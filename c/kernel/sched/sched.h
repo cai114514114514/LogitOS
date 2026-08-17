@@ -131,4 +131,9 @@ unsigned long sched_blocked_count(void);          /* threads currently parked */
  * of blocking. The number M27 exists to drive to zero; see sched.c. */
 unsigned long sched_hlt_waits(void);
 
+/* Walk the poll-pass attribution: slot i -> (return address, count), 0 when
+ * exhausted. See the histogram in sched.c -- "something is still polling" is
+ * not an actionable sentence, and this is what makes it one. */
+int sched_hlt_who(int i, unsigned long *ra, unsigned long *n);
+
 #endif /* LOGIT_SCHED_H */

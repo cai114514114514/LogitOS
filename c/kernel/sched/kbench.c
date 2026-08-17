@@ -408,6 +408,13 @@ void kb_stat_report(const char *tag)
             "%d poll passes through bkl_hlt_wait\n",
             (int)sched_switches(), (int)sched_blocked_count(),
             (int)sched_hlt_waits());
+    /* ...and by whom. The threshold above says a poll survived; this says which
+     * one, which is the difference between a gate and a bug report. */
+    for (int i = 0; ; i++) {
+        unsigned long ra, n;
+        if (!sched_hlt_who(i, &ra, &n)) break;
+        kprintf("[kbench]   poll 0x%lx: %lu pass(es)\n", ra, n);
+    }
 
     /* The syscall histogram, biggest first. Printed as a top-N rather than in
      * full: 128 lines of mostly zeroes on a serial console at ~200 us a line is

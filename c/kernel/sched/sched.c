@@ -1005,9 +1005,60 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
 unsigned long g_bkl_hlt_waits;
 unsigned long sched_hlt_waits(void) { return g_bkl_hlt_waits; }
 
+/* WHO IS STILL POLLING. run-kbench.sh fails at >200 passes with "something is
+ * still polling instead of blocking" -- a message that names no culprit, and
+ * therefore costs a debugging session every single time it fires. It fires at
+ * 247 today.
+ *
+ * The tree already knows the answer to this shape of question: spinlock_t
+ * records the acquiring caller's return address, and that is what turned "the
+ * BKL is contended" into "wm_run+0x2de holds it 80% of the time". A poll is the
+ * same question one level up -- not how many, but whose.
+ *
+ * A 16-slot direct-mapped histogram over the return address. Direct-mapped and
+ * not exact: a collision merges two callers, which is a wrong attribution for a
+ * pair of sites that both poll -- and the answer being sought is "which ONE is
+ * still polling", for which the top entry is right even when the tail is
+ * merged. Cost is one shift, one mask and two adds on a path that is about to
+ * execute HLT. */
+#define HLT_SLOTS 16
+static struct { unsigned long ra; unsigned long n; } g_hlt_who[HLT_SLOTS];
+
+static void hlt_note(unsigned long ra)
+{
+    unsigned h = (unsigned)((ra >> 4) ^ (ra >> 12)) & (HLT_SLOTS - 1);
+    for (int i = 0; i < HLT_SLOTS; i++) {
+        unsigned k = (h + (unsigned)i) & (HLT_SLOTS - 1);
+        if (g_hlt_who[k].ra == ra) { g_hlt_who[k].n++; return; }
+        if (g_hlt_who[k].ra == 0) { g_hlt_who[k].ra = ra; g_hlt_who[k].n = 1; return; }
+    }
+    g_hlt_who[h].n++;               /* full: merge into the home slot */
+}
+
+/* The i-th NON-EMPTY entry, -> 0 when there is nothing more to report. Caller
+ * prints; sched.c must not depend on kprintf's formatting choices.
+ *
+ * Compact rather than "slot i", and the difference is not cosmetic: the table
+ * is open-addressed with linear probing, so an occupied slot can sit above an
+ * empty one whenever a hash collided. A caller looping until the first empty
+ * slot would stop at the hole and silently report a PREFIX of the answer --
+ * in a diagnostic whose entire job is to name the caller that is still
+ * polling, and where the one it drops is as likely to be the culprit as the
+ * ones it prints. 16 slots, so the quadratic walk is free. */
+int sched_hlt_who(int i, unsigned long *ra, unsigned long *n)
+{
+    if (i < 0) return 0;
+    for (int k = 0; k < HLT_SLOTS; k++) {
+        if (g_hlt_who[k].ra == 0) continue;
+        if (i-- == 0) { *ra = g_hlt_who[k].ra; *n = g_hlt_who[k].n; return 1; }
+    }
+    return 0;
+}
+
 void bkl_hlt_wait(void)
 {
     g_bkl_hlt_waits++;
+    hlt_note((unsigned long)__builtin_return_address(0));
     __asm__ volatile ("cli");
     this_cpu()->in_kernel = 0;
     spin_unlock(&g_bkl);
