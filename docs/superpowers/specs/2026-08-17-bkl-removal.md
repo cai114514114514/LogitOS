@@ -283,12 +283,69 @@ Three answers, and the conditions pick one:
 
 The third, until something measures the second as necessary.
 
-## Step 4 — the scheduler stops using the BKL as a hand-off medium
+## Step 4 — and it is NOT the scheduler; that part is a deletion
 
-`schedule()`, `block_self()`, `thread_exit()` and the three bootstraps all rely
-on "drop before the switch, the incoming thread re-acquires after". That is P0's
-design and the last thing standing. When it is gone, the single acquire site at
-`interrupts.c:152` is dead code and gets deleted.
+The scheduler was written down here as the last obstacle, and reading it says
+otherwise. `schedule()` does a genuine release-and-reacquire, not a hand-off:
+
+```c
+me->in_kernel = 0;
+spin_unlock(&g_bkl);                     /* as the OUTGOING thread */
+context_switch(&prev->rsp, next->rsp);
+/* ... resumes as the INCOMING thread, g_sched_lock held, BKL not */
+spin_unlock(&g_sched_lock);
+spin_lock(&g_bkl);                       /* as the INCOMING thread */
+me->in_kernel = 1;
+```
+
+Once no vector acquires the BKL on entry there is nothing here to release or
+re-acquire, and these lines simply go. `g_sched_lock` already protects the
+scheduler and is already held across the switch. This is a deletion, not a
+design.
+
+**The real step 4 is net and fs, and neither appears anywhere in the plan above.**
+The M25 P3 audit's decision was "keep WM/net/fs BKL-guarded"; steps 2 and 3 take
+WM and the IRQ entry. net and fs are left, and they are in worse shape than the
+compositor was.
+
+### `net_lock()` is not a lock
+
+```c
+static inline uint64_t net_lock(void)
+{ uint64_t f; __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(f) :: "memory"); return f; }
+```
+
+It masks interrupts on the local core, and its stated justification is
+*"Everything net runs on the BSP, and the NIC IRQ is routed to the BSP, so
+masking interrupts is enough."* The second clause is true by routing. **The
+first is true because of the BKL** — mainline net code is reached from syscalls,
+which run on whatever core made them, and it is the global lock that keeps two
+of them from being in `tcp_send` at once. Remove it and `cli` on core 0 says
+nothing at all about core 1.
+
+### the filesystem says so itself
+
+`c/fs/logitfs.c:78`:
+
+> Concurrency: every op runs under the kernel BKL and the shared static
+> staging... **Correctness relies on the BKL never being dropped mid-operation.**
+
+A **shared static staging buffer** for the journal, one copy, no lock. Two
+concurrent operations do not race over a counter; they interleave in each
+other's transaction. `lfsro.c:23` is the same shape — *"under the BKL, so one
+buffer is enough"*. Outside `vfs_cred.c` there is not a single `spinlock_t` in
+`c/fs`.
+
+So the order is: **step 2 (WM) → step 3 (IRQ, three vectors + the input ring) →
+step 4a (net: a real lock, or an explicit single-core discipline that is
+enforced rather than observed) → step 4b (fs: a lock per mount, and the staging
+buffer stops being shared) → then the acquire site is dead code.**
+
+This is the third time in one afternoon that a comment turned out to be *true
+but unqualified* — `inq_push`'s "no locks, no shared-state", `net_lock`'s
+"masking interrupts is enough", and logitfs's own honest note, which is the only
+one of the three that names its dependency out loud. That is the difference
+between a comment that survives this work and one that has to be re-derived.
 
 ## The instruments, because none of this was measurable a day ago
 
