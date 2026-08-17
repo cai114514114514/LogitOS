@@ -130,6 +130,21 @@ def collect_targets(texts):
     """target -> (recipe text, prerequisite list). Later definitions append."""
     targets = {}
     for _, text in texts.items():
+        # JOIN BACKSLASH CONTINUATIONS FIRST. A prerequisite list that wraps --
+        #
+        #     test-fs-boot: test-fsmount test-durability test-fscrash \
+        #                   test-fsreplay test-hugefile test-barrier
+        #
+        # loses everything after the backslash, because the split below takes
+        # one physical line. test-fs-boot is one of this file's own SUITES
+        # roots, so its wrapped members were counted UNWIRED while being wired,
+        # and the UNWIRED number this audit exists to report was inflated by it.
+        #
+        # Fourth instance in one day of a make construct that spans physical
+        # lines being read one line at a time: it also produced a wrong md5
+        # that let a real Makefile breakage through, a false MISSING in a shell
+        # check, and a variant binary that tools/negctl_drift.py could not see.
+        text = re.sub(r"\\\n[ \t]*", " ", text)
         lines = text.split("\n")
         cur = None
         for line in lines:

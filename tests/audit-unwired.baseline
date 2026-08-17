@@ -46,12 +46,10 @@ test-audit-list
 test-aui
 test-aui-mask
 test-avsync
-test-barrier
 test-bidi
 test-bing
 test-browser
 test-browser-https
-test-bulkread
 test-ch
 test-ch-host
 test-ch-refusal
@@ -165,7 +163,6 @@ test-html5lib-tok
 test-http-fuzz
 test-httpd
 test-https-smoke
-test-hugefile
 test-identity
 test-img
 test-img-anim
@@ -295,8 +292,6 @@ test-sock
 test-sock-ui
 test-sockserv
 test-sse-page
-test-statmeta
-test-statmeta-os
 test-stream
 test-stream-asan
 test-svg

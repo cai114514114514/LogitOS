@@ -1171,12 +1171,12 @@ in `kheap.c`:
 
 **This is the single most load-bearing fact about testing in this tree**, and it
 is measured, not estimated: `make test-audit` counts 594 `test-` targets and
-finds **359 that no suite reaches** -- after already excluding the ones
+finds **354 that no suite reaches** -- after already excluding the ones
 deliberately out of CI (benchmarks, negative controls run by their positive
 counterpart, manual drivers). Everything below follows from it.
 
 **Every number in this section is a measurement with a date, and they move.**
-As of 2026-08-17: 594 `test-` targets, 22 wired into a suite, 359 unwired (all
+As of 2026-08-17: 594 `test-` targets, 31 wired into a suite, 354 unwired (all
 recorded by name in `tests/audit-unwired.baseline`, and the gate is that the set
 does not GROW), 14 DEAD harnesses and **0 MUTE**. The sweep classifies 530 of
 them: 337 host, 156 device, 3 that need an argument, and 34 aggregates it skips
