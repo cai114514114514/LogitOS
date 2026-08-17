@@ -148,9 +148,14 @@ INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/net/tls -I$ROOT/c/net/core \
       -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
       -I$ROOT/c/kernel/cpu"
-SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c $ROOT/c/net/tls/tls_psk.c \
-     $ROOT/c/net/tls/x509.c $ROOT/c/net/tls/ocsp.c $TMP/roots_test.c $ROOT/c/kernel/cpu/cpufeat.c \
+# Everything EXCEPT the trust-store TU. The fail-closed block at the bottom
+# builds a second client from exactly this list plus a roots.c compiled against
+# an EMPTY bundle -- so "identical in every respect except which anchors are
+# compiled in" is a property of the build line, not a claim in a comment.
+SRC_NOTRUST="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c $ROOT/c/net/tls/tls_psk.c \
+     $ROOT/c/net/tls/x509.c $ROOT/c/net/tls/ocsp.c $ROOT/c/kernel/cpu/cpufeat.c \
      $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
+SRC="$SRC_NOTRUST $TMP/roots_test.c"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a
 # bounds bug in it.
@@ -164,6 +169,13 @@ BREAKDEF=""
 # TLS_INTEROP_ONLY=resume restricts the run to the resumption block, which is
 # all the control needs and keeps it to a few seconds.
 ONLY="${TLS_INTEROP_ONLY:-}"
+# TLS_INTEROP_NOROOTS_CONTROL=1 is the fail-closed block's negative control (see
+# the block near the bottom). It is read HERE, not there, because it pins ONLY
+# to that block: the verdict it computes is "all four pairs failed", and a
+# failure anywhere else in the suite would otherwise be counted towards it.
+NRCTL="${TLS_INTEROP_NOROOTS_CONTROL:-}"
+NRBIN=""                          # set only if the substitute client builds
+[ -n "$NRCTL" ] && ONLY="noroots"
 # shellcheck disable=SC2086
 $CC -O1 -g -Wall -Wextra $SAN $BREAKDEF -o "$BUILD/tls_interop_test" $SRC $INCS || {
     echo "FAIL: could not build tls_interop_test"; exit 1; }
@@ -575,10 +587,212 @@ tamper_case "1.2 rejects substituted ECDHE key"  pubkey
 # read past the buffer" are both being asserted.
 tamper_case "1.2 rejects over-long ECDHE point"  pointlen "ServerKeyExchange malformed"
 
+# ================================================= fail-closed: ZERO anchors ==
+# Everything above proves the trust store lets the right chains through and
+# keeps the wrong ones out. This block proves the other end of the scale: with
+# NO anchors at all, nothing gets through.
+#
+# The property is structural -- both trust loops are bounded by logit_nroots
+# (c/net/tls/x509.c:422 is_pinned_root, :447 signed_by_root), so at zero they
+# both return 0 and x509_verify_chain falls to X509_E_UNTRUSTED (x509.c:534-536)
+# -- and a tree-wide grep for skip_verify / insecure / allow_untrusted finds
+# nothing. But a property nobody has ever watched fail is not evidence, and the
+# day someone adds a "just this once" bypass, every case above still passes.
+#
+# THREE THINGS MAKE THIS A PROOF RATHER THAN A RUN THAT HAPPENED TO GO RED:
+#
+#  1. The two binaries differ ONLY in the trust TU. Same sources, same flags,
+#     same server, same connection -- see SRC_NOTRUST above. So a refusal cannot
+#     be blamed on anything else in the client.
+#  2. Every case runs the TRUSTED client against the SAME live server first. If
+#     that control does not connect, the case is reported as broken rather than
+#     scored -- otherwise a server that failed to start, a bad certificate or a
+#     wrong port would all "prove" fail-closed.
+#  3. The refusal must carry the RIGHT REASON. `--expect-fail` is satisfied by
+#     any failure at all, including a build that produced a client which cannot
+#     parse a ServerHello. The log has to say "no path to a trusted root", which
+#     is tls.c:954 printing X509_E_UNTRUSTED specifically.
+#
+# And before any of that, the substitute store is verified to BE empty and to
+# LINK -- see tests/unit/roots_count_probe.c for why both halves are load-bearing.
+SECTION="noroots"
+# TLS_INTEROP_NOROOTS_CONTROL=1 is this block's negative control: the substitute
+# client is built against this suite's OWN test bundle (the three throwaway CAs
+# minted above) instead of an empty one,
+# so every case here MUST fail, and the verdict at the bottom is inverted. It is
+# the only way to watch this block fail on purpose -- the honest bypass it is
+# meant to catch would live in c/net/tls, which this harness does not edit.
+# (NRCTL/NRBIN are declared at the top, next to ONLY, for the reason given there.)
+
+if [ -z "$ONLY" ] || [ "$ONLY" = "$SECTION" ]; then
+echo
+echo "-- fail-closed: a trust store with ZERO anchors --"
+
+mkdir -p "$TMP/nr" "$TMP/nrroots"
+# An empty source directory -- unless this is the control run, in which case the
+# substitute store is the suite's own populated test store and the block must go red.
+NRSRCDIR="$TMP/nrroots"; NRWANT="zero"
+if [ -n "$NRCTL" ]; then NRSRCDIR="$TMP/roots"; NRWANT="nonzero"; fi
+
+nrfail() { echo "FAIL fail-closed: $1"; fail=$((fail+1)); }
+
+if ! python3 "$ROOT/tools/genroots.py" "$NRSRCDIR" "$TMP/nr/roots_bundle.inc" >"$TMP/nr/gen.log" 2>&1; then
+    nrfail "tools/genroots.py could not build a bundle from $NRSRCDIR"
+    sed 's/^/    | /' "$TMP/nr/gen.log"
+else
+    cp "$ROOT/c/crypto/trust/roots.c" "$TMP/nr/roots_test.c"
+    # -I$TMP/nr FIRST, ahead of the populated test bundle in -I$TMP. roots.c reaches
+    # its bundle with a quoted include, which resolves against the including
+    # file's own directory before any -I -- so this is belt and braces, and the
+    # probe below is what actually settles which bundle got linked.
+    NRINCS="-I$TMP/nr $INCS"
+
+    # (0a) The substitute store must LINK and must be EMPTY, asserted before a
+    #      single handshake. genroots.py emits `logit_roots[] = {};` for an empty
+    #      directory (tools/genroots.py:222-224) -- an empty C initialiser, which
+    #      is a C23 feature and a GNU extension. Measured on this toolchain:
+    #      clang accepts it at the default -std with no diagnostic and
+    #      logit_nroots comes out 0. If that ever stops being true the failure is
+    #      a COMPILE error, and a harness that only asked "did the run fail?"
+    #      would score it as a pass.
+    if ! $CC -O1 -g -Wall -Wextra -o "$BUILD/roots_count_probe_nr" \
+            "$ROOT/tests/unit/roots_count_probe.c" "$TMP/nr/roots_test.c" $NRINCS \
+            >"$TMP/nr/probe_build.log" 2>&1; then
+        nrfail "the substitute trust bundle does not COMPILE. genroots.py emits an
+      empty C initialiser for an empty directory; this toolchain rejects it.
+      That is a REQUEST for the owner of tools/genroots.py, not a pass."
+        sed 's/^/    | /' "$TMP/nr/probe_build.log"
+    elif ! "$BUILD/roots_count_probe_nr" "$NRWANT" >"$TMP/nr/probe.log" 2>&1; then
+        nrfail "the substitute trust store is not what this block requires"
+        sed 's/^/    | /' "$TMP/nr/probe.log"
+    else
+        echo "ok   fail-closed: substitute store links and is $NRWANT  $(cat "$TMP/nr/probe.log")"
+        pass=$((pass+1))
+
+        # (0b) The same probe against the REAL bundle. Without this, a probe that
+        #      reported 0 unconditionally -- or a bundle path that silently
+        #      resolved to nothing -- would satisfy (0a) and mean nothing.
+        if $CC -O1 -g -Wall -Wextra -o "$BUILD/roots_count_probe_real" \
+               "$ROOT/tests/unit/roots_count_probe.c" "$ROOT/c/crypto/trust/roots.c" \
+               "-I$ROOT/c/crypto/trust" >"$TMP/nr/probe_real_build.log" 2>&1 \
+           && "$BUILD/roots_count_probe_real" nonzero >"$TMP/nr/probe_real.log" 2>&1; then
+            echo "ok   fail-closed: the same probe reads the real store as non-empty  $(cat "$TMP/nr/probe_real.log")"
+            pass=$((pass+1))
+        else
+            nrfail "the probe cannot see the REAL trust store as non-empty, so its
+      'empty' verdict distinguishes nothing"
+            sed 's/^/    | /' "$TMP/nr/probe_real_build.log" "$TMP/nr/probe_real.log" 2>/dev/null
+        fi
+
+        # (0c) Build the substitute client. A build failure here is a FAILURE,
+        #      never a skip: a client that does not exist refuses every server,
+        #      which is exactly the observation this block is trying to make.
+        # shellcheck disable=SC2086
+        if $CC -O1 -g -Wall -Wextra $SAN $BREAKDEF -o "$BUILD/tls_interop_test_noroots" \
+               $SRC_NOTRUST "$TMP/nr/roots_test.c" $NRINCS >"$TMP/nr/build.log" 2>&1; then
+            NRBIN="$BUILD/tls_interop_test_noroots"
+        else
+            nrfail "could not build the zero-anchor client"
+            sed 's/^/    | /' "$TMP/nr/build.log"
+        fi
+    fi
+fi
+
+# noroots_pair <label> <srv-ver> <chain> <key> [server-args...]
+# Runs the trusted client and the zero-anchor client against ONE server process,
+# back to back. The trusted run is the control and is checked first.
+noroots_pair() {
+    local label="$1" ver="$2" chain="$3" key="$4"; shift 4
+    [ -z "$NRBIN" ] && return
+    SRV_VER="$ver"
+    if ! start_server "$chain" "$key" "$@"; then
+        nrfail "$label (server did not start)"; cat "$TMP/server.log"; return
+    fi
+    "$BUILD/tls_interop_test" 127.0.0.1 "$PORT" localhost >"$TMP/nr_ctl.log" 2>&1
+    local crc=$?
+    "$NRBIN" 127.0.0.1 "$PORT" localhost --expect-fail >"$TMP/nr_case.log" 2>&1
+    local nrc=$?
+    stop_server
+
+    if [ $crc -ne 0 ]; then
+        nrfail "$label -- the TRUSTED control could not connect to this server,
+      so a refusal by the zero-anchor client proves nothing about anchors"
+        sed 's/^/    | /' "$TMP/nr_ctl.log"
+        return
+    fi
+    if [ $nrc -ne 0 ]; then
+        nrfail "$label -- the zero-anchor client did NOT refuse (a chain verified
+      against a store holding no anchors)"
+        sed 's/^/    | /' "$TMP/nr_case.log"
+        return
+    fi
+    if ! grep -qa "no path to a trusted root" "$TMP/nr_case.log"; then
+        nrfail "$label -- refused, but not for want of an anchor. Expected
+      x509.c's X509_E_UNTRUSTED (tls.c:954 'no path to a trusted root')"
+        sed 's/^/    | /' "$TMP/nr_case.log"
+        return
+    fi
+    # Echo back what the client itself said its store held, so a passing line
+    # carries its own evidence instead of only a label. Printed if present and
+    # never required: the banner belongs to c/crypto/trust, and a gate that
+    # greps for another owner's log wording breaks the day they reword it.
+    local banner
+    banner="$(grep -a -m1 'trust store:' "$TMP/nr_case.log" || true)"
+    echo "ok   $label  (with anchors: connects; zero anchors: no path to a trusted root)${banner:+  [client saw: ${banner#*trust store: }]}"
+    pass=$((pass+1))
+}
+
+# The in-band anchor path: the server sends leaf + CA, so with the anchor held this
+# is decided by is_pinned_root (x509.c:420-435), the loop that byte-compares the
+# top certificate's key against each held root.
+# shellcheck disable=SC2086
+noroots_pair "zero anchors refuse an in-band anchor (1.3)" -tls1_3 \
+    "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519
+# The held-not-sent path: leaf only, so with the anchor held this is decided by
+# signed_by_root (x509.c:439-462) -- the OTHER loop, and the common case on the
+# real web. Both loops have to be shown closing, not one of them.
+noroots_pair "zero anchors refuse a held-not-sent anchor (1.3)" -tls1_3 \
+    "$TMP/ec.pem" "$TMP/ec.key" -groups X25519
+# An RSA anchor reaches the same loops down a different verify_with_key branch.
+# shellcheck disable=SC2086
+noroots_pair "zero anchors refuse an RSA leaf (1.3)" -tls1_3 \
+    "$TMP/rsa.pem" "$TMP/rsa.key" $CHAIN -groups X25519
+# TLS 1.2 arrives at tls_check_chain from tls12.c, not tls.c. The certificate is
+# the one thing the two versions share, and sharing it is worth asserting rather
+# than assuming.
+# shellcheck disable=SC2086
+noroots_pair "zero anchors refuse over TLS 1.2" -tls1_2 \
+    "$TMP/ec.pem" "$TMP/ec.key" $CHAIN -groups X25519
+SRV_VER="-tls1_3"
+
+# Session resumption is not a bypass, and this is why it needs no case of its
+# own: a resumed handshake carries no certificate, but the ticket that makes it
+# possible is only ever issued on a connection that already verified one. With
+# zero anchors the first connection above never completes, so there is nothing
+# to resume from -- the cache is populated by success, and success is what is
+# gone. (`--expect-resume` cases in the resume block above are what assert the
+# cache is only filled that way.)
+fi
+
 echo
 echo "$pass passed, $fail failed"
 
 # --- the verdict ---
+if [ -n "$NRCTL" ]; then
+    # The fail-closed block's own negative control. The substitute client was
+    # built against a POPULATED bundle, so all FOUR pairs must have
+    # noticed. "fail > 0" is not enough here: a build error would also produce
+    # it, and would credit the control for an outcome it did not cause.
+    if [ -n "$NRBIN" ] && [ "$fail" -ge 4 ]; then
+        echo "PASS: fail-closed negative control -- a non-empty substitute store"
+        echo "      was caught by all $fail case(s); the block is not vacuous."
+        exit 0
+    fi
+    echo "FAIL: fail-closed negative control -- expected all 4 pairs to fail with a"
+    echo "      populated substitute store (got fail=$fail, client='$NRBIN')."
+    echo "      Either the block cannot tell the two stores apart, or it never ran."
+    exit 1
+fi
 if [ -n "$BREAK" ]; then
     # Negative control. The client was built with a deliberate defect, so the
     # ONLY acceptable outcome is that this suite caught it. A control that
