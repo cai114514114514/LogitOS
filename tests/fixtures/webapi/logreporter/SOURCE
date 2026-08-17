@@ -1,0 +1,27 @@
+https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js   (loaded by https://www.bilibili.com/)
+
+A REDUCTION, NOT A CAPTURE -- and the distinction matters, because every other
+directory here is committed bytes off the wire (see capture.py) and this one is
+not. What is committed here is the SHAPE of the two functions the 2026-08-16
+scoreboard named in a stack, written out unminified so a test can assert on it:
+
+    tests/scoreboard/2026-08-16-full.md:198-217
+      bilibili  ERRORS  painted 173732 changed px in 13.3s but 1 JS exception
+      TypeError: cannot read property 'split' of undefined
+        at getCurrentDomain (https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js)
+        at setCookie        (log-reporter.js)
+
+Two names, one call path, and everything this fixture does is on it:
+getCurrentDomain reads `document.domain` and `.split('.')`s it with no guard,
+setCookie writes the result into `document.cookie`, and the reporter reads
+`document.cookie` back and splits THAT to find its own id. The
+navigator.cookieEnabled gate around it is not bilibili's -- it is quoted from
+two other real pages already in this corpus, each named at its line in
+log-reporter.js.
+
+WHY THERE IS NO index.html HERE. tests/webapi_platform.mk:67 globs
+`tests/fixtures/webapi/*/index.html` into WEBAPI_FIXTURES, which is the corpus
+`make probe-webapi` ranks missing globals over. That instrument's premise is
+that every page in it is bytes a real site served; a synthetic page in the
+ranking would be this tree telling itself what the web asks for. The page here
+is page.html and the glob does not see it.

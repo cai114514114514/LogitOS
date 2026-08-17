@@ -517,10 +517,46 @@ static void ck_ctx(struct cookie_ctx *c, const struct wurl *u, int http_api)
  * http_api=1 on both: this is the network stack speaking, so HttpOnly
  * cookies are carried and storable per cookies.c's own rules. */
 int webapi_cookie_line(const char *host, const char *path, int secure,
-                       char *out, int cap)
+                       int nav, char *out, int cap)
 {
     struct cookie_ctx c = { host, (path && path[0]) ? path : "/", secure, 1 };
+    /* SameSite, computed HERE because this is the only file that knows what
+     * document is asking: g_loc. browser_rt.c knows the request and not the
+     * initiator, so it passes `nav` and nothing else.
+     *
+     * This call used to be cookie_header(), which is cookie_header_ex() with
+     * CK_REQ_SAME_SITE wired in -- so every request the transport made was
+     * declared same-site, including the ones that were not. Every
+     * cross-origin <script src> and <link rel=stylesheet> a page named (and
+     * res_fetch_all filters those for nothing but data:/javascript:) carried
+     * the target's Secure+HttpOnly+SameSite=Strict session, and the reply was
+     * then evaluated in the requesting page's realm. The fetch()/XHR path
+     * fifty lines below had it right the whole time, which is what made this
+     * an omission rather than a missing feature -- and test-cookie-cors
+     * covers only that path, so the gate could not see it.
+     *
+     * !g_loc_valid means about:blank or a URL url.c will not parse -- no
+     * initiator document, hence nothing to be cross-site TO, hence same-site.
+     *
+     * KNOWN AND DELIBERATE RESIDUAL, in the conservative direction: a
+     * navigation typed into the address bar also has no initiator and should
+     * likewise be same-site, but g_loc is still the PREVIOUS page when the
+     * request goes out (set_location runs at js_page_open, after the bytes
+     * arrive), so typing a URL while a different site is open is classified
+     * CROSS_SITE_NAV and its SameSite=Strict cookies are withheld for that
+     * one request. The page then loads, g_loc becomes it, and everything
+     * after is same-site. Under-sending for one paint; the alternative is
+     * threading a user-vs-page initiator flag through all ten callers of
+     * load(), where the SAFE default is the one a caller forgets. */
+#ifdef WEBAPI_COOKIE_ALWAYS_SAME_SITE     /* negctl: exactly the shipped bug */
+    (void)nav;
     return cookie_header(jar(), &c, now_unix(), out, cap);
+#else
+    int kind = CK_REQ_SAME_SITE;
+    if (g_loc_valid && !cookie_same_site(g_loc.host, host))
+        kind = nav ? CK_REQ_CROSS_SITE_NAV : CK_REQ_CROSS_SITE;
+    return cookie_header_ex(jar(), &c, kind, now_unix(), out, cap);
+#endif
 }
 
 void webapi_cookie_store_line(const char *host, const char *path, int secure,
@@ -955,7 +991,7 @@ static int fetch_send_request(JSContext *ctx, struct wfetch *f)
             ck_ctx(&cc, &f->url, 1);
             int cross_site = g_loc_valid ? !cookie_same_site(g_loc.host, f->url.host)
                                          : CK_REQ_CROSS_SITE;
-            char cookie[2048];
+            static char cookie[CK_HEADER_MAX];   /* 8 KiB: not on the stack */
             int n = cookie_header_ex(jar(), &cc, cross_site ? CK_REQ_CROSS_SITE
                                                             : CK_REQ_SAME_SITE,
                                      now_unix(), cookie, (int)sizeof cookie);
@@ -1631,7 +1667,7 @@ static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
     if (!g_loc_valid) return JS_NewString(ctx, "");
     struct cookie_ctx cc;
     ck_ctx(&cc, &g_loc, 0);
-    char buf[4096];
+    static char buf[CK_HEADER_MAX];              /* 8 KiB: not on the stack */
     int n = cookie_header(jar(), &cc, now_unix(), buf, (int)sizeof buf);
     return JS_NewString(ctx, n > 0 ? buf : "");
 }
@@ -3243,12 +3279,15 @@ void js_webapi_install(JSContext *ctx, const char *url)
              * and an undefined here threw "cannot read property 'split' of
              * undefined" and took the whole telemetry init with it. Reported
              * as the effective domain, which for our single-origin document is
-             * just the host; the setter (a page may narrow it to a registrable
-             * suffix for legacy cross-frame access) is accepted and ignored,
-             * because we have no frames for it to affect -- ignoring is the
-             * whole of that feature here, and a throw would be worse. Empty
-             * string for an opaque-origin document, where `.split('.')` gives
-             * [""], still not a throw. */
+             * just the host. A plain data property, so a page that narrows it
+             * (`document.domain = 'bilibili.com'`, the legacy cross-frame
+             * move) has the write STORED and reads its own value back -- which
+             * is what a real browser does too, and here it affects nothing
+             * because we have no frames. It affects no COOKIE either: ck_ctx()
+             * builds every cookie context from g_loc.host, never from this
+             * property, so writing it cannot widen what the page may set.
+             * Empty string for an opaque-origin document, where `.split('.')`
+             * gives [""], still not a throw. */
             JS_SetPropertyStr(ctx, doc, "domain",
                               JS_NewString(ctx, g_loc_valid ? g_loc.host : ""));
             /* document.cookie: the same jar the network uses, minus HttpOnly.
@@ -3266,6 +3305,55 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_FreeValue(ctx, doc);
     }
     JS_FreeValue(ctx, loc);
+
+    /* navigator.cookieEnabled -- the property that ADVERTISES the accessor
+     * above, and it was answering no while the jar worked.
+     *
+     * js_page.c:610 publishes it as false with the comment "no jar on this
+     * path", and that comment is true OF THAT FILE: js_page.c is deliberately
+     * host-linkable with no transport, and a build that drops this TU (the
+     * weak js_webapi_install, see js_webapi.h) really has no jar and must keep
+     * answering false. But js_page.c calls js_webapi_install twenty lines
+     * later, so on the browser's own path the jar IS present and the answer
+     * was still no. This file is the one that knows, so it answers here; the
+     * false in js_page.c stays, and stays correct, for the build with no us.
+     *
+     * A lie in this direction is worse than an absent property, for exactly
+     * the reason a cookie getter returning "" is worse than no getter: a page
+     * CAN tell absent from false, and false is an affirmative answer it acts
+     * on. Nothing throws, so no exception counter on the scoreboard can see
+     * it -- the page renders correctly, minus a feature.
+     *
+     * MEASURED, both callers in tests/fixtures/webapi/ in this tree:
+     *   baidureal/s010.js:104  `function close(){if(navigator.cookieEnabled){
+     *                           document.cookie="su=0; domain=www.baidu.com"}}`
+     *                          -- a document.cookie WRITE that never ran; and
+     *                          :86 `!bds.se.sugStorage.isSupport()||
+     *                          !navigator.cookieEnabled||...` skips the whole
+     *                          suggestion store before it reads the cookie.
+     *   bing/index.html:34     `navigator.cookieEnabled||r("COOKIEDISABLED")`,
+     *                          and the dark-mode reload falls into
+     *                          `f("dmnoreload_cookieenabled_"+...)` instead.
+     *
+     * The answer is g_loc_valid, not a constant 1, and that is the same
+     * condition that decides whether document.cookie is a working accessor or
+     * a pair of no-ops (js_cookie_get/js_cookie_set return ""/undefined when
+     * it is 0). For a document whose URL url.c cannot parse -- about:blank,
+     * anything that is not http(s) -- cookies genuinely do not work here, and
+     * saying so is the truthful answer rather than the flattering one.
+     *
+     * Only if `navigator` already exists: js_page.c owns that object, and an
+     * embedding that publishes no navigator gets no invented one from us.
+     * js_platform.c runs after this and fills navigator gaps with an
+     * only-if-absent `def`, so it cannot take the answer back. */
+#ifndef WEBAPI_NO_COOKIE_ENABLED      /* the negative control: test-logreporter-negctl */
+    {
+        JSValue nav = JS_GetPropertyStr(ctx, g, "navigator");
+        if (JS_IsObject(nav))
+            JS_SetPropertyStr(ctx, nav, "cookieEnabled", JS_NewBool(ctx, g_loc_valid));
+        JS_FreeValue(ctx, nav);
+    }
+#endif
 
     JSValue hist = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, hist, hist_funcs, (int)(sizeof hist_funcs / sizeof hist_funcs[0]));

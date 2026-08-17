@@ -41,10 +41,18 @@ void bfetch_set_base(const char *page_url);
  * url_resolve does not do that, and bundlers emit "./chunk.js" constantly. */
 int  bfetch_resolve(const char *base, const char *ref, char *out, int max);
 
-/* Queue a GET. Returns a request id, or -1 (bad URL / table full). */
+/* Queue a GET for a SUBRESOURCE. Returns a request id, or -1 (bad URL /
+ * table full). Subresource is the classification, not just a description: a
+ * cross-site request made through this door carries no SameSite=Lax cookie
+ * and no Strict one -- only an explicit SameSite=None. See cookies.h. */
 int  bfetch_start(const char *ref);
 /* As above, but resolved against `base` instead of the document URL. */
 int  bfetch_start_from(const char *base, const char *ref);
+/* Queue a GET for a TOP-LEVEL NAVIGATION. Identical on the wire except that
+ * a cross-site one carries SameSite=Lax and unattributed cookies, which is
+ * the whole of what Lax means and what keeps a link from another site from
+ * arriving logged out. Strict is still withheld. */
+int  bfetch_start_nav(const char *ref);
 
 /* ===================== byte ranges: Range / 206 ==========================
  *

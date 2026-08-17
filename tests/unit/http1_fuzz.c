@@ -490,11 +490,18 @@ static void phase_cookies(int iters)
          * two jar entries can serialize to the same "name=value", so a text
          * search would credit a leak to the wrong (innocent) entry. */
         for (int h = 0; h < 12; h++) {
-            char buf[4096];
+            char buf[CK_HEADER_MAX];
             struct cookie_ctx q;
             q.host = hosts[h]; q.path = "/a/b"; q.secure = (int)rnd_n(2); q.http_api = 1;
             int n = cookie_header(&j, &q, 1700000000, buf, (int)sizeof buf);
-            REQUIRE(n >= 0 && n < (int)sizeof buf, "cookie_header returned %d", n);
+            /* CK_E_NOFIT is a legal answer and reachable here: this fuzzer
+             * generates values up to cookies.c's own CK_VALUE_MAX, and a
+             * single one of those plus its name exceeds any buffer it fits in
+             * only barely. It is NOT lumped in with n <= 0 above the REQUIRE,
+             * because "the caller's buffer was too small" and "the jar
+             * returned garbage" are the two things this line separates. */
+            REQUIRE((n >= 0 || n == CK_E_NOFIT) && n < (int)sizeof buf,
+                    "cookie_header returned %d", n);
             if (n <= 0) continue;
 
             int allowed = 0;

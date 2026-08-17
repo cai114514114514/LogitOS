@@ -391,6 +391,67 @@ static void test_cors_preflight(void)
     ck(!saw_method("OPTIONS"), "...with no preflight");
 }
 
+/* ---- the transport path -------------------------------------------------
+ *
+ * WHY THIS IS HERE AND NOT ONE MORE fetch() TEST. Everything above drives the
+ * jar through fetch()/XHR, and that path computed SameSite correctly from the
+ * day it was written. The browser has a SECOND door into the same jar --
+ * webapi_cookie_line(), which browser_rt.c calls for the navigation and for
+ * every subresource -- and it went in wired to cookie_header(), i.e. to
+ * CK_REQ_SAME_SITE unconditionally. So every cross-origin <script src> and
+ * <link rel=stylesheet> a page named carried the target's Secure + HttpOnly +
+ * SameSite=Strict session, and the reply was evaluated in the requesting
+ * page's realm.
+ *
+ * This file's own title is "which requests carry the session, and which", and
+ * it did not see that for one reason: it only ever asked the door that was
+ * already right. A gate aimed at a rule has to be aimed at every caller of
+ * the rule, or it certifies the caller it happens to know.
+ *
+ * The document is http://page.example/ (main's open_ctx), so other.example is
+ * cross-site and page.example is not. */
+int  webapi_cookie_line(const char *host, const char *path, int secure,
+                        int nav, char *out, int cap);
+void webapi_cookie_store_line(const char *host, const char *path, int secure,
+                              const char *setcookie);
+
+static void test_transport_samesite(void)
+{
+    printf("\n-- the transport door: a subresource is not a navigation --\n");
+    /* Stored by the NETWORK, which is the only way a Strict cookie for another
+     * site gets into the jar at all. Secure throughout: SameSite=None without
+     * it is refused by cookies.c, and holding the other three to the same
+     * attribute keeps the four differing in exactly one thing. */
+    webapi_cookie_store_line("other.example", "/", 1, "u=1; Path=/; Secure");
+    webapi_cookie_store_line("other.example", "/", 1, "l=1; Path=/; Secure; SameSite=Lax");
+    webapi_cookie_store_line("other.example", "/", 1, "s=1; Path=/; Secure; SameSite=Strict");
+    webapi_cookie_store_line("other.example", "/", 1, "n=1; Path=/; Secure; SameSite=None");
+    webapi_cookie_store_line("page.example", "/", 1, "own=1; Path=/; Secure; SameSite=Strict");
+
+    char line[1024];
+    int n;
+
+    n = webapi_cookie_line("other.example", "/", 1, 0, line, (int)sizeof line);
+    if (n <= 0) line[0] = 0;
+    printf("      subresource -> Cookie: %s\n", line[0] ? line : "(none)");
+    ck(!strstr(line, "s=1"), "a cross-site SUBRESOURCE carries no Strict cookie");
+    ck(!strstr(line, "l=1"), "...nor a Lax one");
+    ck(!strstr(line, "u=1"), "...nor an unattributed one, which 6265bis reads as Lax");
+    ck(strstr(line, "n=1") != NULL, "...and does carry SameSite=None, or nothing opted in");
+
+    n = webapi_cookie_line("other.example", "/", 1, 1, line, (int)sizeof line);
+    if (n <= 0) line[0] = 0;
+    printf("      navigation  -> Cookie: %s\n", line[0] ? line : "(none)");
+    ck(!strstr(line, "s=1"), "a cross-site NAVIGATION still carries no Strict cookie");
+    ck(strstr(line, "l=1") != NULL, "...but does carry Lax, which is what Lax means");
+    ck(strstr(line, "u=1") != NULL, "...and unattributed with it");
+
+    n = webapi_cookie_line("page.example", "/", 1, 0, line, (int)sizeof line);
+    if (n <= 0) line[0] = 0;
+    ck(strstr(line, "own=1") != NULL,
+       "a SAME-site subresource carries the Strict cookie -- the rule refuses, it does not block");
+}
+
 int main(void)
 {
     fake_now = 1000;
@@ -403,6 +464,7 @@ int main(void)
     test_cors_simple();
     test_cors_credentials();
     test_cors_preflight();
+    test_transport_samesite();
 
     close_ctx();
 

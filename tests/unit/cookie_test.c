@@ -472,6 +472,110 @@ static void t_malformed(void)
     cookie_jar_free(&j);
 }
 
+/* The three request kinds against all four SameSite values -- a 3x4 table,
+ * written out rather than reduced, because the whole defect this replaced was
+ * a rule stated for one caller and applied to every caller.
+ *
+ * The row that did not exist before is CROSS_SITE_NAV, and it is the ONLY one
+ * where Lax and unset part company with Strict. If a future edit collapses it
+ * back into CROSS_SITE, the lax/unset cells of that row fail and nothing
+ * else does; if it collapses into SAME_SITE, the strict cell fails alone. */
+static void t_samesite_request_kinds(void)
+{
+    struct cookie_jar j;
+    cookie_jar_init(&j);
+    set_from(&j, "example.com", "/", 1, "u=1");                       /* unset */
+    set_from(&j, "example.com", "/", 1, "l=1; SameSite=Lax");
+    set_from(&j, "example.com", "/", 1, "s=1; SameSite=Strict");
+    set_from(&j, "example.com", "/", 1, "n=1; SameSite=None; Secure");
+    struct cookie_ctx c = CTX("example.com", "/", 1, 1);
+    char buf[512];
+
+    cookie_header_ex(&j, &c, CK_REQ_SAME_SITE, NOW, buf, (int)sizeof buf);
+    OK(strstr(buf, "u=1") && strstr(buf, "l=1") &&
+       strstr(buf, "s=1") && strstr(buf, "n=1"));
+
+    cookie_header_ex(&j, &c, CK_REQ_CROSS_SITE, NOW, buf, (int)sizeof buf);
+    OK(!strstr(buf, "u=1") && !strstr(buf, "l=1") &&
+       !strstr(buf, "s=1") &&  strstr(buf, "n=1"));
+
+    cookie_header_ex(&j, &c, CK_REQ_CROSS_SITE_NAV, NOW, buf, (int)sizeof buf);
+    OK(strstr(buf, "u=1") && strstr(buf, "l=1") && strstr(buf, "n=1"));
+    OK(!strstr(buf, "s=1"));      /* the one Lax does not relax */
+
+    cookie_jar_free(&j);
+}
+
+/* Eviction must not prefer the cookie the flag exists to protect.
+ *
+ * THE MEASUREMENT THIS ENCODES, taken before the fix: a page that reads
+ * document.cookie and writes fresh names evicted the HttpOnly session after 49
+ * writes and its own ordinary cookie after 50 -- the protected one FIRST. The
+ * cause is not in evict_lru alone; it is that a script read refreshes
+ * `accessed` on exactly the cookies a script can see, so HttpOnly sinks by
+ * construction.
+ *
+ * THE CLOCK HAS TO ADVANCE HERE and every other test in this file passes the
+ * constant NOW. With one timestamp for everything, `accessed` never separates
+ * anything, evict_lru falls through to its lowest-index tie-break, and the
+ * test would still go green for a reason that has nothing to do with the
+ * defect -- a green built on the SLOT ORDER of the two cookies. The drift is
+ * the whole mechanism, so the drift is what is reproduced. */
+static void t_evict_prefers_visible(void)
+{
+    struct cookie_jar j;
+    cookie_jar_init(&j);
+    struct cookie_ctx net = CTX("example.com", "/", 0, 1);   /* HttpOnly allowed */
+    struct cookie_ctx scr = CTX("example.com", "/", 0, 0);   /* a page: not */
+    char buf[2048];
+    int64_t t = NOW;
+    cookie_set(&j, &net, "SESS=secret; HttpOnly", t);
+    cookie_set(&j, &net, "pub=1", t);
+    for (int i = 0; i < 80; i++) {
+        char sc[64];
+        snprintf(sc, sizeof sc, "f%d=x", i);
+        cookie_set(&j, &scr, sc, ++t);
+        cookie_header(&j, &scr, ++t, buf, (int)sizeof buf);   /* renews what it sees */
+    }
+    /* The flood ran well past max_per_domain, so most of it is gone too -- the
+     * claim is about WHICH cookie survives, not how many. */
+    cookie_header(&j, &net, t, buf, (int)sizeof buf);
+    OK(strstr(buf, "SESS=secret") != NULL);
+    /* ...against a jar that survived by not evicting at all, which would pass
+     * the line above for the wrong reason. The cap really ran: the oldest
+     * flood cookie is gone and the jar is at its per-domain limit.
+     *
+     * `pub` is NOT asserted either way, and the reason is worth the line: one
+     * script read renews every cookie that read can see, so pub and the whole
+     * live flood share a single `accessed` and the choice among them falls
+     * through to evict_lru's lowest-index tie-break -- i.e. to slot order,
+     * which is insertion order. pub is the oldest slot and loses. That is
+     * FIFO-among-equals, not a defect, but it is also not the property this
+     * test is for, and pinning it here would pin a tie-break. */
+    OK(strstr(buf, "f0=x") == NULL);
+    OK(cookie_jar_count(&j) <= 50);
+    cookie_jar_free(&j);
+}
+
+/* ...and the preference must not become a refusal: a domain holding nothing
+ * but HttpOnly cookies still has to accept a new one, or the cap is a leak
+ * that fails closed instead of an eviction. Pass 2 of evict_lru is what this
+ * watches; deleting it turns this into an infinite... no, into a jar that
+ * silently stops storing, which is why the assertion is on the NEW name. */
+static void t_evict_falls_back_to_httponly(void)
+{
+    struct cookie_jar j;
+    cookie_jar_init(&j);
+    for (int i = 0; i < 60; i++) {
+        char sc[64];
+        snprintf(sc, sizeof sc, "h%d=x; HttpOnly", i);
+        set_from(&j, "example.com", "/", 0, sc);
+    }
+    set_from(&j, "example.com", "/", 0, "last=1; HttpOnly");
+    OK(strstr(hdr_for(&j, "example.com", "/", 0, 1), "last=1") != NULL);
+    cookie_jar_free(&j);
+}
+
 static void t_limits(void)
 {
     struct cookie_jar j;
@@ -540,8 +644,52 @@ static void t_header_buffer(void)
     int n = cookie_header(&j, &c, NOW, small, (int)sizeof small);
     /* Truncation is by whole cookies: half a "name=val" is a corrupt header. */
     OK(n >= 0 && n < (int)sizeof small && !strcmp(small, "aaaa=1111"));
+    /* NOTHING fit. This line used to assert == 0 and so PINNED AS CORRECT the
+     * one thing wrong with the contract: 0 also means "the user has no cookies
+     * for this request", and out[0] is 0 either way, so no caller could tell a
+     * jar that is empty from a jar whose contents would not fit. A page saw
+     * document.cookie == "" for a cookie the jar was holding -- while
+     * navigator.cookieEnabled, the property that exists to disambiguate
+     * exactly that, said cookies work. */
     char tiny[4];
-    OK(cookie_header(&j, &c, NOW, tiny, (int)sizeof tiny) == 0 && tiny[0] == 0);
+    OK(cookie_header(&j, &c, NOW, tiny, (int)sizeof tiny) == CK_E_NOFIT && tiny[0] == 0);
+    /* ...and the other half of the distinction, which is what makes the line
+     * above a distinction rather than a rename: a request no cookie applies to
+     * still answers 0. */
+    struct cookie_ctx other = CTX("nothing-here.example", "/", 0, 1);
+    char room[256];
+    OK(cookie_header(&j, &other, NOW, room, (int)sizeof room) == 0 && room[0] == 0);
+    cookie_jar_free(&j);
+}
+
+/* The cap is ONE number now, and this is the size it has to clear.
+ *
+ * Both values are measured, not invented: 1100 bytes is a JWT / OIDC id_token
+ * / cf_clearance, and the 1039-byte set is a bilibili-shaped one built to
+ * realistic name and value sizes. Under the old three-way split -- 4096 for
+ * document.cookie, 2048 for fetch, 1024 for the navigation and every
+ * subresource -- the first was READABLE FROM SCRIPT while the page load sent
+ * no Cookie header at all, and the second dropped exactly one cookie on the
+ * wire: the newest, because 5.4 orders by longest path then earliest
+ * creation. The newest is the one a WAF just set. */
+static void t_header_cap(void)
+{
+    struct cookie_jar j;
+    cookie_jar_init(&j);
+    char sc[1400];
+    int o = 0;
+    o += sprintf(sc + o, "cf_clearance=");
+    for (int i = 0; i < 1100; i++) sc[o++] = 'A' + (i % 26);
+    sc[o] = 0;
+    OK(set_from(&j, "example.com", "/", 0, sc) == 0);
+    struct cookie_ctx c = CTX("example.com", "/", 0, 1);
+    char out[CK_HEADER_MAX];
+    int n = cookie_header(&j, &c, NOW, out, (int)sizeof out);
+    OK(n > 1100 && strstr(out, "cf_clearance=") != NULL);
+    /* The old transport buffer, for the record: same jar, same call, and the
+     * request went out with no Cookie header. */
+    char old_transport[1024];
+    OK(cookie_header(&j, &c, NOW, old_transport, (int)sizeof old_transport) == CK_E_NOFIT);
     cookie_jar_free(&j);
 }
 
@@ -559,6 +707,10 @@ int main(void)
     t_paths();
     t_secure_httponly();
     t_samesite_values();
+    t_samesite_request_kinds();
+    t_evict_prefers_visible();
+    t_evict_falls_back_to_httponly();
+    t_header_cap();
     t_expiry();
     t_malformed();
     t_limits();

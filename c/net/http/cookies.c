@@ -432,17 +432,46 @@ int cookie_jar_gc(struct cookie_jar *j, int64_t now)
 }
 
 /* Evict the least-recently-used cookie among those matching `domain`
- * (domain == NULL means the whole jar). Returns 1 if one was dropped. */
+ * (domain == NULL means the whole jar). Returns 1 if one was dropped.
+ *
+ * HttpOnly LAST, and this is a fix, not a preference. Least-recently-used
+ * alone made the HttpOnly flag select its own bearer as the victim of the
+ * very script it exists to hide from, by a chain of three lines that are each
+ * correct on their own:
+ *
+ *   :731  a script read never MATCHES an HttpOnly cookie (that is the flag),
+ *   :795  only cookies actually written to the header get `accessed = now`,
+ *   here  the victim is the smallest `accessed`.
+ *
+ * So every `document.cookie` READ renewed the lifetime of exactly the cookies
+ * the page can see and of nothing else, and the session cookie sank to the
+ * bottom of the LRU by construction. Measured before this change: 49
+ * `document.cookie` writes of fresh names evicted the HttpOnly session, and
+ * evicted it BEFORE the page's own ordinary cookie -- the protected one died
+ * first. max_per_domain is 50, which real sites reach on their own, so this
+ * was also reachable without an attacker.
+ *
+ * Two passes rather than a sort key, because "prefer" must not become
+ * "never": a domain holding nothing but HttpOnly cookies still has to be able
+ * to accept a new one, and the second pass is what keeps the cap honest.
+ * RFC 6265bis 5.6 leaves eviction order to the implementation. */
 static int evict_lru(struct cookie_jar *j, const char *domain)
 {
-    int best = -1;
-    for (int i = 0; i < j->n; i++) {
-        if (domain && !ci_eq(j->v[i].domain, domain)) continue;
-        if (best < 0 || j->v[i].accessed < j->v[best].accessed) best = i;
+#ifdef COOKIE_NO_EVICT_PREFERENCE             /* negctl: pure LRU, the old rule */
+    const int npass = 1;
+#else
+    const int npass = 2;
+#endif
+    for (int pass = 0; pass < npass; pass++) {
+        int best = -1;
+        for (int i = 0; i < j->n; i++) {
+            if (domain && !ci_eq(j->v[i].domain, domain)) continue;
+            if (npass == 2 && pass == 0 && j->v[i].http_only) continue;
+            if (best < 0 || j->v[i].accessed < j->v[best].accessed) best = i;
+        }
+        if (best >= 0) { jar_erase(j, best); return 1; }
     }
-    if (best < 0) return 0;
-    jar_erase(j, best);
-    return 1;
+    return 0;
 }
 
 static int jar_find(const struct cookie_jar *j, const char *name,
@@ -718,10 +747,24 @@ static int cookie_applies(const struct cookie *c, const char *host,
                           int cross_site, int64_t now)
 {
     if (cookie_expired(c, now)) return 0;
-    /* SameSite.  A fetch/XHR is never a top-level navigation, so Lax gets no
-     * relaxation here and behaves as Strict; an absent attribute IS Lax per
-     * 6265bis.  Only SameSite=None rides a cross-site request. */
-    if (cross_site && c->samesite != CK_SS_NONE) return 0;
+    /* SameSite, three-valued -- see the enum in cookies.h for why two was not
+     * enough.  An absent attribute IS Lax per 6265bis, so the Lax arm covers
+     * CK_SS_UNSET too and only CK_SS_STRICT is left out of a navigation. */
+    /* The two negative controls are the two ways to collapse three values back
+     * into two, and they are opposites: one over-sends on a navigation, the
+     * other under-sends. Each must fail a DIFFERENT assertion of
+     * t_samesite_request_kinds -- if either fails both, the table has stopped
+     * distinguishing the row it was added for. */
+#if defined(COOKIE_NAV_IS_SAME_SITE)          /* negctl: Lax stops meaning Lax */
+    if (cross_site == CK_REQ_CROSS_SITE && c->samesite != CK_SS_NONE) return 0;
+#elif defined(COOKIE_NAV_IS_CROSS_SITE)       /* negctl: the pre-fix binary read */
+    if (cross_site != CK_REQ_SAME_SITE && c->samesite != CK_SS_NONE) return 0;
+#else
+    if (cross_site != CK_REQ_SAME_SITE && c->samesite != CK_SS_NONE) {
+        if (cross_site != CK_REQ_CROSS_SITE_NAV) return 0;
+        if (c->samesite == CK_SS_STRICT) return 0;
+    }
+#endif
     if (c->host_only) { if (!ci_eq(c->domain, host)) return 0; }
     else if (!cookie_domain_match(host, c->domain)) return 0;
     if (!cookie_path_match(path, c->path)) return 0;
@@ -790,5 +833,11 @@ int cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
     }
     out[o] = 0;
     free(idx);
+    /* m cookies applied and none fit. That is not the same fact as "the user
+     * has no cookies here", and it used to be reported as the same integer --
+     * see the return contract in cookies.h. */
+#ifndef COOKIE_NOFIT_IS_EMPTY                     /* negctl: fold them back */
+    if (o == 0 && m > 0) return CK_E_NOFIT;
+#endif
     return o;
 }

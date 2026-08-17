@@ -77,9 +77,49 @@ int  cookie_jar_gc(struct cookie_jar *j, int64_t now);
 int  cookie_set(struct cookie_jar *j, const struct cookie_ctx *ctx,
                 const char *set_cookie_value, int64_t now);
 
+/* How big a Cookie: value any caller in this tree gives us.
+ *
+ * IT IS ONE NUMBER BECAUSE IT USED TO BE THREE, and they disagreed by 8x:
+ * document.cookie read through 4096, fetch/XHR through 2048, and the
+ * navigation plus every subresource through 1024.  Three caps on one jar is
+ * three different answers to "what are this user's cookies", and the smallest
+ * one was on the path that matters most.  Measured on the tree's own code: a
+ * 1100-byte token -- JWT, OIDC id_token, cf_clearance are all this size --
+ * was readable from document.cookie while the PAGE LOAD sent no Cookie header
+ * at all.  Worse, a realistic bilibili-shaped set totals 1039 bytes, so at
+ * 1024 the wire dropped exactly one cookie; RFC 6265 5.4's required order is
+ * longest-path-then-earliest-created, so the one dropped was the NEWEST --
+ * the anti-bot token a WAF had just set on the reload it forced.
+ *
+ * 8192 is chosen as what SERVERS accept, not as what we can hold: it is
+ * nginx's and Apache's default large-header buffer.  A cap derived from the
+ * jar instead (50 cookies x 4 KiB) would be 200 KiB of stack for a case no
+ * server would answer. */
+#define CK_HEADER_MAX 8192
+
 /* Build the Cookie: request-header VALUE for this request into out.
- * Returns the length written (0 if no cookie applies), or -1 on bad input.
+ * Returns the length written, or one of:
+ *
+ *   0            no cookie applies -- the user has none for this request
+ *   CK_E_NOFIT   cookies DO apply and not one of them fit in outmax
+ *   CK_E_ARG     bad input
+ *
+ * THE FIRST TWO USED TO BE THE SAME VALUE, and nothing could tell them apart:
+ * out[0] is 0 either way.  So document.cookie answered "" for a jar holding a
+ * cookie whose value was legal (4090 bytes, under this file's own
+ * CK_VALUE_MAX) and merely too long for the caller's buffer, while
+ * navigator.cookieEnabled -- the property a page consults to disambiguate
+ * exactly this -- said cookies work.  Three components, three different
+ * stories, and the page cannot tell.
+ *
+ * PARTIAL truncation still returns the length written, because every caller
+ * uses the buffer and a negative would make them send nothing where they can
+ * send something.  With one CK_HEADER_MAX it is out of reach for real sites;
+ * when it does happen the cookie dropped is the newest, and that is 5.4's
+ * ordering, not a choice made here.
+ *
  * Updates last-access times, hence the non-const jar. */
+enum { CK_E_ARG = -1, CK_E_NOFIT = -2 };
 int  cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
                    int64_t now, char *out, int outmax);
 
@@ -91,12 +131,30 @@ int  cookie_header(struct cookie_jar *j, const struct cookie_ctx *ctx,
  * the safe value.  A parameter cannot be forgotten.
  *
  * cross_site == CK_REQ_CROSS_SITE suppresses every cookie whose SameSite is
- * Strict, Lax, or absent -- absent is Lax per 6265bis, and a fetch is never a
- * top-level navigation, which is the only thing Lax relaxes for.  Only an
- * explicit SameSite=None (which cookies.c already requires to be Secure) is
- * sent.  That is the rule that makes a cross-site fetch unable to ride on the
- * user's session. */
-enum { CK_REQ_SAME_SITE = 0, CK_REQ_CROSS_SITE = 1 };
+ * Strict, Lax, or absent -- absent is Lax per 6265bis.  Only an explicit
+ * SameSite=None (which cookies.c already requires to be Secure) is sent.
+ * That is the rule that makes a cross-site fetch unable to ride on the
+ * user's session.
+ *
+ * CK_REQ_CROSS_SITE_NAV is the SAME request seen from a different place: a
+ * cross-site TOP-LEVEL NAVIGATION, which is the one thing Lax relaxes for.
+ * Strict is still suppressed; Lax and absent are sent.  This value exists
+ * because the sentence that used to end the paragraph above -- "a fetch is
+ * never a top-level navigation" -- was an argument about the only CALLER at
+ * the time, written into a rule that outlived it.  The transport path
+ * (browser_rt.c) carries navigations, and it inherited the binary reading:
+ * every request it made was declared same-site, so a cross-site subresource
+ * rode the session.  A two-state enum whose two states are "the caller I
+ * know about" and "everything else" is how that happens.
+ *
+ * The three are ordered by how much they permit, and the safe end is 0 --
+ * NOT because anything switches on the order, but because a caller that
+ * passes an uninitialised int gets the RESTRICTIVE answer only if the
+ * restrictive value is nonzero.  It is: SAME_SITE is 0 and permits
+ * everything, so an uninitialised int is the DANGEROUS value here.  That is
+ * exactly why this is a parameter and not a struct field, and why every
+ * caller below computes it rather than defaulting it. */
+enum { CK_REQ_SAME_SITE = 0, CK_REQ_CROSS_SITE = 1, CK_REQ_CROSS_SITE_NAV = 2 };
 int  cookie_header_ex(struct cookie_jar *j, const struct cookie_ctx *ctx,
                       int cross_site, int64_t now, char *out, int outmax);
 

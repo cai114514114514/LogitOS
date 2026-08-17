@@ -1272,16 +1272,33 @@ static void load_once(const char *u)
      * Clearing `ht` is what makes every "am I replaying?" test below correct;
      * leaving it set would apply a stale stylesheet to fresh markup. */
     ht = 0;
-    int doc = bfetch_start(u);
+    /* The ONE navigation in this file; everything else bfetch_start()s is a
+     * subresource. That distinction is a cookie rule, not a label -- bfetch.h. */
+    int doc = bfetch_start_nav(u);
     if (doc < 0) { set_status("load failed: bad URL (need http:// or https://)"); return; }
     bfetch_wait(doc, load_tick);
     if (bfetch_state(doc) != BF_DONE) {
         /* Name the URL as the fetcher saw it: when this fires under a test
          * harness, "which exact string did the address bar hand over" is the
          * whole question (a dropped or doubled keystroke lives right here). */
-        printf("[browser] page fetch failed: %s (%s)\n",
-               bfetch_error(doc), bfetch_url(doc));
-        set_status("load failed: could not fetch the page");
+        const char *why = bfetch_error(doc);
+        printf("[browser] page fetch failed: %s (%s)\n", why, bfetch_url(doc));
+        /* The REASON, in the one place a person is looking. "could not fetch
+         * the page" was the same sentence for a rejected certificate, a name
+         * that does not resolve and a network that is down -- three different
+         * things to do about it, and the diagnosis that separates them already
+         * existed the whole way up from x509 through sock_poll's error byte
+         * (see the SOCK_P_ERROR branch in browser_rt.c). It was thrown away
+         * here. No snprintf in this TU on purpose -- see build_get's note in
+         * browser_rt.c; status[] is 96 and the longest sock_why() sentence is
+         * 57, so nothing here can truncate. */
+        { char st[sizeof status];
+          const char *pre = "load failed: ";
+          int p = 0;
+          while (pre[p] && p < (int)sizeof st - 1) { st[p] = pre[p]; p++; }
+          for (int i = 0; why[i] && p < (int)sizeof st - 1; i++) st[p++] = why[i];
+          st[p] = 0;
+          set_status(st); }
         bfetch_release(doc);
         return;
     }

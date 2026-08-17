@@ -2847,6 +2847,16 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # with deferred expansion so the -include order of the two does not matter.
 -include tests/webapi_globals.mk
 
+# The cookie surface a page touches -- document.cookie and the property that
+# advertises it -- driven by a reduction of the one page whose stack named it.
+# Own fragment; see the file.
+-include tests/logreporter.mk
+
+# The jar's SameSite rule and its eviction order, each with a control that is
+# watched failing -- and the transport door built the way it shipped, which is
+# the defect itself on a -D switch. Own fragment; see the file.
+-include tests/cookiegate.mk
+
 # --- test-webapi-page: the on-device proof that fetch() reaches the pixels --
 # Boots the OS, loads a fixture page from a host server, and requires the text
 # a fetch() wrote into the DOM to appear in a screendump -- plus location, URL,

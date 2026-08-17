@@ -11,6 +11,7 @@
  * the network while it did. bfetch runs the same fetches over the non-blocking
  * socket ABI with a keep-alive connection pool, in ring 3. */
 #include "logit.h"
+#include "sockerr.h"        /* sock_why(): the ONE rendering of a SOCK_E_* */
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,13 +22,18 @@
 #include "hpack.h"
 #include "hpool.h"
 #include "bfetch.h"
+/* For CK_HEADER_MAX only -- the ONE size of a Cookie: value, shared with the
+ * two js_webapi.c call sites that used to disagree with this one by 8x. The
+ * header declares no symbol this file links, so the cookieless build below
+ * still holds. */
+#include "cookies.h"
 
 /* The cookie jar's two transport-side doors, owned by js_webapi.c and WEAK
  * here: a build that links neither js_webapi.c nor cookies.c (the loader
  * host tests) resolves both to NULL and runs cookieless. Contract at their
  * definitions. */
 int  webapi_cookie_line(const char *host, const char *path, int secure,
-                        char *out, int cap) __attribute__((weak));
+                        int nav, char *out, int cap) __attribute__((weak));
 void webapi_cookie_store_line(const char *host, const char *path, int secure,
                               const char *setcookie) __attribute__((weak));
 
@@ -74,6 +80,15 @@ struct breq {
     int   pslot;                     /* hpool slot, -1 when none */
     int   reused;                    /* this attempt rode a pooled connection */
     int   retried;                   /* already re-dialled once after a dead conn */
+    /* 1 = top-level navigation, 0 = subresource. Read only by the cookie line
+     * (build_get), where it is the difference between suppressing SameSite=Lax
+     * and sending it. ZERO IS THE SAFE VALUE and every constructor memsets the
+     * slot, so a request shape added later without thinking about SameSite is
+     * treated as a subresource -- the restrictive answer. It survives hops on
+     * purpose: a redirect chain during a navigation is still that navigation,
+     * and re-classifying hop 2 as a subresource would log the user out exactly
+     * on the sites that redirect to their own login. */
+    int   nav;
     int   c_live;                    /* h1_conn needs freeing */
     struct h1_conn c;
     unsigned char *body;
@@ -369,8 +384,12 @@ static char *build_get(struct breq *r, int *outlen)
      * that TU (the loader host tests) link and run cookieless. See the
      * export comment in js_webapi.c for the WAF loop this closes. */
     if (webapi_cookie_line) {
-        char ck[1024];
-        if (webapi_cookie_line(r->u.host, r->u.path, r->u.https,
+        /* static, not automatic: CK_HEADER_MAX is 8 KiB and this file's own
+         * history is a redirect chain that overflowed a stack into the page
+         * tables. build_get() runs to completion synchronously and nothing
+         * here is reentrant, so one buffer is one buffer. */
+        static char ck[CK_HEADER_MAX];
+        if (webapi_cookie_line(r->u.host, r->u.path, r->u.https, r->nav,
                                ck, (int)sizeof ck) > 0 && ck[0])
             h1_request_set_header(&q, "Cookie", ck);
     }
@@ -432,13 +451,17 @@ static void req_connect(struct breq *r)
         /* Which failure, not just that one happened: the ABI's SOCK_E_* codes
          * separate "bad argument" from "no DNS" from "table full", and folding
          * them into one string cost a real diagnosis once (a harness-wide
-         * "sock_open failed" with the cause unreadable). */
-        printf("[bfetch] sock_open('%s', %d) = %d (%s)\n", r->u.host, r->u.port, fd,
-               fd == SOCK_E_ARG ? "bad argument" :
-               fd == SOCK_E_DNS ? "dns start failed" :
-               fd == SOCK_E_CONN ? "net not up" :
-               fd == SOCK_E_NOSLOT ? "socket table full" : "unknown");
-        req_fail(r, "sock_open failed");
+         * "sock_open failed" with the cause unreadable).
+         *
+         * The cause goes to `r->err` as well as to the serial log, which is the
+         * half that was missing: bfetch_error() is what a PERSON is shown, and
+         * it used to say "sock_open failed" no matter which of the four this
+         * was. The decode is sock_why() rather than the four-way ternary that
+         * used to be inlined here -- see include/abi/sockerr.h for why that
+         * copy was the second of three. */
+        printf("[bfetch] sock_open('%s', %d) = %d (%s)\n",
+               r->u.host, r->u.port, fd, sock_why(fd));
+        req_fail(r, sock_why(fd));
         return;
     }
     slot = hpool_admit(&g_pool, r->u.host, r->u.port, tls, fd, 0, now);
@@ -711,7 +734,18 @@ static void req_step_xfer(struct breq *r)
     }
     if (st == H1_C_ERROR) {
         if (req_retry_fresh(r)) return;
-        req_fail(r, h1_strerror(r->c.err ? r->c.err : r->c.resp.err));
+        /* http1.c's error space stops at "the transport failed" -- it cannot
+         * see WHY, because the transport is a socket handle to it. The socket
+         * can, so ask before falling back to the protocol-level name. Guarded
+         * on a NONZERO code: a SOCK_P_ERROR with an empty code byte is a
+         * reporter that never encoded one (the host stubs in
+         * tests/unit/h2stub do exactly that), and answering "unknown socket
+         * error" there would be strictly less than h1_strerror already says. */
+        int bits = r->fd >= 0 ? sock_poll(r->fd) : 0;
+        if (bits > 0 && (bits & SOCK_P_ERROR) && SOCK_ERR_CODE(bits) < 0)
+            req_fail(r, sock_why(SOCK_ERR_CODE(bits)));
+        else
+            req_fail(r, h1_strerror(r->c.err ? r->c.err : r->c.resp.err));
         return;
     }
 
@@ -795,7 +829,20 @@ int bfetch_pump(void)
         if (r->state == RQ_DIAL) {
             int bits = sock_poll(r->fd);
             if (bits < 0 || (bits & SOCK_P_ERROR)) {
-                req_fail(r, bits < 0 ? "socket error" : "connect failed");
+                /* THIS IS WHERE A CERTIFICATE FAILURE LANDS, and for a while it
+                 * was where one died. SOCK_P_CONNECTED means the transport is
+                 * up INCLUDING the TLS handshake (logit_abi.h above SOCK_P_*),
+                 * so everything the chain verifier can refuse -- an untrusted
+                 * root, an expired leaf, a name that does not match -- reaches
+                 * ring 3 as exactly this branch with SOCK_E_TLS in the code
+                 * byte. c/net/core/sock.c:474 sets it, sock_poll_bits (:547)
+                 * shifts it in, SOCK_ERR_CODE takes it back out.
+                 *
+                 * "socket error" / "connect failed" threw all four codes away
+                 * one line from the end of a diagnosis that had survived the
+                 * whole stack, so a bad certificate, an unresolvable name and a
+                 * dead network were one sentence. */
+                req_fail(r, sock_why(bits < 0 ? bits : SOCK_ERR_CODE(bits)));
                 continue;
             }
             if (bits & SOCK_P_CONNECTED) req_begin_exchange(r);
@@ -808,7 +855,7 @@ int bfetch_pump(void)
 }
 
 static int bfetch_start_range_impl(const char *base, const char *ref,
-                                   long long first, long long last)
+                                   long long first, long long last, int nav)
 {
     if (!g_pool_ready) bfetch_init();
     char abs[BF_URLMAX];
@@ -829,6 +876,7 @@ static int bfetch_start_range_impl(const char *base, const char *ref,
         r->rq_first = first < 0 ? -1 : first;
         r->rq_last  = last  < 0 ? -1 : last;
         r->rres = BF_R_NONE;
+        r->nav = nav ? 1 : 0;
         r->got_first = r->got_last = r->got_total = -1;
         int n = 0; while (abs[n] && n < BF_URLMAX - 1) { r->url[n] = abs[n]; n++; }
         r->url[n] = 0;
@@ -844,9 +892,18 @@ static int bfetch_start_range_impl(const char *base, const char *ref,
 }
 
 int bfetch_start_from(const char *base, const char *ref)
-{ return bfetch_start_range_impl(base, ref, -1, -1); }
+{ return bfetch_start_range_impl(base, ref, -1, -1, 0); }
 
 int bfetch_start(const char *ref) { return bfetch_start_from(0, ref); }
+
+/* The navigation door. It is a SEPARATE entry rather than a flag on
+ * bfetch_start() so that the permissive classification has to be asked for by
+ * name: every existing caller stays a subresource without being edited, and a
+ * new one is a subresource until somebody decides otherwise. The reverse
+ * default -- one parameter, forgotten once -- is the bug this whole change
+ * exists to close, in the same shape one layer down (cookies.h's enum). */
+int bfetch_start_nav(const char *ref)
+{ return bfetch_start_range_impl(0, ref, -1, -1, 1); }
 
 int bfetch_start_range_from(const char *base, const char *ref,
                             long long first, long long last)
@@ -859,7 +916,8 @@ int bfetch_start_range_from(const char *base, const char *ref,
                "(suffix ranges are not supported): %s\n", first, ref ? ref : "");
         return -1;
     }
-    return bfetch_start_range_impl(base, ref, first, last);
+    /* A ranged GET is a media byte supply, never a navigation. */
+    return bfetch_start_range_impl(base, ref, first, last, 0);
 }
 
 int bfetch_start_range(const char *ref, long long first, long long last)
