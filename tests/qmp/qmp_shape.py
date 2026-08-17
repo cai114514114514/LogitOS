@@ -158,15 +158,50 @@ if explore:
     sys.exit(0)
 
 # The Files window auto-launches at cascade 0 and shows LogitOS HD as an icon
-# grid; shaping.txt is the third icon of the first row, centre (594,215).
-# Double click opens it, and the .txt association hands it to TextEdit.
+# grid; shaping.txt is meant to be the third icon of the first row, (594,215).
+#
+# THAT COORDINATE IS A GUESS ABOUT DISK CONTENTS, AND IT HAS ALREADY BEEN WRONG.
+# fsroot/ holds eight entries; add or remove one and the grid renumbers, so the
+# click lands on a different file and the .aex association opens a different
+# app. When it happened, this harness measured a screenshot of PREVIEW playing
+# sample.aac and reported eight failures, four of them phrased as "isolated
+# forms are about half again as wide as joined ones" -- a confident, specific,
+# entirely fictional diagnosis of an Arabic shaping regression. Every row
+# measured 444 px and 1 ink group, including a four-letter Hebrew word, because
+# the measurement was reading the desktop.
+#
+# So the harness now CHECKS WHAT IT OPENED before it measures anything. The
+# kernel already says so on serial -- wm.c:1620 prints "[wm] launched <name>"
+# on the success path -- and this file was already reading that serial log for
+# the font report. Asserting on it costs nothing and converts a fabricated
+# shaping bug into one true sentence naming the app that actually opened.
 goto(594, 215)
 click()
 time.sleep(0.25)
 click()
 time.sleep(2.5)
 shot(out)
+
+
+def launched():
+    try:
+        with open(serial, encoding="utf-8", errors="replace") as fh:
+            return [ln.split("launched", 1)[1].strip()
+                    for ln in fh if "[wm] launched " in ln]
+    except OSError:
+        return []
+
+
+apps = launched()
 cmd({"execute": "quit"})
+if "textedit" not in apps:
+    print("apps launched:", ", ".join(apps) if apps else "(none)")
+    fail("the click at (594,215) did not open TextEdit -- it opened %s. "
+         "The icon grid depends on what is in fsroot/, so this coordinate goes "
+         "stale whenever the disk contents change; re-find it with "
+         "`python3 tests/qmp/qmp_shape.py <iso> <disk> out.ppm --explore` and "
+         "look at out.ppm. NOTHING below this point is a statement about "
+         "shaping." % (apps[-1] if apps else "nothing"))
 try:
     proc.wait(timeout=5)
 except Exception:
