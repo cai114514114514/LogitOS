@@ -221,7 +221,20 @@ Key notes:
   with a screen back buffer + `fb_present()`. `drivers/mouse.c` = PS/2 mouse
   (IRQ12); `drivers/rtc.c` = CMOS wall clock (menu bar + Clock app).
 - M9 networking: `kernel/pci.c` (0xCF8/0xCFC config) + `drivers/e1000.c` (QEMU
-  e1000 8086:100E, MMIO BAR, RX/TX descriptor rings, **polled** — no NIC IRQ).
+  e1000 8086:100E, MMIO BAR, RX/TX descriptor rings). **THE "polled -- no NIC
+  IRQ" THAT USED TO END THIS LINE IS FALSE**, and it was load-bearing: on
+  2026-08-17 it produced a whole diagnosis of the network's throughput as
+  "gated on the compositor's frame rate", because the only steady-state caller
+  of `net_poll()` is `wm.c:5411` inside the WM loop. `c/drivers/net/e1000.c:12`
+  says the opposite in as many words -- *"IRQ-driven receive on RXT0 with
+  net_poll() as the backstop"* -- so the WM loop is the backstop, not the pump,
+  and the theory built on this sentence was dead on arrival.
+
+  The arithmetic that went with it is worth recording as a warning too:
+  `RX_DESC (64) x TIMER_HZ (100)` = 74.8 Mbit/s was offered as the cap against a
+  MEASURED 269.9 Mbit/s -- 3.6x above a supposed ceiling, which should have
+  killed the theory by itself. Nothing in this tree ties `e1000_rx_drain` to the
+  timer tick; the two numbers never meet.
   `net/` = eth/arp/ip/icmp/udp/dns; `net_poll()` is pumped from the WM loop.
   Static IP (QEMU SLIRP: 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3) in
   `net_cfg` (DHCP hook later). Run/test attach `-netdev user -device e1000`
