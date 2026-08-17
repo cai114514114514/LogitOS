@@ -1026,6 +1026,42 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## How big a program can this machine load? 12 MiB, measured
+
+Asked because a Python port turns on it, and answered without CPython, without a
+download and without touching the repo -- so the number stands whatever happens
+to that question.
+
+A 12 MiB `.aex` (`text 12,583,024 / bss 16` -- a REAL `PT_LOAD` of const rodata,
+because `.bss` would measure nothing about the load path: `elf.c` commits
+`p_memsz` and the pages would never be read) was packed at **`/bin`, not the
+root**. Never the root: `wm.c:4994` `scan_apps()` kmallocs every root `.aex`
+WHOLE at boot merely to read 64 header bytes, which would put a contiguous-arena
+gamble on the critical boot path.
+
+```
+cold boot        [kheap] grow #5: +16384 KiB -> arena 36864 KiB, live 6059 KiB, over-allocated 0 KiB
+after browser    [kheap] grow #5: +16384 KiB -> arena 36864 KiB, live 6085 KiB, over-allocated 1 KiB
+                 [execve] pid 3: /bin/padbin loading
+                 padbin ok
+```
+
+**The second run is the control, and it is the only one that proves anything.**
+`pmm_alloc_contig` (`pmm.c:470-490`) is a linear first-fit over the frame bitmap
+with NO fallback, so the question was never "does it work on a fresh machine" --
+it was "does it still work once the desktop and the browser have fragmented
+memory". It does, identically: same growth sequence, 26 KiB apart in `live`.
+
+`padbin ok` prints only after touching `pad_blob[12582911]`, the LAST byte, so
+this is the whole image arriving rather than a header that parsed.
+
+**THE LIMIT IS NOT SPACE, AND IT IS NOT THE HEAP -- IT IS INODES.** The image
+went 7,136 -> 10,217 of 16,384 blocks, using **19% of the free space** for 12
+MiB. But `tools/mkfs.py`'s `INODE_COUNT` is **256**, and 223 are already in use.
+A runtime shipping a stdlib as thousands of `.py` files exhausts the inode table
+long before the disk, which is why a frozen single binary is the only shape this
+filesystem permits.
+
 ## Six subsystems this file did not describe, found by counting
 
 Not noticed -- MEASURED, on 2026-08-17, by comparing each subsystem's target
