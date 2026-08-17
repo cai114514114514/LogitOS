@@ -287,6 +287,8 @@ test-simd-os
 test-smp
 test-smp-fork-storm
 test-smp-fork-storm-1core
+test-smp-freeze-probe
+test-smp-lockprobe
 test-sniff
 test-sock
 test-sock-ui
@@ -301,6 +303,7 @@ test-swap
 test-sweep
 test-sweep-confirm
 test-sweep-host
+test-sweep-resume
 test-tabs
 test-tabs-asan
 test-tcp-host
@@ -340,6 +343,7 @@ test-vidbench-host
 test-video
 test-video265
 test-vorbis
+test-wait-smp
 test-wav
 test-webapi
 test-webapi-asan

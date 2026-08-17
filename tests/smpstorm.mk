@@ -45,3 +45,32 @@ test-smp-fork-storm-1core: $(ISO) $(DISK)
 	@bash tests/boot/run-smp-fork-storm.sh $(ISO) $(DISK) $(STORM_REPS) 1
 
 STORM_REPS ?= 120
+
+# --- The lock instruments ----------------------------------------------------
+#
+# These three were written during the BKL work and driven by hand, which
+# tools/audit_tests.py reports as DEAD -- correctly, and its rule says why:
+# "manual" is not an acceptable reason for a harness with no target, because it
+# describes a dead test equally well. An instrument nobody can invoke by name is
+# one that will be rewritten by the next person who needs it.
+#
+# They are probes, not gates: each prints a measurement and none asserts a
+# threshold, because the numbers they produce are the input to a decision rather
+# than the decision. test-smp-lockprobe is the one that caught kheap_lock at
+# 30.7 M acquisitions against the BKL's 36,836 -- a ratio of 834 against the
+# guess written in test-smp's own failure message.
+#
+# qmp_lockdump.py needs no target of its own: both probes drive it, and the
+# audit's reachability walk finds it from here.
+.PHONY: test-smp-lockprobe test-smp-freeze-probe test-wait-smp
+
+test-smp-lockprobe: $(ISO) $(DISK)
+	@bash tests/boot/run-smp-lockprobe.sh $(ISO) $(DISK)
+
+test-smp-freeze-probe: $(ISO) $(DISK)
+	@bash tests/boot/run-smp-freeze-probe.sh $(ISO) $(DISK) $(FREEZE_REPS) 4
+
+FREEZE_REPS ?= 2
+
+test-wait-smp: $(ISO) $(DISK)
+	@bash tests/boot/run-wait-smp.sh $(ISO) $(DISK)

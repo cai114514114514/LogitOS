@@ -23,7 +23,7 @@
 #
 # It is NOT wired into `test` or `ci`: the device half boots QEMU 169 times and
 # takes hours, and a gate nobody can afford to run is a gate nobody runs.
-.PHONY: test-sweep test-sweep-confirm test-sweep-host
+.PHONY: test-sweep test-sweep-confirm test-sweep-host test-sweep-resume
 
 SWEEP_JOBS ?= 6
 SWEEP_TMO  ?= 900
@@ -60,6 +60,14 @@ test-sweep: $(ISO) $(DISK)
 test-sweep-confirm:
 	@bash tests/boot/sweep-confirm.sh $(SWEEP_OUT) $(SWEEP_TMO)
 	$(SWEEP_VERDICT)
+
+# Pick up an interrupted sweep: run only what has no result yet, then confirm.
+# An afternoon is long enough for something to interrupt it, and re-running 440
+# passing targets to reach the 80 that never ran is an hour spent learning
+# nothing. NO VERDICT HERE -- sweep-resume.sh chains into sweep-confirm.sh, and
+# the resumed run's judgement belongs to test-sweep-confirm over the same file.
+test-sweep-resume:
+	@bash tests/boot/sweep-resume.sh $(SWEEP_OUT) $(SWEEP_TMO)
 
 # Host only. The device targets are what make a full sweep an afternoon; this
 # half is the one worth running after an ordinary change.

@@ -88,6 +88,20 @@ ALLOW_MUTE = {
         "shared driver imported by qmp_site.py, qmp_browser_https.py, "
         "qmp_ps2_only.py and run-usb-absent-test.sh -- it drives a browser and "
         "prints 'done'; each importer owns its own verdict",
+    # And two more, surfaced the same way one layer later: giving the lock
+    # instruments make targets made them reachable, which brought their verdicts
+    # into scope. Third time this has happened in one pass -- deadness hides
+    # muteness, so every reachability gain is also a muteness disclosure.
+    "tests/boot/run-smp-lockprobe.sh":
+        "probe: it prints every lock's ticket counter across a workload. There "
+        "is no threshold to assert -- the numbers are the input to a decision, "
+        "and the one that mattered (kheap_lock 30.7 M against the BKL's 36,836) "
+        "was a ratio nobody had predicted, which is why it is measured and not "
+        "bounded",
+    "tests/boot/sweep-resume.sh":
+        "driver: it runs the targets a sweep has no result for and chains into "
+        "sweep-confirm.sh. The verdict over the finished result file belongs to "
+        "test-sweep-confirm, which is where the gate lives",
 }
 
 
