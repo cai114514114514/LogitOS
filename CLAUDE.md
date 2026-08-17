@@ -788,15 +788,38 @@ ring-3 GUI binary, and since the glyph migration the kernel is its busiest
 caller. The ring-3-only claim survives for `c/lib/video`, `c/lib/audio` and
 `c/lib/media`, which really are filtered.)
 
-**Phase 1 is FILL ONLY**: paths (move/line/quad/cubic/close), nonzero + evenodd,
-a scanline coverage rasterizer, four paints (solid / linear gradient / radial
-gradient / image), Porter-Duff src-over, an **affine transform applied to
-PATHS** (which is what CSS `transform` needs -- `translate(-50%,-50%)` centring
-is reached by 14 of 15 real pages), and a rectangle clip. **Stroke and path
-clipping are phase 2 and do not exist**; what they will cost is written at the
-bottom of `gfx.h`, including the trap already on record -- a stroked corner's
-inner ellipse shares the outer's CENTRE and differs only in radii, and insetting
-the centre pinches the arc to nothing before it meets the straight edges.
+**Phase 1** is paths (move/line/quad/cubic/close), nonzero + evenodd, a scanline
+coverage rasterizer, four paints (solid / linear gradient / radial gradient /
+image), Porter-Duff src-over, an **affine transform applied to PATHS** (which is
+what CSS `transform` needs -- `translate(-50%,-50%)` centring is reached by 14 of
+15 real pages), and a rectangle clip.
+
+**PHASE 2 HAS LANDED** (`8e85be37b`), and this paragraph went on saying "stroke
+and path clipping do not exist" for four commits after they did. That is not a
+bookkeeping slip: it is why three negative controls stopped linking on
+`gfx_path_ellipse` with no explanation available from the document every session
+reads first. `c/lib/gfx/gfx_stroke.c` exists, and `test-gfx` is now
+`test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-clip`.
+
+Each half arrived with its own independent oracle, which is the bar this engine
+is held to:
+- **the stroker's** is a THIRD reference: the distance from a pixel to the
+  FLATTENED source polyline, plus the miter wedge and the square-cap half-square
+  in closed form. To the polyline and never to the ideal curve -- measuring
+  against the curve charges the path's flattening error to the stroker and fails
+  a correct one.
+- **path clipping's** is the AND of two analytic predicates that already
+  existed, supersampled the same 16x16 way; composition costs an oracle almost
+  nothing, which is exactly why `in_sq_annulus` was worth copying. The clip mask
+  is materialised by the CALLER because `raster()` is not reentrant, and the
+  tests use deliberately ASYMMETRIC clip extents and origins -- a centred clip
+  hides a transposed axis or a sign error, and an off-by-one in either axis is
+  the single most likely defect in the feature.
+
+The trap recorded before the work still holds and is worth keeping in view: a
+stroked corner's inner ellipse shares the outer's CENTRE and differs only in
+radii, and insetting the centre pinches the arc to nothing before it meets the
+straight edges.
 
 **Construction** (deliberately the glyph rasterizer's, so a shape and the type
 on it are antialiased by the same rule at the same size -- and since the glyph
@@ -874,16 +897,32 @@ stopped being a staircase**.
 
   `make test-gfx` `test-gfx-negctl` `test-aui-mask` `bench-gfx` `bench-gfx-frame`
 
-**Phase 2 is scheduled** in `docs/superpowers/specs/2026-08-14-open-logit-2-design.md`
+**Phase 2 was scheduled** in `docs/superpowers/specs/2026-08-14-open-logit-2-design.md`
 (seams → stroke → path clipping → SVG onto the engine → text as paths →
-groups/blend/blur), and it opens with the finding that **this engine's founding
-argument is not finished: a FOURTH rasterizer is still live, and it is in ring 0.**
-`c/lib/image/svg.c` is 901 lines carrying its own sorted-crossing scanline filler
-and its own Newton-iteration `dsqrt`/`dsin`. It survived for a mechanical reason —
-`C_SRC` (Makefile:236) filters out `c/lib/video`, `c/lib/audio`, `c/lib/media`,
-`inflate.c` and `png.c`, **and not `svg.c`** — so it compiles into the kernel, where
-it cannot reach the ring-3 engine, and separately into the browser. `grep -c stroke`
-on it returns **0**: every stroked icon on every real page is absent, not wrong.
+groups/blend/blur). **The first four are done, and this paragraph described the
+world before them for four commits** — all four of its claims were false when
+measured on 2026-08-17, and each is the kind that sends somebody the wrong way,
+so they are recorded here rather than quietly overwritten:
+
+| it said | measured |
+|---|---|
+| stroke and path clipping "do not exist" | `c/lib/gfx/gfx_stroke.c`; `test-gfx` = raster + paint + **stroke** + **clip** |
+| "a FOURTH rasterizer is still live, and it is in ring 0" | `svg.c`'s own sorted-crossing filler and its Newton `dsqrt`/`dsin` are **gone** (`e282d0f57`) |
+| "`C_SRC` ... **and not `svg.c`** — so it compiles into the kernel" | `svg.c` is **not in `C_SRC`**; it no longer compiles into the kernel |
+| "`grep -c stroke` on it returns **0**" | returns **30**, and svg.c makes 76 `gfx_*` calls |
+
+So the founding argument IS finished: one rasterizer, and `svg.c` is a consumer
+of it like everything else. Somebody reading the old text would have gone
+looking for a fourth rasterizer that is not there, or assumed a page's stroked
+icons are still missing when they render.
+
+The way it went stale is worth more than the correction. Nothing here was
+careless — the work landed, the commit message said so plainly ("gfx: G3 — the
+other rasterizers are deleted, and the screen cannot tell"), and this file was
+simply not the thing being edited. It is the first document every session reads,
+so its staleness is not inert: three negative controls stopped linking on
+`gfx_path_ellipse` this week, and nothing here explained why a symbol that
+"does not exist" was being referenced.
 
 ## Image decoders: what decodes, and what does not
 
@@ -900,7 +939,7 @@ are C in `c/lib/image/`. The M13 line above still says
 | BMP / ICO | complete, including RLE4 and 32bpp with a real alpha mask |
 | JPEG | baseline **and progressive**; byte-exact against `djpeg -nosmooth` |
 | WebP | VP8L (lossless) **and VP8 (lossy) key frames, with the ALPH alpha plane**; byte-exact vs `dwebp -nofancy` |
-| SVG | own path/fill; phase-2 stroke has landed (the `grep -c stroke` = 0 note above is stale) |
+| SVG | on the shared engine -- its own filler is gone; fill AND stroke |
 
 **Lossy WebP was the last hole and it is closed** (2026-08-16,
 `rust/src/vp8*.rs`). It was the common one: essentially every WebP a website
