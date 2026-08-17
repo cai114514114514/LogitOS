@@ -67,6 +67,27 @@ ALLOW_MUTE = {
         "fixture builder for test-fsreplay -- it seals an uninstalled "
         "transaction into an image; the gate that judges it is the harness "
         "that boots the result",
+    # The four below appeared the moment find_dead started COMPUTING
+    # reachability instead of trusting a list. They were being excused as dead,
+    # which is why nobody ever had to argue for them; reachable, they have to.
+    # One did not survive the argument -- see the gate now in tests/sweep.mk.
+    "tests/boot/sweep-classify.py":
+        "classifier: it partitions targets into host / device / needs-arguments "
+        "and writes three files. It reaches no verdict -- FAIL appears as one "
+        "of the statuses its comments explain, not one it decides",
+    "tests/boot/sweep-confirm.sh":
+        "reporter: it re-runs each non-PASS target alone and records the second "
+        "answer per target. The GATE over its result file is the test-sweep / "
+        "test-sweep-confirm make target -- which exists because this audit "
+        "found that there was none and the sweep could not fail",
+    "tests/boot/bootwait.sh":
+        "waiter: it blocks until a serial line appears and says which outcome "
+        "it saw. Every caller tests for the line itself, because 'the boot "
+        "printed X' is the caller's assertion, not this file's",
+    "tests/qmp/qmp_browser.py":
+        "shared driver imported by qmp_site.py, qmp_browser_https.py, "
+        "qmp_ps2_only.py and run-usb-absent-test.sh -- it drives a browser and "
+        "prints 'done'; each importer owns its own verdict",
 }
 
 
@@ -149,20 +170,49 @@ def harnesses():
 
 
 def find_dead(texts):
-    """Harness files no Makefile / .mk text mentions, and harnesses that only
-    other harnesses mention (which is fine only if declared in ALLOW_DEAD)."""
+    """Harness files nothing can reach.
+
+    A harness is alive if a Makefile names it, OR if a harness that is itself
+    alive names it -- COMPUTED, not declared.
+
+    ALLOW_DEAD says in as many words that the only acceptable reason for a
+    harness to have no target is "another harness drives it". That is a
+    checkable property, so it is checked. Trusting a hand-written list for it
+    cost real coverage: qmp_lockdump.py, sweep-classify.py,
+    run-smp-lockprobe.sh and run-smp-freeze-probe.sh were all reported dead
+    while being driven every run, and the only remedy on offer was to add four
+    more lines to a list -- which is how the list becomes the place a genuinely
+    dead test hides.
+
+    TRANSITIVE FROM A MAKEFILE ROOT, and that word is the whole design. "Some
+    other harness mentions it" would let two dead scripts that reference each
+    other excuse one another forever; a walk outward from the targets cannot,
+    because nothing outside the reachable set can add to it.
+    """
     blob = "\n".join(texts.values())
-    dead = []
-    for h in harnesses():
-        base = os.path.basename(h)
-        if base in blob or h in blob:
-            continue
-        if h in ALLOW_DEAD:
-            continue
-        # driven by another harness?  that is a helper, not a test -- but it
-        # must say so in ALLOW_DEAD, or a genuinely dead test hides here.
-        dead.append(h)
-    return dead
+    hs = harnesses()
+
+    alive = set(h for h in hs if os.path.basename(h) in blob or h in blob)
+    body = {}
+    for h in hs:
+        try:
+            body[h] = read(os.path.join(ROOT, h))
+        except OSError:
+            body[h] = ""
+
+    grew = True
+    while grew:                       # transitive closure, roots outward
+        grew = False
+        for h in hs:
+            if h in alive:
+                continue
+            for a_ in alive:
+                if os.path.basename(h) in body[a_]:
+                    alive.add(h)
+                    grew = True
+                    break
+
+    return [h for h in hs if h not in alive and h not in ALLOW_DEAD]
 
 
 VERDICT = re.compile(r'"?FAIL', re.I)
@@ -349,11 +399,49 @@ def main():
         for h, why in mute:
             print("  %s: %s" % (h, why))
         bad += len(mute)
+    # UNWIRED IS ONE FACT, NOT 354 FINDINGS, AND IT GATES ON GROWTH.
+    #
+    # Reported as 354 individual findings it made this audit permanently red,
+    # which costs the other two categories their gate: DEAD and MUTE are exactly
+    # the checks whose value is being zero, and they are unreadable underneath a
+    # list nobody can act on in one sitting. But zeroing UNWIRED would be worse
+    # -- "ci runs 22 of 588 targets" is TRUE, and the tree should not stop
+    # saying it just because saying it is inconvenient.
+    #
+    # So the debt is recorded, by NAME, in tests/audit-unwired.baseline, and the
+    # gate is that the set does not grow. A new target that no suite reaches is
+    # caught the day it is written, which is the only day it is cheap to wire.
+    # Recording the SET and not the count is deliberate: a count lets one target
+    # get wired while another is unwired, netting zero and hiding both.
+    #
+    # Refresh with `python3 tools/audit_tests.py --bless-unwired`, which is a
+    # separate deliberate act, and read the diff before committing it.
+    base_path = os.path.join(ROOT, "tests", "audit-unwired.baseline")
+    if "--bless-unwired" in sys.argv:
+        with open(base_path, "w", encoding="utf-8") as fh:
+            fh.write("# Targets no aggregate suite reaches. See UNWIRED in\n"
+                     "# tools/audit_tests.py: this is recorded debt, and the\n"
+                     "# gate is that it does not GROW.\n")
+            fh.write("\n".join(sorted(orphan)) + "\n")
+        print("blessed %d unwired target(s) into %s" % (len(orphan), base_path))
+        return 0
+    known = set()
+    try:
+        with open(base_path, encoding="utf-8") as fh:
+            known = set(ln.strip() for ln in fh
+                        if ln.strip() and not ln.startswith("#"))
+    except OSError:
+        pass
+    fresh = sorted(set(orphan) - known)
     if orphan:
-        print("\nUNWIRED -- a test- target no suite reaches (%d):" % len(orphan))
-        for t in orphan:
+        print("\nUNWIRED -- %d target(s) no suite reaches; %d recorded as debt"
+              % (len(orphan), len(orphan) - len(fresh)))
+    if fresh:
+        print("UNWIRED (NEW -- wire it, or bless it deliberately) (%d):"
+              % len(fresh))
+        for t in fresh:
             print("  %s" % t)
-        bad += len(orphan)
+        bad += len(fresh)
     dup = find_duplicate_includes(texts)
     if dup:
         print("\nDUPLICATE INCLUDE -- make keeps the last one and warns about "
