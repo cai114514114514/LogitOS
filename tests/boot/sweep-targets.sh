@@ -36,6 +36,15 @@ echo "sweep: $total targets"
 python3 tests/boot/sweep-classify.py "$LOGDIR" || exit 1
 : > "$LOGDIR/none.txt"
 
+# Targets that need an argument are recorded, not run -- see NEEDS_ARGS in
+# sweep-classify.py. They are in the result file so the sweep still accounts for
+# every enumerated target, and out of the FAIL list so it stays worth reading.
+while IFS=$(printf '\t') read -r t why; do
+    [ -n "$t" ] || continue
+    printf 'NEEDSARGS\t0\t%s\n' "$t" >> "$OUT"
+    printf '%-9s       %s  (%s)\n' "NEEDSARGS" "$t" "$why"
+done < "$LOGDIR/args.txt"
+
 run_one() {
     t="$1"
     # A NAME THAT IS NOT A TARGET, CAUGHT WHERE IT IS CREATED.
@@ -95,12 +104,6 @@ while read -r t; do
 done < "$LOGDIR/dev.txt"
 
 # --- CONFIRM every failure serially -----------------------------------------
-# Six makes share one build/ directory, so two of them racing to produce the
-# same object makes a target fail for a reason that has nothing to do with the
-# target. Measured: test-audio-codec-fuzz-deep failed in the parallel phase and
-# passes alone. So no failure from the parallel phase is believed until it has
-# been reproduced with nothing else running -- otherwise this sweep manufactures
-# bugs, which is worse than missing them.
 # The confirmation pass lives in ONE place, and this is not it.
 #
 # It used to be duplicated here, and the copy carried a bug the original does

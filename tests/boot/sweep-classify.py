@@ -106,10 +106,33 @@ targets += sorted(t for t in prereqs
 targets = sorted(set(t for t in targets
                      if "$" not in t and "%" not in t and t.startswith("test-")))
 
-host, dev = [], []
+# TARGETS THAT CANNOT BE RUN BARE, each with the reason it is here.
+#
+# A target that prints its usage and exits nonzero is not a failing target -- it
+# is a target that was never callable without an argument, and recording it as
+# FAIL puts an entry in the list that no amount of investigation will resolve.
+# The sweep exists to find real breakage; two permanent false entries are two
+# reasons to stop reading the list.
+#
+# An explicit table, not a heuristic. "exited nonzero after printing something
+# that looks like a usage line" would also match a real failure whose error
+# message happens to contain the word usage, and a rule that silently
+# reclassifies a genuine break is far worse than a table somebody has to extend.
+# Extending it is one line and requires naming the argument.
+NEEDS_ARGS = {
+    "test-net-ab":    "BEFORE=<other.iso> -- an A/B comparison needs the other side",
+    "test-perf-gate": "PERF_METRIC=<name> -- a gate on one metric needs the metric",
+}
+
+host, dev, args = [], [], []
 for t in targets:
+    if t in NEEDS_ARGS:
+        args.append("%s\t%s" % (t, NEEDS_ARGS[t]))
+        continue
     (dev if boots(t) else host).append(t)
 
 open(os.path.join(OUT, "host.txt"), "w").write("\n".join(host) + "\n")
 open(os.path.join(OUT, "dev.txt"), "w").write("\n".join(dev) + "\n")
-print("classify: %d targets -- %d host, %d device" % (len(targets), len(host), len(dev)))
+open(os.path.join(OUT, "args.txt"), "w").write("\n".join(args) + ("\n" if args else ""))
+print("classify: %d targets -- %d host, %d device, %d need arguments"
+      % (len(targets), len(host), len(dev), len(args)))
