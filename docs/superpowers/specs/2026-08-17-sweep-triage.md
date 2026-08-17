@@ -1,0 +1,186 @@
+# The full sweep, triaged — what 522 targets actually found
+
+Written while the device half of `make test-sweep` was still running (477/522).
+Every entry below was diagnosed from the recorded logs, without a build, which
+is why the split between "harness fault" and "product fault" is the useful axis:
+the harness faults were fixable immediately and the product faults are queued
+behind a boot.
+
+**The headline is uncomfortable and it is the point of running this at all:
+of the failures diagnosed so far, MOST WERE THE TEST, NOT THE SYSTEM** — and
+several of them were confidently, specifically wrong in a way that would have
+sent somebody after the wrong bug.
+
+## The pattern that repeated five times
+
+> **A control is a COPY of the thing it controls, differing deliberately in one
+> place, and nothing in make or in C expresses "these two must stay identical
+> except for that one difference".**
+
+So they drift, and nothing notices, because a negative control is reached by no
+aggregate suite — all of them sit in the 354 `UNWIRED` targets.
+
+| where | drift | how it presented |
+|---|---|---|
+| `browser-noplat.elf` | `$(GFX_OBJ)` missing | 20 undefined `gfx_*` at link |
+| `browser-noplat.aex` | `--stack-pages 2048` missing | **silent** — the control got a fraction of the real stack, and "comes up with none of the platform APIs" is satisfied by a control that died on a deep render stack |
+| `test-wpt-negctl` | `$(GFX_SRC)` missing | `undefined reference to gfx_path_ellipse` |
+| `test-wpt-fire-negctl` | the same | the same |
+| `test-encoding-negctl` | the same | the same |
+
+The sentence explaining the last three was **already a comment seven lines above
+one of them**, written when the POSITIVE target was fixed.
+
+`js_events.c` is the same disease in C rather than make: the positive install
+path is explicitly loud, with a comment arguing that a prelude which fails to
+install "leaves every page with the pre-existing event surface and nothing says
+so". Twenty lines below, the negative control's install swallows its exception.
+
+## Harness faults — the diagnosis was wrong, not just the verdict
+
+### `test-shape-device` — eight failures about Arabic, none of them about Arabic
+
+Reported "isolated forms are about half again as wide as joined ones" for four
+Arabic strings. The screendump is the desktop with **Preview playing
+sample.aac**; TextEdit never launched and `shaping.txt` was never displayed.
+
+The tell was in the numbers: every row measured `1 ink groups, 444 px wide` — 7
+code points, 13 code points, and a four-letter Hebrew word, all exactly 444. **A
+measurement that returns the same answer for inputs of different lengths is not
+measuring the input.** Converting the .ppm and looking at it settled it in a
+minute.
+
+Cause: the drive clicks a hardcoded (594,215), "the third icon of the first
+row". That is a guess about disk contents; `fsroot/` has eight entries and the
+grid renumbers when any of them changes.
+
+Fixed by making the harness check WHAT IT OPENED before measuring — the kernel
+already prints `[wm] launched <name>` and this harness was already reading that
+serial log for its font report.
+
+### `test-monitor` — the harness buried the bug it found
+
+Eight checks pass. The ninth is real: **launching Clock kills the Activity
+Monitor window.** Then the harness continues, `Frame().ox` is None because the
+window is gone, and the run ends in a `TypeError` traceback pointing at the
+harness. A reader sees a broken test; the finding is one line above it.
+
+Fixed with a `fatal=True` on checks everything after them depends on.
+Accumulate-and-continue is right for independent checks and stays.
+
+### `test-glass` — 26 failures, and the oracle was wrong
+
+All 26 are one boundary: `fresnel s=0`, `got 190, double says 255`.
+`glass_schlick` clamps to `GLASS_FRES_MAX = 190`, argued over twenty lines: it
+models the microfacet roughness of a frosted panel, because a polished lens
+reaches R=1 at grazing incidence and an anodized one does not. The oracle
+compares against **uncapped** Schlick.
+
+Not fixed by teaching the oracle to clamp and leaving it there — that is a pure
+weakening. The implementation's comment claims the cap "only ever clips the
+single outermost ring", which is checkable, so it is now checked. **Verified
+first: over every E in 1..24 the largest uncapped value at s >= 1 is 55.737
+(E=24, s=1) against a cap of 190 — a margin of 3.4x.** That number is also the
+abruptness the design is about: 255 to 55.7 across ONE pixel is a hairline, and
+a gradient would not read as an edge.
+
+### `test-kbench` — a gate on a syscall nobody calls, and a message naming nobody
+
+Two failures.
+
+`no SYS_GET_TIME line in the syscall histogram` is **already documented as
+unfixed** at `kbench.c:416`: the harness reads SYS_GET_TIME's mean out of a
+top-N list, "SYS 10 is absent because it is not called in the window at all,
+which is a separate and older problem".
+
+`247 poll passes through bkl_hlt_wait (limit 200) -- something is still polling
+instead of blocking` is a real measurement over a real threshold, wrapped in a
+message that names no culprit and therefore costs a debugging session every time
+it fires. The tree already knows the answer to this shape of question:
+`spinlock_t` records the acquiring caller's return address, and that is what
+turned "the BKL is contended" into "`wm_run+0x2de` holds it 80% of the time". A
+16-slot return-address histogram on `bkl_hlt_wait` is staged.
+
+(Ruled out on the way: `proc.c:546` carries `bkl_hlt_wait(); /* the old poll;
+run-kbench.sh must FAIL */` — but it is inside `#ifdef KBENCH_NEGCTL`. A proper
+control, not a leftover.)
+
+### Not failures at all
+
+`test-net-ab` wants `BEFORE=<other.iso>`; `test-perf-gate` wants `PERF_METRIC`.
+Both printed their usage and exited nonzero, and both would have been FAIL in
+every future sweep — two permanent entries in a list whose only value is that
+everything in it is worth reading. Now `NEEDSARGS`, from a table that states the
+argument each one wants.
+
+## Product faults — real, and queued behind a boot
+
+| target | finding |
+|---|---|
+| `test-monitor` | launching Clock kills the Activity Monitor window |
+| `test-live-page` | clicking a link does not run its handler |
+| `test-browser-https` | the empty Browser viewport is not blank — 3902 ink px, and the check calling it is a control |
+| `test-preview` | Preview lists `/media` as 0 entries, though the fixtures are on the disk (`FS_FILES` adds them and the names are in `disk.img`) |
+| `test-kbench` | 247 poll passes where the budget is 200 |
+| `test-events` | **passes for the wrong reason** — see below |
+| `test-h265-b` | `got 79 want 80`, one level, in B slices; declared incomplete |
+
+### `test-events` is green and its green is not evidence
+
+`test-events-negctl` reports: *"the ordering suite PASSED with the propagation
+walk stubbed out, so it is not measuring ordering."* The captured log says
+**10/10 subtests passed** against the stubbed build, so the tests ran and all
+passed anyway.
+
+`tests/events/order.html` is a genuine ordering test — it asserts
+`['aC:1','bC:1','c1:2','c2:2','bB:3','aB:3']` and six more orderings. It cannot
+pass with the walk removed. So the walk was **not removed**, and the likely
+mechanism is visible in the stub:
+
+```js
+var EP = null;
+try { if (doc && doc.createElement) EP = Object.getPrototypeOf(doc.createElement('div')); } catch (e) {}
+patch(EP); patch(doc); patch(G);
+```
+
+`patch(null)` returns immediately. If the Element prototype cannot be reached at
+install time, only `document` and the global get patched — and every listener in
+`order.html` is on an ELEMENT, whose `addEventListener` and `dispatchEvent` stay
+NATIVE. Combined with the swallowed install exception, the control degrades
+silently into a copy of the real build.
+
+**So the control's conclusion is a correct observation with the wrong culprit
+named**, which is the third instance of that exact shape in this sweep. Staged:
+the stub throws if it cannot reach the Element prototype, and the install aborts
+loudly rather than reporting a fiction.
+
+## Instrument faults found in the sweep itself
+
+- **A failing target was deleting its siblings' results.** `grep -v -f
+  recheck.txt` reads target NAMES as unanchored regexes. Replayed on this run's
+  real data, one failing `test-fs` deletes all six recorded `test-fs*` rows,
+  including two other targets' passes, and nothing re-runs them. The duplicate
+  confirmation pass was deleted in favour of the one that filters positively on
+  the status field.
+- **`make test-sweep` exited 0 no matter what.** `sweep-confirm.sh` ends with
+  `grep -v ... | sort | sed`, and a pipeline's status is its last command's. A
+  sweep of 525 targets that could not fail. Found by `tools/audit_tests.py`
+  under MUTE — the instrument built to find that shape elsewhere, finding it
+  here. The gate now lives in `tests/sweep.mk` and judges the result file.
+- **One phantom row**, `st-h264-pts`, a target nobody wrote, with the real
+  `test-h264-pts` missing its result. Mechanism never identified. `run_one` now
+  refuses a name that is not in the enumerated list, because a phantom row lies
+  twice — a failure that is not one, and a target that never ran.
+
+## The audit, 388 findings -> 14
+
+`DEAD` now computes the reason it already demanded ("another harness drives
+it"), transitively from Makefile roots outward — 33 -> 14. `UNWIRED`'s 354 are
+recorded by name as debt with a growth gate, because "ci runs 22 of 588 targets"
+is true and should keep being said, while 354 findings made the other two
+categories unreadable.
+
+**And every reachability gain disclosed muteness.** Dead files are excluded from
+the MUTE check, so deadness HIDES muteness: fixing the walk surfaced three
+verdicts, wiring the lock instruments surfaced two more. It happened three times
+in one pass and it is not a coincidence.
