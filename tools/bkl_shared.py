@@ -24,6 +24,20 @@ WHAT IT FINDS, and what it deliberately does not:
     is complete, not that every entry needs a lock -- and a list you have to
     argue down is worth far more than one you have to remember to extend.
 
+DO NOT EXTEND IT TO SAY WHO WRITES EACH ONE. That is the obvious next feature
+and it cannot be done this way. wm.c's window creation is
+
+    struct win *w = &wins[wi];
+    w->used = 1;
+
+-- a write to `wins` that no textual scan will ever attribute, because the name
+`wins` does not appear on the line. Tried: grepping wm_gui_syscall (530 lines,
+the app-thread entry) for assignments reported four writes, and the real answer
+includes the entire window table. Aliasing makes "who writes this" a question
+for a compiler or for a person reading the code, and a scanner that answers it
+confidently is worse than one that declines -- this whole file exists because a
+confident undercount cost somebody the two variables that mattered.
+
 IT IS A LOWER BOUND, and the first thing it missed is worth naming so nobody
 quotes the number as exact: `static uint8_t (*tx_bufs)[BS];` in logitfs.c --
 a pointer to an array -- does not match the pattern below, and that particular
