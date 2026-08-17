@@ -385,6 +385,20 @@ $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
 APPS := clock textedit monitor terminal widgets files preview studio
+
+# EVERY .aex PACKED AT THE LOGITFS ROOT, in one place, host path first.
+#
+# tests/fullsystem.mk derives its ROOT_AEX from this, and its comment explains
+# why that matters: "Derived from $(APPS) rather than restated, so adding an app
+# extends the test automatically instead of silently leaving the new one
+# untested." Deriving from $(APPS) was not enough -- gallery and settings are
+# packed from their own variables, so the test asserted the guest lists exactly
+# nine .aex while the disk carried eleven, and failed by naming the two apps it
+# had itself forgotten to expect.
+#
+# One list, two consumers. Anything added to the root now reaches the test by
+# construction, which is what the sentence above was always promising.
+ROOT_AEX_PACK := $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex)                  $(BROWSER_AEX):browser.aex                  $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex
 # Gallery is packed AFTER browser, not appended to APPS, and that placement is
 # load-bearing: the Dock's order is the order the .aex files land in the LogitFS
 # root, and tests/qmp/qmp_ui.py's BROWSER_SLOT names browser's index in it.
@@ -997,9 +1011,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
-	    $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex) \
-	    $(BROWSER_AEX):browser.aex \
-	    $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex \
+	    $(ROOT_AEX_PACK) \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \

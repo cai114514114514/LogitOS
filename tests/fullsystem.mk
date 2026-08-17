@@ -20,7 +20,16 @@
 # require the guest to list -- and launch -- exactly those. Derived from $(APPS)
 # rather than restated, so adding an app extends the test automatically instead
 # of silently leaving the new one untested.
-ROOT_AEX := $(foreach a,$(APPS),$(BUILD)/$(a).aex) $(BROWSER_AEX)
+#
+# ...and deriving from $(APPS) was not enough to keep that promise. gallery and
+# settings are packed from their own variables, not from $(APPS), so this list
+# held nine while the disk held eleven -- and the assertion failed by naming the
+# two apps it had itself forgotten to expect, which reads like a disk problem.
+#
+# $(ROOT_AEX_PACK) is now the single list the DISK RULE ITSELF packs from, so
+# there is no second place to forget. Its entries are `hostpath:name.aex`; the
+# test wants the host paths, and a host path under $(BUILD) has no colon in it.
+ROOT_AEX := $(foreach p,$(ROOT_AEX_PACK),$(firstword $(subst :, ,$(p))))
 
 test-fullsystem: $(ISO) $(DISK)
 	@bash tests/boot/run-fullsystem-test.sh $(ISO) $(DISK) $(ROOT_AEX)
