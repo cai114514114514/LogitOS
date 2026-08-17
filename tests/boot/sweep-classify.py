@@ -122,6 +122,17 @@ targets = sorted(set(t for t in targets
 NEEDS_ARGS = {
     "test-net-ab":    "BEFORE=<other.iso> -- an A/B comparison needs the other side",
     "test-perf-gate": "PERF_METRIC=<name> -- a gate on one metric needs the metric",
+    # Not an argument but the same category: a target that cannot be run as it
+    # stands. The Makefile says so in capitals above the target -- "REQUIRES A
+    # CHURN BUILD: make CHURN=1 && make CHURN=1 build/disk.img && make
+    # test-leak-os" -- because the driver is compiled into the WM and the flag
+    # is not object-tracked, so a normal build simply does not contain it.
+    #
+    # Deliberately in THIS table rather than a second one. The sweep's question
+    # is "can this target be run right now", and splitting the no by its reason
+    # would give two lists to check instead of one.
+    "test-leak-os":   "CHURN=1, at BUILD time -- the app-churn driver is compiled "
+                      "into the WM and a normal build does not contain it",
 }
 
 host, dev, args = [], [], []
