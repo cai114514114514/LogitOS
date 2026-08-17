@@ -211,6 +211,61 @@ Makefile documents it: *"REQUIRES A CHURN BUILD"*. Same category as `test-net-ab
 and `test-perf-gate` — a target that was never callable on its own — except that
 what it needs is a whole build rather than an argument.
 
+## The one that matters most: a logged-in user cannot save a setting
+
+`test-desktop-os`:
+
+```
+FAIL: boot 2: A USER COULD NOT SAVE A SETTING. This is the original
+      regression: settings_commit() refused because the file was root's
+```
+
+**The failure is real and the explanation in it is not.** The same log says
+
+```
+SETTINGS_USER uid=1000 store=/home/alice/.config/settings.conf defaults=/etc/settings.conf keys=1
+STAT /home/alice/.config/settings.conf mode=600 type=reg uid=1000 gid=1000 size=117
+```
+
+— the file exists, alice owns it, it has content. Nothing was refused for
+ownership. `SETCHECK-SET-FAIL ui.dark` is the actual event, and there is no
+`[set] commit FAILED` line at all, so the refusal happens before the write.
+
+It is `SYS_SETTING_SET`'s permission gate, and the gate is asking the wrong
+question:
+
+```c
+if (settings_schema_find(key)) {          /* a schema key is machine state */
+    ...
+    if (me.uid != 0) return ID_E_PERM;
+```
+
+`ui.dark` is schema entry 75, group `SET_G_APPEARANCE` — an appearance
+preference, exactly the kind a user is supposed to own.
+
+**Two features, each correct alone, contradicting where they meet.**
+`settings_prepare_user()` points the store at `$HOME/.config/settings.conf` so a
+user's schema values override root's defaults *under a file they own* — that is
+the entire per-user settings feature. The M28 gate closes a real hole ("any
+process could rewrite machine-wide persistent configuration"), and its premise —
+"a schema key is machine state" — is true of the system store and stops being
+true the moment a session is active.
+
+So the test should be **where the write lands**, not what the key is called, and
+the discriminator already exists and is already used by
+`settings_store_path()` and `settings_commit()`: `user_path[0]`.
+
+`SETCTL_RESET` inherits the same correction, and its own code already argues the
+point: `settings_reset()` deletes `settings_store_path()` — the user's file when
+one is active — "so that a user resetting their settings must not be able to
+delete root's defaults". That function was written user-aware; only the gate in
+front of it was not, and between them a logged-in user could not reset settings
+that were hers to begin with.
+
+Staged, not applied — it is kernel source and the sweep's device half is
+running. The refusal must survive for the system store, which is what the
+negative half of the gate is for.
+
 ## Instrument faults found in the sweep itself
 
 - **A failing target was deleting its siblings' results.** `grep -v -f
