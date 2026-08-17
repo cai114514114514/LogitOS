@@ -116,6 +116,10 @@ class Frame:
                                    self.ox + pt(x + w), self.oy + pt(y + h)), thresh)
 
 
+class Fatal(Exception):
+    """A failed check that everything after it depends on -- see ck()."""
+
+
 def main(argv):
     iso = argv[1] if len(argv) > 1 else "build/logit.iso"
     disk = argv[2] if len(argv) > 2 else "build/disk.img"
@@ -137,11 +141,26 @@ def main(argv):
     fails = []
     base_out = out[:-4] if out.endswith(".png") else out
 
-    def ck(cond, what, detail=""):
+    def ck(cond, what, detail="", fatal=False):
+        """Record a check. Accumulating and continuing is deliberate -- one run
+        should report every problem, not the first one.
+
+        BUT A STRUCTURAL FAILURE IS NOT A COSMETIC ONE. When "the Monitor is
+        still up" fails, the window is gone, Frame().ox is None, and the next
+        line does `None + pt(330)`. The run then ends in a TypeError traceback
+        pointing at THIS FILE -- so a reader sees a broken harness where the
+        real finding, one line above, is that launching Clock killed the
+        Monitor. The harness's own presentation buried the bug it found.
+
+        `fatal=True` marks a check everything after it depends on. Independent
+        checks keep accumulating; this one stops, and the last line printed is
+        the finding."""
         print("%-4s %s%s" % ("ok" if cond else "FAIL", what,
                              ("  [%s]" % detail) if detail else ""))
         if not cond:
             fails.append(what)
+            if fatal:
+                raise Fatal(what)
 
     qemu = subprocess.Popen(
         ["qemu-system-x86_64",
@@ -287,7 +306,7 @@ def main(argv):
         time.sleep(6 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         f = Frame(shot)
-        ck(f.ok(), "the Monitor is still up after launching Clock")
+        ck(f.ok(), "the Monitor is still up after launching Clock", fatal=True)
 
         # Record where Clock's window is, so its DISAPPEARANCE can be asserted
         # later. The Clock face is a large light disc; sample the desktop region
@@ -494,6 +513,9 @@ def main(argv):
         for l in costs[-3:]:
             print("     %s" % l.strip())
 
+    except Fatal as e:
+        print("     stopping here: every later check depends on this one")
+        del e
     finally:
         qemu.terminate()
         try:
