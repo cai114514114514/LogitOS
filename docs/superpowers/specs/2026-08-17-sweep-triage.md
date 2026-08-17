@@ -301,6 +301,39 @@ important half is not the bless: it is that a red target here means the
 opposite of what red usually means, and the harness says so in its own header
 for anyone who reads that far.
 
+## `test-swap` is green and proves nothing — and an OPTIMISATION is why
+
+`test-swap-negctl`:
+
+```
+FAIL: the workload SUCCEEDED without a swap device.
+      That means the pressure never actually needed swap, so the
+      positive run does not prove swap works. Raise the workload
+      (5th argument) or lower the RAM (4th).
+```
+
+The control is correct, it is well written, and it is saying that the positive
+gate above it is not measuring what it claims. Second instance of that shape
+today after `test-events`, and this one matters more: CLAUDE.md cites `test-swap`
+as the on-device proof that reclaim and swap work at all.
+
+**The cause is very likely an optimisation, recorded in CLAUDE.md itself.** The
+calibration is `SWAP_RAM = 192` MiB against a workload that verifies 49,152
+pages — exactly 192 MiB — and it was chosen when `browser.elf` carried a ~105
+MiB `.bss`. The memory line then moved that 96 MiB arena to `SYS_MMAP` with a
+commit bound, and the same document says why: *"not allocating a page beats
+reclaiming it"*, `.bss` now under 10 MiB. The desktop got smaller, the machine
+stopped being short of memory, and a test calibrated against the old footprint
+quietly stopped applying pressure.
+
+Nothing regressed. A gate went hollow because the system improved underneath it,
+which is the failure mode a *positive* test cannot report about itself — it
+still passes, faster than before. Only the control can say it, and only if
+somebody runs the control.
+
+Fixing it needs a boot to re-calibrate (raise `SWAP_SIZE`, or lower `SWAP_RAM`
+until the control fails again), so it is queued with the rest.
+
 ## What the sweep CONFIRMED — the half that produces no findings
 
 A sweep's other output is that standing claims are still true, and nobody writes
