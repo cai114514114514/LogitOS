@@ -29,6 +29,42 @@ make debug  # QEMU frozen with gdb stub on :1234
   positives unless `.clangd` is being honored — the real build passes `-I` for
   every source dir (`INCDIRS` in the Makefile) and the x86_64 target.
 
+## When a test fails, suspect the apparatus first — measured, 2026-08-17
+
+A sweep of all 522 targets produced 45 failures. **Most were the test, not the
+system**, and the expensive ones shared a shape worth naming:
+
+> **The measurement was right and the sentence around it sent the reader
+> somewhere else.**
+
+Eight instances in one day, and they did not look alike from the outside:
+
+| it said | it was |
+|---|---|
+| "isolated forms are about half again as wide as joined ones", 8 failures about Arabic | a screenshot of Preview playing an audio file — every row read `444 px` regardless of input length |
+| `fresnel s=0: got 190, double says 255`, 26 failures | the oracle did not model a clamp the implementation argues for over twenty lines |
+| "something is still polling instead of blocking" | ~50 passes per core against a budget of 200 that does not mention cores |
+| a `TypeError` traceback in the harness | the harness had found a real bug one line earlier and then walked off the end of it |
+| `undefined reference to gfx_path_ellipse` in three controls | the sentence explaining it was already a comment seven lines above one of them |
+| `0 px wrong` and failing | `rel=mismatch` — zero is the WORST outcome, printed in the words of the best |
+| `test-swap` green | the workload completes without swap; an optimisation shrank the desktop and the calibration went hollow |
+| "there is no reftest harness here, so LAYOUT is UNMEASURED" | `test-reftest` judged 24,300 reftests that day |
+
+**And the same thing happened to the tools used to investigate them**, which is
+the part worth internalising. An `md5sum` "matched" and let a real breakage ship,
+because `grep -m1` picked a different rule's first line. A shell check reported a
+variable missing that was on the continuation line. Two Makefile parsers dropped
+rules whose prerequisites wrap. A patch-anchor checker reported false failures
+because it regex-scraped `\n` instead of evaluating the string. A syntax checker
+reported an undeclared symbol because it put the unpatched header first on the
+include path.
+
+Nobody was careless in any of these. The lesson is narrower and more useful:
+**before believing a failure, check that the thing reporting it is looking at
+what you think it is.** Cheap tests for that: does the number change when the
+input changes? Does the control fire? Does the same gate at another size or core
+count agree? Is the file it read the file you edited?
+
 ## If you write anything that reads the Makefile, join the continuations first
 
 There are five tools in this tree that parse make: `tools/audit_tests.py`,
