@@ -2857,6 +2857,14 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # the defect itself on a -D switch. Own fragment; see the file.
 -include tests/cookiegate.mk
 
+# Two virtio devices QEMU has always offered and this kernel never claimed:
+# an entropy source that does not depend on what the virtual CPU says it
+# supports, and the balloon -- the only way to squeeze a RUNNING machine,
+# which is what the reclaim path was written for and had no way to be given.
+# Each has a control that was watched failing. Own fragments; see the files.
+-include tests/virtio_rng.mk
+-include tests/virtio_balloon.mk
+
 # --- test-webapi-page: the on-device proof that fetch() reaches the pixels --
 # Boots the OS, loads a fixture page from a host server, and requires the text
 # a fetch() wrote into the DOM to appear in a screendump -- plus location, URL,
