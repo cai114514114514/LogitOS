@@ -26,7 +26,23 @@
 .PHONY: test-sweep test-sweep-confirm test-sweep-host test-sweep-resume
 
 SWEEP_JOBS ?= 6
-SWEEP_TMO  ?= 900
+# THE BUDGET MUST EXCEED THE LONGEST LEGITIMATE HARNESS, and 900 did not.
+#
+# It is computable, not a guess: a boot harness bounds each boot itself and runs
+# several, so its worst case is boots x per-boot bound.
+#
+#   run-settings-test.sh   6 boots x 150 s = 900 s   -- exactly the old budget
+#   run-statmeta-test.sh   4 boots x 220 s = 880 s   -- plus overhead, over it
+#
+# Both timed out in the first full sweep, and neither was hanging: each boot
+# stopped at its own limit, and the sum reached the sweep's. A perfectly healthy
+# slow run collides by construction, and the result reads as TIMEOUT -- the one
+# verdict that looks most like a real hang.
+#
+# 1800 gives the worst known harness 2x headroom. A target that genuinely hangs
+# still gets caught; it just costs twice as long to say so, which is the right
+# trade when three of the seven timeouts in a 522-target sweep were this.
+SWEEP_TMO  ?= 1800
 SWEEP_OUT  ?= $(BUILD)/sweep/all.res
 
 # THE GATE IS HERE, NOT IN THE SCRIPTS, AND UNTIL NOW THERE WAS NO GATE AT ALL.
