@@ -39,6 +39,31 @@ appears in this list at all**, which is why widening
 `syscall_is_bkl_free()` — the obvious next move, and the one this document
 replaces — would move nothing.
 
+### Do not quote the 80% as a precise number — and the 1-core run says why
+
+Three runs of the same profile on four cores have now reported the compositor's
+share as **55%, 63% and 80%**. That is not instability in the machine; it is the
+sample size. Each run collects ~600 samples of which only ~100-130 catch the
+lock held, so one percentage point is roughly one sample, and a spread of 25
+points over three runs is what ~100 samples looks like.
+
+The robust statement comes from running the same gate on ONE core:
+
+```
+1 core:   605 samples, held in 126 (20%);  top holder 99% of held
+4 cores:  603 samples, held in 101 (16%);  top holder 63%, second 27%
+```
+
+**At one core the compositor is 99% of held time.** It is not "the largest of
+several holders" — it is the holder, and the interrupt entry's share on four
+cores is four times the interrupts arriving, not a second bottleneck that
+appears under load. That is a claim the noisy 4-core percentage cannot make and
+the 1-core run makes cleanly, and it is the argument for step 2 being first.
+
+Same method as the poll-pass finding below: the sweep already ran this gate at
+1, 4 and 5 cores, so the extra measurement cost nothing and separated a real
+effect from sampling noise.
+
 The M25 spec's P3 decision ("keep WM/net/fs BKL-guarded — they are I/O-bound,
 **low-contention**") was made on 2026-06-08 without these numbers. The premise
 is false now: the WM is 80%.
