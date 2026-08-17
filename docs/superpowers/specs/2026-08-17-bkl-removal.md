@@ -74,9 +74,52 @@ snapshot and the blit**. What is left is smaller:
 |---|---|---|
 | `order[]` / `norder`, window geometry | app syscalls (create/destroy/resize) | a window-list lock, held only to SNAPSHOT geometry, released before the pixels |
 | `w->surf.px` CONTENTS | app syscalls, constantly | tearing, not corruption. `WM_MIDFRAME_GUARD` / `rect_blocked` / `perf_torn` already exist for exactly this |
-| `w->surf.px` POINTER | WM thread only (see above) | nothing needed, but assert it |
+| `w->surf.px` POINTER | **also SYS_GUI_CREATE, on the app thread** | safe by an accident that must become a rule -- see below |
 | the glyph cache | any `SYS_GUI_TEXT` | its own lock — the one genuinely new piece |
 | the back buffer | WM only | nothing |
+
+### The window list: the hazard is the slot claim, not the pointer
+
+The row above began by saying the surface pointer is WM-thread-only, on the
+strength of `win_apply_size()` being the only REALLOCATION and running on the WM
+thread. Reading `SYS_GUI_CREATE` says otherwise: the first allocation runs on the
+APP thread, and it publishes in the wrong order --
+
+```c
+w->used = 1; w->kind = WK_APP; w->app = ap;   /* live ... */
+...
+w->surf.px = kmalloc((size_t)(pxcount * 4));  /* ... and only then given pixels */
+```
+
+-- so there is a window in which `used == 1` and `surf.px` is the previous
+tenant's freed pointer. The BKL hides it today.
+
+**The compositor survives it by an accident nobody wrote down.** Every render
+path walks `order[]` (wm.c:977, :3845, :3912) and never `wins[]` by `used`, and
+`raise_win(wi)` -- the only thing that puts a window INTO `order[]` -- is the
+last statement of `SYS_GUI_CREATE`, after the buffer exists. So a half-built
+window is unreachable from a frame. That is load-bearing and undocumented, which
+puts it one refactor away from being untrue. Peeling the compositor is the moment
+to write it down as a rule and assert it, not the moment to discover it again.
+
+**The race the BKL is really carrying here is the slot claim:**
+
+```c
+for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
+```
+
+Two apps calling `SYS_GUI_CREATE` at once scan and claim the same slot, and
+nothing else prevents it. So the window-list lock is needed for a reason that has
+nothing to do with rendering -- and it must cover the scan and the `used = 1`
+together, which is also the cheapest critical section available: a scan of one
+byte per window.
+
+This is the same shape as the bug the input-deferral comment (wm.c:2450)
+describes -- IRQ handlers mutating `order[]`/`wins[]` under a compositing WM
+thread, giving "a torn read yields a garbage window rect and fb_round_rect/fb_put
+runs away in a near-infinite pixel loop". That path was fixed by DEFERRING to the
+WM thread. The syscall path was never fixed; it was covered by the BKL, and this
+step is where it stops being.
 
 ### The glyph cache, read before designing its lock
 
