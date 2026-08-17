@@ -398,7 +398,27 @@ APPS := clock textedit monitor terminal widgets files preview studio
 #
 # One list, two consumers. Anything added to the root now reaches the test by
 # construction, which is what the sentence above was always promising.
-ROOT_AEX_PACK := $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex)                  $(BROWSER_AEX):browser.aex                  $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex
+# DEFERRED (=), NOT IMMEDIATE (:=), and that is not style. $(MONITOR_AEX),
+# $(GALLERY_AEX), $(SETTINGS_AEX) and $(BROWSER_AEX) are all defined BELOW this
+# line, so := captures them empty and every entry becomes `:name.aex` -- an
+# empty host path that mkfs.py opens as "" and dies on. Shipped exactly that way
+# for an hour and broke build/disk_thrneg.img.
+#
+# AND IF YOU CHANGE THIS, VERIFY IT PROPERLY -- three obvious ways to check it
+# all give the wrong answer, and all three were used before the bug was found:
+#
+#   * `make -n build/disk.img | grep -m1 mkfs.py` picks the FIRST of several
+#     mkfs invocations in the tree (disk-noplat, disk_thrneg), so an md5 of it
+#     "matches" while comparing a line this variable never appears in;
+#   * `grep mkfs.py` without more returns only the first PHYSICAL line of a
+#     command that spans a dozen backslash continuations, and the app entries
+#     are not on it;
+#   * `make -n` prints nothing when the target is already up to date, so -B.
+#
+# What works: `make -Bn build/disk.img | sed -n '/mkfs\.py/,/^$/p'`, then count
+# entries matching `:[a-z]+\.aex$` (expect 11) and entries starting with `:`
+# (expect 0).
+ROOT_AEX_PACK = $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex)                  $(BROWSER_AEX):browser.aex                  $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex
 # Gallery is packed AFTER browser, not appended to APPS, and that placement is
 # load-bearing: the Dock's order is the order the .aex files land in the LogitFS
 # root, and tests/qmp/qmp_ui.py's BROWSER_SLOT names browser's index in it.
