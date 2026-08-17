@@ -359,6 +359,31 @@ difference is what they measure. A count of *the tree's own targets* changes
 every time anybody adds a test; a count of *cases inside one gate* changes only
 when that gate is edited, and its author edits the number in the same commit.
 
+## What the sweep costs, and what two fixes took off it
+
+```
+518 targets, 10.8 hours of machine time, 75 s mean
+```
+
+The distribution is the useful part. **Seven timeouts at 900 s each are 1.75
+hours — 16% of the whole run** — and only two of the seven were real:
+
+| what | cost | now |
+|---|---|---|
+| 34 aggregate targets, every member of which the sweep already ran individually | **90.7 min** | skipped; nothing lost, by construction |
+| `test-settings-os` and `test-statmeta-os`, whose bounded per-boot waits sum to the sweep's own budget | **30.0 min** | budget raised past the longest harness |
+| `test-vidbench-guest`, a genuine hang after a decode error | 15 min | a real finding, above |
+
+**Two hours off a ten-hour run, and neither fix skips a single check.** The
+aggregates' members all still run; the budget change only stops calling a slow
+harness a hang.
+
+Also worth noticing: the two most expensive PASSING targets are
+`test-notify-negctl` (832 s) and `test-clip-negctl` (783 s). Negative controls
+are among the priciest things in this tree — thirteen minutes each — and no
+suite reaches any of the hundred of them. That is the sweep's argument in one
+line: the checks that cost the most and are run the least are the same set.
+
 ## Instrument faults found in the sweep itself
 
 - **A failing target was deleting its siblings' results.** `grep -v -f
