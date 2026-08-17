@@ -725,8 +725,20 @@ int main(int argc, char **argv)
             if (fl) fprintf(fl, "%-70s %-9s %8ld px  %s\n", t.path, vname[v.code], v.diffpx, c);
             if (baseline && !base_has(t.path)) {
                 regressions++;
-                if (opt_verbose || regressions <= 20)
-                    printf("REGRESSION %s (%s, %ld px wrong)\n", t.path, vname[v.code], v.diffpx);
+                /* "px wrong" IS BACKWARDS FOR A MISMATCH REFERENCE, and it read
+                 * that way in a real triage. rel=mismatch requires the test and
+                 * the reference to DIFFER, so a diff of 0 is not a near miss --
+                 * it is the whole failure, the rendering having collapsed into
+                 * the thing it must not look like. Printed as "0 px wrong" it
+                 * invites exactly the wrong reading: a rounding problem, a
+                 * threshold one pixel too tight, something small. */
+                if (opt_verbose || regressions <= 20) {
+                    int mm = t.nrefs > 0 && t.refs[0].mismatch;
+                    printf("REGRESSION %s (%s, %ld px %s)\n", t.path,
+                           vname[v.code], v.diffpx,
+                           mm ? "differ -- rel=mismatch, so this must NOT be 0"
+                              : "wrong");
+                }
             }
         } else if (baseline && base_has(t.path) && v.code != V_SKIP) {
             /* ... and a skip is not a newly-passing test either. Excluding
