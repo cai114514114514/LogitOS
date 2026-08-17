@@ -98,9 +98,13 @@ test-encoding: $(BUILD)/wpt_test
 # decoder, and its number should not be quoted.
 test-encoding-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
+	@# $(GFX_SRC): a CONTROL is a copy of the target it controls, and it
+	@# drifts. The positive target above was fixed when svg.c started
+	@# building its shapes with gfx_path/gfx_fill; this line was not, and
+	@# nothing noticed because no suite reaches a negative control.
 	@$(CC) -O2 -w $(WG_CF) -DENC_NEGCTL_IGNORE_LABEL \
 	    -o $(BUILD)/wpt_encnegctl $(WG_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	    $(GFX_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@n=$$($(BUILD)/wpt_encnegctl --root $(WG_ROOT) --subset encoding -b /dev/null 2>/dev/null \
 	      | sed -n 's/^WPT: \([0-9]*\)\/.*/\1/p'); \
 	 if [ -z "$$n" ]; then echo "test-encoding-negctl: no corpus -- skipped"; exit 0; fi; \

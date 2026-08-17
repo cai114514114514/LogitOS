@@ -288,9 +288,13 @@ test-wpt-harness: $(BUILD)/wpt_test
 .PHONY: test-wpt-fire-negctl
 test-wpt-fire-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
+	@# $(GFX_SRC): a CONTROL is a copy of the target it controls, and it
+	@# drifts. The positive target above was fixed when svg.c started
+	@# building its shapes with gfx_path/gfx_fill; this line was not, and
+	@# nothing noticed because no suite reaches a negative control.
 	@$(CC) -O2 -w $(WPT_CF) -DWPT_DOUBLE_FIRE -o $(BUILD)/wpt_fire2 \
 	    $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	    $(GFX_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@if $(WPT_ENV) $(BUILD)/wpt_fire2 --root $(WPT_ROOT) --subset _selfcheck \
 	       -b /dev/null > $(BUILD)/wpt_fire2.log 2>&1; then \
 	    echo "test-wpt-fire-negctl: FAILED -- the self-check passed with the load"; \
@@ -421,9 +425,13 @@ test-wpt-order: $(BUILD)/wpt_test
 # method, so every new failure is attributable to it.
 test-wpt-negctl: $(BUILD)/wpt_test $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
+	@# $(GFX_SRC): a CONTROL is a copy of the target it controls, and it
+	@# drifts. The positive target above was fixed when svg.c started
+	@# building its shapes with gfx_path/gfx_fill; this line was not, and
+	@# nothing noticed because no suite reaches a negative control.
 	@$(CC) -O2 -w $(WPT_CF) -DWPT_NEGCTL \
 	    -o $(BUILD)/wpt_negctl $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	    $(GFX_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(WPT_ENV) $(BUILD)/wpt_test --root $(WPT_ROOT) --subset dom \
 	    --write-baseline -b $(BUILD)/wpt_negctl_base.txt > $(BUILD)/wpt_negctl_base.log 2>&1
 	@grep -E '^WPT:' $(BUILD)/wpt_negctl_base.log | sed 's/^/  reference: /'
