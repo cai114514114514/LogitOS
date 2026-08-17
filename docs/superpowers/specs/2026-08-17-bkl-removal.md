@@ -209,6 +209,46 @@ driver needs its own lock — and the busy-flags (`g_net_busy`, `g_virtio_busy`,
 them, which the M25 P3 audit says in as many words. They change together with
 this step or not at all.
 
+### It is smaller than that paragraph, because there are only two device IRQs
+
+The mechanism already exists: `interrupts.c:131` computes `bkl_free`, and
+vectors 240 and 241 (TLB shootdown, parallel present) are already handled
+without the lock. Declaring a vector BKL-free is a term in one expression.
+
+And the list of things to declare is short. e1000 and virtio are **polled** —
+there is no NIC interrupt on this machine. The BSP timer tick already runs
+*before* the acquire, for a documented circular-wait reason. What is left is
+IRQ 1 (PS/2 keyboard) and IRQ 12 (PS/2 mouse), and since the input-deferral fix
+both handlers do almost nothing: read the port, track modifiers in their own
+statics, and push one event.
+
+**Except that they push to the same queue, and that queue says it is safe when
+what makes it safe is the BKL:**
+
+```c
+static void inq_push(const struct inev *e)   /* IRQ-safe: no locks, no shared-state */
+{
+    int nt = (inq_tail + 1) % INQ_N;
+    if (nt == inq_head) return;
+    inq[inq_tail] = *e;
+    inq_tail = nt;
+}
+```
+
+One producer makes that correct. **There are two** — `wm_key` from IRQ 1 and
+`wm_mouse_event` from IRQ 12, both a two-line wrapper around this function — and
+today they cannot overlap only because every IRQ takes the global lock on the
+way in. Drop the lock for those two vectors and two cores can be inside
+`inq_push` at once: both read the same `inq_tail`, both write the same slot,
+both store the same `nt`, and one keystroke is silently gone. Not corruption; a
+dropped event, under exactly the flood the queue was sized for.
+
+This is the M25 P3 audit's warning met in the concrete, and it is worth noticing
+that the comment is not wrong so much as **unqualified**: "no locks" is a
+statement about this function, and its correctness lives in a caller three files
+away. Cheapest fix is a single-word CAS claim of the tail — the ring is already
+bounded and drop-on-full, so a failed claim is the case it already handles.
+
 ## Step 4 — the scheduler stops using the BKL as a hand-off medium
 
 `schedule()`, `block_self()`, `thread_exit()` and the three bootstraps all rely
