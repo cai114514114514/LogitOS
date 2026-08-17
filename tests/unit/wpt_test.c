@@ -1950,9 +1950,21 @@ int main(int argc, char **argv)
            "            them.\n"
            "        Both tokened ::[NOTRUN] so neither pollutes the ratchet.\n",
            tot_broken, tot_never, tot_onload, tot_driver);
-    printf("     NOT RUN: %ld reftests -- judged by pixels against a reference render,\n"
-           "        and there is no reftest harness here, so LAYOUT correctness is\n"
-           "        essentially UNMEASURED by the rate above. %ld other files.\n",
+    /* "there is no reftest harness here" was true when this line was written
+     * and stopped being true when tests/reftest.mk landed -- whose own header
+     * opens "third_party/wpt holds tens of thousands of reftests and until this
+     * fragment...". Same corpus, same WPT_ROOT. It judged 24,300 of them
+     * against a 17,452-entry baseline in the sweep of 2026-08-17.
+     *
+     * The stale version was not merely out of date, it pointed the reader away
+     * from the answer: this rate is the tree's headline web-compat number, and
+     * anyone reading it was told layout is essentially unmeasured while a gate
+     * measured it. Name the gate instead. */
+    printf("     NOT RUN HERE: %ld reftests -- judged by pixels against a reference\n"
+           "        render, which this runner does not do. They are NOT unmeasured:\n"
+           "        `make test-reftest` runs them out of the same third_party/wpt\n"
+           "        against a recorded baseline, and the rate above simply is not\n"
+           "        where that answer lives. %ld other files.\n",
            tot_ref, tot_other);
 
     struct blhash fh; blh_build(&fh, &failures);
