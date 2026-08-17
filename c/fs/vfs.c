@@ -584,23 +584,60 @@ static uint32_t create_mode(int is_dir)
     return (uint32_t)(is_dir ? 0777 : 0666) & ~mask;
 }
 
-/* Record `mode` for a name that has just been created. Skipped entirely when it
- * equals the default the file would report anyway: on a backend that stores
- * modes durably that saves a whole journal transaction per file written, and on
- * one that does not it saves a record in a 256-entry table. */
-static void stamp_create_mode(const char *abs, int is_dir)
+/* Record the mode AND the owner for a name that has just been created.
+ *
+ * OWNERSHIP GOES WHERE THE MODE GOES, and it did not used to. The mode has
+ * always been routed here -- backend setattr when the backend owns its
+ * metadata, the VFS store otherwise -- while the create-time owner was written
+ * straight into the VFS store by the two callers, unconditionally. On a backend
+ * with no getattr/setattr the two agreed and nothing was visibly wrong; the
+ * moment logitfs grew the pair, attrs_of() started preferring the backend and
+ * the owner record became a value nothing reads. What that produced is not
+ * subtle and was measured before this was changed: a directory created by uid
+ * 1000 inside a 0700 home it owns stats as uid=0 gid=0 mode=755, and its
+ * creator is then REFUSED (VFS_EACCES) when it tries to put a file in it -- the
+ * exact failure the comment at the mkdir call site says the chown exists to
+ * prevent, and the same one c/kernel/core/settings.c works around by creating
+ * its store as root and giving it away. Ownership that lives in the store the stat path does not consult is
+ * ownership that does not exist.
+ *
+ * ONE setattr, NOT two, and the ordering is why. Both halves are a
+ * read-modify-write through attrs_of() + setattr, so a separate owner stamp
+ * followed by a separate mode stamp has the second re-read the backend and
+ * write back the attributes the first just installed. That was the old bug's
+ * other half: stamp_create_mode() read uid=0 off the fresh inode and committed
+ * it, so even a caller that HAD reached the backend with an owner would have
+ * had it overwritten a line later. Computing both and committing them together
+ * has no such window.
+ *
+ * Skipped entirely when BOTH are the default the name would report anyway: on a
+ * backend that stores this durably that saves a whole journal transaction per
+ * file written, and on one that does not it saves a record in a 256-entry
+ * table. The owner half of that test is what keeps a root-created file with no
+ * umask reporting its 0644 as a DEFAULT rather than as a choice -- stamping
+ * uid=0 gid=0 would set VA_STORED and turn every ordinary file into a record
+ * somebody chose, which is a claim about the file that is not true. */
+static void stamp_create(const char *abs, int is_dir, const struct vcred *c)
 {
     uint32_t want = create_mode(is_dir);
-    if (want == (uint32_t)(is_dir ? 0755 : 0644)) return;
+    int mode_is_default  = (want == (uint32_t)(is_dir ? 0755 : 0644));
+    int owner_is_default = (c->uid == 0 && c->gid == 0);
+    if (mode_is_default && owner_is_default) return;
 
     struct vmountent *m = mount_for(abs);
     if (m && m->fs->getattr && m->fs->setattr) {
-        struct vattr a; attrs_of(abs, &a); a.mode = want;
+        struct vattr a; attrs_of(abs, &a);
+        a.mode = want; a.uid = c->uid; a.gid = c->gid;
         char sub[VFS_PATH_MAX];
         m->fs->setattr(sub_path(m, abs, sub, (int)sizeof sub), &a);
         return;
     }
-    vmeta_chmod(abs, is_dir, want);
+    /* No backend hooks: the VFS store, one field at a time -- these are
+     * separate fields of one record and neither call disturbs the other, so the
+     * clobbering argument above does not apply to this branch. Each is still
+     * skipped when it has nothing to say, for the same reason as above. */
+    if (!owner_is_default) vmeta_chown(abs, is_dir, c->uid, c->gid);
+    if (!mode_is_default)  vmeta_chmod(abs, is_dir, want);
 }
 
 uint32_t vfs_umask(int set) { return vmeta_umask(cur_pid(), set); }
@@ -720,13 +757,12 @@ int vfs_write(const char *path, const void *buf, int size)
      * post-write ones -- and either way this call removes whatever landed. */
     if (wrote >= 0) pc_invalidate(real);
 
-    /* A rewrite keeps the mode it had; only a NEW name gets one. That is POSIX's
-     * rule and it matters here: LogitFS rewrites a whole file per write, so
-     * applying the mask on every write would silently undo every chmod. */
-    if (wrote >= 0 && !existed) {
-        if (c.uid || c.gid) vmeta_chown(real, 0, c.uid, c.gid);
-        stamp_create_mode(real, 0);
-    }
+    /* A rewrite keeps the mode AND the owner it had; only a NEW name gets
+     * either. That is POSIX's rule and it matters here: LogitFS rewrites a whole
+     * file per write, so stamping on every write would silently undo every
+     * chmod -- and, now that the owner travels the same road, would also hand a
+     * file to whoever last wrote it. `existed` is what keeps the two apart. */
+    if (wrote >= 0 && !existed) stamp_create(real, 0, &c);
     return wrote;
 }
 
@@ -824,10 +860,11 @@ int vfs_mkdir(const char *path)
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     rc = fs_mkdir(m->fs, sub_path(m, abs, sub, (int)sizeof sub));
-    /* A directory created by a non-root process belongs to that process, or
-     * the creator cannot put anything in it. */
-    if (rc >= 0 && (c.uid || c.gid)) vmeta_chown(abs, 1, c.uid, c.gid);
-    if (rc >= 0) stamp_create_mode(abs, 1);
+    /* A directory created by a non-root process belongs to that process, or the
+     * creator cannot put anything in it -- which is not a hypothetical, it is
+     * what this line failed to prevent for as long as the owner went somewhere
+     * the stat path does not read. See stamp_create(). */
+    if (rc >= 0) stamp_create(abs, 1, &c);
     return rc;
 }
 
