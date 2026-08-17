@@ -384,6 +384,47 @@ are among the priciest things in this tree — thirteen minutes each — and no
 suite reaches any of the hundred of them. That is the sweep's argument in one
 line: the checks that cost the most and are run the least are the same set.
 
+## Predictions, written before the confirmation pass runs
+
+The sweep's serial confirmation re-runs every non-PASS target ALONE, and it will
+do so against a tree where today's fixes have landed. That makes it a test of
+this triage rather than only of the system, so the predictions go here first —
+a diagnosis nobody wrote down before the evidence arrives is not a diagnosis.
+
+**Should now PASS** (each was a build or harness fault, fixed today):
+
+| target | why it should flip |
+|---|---|
+| `test-forms-negctl` | compiles with `$(BROWSER_JS_CF)`; verified the object builds, 75,072 bytes |
+| `test-platform-page-control` | `browser-noplat.elf` links `$(GFX_OBJ)` |
+| `test-sse-page-control` | `browser-nostream.elf` links `$(GFX_OBJ)` |
+| `test-wpt-negctl`, `test-wpt-fire-negctl`, `test-encoding-negctl` | link `$(GFX_SRC)` |
+| `test-thread-negctl` | `ROOT_AEX_PACK` deferred; verified 11 entries, 0 empty host paths |
+| `test-fullsystem` | `ROOT_AEX` derives from the disk rule's own list; verified 11 |
+
+**Should still FAIL, with a BETTER message** (the fault is real, the reporting
+was what I fixed):
+
+| target | what should change |
+|---|---|
+| `test-shape-device` | one line naming the app that actually opened, not eight about Arabic |
+| `test-monitor` | stops at "the Monitor is still up after launching Clock", no `TypeError` |
+| `test-signal` | the raw log tail instead of nothing |
+
+**Should still FAIL unchanged** (diagnosed, not yet fixed): `test-glass`
+(patch staged), `test-desktop-os` and `test-usersettings` (the settings gate,
+patch staged), `test-kbench*` (attribution patch staged), `test-events-negctl`
+(patch staged), `test-swap-negctl` (needs re-calibration), `test-preview` and
+`test-preview-timing`, `test-live-page`, `test-browser-https`, `test-mse-os`,
+`test-h265-b`, `test-reftest`, `test-wpt`, `test-frameworks`,
+`test-vidbench-guest`.
+
+**Should no longer be counted as failures at all**: `test-net-ab`,
+`test-perf-gate`, `test-leak-os` (NEEDSARGS), and the aggregates.
+
+Anything that flips the wrong way is a wrong diagnosis above, and should be
+corrected here rather than quietly re-explained.
+
 ## Instrument faults found in the sweep itself
 
 - **A failing target was deleting its siblings' results.** `grep -v -f
