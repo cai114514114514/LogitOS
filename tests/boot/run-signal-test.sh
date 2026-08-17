@@ -56,6 +56,22 @@ done
 
 echo "FAIL: SIGTEST_OK marker not seen (boot or run problem)"
 # A ring-3 fault in sigtest itself, or a kernel panic, is the interesting case
-# and is what these two greps are for -- "no marker" on its own says nothing.
-grep -aE "FAIL:|sigtest|\[signal\]|\[fault\]|EXCEPTION" "$LOG" | tail -30 | sed 's/^/      /'
+# and is what this grep is for -- "no marker" on its own says nothing.
+#
+# BUT A FILTER THAT MATCHES NOTHING PRINTS NOTHING, and that is exactly the case
+# where the log is most needed. A full sweep recorded this target as two lines:
+# the FAIL above and make's error. The boot had produced no `sigtest`, no
+# `[signal]`, no `[fault]` and no `EXCEPTION` -- which is itself the finding
+# (it never got as far as running the program), and the filter erased the only
+# evidence of it. So: filtered when the filter has something to say, and the
+# raw tail when it does not, with the reason named.
+hits=$(grep -acE "FAIL:|sigtest|\[signal\]|\[fault\]|EXCEPTION" "$LOG" || true)
+if [ "${hits:-0}" -gt 0 ]; then
+    grep -aE "FAIL:|sigtest|\[signal\]|\[fault\]|EXCEPTION" "$LOG" | tail -30 | sed 's/^/      /'
+else
+    echo "      (no sigtest/signal/fault/EXCEPTION line in the log at all --"
+    echo "       the boot never reached the program. Last 30 lines:)"
+    tail -30 "$LOG" | sed 's/^/      /'
+    [ -s "$LOG" ] || echo "      the serial log is EMPTY: qemu produced nothing"
+fi
 exit 1
