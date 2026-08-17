@@ -694,6 +694,12 @@ test-pkg-roots: $(BUILD) $(LPK_FIXTURES) $(LPK_ROOTS2)/pkgroots.inc $(LPK_ROOTS2
 	@echo
 	@echo "PASS: foreign.lpk flipped refused -> accepted with the trust set, at index 1"
 
+# Both of these are host compiles measured in seconds, and test-audit flagged
+# them the day they landed as reachable by no suite -- which for a trust-store
+# gate is the worst place to be: it is exactly the sort of test that is written
+# once, passes, and is never run again while the thing it guards drifts.
+ci-host: test-pkg-roots test-pkg-poison
+
 # The negative control for the poison in pkgsig.c: a copy of that file with ONE
 # direct read of the built-in array appended MUST fail to compile. Appended
 # rather than patched into the middle, so the control does not depend on the
@@ -1728,6 +1734,14 @@ test-sigint: $(ISO) $(DISK)
 test-sigint-negctl: $(ISO) $(DISK)
 	@sh tests/boot/run-sigint-test.sh $(ISO) $(DISK) nointr
 
+# ci-boot: it boots QEMU. The control is a PREREQUISITE rather than a second
+# name on this line, because tools/audit_tests.py's NOT_CI drops every
+# `test-*-negctl` from the list tools/ci.sh actually runs -- on the ground
+# that a control is "RUN BY its positive counterpart", which nothing checks.
+# Naming it here would have satisfied the audit and run it never.
+ci-boot: test-sigint
+test-sigint: test-sigint-negctl
+
 # How spec-conformant is the HTML parser? Runs the shared tree-construction
 # suite every browser is measured against (third_party/html5lib-tests -- data
 # only, the runner is ours) and prints a pass rate.
@@ -2330,6 +2344,13 @@ test-cells-negctl:
 
 test-term-host: test-term-proto test-sh test-sh-negctl test-sniff test-sniff-negctl \
                 test-cells test-cells-negctl
+
+# The whole suite into ci-host, not test-cells alone. test-audit flagged
+# test-cells as unwired the day it landed, and the reason was not test-cells:
+# its only parent was this target, which no suite reached either. Wiring the
+# member would have left the other six in the same state one level up.
+# ~1 minute of host links; 5.3 M checks.
+ci-host: test-term-host
 
 # On-device: rich output judged by PIXELS (an image at the right size, a drawn
 # progress bar, a ruled table) plus the compatibility claim -- the same commands

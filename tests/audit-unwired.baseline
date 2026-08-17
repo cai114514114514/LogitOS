@@ -274,7 +274,6 @@ test-settings
 test-settings-host
 test-settings-os
 test-settings-ui
-test-sh
 test-shape
 test-shape-device
 test-shell
@@ -287,7 +286,6 @@ test-smp-fork-storm
 test-smp-fork-storm-1core
 test-smp-freeze-probe
 test-smp-lockprobe
-test-sniff
 test-sock
 test-sock-ui
 test-sockserv
@@ -305,8 +303,6 @@ test-tabs-asan
 test-tcp-host
 test-tcp-server
 test-term-gui
-test-term-host
-test-term-proto
 test-term-ui
 test-text
 test-thread

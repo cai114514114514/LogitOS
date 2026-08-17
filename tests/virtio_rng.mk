@@ -14,6 +14,15 @@
 
 .PHONY: test-virtio-rng test-virtio-rng-negctl
 
+# ci-boot, not ci-host: these boot QEMU. The control is a PREREQUISITE of the
+# positive, not a sibling in the list: audit_tests.py's NOT_CI drops every
+# `test-*-negctl` from what tools/ci.sh runs, on the ground that a control is
+# "RUN BY its positive counterpart" -- so naming it beside the positive would
+# have excluded it and invoked it from nowhere. The cost is honest and worth
+# saying out loud: this device is two QEMU boots in CI, not one.
+ci-boot: test-virtio-rng
+test-virtio-rng: test-virtio-rng-negctl
+
 # The claim that matters: on a CPU model with NO RDSEED/RDRAND (-cpu qemu64,
 # per Makefile:1182-1185's own note that this is where rng.c's hardware path
 # is absent), the driver still pulls two independent, non-zero, non-identical

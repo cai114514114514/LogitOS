@@ -39,6 +39,19 @@ COOKIE_JAR_SRC := tests/unit/cookie_test.c c/net/http/cookies.c
 
 .PHONY: test-cookie-jar test-cookie-jar-negctl test-cookie-cors-negctl
 
+# Into the host suite -- and each control is a PREREQUISITE of its positive,
+# which is not decoration. tools/audit_tests.py's NOT_CI excludes every
+# `test-*-negctl` from the suite listing that tools/ci.sh runs, on the stated
+# ground that a control is "RUN BY its positive counterpart". That is an
+# assumption about the Makefile, and nothing checks it: a control that is a
+# separate target and is named by no one is excluded from CI by the regex and
+# invoked by nobody, i.e. run never. Measured on this tree the day these
+# landed: six controls in that state, mine among them. The prerequisite is
+# what makes the assumption true here.
+ci-host: test-cookie-jar test-cookie-cors
+test-cookie-jar: test-cookie-jar-negctl
+test-cookie-cors: test-cookie-cors-negctl
+
 test-cookie-jar:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) -o $(BUILD)/cookie_jar_test $(COOKIE_JAR_SRC)

@@ -27,6 +27,9 @@
 
 .PHONY: test-virtio-balloon test-virtio-balloon-negctl
 
+ci-boot: test-virtio-balloon
+test-virtio-balloon: test-virtio-balloon-negctl   # see tests/virtio_rng.mk
+
 test-virtio-balloon: $(ISO) $(DISK)
 	@python3 tests/boot/run-virtio-balloon-test.py $(ISO) $(DISK)
 

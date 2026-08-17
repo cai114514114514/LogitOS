@@ -1,0 +1,60 @@
+# Negative controls that NOT_CI drops from CI and that no
+# target invokes -- run NEVER. See STRANDED CONTROLS in
+# tools/audit_tests.py: recorded debt, gated on GROWTH.
+# The fix for one entry is a single line: make it a
+# prerequisite of its positive counterpart.
+test-as-crosscheck-negctl
+test-asview-negctl
+test-aui-negctl
+test-clip-negctl
+test-css-anim-negctl
+test-css-interp-accum-negctl
+test-css-interp-negctl
+test-css-web-negctl
+test-cssd-canon-negctl
+test-cssom-negctl
+test-cssprops-negctl
+test-csstyle-negctl
+test-dom-iface-negctl
+test-encoding-negctl
+test-events-negctl
+test-flash-negctl
+test-flex-negctl
+test-forms-ce-negctl
+test-forms-negctl
+test-gfx-clip-negctl
+test-gfx-negctl
+test-gfx-stroke-negctl
+test-glass-negctl
+test-greeter-negctl
+test-grid-negctl
+test-h264-negctl
+test-html5lib-negctl
+test-img-late-negctl
+test-jpeg-negctl
+test-kbench-negctl
+test-layout-box-negctl
+test-monitor-negctl
+test-motion-negctl
+test-mse-negctl
+test-notify-negctl
+test-power-negctl
+test-preview-negctl
+test-range-negctl
+test-reflect-negctl
+test-reftest-css-negctl
+test-reftest-negctl
+test-reftest-perturb-negctl
+test-selectors-negctl
+test-semantics-negctl
+test-swap-negctl
+test-thread-negctl
+test-time-negctl
+test-uefi-negctl
+test-urlelem-negctl
+test-webapi-slots-negctl
+test-webapi-url-negctl
+test-webp-vp8-negctl
+test-window-negctl
+test-wpt-fire-negctl
+test-wpt-negctl

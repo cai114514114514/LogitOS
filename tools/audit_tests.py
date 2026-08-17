@@ -336,6 +336,40 @@ def find_orphan_targets(targets, wired):
     return orphans
 
 
+def find_stranded_controls(targets):
+    """A *-negctl that NOT_CI drops from CI and that NOTHING invokes.
+
+    NOT_CI excludes every `test-*-negctl` from the list tools/ci.sh runs, and
+    the reason it gives is an assumption about the Makefile: a control is "RUN
+    BY its positive counterpart".  Nothing checked it.  A control that is a
+    separate target and is named by nobody is excluded by the regex AND
+    invoked from nowhere -- run never, while looking exactly like a control
+    that is covered.  Six were in that state when this check was written, four
+    of them added the same day, and it is invisible from either end: from
+    ci.sh it is "deliberately not in CI", from the Makefile it is "a target
+    somebody surely runs".
+
+    This is the same shape as the MUTE category one level up -- a thing that
+    reads like a gate and cannot fail -- and it belongs beside it for the same
+    reason: the value of the category is being empty.
+
+    Invoked = named as a prerequisite of any target, or mentioned in any
+    recipe (a `$(MAKE) test-x-negctl` line counts).  Deliberately generous:
+    the finding is "nobody could possibly reach this", not "it is not reached
+    the way I would have written it".
+    """
+    named = set()
+    for name, (recipe, prereqs) in targets.items():
+        for pr in prereqs:
+            named.add(pr)
+        blob = "\n".join(recipe)
+        for other in targets:
+            if other != name and other in blob:
+                named.add(other)
+    return [n for n in sorted(targets)
+            if n.endswith("-negctl") and NOT_CI.match(n) and n not in named]
+
+
 def classify(targets, name):
     """host | boot | skip -- derived from the recipe, never hand-listed.
 
@@ -428,6 +462,45 @@ def main():
         for h, why in mute:
             print("  %s: %s" % (h, why))
         bad += len(mute)
+    # STRANDED IS ONE FACT TOO, for exactly the reason UNWIRED is (see below):
+    # there are 55, and 55 findings would bury DEAD and MUTE, whose whole value
+    # is being zero. So the same shape -- recorded by name, gating on GROWTH --
+    # and the same warning: zeroing it would be worse than carrying it, because
+    # "55 negative controls in this tree are run by nobody" is TRUE.
+    stranded = find_stranded_controls(targets)
+    st_path = os.path.join(ROOT, "tests", "audit-stranded.baseline")
+    if "--bless-stranded" in sys.argv:
+        with open(st_path, "w", encoding="utf-8") as fh:
+            fh.write("# Negative controls that NOT_CI drops from CI and that no\n"
+                     "# target invokes -- run NEVER. See STRANDED CONTROLS in\n"
+                     "# tools/audit_tests.py: recorded debt, gated on GROWTH.\n"
+                     "# The fix for one entry is a single line: make it a\n"
+                     "# prerequisite of its positive counterpart.\n")
+            fh.write("\n".join(sorted(stranded)) + "\n")
+        print("blessed %d stranded control(s) into %s" % (len(stranded), st_path))
+        return 0
+    st_known = set()
+    try:
+        with open(st_path, encoding="utf-8") as fh:
+            st_known = set(ln.strip() for ln in fh
+                           if ln.strip() and not ln.startswith("#"))
+    except OSError:
+        pass
+    st_fresh = sorted(set(stranded) - st_known)
+    if stranded:
+        print("\nSTRANDED CONTROLS -- %d dropped from CI by NOT_CI and invoked by"
+              % len(stranded))
+        print("nobody, so run NEVER; %d recorded as debt. The fix is one line:"
+              % (len(stranded) - len(st_fresh)))
+        print("make it a PREREQUISITE of its positive. Naming it on a")
+        print("ci-host:/ci-boot: line satisfies UNWIRED and still runs it never,")
+        print("which is worse, because it looks fixed.")
+    if st_fresh:
+        print("STRANDED (NEW -- one line, or bless it deliberately) (%d):"
+              % len(st_fresh))
+        for t in st_fresh:
+            print("  %s" % t)
+        bad += len(st_fresh)
     # UNWIRED IS ONE FACT, NOT 354 FINDINGS, AND IT GATES ON GROWTH.
     #
     # Reported as 354 individual findings it made this audit permanently red,

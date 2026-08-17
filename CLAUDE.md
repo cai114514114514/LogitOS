@@ -6,11 +6,21 @@ toward a macOS-style desktop. Real kernel, not a simulation.
 ## Build / run / test
 
 ```sh
-make        # -> build/logit.iso
+make        # -> build/logit.iso        (the KERNEL only -- see below)
 make run    # QEMU: VGA window + serial on terminal
 make test   # headless; asserts kernel prints LOGIT_BOOT_OK on serial
 make debug  # QEMU frozen with gdb stub on :1234
 ```
+
+**`make` alone does NOT rebuild a ring-3 program.** `all: $(ISO)` and
+`$(ISO): $(KERNEL) grub.cfg` -- every app is an `.aex` on `$(DISK)`, which is a
+separate target that only `run` and the boot harnesses depend on. So editing
+`c/apps/browser/*.c` and running `make` prints "Nothing to be done for 'all'"
+and leaves a disk image with the old binary on it, which reads as "it still
+builds" and is not that. `make build/disk.img` (or any `make test-*` that needs
+the disk) is the check. Nothing is broken here -- the ISO genuinely does not
+contain the apps -- but "I ran make and it was fine" is not evidence about
+anything above the kernel.
 
 ## Toolchain (macOS / Apple Silicon host, x86_64 target)
 
@@ -491,6 +501,37 @@ optional so GRUB boots with `-vga none`; QEMU uses `-vga none -device
 virtio-gpu-pci` + `virtio-blk-pci`. (Post-M18 fixes also landed: Finder list
 clipping, runtime-mkdir clean dirs, the ATA IF-on/non-preempt fix, inode_trunc
 double-indirect free.)
+
+**Two more devices ride the same transport now, and neither needed a Makefile
+change to build** -- `C_SRC` globs `c/drivers`, and a driver registers itself
+through the device model's linker section (`DRIVER_DECLARE`), so there is no
+call in `kmain` either:
+
+- **virtio-rng** (`virtio_rng.c`, dev 4 / PCI 1af4:1005). It closes a gap this
+  tree already worked around in writing: `rng_strong()` is defined as "RDSEED
+  or RDRAND available" and gates whether TLS will attempt a handshake at all,
+  so `Makefile:1182` passes `-cpu max` for the stated reason that the default
+  qemu64 has neither and the TLS client refuses the weak rdtsc fallback. Any
+  machine whose CPU model lacks them -- an explicit `-cpu qemu64`, an older
+  model, a real hypervisor masking them -- has no hardware entropy at all.
+  **It is NOT wired into `rng.c`** (deliberately; that file is not this
+  change), and its boot self-test prints 32 bytes of the entropy stream to a
+  serial log every `tests/boot` harness captures to a file -- harmless while
+  nothing consumes the driver, a leaked seed the moment the requested hook
+  exists. Whoever writes the hook deletes the self-test.
+- **virtio-balloon** (`virtio_balloon.c`, dev 5 / PCI 1af4:1002). The pressure
+  source the reclaim/swap line was written for and never had: `-m` at boot and
+  `mempress.as` can only squeeze a machine that has not started yet or a
+  process that asks. A balloon squeezes a RUNNING one, from the host, live. It
+  lands on the right side of the reclaim invariant for free -- a balloon frame
+  is `pmm_alloc()`'d, so `pmm_refcount` is 1 while `rmap_count` is 0, and
+  "evict only if they are equal" makes it structurally un-evictable with no
+  `pmm_pin()` and no exception list.
+
+  `make test-virtio-rng` (4) `test-virtio-rng-negctl` ·
+  `test-virtio-balloon` (12, cross-checked from BOTH sides -- the guest's
+  `pmm_free_frames()` and the host's `query-balloon` must agree; one side
+  alone is a driver agreeing with itself) `test-virtio-balloon-negctl`
 
 Pre-M20 prerequisite — **mini-libc 大补**: `c/apps/libc` grew into a real
 freestanding C lib. `io.c` is the single errno/syscall TU (POSIX wrappers over
@@ -1209,6 +1250,61 @@ The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
 `<body>` as it did before — and `test-forms-negctl` must FAIL against that
 build, or the suite is not measuring the focus model.
 
+### Cookies — one jar, TWO doors, and the gate only knew one
+
+`c/net/http/cookies.c` (RFC 6265 + 6265bis) is one jar reached from two places
+that must classify a request the same way, and for a while did not:
+
+- **fetch()/XHR** — `js_webapi.c`, computes cross-site from `g_loc` and passes
+  it. Correct since the day it was written.
+- **the transport** — `webapi_cookie_line()`, called by `browser_rt.c` for the
+  navigation and for **every subresource**. It went in wired to
+  `cookie_header()`, which is `cookie_header_ex(..., CK_REQ_SAME_SITE, ...)`
+  with the argument fixed. Every request the browser made was declared
+  same-site, so a cross-origin `<script src>` carried the target's
+  Secure+HttpOnly+SameSite=Strict session and the reply was evaluated in the
+  requesting page's realm.
+
+**`test-cookie-cors` is titled "which requests carry the session, and which"
+and could not see it**, because every case in it drives `fetch()`. That is the
+lesson worth carrying out of this subsystem: *a gate aimed at a rule has to be
+aimed at every caller of the rule, or it certifies the caller it happens to
+know.* Same shape as the WPT runner that linked `layout.c` and never called
+`layout_page()` — linking a TU is not running it; testing one caller is not
+testing the rule.
+
+Three things to know before touching it:
+
+- **The request kind is three-valued** (`CK_REQ_SAME_SITE` /
+  `CK_REQ_CROSS_SITE` / `CK_REQ_CROSS_SITE_NAV`) and it used to be two,
+  because the two were argued from the only caller at the time: *"a fetch is
+  never a top-level navigation, which is the only thing Lax relaxes for."*
+  Then the transport arrived, which carries navigations. **SAME_SITE is 0 and
+  permits everything**, so an uninitialised int is the DANGEROUS value here —
+  which is why it is a parameter and every caller computes it.
+- **`CK_HEADER_MAX` is one number because it used to be three**, disagreeing
+  by 8x: 4096 for `document.cookie`, 2048 for fetch, **1024 for the navigation
+  and every subresource**. A 1100-byte token (JWT / OIDC / cf_clearance) was
+  readable from script while the page load sent no `Cookie` header at all, and
+  a realistic bilibili-shaped set of 1039 bytes lost exactly one cookie on the
+  wire — the NEWEST, because 5.4 orders by longest-path-then-earliest-created,
+  i.e. the anti-bot token a WAF had just set. 8192 is what *servers* accept
+  (nginx/Apache default), not what the jar could hold.
+- **HttpOnly used to make a cookie the PREFERRED eviction victim** of the
+  script it hides from. Three correct lines: a script read never matches an
+  HttpOnly cookie; only cookies actually sent get `accessed = now`; the victim
+  is the smallest `accessed`. So every `document.cookie` read renewed exactly
+  what the page could see. 49 writes evicted the session, before the page's
+  own cookie. `evict_lru` is two passes now — preference, not prohibition.
+
+`cookie_header_ex` returns `CK_E_NOFIT` rather than 0 when cookies apply and
+none fit; 0 now means only "the user has none". The old fold was **pinned as
+correct** by `cookie_test.c`'s own buffer case.
+
+  `make test-cookie-jar` · `test-cookie-jar-negctl` (four collapses, each
+  reddening exactly its own count: 1/1/1/2) · `test-cookie-cors` ·
+  `test-cookie-cors-negctl` (the shipped wiring on a `-D` switch)
+
 ### IPv6 — no `net_cfg.ip`, and ND is not ARP
 
 Measured the same way the H.265 gap was, and it is the worse of the two: the
@@ -1505,18 +1601,66 @@ in `kheap.c`:
   the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
   `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
 
-## The test suite: 594 targets, and `make test` reaches 22
+## The test suite: 610 targets, and a suite reaches 53
 
-**This is the single most load-bearing fact about testing in this tree**, and it
-is measured, not estimated: `make test-audit` counts 594 `test-` targets and
-finds **354 that no suite reaches** -- after already excluding the ones
-deliberately out of CI (benchmarks, negative controls run by their positive
-counterpart, manual drivers). Everything below follows from it.
+**AND "UNWIRED" DOES NOT MEAN "CI DOES NOT RUN IT" -- 328 of the 350 are run.**
+This paragraph called the unwired count "the single most load-bearing fact
+about testing in this tree" and had everything below follow from it, and the
+number is real but it is not that fact. Measured 2026-08-17:
+
+    CI runs (audit_tests.py --suites=host + =boot)   358
+    audit says UNWIRED                                350
+    UNWIRED **and yet run by CI**                     328
+
+`tools/ci.sh` does not use the aggregates at all. It asks
+`audit_tests.py --suites=host|boot`, and that path calls `classify()`, which
+derives host-vs-boot **from the recipe** and skips only `NOT_CI` -- it never
+consults `wired`. That is deliberate and the function says so: *"A hand-written
+list of 'the suites CI runs' is the thing that rotted here ... so the CI asks
+the Makefile instead, and a target added tomorrow is picked up without anyone
+remembering."* So UNWIRED measures reachability from `ci-host:`/`ci-boot:`
+declarations -- a mechanism CI stopped depending on -- while reading like
+coverage. Both numbers are worth having; only one of them is about what runs.
+
+**The half that IS a coverage hole is the negative controls, and it is 55 of
+them.** `NOT_CI` drops every `test-*-negctl` from the suite listing, on the
+stated ground that a control is "RUN BY its positive counterpart". Nothing
+checked that. A control that is a separate target and is named by nobody is
+excluded by the regex AND invoked from nowhere -- run never, while looking
+exactly like a control that is covered. Counted 2026-08-17 by the new
+STRANDED CONTROLS category: **55**, recorded by name in
+`tests/audit-stranded.baseline` and gated on growth, the same shape UNWIRED
+uses and for the same reason -- 55 findings would bury DEAD and MUTE, whose
+whole value is being zero.
+
+**The fix for one entry is a single line: `test-X: test-X-negctl`.** Naming it
+beside the positive on a `ci-host:` line instead satisfies UNWIRED and still
+runs it never, which is the worse of the two failures because it looks fixed.
+That distinction is why the category reports the fix in its own output.
 
 **Every number in this section is a measurement with a date, and they move.**
-As of 2026-08-17: 594 `test-` targets, 31 wired into a suite, 354 unwired (all
-recorded by name in `tests/audit-unwired.baseline`, and the gate is that the set
-does not GROW), 14 DEAD harnesses and **0 MUTE**. The sweep classifies 530 of
+As of 2026-08-17 (second measurement that day, after a wiring pass): 610
+`test-` targets, 53 wired into a suite, 350 unwired (all recorded by name in
+`tests/audit-unwired.baseline`, and the gate is that the set does not GROW),
+14 DEAD harnesses and **0 MUTE**.
+
+**31 -> 53 wired is not 22 new tests; it is 22 that already existed being
+named.** `ci-host:` and `ci-boot:` accept prerequisites from any fragment, so
+membership is one line in the file that owns the target, and the audit's
+"UNWIRED (NEW)" list is what says which line is missing -- it named seven the
+day they landed, and four of those were `test-cells`'s siblings under a parent
+(`test-term-host`) that no suite reached either. **Wire the parent, not the
+member**: wiring `test-cells` alone would have left the other six in the same
+state one level up. `--bless-unwired` REGENERATES the baseline rather than
+appending to it, so a wiring pass must re-run it -- otherwise the file keeps
+recording as debt things that are no longer debt, and the next person to
+un-wire one of them is not flagged.
+
+`test-audit` still exits non-zero, and it is worth knowing why before reading
+it as a regression: all 14 remaining findings are the DEAD category -- QMP
+drivers under `tests/qmp/` that no Makefile target names. Unlike UNWIRED,
+DEAD has no baseline, so the gate has no way to record a deliberate decision
+about a manual tool. The sweep classifies 530 of
 them: 337 host, 156 device, 3 that need an argument, and 34 aggregates it skips
 because it already runs every one of their members individually.
 

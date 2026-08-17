@@ -18,6 +18,19 @@
 # the same call the browser makes.
 .PHONY: test-logreporter test-logreporter-negctl test-logreporter-asan
 
+# Wired, not blessed. These went into tests/audit-unwired.baseline when they
+# landed, which is the right move for a target nobody can afford to run and
+# the wrong one for host links that take seconds. The ASan build is in as
+# well: it is the only one of the three that opens and closes the page twice,
+# so it is where a leak in js_page_open would show.
+#
+# The control is a PREREQUISITE, not a third name on the ci-host line --
+# audit_tests.py's NOT_CI drops `test-*-negctl` from what ci.sh runs, so
+# listing it there would have excluded it and invoked it from nowhere. See
+# tests/cookiegate.mk for the measurement behind that.
+ci-host: test-logreporter test-logreporter-asan
+test-logreporter: test-logreporter-negctl
+
 LOGREP_FIXTURE := tests/fixtures/webapi/logreporter
 LOGREP_SRC := tests/unit/logreporter_test.c c/apps/browser/js_page.c \
               c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
