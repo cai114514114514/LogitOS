@@ -100,7 +100,7 @@ lines are live. Do not add to either.**
   The name suggests a kernel library and it is not one.
 
 `c/apps/libc/` is `src/` + `include/` and reports as empty to anything that
-looks only at `c/apps/libc/*.c`; it is 10.5k lines one level down.
+looks only at `c/apps/libc/*.c`; it is 11.8k lines one level down (2026-08-17).
 
 **File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is
 now `c/net/transport/tcp.c`, `kernel/wm.c` → `c/kernel/gui/wm.c`); basename +
@@ -476,7 +476,7 @@ runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
 (≈CPython).
 
 **That paragraph is the record of M20 and stops there. The language is now at M27
-and about 7.2 kLOC**, and the four things M20 listed as deferred — dict, closures,
+and about 7.9 kLOC (2026-08-17)**, and the four things M20 listed as deferred — dict, closures,
 GC, computed-goto — all exist. Do not plan against the M20 feature list.
 
 - **M21 dict · M22 closures · M22.3 classes** (`class`/`super`, copy-down
@@ -494,7 +494,7 @@ GC, computed-goto — all exist. Do not plan against the M20 feature list.
   deterministic release, and iteration reusing `OP_LEN` + `OP_INDEX_GET` rather
   than a new iterator protocol. Its payoff is **`fsroot/as/examples/ash.as`: the
   system shell, written in AetherScript**, with no `fork`, no `dup2`, no `waitpid`
-  and no file-descriptor arithmetic anywhere in the file — against 971 lines of C
+  and no file-descriptor arithmetic anywhere in the file — against 982 lines of C
   in `c/apps/coreutils/sh.c` doing the same job.
 
 **THE SELF-HOSTING TAX, and it is the single most important thing to know before
