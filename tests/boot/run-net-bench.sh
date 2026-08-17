@@ -41,6 +41,27 @@
 #     --label TEXT      tag for the printed table
 #     --json FILE       write the raw per-run reports here
 #     --baseline        also run one arm on plain -netdev user, for reference
+#     --logdir DIR      keep the per-arm serial log, wire report and QEMU-B log
+#                       here (default build/net-bench; NET_BENCH_LOGDIR overrides)
+#     --trace           ask netwire for a per-packet timeline into --logdir
+#
+# WHY --logdir IS ON BY DEFAULT.  Everything this harness runs in produces two
+# guest-side lines that answer questions the wire cannot:
+#
+#   [http] get rc=.. status=.. t=..ms      c/kernel/gui/wm.c:2216
+#   [net] rx path: frames .. irq .. softirq .. inline .. poll ..
+#                                          c/net/core/net.c:154
+#
+# The first says whether the wire's goodput describes the WHOLE fetch or a
+# burst inside a fetch that is mostly stall -- a different problem with a
+# different fix.  The second says which context actually drains the ring.  Both
+# were being written to a mktemp directory and deleted by the EXIT trap on every
+# successful run, so the only way to see them was to make the run fail.  They
+# are now copied out before the trap fires.
+#
+# WARNING about --trace: netwire writes one line per frame INSIDE its forwarding
+# loop, which lowers the wire's own ceiling.  Read a traced run for SHAPE
+# (window over time, inter-arrival spacing) and never quote a Mbit/s from one.
 set -u
 
 ISO="${1:?usage: run-net-bench.sh <iso> <disk.img> [options]}"; shift
@@ -55,6 +76,8 @@ SIZE=917504
 LABEL="${NET_BENCH_LABEL:-net}"
 JSON=""
 BASELINE=0
+LOGDIR="${NET_BENCH_LOGDIR:-}"
+TRACE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -66,12 +89,17 @@ while [ $# -gt 0 ]; do
         --label)    LABEL="$2"; shift 2 ;;
         --json)     JSON="$2"; shift 2 ;;
         --baseline) BASELINE=1; shift ;;
+        --logdir)   LOGDIR="$2"; shift 2 ;;
+        --trace)    TRACE=1; shift ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
 [ ${#NICS[@]} -gt 0 ] || NICS=("e1000:e1000")
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+[ -n "$LOGDIR" ] || LOGDIR="$ROOT/build/net-bench"
+mkdir -p "$LOGDIR" || { echo "FAIL: cannot create logdir $LOGDIR" >&2; exit 2; }
 TMP="$(mktemp -d)"
 PIDS=()
 cleanup() {
@@ -127,6 +155,7 @@ echo
 run_arm() {
     local dev="$1" drv="$2" mode="$3"
     local log="$TMP/$drv.$mode.log" rep="$TMP/$drv.$mode.json"
+    local tr="$TMP/$drv.$mode.trace"
     local qb="" wirepid="" p1="" p2=""
     local netargs
 
@@ -147,6 +176,7 @@ run_arm() {
         qb=$!; PIDS+=("$qb")
         python3 "$HERE/netwire.py" --listen 127.0.0.1:$p1 --connect 127.0.0.1:$p2 \
             --delay-ms "$DELAY" --loss-pct "$LOSS" --report "$rep" \
+            $([ "$TRACE" = 1 ] && printf -- '--trace %s' "$tr") \
             >"$TMP/wire.log" 2>&1 &
         wirepid=$!; PIDS+=("$wirepid")
         sleep 1
@@ -203,6 +233,20 @@ run_arm() {
     printf '%s %s %s %s %s %s\n' "$idle0" "$idle1" "$it0" "$it1" "$busy1" "$bt1" \
         > "$TMP/$drv.$mode.cpu"
     printf '%s %s\n' "$busy0" "$bt0" >> "$TMP/$drv.$mode.cpu"
+    # A THIRD LINE USED TO GO HERE -- the relay's own CPU, idle-corrected the
+    # same way the guest's is, printed as a duty cycle against payload flight
+    # time with "WIRE-LIMITED, distrust every rate above" past 0.8. It is
+    # deliberately NOT here, and the reason is worth more than the number was:
+    # the numerator was CPU over the whole transfer WINDOW (fetches plus the
+    # ~14 s gaps between them) and the denominator was only the milliseconds a
+    # payload was in flight, so the idle correction had to be exactly right for
+    # the ratio to mean anything -- and the idle window is sampled before
+    # QEMU-A has connected, when netwire's select loop is a different loop.
+    # An adversarial pass refused it. A rate that says "distrust every rate
+    # above" is the last one that may itself be unverified, so it is gone
+    # rather than annotated. --selftest's out-of-band ceiling, measured with no
+    # QEMU competing, is what remains and it was never in question; and
+    # relay_self_latency_ms below is a DIRECT measurement, not a ratio.
     sleep 1
     : > "$TMP/$drv.$mode.stop"
     kill "$qa" 2>/dev/null; wait "$qa" 2>/dev/null
@@ -212,6 +256,15 @@ run_arm() {
         kill "$wirepid" 2>/dev/null; wait "$wirepid" 2>/dev/null
     fi
     [ -n "$qb" ] && { kill "$qb" 2>/dev/null; wait "$qb" 2>/dev/null; }
+
+    # Copy the evidence out BEFORE any `return` -- the EXIT trap rm -rf's $TMP,
+    # so on a successful run these files used to exist only inside the harness.
+    cp -f "$log"  "$LOGDIR/$drv.$mode.serial.log" 2>/dev/null
+    cp -f "$rep"  "$LOGDIR/$drv.$mode.wire.json"  2>/dev/null
+    cp -f "$tr"   "$LOGDIR/$drv.$mode.trace"      2>/dev/null
+    cp -f "$TMP/$drv.$mode.err" "$LOGDIR/$drv.$mode.qemu.err" 2>/dev/null
+    [ -n "$qb" ] && cp -f "$TMP/qemub.log" "$LOGDIR/$drv.$mode.qemub.log" 2>/dev/null
+    [ -n "$wirepid" ] && cp -f "$TMP/wire.log" "$LOGDIR/$drv.$mode.wire.log" 2>/dev/null
 
     local bound done_n
     bound="$(grep -ao '\[net\] NIC bound: [a-z0-9-]*' "$log" | head -1 | sed 's/.*: //')"
@@ -233,7 +286,7 @@ rep_path, n, cpu_path, size = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sy
 delay = float(sys.argv[5])
 
 # --- host CPU attributable to the transfer -------------------------------
-idle_rate = busy_rate = bytes_per_cpu = None
+idle_rate = busy_rate = bytes_per_cpu = wire_cores = None
 try:
     lines = open(cpu_path).read().split("\n")
     i0, i1, it0, it1, b1, bt1 = (float(x) for x in lines[0].split())
@@ -250,7 +303,6 @@ cpu_txt = "idle=%.2f cores busy=%.2f cores" % (idle_rate, busy_rate) \
           if idle_rate is not None else "cpu=n/a"
 if bytes_per_cpu:
     cpu_txt += "  %.1f MB per extra host-CPU-second" % (bytes_per_cpu / 1e6)
-
 if not os.path.exists(rep_path) or os.path.getsize(rep_path) == 0:
     print("    fetches=%d  (no wire in this arm)  %s" % (n, cpu_txt))
     sys.exit(0)
@@ -280,7 +332,39 @@ print("    frames   in %d / out %d   (%.2f KiB per inbound frame)"
       % (rep["frames_net_to_guest"], rep["frames_guest_to_net"],
          rep["octets_net_to_guest"] / 1024.0 / max(1, rep["frames_net_to_guest"])))
 print("    host     %s" % cpu_txt)
+# "Is the WIRE the thing being measured?" is the right question and the
+# CPU-duty answer to it was withdrawn -- see the note beside the sampling in
+# the shell above. What answers it here instead is the direct measurement
+# below, which needs no idle correction and no window to divide by.
+#
+# The relay's own contribution to every latency it reports, measured rather
+# than argued: select-return to socket-handoff, per loop iteration. Compare it
+# against rx_to_ack_turnaround before believing that number is the guest's.
+sl = rep.get("relay_self_latency_ms")
+ta = rep.get("rx_to_ack_turnaround")
+if sl:
+    print("    relay    self-latency median %.3f ms  p90 %.3f  p99 %.3f  max %.3f "
+          "(%.1f frames/iteration)"
+          % (sl["median"], sl["p90"], sl["p99"], sl["max"],
+             sl["frames_per_iteration"]))
+    if ta:
+        print("    turnarnd rx->ack median %.3f ms  p90 %.3f  max %.3f   "
+              "-> relay accounts for %.0f%% of the median"
+              % (ta["median_ms"], ta["p90_ms"], ta["max_ms"],
+                 100.0 * sl["median"] / ta["median_ms"] if ta["median_ms"] else 0))
 PY
+    # The guest's own account of the same transfers. `t=` is the fetch's total
+    # wall time as the guest measures it (10 ms resolution, TIMER_HZ 100); the
+    # rx-path line says which context drained the ring. Both come from the log
+    # this harness used to delete.
+    local hl rl
+    hl="$(grep -ao '\[http\] get rc=[-0-9]* status=[-0-9]* t=[0-9]*ms' "$log" | tr '\n' ' ')"
+    # tr -d '\r' first: the serial log is CRLF, and `[^\r]` in a BRE bracket is
+    # "not a backslash or an r", which truncates the line at "f" of "frames".
+    rl="$(tr -d '\r' < "$log" | grep -ao '\[net\] rx path: .*' | tail -3 | sed 's/^/             /')"
+    [ -n "$hl" ] && printf '    guest    %s\n' "$hl"
+    [ -n "$rl" ] && printf '    rx path\n%s\n' "$rl"
+    printf '    logs     %s/%s.%s.*\n' "$LOGDIR" "$drv" "$mode"
     return 0
 }
 

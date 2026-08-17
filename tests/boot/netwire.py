@@ -512,6 +512,22 @@ def run(args):
         counter += 1
         heapq.heappush(q, (due, counter, direction, frame))
 
+    # HOW MUCH OF A MEASURED LATENCY IS THIS PROCESS?
+    #
+    # The turnaround number above is "inbound frame crossed the wire" to "the
+    # guest's ACK crossed the wire", and BOTH timestamps are taken by this
+    # single-threaded Python loop.  So a relay that is near saturation inflates
+    # exactly the quantity the receive path is being judged on, and the guest
+    # gets blamed for the relay's queueing.  Arguing from CPU utilisation is not
+    # enough -- measure it.
+    #
+    # Per loop iteration: how long from the select() return that read the frames
+    # to the moment they have been handed to the kernel's socket buffer.  That
+    # is this process's entire contribution to any latency it reports.  One
+    # append per ITERATION, not per frame, so the hot loop does not pay a list
+    # append per packet.
+    self_lat = []          # [(seconds, frames_that_iteration)]
+
     while True:
         now = time.monotonic()
         if stopping[0]:
@@ -532,19 +548,36 @@ def run(args):
         except InterruptedError:
             continue
         now = time.monotonic()
+        nf = 0
         for e in r:
             direction = 0 if e is guest else 1
             for frame in e.feed():
                 inst.observe(direction, frame, now)
                 emit(direction, frame, now)
+                nf += 1
         while q and q[0][0] <= now:
             _, _, direction, frame = heapq.heappop(q)
             (up if direction == 0 else guest).queue(frame)
         for e in (guest, up):
             if e.tx:
                 e.flush()
+        if nf:
+            self_lat.append((time.monotonic() - now, nf))
 
     rep = inst.report()
+    if self_lat:
+        lats = sorted(x[0] * 1e3 for x in self_lat)
+        nfr = sum(x[1] for x in self_lat)
+        rep["relay_self_latency_ms"] = {
+            "iterations": len(lats),
+            "frames": nfr,
+            "frames_per_iteration": round(nfr / len(lats), 2),
+            "median": round(lats[len(lats) // 2], 4),
+            "p90": round(lats[int(len(lats) * 0.9)], 4),
+            "p99": round(lats[int(len(lats) * 0.99)], 4),
+            "max": round(lats[-1], 4),
+            "total_s": round(sum(lats) / 1e3, 4),
+        }
     rep["config"] = {
         "delay_ms_each_way": args.delay_ms,
         "rtt_ms_added": args.delay_ms * 2,
@@ -605,6 +638,121 @@ def selftest():
     dt = time.monotonic() - t0
     print("  ceiling (framing+socket): %.0f frames/s = %.1f Mbit/s at 1514 B (%d moved)"
           % (m / dt, m * 1514 * 8 / dt / 1e6, moved))
+    return _selftest_endtoend(frame)
+
+
+def _selftest_endtoend(frame):
+    """The ceiling of the loop that is ACTUALLY USED, measured end to end.
+
+    WHY THIS STAGE EXISTS, and it overturned a conclusion.  The two stages above
+    time `observe()` and `queue/flush` in SEPARATE loops, so the natural way to
+    combine them is the series formula 1/(1/A + 1/F) -- and a benchmark run was
+    read against exactly that, concluding the wire could carry ~1124 Mbit/s and
+    therefore that a measured ~270-300 Mbit/s had to be the guest's fault.
+
+    But the production loop (see `run`) is not observe+queue.  Per frame it also
+    pays a `select()` round trip, a `heapq` push and pop through the delay
+    queue, a `len()`-prefixed copy into a bytearray and a `del` off the front of
+    another, and it does all of it inside one single-threaded Python process
+    that must ALSO be scheduled against two QEMUs on the same host.  None of
+    that is in A or F, so the series figure is not an upper bound on this loop;
+    it is an upper bound on a loop nobody runs.
+
+    So: spawn the real script, the way the harness spawns it, and push frames
+    through it net->guest -- the direction a body travels.  This number is the
+    one a measured goodput should be compared against.
+    """
+    import os
+    import subprocess
+    import tempfile
+    import threading
+
+    def free_port():
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    p1, p2 = free_port(), free_port()
+
+    # Upstream: what QEMU-B's socket netdev is, i.e. netwire's --connect peer.
+    up_l = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    up_l.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    up_l.bind(("127.0.0.1", p2))
+    up_l.listen(1)
+
+    n = 20000                      # ~30 MB, well past any one-fetch body
+    rep = os.path.join(tempfile.mkdtemp(), "r.json")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__),
+         "--listen", "127.0.0.1:%d" % p1, "--connect", "127.0.0.1:%d" % p2,
+         "--duration", "60", "--report", rep],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    up_c = None
+    try:
+        up_l.settimeout(30)
+        up_c, _ = up_l.accept()
+        up_l.close()
+
+        # Guest side: connect to netwire's listen port and drain.
+        g = socket.create_connection(("127.0.0.1", p1), timeout=30)
+
+        got = [0]
+        done = threading.Event()
+        # Count what is actually SENT, not `n` -- the blast is in blocks of 64,
+        # so a `want` of n frames is never reached and `done.wait` runs to its
+        # full timeout, which silently reports the timeout as the transfer time.
+        sent_frames = (n // 64) * 64
+        want = sent_frames * (len(frame) + 4)
+
+        def drain():
+            while got[0] < want:
+                try:
+                    b = g.recv(1 << 20)
+                except OSError:
+                    break
+                if not b:
+                    break
+                got[0] += len(b)
+            done.set()
+
+        th = threading.Thread(target=drain, daemon=True)
+        th.start()
+
+        blob = (struct.pack("!I", len(frame)) + frame) * 64
+        t0 = time.monotonic()
+        for _ in range(n // 64):
+            up_c.sendall(blob)
+        ok = done.wait(120)
+        dt = time.monotonic() - t0
+        moved = got[0] / (len(frame) + 4)
+        if not ok:
+            print("  ceiling (REAL LOOP, end to end): TIMED OUT after %.1f s "
+                  "with %d of %d frames -- number below is a floor, not a ceiling"
+                  % (dt, moved, sent_frames))
+        if dt > 0 and moved > 0:
+            print("  ceiling (REAL LOOP, end to end): %.0f frames/s = %.1f Mbit/s "
+                  "at %d B (%d of %d frames in %.3f s)"
+                  % (moved / dt, moved * len(frame) * 8 / dt / 1e6,
+                     len(frame), moved, sent_frames, dt))
+            print("  ^ compare a measured goodput against THIS, not against the "
+                  "series of the two above")
+        else:
+            print("  ceiling (REAL LOOP, end to end): FAILED to move frames")
+            return 1
+    finally:
+        try:
+            if up_c is not None:
+                up_c.close()
+        except OSError:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
     return 0
 
 

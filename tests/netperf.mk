@@ -31,9 +31,17 @@ netwire-selftest:
 # a gate. DELAY=<ms> injects a real one-way delay on the guest's own segment
 # (RTT added is twice it), which is the thing SLIRP alone cannot provide.
 #   make test-net-bench REPS=5 DELAY=25 BYTES=917504
+#
+# The per-arm serial log, wire report and QEMU-B log are ALWAYS kept, under
+# $(BUILD)/net-bench (LOGDIR= overrides). The guest-side [http] and [net] rx
+# path lines are in that serial log and nowhere else; they used to be deleted
+# on every successful run. TRACE=1 additionally asks netwire for a per-packet
+# timeline -- read it for shape only, it lowers the wire's own ceiling.
 test-net-bench: $(ISO) $(DISK)
 	@bash tests/boot/run-net-bench.sh $(ISO) $(DISK) \
 	    --reps $(if $(REPS),$(REPS),5) --delay $(if $(DELAY),$(DELAY),0) \
+	    --logdir $(if $(LOGDIR),$(LOGDIR),$(BUILD)/net-bench) \
+	    $(if $(TRACE),--trace,) \
 	    $(if $(BYTES),--bytes $(BYTES),) $(if $(NIC),--nic $(NIC),)
 
 # All three NICs QEMU can emulate, booted TOGETHER and fetched round-robin.
