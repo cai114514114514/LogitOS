@@ -958,6 +958,34 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## Containers, the A/V clock and MSE — 1.9 kLOC and fifteen gates
+
+`c/lib/media/`: `demux.c` (sniffing, the demuxer object, sample ordering,
+seeking, the Annex B rewrite), `mp4.c`, `mkv.c`, `avclock.c`. Fifteen targets
+across `test-demux*`, `test-avsync` and `test-mse*` — **fourteen green**, with
+`test-mse-os` the one red (playback stalls on device; see the sweep triage).
+
+Three things the source argues that are worth knowing before touching it:
+
+- **Sniffing is by CONTENT, not by name.** A file called `.mp4` that is really
+  Matroska opens as Matroska, and a `.bin` that is really an MP4 opens too —
+  the same rule `audio_sniff()` uses. Preview already relies on this: it picks
+  the image-or-video path from the Annex-B start code rather than the
+  extension.
+- **`demux.c` is what mp4 and mkv have in common**, and it is what a player
+  talks to. Format-specific code stays in the two format files; a third
+  container is a third file, not a third path through the player.
+- **`avclock.c` is a POLICY, not a conversion.** A container hands out two
+  streams of timestamps written by an encoder on another machine, and they mean
+  nothing until something decides what "now" is. On this machine that is not
+  academic — a from-scratch H.264 decoder under QEMU's TCG is not guaranteed to
+  keep up, so the falling-behind policy is the design, not an error path.
+
+The fuzz gates are worth naming because the shapes differ: `test-demux-fuzz`,
+`-fuzz-deep` and `-fuzz-negctl`. A container parser reads attacker-controlled
+offsets and lengths for a living, which is the same argument the image decoders'
+`test-img-fuzz` makes.
+
 ## USB/xHCI — nine gates, all green, and the one whose header matters most
 
 `c/drivers/usb/`: `xhci.c` + `xhci_ring.c` (the controller and its rings),
