@@ -146,6 +146,7 @@ argument each one wants.
 | `test-kbench` | 247 poll passes where the budget is 200 |
 | `test-events` | **passes for the wrong reason** — see below |
 | `test-h265-b` | `got 79 want 80`, one level, in B slices; declared incomplete |
+| `test-vidbench-guest` | **two failures, both size-dependent, and the second is silent.** The corpus is 8 files; 6 ran. h264 and h265 both decode at 320x240 and 640x360, h264 decodes at 1280x720 — and **h265 at 1280x720 returns decode error -3**. Then the NEXT file (h264 1920x1080) produces no output at all: the guest died or hung, and the harness waited out the full 900 s for a completion marker that was never coming. Two things to fix: the decoder at 720p, and a harness with no timeout of its own |
 | `test-desktop-os` | **a logged-in user cannot save a setting** — see the section below; the largest of these |
 | `test-mse-os` | playback STALLS. `step` keeps climbing while `t_ms=4066 decoded=60 shown=59 segs=4+5` never move — and the signature is specific: one frame decoded that the presenter never showed, then nothing |
 | `test-reftest` | 16 regressions against the ratchet, **and 52 newly passing** — the shape of a real feature landing. They cluster to about nine causes: four `gap-004-*` writing directions all 6140 px wrong, three `column-auto-repeat-auto-*`, three `mask-image/*`. `css-viewport/zoom/svg-stroke-width` points straight at the phase-2 stroke work |
