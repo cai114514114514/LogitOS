@@ -958,6 +958,33 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## H.265/HEVC — nine gates, and this file did not mention it
+
+Written down because the omission is the mirror image of a stale claim: there is
+no sentence here to correct, so a reader concludes the decoder does not exist or
+is not tested. Before 2026-08-17 the string "H.265" appeared in this file
+exactly once, as an example of a target that fails when a sweep runs it in
+parallel.
+
+`c/lib/video/h265*.c` — nal, cabac, pred, mc, deblock — and **nine gates, eight
+green** in the full sweep:
+
+| | |
+|---|---|
+| `test-h265` | the bit-exact list. Anything not exact is NOT in it and is claimed nowhere |
+| `test-h265-diff` | the whole matrix including the failures — "the honest picture", per its own header |
+| `test-h265-m10` | **Main 10.** Not a lower bar: the 10-bit cases are gated by `test-h265` exactly like the 8-bit ones, because 10 bits is a claimed feature rather than an experiment. `H265-OK 15 pictures bit-exact (10-bit)` |
+| `test-h265-scaling` | scaling lists |
+| `test-h265-units`, `-asan`, `-units-control` | modules, sanitised, with a control |
+| `test-h265-b` | **the one red.** B slices, declared incomplete; `got 79 want 80`, one level |
+
+The bar is H.264's: bit-exactness against a reference, not a tolerance.
+
+**And one thing the gates do not cover, found by the sweep**: `test-vidbench-guest`
+decodes h265 at 320x240 and 640x360 and h264 at 1280x720, then returns
+`decode error -3` for **h265 at 1280x720**. The gate corpus is small frames, so
+a size-dependent failure in one codec sits outside every one of the nine.
+
 ## Image decoders: what decodes, and what does not
 
 Written down because the answer is not derivable from the file list -- **PNG,
