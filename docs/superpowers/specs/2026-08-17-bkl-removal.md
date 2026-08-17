@@ -246,8 +246,32 @@ dropped event, under exactly the flood the queue was sized for.
 This is the M25 P3 audit's warning met in the concrete, and it is worth noticing
 that the comment is not wrong so much as **unqualified**: "no locks" is a
 statement about this function, and its correctness lives in a caller three files
-away. Cheapest fix is a single-word CAS claim of the tail — the ring is already
-bounded and drop-on-full, so a failed claim is the case it already handles.
+away.
+
+**And the obvious fix is wrong, which is worth writing down because it was
+written down here first.** "CAS the tail" — claim a slot atomically, then fill
+it — advances `inq_tail` *before* `inq[t]` is written, so the drain can observe
+a tail past a slot that holds the previous tenant's event. Claim-then-write is
+the standard MPSC hazard and a single CAS does not close it.
+
+Three answers, and the conditions pick one:
+
+- **A per-slot ready flag** the consumer spins on. Correct, lock-free, and it
+  puts a spin in `wm_drain_input` to save six instructions in an IRQ. Wrong
+  trade at this size.
+- **Two queues, one per IRQ**, each genuinely single-producer, drained together.
+  Fully lock-free and it fits the shape — exactly two producers, each its own
+  vector. But it **loses the order between a keystroke and a click**, and there
+  is no timestamp in `struct inev` to restore it. Ordering across the two
+  devices is not obviously disposable (a modifier is sampled in the IRQ
+  precisely so it reflects the instant of the press), so this needs an argument
+  nobody has made rather than a preference.
+- **A lock around the producers only.** The critical section is a bounds check,
+  one struct copy and one store; the consumer touches `inq_head` alone and stays
+  as it is. Exact ordering preserved, one atomic added to a path that already
+  costs a port read.
+
+The third, until something measures the second as necessary.
 
 ## Step 4 — the scheduler stops using the BKL as a hand-off medium
 
