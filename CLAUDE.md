@@ -958,6 +958,43 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## WPT — the headline number, and the two ways it lied
+
+```
+WPT: 149318/246542 subtests passed (60.6%) over 9181 harness files
+     0 CRASHED · 554 DIED · 363 NEVER STARTED
+```
+
+This is the most quotable number in the tree, which is exactly why the suite is
+built to distrust it. **The gate is a ratchet against an expected-failure list,
+not the percentage**: green on a tree that changes nothing, red only when
+something that worked stops working. The corpus is OPTIONAL and the capability
+is not — `WPT_ROOT` points anywhere, an absent directory makes the runner say so
+and exit 0, because a missing corpus is not a regression in the code under test.
+
+**THE RUNNER MUST BE `browser.aex`, or every number is of a browser that does
+not exist.** Two halves, which fail independently, and the second one is the
+most instructive failure in this repository:
+
+- **The source list** — expressed as a SUBTRACTION from the Makefile's own
+  variables, so it cannot drift silently. (Three `*-negctl` link failures and
+  three `browser-*.elf` variants missing `$(GFX_OBJ)` on 2026-08-17 are what
+  happens where that discipline is not applied; `make test-negctl-drift` now
+  gates it.)
+- **The call sequence.** *LINKING A TRANSLATION UNIT IS NOT RUNNING IT.* The
+  runner linked `css_extra.c` and `layout.c` and then never called
+  `css_apply()`, `css_extra_apply()` or `layout_page()`. `make test-wpt
+  ONLY=css/css-grid` read **531/11152 with AND without the grid
+  implementation** — 11,152 subtests structurally unreachable, and the line
+  shipping grid unable to tell its own work from a no-op.
+
+And one thing the rate does NOT cover: reftests, judged by pixels against a
+reference render, which this runner does not do. They are not unmeasured —
+`make test-reftest` runs them out of the same `third_party/wpt` against a
+17,452-entry baseline and judged 24,300 of them on 2026-08-17. The runner's
+own output said "there is no reftest harness here" until that day; it now names
+the gate.
+
 ## Containers, the A/V clock and MSE — 1.9 kLOC and fifteen gates
 
 `c/lib/media/`: `demux.c` (sniffing, the demuxer object, sample ordering,
