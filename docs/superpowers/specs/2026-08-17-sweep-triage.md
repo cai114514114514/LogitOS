@@ -105,6 +105,28 @@ turned "the BKL is contended" into "`wm_run+0x2de` holds it 80% of the time". A
 run-kbench.sh must FAIL */` — but it is inside `#ifdef KBENCH_NEGCTL`. A proper
 control, not a leftover.)
 
+**And then the same instrument at three core counts bracketed the answer, which
+changes what the finding probably IS:**
+
+| target | cores | poll passes | verdict |
+|---|---|---|---|
+| `test-kbench-1core` | 1 | **52** | PASS |
+| `test-kbench` | 4 | 247 | FAIL |
+| `test-kbench-5` | 5 | 239 | FAIL |
+
+About fifty per core, against a budget of 200 that does not mention cores. So
+the likeliest reading is not "something is still polling" but **"the budget was
+set on a smaller machine and never scaled"** — and the failure text asserts the
+first reading in so many words. Which of the two it is, is exactly what the
+staged return-address attribution answers: fifty passes from one site on every
+core is a per-core idle path and the threshold is wrong; fifty from a scattering
+of sites is a real poll. Nothing here gets changed until it says which.
+
+Worth stating as a method rather than a result: **the negative control was not
+the only control available.** Running the same gate at 1, 4 and 5 cores cost
+nothing extra — all three were already in the sweep — and it separated a
+threshold problem from a code problem before a line of kernel source was read.
+
 ### Not failures at all
 
 `test-net-ab` wants `BEFORE=<other.iso>`; `test-perf-gate` wants `PERF_METRIC`.
@@ -120,7 +142,7 @@ argument each one wants.
 | `test-monitor` | launching Clock kills the Activity Monitor window |
 | `test-live-page` | clicking a link does not run its handler |
 | `test-browser-https` | the empty Browser viewport is not blank — 3902 ink px, and the check calling it is a control |
-| `test-preview` | Preview lists `/media` as 0 entries, though the fixtures are on the disk (`FS_FILES` adds them and the names are in `disk.img`) |
+| `test-preview`, `test-preview-timing` | Preview lists `/media` as 0 entries, though the fixtures are on the disk (`FS_FILES` adds them, `tests/preview.mk` adds the prerequisite line correctly, and the names are present in `disk.img`). Two targets, one cause |
 | `test-kbench` | 247 poll passes where the budget is 200 |
 | `test-events` | **passes for the wrong reason** — see below |
 | `test-h265-b` | `got 79 want 80`, one level, in B slices; declared incomplete |
@@ -153,6 +175,41 @@ silently into a copy of the real build.
 named**, which is the third instance of that exact shape in this sweep. Staged:
 the stub throws if it cannot reach the Element prototype, and the install aborts
 loudly rather than reporting a fiction.
+
+### `test-fullsystem` — a list derived so it could not go stale, went stale
+
+The guest listed eleven `.aex` at the disk root and the expectation held nine.
+The guest was right. `ROOT_AEX` was built from `$(APPS)` under a comment saying
+precisely why: "Derived from `$(APPS)` rather than restated, so adding an app
+extends the test automatically instead of silently leaving the new one
+untested." `gallery` and `settings` are packed from their own variables, so
+**the assertion failed by naming the two apps it had itself forgotten to
+expect** — which reads like a disk problem.
+
+Now derived from `$(ROOT_AEX_PACK)`, the single list the disk rule itself packs
+from. Verified behaviour-neutral: the `mkfs` command line is byte-identical
+before and after.
+
+### `test-forms-negctl` — a control built with flags the real build fixed a week ago
+
+`browser.c:2314: expected identifier` — `it[i].hidden` expanding to
+`__attribute__((visibility("hidden")))` out of musl's internal `features.h`.
+Commit 339298854 (08-09) is titled *"browser: `hidden` is a macro, so struct
+item lost a field and seven sites crashed"*, and fixed it with a target-specific
+override on `$(BROWSER_JS_OBJ)`. `build/nofocus/browser.o` is not in that list.
+
+Two near-misses worth recording. The error implicates `-DBROWSER_NO_FOCUS` by
+position and has nothing to do with it — replaying the command without that flag
+fails identically. And it briefly looked as though HEAD could not rebuild
+`browser.c` at all, which would have been serious; the `.d` file settles it,
+because the real object does not depend on `features.h`.
+
+### `test-leak-os` — not runnable bare, and says so
+
+`the app-churn driver did not run (only 1 launches). Build with CHURN=1.` The
+Makefile documents it: *"REQUIRES A CHURN BUILD"*. Same category as `test-net-ab`
+and `test-perf-gate` — a target that was never callable on its own — except that
+what it needs is a whole build rather than an argument.
 
 ## Instrument faults found in the sweep itself
 
