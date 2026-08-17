@@ -235,13 +235,23 @@ static void inq_push(const struct inev *e)   /* IRQ-safe: no locks, no shared-st
 }
 ```
 
-One producer makes that correct. **There are two** — `wm_key` from IRQ 1 and
-`wm_mouse_event` from IRQ 12, both a two-line wrapper around this function — and
-today they cannot overlap only because every IRQ takes the global lock on the
-way in. Drop the lock for those two vectors and two cores can be inside
-`inq_push` at once: both read the same `inq_tail`, both write the same slot,
-both store the same `nt`, and one keystroke is silently gone. Not corruption; a
-dropped event, under exactly the flood the queue was sized for.
+One producer makes that correct. **There are three, and the third is the one
+that would have been missed:** `wm_key` from IRQ 1, `wm_mouse_event` from IRQ
+12, and both again from `usb_isr` (`c/drivers/usb/usb_core.c`) via `hid_poll` —
+the xHCI interrupt decodes a HID report and posts it through the same two entry
+points. Three vectors, one ring, and today they cannot overlap only because
+every IRQ takes the global lock on the way in.
+
+So the vector list for this step is three, not two. Drop the lock for them and
+two cores can be inside `inq_push` at once: both read the same `inq_tail`, both
+write the same slot, both store the same `nt`, and one keystroke is silently
+gone. Not corruption; a dropped event, under exactly the flood the queue was
+sized for.
+
+`usb_isr`'s own comment ends *"Nothing sleeps, nothing allocates, nothing takes
+a lock."* The last clause stops being true when the queue gets a lock. A
+spinlock in an ISR is fine — sleeping and allocating are what is not — but the
+sentence has to be amended rather than quietly falsified.
 
 This is the M25 P3 audit's warning met in the concrete, and it is worth noticing
 that the comment is not wrong so much as **unqualified**: "no locks" is a
