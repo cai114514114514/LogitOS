@@ -2468,12 +2468,61 @@ struct inev { int type; int x, y, l, r, m, wheel, mods; };
 #define INQ_N 512
 static struct inev inq[INQ_N];
 static volatile int inq_head, inq_tail;
-static void inq_push(const struct inev *e)   /* IRQ-safe: no locks, no shared-state */
+
+/* THE COMMENT THAT USED TO BE HERE SAID "IRQ-safe: no locks, no shared-state",
+ * and it was true of one producer. THERE ARE THREE.
+ *
+ * wm_key comes from IRQ 1, wm_mouse_event from IRQ 12, and BOTH again from
+ * usb_isr (c/drivers/usb/usb_core.c) by way of hid_poll -- the xHCI interrupt
+ * decodes a HID report and posts it through the same two entry points. Three
+ * vectors, one ring. They cannot overlap today only because every interrupt
+ * takes the big kernel lock on the way in -- which is precisely what
+ * step 3 of the BKL removal takes away for exactly these vectors, since after
+ * the input-deferral fix none of the handlers does anything else. Unlocked,
+ * two cores read the same inq_tail, write the same slot and store the same nt:
+ * one event silently gone, under exactly the flood the ring was sized for.
+ *
+ * The comment was not wrong; it was UNQUALIFIED. "No locks" is a true statement
+ * about this function, and the property that made it sufficient lived in a
+ * caller three files away.
+ *
+ * WHY A LOCK AND NOT A CAS. Claiming a slot with a CAS on the tail advances
+ * inq_tail BEFORE inq[t] is written, so the drain can observe a tail past a
+ * slot still holding the previous tenant's event -- the standard multi-producer
+ * hazard, which one atomic does not close. A per-slot ready flag closes it and
+ * puts a spin in the CONSUMER to save six instructions in an IRQ. Two queues,
+ * one per vector, is genuinely lock-free and fits the shape -- but it loses the
+ * order between a keystroke and a click, and struct inev has no timestamp to
+ * restore it. That order is not obviously disposable: `mods` is sampled in the
+ * IRQ for the express purpose of reflecting the instant of the press.
+ *
+ * So: a lock over the producers only. The critical section is a bounds check, a
+ * struct copy and a store, on a path that already did a port read. The CONSUMER
+ * is untouched -- wm_drain_input writes only inq_head, and one reader against
+ * one serialised writer is the single-producer case it was always written for.
+ *
+ * Inert until step 3: the BKL still serialises both IRQs, so this lock is never
+ * contended and nothing about the machine's behaviour changes. That is the
+ * point of landing it first -- declaring the vectors BKL-free then becomes one
+ * line against a safe queue instead of two changes at once against an unsafe
+ * one.
+ *
+ * NOTE for whoever does step 3: usb_core.c's comment above usb_isr() ends
+ * "Nothing sleeps, nothing allocates, nothing takes a lock." The last clause
+ * stops being true here. A spinlock in an ISR is fine -- it is the sleeping and
+ * the allocating that are not -- but the sentence has to say so rather than be
+ * quietly falsified. */
+static spinlock_t inq_lock = SPINLOCK_INIT;
+
+static void inq_push(const struct inev *e)
 {
+    uint64_t f = spin_lock_irqsave(&inq_lock);
     int nt = (inq_tail + 1) % INQ_N;
-    if (nt == inq_head) return;            /* full: drop (cosmetic under flooding) */
-    inq[inq_tail] = *e;
-    inq_tail = nt;
+    if (nt != inq_head) {                  /* full: drop (cosmetic under flooding) */
+        inq[inq_tail] = *e;
+        inq_tail = nt;
+    }
+    spin_unlock_irqrestore(&inq_lock, f);
 }
 static void wm_process_mouse(const struct inev *e);   /* fwd: bodies below */
 static void wm_process_key(int c, int mods);

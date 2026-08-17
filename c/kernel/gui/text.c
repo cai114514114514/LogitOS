@@ -8,6 +8,7 @@
 #include "vfs.h"
 #include "kheap.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -143,9 +144,45 @@ static void tl_fonts(struct shape_font_set *fs, int prefer, int *map)
         }
 }
 
+/* THE TEXT LOCK, AND WHY IT IS ONE LOCK AND NOT THREE.
+ *
+ * The comment above the scratch says the quiet part: "the whole UI runs under
+ * the big kernel lock". That is the only thing keeping ~45 KiB of file-scope
+ * shaping scratch (tl_cps, tl_levels, tl_order, tl_glyphs, tl_runs, tl_bidi),
+ * the 40 KiB rasteriser scratch, and the 2048-entry glyph cache from being torn
+ * by two cores at once -- and step 2 of the BKL removal takes that away.
+ *
+ * One lock covers all three because they are all reached through ONE function.
+ * layout() is the single entry every public text call funnels into, for a
+ * reason stated further up: measuring and drawing must agree at the same px, so
+ * there is deliberately no second path. Splitting this into a shaping lock and
+ * a cache lock would buy nothing (nobody takes one without the other) and cost
+ * an ordering rule that only exists to be got wrong.
+ *
+ * IT ALSO SETTLES THE GLYPH CACHE'S UGLY CASE FOR FREE. glyph_get returns a
+ * POINTER INTO the cache table, and its caller reads e->cov after it returns --
+ * so a lock inside glyph_get would protect the probe and leave the use
+ * unguarded, with eviction free to kfree() the coverage buffer under a blit.
+ * Held out here, the entry cannot be evicted while it is being used, because
+ * the only code that evicts is inside the same lock.
+ *
+ * ORDERING: BKL -> text_lock -> kheap_lock. Text is never entered from an
+ * interrupt (input is deferred to the WM thread -- see wm.c's input-deferral
+ * note), so this is the bare spin_lock and not the irqsave form; and nothing
+ * under this lock takes the BKL, so the order cannot invert.
+ *
+ * TODAY THIS LOCK IS NEVER CONTENDED, on purpose. The BKL still serialises
+ * everything above it, so adding it changes no behaviour and can be verified
+ * against test-desktop-look's 16 recorded values byte for byte. It starts doing
+ * work the moment the compositor stops holding the BKL across its pixel pass,
+ * which is the next piece. Introducing it a step early is what makes that step
+ * a small change instead of a flag day.
+ */
+static spinlock_t text_lock = SPINLOCK_INIT;
+
 /* The one layout entry point. `draw` = 0 measures, 1 draws. Returns end x. */
-static int layout(int x, int y, const char *s, int len, int prefer, int px,
-                  int cell, uint32_t color, int draw)
+static int layout_locked(int x, int y, const char *s, int len, int prefer, int px,
+                         int cell, uint32_t color, int draw)
 {
     if (!font_ok[F_UI] && !font_ok[F_MONO] && !font_ok[F_TEXT]) return x;
     if (len <= 0) return x;
@@ -163,6 +200,15 @@ static int layout(int x, int y, const char *s, int len, int prefer, int px,
     struct emit_ctx ec = { y + ascent_px(map[0], px), px, color, map };
     struct shape_emit em = { emit_blit, &ec };
     return shape_line(&fs, s, len, px, cell, x, &em, &sc);
+}
+
+static int layout(int x, int y, const char *s, int len, int prefer, int px,
+                  int cell, uint32_t color, int draw)
+{
+    spin_lock(&text_lock);
+    int r = layout_locked(x, y, s, len, prefer, px, cell, color, draw);
+    spin_unlock(&text_lock);
+    return r;
 }
 
 static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
