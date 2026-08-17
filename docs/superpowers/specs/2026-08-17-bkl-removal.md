@@ -149,7 +149,45 @@ The shape that answers all three without a new global bottleneck:
   refcount. Prefer the first until a measurement says text contention is real;
   the second is the answer if it is.
 
-Order of work: glyph-cache lock → window-list lock + geometry snapshot →
+### ...and then the file says the BKL is its reason, which changes the answer
+
+`text.c:89`, above the shaping scratch:
+
+> The scratch is file scope because the whole UI runs under the big kernel
+> lock, and because a 32 KiB kernel stack has no room for it.
+
+So `rastbuf` is not the only shared scratch and not even the big one.
+`tl_cps`, `tl_levels`, `tl_order`, `tl_glyphs`, `tl_runs` and `tl_bidi` (32 KiB
+by itself, ~45 KiB together) are the SHAPING scratch, and unlike the raster
+buffer they are touched on EVERY text call, not only on a cache miss. The
+"allocate it on a miss" answer above does not extend to them: 45 KiB per drawn
+string is not a trade, it is a regression.
+
+Three properties of the file make the right answer small:
+
+- Every public entry -- `text_draw`, `text_draw_sz`, `text_draw_mono`,
+  `text_draw_mono_sz`, `text_width`, `text_width_sz`, `text_measure`,
+  `text_draw_run` -- funnels through **one** function. The file says so at
+  line 81 and gives the reason: measuring and drawing must agree at the same
+  px, so a separate measuring path would drift a few pixels per line in a way
+  nobody could reproduce. There is exactly one place to lock.
+- All six scratch buffers are bound into one struct at lines 125-128, in one
+  statement. There is exactly one thing to protect.
+- Text was already serialised -- by the BKL. A text lock is not new
+  serialisation; it is the same serialisation, scoped to text.
+
+**So the first piece of step 2 is a TEXT lock, not a glyph-cache lock**, and the
+glyph cache falls inside it rather than needing one of its own. That also
+answers hazard 3 for free: the caller of `glyph_get` is inside the same lock,
+so a returned entry cannot be evicted under it.
+
+Per-core scratch was the alternative and is rejected for now: 45 KiB x 8 cores
+is 360 KiB of kernel `.bss` bought to remove a lock that is held for the
+duration of one string. If text contention ever shows up in the holder profile,
+that is the measurement that would justify it -- and the profile already exists
+to say so.
+
+Order of work: text lock → window-list lock + geometry snapshot →
 release the BKL across the pixel pass → measure.
 
 **Gates that already exist and must all hold**: `test-desktop-look` (16 recorded
