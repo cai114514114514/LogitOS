@@ -46,9 +46,40 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # are not waiting on this work.
 DEFAULT = ["c/net", "c/fs", "c/kernel/gui", "c/drivers"]
 
-# `static` at column 0, not const, not a function definition or prototype.
-DECL = re.compile(r"^static\s+(?!const\b)(?!inline\b)([A-Za-z_][\w\s\*\(\)\[\]]*?)"
-                  r"\b([A-Za-z_]\w*)\s*(\[[^;]*\])?\s*(=[^;]*)?;", re.M)
+# `static` at column 0 through the terminating `;`, not const, not a function.
+# The whole statement is taken and the DECLARATOR LIST is split afterwards --
+# see split_declarators() for why that is not optional.
+STMT = re.compile(r"^static\s+(?!const\b)(?!inline\b)([^;{}]*);", re.M)
+NAME = re.compile(r"([A-Za-z_]\w*)\s*(\[[^\]]*\])*\s*$")
+
+
+def split_declarators(body):
+    """`int order[MAXWIN], norder` -> ['order[MAXWIN]', 'norder'].
+
+    ONE LINE CAN DECLARE SEVERAL OBJECTS, and the first version of this file
+    did not split, which cost it the two variables that matter most in the
+    subsystem it was written for: wm.c's
+
+        static int order[MAXWIN], norder;
+
+    the z-order and its count -- read by every frame, written by every window
+    create, destroy and raise. A tool whose entire value is completeness lost
+    the pair at the centre of the work it was built to serve, and reported a
+    tidy number while doing it. Split on commas at bracket depth 0.
+    """
+    out, depth, cur = [], 0, ""
+    for ch in body:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    return [d.strip() for d in out if d.strip()]
 
 
 def scan(path):
@@ -61,11 +92,27 @@ def scan(path):
     src = re.sub(r"//[^\n]*", "", src)
     src = re.sub(r'"(\\.|[^"\\])*"', '""', src)
     out = []
-    for m in DECL.finditer(src):
-        typ, name, arr = m.group(1).strip(), m.group(2), m.group(3) or ""
-        if "(" in typ and "*" not in typ:        # function definition
+    for m in STMT.finditer(src):
+        stmt = m.group(1)
+        if "(" in stmt and "*" not in stmt:      # function prototype
             continue
-        out.append((name, (typ + " " + arr).strip()))
+        head = stmt.split("=")[0]                # drop any initialiser
+        decls = split_declarators(head)
+        if not decls:
+            continue
+        # the type is whatever precedes the first declarator's name
+        first = decls[0]
+        fm = NAME.search(first)
+        typ = first[:fm.start(1)].strip() if fm else first
+        for d in decls:
+            dm = NAME.search(d.split("=")[0].strip())
+            if not dm:
+                continue
+            name = dm.group(1)
+            arr = d[dm.end(1):].strip()
+            if name in ("struct", "union", "enum", "unsigned", "signed"):
+                continue
+            out.append((name, (typ + " " + arr).strip()))
     return out
 
 
