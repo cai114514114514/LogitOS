@@ -1,7 +1,8 @@
 #include "spinlock.h"
 #include "percpu.h"      /* this_cpu (BKL owner tracking) */
-#include "kbench.h"
-#include "serial.h"    /* the bad-release detector prints without taking a lock */      /* g_kb_stat: BKL wait/hold accounting, off by default */
+#include "kbench.h"      /* g_kb_stat: BKL wait/hold accounting, off by default */
+#include "tlb.h"         /* tlb_service(): a spin with IF=0 must still answer a shootdown */
+#include "serial.h"      /* the bad-release detector prints without taking a lock */
 
 /* Big Kernel Lock: a single lock taken on every entry into kernel code (P0). */
 spinlock_t g_bkl = SPINLOCK_INIT;
@@ -44,6 +45,13 @@ void spin_lock(spinlock_t *l)
     while (__atomic_load_n(&l->serving, __ATOMIC_SEQ_CST) != my) {
         waited = 1;
         __asm__ volatile ("pause");
+        /* A core waiting here has IF=0 and cannot take an interrupt -- which is
+         * precisely why tlb_flush_all() had to give up on it and why the real
+         * TLB shootdown was never wired into vmm_free_space. It can still read
+         * a byte. Serving the request from inside the wait is what makes a
+         * shootdown reach a core that is blocked on a lock. Costs one per-core
+         * byte load per pause when there is nothing owed. */
+        tlb_service();
     }
     l->owner_ra  = (unsigned long)__builtin_return_address(0);
     l->owner_cpu = this_cpu()->index;

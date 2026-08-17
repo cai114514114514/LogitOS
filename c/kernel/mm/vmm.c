@@ -9,6 +9,12 @@
 #include "mmhost.h"
 #include "kprintf.h"
 
+/* WEAK, and not an #include: vmm.c is compiled host-side by make test-mm with
+ * no kernel cpu headers on its include path -- the same reason kheap.c reaches
+ * its core index through a weak hook. Absent, the call is skipped, which is
+ * right: a host test has no other core to shoot down. */
+void tlb_flush_all(void) __attribute__((weak));
+
 #define PRESENT  0x1
 #define WRITABLE 0x2
 #define USER     0x4
@@ -507,13 +513,24 @@ void vmm_free_space(uint64_t cr3)
     vma_space_free(cr3);
     if (pdpt_e & PRESENT) pmm_free(pdpt_e & MM_PTE_ADDR);   /* private PDPT frame */
     pmm_free(cr3 & MM_PTE_ADDR);                            /* PML4 frame */
-    /* NB: NO tlb_flush_all() here. vmm_free_space runs under the BKL, and a core
-     * spinning to acquire the BKL does so with IF=0 (spin_lock_irqsave) -- it
-     * cannot service the shootdown IPI, so it never acks and the initiator (which
-     * holds the BKL) deadlocks. It's also not needed under the current BKL: a
-     * user space's frames are only cached by its own threads, which have left
-     * (CR3-switched away) before reap. Active shootdown is wired in once a
-     * bkl-free unmap path exists (see tlb.h). */
+    /* THE SHOOTDOWN IS WIRED IN NOW, and this comment used to say why it could
+     * not be. It said: "a core spinning to acquire the BKL does so with IF=0
+     * and cannot service the shootdown IPI, so it never acks and the initiator
+     * deadlocks." That was true and it is the reason M25 P2b shipped as
+     * infrastructure nobody could call.
+     *
+     * What changed is that the spin no longer has to take an interrupt to
+     * answer: tlb_flush_all() records the request in a per-core flag before it
+     * sends the IPI, and spin_lock()'s wait loop polls that flag. A core that
+     * cannot be interrupted can still read a byte. tlb_late_count() stays at 0
+     * on this path, which is the assertion that the mechanism actually reaches
+     * a blocked core rather than timing out politely.
+     *
+     * It is not redundant now that it works: the old "not needed" argument
+     * rested on every thread of the dying space having CR3-switched away
+     * first, which is true today and is exactly the kind of invariant that
+     * stops being true quietly. */
+    if (tlb_flush_all) tlb_flush_all();
 }
 
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)

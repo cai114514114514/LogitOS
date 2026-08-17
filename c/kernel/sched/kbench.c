@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "kbench.h"
+#include "tlb.h"
 #include "sched.h"
 #include "spinlock.h"
 #include "percpu.h"
@@ -422,7 +423,12 @@ void kb_stat_report(const char *tag)
     {
         uint64_t total_n = 0, total_c = 0;
         for (int s = 0; s < KB_NSYS; s++) { total_n += g_kb_sys_n[s]; total_c += g_kb_sys_cyc[s]; }
-        bklprof_report();
+        /* Shootdowns that were never acknowledged. This is the assertion that the
+     * per-core request flag actually reaches a core spinning for a lock with
+     * interrupts off -- the case that kept M25 P2b uncallable. A non-zero
+     * number here means somebody kept stale TLB entries. */
+    kprintf("[kbench] tlb: %lu shootdown(s) never acked\n", tlb_late_count());
+    bklprof_report();
     kprintf("[kbench] syscalls: %d calls, %d ms inside the dispatcher "
                 "(BKL already held; blocking calls include time descheduled)\n",
                 (int)total_n, (int)(total_c / g_mhz / 1000));
