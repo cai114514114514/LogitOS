@@ -958,7 +958,28 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
-## WPT — the headline number, and the two ways it lied
+## Six subsystems this file did not describe, found by counting
+
+Not noticed -- MEASURED, on 2026-08-17, by comparing each subsystem's target
+count against how often this file mentions it. Four came back with substantial
+coverage and no documentation at all:
+
+    ip6     8 targets   0 mentions        webapi  6 targets   0 mentions
+    forms   7 targets   0 mentions        usb     9 targets   1 mention
+    demux  10 targets   2 mentions        wpt     9 targets   1 mention
+
+**An absent claim is worse than a stale one and much harder to see.** A wrong
+sentence misdirects and can be corrected; a missing one lets a reader conclude
+the subsystem does not exist or is untested, and there is nothing for a
+correction to attach to. IPv6 was the sharpest case: the networking sections
+above run M9 to M12 and say "net" thirty-seven times, so nobody reading them
+concludes the documentation is thin -- they conclude the stack is IPv4-only.
+
+Each section below records what that subsystem's OWN source or tests argue,
+rather than a summary written from the outside. The measurement is repeatable:
+compare `make -pRrq | grep -oE '^test-[a-z0-9]+'` counts against `grep -c` here.
+
+### WPT — the headline number, and the two ways it lied
 
 ```
 WPT: 149318/246542 subtests passed (60.6%) over 9181 harness files
@@ -995,7 +1016,7 @@ reference render, which this runner does not do. They are not unmeasured —
 own output said "there is no reftest harness here" until that day; it now names
 the gate.
 
-## Containers, the A/V clock and MSE — 1.9 kLOC and fifteen gates
+### Containers, the A/V clock and MSE
 
 `c/lib/media/`: `demux.c` (sniffing, the demuxer object, sample ordering,
 seeking, the Annex B rewrite), `mp4.c`, `mkv.c`, `avclock.c`. Fifteen targets
@@ -1023,7 +1044,7 @@ The fuzz gates are worth naming because the shapes differ: `test-demux-fuzz`,
 offsets and lengths for a living, which is the same argument the image decoders'
 `test-img-fuzz` makes.
 
-## USB/xHCI — nine gates, all green, and the one whose header matters most
+### USB/xHCI — and the third producer on the input ring
 
 `c/drivers/usb/`: `xhci.c` + `xhci_ring.c` (the controller and its rings),
 `usb_core.c` (enumeration and driver binding), `usb_desc.c`, `usb_hid.c`,
@@ -1052,7 +1073,7 @@ its control: the same machine with the devices unplugged, where nothing can
 deliver input, so the positive assertions must not be satisfiable — *"a test
 that passes with the thing under test taken away is measuring something else."*
 
-## The interactive web platform — 6.6 kLOC, 13 gates, and no mention either
+### The interactive web platform — forms, focus, and the platform APIs
 
 `c/apps/browser/`: `js_platform.c` (1,910), `forms.c` (2,199), `js_select.c`
 (1,188), `js_forms.c` (1,015), `focus.c` (342). Thirteen targets — the
@@ -1084,7 +1105,7 @@ The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
 `<body>` as it did before — and `test-forms-negctl` must FAIL against that
 build, or the suite is not measuring the focus model.
 
-## IPv6 — eight gates, all green, and the string "ip6" was not in this file
+### IPv6 — no `net_cfg.ip`, and ND is not ARP
 
 Measured the same way the H.265 gap was, and it is the worse of the two: the
 networking sections above run from M9 to M12 and say "net" thirty-seven times,
@@ -1116,7 +1137,7 @@ EXACTLY as it did before IPv6 existed (one connection, no race, same order)?
 The second question is the one that matters most: it is what stops an
 IPv6-capable build from making every IPv4 network slower.
 
-## H.265/HEVC — nine gates, and this file did not mention it
+### H.265/HEVC
 
 Written down because the omission is the mirror image of a stale claim: there is
 no sentence here to correct, so a reader concludes the decoder does not exist or
