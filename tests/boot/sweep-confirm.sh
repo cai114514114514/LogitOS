@@ -23,12 +23,12 @@ TMO="${2:-1200}"
 LOGDIR="$(dirname "$OUT")/sweeplogs"
 mkdir -p "$LOGDIR"
 
-grep -v -E "^(PASS|NOTARGET)	" "$OUT" | cut -f3 | sort -u > "$LOGDIR/recheck.txt"
+grep -v -E "^(PASS|NOTARGET|NEEDSARGS|AGGREGATE)	" "$OUT" | cut -f3 | sort -u > "$LOGDIR/recheck.txt"
 n=$(grep -c . "$LOGDIR/recheck.txt" || true)
 echo "confirm: $n target(s) to re-run alone"
 [ "$n" = "0" ] && exit 0
 
-grep -E "^(PASS|NOTARGET)	" "$OUT" > "$OUT.keep" || true
+grep -E "^(PASS|NOTARGET|NEEDSARGS|AGGREGATE)	" "$OUT" > "$OUT.keep" || true
 mv "$OUT.keep" "$OUT"
 
 while read -r t; do

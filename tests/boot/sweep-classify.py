@@ -135,15 +135,49 @@ NEEDS_ARGS = {
                       "into the WM and a normal build does not contain it",
 }
 
-host, dev, args = [], [], []
+def aggregate(t, known):
+    """A target whose whole job is to run other targets this sweep already runs.
+
+    THREE OF THE SWEEP'S FOUR TIMEOUTS WERE THESE. test-fs is
+    `test-fs-host test-fs-boot`, and test-fs-boot is six boot targets; it was
+    killed at 900 s in the middle of test-fscrash's third crash round. The
+    per-target timeout cannot be right for a target that is fifteen targets.
+
+    Raising the timeout for them would be the wrong fix, because running them at
+    all is pure duplication: every member is already in this sweep, run
+    individually, with its own log and its own verdict. The aggregate adds no
+    coverage and costs the sum of its parts a second time.
+
+    The test is deliberately narrow -- EVERY prerequisite must itself be a test
+    target the sweep will run, and the recipe must do nothing but announce. A
+    target that also checks something (compares two runs, sums a score) is NOT
+    an aggregate no matter how many test- prerequisites it has, and gets run.
+    """
+    pre = prereqs.get(t, [])
+    if not pre or not all(p in known for p in pre):
+        return False
+    for ln in recipes.get(t, []):
+        body = ln.strip().lstrip("@-")
+        if body and not body.startswith(("echo ", "true", ":")):
+            return False
+    return True
+
+
+host, dev, args, agg = [], [], [], []
+known = set(targets)
 for t in targets:
     if t in NEEDS_ARGS:
         args.append("%s\t%s" % (t, NEEDS_ARGS[t]))
+        continue
+    if aggregate(t, known):
+        agg.append("%s\t%s" % (t, " ".join(prereqs.get(t, []))))
         continue
     (dev if boots(t) else host).append(t)
 
 open(os.path.join(OUT, "host.txt"), "w").write("\n".join(host) + "\n")
 open(os.path.join(OUT, "dev.txt"), "w").write("\n".join(dev) + "\n")
 open(os.path.join(OUT, "args.txt"), "w").write("\n".join(args) + ("\n" if args else ""))
-print("classify: %d targets -- %d host, %d device, %d need arguments"
-      % (len(targets), len(host), len(dev), len(args)))
+open(os.path.join(OUT, "agg.txt"), "w").write("\n".join(agg) + ("\n" if agg else ""))
+print("classify: %d targets -- %d host, %d device, %d need arguments, "
+      "%d aggregates (members run individually)"
+      % (len(targets), len(host), len(dev), len(args), len(agg)))

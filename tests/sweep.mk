@@ -44,7 +44,7 @@ SWEEP_OUT  ?= $(BUILD)/sweep/all.res
 # NEEDSARGS and NOTARGET are not failures: one was never callable bare, the
 # other is a build-system finding already reported as itself.
 define SWEEP_VERDICT
-	@bad=$$(grep -cvE "^(PASS|NOTARGET|NEEDSARGS)	" $(SWEEP_OUT) || true); \
+	@bad=$$(grep -cvE "^(PASS|NOTARGET|NEEDSARGS|AGGREGATE)	" $(SWEEP_OUT) || true); \
 	if [ "$$bad" != "0" ]; then \
 	    echo "test-sweep: $$bad target(s) not passing -- see $(SWEEP_OUT)"; \
 	    exit 1; \

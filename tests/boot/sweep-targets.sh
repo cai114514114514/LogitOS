@@ -45,6 +45,18 @@ while IFS=$(printf '\t') read -r t why; do
     printf '%-9s       %s  (%s)\n' "NEEDSARGS" "$t" "$why"
 done < "$LOGDIR/args.txt"
 
+# Aggregates are recorded, not run -- see aggregate() in sweep-classify.py. Every
+# member is in this sweep already, with its own log and its own verdict, so
+# running the aggregate costs the sum of its parts a second time and adds no
+# coverage. Three of the four timeouts in the first full sweep were these:
+# test-fs alone expands to fifteen targets and was killed at 900 s in the middle
+# of test-fscrash's third crash round.
+while IFS=$(printf '\t') read -r t members; do
+    [ -n "$t" ] || continue
+    printf 'AGGREGATE\t0\t%s\n' "$t" >> "$OUT"
+    printf '%-9s       %s  (= %s)\n' "AGGREGATE" "$t" "$members"
+done < "$LOGDIR/agg.txt"
+
 run_one() {
     t="$1"
     # A NAME THAT IS NOT A TARGET, CAUGHT WHERE IT IS CREATED.
