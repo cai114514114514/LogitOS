@@ -29,6 +29,34 @@ make debug  # QEMU frozen with gdb stub on :1234
   positives unless `.clangd` is being honored — the real build passes `-I` for
   every source dir (`INCDIRS` in the Makefile) and the x86_64 target.
 
+## If you write anything that reads the Makefile, join the continuations first
+
+There are five tools in this tree that parse make: `tools/audit_tests.py`,
+`tools/negctl_drift.py`, `tests/boot/sweep-classify.py`, and two throwaway shell
+checks that turned into decisions. **Four of the five read one PHYSICAL line at
+a time, and all four were wrong**, found in a single day (2026-08-17):
+
+- an `md5sum` of `make -n build/disk.img | grep -m1 mkfs.py` matched before and
+  after a change, which is what convinced me the change was safe. It was
+  comparing the first of several `mkfs` invocations, on a line the change never
+  touched — and the change had made every app's host path empty. It shipped.
+- a shell check reported `browser-nofocus.elf` as missing `$(GFX_OBJ)`. It has
+  it, on the continuation line.
+- `negctl_drift.py`'s parser lost any rule whose prerequisites wrap, because the
+  second line starts with spaces, matches no target pattern and clears the
+  current target — so the rule's recipe was dropped and the target never entered
+  the table. It reported three browser variants where there are four, and the
+  missing one was the variant that started the investigation.
+- `audit_tests.py` took `line.split(":", 1)[1]` as the prerequisite list, so
+  `test-fs-boot: a b c \` lost everything after the backslash. `test-fs-boot` is
+  one of that file's own suite roots, so its wrapped members were reported as
+  reachable by nothing. **The count the audit exists to produce was inflated by
+  its own parser: 22 wired became 31, and 359 unwired became 354.**
+
+`re.sub(r"\\\n[ \t]*", " ", text)` before anything else. Or read `make -pRrq`
+instead, whose output make has already joined — verified, not assumed, which is
+why `sweep-classify.py` is the one that was fine.
+
 ## Source layout
 
 All source lives under `c/`, headers **colocated** with their `.c`. The
