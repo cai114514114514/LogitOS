@@ -336,6 +336,29 @@ other's transaction. `lfsro.c:23` is the same shape — *"under the BKL, so one
 buffer is enough"*. Outside `vfs_cred.c` there is not a single `spinlock_t` in
 `c/fs`.
 
+**And the honest comment undercounts itself.** It names four —
+`blk_buf`/`ind_buf`/`dind_buf`/`namebuf` — out of ten declared immediately above
+it:
+
+```c
+static uint32_t tx_targets[LOG_MAX];   static uint8_t (*tx_bufs)[BS];
+static int      tx_count;              static uint32_t tx_gen;
+static uint8_t  tx_hdr[BS];            static uint32_t l2_buf[PPB];
+```
+
+`l2_buf` is staging like the three it does name. The `tx_*` five are worse than
+staging: **they are the transaction**. Two operations sharing them do not
+corrupt a scratch buffer and recover — they stage blocks into one another's
+journal record and commit it. So the concrete shape of step 4b is not "add a
+lock to the filesystem" but: one lock per mount around an operation, and a
+transaction that belongs to the operation rather than to the file.
+
+That undercount is worth noticing precisely because this comment is the *good*
+one. It is the only place in the three that names its dependency on the BKL out
+loud, and it still lists less than half of what depends on it — which is the
+argument for deriving the list from the declarations rather than trusting the
+prose, even when the prose is honest.
+
 So the order is: **step 2 (WM) → step 3 (IRQ, three vectors + the input ring) →
 step 4a (net: a real lock, or an explicit single-core discipline that is
 enforced rather than observed) → step 4b (fs: a lock per mount, and the staging
