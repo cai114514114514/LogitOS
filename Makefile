@@ -3156,8 +3156,7 @@ test-webp-vp8-negctl: $(RUST_LIB_HOST)
 	   (cd rust && "$(RUST_BIN)/cargo" build --release --features $$f \
 	       --target-dir ../$(BUILD)/rustctl >/dev/null 2>&1) || exit 1; \
 	   $(CC) -O2 -w -o $(BUILD)/webp_vp8_ctl tests/unit/webp_vp8_test.c \
-	       c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
-	       c/lib/image/exif.c tests/unit/rust_host_shim.c $(GFX_SRC) \
+	       $(IMG_HOST_SRC) \
 	       $(BUILD)/rustctl/release/liblogit_rust.a $(IMG_HOST_INC) -lm; \
 	   if $(BUILD)/webp_vp8_ctl $(BUILD)/webpvp8 >$(BUILD)/webp_negctl.log 2>&1; then \
 	     echo "FAIL: --features $$f still passes -- the control proves nothing"; exit 1; \
