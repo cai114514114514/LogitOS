@@ -13,6 +13,7 @@
  */
 
 #define LOGIT_USERLIB_H          /* claim logit.h's guard */
+#define SH_HOST_TEST             /* sh.c takes sh_sigaction/sh_kill from here */
 #include "logit_abi.h"
 
 #include <stdio.h>
@@ -149,6 +150,18 @@ static inline int sys_fork(void)
     return c->pid;
 }
 
+/* One phantom child exits: drop every write end it inherited, which is what
+ * makes the parent's liveness read return EOF instead of EAGAIN. */
+static inline void stub_child_exit(int pid)
+{
+    for (int i = 0; i < 16; i++) {
+        if (!stub_children[i].used || stub_children[i].pid != pid) continue;
+        for (int k = 0; k < stub_children[i].npipe; k++) stub_pipes[stub_children[i].pipes[k]].writers--;
+        stub_children[i].used = 0;
+        return;
+    }
+}
+
 /* The phantom child exits: drop every write end it inherited, which is what
  * makes the parent's liveness read return EOF instead of EAGAIN. */
 static inline void stub_child_exit_all(void)
@@ -160,6 +173,37 @@ static inline void stub_child_exit_all(void)
     }
 }
 static inline int sys_waitpid(int pid, int *st) { (void)pid; if (st) *st = stub_child_status; return pid; }
+
+/* ------------------------------------------------------------- signals ---- *
+ *
+ * SH_HOST_TEST tells sh.c to take its two platform calls from here instead of
+ * emitting `int 0x80` -- which the host cannot execute -- while leaving every
+ * line of the forwarding DECISION (which pids, when, how long it waits, what it
+ * does if the job survives) as the real code under test.
+ *
+ * sh_kill models the kernel's DEFAULT ACTION and nothing more: SIGINT
+ * terminates a process that has not asked otherwise, so the phantom child exits
+ * and the shell's liveness pipe goes to EOF exactly as it would on the machine.
+ * stub_sig_ignored is the other half of the story -- a child that catches SIGINT
+ * and keeps running, which is the case the shell's grace period exists for and
+ * which no "does ^C work" test would otherwise reach. */
+static int stub_sigint_handler_set;      /* did the shell install one? */
+static int stub_kill_calls, stub_kill_last_pid, stub_kill_last_sig;
+static int stub_sig_ignored;             /* the child declines to die */
+
+static inline int sh_sigaction(int signo, void (*handler)(int), unsigned long flags)
+{
+    (void)flags;
+    if (signo == LOGIT_SIGINT) stub_sigint_handler_set = handler ? 1 : 0;
+    return 0;
+}
+
+static inline int sh_kill(int pid, int signo)
+{
+    stub_kill_calls++; stub_kill_last_pid = pid; stub_kill_last_sig = signo;
+    if (signo == LOGIT_SIGINT && !stub_sig_ignored) stub_child_exit(pid);
+    return 0;
+}
 static inline int sys_execve(const char *p, char *const a[], char *const e[])
 { (void)p; (void)a; (void)e; return -1; }
 static inline int sys_getpid(void) { return 1; }

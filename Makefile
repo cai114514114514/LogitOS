@@ -448,7 +448,7 @@ CH_AEX := $(BUILD)/ch.aex
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h $(CLIDIR)/logit_cells.h
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
@@ -1717,6 +1717,17 @@ test-ahci-two: $(ISO) $(DISK)
 test-shell: $(ISO) $(DISK)
 	@sh tests/boot/run-shell-test.sh $(ISO) $(DISK)
 
+# Ctrl+C, on the machine. The host suite proves /bin/sh forwards SIGINT to the
+# foreground job; only a boot proves the kernel then delivers it, and both
+# halves have to be real (see the header of the script and
+# c/kernel/exec/ksignal.c:316). Its negative control runs the identical script
+# with the ^C removed and requires the job to still be running.
+test-sigint: $(ISO) $(DISK)
+	@sh tests/boot/run-sigint-test.sh $(ISO) $(DISK)
+
+test-sigint-negctl: $(ISO) $(DISK)
+	@sh tests/boot/run-sigint-test.sh $(ISO) $(DISK) nointr
+
 # How spec-conformant is the HTML parser? Runs the shared tree-construction
 # suite every browser is measured against (third_party/html5lib-tests -- data
 # only, the runner is ours) and prints a pass rate.
@@ -2277,7 +2288,48 @@ test-sniff-negctl:
 		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sniff_negctl.log) checks fail without the guard"; \
 	fi
 
-test-term-host: test-term-proto test-sh test-sh-negctl test-sniff test-sniff-negctl
+# The cell/byte rule (c/apps/coreutils/logit_cells.h): the ONE conversion
+# between a byte index in a UTF-8 string and the column the terminal grid draws
+# it at. Two binaries depend on it agreeing -- /bin/sh publishes its edit cursor
+# in that number and the Terminal draws a caret at it -- so it is checked
+# against references neither of them wrote: the decoder against
+# c/lib/text/utf8.c (the decoder the renderer itself walks with), the width
+# table against the Unicode Character Database's EastAsianWidth.txt for all
+# 1,114,112 code points, and the renderer's own cell-grid layout through the
+# fonts that actually ship on the disk image.
+CELLS_TEXT := c/lib/text/utf8.c c/lib/text/shape.c c/lib/text/bidi.c \
+              c/lib/text/script.c c/lib/text/otlayout.c c/lib/text/ttf.c \
+              c/lib/text/cff.c
+# Deferred (`=`, not `:=`): UCD is set by tests/text.mk, which is -include'd
+# further down this file. An immediate assignment here expands it before that
+# happens and silently looks for /EastAsianWidth.txt at the filesystem root.
+CELLS_ARGS = $(UCD)/EastAsianWidth.txt fsroot/fonts/mono.ttf fsroot/fonts/ui.ttf \
+             third_party/fonts/DejaVuSans.ttf
+
+test-cells:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/cells_test tests/unit/cells_test.c \
+		$(CELLS_TEXT) -Ic/apps/coreutils -Ic/lib/text
+	@./$(BUILD)/cells_test $(CELLS_ARGS)
+
+# Negative control: CELLS_NEGATIVE_CONTROL puts the header back to what /bin/sh
+# and the Terminal did before it existed -- one cell per BYTE, an identity
+# inverse, and a cursor that steps one byte at a time. Every conversion
+# assertion must fail with that compiled in; a suite that still passes was
+# measuring nothing.
+test-cells-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DCELLS_NEGATIVE_CONTROL -o $(BUILD)/cells_negctl \
+		tests/unit/cells_test.c $(CELLS_TEXT) -Ic/apps/coreutils -Ic/lib/text
+	@if ./$(BUILD)/cells_negctl $(CELLS_ARGS) >$(BUILD)/cells_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with one cell per byte"; \
+		exit 1; \
+	else \
+		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/cells_negctl.log) checks fail when a cell is a byte"; \
+	fi
+
+test-term-host: test-term-proto test-sh test-sh-negctl test-sniff test-sniff-negctl \
+                test-cells test-cells-negctl
 
 # On-device: rich output judged by PIXELS (an image at the right size, a drawn
 # progress bar, a ruled table) plus the compatibility claim -- the same commands

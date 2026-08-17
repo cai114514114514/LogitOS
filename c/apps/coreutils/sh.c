@@ -1,5 +1,6 @@
 #include "clib.h"
 #include "logit_rich.h"
+#include "logit_cells.h"
 
 /* /bin/sh -- LogitOS shell.
  *
@@ -147,6 +148,102 @@ static void outn_str(char *o, int v)
     int k = 0; while (i) o[k++] = t[--i]; o[k] = 0;
 }
 
+/* ------------------------------------------------------------ ^C, for real --
+ *
+ * THE CONTRACT IS WRITTEN IN THE KERNEL, at c/kernel/exec/ksignal.c:316:
+ *
+ *     "THE FOREGROUND PID is whichever process most recently blocked reading
+ *      the console. [...] the shell then forks a child and waits, and the
+ *      SIGINT goes to the shell, which is exactly where a shell wants it. What
+ *      it does NOT do is deliver to the child, so `sleep 100` is not
+ *      interruptible by ^C until /bin/sh forwards it. Stated, not hidden."
+ *
+ * This is the forwarding. The kernel's tty drain (ksig_tick) posts SIGINT to
+ * the foreground pid, which on the serial console is this shell; the shell
+ * catches it and passes it on to every stage of the foreground pipeline with
+ * SYS_KILL. Nothing else can do it: there are no process groups here, so there
+ * is no "foreground job" for the kernel to know about -- only the shell knows
+ * which pids that is.
+ *
+ * FOUR THINGS ABOUT THE HANDLER, each of which is a bug if got wrong:
+ *
+ *  - IT MUST EXIST AT ALL, or the signal never arrives. ksig_kill refuses a
+ *    default-terminate signal to the protected console process (no parent, no
+ *    window -- this shell) precisely when it has NO handler installed
+ *    (ksignal.c, above ksig_kill). Installing one is what makes ^C reach us,
+ *    and the same call is what stops the default action from killing the shell.
+ *
+ *  - SA_RESTART IS NOT OPTIONAL. An interrupted blocking call returns
+ *    SIG_E_INTR (-4), and clib.h's readline treats every `r <= 0` from
+ *    sys_read as end of input and returns -1 -- which main() reads as ^D and
+ *    exits. Without SA_RESTART the FIRST ^C typed at the prompt would close the
+ *    console shell. With it, the kernel rewinds rip over the `int 0x80` and the
+ *    read resumes (c/kernel/exec/ksigframe.c:183).
+ *
+ *  - THE HANDLER ONLY SETS A FLAG. It runs on an ordinary ring-3 frame the
+ *    kernel pushed at whatever instruction was executing; writing to the job
+ *    table or a pipe from there would race the wait loop that owns them.
+ *
+ *  - THE RESTORER IS OURS TO SUPPLY. There is no VDSO and SYS_SIGACTION
+ *    refuses restorer 0 (include/abi/logit_abi.h). The four instructions must
+ *    not touch the stack: the handler's own `ret` has already popped this
+ *    address, so rsp points exactly at the struct logit_sigctx the kernel
+ *    pushed. mini-libc has the identical trampoline, but /bin/sh does not link
+ *    mini-libc -- coreutils are crt0_cli plus logit.h and nothing else.
+ * ------------------------------------------------------------------------- */
+
+static volatile int sig_intr;          /* set by the handler, read by the loops */
+
+static void sh_on_sigint(int s) { (void)s; sig_intr = 1; }
+
+#ifdef SH_HOST_TEST
+/* tests/unit/sh_hoststub.h supplies sh_sigaction() and sh_kill(): `int 0x80`
+ * cannot be executed on the host, and everything the forwarding DECISION
+ * depends on is plain C above and below this line. */
+#else
+#define SH_STR2(x) #x
+#define SH_STR(x)  SH_STR2(x)
+__asm__(
+    ".text\n"
+    ".globl sh_sigrestore\n"
+    ".hidden sh_sigrestore\n"
+    "sh_sigrestore:\n"
+    "    movq $" SH_STR(SYS_SIGRETURN) ", %rax\n"
+    "    int $0x80\n"
+    /* SYS_SIGRETURN does not return. If it ever does the frame was rejected and
+     * there is nothing sane to resume, so spin rather than execute whatever
+     * follows in memory. */
+    "1:  jmp 1b\n"
+);
+extern void sh_sigrestore(void);
+
+static int sh_sigaction(int signo, void (*handler)(int), unsigned long flags)
+{
+    struct logit_sigaction sa;
+    sa.handler  = (unsigned long)(void *)handler;
+    sa.mask     = 0;
+    sa.flags    = flags;
+    sa.restorer = (unsigned long)(void *)sh_sigrestore;
+    return (int)_sys(SYS_SIGACTION, signo, (long)&sa, 0);
+}
+
+static int sh_kill(int pid, int signo)
+{ return (int)_sys(SYS_KILL, pid, signo, LOGIT_KILL_SIGNAL); }
+#endif
+
+/* Install the handler. A function rather than three lines in main() so the host
+ * test can drive the real call and assert the handler was installed at all --
+ * every other assertion about ^C sets the flag directly and would pass on a
+ * shell that never asked for the signal, which is the shape of "it builds but
+ * is never called". SA_RESTART: see the note above. A kernel that refuses this
+ * (an old one, or one without SYS_SIGACTION) leaves the shell behaving exactly
+ * as it did before -- the ^C path is additive and nothing here pretends to be
+ * a fallback for it. */
+static void sh_signals_init(void)
+{
+    sh_sigaction(LOGIT_SIGINT, sh_on_sigint, LOGIT_SA_RESTART);
+}
+
 /* forward declarations: the control dispatcher drives the editor below. */
 static void publish_input(void);
 static void apply_key(int k);
@@ -190,6 +287,18 @@ static int job_running(struct job *j)
     int n = sys_read(j->live_fd, &c, 1);
     if (n == 0) return 0;
     return 1;                                    /* EAGAIN_RC, or a stray byte */
+}
+
+/* Send a signal to every stage of a pipeline. Returns how many the kernel
+ * accepted -- a stage that has already exited answers SIG_E_SRCH, which is not
+ * a failure of anything: `sleep 5 | head -1` has one live stage by the time a
+ * human reaches for ^C. */
+static int job_signal(struct job *j, int signo)
+{
+    int n = 0;
+    for (int i = 0; i < j->npid; i++)
+        if (sh_kill(j->pids[i], signo) == 0) n++;
+    return n;
 }
 
 static void job_reap(struct job *j)
@@ -237,7 +346,14 @@ static void publish_input(void)
     char p[96];
     prompt_text(p, sizeof p);
     rt_reset(&enc);
-    rt_u16(&enc, lcur);
+    /* CELLS, NOT BYTES. `lcur` is a byte index into lbuf; the terminal draws
+     * this number as a column on its character grid (c/apps/gui/terminal.c's
+     * input line). The two are the same number only for ASCII, and since the
+     * prompt started accepting non-ASCII they are not -- the caret would sit
+     * one column right for every continuation byte and every wide glyph left
+     * of the cursor. c/apps/coreutils/logit_cells.h is the conversion, shared
+     * with the terminal so there is one rule and not two. */
+    rt_u16(&enc, lc_cells(lbuf, lcur));
     rt_str(&enc, p);
     rt_strn(&enc, lbuf, llen);
     rt_send(RT_T_INPUT, &enc);
@@ -355,8 +471,12 @@ static void ins_char(char c)
 static void apply_key(int k)
 {
     switch (k) {
-    case KEY_LEFT:  if (lcur > 0) lcur--; break;
-    case KEY_RIGHT: if (lcur < llen) lcur++; break;
+    /* By CHARACTER, not by byte. A cursor parked between the bytes of one
+     * UTF-8 sequence has no column at all -- lc_cells cannot answer for it, the
+     * next backspace would tear the character in half, and the byte that came
+     * out would be an invalid lead the terminal draws as U+FFFD. */
+    case KEY_LEFT:  lcur = lc_prev(lbuf, llen, lcur); break;
+    case KEY_RIGHT: lcur = lc_next(lbuf, llen, lcur); break;
     case KEY_HOME:  lcur = 0; break;
     case KEY_END:   lcur = llen; break;
     case KEY_UP:
@@ -387,9 +507,17 @@ static int feed_edit_text(const char *s, int n)
         ed_dirty = 1;
         if (c == '\n' || c == '\r') { lbuf[llen] = 0; return i; }
         if (c == '\b' || c == 127) {
-            if (lcur > 0) {
-                for (int k = lcur - 1; k < llen - 1; k++) lbuf[k] = lbuf[k + 1];
-                lcur--; llen--; lbuf[llen] = 0;
+            /* One CHARACTER, which is one to four bytes. Deleting one byte off
+             * the end of a multi-byte sequence leaves a truncated lead byte in
+             * the buffer, which is not merely ugly: it is an invalid sequence
+             * that the terminal draws as U+FFFD, that lc_cells has to guess at,
+             * and that the shell would then hand to execve as part of an
+             * argument. */
+            int from = lc_prev(lbuf, llen, lcur);
+            int n_del = lcur - from;
+            if (n_del > 0) {
+                for (int k = from; k < llen - n_del; k++) lbuf[k] = lbuf[k + n_del];
+                lcur = from; llen -= n_del; lbuf[llen] = 0;
             }
             continue;
         }
@@ -709,6 +837,13 @@ static struct job *start_pipeline(struct cmd *cmds, int ncmd, int background, co
             if (pfd[1] >= 0) sys_close(pfd[1]);
             if (sp[0] >= 0) sys_close(sp[0]);
             if (sp[1] >= 0) sys_close(sp[1]);
+            /* SIGINT back to SIG_DFL before this becomes somebody else's
+             * program. execve does this too (ksig_proc_exec: a CAUGHT signal
+             * goes back to default across exec), but the window between fork
+             * and execve is real -- a ^C landing in it would run the SHELL's
+             * handler on the child's stack, and the child would then execve
+             * with sig_intr set and nothing that ever reads it. */
+            sh_sigaction(LOGIT_SIGINT, 0, 0);
             sys_close(lv[0]);                             /* keep lv[1]: it IS the handle */
             if (ctl_fd >= 0) sys_close(ctl_fd);           /* the control channel is ours */
 
@@ -732,20 +867,46 @@ static struct job *start_pipeline(struct cmd *cmds, int ncmd, int background, co
     return j;
 }
 
+/* How long a signalled job is given to die before the shell gives up on it and
+ * takes its prompt back. In naps, and a nap is sys_sleep_ms(3) against a 100 Hz
+ * tick, so this is on the order of a second rather than exactly one.
+ *
+ * There has to be a bound. A job that CATCHES SIGINT and declines to exit is
+ * entitled to (that is what a catchable signal means), and a shell that waited
+ * for it forever would have replaced "^C does not stop the job" with "^C hangs
+ * the terminal", which is worse. When the grace runs out the shell falls back
+ * to exactly the old behaviour -- the job is abandoned into the background,
+ * marked interrupted, and `jobs` lists it -- so nothing that used to work stops
+ * working; what changes is that the signal was actually sent first. */
+#define SIGINT_GRACE_NAPS 300
+
 /* Wait for a foreground job, staying responsive to ^C and pumping keystrokes
- * into the job's stdin. Returns the exit status. */
+ * into the job's stdin. Returns the exit status.
+ *
+ * TWO SOURCES OF ^C REACH THIS LOOP AND THEY ARE NOT THE SAME MECHANISM:
+ *   pend_intr  the GUI Terminal's RT_C_INTR control frame (interactive mode),
+ *              delivered over fd 4 -- there is no tty involved at all.
+ *   sig_intr   a real SIGINT from the kernel's console drain (serial mode),
+ *              caught by sh_on_sigint above.
+ * Both mean the same thing here, so they are handled in one place; the kernel's
+ * half of the story is at c/kernel/exec/ksignal.c:316. */
 static int wait_foreground(struct job *j)
 {
     ctl_mode = CTL_JOB;
     pend_intr = 0; pend_eof = 0; pend_text_n = 0;
+    /* Discard a ^C that arrived while the shell was at its prompt: it belongs
+     * to the line that was being typed, not to the job about to run. */
+    sig_intr = 0;
+    int intr = 0, grace = 0;
     for (;;) {
         ctl_poll();
-        if (pend_intr) {
-            pend_intr = 0;
+        if ((pend_intr || sig_intr) && !intr) {
+            pend_intr = 0; sig_intr = 0;
+            intr = 1;
             j->interrupted = 1;
-            j->bg = 1;                                    /* abandoned, not killed */
             errs("^C\n");
-            return 130;
+            job_signal(j, LOGIT_SIGINT);
+            grace = SIGINT_GRACE_NAPS;
         }
         if (pend_eof && j->stdin_fd >= 0) {
             pend_eof = 0;
@@ -760,13 +921,23 @@ static int wait_foreground(struct job *j)
             }
         }
         if (!job_running(j)) break;
+        if (intr && --grace <= 0) {
+            /* It was signalled and it is still alive: it caught SIGINT, or it
+             * is wedged in a syscall no signal reaches. Abandon it, which is
+             * what this loop did unconditionally before it could signal. */
+            j->bg = 1;
+            return 130;
+        }
         nap();
     }
     ctl_mode = CTL_EDIT;
     job_reap(j);
     int st = j->status;
     job_release(j);
-    return st;
+    /* 128 + SIGINT, as every shell reports it, and NOT the child's own exit
+     * status: a program that installs a SIGINT handler and exits 0 from it was
+     * still interrupted, and $? has to say so. */
+    return intr ? 130 : st;
 }
 
 /* ---------------------------------------------------------------- builtins -- */
@@ -928,6 +1099,8 @@ int main(int argc, char **argv)
         char **e = rt_envp(argc, argv);
         if (e) for (int i = 0; e[i] && nenv < MAXENV; i++) c_strcpy(envstore[nenv++], e[i], ENVLEN);
     }
+    sh_signals_init();
+
     int rich = rt_init(argc, argv);
     const char *cs = rt_getenv(argc, argv, "LOGIT_CTL");
     if (rich && cs) {

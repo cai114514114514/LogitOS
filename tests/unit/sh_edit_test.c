@@ -289,6 +289,53 @@ static void t_editing(void)
     CHK(!strcmp(prompt, "/home $ "), "prompt = '%s'", prompt);
     CHK(!strcmp(shown, "abcdef"), "published buffer = '%s'", shown);
     CHK(curs == 5, "published cursor = %d (want 5)", curs);
+
+    /* --- MULTI-BYTE, which is the whole reason c/apps/coreutils/logit_cells.h
+     * exists. Written as escaped bytes so that re-encoding this source file
+     * cannot silently change what is being typed. "\xE4\xB8\xAD" is U+4E2D, a
+     * wide character: 3 bytes, 2 cells.
+     *
+     * THE PUBLISHED CURSOR IS A COLUMN. lcur is a byte index and the terminal
+     * draws the number it receives as a column, so a shell that published lcur
+     * puts the caret 9 columns right of a 3-character Chinese word instead of
+     * 6. That is the bug; these are the numbers. */
+    cap(fd_rich_r, capbuf, sizeof capbuf);
+    ctl_text("\xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97");     /* 3 wide chars, 9 bytes */
+    ctl_text("\n");
+    edit_line();
+    CHK(!strcmp(lbuf, "\xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97"), "wide chars did not survive the prompt");
+    CHK(llen == 9, "buffer is %d bytes, want 9", llen);
+    CHK(last_input(prompt, sizeof prompt, shown, sizeof shown, &curs), "no RT_T_INPUT published");
+    CHK(curs == 6, "published cursor after 3 wide chars = %d (want 6 cells, NOT 9 bytes)", curs);
+
+    /* One backspace deletes one CHARACTER. Deleting one byte would leave a
+     * truncated lead byte -- an invalid sequence the terminal draws as U+FFFD
+     * and the shell would hand to execve. */
+    cap(fd_rich_r, capbuf, sizeof capbuf);
+    ctl_text("\xE4\xB8\xAD\xE6\x96\x87\b");
+    ctl_text("\n");
+    edit_line();
+    CHK(llen == 3 && !strcmp(lbuf, "\xE4\xB8\xAD"),
+        "backspace over a wide char left %d bytes, want 3", llen);
+    CHK(last_input(prompt, sizeof prompt, shown, sizeof shown, &curs), "no RT_T_INPUT published");
+    CHK(curs == 2, "cursor after backspacing one wide char = %d (want 2)", curs);
+
+    /* Left/Right move by character too, and insert lands between characters. */
+    cap(fd_rich_r, capbuf, sizeof capbuf);
+    ctl_text("\xE4\xB8\xAD\xE6\x96\x87");
+    ctl_key(KEY_LEFT);
+    ctl_text("X");
+    ctl_text("\n");
+    edit_line();
+    CHK(!strcmp(lbuf, "\xE4\xB8\xAD" "X" "\xE6\x96\x87"),
+        "Left over a wide char split it: %d bytes", llen);
+    CHK(last_input(prompt, sizeof prompt, shown, sizeof shown, &curs), "no RT_T_INPUT published");
+    CHK(curs == 3, "cursor after wide + X = %d cells (want 3)", curs);
+
+    /* A one-byte-per-cell shell would have said 9, 6 and 4 for the three
+     * cursors above. Pin that they are not those numbers, so the assertions
+     * cannot be satisfied by the bug they were written for. */
+    CHK(curs != 4, "the cursor is still counting bytes");
 }
 
 /* ---------------------------------------------------------- completion ---- */
@@ -337,10 +384,28 @@ static void pump_hook(int n)
     if (n == 3) { pump_seen = stub_pipes[pump_pipe].count; stub_child_exit_all(); }
 }
 
+/* A real SIGINT arriving while the shell is inside its own wait loop: the
+ * kernel would run sh_on_sigint on a pushed frame; here the hook stands in for
+ * the frame, and everything downstream of the flag is the shell's own code. */
+static void raise_hook(int n)
+{
+    if (n == 1) sh_on_sigint(LOGIT_SIGINT);
+}
+
 static void t_jobs(void)
 {
     begin_edit_session();
     for (int i = 0; i < MAXJOBS; i++) jobs[i].used = 0;
+
+    /* THE HANDLER IS INSTALLED AT ALL, checked through the real call before
+     * anything drives the flag by hand. On the serial console the kernel
+     * REFUSES a default-terminate signal to the protected console process while
+     * it has no handler (c/kernel/exec/ksignal.c, above ksig_kill), so a shell
+     * that never installed one would never see a ^C -- and every other
+     * assertion below would still pass, because they set the flag directly. */
+    stub_sigint_handler_set = 0;
+    sh_signals_init();
+    CHK(stub_sigint_handler_set == 1, "sh_signals_init did not install a SIGINT handler");
 
     struct cmd c;
     c.argc = 1; c.argv[0] = (char *)"sleeper"; c.argv[1] = 0;
@@ -359,19 +424,66 @@ static void t_jobs(void)
         CHK(st == 3, "status = %d, want 3", st);
     }
 
-    /* 2. ^C while the job is still alive: the shell gets its prompt back, the
-     *    job is marked interrupted, and the status is 130. */
+    /* 2. ^C FROM THE TERMINAL (an RT_C_INTR control frame) while the job is
+     *    still alive: the shell forwards SIGINT to every stage, the job dies,
+     *    the shell gets its prompt back and $? is 130.
+     *
+     *    This assertion used to read "the job should still be RUNNING -- there
+     *    is no kill(2)", which was true when it was written and is the exact
+     *    gap c/kernel/exec/ksignal.c:316 names. There is a kill(2) now, so the
+     *    test asserts the delivery rather than recording its absence. */
     stub_child_status = 0;
+    stub_kill_calls = 0; stub_sig_ignored = 0;
     j = start_pipeline(&c, 1, 0, "sleeper");
     CHK(j != 0, "second start_pipeline failed");
     if (j) {
+        int pid = j->pids[0];
         ctl_plain(RT_C_INTR);
         int st = wait_foreground(j);
         CHK(st == 130, "interrupt status = %d, want 130", st);
+        CHK(stub_kill_calls == 1, "SIGINT forwarded to %d stages, want 1", stub_kill_calls);
+        CHK(stub_kill_last_pid == pid, "SIGINT went to pid %d, want %d", stub_kill_last_pid, pid);
+        CHK(stub_kill_last_sig == LOGIT_SIGINT, "forwarded signal %d, want SIGINT (%d)",
+            stub_kill_last_sig, LOGIT_SIGINT);
+    }
+
+    /* 2b. THE SAME THING FROM A REAL SIGINT. On the serial console there is no
+     *     control channel at all: the kernel's tty drain posts SIGINT to the
+     *     foreground pid, which is the shell, and sh_on_sigint sets the flag
+     *     this loop reads. Driven through the nap hook so the signal lands
+     *     while the shell is inside its own wait, which is where it lands on
+     *     the machine. */
+    stub_kill_calls = 0; stub_sig_ignored = 0; sig_intr = 0;
+    j = start_pipeline(&c, 1, 0, "sleeper2");
+    if (j) {
+        stub_naps = 0;
+        stub_nap_hook = raise_hook;
+        int st = wait_foreground(j);
+        stub_nap_hook = 0;
+        CHK(st == 130, "SIGINT status = %d, want 130", st);
+        CHK(stub_kill_calls == 1, "a real SIGINT forwarded to %d stages, want 1", stub_kill_calls);
+        CHK(sig_intr == 0, "the SIGINT flag was left set for the next command");
+    }
+
+    /* 2c. A JOB THAT CATCHES SIGINT AND KEEPS RUNNING. The shell must not hang
+     *     waiting for it: after the grace period it falls back to the old
+     *     behaviour -- abandoned into the background, marked interrupted, still
+     *     listed by `jobs`. Without a bound this case is an unkillable
+     *     terminal, which is a worse bug than the one being fixed. */
+    stub_kill_calls = 0; stub_sig_ignored = 1;
+    j = start_pipeline(&c, 1, 0, "stubborn");
+    if (j) {
+        ctl_plain(RT_C_INTR);
+        int st = wait_foreground(j);
+        CHK(st == 130, "stubborn job status = %d, want 130", st);
+        CHK(stub_kill_calls == 1, "stubborn job was signalled %d times", stub_kill_calls);
         CHK(j->interrupted == 1, "job not marked interrupted");
-        CHK(job_running(j), "the job should still be RUNNING -- there is no kill(2)");
+        CHK(j->bg == 1, "a job that survived ^C was not abandoned into the background");
+        CHK(job_running(j), "the stub was told to ignore SIGINT but the job died anyway");
+        stub_sig_ignored = 0;
         stub_child_exit_all();
     }
+
 
     /* 3. ^D during a job closes that job's stdin, so a child blocked on read
      *    sees EOF. That is what the control channel buys over stdin. */
