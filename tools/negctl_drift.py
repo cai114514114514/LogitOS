@@ -20,7 +20,15 @@ Six drifted controls were found by hand in one sweep of this tree:
   nofocus/browser.o    used $(JS_CF) where the real objects use
                        $(BROWSER_JS_CF), reviving a bug fixed a week earlier
 
-There are 100 `*-negctl` targets. Six were found by tripping over them.
+  browser-nostream.elf missing $(GFX_OBJ)      -- the sweep, as
+                       test-sse-page-control, dying on the identical
+                       svg.o:(paint_shape) link error as noplat
+  browser-nofetch.elf  missing $(GFX_OBJ)      -- found by LOOKING, after the
+                       second instance suggested the family was worth listing.
+                       No target had ever run it.
+
+There are 100 `*-negctl` targets and four `browser-*.elf` variants. Eight
+drifted controls, and every one was found by accident or by finally looking.
 
 WHAT IT COMPARES, and why at this level. Recipes are compared UNEXPANDED: the
 tokens `$(GFX_OBJ)`, `$(WPT_TEST_SRC)`, `-lm`, `--stack-pages` and so on. That
@@ -122,10 +130,28 @@ def makefiles():
 
 
 def rules():
-    """-> {target: [recipe lines]}"""
+    """-> {target: [recipe lines]}, with backslash continuations JOINED FIRST.
+
+    Joining is not tidiness. Without it, a rule whose prerequisites wrap --
+
+        $(BUILD)/browser-nofocus.elf: $(ENGINE_OBJ) $(NOFOCUS_JS_OBJ) ... \\
+                                      $(GFX_OBJ) $(RUST_LIB) ...
+
+    -- loses its target on the second line (which starts with spaces, matches no
+    target pattern, and clears `cur`), so its RECIPE is dropped and the target
+    never appears in the result at all. The tool then reports three browser
+    variants where there are four, and the missing one is the variant whose
+    drift started this whole thread.
+
+    Third time today the same trap: a make construct that spans physical lines,
+    read one physical line at a time. It cost a wrong md5 in the Makefile, a
+    false MISSING in a shell check, and this.
+    """
     out, cur = {}, None
     for mf in makefiles():
-        for ln in open(mf, encoding="utf-8", errors="replace").read().split("\n"):
+        text = open(mf, encoding="utf-8", errors="replace").read()
+        text = re.sub(r"\\\n[ \t]*", " ", text)      # join continuations
+        for ln in text.split("\n"):
             if ln.startswith("\t"):
                 if cur:
                     out.setdefault(cur, []).append(ln)
@@ -142,6 +168,48 @@ def tokens(lines):
             if interesting(w):
                 t.add(w)
     return t
+
+
+def variant_binaries(r):
+    """The blind spot, closed for the one family that actually has members.
+
+    A control whose COMPILE lives in a separate rule is invisible to the
+    recipe-pairing above -- test-forms-negctl builds a disk and runs a QMP
+    harness, and the drift is in $(BUILD)/browser-nofocus.elf. That was written
+    down as a limitation, and then a SECOND instance turned up the same
+    afternoon (test-sse-page-control, dying on the identical svg.o:(paint_shape)
+    link error), and a third and fourth were found by looking:
+
+        browser-noplat    missing $(GFX_OBJ)   -- found by hand
+        browser-nostream  missing $(GFX_OBJ)   -- found by the sweep
+        browser-nofetch   missing $(GFX_OBJ)   -- found by looking, never run
+
+    Four variants of one binary, three of them drifted. That is a family, not an
+    exception, so it gets checked: every $(BUILD)/browser-*.elf is compared with
+    $(BUILD)/browser.elf, and a $(...) list the real one has and a variant does
+    not is reported. Deliberate omissions are the variant's own *_JS_OBJ, which
+    is the filtered object list that MAKES it a variant.
+    """
+    base = None
+    for t in r:
+        if t.endswith("/browser.elf"):
+            base = t
+            break
+    if not base:
+        return []
+    want = set(x for x in tokens(r[base]) if LIST_VAR.match(x))
+    out = []
+    for t in sorted(r):
+        if not re.search(r"/browser-[a-z0-9]+\.elf$", t):
+            continue
+        have = set(x for x in tokens(r[t]) if LIST_VAR.match(x))
+        # its own *_JS_OBJ replaces the base's; that substitution is the point
+        missing = sorted(x for x in want - have
+                         if not any(y.endswith("_JS_OBJ)") for y in have - want)
+                         or not x.endswith("_JS_OBJ)"))
+        if missing:
+            out.append((t, missing))
+    return out
 
 
 def main(argv):
@@ -191,6 +259,19 @@ def main(argv):
             print("      %s" % t)
     else:
         print("\nevery paired control has at least one token of its own (0 literal copies)")
+
+    # The variant-binary family. See variant_binaries() for why it needs its own
+    # pass rather than falling out of the pairing above.
+    vb = variant_binaries(r)
+    if vb:
+        print("\nBROWSER VARIANTS missing a list the real browser.elf links:")
+        for t, missing in vb:
+            print("      %s   %s" % (t, " ".join(missing)))
+        n_drift += len(vb)
+    else:
+        nv = sum(1 for t in r if re.search(r"/browser-[a-z0-9]+\.elf$", t))
+        print("\nevery browser-*.elf variant links what browser.elf links "
+              "(%d variants)" % nv)
 
     print("\n%d of %d name-paired controls have a token their positive target has"
           % (n_drift, n_pair))

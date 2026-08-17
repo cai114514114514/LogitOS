@@ -2695,8 +2695,8 @@ test-webapi-page: $(ISO) $(DISK)
 # fail. If this ever passes the positive checks, test-webapi-page is measuring
 # something other than this change.
 NOFETCH_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ))
-$(BUILD)/browser-nofetch.elf: $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-nofetch.elf: $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOFETCH_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-nofetch.aex: $(BUILD)/browser-nofetch.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nofetch.elf $@ Browser - 'B' 120 130 240
 
@@ -2781,8 +2781,8 @@ $(NOSTREAM_OBJ): c/apps/browser/js_webapi.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(JS_INC) -DWEBAPI_NO_STREAM -c $< -o $@
 NOSTREAM_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_webapi.o,$(BROWSER_JS_OBJ)) $(NOSTREAM_OBJ)
-$(BUILD)/browser-nostream.elf: $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-nostream.elf: $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOSTREAM_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-nostream.aex: $(BUILD)/browser-nostream.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/browser-nostream.elf $@ Browser - 'B' 120 130 240
 
