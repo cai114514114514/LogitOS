@@ -165,6 +165,33 @@ def main(argv):
         if show_all:
             for x in sorted(tn - tp):
                 print("      control-only (probably the point):  %s" % x)
+    # THE OTHER DIRECTION, and its value is being zero.
+    #
+    # Everything above asks whether the control is missing something the real
+    # target has. This asks whether the control has ANYTHING OF ITS OWN -- no
+    # -D, no swapped source list, no changed argument. A control that is a
+    # literal copy of its target cannot fail differently from it, so it can
+    # never be watched failing, and it is counted as evidence anyway. That is
+    # the worst shape a control can take, and it costs one set difference to
+    # rule out.
+    #
+    # Currently 0 of 71, which is why it prints even when it finds nothing: a
+    # check whose healthy state is silence is a check nobody knows is running.
+    identical = []
+    for neg, pos in pairs:
+        if pos not in r:
+            continue
+        alln = set(w for ln in r[neg] for w in ln.replace("\\", " ").split())
+        allp = set(w for ln in r[pos] for w in ln.replace("\\", " ").split())
+        if not (alln - allp):
+            identical.append(neg)
+    if identical:
+        print("\nCONTROLS THAT ARE LITERAL COPIES -- they cannot fail differently:")
+        for t in identical:
+            print("      %s" % t)
+    else:
+        print("\nevery paired control has at least one token of its own (0 literal copies)")
+
     print("\n%d of %d name-paired controls have a token their positive target has"
           % (n_drift, n_pair))
     print("(100 *-negctl targets exist; this pairs only those named X-negctl "
