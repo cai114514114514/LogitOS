@@ -41,6 +41,31 @@ const uint8_t *pkg_root_key(int i)
 const char *pkg_root_name(int i)
 { return (i >= 0 && i < PKG_ROOT_N) ? PKG_ROOTS[i].name : 0; }
 
+/* THE BUILT-IN ARRAY IS OUT OF SCOPE FROM HERE DOWN, and by the compiler rather
+ * than by convention.
+ *
+ * pkgsig.h:57-62 promises that moving the trust set off the ISO is "local to
+ * pkg_root_count/pkg_root_key". That promise is only worth the line it is
+ * written on if every reader of the trust set goes through them -- and until
+ * now lpk_verify did not: it looped over PKG_ROOTS directly, four lines below
+ * the three accessors it was supposed to use, while /bin/pkgverify --roots (the
+ * diagnostic whose entire job is to say who is trusted) did use them. With one
+ * compiled-in root the two read the same bytes and nothing diverges. Follow the
+ * header, swap the accessors for a disk or a keyring, and the LISTING and the
+ * VERDICT come from different sources -- the UI insisting the wrong one is
+ * right, which is worse than no UI.
+ *
+ * `#pragma GCC poison` makes a relapse a compile error at the exact character
+ * that causes it, instead of a second source of truth nobody sees until the
+ * accessors stop being a wrapper. It costs nothing: PKG_ROOTS and PKG_ROOT_N
+ * are referenced nowhere else in the tree (only this file and the generator
+ * that emits them). PKG_ROOT_N is #undef'd first because poisoning a live macro
+ * name is a diagnostic in its own right. Watched failing by test-pkg-poison,
+ * which appends one direct read to a copy of this file and requires cc to
+ * refuse it. */
+#undef PKG_ROOT_N
+#pragma GCC poison PKG_ROOTS PKG_ROOT_N
+
 int lpk_sign(uint8_t *hdr, const char *name,
              const uint8_t *payload, uint64_t payload_len,
              const uint8_t seed[32])
@@ -130,10 +155,24 @@ int lpk_verify(const uint8_t *buf, uint64_t len, struct lpk *out, int trust_any)
     if (!ed25519_verify(buf + 160, h, 32, buf + 128)) return LPK_E_SIG;
 #endif
 
+    /* Through the accessors, which are the only readers of the built-in array
+     * (see the poison above). `root_index` is an index into pkg_root_count()'s
+     * enumeration, so /bin/pkgverify can turn it back into a name with
+     * pkg_root_name() and be talking about the same entry.
+     *
+     * A NULL key is skipped, never matched: pkg_root_key is documented to
+     * return NULL for an entry it cannot produce, and a store that answers "I
+     * do not have this one" must narrow the trust set, not widen it. `continue`
+     * rather than `break` so one unreadable entry cannot hide the ones after
+     * it -- silently trusting fewer roots is a refusal a user can see, silently
+     * skipping the rest of the table is not. */
     int root = -1;
-    for (int r = 0; r < PKG_ROOT_N; r++) {
+    const int nroots = pkg_root_count();
+    for (int r = 0; r < nroots; r++) {
+        const uint8_t *rk = pkg_root_key(r);
+        if (!rk) continue;
         uint8_t diff = 0;
-        for (int i = 0; i < 32; i++) diff |= (uint8_t)(PKG_ROOTS[r].key[i] ^ buf[128 + i]);
+        for (int i = 0; i < 32; i++) diff |= (uint8_t)(rk[i] ^ buf[128 + i]);
         if (!diff) { root = r; break; }
     }
     if (root < 0 && !trust_any) return LPK_E_UNTRUSTED;

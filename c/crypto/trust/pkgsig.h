@@ -61,6 +61,16 @@
  *   root-owned /etc/trust becomes possible and the change is local to
  *   pkg_root_count/pkg_root_key below.
  *
+ *   That last sentence is now ENFORCED rather than asserted, and it was not
+ *   before: lpk_verify used to walk the compiled-in array itself, four lines
+ *   under the accessors, while /bin/pkgverify --roots used the accessors. With
+ *   a single built-in root the two agree and nothing is visibly wrong; change
+ *   the accessors as this paragraph invites and the machine's answer to "who
+ *   signed this?" and its answer to "who do you trust?" start coming from
+ *   different tables, with the UI reporting the one that did not decide.
+ *   pkgsig.c now reaches the trust set only through the three functions below,
+ *   and `#pragma GCC poison` on the array makes a relapse a compile error.
+ *
  * The Makefile gives pkgsig.o an explicit dependency on pkgroots.inc for the
  * same reason roots.o has one on roots_bundle.inc: regenerating the include
  * without it silently keeps the old keys in the kernel. */
