@@ -627,7 +627,8 @@ harness was built first.
 
 ## Storage: the block layer and LogitFS
 
-**Status (verified 2026-08-08, all 12 targets below run green): this machine
+**Status (verified 2026-08-08 and RE-VERIFIED 2026-08-17, all 12 targets
+below green both times): this machine
 keeps a file across a reboot.** The old "corrupts after repeated non-snapshot
 boots; use `-snapshot`" note was true of v3 and is not true now. Do not design
 around it, and do not add `-snapshot` to a harness to work around a write.
@@ -706,7 +707,12 @@ stopwatch). **Caveat worth knowing: `vfs_meta`'s records are in RAM and do NOT
 survive a reboot.** File *contents* are durable; modes and owners are not, until
 logitfs implements getattr/setattr (two function pointers, no other change).
 
-**Tests — and these are not decorative; all 12 were run green on 2026-08-08.**
+**Tests — and these are not decorative; all 12 ran green on 2026-08-08 and all
+12 ran green again on 2026-08-17**, the second time as part of a sweep of every
+target in the tree rather than as a deliberate check of this subsystem. That
+distinction is the point: nine days and a good deal of unrelated work later,
+including four boot targets that cost minutes each (test-durability is five
+boots, test-fscrash is four SIGKILLs), nothing here had quietly rotted.
 Host (`make test-fs-host`, seconds, uses a simulated device whose defining
 feature is a *volatile write cache* so barriers are not no-ops):
 `test-fs-cache` 29 · `test-fs-journal` 48 · `test-fs-crash` **1744** ·
