@@ -138,11 +138,27 @@ test-platform-page: $(ISO) $(DISK)
 # The device negative control: the same harness against a browser.aex linked
 # without js_platform.o and js_select.o. Both entry points are weak in
 # js_page.c, so that build links cleanly and simply comes up with none of it.
+#
+# THE CONTROL MUST DIFFER FROM THE REAL BROWSER IN EXACTLY ONE WAY, and these
+# two lines are a hand-copy of Makefile:702-703 and 730, so they drift. Both had:
+#
+#   * $(GFX_OBJ) missing. Harmless until the G3 migration pointed svg.c's
+#     paint_shape at the engine, at which point the control stopped LINKING --
+#     twenty undefined gfx_* symbols. Loud, and the cheap one.
+#
+#   * --stack-pages 2048 missing, which is the dangerous one. It is not a link
+#     error and never will be; it silently gives the control a fraction of the
+#     real browser's stack. This harness asserts the control comes up with NONE
+#     of the platform APIs, and a control that crashed on a deep render stack
+#     satisfies that assertion perfectly. A negative control passing for the
+#     wrong reason is worse than no control, because it is counted as evidence.
+#
+# Anything added to the browser's link or packaging has to be added here too.
 NOPLAT_JS_OBJ := $(filter-out $(BUILD)/jsobj/c/apps/browser/js_platform.o $(BUILD)/jsobj/c/apps/browser/js_select.o $(BUILD)/jsobj/c/apps/browser/js_intl.o,$(BROWSER_JS_OBJ))
-$(BUILD)/browser-noplat.elf: $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
-	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+$(BUILD)/browser-noplat.elf: $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(NOPLAT_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
 $(BUILD)/browser-noplat.aex: $(BUILD)/browser-noplat.elf tools/mkaex.py
-	python3 tools/mkaex.py $(BUILD)/browser-noplat.elf $@ Browser - 'B' 120 130 240
+	python3 tools/mkaex.py $(BUILD)/browser-noplat.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
 
 test-platform-page-control: $(ISO) $(BUILD)/browser-noplat.aex
 	@$(MAKE) DISK=$(BUILD)/disk-noplat.img BROWSER_AEX=$(BUILD)/browser-noplat.aex $(BUILD)/disk-noplat.img
