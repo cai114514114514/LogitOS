@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "logitfs.h"
 #include "net.h"
+#include "roots.h"        /* trust_banner -- the compiled-in CA set, named */
 #include "text.h"
 #include "img.h"
 #include "smp.h"
@@ -158,6 +159,16 @@ void kernel_main(uint64_t mb_info)
      * every key at its default, which is why nothing after this line has to
      * care whether it worked. */
     if (fs_ok) settings_init();
+
+    /* Enumerate the trust store on serial before the network exists. It used
+     * to be printed from tls_start(), which meant a machine that never opened
+     * a TLS connection never said what it trusts -- and "what it trusts" is
+     * not a runtime property, it is compiled in, so there was never a reason
+     * to wait for a handshake to state it. Beside net_init because this is the
+     * anchor set every https fetch net_init makes possible will be checked
+     * against. trust_banner() is idempotent; tls_start still calls it, and on
+     * an ordinary boot finds it already said. */
+    trust_banner();
 
     net_init();   /* NIC + stack (incl. TCP + HTTP); apps drive it at runtime */
 

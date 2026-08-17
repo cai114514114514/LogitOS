@@ -1320,16 +1320,41 @@ static int step_recv_flight(struct tls_sess *s)
 
 /* ------------------------------------------------------------- public API */
 
-/* Say out loud, once, how big the trust store actually is -- including the
- * roots that were dropped at generation time because we cannot verify their key
- * type. tools/roots/ holding 130 PEMs means nothing if some of them never made
- * it into the binary; this is the line that stops that from being invisible. */
-static void trust_banner(void)
+/* Say out loud, once, WHAT this machine trusts -- the two counts, and then
+ * every root by name.
+ *
+ * The counts alone were the whole banner until logit_root_names[] existed, and
+ * they were never the interesting half: tools/roots/ holding 130 PEMs means
+ * nothing if some of them never made it into the binary, but "130 roots" also
+ * means nothing to someone asking whether a particular CA is in there. A
+ * trust store that cannot enumerate itself can only be audited by rebuilding
+ * it, which is not an operation a running machine can perform.
+ *
+ * Called from kernel_main (c/kernel/core/kmain.c, beside net_init) as well as
+ * from tls_start below -- `done` makes the second call a no-op, so on an
+ * ordinary boot this prints at boot and the handshake-time call finds it
+ * already said. That relocation is only safe because tests/boot/run-test.sh
+ * greps for the EXACT counts, so a store that quietly shrank is a red test
+ * rather than a line that still prints. */
+void trust_banner(void)
 {
     static int done;
     if (done) return;
     done = 1;
     kprintf("[tls] trust store: %d roots, %d skipped\n", logit_nroots, logit_nroots_skipped);
+    /* Packed several to a line: 130 names one per line buries the rest of the
+     * boot log, and the names are for reading, not for parsing. */
+    char line[96];
+    int n = 0;
+    for (int i = 0; i < logit_nroots; i++) {
+        const char *s = logit_root_names[i];
+        int l = 0; while (s[l]) l++;
+        if (l > (int)sizeof line - 2) l = (int)sizeof line - 2;  /* never overrun */
+        if (n && n + 1 + l > 78) { line[n] = 0; kprintf("[tls]   %s\n", line); n = 0; }
+        if (n) line[n++] = ' ';
+        for (int k = 0; k < l; k++) line[n++] = s[k];
+    }
+    if (n) { line[n] = 0; kprintf("[tls]   %s\n", line); }
     for (int i = 0; i < logit_nroots_skipped && logit_roots_skipped[i]; i++)
         kprintf("[tls]   NOT TRUSTED (unsupported key): %s\n", logit_roots_skipped[i]);
 }

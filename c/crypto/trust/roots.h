@@ -27,6 +27,28 @@ struct root_ca {
 extern const struct root_ca logit_roots[];
 extern const int logit_nroots;
 
+/* The name of each row, in logit_roots[] order, exactly logit_nroots entries:
+ * the basename of the PEM in tools/roots/ it was generated from. Kept as a
+ * PARALLEL array rather than a ninth field of struct root_ca on purpose -- the
+ * row is walked by two byte-comparison loops in net/x509.c (:422, :447) that
+ * compare nothing but key material, and widening the row would touch both for
+ * a string neither reads.
+ *
+ * It exists because a count is not an answer to "which CAs does this machine
+ * trust?". The struct above is eight fields of key material and no name, so
+ * until this array the honest answer from a running kernel was a number. The
+ * slug is the right identifier and not merely the convenient one: adding a PEM
+ * to tools/roots/ is how a root is trusted and deleting one is how it is
+ * revoked, and `make check-roots` makes a bundle that disagrees with that
+ * directory a hard build failure. */
+extern const char *const logit_root_names[];
+
+/* Print the trust store -- the two counts and every root's name -- once per
+ * boot, to serial. Defined in c/net/tls/tls.c beside the code that consumes
+ * the store; declared here because kernel_main calls it at boot, so a machine
+ * that never opens a TLS connection still says what it trusts. */
+void trust_banner(void);
+
 /* Roots that exist as PEMs in tools/roots/ but were NOT compiled in, because
  * their key type is one this kernel cannot verify (Ed448, and anything not
  * in the ROOT_* list above). Each
