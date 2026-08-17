@@ -220,6 +220,7 @@ test-mse
 test-mse-asan
 test-mse-os
 test-nd-host
+test-negctl-drift
 test-net
 test-net-drivers
 test-net-os

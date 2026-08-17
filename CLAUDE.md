@@ -1142,13 +1142,23 @@ in `kheap.c`:
   the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
   `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
 
-## The test suite: 522 targets, and `make test` reaches 22
+## The test suite: 594 targets, and `make test` reaches 22
 
 **This is the single most load-bearing fact about testing in this tree**, and it
-is measured, not estimated: `make test-audit` counts 522 `test-` targets and
-finds **352 that no suite reaches** -- after already excluding the ones
+is measured, not estimated: `make test-audit` counts 594 `test-` targets and
+finds **359 that no suite reaches** -- after already excluding the ones
 deliberately out of CI (benchmarks, negative controls run by their positive
 counterpart, manual drivers). Everything below follows from it.
+
+**Every number in this section is a measurement with a date, and they move.**
+As of 2026-08-17: 594 `test-` targets, 22 wired into a suite, 359 unwired (all
+recorded by name in `tests/audit-unwired.baseline`, and the gate is that the set
+does not GROW), 14 DEAD harnesses and **0 MUTE**. The sweep classifies 530 of
+them: 337 host, 156 device, 3 that need an argument, and 34 aggregates it skips
+because it already runs every one of their members individually.
+
+Re-measure before quoting: this paragraph was 522/352 for long enough that the
+gap became the finding.
 
 **A gate nobody runs is a gate that rots, and it rots silently.** One sweep of
 all 522 found five host targets that had stopped BUILDING -- not failing, not
@@ -1172,7 +1182,7 @@ feared: `test-audio-codec-fuzz-deep`, `test-h265`, `test-demux` and
 `test-csstext-all` all failed in the parallel phase and pass by themselves. A
 sweep that reports those is MANUFACTURING bugs, which is worse than missing
 them. `make test-sweep-host` is the half worth running after an ordinary change
-(minutes); the full one boots QEMU 169 times and takes an afternoon, which is
+(minutes); the full one boots QEMU about 156 times and takes an afternoon, which is
 why it is not wired into `test` or `ci`.
 
 **THE MIRROR-IMAGE TRAPS IN `test-libc-diff`.** The header of `tests/libc.mk`
@@ -1194,7 +1204,7 @@ actually uses: `sys.exit(main())` propagates a status the literal-integer
 search cannot see; a shell script's exit status is its LAST COMMAND'S (`exec
 python3 ...`, a bare `[ "$ok" -gt 0 ]`, `set -e`); and a harness no target runs
 cannot make a gate pass wrongly, so listing the dead ones twice buries the few
-that can. The four that remain are declared in `ALLOW_MUTE` with a reason each
+that can. The ones that remain are declared in `ALLOW_MUTE` with a reason each
 -- a library, two scoreboard REPORTERS whose per-site FAIL is the measurement
 they exist to produce, and a fixture builder. **An empty category is the point:
 a list of 28 with 24 false entries is a list nobody reads, and the 29th -- a
