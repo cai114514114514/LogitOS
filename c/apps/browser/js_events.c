@@ -79,6 +79,8 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>     /* exit(): the negative control below aborts rather
+                         * than report a verdict it cannot support */
 #include "quickjs.h"
 #include "js_events.h"
 
@@ -854,9 +856,47 @@ static const char NEGCTL_JS[] =
 "    return !ev.defaultPrevented;\n"
 "  });\n"
 "}\n"
+/* PATCH THE OBJECT THAT OWNS THE METHOD, not the first prototype above an
+ * element. js_dom.c installs addEventListener/removeEventListener/
+ * dispatchEvent on EventTarget.prototype, and wrap() chains
+ * EventTarget -> Node -> Element -> HTMLElement -> HTML*Element, so
+ * `Object.getPrototypeOf(document.createElement('div'))` is a LEAF of that
+ * chain, several links below the owner. Defining the stub there shadows it for
+ * whatever wrappers happen to share that exact leaf and for nothing else --
+ * which is how this control came to install cleanly, report nothing, and leave
+ * the walk fully intact. Walking up to the owner is both correct and robust to
+ * the chain growing another link. */
+"function owner(o, k) {\n"
+"  for (var p = o; p; p = Object.getPrototypeOf(p))\n"
+"    if (Object.prototype.hasOwnProperty.call(p, k)) return p;\n"
+"  return null;\n"
+"}\n"
 "var EP = null;\n"
-"try { if (doc && doc.createElement) EP = Object.getPrototypeOf(doc.createElement('div')); } catch (e) {}\n"
-"patch(EP); patch(doc); patch(G);\n"
+"try { if (doc && doc.createElement)\n"
+"  EP = owner(doc.createElement('div'), 'addEventListener'); } catch (e) {}\n"
+/* THE CONTROL HAS TO PROVE IT TOOK EFFECT.
+ *
+ * patch(null) returns immediately, and EP is fetched inside a try that
+ * swallows. So if the Element prototype cannot be reached at install time,
+ * this file quietly patches only `document` and the global -- and every
+ * listener in tests/events/order.html is on an ELEMENT, whose
+ * addEventListener and dispatchEvent stay NATIVE. The walk is then fully
+ * intact, order.html passes 10/10, and the control concludes that the
+ * ordering suite is not measuring ordering.
+ *
+ * That conclusion is a correct observation with the wrong culprit named. A
+ * negative control that silently degrades into a copy of the positive build
+ * is the worst kind, because its green and its red both mean nothing and
+ * only the red gets investigated. */
+"if (!EP) throw new Error('negctl: no Element prototype -- addEventListener \\\n"
+"on elements would stay NATIVE and the walk would NOT be stubbed');\n"
+/* document and the global get the same treatment, and by the same rule:
+ * js_dom.c gives `document` its own addEventListener (doc_addEventListener)
+ * and js_page.c binds window's, so for those two the owner may well BE the
+ * object itself -- owner() returns it and patch() defines over it. */
+"patch(EP); patch(owner(doc, 'addEventListener') || doc);\n"
+"patch(owner(G, 'addEventListener') || G);\n"
+"return 'ok';\n"
 "})();\n";
 #endif
 
@@ -885,9 +925,26 @@ void js_events_install(JSContext *ctx)
 
 #ifdef JS_EVENTS_NEGCTL
     {
+        /* LOUD, for the same reason the positive install above is loud, and it
+         * is worth naming that this file made the argument once and applied it
+         * to one of the two paths. A control whose stub fails to install is
+         * byte-for-byte the build it is supposed to differ from; it then
+         * reports that the suite it controls is measuring nothing, which is
+         * the one thing the reader will act on and the one thing that is not
+         * true. Aborting beats reporting a fiction. */
         JSValue n = JS_Eval(ctx, NEGCTL_JS, sizeof NEGCTL_JS - 1,
                             "<js_events_negctl>", JS_EVAL_TYPE_GLOBAL);
-        if (JS_IsException(n)) JS_FreeValue(ctx, JS_GetException(ctx));
+        if (JS_IsException(n)) {
+            JSValue e = JS_GetException(ctx);
+            const char *m = JS_ToCString(ctx, e);
+            fprintf(stderr, "js_events NEGCTL: stub did not install: %s\n",
+                    m ? m : "(unprintable)");
+            fprintf(stderr, "js_events NEGCTL: this build is identical to the "
+                            "real one -- its verdict is meaningless\n");
+            if (m) JS_FreeCString(ctx, m);
+            JS_FreeValue(ctx, e);
+            exit(2);
+        }
         JS_FreeValue(ctx, n);
     }
 #endif
