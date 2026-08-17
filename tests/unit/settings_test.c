@@ -45,30 +45,77 @@ static int   fs_len = -1;              /* -1 = the file does not exist */
 static int   fs_writes, fs_deletes;
 static int   fs_write_fails;           /* >0: fail the next N writes */
 
+/* TWO MORE SLOTS, added for t_gate and deliberately NOT a filesystem.
+ *
+ * The permission gate is about which of two stores a write lands in, so a
+ * one-file stub cannot exercise it at all -- settings_prepare_user() reads
+ * /etc/passwd to find a home, and a commit under a session writes
+ * <home>/.config/settings.conf. Both were "return -1" here, so a session
+ * could not be established and the gate had no second store to distinguish.
+ *
+ * `passwd` is read-only (nothing writes it) and ANY path that is neither it
+ * nor SET_PATH is the one user file -- rather than a path table, because the
+ * point is "the system store and not-the-system-store" and hard-coding what
+ * settings.c computes for a home would pin an implementation detail this file
+ * has no business knowing. The counters stay separate: fs_writes/fs_deletes
+ * are asserted by tests above and must keep counting only the system store. */
+#define PW_PATH "/etc/passwd"
+static const char *fs_passwd;          /* NULL = this machine has no accounts */
+static char  usr_buf[8192];
+static int   usr_len = -1;             /* -1 = the user's file does not exist */
+static int   usr_writes, usr_deletes;
+
+static int is_sys(const char *p)  { return strcmp(p, SET_PATH) == 0; }
+static int is_pw(const char *p)   { return strcmp(p, PW_PATH) == 0; }
+
 int vfs_size(const char *p)
-{ return (strcmp(p, SET_PATH) == 0 && fs_len >= 0) ? fs_len : -1; }
+{
+    if (is_sys(p)) return fs_len >= 0 ? fs_len : -1;
+    if (is_pw(p))  return fs_passwd ? (int)strlen(fs_passwd) : -1;
+    return usr_len >= 0 ? usr_len : -1;
+}
 
 int vfs_read(const char *p, void *b, int max)
 {
-    if (strcmp(p, SET_PATH) != 0 || fs_len < 0) return -1;
-    int n = fs_len < max ? fs_len : max;
-    memcpy(b, fs_buf, (size_t)n);
+    if (is_pw(p)) {
+        if (!fs_passwd) return -1;
+        int n = (int)strlen(fs_passwd);
+        if (n > max) n = max;
+        memcpy(b, fs_passwd, (size_t)n);
+        return n;
+    }
+    const char *src = is_sys(p) ? fs_buf : usr_buf;
+    int len = is_sys(p) ? fs_len : usr_len;
+    if (len < 0) return -1;
+    int n = len < max ? len : max;
+    memcpy(b, src, (size_t)n);
     return n;
 }
 
 int vfs_write(const char *p, const void *b, int size)
 {
-    if (strcmp(p, SET_PATH) != 0) return -1;
+    if (is_pw(p)) return -1;                 /* nothing here writes accounts */
     if (fs_write_fails > 0) { fs_write_fails--; return -1; }
-    if (size > (int)sizeof fs_buf) return -1;
-    memcpy(fs_buf, b, (size_t)size);
-    fs_len = size;
-    fs_writes++;
+    if (is_sys(p)) {
+        if (size > (int)sizeof fs_buf) return -1;
+        memcpy(fs_buf, b, (size_t)size);
+        fs_len = size;
+        fs_writes++;
+        return size;
+    }
+    if (size > (int)sizeof usr_buf) return -1;
+    memcpy(usr_buf, b, (size_t)size);
+    usr_len = size;
+    usr_writes++;
     return size;
 }
 
 int vfs_delete(const char *p)
-{ if (strcmp(p, SET_PATH)) return -1; fs_len = -1; fs_deletes++; return 0; }
+{
+    if (is_pw(p)) return -1;
+    if (is_sys(p)) { fs_len = -1;  fs_deletes++;  return 0; }
+    usr_len = -1; usr_deletes++; return 0;
+}
 
 int vfs_mkdir(const char *p) { (void)p; return 0; }
 
@@ -607,6 +654,93 @@ static void t_selftest(void)
     ok(settings_get_int("net.dhcp", 1) == 0, "the sweep leaves the live network alone");
 }
 
+/* ---- the permission gate ----------------------------------------------
+ *
+ * WHY THIS DID NOT EXIST, which is more useful than the test.
+ * settings.c declares `vfs_cred_current` WEAK so a build without the cred
+ * table still links, and answers uid 0 -- root -- when the pointer is NULL.
+ * This file never defined it. So every settings_syscall() the host suite could
+ * have made would have been made as root, the gate would have stepped aside
+ * every time, and the whole of it was structurally unreachable. The stub that
+ * makes the test possible is the same stub that made the gate untestable, and
+ * nothing said so: the suite was green with the gate refusing every logged-in
+ * user, and only two QEMU boots (test-desktop-os) could see it.
+ *
+ * Four rows, because the rule has two dimensions and testing one of them is
+ * how it broke. "Machine state" is a property of WHERE THE WRITE LANDS, not of
+ * what the key is called:
+ *
+ *   uid    store                       schema write
+ *   0      system (/etc)               ok      -- root configures the machine
+ *   1000   system (no session)         REFUSED -- the hole the gate exists for
+ *   1000   alice's own (session 1000)  ok      -- THE BUG: this was refused
+ *   1000   root's    (session 0)       REFUSED -- the hole widening it opens
+ *
+ * The last row is why store_is_mine() exists rather than store_is_system()
+ * alone, and it is reachable rather than theoretical: with root logged in,
+ * user_path points at root's home, so store_is_system() is false and a gate
+ * testing only that would step aside for a uid-1000 process writing into
+ * root's store. */
+/* The same two-field definition c/fs/vfs_meta.h gives. Spelled out rather than
+ * included, for the reason settings.c gives above its own forward declaration:
+ * pulling vfs.h into this link would bring the whole VFS in behind it, and the
+ * five stubs at the top of this file exist precisely so it does not come. */
+struct vcred { unsigned uid, gid; };
+static unsigned g_test_uid;
+void vfs_cred_current(struct vcred *c);
+void vfs_cred_current(struct vcred *c)
+{
+    c->uid = g_test_uid; c->gid = g_test_uid;
+}
+
+static void t_gate(void)
+{
+    printf("\n-- the permission gate: where the write lands, not what the key is --\n");
+    const char *schema_key = "ui.dark";
+    ok(settings_schema_find(schema_key) != NULL,
+       "ui.dark is a schema key, so the gate applies to it at all");
+
+    /* Six colon-separated fields, which is what acct_parse_line requires and
+     * will reject a seventh of -- see c/apps/coreutils/accounts.h. The hash is
+     * "x" because nothing here authenticates; what is being resolved is a
+     * home, and that is field five. */
+    fs_passwd = "root:x:0:0:/root:/bin/sh\n"
+                "alice:x:1000:1000:/home/alice:/bin/sh\n";
+
+    /* root, no session: the machine's own store. */
+    settings_discard_user();
+    g_test_uid = 0;
+    ok(settings_syscall(SYS_SETTING_SET, (long)schema_key, (long)"1", 1) == 0,
+       "root writes a schema key into the system store");
+
+    /* a user with no session, still aimed at the system store. */
+    g_test_uid = 1000;
+    ok(settings_syscall(SYS_SETTING_SET, (long)schema_key, (long)"0", 1) == ID_E_PERM,
+       "a non-root process may NOT rewrite machine state");
+
+    /* alice, logged in, writing her own file. THE BUG. */
+    if (settings_prepare_user(1000) == 0) {
+        settings_adopt_user();
+        g_test_uid = 1000;
+        ok(settings_syscall(SYS_SETTING_SET, (long)schema_key, (long)"1", 1) == 0,
+           "alice writes a schema key into alice's OWN store");
+
+        /* ...and somebody else does not, into the same store. */
+        g_test_uid = 1001;
+        ok(settings_syscall(SYS_SETTING_SET, (long)schema_key, (long)"0", 1) == ID_E_PERM,
+           "another user may NOT write into alice's store");
+        settings_discard_user();
+    } else {
+        /* Said out loud rather than skipped silently: a prepare that cannot
+         * resolve a home makes the two rows above unreachable, and a suite
+         * that quietly drops them is the failure this whole file is about. */
+        printf("  SKIP: settings_prepare_user(1000) could not resolve a home --\n"
+               "        the two session rows are UNMEASURED in this build\n");
+        fails++;
+    }
+    g_test_uid = 0;
+}
+
 int main(int argc, char **argv)
 {
     verbose = (argc > 1 && strcmp(argv[1], "-v") == 0);
@@ -618,9 +752,11 @@ int main(int argc, char **argv)
     t_rules();
     t_frames();
     t_selftest();
+    t_gate();
 
     printf("\n%d checks, %d failed\n", checks, fails);
-#if defined(SETTINGS_NO_TRUNC_GUARD) || defined(SETTINGS_NO_RANGE_CHECK)
+#if defined(SETTINGS_NO_TRUNC_GUARD) || defined(SETTINGS_NO_RANGE_CHECK) \
+ || defined(SETTINGS_GATE_KEY_IS_MACHINE) || defined(SETTINGS_GATE_STORE_ONLY)
     /* A negative control. It is built to fail; a build of it that PASSES means
      * the assertion it was aimed at is not actually being made. */
     if (!fails) {

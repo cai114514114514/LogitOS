@@ -538,6 +538,25 @@ int settings_load(void)
 const char *settings_store_path(void)
 { return user_path[0] ? user_path : SET_PATH; }
 
+/* Does a write land in the MACHINE's store rather than some user's own file?
+ * The permission gates in settings_syscall() key off this and nothing else:
+ * "machine state" is a property of the destination, not of the key's name. One
+ * definition, the same user_path[0] settings_store_path() above and
+ * settings_commit() already use. */
+static int store_is_system(void) { return user_path[0] == 0; }
+
+/* ...and "nor somebody else's". The gates refuse a non-root SCHEMA write that
+ * would land in machine state OR IN ANOTHER USER'S FILE.
+ *
+ * store_is_system() alone is not enough, and the gap is reachable rather than
+ * theoretical: with root logged in, user_path points at root's home, so
+ * store_is_system() is false and a gate testing only that would step aside for
+ * a uid-1000 process writing into root's store. The per-user store exists so a
+ * user's schema values live under a file THEY own -- a write by anybody else is
+ * the thing it was built to prevent, and widening the gate to fix alice must
+ * not open that. */
+static int store_is_mine(unsigned uid) { return !store_is_system() && uid == user_uid; }
+
 int settings_prepare_user(unsigned uid)
 {
     pending_path[0] = 0;
@@ -1293,11 +1312,40 @@ long settings_syscall(long num, long a, long b, long c)
          * kernel-internal caller (settings_frame_save(), the boot-time
          * defaults) that calls settings_set_* directly rather than through
          * this syscall never meets it at all. */
+        /* ...AND THE GATE ASKED THE WRONG QUESTION, which run-desktop-test.sh
+         * caught as "boot 2: A USER COULD NOT SAVE A SETTING".
+         *
+         * "A schema key is machine state" is true of the SYSTEM store and stops
+         * being true the moment a user logs in. settings_prepare_user() points
+         * the store at $HOME/.config/settings.conf precisely so that a user's
+         * schema values override root's defaults under a file they own -- that
+         * is the whole feature, and settings_store_path() already returns the
+         * user's path when one is active. A write under a session is not
+         * machine-wide configuration; it is alice's ui.dark in alice's home,
+         * mode 600, uid 1000.
+         *
+         * So the hole this gate closes is "any process may rewrite MACHINE
+         * state", and the thing it must test is where the write LANDS, not what
+         * the key is called. store_is_system() is that test, and it is the same
+         * user_path[0] that settings_store_path() and settings_commit() already
+         * key off -- not a second notion of "is a user active" invented here.
+         *
+         * The two features are each correct alone. They contradicted where they
+         * met, and the symptom was identical to a much older bug about file
+         * ownership -- which is what the harness's message still names, and why
+         * the log's own `STAT ... uid=1000 gid=1000` for the file it says the
+         * user could not write to made no sense. */
         if (settings_schema_find(key)) {
             struct vcred me;
             if (vfs_cred_current) vfs_cred_current(&me);
             else                  me.uid = 0;   /* host test link: no cred table -> root */
+#if defined(SETTINGS_GATE_KEY_IS_MACHINE)   /* negctl: the gate as it shipped */
             if (me.uid != 0) return ID_E_PERM;
+#elif defined(SETTINGS_GATE_STORE_ONLY)    /* negctl: destination, but not owner */
+            if (me.uid != 0 && store_is_system()) return ID_E_PERM;
+#else
+            if (me.uid != 0 && !store_is_mine(me.uid)) return ID_E_PERM;
+#endif
         }
         return settings_set_str(key, val, (int)c & 1);
     }
@@ -1383,11 +1431,25 @@ long settings_syscall(long num, long a, long b, long c)
              * leaving it open would make the refusal above decorative (can't
              * set ui.dark, can erase it). Found by the adversarial verifier of
              * the settings line, closed at integration. Root's boot-time /
-             * kernel-internal resets never come through this syscall. */
+             * kernel-internal resets never come through this syscall.
+             *
+             * ...and it inherits the same correction, for a reason already
+             * written into settings_reset() itself: it deletes
+             * settings_store_path(), which IS the user's file when a session is
+             * active, "so that a user resetting their settings must not be able
+             * to delete root's defaults". That function was already
+             * user-aware; only this gate was not, and between them a logged-in
+             * user could not reset settings that were hers to begin with. */
             struct vcred me;
             if (vfs_cred_current) vfs_cred_current(&me);
             else                  me.uid = 0;   /* host test link: no cred table -> root */
+#if defined(SETTINGS_GATE_KEY_IS_MACHINE)   /* negctl: the gate as it shipped */
             if (me.uid != 0) return ID_E_PERM;
+#elif defined(SETTINGS_GATE_STORE_ONLY)    /* negctl: destination, but not owner */
+            if (me.uid != 0 && store_is_system()) return ID_E_PERM;
+#else
+            if (me.uid != 0 && !store_is_mine(me.uid)) return ID_E_PERM;
+#endif
             return settings_reset();
         }
         case SETCTL_COUNT:    return settings_schema_count();

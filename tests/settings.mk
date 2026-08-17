@@ -62,7 +62,42 @@ test-settings-negctl:
 	  rc=$$?; tail -3 $(BUILD)/settings_negctl2.log; \
 	  if [ $$rc -ne 0 ]; then \
 	    echo "test-settings-negctl: FAIL -- control 2 did not fail as required"; exit 1; fi
-	@echo "test-settings-negctl: both controls failed as required"
+	@echo "--- negative control 3: the gate as it shipped (must fail) ---"
+	@$(CC) $(SET_CFLAGS) $(SET_INC) -DSETTINGS_GATE_KEY_IS_MACHINE \
+	    -o $(BUILD)/settings_negctl3 $(SET_SRC)
+	@$(BUILD)/settings_negctl3 > $(BUILD)/settings_negctl3.log 2>&1; \
+	  rc=$$?; grep -E '^ *FAIL|checks,' $(BUILD)/settings_negctl3.log | tail -3; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "test-settings-negctl: FAIL -- control 3 did not fail as required"; exit 1; fi
+	@echo "--- negative control 4: destination but not owner (must fail) ---"
+	@$(CC) $(SET_CFLAGS) $(SET_INC) -DSETTINGS_GATE_STORE_ONLY \
+	    -o $(BUILD)/settings_negctl4 $(SET_SRC)
+	@$(BUILD)/settings_negctl4 > $(BUILD)/settings_negctl4.log 2>&1; \
+	  rc=$$?; grep -E '^ *FAIL|checks,' $(BUILD)/settings_negctl4.log | tail -3; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "test-settings-negctl: FAIL -- control 4 did not fail as required"; exit 1; fi
+	@echo "test-settings-negctl: all four controls failed as required"
+
+# CONTROLS 3 AND 4 ARE OPPOSITES, and that is what makes the pair worth having
+# rather than one of them. The gate has to answer two questions at once --
+# "would this write land in machine state?" and "is this store yours?" -- and
+# each control removes exactly one:
+#
+#   SETTINGS_GATE_KEY_IS_MACHINE  the gate as it shipped: any non-root schema
+#                                 write refused, wherever it lands. This is the
+#                                 bug test-desktop-os found as "boot 2: A USER
+#                                 COULD NOT SAVE A SETTING" -- alice, owner of
+#                                 a mode-600 file, refused a write to it.
+#   SETTINGS_GATE_STORE_ONLY      tests the destination and not the owner, so
+#                                 with root logged in (user_path -> root's
+#                                 home) a uid-1000 process may write into
+#                                 root's store. This is the hole that widening
+#                                 the gate to fix alice would have opened, and
+#                                 it is why store_is_mine() exists rather than
+#                                 store_is_system() alone.
+#
+# Each must fail exactly its own row of t_gate's four. If one ever fails both,
+# the table has stopped distinguishing the two questions.
 
 # The one that matters: SET IT, REBOOT WITHOUT -snapshot, CHECK IT. Six real
 # boots against one disk image. A settings system tested without a real reboot
