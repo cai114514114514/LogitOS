@@ -78,6 +78,34 @@ snapshot and the blit**. What is left is smaller:
 | the glyph cache | any `SYS_GUI_TEXT` | its own lock — the one genuinely new piece |
 | the back buffer | WM only | nothing |
 
+### The glyph cache, read before designing its lock
+
+`c/kernel/gui/text.c`: 2048 open-addressed entries, 8-probe window, evict on
+overflow. Three hazards, and **the sharpest one is not the table**:
+
+1. **`rastbuf` is ONE shared 200x200 scratch buffer.** Two cores rasterising at
+   once corrupt each other's glyph. This is the hazard a table lock alone would
+   not fix, because it is not in the table.
+2. **Eviction `kfree(cache[h0].cov)`** frees a coverage buffer another core may
+   be blitting from.
+3. **`glyph_get` returns a pointer INTO the table**, and the caller reads
+   `e->cov` after it returns -- so a lock held only inside `glyph_get` protects
+   nothing that matters.
+
+The shape that answers all three without a new global bottleneck:
+
+- **Allocate the scratch on a MISS instead of sharing one.** kmalloc is cheap
+  now (per-core magazines, 64d391255) and a miss is rare by construction -- a
+  cache that misses often is a cache that is too small, which is a different
+  bug. That deletes hazard 1 outright and removes rasterisation from the
+  critical section.
+- **The lock then covers only the probe, the evict and the fill** -- tens of
+  instructions, not a rasterisation.
+- **Hazard 3 is the real design choice.** Either the caller holds the lock
+  across its blit (simple, and a text run is short), or entries carry a
+  refcount. Prefer the first until a measurement says text contention is real;
+  the second is the answer if it is.
+
 Order of work: glyph-cache lock → window-list lock + geometry snapshot →
 release the BKL across the pixel pass → measure.
 
