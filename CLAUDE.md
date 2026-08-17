@@ -958,6 +958,38 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## IPv6 — eight gates, all green, and the string "ip6" was not in this file
+
+Measured the same way the H.265 gap was, and it is the worse of the two: the
+networking sections above run from M9 to M12 and say "net" thirty-seven times,
+so a reader does not conclude the documentation is thin here — they conclude the
+stack is **IPv4-only**. It is not.
+
+`c/net/ip/`: `ip6.c` (477 lines), `nd.c` (882), `ip6_addr.c`. Eight targets,
+**all eight green** in the full sweep: `test-ip6-host`, `test-nd-host`,
+`test-ip6-dns`, `test-ip6-fallback`, and a negative control for each.
+
+The two shape differences the source argues, worth knowing before touching it:
+
+- **There is no `net_cfg.ip`.** An interface holds SEVERAL addresses at once —
+  always a link-local one, usually one or more routable — each with an RFC 4862
+  state and two lifetimes. Which one sources a packet is decided **per
+  destination** by RFC 6724, in `ip6_addr.c`. Every "the machine's IP address"
+  assumption from the IPv4 side is wrong here.
+- **Neighbour Discovery is not ARP.** ARP is its own ethertype with a flat
+  cache and no state; ND is ICMPv6 — it runs OVER IP, over multicast, with a
+  five-state per-neighbour machine, and it carries the host's whole address
+  configuration as a side effect. `nd.c` implements one protocol that does the
+  job of ARP, ICMP redirects, router discovery and DHCP (RFC 4443, 4861, 4862).
+
+`test-ip6-fallback` is the one to know by name, and its own comment says why:
+it drives the dual-stack socket state machine (`c/net/core/sock.c`) against a
+model TCP and asks two things -- does a preferred-but-BLACK-HOLED IPv6
+destination actually end up fetching over IPv4, and does a v4-only answer behave
+EXACTLY as it did before IPv6 existed (one connection, no race, same order)?
+The second question is the one that matters most: it is what stops an
+IPv6-capable build from making every IPv4 network slower.
+
 ## H.265/HEVC — nine gates, and this file did not mention it
 
 Written down because the omission is the mirror image of a stale claim: there is
