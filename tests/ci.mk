@@ -22,7 +22,7 @@
 # deletes targets written straight into it, which is how two of these
 # fragments came to exist in the first place.
 
-.PHONY: test-audit test-audit-list ci ci-boot ci-all ci-here test-simd-os
+.PHONY: test-audit test-audit-list test-negctl-drift bkl-shared ci ci-boot ci-all ci-here test-simd-os
 
 # cpu_simd_selftest() was written, documented down to its call order, and never
 # called from anywhere -- the same shape of dead test the audit above looks
@@ -55,6 +55,21 @@ test-audit:
 
 test-audit-list:
 	@python3 tools/audit_tests.py --list
+
+# The negative-control drift gate. A control is a COPY of the thing it controls
+# and nothing in make says "identical except for the -D", so controls drift --
+# six had, and all six were found by tripping over them rather than by any
+# check. This one is at 0 in both its directions today, which is why it gates
+# HARD while test-audit is still advisory in ci: there is nothing here to grant
+# a grace period to, and a check that starts clean and is allowed to go dirty
+# was never a gate.
+test-negctl-drift:
+	@python3 tools/negctl_drift.py
+
+# Not a gate: an inventory. Every file-scope mutable static in the subsystems
+# the BKL still protects, for the removal work. Prints "at least N" and means it.
+bkl-shared:
+	@python3 tools/bkl_shared.py
 
 # ci: audit + clean-clone build + every host suite the Makefile declares.
 # The suite list is DERIVED from the Makefile (tools/audit_tests.py

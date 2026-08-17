@@ -196,7 +196,12 @@ def main(argv):
           % (n_drift, n_pair))
     print("(100 *-negctl targets exist; this pairs only those named X-negctl "
           "against an existing X)")
-    return 0
+    # A HARD GATE FROM DAY ONE, unlike tools/audit_tests.py, and the difference
+    # is not principle but arithmetic: the audit still has 14 findings, so ci
+    # keeps it advisory until they are worked off. This check is at 0 in both
+    # directions today, so there is nothing to grant a grace period to -- and a
+    # check that starts clean and is allowed to go dirty was never a gate.
+    return 1 if (n_drift or identical) else 0
 
 
 if __name__ == "__main__":

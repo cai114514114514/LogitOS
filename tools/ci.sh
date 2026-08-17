@@ -59,6 +59,17 @@ echo "=============================================================="
 audit_rc=0
 python3 "$SRC/tools/audit_tests.py" || audit_rc=$?
 
+# ...and the negative-control drift check, in the same cheap-first slot but as a
+# HARD failure rather than an advisory one. The audit still carries 14 findings,
+# so ci reports it and carries on; this check is at 0 in both directions today,
+# and letting a clean check go dirty is how it stops being a check. It would
+# have caught six drifted controls in this tree, all six of which were found by
+# tripping over them at link time or, worse, not at all.
+echo "=============================================================="
+echo "ci: negative-control drift"
+echo "=============================================================="
+python3 "$SRC/tools/negctl_drift.py" || exit 1
+
 # ---- 2. the clean clone ---------------------------------------------------
 if [ "$do_clone" = 1 ]; then
     head_sha="$(git -C "$SRC" rev-parse HEAD)"
