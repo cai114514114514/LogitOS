@@ -139,7 +139,7 @@ argument each one wants.
 
 | target | finding |
 |---|---|
-| `test-monitor` | launching Clock kills the Activity Monitor window |
+| `test-monitor` | launching Clock kills the Activity Monitor window. **The obvious harness explanation was checked and ruled out** — after `test-shape-device` turned out to be a stale hardcoded click, the first suspicion was that the dock grew (gallery and settings are new, and they are what broke `test-fullsystem`) and the click had drifted. It has not: `qmp_monitor.py` DISCOVERS the dock's app count rather than assuming it, prints a note when it differs from `qmp_ui.NAPPS`, printed no such note, and `CLOCK_SLOT = 0` is `clock.aex`. It clicked Clock, and Monitor died |
 | `test-live-page` | clicking a link does not run its handler |
 | `test-browser-https` | the empty Browser viewport is not blank — 3902 ink px, and the check calling it is a control |
 | `test-preview`, `test-preview-timing` | Preview lists `/media` as 0 entries, though the fixtures are on the disk (`FS_FILES` adds them, `tests/preview.mk` adds the prerequisite line correctly, and the names are present in `disk.img`). Two targets, one cause |
