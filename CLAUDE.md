@@ -958,6 +958,35 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## USB/xHCI — nine gates, all green, and the one whose header matters most
+
+`c/drivers/usb/`: `xhci.c` + `xhci_ring.c` (the controller and its rings),
+`usb_core.c` (enumeration and driver binding), `usb_desc.c`, `usb_hid.c`,
+`hid_report.c` — 2,317 lines, nine targets, **all nine green**.
+
+Two things in it are load-bearing beyond USB:
+
+- **Binding is on the INTERFACE class/subclass/protocol triple**, which is why
+  `usb_core.c` is worth more than the HID driver it currently serves: a second
+  device class is a `probe`/`poll` pair, not a rewrite.
+- **`usb_isr` posts keys and pointer motion into the WM's input ring** through
+  the same `wm_key()` / `wm_mouse_event()` the PS/2 drivers call. That makes
+  USB a THIRD producer on `inq_push`, which matters to the BKL removal (see
+  `docs/superpowers/specs/2026-08-17-bkl-removal.md`) and is invisible from
+  either end — from the interrupt table it is "the USB vector", from `wm.c` it
+  is the same two functions.
+
+**And the tree already gates the property that fact creates.** `test-usb-both`:
+
+> Coexistence: both stacks live at once. The requirement is not "input works"
+> but "exactly once" — two producers on one queue is only safe if neither
+> duplicates the other's events, and no "does input work?" test catches that.
+
+It COUNTS rather than detects, so double delivery fails it. `test-usb-none` is
+its control: the same machine with the devices unplugged, where nothing can
+deliver input, so the positive assertions must not be satisfiable — *"a test
+that passes with the thing under test taken away is measuring something else."*
+
 ## The interactive web platform — 6.6 kLOC, 13 gates, and no mention either
 
 `c/apps/browser/`: `js_platform.c` (1,910), `forms.c` (2,199), `js_select.c`

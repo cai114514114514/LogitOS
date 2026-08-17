@@ -335,6 +335,24 @@ Three answers, and the conditions pick one:
 
 The third, until something measures the second as necessary.
 
+### The gate for this already exists, and its header states the property
+
+`test-usb-both` — from `tests/usb.mk`:
+
+> Coexistence: both stacks live at once. The requirement is not "input works"
+> but **"exactly once" — two producers on one queue is only safe if neither
+> duplicates the other's events**, and no "does input work?" test catches that.
+
+The tree already knows the ring has more than one producer, already has a gate
+that COUNTS events rather than detecting them, and already fails on double
+delivery. Nothing needs writing: after the producer lock, and again after the
+vectors are declared BKL-free, `test-usb-both` is the check — with
+`test-usb-none` (devices unplugged, so the positive assertions must be
+unsatisfiable) as the control that it is measuring input at all.
+
+That the property was already named, by a test written for a different reason,
+is the strongest evidence available that the analysis above is the right shape.
+
 ## Step 4 — and it is NOT the scheduler; that part is a deletion
 
 The scheduler was written down here as the last obstacle, and reading it says
