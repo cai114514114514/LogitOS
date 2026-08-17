@@ -767,9 +767,28 @@ credentials, keyed by pid until `proc.c`'s owner takes them), `vfsctl.c`
 an unprivileged shell can be refused for real), `ramfs.c` (second mount, no
 device), `lfsro.c` (instance-aware read-only v4 reader — `logitfs.c` is a
 singleton and cannot be two), `fsbench.c` (`/dev/fsbench`, the storage
-stopwatch). **Caveat worth knowing: `vfs_meta`'s records are in RAM and do NOT
-survive a reboot.** File *contents* are durable; modes and owners are not, until
-logitfs implements getattr/setattr (two function pointers, no other change).
+stopwatch).
+
+**THAT CAVEAT IS GONE, and this paragraph carried it four commits too long.** It
+used to read "vfs_meta's records are in RAM and do NOT survive a reboot... until
+logitfs implements getattr/setattr (two function pointers, no other change)".
+Both pointers are implemented — `logitfs.c:1224` and `:1283`, installed in the
+ops table at `:1402`. The on-disk inode carries `xmode`, `uid` and `gid`, and
+`xmode` has a presence bit of its own (`LFS_MODE_SET`) for a reason worth
+keeping: **mode 0 is a legal mode**, so "0 means unset" would make a file nobody
+may touch unrepresentable. That distinction is carried out to ring 3 as
+`LSTA_MODE_STORED` — a stat that cannot tell a chosen 0644 from a defaulted one
+is a stat that lies quietly.
+
+Gated by `test-statmeta`, `test-statmeta-negctl` (both green) and
+`test-statmeta-os`.
+
+Why this mattered enough to correct in place: modes and owners not surviving a
+reboot is not a footnote, it is the premise several other things need. A trust
+store on disk is only a trust store if an unprivileged process cannot rewrite
+it; a read-only `/bin` is only read-only if it is still read-only after the next
+boot. Reading the stale sentence, the answer to "can this machine hold a
+permission?" was no. It is yes.
 
 **Tests — and these are not decorative; all 12 ran green on 2026-08-08 and all
 12 ran green again on 2026-08-17**, the second time as part of a sweep of every
