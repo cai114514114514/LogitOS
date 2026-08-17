@@ -108,9 +108,20 @@
                            /*   nrows*ncols * (u8 cellkind, str text, str target) */
 #define RT_T_CHART      8  /* u16 n, u16 kind, str title, n*(u32 value, str label)*/
 #define RT_T_VIDEO      9  /* u8 kind, u16 w_pt, u16 h_pt, u16 flags, str path   */
-/* 10 is deliberately unassigned. An unknown type is ignored by the terminal (see
+#define RT_T_CLEAR     10  /* no payload: discard the scrollback                 */
+/* 11 is deliberately unassigned. An unknown type is ignored by the terminal (see
  * the default case in handle_frame), so the protocol grows without a version
- * bump -- but only types that EXIST are listed here. */
+ * bump -- but only types that EXIST are listed here.
+ *
+ * RT_T_CLEAR is what `clear` is, on this system. The Unix answer is two escape
+ * bytes (ESC [ 2 J), and this terminal deliberately has no escape parser: a
+ * character grid that interprets its own input is the in-band control language
+ * this protocol exists to refuse, and the demand survey found exactly ONE
+ * program in the whole tree emitting escapes -- c/apps/coreutils/clear.c. A VT
+ * parser for one caller would be a second, weaker copy of the side band. So
+ * `clear` says what it means on the channel that carries meaning, and keeps the
+ * escape bytes for fd 1 when there is no channel (the serial console, which
+ * really is a VT). */
 
 /* ---- terminal -> shell (control channel) --------------------------------- */
 #define RT_C_INTR      64  /* ^C: abandon the foreground job                     */

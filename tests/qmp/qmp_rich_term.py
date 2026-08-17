@@ -564,6 +564,81 @@ pump(4.0)
 body4 = bytes(log)
 chk(b"LRT\x01" not in body4, "the redirected refusal contains no protocol frames")
 
+# ------------------------------------------- 8. `clear` actually clears -----
+# It did not. c/apps/coreutils/clear.c was the only escape-emitting program in
+# the tree, and this terminal has no escape parser on purpose -- put_char()
+# refuses C0 -- so ESC was dropped and the three printable bytes that followed
+# it ("[2J", "[H") were painted as text. The window filled up instead of
+# emptying. It is a side-band frame now (RT_T_CLEAR), and the escapes survive
+# for the listener they were right for, which is tested below on the serial
+# console.
+print("8. `clear` empties the screen (over the side band, not two ESC bytes)")
+ctrl("l")
+time.sleep(0.8)
+run("ls /bin", 3.5)
+p_full = shot("clear_before")
+ink_full = count(p_full, C_FG)
+# Slower than run()'s default. PS/2 has a one-byte buffer and this keystroke
+# travels terminal -> control pipe -> shell -> rich pipe -> terminal before it
+# is echoed; a dropped letter runs a command that does not exist, and the
+# assertion below would then read "clear does not clear" while measuring a
+# typo. The error-ink check is what tells the two apart -- a mistyped command
+# prints "not found" in red, and `clear` prints nothing at all.
+typ("clear\n", settle=0.22)
+time.sleep(5.0)
+p_cleared = shot("clear_after")
+ink_cleared = count(p_cleared, C_FG)
+typo = count(p_cleared, C_ERR)
+print(f"     ink: before clear = {ink_full} px, after = {ink_cleared} px,"
+      f" error ink = {typo} px")
+chk(ink_full > 800, f"the pre-clear screen really is full of text ({ink_full} px)")
+chk(typo == 0, f"the keystrokes arrived -- no command-not-found line ({typo} px of red)")
+chk(ink_cleared * 8 < ink_full,
+    f"and `clear` emptied it ({ink_cleared} px left of {ink_full})")
+
+# The other half, and the control that makes the first half mean something: on
+# the serial console there is NO rich channel, so `clear` must fall back to the
+# escapes -- a terminal that really is a VT still gets what it understands. If
+# this fails, the frame path is not being chosen by the channel's presence.
+# Polled to a deadline rather than slept at: wait_for() cannot be used here
+# because the guest echoes CR LF, so `mark + b"\n"` never matches and it always
+# burns its whole timeout.
+log.clear()
+serial.sendall(b"echo " + mark + b"\nclear\necho " + mark + b"\n")
+deadline = time.time() + 25
+while time.time() < deadline and b"\x1b[2J" not in log:
+    time.sleep(0.25)
+body5 = bytes(log)
+chk(b"\x1b[2J" in body5,
+    "on the serial console (no rich channel) `clear` still emits ESC [ 2 J")
+chk(b"LRT\x01" not in body5, "and emits no protocol bytes there")
+
+# ----------------------------- 9. a truncated table says it was truncated ----
+# The terminal's table storage is TROW=48 rows (c/apps/gui/terminal.c). /bin on
+# this disk holds 55 programs and `dir` sends every one of them in a single
+# frame, so seven rows used to be dropped in silence -- a table that simply
+# ended, indistinguishable on screen from a directory with 48 entries in it.
+# Raising the constant would move the number, not fix the shape.
+print("9. a table larger than the window's storage says so, instead of ending")
+ctrl("l")
+time.sleep(0.8)
+log.clear()
+run("dir /bin", 3.5)
+p_tr = shot("trunc")
+# Nothing else on this screen writes stderr, and the notice is the only thing
+# drawn in the error colour -- so any ink of it at all is the notice.
+n_notice = count(p_tr, C_ERR)
+chk(n_notice > 20, f"the truncation notice is drawn, in the error colour ({n_notice} px)")
+warn = [l for l in log.decode("utf-8", "replace").splitlines()
+        if "TERMWARN table truncated" in l]
+chk(len(warn) >= 1, "and the drop is reported on fd 2, as bytes")
+if warn:
+    print("     " + warn[-1].strip())
+    kv = dict(p.split("=") for p in warn[-1].split() if "=" in p)
+    shown, frame = int(kv.get("shown_rows", 0)), int(kv.get("frame_rows", 0))
+    chk(frame > shown and shown > 0,
+        f"the report names both numbers ({shown} shown of {frame} sent)")
+
 # ------------------------------------------------------------------ done ----
 s.screendump(OUT, settle=0.5)
 try:

@@ -169,6 +169,11 @@ static int nimg;
 struct tblobj {
     char title[48];
     int ncols, nrows;
+    /* What the FRAME said, before this window's fixed-size storage clamped it.
+     * Kept because the difference is the only thing that can be reported: a
+     * table that quietly stops at row 48 is indistinguishable, on screen, from
+     * a directory that really has 48 entries in it. */
+    int wire_cols, wire_rows;
     char hdr[TCOL][TCELL];
     char cellt[TROW][TCOL][TCELL];
     unsigned char cellk[TROW][TCOL];
@@ -620,6 +625,7 @@ static void handle_table(struct rt_rd *r)
     char title[48];
     rt_rd_str(r, title, sizeof title);
     if (r->bad || nc <= 0 || nr < 0) { put_text(S_ERR, "terminal: bad table frame"); return; }
+    int wc = nc, wr = nr;
     if (nc > TCOL) nc = TCOL;
     if (nr > TROW) nr = TROW;
 
@@ -627,6 +633,7 @@ static void handle_table(struct rt_rd *r)
     struct tblobj *tb = &tbls[slot];
     scopy(tb->title, title, sizeof tb->title);
     tb->ncols = nc; tb->nrows = nr;
+    tb->wire_cols = wc; tb->wire_rows = wr;
     for (int c = 0; c < nc; c++) rt_rd_str(r, tb->hdr[c], TCELL);
     for (int y = 0; y < nr; y++) {
         tb->target[y][0] = 0;
@@ -640,7 +647,34 @@ static void handle_table(struct rt_rd *r)
             if (r->bad) { tb->nrows = y; y = nr; break; }
         }
     }
-    int o = obj_alloc(O_TABLE, slot, tb->nrows + 3);
+    /* THE ROWS THAT DID NOT FIT ARE A FINDING, NOT A DETAIL.
+     *
+     * `dir /bin` on this disk sends 55 rows; TROW is 48, so seven programs used
+     * to leave no trace at all -- the table simply ended, looking exactly like a
+     * directory with 48 entries in it. Raising TROW would move the number, not
+     * fix the shape: the storage is fixed-size on purpose (a scrollback of
+     * unbounded tables is a scrollback with no bound), so SOME frame is always
+     * larger than it, and the only honest answer is to say so.
+     *
+     * Two channels, because they answer different questions: a row drawn under
+     * the table tells the person reading it, and a line on fd 2 -- the serial
+     * console, where every GUI app's stderr goes -- makes it a byte a test can
+     * assert on rather than a shape somebody has to photograph. */
+    int trunc = (tb->wire_rows > tb->nrows || tb->wire_cols > tb->ncols);
+    if (trunc) {
+        char b[128]; int n = 0; char num[12];
+        sappend(b, &n, (int)sizeof b, "TERMWARN table truncated shown_rows=");
+        utoa((unsigned)tb->nrows, num);     sappend(b, &n, (int)sizeof b, num);
+        sappend(b, &n, (int)sizeof b, " frame_rows=");
+        utoa((unsigned)tb->wire_rows, num); sappend(b, &n, (int)sizeof b, num);
+        sappend(b, &n, (int)sizeof b, " shown_cols=");
+        utoa((unsigned)tb->ncols, num);     sappend(b, &n, (int)sizeof b, num);
+        sappend(b, &n, (int)sizeof b, " frame_cols=");
+        utoa((unsigned)tb->wire_cols, num); sappend(b, &n, (int)sizeof b, num);
+        sappend(b, &n, (int)sizeof b, "\n");
+        sys_write(2, b, n);
+    }
+    int o = obj_alloc(O_TABLE, slot, tb->nrows + 3 + (trunc ? 1 : 0));
     attach_obj(o);
 }
 
@@ -925,6 +959,21 @@ static void handle_video(struct rt_rd *r)
     l->len = (short)n;
 }
 
+/* Empty the scrollback. ONE implementation, two callers that must not disagree:
+ * ^L (typed here) and RT_T_CLEAR (the `clear` program, over the side band). A
+ * second copy is how "clear" and "^L" end up leaving different things behind --
+ * the live objects, in particular: a video whose lines are gone but which is
+ * still decoding a picture per turn is a clip playing into a scrollback that no
+ * longer contains it. */
+static void clear_scrollback(void)
+{
+    lbase = 0; lcount = 0; line_abs = 0;
+    end_all_lines();
+    scroll = 0; follow = 1; redraw = 1;
+    for (int i = 0; i < 4; i++) sg_line[i] = -1;
+    for (int i = 0; i < MAXVID; i++) { vids[i].paused = 1; vids[i].px = vids[i].py = -1; }
+}
+
 static void handle_frame(int type, const unsigned char *p, int len)
 {
     struct rt_frame f = { type, 0, 0, p, len };
@@ -982,6 +1031,10 @@ static void handle_frame(int type, const unsigned char *p, int len)
     case RT_T_TABLE:    handle_table(&r); break;
     case RT_T_CHART:    handle_chart(&r); break;
     case RT_T_VIDEO:    handle_video(&r); break;
+    /* `clear`, said on the channel that carries meaning. The prompt line of the
+     * command that asked goes too -- it is scrollback like any other, and a
+     * `clear` that leaves one line behind has not cleared the screen. */
+    case RT_T_CLEAR:    clear_scrollback(); break;
     default: break;                             /* unknown type: ignore, keep text */
     }
     redraw = 1;
@@ -1124,6 +1177,26 @@ static void draw_table_obj(int x, int y, int w, struct robj *o)
         }
     }
     gui_rect(x, hy + lh + 2 + tb->nrows * lh, w - 8, 1, P.rule);
+
+    /* Below the closing rule, in the error colour, because it IS an error: what
+     * is on screen is not the answer to the question that was asked. */
+    if (tb->wire_rows > tb->nrows || tb->wire_cols > tb->ncols) {
+        char m[96]; int n = 0; char num[12];
+        sappend(m, &n, (int)sizeof m, "[truncated: showing ");
+        utoa((unsigned)tb->nrows, num);     sappend(m, &n, (int)sizeof m, num);
+        sappend(m, &n, (int)sizeof m, " of ");
+        utoa((unsigned)tb->wire_rows, num); sappend(m, &n, (int)sizeof m, num);
+        sappend(m, &n, (int)sizeof m, " rows");
+        if (tb->wire_cols > tb->ncols) {
+            sappend(m, &n, (int)sizeof m, ", ");
+            utoa((unsigned)tb->ncols, num);     sappend(m, &n, (int)sizeof m, num);
+            sappend(m, &n, (int)sizeof m, " of ");
+            utoa((unsigned)tb->wire_cols, num); sappend(m, &n, (int)sizeof m, num);
+            sappend(m, &n, (int)sizeof m, " columns");
+        }
+        sappend(m, &n, (int)sizeof m, "]");
+        draw_text(x, hy + lh + 6 + tb->nrows * lh, P.err, m);
+    }
 }
 
 static void draw_chart_obj(int x, int y, int w, struct robj *o)
@@ -1453,6 +1526,27 @@ static void on_click(int mx, int my, int right)
 
 /* ---------------------------------------------------------------- setup --- */
 
+/* Everything that follows from win_w/win_h. Split out of measure_geometry so
+ * there is exactly ONE derivation of the grid: the window is born at a size and
+ * then changes size, and a second copy of these five lines behind EV_RESIZE is
+ * how the two drift. The cell and the line height are NOT here -- they come
+ * from the font, not from the window, and re-measuring them per resize would
+ * make the character size depend on the drag. */
+static void derive_layout(void)
+{
+    text_x = PAD + GUTTER;
+    text_y = TOPBAR + 4;
+    text_w = win_w - text_x - PAD - SBW;
+    if (text_w < 4 * cell) text_w = 4 * cell;
+    text_h = win_h - text_y - (lh + 14);
+    if (text_h < lh) text_h = lh;
+    cols = text_w / cell;
+    if (cols > MAXCOLS) cols = MAXCOLS;
+    if (cols < 20) cols = 20;
+    rows = text_h / lh;
+    if (rows < 4) rows = 4;
+}
+
 static void measure_geometry(void)
 {
     /* The cell is MEASURED, not declared: gui_text_mono draws the mono font at
@@ -1472,15 +1566,56 @@ static void measure_geometry(void)
     win_w = sw - 260; if (win_w > 900) win_w = 900; if (win_w < 420) win_w = 420;
     win_h = sh - 240; if (win_h > 620) win_h = 620; if (win_h < 300) win_h = 300;
 
-    text_x = PAD + GUTTER;
-    text_y = TOPBAR + 4;
-    text_w = win_w - text_x - PAD - SBW;
-    text_h = win_h - text_y - (lh + 14);
-    cols = text_w / cell;
-    if (cols > MAXCOLS) cols = MAXCOLS;
-    if (cols < 20) cols = 20;
-    rows = text_h / lh;
-    if (rows < 4) rows = 4;
+    derive_layout();
+}
+
+/* Tell the shell the grid. Not a courtesy: /bin/sh wraps the edit line and
+ * lays out its completion columns from LOGIT_COLS, which was only ever sent
+ * once, at spawn -- so after a resize the shell was formatting for a window
+ * that no longer existed. */
+static void send_size(void)
+{
+    if (ctl_w < 0) return;
+    rt_reset(&enc);
+    rt_u16(&enc, cols); rt_u16(&enc, rows); rt_u16(&enc, cell);
+    ctl_send(RT_C_SIZE, &enc);
+}
+
+/* EV_RESIZE. Read include/abi/logit_abi.h:602 before deciding this is optional:
+ * the WM has ALREADY replaced the canvas by the time this event arrives, and
+ * the compositor is showing a magnified copy of the old one until we paint. An
+ * app that ignores it does not keep its old layout -- it shows the wrong thing,
+ * with its input line stranded in the middle of the window.
+ *
+ * What is re-derived and what is not:
+ *  - The grid is (derive_layout), and the shell is told (send_size).
+ *  - The SCROLLBACK IS NOT RE-WRAPPED. A hard wrap done at receive time
+ *    (put_char, at the then-current `cols`) is indistinguishable afterwards
+ *    from a newline the program actually wrote, so re-wrapping would have to
+ *    guess -- and guessing wrong joins two lines that were never one. New
+ *    output wraps at the new width; what is already scrolled back keeps the
+ *    width it arrived at. Deliberate, and the alternative is worse.
+ *  - An image or a video keeps the display size it was created at, because
+ *    layout and paint must agree on an object's height and that height was
+ *    stored in its scrollback line. It reflows into place; it does not rescale.
+ */
+static void on_resize(int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    if (w == win_w && h == win_h) return;
+    win_w = w; win_h = h;
+    int ocols = cols, orows = rows;
+    derive_layout();
+    if (cols != ocols || rows != orows) send_size();
+    /* On fd 2, which the WM wires to the serial console for every GUI app --
+     * the same reason the TERMPERF lines are there. A resize is otherwise
+     * observable only as pixels, and "the window looks right" is not a thing a
+     * harness can assert; the grid it computed is. */
+    perf_kv("resize", "w", (unsigned)win_w, "h", (unsigned)win_h, "cols", (unsigned)cols);
+    /* follow==1 means "stick to the bottom", and the bottom moved: paint()
+     * recomputes scroll from the new view height, so all this has to do is ask
+     * for a paint. A clamp here would fight it. */
+    redraw = 1;
 }
 
 /* Build the child environment. LOGIT_RICH is the whole discovery mechanism: a
@@ -1631,9 +1766,7 @@ static void on_key(struct logit_event *e)
         errs_only = !errs_only; follow = 1; redraw = 1;
         return;
     case 12:                                    /* ^L: clear scrollback */
-        lbase = 0; lcount = 0; line_abs = 0; end_all_lines(); scroll = 0; follow = 1; redraw = 1;
-        for (int i = 0; i < 4; i++) sg_line[i] = -1;
-        for (int i = 0; i < MAXVID; i++) { vids[i].paused = 1; vids[i].px = vids[i].py = -1; }
+        clear_scrollback();
         return;
     case 22:                                    /* ^V: paste */
         for (int i = 0; i < clip_n; i++) type_char(clip[i]);
@@ -1658,9 +1791,7 @@ void app_main(void)
         put_text(S_ERR, "terminal: cannot start /bin/sh");
         alive = 0;
     } else {
-        rt_reset(&enc);
-        rt_u16(&enc, cols); rt_u16(&enc, rows); rt_u16(&enc, cell);
-        ctl_send(RT_C_SIZE, &enc);
+        send_size();
     }
 
     /* Opened on a file (the WM's file-type fallback launches the Terminal with
@@ -1683,6 +1814,7 @@ void app_main(void)
             switch (e.type) {
             case EV_CLOSE: app_exit(0);
             case EV_THEME: theme_load(); redraw = 1; break;
+            case EV_RESIZE: on_resize(e.a, e.b); break;
             case EV_KEY:   if (alive) on_key(&e); break;
             case EV_MOUSE:
             case EV_MOUSE_R: {
