@@ -271,6 +271,36 @@ Staged, not applied — it is kernel source and the sweep's device half is
 running. The refusal must survive for the system store, which is what the
 negative half of the gate is for.
 
+## `test-frameworks` is red because two frameworks started working
+
+The gate's own header says what it is:
+
+> It is a CHANGE DETECTOR, not a wish list... the target is green today and goes
+> red the moment a Web API lands — which is exactly the acceptance check
+> `webapi_probe.c`'s header asks for: *"when a name from channel 1 is
+> implemented, the channel-2 error for that page must change, and if it does
+> not, the implementation did not matter."* When it fires, update BASELINE in
+> the same commit and say which cause moved.
+
+It fired. Which cause moved:
+
+| | baseline | 2026-08-17 |
+|---|---|---|
+| **vue** | 3 causes, `SVGElement (global constructor)`, `#app=0`, no button | **0 causes**, `#app=106`, button reads `"count is 0"` |
+| **webpack** | 1 cause, `document.currentScript`, `#app=0` | **0 causes**, `#app=148`, button reads `"count is 0"` |
+| svelte | 5 causes, `HTMLTemplateElement.content`, `#app=0` | unchanged — `template.content` is still undefined |
+
+`SVGElement` now reports `ctor` rather than `undefined` in the missing-feature
+list, and `document.currentScript` has left it entirely. **Two frameworks went
+from a blank page to a rendered, interactive one**, and the acceptance check the
+programme set for itself — that implementing a name must change that page's
+error — is met rather than refuted.
+
+Blessing the baseline needs a run, so it is queued behind the sweep. The
+important half is not the bless: it is that a red target here means the
+opposite of what red usually means, and the harness says so in its own header
+for anyone who reads that far.
+
 ## What the sweep CONFIRMED — the half that produces no findings
 
 A sweep's other output is that standing claims are still true, and nobody writes
