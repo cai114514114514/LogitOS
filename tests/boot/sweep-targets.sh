@@ -38,6 +38,26 @@ python3 tests/boot/sweep-classify.py "$LOGDIR" || exit 1
 
 run_one() {
     t="$1"
+    # A NAME THAT IS NOT A TARGET, CAUGHT WHERE IT IS CREATED.
+    #
+    # One row in a 451-target sweep read `st-h264-pts` -- a target that does not
+    # exist, with a real one (`test-h264-pts`) missing its result. It cost 28
+    # seconds proving make cannot build a name nobody wrote, and the honest
+    # record is that the mechanism was never identified: the enumeration at the
+    # top of this file anchors on `^test-`, so it cannot emit that string, and
+    # the append is a single short printf to an O_APPEND fd.
+    #
+    # Not knowing HOW is not a reason to leave it undetectable. A phantom row is
+    # silent twice over -- it reports a failure that is not one, and it hides a
+    # target that never ran -- and the second half is the expensive one, because
+    # a sweep's whole value is the claim that it covered everything. So the name
+    # is checked against the enumerated list at the moment it is used, and a
+    # miss is loud. If it never fires, it cost one grep per target.
+    if ! grep -qxF -- "$t" "$LOGDIR/all.txt"; then
+        printf 'sweep: BUG: refusing to run "%s" -- not an enumerated target\n' "$t" >&2
+        printf 'PHANTOM\t0\t%s\n' "$t" >> "$OUT"
+        return
+    fi
     s=$(date +%s)
     timeout "$TMO" make "$t" > "$LOGDIR/$t.log" 2>&1
     rc=$?
@@ -81,15 +101,26 @@ done < "$LOGDIR/dev.txt"
 # passes alone. So no failure from the parallel phase is believed until it has
 # been reproduced with nothing else running -- otherwise this sweep manufactures
 # bugs, which is worse than missing them.
+# The confirmation pass lives in ONE place, and this is not it.
+#
+# It used to be duplicated here, and the copy carried a bug the original does
+# not: it dropped the already-recorded rows with
+#
+#     grep -v -f "$LOGDIR/recheck.txt" "$OUT"
+#
+# where recheck.txt holds TARGET NAMES and -f reads them as UNANCHORED REGEXES
+# matched against whole result lines. So one failing `test-fs` deletes the PASS
+# rows of test-fsck, test-fs-crash, test-fsmount, test-fs-format, test-fs-host,
+# test-fs-journal and test-fsreplay -- and since those names are not in
+# recheck.txt, nothing re-runs them. Seven targets leave the sweep silently, and
+# the summary still says everything was covered.
+#
+# sweep-confirm.sh gets this right by filtering POSITIVELY on the status field
+# (`grep -E "^(PASS|NOTARGET)\t"`), which cannot confuse a name with a pattern.
+# Two implementations of one step is how they drift; the second one is deleted
+# rather than repaired.
 echo "--- confirming failures serially ---"
-grep -v -E "^(PASS|NOTARGET)	" "$OUT" | cut -f3 > "$LOGDIR/recheck.txt"
-if [ -s "$LOGDIR/recheck.txt" ]; then
-    grep -v -f "$LOGDIR/recheck.txt" "$OUT" > "$OUT.keep" 2>/dev/null || cp "$OUT" "$OUT.keep"
-    mv "$OUT.keep" "$OUT"
-    while read -r t; do
-        [ -n "$t" ] && run_one "$t"
-    done < "$LOGDIR/recheck.txt"
-fi
+bash "$(dirname "$0")/sweep-confirm.sh" "$OUT" "$TMO"
 
 echo "--- summary ---"
 cut -f1 "$OUT" | sort | uniq -c | sort -rn
