@@ -146,6 +146,11 @@ argument each one wants.
 | `test-kbench` | 247 poll passes where the budget is 200 |
 | `test-events` | **passes for the wrong reason** — see below |
 | `test-h265-b` | `got 79 want 80`, one level, in B slices; declared incomplete |
+| `test-desktop-os` | **a logged-in user cannot save a setting** — see the section below; the largest of these |
+| `test-mse-os` | playback STALLS. `step` keeps climbing while `t_ms=4066 decoded=60 shown=59 segs=4+5` never move — and the signature is specific: one frame decoded that the presenter never showed, then nothing |
+| `test-reftest` | 16 regressions against the ratchet, **and 52 newly passing** — the shape of a real feature landing. They cluster to about nine causes: four `gap-004-*` writing directions all 6140 px wrong, three `column-auto-repeat-auto-*`, three `mask-image/*`. `css-viewport/zoom/svg-stroke-width` points straight at the phase-2 stroke work |
+| `test-wpt` | 20 new failures out of 246,542 subtests, over about five causes: eight in `css-anchor-position`, five subtests of one `contain-size-grid-003.html`, two popovers |
+| `test-frameworks` | the corpus no longer matches its BASELINE — **because Vue and webpack now render**. An improvement reported as a failure; the baseline needs blessing, deliberately, with the diff read |
 
 ### `test-events` is green and its green is not evidence
 
