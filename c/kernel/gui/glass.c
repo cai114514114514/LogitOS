@@ -168,8 +168,13 @@ int glass_refract_ratio(int u, int en, int ed)
  * and the darker pixel just inside it that makes the pair read as thickness,
  * both remain exactly where the physics puts them. Interior values (already
  * well under the cap per the table above) are unaffected -- this only ever
- * clips the single outermost ring. */
-#define GLASS_FRES_MAX 190
+ * clips the single outermost ring. THAT LAST SENTENCE IS NOW A TEST, not a
+ * claim -- glass_lut_test.c requires every interior ring to sit below the cap
+ * on its own, so if the geometry ever changes enough for the clamp to start
+ * shaping the curve rather than trimming its tip, the argument above stops
+ * being true and something says so.
+ *
+ * The value lives in glass.h (the test needs it); the reason lives here. */
 int glass_schlick(int u)
 {
     long long u2 = ((long long)u * u) >> 16;

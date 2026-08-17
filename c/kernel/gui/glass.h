@@ -34,6 +34,13 @@ void glass_build_lut(int E, int refract);
 
 /* Schlick's approximation at incidence parameter u (16.16), as 0..255.
  * Exposed for the host test alongside glass_refract_ratio. */
+/* The cap glass_schlick() clamps its output to. Here rather than in glass.c
+ * because the TEST needs it: an oracle that does not model the cap reports the
+ * capped ring as 26 failures against a curve the implementation never claimed
+ * to follow at that point. The long argument for the NUMBER stays above the
+ * clamp in glass.c -- this is the value, that is the reason. */
+#define GLASS_FRES_MAX 190
+
 int glass_schlick(int u);
 
 /* a/(h+d) at incidence parameter u (16.16), refractive index en/ed, as 16.16.

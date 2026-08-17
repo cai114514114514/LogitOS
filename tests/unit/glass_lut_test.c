@@ -20,6 +20,7 @@
  *   cc -o glass_lut_test tests/unit/glass_lut_test.c c/kernel/gui/glass.c -lm
  */
 #include <math.h>
+#include "glass.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -146,11 +147,38 @@ int main(void)
         int prev = 256;
         for (int s = 0; s <= E; s++) {
             double u = (double)(E - s) / E;
-            double want = ref_fresnel(u) * 255.0;
+            double raw = ref_fresnel(u) * 255.0;
+            /* CAPPED, because the function under test is capped and says so.
+             * glass_schlick clamps to GLASS_FRES_MAX to model the microfacet
+             * roughness of a frosted panel -- a polished lens reaches R=1 at
+             * grazing incidence and an anodized one does not. Comparing its
+             * output against uncapped Schlick reported the outermost ring as
+             * a failure at every E: 26 identical "got 190, double says 255",
+             * which is the oracle disagreeing with the specification rather
+             * than with the code.
+             *
+             * The comment above the clamp claims it "only ever clips the
+             * single outermost ring". That is checkable, so the next check
+             * checks it -- and it is what keeps this from being a weakening:
+             * the cap may trim the tip of the curve, and if it ever starts
+             * SHAPING the curve the suite goes red.
+             *
+             * The margin is not thin: over every E in 1..24, the largest
+             * uncapped value at s >= 1 is 55.737 (E=24, s=1) against a cap of
+             * 190 -- a factor of 3.4. Which is also the abruptness the comment
+             * below is about: 255 to 55.7 across ONE pixel is a hairline, and
+             * a gradient would not read as an edge. */
+            double want = raw > GLASS_FRES_MAX ? (double)GLASS_FRES_MAX : raw;
             int got = glass_fres[s];
             char m[128];
             snprintf(m, sizeof m, "E=%d fresnel s=%d: got %d, double says %.3f", E, s, got, want);
             ck(fabs(got - want) <= 1.0, m);
+            if (s >= 1) {
+                snprintf(m, sizeof m, "E=%d fresnel s=%d: uncapped %.3f is over "
+                         "GLASS_FRES_MAX -- the cap is shaping the curve, not "
+                         "trimming its tip", E, s, raw);
+                ck(raw <= (double)GLASS_FRES_MAX + 1.0, m);
+            }
             snprintf(m, sizeof m, "E=%d fresnel: rises inward at s=%d (%d > %d)", E, s, got, prev);
             ck(got <= prev, m);
             prev = got;
@@ -167,10 +195,43 @@ int main(void)
     glass_build_lut(22, 18);
     {
         char m[128];
-        snprintf(m, sizeof m, "E=22 fresnel: %d -> %d from the rim to one pixel in -- not a hairline",
-                 glass_fres[0], glass_fres[1]);
-        ck(glass_fres[0] - glass_fres[1] >= 150, m);
-        ck(glass_fres[0] >= 250, "E=22 fresnel: the outermost pixel is not a mirror");
+        /* THESE TWO WERE WRITTEN AGAINST AN UNCAPPED RIM AND WERE NEVER
+         * UPDATED WHEN THE CAP LANDED. dc0400df9 (Aug 13, "the panel had no
+         * edge") wrote `>= 250` and `>= 150` when glass_fres[0] really was
+         * ~255; a1c345a76 (Aug 15, "the numbers moved") introduced
+         * GLASS_FRES_MAX = 190 with thirty lines of argument, and both
+         * assertions have been red ever since -- unnoticed, because the same
+         * change reddened 24 others in this file for a different reason and
+         * the file was not run again.
+         *
+         * Not retuned to pass. Retuned to say the same THING under the design
+         * that shipped, which the comment at the top of this block states
+         * outright: the assertion exists to reject "a plausible-looking linear
+         * ramp from 255 to 10 across the band" that would satisfy every other
+         * check here. So both are rewritten scale-free, against the cap rather
+         * than against a number that assumed no cap:
+         *
+         *   - the rim reaches the cap EXACTLY, i.e. it is as mirror-like as
+         *     this material gets. Stricter than `>= 250` ever was relative to
+         *     its own design, and it fails if the cap stops being reached at
+         *     all -- which is the thing "is there a mirror" was asking.
+         *   - the first pixel's drop is MOST OF THE WHOLE FALLOFF. Measured
+         *     here: 190 -> 52 against an interior of 10, so 138 of the 180
+         *     available, 77%. The linear ramp this is aimed at spends 1/22 of
+         *     its range on the first pixel -- 4.5%. A 17x separation is a
+         *     discriminator; 150 was a number that happened to fit a rim of
+         *     255 and stopped meaning anything the moment the rim moved. */
+        int span = glass_fres[0] - glass_fres[GLASS_E_MAX];
+        int step = glass_fres[0] - glass_fres[1];
+        snprintf(m, sizeof m, "E=22 fresnel: %d -> %d over an interior of %d -- "
+                 "the first pixel spends %d%% of the falloff, a ramp spends ~5%%",
+                 glass_fres[0], glass_fres[1], glass_fres[GLASS_E_MAX],
+                 span > 0 ? 100 * step / span : 0);
+        ck(span > 0 && step * 2 >= span, m);
+        snprintf(m, sizeof m, "E=22 fresnel: the outermost pixel is %d, not the "
+                 "cap %d -- the rim is not as mirror-like as this material gets",
+                 glass_fres[0], GLASS_FRES_MAX);
+        ck(glass_fres[0] == GLASS_FRES_MAX, m);
         printf("  fresnel at E=22: %d %d %d %d %d ... interior %d\n",
                glass_fres[0], glass_fres[1], glass_fres[2], glass_fres[3],
                glass_fres[4], glass_fres[GLASS_E_MAX]);
