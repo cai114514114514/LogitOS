@@ -396,7 +396,16 @@ static int feed_edit_text(const char *s, int n)
         if (c == '\t') { do_complete(); continue; }
         if (c == 21) { llen = 0; lcur = 0; lbuf[0] = 0; continue; }   /* ^U kill line  */
         if (c == 1)  { lcur = 0; continue; }                          /* ^A line start */
-        if (c < 32) continue;                                          /* no in-band control language */
+        /* (unsigned char), and it is the same one-word bug as the GUI
+         * Terminal's put_char. `c` is `char`, which is SIGNED here, so every
+         * byte >= 0x80 tested < 32 and was dropped: the first byte of any
+         * non-ASCII UTF-8 sequence is >= 0xC0. Nothing but ASCII could be typed
+         * at this prompt.
+         *
+         * Fixing the terminal alone would have changed nothing visible, because
+         * the character died HERE, one layer upstream -- which is the reason
+         * both sites move in the same commit. */
+        if ((unsigned char)c < 32) continue;                           /* no in-band control language */
         ins_char(c);
     }
     return -1;

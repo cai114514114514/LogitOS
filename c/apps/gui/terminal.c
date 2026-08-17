@@ -385,7 +385,17 @@ static void put_char(int stream, char c)
         do { if (l->len < MAXCOLS) l->t[l->len++] = ' '; } while (l->len % 8 && l->len < MAXCOLS);
         l->t[l->len] = 0; return;
     }
-    if (c < 32) return;                       /* no in-band control language   */
+    /* CONTROL CHARACTERS ONLY, and `unsigned char` is the whole fix. `char` is
+     * SIGNED on this target -- UCFLAGS (Makefile) sets no -funsigned-char -- so
+     * `c < 32` was true for every byte >= 0x80: 0xE4, the first byte of a
+     * three-byte CJK sequence, arrives as -28. Every non-ASCII character was
+     * dropped one byte at a time, on a machine that carries a 2.2 MB CJK font,
+     * a UTF-8 decoder, a shaper and a bidi pass, and gates Arabic rendering.
+     *
+     * The line is still a refusal of an in-band control language -- that part
+     * was deliberate and stays. It just has to refuse C0, not the upper half of
+     * every UTF-8 code point. `\t` is handled above and never reaches here. */
+    if ((unsigned char)c < 32) return;        /* no in-band control language   */
     if (l->len >= cols || l->len >= MAXCOLS) { end_line(stream); l = cur_line(stream); }
     l->t[l->len++] = c;
     l->t[l->len] = 0;
