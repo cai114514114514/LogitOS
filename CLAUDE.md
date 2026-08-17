@@ -958,6 +958,38 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+## The interactive web platform — 6.6 kLOC, 13 gates, and no mention either
+
+`c/apps/browser/`: `js_platform.c` (1,910), `forms.c` (2,199), `js_select.c`
+(1,188), `js_forms.c` (1,015), `focus.c` (342). Thirteen targets — the
+`test-webapi*` six and the `test-forms*` seven — twelve green.
+
+**The rule this area is built on is worth more than the inventory**, and
+`js_platform.c` states it:
+
+> every entry below is either a name a page in `tests/fixtures/webapi/` actually
+> reached for (with the page named in the comment) or is marked as
+> requested-but-unmeasured. **Nothing in this file is here because a browser is
+> "supposed to" have it.**
+
+So the coverage is demand-driven and the evidence is per-name. That is also why
+`test-frameworks` is a CHANGE DETECTOR rather than a wish list, and what makes
+its acceptance criterion checkable: *when a name from channel 1 is implemented,
+the channel-2 error for that page must change, and if it does not, the
+implementation did not matter.*
+
+**It has just been met, which is the concrete payoff of the whole arrangement.**
+`SVGElement` (global constructor) and `document.currentScript` landed, and on
+2026-08-17 **vue and webpack went from a blank page to a rendered, interactive
+one** — `#app` 0 -> 106 and 0 -> 148 characters, both buttons reading
+"count is 0", both frameworks' missing-cause counts falling to zero. svelte is
+still blank, and its cause is named: `HTMLTemplateElement.content`.
+
+The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
+— no element takes focus from a click, Tab does not move it, a keystroke goes to
+`<body>` as it did before — and `test-forms-negctl` must FAIL against that
+build, or the suite is not measuring the focus model.
+
 ## IPv6 — eight gates, all green, and the string "ip6" was not in this file
 
 Measured the same way the H.265 gap was, and it is the worse of the two: the
