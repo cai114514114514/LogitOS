@@ -172,15 +172,15 @@ test-js-stack-control: $(BUILD)/negctl/quickjs_nostack.c
 # --- test-js-callee-control ------------------------------------------------
 # The second control over the same file: it reverts the callee NAMING (the
 # LOGIT-NAME-CALLEE guard) and leaves the stack prepend alone, so the checks
-# that redden are the five about the message and nothing else. Separate from
+# that redden are the six about the message and nothing else. Separate from
 # test-js-stack-control on purpose -- that one reverts the prepend and reddens
 # a different set, and one control turning off both would not say which patch
 # either group of checks was measuring.
 #
-# EXACTLY 5 is asserted. Two of the seven checks added with the patch must
+# EXACTLY 6 is asserted. Two of the eight checks added with the patch must
 # keep PASSING here: a call that works, and an error thrown from inside a real
 # function. They are what stops "rewrite every failed call's message" from
-# satisfying the other five.
+# satisfying the other six.
 $(BUILD)/negctl/quickjs_nocallee.c: third_party/quickjs/quickjs.c
 	@mkdir -p $(dir $@)
 	@sed 's|.*/\* LOGIT-NAME-CALLEE \*/|                    if (0)  /* negative control: bare "not a function" */|' $< > $@
@@ -195,10 +195,10 @@ test-js-callee-control: $(BUILD)/negctl/quickjs_nocallee.c
 	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
 	@$(BUILD)/js_callee_control > $(BUILD)/js_callee_control.log 2>&1; \
 	 n=`grep -c '^FAIL:' $(BUILD)/js_callee_control.log`; \
-	 if [ "$$n" != "5" ]; then \
-	   echo "FAIL (control): expected exactly 5 checks to fail without the naming, got $$n"; \
+	 if [ "$$n" != "6" ]; then \
+	   echo "FAIL (control): expected exactly 6 checks to fail without the naming, got $$n"; \
 	   grep '^FAIL:' $(BUILD)/js_callee_control.log; exit 1; \
 	 else \
-	   echo "PASS (control): a bare 'not a function' fails 5 checks as it must"; \
+	   echo "PASS (control): a bare 'not a function' fails 6 checks as it must"; \
 	 fi
 .PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control

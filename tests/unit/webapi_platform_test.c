@@ -183,6 +183,16 @@ int main(int argc, char **argv)
          "  catch (e) { return e instanceof SyntaxError; } })()",
          "a non-numeric timing member is not a timestamp");
 
+    /* canvas.getContext STAYS ABSENT, and the argument is in js_platform.c
+     * above the observers: `!!canvas.getContext` is the canonical feature
+     * test, so a getContext() returning null -- the spec's own way to refuse a
+     * context type -- would flip that test true and send the page down the
+     * canvas branch with a null context. A page that renders a fallback today
+     * would render nothing. Asserted so the one-line "fix" cannot land
+     * quietly. */
+    ckjs("typeof document.createElement('canvas').getContext === 'undefined'",
+         "canvas.getContext stays absent (a null-returning stub passes !!getContext)");
+
     /* ==== document lifecycle ============================================
      * MEASURED on bing and deepseek -- the most-wanted property in the corpus.
      * It must be 'loading' while script runs, or a page skips its own

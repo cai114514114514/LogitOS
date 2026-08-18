@@ -948,6 +948,92 @@ static JSValue el_contains(JSContext *ctx, JSValueConst t, int argc, JSValueCons
     return JS_NewBool(ctx, o && (o == n || is_ancestor(n, o)));
 }
 
+/* ---- Node.isEqualNode ----------------------------------------------------
+ *
+ * MEASURED on stripe.com, and it is not a corner of the platform: React's
+ * Float (the thing that hoists <title>/<meta>/<link rel=stylesheet> into
+ * <head> and de-duplicates them during hydration) compares candidates with
+ * isEqualNode. Absent, every one of those comparisons threw
+ * `TypeError: isEqualNode is not a function` out of useSyncExternalStore --
+ * six per load -- React declared the hydration lost and switched the whole
+ * root to client rendering, and the client render died on the next one. The
+ * page went from 69 painted text runs to 0.
+ *
+ * DOM Standard 4.4 "equals", the parts that exist in this DOM:
+ *   - the node types match;
+ *   - element: namespace, local name, attribute COUNT, and every attribute of
+ *     one is present on the other with the same value -- BY SET, not by order,
+ *     because attribute order is not part of an element's identity and a
+ *     server and a client routinely emit it differently. (That is exactly the
+ *     comparison React is making, so getting the order rule wrong here would
+ *     re-create the bug in a quieter form.)
+ *   - doctype: the name;
+ *   - text/comment: the data, bytes and length;
+ *   - and then the children, same count, pairwise, in order -- order IS part
+ *     of identity for children.
+ * Prefix and Attr namespaces are not modelled by this DOM, so they cannot be
+ * compared and are not pretended to be. */
+static int node_equal(const struct node *a, const struct node *b)
+{
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    if (a->type != b->type) return 0;
+    switch (a->type) {
+    case N_ELEM:
+        if (a->ns != b->ns) return 0;
+        if (!a->tag || !b->tag || !ieq(a->tag, b->tag)) return 0;
+        if (a->nattr != b->nattr) return 0;
+        for (int i = 0; i < a->nattr; i++) {
+            const char *an = dom_attr_name_at(a, i);
+            if (!an) return 0;
+            int bl = 0;
+            const char *bv = attr_val_len(b, an, &bl);
+            if (!bv) return 0;
+            int al = (int)a->attrs[i].vlen;
+            if (al != bl) return 0;
+            if (al && memcmp(a->attrs[i].value, bv, (size_t)al) != 0) return 0;
+        }
+        break;
+    case N_DOCTYPE:
+        if (!a->tag || !b->tag || !ieq(a->tag, b->tag)) return 0;
+        break;
+    case N_TEXT:
+    case N_COMMENT:
+        if (a->textlen != b->textlen) return 0;
+        if (a->textlen && memcmp(a->text, b->text, (size_t)a->textlen) != 0) return 0;
+        break;
+    default:
+        break;
+    }
+    const struct node *ca = a->first_child, *cb = b->first_child;
+    while (ca && cb) {
+        if (!node_equal(ca, cb)) return 0;
+        ca = ca->next; cb = cb->next;
+    }
+    return ca == 0 && cb == 0;
+}
+
+static JSValue el_isEqualNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (argc < 1 || JS_IsNull(argv[0]) || JS_IsUndefined(argv[0]))
+        return JS_FALSE;                 /* spec: null is never equal */
+    struct node *o = node_of(argv[0]);
+    if (!n || !o) return JS_FALSE;
+    return JS_NewBool(ctx, node_equal(n, o));
+}
+
+/* isSameNode is the identity test isEqualNode is constantly confused with.
+ * It is one line and its absence is the same class of failure, so it goes in
+ * beside it rather than waiting for its own page to die on it. */
+static JSValue el_isSameNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (argc < 1 || JS_IsNull(argv[0]) || JS_IsUndefined(argv[0]))
+        return JS_FALSE;
+    return JS_NewBool(ctx, n && n == node_of(argv[0]));
+}
+
 static JSValue el_get_ownerDocument(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t);
@@ -3177,6 +3263,8 @@ static const JSCFunctionListEntry node_proto_funcs[] = {
     JS_CGETSET_DEF("ownerDocument", el_get_ownerDocument, NULL),
     JS_CFUNC_DEF("hasChildNodes", 0, el_hasChildNodes),
     JS_CFUNC_DEF("contains", 1, el_contains),
+    JS_CFUNC_DEF("isEqualNode", 1, el_isEqualNode),
+    JS_CFUNC_DEF("isSameNode", 1, el_isSameNode),
     JS_CFUNC_DEF("appendChild", 1, el_appendChild),
     JS_CFUNC_DEF("insertBefore", 2, el_insertBefore),
     JS_CFUNC_DEF("replaceChild", 2, el_replaceChild),

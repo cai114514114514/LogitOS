@@ -16770,6 +16770,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                         js_name_not_a_function(ctx, call_argv[-1], JS_ATOM_NULL);
                     goto exception;
                 }
+                mcall_atom = JS_ATOM_NULL;
                 if (opcode == OP_tail_call)
                     goto done;
                 for(i = -1; i < call_argc; i++)
@@ -17913,6 +17914,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             BREAK;
 
         CASE(OP_get_array_el2):
+            mcall_atom = JS_ATOM_NULL;   /* x[k]() has no name to borrow */
             {
                 JSValue val;
 

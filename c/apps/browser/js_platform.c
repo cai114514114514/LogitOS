@@ -882,6 +882,32 @@ static const char *PLATFORM_PRELUDE =
 "  }\n"
 "})();\n"
 
+/* ==== canvas.getContext IS ABSENT ON PURPOSE =============================
+ *
+ * MEASURED on stripe.com: four `getContext is not a function (it is
+ * undefined)` per load, named by the engine's own message. The obvious
+ * one-line answer -- a getContext() that returns null -- is the wrong one,
+ * and it is worth writing down because it reads as obviously safe.
+ *
+ * Returning null IS how the spec says "this context type is unsupported", so
+ * the RETURN value would be honest. The problem is one level up: the canonical
+ * feature test is
+ *
+ *     !!document.createElement('canvas').getContext
+ *
+ * (Modernizr's, and every hand copy of it). It asks whether the METHOD exists,
+ * not what it answers. Adding the method flips that test from false to true
+ * and sends the page down the canvas branch holding a null context -- from
+ * "no canvas, take the fallback" to "canvas, and every call on it throws". A
+ * page that renders a fallback today would render nothing.
+ *
+ * So the absence here is load-bearing in the OPPOSITE direction from the
+ * observers below, where a missing constructor is a hard ReferenceError and a
+ * present-but-bounded one is strictly better. The exit from this is a real 2D
+ * context, not a stub; c/lib/gfx can rasterize one and nothing else is in the
+ * way, but it is that job and not this comment. Pinned by test-platform.
+ * ======================================================================== */
+
 /* ==== the observers ======================================================
  * REQUESTED, NOT MEASURED: no page in the corpus reached one, because they all
  * died earlier. They are here because their ABSENCE is load-bearing in a way

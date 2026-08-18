@@ -1407,6 +1407,48 @@ int main(void)
                 "if (document.getElementById('ih').innerHTML !== 'cell') throw 'div ctx';"),
        "the same string in <div> context drops the stray <td>");
 
+    /* ---- Node.isEqualNode / isSameNode ----------------------------------
+     * MEASURED on stripe.com: React's Float compares hoisted <link>/<meta>
+     * candidates with isEqualNode, and its absence threw six times per load
+     * out of useSyncExternalStore, cost the hydration, and took the page from
+     * 69 painted text runs to 0. The attribute-ORDER case is the one that
+     * matters most: a server and a client routinely emit the same element
+     * with the attributes in a different order, so comparing by position
+     * would re-create the bug in a quieter form. */
+    CK(run(ctx, "var h = document.body;"
+                "var a = document.createElement('link');"
+                "a.setAttribute('rel','stylesheet'); a.setAttribute('href','/x.css');"
+                "var b = document.createElement('link');"
+                "b.setAttribute('href','/x.css'); b.setAttribute('rel','stylesheet');"
+                "if (!a.isEqualNode(b)) throw 'attribute order must not matter';"
+                "if (a.isSameNode(b)) throw 'distinct nodes are not the same node';"
+                "if (!a.isSameNode(a)) throw 'a node is the same node as itself';"),
+       "isEqualNode ignores attribute order; isSameNode is identity");
+    CK(run(ctx, "var a = document.createElement('link');"
+                "a.setAttribute('rel','stylesheet'); a.setAttribute('href','/x.css');"
+                "var b = document.createElement('link');"
+                "b.setAttribute('rel','stylesheet'); b.setAttribute('href','/y.css');"
+                "if (a.isEqualNode(b)) throw 'a differing value must not compare equal';"
+                "b.setAttribute('href','/x.css'); b.setAttribute('media','all');"
+                "if (a.isEqualNode(b)) throw 'an extra attribute must not compare equal';"),
+       "isEqualNode is sensitive to values and to attribute count");
+    CK(run(ctx, "var a = document.createElement('div'); a.innerHTML = '<p>hi</p>';"
+                "var b = document.createElement('div'); b.innerHTML = '<p>hi</p>';"
+                "if (!a.isEqualNode(b)) throw 'equal subtrees';"
+                "b.innerHTML = '<p>ho</p>';"
+                "if (a.isEqualNode(b)) throw 'text content is part of equality';"
+                "b.innerHTML = '<p>hi</p><p>hi</p>';"
+                "if (a.isEqualNode(b)) throw 'child count is part of equality';"
+                "var c = document.createElement('span'); "
+                "if (a.isEqualNode(c)) throw 'tag name is part of equality';"),
+       "isEqualNode recurses into children, in order");
+    CK(run(ctx, "var a = document.createElement('div');"
+                "if (a.isEqualNode(null) !== false) throw 'null';"
+                "if (a.isEqualNode(undefined) !== false) throw 'undefined';"
+                "if (a.isEqualNode() !== false) throw 'no argument';"
+                "if (a.isSameNode(null) !== false) throw 'same/null';"),
+       "isEqualNode(null) is false, not a throw");
+
     /* console.log/warn/error are installed and callable */
     CK(run(ctx, "console.log('L', 1); console.warn('W'); console.error('E');"),
        "console.log/warn/error callable");

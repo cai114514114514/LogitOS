@@ -252,6 +252,19 @@ int main(void)
         "(function(){ var p = { then: function(){} }; p.then();"
         "  var g = 7; try { g(); } catch (e) { return e.message; } })()",
         "not a function (the callee is a number)");
+    /* The same trap through the OTHER door, and the one that needed a second
+     * pass to see: `o.a?.()` on a nullish o.a SKIPS the call, so the atom the
+     * bytecode pushed is never consumed and stays live for whatever fails
+     * next. A computed call has no name of its own to overwrite it, so that
+     * next failure would be reported as `a is not a function` -- pointing at
+     * a line that is fine. A message that names the WRONG thing is worse than
+     * the bare one it replaces. */
+    expect_str(ctx, "a skipped optional call does not lend its name to the next failure",
+        "(function(){ var o = { a: null }; o.a?.();"
+        "  var m = {}, k = 'z';"
+        "  try { m[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is undefined)");
+
     /* And the call that SUCCEEDS is untouched -- the check runs only after an
      * exception, so nothing here may change what a working call returns. */
     expect_true(ctx, "a call that works is unaffected",

@@ -148,6 +148,14 @@ int bfetch_start_from(const char *base, const char *ref)
 }
 int bfetch_start(const char *ref) { return bfetch_start_from(0, ref); }
 
+/* The navigation door (bfetch.h). This fake carries no cookie jar, so the
+ * same-site classification the real one differs on has nothing to act on here
+ * -- but the SYMBOL has to exist, or browser.c's one navigation call does not
+ * link and the whole loader suite stops building rather than failing. That is
+ * how this arrived: a source grew a dependency and a link line did not follow,
+ * which this tree has now recorded seven times. */
+int bfetch_start_nav(const char *ref) { return bfetch_start_from(0, ref); }
+
 int bfetch_state(int id)  { return (id >= 0 && g_req[id].used) ? g_req[id].state : BF_FAILED; }
 int bfetch_status(int id) { return (id >= 0 && g_req[id].used) ? g_req[id].status : 0; }
 const char *bfetch_url(int id) { return (id >= 0 && g_req[id].used) ? g_req[id].url : ""; }
