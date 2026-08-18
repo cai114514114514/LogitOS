@@ -484,6 +484,19 @@ def host_probe(url, result):
                 img_tags=len(re.findall(r"<img\b", body, re.I)),
                 inventory=inventory(body),
                 elapsed=round(time.time() - t0, 1))
+            # KEEP THE DOCUMENT. Everything above is a COUNT taken from it, and
+            # a count cannot be re-questioned: the moment anyone asks "which
+            # script defines that symbol" the bytes are gone, and on a live
+            # site they cannot be fetched again -- bing serves a different
+            # document per request, so a curl an hour later is a different
+            # page and any conclusion drawn from it is unfalsifiable. Measured
+            # the day this was added: a `_w is not defined` investigation ran
+            # aground on exactly that.
+            #
+            # Under `_body` and popped by the caller rather than stored in the
+            # JSON: it is 217 KB for bing and over a megabyte for github, and
+            # the record is meant to be read.
+            result["_body"] = body
     except urllib.error.HTTPError as e:
         result.update(ok=True, status=e.code, final_url=url, bytes=0,
                       redirects=chain, script_tags=0, script_src=0, img_tags=0,
@@ -799,6 +812,23 @@ def main():
         ui.typ("about:text")
         ui.key("ret")
         time.sleep(2.5)
+
+        # The document the HOST was served, beside the log for the same
+        # reason. Not the guest's copy -- we have no way to read that back --
+        # but fetched with the guest's own User-Agent, in parallel with the
+        # boot, so it is the closest thing to the bytes the browser saw. A
+        # site that serves two different documents to one UA in one minute
+        # will still defeat it, and the file makes that visible instead of
+        # leaving it to be assumed.
+        hb = (rec.get("host") or {}).pop("_body", None)
+        if hb:
+            hp = os.path.join(shots_dir, "%s.host.html" % args.name)
+            try:
+                with open(hp, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(hb)
+                rec["host_document"] = hp
+            except OSError:
+                pass
 
         # The serial from the moment Enter was pressed, kept BESIDE the JSON: a
         # verdict without the log that produced it cannot be argued with.
