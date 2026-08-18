@@ -48,6 +48,15 @@ void png_register(void);
 void gif_register(void);
 void jpeg_register(void);
 void svg_register(void);
+
+/* Parse ONE CSS colour literal -- "#f0f", "rgba(1,2,3,.5)", "red" -- into
+ * rgba[4]. 1 if it named a colour, 0 if not (rgba untouched, so the caller
+ * keeps its previous value: what both SVG's default and Canvas's "ignore an
+ * unparseable fillStyle" require). Implemented in svg.c over the parser that
+ * file already had, so an SVG attribute and a canvas fillStyle cannot come to
+ * disagree about what "rebeccapurple" is. This is NOT the cascade's parser and
+ * must not become it -- LibCSS owns what a stylesheet means. */
+int img_css_color(const char *s, int len, unsigned char *rgba);
 void bmp_register(void);
 void ico_register(void);
 void webp_register(void);

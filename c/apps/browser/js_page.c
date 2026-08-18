@@ -54,6 +54,11 @@ void js_anim_install(JSContext *ctx) __attribute__((__weak__));
  * build without that TU links and `typeof DOMParser === 'undefined'`, which
  * is the correct feature-detect answer for a browser that doesn't have it. */
 void js_domparser_install(JSContext *ctx) __attribute__((__weak__));
+/* CanvasRenderingContext2D over c/lib/gfx -- js_canvas.c. Weak like the rest;
+ * a build without that TU has canvases with no context, which is what this
+ * browser was until the callee-naming instrument ranked `getContext` first
+ * among every failed call in the site corpus. */
+void js_canvas_install(JSContext *ctx) __attribute__((__weak__));
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -708,6 +713,11 @@ int js_page_open(struct node *root)
      * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
      * focused. It can only copy a descriptor that already exists. */
     if (js_semantics_install) js_semantics_install(g_ctx);
+    /* After the interface objects exist, because it asks for
+     * HTMLCanvasElement.prototype BY NAME and installs nothing if it is
+     * absent -- saying so out loud rather than leaving the page to rediscover
+     * it as `getContext is not a function`. */
+    if (js_canvas_install) js_canvas_install(g_ctx);
     /* LAST, after everyone who owns a piece of what it composes with has had
      * their turn, and the ordering is load-bearing twice over. It takes
      * Element.prototype, which js_dom.c publishes. And it REPLACES

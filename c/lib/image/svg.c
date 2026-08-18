@@ -402,7 +402,14 @@ static void parse_color(const uint8_t *v, int vl, struct paint *pc)
         pc->b = clampbyte(c[2] >> 8);
         int a = c[3];
         if (a < 0) a = 0; if (a > 256) a = 256;       /* clamp to [0,1] in 24.8 */
-        pc->a = (uint8_t)((a * 255) / 256);
+        /* ROUNDED, not truncated. `a` is 24.8 with 256 == 1.0, so the byte is
+         * a*255/256 -- and truncating it puts every alpha one step LOW and,
+         * worse, loses a step on every round trip: 0.5 becomes 127, which
+         * serializes as 0.498, which reparses as 126. Found by canvas, where
+         * `ctx.fillStyle = ctx.fillStyle` is a real idiom and so the round
+         * trip is observable; the same one-step error was always here on an
+         * SVG fill-opacity, just with nothing to compare it against. */
+        pc->a = (uint8_t)((a * 255 + 128) / 256);
         return;
     }
     for (unsigned i = 0; i < sizeof CNAMES / sizeof CNAMES[0]; i++)
@@ -412,6 +419,35 @@ static void parse_color(const uint8_t *v, int vl, struct paint *pc)
             return;
         }
     /* unknown color: keep inherited */
+}
+
+/* The same parser, for a caller outside this file. Canvas 2D takes a CSS
+ * colour in a JS string -- `ctx.fillStyle = "#f0f"` -- which is the SAME
+ * question this file already answers for an SVG attribute, so it gets the same
+ * answer rather than a second table that can disagree with this one. (css.h is
+ * emphatic about that failure mode one layer up: two evaluators for one
+ * question do not fail by being approximate, they fail by DISAGREEING.)
+ *
+ * NOT the cascade's parser, and it must not become it: LibCSS owns what a
+ * stylesheet means. This is the narrower job both callers actually have -- a
+ * colour literal in an attribute or a script string, with no cascade, no
+ * inheritance and no currentColor to resolve.
+ *
+ * Returns 1 and fills rgba[4] when the string names a colour, 0 when it does
+ * not (including "none"), leaving rgba untouched -- so a caller can keep its
+ * previous value, which is what both the SVG default and the Canvas spec
+ * ("ignore an unparseable fillStyle") require. */
+int img_css_color(const char *s, int len, unsigned char *rgba)
+{
+    struct paint pc;
+    pc.r = pc.g = pc.b = 0; pc.a = 255; pc.none = 0; pc.evenodd = 0;
+    /* A sentinel the parser cannot produce, so "did it match?" is a real
+     * question rather than a comparison against a plausible black. */
+    pc.none = 2;
+    parse_color((const uint8_t *)s, len, &pc);
+    if (pc.none != 0) return 0;
+    rgba[0] = pc.r; rgba[1] = pc.g; rgba[2] = pc.b; rgba[3] = pc.a;
+    return 1;
 }
 
 static void apply_opacity(const uint8_t *v, int vl, struct paint *pc)

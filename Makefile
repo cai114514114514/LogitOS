@@ -2861,6 +2861,7 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # committed real-page corpus) and test-platform / -control / -asan for
 # js_platform.c + js_select.c. Own fragment; see the file.
 -include tests/webapi_platform.mk
+-include tests/canvas.mk
 
 # The platform globals: TextEncoder/TextDecoder against the WPT encoding
 # subset with its negative control, and the task/microtask/timer ordering
