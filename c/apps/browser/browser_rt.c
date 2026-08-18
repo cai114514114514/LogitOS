@@ -1749,8 +1749,109 @@ void bxfer_free(struct h1_conn *c)
  * were eight TLS handshakes. Now it is one pooled request -- and the size cap
  * is gone with it, because the body buffer grows as bytes arrive rather than
  * being reserved up front. */
+/* `data:` -- decoded HERE, because this is the one place a sub-resource's
+ * BYTES are asked for, and a data URI is bytes that have already arrived.
+ *
+ * It used to go to bfetch_sync like any other src, which parsed it as a URL,
+ * failed, and reported `fetch failed (status 404)` against a 900-character
+ * "hostname". Measured on www.bing.com, whose page carries its icons inline;
+ * the scoreboard recorded it as a sub-resource failure, which is exactly the
+ * wrong diagnosis -- nothing failed, nothing should have been fetched.
+ *
+ * RFC 2397: data:[<mediatype>][;base64],<data>. The media type is not parsed
+ * and does not need to be: img_decode() sniffs the bytes, as it does for a
+ * fetched image, so a lying `image/png` on a JPEG is handled the same way
+ * here as over HTTP. Only the `;base64` flag matters, because it decides how
+ * the payload is read.
+ *
+ * Percent-decoding the non-base64 form is done too: `data:image/svg+xml,%3Csvg`
+ * is how an SVG icon is written inline more often than the base64 form. */
+static int is_data_uri(const char *s)
+{
+    static const char k[] = "data:";
+    if (!s) return 0;
+    for (int i = 0; i < 5; i++) {
+        int c = s[i], d = k[i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != d) return 0;
+    }
+    return 1;
+}
+
+static int b64v(int c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;                      /* '=' and whitespace both land here */
+}
+
+static int hexv(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int data_uri(const char *src, unsigned char **buf, int *len)
+{
+    if (!is_data_uri(src)) return -1;
+    const char *comma = 0;
+    for (const char *p = src; *p; p++) if (*p == ',') { comma = p; break; }
+    if (!comma) return -1;                       /* no payload: not a data URI */
+    int b64 = 0;
+    for (const char *p = src + 5; p < comma - 5; p++)
+        if ((p[0]=='b'||p[0]=='B') && (p[1]=='a'||p[1]=='A') &&
+            (p[2]=='s'||p[2]=='S') && (p[3]=='e'||p[3]=='E') &&
+            p[4]=='6' && p[5]=='4') { b64 = 1; break; }
+
+    const char *d = comma + 1;
+    int n = 0; while (d[n]) n++;
+    /* An upper bound, never an exact size: base64 is 3 bytes per 4 characters
+     * and percent-decoding only ever shrinks. */
+    unsigned char *out = (unsigned char *)malloc((size_t)n + 4);
+    if (!out) return -1;
+    int o = 0;
+
+    if (b64) {
+        /* `acc` is MASKED BACK after every byte emitted, and unsigned. Without
+         * the mask it accumulates every sextet ever seen and overflows a
+         * signed int about seven characters in -- undefined behaviour that
+         * happens to work on this compiler and was caught by UBSan in
+         * test-h2mux-asan the first time this ran, not by any output being
+         * wrong. After an emit at most 7 bits are still owed, so the mask is
+         * exact rather than defensive. */
+        unsigned acc = 0; int bits = 0;
+        for (int i = 0; i < n; i++) {
+            int v = b64v((unsigned char)d[i]);
+            if (v < 0) continue;                 /* padding and whitespace */
+            acc = (acc << 6) | (unsigned)v; bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                out[o++] = (unsigned char)((acc >> bits) & 0xFFu);
+                acc &= (1u << bits) - 1u;
+            }
+        }
+    } else {
+        for (int i = 0; i < n; i++) {
+            if (d[i] == '%' && i + 2 < n) {
+                int h = hexv((unsigned char)d[i+1]), l = hexv((unsigned char)d[i+2]);
+                if (h >= 0 && l >= 0) { out[o++] = (unsigned char)((h << 4) | l); i += 2; continue; }
+            }
+            out[o++] = (unsigned char)(d[i] == '+' ? ' ' : d[i]);
+        }
+    }
+    if (o <= 0) { free(out); return -1; }
+    *buf = out; *len = o;
+    return 0;
+}
+
 int res_fetch(const char *src, unsigned char **buf, int *len)
 {
+    if (data_uri(src, buf, len) == 0) return 0;
     char abs[BF_URLMAX];
     if (bfetch_resolve(0, src, abs, sizeof abs) == 0 && cache_take(abs, buf, len) == 0)
         return 0;

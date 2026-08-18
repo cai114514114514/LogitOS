@@ -661,6 +661,14 @@ static int load_late_images(int budget)
     for (int i = 0; i < n && queued < budget; i++) {
         if (items[i].type != IT_IMAGE || items[i].img || !items[i].imgsrc) continue;
         if (layout_img_cached(items[i].imgsrc)) continue;   /* answered already */
+        /* A `data:` image is bytes that already arrived; res_fetch() decodes
+         * it. Queueing it here would send a 900-character base64 payload to
+         * bfetch as a hostname, which is what produced bing's
+         * `fetch failed (status 404) data:image/png;base64,...` on the
+         * scoreboard -- a sub-resource failure for a resource that was never
+         * missing. layout_load_images() below calls res_fetch() directly, so
+         * skipping the network queue does not skip the image. */
+        if (starts_ci(items[i].imgsrc, "data:")) continue;
         int dup = 0;
         for (int k = 0; k < g_nres; k++)
             if (g_res[k].ref && str_eq(g_res[k].ref, items[i].imgsrc)) { dup = 1; break; }

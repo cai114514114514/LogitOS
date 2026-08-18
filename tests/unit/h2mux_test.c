@@ -837,6 +837,67 @@ static void t_plaintext_is_h1(void)
     x_free(&x);
 }
 
+int res_fetch(const char *src, unsigned char **buf, int *len);
+
+/* ---- `data:` is bytes that already arrived, not a URL to fetch ----------
+ *
+ * res_fetch() is the one place layout asks for a sub-resource's BYTES, and a
+ * data URI used to go straight past it into bfetch_sync -- which parsed a
+ * 900-character base64 payload as a hostname and reported
+ *
+ *     fetch failed (status 404) data:image/png;base64,iVBORw0KGgo...
+ *
+ * on www.bing.com, whose page carries its icons inline. The scoreboard
+ * recorded that as a sub-resource failure, which is the wrong diagnosis in
+ * the most expensive direction: nothing failed, and nothing should have been
+ * fetched.
+ *
+ * Both RFC 2397 forms, because both are common and they are different code
+ * paths: `;base64` for a PNG, and percent-encoded text for the inline SVG
+ * icon, which is how an icon is written more often than the base64 form.
+ * The media type is deliberately NOT parsed -- img_decode() sniffs the bytes
+ * exactly as it does for a fetched image, so a lying type is handled the same
+ * way here as over HTTP. */
+static void t_data_uri(void)
+{
+    printf("\n-- data: URIs are decoded, not fetched --\n");
+    unsigned char *b = 0; int n = 0;
+
+    /* base64: the 8-byte PNG signature, which is what a real one starts with
+     * and what img_decode sniffs. */
+    OKM(res_fetch("data:image/png;base64,iVBORw0KGgo=", &b, &n) == 0,
+        "a base64 data URI resolves");
+    OKM(n == 8, "...to 8 bytes, got %d", n);
+    if (b && n >= 8) {
+        static const unsigned char png[8] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A};
+        int same = 1;
+        for (int i = 0; i < 8; i++) if (b[i] != png[i]) same = 0;
+        OKM(same, "...and they are the PNG signature");
+    }
+    free(b); b = 0; n = 0;
+
+    /* percent-encoded, the inline-SVG form. `+` is a space, as in a query. */
+    OKM(res_fetch("data:image/svg+xml,%3Csvg%20a+b%3E", &b, &n) == 0,
+        "a percent-encoded data URI resolves");
+    /* `%3Csvg%20a+b%3E` is `<svg a b>` -- nine characters, and both space
+     * forms are exercised: `%20` and the query-style `+`. */
+    OKM(n == 9 && b && b[0] == '<' && b[4] == ' ' && b[6] == ' ' && b[8] == '>',
+        "...to the decoded text, %d bytes", n);
+    free(b); b = 0; n = 0;
+
+    /* No comma is not a data URI at all -- it must fall through to the
+     * network path rather than being decoded into nothing. Asserted because
+     * returning 0 with an empty buffer would be a silent blank image. */
+    OKM(res_fetch("data:image/png;base64", &b, &n) != 0,
+        "a data: with no payload is NOT claimed by the decoder");
+
+    /* Case: the scheme is case-insensitive and pages write it both ways. */
+    b = 0; n = 0;
+    OKM(res_fetch("DATA:text/plain,hi", &b, &n) == 0 && n == 2,
+        "the scheme is matched case-insensitively");
+    free(b);
+}
+
 int main(void)
 {
     printf("=== h2mux_test: the browser's fetch transport over HTTP/2 ===\n");
@@ -850,6 +911,7 @@ int main(void)
     t_binary_response();
     t_h1_fallback();
     t_plaintext_is_h1();
+    t_data_uri();
 
     printf("\n%d checks, %d failures\n", checks, fails);
     if (fails) { printf("h2mux_test: FAIL\n"); return 1; }
