@@ -882,30 +882,32 @@ static const char *PLATFORM_PRELUDE =
 "  }\n"
 "})();\n"
 
-/* ==== canvas.getContext IS ABSENT ON PURPOSE =============================
+/* ==== canvas.getContext IS NOT HERE, AND IS NOT ABSENT EITHER ============
  *
- * MEASURED on stripe.com: four `getContext is not a function (it is
- * undefined)` per load, named by the engine's own message. The obvious
- * one-line answer -- a getContext() that returns null -- is the wrong one,
- * and it is worth writing down because it reads as obviously safe.
+ * This block used to argue at length that the method should stay away,
+ * because the canonical feature test is `!!canvas.getContext` and a
+ * null-returning stub flips it true. The argument was right about the stub and
+ * wrong about the conclusion: the exit is a REAL context, and it landed --
+ * `c/apps/browser/js_canvas.c`, over c/lib/gfx, installed onto
+ * HTMLCanvasElement.prototype.
  *
- * Returning null IS how the spec says "this context type is unsupported", so
- * the RETURN value would be honest. The problem is one level up: the canonical
- * feature test is
+ * The concern that motivated the old note is answered by WHERE it installs
+ * rather than by staying away: HTMLCanvasElement.prototype is a real link in a
+ * <canvas>'s chain (js_dom_iface.inc:214), so `div.getContext` is still
+ * undefined and a probe aimed at the wrong element still gets the right
+ * answer. tests/unit/canvas_test.c asserts that, so a later move to
+ * Element.prototype cannot pass unnoticed.
  *
- *     !!document.createElement('canvas').getContext
+ * The corpus evidence is kept because it is the reason the stub was refused
+ * and would be the reason again. tests/fixtures/jsperf/baidu-async-search.js:
  *
- * (Modernizr's, and every hand copy of it). It asks whether the METHOD exists,
- * not what it answers. Adding the method flips that test from false to true
- * and sends the page down the canvas branch holding a null context -- from
- * "no canvas, take the fallback" to "canvas, and every call on it throws". A
- * page that renders a fallback today would render nothing.
+ *     var o = a.getContext === i ? !1 : a.getContext("2d");
+ *     if (o === !1) return !1;
+ *     a.width = a.height = 10; ...
  *
- * So the absence here is load-bearing in the OPPOSITE direction from the
- * observers below, where a missing constructor is a hard ReferenceError and a
- * present-but-bounded one is strictly better. The exit from this is a real 2D
- * context, not a stub; c/lib/gfx can rasterize one and nothing else is in the
- * way, but it is that job and not this comment. Pinned by test-platform.
+ * `i` is undefined and the early return compares STRICTLY against false. A
+ * getContext returning null slips past that guard and the page walks on
+ * holding null -- a clean fallback turned into a crash further from its cause.
  * ======================================================================== */
 
 /* ==== the observers ======================================================

@@ -235,6 +235,36 @@ static void t_calc_height(void)
     box_is("w",    0, 176, 140, 30);
 }
 
+/* ---- <canvas> reserves a box ----------------------------------------------
+ *
+ * It used to fall through to the empty-block path and take NO SPACE, so a page
+ * that drew a chart reserved nothing for it and the surrounding text closed
+ * over the hole. The default is CSS's 300x150 -- the same one <video> uses,
+ * and where <video>'s came from.
+ *
+ * The two sizes are DIFFERENT QUANTITIES and the order they resolve in has to
+ * match on both sides: the width/height ATTRIBUTES size the backing bitmap
+ * (js_canvas.c) and CSS sizes the box it is drawn into (here). A canvas laid
+ * out at one size and rendered at another is the bug this pins. */
+static void t_canvas_box(void)
+{
+    printf("-- <canvas> is a replaced element with CSS's 300x150 default\n");
+    page("<html><head><style>body{margin:0}"
+         "#css{width:80px;height:20px}"
+         "</style></head><body>"
+         "<canvas id=att width=200 height=100></canvas>"
+         "<canvas id=def></canvas>"
+         "<canvas id=css width=200 height=100></canvas>"
+         "</body></html>", 800);
+    box_is("att", 0, 0, 200, 100);
+    /* The default follows the first on the same line, so its x is 200. */
+    box_is("def", 200, 0, 300, 150);
+    /* CSS beats the attributes for the BOX -- the attributes still own the
+     * bitmap, which is why 80x20 here and 200x100 there is correct and not a
+     * contradiction. */
+    box_is("css", 500, 0, 80, 20);
+}
+
 int main(void)
 {
     /* ---------------------------------------------------------------- 1
@@ -243,6 +273,7 @@ int main(void)
      * element correctly said width:120px. */
     t_pct_padding();
     t_calc_height();
+    t_canvas_box();
 
     printf("-- a box nobody painted\n");
     page("<html><head><style>body{margin:0}"

@@ -194,10 +194,26 @@ static void st_reset(struct cv_state *s)
 static struct canvas2d *cv_of(JSValueConst v)
 { return (struct canvas2d *)JS_GetOpaque(v, cv_class_id); }
 
+#define CV_REG 8
+static struct { struct node *n; struct canvas2d *c; } g_reg[CV_REG];
+
+static void reg_add(struct node *n, struct canvas2d *c)
+{
+    for (int i = 0; i < CV_REG; i++)
+        if (!g_reg[i].n || g_reg[i].n == n) { g_reg[i].n = n; g_reg[i].c = c; return; }
+    printf("[canvas] %d canvases already have contexts; this one will not reach "
+           "the screen\n", CV_REG);
+}
+
 static void cv_finalizer(JSRuntime *rt, JSValue val)
 {
     struct canvas2d *c = (struct canvas2d *)JS_GetOpaque(val, cv_class_id);
     if (!c) return;
+    /* Out of the registry first: browser_paint.c reaches the pixels through it
+     * every frame, and an entry pointing at freed memory would be read before
+     * anything noticed the context was gone. */
+    for (int i = 0; i < CV_REG; i++)
+        if (g_reg[i].c == c) { g_reg[i].n = NULL; g_reg[i].c = NULL; }
     if (c->px) free(c->px);
     JS_FreeValueRT(rt, c->elval);
     free(c);
@@ -1167,6 +1183,7 @@ static JSValue el_getContext(JSContext *ctx, JSValueConst t, int argc, JSValueCo
     if (JS_IsException(obj)) { JS_FreeValue(ctx, c->elval); free(c->px); free(c); return obj; }
     JS_SetOpaque(obj, c);
     JS_SetPropertyStr(ctx, t, "__ctx2d", JS_DupValue(ctx, obj));
+    reg_add(n, c);
     return obj;
 }
 
@@ -1226,6 +1243,43 @@ static const JSCFunctionListEntry canvas_el_funcs[] = {
     JS_CFUNC_DEF("toDataURL", 0, el_toDataURL),
     JS_CFUNC_DEF("toBlob", 1, el_toDataURL),
 };
+
+/* ------------------------------------------------------- reaching the screen --
+ *
+ * layout.c reserves an IT_CANVAS box and browser_paint.c asks for the pixels
+ * here, weakly -- the same split IT_VIDEO and IT_CONTROL use, and for the same
+ * reason: a script can repaint a canvas between two frames without layout
+ * running at all, so the bitmap cannot be layout's to own.
+ *
+ * The painter has a `struct node *` and the context is reachable only from the
+ * element's JS wrapper, so a small registry closes the gap. It is an ARRAY and
+ * not a hash because a page with more than a handful of canvases is not the
+ * case this is sized for, and a linear scan over eight entries costs less than
+ * the hash would; the cap is stated and a canvas past it simply does not
+ * reach the screen, which is visible rather than silent.
+ *
+ * The backing store is straight RGBA8 -- what SYS_GUI_BLIT consumes -- so this
+ * is one blit and no conversion, the same property that made getImageData a
+ * copy. The bitmap is drawn at its OWN size into the box CSS gave it; when the
+ * two differ the compositor's nearest-neighbour rescale applies, which is the
+ * spec's behaviour and is why the two sizes are separate quantities. */
+/* Returns the backing store, or NULL when that element has no context yet --
+ * the ordinary case for a canvas the page has not drawn into.
+ *
+ * It HANDS OVER the pixels rather than blitting them, and that is what keeps
+ * this file host-linkable: gui_blit is a static inline over int 0x80 in
+ * c/apps/logit.h, and pulling that in would make js_canvas.c a ring-3-only TU
+ * that tests/canvas.mk could not build. The painter already blits IT_IMAGE, so
+ * the call site exists there anyway. */
+const unsigned char *canvas_pixels(struct node *n, int *w, int *h)
+{
+    for (int i = 0; i < CV_REG; i++)
+        if (g_reg[i].n == n && g_reg[i].c && g_reg[i].c->px) {
+            *w = g_reg[i].c->w; *h = g_reg[i].c->h;
+            return g_reg[i].c->px;
+        }
+    return 0;
+}
 
 /* --------------------------------------------------------------- install -- */
 

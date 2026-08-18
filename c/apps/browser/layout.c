@@ -1417,6 +1417,44 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
      * that default. An <audio> element gets a box only if it is asked for one:
      * with no controls to draw, a silent 300x150 hole in the page would be a
      * bug the page cannot see. */
+    /* <canvas>: the same replaced-element shape as <video>, and the same
+     * default -- CSS's 300x150 is where the media default came from in the
+     * first place, and it is what a <canvas> with no attributes occupies in
+     * every browser. Before this it fell through to the empty-block path and
+     * took no space at all, so a page that drew a chart reserved nothing for
+     * it and the surrounding text closed over the hole. Priority: CSS
+     * width/height > the width/height attributes > 300x150 -- the same order
+     * as <video>, and the same order js_canvas.c reads the attributes in for
+     * the BACKING STORE, which is a different quantity: the attributes size
+     * the bitmap, CSS sizes the box it is drawn into. Keeping the two orders
+     * identical is what stops a canvas from being laid out at one size and
+     * rendered at another. */
+    if (tag_eq(c->tag, "canvas")) {
+        int iw = 0, ih = 0;
+        if (st && st->has_w && !st->w_pct) iw = st->width;
+        if (st && st->has_h && !st->h_pct) ih = st->height;
+        if (st && st->has_w && st->w_pct) iw = (f->x1 - f->x0) * st->width / 100;
+        if (!iw) { const char *wa = dom_attr(c, "width");  if (wa) iw = atoi_(wa); }
+        if (!ih) { const char *ha = dom_attr(c, "height"); if (ha) ih = atoi_(ha); }
+        if (iw <= 0) iw = 300;
+        if (ih <= 0) ih = 150;
+        if (iw > f->x1 - f->x0) { int s2 = f->x1 - f->x0; ih = ih * s2 / iw; iw = s2; }
+        if (f->line_started && f->x + iw > f->x1) newline(f);
+        struct item *it = additem(IT_CANVAS, c);
+        if (it) { it->x = f->x; it->y = f->y; it->w = iw; it->h = ih;
+                  it->href = h2;
+                  it->hidden = st ? st->hidden : 0;
+                  it->opacity = st ? st->opacity : 255; }
+        /* Same as <video>: a replaced element has an exact box in the display
+         * list, and the CSSOM only recognises IT_RECT there -- without this
+         * record getBoundingClientRect reads an ink union of whatever was
+         * drawn into it, which for a canvas the page has not touched is
+         * nothing at all. */
+        box_close(box_open(c, f->x, f->y, iw, ih), f->x, f->y, iw, ih);
+        f->x += iw; f->line_started = 1; if (ih > f->lineh) f->lineh = ih;
+        return;
+    }
+
     if (tag_eq(c->tag, "video") || tag_eq(c->tag, "audio")) {
         int is_audio = tag_eq(c->tag, "audio");
         int iw = 0, ih = 0;

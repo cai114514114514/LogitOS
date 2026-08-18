@@ -183,15 +183,32 @@ int main(int argc, char **argv)
          "  catch (e) { return e instanceof SyntaxError; } })()",
          "a non-numeric timing member is not a timestamp");
 
-    /* canvas.getContext STAYS ABSENT, and the argument is in js_platform.c
-     * above the observers: `!!canvas.getContext` is the canonical feature
-     * test, so a getContext() returning null -- the spec's own way to refuse a
-     * context type -- would flip that test true and send the page down the
-     * canvas branch with a null context. A page that renders a fallback today
-     * would render nothing. Asserted so the one-line "fix" cannot land
-     * quietly. */
+    /* canvas.getContext is a REAL context now (js_canvas.c), which this build
+     * does not link -- so the right assertion here is not "absent" and not
+     * "present", it is that nothing in THIS file quietly provides one. A
+     * getContext appearing without js_canvas.c on the link line would be a
+     * stub, and a stub is what the corpus evidence in js_platform.c refuses.
+     * The real surface is gated by make test-canvas, 46 checks against read-back
+     * pixels. */
     ckjs("typeof document.createElement('canvas').getContext === 'undefined'",
-         "canvas.getContext stays absent (a null-returning stub passes !!getContext)");
+         "js_platform.c provides no getContext of its own (js_canvas.c owns it)");
+
+    /* WHERE Node's methods actually reach, asked because the callee-naming
+     * instrument returned `appendChild is not a function (it is undefined)`
+     * from 2345.com's Vue runtime -- and "it is undefined" says the object
+     * exists and its chain does not carry the method, which is a different
+     * bug from a null receiver and points at one of the objects below.
+     * doc_funcs (js_dom.c) lists createElement and querySelector and NOT
+     * appendChild, so whether the document has it at all is a question about
+     * the interface hierarchy rather than about that table. */
+    ckjs_dom("typeof document.appendChild === 'function'",
+             "the document inherits Node.appendChild");
+    ckjs_dom("typeof document.createDocumentFragment().appendChild === 'function'",
+             "a DocumentFragment inherits Node.appendChild");
+    ckjs_dom("typeof document.head.appendChild === 'function'",
+             "document.head has appendChild");
+    ckjs_dom("typeof document.documentElement.appendChild === 'function'",
+             "documentElement has appendChild");
 
     /* ==== document lifecycle ============================================
      * MEASURED on bing and deepseek -- the most-wanted property in the corpus.

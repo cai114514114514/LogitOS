@@ -1358,15 +1358,63 @@ call. 37 runs is not a rendered stripe.com and is not claimed to be one; it is
 the difference between a page that lost its whole document and one that did
 not.
 
-**And `canvas.getContext` STAYS ABSENT, deliberately** -- the other name in
-that log, and the one where the obvious one-line fix is the wrong one.
-Returning null is how the spec refuses a context type, so the return value
-would be honest; but the canonical feature test is `!!canvas.getContext`, which
-asks whether the METHOD exists. Adding it flips that test true and sends the
-page down the canvas branch holding a null context: from "no canvas, take the
-fallback" to "canvas, and every call on it throws". Argued in `js_platform.c`
-above the observers and pinned by `test-platform`, so the one-line "fix" cannot
-land quietly.
+**`canvas.getContext` was the other name in that log, and it is now a REAL 2D
+context** (`c/apps/browser/js_canvas.c`). It was ranked, not chosen: pointed at
+a full scoreboard, the instrument returned **33 `getContext`** (qq 25, stripe 8,
+anthropic 2) against 1 of anything else.
+
+The one-line answer -- `getContext() { return null }` -- is the wrong one, and
+the corpus says so rather than an argument.
+`tests/fixtures/jsperf/baidu-async-search.js` writes
+`var o = a.getContext === i ? !1 : a.getContext("2d"); if (o === !1) return !1;`
+-- `i` is undefined and the guard compares STRICTLY against false, so with the
+method absent the probe returns false and the page takes its fallback cleanly,
+and with a null-returning method the guard does not fire and the page walks on
+holding null. The "safe" one-liner converts a clean fallback into a crash
+further from its cause.
+
+**It is the consumer `c/lib/gfx` never had.** `gfx_fill`, `gfx_paint_linear`,
+`gfx_paint_radial`, `gfx_surface_init` and the whole `gfx_m_*` affine layer
+were reachable only from two unit tests and a bench -- the engine's own
+reconnaissance recorded exactly that -- and canvas 2D is their shape. No new
+rasterizer: the file makes gfx calls and owns no scanline loop.
+
+Two engine contracts shaped the code rather than the reverse, and both are
+worth knowing before touching it:
+
+- **`gfx_path_matrix` REFUSES a mid-build call** (latching `overflow`), because
+  points already recorded were flattened under the old matrix. Canvas requires
+  the opposite -- the CTM in force when a point is added transforms it. So the
+  path's matrix stays IDENTITY and `js_canvas.c` transforms every point with
+  `gfx_m_apply`. Not a workaround; the only reading true to both contracts.
+- **A `gfx_surface` is STRAIGHT RGBA8, byte for byte what ImageData is.** So
+  `getImageData` is a copy, not a conversion, and the gate can assert BYTES:
+  what a check reads is literally what the engine composited. Every assertion
+  in `tests/unit/canvas_test.c` names a pixel.
+
+It installs onto `HTMLCanvasElement.prototype` BY NAME, which settles what the
+old note here worried about at length: `getContext` lands on canvases and on
+NOTHING else, so `div.getContext` stays undefined. `toDataURL`/`toBlob` THROW
+rather than fabricate -- this tree decodes PNG and does not encode it, and a
+fabricated data URL is believed rather than detected. `drawImage`, `fillText`
+and `clip()` are absent on purpose, so the same instrument picks what is next.
+
+  `make test-canvas` 46 checks · `test-canvas-negctl` = `-DCANVAS_IGNORE_CTM`,
+  exactly the 5 transform checks. The control is the PLAUSIBLE wrong
+  implementation, not the absent one -- gfx's path carries a matrix, so "the
+  path will handle it" is what a reader assumes. It draws a perfectly good
+  picture in the wrong place, so colours, edges and ImageData all still pass.
+
+Three real bugs the gate found, none of which a does-it-throw test sees:
+`fillRect` re-initialised the context's path over the SAME point buffers and
+restored the struct after, so the counts came back and the geometry did not; the
+element<->context reference is a CYCLE and without a `gc_mark` the pair was
+unreachable and uncollectable at once (the suite passed and then aborted inside
+`JS_FreeRuntime` -- a leak only visible at teardown, which a browser never
+reaches); and **`svg.c`'s alpha was TRUNCATED**, `(a*255)/256`, putting every
+alpha one step low and losing another per round trip (0.5 -> 127 -> "0.498" ->
+126). Rounded now. That error was always there on an SVG `fill-opacity`; canvas
+is simply the first caller with a round trip to observe it through.
 
 **Also fixed there: `performance.measure(x, 'navigationStart')` threw.** User
 Timing L2's "convert a name to a timestamp" is TWO lookups -- a name that is

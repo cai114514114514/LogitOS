@@ -34,6 +34,17 @@ extern void media_paint_box(struct node *node, int x, int y, int w, int h,
                             int clip_x, int clip_y, int clip_w, int clip_h)
     __attribute__((__weak__));
 
+/* js_canvas.c, weakly, for exactly the same reason and with the same split:
+ * layout reserves a <canvas>'s box and the PIXELS belong to whoever owns the
+ * state -- here the 2d context's backing store, which a script can repaint
+ * between two frames without layout running at all. Returns 0 when that
+ * element has no context yet, which is the ordinary case for a canvas the
+ * page has not drawn into, and the painter then leaves the box alone rather
+ * than filling it: an undrawn canvas is TRANSPARENT, not black, and painting
+ * it black would hide whatever the page put behind it. */
+extern const unsigned char *canvas_pixels(struct node *node, int *w, int *h)
+    __attribute__((__weak__));
+
 /* forms.c, weakly, for exactly the same reason. layout.c reserves a control's
  * box; what goes INSIDE it -- the value, the caret, the tick -- is state that
  * changes on every keystroke and lives in forms.c. Weak because eight host test
@@ -768,6 +779,14 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
                                 cl_x1 - cl_x0, cl_y1 - cl_y0);
             else
                 fill(sx, sy, e->w, e->h, 0x000000, op);
+        } else if (e->type == IT_CANVAS) {
+            int cw = 0, ch = 0;
+            const unsigned char *cpx = canvas_pixels
+                                     ? canvas_pixels(e->node, &cw, &ch) : 0;
+            /* Drawn at its OWN size into the box CSS gave it; when the two
+             * differ the compositor's rescale applies, which is the spec's
+             * behaviour and is why they are separate quantities. */
+            if (cpx && cw > 0 && ch > 0) gui_blit(sx, sy, e->w, e->h, cpx, cw, ch);
         } else if (e->type == IT_CONTROL) {
             paint_control(e, sx, sy);
         } else if (e->type == IT_IMAGE && e->img) {

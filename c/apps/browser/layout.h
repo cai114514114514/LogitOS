@@ -22,7 +22,18 @@
  * That split is also what keeps layout.c free of any link dependency on
  * forms.c: eight host test binaries link layout.c, and none of them would
  * otherwise build. */
-enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO, IT_CONTROL };
+/* IT_CANVAS is a <canvas>'s border box, and it is a third instance of the same
+ * split as IT_VIDEO and IT_CONTROL: layout reserves the box, and the PIXELS
+ * belong to whoever owns the state -- here js_canvas.c's backing store, which
+ * a script can repaint between two frames without layout running at all. Made
+ * a distinct type rather than an IT_IMAGE with a borrowed `img` for the reason
+ * IT_VIDEO gives: layout_free() must never own it.
+ *
+ * APPENDED at the end of the enum on purpose. tests/unit and browser_paint.c
+ * switch on these values and `make test-cssom-abi` pins sizeof(struct item)
+ * across two flag sets; inserting in the middle would renumber IT_CONTROL
+ * under one build and not the other. */
+enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_VIDEO, IT_CONTROL, IT_CANVAS };
 struct item {
     int type, x, y, w, h;
     struct node *node;                /* DOM node this box came from (NULL only
