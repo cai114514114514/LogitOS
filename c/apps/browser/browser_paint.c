@@ -587,6 +587,7 @@ int printf(const char *, ...);   /* the dump's only output; this TU has no stdio
 #define PTX_MAX 65536
 static char g_ptx[PTX_MAX];
 static int  g_ptx_n;          /* bytes kept */
+static int  g_ptx_log;        /* print the record as it changes (browser only) */
 static int  g_ptx_runs;       /* runs painted, counted even when not kept */
 static int  g_ptx_chars;      /* text bytes painted, likewise */
 
@@ -628,6 +629,8 @@ static void ptx_note(int x, int y, const char *s, int len)
     }
     g_ptx[g_ptx_n++] = '\n';
 }
+
+void browser_paint_text_log(int on) { g_ptx_log = on ? 1 : 0; }
 
 void browser_paint_text_dump(void)
 {
@@ -792,7 +795,15 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
      * thing it was measuring. */
     {
         static int last_runs = -1, last_chars = -1;
-        if (g_ptx_runs != last_runs || g_ptx_chars != last_chars) {
+        /* OFF unless the browser turns it on, and that is not a preference.
+         * This TU is linked by five host harnesses that render pages without
+         * being a browser -- reftest, the layout box tests, the WPT runner,
+         * the semantics runner -- and every one of them reads its own stdout.
+         * The first version printed unconditionally and put a `[dl]` line
+         * between every reftest verdict, which is an instrument writing into
+         * the output of the thing it is measuring. A harness that wants the
+         * record calls browser_paint_text_log(1); browser.c does. */
+        if (g_ptx_log && (g_ptx_runs != last_runs || g_ptx_chars != last_chars)) {
             last_runs = g_ptx_runs; last_chars = g_ptx_chars;
             printf("[dl] painted text: %d run(s), %d byte(s)\n",
                    g_ptx_runs, g_ptx_chars);

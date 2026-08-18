@@ -105,7 +105,19 @@ struct cstyle {
                                      * element's opacity. */
     int font_px, bold, italic, mono;
     int mt, mr, mb, ml;             /* margins (px); ml/mr = -1 means auto */
-    int pt, pr, pb, pl;             /* paddings (px) */
+    int pt, pr, pb, pl;             /* paddings (px), percentages RESOLVED */
+    /* The specified percentage, in HUNDREDTHS of a percent, or 0 for "not a
+     * percentage" (0% and absent resolve to the same pixel count, so the
+     * sentinel costs nothing). Hundredths because `padding-top:56.25%` is the
+     * single most common percentage padding on the web -- it is a 16:9 box --
+     * and rounding it to 56 turns 225 px into 224.
+     *
+     * CSS 2.1 8.4: EVERY edge, top and bottom included, resolves against the
+     * containing block's WIDTH. That asymmetry is not a quirk to work around;
+     * it is the entire mechanism behind the aspect-ratio box, and a padding
+     * engine that resolves the vertical edges against height instead produces
+     * a plausible wrong number rather than an obvious one. */
+    int pt0, pr0, pb0, pl0;
     int width, height; int has_w, has_h, w_pct, h_pct;
     int w_off, h_off;               /* px addend when w_pct/h_pct (calc) */
     int min_w, max_w, min_h, max_h;             /* min/max sizing */

@@ -33,6 +33,12 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll);
  * and the bytes stop being kept, and the dump says which happened. */
 void browser_paint_text_dump(void);
 
+/* Arm the automatic one-line-per-change record. OFF by default, because this
+ * TU is linked by host harnesses that render pages and are not browsers, and
+ * an instrument that writes into the output of the thing it measures has
+ * replaced it. browser.c arms it; nothing else should. */
+void browser_paint_text_log(int on);
+
 /* Hit-test a viewport-local point; on a link, copy its href (NUL-terminated)
  * into buf (<= max) and return 1, else 0. */
 int  browser_hittest(int x, int y, int scroll, char *buf, int max);

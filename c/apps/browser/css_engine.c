@@ -810,6 +810,18 @@ static int len_px(css_fixed val, css_unit unit, int font_px, int *pct)
     return FIXTOINT(FMUL(val, per) + F_0_5);
 }
 
+/* A percentage in HUNDREDTHS of a percent. len_px() rounds a percentage to a
+ * whole number, which is right for the properties that had it first (width,
+ * height, min/max) and wrong for padding: 56.25% of 400 is 225, and 56% of it
+ * is 224. One pixel, on the single most common percentage padding there is. */
+static int pct_x100(css_fixed val)
+{
+    long v = (long)FIXTOINT(FMUL(val, INTTOFIX(100)) + F_0_5);
+    if (v > 1000000) v = 1000000;      /* 10000%: past any sane box */
+    if (v < -1000000) v = -1000000;
+    return (int)v;
+}
+
 /* clamp absolutised lengths so a giant CSS value can't overflow the int
  * coordinates the layout engine accumulates (signed overflow = UB). */
 static int clamp_px(int v) { if (v > 8192) return 8192; if (v < -8192) return -8192; return v; }
@@ -869,10 +881,35 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     o->mb = css_computed_margin_bottom(cs, &len, &unit) == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
     o->ml = css_computed_margin_left(cs, &len, &unit)   == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
 
-    css_computed_padding_top(cs, &len, &unit);    o->pt = clamp_px(len_px(len, unit, fp, NULL));
-    css_computed_padding_right(cs, &len, &unit);  o->pr = clamp_px(len_px(len, unit, fp, NULL));
-    css_computed_padding_bottom(cs, &len, &unit); o->pb = clamp_px(len_px(len, unit, fp, NULL));
-    css_computed_padding_left(cs, &len, &unit);   o->pl = clamp_px(len_px(len, unit, fp, NULL));
+    /* PADDING PERCENTAGES ARE KEPT, and they used to be thrown away right
+     * here: all four of these passed NULL for len_px's `pct` out-parameter, so
+     * a percentage came back as its own bare number and was stored as PIXELS.
+     * `padding-top:56.25%` became fifty-six pixels.
+     *
+     * That is the worst shape a units bug can take, because the result is
+     * plausible: every box still has a size, nothing is zero, nothing
+     * overflows, and the page paints. What it breaks is the aspect-ratio box
+     * (`height:0; padding-top:56.25%` with an absolutely positioned cover
+     * inside), which is how essentially every card grid on the web reserves
+     * space for a picture -- so the wrapper collapses to a sliver and the
+     * cover, sized to the card, swallows the title beneath it. Found on
+     * bilibili, where the video titles are painted at coordinates INSIDE the
+     * thumbnail and the area below the image is empty. See
+     * tests/unit/layout_box_test.c t_pct_padding.
+     *
+     * The pixel field keeps its meaning -- RESOLVED -- so none of layout.c's
+     * thirty-odd readers change; the specified percentage rides alongside in
+     * pt0..pl0 and layout resolves it once, against the containing block's
+     * width, at the top of layout_block(). */
+    { int pc;
+      css_computed_padding_top(cs, &len, &unit);
+      o->pt = clamp_px(len_px(len, unit, fp, &pc));    o->pt0 = pc ? pct_x100(len) : 0;
+      css_computed_padding_right(cs, &len, &unit);
+      o->pr = clamp_px(len_px(len, unit, fp, &pc));    o->pr0 = pc ? pct_x100(len) : 0;
+      css_computed_padding_bottom(cs, &len, &unit);
+      o->pb = clamp_px(len_px(len, unit, fp, &pc));    o->pb0 = pc ? pct_x100(len) : 0;
+      css_computed_padding_left(cs, &len, &unit);
+      o->pl = clamp_px(len_px(len, unit, fp, &pc));    o->pl0 = pc ? pct_x100(len) : 0; }
 
     if (css_computed_width(cs, &len, &unit) == CSS_WIDTH_SET) {
         int pct; o->width = clamp_px(len_px(len, unit, fp, &pct)); o->has_w = 1; o->w_pct = pct;

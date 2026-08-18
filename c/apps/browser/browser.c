@@ -2745,6 +2745,10 @@ static int ce_key(struct node *host, int k, const struct logit_event *ev, int *d
 
 void app_main(void)
 {
+    /* Arm the painted-text record. Only here: browser_paint.c is linked by
+     * five host harnesses that render pages without being a browser, and it
+     * must not write into their output. */
+    browser_paint_text_log(1);
     css_init();             /* build the UA default stylesheet */
     win_query_size();
     css_viewport(win_w, win_h);  /* @media/vw/vh evaluate against the real window */

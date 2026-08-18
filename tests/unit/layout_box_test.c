@@ -66,10 +66,21 @@ static struct node *ID(const char *id){
 
 /* Lay the page out at `cw` and leave it current for the queries below. */
 static void page(const char *html, int cw){
-    static char css[16384];
+    static char css[16384], exp[32768];
     g_root = dom_parse(html, (int)strlen(html));
     int cl = collect_style(g_root, css, 0, (int)sizeof css);
-    css_apply(g_root, css, cl);
+    /* THE BROWSER'S ORDER, not a shorter one. browser.c runs css_expand_vars
+     * over the collected sheet and hands the EXPANDED text to css_apply; this
+     * helper used to skip that step, so every `var()` in a test reached LibCSS
+     * unsubstituted and resolved to nothing.
+     *
+     * That is not a harmless simplification -- it is a harness that disagrees
+     * with the thing it is testing, and it produced a false finding the day it
+     * was noticed: `padding-top: var(--cover-radio)` came out 0 here and was
+     * about to be reported as a browser bug. bilibili writes exactly that
+     * declaration. */
+    int el = css_expand_vars(css, cl, exp, (int)sizeof exp);
+    css_apply(g_root, exp, el);
     layout_page(g_root, cw);
 }
 
@@ -120,12 +131,72 @@ static void class_counts(struct node *n, int *elems, int *inked, int *tabled){
     for(struct node *c=n->first_child;c;c=c->next) class_counts(c,elems,inked,tabled);
 }
 
+/* ---- percentage padding, which is how the whole web reserves a picture ----
+ *
+ * CSS 2.1 8.4: a percentage on ANY padding edge -- top and bottom included --
+ * resolves against the containing block's WIDTH. That asymmetry is the entire
+ * mechanism behind the aspect-ratio box: a wrapper with `height:0` and
+ * `padding-top:56.25%` is exactly 16:9 of its own width, and the cover image
+ * inside it is `position:absolute; inset:0`. Every card grid on the modern web
+ * is built this way, bilibili's included.
+ *
+ * MEASURED THERE FIRST, which is why this test exists. Its video cards paint
+ * their titles at coordinates INSIDE the thumbnail -- the browser draws the
+ * text and then blits the cover over it -- and the grey area below the image,
+ * where the title belongs, is empty. The cause is one line in css_engine.c:
+ * padding was converted with len_px(..., NULL), discarding the percentage flag
+ * that function computes, so padding-top:56.25% became FIFTY-SIX PIXELS. The
+ * wrapper is then far shorter than the cover it exists to reserve space for,
+ * and an absolutely positioned height:100% cover swallows the card.
+ *
+ * A percentage read as a pixel count is the worst shape a units bug can take:
+ * it produces a plausible small number rather than a zero or a crash, so every
+ * box still has a size and the page still paints. */
+static void t_pct_padding(void)
+{
+    printf("-- percentage padding resolves against the containing block WIDTH\n");
+    /* 400 wide, so 56.25% is 225 and 25% is 100 -- numbers no pixel reading of
+     * the same declarations can coincide with. */
+    page("<html><head><style>body{margin:0}"
+         "#cb{width:400px}"
+         "#ar{height:0;padding-top:56.25%}"
+         "#pad{padding:25%}"
+         "#in{height:10px}"
+         "</style></head><body>"
+         "<div id=cb><div id=ar></div><div id=pad><div id=in></div></div></div>"
+         "</body></html>", 800);
+    box_is("ar", 0, 0, 400, 225);
+    /* All four edges against WIDTH, bottom and top included: 400 * 0.25 = 100. */
+    box_is("pad", 0, 225, 400, 210);
+    box_is("in", 100, 325, 200, 10);
+
+    /* ...AND THROUGH A CUSTOM PROPERTY, which is how the page that prompted
+     * this actually writes it:
+     *
+     *     .bili-video-card__image--wrap { padding-top: var(--cover-radio) }
+     *     --cover-radio: 56.25%
+     *
+     * A percentage that arrives by substitution has to reach the same place a
+     * literal one does. Splitting the two is the difference between a fix that
+     * works on a test and a fix that works on the web -- the literal form
+     * passed here while the page it was written for did not move at all. */
+    page("<html><head><style>body{margin:0}"
+         "#cb2{width:400px;--cover-radio:56.25%}"
+         "#var{height:0;padding-top:var(--cover-radio)}"
+         "</style></head><body>"
+         "<div id=cb2><div id=var></div></div>"
+         "</body></html>", 800);
+    box_is("var", 0, 0, 400, 225);
+}
+
 int main(void)
 {
     /* ---------------------------------------------------------------- 1
      * The whole point: a bare sized <div> that paints nothing. Before the
      * table these four numbers were 0,0,0,0 and getComputedStyle on the same
      * element correctly said width:120px. */
+    t_pct_padding();
+
     printf("-- a box nobody painted\n");
     page("<html><head><style>body{margin:0}"
          "#a{width:120px;height:40px}"

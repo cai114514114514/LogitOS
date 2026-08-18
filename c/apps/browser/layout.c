@@ -1260,6 +1260,7 @@ static void flow_children(struct iflow *f, struct node *n, const char *href)
 
 /* flow a single node into the inline context */
 static int layout_block(struct node *n, int x, int y, int w);   /* fwd */
+static void resolve_pad(struct cstyle *st, int cbw);            /* fwd */
 static int is_block(struct node *n);                            /* fwd */
 static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int y); /* fwd */
 static void flow_node(struct iflow *f, struct node *c, const char *href)
@@ -1476,6 +1477,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
         }
         int btop = f->y;
+        resolve_pad(st, bw);          /* bw is c's containing block width */
         int bbi = box_open(c, bx, btop, bw, 0);
         int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
         if (st && st->position != POS_STATIC) {
@@ -2027,6 +2029,7 @@ static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int
             g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
             if (g_cbh < 0 && sh >= 0) g_cbh = 0;
         }
+        resolve_pad(st, fw);
         int inw = fw - hextra(st); if (inw < 0) inw = 0;
         /* layout_block sees flt != none and opens a BFC, so the float's own
          * contents neither see nor leak the outer exclusions. */
@@ -2084,6 +2087,33 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist);   /* fwd
  * of its content: the block formatting context (float scoping + "a BFC root
  * grows to contain its floats") and the overflow clip stamped onto every item
  * the subtree emits. */
+/* Resolve this box's percentage paddings against the containing block's WIDTH
+ * -- all four edges, top and bottom included (CSS 2.1 8.4).
+ *
+ * ONE PLACE, and that is the whole design. `st->pt` and its three siblings are
+ * read from about forty sites in this file, in contexts that do not all have a
+ * containing-block width to hand; threading one through every one of them
+ * would be a large edit with forty chances to pass the wrong number. Instead
+ * the pixel fields keep their meaning -- always RESOLVED, never a percentage --
+ * and this rewrites them from the specified value the style engine parked in
+ * pt0..pl0. Every reader is unchanged and cannot be wrong.
+ *
+ * Resolving from pt0 rather than from pt is what makes it idempotent: a second
+ * layout at a different width recomputes from the specification, not from the
+ * answer to the previous question. That matters here -- layout_page runs again
+ * on every resize and on every script mutation.
+ *
+ * WHERE: the top of layout_block, because `w` is the width available to this
+ * box from its parent, which IS its containing block's content width. */
+static void resolve_pad(struct cstyle *st, int cbw)
+{
+    if (!st || cbw < 0) return;
+    if (st->pt0) st->pt = (int)(((long)cbw * st->pt0 + 5000) / 10000);
+    if (st->pr0) st->pr = (int)(((long)cbw * st->pr0 + 5000) / 10000);
+    if (st->pb0) st->pb = (int)(((long)cbw * st->pb0 + 5000) / 10000);
+    if (st->pl0) st->pl = (int)(((long)cbw * st->pl0 + 5000) / 10000);
+}
+
 static int layout_block(struct node *n, int x, int y, int w)
 {
     struct cstyle *nst = n->style;
@@ -2248,6 +2278,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
               g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
               if (g_cbh < 0 && sh >= 0) g_cbh = 0; }
             g_in_overlay = 1;
+            resolve_pad(st, ow);
             int oinner = layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
             g_in_overlay = ovl_save;
             g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
@@ -2418,6 +2449,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
             /* The record goes in whether or not the two lines above emitted
              * anything -- that difference is the whole of the NOBOX class. */
             int bi = box_open(c, bx, top, bw, 0);
+            resolve_pad(st, bw);
             int inw = bw - hextra(st); if (inw < 0) inw = 0;
             int lastc = m_is_last_inflow(c);
             int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
@@ -2786,6 +2818,7 @@ static int flex_place(struct flexslot *f, int px, int py, int iw, int forced_h, 
         g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
         if (g_cbh < 0 && sh >= 0) g_cbh = 0;
     }
+    resolve_pad(st, iw);
     int inw = iw - hextra(st); if (inw < 0) inw = 0;
     int inner = layout_block(f->n, px + cx_off(st), py + cy_off(st), inw);
     { int b = float_max_bottom(nsave); if (b > inner) inner = b; }
@@ -3591,6 +3624,7 @@ static int layout_grid(struct node *n, int x, int y, int w)
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
         int gbi = box_open(c, cellx + ml, top, cw, 0);
+        resolve_pad(st, cw);
         int inw = cw - hextra(st); if (inw < 0) inw = 0;
         int nsave = g_nfloat, bsave = g_fbase;
         g_fbase = g_nfloat;                     /* each grid item is its own BFC */
@@ -3719,6 +3753,7 @@ static int layout_table(struct node *t, int x, int y, int w)
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }
             int tbi = box_open(c, rx, cy, cw[ci], 0);
+            resolve_pad(st, cw[ci] - ml);
             int inw = cw[ci] - ml - hextra(st); if (inw < 0) inw = 0;
             int nsave = g_nfloat, bsave = g_fbase;
             g_fbase = g_nfloat;                 /* each cell is its own BFC */

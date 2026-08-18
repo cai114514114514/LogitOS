@@ -48,6 +48,24 @@ void virtio_gpu_cursor_define(const void *p, int w, int h) { (void)p;(void)w;(vo
 void virtio_gpu_cursor_move(int x, int y) { (void)x;(void)y; }
 void vmm_map_range(uint64_t a, uint64_t b, uint64_t c) { (void)a;(void)b;(void)c; }
 
+/* c/kernel/gui/text.c takes a lock around its glyph layout -- the cache and the
+ * fallback chain are shared mutable state and USB, PS/2 and the compositor all
+ * reach text through it. This harness is single-threaded and links no
+ * scheduler, so the lock is a pair of no-ops here, exactly as log_test.c and
+ * wait_test.c already do for the same two symbols.
+ *
+ * IT WAS THE LINK THAT BROKE, NOT THE TEST: this target stopped BUILDING the
+ * day that lock landed and nothing said so, because nothing runs test-reftest
+ * on an ordinary change. That is the failure mode the test-suite notes in
+ * CLAUDE.md name outright -- five host targets found not compiling in a single
+ * sweep, each because a source grew a dependency and a link line did not
+ * follow. This is the sixth, and it was three hours old. */
+struct spinlock;
+void spin_lock(struct spinlock *l);
+void spin_unlock(struct spinlock *l);
+void spin_lock(struct spinlock *l)   { (void)l; }
+void spin_unlock(struct spinlock *l) { (void)l; }
+
 /* ------------------------------------------------------------- the fonts -- */
 /* c/kernel/gui/text.c's text_init() opens three fixed paths through the VFS.
  * Rather than teach it about the host, give it a VFS: two entries, mapped to
