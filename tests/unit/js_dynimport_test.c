@@ -98,6 +98,18 @@ static int resolve(const char *base, const char *spec, char *out, int max)
 static char *norm(JSContext *ctx, const char *base, const char *name, void *o)
 {
     (void)o;
+    /* BARE SPECIFIERS ARE REFUSED HERE, exactly as c/apps/browser/js_module.c's
+     * mod_normalize() refuses them -- same place in the sequence (normalize,
+     * not load) and the same way (JS_Throw + NULL). Cases 1-8 all use `./x` or
+     * an absolute URL, so this changes none of them; case 9 needs it, and
+     * needs it to be the PRODUCTION shape rather than a load-time failure,
+     * because "throws while resolving" and "throws while fetching" are two
+     * different paths through QuickJS and only one of them is what a real page
+     * hits. */
+    if (name && name[0] && name[0] != '/' && name[0] != '.' && !strchr(name, ':')) {
+        JS_ThrowTypeError(ctx, "bare module specifier '%s' is not resolvable", name);
+        return NULL;
+    }
     char abs[512];
     if (resolve(base, name, abs, sizeof abs) != 0) {
         JS_ThrowTypeError(ctx, "cannot resolve '%s' against '%s'", name, base ? base : "?");
@@ -293,6 +305,58 @@ int main(void)
       ok_(strncmp(b, "rejected", 8) == 0,
           "import() from a classic script is refused (no base URL) -- known gap", b);
       if (strncmp(b, "rejected", 8) == 0) printf("note: classic-script import() -> %s\n", b); }
+
+    /* ---- 9. VITE'S MODERN-BROWSER PROBE, VERBATIM ------------------------
+     *
+     * Taken byte for byte out of https://www.bilibili.com/ on 2026-08-17. It
+     * is the first of that page's four <script type="module"> blocks, and it
+     * is on a large share of the modern web: @vitejs/plugin-legacy emits it on
+     * every build, and everything downstream turns on the flag it sets.
+     *
+     *   import.meta.url;                     -- import.meta must parse
+     *   import("_").catch(()=>1);            -- dynamic import must exist AND
+     *                                           an unresolvable one must REJECT
+     *   async function* g(){};               -- async generators must parse
+     *   window.__vite_is_modern_browser=true
+     *
+     * The `"_"` is deliberately unresolvable: the snippet is a feature probe,
+     * and the `.catch` is there because the author EXPECTS the rejection. So
+     * the whole thing is a test of one rule -- **import() reports a resolution
+     * failure by rejecting its promise, never by throwing synchronously.** If
+     * it throws, statement 2 aborts the module body, the flag is never set,
+     * and the page's second inline module takes the legacy branch: it injects
+     * a SystemJS polyfill and a separate legacy bundle instead of running the
+     * modern one. On bilibili the modern bundle is the application.
+     *
+     * That failure is invisible from every angle a test usually looks from.
+     * Nothing throws that the page can see, no request 404s, the document
+     * still paints its server-rendered markup -- it simply runs the wrong half
+     * of the site forever. */
+    {
+        static const char VITE_PROBE[] =
+            "import.meta.url;import(\"_\").catch(()=>1);async function* g(){};"
+            "if(location.protocol!=\"file:\"){window.__vite_is_modern_browser=true}";
+        /* `window` and `location`, which the snippet's last statement needs.
+         * window === globalThis is what a real page has; JS_DupValue because
+         * JS_SetPropertyStr consumes the VALUE but not the object. */
+        JSValue g = JS_GetGlobalObject(ctx);
+        JS_SetPropertyStr(ctx, g, "window", JS_DupValue(ctx, g));
+        JSValue loc = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, loc, "protocol", JS_NewString(ctx, "https:"));
+        JS_SetPropertyStr(ctx, g, "location", loc);
+        JS_FreeValue(ctx, g);
+
+        v = eval_module(ctx, "https://www.bilibili.com/#inline-module-1", VITE_PROBE);
+        ok_(!JS_IsException(v),
+            "vite's probe module evaluates (import.meta + async generators parse)", NULL);
+        JS_FreeValue(ctx, v);
+        pump(ctx, 100);
+        char b[128];
+        global_str(ctx, "__vite_is_modern_browser", b, sizeof b);
+        ok_(!strcmp(b, "true"),
+            "...and sets __vite_is_modern_browser -- i.e. an unresolvable "
+            "import() REJECTED instead of aborting the module body", b);
+    }
 
     printf("dynamic import: %d fetches through the loader in total\n", g_total_fetches);
 
