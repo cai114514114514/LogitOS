@@ -496,14 +496,22 @@ def host_probe(url, result):
 # ------------------------------------------------------------------ the guest
 
 def ctrl(ui, qcode):
-    """Ctrl+<key>, which qmp_ui.Session has no helper for. Written here rather
-    than added to qmp_ui.py because that file is imported by a dozen live
-    harnesses belonging to other lines."""
-    ui._input([{"type": "key", "data": {"key": {"type": "qcode", "data": "ctrl"}, "down": True}},
-               {"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": True}}])
-    ui._input([{"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": False}},
-               {"type": "key", "data": {"key": {"type": "qcode", "data": "ctrl"}, "down": False}}])
-    time.sleep(0.25)
+    """Ctrl+<key>, PACED.
+
+    THIS NEVER WORKED, and it took a second navigation to find out. It used to
+    put ctrl-down and key-down in ONE input-send-event and the two releases in
+    another -- four scancodes in two bursts, into a PS/2 controller with a
+    ONE-BYTE buffer. The letter was dropped every time.
+
+    Nothing noticed for a year because of a coincidence: browser.c starts with
+    `editing = 1`, so the address bar is already focused when this harness
+    types its first URL, and Ctrl+L not arriving is indistinguishable from
+    Ctrl+L working. The SECOND navigation in a boot is where it shows, and
+    until about:text there was never a second one.
+
+    qmp_ui.Session.key_mods() is the paced version; this wrapper stays because
+    a dozen call sites read better as ctrl(ui, "l")."""
+    ui.key_mods(("ctrl",), qcode, settle=0.25)
 
 
 SELFTEST = ("<!doctype html><html><head><title>sb</title></head>"
@@ -765,9 +773,63 @@ def main():
         ppm_to_png(base_ppm, base_png)
         rec["shot"] = png
 
+        # WHICH WORDS REACHED THE SCREEN. `changed px` above cannot tell a
+        # rendered page from a flat dark block -- this file's own header says
+        # so -- and the gap is not academic: bilibili scores PAINTED with
+        # 267,376 changed pixels and every one of its video cards is a
+        # thumbnail above an EMPTY grey rectangle where the title should be.
+        # No exception, no failed request, nothing in the record.
+        #
+        # Ctrl+Alt+D makes the browser print the text runs its last paint
+        # emitted (c/apps/browser/browser_paint.h). Sent AFTER the screenshot,
+        # so the dump cannot disturb the pixels that were just measured, and
+        # after the page has settled, so what it reports is the finished page.
+        # THE ADDRESS BAR, not a chord. Ctrl+Alt+D is wired in the browser and
+        # is the convenient trigger for a person, but it produced no output
+        # here across two runs -- unpaced and paced one scancode at a time --
+        # and nothing in the kernel explains why (kbd_mods reports EV_MOD_ALT;
+        # wm_shortcut only claims SUPER). An instrument whose trigger cannot be
+        # observed is not an instrument, so this uses the channel every driver
+        # in this directory already exercises forty times a run.
+        #
+        # about:text does NOT navigate -- it prints and returns, leaving the
+        # page and its last paint exactly where they were, which is the whole
+        # point: the question is about the page that is loaded.
+        ctrl(ui, "l")
+        ui.typ("about:text")
+        ui.key("ret")
+        time.sleep(2.5)
+
         # The serial from the moment Enter was pressed, kept BESIDE the JSON: a
         # verdict without the log that produced it cannot be argued with.
         tail = serial(mark)
+        # THE LAST summary, not the first. browser_paint prints one line every
+        # time the pair CHANGES, so the first is an early frame -- often the
+        # empty tab -- and reading it would report a settled page's text as
+        # whatever was on screen a second after Enter.
+        # CRLF FIRST. The serial log is CRLF and every regex below anchors on
+        # a newline; run-net-bench.sh's own note records the same trap in a
+        # BRE. Without this the summary matched (it does not span lines) and
+        # the block never did, so the record carried a count and no words --
+        # which reads as "the page painted nothing recognisable" rather than
+        # "the harness could not read its own instrument".
+        tail_n = tail.replace("\r\n", "\n")
+        ms = re.findall(r"\[dl\] painted text: (\d+) run\(s\), (\d+) byte", tail_n)
+        m = ms[-1] if ms else None
+        if m:
+            rec["text_runs"] = int(m[0])
+            rec["text_bytes"] = int(m[1])
+            body = re.search(r"\[dl\] ---8<--- begin painted text\n(.*?)"
+                             r"\[dl\] ---8<--- end painted text", tail_n, re.S)
+            if body:
+                lines = [ln[5:] for ln in body.group(1).splitlines()
+                         if ln.startswith("[dl] ")]
+                rec["text"] = "\n".join(lines)
+        else:
+            # Absent is a finding, not a blank: a page that painted no text at
+            # all and a dump that did not happen are different, and only the
+            # second one is the harness's fault.
+            rec["text_runs"] = None
         slog = os.path.join(shots_dir, "%s.serial.txt" % args.name)
         with open(slog, "w", encoding="utf-8", errors="replace") as fh:
             fh.write(tail)

@@ -573,10 +573,91 @@ static uint32_t backdrop_at(const struct item *it, int i)
     return layout_page_bg(&pbg) ? pbg : 0xFFFFFF;
 }
 
+/* ---- the painted-text record (browser_paint.h says why) ------------------
+ *
+ * Appended at the ONE site that paints document text, so it cannot drift from
+ * what was drawn: if a run does not reach gui_text_run it does not reach this
+ * either, which is the whole point -- a record built from the layout tree
+ * instead would report text that a clip, an opacity or a viewport cull threw
+ * away. Chrome and the ordinary boxes are painted by wm.c and by the app's own
+ * chrome path, not here, so what this collects is the DOCUMENT's text and
+ * nothing else. */
+int printf(const char *, ...);   /* the dump's only output; this TU has no stdio */
+
+#define PTX_MAX 65536
+static char g_ptx[PTX_MAX];
+static int  g_ptx_n;          /* bytes kept */
+static int  g_ptx_runs;       /* runs painted, counted even when not kept */
+static int  g_ptx_chars;      /* text bytes painted, likewise */
+
+/* Ten bytes of decimal per run buys the only question the words alone cannot
+ * answer: a title that is MISSING and a title that is painted UNDER the box
+ * drawn after it look identical in a list of strings, and completely different
+ * in a list of coordinates. Measured on bilibili the day this was added, and
+ * that is exactly the pair it had to separate. */
+static void ptx_pos(int x, int y)
+{
+    char b[24]; int n = 0;
+    int v = x < 0 ? -x : x, d[8], k = 0;
+    if (x < 0) b[n++] = '-';
+    do { d[k++] = v % 10; v /= 10; } while (v);
+    while (k) b[n++] = (char)('0' + d[--k]);
+    b[n++] = ',';
+    v = y < 0 ? -y : y; k = 0;
+    if (y < 0) b[n++] = '-';
+    do { d[k++] = v % 10; v /= 10; } while (v);
+    while (k) b[n++] = (char)('0' + d[--k]);
+    b[n++] = ' ';
+    for (int i = 0; i < n && g_ptx_n + 1 < PTX_MAX; i++) g_ptx[g_ptx_n++] = b[i];
+}
+
+static void ptx_note(int x, int y, const char *s, int len)
+{
+    if (len <= 0 || !s) return;
+    g_ptx_runs++;
+    g_ptx_chars += len;
+    if (g_ptx_n + len + 24 >= PTX_MAX) return;  /* counts go on; bytes stop */
+    ptx_pos(x, y);
+    for (int i = 0; i < len; i++) {
+        /* One run per line, so a newline INSIDE a run would forge a boundary.
+         * There should not be one -- layout breaks lines -- and if there ever
+         * is, it becomes a space rather than a lie about how many runs there
+         * were. */
+        char c = s[i];
+        g_ptx[g_ptx_n++] = (c == '\n' || c == '\r') ? ' ' : c;
+    }
+    g_ptx[g_ptx_n++] = '\n';
+}
+
+void browser_paint_text_dump(void)
+{
+    printf("[dl] painted text: %d run(s), %d byte(s)%s\n", g_ptx_runs, g_ptx_chars,
+           g_ptx_n + 1 >= PTX_MAX ? " -- TRUNCATED, the text below is a prefix" : "");
+    printf("[dl] ---8<--- begin painted text\n");
+    /* Written in bounded pieces rather than one printf: the buffer is 64 KiB
+     * and the serial console's own line handling is not something to hand a
+     * string that long. */
+    int i = 0;
+    while (i < g_ptx_n) {
+        int j = i;
+        while (j < g_ptx_n && g_ptx[j] != '\n') j++;
+        char save = g_ptx[j];
+        g_ptx[j] = 0;
+        printf("[dl] %s\n", g_ptx + i);
+        g_ptx[j] = save;
+        i = j + 1;
+    }
+    printf("[dl] ---8<--- end painted text\n");
+}
+
 void browser_paint(int vx, int vy, int vw, int vh, int scroll)
 {
     const struct item *it = layout_items();
     int n = layout_count();
+    /* Whole-pass, so the last paint wins: a repaint that covers half the
+     * viewport must not leave the other half's runs from the pass before it
+     * standing beside the new ones. */
+    g_ptx_n = g_ptx_runs = g_ptx_chars = 0;
     set_clip(vx, vy, vx + vw, vy + vh);
     uint32_t pbg;
     if (layout_page_bg(&pbg)) fill(vx, vy, vw, vh, pbg, 255);  /* themed background */
@@ -658,6 +739,7 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             uint32_t col = e->color;
             if (op < 255) col = mix(backdrop_at(it, i), col, op);
             gui_text_run(sx, sy, e->font_px, e->mono, col, e->text, e->len);
+            ptx_note(sx, sy, e->text, e->len);
             /* text-decoration. `y` is the top of the em box -- text_draw_run
              * adds the ascent itself, and the ascent lives in the kernel's font
              * tables, so ring 3 has no baseline to measure from. The underline
@@ -697,6 +779,55 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
     }
     gui_clip(0, 0, 0, 0);
     cl_x0 = cl_y0 = 0; cl_x1 = cl_y1 = 0;
+
+    /* ONE LINE PER CONTENT CHANGE, automatically. The full text needs a
+     * trigger (about:text) because it is 40 KB on a real page and a serial
+     * console is not free; the COUNTS are two integers and belong in every
+     * log next to `[browser] load done`, which is the line a reader is
+     * already looking at when they ask why a page looks empty.
+     *
+     * Printed only when the pair CHANGES, because browser_paint runs per
+     * frame: a settled page would otherwise emit this sixty times a second,
+     * and an instrument that floods the log it writes to has replaced the
+     * thing it was measuring. */
+    {
+        static int last_runs = -1, last_chars = -1;
+        if (g_ptx_runs != last_runs || g_ptx_chars != last_chars) {
+            last_runs = g_ptx_runs; last_chars = g_ptx_chars;
+            printf("[dl] painted text: %d run(s), %d byte(s)\n",
+                   g_ptx_runs, g_ptx_chars);
+            /* ...and the WORDS, bounded. A trigger was tried first and is
+             * still wired (about:text, and a Ctrl+Alt+D chord), and neither
+             * arrives through the QMP harness -- four boots spent on it, and
+             * the cause is upstream of anything this file can see. An
+             * instrument that needs a keystroke nobody can deliver is not an
+             * instrument, and the keystroke was never the point.
+             *
+             * PTX_LOG_MAX is the whole cost control. A page that paints a lot
+             * of text would otherwise put tens of kilobytes on a serial
+             * console once per content change, which is the "an instrument
+             * that changes the machine it measures" trap named above
+             * kbench.c's micro battery. Measured on bilibili the text painted
+             * is 642 bytes, so the cap is not reached and not felt; it exists
+             * for the page where it would be. Truncation says so. */
+            printf("[dl] ---8<--- begin painted text\n");
+            #define PTX_LOG_MAX 4096
+            int lim = g_ptx_n < PTX_LOG_MAX ? g_ptx_n : PTX_LOG_MAX;
+            int i = 0;
+            while (i < lim) {
+                int j = i;
+                while (j < lim && g_ptx[j] != '\n') j++;
+                char save = g_ptx[j];
+                g_ptx[j] = 0;
+                printf("[dl] %s\n", g_ptx + i);
+                g_ptx[j] = save;
+                i = j + 1;
+            }
+            if (lim < g_ptx_n)
+                printf("[dl] ...TRUNCATED at %d of %d byte(s)\n", lim, g_ptx_n);
+            printf("[dl] ---8<--- end painted text\n");
+        }
+    }
 }
 
 /* Does the point (doc coords) land on `e`, honouring its overflow clip? An

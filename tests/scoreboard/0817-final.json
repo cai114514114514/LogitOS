@@ -1,0 +1,96 @@
+{
+ "date": "0817-final",
+ "generated": "2026-08-18T15:38:23",
+ "iso": "build/logit.iso",
+ "iso_sha256_16": "ba1d0615b6a1efd8",
+ "commit": "371c1237f",
+ "wall_seconds": 59.7,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "bilibili",
+   "url": "https://www.bilibili.com/",
+   "started": "2026-08-18T15:37:23",
+   "verdict": "PAINTED",
+   "why": "painted 255272 changed px in 18.7s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bilibili.com/",
+    "bytes": 116533,
+    "redirects": [],
+    "script_tags": 21,
+    "script_src": 8,
+    "img_tags": 13,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 1.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 20,
+    "dials": 8,
+    "reused": 12,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 9536,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 18.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 255272,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 70873,
+    "ink_px_blank": 3902,
+    "colours": 7265,
+    "rich_tiles_proxy": 349
+   },
+   "shot": "tests/scoreboard/0817-final/bilibili.png",
+   "serial_log": "tests/scoreboard/0817-final/bilibili.serial.txt",
+   "text_runs": 59,
+   "text_bytes": 583,
+   "text": "14,84 •\n57,84 首页\n14,104 •\n36,104 番剧\n14,124 •\n36,124 直播\n14,144 •\n36,144 游戏中心\n14,164 •\n36,164 会员购\n14,184 •\n36,184 漫画\n14,204 •\n36,204 赛事\n14,224 •\n55,224 下载客户端\n8,360 动态\n8,402 热门\n8,422 番剧\n43,422 电影\n78,422 国创\n113,422 电视剧\n164,422 综艺\n199,422 纪录片\n250,422 动画\n285,422 游戏\n320,422 鬼畜\n355,422 音乐\n390,422 舞蹈\n425,422 影视\n460,422 娱乐\n495,422 知识\n530,422 科技数码\n597,422 资讯\n632,422 美食\n667,422 小剧场\n718,422 汽车\n753,422 时尚美妆\n820,422 体育运动\n887,422 动物\n922,422 vlog\n955,422 绘画\n990,422 人工智能\n8,442 家装房产\n75,442 户外潮流\n142,442 健身\n177,442 手工\n212,442 旅游出行\n279,442 三农\n314,442 亲子\n349,442 健康\n384,442 情感\n419,442 生活兴趣\n486,442 生活经验\n553,442 公益\n588,442 超高清\n639,442 视频播客\n8,462 更多\n35,482 专栏\n94,482 直播\n153,482 活动\n212,482 课堂\n271,482 社区中心\n362,482 新歌热榜\n8,562 大危机？魔法课堂遇神秘人袭击！\n14,582 •\n14,582 •\n14,582 •\n14,582 •\n14,582 •\n14,582 •\n14,582 •\n14,582 •\n14,582 •",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T15:38:23",
+   "reported": "TypeError split of undefined",
+   "wall_seconds": 59.6,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  }
+ ]
+}

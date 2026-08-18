@@ -175,10 +175,10 @@ def merge_repeats(name, url, reported, recs):
     return out
 
 
-HEAD = "| %-18s | %-10s | %6s | %5s | %8s | %3s | %10s | %-8s |"
-RULE = ("|%s|%s|%s|%s|%s|%s|%s|%s|"
+HEAD = "| %-18s | %-10s | %6s | %5s | %8s | %3s | %10s | %11s | %-8s |"
+RULE = ("|%s|%s|%s|%s|%s|%s|%s|%s|%s|"
         % ("-" * 20, "-" * 12, "-" * 8, "-" * 7, "-" * 10, "-" * 5, "-" * 12,
-           "-" * 10))
+           "-" * 13, "-" * 10))
 
 
 def _row(r):
@@ -197,9 +197,18 @@ def _row(r):
     gap = s.get("gap")
     cell = "-" if asked is None or got is None else (
         "%d/%d%s" % (asked, got, " !" if gap else ""))
+    # `text`: runs/bytes of DOCUMENT text the browser's last paint actually
+    # emitted (Ctrl+Alt+D -> c/apps/browser/browser_paint.h). It is the column
+    # `changed px` could never be: pixels cannot tell a rendered page from a
+    # dark block, and this says which WORDS are among them. It judges no
+    # layout -- 0 runs on a page with text is a finding; a number is not a
+    # pass. `-` means the dump did not arrive, which is the harness's problem
+    # and not the browser's, and the two must not read alike.
+    tr, tb = r.get("text_runs"), r.get("text_bytes")
+    tcell = "-" if tr is None else "%d/%d" % (tr, tb or 0)
     return HEAD % (r["name"], r["verdict"], g.get("load_seconds", "-"),
                    got if got is not None else "-", cell,
-                   nexc if g else "-", p.get("changed_px", "-"), host)
+                   nexc if g else "-", p.get("changed_px", "-"), tcell, host)
 
 
 def _sorted(rows):
@@ -214,13 +223,13 @@ def render_table(snap):
     corpus = [r for r in snap["sites"] if not r["name"].startswith("control-")]
     ctrl = [r for r in snap["sites"] if r["name"].startswith("control-")]
     out = [HEAD % ("site", "verdict", "load s", "reqs", "asked/got", "exc",
-                   "changed px", "host"), RULE]
+                   "changed px", "text run/B", "host"), RULE]
     out += [_row(r) for r in _sorted(corpus)]
     if ctrl:
         out.append("")
         out.append("CONTROLS -- harness health, not results:")
         out.append(HEAD % ("control", "verdict", "load s", "reqs", "asked/got",
-                           "exc", "changed px", "host"))
+                           "exc", "changed px", "text run/B", "host"))
         out.append(RULE)
         out += [_row(r) for r in _sorted(ctrl)]
     return "\n".join(out)

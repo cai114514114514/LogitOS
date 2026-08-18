@@ -210,6 +210,41 @@ class Session:
                      {"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": False}}])
         time.sleep(settle)
 
+    def key_mods(self, mods, qcode, settle=0.05):
+        """A chord: hold every qcode in `mods`, tap `qcode`, release in reverse.
+
+        key_shift() above is this with mods=("shift",) and stays as it is --
+        it has callers and there is no reason to churn them. Release order is
+        reversed on purpose: a driver that lets go of ctrl before the letter
+        can deliver the letter WITHOUT the modifier, which is a keystroke the
+        page was never sent and is very hard to see afterwards.
+
+        Everything here is one-byte PS/2 at heart, so the settle is not
+        optional -- see the note in tests/qmp/qmp_term.py about the one-byte
+        buffer.
+        """
+        # PACED, one scancode at a time. A chord is SIX bytes on the wire
+        # (ctrl down, alt down, d down, d up, alt up, ctrl up) and the PS/2
+        # controller this machine emulates has a ONE-BYTE buffer -- the same
+        # fact tests/qmp/qmp_term.py's header records, and the same one that
+        # makes a mistyped command look like a broken feature. Sent unpaced,
+        # the first version of this helper delivered nothing at all and the
+        # browser looked as though it had ignored the chord.
+        step = 0.06
+        for m in mods:
+            self._input([{"type": "key",
+                          "data": {"key": {"type": "qcode", "data": m}, "down": True}}])
+            time.sleep(step)
+        for down in (True, False):
+            self._input([{"type": "key",
+                          "data": {"key": {"type": "qcode", "data": qcode}, "down": down}}])
+            time.sleep(step)
+        for m in reversed(list(mods)):
+            self._input([{"type": "key",
+                          "data": {"key": {"type": "qcode", "data": m}, "down": False}}])
+            time.sleep(step)
+        time.sleep(settle)
+
     def typ(self, text):
         # Uppercase letters go through shift, like every other shifted key.
         # They used to fall through to `self.key("O")`, and QEMU's qcodes are

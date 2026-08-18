@@ -1138,6 +1138,37 @@ static void load(const char *u)
     /* `u` is usually &url[0] -- follow_link and the address bar both write it
      * before calling. Copy first: the chain rewrites `url` on every hop. */
     { int i = 0; while (u[i] && i < (int)sizeof cur - 1) { cur[i] = u[i]; i++; } cur[i] = 0; }
+
+    /* about:text -- print the words the LAST paint put on the screen, and stay
+     * where we are. Not a navigation and not a page: it answers a question
+     * about the page already loaded, so navigating away to answer it would
+     * destroy the thing being asked about.
+     *
+     * THE ADDRESS BAR IS THE CHANNEL BECAUSE IT IS THE ONE THAT IS PROVEN.
+     * This started as a Ctrl+Alt+D chord, which is the obvious shape and which
+     * produced no output at all through the QMP harness -- twice, once unpaced
+     * and once paced one scancode at a time. Nothing in the kernel explains it
+     * (kbd_mods reports EV_MOD_ALT, wm_shortcut only claims SUPER chords), so
+     * the failure is somewhere in a path this line cannot observe, and an
+     * instrument whose trigger cannot be observed is not an instrument. Typing
+     * a URL is what every driver in tests/qmp already does forty times a run.
+     * The chord stays wired as well; if it ever starts arriving it costs
+     * nothing, and it is the convenient one for a person at the keyboard. */
+    /* The address every load() was actually handed, once. Two lines cost
+     * nothing and both were missing when they were wanted: `[browser] load
+     * done` says a load finished and never said OF WHAT, so a dropped or
+     * doubled keystroke in a QMP harness -- the failure this file's own
+     * comment at the fetch-failed branch calls "the whole question" -- was
+     * only visible when the fetch failed. It is equally the whole question
+     * when the fetch SUCCEEDS and the wrong page arrives. */
+    printf("[browser] load: %s\n", cur);
+    if (cur[0] == 'a' && cur[1] == 'b' && cur[2] == 'o' && cur[3] == 'u' &&
+        cur[4] == 't' && cur[5] == ':' && cur[6] == 't' && cur[7] == 'e' &&
+        cur[8] == 'x' && cur[9] == 't' && cur[10] == 0) {
+        browser_paint_text_dump();
+        set_status("painted text dumped to the serial console");
+        return;
+    }
     /* THE INVARIANT: after load(u), the browser is AT u. Every in-app caller
      * already wrote `url` before calling, so this is a no-op for them -- but it
      * has to be stated, because the moment it is only true by convention it
@@ -2858,7 +2889,19 @@ void app_main(void)
                     int c = k;
                     if (c >= 1 && c <= 26) c = c + 'a' - 1;      /* the folded form */
                     if (c >= 'A' && c <= 'Z') c += 32;
-                    if (c == 't') {                              /* new tab */
+                    /* FIRST IN THE CHAIN, and that is not a style choice:
+                     * Ctrl+D three branches below bookmarks the page, so a
+                     * chord that merely ADDS Alt to it would never be reached.
+                     * Ctrl+Alt+D dumps the words that reached the screen to the
+                     * serial console -- an instrument rather than a feature,
+                     * which is also why it takes a modifier no page and no
+                     * hand sends by accident. browser_paint.h says what it
+                     * answers that `changed px` cannot. */
+                    if (c == 'd' && (e.mods & EV_MOD_ALT)) {
+                        browser_paint_text_dump();
+                        set_status("painted text dumped to the serial console");
+                        handled = 1;
+                    } else if (c == 't') {                       /* new tab */
                         int n = tabs_new("");
                         if (n >= 0) { tab_dehydrate(); tabs_select(n);
                             url[0] = 0; ulen = 0; editing = 1;
@@ -2923,7 +2966,25 @@ void app_main(void)
                         g_panel = g_panel == PANEL_DOWNLOADS ? PANEL_NONE : PANEL_DOWNLOADS;
                         g_panel_sel = g_panel_top = 0;
                         handled = 1;
-                    } else if (c == 'l') { editing = 1; handled = 1; }   /* focus the bar */
+                    } else if (c == 'l') {                       /* focus the bar */
+                        /* FOCUS AND *SELECT*, which is what Ctrl+L does in
+                         * every browser: the next keystroke REPLACES the
+                         * address, it does not append to it. There is no
+                         * selection model in this bar, and clearing is what
+                         * "type over the selection" looks like from the
+                         * outside for the only thing anyone does after Ctrl+L.
+                         *
+                         * It used to only set `editing`, and the bug that hid
+                         * behind that is worth naming because it hid well:
+                         * tests/qmp/qmp_site.py drives every navigation with
+                         * Ctrl+L then the URL, and its FIRST navigation is out
+                         * of an empty tab -- so appending and replacing are
+                         * the same thing and it worked for a year. The second
+                         * navigation in a boot silently produced
+                         * `https://site/what-was-typed`. */
+                        editing = 1; ulen = 0; url[0] = 0;
+                        handled = 1;
+                    }
                 }
                 if (handled) { need = 1; continue; }
 

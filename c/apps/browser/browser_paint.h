@@ -7,6 +7,32 @@ struct node;
  * at the given pixel scroll, using the GUI render syscalls. */
 void browser_paint(int vx, int vy, int vw, int vh, int scroll);
 
+/* ---- WHAT WORDS REACHED THE SCREEN --------------------------------------
+ *
+ * The site scoreboard's own header states the gap this closes, and states it
+ * as a limitation it cannot fix: "`changed px` counts pixels that differ from
+ * an empty tab ... It cannot tell a rendered page from a flat dark block.
+ * Nothing here checks whether the RIGHT pixels changed -- that is what
+ * reftests are for, and none of WPT's 17,155 of them run on this machine."
+ *
+ * Reftests are the right answer to "is the layout correct" and they are a
+ * long way off. This is the cheap middle: not WHERE the pixels are, but WHICH
+ * WORDS are among them. It cannot judge a layout and does not try. It answers
+ * the question every BLANK and ERRORS row on that scoreboard is really
+ * asking -- did the text appear at all -- which today is answered by a person
+ * squinting at a PNG.
+ *
+ * Measured on bilibili the day this was written: the page paints 267,376
+ * changed pixels and scores PAINTED, and its video cards are thumbnails above
+ * an EMPTY grey rectangle where every title should be. No exception, no failed
+ * request, no missing subresource. Nothing in the record said so.
+ *
+ * Every browser_paint() pass records the text runs it emits; the record is
+ * whole-pass, so the last paint wins and a partial repaint does not leave a
+ * mixture. Bounded and honest about it: past the cap the counts keep counting
+ * and the bytes stop being kept, and the dump says which happened. */
+void browser_paint_text_dump(void);
+
 /* Hit-test a viewport-local point; on a link, copy its href (NUL-terminated)
  * into buf (<= max) and return 1, else 0. */
 int  browser_hittest(int x, int y, int scroll, char *buf, int max);
