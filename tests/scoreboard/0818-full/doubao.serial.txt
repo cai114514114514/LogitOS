@@ -1,0 +1,124 @@
+[wm] perf t=19904 composites=179 ns=2137745496 max=78354469 motions=18 curmoves=10 curns=292598 full=127 rects=179 cpx=33995472 fpx=33805216 presns=66867606 torn=0 defer=97 late=0 drawmax=115
+[browser] load: https://www.doubao.com/
+[sock] connected www.doubao.com via ipv4 ::ffff:198.18.0.42
+[wm] perf t=20904 composites=224 ns=2448030456 max=78354469 motions=18 curmoves=10 curns=292598 full=172 rects=224 cpx=40139472 fpx=39949216 presns=76737548 torn=0 defer=136 late=0 drawmax=115
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.doubao.com, alpn=http/1.1
+[net] rx path: frames 64 irq 57 softirq 29 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[sock] connected lf-flow-web-cdn.doubao.com via ipv4 ::ffff:198.18.0.114
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-flow-web-cdn.doubao.com, alpn=http/1.1
+[wm] perf t=24924 composites=238 ns=2549139484 max=78354469 motions=18 curmoves=10 curns=292598 full=178 rects=238 cpx=41409232 fpx=41218976 presns=79567326 torn=0 defer=141 late=0 drawmax=115
+[tls] ticket stored for lf-flow-web-cdn.doubao.com (208 bytes, lifetime 21600s, 1 cached)
+[tls] ticket stored for lf-flow-web-cdn.doubao.com (208 bytes, lifetime 21600s, 2 cached)
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[browser] heap peak 8601K
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 4 external classic, 0 external module, 9 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf-flow-web-cdn.doubao.com (no chain, no signature), alpn=http/1.1
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[net] rx path: frames 600 irq 212 softirq 108 inline 0 poll 9 idle 0/0 halt/skip
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[mm] low: 105942 frames free (413 MiB), 25095 used, 0 shared, 0 bugs
+[mm] low: 105686 frames free (412 MiB), 25351 used, 0 shared, 0 bugs
+[mm] low: 105430 frames free (411 MiB), 25607 used, 0 shared, 0 bugs
+[mm] low: 105174 frames free (410 MiB), 25863 used, 0 shared, 0 bugs
+[mm] low: 104918 frames free (409 MiB), 26119 used, 0 shared, 0 bugs
+[mm] low: 104662 frames free (408 MiB), 26375 used, 0 shared, 0 bugs
+[mm] low: 104406 frames free (407 MiB), 26631 used, 0 shared, 0 bugs
+[mm] low: 104150 frames free (406 MiB), 26887 used, 0 shared, 0 bugs
+[mm] low: 103894 frames free (405 MiB), 27143 used, 0 shared, 0 bugs
+[mm] low: 103638 frames free (404 MiB), 27399 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf3-short.ibytedapm.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 2 cached)
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 3 cached)
+[tls] chain of 3 verified for www.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[mm] low: 103382 frames free (403 MiB), 27655 used, 0 shared, 0 bugs
+[mm] low: 103126 frames free (402 MiB), 27911 used, 0 shared, 0 bugs
+[mm] low: 102870 frames free (401 MiB), 28167 used, 0 shared, 0 bugs
+[mm] low: 102614 frames free (400 MiB), 28423 used, 0 shared, 0 bugs
+[browser] load done: 8 requests, 4 connections dialled, 5 reused, 0 modules loaded (0 failed)
+[browser] pool: 5 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[error] TypeError: cannot read property 'history' of undefined
+    at m (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at c (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at b (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at useMemo (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at p (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at ak (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at i (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oD (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oF (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oE (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at ox (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at S (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at C (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.09a3e030.js)
+    at apply (native)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at k (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at j (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at _deliver (<platform>:168)
+    at <anonymous> (<platform>:175)
+
+[bxfer] h2 mcs.doubao.com:443 closed: streams=1 peak=1 frames=4/4 hpack_in=0
+[bxfer] h2 www.doubao.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=75
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=6301
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[bxfer] h2 mcs.doubao.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=38
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=6272
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[bxfer] h2 mcs.doubao.com:443 closed: streams=5 peak=5 frames=19/18 hpack_in=2682
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=4/4 hpack_in=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=4/5 hpack_in=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for mssdk.bytedance.com, alpn=h2
+[tls] ticket stored for mssdk.bytedance.com (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for mssdk.bytedance.com (240 bytes, lifetime 900s, 5 cached)
+[bxfer] h2 mssdk.bytedance.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=60
+[browser] load: about:text
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=51948 composites=338 ns=3599910543 max=78354469 motions=18 curmoves=10 curns=292598 full=227 rects=338 cpx=58335952 fpx=58145696 presns=112363988 torn=0 defer=175 late=0 drawmax=115

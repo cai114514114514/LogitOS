@@ -1,0 +1,55 @@
+[wm] perf t=19659 composites=206 ns=1896121622 max=61007392 motions=18 curmoves=10 curns=356324 full=148 rects=207 cpx=31478224 fpx=31246608 presns=59518656 torn=0 defer=121 late=0 drawmax=90
+[browser] load: http://example.com/
+[sock] connected example.com via ipv4 ::ffff:198.18.0.101
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[wm] perf t=20659 composites=235 ns=1997921668 max=61007392 motions=18 curmoves=10 curns=356324 full=176 rects=236 cpx=33556944 fpx=33325328 presns=62851666 torn=0 defer=147 late=0 drawmax=109
+[browser] scripts collected: 0 external classic, 0 external module, 0 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[wm] perf t=37706 composites=283 ns=2481833115 max=61007392 motions=18 curmoves=10 curns=356324 full=191 rects=284 cpx=40714704 fpx=40483088 presns=78301487 torn=0 defer=156 late=0 drawmax=109
+[browser] load: about:text
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[wm] perf t=38706 composites=309 ns=2638999324 max=61007392 motions=18 curmoves=10 curns=356324 full=216 rects=310 cpx=43817424 fpx=43585808 presns=83756045 torn=0 defer=178 late=0 drawmax=109

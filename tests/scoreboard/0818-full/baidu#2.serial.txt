@@ -1,0 +1,138 @@
+[wm] perf t=19674 composites=207 ns=2089167083 max=61305918 motions=18 curmoves=10 curns=302851 full=150 rects=207 cpx=36462976 fpx=36239632 presns=67566974 torn=0 defer=118 late=0 drawmax=94
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.43
+[wm] perf t=20675 composites=236 ns=2237296648 max=61305918 motions=18 curmoves=10 curns=302851 full=178 rects=236 cpx=39565696 fpx=39342352 presns=72554369 torn=0 defer=143 late=0 drawmax=94
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 66 irq 55 softirq 25 inline 3 poll 3 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[dl] painted text: 31 run(s), 327 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 朱镕基同志遗体在京火化
+[dl] 300,511 5
+[dl] 300,528 梭子蟹价格大跳水
+[dl] 431,528 10元能买两斤
+[dl] 308,508 热
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志生平照片
+[dl] 632,565 6
+[dl] 632,582 杨国福冒用羽生结弦名义摆花篮
+[dl] 632,619 7
+[dl] 640,616 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[sock] connected pss.bdstatic.com via ipv4 ::ffff:198.18.0.45
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[browser] heap peak 10057K
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[wm] perf t=30688 composites=273 ns=2975463616 max=61305918 motions=18 curmoves=10 curns=302851 full=196 rects=273 cpx=53461376 fpx=53238032 presns=97866608 torn=0 defer=148 late=0 drawmax=94
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for hectorstatic.baidu.com, alpn=http/1.1
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+无畏是青春的态度，热AI是时代的脉搏。
+各位新同学正以无畏的姿态奔赴通用人工智能的星辰大海！
+作为引领AI时代浪潮的主力军，广阔舞台，待你大展身手。
+乘风破浪，勇往直前，未来百度将与你一起，创造无限可能！
+
+%c百度2027校园招聘简历投递：https://talent.baidu.com/jobs/list color:red
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+Error
+[browser] inserted script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/plugins/bzPopper_d8249c4undefined: no error (status 404)
+[browser] inserted script LOST: https://pss.bdstatic.com/static/superman-san/app/chat-input/result_f7fe0a6undefined: no error (status 404)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 19 requests, 6 connections dialled, 13 reused, 0 modules loaded (0 failed)
+[browser] pool: 13 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[wm] perf t=39694 composites=305 ns=3434445924 max=61305918 motions=18 curmoves=10 curns=302851 full=213 rects=305 cpx=62114176 fpx=61890832 presns=112950517 torn=0 defer=157 late=0 drawmax=94
+[net] rx path: frames 580 irq 338 softirq 160 inline 6 poll 7 idle 0/0 halt/skip
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[js] uncaught in timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)
+[wm] perf t=55723 composites=346 ns=3849932027 max=61305918 motions=18 curmoves=10 curns=302851 full=223 rects=346 cpx=68186496 fpx=67963152 presns=125815055 torn=0 defer=162 late=0 drawmax=94
+[browser] load: about:text
+[dl] painted text: 31 run(s), 327 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 朱镕基同志遗体在京火化
+[dl] 300,511 5
+[dl] 300,528 梭子蟹价格大跳水
+[dl] 431,528 10元能买两斤
+[dl] 308,508 热
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志生平照片
+[dl] 632,565 6
+[dl] 632,582 杨国福冒用羽生结弦名义摆花篮
+[dl] 632,619 7
+[dl] 640,616 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[wm] perf t=56724 composites=381 ns=4138839030 max=61305918 motions=18 curmoves=10 curns=302851 full=257 rects=381 cpx=74361216 fpx=74137872 presns=135936315 torn=0 defer=190 late=0 drawmax=102

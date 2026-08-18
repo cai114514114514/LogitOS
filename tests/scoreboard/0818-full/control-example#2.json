@@ -1,0 +1,79 @@
+{
+ "name": "control-example#2",
+ "url": "http://example.com/",
+ "started": "2026-08-18T20:27:05",
+ "verdict": "PAINTED",
+ "why": "painted 8336 changed px in 0.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "http://example.com/",
+  "bytes": 559,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 0,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 0.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 8336,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 8319,
+  "ink_px_blank": 3902,
+  "colours": 765,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-full/control-example#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-full/control-example#2.serial.txt",
+ "text_runs": 19,
+ "text_bytes": 109,
+ "text": "0,170 Example\n98,170 Domain\n0,214 This\n32,214 domain\n89,214 is\n103,214 for\n126,214 use\n153,214 in\n169,214 documentation\n281,214 examples\n350,214 without\n408,214 needing\n467,214 permission.\n551,214 Avoid\n593,214 use\n620,214 in\n0,234 operations.\n0,262 Learn\n43,262 more",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 0,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T20:27:47"
+}

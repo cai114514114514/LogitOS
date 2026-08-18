@@ -1,0 +1,191 @@
+[wm] perf t=19682 composites=202 ns=2241481245 max=66557708 motions=18 curmoves=11 curns=284178 full=155 rects=203 cpx=39618224 fpx=39469328 presns=74473054 torn=0 defer=119 late=0 drawmax=116
+[browser] load: https://www.2345.com/
+[sock] connected www.2345.com via ipv4 ::ffff:198.18.0.40
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.2345.com, alpn=http/1.1
+[tls] OCSP staple: good (www.2345.com)
+[wm] perf t=20685 composites=227 ns=2350370921 max=66557708 motions=18 curmoves=11 curns=284178 full=179 rects=228 cpx=41696944 fpx=41548048 presns=78348179 torn=0 defer=141 late=0 drawmax=118
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[dl] painted text: 41 run(s), 493 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,96 8月18日
+[dl] 67,96 星期二
+[dl] 8,124 七月初六
+[dl] 75,124 宜：
+[dl] 110,124 嫁娶
+[dl] 8,160 星座运势
+[dl] 75,160 月历壁纸
+[dl] 8,180 旗下产品
+[dl] 8,200 旗下产品
+[dl] 75,200 下载浏览器
+[dl] 158,200 魔方办公
+[dl] 225,200 装软件赚钱
+[dl] 8,220 163邮箱
+[dl] 8,240 163邮箱
+[dl] 67,240 QQ邮箱
+[dl] 124,240 126邮箱
+[dl] 183,240 腾讯企邮
+[dl] 250,240 139邮箱
+[dl] 309,240 新浪邮箱
+[dl] 376,240 yeah邮箱
+[dl] 445,240 搜狐邮箱
+[dl] 512,240 更多邮箱
+[dl] 8,260 反馈
+[dl] 43,260 换肤
+[dl] 78,260 登录
+[dl] 8,280 登录2345帐号
+[dl] 107,280 注册
+[dl] 142,280 收藏夹
+[dl] 193,280 王牌技术联盟
+[dl] 8,300 把2345设为主页
+[dl] 8,336 [切换]
+[dl] 8,372 今  
+[dl] 33,372 晴
+[dl] 8,392 明
+[dl] 27,392 晴
+[dl] 8,428 15天
+[dl] 8,456 天气
+[dl] 8,580 激发下沉市场活力
+[dl] 139,580 活跃县域消费
+[dl] 8,600 杭州酒局事件赵某峰郁某栋被刑拘
+[dl] 8,620 俄指责英无人机参战：英国成帮凶共犯
+[dl] ---8<--- end painted text
+[sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.44
+[net] rx path: frames 81 irq 51 softirq 26 inline 0 poll 3 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[browser] heap peak 10856K
+[dl] painted text: 23 run(s), 246 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,562 激发下沉市场活力
+[dl] 1109,562 活跃县域消费
+[dl] 1011,578 杭州酒局事件赵某峰郁某栋被刑拘
+[dl] 809,204 8月18日
+[dl] 809,220 星期二
+[dl] 809,244 七月初六
+[dl] 809,260 宜：
+[dl] 837,260 嫁娶
+[dl] 809,312 星座运势
+[dl] 809,333 月历壁纸
+[dl] 816,358 旗下产品
+[dl] 816,382 163邮箱
+[dl] 809,438 反馈
+[dl] 825,459 换肤
+[dl] 810,480 登录
+[dl] 810,502 把2345设为主页
+[dl] 668,193 [切换]
+[dl] 668,211 今  
+[dl] 686,211 晴
+[dl] 668,305 明
+[dl] 689,305 晴
+[dl] 764,336 15天
+[dl] 764,355 天气
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 7 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 8 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 9 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 10 cached)
+[img] 13/13 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 13/256 ents 118K]
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] scripts collected: 12 external classic, 0 external module, 4 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 892s, 10 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[wm] perf t=31698 composites=283 ns=3956504134 max=66557708 motions=18 curmoves=11 curns=284178 full=218 rects=284 cpx=74987184 fpx=74838288 presns=134551005 torn=0 defer=148 late=0 drawmax=118
+[tls] chain of 3 verified for passport-plugin.hao184.com, alpn=http/1.1
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 11 cached)
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 12 cached)
+[net] rx path: frames 604 irq 404 softirq 194 inline 5 poll 13 idle 0/0 halt/skip
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[browser] script REFUSED (HTML, not JS): https://www.2345.com/ (status 200, 168076 bytes)
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at o (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at map (native)
+    at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at n (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)
+    at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js:2)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www.2345.com/#inline-script-4:7)
+    at <eval> (https://www.2345.com/#inline-script-4:8)
+[browser] load done: 33 requests, 8 connections dialled, 25 reused, 0 modules loaded (0 failed)
+[browser] pool: 25 hits, 2 evicted, 3 closed
+[browser] resources: 0 from tab, 32 from network (tab 2 of 3)
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[error] Failed to calculate load time: TypeError: cannot read property 'loadEventEnd' of undefined
+[error] Failed to calculate resource size: TypeError: cannot read property 'transferSize' of undefined
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[wm] perf t=52749 composites=367 ns=4771754900 max=66557708 motions=18 curmoves=11 curns=284178 full=261 rects=368 cpx=88534704 fpx=88385808 presns=162063845 torn=0 defer=179 late=0 drawmax=118
+[browser] load: about:text
+[dl] painted text: 23 run(s), 246 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,562 激发下沉市场活力
+[dl] 1109,562 活跃县域消费
+[dl] 1011,578 杭州酒局事件赵某峰郁某栋被刑拘
+[dl] 809,204 8月18日
+[dl] 809,220 星期二
+[dl] 809,244 七月初六
+[dl] 809,260 宜：
+[dl] 837,260 嫁娶
+[dl] 809,312 星座运势
+[dl] 809,333 月历壁纸
+[dl] 816,358 旗下产品
+[dl] 816,382 163邮箱
+[dl] 809,438 反馈
+[dl] 825,459 换肤
+[dl] 810,480 登录
+[dl] 810,502 把2345设为主页
+[dl] 668,193 [切换]
+[dl] 668,211 今  
+[dl] 686,211 晴
+[dl] 668,305 明
+[dl] 689,305 晴
+[dl] 764,336 15天
+[dl] 764,355 天气
+[dl] ---8<--- end painted text
+[wm] perf t=53749 composites=390 ns=4929110712 max=66557708 motions=18 curmoves=11 curns=284178 full=282 rects=391 cpx=91668144 fpx=91519248 presns=167181364 torn=0 defer=197 late=0 drawmax=118

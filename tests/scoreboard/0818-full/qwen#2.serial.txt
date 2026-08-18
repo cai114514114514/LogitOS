@@ -1,0 +1,172 @@
+[wm] perf t=19730 composites=201 ns=1977603192 max=63460249 motions=18 curmoves=10 curns=376976 full=157 rects=201 cpx=38092528 fpx=37984992 presns=64575993 torn=0 defer=122 late=0 drawmax=100
+[browser] load: https://chat.qwen.ai/
+[sock] connected chat.qwen.ai via ipv4 ::ffff:198.18.0.97
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[wm] perf t=20730 composites=237 ns=2163322716 max=63460249 motions=18 curmoves=10 curns=376976 full=192 rects=237 cpx=42219248 fpx=42111712 presns=71974173 torn=0 defer=153 late=0 drawmax=100
+[tls] chain of 2 verified for chat.qwen.ai, alpn=http/1.1
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 1 cached)
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 2 cached)
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[dl] painted text: 27 run(s), 104 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,88 Qwen3.7-Plus
+[dl] 6,113 Log
+[dl] 35,113 in
+[dl] 70,113 Sign
+[dl] 104,113 up
+[dl] 0,137 How
+[dl] 35,137 can
+[dl] 64,137 I
+[dl] 71,137 help
+[dl] 104,137 you
+[dl] 133,137 ?
+[dl] 0,206 Auto
+[dl] 0,227 By
+[dl] 21,227 using
+[dl] 62,227 Qwen
+[dl] 105,227 Studio,
+[dl] 158,227 you
+[dl] 187,227 agree
+[dl] 230,227 to
+[dl] 248,227 our
+[dl] 275,227 Terms
+[dl] 322,227 of
+[dl] 339,227 Service
+[dl] 393,227 and
+[dl] 423,227 Privacy
+[dl] 479,227 Policy
+[dl] 525,227 .
+[dl] ---8<--- end painted text
+[net] rx path: frames 66 irq 51 softirq 26 inline 0 poll 2 idle 0/0 halt/skip
+[sock] connected assets.alicdn.com via ipv4 ::ffff:198.18.0.102
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for assets.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (assets.alicdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for assets.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (assets.alicdn.com)
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[browser] heap peak 14646K
+[browser] scripts collected: 2 external classic, 1 external module, 14 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.googletagmanager.com, alpn=http/1.1
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for o.alicdn.com, alpn=http/1.1
+[net] rx path: frames 604 irq 240 softirq 124 inline 4 poll 7 idle 0/0 halt/skip
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+[browser] JS exception: InternalError: interrupted
+InternalError: interrupted
+    at x (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at wF (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at ws (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at QARDLm (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+Browser detection: [object Object]
+Modern features support: true
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[mm] low: 105942 frames free (413 MiB), 25095 used, 0 shared, 0 bugs
+[mm] low: 105686 frames free (412 MiB), 25351 used, 0 shared, 0 bugs
+[mm] low: 105430 frames free (411 MiB), 25607 used, 0 shared, 0 bugs
+[mm] low: 105174 frames free (410 MiB), 25863 used, 0 shared, 0 bugs
+[mm] low: 104918 frames free (409 MiB), 26119 used, 0 shared, 0 bugs
+[mm] low: 104662 frames free (408 MiB), 26375 used, 0 shared, 0 bugs
+[mm] low: 104406 frames free (407 MiB), 26631 used, 0 shared, 0 bugs
+[mm] low: 104150 frames free (406 MiB), 26887 used, 0 shared, 0 bugs
+[mm] low: 103894 frames free (405 MiB), 27143 used, 0 shared, 0 bugs
+[mm] low: 103638 frames free (404 MiB), 27399 used, 0 shared, 0 bugs
+[mm] low: 103382 frames free (403 MiB), 27655 used, 0 shared, 0 bugs
+[js] module loaded 9129 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/react-vendor.js
+[js] module loaded 182575 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/react-dom-vendor.js
+[net] rx path: frames 1150 irq 366 softirq 198 inline 4 poll 11 idle 0/0 halt/skip
+[js] module loaded 743878 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/antd-vendor.js
+[js] module loaded 17127 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/dayjs-vendor.js
+[js] module loaded 69376 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/i18next-vendor.js
+[js] module loaded 1341 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/vite-helpers.js
+[js] module loaded 55939 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/lodash-vendor.js
+[net] rx path: frames 1703 irq 497 softirq 265 inline 4 poll 15 idle 0/0 halt/skip
+[mm] low: 103126 frames free (402 MiB), 27911 used, 0 shared, 0 bugs
+[mm] low: 102870 frames free (401 MiB), 28167 used, 0 shared, 0 bugs
+[mm] low: 102614 frames free (400 MiB), 28423 used, 0 shared, 0 bugs
+[js] module loaded 3017089 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/mermaid-vendor.js
+[mm] low: 102358 frames free (399 MiB), 28679 used, 0 shared, 0 bugs
+[mm] low: 102102 frames free (398 MiB), 28935 used, 0 shared, 0 bugs
+[mm] low: 101846 frames free (397 MiB), 29191 used, 0 shared, 0 bugs
+[mm] low: 101590 frames free (396 MiB), 29447 used, 0 shared, 0 bugs
+[mm] low: 101334 frames free (395 MiB), 29703 used, 0 shared, 0 bugs
+[mm] low: 101078 frames free (394 MiB), 29959 used, 0 shared, 0 bugs
+[mm] low: 100822 frames free (393 MiB), 30215 used, 0 shared, 0 bugs
+[mm] low: 100566 frames free (392 MiB), 30471 used, 0 shared, 0 bugs
+[mm] low: 100310 frames free (391 MiB), 30727 used, 0 shared, 0 bugs
+[mm] low: 100054 frames free (390 MiB), 30983 used, 0 shared, 0 bugs
+[mm] low: 99798 frames free (389 MiB), 31239 used, 0 shared, 0 bugs
+[mm] low: 99542 frames free (388 MiB), 31495 used, 0 shared, 0 bugs
+[mm] low: 99286 frames free (387 MiB), 31751 used, 0 shared, 0 bugs
+[mm] low: 99030 frames free (386 MiB), 32007 used, 0 shared, 0 bugs
+[mm] low: 98774 frames free (385 MiB), 32263 used, 0 shared, 0 bugs
+[mm] low: 98518 frames free (384 MiB), 32519 used, 0 shared, 0 bugs
+[mm] low: 98262 frames free (383 MiB), 32775 used, 0 shared, 0 bugs
+[mm] low: 98006 frames free (382 MiB), 33031 used, 0 shared, 0 bugs
+[mm] low: 97750 frames free (381 MiB), 33287 used, 0 shared, 0 bugs
+[mm] low: 97494 frames free (380 MiB), 33543 used, 0 shared, 0 bugs
+[js] module loaded 28899 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/dompurify-vendor.js
+[js] module loaded 9456 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/es-toolkit-vendor.js
+[js] module loaded 41303 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/marked-vendor.js
+[js] module loaded 37199 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/axios-vendor.js
+[js] module loaded 18439 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/router-vendor.js
+[js] module loaded 47990 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/dnd-vendor.js
+[net] rx path: frames 2250 irq 631 softirq 342 inline 4 poll 22 idle 0/0 halt/skip
+[mm] low: 97238 frames free (379 MiB), 33799 used, 0 shared, 0 bugs
+[mm] low: 96982 frames free (378 MiB), 34055 used, 0 shared, 0 bugs
+[mm] low: 96726 frames free (377 MiB), 34311 used, 0 shared, 0 bugs
+[js] module loaded 3854316 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/monaco-vendor.js
+[browser] module exception in https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/main.js: SyntaxError: invalid escape sequence in regular expression
+SyntaxError: invalid escape sequence in regular expression
+    at https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/monaco-vendor.js:1
+
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for chat.qwen.ai (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for g.alicdn.com, alpn=http/1.1
+[tls] OCSP staple: good (g.alicdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for d.alicdn.com, alpn=h2
+[error] Uncaught (in promise) Error: 该浏览器不支持indexedDB
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at Promise (native)
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at call (native)
+    at t (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at call (native)
+    at t (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at <anonymous> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+    at <eval> (https://g.alicdn.com/aes/??tracker/3.1.0/index.js,tracker-plugin-pv/3.0.5/index.js,tracker-plugin-event/3.0.0/index.js,tracker-plugin-jserror/3.0.3/index.js,tracker-plugin-api/3.1.2/index.js,tracker-plugin-resourceError/3.0.4/index.js,tracker-plugin-perf/3.1.1/index.js,tracker-plugin-eventTiming/3.0.0/index.js,tracker-plugin-survey/3.1.3/index.js,tracker-plugin-longtask/3.0.1/index.js,tracker-plugin-blank/3.0.1/index.js)
+
+[browser] load done: 23 requests, 7 connections dialled, 16 reused, 15 modules loaded (1 failed)
+[browser] pool: 16 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)

@@ -1,0 +1,79 @@
+{
+ "name": "bilibili",
+ "url": "https://www.bilibili.com/",
+ "started": "2026-08-18T20:20:29",
+ "verdict": "PAINTED",
+ "why": "painted 160868 changed px in 9.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bilibili.com/",
+  "bytes": 120754,
+  "redirects": [],
+  "script_tags": 21,
+  "script_src": 8,
+  "img_tags": 13,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 13,
+  "dials": 3,
+  "reused": 11,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8675,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 160868,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 4478,
+  "ink_px_blank": 3902,
+  "colours": 789,
+  "rich_tiles_proxy": 18
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-full/bilibili.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-full/bilibili.serial.txt",
+ "text_runs": 57,
+ "text_bytes": 503,
+ "text": "73,279 动态\n114,279 热门\n24,60 首页\n89,60 番剧\n130,60 直播\n171,60 游戏中心\n240,60 会员购\n295,60 漫画\n336,60 赛事\n377,60 下载客户端",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T20:21:20"
+}

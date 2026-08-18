@@ -1,0 +1,178 @@
+{
+ "name": "baidu",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-18T20:19:32",
+ "verdict": "ERRORS",
+ "why": "painted 25868 changed px in 51.1s but 13 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 697728,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 2.7
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at addPaths (https://www.baidu.com/#inline-script-11)",
+     "at <anonymous> (https://www.baidu.com/#inline-script-11:5)",
+     "at <eval> (https://www.baidu.com/#inline-script-11:5)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <anonymous> (https://www.baidu.com/#inline-script-12)",
+     "at <eval> (https://www.baidu.com/#inline-script-12:1)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)",
+     "at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:6)",
+     "at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:7)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:56)",
+     "at initPreload (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:57)",
+     "at <eval> (https://www.baidu.com/#inline-script-13:17)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <anonymous> (https://www.baidu.com/#inline-script-14:1)",
+     "at <eval> (https://www.baidu.com/#inline-script-14:6)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <eval> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:21)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: 'F' is not defined",
+    "stack": [
+     "at <eval> (https://www.baidu.com/#inline-script-15:1)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <eval> (https://www.baidu.com/#inline-script-16:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: '$' is not defined",
+    "stack": [
+     "at <eval> (https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js:3)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: 'F' is not defined",
+    "stack": [
+     "at <eval> (https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js:1)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "ReferenceError: 'F' is not defined",
+    "stack": [
+     "at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [
+   "timer: ReferenceError: '$' is not defined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 0) https://pss.bdstatic.com/r/www/static/font/cosmic/pc/cos-icon_3df378f.css: TLS refused: handshake or certificate verification failed",
+   "fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed",
+   "fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 16,
+  "dials": 8,
+  "reused": 8,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 51.1,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 25868,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 6155,
+  "ink_px_blank": 3902,
+  "colours": 890,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-full/baidu.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-full/baidu.serial.txt",
+ "text_runs": 31,
+ "text_bytes": 327,
+ "text": "598,245 复杂问题就找文心助手，深入思考回答更优\n641,245 \n245,500 \n958,487 \n960,502 换一换\n242,522 \n245,542 朱镕基同志遗体在京火化\n300,511 5\n300,528 梭子蟹价格大跳水\n431,528 10元能买两斤\n308,508 热\n245,579 1\n245,596 朱镕基同志生平照片\n632,565 6\n632,582 杨国福冒用羽生结弦名义摆花篮\n632,619 7\n640,616 新\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T20:21:05"
+}

@@ -1,0 +1,83 @@
+{
+ "name": "baidu#2",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-18T20:23:00",
+ "verdict": "ERRORS",
+ "why": "painted 26160 changed px in 18.7s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 695675,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 3.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 19,
+  "dials": 6,
+  "reused": 13,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10057,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 18.7,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 26160,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   768
+  ],
+  "ink_px": 6155,
+  "ink_px_blank": 3902,
+  "colours": 890,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-full/baidu#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-full/baidu#2.serial.txt",
+ "text_runs": 31,
+ "text_bytes": 327,
+ "text": "598,245 复杂问题就找文心助手，深入思考回答更优\n641,245 \n245,500 \n958,487 \n960,502 换一换\n242,522 \n245,542 朱镕基同志遗体在京火化\n300,511 5\n300,528 梭子蟹价格大跳水\n431,528 10元能买两斤\n308,508 热\n245,579 1\n245,596 朱镕基同志生平照片\n632,565 6\n632,582 杨国福冒用羽生结弦名义摆花篮\n632,619 7\n640,616 新\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T20:23:59"
+}

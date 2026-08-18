@@ -1,0 +1,166 @@
+[wm] perf t=19883 composites=171 ns=2111488175 max=63625833 motions=18 curmoves=12 curns=1107127 full=117 rects=172 cpx=34151664 fpx=33953136 presns=68718358 torn=0 defer=87 late=0 drawmax=116
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.43
+[wm] perf t=20883 composites=192 ns=2256089422 max=63625833 motions=18 curmoves=12 curns=1107127 full=138 rects=193 cpx=37223664 fpx=37025136 presns=73407169 torn=0 defer=105 late=0 drawmax=124
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 72 irq 56 softirq 27 inline 2 poll 2 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[dl] painted text: 31 run(s), 327 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 朱镕基同志遗体在京火化
+[dl] 300,511 5
+[dl] 300,528 梭子蟹价格大跳水
+[dl] 431,528 10元能买两斤
+[dl] 308,508 热
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志生平照片
+[dl] 632,565 6
+[dl] 632,582 杨国福冒用羽生结弦名义摆花篮
+[dl] 632,619 7
+[dl] 640,616 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[sock] connected pss.bdstatic.com via ipv4 ::ffff:198.18.0.45
+[wm] perf t=24941 composites=208 ns=2347100841 max=63625833 motions=18 curmoves=12 curns=1107127 full=146 rects=209 cpx=38493424 fpx=38294896 presns=76199587 torn=0 defer=112 late=0 drawmax=124
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/static/font/cosmic/pc/cos-icon_3df378f.css: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[wm] perf t=50039 composites=277 ns=3290111233 max=63625833 motions=18 curmoves=12 curns=1107127 full=166 rects=278 cpx=54334704 fpx=54136176 presns=107179947 torn=0 defer=118 late=0 drawmax=124
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for hectorstatic.baidu.com, alpn=http/1.1
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at addPaths (https://www.baidu.com/#inline-script-11)
+    at <anonymous> (https://www.baidu.com/#inline-script-11:5)
+    at <eval> (https://www.baidu.com/#inline-script-11:5)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-12)
+    at <eval> (https://www.baidu.com/#inline-script-12:1)
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)
+    at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:6)
+    at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:7)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:56)
+    at initPreload (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:57)
+    at <eval> (https://www.baidu.com/#inline-script-13:17)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-14:1)
+    at <eval> (https://www.baidu.com/#inline-script-14:6)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:21)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-15:1)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-16:2)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js:3)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js:1)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)
+Error
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 16 requests, 8 connections dialled, 8 reused, 0 modules loaded (0 failed)
+[browser] pool: 8 hits, 0 evicted, 4 closed
+[browser] resources: 0 from tab, 11 from network (tab 2 of 3)
+[js] uncaught in timer: ReferenceError: '$' is not defined
+[browser] load: about:text
+[dl] painted text: 31 run(s), 327 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 朱镕基同志遗体在京火化
+[dl] 300,511 5
+[dl] 300,528 梭子蟹价格大跳水
+[dl] 431,528 10元能买两斤
+[dl] 308,508 热
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志生平照片
+[dl] 632,565 6
+[dl] 632,582 杨国福冒用羽生结弦名义摆花篮
+[dl] 632,619 7
+[dl] 640,616 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[wm] perf t=89103 composites=408 ns=4816995245 max=63625833 motions=18 curmoves=12 curns=1107127 full=223 rects=409 cpx=80159984 fpx=79961456 presns=157317666 torn=0 defer=152 late=0 drawmax=124

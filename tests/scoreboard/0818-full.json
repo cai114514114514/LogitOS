@@ -1,0 +1,1843 @@
+{
+ "date": "0818-full",
+ "generated": "2026-08-18T20:29:17",
+ "iso": "build/logit.iso",
+ "iso_sha256_16": "ba1d0615b6a1efd8",
+ "commit": "f4c1ad273",
+ "wall_seconds": 584.3,
+ "repeat": 2,
+ "sites": [
+  {
+   "name": "baidu",
+   "url": "https://www.baidu.com/",
+   "started": "2026-08-18T20:19:32",
+   "verdict": "ERRORS",
+   "why": "painted 25868 changed px in 51.1s but 13 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.baidu.com/",
+    "bytes": 697728,
+    "redirects": [],
+    "script_tags": 34,
+    "script_src": 12,
+    "img_tags": 20,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 12,
+     "inline_scripts": 17,
+     "images": 18,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 15
+    },
+    "elapsed": 2.7
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at addPaths (https://www.baidu.com/#inline-script-11)",
+       "at <anonymous> (https://www.baidu.com/#inline-script-11:5)",
+       "at <eval> (https://www.baidu.com/#inline-script-11:5)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://www.baidu.com/#inline-script-12)",
+       "at <eval> (https://www.baidu.com/#inline-script-12:1)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)",
+       "at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:20)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:6)",
+       "at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:7)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:56)",
+       "at initPreload (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:57)",
+       "at <eval> (https://www.baidu.com/#inline-script-13:17)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://www.baidu.com/#inline-script-14:1)",
+       "at <eval> (https://www.baidu.com/#inline-script-14:6)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <eval> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:21)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: 'F' is not defined",
+      "stack": [
+       "at <eval> (https://www.baidu.com/#inline-script-15:1)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <eval> (https://www.baidu.com/#inline-script-16:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <eval> (https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js:3)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: 'F' is not defined",
+      "stack": [
+       "at <eval> (https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js:1)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: 'F' is not defined",
+      "stack": [
+       "at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [
+     "timer: ReferenceError: '$' is not defined"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 0) https://pss.bdstatic.com/r/www/static/font/cosmic/pc/cos-icon_3df378f.css: TLS refused: handshake or certificate verification failed",
+     "fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed",
+     "fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 5,
+    "requests": 16,
+    "dials": 8,
+    "reused": 8,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 51.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 25868,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 6155,
+    "ink_px_blank": 3902,
+    "colours": 890,
+    "rich_tiles_proxy": 19
+   },
+   "shot": "tests/scoreboard/0818-full/baidu.png",
+   "serial_log": "tests/scoreboard/0818-full/baidu.serial.txt",
+   "text_runs": 31,
+   "text_bytes": 327,
+   "text": "598,245 复杂问题就找文心助手，深入思考回答更优\n641,245 \n245,500 \n958,487 \n960,502 换一换\n242,522 \n245,542 朱镕基同志遗体在京火化\n300,511 5\n300,528 梭子蟹价格大跳水\n431,528 10元能买两斤\n308,508 热\n245,579 1\n245,596 朱镕基同志生平照片\n632,565 6\n632,582 杨国福冒用羽生结弦名义摆花篮\n632,619 7\n640,616 新\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 12,
+     "inline_scripts": 17,
+     "images": 18,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 15
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:21:05",
+   "reported": "opens but unusable; a redirect works host-side and not on the machine",
+   "wall_seconds": 92.7,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "deepseek",
+   "url": "https://www.deepseek.com/",
+   "started": "2026-08-18T20:19:32",
+   "verdict": "PAINTED",
+   "why": "painted 17328 changed px in 7.9s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.deepseek.com/",
+    "bytes": 86450,
+    "redirects": [],
+    "script_tags": 41,
+    "script_src": 19,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 22,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "elapsed": 0.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 22,
+    "dials": 2,
+    "reused": 20,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 14733,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 7.9,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 17328,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 13826,
+    "ink_px_blank": 3902,
+    "colours": 861,
+    "rich_tiles_proxy": 21
+   },
+   "shot": "tests/scoreboard/0818-full/deepseek.png",
+   "serial_log": "tests/scoreboard/0818-full/deepseek.serial.txt",
+   "text_runs": 22,
+   "text_bytes": 95,
+   "text": "14,95 获取\n49,95 APP\n35,119 扫码下载\n102,119 DeepSeek\n174,119 App\n14,147 中文\n68,147 EN\n8,227 DeepSeek\n80,227 网页版\n131,227 DeepSeek\n203,227 App\n233,227 API\n259,227 开放平台\n326,227 DeepSeek\n398,227 Harness\n458,227 API\n484,227 文档\n519,227 加入我们\n14,251 中文\n68,251 EN\n8,275 热招中\n59,275 加入\n94,275 DeepSeek\n166,275 共赴星辰大海\n25,295 DeepSeek-V4-Pro\n149,295 正式版发布，Agent\n289,295 能力大幅提升，支持\n436,295 Responses\n513,295 API\n539,295 和\n558,295 Codex\n604,295 接入，已在网页端、APP\n780,295 和\n799,295 API\n825,295 全面上线，欢迎测试和反馈\n8,329 探索未至之境\n8,397 开始对话\n75,397 与\n94,397 DeepSeek\n166,397 免费对话\n233,397 体验全新旗舰模型\n364,397 API\n390,397 开放平台\n457,397 调用\n492,397 DeepSeek\n564,397 最新模型\n631,397 快速集成、流畅体验\n8,417 加入\n43,417 DeepSeek\n8,437 共赴星辰大海\n107,437 查看岗位\n8,480 浙ICP备2023025841号\n163,480 浙B2-20250178\n269,480 浙公网安备33010502011812号\n35,532 扫码关注公众号\n8,580 产品\n8,608 DeepSeek\n80,608 网页版\n131,608 DeepSeek\n203,608 App\n233,608 DeepSeek\n305,608 Harness\n365,608 API\n391,608 开放平台\n458,608 API\n484,608 文档\n519,608 API\n545,608 价格\n580,608 服务状态",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 22,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:20:22",
+   "reported": "blank; needs Worker",
+   "wall_seconds": 49.6,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "doubao",
+   "url": "https://www.doubao.com/",
+   "started": "2026-08-18T20:19:32",
+   "verdict": "BLANK",
+   "why": "loaded in 13.9s and painted 3228 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.doubao.com/chat/",
+    "bytes": 382655,
+    "redirects": [
+     "302 -> https://www.doubao.com/chat/"
+    ],
+    "script_tags": 15,
+    "script_src": 4,
+    "img_tags": 1,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 3.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 2,
+    "requests": 8,
+    "dials": 4,
+    "reused": 5,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8601,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 13.9,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 3228,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 3902,
+    "ink_px_blank": 3902,
+    "colours": 587,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/doubao.png",
+   "serial_log": "tests/scoreboard/0818-full/doubao.serial.txt",
+   "text_runs": 0,
+   "text_bytes": 0,
+   "text": "",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:20:27",
+   "reported": "TypeError charAt of undefined, localised to webpack module 3454",
+   "wall_seconds": 55.6,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "bing",
+   "url": "https://www.bing.com/",
+   "started": "2026-08-18T20:19:32",
+   "verdict": "ERRORS",
+   "why": "painted 620716 changed px in 4.3s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bing.com/",
+    "bytes": 220999,
+    "redirects": [],
+    "script_tags": 20,
+    "script_src": 3,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 3,
+     "inline_scripts": 8,
+     "images": 0,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "elapsed": 0.8
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "ReferenceError: '_w' is not defined",
+      "stack": [
+       "at <eval> (https://www.bing.com/#inline-script-2:2)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 404) data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAKFSURBVHgBrVJBaxNBFP7ezGw2bZJmo/SkYCyICgoVvBQ85AcILUUvXkov4tFeBY3xD4gnbxIoXhTaglfR9OC5HnpSpCmtNMW2ydom2d3ZnedstKXBoz72zZth+b73fTMP+Meg482lN+3JTH5kGcxlZsAYRlpjP8Lu66+gnm66Ls3vvZ9qnCZQ6eK93Cl32skytw/L6TkFpp8Nij/twtGGc16mLEdVdQ8YIhDpYrSuhlHvQhR2oaOuPR+CtU9IfFbtAPkxB1TKIjo7WvEebnh/KSi63yvWDAlKWCBOK4Qw0C2i0BQh8g6F3giigstxLlO1kIWTO7i5uFgxJD4OQH+SEA+q/6W0sv3h6nyncaOzen+9bpzcXIQsNGcQs+joUNfUeP7b9IDJdpeUkO3MEslAzfh1Z2H9yb3O2p13lf5+a65rCgg5h4CzSIz0BJmqmnCbFSGYFSekyMCSQKVWjNl8dnupmZKPCX/aMZFtEFOGQowYl42w7sl46pq7NSnZIAWnQAlDNq0iXjn2WRQHMw7lyKHIKgg4sjtjW9pfn9UVtdOxkr0UJOk3WNlkJAOC/oNqOQmOyjLScC08RJdiZFILqe+GmpCtWpaSqhLGE0ggB2BRL071VtcqFa99tP3cO3MOmSBmFYbIaodja4aFIoZaodNvym9nq/gRP8VuAOyE3NpK4F65TKO5EnOgwJHNWBE0MSdiM//q8UUxNNd3l2rwdQd9gyRiMq6DwoQEFXskvB5kqQdRPGJR6hGVuo2TSRyKfV3njsbhT3tH4xkSYxZY7EN6/QGRLPVTsg2RD2onkzgUe/EL3+eZg0SWz9/KQhT64KxO5ZOMJbMWzaCL2fyjehP/I34BAVpFdp9EDL8AAAAASUVORK5CYII=: no error"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 9,
+    "requests": 6,
+    "dials": 2,
+    "reused": 4,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 4.3,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 620716,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 517358,
+    "ink_px_blank": 3902,
+    "colours": 587,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/bing.png",
+   "serial_log": "tests/scoreboard/0818-full/bing.serial.txt",
+   "text_runs": 0,
+   "text_bytes": 0,
+   "text": "",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 3,
+     "inline_scripts": 8,
+     "images": 0,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:20:17",
+   "reported": "ReferenceError: w is not defined; renders \"一坨黑黑的\"",
+   "wall_seconds": 45.2,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "2345",
+   "url": "https://www.2345.com/",
+   "started": "2026-08-18T20:19:32",
+   "verdict": "ERRORS",
+   "why": "painted 6620 changed px in 15.7s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.2345.com/",
+    "bytes": 168076,
+    "redirects": [],
+    "script_tags": 19,
+    "script_src": 12,
+    "img_tags": 14,
+    "inventory": {
+     "stylesheets": 6,
+     "script_src": 11,
+     "inline_scripts": 8,
+     "images": 14,
+     "preloads": 82,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "elapsed": 0.8
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+       "at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at o (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at map (native)",
+       "at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at call (native)",
+       "at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at n (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+       "at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://www.2345.com/#inline-script-4:7)",
+       "at <eval> (https://www.2345.com/#inline-script-4:8)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 33,
+    "dials": 8,
+    "reused": 25,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 10856,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 15.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 6620,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 5080,
+    "ink_px_blank": 3902,
+    "colours": 750,
+    "rich_tiles_proxy": 18
+   },
+   "shot": "tests/scoreboard/0818-full/2345.png",
+   "serial_log": "tests/scoreboard/0818-full/2345.serial.txt",
+   "text_runs": 23,
+   "text_bytes": 246,
+   "text": "8,96 8月18日\n67,96 星期二\n8,124 七月初六\n75,124 宜：\n110,124 嫁娶\n8,160 星座运势\n75,160 月历壁纸\n8,180 旗下产品\n8,200 旗下产品\n75,200 下载浏览器\n158,200 魔方办公\n225,200 装软件赚钱\n8,220 163邮箱\n8,240 163邮箱\n67,240 QQ邮箱\n124,240 126邮箱\n183,240 腾讯企邮\n250,240 139邮箱\n309,240 新浪邮箱\n376,240 yeah邮箱\n445,240 搜狐邮箱\n512,240 更多邮箱\n8,260 反馈\n43,260 换肤\n78,260 登录\n8,280 登录2345帐号\n107,280 注册\n142,280 收藏夹\n193,280 王牌技术联盟\n8,300 把2345设为主页\n8,336 [切换]\n8,372 今  \n33,372 晴\n8,392 明\n27,392 晴\n8,428 15天\n8,456 天气\n8,580 激发下沉市场活力\n139,580 活跃县域消费\n8,600 杭州酒局事件赵某峰郁某栋被刑拘\n8,620 俄指责英无人机参战：英国成帮凶共犯",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 6,
+     "script_src": 11,
+     "inline_scripts": 8,
+     "images": 14,
+     "preloads": 82,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:20:29",
+   "reported": "TypeError toString of undefined",
+   "wall_seconds": 56.7,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "jd",
+   "url": "https://www.jd.com/",
+   "started": "2026-08-18T20:20:18",
+   "verdict": "BLANK",
+   "why": "loaded in 6.1s and painted 2240 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://corporate.jd.com/home",
+    "bytes": 686,
+    "redirects": [
+     "301 -> https://corporate.jd.com/home"
+    ],
+    "script_tags": 2,
+    "script_src": 1,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 1,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 3
+    },
+    "elapsed": 1.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 3,
+    "dials": 3,
+    "reused": 1,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 6733,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 6.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2240,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 3902,
+    "ink_px_blank": 3902,
+    "colours": 587,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/jd.png",
+   "serial_log": "tests/scoreboard/0818-full/jd.serial.txt",
+   "text_runs": 0,
+   "text_bytes": 0,
+   "text": "",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 1,
+     "inline_scripts": 1,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 3
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:21:04",
+   "reported": "jQuery is not defined",
+   "wall_seconds": 46.7,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "anthropic",
+   "url": "https://www.anthropic.com/",
+   "started": "2026-08-18T20:20:22",
+   "verdict": "ERRORS",
+   "why": "painted 7200 changed px in 8.5s but 3 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.anthropic.com/",
+    "bytes": 182051,
+    "redirects": [],
+    "script_tags": 20,
+    "script_src": 11,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 11,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 13
+    },
+    "elapsed": 0.9
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+       "at 8724 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.f2efb3c5440a81cf.js)",
+       "at call (native)",
+       "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at 2444 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)",
+       "at call (native)",
+       "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at 316 (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at call (native)",
+       "at t (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)",
+       "at <eval> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.ddbc49dc.a0e26460bb24d814.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [
+     "timer: TypeError: cannot read property 'pageYOffset' of undefined",
+     "timer: TypeError: cannot read property 'pageYOffset' of undefined"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 14,
+    "dials": 7,
+    "reused": 7,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8296,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 8.5,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 7200,
+    "changed_bbox": [
+     148,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 5084,
+    "ink_px_blank": 3902,
+    "colours": 767,
+    "rich_tiles_proxy": 16
+   },
+   "shot": "tests/scoreboard/0818-full/anthropic.png",
+   "serial_log": "tests/scoreboard/0818-full/anthropic.serial.txt",
+   "text_runs": 15,
+   "text_bytes": 71,
+   "text": "8,68 Skip\n41,68 to\n59,68 main\n98,68 content\n8,88 Skip\n41,88 to\n59,88 footer\n14,132 •\n36,132 Research\n14,152 •\n36,152 Policy\n14,172 •\n36,172 Commitments\n14,492 •\n36,492 Learn",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 11,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 13
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:21:11",
+   "reported": "\"is not a function\"",
+   "wall_seconds": 49.7,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "openai",
+   "url": "https://openai.com/",
+   "started": "2026-08-18T20:20:28",
+   "verdict": "FLAKY",
+   "why": "verdicts disagreed across 2 runs: BLANK, PAINTED",
+   "host": {
+    "ok": true,
+    "status": 403,
+    "final_url": "https://openai.com/",
+    "bytes": 0,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": null,
+    "elapsed": 0.5
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "event listener: TypeError: cannot read property 'document' of undefined",
+     "timer: TypeError: not a function",
+     "timer: TypeError: cannot read property 'querySelector' of undefined"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 2,
+    "dials": 2,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 3.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 3420,
+    "changed_bbox": [
+     152,
+     12,
+     1256,
+     764
+    ],
+    "ink_px": 4740,
+    "ink_px_blank": 3902,
+    "colours": 642,
+    "rich_tiles_proxy": 16
+   },
+   "shot": "tests/scoreboard/0818-full/openai.png",
+   "serial_log": "tests/scoreboard/0818-full/openai.serial.txt",
+   "text_runs": 0,
+   "text_bytes": 0,
+   "text": "",
+   "subresources": {
+    "host_inventory": null,
+    "gap": null
+   },
+   "finished": "2026-08-18T20:21:12",
+   "reported": "an icon and nothing else",
+   "wall_seconds": 44.2,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "bilibili",
+   "url": "https://www.bilibili.com/",
+   "started": "2026-08-18T20:20:29",
+   "verdict": "PAINTED",
+   "why": "painted 160868 changed px in 9.7s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bilibili.com/",
+    "bytes": 120754,
+    "redirects": [],
+    "script_tags": 21,
+    "script_src": 8,
+    "img_tags": 13,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 1.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 13,
+    "dials": 3,
+    "reused": 11,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8675,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 9.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 160868,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 4478,
+    "ink_px_blank": 3902,
+    "colours": 789,
+    "rich_tiles_proxy": 18
+   },
+   "shot": "tests/scoreboard/0818-full/bilibili.png",
+   "serial_log": "tests/scoreboard/0818-full/bilibili.serial.txt",
+   "text_runs": 57,
+   "text_bytes": 503,
+   "text": "73,279 动态\n114,279 热门\n24,60 首页\n89,60 番剧\n130,60 直播\n171,60 游戏中心\n240,60 会员购\n295,60 漫画\n336,60 赛事\n377,60 下载客户端",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:21:20",
+   "reported": "TypeError split of undefined",
+   "wall_seconds": 51.1,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "douyin",
+   "url": "https://www.douyin.com/",
+   "started": "2026-08-18T20:21:04",
+   "verdict": "BLANK",
+   "why": "loaded in 3.7s and painted 2612 changed pixels (0 exceptions) -- and the document asked for 2 subresources (0 stylesheets, 1 script srcs) against 1 requests issued, short by 1",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.douyin.com/",
+    "bytes": 2397,
+    "redirects": [],
+    "script_tags": 3,
+    "script_src": 1,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 1,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 2
+    },
+    "elapsed": 1.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 3,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 39159,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 3.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2612,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 4107,
+    "ink_px_blank": 3902,
+    "colours": 620,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/douyin.png",
+   "serial_log": "tests/scoreboard/0818-full/douyin.serial.txt",
+   "text_runs": 1,
+   "text_bytes": 9,
+   "text": "8,68 Please\n57,68 wait...",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 1,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 2
+    },
+    "gap": {
+     "mandatory": 2,
+     "requested": 1,
+     "short_by": 1,
+     "stylesheets": 0,
+     "script_src": 1
+    }
+   },
+   "finished": "2026-08-18T20:21:49",
+   "reported": "nothing renders at all",
+   "wall_seconds": 44.6,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "github",
+   "url": "https://github.com/",
+   "started": "2026-08-18T20:21:05",
+   "verdict": "ERRORS",
+   "why": "painted 623236 changed px in 106.9s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://github.com/",
+    "bytes": 574621,
+    "redirects": [],
+    "script_tags": 15,
+    "script_src": 9,
+    "img_tags": 24,
+    "inventory": {
+     "stylesheets": 19,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 78,
+     "fonts": 1,
+     "mandatory": 29
+    },
+    "elapsed": 0.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://github.githubassets.com/assets/behaviors-b7d871273e907300.js: TypeError: not an object"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 6,
+    "requests": 97,
+    "dials": 5,
+    "reused": 92,
+    "modules": 61,
+    "modules_failed": 0,
+    "heap_peak_k": 32883,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 106.9,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 623236,
+    "changed_bbox": [
+     140,
+     0,
+     1260,
+     764
+    ],
+    "ink_px": 506663,
+    "ink_px_blank": 3902,
+    "colours": 708,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/github.png",
+   "serial_log": "tests/scoreboard/0818-full/github.serial.txt",
+   "text_runs": 17,
+   "text_bytes": 99,
+   "text": "8,68 Skip\n41,68 to\n59,68 content\n8,132 Navigation\n130,132 Menu\n8,262 Sign\n42,262 in\n14,290 •\n42,294 Platform\n49,326 ◦\n64,326 AI\n80,326 CODE\n124,326 CREATION\n76,354 ▪\n111,354 GitHub\n164,354 Copilot\n218,354 Write\n259,354 better\n305,354 code\n342,354 with\n376,354 AI\n76,374 ▪\n111,374 GitHub\n164,374 Copilot\n218,374 app\n248,374 Direct\n294,374 agents\n345,374 from\n382,374 issue\n420,374 to\n438,374 merge\n76,394 ▪\n111,394 MCP\n146,394 Registry\n207,394 Integrate\n275,394 external\n335,394 tools\n49,430 ◦\n64,430 DEVELOPER\n153,430 WORKFLOWS\n76,458 ▪\n111,458 Actions\n166,458 Automate\n239,458 any\n268,458 workflow\n76,478 ▪\n111,478 Codespaces\n198,478 Instant\n251,478 dev\n279,478 environments\n76,498 ▪\n111,498 Issues\n156,498 Plan\n191,498 and\n221,498 track\n261,498 work\n76,518 ▪\n111,518 Code\n150,518 Review\n203,518 Manage\n262,518 code\n299,518 changes\n76,538 ▪\n111,538 Code\n150,538 Quality\n204,538 Enforce\n261,538 quality\n313,538 at\n331,538 merge\n49,574 ◦\n64,574 APPLICATION\n162,574 SECURITY\n76,602 ▪\n111,602 GitHub\n164,602 Advanced\n236,602 Security\n297,602 Find\n330,602 and\n360,602 fix\n379,602 vulnerabilities\n76,622 ▪\n111,622 Code\n150,622 security\n209,622 Secure\n260,622 your\n295,622 code\n332,622 as\n351,622 you\n380,622 build",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 19,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 78,
+     "fonts": 1,
+     "mandatory": 29
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:23:33",
+   "reported": "\"很奇怪\"",
+   "wall_seconds": 148.2,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "qq",
+   "url": "https://www.qq.com/",
+   "started": "2026-08-18T20:21:12",
+   "verdict": "PAINTED",
+   "why": "painted 93836 changed px in 24.7s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.qq.com/",
+    "bytes": 134408,
+    "redirects": [],
+    "script_tags": 13,
+    "script_src": 7,
+    "img_tags": 17,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 1.3
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 16,
+    "dials": 7,
+    "reused": 9,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8722,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 24.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 93836,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 17862,
+    "ink_px_blank": 3902,
+    "colours": 1095,
+    "rich_tiles_proxy": 46
+   },
+   "shot": "tests/scoreboard/0818-full/qq.png",
+   "serial_log": "tests/scoreboard/0818-full/qq.serial.txt",
+   "text_runs": 70,
+   "text_bytes": 1139,
+   "text": "14,117 搜索\n68,100 问AI\n8,124 邮箱\n8,144 网页设置\n8,164 快捷访问\n8,184 安装电脑版\n8,204 内容更精彩\n14,232 •\n36,232 要闻\n14,252 •\n36,252 科技\n14,272 •\n36,272 财经\n14,292 •\n36,292 AI\n14,312 •\n36,312 热问\n14,332 •\n36,332 教育\n14,352 •\n36,352 国际\n14,372 •\n36,372 军事\n14,392 •\n36,392 娱乐\n14,412 •\n36,412 电视剧\n14,432 •\n36,432 体育\n14,452 •\n36,452 NBA\n14,472 •\n36,472 汽车\n14,492 •\n36,492 房产\n14,512 •\n36,512 游戏\n14,532 •\n36,532 健康\n14,552 •\n36,552 QQ游戏\n14,572 •\n36,572 小游戏中心\n14,592 •\n36,592 更多",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:22:17",
+   "reported": "Uncaught (in promise) undefined",
+   "wall_seconds": 66.1,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "weixin",
+   "url": "https://weixin.qq.com/",
+   "started": "2026-08-18T20:21:12",
+   "verdict": "BLANK",
+   "why": "loaded in 6.7s and painted 2592 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://weixin.qq.com/",
+    "bytes": 112697,
+    "redirects": [],
+    "script_tags": 10,
+    "script_src": 5,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "elapsed": 1.5
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 5,
+    "dials": 3,
+    "reused": 2,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 6733,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 6.7,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2592,
+    "changed_bbox": [
+     152,
+     16,
+     1260,
+     764
+    ],
+    "ink_px": 3902,
+    "ink_px_blank": 3902,
+    "colours": 595,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/weixin.png",
+   "serial_log": "tests/scoreboard/0818-full/weixin.serial.txt",
+   "text_runs": 23,
+   "text_bytes": 151,
+   "text": "343,340 微信\n380,340 4.1.13\n427,340 for\n451,340 Windows\n522,340 全新发布\n749,340 08-18\n343,367 微信\n380,367 4.1.13\n427,367 for\n451,367 Mac\n484,367 全新发布\n749,367 08-18\n343,404 微信输入法\n431,404 2.1.2\n469,404 for\n493,404 Windows\n564,404 发布\n749,404 08-17\n343,457 更多日志\n-24,92 WeChat\n35,92 (繁体)\n97,92 WeChat\n-32,108 (EN)",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 3,
+     "inline_scripts": 3,
+     "images": 0,
+     "preloads": 5,
+     "fonts": 0,
+     "mandatory": 5
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:22:00",
+   "reported": "same as douyin -- nothing renders",
+   "wall_seconds": 48.1,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "apple",
+   "url": "https://www.apple.com/",
+   "started": "2026-08-18T20:21:20",
+   "verdict": "ERRORS",
+   "why": "painted 68012 changed px in 24.1s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.apple.com/",
+    "bytes": 254286,
+    "redirects": [],
+    "script_tags": 18,
+    "script_src": 13,
+    "img_tags": 98,
+    "inventory": {
+     "stylesheets": 9,
+     "script_src": 13,
+     "inline_scripts": 1,
+     "images": 42,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 23
+    },
+    "elapsed": 0.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "timer: TypeError: not a function"
+    ],
+    "module_exceptions": [
+     "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+    ],
+    "fetch_failed": [
+     "fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 4,
+    "requests": 47,
+    "dials": 4,
+    "reused": 43,
+    "modules": 6,
+    "modules_failed": 0,
+    "heap_peak_k": 13059,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 24.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 68012,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 52908,
+    "ink_px_blank": 3902,
+    "colours": 888,
+    "rich_tiles_proxy": 17
+   },
+   "shot": "tests/scoreboard/0818-full/apple.png",
+   "serial_log": "tests/scoreboard/0818-full/apple.serial.txt",
+   "text_runs": 21,
+   "text_bytes": 86,
+   "text": "8,82 Apple\n14,188 •\n70,188 Apple\n14,244 •\n49,244 ◦\n97,244 Store\n49,304 ◦\n90,304 Mac\n49,364 ◦\n91,364 iPad\n49,424 ◦\n105,424 iPhone\n49,484 ◦\n102,484 Watch\n49,544 ◦\n101,544 Vision\n49,604 ◦\n110,604 AirPods",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 9,
+     "script_src": 13,
+     "inline_scripts": 1,
+     "images": 42,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 23
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:22:25",
+   "reported": "0 images; TypeError split of undefined",
+   "wall_seconds": 65.3,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "stripe",
+   "url": "https://stripe.com/",
+   "started": "2026-08-18T20:21:49",
+   "verdict": "BLANK",
+   "why": "loaded in 30.1s and painted 2452 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://stripe.com/",
+    "bytes": 636879,
+    "redirects": [],
+    "script_tags": 78,
+    "script_src": 75,
+    "img_tags": 35,
+    "inventory": {
+     "stylesheets": 5,
+     "script_src": 74,
+     "inline_scripts": 0,
+     "images": 35,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 80
+    },
+    "elapsed": 1.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 3,
+    "requests": 85,
+    "dials": 3,
+    "reused": 82,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 14119,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 30.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2452,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 3902,
+    "ink_px_blank": 3902,
+    "colours": 587,
+    "rich_tiles_proxy": 15
+   },
+   "shot": "tests/scoreboard/0818-full/stripe.png",
+   "serial_log": "tests/scoreboard/0818-full/stripe.serial.txt",
+   "text_runs": 0,
+   "text_bytes": 0,
+   "text": "14,101 •\n42,105 Products\n14,129 •\n42,133 Solutions\n14,157 •\n42,161 Developers\n14,185 •\n42,189 Resources\n14,213 •\n36,213 Pricing\n14,233 •\n55,233 Guide\n99,233 me\n14,253 •\n36,253 Sign\n70,253 in\n8,281 Not\n37,281 sure\n70,281 where\n116,281 to\n134,281 start?\n178,281 Tell\n206,281 us\n225,281 about\n270,281 your\n305,281 business\n368,281 to\n386,281 get\n412,281 personalized\n504,281 Stripe\n549,281 product\n608,281 recommendations.\n744,281 Find\n777,281 what's\n827,281 right\n864,281 for\n887,281 you\n8,301 Start\n47,301 now\n85,301 Contact\n145,301 sales\n23,325 Back\n14,385 •\n55,385 Sign\n89,385 in\n14,405 •\n36,405 Contact\n96,405 sales\n8,441 Global\n57,441 GDP\n92,441 running\n150,441 on\n171,441 Stripe:\n8,475 Financial\n147,475 infrastructure\n354,475 to\n392,475 grow\n473,475 your\n546,475 revenue.\n678,475 Accept\n784,475 payments,\n943,475 offer\n8,515 financial\n140,515 services,\n269,515 and\n332,515 implement\n498,515 custom\n614,515 revenue\n738,515 models—from\n950,515 your\n1023,515 first\n8,555 transaction\n182,555 to\n220,555 your\n293,555 billionth.\n8,609 Financial\n147,609 infrastructure\n354,609 to\n392,609 grow\n473,609 your\n546,609 revenue.\n678,609 Accept\n784,609 payments,\n943,609 offer",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 5,
+     "script_src": 74,
+     "inline_scripts": 0,
+     "images": 35,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 80
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:23:00",
+   "reported": "73 scripts, extremely slow",
+   "wall_seconds": 70.7,
+   "runs": 2,
+   "all_verdicts": [
+    "BLANK",
+    "BLANK"
+   ]
+  },
+  {
+   "name": "qwen",
+   "url": "https://chat.qwen.ai/",
+   "started": "2026-08-18T20:22:00",
+   "verdict": "ERRORS",
+   "why": "painted 614968 changed px in 69.1s but 2 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://chat.qwen.ai/",
+    "bytes": 197806,
+    "redirects": [],
+    "script_tags": 18,
+    "script_src": 3,
+    "img_tags": 6,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 15,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 2.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "InternalError: interrupted",
+      "stack": [
+       "at wF (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at ws (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at QARDLm (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+       "at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/main.js: SyntaxError: invalid escape sequence in regular expression"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 23,
+    "dials": 7,
+    "reused": 16,
+    "modules": 15,
+    "modules_failed": 1,
+    "heap_peak_k": 14646,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 69.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 614968,
+    "changed_bbox": [
+     140,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 510533,
+    "ink_px_blank": 3902,
+    "colours": 823,
+    "rich_tiles_proxy": 16
+   },
+   "shot": "tests/scoreboard/0818-full/qwen.png",
+   "serial_log": "tests/scoreboard/0818-full/qwen.serial.txt",
+   "text_runs": 27,
+   "text_bytes": 104,
+   "text": "0,88 Qwen3.7-Plus\n6,113 Log\n35,113 in\n70,113 Sign\n104,113 up\n0,137 How\n35,137 can\n64,137 I\n71,137 help\n104,137 you\n133,137 ?\n0,206 Auto\n0,227 By\n21,227 using\n62,227 Qwen\n105,227 Studio,\n158,227 you\n187,227 agree\n230,227 to\n248,227 our\n275,227 Terms\n322,227 of\n339,227 Service\n393,227 and\n423,227 Privacy\n479,227 Policy\n525,227 .",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 15,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:23:50",
+   "reported": "hangs",
+   "wall_seconds": 109.8,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "control-example",
+   "url": "http://example.com/",
+   "started": "2026-08-18T20:22:18",
+   "verdict": "PAINTED",
+   "why": "painted 8284 changed px in 1.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "http://example.com/",
+    "bytes": 559,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 1.3,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8284,
+    "changed_bbox": [
+     140,
+     16,
+     1260,
+     764
+    ],
+    "ink_px": 8319,
+    "ink_px_blank": 3902,
+    "colours": 765,
+    "rich_tiles_proxy": 16
+   },
+   "shot": "tests/scoreboard/0818-full/control-example.png",
+   "serial_log": "tests/scoreboard/0818-full/control-example.serial.txt",
+   "text_runs": 19,
+   "text_bytes": 109,
+   "text": "0,170 Example\n98,170 Domain\n0,214 This\n32,214 domain\n89,214 is\n103,214 for\n126,214 use\n153,214 in\n169,214 documentation\n281,214 examples\n350,214 without\n408,214 needing\n467,214 permission.\n551,214 Avoid\n593,214 use\n620,214 in\n0,234 operations.\n0,262 Learn\n43,262 more",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:23:00",
+   "reported": "CONTROL: the simplest page on the web, no JS, no CSS worth the name",
+   "wall_seconds": 42.2,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "control-wikipedia",
+   "url": "https://en.wikipedia.org/wiki/Operating_system",
+   "started": "2026-08-18T20:22:26",
+   "verdict": "PAINTED",
+   "why": "painted 79580 changed px in 12.1s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+    "bytes": 676183,
+    "redirects": [],
+    "script_tags": 5,
+    "script_src": 1,
+    "img_tags": 26,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "elapsed": 0.8
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+     "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/8/8a/OOjs_UI_icon_edit-ltr-progressive.svg/20px-OOjs_UI_icon_edit-ltr-progressive.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 1,
+    "requests": 37,
+    "dials": 4,
+    "reused": 33,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 17763,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 12.1,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 79580,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 19905,
+    "ink_px_blank": 3902,
+    "colours": 1581,
+    "rich_tiles_proxy": 57
+   },
+   "shot": "tests/scoreboard/0818-full/control-wikipedia.png",
+   "serial_log": "tests/scoreboard/0818-full/control-wikipedia.serial.txt",
+   "text_runs": 199,
+   "text_bytes": 1142,
+   "text": "8,68 Jump\n51,68 to\n69,68 content\n24,88 Main\n61,88 menu\n8,108 Main\n45,108 menu\n14,132 move\n56,132 to\n74,132 sidebar\n148,132 hide\n8,156 Navigation\n14,192 •\n36,192 Main\n73,192 page\n14,212 •\n36,212 Contents\n14,232 •\n36,232 Current\n93,232 events\n14,252 •\n36,252 Random\n99,252 article\n14,272 •\n36,272 About\n81,272 Wikipedia\n14,292 •\n36,292 Contact\n96,292 us\n8,328 Contribute\n14,364 •\n36,364 Help\n14,384 •\n36,384 Learn\n79,384 to\n97,384 edit\n14,404 •\n36,404 Community\n122,404 portal\n14,424 •\n36,424 Recent\n88,424 changes\n14,444 •\n36,444 Upload\n90,444 file\n14,464 •\n36,464 Special\n90,464 pages\n8,550 Search\n14,602 Search",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:23:20",
+   "reported": "CONTROL: known to render since M13",
+   "wall_seconds": 54.3,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "kimi",
+   "url": "https://www.kimi.com/",
+   "started": "2026-08-18T20:23:00",
+   "verdict": "ERRORS",
+   "why": "painted 11732 changed px in 58.3s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.kimi.com/",
+    "bytes": 483157,
+    "redirects": [],
+    "script_tags": 5,
+    "script_src": 3,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 29,
+     "script_src": 3,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 85,
+     "fonts": 0,
+     "mandatory": 33
+    },
+    "elapsed": 2.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://statics.moonshot.cn/kimi-web-seo/assets/index-BcokEyC7.js: InternalError: interrupted"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 114,
+    "dials": 3,
+    "reused": 111,
+    "modules": 82,
+    "modules_failed": 0,
+    "heap_peak_k": 27634,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 58.3,
+    "paint_seconds": 16.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 11732,
+    "changed_bbox": [
+     144,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 8286,
+    "ink_px_blank": 3902,
+    "colours": 767,
+    "rich_tiles_proxy": 20
+   },
+   "shot": "tests/scoreboard/0818-full/kimi.png",
+   "serial_log": "tests/scoreboard/0818-full/kimi.serial.txt",
+   "text_runs": 5,
+   "text_bytes": 59,
+   "text": "35,96 新建会话\n8,120 Ctrl\n8,140 K\n35,176 插件\n94,176 定时任务\n185,176 PPT\n241,176 集群\n300,176 深度研究\n391,176 文档\n450,176 网站\n509,176 表格\n568,176 设计\n41,204 收起\n35,228 Kimi\n70,228 Work\n150,228 Kimi\n185,228 Code\n41,256 Kimi\n76,256 Claw\n14,324 •\n14,324 •\n14,324 •\n14,324 •\n14,324 •\n8,380 尽管问，或做个\n123,380 Agent\n167,380 任务...\n65,441 探索灵感\n14,465 滑动探索",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 29,
+     "script_src": 3,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 85,
+     "fonts": 0,
+     "mandatory": 33
+    },
+    "gap": null
+   },
+   "finished": "2026-08-18T20:24:39",
+   "reported": "the one the whole browser arc was aimed at -- an LLM chat page: React, streaming fetch, and a text input that has to accept keystrokes",
+   "wall_seconds": 99.2,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  }
+ ]
+}
