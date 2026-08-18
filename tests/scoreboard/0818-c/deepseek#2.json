@@ -1,0 +1,80 @@
+{
+ "name": "deepseek#2",
+ "url": "https://www.deepseek.com/",
+ "started": "2026-08-18T22:37:37",
+ "verdict": "PAINTED",
+ "why": "painted 17316 changed px in 9.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.deepseek.com/",
+  "bytes": 86450,
+  "redirects": [],
+  "script_tags": 41,
+  "script_src": 19,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "elapsed": 0.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 22,
+  "dials": 2,
+  "reused": 20,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14740,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 17316,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 13826,
+  "ink_px_blank": 3902,
+  "colours": 861,
+  "rich_tiles_proxy": 21
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/deepseek#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/deepseek#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/deepseek#2.host.html",
+ "text_runs": 22,
+ "text_bytes": 95,
+ "text": "14,95 获取\n49,95 APP\n35,119 扫码下载\n102,119 DeepSeek\n174,119 App\n14,147 中文\n68,147 EN\n8,227 DeepSeek\n80,227 网页版\n131,227 DeepSeek\n203,227 App\n233,227 API\n259,227 开放平台\n326,227 DeepSeek\n398,227 Harness\n458,227 API\n484,227 文档\n519,227 加入我们\n14,251 中文\n68,251 EN\n8,275 热招中\n59,275 加入\n94,275 DeepSeek\n166,275 共赴星辰大海\n25,295 DeepSeek-V4-Pro\n149,295 正式版发布，Agent\n289,295 能力大幅提升，支持\n436,295 Responses\n513,295 API\n539,295 和\n558,295 Codex\n604,295 接入，已在网页端、APP\n780,295 和\n799,295 API\n825,295 全面上线，欢迎测试和反馈\n8,329 探索未至之境\n8,397 开始对话\n75,397 与\n94,397 DeepSeek\n166,397 免费对话\n233,397 体验全新旗舰模型\n364,397 API\n390,397 开放平台\n457,397 调用\n492,397 DeepSeek\n564,397 最新模型\n631,397 快速集成、流畅体验\n8,417 加入\n43,417 DeepSeek\n8,437 共赴星辰大海\n107,437 查看岗位\n8,480 浙ICP备2023025841号\n163,480 浙B2-20250178\n269,480 浙公网安备33010502011812号\n35,532 扫码关注公众号\n8,580 产品\n8,608 DeepSeek\n80,608 网页版\n131,608 DeepSeek\n203,608 App\n233,608 DeepSeek\n305,608 Harness\n365,608 API\n391,608 开放平台\n458,608 API\n484,608 文档\n519,608 API\n545,608 价格\n580,608 服务状态",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T22:38:28"
+}

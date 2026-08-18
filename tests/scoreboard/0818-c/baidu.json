@@ -1,0 +1,84 @@
+{
+ "name": "baidu",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-18T22:33:38",
+ "verdict": "ERRORS",
+ "why": "painted 24304 changed px in 23.5s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 695413,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 3.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 19,
+  "dials": 6,
+  "reused": 13,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10059,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 23.5,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 24304,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   768
+  ],
+  "ink_px": 6155,
+  "ink_px_blank": 3902,
+  "colours": 867,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/baidu.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/baidu.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/baidu.host.html",
+ "text_runs": 29,
+ "text_bytes": 346,
+ "text": "598,245 复杂问题就找文心助手，深入思考回答更优\n641,245 \n245,500 \n958,487 \n960,502 换一换\n242,522 \n245,542 习近平同厄瓜多尔总统举行会谈\n300,511 5\n300,528 “泔水喂猪”被正式写入禁令\n245,579 1\n245,596 外交部改口：把靖国神社称作战犯神社\n632,565 6\n632,582 伊朗最高领袖将主持活动\n640,562 新\n632,619 7\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T22:34:43"
+}

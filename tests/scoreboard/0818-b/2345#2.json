@@ -1,0 +1,110 @@
+{
+ "name": "2345#2",
+ "url": "https://www.2345.com/",
+ "started": "2026-08-18T21:46:50",
+ "verdict": "ERRORS",
+ "why": "painted 6668 changed px in 37.9s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.2345.com/",
+  "bytes": 167988,
+  "redirects": [],
+  "script_tags": 19,
+  "script_src": 12,
+  "img_tags": 14,
+  "inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 82,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: appendChild is not a function (it is undefined)",
+    "stack": [
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)",
+     "at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at o (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at map (native)",
+     "at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at call (native)",
+     "at c (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at n (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js)",
+     "at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.6a1d4156.js:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: write is not a function (it is undefined)",
+    "stack": [
+     "at <anonymous> (https://www.2345.com/#inline-script-4:7)",
+     "at <eval> (https://www.2345.com/#inline-script-4:8)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 0) //passport-plugin.hao184.com/statistics-report/v2.1.js: TLS refused: handshake or certificate verification failed"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 33,
+  "dials": 8,
+  "reused": 25,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10855,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 37.9,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 6668,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   768
+  ],
+  "ink_px": 5080,
+  "ink_px_blank": 3902,
+  "colours": 750,
+  "rich_tiles_proxy": 18
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-b/2345#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-b/2345#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-b/2345#2.host.html",
+ "text_runs": 22,
+ "text_bytes": 248,
+ "text": "8,96 8月18日\n67,96 星期二\n8,124 七月初六\n75,124 宜：\n110,124 嫁娶\n8,160 星座运势\n75,160 月历壁纸\n8,180 旗下产品\n8,200 旗下产品\n75,200 下载浏览器\n158,200 魔方办公\n225,200 装软件赚钱\n8,220 163邮箱\n8,240 163邮箱\n67,240 QQ邮箱\n124,240 126邮箱\n183,240 腾讯企邮\n250,240 139邮箱\n309,240 新浪邮箱\n376,240 yeah邮箱\n445,240 搜狐邮箱\n512,240 更多邮箱\n8,260 反馈\n43,260 换肤\n78,260 登录\n8,280 登录2345帐号\n107,280 注册\n142,280 收藏夹\n193,280 王牌技术联盟\n8,300 把2345设为主页\n8,336 [切换]\n8,372 今  \n33,372 晴\n8,392 明\n27,392 晴\n8,428 15天\n8,456 天气\n8,580 外交部直接把靖国神社称作战犯神社\n8,600 60万亿元，打开消费增长新空间\n8,620 杭州酒局事件赵某峰郁某栋被刑拘",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 6,
+   "script_src": 11,
+   "inline_scripts": 8,
+   "images": 14,
+   "preloads": 82,
+   "fonts": 0,
+   "mandatory": 18
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T21:48:09"
+}

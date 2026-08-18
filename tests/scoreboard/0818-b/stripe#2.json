@@ -1,0 +1,80 @@
+{
+ "name": "stripe#2",
+ "url": "https://stripe.com/",
+ "started": "2026-08-18T21:48:32",
+ "verdict": "PAINTED",
+ "why": "painted 20812 changed px in 28.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/",
+  "bytes": 636879,
+  "redirects": [],
+  "script_tags": 78,
+  "script_src": 75,
+  "img_tags": 35,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 85,
+  "dials": 3,
+  "reused": 82,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14119,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 28.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 20812,
+  "changed_bbox": [
+   152,
+   0,
+   1256,
+   764
+  ],
+  "ink_px": 7031,
+  "ink_px_blank": 3902,
+  "colours": 838,
+  "rich_tiles_proxy": 20
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-b/stripe#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-b/stripe#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-b/stripe#2.host.html",
+ "text_runs": 37,
+ "text_bytes": 172,
+ "text": "14,101 •\n42,105 Products\n14,129 •\n42,133 Solutions\n14,157 •\n42,161 Developers\n14,185 •\n42,189 Resources\n14,213 •\n36,213 Pricing\n14,233 •\n55,233 Guide\n99,233 me\n14,253 •\n36,253 Sign\n70,253 in\n8,281 Not\n37,281 sure\n70,281 where\n116,281 to\n134,281 start?\n178,281 Tell\n206,281 us\n225,281 about\n270,281 your\n305,281 business\n368,281 to\n386,281 get\n412,281 personalized\n504,281 Stripe\n549,281 product\n608,281 recommendations.\n744,281 Find\n777,281 what's\n827,281 right\n864,281 for\n887,281 you\n8,301 Start\n47,301 now\n85,301 Contact\n145,301 sales\n23,325 Back\n14,385 •\n55,385 Sign\n89,385 in\n14,405 •\n36,405 Contact\n96,405 sales\n8,441 Global\n57,441 GDP\n92,441 running\n150,441 on\n171,441 Stripe:\n8,475 Financial\n147,475 infrastructure\n354,475 to\n392,475 grow\n473,475 your\n546,475 revenue.\n678,475 Accept\n784,475 payments,\n943,475 offer\n8,515 financial\n140,515 services,\n269,515 and\n332,515 implement\n498,515 custom\n614,515 revenue\n738,515 models—from\n950,515 your\n1023,515 first\n8,555 transaction\n182,555 to\n220,555 your\n293,555 billionth.\n8,609 Financial\n147,609 infrastructure\n354,609 to\n392,609 grow\n473,609 your\n546,609 revenue.\n678,609 Accept\n784,609 payments,\n943,609 offer",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T21:49:40"
+}

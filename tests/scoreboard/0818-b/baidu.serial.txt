@@ -1,0 +1,149 @@
+[wm] perf t=19784 composites=172 ns=2339363656 max=78507158 motions=17 curmoves=10 curns=1493472 full=119 rects=173 cpx=36095136 fpx=35904880 presns=73866985 torn=0 defer=87 late=0 drawmax=121
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.43
+[wm] perf t=20784 composites=218 ns=2541285196 max=78507158 motions=17 curmoves=10 curns=1493472 full=164 rects=219 cpx=40221856 fpx=40031600 presns=82095805 torn=0 defer=128 late=0 drawmax=121
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 77 irq 49 softirq 25 inline 1 poll 3 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[dl] painted text: 30 run(s), 355 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 习近平同厄瓜多尔总统举行会谈
+[dl] 300,511 5
+[dl] 300,528 两只股票涨疯了
+[dl] 415,528 公司称存在炒作风险
+[dl] 308,508 新
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志遗体在京火化
+[dl] 632,565 6
+[dl] 632,582 瑞幸七夕联名引争议：买咖啡像随份子
+[dl] 632,619 7
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[sock] connected pss.bdstatic.com via ipv4 ::ffff:198.18.0.45
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/static/font/cosmic/pc/cos-icon_3df378f.css: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/es6-polyfill_388d059.js: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/polyfill_9354efa.js: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for hectorstatic.baidu.com, alpn=http/1.1
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js: timed out
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js: timed out
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js: timed out
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js: timed out
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js: timed out
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js: timed out
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] JS exception: ReferenceError: 'require' is not defined
+ReferenceError: 'require' is not defined
+    at addPaths (https://www.baidu.com/#inline-script-11)
+    at <anonymous> (https://www.baidu.com/#inline-script-11:5)
+    at <eval> (https://www.baidu.com/#inline-script-11:5)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-12)
+    at <eval> (https://www.baidu.com/#inline-script-12:1)
+[browser] script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/es6-polyfill_388d059.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/polyfill_9354efa.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js: timed out (status 0)
+[browser] script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js: timed out (status 0)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-14:1)
+    at <eval> (https://www.baidu.com/#inline-script-14:6)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js: timed out (status 0)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-15:1)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-16:2)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js: timed out (status 0)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js: timed out (status 0)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js: timed out (status 0)
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+Error
+[wm] perf t=129036 composites=477 ns=5852516036 max=78507158 motions=17 curmoves=10 curns=1493472 full=211 rects=478 cpx=90766496 fpx=90576240 presns=193150771 torn=0 defer=132 late=0 drawmax=133
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 16 requests, 14 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 2 evicted, 13 closed
+[browser] resources: 0 from tab, 2 from network (tab 2 of 3)
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[browser] load: about:text
+[dl] painted text: 30 run(s), 355 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 习近平同厄瓜多尔总统举行会谈
+[dl] 300,511 5
+[dl] 300,528 两只股票涨疯了
+[dl] 415,528 公司称存在炒作风险
+[dl] 308,508 新
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志遗体在京火化
+[dl] 632,565 6
+[dl] 632,582 瑞幸七夕联名引争议：买咖啡像随份子
+[dl] 632,619 7
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[wm] perf t=149064 composites=556 ns=6596854187 max=78507158 motions=17 curmoves=10 curns=1493472 full=251 rects=557 cpx=103228576 fpx=103038320 presns=219894382 torn=0 defer=161 late=0 drawmax=133

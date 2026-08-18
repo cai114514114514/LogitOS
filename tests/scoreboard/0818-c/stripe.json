@@ -1,0 +1,80 @@
+{
+ "name": "stripe",
+ "url": "https://stripe.com/",
+ "started": "2026-08-18T22:36:10",
+ "verdict": "PAINTED",
+ "why": "painted 24156 changed px in 27.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/",
+  "bytes": 636887,
+  "redirects": [],
+  "script_tags": 78,
+  "script_src": 75,
+  "img_tags": 35,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "elapsed": 1.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 80,
+  "dials": 3,
+  "reused": 77,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14002,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 27.7,
+  "paint_seconds": 20.0,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 24156,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 14012,
+  "ink_px_blank": 3902,
+  "colours": 980,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/stripe.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/stripe.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/stripe.host.html",
+ "text_runs": 38,
+ "text_bytes": 164,
+ "text": "14,101 •\n42,105 Products\n14,129 •\n42,133 Solutions\n14,157 •\n42,161 Developers\n14,185 •\n42,189 Resources\n14,213 •\n36,213 Pricing\n14,233 •\n36,233 Sign\n70,233 in\n8,269 Start\n47,269 now\n85,269 Contact\n145,269 sales\n23,293 Back\n14,353 •\n55,353 Sign\n89,353 in\n14,373 •\n36,373 Contact\n96,373 sales\n8,409 Global\n57,409 GDP\n92,409 running\n150,409 on\n171,409 Stripe:\n8,443 Financial\n147,443 infrastructure\n354,443 to\n392,443 grow\n473,443 your\n546,443 revenue.\n678,443 Accept\n784,443 payments,\n943,443 offer\n8,483 financial\n140,483 services,\n269,483 and\n332,483 implement\n498,483 custom\n614,483 revenue\n738,483 models—from\n950,483 your\n1023,483 first\n8,523 transaction\n182,523 to\n220,523 your\n293,523 billionth.\n8,577 Financial\n147,577 infrastructure\n354,577 to\n392,577 grow\n473,577 your\n546,577 revenue.\n678,577 Accept\n784,577 payments,\n943,577 offer\n8,617 financial\n140,617 services,\n269,617 and\n332,617 implement\n498,617 custom\n614,617 revenue\n738,617 models—from\n950,617 your\n1023,617 first",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 74,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 80
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T22:37:22"
+}

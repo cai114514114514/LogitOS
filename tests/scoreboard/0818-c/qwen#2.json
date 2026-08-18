@@ -1,0 +1,95 @@
+{
+ "name": "qwen#2",
+ "url": "https://chat.qwen.ai/",
+ "started": "2026-08-18T22:40:36",
+ "verdict": "ERRORS",
+ "why": "painted 615008 changed px in 73.9s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://chat.qwen.ai/",
+  "bytes": 197806,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 3,
+  "img_tags": 6,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 3,
+   "inline_scripts": 15,
+   "images": 6,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "elapsed": 1.2
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "InternalError: interrupted",
+    "stack": [
+     "at wF (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at ws (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at QARDLm (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)",
+     "at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.86/js/main.js: SyntaxError: invalid escape sequence in regular expression"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 23,
+  "dials": 7,
+  "reused": 16,
+  "modules": 15,
+  "modules_failed": 1,
+  "heap_peak_k": 14646,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 73.9,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 615008,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 510533,
+  "ink_px_blank": 3902,
+  "colours": 823,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/qwen#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/qwen#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/qwen#2.host.html",
+ "text_runs": 27,
+ "text_bytes": 104,
+ "text": "0,88 Qwen3.7-Plus\n6,113 Log\n35,113 in\n70,113 Sign\n104,113 up\n0,137 How\n35,137 can\n64,137 I\n71,137 help\n104,137 you\n133,137 ?\n0,206 Auto\n0,227 By\n21,227 using\n62,227 Qwen\n105,227 Studio,\n158,227 you\n187,227 agree\n230,227 to\n248,227 our\n275,227 Terms\n322,227 of\n339,227 Service\n393,227 and\n423,227 Privacy\n479,227 Policy\n525,227 .",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 3,
+   "inline_scripts": 15,
+   "images": 6,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T22:42:31"
+}

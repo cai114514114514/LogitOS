@@ -1,0 +1,86 @@
+{
+ "name": "douyin#2",
+ "url": "https://www.douyin.com/",
+ "started": "2026-08-18T22:39:17",
+ "verdict": "BLANK",
+ "why": "loaded in 4.3s and painted 2760 changed pixels (0 exceptions) -- and the document asked for 2 subresources (0 stylesheets, 1 script srcs) against 1 requests issued, short by 1",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.douyin.com/",
+  "bytes": 2397,
+  "redirects": [],
+  "script_tags": 3,
+  "script_src": 1,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 1,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "elapsed": 0.8
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 1,
+  "dials": 1,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 39156,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 4.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2760,
+  "changed_bbox": [
+   148,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 4185,
+  "ink_px_blank": 3902,
+  "colours": 623,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/douyin#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/douyin#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/douyin#2.host.html",
+ "text_runs": 1,
+ "text_bytes": 9,
+ "text": "8,68 Please\n57,68 wait...",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 1,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "gap": {
+   "mandatory": 2,
+   "requested": 1,
+   "short_by": 1,
+   "stylesheets": 0,
+   "script_src": 1
+  }
+ },
+ "finished": "2026-08-18T22:40:02"
+}

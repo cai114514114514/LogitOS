@@ -1,0 +1,123 @@
+[wm] perf t=19702 composites=190 ns=2163369971 max=63346532 motions=18 curmoves=10 curns=360690 full=131 rects=191 cpx=35668976 fpx=35429088 presns=65912884 torn=0 defer=100 late=0 drawmax=115
+[browser] load: https://www.bing.com/
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.41
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[wm] perf t=20703 composites=223 ns=2311888589 max=63346532 motions=18 curmoves=10 curns=360690 full=163 rects=224 cpx=38771696 fpx=38531808 presns=70727330 torn=0 defer=129 late=0 drawmax=115
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[net] rx path: frames 93 irq 51 softirq 24 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] scripts collected: 3 external classic, 0 external module, 8 inline
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.41
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[wm] perf t=23717 composites=235 ns=2480567735 max=63346532 motions=18 curmoves=10 curns=360690 full=170 rects=236 cpx=41997296 fpx=41757408 presns=76594774 torn=0 defer=133 late=0 drawmax=155
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[browser] JS exception: ReferenceError: '_w' is not defined
+ReferenceError: '_w' is not defined
+    at <eval> (https://www.bing.com/#inline-script-2:3)
+[browser] load done: 4 requests, 2 connections dialled, 2 reused, 0 modules loaded (0 failed)
+[browser] pool: 2 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 3 from network (tab 2 of 3)
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[wm] perf t=24725 composites=244 ns=2646395855 max=63346532 motions=18 curmoves=10 curns=360690 full=177 rects=245 cpx=45130736 fpx=44890848 presns=83341011 torn=0 defer=137 late=0 drawmax=155
+[tls] chain of 3 verified for www.bing.com, alpn=h2
+[tls] OCSP staple: good (www.bing.com)
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[mm] low: 105942 frames free (413 MiB), 25095 used, 0 shared, 0 bugs
+[mm] low: 105686 frames free (412 MiB), 25351 used, 0 shared, 0 bugs
+[mm] low: 105430 frames free (411 MiB), 25607 used, 0 shared, 0 bugs
+[mm] low: 105174 frames free (410 MiB), 25863 used, 0 shared, 0 bugs
+[mm] low: 104918 frames free (409 MiB), 26119 used, 0 shared, 0 bugs
+[mm] low: 104662 frames free (408 MiB), 26375 used, 0 shared, 0 bugs
+[mm] low: 104406 frames free (407 MiB), 26631 used, 0 shared, 0 bugs
+[mm] low: 104150 frames free (406 MiB), 26887 used, 0 shared, 0 bugs
+[mm] low: 103894 frames free (405 MiB), 27143 used, 0 shared, 0 bugs
+[mm] low: 103638 frames free (404 MiB), 27399 used, 0 shared, 0 bugs
+[mm] low: 103382 frames free (403 MiB), 27655 used, 0 shared, 0 bugs
+[mm] low: 103126 frames free (402 MiB), 27911 used, 0 shared, 0 bugs
+[mm] low: 102870 frames free (401 MiB), 28167 used, 0 shared, 0 bugs
+[mm] low: 102614 frames free (400 MiB), 28423 used, 0 shared, 0 bugs
+[mm] low: 102358 frames free (399 MiB), 28679 used, 0 shared, 0 bugs
+[mm] low: 102102 frames free (398 MiB), 28935 used, 0 shared, 0 bugs
+[mm] low: 101846 frames free (397 MiB), 29191 used, 0 shared, 0 bugs
+[mm] low: 101590 frames free (396 MiB), 29447 used, 0 shared, 0 bugs
+[mm] low: 101334 frames free (395 MiB), 29703 used, 0 shared, 0 bugs
+[mm] low: 101078 frames free (394 MiB), 29959 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) Error: IndexedDB not supported
+    at e (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at IOTDinit (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <eval> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js:1)
+
+[error] Uncaught (in promise) Error: IndexedDB not supported
+    at e (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at IOTDinit (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <eval> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js:1)
+
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=4/5 hpack_in=538
+[bxfer] h2 www.bing.com:443 closed: streams=30 peak=7 frames=76/64 hpack_in=288286
+[browser] load: about:text
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=41745 composites=319 ns=3262451106 max=63346532 motions=18 curmoves=10 curns=360690 full=220 rects=320 cpx=55329776 fpx=55089888 presns=103410264 torn=0 defer=171 late=0 drawmax=155

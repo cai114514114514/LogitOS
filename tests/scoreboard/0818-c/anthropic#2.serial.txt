@@ -1,0 +1,153 @@
+[wm] perf t=19787 composites=161 ns=1843748753 max=60686477 motions=18 curmoves=10 curns=485180 full=116 rects=161 cpx=33160640 fpx=33036560 presns=63256265 torn=0 defer=86 late=0 drawmax=120
+[browser] load: https://www.anthropic.com/
+[sock] connected www.anthropic.com via ipv4 ::ffff:198.18.0.56
+[wm] perf t=20787 composites=195 ns=1989886738 max=60686477 motions=18 curmoves=10 curns=485180 full=150 rects=195 cpx=36232640 fpx=36108560 presns=69437768 torn=0 defer=117 late=0 drawmax=120
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[dl] painted text: 15 run(s), 71 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 main
+[dl] 98,68 content
+[dl] 8,88 Skip
+[dl] 41,88 to
+[dl] 59,88 footer
+[dl] 14,132 •
+[dl] 36,132 Research
+[dl] 14,152 •
+[dl] 36,152 Policy
+[dl] 14,172 •
+[dl] 36,172 Commitments
+[dl] 14,492 •
+[dl] 36,492 Learn
+[dl] ---8<--- end painted text
+[sock] connected cdn.prod.website-files.com via ipv4 ::ffff:198.18.0.61
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[net] rx path: frames 69 irq 56 softirq 27 inline 1 poll 3 idle 0/0 halt/skip
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[browser] heap peak 8296K
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[browser] scripts collected: 11 external classic, 0 external module, 9 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for cdn.prod.website-files.com, alpn=http/1.1
+[tls] chain of 4 verified for d3e54v103j8qbb.cloudfront.net, alpn=http/1.1
+[tls] OCSP staple: good (d3e54v103j8qbb.cloudfront.net)
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[tls] ticket stored for d3e54v103j8qbb.cloudfront.net (138 bytes, lifetime 29801s, 1 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=http/1.1
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[wm] perf t=26965 composites=225 ns=2771158435 max=60686477 motions=18 curmoves=10 curns=485180 full=170 rects=225 cpx=51899840 fpx=51775760 presns=100018210 torn=0 defer=122 late=0 drawmax=250
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for claude.com, alpn=http/1.1
+[browser] load done: 14 requests, 7 connections dialled, 7 reused, 0 modules loaded (0 failed)
+[browser] pool: 7 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 12 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for hubspotonwebflow.com, alpn=h2
+[error] Uncaught (in promise) TypeError: getBBox is not a function (it is undefined)
+    at <anonymous> (https://www.anthropic.com/#inline-module-1)
+    at forEach (native)
+    at Ue (https://www.anthropic.com/#inline-module-1)
+    at lt (https://www.anthropic.com/#inline-module-1)
+
+[js] uncaught in timer: ReferenceError: 'CSSStyleDeclaration' is not defined
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[warn] jQuery.Deferred exception: cannot read property 'pageYOffset' of undefined TypeError: cannot read property 'pageYOffset' of undefined
+    at offset (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at forEach (native)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at g (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at S (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at forEach (native)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at <anonymous> (https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/js/ant-brand.schunk.2ca0819598b49883.js)
+    at apply (native)
+    at e (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+    at <anonymous> (https://d3e54v103j8qbb.cloudfront.net/js/jquery-3.5.1.min.dc5e7f18c8.js?site=67ce28cfec624e2b733f8a52)
+ undefined
+[js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
+[bxfer] h2 www.anthropic.com:443 closed: streams=2 peak=2 frames=10/7 hpack_in=244
+[bxfer] h2 hubspotonwebflow.com:443 closed: streams=1 peak=1 frames=9/5 hpack_in=23683
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for www.anthropic.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for assets.claude.ai, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.googletagmanager.com, alpn=http/1.1
+[net] rx path: frames 628 irq 329 softirq 163 inline 1 poll 8 idle 0/0 halt/skip
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for a-cdn.anthropic.com, alpn=http/1.1
+[js] uncaught in timer: TypeError: cannot read property 'pageYOffset' of undefined
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderTopRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomRightRadius set to undefined Missing plugin? gsap.registerPlugin()
+[warn] Invalid property borderBottomLeftRadius set to undefined Missing plugin? gsap.registerPlugin()
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for a-cdn.anthropic.com, alpn=h2
+[net] rx path: frames 1198 irq 459 softirq 230 inline 1 poll 11 idle 0/0 halt/skip
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[bxfer] h2 www.anthropic.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=42
+[bxfer] h2 a-cdn.anthropic.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=8536
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for a-api.anthropic.com, alpn=h2
+[bxfer] h2 a-api.anthropic.com:443 closed: streams=3 peak=3 frames=12/12 hpack_in=63
+[wm] perf t=49023 composites=293 ns=3852170133 max=60686477 motions=18 curmoves=10 curns=485180 full=198 rects=293 cpx=70536640 fpx=70412560 presns=139060484 torn=0 defer=133 late=0 drawmax=250
+[browser] load: about:text
+[dl] painted text: 15 run(s), 71 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 main
+[dl] 98,68 content
+[dl] 8,88 Skip
+[dl] 41,88 to
+[dl] 59,88 footer
+[dl] 14,132 •
+[dl] 36,132 Research
+[dl] 14,152 •
+[dl] 36,152 Policy
+[dl] 14,172 •
+[dl] 36,172 Commitments
+[dl] 14,492 •
+[dl] 36,492 Learn
+[dl] ---8<--- end painted text

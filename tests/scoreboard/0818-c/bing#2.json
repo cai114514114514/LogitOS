@@ -1,0 +1,88 @@
+{
+ "name": "bing#2",
+ "url": "https://www.bing.com/",
+ "started": "2026-08-18T22:38:13",
+ "verdict": "ERRORS",
+ "why": "painted 620620 changed px in 4.3s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bing.com/",
+  "bytes": 189877,
+  "redirects": [],
+  "script_tags": 20,
+  "script_src": 3,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 3,
+   "inline_scripts": 8,
+   "images": 0,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "ReferenceError: '_w' is not defined",
+    "stack": [
+     "at <eval> (https://www.bing.com/#inline-script-2:2)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 9,
+  "requests": 4,
+  "dials": 2,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 4.3,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 620620,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 517358,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-c/bing#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-c/bing#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-c/bing#2.host.html",
+ "text_runs": 0,
+ "text_bytes": 0,
+ "text": "",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 3,
+   "inline_scripts": 8,
+   "images": 0,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T22:38:58"
+}

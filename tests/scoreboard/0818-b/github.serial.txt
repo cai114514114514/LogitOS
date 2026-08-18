@@ -1,0 +1,355 @@
+[wm] perf t=19770 composites=206 ns=2705404609 max=65901630 motions=18 curmoves=10 curns=331897 full=147 rects=206 cpx=45040976 fpx=44784544 presns=81231685 torn=0 defer=107 late=0 drawmax=103
+[browser] load: https://github.com/
+[sock] connected github.com via ipv4 ::ffff:198.18.0.73
+[wm] perf t=20771 composites=221 ns=2764423776 max=65901630 motions=18 curmoves=10 curns=331897 full=160 rects=221 cpx=46126416 fpx=45869984 presns=83075324 torn=0 defer=119 late=0 drawmax=109
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for github.com, alpn=http/1.1
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 1 cached)
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 2 cached)
+[net] rx path: frames 73 irq 45 softirq 21 inline 2 poll 2 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[dl] painted text: 89 run(s), 467 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 content
+[dl] 8,132 Navigation
+[dl] 130,132 Menu
+[dl] 8,262 Sign
+[dl] 42,262 in
+[dl] 14,290 •
+[dl] 42,294 Platform
+[dl] 49,326 ◦
+[dl] 64,326 AI
+[dl] 80,326 CODE
+[dl] 124,326 CREATION
+[dl] 76,354 ▪
+[dl] 111,354 GitHub
+[dl] 164,354 Copilot
+[dl] 218,354 Write
+[dl] 259,354 better
+[dl] 305,354 code
+[dl] 342,354 with
+[dl] 376,354 AI
+[dl] 76,374 ▪
+[dl] 111,374 GitHub
+[dl] 164,374 Copilot
+[dl] 218,374 app
+[dl] 248,374 Direct
+[dl] 294,374 agents
+[dl] 345,374 from
+[dl] 382,374 issue
+[dl] 420,374 to
+[dl] 438,374 merge
+[dl] 76,394 ▪
+[dl] 111,394 MCP
+[dl] 146,394 Registry
+[dl] 207,394 Integrate
+[dl] 275,394 external
+[dl] 335,394 tools
+[dl] 49,430 ◦
+[dl] 64,430 DEVELOPER
+[dl] 153,430 WORKFLOWS
+[dl] 76,458 ▪
+[dl] 111,458 Actions
+[dl] 166,458 Automate
+[dl] 239,458 any
+[dl] 268,458 workflow
+[dl] 76,478 ▪
+[dl] 111,478 Codespaces
+[dl] 198,478 Instant
+[dl] 251,478 dev
+[dl] 279,478 environments
+[dl] 76,498 ▪
+[dl] 111,498 Issues
+[dl] 156,498 Plan
+[dl] 191,498 and
+[dl] 221,498 track
+[dl] 261,498 work
+[dl] 76,518 ▪
+[dl] 111,518 Code
+[dl] 150,518 Review
+[dl] 203,518 Manage
+[dl] 262,518 code
+[dl] 299,518 changes
+[dl] 76,538 ▪
+[dl] 111,538 Code
+[dl] 150,538 Quality
+[dl] 204,538 Enforce
+[dl] 261,538 quality
+[dl] 313,538 at
+[dl] 331,538 merge
+[dl] 49,574 ◦
+[dl] 64,574 APPLICATION
+[dl] 162,574 SECURITY
+[dl] 76,602 ▪
+[dl] 111,602 GitHub
+[dl] 164,602 Advanced
+[dl] 236,602 Security
+[dl] 297,602 Find
+[dl] 330,602 and
+[dl] 360,602 fix
+[dl] 379,602 vulnerabilities
+[dl] 76,622 ▪
+[dl] 111,622 Code
+[dl] 150,622 security
+[dl] 209,622 Secure
+[dl] 260,622 your
+[dl] 295,622 code
+[dl] 332,622 as
+[dl] 351,622 you
+[dl] 380,622 build
+[dl] ---8<--- end painted text
+[sock] connected github.githubassets.com via ipv4 ::ffff:198.18.0.81
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[wm] perf t=22771 composites=231 ns=2834502093 max=65901630 motions=18 curmoves=10 curns=331897 full=167 rects=231 cpx=47242576 fpx=46986144 presns=85646421 torn=0 defer=125 late=0 drawmax=109
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[mm] low: 105942 frames free (413 MiB), 25095 used, 0 shared, 0 bugs
+[mm] low: 105686 frames free (412 MiB), 25351 used, 0 shared, 0 bugs
+[mm] low: 105430 frames free (411 MiB), 25607 used, 0 shared, 0 bugs
+[mm] low: 105174 frames free (410 MiB), 25863 used, 0 shared, 0 bugs
+[mm] low: 104918 frames free (409 MiB), 26119 used, 0 shared, 0 bugs
+[browser] heap peak 32884K
+[dl] painted text: 17 run(s), 99 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 112,538 The
+[dl] 237,538 future
+[dl] 430,538 of
+[dl] 502,538 building
+[dl] 759,538 happens
+[dl] 436,607 together
+[dl] 54,106 Platform
+[dl] 149,106 Solutions
+[dl] 247,106 Resources
+[dl] 351,106 Open
+[dl] 391,106 Source
+[dl] 432,106 Enterprise
+[dl] 538,110 Pricing
+[dl] 1027,107 Sign
+[dl] 1056,107 in
+[dl] 1078,107 Sign
+[dl] 1107,107 up
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 76303s, 3 cached)
+[wm] perf t=30814 composites=271 ns=3825169120 max=65901630 motions=18 curmoves=10 curns=331897 full=193 rects=271 cpx=67128656 fpx=66872224 presns=120251604 torn=0 defer=132 late=0 drawmax=109
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 76303s, 4 cached)
+[mm] low: 104662 frames free (408 MiB), 26375 used, 0 shared, 0 bugs
+[mm] low: 104406 frames free (407 MiB), 26631 used, 0 shared, 0 bugs
+[mm] low: 104150 frames free (406 MiB), 26887 used, 0 shared, 0 bugs
+[mm] low: 103894 frames free (405 MiB), 27143 used, 0 shared, 0 bugs
+[mm] low: 103638 frames free (404 MiB), 27399 used, 0 shared, 0 bugs
+[mm] low: 103382 frames free (403 MiB), 27655 used, 0 shared, 0 bugs
+[mm] low: 103126 frames free (402 MiB), 27911 used, 0 shared, 0 bugs
+[mm] low: 102870 frames free (401 MiB), 28167 used, 0 shared, 0 bugs
+[mm] low: 102614 frames free (400 MiB), 28423 used, 0 shared, 0 bugs
+[mm] low: 102358 frames free (399 MiB), 28679 used, 0 shared, 0 bugs
+[mm] low: 102102 frames free (398 MiB), 28935 used, 0 shared, 0 bugs
+[mm] low: 101846 frames free (397 MiB), 29191 used, 0 shared, 0 bugs
+[mm] low: 101590 frames free (396 MiB), 29447 used, 0 shared, 0 bugs
+[mm] low: 101334 frames free (395 MiB), 29703 used, 0 shared, 0 bugs
+[mm] low: 101078 frames free (394 MiB), 29959 used, 0 shared, 0 bugs
+[mm] low: 100822 frames free (393 MiB), 30215 used, 0 shared, 0 bugs
+[mm] low: 100566 frames free (392 MiB), 30471 used, 0 shared, 0 bugs
+[mm] low: 100310 frames free (391 MiB), 30727 used, 0 shared, 0 bugs
+[mm] low: 100054 frames free (390 MiB), 30983 used, 0 shared, 0 bugs
+[mm] low: 99798 frames free (389 MiB), 31239 used, 0 shared, 0 bugs
+[mm] low: 99542 frames free (388 MiB), 31495 used, 0 shared, 0 bugs
+[mm] low: 99286 frames free (387 MiB), 31751 used, 0 shared, 0 bugs
+[mm] low: 99030 frames free (386 MiB), 32007 used, 0 shared, 0 bugs
+[img] 8/8 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 8/256 ents 20979K]
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 0 external classic, 9 external module, 0 inline
+[net] rx path: frames 585 irq 322 softirq 155 inline 3 poll 7 idle 0/0 halt/skip
+[net] rx path: frames 1144 irq 434 softirq 217 inline 3 poll 11 idle 0/0 halt/skip
+[mm] low: 98774 frames free (385 MiB), 32263 used, 0 shared, 0 bugs
+[mm] low: 98518 frames free (384 MiB), 32519 used, 0 shared, 0 bugs
+[mm] low: 98262 frames free (383 MiB), 32775 used, 0 shared, 0 bugs
+[mm] low: 98006 frames free (382 MiB), 33031 used, 0 shared, 0 bugs
+[mm] low: 97750 frames free (381 MiB), 33287 used, 0 shared, 0 bugs
+[js] module loaded 4241 bytes: https://github.githubassets.com/assets/app-foundation-33f393e599bf3cff.js
+[js] module loaded 81728 bytes: https://github.githubassets.com/assets/app-runtime-9410446a7235bafa.js
+[js] module loaded 7170 bytes: https://github.githubassets.com/assets/fetch-utilities-13e6a2728cb8d6a4.js
+[js] module loaded 29374 bytes: https://github.githubassets.com/assets/78205-75aff589688e0be2.js
+[js] module loaded 6408 bytes: https://github.githubassets.com/assets/catalyst-fe76da6b29217672.js
+[js] module loaded 3956 bytes: https://github.githubassets.com/assets/selector-observer-31e911ea8e9046d3.js
+[js] module loaded 20323 bytes: https://github.githubassets.com/assets/relative-time-element-30f4d10f3776b4ac.js
+[js] module loaded 20255 bytes: https://github.githubassets.com/assets/296-cddf2922ea3a416c.js
+[mm] low: 97494 frames free (380 MiB), 33543 used, 0 shared, 0 bugs
+[js] module loaded 14027 bytes: https://github.githubassets.com/assets/816-29b762091e5033a9.js
+[js] module loaded 18120 bytes: https://github.githubassets.com/assets/65637-e357a8be37eda955.js
+[js] module loaded 18700 bytes: https://github.githubassets.com/assets/58494-8fde42aa50c63758.js
+[js] module loaded 16950 bytes: https://github.githubassets.com/assets/31721-903cd2b317a8cc03.js
+[js] module loaded 12269 bytes: https://github.githubassets.com/assets/46740-0a6e4901e467cc61.js
+[js] module loaded 132398 bytes: https://github.githubassets.com/assets/98944-e7414dc2340e0a21.js
+[mm] low: 97238 frames free (379 MiB), 33799 used, 0 shared, 0 bugs
+[error] TypeError: cannot read property 'call' of undefined
+    at <anonymous> (https://github.githubassets.com/assets/78205-75aff589688e0be2.js)
+    at connectedCallback (https://github.githubassets.com/assets/58494-8fde42aa50c63758.js)
+    at upgradeOne (<platform>:901)
+    at <anonymous> (<platform>:916)
+    at walk (<platform>:909)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at upgradeTree (<platform>:917)
+    at define (<platform>:933)
+    at 330861 (https://github.githubassets.com/assets/58494-8fde42aa50c63758.js:103)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-56820c613def431c.js)
+    at 239673 (https://github.githubassets.com/assets/98944-e7414dc2340e0a21.js)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-56820c613def431c.js)
+    at 918699 (https://github.githubassets.com/assets/github-elements-9b37ce1177fd21a7.js)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-56820c613def431c.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-9b37ce1177fd21a7.js:2)
+
+[mm] low: 96982 frames free (378 MiB), 34055 used, 0 shared, 0 bugs
+[mm] low: 96726 frames free (377 MiB), 34311 used, 0 shared, 0 bugs
+[mm] low: 96470 frames free (376 MiB), 34567 used, 0 shared, 0 bugs
+[js] module loaded 3128 bytes: https://github.githubassets.com/assets/runtime-helpers-b5a5a1cee32a4b87.js
+[js] module loaded 550 bytes: https://github.githubassets.com/assets/aria-live-f791bd0decd4aed1.js
+[js] module loaded 5314 bytes: https://github.githubassets.com/assets/hotkey-18e2cf4c6aadb3ff.js
+[js] module loaded 266117 bytes: https://github.githubassets.com/assets/react-core-95eb7d99fce5a374.js
+[mm] low: 96214 frames free (375 MiB), 34823 used, 0 shared, 0 bugs
+[mm] low: 95958 frames free (374 MiB), 35079 used, 0 shared, 0 bugs
+[js] module loaded 195190 bytes: https://github.githubassets.com/assets/react-lib-1c1e7314c65e556e.js
+[js] module loaded 10274 bytes: https://github.githubassets.com/assets/50841-f6411d024525940b.js
+[js] module loaded 16160 bytes: https://github.githubassets.com/assets/2761-3f26182ea6dd74be.js
+[js] module loaded 9898 bytes: https://github.githubassets.com/assets/88475-e7c45daacb58e0a3.js
+[js] module loaded 75181 bytes: https://github.githubassets.com/assets/26533-36c85461b011ffd5.js
+[js] module loaded 10017 bytes: https://github.githubassets.com/assets/3609-2a17d1c3e2ce7fe5.js
+[js] module loaded 41668 bytes: https://github.githubassets.com/assets/87644-7ec64f4e3cd64d13.js
+[js] module loaded 36096 bytes: https://github.githubassets.com/assets/21880-6250a7d3b7be454a.js
+[mm] low: 95702 frames free (373 MiB), 35335 used, 0 shared, 0 bugs
+[js] module loaded 10600 bytes: https://github.githubassets.com/assets/75145-7597929c9020acb6.js
+[js] module loaded 31078 bytes: https://github.githubassets.com/assets/29685-9b276fea68fdefcc.js
+[js] module loaded 11879 bytes: https://github.githubassets.com/assets/90775-fff03cb223239d89.js
+[js] module loaded 11896 bytes: https://github.githubassets.com/assets/55887-99a4521199610050.js
+[mm] low: 95446 frames free (372 MiB), 35591 used, 0 shared, 0 bugs
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 382726 (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-56820c613def431c.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js:35)
+
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 382726 (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-56820c613def431c.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js:35)
+
+[browser] module rejected https://github.githubassets.com/assets/behaviors-b7d871273e907300.js: TypeError: not an object
+[js] module loaded 15564 bytes: https://github.githubassets.com/assets/4234-e75d2c77c808d898.js
+[mm] low: 95190 frames free (371 MiB), 35847 used, 0 shared, 0 bugs
+[mm] low: 94934 frames free (370 MiB), 36103 used, 0 shared, 0 bugs
+[mm] low: 94678 frames free (369 MiB), 36359 used, 0 shared, 0 bugs
+[mm] low: 94422 frames free (368 MiB), 36615 used, 0 shared, 0 bugs
+[mm] low: 94166 frames free (367 MiB), 36871 used, 0 shared, 0 bugs
+[mm] low: 93910 frames free (366 MiB), 37127 used, 0 shared, 0 bugs
+[mm] low: 93654 frames free (365 MiB), 37383 used, 0 shared, 0 bugs
+[mm] low: 93398 frames free (364 MiB), 37639 used, 0 shared, 0 bugs
+[mm] low: 93142 frames free (363 MiB), 37895 used, 0 shared, 0 bugs
+[mm] low: 92886 frames free (362 MiB), 38151 used, 0 shared, 0 bugs
+[net] rx path: frames 1667 irq 720 softirq 355 inline 4 poll 16 idle 0/0 halt/skip
+[mm] low: 92630 frames free (361 MiB), 38407 used, 0 shared, 0 bugs
+[js] module loaded 676048 bytes: https://github.githubassets.com/assets/primer-react-3e63dd60f91fc3ba.js
+[mm] low: 92374 frames free (360 MiB), 38663 used, 0 shared, 0 bugs
+[mm] low: 92118 frames free (359 MiB), 38919 used, 0 shared, 0 bugs
+[js] module loaded 28765 bytes: https://github.githubassets.com/assets/76256-72283498e260887e.js
+[js] module loaded 7545 bytes: https://github.githubassets.com/assets/71393-41834f9c99699fd4.js
+[js] module loaded 17866 bytes: https://github.githubassets.com/assets/2927-6545834de562a1fe.js
+[js] module loaded 67300 bytes: https://github.githubassets.com/assets/13365-ed074e3b0d62ce5b.js
+[js] module loaded 9830 bytes: https://github.githubassets.com/assets/96305-2aea220328b24ac0.js
+[js] module loaded 99628 bytes: https://github.githubassets.com/assets/81674-96c4570f9f5d7ea1.js
+[js] module loaded 19586 bytes: https://github.githubassets.com/assets/58636-96d5e3c9fc4893b0.js
+[js] module loaded 200785 bytes: https://github.githubassets.com/assets/42179-3431b8cbd631667c.js
+[js] module loaded 265914 bytes: https://github.githubassets.com/assets/97662-3287389963328ab8.js
+[mm] low: 91862 frames free (358 MiB), 39175 used, 0 shared, 0 bugs
+[js] module loaded 11413 bytes: https://github.githubassets.com/assets/71236-18053476e03a7169.js
+[js] module loaded 53085 bytes: https://github.githubassets.com/assets/43831-dc84a42aeaa457be.js
+[js] module loaded 69793 bytes: https://github.githubassets.com/assets/70666-774087b76d27f9f3.js
+[mm] low: 91606 frames free (357 MiB), 39431 used, 0 shared, 0 bugs
+[js] module loaded 113841 bytes: https://github.githubassets.com/assets/6948-d8d271af8f66ba88.js
+[mm] low: 91350 frames free (356 MiB), 39687 used, 0 shared, 0 bugs
+[js] module loaded 14130 bytes: https://github.githubassets.com/assets/86432-862a6235181c276d.js
+[js] module loaded 469343 bytes: https://github.githubassets.com/assets/47166-2b46d439e854f735.js
+[mm] low: 91094 frames free (355 MiB), 39943 used, 0 shared, 0 bugs
+[mm] low: 90838 frames free (354 MiB), 40199 used, 0 shared, 0 bugs
+[mm] low: 90582 frames free (353 MiB), 40455 used, 0 shared, 0 bugs
+[js] module loaded 40570 bytes: https://github.githubassets.com/assets/48761-7383981d93a093b6.js
+[js] module loaded 125327 bytes: https://github.githubassets.com/assets/35518-ef415a75185c0def.js
+[js] module loaded 3866 bytes: https://github.githubassets.com/assets/40067-e293d18f429a53fa.js
+[js] module loaded 20107 bytes: https://github.githubassets.com/assets/43681-074c12c0c3a6d766.js
+[js] module loaded 6128 bytes: https://github.githubassets.com/assets/65390-8192b87a390f0f9d.js
+[js] module loaded 25235 bytes: https://github.githubassets.com/assets/74972-dcb1217516d9b515.js
+[js] module loaded 32424 bytes: https://github.githubassets.com/assets/23187-fe5e64e2ede633c0.js
+[js] module loaded 100745 bytes: https://github.githubassets.com/assets/24360-79deb141ba3dfbc7.js
+[js] module loaded 20982 bytes: https://github.githubassets.com/assets/7255-cecf5b7ac342748b.js
+[js] module loaded 100977 bytes: https://github.githubassets.com/assets/78890-cdb7ba5b715a6920.js
+[js] module loaded 10526 bytes: https://github.githubassets.com/assets/83144-bab9225bef14b2f0.js
+[js] module loaded 31439 bytes: https://github.githubassets.com/assets/93633-8a9f03366a0a10a2.js
+[net] rx path: frames 2185 irq 1011 softirq 496 inline 7 poll 23 idle 0/0 halt/skip
+[js] module loaded 125456 bytes: https://github.githubassets.com/assets/73064-4ea58a024a6e2321.js
+[mm] low: 90326 frames free (352 MiB), 40711 used, 0 shared, 0 bugs
+[js] module loaded 14730 bytes: https://github.githubassets.com/assets/95771-0d0beeb5018875cc.js
+[mm] low: 90070 frames free (351 MiB), 40967 used, 0 shared, 0 bugs
+[mm] low: 89814 frames free (350 MiB), 41223 used, 0 shared, 0 bugs
+[mm] low: 89558 frames free (349 MiB), 41479 used, 0 shared, 0 bugs
+[mm] low: 89302 frames free (348 MiB), 41735 used, 0 shared, 0 bugs
+[mm] low: 89046 frames free (347 MiB), 41991 used, 0 shared, 0 bugs
+[mm] low: 88790 frames free (346 MiB), 42247 used, 0 shared, 0 bugs
+[mm] low: 88534 frames free (345 MiB), 42503 used, 0 shared, 0 bugs
+[mm] low: 88278 frames free (344 MiB), 42759 used, 0 shared, 0 bugs
+[mm] low: 88022 frames free (343 MiB), 43015 used, 0 shared, 0 bugs
+[mm] low: 87766 frames free (342 MiB), 43271 used, 0 shared, 0 bugs
+[browser] load done: 97 requests, 5 connections dialled, 92 reused, 61 modules loaded (0 failed)
+[browser] pool: 92 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 35 from network (tab 2 of 3)
+[error] Uncaught (in promise) TypeError: value is not iterable
+    at $4 (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js)
+    at nQ (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-b7d871273e907300.js)
+

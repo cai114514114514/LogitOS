@@ -1,0 +1,86 @@
+{
+ "name": "baidu#2",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-18T21:45:38",
+ "verdict": "ERRORS",
+ "why": "painted 25024 changed px in 39.1s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 695764,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 2.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 19,
+  "dials": 7,
+  "reused": 12,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10055,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 39.1,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 25024,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   768
+  ],
+  "ink_px": 6155,
+  "ink_px_blank": 3902,
+  "colours": 886,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-b/baidu#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-b/baidu#2.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-b/baidu#2.host.html",
+ "text_runs": 30,
+ "text_bytes": 355,
+ "text": "598,245 复杂问题就找文心助手，深入思考回答更优\n641,245 \n245,500 \n958,487 \n960,502 换一换\n242,522 \n245,542 习近平同厄瓜多尔总统举行会谈\n300,511 5\n300,528 两只股票涨疯了\n415,528 公司称存在炒作风险\n308,508 新\n245,579 1\n245,596 朱镕基同志遗体在京火化\n632,565 6\n632,582 瑞幸七夕联名引争议：买咖啡像随份子\n632,619 7\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T21:46:58"
+}

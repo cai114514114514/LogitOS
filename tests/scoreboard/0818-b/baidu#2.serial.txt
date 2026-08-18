@@ -1,0 +1,134 @@
+[wm] perf t=19789 composites=196 ns=2438789403 max=89127329 motions=18 curmoves=10 curns=450653 full=137 rects=197 cpx=38301920 fpx=38095120 presns=76895629 torn=0 defer=108 late=0 drawmax=128
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.43
+[wm] perf t=20790 composites=239 ns=2539540205 max=89127329 motions=18 curmoves=10 curns=450653 full=179 rects=240 cpx=40380640 fpx=40173840 presns=80271827 torn=0 defer=148 late=0 drawmax=128
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 129 irq 41 softirq 20 inline 0 poll 2 idle 0/0 halt/skip
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[dl] painted text: 30 run(s), 355 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 习近平同厄瓜多尔总统举行会谈
+[dl] 300,511 5
+[dl] 300,528 两只股票涨疯了
+[dl] 415,528 公司称存在炒作风险
+[dl] 308,508 新
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志遗体在京火化
+[dl] 632,565 6
+[dl] 632,582 瑞幸七夕联名引争议：买咖啡像随份子
+[dl] 632,619 7
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[sock] connected pss.bdstatic.com via ipv4 ::ffff:198.18.0.45
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed
+[browser] heap peak 10055K
+[wm] perf t=44846 composites=301 ns=3318677418 max=89127329 motions=18 curmoves=10 curns=450653 full=195 rects=302 cpx=53057760 fpx=52850960 presns=105964348 torn=0 defer=153 late=0 drawmax=128
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for hectorstatic.baidu.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+无畏是青春的态度，热AI是时代的脉搏。
+各位新同学正以无畏的姿态奔赴通用人工智能的星辰大海！
+作为引领AI时代浪潮的主力军，广阔舞台，待你大展身手。
+乘风破浪，勇往直前，未来百度将与你一起，创造无限可能！
+
+%c百度2027校园招聘简历投递：https://talent.baidu.com/jobs/list color:red
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+Error
+[browser] inserted script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/plugins/bzPopper_d8249c4undefined: no error (status 404)
+[browser] inserted script LOST: https://pss.bdstatic.com/static/superman-san/app/chat-input/result_f7fe0a6undefined: no error (status 404)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 19 requests, 7 connections dialled, 12 reused, 0 modules loaded (0 failed)
+[browser] pool: 12 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 13 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[js] uncaught in timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)
+[browser] load: about:text
+[dl] painted text: 30 run(s), 355 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 641,245 
+[dl] 245,500 
+[dl] 958,487 
+[dl] 960,502 换一换
+[dl] 242,522 
+[dl] 245,542 习近平同厄瓜多尔总统举行会谈
+[dl] 300,511 5
+[dl] 300,528 两只股票涨疯了
+[dl] 415,528 公司称存在炒作风险
+[dl] 308,508 新
+[dl] 245,579 1
+[dl] 245,596 朱镕基同志遗体在京火化
+[dl] 632,565 6
+[dl] 632,582 瑞幸七夕联名引争议：买咖啡像随份子
+[dl] 632,619 7
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[wm] perf t=77008 composites=417 ns=4870676606 max=89127329 motions=18 curmoves=10 curns=450653 full=249 rects=418 cpx=79538400 fpx=79331600 presns=157542261 torn=0 defer=183 late=0 drawmax=170

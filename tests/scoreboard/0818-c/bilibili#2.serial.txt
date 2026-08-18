@@ -1,0 +1,280 @@
+[wm] perf t=19717 composites=184 ns=1862249565 max=62489288 motions=18 curmoves=10 curns=413703 full=142 rects=184 cpx=33787472 fpx=33696480 presns=65535584 torn=0 defer=111 late=0 drawmax=123
+[browser] load: https://www.bilibili.com/
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.58
+[wm] perf t=20717 composites=222 ns=2012694729 max=62489288 motions=18 curmoves=10 curns=413703 full=179 rects=222 cpx=36890192 fpx=36799200 presns=70354361 torn=0 defer=145 late=0 drawmax=123
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 112086 frames free (437 MiB), 18951 used, 0 shared, 0 bugs
+[dl] painted text: 74 run(s), 532 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,84 •
+[dl] 57,84 首页
+[dl] 14,104 •
+[dl] 36,104 番剧
+[dl] 14,124 •
+[dl] 36,124 直播
+[dl] 14,144 •
+[dl] 36,144 游戏中心
+[dl] 14,164 •
+[dl] 36,164 会员购
+[dl] 14,184 •
+[dl] 36,184 漫画
+[dl] 14,204 •
+[dl] 36,204 赛事
+[dl] 14,224 •
+[dl] 55,224 下载客户端
+[dl] 8,360 动态
+[dl] 8,402 热门
+[dl] 8,422 番剧
+[dl] 43,422 电影
+[dl] 78,422 国创
+[dl] 113,422 电视剧
+[dl] 164,422 综艺
+[dl] 199,422 纪录片
+[dl] 250,422 动画
+[dl] 285,422 游戏
+[dl] 320,422 鬼畜
+[dl] 355,422 音乐
+[dl] 390,422 舞蹈
+[dl] 425,422 影视
+[dl] 460,422 娱乐
+[dl] 495,422 知识
+[dl] 530,422 科技数码
+[dl] 597,422 资讯
+[dl] 632,422 美食
+[dl] 667,422 小剧场
+[dl] 718,422 汽车
+[dl] 753,422 时尚美妆
+[dl] 820,422 体育运动
+[dl] 887,422 动物
+[dl] 922,422 vlog
+[dl] 955,422 绘画
+[dl] 990,422 人工智能
+[dl] 8,442 家装房产
+[dl] 75,442 户外潮流
+[dl] 142,442 健身
+[dl] 177,442 手工
+[dl] 212,442 旅游出行
+[dl] 279,442 三农
+[dl] 314,442 亲子
+[dl] 349,442 健康
+[dl] 384,442 情感
+[dl] 419,442 生活兴趣
+[dl] 486,442 生活经验
+[dl] 553,442 公益
+[dl] 588,442 超高清
+[dl] 639,442 视频播客
+[dl] 8,462 更多
+[dl] 35,482 专栏
+[dl] 94,482 直播
+[dl] 153,482 活动
+[dl] 212,482 课堂
+[dl] 271,482 社区中心
+[dl] 362,482 新歌热榜
+[dl] 8,562 大危机？魔法课堂遇神秘人袭击！
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] ---8<--- end painted text
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.67
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 900s, 2 cached)
+[net] rx path: frames 64 irq 70 softirq 32 inline 2 poll 4 idle 0/0 halt/skip
+[mm] low: 111830 frames free (436 MiB), 19207 used, 0 shared, 0 bugs
+[mm] low: 111574 frames free (435 MiB), 19463 used, 0 shared, 0 bugs
+[mm] low: 111318 frames free (434 MiB), 19719 used, 0 shared, 0 bugs
+[browser] heap peak 9550K
+[dl] painted text: 56 run(s), 472 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 70,279 动态
+[dl] 106,279 热门
+[dl] 478,233 番剧
+[dl] 478,271 电影
+[dl] 1154,233 国创
+[dl] 1147,271 电视剧
+[dl] 1830,233 综艺
+[dl] 1823,271 纪录片
+[dl] 2506,233 动画
+[dl] 2506,271 游戏
+[dl] 3182,233 鬼畜
+[dl] 3182,271 音乐
+[dl] 3858,233 舞蹈
+[dl] 3858,271 影视
+[dl] 4534,233 娱乐
+[dl] 4534,271 知识
+[dl] 5197,233 科技数码
+[dl] 5210,271 资讯
+[dl] 5886,233 美食
+[dl] 5878,271 更多
+[dl] 1046,236 专栏
+[dl] 1046,274 直播
+[dl] 1276,236 活动
+[dl] 1276,274 课堂
+[dl] 1480,236 社区中心
+[dl] 1480,274 新歌热榜
+[dl] 313,458 当你好不容易上一次微机课...
+[dl] 332,506 多米糯骨嘎
+[dl] 403,506 ·
+[dl] 313,523 08-15
+[dl] 573,458 约会前怎么快速变帅?
+[dl] 592,506 柯野kayn
+[dl] 651,506 ·
+[dl] 573,523 08-15
+[dl] 833,458 单曲循环｜“当你们班换座位时
+[dl] 833,480 ”｜ECLIPSER
+[dl] 852,506 水拟称
+[dl] 897,506 ·
+[dl] 833,523 昨天
+[dl] 342,330 283.7万
+[dl] 421,330 419
+[dl] 511,330 01:16
+[dl] 602,330 15.3万
+[dl] 674,330 377
+[dl] 771,330 09:12
+[dl] 862,330 226.7万
+[dl] 941,330 111
+[dl] 1031,330 40:06
+[dl] 45,60 首页
+[dl] 89,60 番剧
+[dl] 130,60 直播
+[dl] 171,60 游戏中心
+[dl] 240,60 会员购
+[dl] 295,60 漫画
+[dl] 336,60 赛事
+[dl] 396,60 下载客户端
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[wm] perf t=24719 composites=242 ns=2254548672 max=62489288 motions=18 curmoves=10 curns=413703 full=192 rects=242 cpx=41201232 fpx=41110240 presns=78398685 torn=0 defer=154 late=0 drawmax=123
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 3 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 4 cached)
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 5 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 6 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 8 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 9 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 10 cached)
+[wm] perf t=26731 composites=261 ns=2473339174 max=62489288 motions=18 curmoves=10 curns=413703 full=208 rects=261 cpx=45389392 fpx=45298400 presns=85876060 torn=0 defer=166 late=0 drawmax=127
+[mm] low: 111062 frames free (433 MiB), 19975 used, 0 shared, 0 bugs
+[mm] low: 110806 frames free (432 MiB), 20231 used, 0 shared, 0 bugs
+[mm] low: 110550 frames free (431 MiB), 20487 used, 0 shared, 0 bugs
+[mm] low: 110294 frames free (430 MiB), 20743 used, 0 shared, 0 bugs
+[mm] low: 110038 frames free (429 MiB), 20999 used, 0 shared, 0 bugs
+[mm] low: 109782 frames free (428 MiB), 21255 used, 0 shared, 0 bugs
+[mm] low: 109526 frames free (427 MiB), 21511 used, 0 shared, 0 bugs
+[img] 7/7 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 7/256 ents 6945K]
+[mm] low: 109270 frames free (426 MiB), 21767 used, 0 shared, 0 bugs
+[browser] scripts collected: 5 external classic, 1 external module, 12 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for s1.hdslb.com (no chain, no signature), alpn=http/1.1
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (240 bytes, lifetime 894s, 10 cached)
+[mm] low: 109014 frames free (425 MiB), 22023 used, 0 shared, 0 bugs
+[net] rx path: frames 604 irq 333 softirq 160 inline 2 poll 13 idle 0/0 halt/skip
+[mm] low: 108758 frames free (424 MiB), 22279 used, 0 shared, 0 bugs
+[mm] low: 108502 frames free (423 MiB), 22535 used, 0 shared, 0 bugs
+[mm] low: 108246 frames free (422 MiB), 22791 used, 0 shared, 0 bugs
+[mm] low: 107990 frames free (421 MiB), 23047 used, 0 shared, 0 bugs
+[mm] low: 107734 frames free (420 MiB), 23303 used, 0 shared, 0 bugs
+[mm] low: 107478 frames free (419 MiB), 23559 used, 0 shared, 0 bugs
+[mm] low: 107222 frames free (418 MiB), 23815 used, 0 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 106966 frames free (417 MiB), 24071 used, 0 shared, 0 bugs
+[mm] low: 106710 frames free (416 MiB), 24327 used, 0 shared, 0 bugs
+[mm] low: 106454 frames free (415 MiB), 24583 used, 0 shared, 0 bugs
+[mm] low: 106198 frames free (414 MiB), 24839 used, 0 shared, 0 bugs
+[mm] low: 105942 frames free (413 MiB), 25095 used, 0 shared, 0 bugs
+[mm] low: 105686 frames free (412 MiB), 25351 used, 0 shared, 0 bugs
+[mm] low: 105430 frames free (411 MiB), 25607 used, 0 shared, 0 bugs
+[mm] low: 105174 frames free (410 MiB), 25863 used, 0 shared, 0 bugs
+[error] Hydration completed but contains mismatches.
+[mm] low: 104918 frames free (409 MiB), 26119 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[mm] low: 104662 frames free (408 MiB), 26375 used, 0 shared, 0 bugs
+[mm] low: 104406 frames free (407 MiB), 26631 used, 0 shared, 0 bugs
+[mm] low: 104150 frames free (406 MiB), 26887 used, 0 shared, 0 bugs
+[mm] low: 103894 frames free (405 MiB), 27143 used, 0 shared, 0 bugs
+[mm] low: 103638 frames free (404 MiB), 27399 used, 0 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for i0.hdslb.com (no chain, no signature), alpn=h2
+[mm] low: 103382 frames free (403 MiB), 27655 used, 0 shared, 0 bugs
+[browser] load done: 20 requests, 8 connections dialled, 12 reused, 0 modules loaded (0 failed)
+[browser] pool: 12 hits, 3 evicted, 4 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[dl] painted text: 56 run(s), 471 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 70,279 动态
+[dl] 106,279 热门
+[dl] 478,233 番剧
+[dl] 478,271 电影
+[dl] 1154,233 国创
+[dl] 1147,271 电视剧
+[dl] 1830,233 综艺
+[dl] 1823,271 纪录片
+[dl] 2506,233 动画
+[dl] 2506,271 游戏
+[dl] 3182,233 鬼畜
+[dl] 3182,271 音乐
+[dl] 3858,233 舞蹈
+[dl] 3858,271 影视
+[dl] 4534,233 娱乐
+[dl] 4534,271 知识
+[dl] 5197,233 科技数码
+[dl] 5210,271 资讯
+[dl] 5886,233 美食
+[dl] 5878,271 更多
+[dl] 1046,236 专栏
+[dl] 1046,274 直播
+[dl] 1276,236 活动
+[dl] 1276,274 课堂
+[dl] 1480,236 社区中心
+[dl] 1480,274 新歌热榜
+[dl] 313,458 当你好不容易上一次微机课...
+[dl] 332,506 多米糯骨嘎
+[dl] 403,506 ·
+[dl] 313,523 08-15
+[dl] 573,458 约会前怎么快速变帅?
+[dl] 592,506 柯野kayn
+[dl] 651,506 ·
+[dl] 573,523 08-15
+[dl] 833,458 单曲循环｜“当你们班换座位时
+[dl] 833,480 ”｜ECLIPSER
+[dl] 852,506 水拟称
+[dl] 897,506 ·
+[dl] 833,523 08-17
+[dl] 342,330 283.7万
+[dl] 421,330 419
+[dl] 511,330 01:16
+[dl] 602,330 15.3万
+[dl] 674,330 377
+[dl] 771,330 09:12
+[dl] 862,330 226.7万
+[dl] 941,330 111
+[dl] 1031,330 40:06
+[dl] 45,60 首页
+[dl] 89,60 番剧
+[dl] 130,60 直播
+[dl] 171,60 游戏中心
+[dl] 240,60 会员购
+[dl] 295,60 漫画
+[dl] 336,60 赛事
+[dl] 396,60 下载客户端
+[dl] ---8<--- end painted text
+[mm] low: 103126 frames free (402 MiB), 27911 used, 0 shared, 0 bugs
+[mm] low: 102870 frames free (401 MiB), 28167 used, 0 shared, 0 bugs

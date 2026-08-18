@@ -1,0 +1,82 @@
+{
+ "name": "jd",
+ "url": "https://www.jd.com/",
+ "started": "2026-08-18T21:42:37",
+ "verdict": "BLANK",
+ "why": "loaded in 6.1s and painted 2296 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://corporate.jd.com/home",
+  "bytes": 686,
+  "redirects": [
+   "301 -> https://corporate.jd.com/home"
+  ],
+  "script_tags": 2,
+  "script_src": 1,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 1,
+   "inline_scripts": 1,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 3
+  },
+  "elapsed": 2.3
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 3,
+  "dials": 3,
+  "reused": 1,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 6733,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 6.1,
+  "paint_seconds": 16.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2296,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0818-b/jd.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0818-b/jd.serial.txt",
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0818-b/jd.host.html",
+ "text_runs": 0,
+ "text_bytes": 0,
+ "text": "",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 1,
+   "inline_scripts": 1,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 3
+  },
+  "gap": null
+ },
+ "finished": "2026-08-18T21:43:24"
+}
