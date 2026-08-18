@@ -9,6 +9,7 @@
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan
 .PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
 .PHONY: test-webapi-slots-negctl
+.PHONY: test-platform-timing-negctl
 
 # --- test-webapi-slots-negctl ----------------------------------------------
 # The negative control for admitting fetches against the REAL free-slot count.
@@ -102,7 +103,7 @@ PLATFORM_TEST_SRC += c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/ur
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
 PLATFORM_MOD := c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
-test-platform: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+test-platform: test-platform-timing-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/platform_test
@@ -176,3 +177,30 @@ test-platform-page-control: $(ISO) $(BUILD)/browser-noplat.aex
 test-bing: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_bing.py $(ISO) $(DISK)
 
+# --- test-platform-timing-negctl -------------------------------------------
+# The negative control for User Timing's SECOND lookup. It cannot be
+# test-platform-control: that build drops js_platform.o entirely, so
+# performance.measure does not exist and EVERY performance check fails for the
+# same uninformative reason. -DPLATFORM_NO_TIMING_MARKS restores exactly what
+# shipped -- markTime searching only user marks -- and leaves the rest of the
+# platform intact, so the checks that redden are the ones about this rule and
+# nothing else.
+#
+# EXACTLY 2, and the count is asserted rather than eyeballed. The third check
+# of the three added with the fix -- that a non-numeric timing member is still
+# a SyntaxError -- must keep PASSING here: it is the half that stops "make
+# markTime never throw" from satisfying the other two.
+test-platform-timing-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_TIMING_MARKS \
+	    -o $(BUILD)/platform_tmneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_tmneg > $(BUILD)/platform_tmneg.log 2>&1; \
+	 n=`grep -c '^FAIL: ' $(BUILD)/platform_tmneg.log`; \
+	 if [ "$$n" != "2" ]; then \
+	   echo "test-platform-timing-negctl: FAILED -- expected exactly 2 FAILs, got $$n:"; \
+	   grep '^FAIL: ' $(BUILD)/platform_tmneg.log; exit 1; \
+	 else \
+	   echo "test-platform-timing-negctl: ok -- the suite fails without the fix:"; \
+	   grep '^FAIL: ' $(BUILD)/platform_tmneg.log; \
+	 fi

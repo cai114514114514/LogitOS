@@ -162,6 +162,27 @@ int main(int argc, char **argv)
     ckjs("typeof performance.timeOrigin === 'number'", "performance.timeOrigin");
     ckjs("performance.navigation.type === 0", "performance.navigation");
 
+    /* User Timing L2's "convert a name to a timestamp" is two lookups, not one:
+     * a name that is not a user mark is looked up in the PerformanceTiming
+     * interface BEFORE it is rejected. MEASURED on stripe.com, which calls
+     * performance.measure(x, 'navigationStart') from its Next.js hydration
+     * path -- the most common form of the call, because it is how a bundle
+     * measures anything against the start of navigation. We threw
+     * `SyntaxError: mark 'navigationStart' does not exist`, twice per load.
+     *
+     * The check above (line ~155, 'nope') is the other half and must keep
+     * passing: a name in NEITHER place is still a SyntaxError. Without both,
+     * "make markTime never throw" would satisfy this one. */
+    ckjs("(function(){ var m = performance.measure('nav', 'navigationStart');"
+         "  return m.startTime === 0 && m.duration >= 0; })()",
+         "measure from 'navigationStart' resolves via performance.timing");
+    ckjs("(function(){ var m = performance.measure('re', 'responseEnd');"
+         "  return typeof m.startTime === 'number' && m.startTime >= 0; })()",
+         "measure from any PerformanceTiming attribute resolves");
+    ckjs("(function(){ try { performance.measure('y','toJSON'); return false; }"
+         "  catch (e) { return e instanceof SyntaxError; } })()",
+         "a non-numeric timing member is not a timestamp");
+
     /* ==== document lifecycle ============================================
      * MEASURED on bing and deepseek -- the most-wanted property in the corpus.
      * It must be 'loading' while script runs, or a page skips its own

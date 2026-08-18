@@ -268,9 +268,27 @@ static const char *PLATFORM_PRELUDE =
 "    if (opts && opts.detail !== undefined) e.detail = opts.detail;\n"
 "    entries.push(e); return e;\n"
 "  });\n"
+   /* User Timing L2, "convert a name to a timestamp": a name that is not a
+      user mark is looked up in the PerformanceTiming interface BEFORE it is
+      rejected. Only a name in neither is a SyntaxError.
+    *
+    * MEASURED on stripe.com, whose instrumentation calls
+    * `performance.measure(x, 'navigationStart')` -- the most common form of
+    * this call, because it is how a bundle measures anything against the
+    * start of navigation. We threw `SyntaxError: mark 'navigationStart' does
+    * not exist`, twice per load, from inside the Next.js hydration path.
+    * perf.timing already carried the attribute; markTime never looked.
+    *
+    * timing is absolute wall-clock ms and a mark is relative to timeOrigin,
+    * so the conversion is the subtraction. */
 "  function markTime(n) {\n"
 "    for (var i = entries.length - 1; i >= 0; i--)\n"
 "      if (entries[i].entryType === 'mark' && entries[i].name === n) return entries[i].startTime;\n"
+#ifndef PLATFORM_NO_TIMING_MARKS
+"    var tim = perf.timing;\n"
+"    if (tim && typeof tim[n] === 'number' && typeof tim.navigationStart === 'number')\n"
+"      return tim[n] - tim.navigationStart;\n"
+#endif
 "    return null;\n"
 "  }\n"
 "  def(perf, 'measure', function (name, a, b) {\n"
