@@ -211,6 +211,59 @@ int main(void)
     expect_true(ctx, "throwing a plain object still has no stack",
         "(function(){ try { throw {a:1}; } catch (e) { return e.stack === undefined; } })()");
 
+    /* ---- "not a function" has to name something --------------------------
+     *
+     * The same argument one level down: upstream's message for a failed call
+     * is the bare string "not a function", with neither the callee's name nor
+     * what it actually was. MEASURED on stripe.com -- six of them in a row,
+     * byte-identical, out of React's useSyncExternalStore, with the page
+     * rendering empty behind them. Against a minified bundle that message IS
+     * the diagnosis; the source reads `oS(a,b)` and tells you nothing either.
+     *
+     * Chrome's strings are quoted per line. We deliberately differ: Chrome
+     * reconstructs the whole callee EXPRESSION from source text ("o.a", "(intermediate
+     * value).nope"), which needs the source, and this engine has only the
+     * property atom in the bytecode. So the name is the property alone, and
+     * what the callee WAS is added instead -- the half Chrome does not print
+     * and the half that separates a missing API (undefined) from a shape
+     * mismatch (an object).
+     *
+     * NEGATIVE CONTROL: make test-js-callee-control. */
+    expect_str(ctx, "a missing method names itself and says it was undefined",
+        "(function(){ try { ({}).nope(); } catch (e) { return e.message; } })()",
+        /* Chrome: "(intermediate value).nope is not a function" */
+        "nope is not a function (it is undefined)");
+    expect_str(ctx, "a method that is a number says so",
+        "(function(){ var o = { a: 1 }; try { o.a(); } catch (e) { return e.message; } })()",
+        /* Chrome: "o.a is not a function" */
+        "a is not a function (it is a number)");
+    expect_str(ctx, "a plain call reports what the callee was",
+        "(function(){ var f = 'x'; try { f(); } catch (e) { return e.message; } })()",
+        /* Chrome: "f is not a function" -- the variable name needs the source */
+        "not a function (the callee is a string)");
+    expect_str(ctx, "a null method is not confused with a missing one",
+        "(function(){ var o = { a: null }; try { o.a(); } catch (e) { return e.message; } })()",
+        "a is not a function (it is null)");
+    /* The stale-atom trap: a plain call AFTER a method call must not inherit
+     * the method's name. Without the reset in OP_call_method this reads
+     * "then is not a function", which would send the reader to the wrong line
+     * of a bundle -- worse than the bare message it replaces. */
+    expect_str(ctx, "a plain call does not inherit the previous method's name",
+        "(function(){ var p = { then: function(){} }; p.then();"
+        "  var g = 7; try { g(); } catch (e) { return e.message; } })()",
+        "not a function (the callee is a number)");
+    /* And the call that SUCCEEDS is untouched -- the check runs only after an
+     * exception, so nothing here may change what a working call returns. */
+    expect_true(ctx, "a call that works is unaffected",
+        "(function(){ var o = { a: function(){ return 42; } }; return o.a() === 42; })()");
+    /* An exception thrown from INSIDE a callable must survive verbatim: the
+     * replacement is gated on the callee not being callable, and this is the
+     * case that gate exists for. */
+    expect_str(ctx, "an error thrown inside a real function is not rewritten",
+        "(function(){ var o = { a: function(){ throw new TypeError('mine'); } };"
+        "  try { o.a(); } catch (e) { return e.message; } })()",
+        "mine");
+
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
     if (failed) { printf("js_stack_test: %d/%d checks FAILED\n", failed, checks); return 1; }

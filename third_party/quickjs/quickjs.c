@@ -16265,6 +16265,56 @@ typedef enum {
 #define FUNC_RET_INITIAL_YIELD 3
 
 /* argv[] is modified if (flags & JS_CALL_FLAG_COPY_ARGV) = 0. */
+/* ---- LogitOS: "not a function" has to name something ---------------------
+ *
+ * MEASURED on stripe.com. Six consecutive `TypeError: not a function` out of
+ * React's error path, byte-identical, naming neither the callee nor what it
+ * actually was -- and six different bugs and one function called six times
+ * look exactly the same in that log. Against a minified bundle the message is
+ * the entire diagnosis, because the source is `oS(a,b)` and reading it tells
+ * you nothing either.
+ *
+ * Two facts are recoverable at the throw site and neither was used:
+ *
+ *   - for `x.foo()` the property atom is IN THE BYTECODE, sitting in the
+ *     OP_get_field2 that pushed the callee two opcodes earlier;
+ *   - for any call at all, what the callee WAS -- undefined is a missing API,
+ *     an object is a shape mismatch, and today they print the same.
+ *
+ * COST IS ZERO ON THE PATH THAT WORKS. The check runs only after
+ * JS_CallInternal has already returned an exception, and only replaces it when
+ * the callee provably could not be called -- in which case no user code ran,
+ * so the pending exception is necessarily the generic one this replaces. A
+ * pre-call JS_IsFunction() on every method call would have cost every call
+ * that succeeds, which is all of them. */
+static const char *js_callee_kind(JSValueConst v)
+{
+    switch (JS_VALUE_GET_NORM_TAG(v)) {
+    case JS_TAG_UNDEFINED: return "undefined";
+    case JS_TAG_NULL:      return "null";
+    case JS_TAG_BOOL:      return "a boolean";
+    case JS_TAG_INT:
+    case JS_TAG_FLOAT64:   return "a number";
+    case JS_TAG_STRING:    return "a string";
+    case JS_TAG_SYMBOL:    return "a symbol";
+    case JS_TAG_OBJECT:    return "an object";
+    default:               return "a value";
+    }
+}
+
+static void js_name_not_a_function(JSContext *ctx, JSValueConst callee, JSAtom name)
+{
+    char buf[ATOM_GET_STR_BUF_SIZE];
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    if (name != JS_ATOM_NULL)
+        JS_ThrowTypeError(ctx, "%s is not a function (it is %s)",
+                          JS_AtomGetStr(ctx, buf, sizeof(buf), name),
+                          js_callee_kind(callee));
+    else
+        JS_ThrowTypeError(ctx, "not a function (the callee is %s)",
+                          js_callee_kind(callee));
+}
+
 static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                                JSValueConst this_obj, JSValueConst new_target,
                                int argc, JSValue *argv, int flags)
@@ -16389,6 +16439,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     for(;;) {
         int call_argc;
         JSValue *call_argv;
+        /* The atom of the last OP_get_field2, i.e. the method name of the
+         * call about to happen. Bytecode atoms outlive the frame, so this is
+         * a borrow with no refcount. */
+        JSAtom mcall_atom = JS_ATOM_NULL;
 
         SWITCH(pc) {
         CASE(OP_push_i32):
@@ -16711,8 +16765,11 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 sf->cur_pc = pc;
                 ret_val = JS_CallInternal(ctx, call_argv[-1], JS_UNDEFINED,
                                           JS_UNDEFINED, call_argc, call_argv, 0);
-                if (unlikely(JS_IsException(ret_val)))
+                if (unlikely(JS_IsException(ret_val))) {
+                    if (!JS_IsFunction(ctx, call_argv[-1]))  /* LOGIT-NAME-CALLEE */
+                        js_name_not_a_function(ctx, call_argv[-1], JS_ATOM_NULL);
                     goto exception;
+                }
                 if (opcode == OP_tail_call)
                     goto done;
                 for(i = -1; i < call_argc; i++)
@@ -16747,8 +16804,12 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 sf->cur_pc = pc;
                 ret_val = JS_CallInternal(ctx, call_argv[-1], call_argv[-2],
                                           JS_UNDEFINED, call_argc, call_argv, 0);
-                if (unlikely(JS_IsException(ret_val)))
+                if (unlikely(JS_IsException(ret_val))) {
+                    if (!JS_IsFunction(ctx, call_argv[-1]))  /* LOGIT-NAME-CALLEE */
+                        js_name_not_a_function(ctx, call_argv[-1], mcall_atom);
                     goto exception;
+                }
+                mcall_atom = JS_ATOM_NULL;
                 if (opcode == OP_tail_call_method)
                     goto done;
                 for(i = -2; i < call_argc; i++)
@@ -17640,6 +17701,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 val = JS_GetProperty(ctx, sp[-1], atom);
                 if (unlikely(JS_IsException(val)))
                     goto exception;
+                mcall_atom = atom;   /* for the message if the call fails */
                 *sp++ = val;
             }
             BREAK;

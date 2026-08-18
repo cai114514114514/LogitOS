@@ -144,7 +144,7 @@ $(BUILD)/js_stack_test: tests/unit/js_stack_test.c $(QJS_SRC)
 	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/js_stack_test.c $(QJS_SRC) -lm
 
-test-js-stack: $(BUILD)/js_stack_test
+test-js-stack: $(BUILD)/js_stack_test test-js-callee-control
 	@$(BUILD)/js_stack_test
 
 # THE NEGATIVE CONTROL. One sed turns the prepend off -- restoring exactly
@@ -169,4 +169,36 @@ test-js-stack-control: $(BUILD)/negctl/quickjs_nostack.c
 	    grep -c '^FAIL:' $(BUILD)/js_stack_control.log | sed 's/^/  /;s/$$/ checks fail without the message line/'; \
 	 fi
 
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport test-js-stack test-js-stack-control
+# --- test-js-callee-control ------------------------------------------------
+# The second control over the same file: it reverts the callee NAMING (the
+# LOGIT-NAME-CALLEE guard) and leaves the stack prepend alone, so the checks
+# that redden are the five about the message and nothing else. Separate from
+# test-js-stack-control on purpose -- that one reverts the prepend and reddens
+# a different set, and one control turning off both would not say which patch
+# either group of checks was measuring.
+#
+# EXACTLY 5 is asserted. Two of the seven checks added with the patch must
+# keep PASSING here: a call that works, and an error thrown from inside a real
+# function. They are what stops "rewrite every failed call's message" from
+# satisfying the other five.
+$(BUILD)/negctl/quickjs_nocallee.c: third_party/quickjs/quickjs.c
+	@mkdir -p $(dir $@)
+	@sed 's|.*/\* LOGIT-NAME-CALLEE \*/|                    if (0)  /* negative control: bare "not a function" */|' $< > $@
+	@grep -q 'negative control: bare' $@ || \
+	    { echo "FAIL: the negative-control sed matched nothing -- the patch it reverts has moved"; exit 1; }
+
+test-js-callee-control: $(BUILD)/negctl/quickjs_nocallee.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_callee_control \
+	    tests/unit/js_stack_test.c $(BUILD)/negctl/quickjs_nocallee.c \
+	    third_party/quickjs/cutils.c third_party/quickjs/libregexp.c \
+	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
+	@$(BUILD)/js_callee_control > $(BUILD)/js_callee_control.log 2>&1; \
+	 n=`grep -c '^FAIL:' $(BUILD)/js_callee_control.log`; \
+	 if [ "$$n" != "5" ]; then \
+	   echo "FAIL (control): expected exactly 5 checks to fail without the naming, got $$n"; \
+	   grep '^FAIL:' $(BUILD)/js_callee_control.log; exit 1; \
+	 else \
+	   echo "PASS (control): a bare 'not a function' fails 5 checks as it must"; \
+	 fi
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control

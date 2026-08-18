@@ -440,6 +440,35 @@ static JSValue js_perf_now(JSContext *ctx, JSValueConst t, int argc, JSValueCons
  * Richer than js_dom.c's fallback: this one also captures into the buffer the
  * browser's status bar reads, which is the only place a headless screenshot
  * test can see that a script ran. */
+/* An Error logged BY THE PAGE is the only window we have into a bundle's own
+ * failure handling, and JS_ToCString on it yields the message alone. MEASURED
+ * on stripe.com: six consecutive `[error] TypeError: not a function` out of
+ * React's error path, identical, naming nothing -- six different bugs and one
+ * function called six times look exactly the same in that log, and the whole
+ * page renders empty behind them.
+ *
+ * QuickJS's .stack holds the frames WITHOUT the message header (unlike V8),
+ * which is why the uncaught-exception printer already emits message-then-stack
+ * and why this can simply append. The trailing newline is trimmed so the
+ * caller's terminator stays the only one. */
+static void con_stack(JSContext *ctx, JSValueConst v)
+{
+    if (!JS_IsError(ctx, v)) return;
+    JSValue st = JS_GetPropertyStr(ctx, v, "stack");
+    if (!JS_IsString(st)) { JS_FreeValue(ctx, st); return; }
+    const char *s = JS_ToCString(ctx, st);
+    if (s && *s) {
+        int n = 0;
+        while (s[n]) n++;
+        while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) n--;
+        /* Serial only. note() feeds the status bar, which is one line wide;
+         * a stack there would push out the message it belongs to. */
+        if (n > 0) printf("\n%.*s", n, s);
+    }
+    if (s) JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, st);
+}
+
 static JSValue con_out(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -449,6 +478,7 @@ static JSValue con_out(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
         if (i) { note(" "); printf(" "); }
         note(s); printf("%s", s);
         JS_FreeCString(ctx, s);
+        con_stack(ctx, argv[i]);
     }
     note("\n"); printf("\n");
     return JS_UNDEFINED;

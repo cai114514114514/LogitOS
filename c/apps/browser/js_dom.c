@@ -3225,6 +3225,27 @@ static JSClassDef elem_class = { "Element", elem_finalizer };
  * goes to printf -- the serial console in the OS, stdout in host tests. */
 int printf(const char *, ...);
 
+/* Same rule as js_page.c's richer console: an Error logged by the page prints
+ * as its message alone, which names nothing. QuickJS's .stack is the frames
+ * without the message header, so appending it is the whole fix. Kept in both
+ * consoles rather than shared, because they have no common TU and a host
+ * harness reading only this one would otherwise be the blind half. */
+static void con_stack(JSContext *ctx, JSValueConst v)
+{
+    if (!JS_IsError(ctx, v)) return;
+    JSValue st = JS_GetPropertyStr(ctx, v, "stack");
+    if (!JS_IsString(st)) { JS_FreeValue(ctx, st); return; }
+    const char *s = JS_ToCString(ctx, st);
+    if (s && *s) {
+        int n = 0;
+        while (s[n]) n++;
+        while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) n--;
+        if (n > 0) printf("\n%.*s", n, s);
+    }
+    if (s) JS_FreeCString(ctx, s);
+    JS_FreeValue(ctx, st);
+}
+
 static JSValue con_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -3233,6 +3254,7 @@ static JSValue con_log(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
         if (!s) continue;
         printf("%s%s", i ? " " : "", s);
         JS_FreeCString(ctx, s);
+        con_stack(ctx, argv[i]);
     }
     printf("\n");
     return JS_UNDEFINED;
