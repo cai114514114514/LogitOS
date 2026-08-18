@@ -455,6 +455,51 @@ provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
   select handler (else LibCSS won't treat `<html>` as root → font-size unresolved);
   host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
 
+**TWO UNITS BUGS IN THE STYLE PATH, and both had the same shape: a plausible
+small number where there should have been none.** That shape is why they
+lasted -- nothing is zero, nothing overflows, every box still has a size and
+the page still paints. Found by instrumenting what the browser PAINTED
+(`[dl]` lines, see the scoreboard section) rather than by reading the code.
+
+- **A percentage padding was stored as a pixel count.** `len_px()` reports
+  through an out-parameter whether the value it converted was a percentage,
+  and all four padding edges passed NULL -- so `padding-top: 56.25%` became
+  fifty-six pixels. That declaration with `height:0` is the ASPECT-RATIO BOX,
+  which is how essentially every card grid on the web reserves space for a
+  picture. `struct cstyle` carries the specification in `pt0..pl0` (hundredths
+  of a percent -- 56.25% of 400 is 225 and 56% of it is 224) and `resolve_pad`
+  rewrites the pixel fields at the seven layout sites where a containing-block
+  width is in scope, so layout.c's forty readers are unchanged.
+
+  Placement matters and the test caught the first attempt: `layout_block(n, x,
+  y, w)`'s `w` is NOT the containing block width -- every caller passes
+  `bw - hextra(st)`, the box's own CONTENT width.
+
+- **`calc()` worked on `width` and on no other length property.** One tuple in
+  `third_party/css/libcss/src/select/select_config.py`; the generated parser
+  accepts `height: calc(...)` and the hand-written `css__cascade_height` then
+  drops it at CASCADE time, before a computed style exists. Fixed for
+  `height`; the config marks it, `select_generator.py` regenerates the three
+  vendored headers, and three hand-written sites plus a new
+  `css_computed_height_px()` follow. **The generator is idempotent -- check
+  that first: run against an unmodified config it reproduces all three headers
+  byte for byte, which is what makes the diff readable.**
+
+  **The other nineteen are still in this state.** WPT `css/` usage, measured,
+  as the work order: width 332 (works), left 168, height 154 (fixed), top 89,
+  min-width 45, max-width 33, max-height 28, bottom 28, min-height 27,
+  text-indent 20, right 17, margin-left 16, then the paddings and margins in
+  single digits. Note before starting on the insets: `css_engine.c` already
+  SKIPS a percentage on top/left/right/bottom on purpose (it has nowhere to
+  defer it to), so only pure-length calcs there are usable -- 229 of the 338
+  inset calcs in the corpus, and 96 of those are `calc(var(--x))` from two
+  generated animation files.
+
+  Gotcha carried from width: `css_computed_height()` reports an unresolved
+  calc as AUTO deliberately, so the resolution happens in the ELSE branch,
+  through two probes of the `_px` accessor. A calc is linear in the available
+  length, so slope recovers the percentage and intercept the addend.
+
 M18 Real processes ✅ (the "toward a real OS" step: run software not written for
 LogitOS). A POSIX-ish process model independent of the window manager:
 `c/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
@@ -1249,6 +1294,56 @@ The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
 — no element takes focus from a click, Tab does not move it, a keystroke goes to
 `<body>` as it did before — and `test-forms-negctl` must FAIL against that
 build, or the suite is not measuring the focus model.
+
+### The site scoreboard — and the column that says WHICH words
+
+`make scoreboard` boots one QEMU per live site and writes a dated snapshot;
+the delta between two snapshots is the whole product. Its header states its
+own blind spot: *"`changed px` ... cannot tell a rendered page from a flat
+dark block. Nothing here checks whether the RIGHT pixels changed -- that is
+what reftests are for, and none of WPT's 17,155 of them run on this machine."*
+
+Reftests are the right answer to "is the layout correct" and they are a long
+way off. **`text run/B` is the cheap middle**: not WHERE the pixels are, but
+WHICH WORDS are among them, with the coordinate of every run. It judges no
+layout and does not try; it answers the question every BLANK and ERRORS row
+is really asking, which was previously answered by a person squinting at a
+PNG.
+
+It found its own reason to exist on the first run. bilibili scores PAINTED
+with ~255,000 changed pixels and no exceptions, and its video cards were
+thumbnails above an EMPTY grey rectangle. The column said **59 runs / 583
+bytes against a document carrying 40,365 bytes of text**, and the positions
+put the titles INSIDE the thumbnail's own box -- so the image was blitted over
+them. *"Missing" and "painted underneath the thing drawn after it" look
+identical in a list of strings and completely different in a list of
+coordinates*, which is why the position is recorded. Both units bugs above
+were found down that thread.
+
+Three things about it worth knowing before touching it:
+
+- **It is collected at the ONE site that paints document text**, so it cannot
+  drift from what was drawn. A record built from the layout tree instead would
+  report text that a clip, an opacity or a viewport cull threw away.
+- **It needs no trigger, and that is the second lesson.** A Ctrl+Alt+D chord
+  was tried first, then `about:text` through the address bar, then the chord
+  paced one scancode at a time -- four boots, no output, and nothing in the
+  kernel explains it. An instrument whose trigger cannot be observed is not an
+  instrument, so the browser prints it itself whenever the painted text
+  CHANGES, bounded at PTX_LOG_MAX. Both triggers stay wired for a person.
+- **It is OFF unless `browser_paint_text_log(1)` is called**, which only
+  browser.c does. Five host harnesses link that TU without being a browser,
+  and the first version put a `[dl]` line between every reftest verdict.
+
+**Two harness bugs fell out of chasing that trigger, and both had hidden for
+the same reason -- nothing had ever needed a SECOND navigation in one boot.**
+`qmp_site.py`'s `ctrl()` put four scancodes in two bursts into a PS/2
+controller with a one-byte buffer, so Ctrl+L never arrived; it went unnoticed
+because browser.c starts with `editing = 1`, so the bar is already focused
+when the harness types its first URL and "Ctrl+L did not arrive" is
+indistinguishable from "Ctrl+L worked". And browser.c's Ctrl+L only set
+`editing` without clearing, so typing APPENDED -- same coincidence, and the
+second navigation in a boot silently produced `https://site/what-was-typed`.
 
 ### Cookies — one jar, TWO doors, and the gate only knew one
 
