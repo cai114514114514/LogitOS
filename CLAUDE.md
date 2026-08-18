@@ -1290,6 +1290,93 @@ one** — `#app` 0 -> 106 and 0 -> 148 characters, both buttons reading
 "count is 0", both frameworks' missing-cause counts falling to zero. svelte is
 still blank, and its cause is named: `HTMLTemplateElement.content`.
 
+**WHEN A PAGE REPORTS ITS OWN ERROR, READ IT -- and until 2026-08-18 there was
+nothing to read.** A modern bundle catches its own exceptions and logs them, so
+the browser's uncaught-exception printer never sees the interesting ones. What
+reached the serial log was:
+
+```
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+[error] TypeError: not a function
+```
+
+Six of these on stripe.com, byte-identical, from a minified bundle whose source
+reads `oS(a,b)`. Six different bugs and one function called six times are the
+same line. Two instruments closed it, and together they named the cause on the
+first run:
+
+- **`console.error(err)` prints the stack.** Chrome does; we printed the
+  message. QuickJS's `.stack` is the frames WITHOUT the message header, which
+  is why the uncaught printer already emits message-then-stack and why this is
+  an append. In BOTH consoles (`js_page.c`'s and `js_dom.c`'s fallback) --
+  they share no TU, and a host harness reading only one would be the blind
+  half. Serial only: `note()` feeds the one-line status bar.
+- **The message names the callee** (`third_party/quickjs/quickjs.c`, marker
+  `LOGIT-NAME-CALLEE`). For `x.foo()` the property atom is IN THE BYTECODE, in
+  the `OP_get_field2` that pushed the callee; and for any call, WHAT the callee
+  was separates a missing API (`undefined`) from a shape mismatch (an object).
+
+```
+TypeError: isEqualNode is not a function (it is undefined)
+    at <anonymous> (.../68654-0ccff603146a8ff7.js)
+    at useSyncExternalStore (.../framework-bfbcaa5a2903bc7d.js)
+```
+
+**Cost is zero on the path that works**: the check runs only after
+`JS_CallInternal` has already returned an exception, and replaces it only when
+the callee provably could not be called -- in which case no user code ran, so
+the pending exception is necessarily the generic one. A pre-call
+`JS_IsFunction()` would have charged every call that succeeds, which is all of
+them.
+
+Two traps in it, both found by writing the control first and both able to name
+the WRONG thing, which is worse than the bare message: a plain call must not
+inherit the previous method call's atom, and `o.a?.()` on a nullish `o.a`
+SKIPS the call so its atom is never consumed. Cleared at `OP_call` and
+`OP_get_array_el2`.
+
+  `make test-js-stack` 32 checks · `test-js-callee-control` reverts the naming
+  and requires **exactly 6** to redden -- two of the eight must keep PASSING
+  (a call that works, an error thrown from INSIDE a real function), or "rewrite
+  every failed call's message" would satisfy the rest.
+
+**What it found, immediately: `Node.isEqualNode`.** React's Float -- the part
+that hoists `<title>`/`<meta>`/`<link rel=stylesheet>` into `<head>` and
+de-duplicates them during hydration -- compares candidates with it. Absent, it
+threw six times, React declared the hydration lost (#418), switched the root to
+client rendering (#423), and the client render died. stripe went 69 painted
+text runs -> 38 -> **0** and scored BLANK with **no failed request and no
+missing subresource**. Nothing else in the record said why.
+
+Measured after, same harness, same day: **37 runs / 172 bytes** instead of 0,
+changed px 2,452 -> 9,352, BLANK -> GAP, and zero `isEqualNode` throws. The
+hydration MISMATCH (#418) is still there -- our DOM is still not what React
+expects -- but the client render now survives it instead of dying on the next
+call. 37 runs is not a rendered stripe.com and is not claimed to be one; it is
+the difference between a page that lost its whole document and one that did
+not.
+
+**And `canvas.getContext` STAYS ABSENT, deliberately** -- the other name in
+that log, and the one where the obvious one-line fix is the wrong one.
+Returning null is how the spec refuses a context type, so the return value
+would be honest; but the canonical feature test is `!!canvas.getContext`, which
+asks whether the METHOD exists. Adding it flips that test true and sends the
+page down the canvas branch holding a null context: from "no canvas, take the
+fallback" to "canvas, and every call on it throws". Argued in `js_platform.c`
+above the observers and pinned by `test-platform`, so the one-line "fix" cannot
+land quietly.
+
+**Also fixed there: `performance.measure(x, 'navigationStart')` threw.** User
+Timing L2's "convert a name to a timestamp" is TWO lookups -- a name that is
+not a user mark is looked up in the `PerformanceTiming` interface before it is
+rejected. `markTime()` only did the first, and `js_platform.c` was already
+building a full `performance.timing` thirty lines below its own definition.
+`test-platform-timing-negctl` reverts it and requires exactly 2 of the 3 new
+checks to redden; the third (a non-numeric member is still a `SyntaxError`) is
+what stops "make markTime never throw" from satisfying them.
+
 The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
 — no element takes focus from a click, Tab does not move it, a keystroke goes to
 `<body>` as it did before — and `test-forms-negctl` must FAIL against that
