@@ -64,7 +64,7 @@
 /* set_font_style(style, 0, 0, CSS_UNIT_PX); */
 /* set_font_variant(style, 0, 0, CSS_UNIT_PX); */
 /* set_font_weight(style, 0, 0, CSS_UNIT_PX); */
-/* set_height(style, 0, 0, CSS_UNIT_PX); */
+set_height(style, 0, (css_fixed_or_calc)0, CSS_UNIT_PX);
 /* set_justify_content(style, 0, 0, CSS_UNIT_PX); */
 /* set_left(style, 0, 0, CSS_UNIT_PX); */
 /* set_letter_spacing(style, 0, 0, CSS_UNIT_PX); */

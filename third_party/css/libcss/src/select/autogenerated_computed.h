@@ -246,7 +246,7 @@ struct css_computed_style_i {
 	css_fixed flex_grow;
 	css_fixed flex_shrink;
 	css_fixed font_size;
-	css_fixed height;
+	css_fixed_or_calc height;
 	css_fixed left;
 	css_fixed letter_spacing;
 	css_fixed line_height;

@@ -8863,6 +8863,8 @@ css/css-fonts/system-ui-ur.html
 css/css-fonts/system-ui-zh.html
 css/css-fonts/system-ui.html
 css/css-fonts/test-synthetic-bold.html
+css/css-fonts/test-synthetic-italic-2.html
+css/css-fonts/test-synthetic-italic-3.html
 css/css-fonts/test-synthetic-italic.html
 css/css-fonts/variations/font-weight-metrics.html
 css/css-fonts/variations/variable-box-font.html
@@ -13289,6 +13291,7 @@ css/css-sizing/intrinsic-percent-replaced-005.html
 css/css-sizing/intrinsic-percent-replaced-006.html
 css/css-sizing/intrinsic-percent-replaced-007.html
 css/css-sizing/intrinsic-percent-replaced-008.html
+css/css-sizing/intrinsic-percent-replaced-009.html
 css/css-sizing/intrinsic-percent-replaced-012.html
 css/css-sizing/intrinsic-percent-replaced-013.html
 css/css-sizing/intrinsic-percent-replaced-014.html
@@ -16346,6 +16349,7 @@ css/css-writing-modes/available-size-003.html
 css/css-writing-modes/available-size-004.html
 css/css-writing-modes/available-size-005.html
 css/css-writing-modes/available-size-006.html
+css/css-writing-modes/available-size-007.html
 css/css-writing-modes/available-size-008.html
 css/css-writing-modes/available-size-009.html
 css/css-writing-modes/available-size-010.html

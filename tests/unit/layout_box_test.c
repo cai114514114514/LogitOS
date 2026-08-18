@@ -189,6 +189,52 @@ static void t_pct_padding(void)
     box_is("var", 0, 0, 400, 225);
 }
 
+/* ---- calc() on a HEIGHT ---------------------------------------------------
+ *
+ * Upstream LibCSS gives calc() to `width` and to NO OTHER length property.
+ * Every other one -- height, min/max on both axes, all four margins and
+ * paddings, top/right/bottom/left -- dropped a calc() at CASCADE time, so the
+ * declaration never reached the computed style and the property read as
+ * absent. `height` is fixed (select_config.py, marked as a local patch); the
+ * rest are still in that state and are named in the commit.
+ *
+ * It is invisible until it is not, and then it is invisible AGAIN: an absent
+ * height leaves the box empty, and layout floors an empty box at font_px --
+ * so the result is a small plausible number, not a zero. bilibili's video-card
+ * titles are `height: calc(2 * var(--title-line-height))` with
+ * overflow:hidden, which came out as one clipped line instead of two, with no
+ * error anywhere.
+ *
+ * All three forms, because they are three different paths through the
+ * calculator: a number times a dimension, the same reversed, and a sum. The
+ * var() form is the one the page writes and the one that also exercises the
+ * substitution in page(). */
+static void t_calc_height(void)
+{
+    printf("-- calc() resolves on a height, not only on a width\n");
+    page("<html><head><style>body{margin:0}"
+         "#r{--lh:22px}"
+         "#lit{height:calc(2 * 22px)}"
+         "#rev{height:calc(22px * 2)}"
+         "#sum{height:calc(20px + 24px)}"
+         "#varm{height:calc(2 * var(--lh))}"
+         "#w{width:calc(100px + 40px);height:30px}"
+         "</style></head><body><div id=r>"
+         "<div id=lit>a</div><div id=rev>a</div><div id=sum>a</div>"
+         "<div id=varm>a</div><div id=w>a</div>"
+         "</div></body></html>", 400);
+    box_is("lit",  0,   0, 400, 44);
+    box_is("rev",  0,  44, 400, 44);
+    box_is("sum",  0,  88, 400, 44);
+    box_is("varm", 0, 132, 400, 44);
+    /* width's calc has always worked; asserted beside the others so a future
+     * change that breaks one and not the other is not read as both. The
+     * height is 30 and not 10 deliberately: layout floors an empty box at
+     * font_px, so a 10 here would be asserting that floor rather than this
+     * calc, and the failure would name the wrong thing. */
+    box_is("w",    0, 176, 140, 30);
+}
+
 int main(void)
 {
     /* ---------------------------------------------------------------- 1
@@ -196,6 +242,7 @@ int main(void)
      * table these four numbers were 0,0,0,0 and getComputedStyle on the same
      * element correctly said width:120px. */
     t_pct_padding();
+    t_calc_height();
 
     printf("-- a box nobody painted\n");
     page("<html><head><style>body{margin:0}"

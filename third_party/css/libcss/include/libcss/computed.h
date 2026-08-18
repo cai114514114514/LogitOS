@@ -304,6 +304,16 @@ uint8_t css_computed_width_px(
 uint8_t css_computed_width(const css_computed_style *style,
 		css_fixed *length, css_unit *unit);
 
+/* LOCAL PATCH (LogitOS): the height counterpart of css_computed_width_px.
+ * Upstream has the _px form for width only; `height: calc(...)` is common
+ * enough on real pages that its absence reads as a layout bug rather than a
+ * missing accessor. available_px is the containing block's HEIGHT. */
+uint8_t css_computed_height_px(
+		const css_computed_style *style,
+		const css_unit_ctx *unit_ctx,
+		int available_px,
+		int *px_out);
+
 uint8_t css_computed_empty_cells(
 		const css_computed_style *style);
 

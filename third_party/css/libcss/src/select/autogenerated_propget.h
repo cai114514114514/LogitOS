@@ -1679,8 +1679,8 @@ static inline uint8_t get_height_bits(const css_computed_style *style)
 	/* 7bits: uuuuutt : unit | type */
 	return (bits & 0x3);
 }
-static inline uint8_t get_height(const css_computed_style *style, css_fixed
-		*length, css_unit *unit)
+static inline uint8_t get_height(const css_computed_style *style,
+		css_fixed_or_calc *length, css_unit *unit)
 {
 	uint32_t bits = style->i.bits[HEIGHT_INDEX];
 	bits &= HEIGHT_MASK;

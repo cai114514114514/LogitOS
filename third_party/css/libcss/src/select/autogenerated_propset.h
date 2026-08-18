@@ -1320,15 +1320,29 @@ static inline css_error set_font_weight(css_computed_style *style, uint8_t type)
 #define HEIGHT_MASK 0x3f800
 
 static inline css_error set_height(css_computed_style *style, uint8_t type,
-		css_fixed length, css_unit unit)
+		css_fixed_or_calc length, css_unit unit)
 {
+	uint32_t orig_bits = (style->i.bits[HEIGHT_INDEX] & HEIGHT_MASK) >>
+			HEIGHT_SHIFT;
+	
+	/* 7bits: uuuuutt : unit | type */
+	if ((orig_bits & 0x3) == CSS_HEIGHT_SET) {
+		if ((orig_bits & 0x7c) >> 2 == CSS_UNIT_CALC) {
+			lwc_string_unref(style->i.height.calc);
+		}
+	}
+	
 	uint32_t *bits = &style->i.bits[HEIGHT_INDEX];
 	
 	/* 7bits: uuuuutt : unit | type */
 	*bits = (*bits & ~HEIGHT_MASK) | ((((uint32_t)type & 0x3) | (unit <<
 			2)) << HEIGHT_SHIFT);
 	
-	style->i.height = length;
+	if (unit == CSS_UNIT_CALC) {
+		style->i.height.calc = lwc_string_ref(length.calc);
+	} else {
+		style->i.height.value = length.value;
+	}
 	
 	return CSS_OK;
 }

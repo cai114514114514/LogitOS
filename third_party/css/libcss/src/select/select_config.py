@@ -83,7 +83,17 @@ style = {
     ('flex_grow', 1, 'fixed', 'CSS_FLEX_GROW_SET'),
     ('flex_shrink', 1, 'fixed', 'CSS_FLEX_SHRINK_SET'),
     ('font_size', 4, 'length', 'CSS_FONT_SIZE_DIMENSION'),
-    ('height', 2, 'length', 'CSS_HEIGHT_SET'),
+    # LOCAL PATCH (LogitOS): calc(), which upstream gives to `width` alone.
+    # Every other length property in this table -- height, min/max on both
+    # axes, all four margins and paddings, top/right/bottom/left -- drops a
+    # calc() silently at CASCADE time, so the declaration never reaches the
+    # computed style and the property reads as absent. That is invisible on a
+    # page until it is not: bilibili's video-card titles are
+    # `height: calc(2 * var(--title-line-height))` with overflow:hidden, so
+    # they came out one clipped line instead of two, with no error anywhere.
+    # Only `height` is changed here, because only `height` has been measured
+    # against a real page; the rest are named in the commit as the same gap.
+    ('height', 2, (('length', None, 'calc'),), 'CSS_HEIGHT_SET'),
     ('line_height', 2, 'length', None, None, None, 'get'),
     ('list_style_image', 1, 'string'),
     ('margin_top', 2, 'length', 'CSS_MARGIN_SET'),

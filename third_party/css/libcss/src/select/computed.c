@@ -619,10 +619,89 @@ uint8_t css_computed_box_sizing(const css_computed_style *style)
 	return get_box_sizing(style);
 }
 
+/* LOCAL PATCH (LogitOS): the height counterpart of css_computed_width_px().
+ *
+ * Upstream ships the _px form for width and not for height, and the asymmetry
+ * is invisible until a page uses calc() on a height -- at which point
+ * css_computed_height() below hands its caller a css_fixed that is really a
+ * calc INDEX, with unit CSS_UNIT_CALC. A caller that converts it as a length
+ * gets a small nonsense number, which is the worst kind: every box still has a
+ * size and the page still paints.
+ *
+ * Measured on bilibili's video cards, whose titles are
+ *   height: calc(2 * var(--title-line-height))  with overflow:hidden
+ * and came out one clipped line instead of two.
+ *
+ * Same shape as the width version -- CALC through the calculator, PCT against
+ * available_px, everything else a unit conversion -- with one difference that
+ * is the caller's to honour: available_px here is the containing block's
+ * HEIGHT, not its width. */
+uint8_t css_computed_height_px(
+		const css_computed_style *style,
+		const css_unit_ctx *unit_ctx,
+		int available_px,
+		int *px_out)
+{
+	enum css_height_e type;
+	css_unit unit = CSS_UNIT_PX;
+	css_fixed_or_calc value = {.value = 0};
+
+	type = get_height(style, &value, &unit);
+	switch (type) {
+	case CSS_HEIGHT_AUTO:
+		break;
+	case CSS_HEIGHT_SET:
+		switch (unit) {
+		case CSS_UNIT_CALC:
+			if (css_calculator_calculate(
+					style->calc, unit_ctx,
+					available_px, value.calc,
+					style, &unit, &value.value) == CSS_OK) {
+				type = CSS_HEIGHT_SET;
+				*px_out = FIXTOINT(value.value);
+			} else {
+				type = CSS_HEIGHT_AUTO;
+			}
+			break;
+		case CSS_UNIT_PCT:
+			if (available_px < 0) {
+				type = CSS_HEIGHT_AUTO;
+				break;
+			}
+			*px_out = FPCT_OF_INT_TOINT(value.value, available_px);
+			break;
+		default:
+			*px_out = FIXTOINT(css_unit_len2device_px(
+					style, unit_ctx,
+					value.value, unit));
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return type;
+}
+
 uint8_t css_computed_height(const css_computed_style *style,
 		css_fixed *length, css_unit *unit)
 {
-	return get_height(style, length, unit);
+	/* LOCAL PATCH (LogitOS): mirrors css_computed_width() below. Now that
+	 * height carries calc(), the stored value may be a calc INDEX, and a
+	 * caller that converts it as a length gets a small nonsense number --
+	 * which is worse than an absent one, because the box still has a size.
+	 * A calc reads as AUTO through this accessor, exactly as it does for
+	 * width; the resolved value comes from css_computed_height_px(). */
+	css_fixed_or_calc length_ = {.value = 0};
+	uint8_t ret = get_height(style, &length_, unit);
+	if (ret == CSS_HEIGHT_SET) {
+		if (*unit == CSS_UNIT_CALC) {
+			return CSS_HEIGHT_AUTO;
+		}
+		*length = length_.value;
+	}
+	return ret;
 }
 
 uint8_t css_computed_line_height(const css_computed_style *style,
@@ -1289,8 +1368,9 @@ css_error css__compute_absolute_values(const css_computed_style *parent,
 	if (error != CSS_OK)
 		return error;
 
-	/* Fix up height */
-	error = compute_absolute_length(style, &ex_size.data.length,
+	/* Fix up height. LOCAL PATCH (LogitOS): the _calc variant, which is
+	 * what width already uses -- height carries calc() now. */
+	error = compute_absolute_length_calc(style, &ex_size.data.length,
 			get_height, set_height);
 	if (error != CSS_OK)
 		return error;

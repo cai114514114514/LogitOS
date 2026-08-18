@@ -933,6 +933,34 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     }
     if (css_computed_height(cs, &len, &unit) == CSS_HEIGHT_SET) {
         int pct; o->height = clamp_px(len_px(len, unit, fp, &pct)); o->has_h = 1; o->h_pct = pct;
+    } else {
+        /* A CALC HEIGHT ARRIVES HERE, NOT ABOVE, and that is the same shape
+         * the width block below uses: css_computed_height() reports an
+         * unresolved calc() as AUTO on purpose, because what it would
+         * otherwise hand back is a calc INDEX that a caller converting it as
+         * a length turns into a small nonsense number -- and a small nonsense
+         * number is worse than an absent one, since the box still has a size
+         * and the page still paints.
+         *
+         * `height: calc(...)` reached this file as nothing at all until now:
+         * upstream LibCSS gives calc() to `width` and to no other length
+         * property, and the cascade dropped it before the computed style
+         * existed. See the LOCAL PATCH note in
+         * third_party/css/libcss/src/select/select_config.py.
+         *
+         * Probed exactly as width is: a calc() is linear in the available
+         * length, so two evaluations recover slope (the percentage) and
+         * intercept (the px addend). A calc with no percentage in it -- which
+         * is the common case, and the one bilibili's card titles are -- gives
+         * slope 0 and is answered correctly with no available height at all. */
+        int q0, q1;
+        if (css_computed_height_px(cs, &g_unit, 0, &q0) == CSS_HEIGHT_SET &&
+            css_computed_height_px(cs, &g_unit, 1000, &q1) == CSS_HEIGHT_SET) {
+            int pct = (q1 - q0 + 5) / 10;
+            o->has_h = 1;
+            if (pct) { o->h_pct = 1; o->height = pct; o->h_off = clamp_px(q0); }
+            else       o->height = clamp_px(q0);
+        }
     }
 
     /* min/max sizing. `auto` (the flex-item initial) leaves has_min_* clear, so
