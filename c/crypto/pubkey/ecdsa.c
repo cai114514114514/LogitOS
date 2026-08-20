@@ -594,6 +594,226 @@ int ecdh_shared(int curve, const uint8_t *priv, uint32_t blind,
     return rc;
 }
 
+/* ============================================================================
+ * ECDSA *SIGNING* on P-256 / P-384 / P-521.
+ *
+ * WHY THIS EXISTS: before it, the only signature this entire tree could
+ * PRODUCE was Ed25519 (ed25519_sign). ECDSA and RSA were verify-only, which is
+ * everything a client needs and nothing a SERVER needs -- a TLS 1.3 server
+ * proves it holds the certificate's private key by signing the transcript in
+ * CertificateVerify. The rejected alternative was an Ed25519 server
+ * certificate, which needs no new primitive at all; it was rejected because
+ * our own client neither advertises ed25519 (0x0807) in signature_algorithms
+ * nor has a branch for it in verify_flight, so an Ed25519 server would have
+ * been a server this machine's own browser cannot reach. P-256 is the one
+ * certificate key type every peer here already verifies.
+ *
+ * NO RNG IS INVOLVED IN CHOOSING k -- RFC 6979 deterministic generation.
+ * That is not tidiness. ECDSA's failure mode when k repeats or is biased is
+ * total: two signatures under the same k give
+ *     k = (e1 - e2)/(s1 - s2),  then  d = (s*k - e)/r
+ * and the private key is gone (PS3, 2010; Android SecureRandom, 2013). The
+ * alternative -- take k from kernel_random_bytes like the ECDHE scalars do --
+ * makes the server's long-term identity key depend on the CSPRNG being healthy
+ * at every single signature, forever, on a machine whose entropy comes from
+ * RDSEED and a fallback this tree already refuses to trust for TLS
+ * (rng_strong()). Deterministic k depends on it exactly once, at key
+ * generation. It also buys the test an INDEPENDENT known-answer oracle: RFC
+ * 6979 A.2.5 publishes r and s for P-256/SHA-256, so a correct signer is
+ * pinned to exact bytes rather than to "openssl accepted it", which several
+ * subtly wrong signers would also pass.
+ *
+ * `blind` is still caller-supplied randomness, for the SCALAR BLINDING of k*G
+ * only (see blind_scalar). It cannot change the output -- (k + rho*n)*G ==
+ * k*G -- so the RFC 6979 vectors hold for every value of it, which is what
+ * makes both properties testable at once.
+ *
+ * THE HMAC IS INJECTED, and that is not a style choice. This file states its
+ * own invariant a hundred lines above: randomness is supplied by the caller
+ * "so this file stays free of any RNG dependency and remains host-testable on
+ * its own". Calling hmac() directly broke exactly that -- `make test-crypto`
+ * links ecdsa.c ALONE (tests/unit/ecdsa_test.c + ecdsa.c + -Ic/crypto, nothing
+ * else) and stopped LINKING, which is the failure mode CLAUDE.md records five
+ * instances of: "a source file grew a dependency and a link line did not
+ * follow". So the primitive comes in as a parameter, the way ed25519_keypair
+ * takes its randbytes, and the file's dependency set is unchanged. The caller
+ * cannot pick the wrong hash by accident: it is invoked as mac(hlen, ...) with
+ * OUR hlen, never the caller's idea of one.
+ * ========================================================================== */
+
+/* bits2int (RFC 6979 2.3.2): the leftmost qlen bits of `b`, as an integer.
+ * When 8*blen > qlen the value is SHIFTED RIGHT, not masked. For every pairing
+ * this tree actually uses the shift count is 0, but a masked implementation is
+ * wrong for e.g. P-521 with a 66-byte digest and wrong in a way that produces
+ * a signature which simply does not verify, i.e. with no pointer to here. */
+static void bits2int(bn o, const uint8_t *b, int blen, int qbits)
+{
+    int use = blen;
+    if (use * 8 > qbits) use = (qbits + 7) / 8;
+    bn_from_be(o, b, use);
+    int excess = use * 8 - qbits;
+    for (int i = 0; i < excess; i++) {          /* >>1, `excess` times (0..7) */
+        uint32_t carry = 0;
+        for (int j = NL - 1; j >= 0; j--) {
+            uint32_t nc = o[j] & 1u;
+            o[j] = (o[j] >> 1) | (carry << 31);
+            carry = nc;
+        }
+    }
+}
+
+static int bn_bits(const bn a)
+{
+    for (int i = NL*32 - 1; i >= 0; i--) if ((a[i/32] >> (i%32)) & 1) return i + 1;
+    return 0;
+}
+
+/* RFC 6979 3.2's HMAC_DRBG over the curve order. `hlen` is the message
+ * digest's length and doubles as the DRBG's hash, exactly as the RFC specifies
+ * ("the same hash function as the one used to process the message"). */
+struct k_gen { uint8_t K[64], V[64]; int hlen; ecdsa_hmac_fn mac; };
+
+/* One buffer because hmac() takes a single contiguous message: V (<=64) +
+ * separator (1) + int2octets(x) (<=66) + bits2octets(h1) (<=66) = 197. */
+static void kg_seed(struct k_gen *g, uint8_t sep, const uint8_t *x_oct, int xlen,
+                    const uint8_t *h1_oct, int h1len)
+{
+    uint8_t buf[208]; int n = 0;
+    for (int i = 0; i < g->hlen; i++) buf[n++] = g->V[i];
+    buf[n++] = sep;
+    for (int i = 0; i < xlen; i++)  buf[n++] = x_oct[i];
+    for (int i = 0; i < h1len; i++) buf[n++] = h1_oct[i];
+    g->mac(g->hlen, g->K, g->hlen, buf, n, g->K);
+    g->mac(g->hlen, g->K, g->hlen, g->V, g->hlen, g->V);
+    crypto_wipe(buf, sizeof buf);
+}
+
+static void kg_init(struct k_gen *g, int hlen, ecdsa_hmac_fn mac,
+                    const uint8_t *x_oct, int xlen,
+                    const uint8_t *h1_oct, int h1len)
+{
+    g->hlen = hlen; g->mac = mac;
+    for (int i = 0; i < hlen; i++) { g->V[i] = 0x01; g->K[i] = 0x00; }
+#ifdef LOGIT_ECDSA_SIGN_BREAK_SEP
+    /* NEGATIVE CONTROL (test-ecdsa-sign-negctl). Transpose the two separator
+     * octets -- the single most plausible transcription error in RFC 6979 3.2,
+     * and one that changes NOTHING an ordinary test can see: k is still
+     * uniform, r and s are still a valid signature, and openssl still verifies
+     * it. Only the known-answer half notices. If the gate stays green with
+     * this defined, the RFC 6979 reference is not being consulted and the
+     * suite is measuring "openssl accepted it", which no k-generation bug ever
+     * fails. */
+    kg_seed(g, 0x01, x_oct, xlen, h1_oct, h1len);
+    kg_seed(g, 0x00, x_oct, xlen, h1_oct, h1len);
+#else
+    kg_seed(g, 0x00, x_oct, xlen, h1_oct, h1len);   /* steps d + e */
+    kg_seed(g, 0x01, x_oct, xlen, h1_oct, h1len);   /* steps f + g */
+#endif
+}
+
+/* Next candidate k: RFC 6979 3.2 step h -- fill T to at least qlen bits, then
+ * bits2int. kg_retry implements step h.3's "K = HMAC(V||00); V = HMAC(V)". */
+static void kg_next(struct k_gen *g, bn k, const struct curve *c)
+{
+    uint8_t T[80]; int tlen = 0;
+    int need = c->nbytes;                        /* ceil(qlen/8) */
+    while (tlen < need) {
+        g->mac(g->hlen, g->K, g->hlen, g->V, g->hlen, g->V);
+        for (int i = 0; i < g->hlen && tlen < (int)sizeof T; i++) T[tlen++] = g->V[i];
+    }
+    bits2int(k, T, need, bn_bits(c->n));
+    crypto_wipe(T, sizeof T);
+}
+
+static void kg_retry(struct k_gen *g)
+{
+    uint8_t buf[80]; int n = 0;
+    for (int i = 0; i < g->hlen; i++) buf[n++] = g->V[i];
+    buf[n++] = 0x00;
+    g->mac(g->hlen, g->K, g->hlen, buf, n, g->K);
+    g->mac(g->hlen, g->K, g->hlen, g->V, g->hlen, g->V);
+    crypto_wipe(buf, sizeof buf);
+}
+
+/* Sign `hash` (hlen bytes) with the private scalar `priv` (nbytes big-endian).
+ * `sig` receives r||s, nbytes each. 0 on success, -1 on a bad curve, an
+ * out-of-range private key, or -- unreachably -- 16 consecutive candidate k
+ * values that all yielded r == 0 or s == 0.
+ *
+ * `hlen` must be the digest length of the SAME hash the caller will name in
+ * the signature algorithm; the DRBG is keyed on it, so signing a SHA-256
+ * digest while claiming SHA-384 produces a signature that verifies as neither. */
+int ecdsa_sign(int curve, const uint8_t *priv, const uint8_t *hash, int hlen,
+               uint32_t blind, ecdsa_hmac_fn mac, uint8_t *sig)
+{
+    struct curve *c = curve_by_id(curve);
+    if (!c || !mac) return -1;
+    if (hlen != 32 && hlen != 48 && hlen != 64) return -1;   /* what hmac() dispatches on */
+
+    bn d; bn_from_be(d, priv, c->nbytes);
+    if (bn_iszero(d) || bn_cmp(d, c->n) >= 0) { crypto_wipe(d, sizeof d); return -1; }
+
+    int qbits = bn_bits(c->n);
+    /* e = bits2int(h1) mod n. The reduction is not cosmetic: mod_mul's Barrett
+     * path assumes reduced inputs, and a P-256 key signing a SHA-384 digest
+     * produces a bits2int result that can exceed n. One conditional subtract is
+     * exact because bits2int < 2^qlen < 2n. */
+    bn e; bits2int(e, hash, hlen, qbits);
+    if (bn_cmp(e, c->n) >= 0) { bn t; bn_sub(t, e, c->n); bn_copy(e, t); }
+
+    uint8_t x_oct[66], h1_oct[66];
+    bn_to_be(x_oct, d, c->nbytes);
+    bn_to_be(h1_oct, e, c->nbytes);              /* bits2octets(h1) = int2octets(e) */
+
+    struct k_gen g;
+    kg_init(&g, hlen, mac, x_oct, c->nbytes, h1_oct, c->nbytes);
+    crypto_wipe(x_oct, sizeof x_oct);
+
+    int rc = -1;
+    bn k, r, s;
+    for (int tries = 0; tries < 16; tries++) {
+        if (tries) kg_retry(&g);
+        kg_next(&g, k, c);
+        if (bn_iszero(k) || bn_cmp(k, c->n) >= 0) continue;      /* RFC 6979 step h.3 */
+
+        /* R = k*G, blinded: jpt_mul_bits over k + rho*n reaches the same point
+         * by a different bit pattern, so one timing trace does not map onto k. */
+        bn kb; int nbits = blind_scalar(kb, k, blind, c);
+        if (nbits <= 0) { crypto_wipe(kb, sizeof kb); continue; }
+        struct jpt R; jpt_mul_bits(&R, kb, nbits, c->gx, c->gy, c);
+        crypto_wipe(kb, sizeof kb);
+        if (bn_iszero(R.Z)) { crypto_wipe(&R, sizeof R); continue; }
+
+        bn rx, ry; jpt_affine(rx, ry, &R, c);
+        crypto_wipe(&R, sizeof R); crypto_wipe(ry, sizeof ry);
+        /* r = Rx mod n. Rx < p and p < 2n for all three curves, so one
+         * conditional subtract is exact -- the same argument ecdsa_verify makes
+         * when it folds rx back before the comparison. */
+        if (bn_cmp(rx, c->n) >= 0) { bn t; bn_sub(t, rx, c->n); bn_copy(rx, t); }
+        bn_copy(r, rx);
+        if (bn_iszero(r)) continue;
+
+        /* s = k^-1 (e + r*d) mod n */
+        bn kinv, rd, sum;
+        mod_inv(kinv, k, c->n);
+        mod_mul(rd, r, d, c->n);
+        mod_add(sum, e, rd, c->n);
+        mod_mul(s, kinv, sum, c->n);
+        crypto_wipe(kinv, sizeof kinv); crypto_wipe(rd, sizeof rd); crypto_wipe(sum, sizeof sum);
+        if (bn_iszero(s)) continue;
+
+        bn_to_be(sig, r, c->nbytes);
+        bn_to_be(sig + c->nbytes, s, c->nbytes);
+        rc = 0;
+        break;
+    }
+
+    crypto_wipe(&g, sizeof g);
+    crypto_wipe(d, sizeof d); crypto_wipe(e, sizeof e);
+    crypto_wipe(k, sizeof k); crypto_wipe(s, sizeof s);
+    return rc;
+}
+
 /* Test hook (tools/t/ecdsa_test.c): out = a*b mod (curveid?P384:P256 . useorder?n:p),
  * big-endian, nbytes each. Exercises mod_mul's Barrett path. */
 int ecdsa_modmul_test(int curveid, int useorder, const uint8_t *a, const uint8_t *b, uint8_t *out)

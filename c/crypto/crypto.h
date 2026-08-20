@@ -233,6 +233,31 @@ int ecdh_shared(int curve, const uint8_t *priv, uint32_t blind,
 int ecdsa_verify(int curve, const uint8_t *pub, const uint8_t *sig,
                  const uint8_t *hash, int hlen);
 
+/* --- ECDSA sign on P-256 (256) / P-384 (384) / P-521 (521) ------------------
+ * The counterpart to ecdsa_verify, and the reason it exists is the TLS SERVER:
+ * a client only ever verifies, so until c/net/tls/tls_server.c there was no
+ * caller and the only signature this tree could PRODUCE was Ed25519.
+ *
+ * `priv` is the private scalar, flen bytes big-endian (flen = x509_ec_flen);
+ * `hash` is the message digest, hlen in {32,48,64}; `sig` receives r||s, flen
+ * bytes each. Returns 0, or -1 for an unknown curve, a scalar outside
+ * [1, n-1], or an hlen no HMAC here dispatches on.
+ *
+ * k IS DETERMINISTIC (RFC 6979) and no RNG is consulted. `blind` is 32 fresh
+ * random bits used only to blind the scalar multiplication, exactly as in
+ * ecdh_keygen; it cannot change the output, so RFC 6979's r and s are a
+ * known-answer oracle for any value of it. See the block comment in ecdsa.c
+ * for why the RNG was taken out of this path rather than trusted.
+ *
+ * `mac` is this file's own hmac(), passed in rather than called: ecdsa.c is
+ * deliberately dependency-free so `make test-crypto` can link it on its own,
+ * and calling hmac() directly stopped that target LINKING. Same reason
+ * ed25519_keypair takes its randbytes. Pass `hmac`; NULL returns -1. */
+typedef void (*ecdsa_hmac_fn)(int hlen, const uint8_t *key, int keylen,
+                              const uint8_t *msg, int msglen, uint8_t *out);
+int ecdsa_sign(int curve, const uint8_t *priv, const uint8_t *hash, int hlen,
+               uint32_t blind, ecdsa_hmac_fn mac, uint8_t *sig);
+
 /* --- RSASSA-PKCS1-v1_5 verify --- n,e big-endian; sig big-endian (<= nlen);
  * hash is the digest (hlen 32 -> SHA-256, 48 -> SHA-384). 1 valid / 0 not. */
 int rsa_pkcs1_verify(const uint8_t *n, int nlen, const uint8_t *e, int elen,
