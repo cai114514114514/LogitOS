@@ -187,7 +187,12 @@ static void usage(const char *argv0)
 {
     printf("usage: %s [-m /model.lm] [-p \"prompt\"] [-n 200] [-t 0.8] "
            "[-s seed] [--greedy] [--budget MiB] [--seq N] [--read] "
-           "[--posix-read] [--mm]\n", argv0);
+           "[--posix-read] [--mm]\n"
+           "       [--ids 1,2,3] [--print-ids] [--dump-logits FILE]\n"
+           "  --ids replaces -p with real token ids (the tokenizer stays on\n"
+           "  the host); --print-ids prints generated ids instead of bytes;\n"
+           "  --dump-logits writes the raw f32 logit row after the prompt.\n",
+           argv0);
 }
 
 /* lm_open's refusal codes are named in model.h; a person on a serial console
@@ -342,6 +347,28 @@ static double now_s(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/* The --ids buffer bound. 512 because it is the seq_len this model line is
+ * built at, so a longer list could not be fed anyway; a fixed buffer rather
+ * than a malloc because the list arrives on a command line, where the length
+ * is bounded by the OS's argv limit long before it is bounded by anything
+ * here. */
+#define LM_IDS_MAX 512
+
+/* THE ARENA ACCESSORS EXIST ONLY IN THE FREESTANDING BUILD, and the guard is
+ * __STDC_HOSTED__ because that is the discriminator malloc.c itself uses to
+ * pick its backend. build/lm_host is an ordinary hosted program linked against
+ * glibc's malloc, which has no arena and no such symbols -- declaring them
+ * unconditionally is an undefined reference at link time, which is how this
+ * was found. Declared here rather than reached through a header because
+ * malloc.c exports them without one: it is the allocator every other TU
+ * depends on and deliberately acquires no include that might itself allocate
+ * (its own comment at arena_sys). */
+#if !__STDC_HOSTED__
+extern size_t malloc_arena_size(void);
+extern int    malloc_arena_failed;
+#define LM_HAVE_ARENA 1
+#endif
+
 int main(int argc, char **argv)
 {
     const char *model_path = "/model.lm";
@@ -351,6 +378,25 @@ int main(int argc, char **argv)
     unsigned long long seed = 0;
     int have_seed = 0;
     int greedy = 0;
+
+    /* --ids / --print-ids: THE TOKENIZER STAYS ON THE HOST.
+     *
+     * -p feeds the prompt one BYTE at a time, which is the right and only
+     * convention for a byte-level synthetic model and is simply wrong for a
+     * real one: Qwen3's vocabulary is 151,936 BPE tokens and "hello" is not
+     * five of them. A real tokenizer on the device would be ~887 KiB of merge
+     * table (tools/lmtok.py measured it) and, worse, a SECOND implementation
+     * of the encoder to keep in step with the host's -- and a divergence
+     * there is indistinguishable from a divergence in the arithmetic, which
+     * is the one comparison this program exists to make trustworthy.
+     *
+     * So ids in, ids out. The host encodes with tools/lmtok.py (gated against
+     * the real tokenizer at 38,990 tokens exact) and decodes the same way,
+     * and HOST-vs-DEVICE becomes an exact integer comparison with no text,
+     * no locale and no font in the middle of it. */
+    const char *ids_arg = NULL;
+    int print_ids = 0;
+    const char *dump_logits = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
@@ -377,6 +423,12 @@ int main(int argc, char **argv)
                 return 2;
             }
             g_budget_bytes = mib * 1024ull * 1024ull;
+        } else if (strcmp(argv[i], "--ids") == 0 && i + 1 < argc) {
+            ids_arg = argv[++i];
+        } else if (strcmp(argv[i], "--print-ids") == 0) {
+            print_ids = 1;
+        } else if (strcmp(argv[i], "--dump-logits") == 0 && i + 1 < argc) {
+            dump_logits = argv[++i];
         } else if (strcmp(argv[i], "--greedy") == 0) {
             greedy = 1;
         } else if (strcmp(argv[i], "--read") == 0) {
@@ -746,6 +798,21 @@ int main(int argc, char **argv)
 
     mm_mark("before the inference state is allocated");
 
+    /* WHAT THE HEAP ACTUALLY IS, printed before the allocation that may fail
+     * on it. malloc.c's arena_reserve() HALVES its request until one succeeds
+     * (128 -> 64 -> 32 -> ...), so a build compiled with a 128 MiB reservation
+     * can be running on 16 -- and the failure message below, which names the
+     * size ASKED FOR, then sends the reader hunting for a machine out of
+     * memory when the machine has hundreds of megabytes free and it is the
+     * RESERVATION that is small. Measured on the device at 1024 MiB: 455 MiB
+     * free and a 29 MiB state refused, which is not explicable from any other
+     * number this program prints. */
+#ifdef LM_HAVE_ARENA
+    printf("lm: ring-3 heap    %lu KiB reserved%s\n",
+           (unsigned long)(malloc_arena_size() / 1024),
+           malloc_arena_failed ? " (RESERVATION FAILED -- there is no heap)" : "");
+#endif
+
     struct lm_state st;
     if (lm_state_new(&st, &m) != 0) {
         printf("lm: out of memory allocating the %lu KiB inference state\n",
@@ -836,8 +903,52 @@ int main(int argc, char **argv)
      * relying on the field itself is the one reading that cannot drift from
      * whatever lm_forward actually does to it. */
     const float *logits = NULL;
+
+    /* --ids REPLACES the byte feed above rather than adding to it. Parsed
+     * here and not at argument time because `vocab` and `seq_len` -- the two
+     * things an id has to be checked against -- are properties of the model,
+     * which is not open yet when argv is walked.
+     *
+     * AN OUT-OF-RANGE ID IS REFUSED, NOT CLAMPED. lm_embed_row would read off
+     * the end of the embedding table, and the failure that produces is a
+     * plausible-looking vector rather than a fault -- the same shape as every
+     * other silent failure this file argues about. */
+    int  ids_buf[LM_IDS_MAX];
+    long ids_n = 0;
+    if (ids_arg) {
+        const char *s = ids_arg;
+        while (*s) {
+            while (*s == ',' || *s == ' ') s++;
+            if (!*s) break;
+            if (*s < '0' || *s > '9') {
+                printf("lm: --ids: '%s' is not a comma-separated list of "
+                       "non-negative integers\n", ids_arg);
+                lm_state_free(&st); lm_close(&m);
+                release_blob(blob, (size_t)len, mapped, fd); return 1;
+            }
+            long v = 0;
+            while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+            if (v >= (long)vocab) {
+                printf("lm: --ids: token %ld is outside the model's vocabulary "
+                       "of %d -- refused rather than clamped, because reading "
+                       "past the embedding table produces a plausible vector "
+                       "and no error\n", v, vocab);
+                lm_state_free(&st); lm_close(&m);
+                release_blob(blob, (size_t)len, mapped, fd); return 1;
+            }
+            if (ids_n >= LM_IDS_MAX) {
+                printf("lm: --ids: more than %d tokens; this is a fixed buffer "
+                       "because the list comes off a command line\n", LM_IDS_MAX);
+                lm_state_free(&st); lm_close(&m);
+                release_blob(blob, (size_t)len, mapped, fd); return 1;
+            }
+            ids_buf[ids_n++] = (int)v;
+        }
+        prompt_len = (size_t)ids_n;
+    }
+
     for (size_t i = 0; i < prompt_len && st.pos < seq_len; i++) {
-        unsigned char tok = (unsigned char)prompt[i];
+        int tok = ids_arg ? ids_buf[i] : (int)(unsigned char)prompt[i];
         double c0 = now_s();
         logits = lm_forward(&m, &st, tok, st.pos);
         double c1 = now_s();
@@ -854,7 +965,49 @@ int main(int argc, char **argv)
         logit_scan(logits, vocab, &lo_min, &lo_max, &lo_nonfinite, &lo_rows);
         steps_run++;
     }
-    fputs(prompt, stdout);
+    /* Nothing is echoed in --ids mode: the ids the host sent are the ids the
+     * host already has, and this program cannot turn them back into text
+     * without the tokenizer it deliberately does not carry. Printing the raw
+     * argv string instead would put a comma-separated integer list in the
+     * middle of the generated output, where a reader would take it for text
+     * the model produced. */
+    if (!ids_arg) fputs(prompt, stdout);
+
+    /* --dump-logits: THE LOGIT ROW AFTER THE LAST PROMPT TOKEN, raw f32.
+     *
+     * This is the file the whole "is it really Qwen" question is settled on.
+     * A generated SAMPLE cannot settle it -- a wrong rope base, a transposed
+     * matrix and a wrong tokenizer all produce confident, grammatical, wrong
+     * text -- so the comparison against PyTorch is made on the logits, where
+     * the two sides either agree to the quantiser's error or they do not.
+     *
+     * Raw little-endian f32, `vocab` of them, no header: the reader is
+     * numpy.fromfile on a machine that is x86-64 on both ends, and a header
+     * would be a second thing to keep in step for no reader's benefit.
+     *
+     * A FAILED WRITE IS REPORTED AND CHANGES THE EXIT STATUS. An oracle
+     * comparison that silently reads a stale file from the previous run is
+     * the exact failure CLAUDE.md opens with -- the thing reporting the
+     * result was not looking at what the reader assumed. */
+    if (dump_logits) {
+        if (!logits) {
+            printf("lm: --dump-logits: nothing has run (an empty prompt has "
+                   "no logit row), so there is nothing to dump\n");
+            lm_state_free(&st); lm_close(&m);
+            release_blob(blob, (size_t)len, mapped, fd); return 1;
+        }
+        FILE *lf = fopen(dump_logits, "wb");
+        size_t wrote = lf ? fwrite(logits, sizeof(float), (size_t)vocab, lf) : 0;
+        if (lf) fclose(lf);
+        if (wrote != (size_t)vocab) {
+            printf("lm: --dump-logits: wrote %lu of %d floats to %s\n",
+                   (unsigned long)wrote, vocab, dump_logits);
+            lm_state_free(&st); lm_close(&m);
+            release_blob(blob, (size_t)len, mapped, fd); return 1;
+        }
+        printf("lm: dumped %d logits after prompt position %d to %s\n",
+               vocab, st.pos - 1, dump_logits);
+    }
 
     /* -------------------------------------------------------- generate -- */
     int next_tok = 0;
@@ -884,7 +1037,8 @@ int main(int argc, char **argv)
         }
         logit_scan(logits, vocab, &lo_min, &lo_max, &lo_nonfinite, &lo_rows);
         steps_run++;
-        putchar(next_tok);
+        if (print_ids) printf("%d ", next_tok);
+        else           putchar(next_tok);
         produced++;
         next_tok = greedy ? lm_sample_greedy(logits, vocab)
                            : lm_sample_topp((float *)logits, vocab,

@@ -108,16 +108,23 @@ static void ref_softmax(double *y, const float *x, int n)
     for (int i = 0; i < n; i++) y[i] /= s;
 }
 
-static void ref_rope(double *y, const float *x, int n, int pos, double theta)
+/* The rope reference, at BOTH pairings. `pairing` selects which two
+ * coordinates make up pair i; the angles are identical either way, which is
+ * the property that makes the two so easy to confuse and so damaging to get
+ * wrong -- see nn.h. */
+static void ref_rope(double *y, const float *x, int n, int pos, double theta,
+                     int pairing)
 {
     int half = n / 2;
     for (int i = 0; i < half; i++) {
         double freq = 1.0 / pow(theta, (double)(2 * i) / (double)n);
         double a = (double)pos * freq;
         double c = cos(a), s = sin(a);
-        double x0 = x[2 * i], x1 = x[2 * i + 1];
-        y[2 * i]     = x0 * c - x1 * s;
-        y[2 * i + 1] = x0 * s + x1 * c;
+        int i0 = (pairing == NN_ROPE_NEOX) ? i        : 2 * i;
+        int i1 = (pairing == NN_ROPE_NEOX) ? i + half : 2 * i + 1;
+        double x0 = x[i0], x1 = x[i1];
+        y[i0] = x0 * c - x1 * s;
+        y[i1] = x0 * s + x1 * c;
     }
 }
 
@@ -452,8 +459,8 @@ static void t_rope(void)
     static double r[N];
     for (int i = 0; i < N; i++) x[i] = frand();
     memcpy(y, x, sizeof x);
-    nn_rope(y, N, 7, 10000.0f);
-    ref_rope(r, x, N, 7, 10000.0);
+    nn_rope(y, N, 7, 10000.0f, NN_ROPE_INTERLEAVED);
+    ref_rope(r, x, N, 7, 10000.0, NN_ROPE_INTERLEAVED);
     double worst = 0.0;
     for (int i = 0; i < N; i++) {
         double e = fabs((double)y[i] - r[i]);
@@ -481,10 +488,52 @@ static void t_rope(void)
      * position); this pins the one position whose answer is known without a
      * reference at all. */
     memcpy(y, x, sizeof x);
-    nn_rope(y, N, 0, 10000.0f);
+    nn_rope(y, N, 0, 10000.0f, NN_ROPE_INTERLEAVED);
     int same = 1;
     for (int i = 0; i < N; i++) if (y[i] != x[i]) { same = 0; break; }
     eqi("rope at position 0 is the identity", same, 1);
+
+    /* ---------------------------------------------- THE OTHER PAIRING --
+     *
+     * NN_ROPE_NEOX rotates (x[i], x[i+n/2]) instead of (x[2i], x[2i+1]).
+     * Qwen3 is a NEOX model, so this is not a curiosity -- it is the pairing
+     * the only real model in this tree uses, and until it existed the tree
+     * had exactly one convention and no way to say otherwise.
+     *
+     * THREE CHECKS, AND THE THIRD IS THE ONE THAT MATTERS. Agreeing with its
+     * own reference and being the identity at position 0 are both true of a
+     * function that ignores `pairing` entirely -- position 0 is the identity
+     * under EVERY convention, which is exactly how a corrupt rope table
+     * survived a position-0 comparison during this work. So the last check
+     * requires the two pairings to actually DIFFER at a position where they
+     * can. */
+    memcpy(y, x, sizeof x);
+    nn_rope(y, N, 7, 10000.0f, NN_ROPE_NEOX);
+    ref_rope(r, x, N, 7, 10000.0, NN_ROPE_NEOX);
+    worst = 0.0;
+    for (int i = 0; i < N; i++) {
+        double e = fabs((double)y[i] - r[i]);
+        if (e > worst) worst = e;
+    }
+    near("rope NEOX matches the double reference", worst, 0.0, 1e-6);
+
+    memcpy(y, x, sizeof x);
+    nn_rope(y, N, 0, 10000.0f, NN_ROPE_NEOX);
+    same = 1;
+    for (int i = 0; i < N; i++) if (y[i] != x[i]) { same = 0; break; }
+    eqi("rope NEOX at position 0 is the identity too", same, 1);
+
+    { float a[N], b[N];
+      memcpy(a, x, sizeof x); memcpy(b, x, sizeof x);
+      nn_rope(a, N, 7, 10000.0f, NN_ROPE_INTERLEAVED);
+      nn_rope(b, N, 7, 10000.0f, NN_ROPE_NEOX);
+      double sep = 0.0;
+      for (int i = 0; i < N; i++) {
+          double e = fabs((double)a[i] - (double)b[i]);
+          if (e > sep) sep = e;
+      }
+      printf("      the two pairings separate by %.4g at pos 7\n", sep);
+      eqi("the two pairings are NOT the same function", (long)(sep > 1e-3), 1); }
 }
 
 int main(void)

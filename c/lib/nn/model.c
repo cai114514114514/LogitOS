@@ -245,6 +245,36 @@ int lm_open(struct lm_model *m, const void *blob, size_t len)
     for (size_t i = 0; i < sizeof h.reserved / sizeof h.reserved[0]; i++)
         if (h.reserved[i] != 0) return -3;
 
+    /* THE TWO ARCHITECTURE CONSTANTS (model.h). Zero means "the default" and
+     * is the only value a writer can mean by silence, so it is not checked
+     * here -- but everything else representable IS checked, because these are
+     * the two numbers whose corruption produces no symptom. A NaN rope base
+     * makes every position encoding NaN and the logits follow; a negative eps
+     * can put a negative under the sqrt in rmsnorm. Both would surface as
+     * garbage output attributed to the model rather than to the file, which
+     * is the failure this format spends its whole `reserved` discipline
+     * avoiding.
+     *
+     * Tested on the BIT PATTERN and not with isfinite(): this TU is built
+     * -ffreestanding for the device and math.h is not guaranteed there, and
+     * "exponent all ones" is the definition rather than an approximation of
+     * it. Sign bit set is refused outright -- neither a rope base nor an eps
+     * has a meaningful negative value. */
+    { /* 0x7F800000 IS THE EXPONENT FIELD, bits 23..30, and the first draft of
+       * this line masked with 0xFF000000 instead -- which includes the SIGN
+       * bit and drops the exponent's low bit, so it matched +inf and MISSED
+       * EVERY NaN. A NaN rope base is the more dangerous of the two: infinity
+       * at least drives the frequencies to zero, while NaN poisons every
+       * position encoding and every logit downstream with no error anywhere.
+       * Caught by the NaN case in lm_format_test, which is why the two are
+       * separate checks there rather than one "non-finite is refused". */
+      const uint32_t bits[2] = { h.rope_base_f32, h.rms_eps_f32 };
+      for (int i = 0; i < 2; i++) {
+          if (bits[i] == 0) continue;                       /* use the default */
+          if (bits[i] & 0x80000000u) return -4;             /* negative */
+          if ((bits[i] & 0x7F800000u) == 0x7F800000u) return -4; /* inf or NaN */
+      } }
+
     size_t expected = lm_expected_size(&h);
     if (!expected) return -4;
     if (len != expected) return -5;
@@ -427,14 +457,23 @@ int lm_describe(const struct lm_model *m, char *buf, int cap)
     const char *dtype = m->h.dtype == NN_Q8 ? "q8"
                       : m->h.dtype == NN_Q4 ? "q4" : "f32";
     int n = snprintf(buf, (size_t)cap,
+        /* rope= and eps= are printed ALWAYS, never as a present/absent word.
+         * This is the one line a harness log carries about which model ran,
+         * and the three architecture facts it now depends on -- pairing, base,
+         * epsilon -- are precisely the ones whose wrong value produces fluent,
+         * confident, wrong text with nothing else in the output to show it. A
+         * flag word that is simply missing when interleaved would read as
+         * "not applicable" rather than as a choice. */
         "LOGITLM dim=%u layers=%u heads=%u kv_heads=%u head_dim=%d hidden=%u "
-        "vocab=%u seq_len=%u dtype=%s%s%s%s",
+        "vocab=%u seq_len=%u dtype=%s%s%s%s rope=%s/%g eps=%g",
         (unsigned)m->h.dim, (unsigned)m->h.n_layers, (unsigned)m->h.n_heads,
         (unsigned)m->h.n_kv_heads, m->head_dim, (unsigned)m->h.hidden,
         (unsigned)m->h.vocab, (unsigned)m->h.seq_len, dtype,
         (m->h.flags & LM_TIED)   ? " tied"   : "",
         (m->h.flags & LM_QKNORM) ? " qknorm" : "",
-        (m->h.flags & LM_QEMB)   ? " qemb"   : "");
+        (m->h.flags & LM_QEMB)   ? " qemb"   : "",
+        (m->h.flags & LM_ROPE_NEOX) ? "neox" : "interleaved",
+        (double)lm_rope_base(&m->h), (double)lm_rms_eps(&m->h));
     if (n < 0) return -1;               /* an encoding error, not a size one */
     return n < cap ? n : cap - 1;       /* snprintf's return can exceed cap */
 }

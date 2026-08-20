@@ -556,8 +556,8 @@ static const float *shadow_forward(struct shadow_state *s, struct lm_kvcache *kv
         if (!shmv(s->k, &L->wk, s->xb, kv_dim, dim)) return NULL;
         if (!shmv(s->v, &L->wv, s->xb, kv_dim, dim)) return NULL;
 
-        for (int hi = 0; hi < nh; hi++) nn_rope(s->q + (size_t)hi*hd, hd, pos, SHD_ROPE_BASE);
-        for (int hi = 0; hi < nkvh; hi++) nn_rope(s->k + (size_t)hi*hd, hd, pos, SHD_ROPE_BASE);
+        for (int hi = 0; hi < nh; hi++) nn_rope(s->q + (size_t)hi*hd, hd, pos, SHD_ROPE_BASE, NN_ROPE_INTERLEAVED);
+        for (int hi = 0; hi < nkvh; hi++) nn_rope(s->k + (size_t)hi*hd, hd, pos, SHD_ROPE_BASE, NN_ROPE_INTERLEAVED);
 
         for (int kvh = 0; kvh < nkvh; kvh++)
             kv_cache_write(kv, l, pos, kvh, s->k + (size_t)kvh*hd, s->v + (size_t)kvh*hd);

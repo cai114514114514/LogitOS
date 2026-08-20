@@ -51,7 +51,24 @@
 #define LM_TIED    1u               /* the output head IS the token embedding */
 #define LM_QKNORM  2u               /* per-layer q_norm/k_norm -- see below */
 #define LM_QEMB    4u               /* tok_emb is stored at `dtype`, not f32 */
-#define LM_FLAGS_KNOWN (LM_TIED | LM_QKNORM | LM_QEMB)
+/* LM_ROPE_NEOX -- rotate (x[i], x[i+hd/2]) instead of (x[2i], x[2i+1]).
+ *
+ * A MODEL PROPERTY, not a build-time one, for exactly the reason rope_base is
+ * (see below): both pairings are valid rotary embeddings, both preserve every
+ * pair's length, and a model run under the wrong one produces finite logits
+ * and fluent, confident, wrong text. llama2.c and the RoFormer paper use the
+ * interleaved pairing; GPT-NeoX, every huggingface `rotate_half`, and Qwen3
+ * use this one.
+ *
+ * UNLIKE rope_base IT IS A FLAG AND NOT A VALUE, and that is not a style
+ * choice: LM_FLAGS_KNOWN already makes a reader REFUSE a flag it does not
+ * understand, which is the behaviour wanted here. A file that needs a pairing
+ * this build does not implement must not be run under the other one.
+ *
+ * CLEAR = interleaved, so every model written before this flag existed is
+ * bit-identical through lm_forward. */
+#define LM_ROPE_NEOX 8u
+#define LM_FLAGS_KNOWN (LM_TIED | LM_QKNORM | LM_QEMB | LM_ROPE_NEOX)
 
 /* On-disk header. Exactly 64 bytes; asserted at compile time in model.c and
  * asserted against a real file by tests/unit/lm_format_test.c, because "the
@@ -72,10 +89,73 @@ struct lm_header {
     uint32_t seq_len;               /* the KV cache is sized from this */
     uint32_t flags;                 /* LM_* */
     uint32_t head_dim;              /* 0 = dim / n_heads. See below. */
-    uint32_t reserved[3];           /* zero; a reader must REFUSE a non-zero
+    uint32_t rope_base_f32;         /* f32 BIT PATTERN; 0 = LM_ROPE_BASE_DFL */
+    uint32_t rms_eps_f32;           /* f32 BIT PATTERN; 0 = LM_RMS_EPS_DFL   */
+    uint32_t reserved[1];           /* zero; a reader must REFUSE a non-zero
                                      * one rather than ignore it, so a future
                                      * field cannot be silently misread */
 };
+
+/* THE TWO ARCHITECTURE CONSTANTS, AND WHY THEY MOVED INTO THE FILE.
+ *
+ * infer.c used to compile these in, arguing they are properties of the
+ * ARCHITECTURE rather than of a file: "a file that wanted a different rope
+ * base would be a different architecture wearing the same magic number".
+ * That argument was right about the danger and wrong about the fact. Qwen3
+ * is the same architecture this format already describes -- same RMSNorm,
+ * same SwiGLU, same GQA, same rotary -- and it ships
+ *
+ *     rope.freq_base                    1000000.0     vs 10000.0   100x
+ *     attention.layer_norm_rms_epsilon  9.9999999e-07 vs 1e-05      10x
+ *
+ * so under the old rule the model was not expressible, and the converter
+ * refused to write it. That refusal was correct: A WRONG ROPE BASE IS THE
+ * WORST FAILURE IN THIS WHOLE FILE. It does not crash, it does not produce a
+ * NaN, it does not change the tokens/s -- every logit is finite and the text
+ * is fluent and wrong, because a 100x base is simply a different position
+ * encoding. There is no output a person can look at that says so.
+ *
+ * ZERO MEANS "THE OLD DEFAULT", so this is a compatible extension and not a
+ * version bump -- the same shape LogitFS used when atime/mtime took over its
+ * `reserved` bytes. Every file written before this field existed has zeroes
+ * there and keeps reading exactly as it did.
+ *
+ * AND ZERO IS SAFE AS A SENTINEL HERE, WHICH IS NOT AUTOMATIC -- LogitFS had
+ * to add LFS_MODE_SET precisely because mode 0 is a legal mode. Neither of
+ * these has a legal zero: a rope base of 0 makes every frequency 1/0, and an
+ * rmsnorm eps of 0 is a divide-by-zero on a zero row. So there is no value a
+ * writer could mean by 0 other than "I did not say", and no presence bit is
+ * needed. A NEGATIVE or non-finite value, on the other hand, IS
+ * representable and is refused by lm_open (-4) rather than propagated into
+ * NaN logits three layers down.
+ *
+ * They are stored as f32 BIT PATTERNS in uint32 fields so the header's own
+ * "exactly 64 bytes, every field is a uint32" contract is unchanged -- a
+ * float member would have said the same thing about the bytes and made the
+ * struct's stated invariant false. */
+#define LM_ROPE_BASE_DFL 10000.0f
+#define LM_RMS_EPS_DFL   1e-5f
+
+/* The accessors both readers use. They are here, in the header both the
+ * runtime and the converter include, because the previous arrangement -- a
+ * #define private to infer.c and a hand-kept COPY in tools/lmshape.c gated by
+ * a grep-the-source test -- is exactly the "second constant to keep in sync"
+ * this format's own comments argue against everywhere else. */
+static inline float lm_f32_or(uint32_t bits, float dfl)
+{
+    float f;
+    if (bits == 0) return dfl;
+    /* memcpy, not a union or a cast through float*: the cast is a strict
+     * aliasing violation that -O2 is entitled to miscompile, and this is the
+     * one place in the format where a silently wrong value cannot be seen in
+     * the output. */
+    __builtin_memcpy(&f, &bits, sizeof f);
+    return f;
+}
+static inline float lm_rope_base(const struct lm_header *h)
+{ return lm_f32_or(h->rope_base_f32, LM_ROPE_BASE_DFL); }
+static inline float lm_rms_eps(const struct lm_header *h)
+{ return lm_f32_or(h->rms_eps_f32, LM_RMS_EPS_DFL); }
 
 /* HEAD_DIM IS NOT dim / n_heads, AND THAT IS NOT A HYPOTHETICAL. This field
  * used to be reserved[0] and the head size was derived, which is true of

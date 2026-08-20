@@ -40,13 +40,24 @@
 #include "nn.h"
 #include "quant4.h"   /* HOOKUP 1/6: q4_mv, for mv()'s NN_Q4 arm */
 
-/* The architecture's two constants. They are in the code and not in the file
- * header because they are properties of the ARCHITECTURE, which is fixed, and
- * not of a particular model -- a file that wanted a different rope base would
- * be a different architecture wearing the same magic number, and reading it
- * from the header would let that happen silently. */
-#define LM_RMS_EPS   1e-5f
-#define LM_ROPE_BASE 10000.0f
+/* THE TWO ARCHITECTURE CONSTANTS NOW COME OFF THE FILE. This block used to
+ * read:
+ *
+ *     #define LM_RMS_EPS   1e-5f
+ *     #define LM_ROPE_BASE 10000.0f
+ *
+ * and argued they belong in the code because they are properties of the
+ * ARCHITECTURE, "and reading it from the header would let that happen
+ * silently". The danger it names is real and is the reason model.h refuses a
+ * negative or non-finite value instead of trusting the field -- but the fact
+ * was wrong: Qwen3 is this same architecture (RMSNorm, SwiGLU, GQA, rotary)
+ * with rope base 1e6 and eps 1e-6, so under the old rule it was not
+ * expressible and the converter refused to write it at all.
+ *
+ * lm_rope_base()/lm_rms_eps() return the OLD constants when the file leaves
+ * the fields zero, so every model written before today produces bit-identical
+ * output through this function -- which is what tests/unit/lm_infer_test.c's
+ * unchanged expectations check. */
 
 /* The largest head_dim whose rope rotation is hoisted onto the stack below.
  * 256 covers every shape this format has held and the one it is aimed at
@@ -58,6 +69,13 @@
  * just without the hoist -- so the bound costs speed on a shape nobody has and
  * cannot cost correctness on any. */
 #define LM_ROPE_MAX_HD 256
+
+#ifdef LM_TRACE_HIDDEN
+/* Set by the caller (build/lm_host under -DLM_TRACE_HIDDEN). `l` is -1 for the
+ * embedding row and 0..n_layers-1 after that layer's FFN residual add, which
+ * is exactly where transformers' output_hidden_states samples. */
+void (*lm_trace_hidden)(int l, const float *x, int dim) = 0;
+#endif
 
 /* --------------------------------------------------------------- layout --
  *
@@ -462,15 +480,59 @@ const float *lm_forward(const struct lm_model *m, struct lm_state *s,
      * one call and dies with the frame, so putting it in the state would add
      * bytes to lm_state_bytes -- a number infer.h exists to let a caller print
      * and refuse -- to describe memory no forward pass holds between calls. */
+    /* Read ONCE per forward pass, not per layer: they are constant for the
+     * whole call and re-reading them 28 times would invite a future edit to
+     * take one of the two from a different place. */
+#ifdef LM_IGNORE_HEADER_ARCH
+    /* NEGATIVE CONTROL for t_ropebase, and it is the PLAUSIBLE wrong version
+     * rather than an absurd one: this is exactly what this file did until the
+     * header grew the fields, and it is what any build that missed the change
+     * still does. It reads a valid file, runs at full speed, produces finite
+     * logits and fluent text -- and encodes position with a base 100x off.
+     * `make test-lm-ropebase-negctl` requires it to redden the pos>0 check and
+     * to leave the pos-0 check PASSING, because a control that reddens
+     * everything has not shown which property is load-bearing. */
+    const float rope_base = LM_ROPE_BASE_DFL;
+    const float rms_eps   = LM_RMS_EPS_DFL;
+#else
+    const float rope_base = lm_rope_base(&m->h);
+    const float rms_eps   = lm_rms_eps(&m->h);
+#endif
+    /* WHICH TWO COORDINATES EACH ROTATION PAIRS. Off the file, like the base:
+     * both conventions are rotations, so nothing downstream can tell them
+     * apart, and the wrong one is fluent and wrong. model.h argues the flag. */
+#ifdef LM_IGNORE_HEADER_ARCH
+    /* The control ignores the pairing FLAG as well as the two VALUES, because
+     * they are the same mistake carried in two different fields and a control
+     * that covered only one would certify the other. Interleaved is what this
+     * file did before the flag existed. */
+    const int rope_pairing = NN_ROPE_INTERLEAVED;
+#else
+    const int rope_pairing = (m->h.flags & LM_ROPE_NEOX) ? NN_ROPE_NEOX
+                                                         : NN_ROPE_INTERLEAVED;
+#endif
+
     double rope_cs[LM_ROPE_MAX_HD];
     int rope_hoist = (hd <= LM_ROPE_MAX_HD);
-    if (rope_hoist) nn_rope_build(rope_cs, hd, pos, LM_ROPE_BASE);
+    if (rope_hoist) nn_rope_build(rope_cs, hd, pos, rope_base);
 
+#ifdef LM_TRACE_HIDDEN
+    /* TRACE HOOK -- compiled out entirely unless asked for, so the shipped
+     * forward pass has neither a branch nor a symbol for it.
+     *
+     * It exists because "the logits are wrong" is not a location. The residual
+     * stream after every layer is 29 vectors of `dim`, and transformers can
+     * hand back exactly the same 29 with output_hidden_states=True, so
+     * comparing them turns one wrong number at the end into the INDEX OF THE
+     * FIRST LAYER THAT DISAGREES -- which is the difference between reading 28
+     * layers of code and reading one. */
+    if (lm_trace_hidden) lm_trace_hidden(-1, s->x, dim);
+#endif
     for (int l = 0; l < nl; l++) {
         const struct lm_layer *L = &m->layer[l];
         if (!L->att_norm || !L->ffn_norm) return NULL;
 
-        nn_rmsnorm(s->xb, s->x, L->att_norm, dim, LM_RMS_EPS);
+        nn_rmsnorm(s->xb, s->x, L->att_norm, dim, rms_eps);
 
         if (!mv(s->q, &L->wq, s->xb, q_dim,  dim)) return NULL;
         if (!mv(s->k, &L->wk, s->xb, kv_dim, dim)) return NULL;
@@ -484,8 +546,8 @@ const float *lm_forward(const struct lm_model *m, struct lm_state *s,
          * distinguishes the two orders -- which makes the wrong order
          * indistinguishable from f32 noise at the all-ones gain a test would
          * naturally use. */
-        if (L->q_norm) lm_qk_norm(s->q, L->q_norm, nh,   hd, LM_RMS_EPS);
-        if (L->k_norm) lm_qk_norm(s->k, L->k_norm, nkvh, hd, LM_RMS_EPS);
+        if (L->q_norm) lm_qk_norm(s->q, L->q_norm, nh,   hd, rms_eps);
+        if (L->k_norm) lm_qk_norm(s->k, L->k_norm, nkvh, hd, rms_eps);
 
         /* RoPE IS PER HEAD. The rotation pairs (x[2i], x[2i+1]) within one
          * head's head_dim values and its frequencies are indexed by i within
@@ -493,11 +555,11 @@ const float *lm_forward(const struct lm_model *m, struct lm_state *s,
          * every head but the first the wrong frequencies -- and produces a
          * model that is fluent and wrong, with no error anywhere. */
         if (rope_hoist) {
-            for (int hi = 0; hi < nh;   hi++) nn_rope_apply(s->q + (size_t)hi * hd, hd, rope_cs);
-            for (int hi = 0; hi < nkvh; hi++) nn_rope_apply(s->k + (size_t)hi * hd, hd, rope_cs);
+            for (int hi = 0; hi < nh;   hi++) nn_rope_apply(s->q + (size_t)hi * hd, hd, rope_cs, rope_pairing);
+            for (int hi = 0; hi < nkvh; hi++) nn_rope_apply(s->k + (size_t)hi * hd, hd, rope_cs, rope_pairing);
         } else {
-            for (int hi = 0; hi < nh;   hi++) nn_rope(s->q + (size_t)hi * hd, hd, pos, LM_ROPE_BASE);
-            for (int hi = 0; hi < nkvh; hi++) nn_rope(s->k + (size_t)hi * hd, hd, pos, LM_ROPE_BASE);
+            for (int hi = 0; hi < nh;   hi++) nn_rope(s->q + (size_t)hi * hd, hd, pos, rope_base, rope_pairing);
+            for (int hi = 0; hi < nkvh; hi++) nn_rope(s->k + (size_t)hi * hd, hd, pos, rope_base, rope_pairing);
         }
 
         float *krow = s->kcache + ((size_t)l * seq + pos) * kv_dim;
@@ -555,7 +617,7 @@ const float *lm_forward(const struct lm_model *m, struct lm_state *s,
         if (!mv(s->xb2, &L->wo, s->xb, dim, q_dim)) return NULL;
         nn_add(s->x, s->xb2, dim);
 
-        nn_rmsnorm(s->xb, s->x, L->ffn_norm, dim, LM_RMS_EPS);
+        nn_rmsnorm(s->xb, s->x, L->ffn_norm, dim, rms_eps);
         if (!mv(s->hb,  &L->w1, s->xb, hidden, dim)) return NULL;
         if (!mv(s->hb2, &L->w3, s->xb, hidden, dim)) return NULL;
         /* out aliases a. Safe by inspection of nn_swiglu: element i reads
@@ -565,12 +627,15 @@ const float *lm_forward(const struct lm_model *m, struct lm_state *s,
         nn_swiglu(s->hb, s->hb, s->hb2, hidden);
         if (!mv(s->xb2, &L->w2, s->hb, dim, hidden)) return NULL;
         nn_add(s->x, s->xb2, dim);
+#ifdef LM_TRACE_HIDDEN
+        if (lm_trace_hidden) lm_trace_hidden(l, s->x, dim);
+#endif
     }
 
     /* Into xb rather than in place, so s->x is left holding the final residual
      * stream -- the sentence embedding, and the one vector worth looking at
      * when the logits are wrong. The norm costs nothing either way. */
-    nn_rmsnorm(s->xb, s->x, m->final_norm, dim, LM_RMS_EPS);
+    nn_rmsnorm(s->xb, s->x, m->final_norm, dim, rms_eps);
     if (!mv(s->logits, &m->wcls, s->xb, vocab, dim)) return NULL;
 
     s->pos = pos + 1;

@@ -60,6 +60,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>   /* offsetof -- t_ropebase pokes one header field */
 #include <math.h>
 #include "infer.h"
 #include "model.h"
@@ -648,6 +649,150 @@ static void t_forward(const char *name, struct cfg c, const int *tok, int nt)
     fx_free(&f);
 }
 
+/* ------------------------------------------- the header's rope base -------
+ *
+ * THE NUMBER IN THE HEADER MUST REACH THE ARITHMETIC. This is the one
+ * property in this whole file whose violation produces no symptom: a model
+ * run with the wrong rope base is fluent, confident and wrong, every logit
+ * finite, the tokens/s unchanged. Qwen3 ships 1000000 against this format's
+ * old compiled-in 10000, so it is a 100x error sitting behind text that reads
+ * perfectly.
+ *
+ * THE TEST IS TWO HALVES AND THE SECOND IS THE ONE THAT MAKES IT A PROOF.
+ *
+ *   at pos > 0   the two models MUST differ. Same weights, same tokens, one
+ *                field changed -- if the logits are equal the field is being
+ *                ignored, which is exactly the state this format was in
+ *                yesterday.
+ *   at pos == 0  the two models MUST be BIT-IDENTICAL. RoPE at position 0
+ *                rotates by zero: cos(0)=1, sin(0)=0 for every frequency, so
+ *                NO base can matter there. Without this half, "the logits
+ *                moved" is satisfied by any change at all -- a rope base that
+ *                accidentally scaled the weights, or perturbed the norm, or
+ *                simply produced NaN, would pass. With it, the difference is
+ *                pinned to the position encoding and to nothing else.
+ *
+ * memcmp and not a tolerance for the pos-0 half, for the reason t_mask gives:
+ * identical inputs through identical code must give identical bits. */
+static void t_ropebase(void)
+{
+    struct cfg c = { 8, 2, 2, 2, 16, 8, 8, 1 };
+    int tok[4] = { 3, 1, 0, 7 };
+    struct fx f;
+    fx_describe(&f, &c); fx_fill(&f);
+
+    float lg[2][4][8];
+    int   ok = 1;
+    /* i = 0 leaves the field zero (the format default, 10000); i = 1 stores
+     * Qwen3's 1000000. Everything else about the two files is identical --
+     * same fixture, same weights, same dtype -- so the ONLY difference is the
+     * four bytes under test. */
+    for (int i = 0; i < 2; i++) {
+        size_t blen; unsigned char *blob = fx_blob(&f, NN_F32, f.W, &blen);
+        if (i == 1) { float rb = 1000000.0f;
+                      memcpy(blob + offsetof(struct lm_header, rope_base_f32), &rb, 4); }
+        struct lm_model m; struct lm_state s;
+        if (lm_open(&m, blob, blen) || lm_state_new(&s, &m)) {
+            eqi("ropebase: model and state build", 0, 1); ok = 0;
+            free(blob); break;
+        }
+        for (int t = 0; t < 4; t++) {
+            const float *o = lm_forward(&m, &s, tok[t], t);
+            if (!o) { eqi("ropebase: lm_forward ran", 0, 1); ok = 0; break; }
+            memcpy(lg[i][t], o, (size_t)c.vocab * sizeof(float));
+        }
+        lm_state_free(&s); lm_close(&m); free(blob);
+    }
+    fx_free(&f);
+    if (!ok) return;
+
+    eqi("ropebase: pos 0 is BIT-IDENTICAL (RoPE at position 0 is the identity, "
+        "so no base can matter there)",
+        (long)(memcmp(lg[0][0], lg[1][0], (size_t)c.vocab * sizeof(float)) == 0), 1);
+
+    /* Every position after 0 must move. Reported as the worst absolute
+     * difference rather than as a bare "differs", so a change that is real but
+     * absurdly small -- the shape a rounding accident takes -- is visible in
+     * the log instead of being certified by a != comparison. */
+    double worst = 0.0;
+    for (int t = 1; t < 4; t++)
+        for (int v = 0; v < c.vocab; v++) {
+            double d = fabs((double)lg[0][t][v] - (double)lg[1][t][v]);
+            if (d > worst) worst = d;
+        }
+    printf("      rope base 10000 vs 1000000: worst |dlogit| = %.4g over "
+           "positions 1..3\n", worst);
+    eqi("ropebase: the header's value reaches the arithmetic (pos>0 logits move)",
+        (long)(worst > 1e-3), 1);
+}
+
+/* ------------------------------------------- the header's rope PAIRING ----
+ *
+ * The same property one field over, and it needs its own check because the
+ * two are carried differently: the base is a value in what used to be
+ * `reserved`, the pairing is a bit in `flags`. A build that read the base and
+ * ignored the flag would pass t_ropebase completely.
+ *
+ * THE PAIRING IS THE HARDER OF THE TWO TO CATCH, which is why it is here at
+ * all. A wrong base at least changes the ANGLES, and an angle is visible in a
+ * rotation table. The wrong pairing uses the RIGHT angles on the WRONG two
+ * coordinates: every pair still keeps its length, so the rotation is still a
+ * rotation, every invariant a test would naturally reach for still holds, and
+ * the output is finite and fluent. Qwen3 is NEOX and everything this format
+ * shipped before it was interleaved, so getting this wrong is the default.
+ *
+ * Same two halves as t_ropebase, and the pos-0 half carries the same weight:
+ * position 0 is the identity under BOTH pairings, so bit-identical there is
+ * what pins the difference to the pairing rather than to some side effect. */
+static void t_ropepairing(void)
+{
+    struct cfg c = { 8, 2, 2, 2, 16, 8, 8, 1 };
+    int tok[4] = { 3, 1, 0, 7 };
+    struct fx f;
+    fx_describe(&f, &c); fx_fill(&f);
+
+    float lg[2][4][8];
+    int   ok = 1;
+    for (int i = 0; i < 2; i++) {
+        size_t blen; unsigned char *blob = fx_blob(&f, NN_F32, f.W, &blen);
+        if (i == 1) {
+            uint32_t fl;
+            memcpy(&fl, blob + offsetof(struct lm_header, flags), 4);
+            fl |= LM_ROPE_NEOX;
+            memcpy(blob + offsetof(struct lm_header, flags), &fl, 4);
+        }
+        struct lm_model m; struct lm_state s;
+        if (lm_open(&m, blob, blen) || lm_state_new(&s, &m)) {
+            eqi("ropepairing: model and state build (is LM_ROPE_NEOX in "
+                "LM_FLAGS_KNOWN?)", 0, 1);
+            ok = 0; free(blob); break;
+        }
+        for (int t = 0; t < 4; t++) {
+            const float *o = lm_forward(&m, &s, tok[t], t);
+            if (!o) { eqi("ropepairing: lm_forward ran", 0, 1); ok = 0; break; }
+            memcpy(lg[i][t], o, (size_t)c.vocab * sizeof(float));
+        }
+        lm_state_free(&s); lm_close(&m); free(blob);
+    }
+    fx_free(&f);
+    if (!ok) return;
+
+    eqi("ropepairing: pos 0 is BIT-IDENTICAL (both pairings are the identity "
+        "at position 0)",
+        (long)(memcmp(lg[0][0], lg[1][0], (size_t)c.vocab * sizeof(float)) == 0), 1);
+
+    double worst = 0.0;
+    for (int t = 1; t < 4; t++)
+        for (int v = 0; v < c.vocab; v++) {
+            double d = fabs((double)lg[0][t][v] - (double)lg[1][t][v]);
+            if (d > worst) worst = d;
+        }
+    printf("      interleaved vs NEOX: worst |dlogit| = %.4g over "
+           "positions 1..3\n", worst);
+    eqi("ropepairing: LM_ROPE_NEOX reaches the arithmetic (pos>0 logits move)",
+        (long)(worst > 1e-3), 1);
+}
+
 /* The causal mask, and it is the only check here that does not need a
  * reference: identical inputs must give identical bits, so the assertion is
  * memcmp and not a tolerance. */
@@ -1112,6 +1257,8 @@ int main(void)
 
     t_headdim();
 
+    t_ropebase();
+    t_ropepairing();
     t_mask();
     t_pos();
     t_greedy();

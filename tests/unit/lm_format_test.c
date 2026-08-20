@@ -450,12 +450,64 @@ static void t_refusals(void)
     eqi("-2: *m left zeroed", is_zeroed(&m), 1);
 
     /* -3 a nonzero reserved field -- a future format, refused rather than
-     * ignored, per model.h. */
-    { struct lm_header h; tc_header(&h, NN_F32, 0); h.reserved[2] = 1;
+     * ignored, per model.h.
+     *
+     * THE INDEX IS reserved[0] AND IT USED TO BE reserved[2]. `reserved` gave
+     * up two more words to rope_base_f32/rms_eps_f32, and this line did not
+     * follow them -- so it wrote EIGHT BYTES PAST the 64-byte header into
+     * hbuf's payload, and the gate failed with -5 (wrong length) while
+     * claiming to be about -3. That is the second time this exact mistake has
+     * been made in this file's neighbourhood: model.c's own comment records
+     * the first, when the loop BOUND did not follow head_dim out of
+     * `reserved`. Both times the symptom pointed somewhere else entirely.
+     * Written as the last element rather than a literal so the next field
+     * taken out of `reserved` cannot leave it behind again. */
+    { struct lm_header h; tc_header(&h, NN_F32, 0);
+      h.reserved[sizeof h.reserved / sizeof h.reserved[0] - 1] = 1;
       memcpy(hbuf, &h, sizeof h); }
     memset(&m, 0xAA, sizeof m);
     eqi("-3: a nonzero reserved field is refused", lm_open(&m, hbuf, sizeof hbuf), -3);
     eqi("-3: *m left zeroed", is_zeroed(&m), 1);
+
+    /* THE TWO ARCHITECTURE CONSTANTS (model.h). Zero means "use the default",
+     * so the accessors must return the OLD compiled-in values on every file
+     * written before the fields existed -- that is what keeps this change a
+     * compatible extension rather than a silent format bump, and every other
+     * expectation in this suite depends on it.
+     *
+     * The refusals matter more than the round trip. A rope base of 0 makes
+     * every rotary frequency 1/0 and a NaN rope base makes every position
+     * encoding NaN, and NEITHER produces an error anywhere downstream -- the
+     * logits simply stop meaning anything, which is the one failure in this
+     * format that no output can show you. 0 is the sentinel, so the values
+     * that must be refused are the negative and the non-finite ones. */
+    { struct lm_header h; tc_header(&h, NN_F32, 0);
+      eqf("zero rope_base_f32 reads back as the default", lm_rope_base(&h), LM_ROPE_BASE_DFL);
+      eqf("zero rms_eps_f32 reads back as the default",   lm_rms_eps(&h),   LM_RMS_EPS_DFL);
+      float rb = 1000000.0f, re = 1e-6f;
+      memcpy(&h.rope_base_f32, &rb, 4); memcpy(&h.rms_eps_f32, &re, 4);
+      eqf("a stored rope_base reads back exactly", lm_rope_base(&h), 1000000.0f);
+      eqf("a stored rms_eps reads back exactly",   lm_rms_eps(&h),   1e-6f);
+      /* NOT lm_open()'d here: hbuf is a bare 64-byte header and lm_open
+       * refuses anything that is not lm_expected_size() bytes, so it would
+       * read -5 for a reason that has nothing to do with these fields. The
+       * refusal cases below DO run through lm_open because they are checked
+       * before the length is, and a whole-file open carrying both constants
+       * is what test-lm-ropebase does against a real one. */ }
+
+    { struct lm_header h; tc_header(&h, NN_F32, 0);
+      h.rope_base_f32 = 0xFF800000u;           /* -inf */
+      memcpy(hbuf, &h, sizeof h); memset(&m, 0xAA, sizeof m);
+      eqi("-4: a non-finite rope_base is refused", lm_open(&m, hbuf, sizeof hbuf), -4);
+      eqi("-4: *m left zeroed (rope_base)", is_zeroed(&m), 1); }
+    { struct lm_header h; tc_header(&h, NN_F32, 0);
+      h.rope_base_f32 = 0x7FC00000u;           /* NaN */
+      memcpy(hbuf, &h, sizeof h); memset(&m, 0xAA, sizeof m);
+      eqi("-4: a NaN rope_base is refused", lm_open(&m, hbuf, sizeof hbuf), -4); }
+    { struct lm_header h; tc_header(&h, NN_F32, 0);
+      float neg = -1e-6f; memcpy(&h.rms_eps_f32, &neg, 4);
+      memcpy(hbuf, &h, sizeof h); memset(&m, 0xAA, sizeof m);
+      eqi("-4: a negative rms_eps is refused", lm_open(&m, hbuf, sizeof hbuf), -4); }
 
     /* -4 inconsistent header -- three different ways to be inconsistent,
      * because model.h names three and a loader that checked only one of

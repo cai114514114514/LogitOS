@@ -144,47 +144,44 @@ static double rope_angle(int i, int n, int pos, float theta)
     return (double)pos * freq;
 }
 
-/* Rotate pair i by (c,s). The ONE place the PAIRING lives.
+/* Rotate pair i by (c,s). THE ONE PLACE THE PAIRING LIVES.
  *
- * INTERLEAVED PAIRS -- (x[0],x[1]), (x[2],x[3]), ... -- which is the
- * convention in the RoFormer paper and in llama2.c. Huggingface rotates
- * (x[i], x[i+n/2]) instead. Both are valid rotary embeddings and they are
- * NOT interchangeable: weights trained under one produce fluent-looking
- * nonsense under the other, with no error anywhere. nn.h names the choice
- * for the same reason. */
-static void rope_pair(float *x, int i, int half, double c, double s)
+ * `pairing` selects which two coordinates of the head make up pair i:
+ * NN_ROPE_INTERLEAVED takes (x[2i], x[2i+1]), NN_ROPE_NEOX takes
+ * (x[i], x[i+half]). nn.h argues why this is a model property rather than a
+ * build-time one and carries the measurement.
+ *
+ * THE ROTATION ITSELF IS WRITTEN ONCE. Only the two INDICES depend on the
+ * convention, so the arithmetic below -- and its double-precision multiply
+ * that rounds exactly once -- cannot differ between the two paths. Writing
+ * them as two branches with a rotation in each is how one of them gets a
+ * rounding fix the other does not. */
+static void rope_pair(float *x, int i, int half, double c, double s, int pairing)
 {
 #ifdef NN_ROPE_SPLIT_HALF
-    /* NEGATIVE CONTROL: huggingface's pairing, (x[i], x[i + n/2]). Also a
-     * valid rotary embedding -- it still preserves every pair's length,
-     * so the "it is a rotation" check passes -- and it produces different
-     * numbers from the same weights. That is exactly the failure this
-     * control exists to make visible: fluent-looking nonsense with no
-     * error anywhere.
-     *
-     * It lives HERE, in the shared rotation, so it still reddens whichever
-     * of the three entry points a caller uses. Putting it in nn_rope alone
-     * would have left infer.c -- which goes through build/apply -- quietly
-     * uncontrolled, i.e. a negative control that no longer covers the path
-     * the product actually runs. */
-    float x0 = x[i], x1 = x[i + half];
-    x[i]        = (float)((double)x0 * c - (double)x1 * s);
-    x[i + half] = (float)((double)x0 * s + (double)x1 * c);
-#else
-    (void)half;
-    float x0 = x[2 * i], x1 = x[2 * i + 1];
-    x[2 * i]     = (float)((double)x0 * c - (double)x1 * s);
-    x[2 * i + 1] = (float)((double)x0 * s + (double)x1 * c);
+    /* NEGATIVE CONTROL: INVERT whatever the caller asked for. It used to
+     * hard-select huggingface's pairing, which was a correct control while
+     * interleaved was the only thing this file could do -- and would now be a
+     * control that AGREES with the shipped behaviour on every Qwen3 model,
+     * i.e. a control that cannot be watched failing on the one model the line
+     * is aimed at. Inverting keeps it wrong for every caller whatever they
+     * asked for, which is what a control has to be. */
+    pairing = !pairing;
 #endif
+    int i0 = (pairing == NN_ROPE_NEOX) ? i        : 2 * i;
+    int i1 = (pairing == NN_ROPE_NEOX) ? i + half : 2 * i + 1;
+    float x0 = x[i0], x1 = x[i1];
+    x[i0] = (float)((double)x0 * c - (double)x1 * s);
+    x[i1] = (float)((double)x0 * s + (double)x1 * c);
 }
 
-void nn_rope(float *x, int n, int pos, float theta)
+void nn_rope(float *x, int n, int pos, float theta, int pairing)
 {
     if (!x || n <= 1) return;
     int half = n / 2;
     for (int i = 0; i < half; i++) {
         double a = rope_angle(i, n, pos, theta);
-        rope_pair(x, i, half, cos(a), sin(a));
+        rope_pair(x, i, half, cos(a), sin(a), pairing);
     }
 }
 
@@ -199,12 +196,12 @@ void nn_rope_build(double *cs, int n, int pos, float theta)
     }
 }
 
-void nn_rope_apply(float *x, int n, const double *cs)
+void nn_rope_apply(float *x, int n, const double *cs, int pairing)
 {
     if (!x || !cs || n <= 1) return;
     int half = n / 2;
     for (int i = 0; i < half; i++)
-        rope_pair(x, i, half, cs[2 * i], cs[2 * i + 1]);
+        rope_pair(x, i, half, cs[2 * i], cs[2 * i + 1], pairing);
 }
 
 void nn_add(float *y, const float *x, int n)
