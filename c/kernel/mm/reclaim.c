@@ -46,6 +46,33 @@ static uint64_t c_swapin, c_swapin_fail;
  * reclaim_dropped() as "tier 1 total" has to change. */
 static uint64_t c_dropped_zero, c_dropped_cache;
 
+/* THE THIRD NUMBER, WATCHED RATHER THAN ASSUMED.
+ *
+ * candidate() adds pcache_holds(f) to the count that must equal
+ * pmm_refcount(f), and pcache.h argues at length that this keeps a cached page
+ * evictable instead of structurally pinned. That argument is checkable and was
+ * never checked: c_skip_partial lumps together every frame with a reference
+ * reclaim cannot account for, so a cached page failing the test looked
+ * identical to a kernel buffer, and "the page cache made a page unevictable"
+ * -- the exact failure the pin discipline exists to prevent -- would have
+ * shown up as a bigger number in a bucket that is nonzero anyway.
+ *
+ * Split out here, and both halves are needed to read either:
+ *   c_seen_cached          frames the sweep met that the cache holds. Without
+ *                          it, a zero in the next counter can mean "nothing
+ *                          went wrong" or "no cached page was ever swept".
+ *   c_skip_partial_cached  ...of which the arithmetic did not add up. This is
+ *                          the number that must stay 0. Nonzero means some
+ *                          reference is held by neither a PTE nor the cache,
+ *                          on a page-cache frame -- i.e. the shared-page case
+ *                          this line was asked about, failing.
+ *   c_skip_wide_cached     ...and the ones refused for having more sharers
+ *                          than gather() can hold. A file page shared by 17
+ *                          processes is the one legitimate way a cached page
+ *                          is unevictable, and it is a different fact from a
+ *                          broken refcount. */
+static uint64_t c_seen_cached, c_skip_partial_cached, c_skip_wide_cached;
+
 uint64_t reclaim_runs(void)          { return c_runs; }
 uint64_t reclaim_scanned(void)       { return c_scanned; }
 uint64_t reclaim_dropped(void)       { return c_dropped; }
@@ -56,6 +83,9 @@ uint64_t reclaim_second_chance(void) { return c_second; }
 uint64_t reclaim_skip_unmapped(void) { return c_skip_unmapped; }
 uint64_t reclaim_skip_pinned(void)   { return c_skip_pinned; }
 uint64_t reclaim_skip_partial(void)  { return c_skip_partial; }
+uint64_t reclaim_seen_cached(void)         { return c_seen_cached; }
+uint64_t reclaim_skip_partial_cached(void) { return c_skip_partial_cached; }
+uint64_t reclaim_skip_wide_cached(void)    { return c_skip_wide_cached; }
 uint64_t reclaim_skip_wide(void)     { return c_skip_wide; }
 uint64_t reclaim_skip_busy(void)     { return c_skip_busy; }
 uint64_t reclaim_backoffs(void)      { return c_backoffs; }
@@ -158,9 +188,10 @@ static int candidate(uint64_t f, unsigned *nmap, int *cached)
      * turned away here the way ordinary kernel memory is. It is, per
      * pcache.h, the cheapest reclaimable frame on the machine. */
     if (!rmap_mapped(phys) && !held) { c_skip_unmapped++; return 0; }
+    if (held) c_seen_cached++;      /* the denominator for the two below */
     unsigned n = rmap_count(phys);
     if (n == 0 && !held) { c_skip_unmapped++; return 0; }   /* raced away; not ours */
-    if (rmap_incomplete(phys)) { c_skip_partial++; return 0; }
+    if (rmap_incomplete(phys)) { c_skip_partial++; c_skip_partial_cached += held; return 0; }
     unsigned rc = pmm_refcount(phys);
     if (rc == 0 || n + held != rc) {
         /* Either pmm thinks the frame is free while PTEs (or the cache) point
@@ -169,12 +200,13 @@ static int candidate(uint64_t f, unsigned *nmap, int *cached)
          * the PTEs we know nor the cache's own -- the kernel is using this
          * user page. Both mean: not ours to take. */
         c_skip_partial++;
+        c_skip_partial_cached += held;
         return 0;
     }
 #ifndef RECLAIM_NO_PIN_CHECK
     if (pmm_pincount(phys)) { c_skip_pinned++; return 0; }
 #endif
-    if (n > RECLAIM_MAX_SHARERS) { c_skip_wide++; return 0; }
+    if (n > RECLAIM_MAX_SHARERS) { c_skip_wide++; c_skip_wide_cached += held; return 0; }
     *nmap = n;
     *cached = (int)held;
     return 1;
@@ -640,6 +672,13 @@ void reclaim_report(const char *tag)
             "%d too-shared / %d running elsewhere; failed %d no-slot / %d io; %d bugs\n",
             t, (int)c_skip_unmapped, (int)c_skip_pinned, (int)c_skip_partial,
             (int)c_skip_wide, (int)c_skip_busy, (int)c_noslot, (int)c_io, (int)c_bugs);
+    /* THE PAGE CACHE'S SHARE OF THE SWEEP, and the one number in this file
+     * that must be zero. See the counter block at the top for why it is
+     * printed with its denominator rather than alone. */
+    kprintf("[reclaim] %s: page-cache frames met %d, dropped %d, "
+            "UNACCOUNTED-FOR REFERENCE %d, too-shared %d\n",
+            t, (int)c_seen_cached, (int)c_dropped_cache,
+            (int)c_skip_partial_cached, (int)c_skip_wide_cached);
     kprintf("[reclaim] %s: %d swap-ins (%d failed); %d kcycles scanning "
             "(%d per frame evicted)\n",
             t, (int)c_swapin, (int)c_swapin_fail, (int)(c_cycles / 1000),

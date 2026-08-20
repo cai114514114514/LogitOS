@@ -57,6 +57,13 @@ struct pfile {
     uint64_t dev, ino, size;
     int      refs;          /* VMA references + transient lookups */
     int      used;
+    /* The highest page index ever installed for this file, +1, or 0 for none.
+     * purge() walks the INDEX SPACE rather than the pool (see purge_locked),
+     * and this is the bound that makes that walk exact: pf.size can shrink
+     * under a rewrite, so sizing the walk from it would leave the pages past
+     * the new end resident and stale. Never decreased while any entry of the
+     * file lives; reset to 0 by a purge that emptied the file. */
+    uint64_t hiwater;
     char     path[PCACHE_PATHMAX];
 };
 
@@ -67,11 +74,15 @@ struct pentry {
     int32_t  hnext;         /* next in this hash bucket, or -1 */
 };
 
-#define PC_NBUCKET 1024     /* power of two; PCACHE_MAXPAGE / 4 */
-
 static struct pfile  pf[PCACHE_MAXFILE];
-static struct pentry pg[PCACHE_MAXPAGE];
-static int32_t       bucket[PC_NBUCKET];
+/* THE POOL IS ALLOCATED, NOT DECLARED -- see the sizing note in pcache.h.
+ * Both of these used to be static arrays (98,304 + 4,096 bytes of kernel .bss
+ * on every machine, spent whether or not a file was ever opened); they come
+ * from one pmm_alloc_contig() at init now, sized from RAM. */
+static struct pentry *pg;
+static int32_t       *bucket;
+static uint32_t       pc_nbucket;       /* power of two */
+static uint32_t       pc_bmask;         /* pc_nbucket - 1 */
 static int32_t       pc_free;           /* head of the free entry list (via hnext) */
 static uint32_t      pc_npage;          /* entries actually in use as a pool */
 static uint32_t      pc_hand;           /* the cache's own eviction hand */
@@ -97,6 +108,7 @@ static const struct pcache_ops *pc_ops;
 static void purge(int fh, uint64_t *counter);
 
 static uint64_t c_hit, c_miss, c_drop, c_evict, c_inval, c_bypass, c_peak, c_resident;
+static uint64_t c_orphan, c_uncached;
 static uint64_t c_bug;
 
 uint64_t pcache_hits(void)        { return c_hit; }
@@ -107,6 +119,9 @@ uint64_t pcache_dropped(void)     { return c_drop; }
 uint64_t pcache_evicted(void)     { return c_evict; }
 uint64_t pcache_invalidated(void) { return c_inval; }
 uint64_t pcache_bypassed(void)    { return c_bypass; }
+uint64_t pcache_orphaned(void)    { return c_orphan; }
+uint64_t pcache_uncached(void)    { return c_uncached; }
+uint64_t pcache_slots(void)       { return pc_npage; }
 int      pcache_ready(void)       { return pc_ready; }
 
 uint64_t pcache_files(void)
@@ -119,6 +134,7 @@ uint64_t pcache_files(void)
 uint64_t pcache_shared(void)
 {
     uint64_t n = 0;
+    if (!pc_ready) return 0;         /* pg[] is a pointer now; nothing to walk */
     for (uint32_t i = 0; i < pc_npage; i++)
         if (pg[i].fh >= 0 && pmm_refcount(pg[i].phys) > 2) n++;
     return n;
@@ -132,17 +148,42 @@ void pcache_init(uint64_t total_frames)
 {
     if (pc_ready || total_frames == 0) return;
 
-    /* The pool is a CEILING, not a target: reclaim takes these pages back long
-     * before it is reached. Clamped to a sixteenth of RAM so that the small
-     * machines the pressure harnesses boot (192 MiB, sometimes 128) do not give
-     * a third of themselves to page cache before reclaim has had a word. */
-    uint64_t n = PCACHE_MAXPAGE;
-    if (n > total_frames / 16) n = total_frames / 16;
-    if (n < 32) n = 32;
-    if (n > PCACHE_MAXPAGE) n = PCACHE_MAXPAGE;
+    /* The pool is a CEILING, not a target, and its size is DERIVED from RAM --
+     * read the sizing note in pcache.h before changing either the fraction or
+     * the fact that this is not a constant. */
+#ifdef PCACHE_LEGACY_POOL
+    /* NEGATIVE CONTROL: the expression this file shipped with, verbatim, so
+     * the control is the OLD CODE rather than an approximation of it. */
+    uint64_t n = PCACHE_LEGACY_MAXPAGE;
+    if (n > total_frames / PCACHE_LEGACY_SHARE) n = total_frames / PCACHE_LEGACY_SHARE;
+#else
+    uint64_t n = total_frames / PCACHE_FRAME_SHARE;
+#endif
+    if (n < PCACHE_MINPAGE) n = PCACHE_MINPAGE;
+    if (n > 0x7FFFFFFEull) n = 0x7FFFFFFEull;   /* the entry index is int32_t */
     pc_npage = (uint32_t)n;
 
-    uint64_t bytes = total_frames * 4;
+    /* One bucket per four entries, rounded UP to a power of two so the hash
+     * can mask instead of divide. Four is the load factor the fixed 1024/4096
+     * pair already had; keeping it means the chain length does not change as
+     * the pool grows, which is the only thing that would make a bigger pool
+     * slower per lookup rather than merely larger. */
+    pc_nbucket = 16;
+    while (pc_nbucket < pc_npage / 4 && pc_nbucket < (1u << 30)) pc_nbucket <<= 1;
+    pc_bmask = pc_nbucket - 1;
+
+    /* ONE allocation for all three tables, not three. Not tidiness: this runs
+     * at init and must either give the cache everything it needs or leave it
+     * off, and three allocations have three chances to half-succeed and a
+     * rollback path each. pmm_alloc_contig() is a linear first-fit with no
+     * fallback (pmm.c), which is exactly why the whole request goes in once,
+     * while the frame bitmap is still empty. */
+    uint64_t b_frame  = total_frames * 4;                    /* pc_of_frame[] */
+    uint64_t b_pages  = (uint64_t)pc_npage * sizeof(struct pentry);
+    uint64_t b_bucket = (uint64_t)pc_nbucket * 4;
+    b_frame  = (b_frame  + 7) & ~7ull;                       /* keep pg[] aligned */
+    b_pages  = (b_pages  + 7) & ~7ull;
+    uint64_t bytes = b_frame + b_pages + b_bucket;
     uint64_t frames = (bytes + FRAME_SIZE - 1) / FRAME_SIZE;
     uint64_t base = pmm_alloc_contig((size_t)frames);
     if (!base) {
@@ -151,28 +192,42 @@ void pcache_init(uint64_t total_frames)
          * cache stays OFF entirely rather than running without the one hook
          * that keeps its entries from dangling. The kernel then behaves exactly
          * as it did before this line: file mappings are refused, reads go
-         * straight to the backend. */
-        kprintf("[pcache] init FAILED: no %d contiguous frames for the frame table "
-                "-- the page cache is DISABLED for this boot\n", (int)frames);
+         * straight to the backend.
+         *
+         * NOT retried at a smaller size. A cache that quietly came up with a
+         * tenth of the slots it asked for would reintroduce the ceiling the
+         * sizing note exists to remove, at a number nobody chose and nothing
+         * prints -- which is the exact failure being fixed here. Off and loud
+         * is the honest outcome; the numbers below say what was asked for. */
+        kprintf("[pcache] init FAILED: no %d contiguous frames (%d KiB) for "
+                "%d page slots + a %d-entry frame table "
+                "-- the page cache is DISABLED for this boot\n",
+                (int)frames, (int)(bytes / 1024), (int)pc_npage, (int)total_frames);
+        pc_npage = 0;
         return;
     }
-    pc_of_frame = (uint32_t *)mm_p2v(base);
+    uint8_t *mem = (uint8_t *)mm_p2v(base);
+    pc_of_frame = (uint32_t *)mem;
+    pg          = (struct pentry *)(mem + b_frame);
+    bucket      = (int32_t *)(mem + b_frame + b_pages);
     pc_frames = total_frames;
     memset(pc_of_frame, 0, (size_t)(total_frames * 4));
 
-    for (int i = 0; i < PC_NBUCKET; i++) bucket[i] = -1;
+    for (uint32_t i = 0; i < pc_nbucket; i++) bucket[i] = -1;
     for (uint32_t i = 0; i < pc_npage; i++) {
         pg[i].fh = -1;
         pg[i].phys = 0;
+        pg[i].index = 0;
         pg[i].hnext = (i + 1 < pc_npage) ? (int32_t)(i + 1) : -1;
     }
     pc_free = 0;
     pc_ready = 1;
 
     kprintf("[pcache] up: %d page slots (%d KiB ceiling), %d file slots, "
-            "frame table %d KiB%s\n",
-            (int)pc_npage, (int)(pc_npage * 4), PCACHE_MAXFILE,
-            (int)(total_frames * 4 / 1024),
+            "%d buckets; tables %d KiB from the PMM (%d B/frame of RAM)%s\n",
+            (int)pc_npage, (int)(pc_npage * 4), PCACHE_MAXFILE, (int)pc_nbucket,
+            (int)(frames * FRAME_SIZE / 1024),
+            (int)(frames * FRAME_SIZE / (total_frames ? total_frames : 1)),
 #ifdef PCACHE_PER_OPEN
             "  [NEGATIVE CONTROL: keyed per-open, not per-inode]"
 #else
@@ -186,7 +241,7 @@ void pcache_init(uint64_t total_frames)
 static inline uint32_t hash(int fh, uint64_t index)
 {
     uint64_t h = ((uint64_t)fh * 0x9E3779B97F4A7C15ull) ^ (index * 0xC2B2AE3D27D4EB4Full);
-    return (uint32_t)((h >> 32) & (PC_NBUCKET - 1));
+    return (uint32_t)((h >> 32) & pc_bmask);
 }
 
 /* Caller holds pc_lock. */
@@ -296,6 +351,7 @@ int pcache_file_open(const char *path)
             pf[i].dev = dev;
             pf[i].ino = ino;
             pf[i].size = size;
+            pf[i].hiwater = 0;      /* a fresh identity has installed nothing */
             size_t n = pc_slen(path);
             if (n >= PCACHE_PATHMAX) { pf[i].used = 0; goto out; }
             memcpy(pf[i].path, path, n + 1);
@@ -323,7 +379,14 @@ int pcache_file_open(const char *path)
             memcpy(pf[i].path, path, n + 1);
             ret = i;
             spin_unlock_irqrestore(&pc_lock, fl);
-            purge(ret, &c_evict);
+            purge(ret, &c_evict);       /* the OLD identity's pages, under the
+                                         * OLD hiwater -- which is why the reset
+                                         * below comes after, not before */
+            fl = spin_lock_irqsave(&pc_lock);
+            if (pf[ret].used && pf[ret].dev == dev && pf[ret].ino == ino)
+                pf[ret].hiwater = 0;    /* still ours: the new identity has
+                                         * installed nothing yet */
+            spin_unlock_irqrestore(&pc_lock, fl);
             return ret;
         }
     /* Full of LIVE entries. Not fatal and not silent: the mapping is refused,
@@ -350,13 +413,31 @@ uint64_t pcache_file_size(int fh)
     return pf[fh].used ? pf[fh].size : 0;
 }
 
-/* Caller holds pc_lock. Every resident page of `fh`, unlinked; the frames come
- * back on `out` so the reference drops can happen with the lock released. */
-static int purge_locked(int fh, uint64_t *out, int max)
+/* Caller holds pc_lock. Up to `max` resident pages of `fh`, unlinked; the
+ * frames come back on `out` so the reference drops can happen with the lock
+ * released. `*cursor` is the page index to resume from and is advanced.
+ *
+ * THIS WALKS THE FILE'S INDEX SPACE, NOT THE POOL, and that is the one change
+ * the pool's new size forced. The old loop was `for i in 0..pc_npage: if
+ * pg[i].fh == fh`, which is O(pool) per batch of 64 -- fine at 4096 slots, and
+ * 65,536 iterations per batch at the sized-from-RAM pool, on the path every
+ * vfs_write takes for a cached file. Probing find(fh, 0..hiwater) instead costs
+ * O(the file's pages), which is the right bound: a purge cannot remove more
+ * pages than the file has, and for the small files that dominate (a two-page
+ * config, a one-page script) it is two probes instead of tens of thousands.
+ *
+ * hiwater and not size/4096: a rewrite can SHRINK a file between the pages
+ * being installed and the invalidation arriving, and pages past the new end
+ * are exactly the ones a reader must not still see. */
+static int purge_locked(int fh, uint64_t *out, int max, uint64_t *cursor)
 {
     int n = 0;
-    for (uint32_t i = 0; i < pc_npage && n < max; i++)
-        if (pg[i].fh == fh) out[n++] = unlink_entry((int32_t)i);
+    uint64_t hi = pf[fh].used ? pf[fh].hiwater : 0;
+    while (*cursor < hi && n < max) {
+        int32_t e = find(fh, *cursor);
+        (*cursor)++;
+        if (e >= 0) out[n++] = unlink_entry(e);
+    }
     return n;
 }
 
@@ -366,11 +447,36 @@ static void purge(int fh, uint64_t *counter)
 {
     for (;;) {
         uint64_t frames[PURGE_BATCH];
+        /* THE CURSOR RESTARTS AT 0 EVERY BATCH, deliberately, and carrying it
+         * across batches was the first version. pc_lock is dropped between
+         * batches, so a page of this same file can be installed in the gap --
+         * at an index BELOW where the cursor got to -- and a carried cursor
+         * walks straight past it and leaves a stale page no invalidation can
+         * ever reach. The old pool-scan loop restarted from slot 0 each batch
+         * and did not have that hole; this keeps the property. Re-probing is
+         * idempotent (an unlinked entry simply is not found), and each batch
+         * removes up to 64, so it still terminates. Cost is O(hiwater) per
+         * batch rather than O(pool) per batch -- for an 800-page file, ~10k
+         * hash probes instead of ~850k pool slots. */
+        uint64_t cursor = 0;
         uint64_t fl = spin_lock_irqsave(&pc_lock);
-        int n = purge_locked(fh, frames, PURGE_BATCH);
+        int n = purge_locked(fh, frames, PURGE_BATCH, &cursor);
+        /* hiwater is NOT reset here, and the first version of this function did
+         * reset it. The bug: pc_lock is dropped between batches (and inside
+         * pcache_get's miss, which reads a disk), so a page of this same file
+         * can be installed in the gap and raise hiwater; clearing it at the end
+         * of the walk would leave that entry resident with an index the NEXT
+         * purge's bound excludes -- a stale page that no invalidation can ever
+         * reach, which is the one thing this cache must not have.
+         *
+         * Only a slot taking a NEW IDENTITY resets it (pcache_file_open, both
+         * places), because that is the only moment the old bound stops meaning
+         * anything. Monotone is the safe direction: an over-large hiwater costs
+         * a few extra hash probes on a later purge and can never miss a page. */
+        int done = (n < PURGE_BATCH);
         spin_unlock_irqrestore(&pc_lock, fl);
         for (int i = 0; i < n; i++) { pmm_free(frames[i]); if (counter) (*counter)++; }
-        if (n < PURGE_BATCH) return;
+        if (done) return;
     }
 }
 
@@ -476,16 +582,49 @@ void pcache_invalidate_path(const char *path)
 
 /* Make room when the entry pool is full.
  *
- * Only a page NOTHING maps may be taken here, and "nothing maps it" is read off
- * the refcount: the cache's own reference is one, so a refcount of exactly one
- * means no PTE anywhere points at this frame. Taking a mapped page would mean
+ * PASS 1 takes a page NOTHING maps, and "nothing maps it" is read off the
+ * refcount: the cache's own reference is one, so a refcount of exactly one
+ * means no PTE anywhere points at this frame. Taking a mapped PAGE would mean
  * tearing down PTEs, which is reclaim's job and needs reclaim's machinery (the
  * reverse map, the busy-elsewhere check, the TLB); doing a second, weaker copy
  * of it here is how the two would drift apart. So the division is: the cache
  * takes back what is free to take, and reclaim -- which can unmap -- takes the
  * rest, through the drop tier.
  *
- * Caller holds pc_lock. Returns the freed frame, or 0. */
+ * PASS 2 IS NEW, AND IT IS NOT THAT. It does not unmap anything and does not
+ * free a frame: it takes back the ENTRY while the PAGE stays exactly where it
+ * is, mapped, valid, and holding its bytes. The victim frame loses one pmm
+ * reference (the cache's) and keeps one per PTE, so rmap_count == pmm_refcount
+ * again with pcache_holds() now 0 -- three independently maintained numbers
+ * that still agree, which is the only invariant reclaim.h asks of anyone.
+ *
+ * WHY IT HAD TO EXIST. Without it, a pool full of mapped pages made
+ * pcache_get() hand its caller a page with NO ENTRY BEHIND IT, and fault.c's
+ * do_file() then took a second reference on it and installed one PTE. That
+ * frame has rmap_count 1, pcache_holds 0 and pmm_refcount 2: it fails
+ * reclaim's eligibility test forever, and on process exit the PTE's reference
+ * is dropped and the allocation reference is not. ONE LEAKED FRAME PER FAULT
+ * PAST THE CEILING, counted by nothing. The alternative fixes were worse:
+ * returning 0 declines the fault and kills the process (a memory shortage that
+ * presents as a segfault), and changing what pcache_get() returns means
+ * changing fault.c, which is another line's file this run.
+ *
+ * WHAT IT COSTS, SAID PLAINLY: the victim page stops being shareable (a later
+ * mapping of the same file page misses and reads a second copy) and stops
+ * being tier-1 droppable (VMM_PTE_FILE is not VMM_PTE_ANON, so try_drop
+ * declines it and it can only leave through swap). That is the same loss the
+ * uncached hand-back had, minus the leak, and moved onto the COLDEST page
+ * instead of the one just faulted. It is counted separately from an ordinary
+ * eviction because it is a different event: `evicted` is the cache working,
+ * `orphaned` is the pool being too small for the workload.
+ *
+ * It does NOT widen the coherence hole. pcache_invalidate_*() has never torn
+ * down a PTE -- it removes entries so the NEXT fault re-reads -- so a process
+ * that already has a file page mapped already keeps its old bytes across a
+ * write. An orphaned page is in exactly that pre-existing state.
+ *
+ * Caller holds pc_lock. Returns the victim frame (the caller drops the cache's
+ * reference on it), or 0. */
 static uint64_t evict_one_locked(void)
 {
     for (uint32_t tries = 0; tries < pc_npage; tries++) {
@@ -496,7 +635,25 @@ static uint64_t evict_one_locked(void)
         c_evict++;
         return unlink_entry((int32_t)i);
     }
-    return 0;
+#ifndef PCACHE_NO_ORPHAN
+    for (uint32_t tries = 0; tries < pc_npage; tries++) {
+        uint32_t i = pc_hand;
+        pc_hand = (pc_hand + 1 >= pc_npage) ? 0 : pc_hand + 1;
+        if (pg[i].fh < 0) continue;
+        c_orphan++;
+        return unlink_entry((int32_t)i);
+    }
+#else
+    /* NEGATIVE CONTROL (-DPCACHE_NO_ORPHAN): pass 2 removed, which is the code
+     * exactly as it stood before 2026-08-20. It is the SHIPPED WRONG VERSION,
+     * not a fault injected to be easy to catch, and that is the point -- every
+     * functional assertion in this tree still passes against it, because the
+     * fault still succeeds and the process still runs and reads the right
+     * bytes. The only thing it does is lose one 4 KiB frame per fault, forever,
+     * with no counter and no console line. tests/unit/mm_pcache_test.c's
+     * t_pool_full_of_mapped is REQUIRED to fail here. */
+#endif
+    return 0;                    /* pc_npage == 0: the cache never came up */
 }
 
 uint64_t pcache_get(int fh, uint64_t index)
@@ -550,12 +707,26 @@ uint64_t pcache_get(int fh, uint64_t index)
         }
     }
     if (pc_free < 0) {
-        /* Every slot is taken and every page in them is mapped by somebody. The
-         * page is still handed back -- UNCACHED, with its allocation reference
-         * intact -- so the fault succeeds and the process runs; it simply does
-         * not get to share. Counted as an eviction failure through the pool
-         * being too small, not hidden. */
+        /* UNREACHABLE, and counted rather than trusted.
+         *
+         * evict_one_locked()'s second pass takes a slot from ANY entry, so it
+         * can only come back empty when the pool holds no entries at all --
+         * and if it holds none then pc_free cannot be empty either. So getting
+         * here means the free list and the entry array disagree, which is a
+         * bug in this file and nowhere else.
+         *
+         * The old code got here whenever the pool was full of mapped pages,
+         * returned the frame UNCACHED, and leaked it (see evict_one_locked).
+         * Handing it back is still the least-bad thing to do -- the fault
+         * succeeds and the process runs -- so that is kept, but it is now
+         * SAID: this counter is a leak counter, one 4 KiB frame per tick, and
+         * a nonzero value is a defect report, not a capacity report. */
+        c_uncached++;
         spin_unlock_irqrestore(&pc_lock, fl);
+        kprintf("[pcache] BUG: pool of %d slots has no free entry and nothing "
+                "to evict; page %d of %s handed back UNCACHED (frame %p LEAKED, "
+                "%d so far)\n", (int)pc_npage, (int)index, pf[fh].path,
+                (void *)frame, (int)c_uncached);
         return frame;
     }
     e = pc_free;
@@ -567,6 +738,7 @@ uint64_t pcache_get(int fh, uint64_t index)
     pg[e].hnext = bucket[b];
     bucket[b] = e;
     pc_of_frame[frame / FRAME_SIZE] = (uint32_t)e + 1;
+    if (index + 1 > pf[fh].hiwater) pf[fh].hiwater = index + 1;   /* purge's bound */
     c_resident++;
     if (c_resident > c_peak) c_peak = c_resident;
     spin_unlock_irqrestore(&pc_lock, fl);
@@ -663,4 +835,17 @@ void pcache_report(const char *tag)
     kprintf("[pcache] %s: %d dropped by reclaim, %d evicted here, "
             "%d invalidated by a write, %d whole-file reads bypassed\n",
             tag ? tag : "-", (int)c_drop, (int)c_evict, (int)c_inval, (int)c_bypass);
+    /* THE CEILING LINE. Everything above is the cache working; these two
+     * numbers are the pool being too small for what is asked of it, and
+     * neither existed before 2026-08-20 -- the pool has never had a consumer
+     * that could reach its top, so its failure mode had never been printed.
+     * `orphaned` is a capacity report and `uncached` is a defect report; they
+     * are on the same line because a reader chasing "where did my sharing go"
+     * needs to see which of the two happened. */
+    kprintf("[pcache] %s: pool %d/%d slots used at peak (%d%%); "
+            "%d entries orphaned (pool full of mapped pages), "
+            "%d pages handed back UNCACHED AND LEAKED\n",
+            tag ? tag : "-", (int)c_peak, (int)pc_npage,
+            (int)(pc_npage ? (c_peak * 100) / pc_npage : 0),
+            (int)c_orphan, (int)c_uncached);
 }

@@ -260,6 +260,15 @@ uint64_t reclaim_second_chance(void); /* referenced, accessed bit cleared instea
 uint64_t reclaim_skip_unmapped(void); /* no reverse-map entry: kernel memory */
 uint64_t reclaim_skip_pinned(void);   /* explicitly pinned */
 uint64_t reclaim_skip_partial(void);  /* rmap_count != refcount, or chain truncated */
+/* The page cache's share of the sweep, split out of the aggregates above.
+ * reclaim_skip_partial_cached() is the one that must be ZERO: a frame the
+ * cache holds whose references do not add up is exactly the structurally
+ * unevictable page pcache.h's refcount decision exists to prevent, and inside
+ * skip_partial it is invisible. reclaim_seen_cached() is its denominator --
+ * without it a zero cannot be told from 'no cached frame was ever swept'. */
+uint64_t reclaim_seen_cached(void);
+uint64_t reclaim_skip_partial_cached(void);
+uint64_t reclaim_skip_wide_cached(void);
 uint64_t reclaim_skip_wide(void);     /* more sharers than RECLAIM_MAX_SHARERS */
 uint64_t reclaim_skip_busy(void);     /* the space is running on another core */
 uint64_t reclaim_backoffs(void);      /* passes that found nothing and backed off */

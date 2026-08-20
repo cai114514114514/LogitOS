@@ -141,13 +141,119 @@
 #define PCACHE_MAXFILE 32
 #define PCACHE_PATHMAX 192
 
-/* Resident pages. 4096 entries is a 16 MiB ceiling on cached file data, which
- * is a bound and not a target: reclaim takes these back under pressure long
- * before the ceiling matters, and the ceiling exists so that a machine with no
- * pressure at all still has a number. Clamped further at init to one sixteenth
- * of RAM, so the 192 MiB machine the swap harness boots does not give a third
- * of its memory to page cache before reclaim has said anything. */
-#define PCACHE_MAXPAGE 4096
+/* ===========================================================================
+ * HOW BIG THE POOL IS, AND WHY IT IS NO LONGER A CONSTANT
+ *
+ * This used to be `#define PCACHE_MAXPAGE 4096`, clamped at init to
+ * total_frames/16, and the entries were a static array in kernel .bss. Three
+ * measurements on 2026-08-20 said that all three of those decisions were
+ * wrong, and none of them could have been seen before elf_load started
+ * producing file-backed VMAs, because until then the cache had no consumer:
+ *
+ *   1. THE CONSTANT MEANS A DIFFERENT THING ON EVERY MACHINE. 4096 slots is
+ *      16 MiB: 3.1% of the 512 MiB desktop boot, and on the 192 MiB machine
+ *      the swap harness boots the clamp bites instead and gives 3072 slots =
+ *      6.25%. One number, two policies, neither chosen.
+ *
+ *   2. 16 MiB IS NOT ENOUGH FOR THE ONE WORKLOAD THIS LINE EXISTS FOR. A
+ *      284 MiB model mapped read-only off the disk is 72,704 pages. It cannot
+ *      fit in 4096 slots, and what happened when it did not fit is (3).
+ *
+ *   3. THE FULL-POOL PATH LEAKED A FRAME PER FAULT. pcache_get() handed the
+ *      page back UNCACHED with its allocation reference intact; do_file()
+ *      (fault.c) then took its own reference and installed one PTE. So
+ *      rmap_count 1 + pcache_holds 0 = 1 against a pmm refcount of 2 --
+ *      reclaim's eligibility test (below) fails, forever, and when the
+ *      process exits the PTE's reference goes and the allocation reference
+ *      does not. One 4 KiB frame lost per page fault past the ceiling, with
+ *      nothing counting it. On the target workload that is the machine.
+ *
+ * THE SIZE IS NOW DERIVED, from the one thing that bounds it: A FRAME CAN
+ * HOLD AT MOST ONE CACHED FILE PAGE, so the largest pool that can ever be
+ * needed is one entry per frame. Half of that is chosen, and the half is
+ * derived too rather than picked: the cache must never be able to drive the
+ * allocator to failure BY ITSELF, and "at most half the frames" is the
+ * strongest form of that -- for every frame the cache holds there is one it
+ * does not. That is the property the old 4096 was providing by accident of
+ * scale; this states it.
+ *
+ *      slots = total_frames / PCACHE_FRAME_SHARE
+ *
+ * COST, MEASURED, not estimated -- `size -A build/c/kernel/mm/pcache.o` and
+ * the kernel's own boot line, both on 2026-08-20, 512 MiB / 131,037 frames:
+ *
+ *   .bss          109,716 B  ->  7,588 B      -102,128 B, permanent, every boot
+ *                                             (pg[] -98,304, bucket[] -4,096,
+ *                                              pf[] +256 for the purge bound)
+ *   allocated     511 KiB    ->  2,112 KiB    +1,600 KiB at init, from the PMM
+ *   per frame     4 B        ->  16.5 B       +12.5 B = +0.305% of RAM
+ *   ceiling       16 MiB     ->  256 MiB
+ *
+ * An entry is 24 bytes and the bucket array is one int32 per four entries, so
+ * 12.5 B per frame is arithmetic and not a fit. It comes from
+ * pmm_alloc_contig() at init like the reverse map's node pool, which is the
+ * point: the static array cost its 102,400 B on every machine whether or not
+ * anything ever opened a file, and a machine with 64 MiB paid the same as one
+ * with 512.
+ *
+ * WHAT DID NOT CHANGE: the pool is still a CEILING and not a target, reclaim
+ * still takes these pages back under pressure long before it is reached, and
+ * the full-pool path still exists and is still reachable. It no longer leaks;
+ * see pcache.c's evict_one_locked().
+ *
+ * OCCUPANCY, MEASURED, so that "the desktop does not come near it" is a number
+ * rather than a hope (each is `pcache_report`'s peak, one QEMU boot each):
+ *
+ *   boot + desktop, nothing launched            45-46 pages
+ *   ...+ the browser exec'd                       178 pages
+ *   ...+ 25 large files mapped and every page
+ *        touched at once (run-pcachefill.sh)    4,782 pages
+ *
+ * The last one is a workload built specifically to load this pool, and it
+ * reaches 7% of it. It is also 117% of the OLD pool, which is exactly why that
+ * harness exists: 4,775 mapped pages against 4,096 slots is where the old code
+ * leaked 685 frames, measured. */
+#define PCACHE_FRAME_SHARE 2u
+
+/* The floor. A machine (or a host simulation) small enough that half its
+ * frames is a handful still gets a usable cache rather than a degenerate one. */
+#define PCACHE_MINPAGE 32u
+
+/* ---------------------------------------------------------------------------
+ * THE NEGATIVE CONTROL: -DPCACHE_LEGACY_POOL
+ *
+ * Not "no page cache" -- that fails everything and proves nothing about the
+ * SIZE. This is the pool exactly as it shipped: `min(4096, total_frames/16)`
+ * entries, and evict_one_locked() without its second pass, which together are
+ * the two lines that produced the leak. Everything a program can observe about
+ * itself is unchanged under it: the mappings work, the bytes are right, the
+ * processes run to completion.
+ *
+ * tests/boot/run-pcachefill.sh is REQUIRED to fail against it, on exactly two
+ * assertions -- `orphaned == 0` and `uncached == 0`. That it fails on the
+ * SECOND one and not only the first is the part that matters: an orphan is the
+ * pool being too small, an uncached hand-back is a frame gone.
+ *
+ * The Makefile rule this needs (two tokens, in the toggle block beside CHURN=1
+ * and NOSHAPE=1 at Makefile:106; not added here because the Makefile is owned
+ * by another line this run):
+ *
+ *     ifeq ($(PCLEGACY),1)
+ *     CFLAGS += -DPCACHE_LEGACY_POOL
+ *     endif
+ *
+ * and then
+ *
+ *     make BUILD=build/pclegacy PCLEGACY=1 build/pclegacy/logit.iso
+ *     bash tests/boot/run-pcachefill.sh build/pclegacy/logit.iso build/disk.img legacy
+ *
+ * -- the disk is shared on purpose: the apps are identical, only the kernel
+ * differs, so a rebuilt disk would be a second variable. */
+#ifdef PCACHE_LEGACY_POOL
+#define PCACHE_LEGACY_MAXPAGE 4096u
+#define PCACHE_LEGACY_SHARE   16u
+#define PCACHE_NO_ORPHAN 1
+#endif
 
 /* Files above this are read STRAIGHT THROUGH, not installed. The argument is
  * bcache.c's, one layer up and for the same reason: a 2.2 MiB font or a 1 MiB
@@ -239,6 +345,16 @@ uint64_t pcache_resident(void);     /* pages held right now */
 uint64_t pcache_peak(void);
 uint64_t pcache_dropped(void);      /* pages reclaim took */
 uint64_t pcache_evicted(void);      /* pages the cache took back itself (pool full) */
+uint64_t pcache_orphaned(void);     /* entries dropped while the page stayed MAPPED --
+                                     * the pool was full of pages nothing was willing
+                                     * to give up, so the coldest one lost its cache
+                                     * identity (not its mapping). See evict_one_locked. */
+uint64_t pcache_uncached(void);     /* THE FAILURE THAT USED TO BE INVISIBLE: a page
+                                     * handed back with no entry behind it. Must be 0;
+                                     * see the pool-sizing note above for why it now
+                                     * cannot happen without a bug, and pcache.c for
+                                     * what it costs when it does. */
+uint64_t pcache_slots(void);        /* the pool's size, decided at init from RAM */
 uint64_t pcache_invalidated(void);  /* pages a write threw away */
 uint64_t pcache_shared(void);       /* pages currently mapped more than once */
 uint64_t pcache_bypassed(void);     /* whole-file reads too big to install */

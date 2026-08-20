@@ -599,19 +599,30 @@ static void t_idle_slot_eviction(void)
     mm_eqi(pcache_audit(), 0, "final audit for this phase");
 }
 
+/* Every frame t_pool_bounded installed, so t_pool_full_of_mapped can take a
+ * reference on the ones still resident. Sized from the 16 MiB simulated
+ * machine below, not from the pool: pcache_slots() is not a compile-time
+ * value any more, and an array that is a fixed multiple of the sim's own size
+ * cannot be silently outgrown by a change to the pool fraction -- it is
+ * bounded by the FRAMES, and the cache can never hold more pages than that. */
+#define POOL_FRAMES_MAX 4096
+static uint64_t filled[POOL_FRAMES_MAX];
+
 /* ======================================================================== */
 static void t_pool_bounded(void)
 {
     phase("the pool is bounded: fill past its capacity and the cache evicts its own");
 
-    /* pcache_init() clamps the pool to at most one sixteenth of the frames
-     * this test hands it (see pcache.h/pcache.c), which at the 16 MiB
-     * mm_sim_init() below is on the order of a few hundred slots -- comfortably
-     * inside the PCACHE_MAXPAGE=4096 compile-time ceiling. 600 distinct pages
-     * is well past either bound, so this exercises the SAME self-eviction path
-     * PCACHE_MAXPAGE exists to guard, without a multi-hundred-MiB simulated
-     * machine to reach the literal constant. */
-    const int NPAGES = 600;
+    /* THE PAGE COUNT IS DERIVED FROM THE POOL, NOT WRITTEN DOWN. It used to be
+     * a literal 600 against a pool that pcache_init() clamped to
+     * total_frames/16 -- true of the constant that existed then and false the
+     * moment the pool started being sized from RAM (pcache.h). A fixed number
+     * larger than the pool proves self-eviction; a fixed number SMALLER than
+     * the pool proves nothing at all and says so by never firing, which is the
+     * failure mode this phase must not be able to have. +32 is the smallest
+     * margin that leaves several installs past the cap for the plateau
+     * assertion below to look at. */
+    const int NPAGES = (int)pcache_slots() + 32;
     int fid = sim_add_file("/data/big.bin", (uint64_t)NPAGES * 4096);
     int fh = pcache_file_open("/data/big.bin");
     mm_ok(fh >= 0, "opened the big file");
@@ -619,10 +630,16 @@ static void t_pool_bounded(void)
     uint64_t evict_before = pcache_evicted();
     int saw_evict = 0;
     long long cap = -1;
+    int hard_fail = -1;
 
     for (int i = 0; i < NPAGES; i++) {
         uint64_t f = pcache_get(fh, (uint64_t)i);
-        mm_ok(f != 0, "page %d installed or served uncached -- never a hard failure", i);
+        /* ONE assertion for the whole loop, not one per page: NPAGES is
+         * derived from the pool now and is in the thousands, and 2,080 checks
+         * that can only all pass or all fail together do not carry 2,080
+         * checks' worth of information -- they just move the suite's total. */
+        if (f == 0 && hard_fail < 0) hard_fail = i;
+        if (i < POOL_FRAMES_MAX) filled[i] = f;
 
         if (!saw_evict && pcache_evicted() > evict_before) {
             saw_evict = 1;
@@ -636,12 +653,20 @@ static void t_pool_bounded(void)
         }
     }
 
+    mm_eqf(hard_fail, -1, "every one of the %d pages was served -- never a hard failure", NPAGES);
     mm_ok(saw_evict, "the cache evicted its OWN entries under pressure rather than growing without bound");
-    mm_ok(cap > 0 && cap <= PCACHE_MAXPAGE,
-          "the plateau (%lld) is a real bound, within the compile-time ceiling (%d)",
-          cap, PCACHE_MAXPAGE);
+    mm_ok(cap > 0 && cap <= (long long)pcache_slots(),
+          "the plateau (%lld) is a real bound, within the pool this machine was given (%d)",
+          cap, (int)pcache_slots());
     mm_ok(pcache_evicted() - evict_before >= (uint64_t)(NPAGES - cap),
           "self-eviction fired for (at minimum) every page past the cap");
+    /* The pool was full of pages NOTHING maps, so pass 1 of evict_one_locked()
+     * served every one of them. Neither of the two ceiling counters may move
+     * here -- that is what makes the next phase's numbers attributable. */
+    mm_eqi((long long)pcache_orphaned(), 0,
+           "no entry was orphaned: every victim was unmapped, so pass 1 sufficed");
+    mm_eqi((long long)pcache_uncached(), 0,
+           "and nothing was handed back uncached -- the leak path is not reachable here");
 
     /* The most recent page is always resident -- eviction takes the COLD end
      * of the pool, never the page just installed. */
@@ -650,6 +675,95 @@ static void t_pool_bounded(void)
     mm_eqf(bad_byte(last, fid, NPAGES - 1, 4096), -1, "...and holds its real bytes");
 
     mm_eqi(pcache_audit(), 0, "audit clean after filling past capacity");
+}
+
+/* ========================================================================
+ * THE POOL FULL OF PAGES SOMEBODY MAPS -- the case that used to LEAK.
+ *
+ * evict_one_locked()'s pass 1 only takes an entry whose frame has refcount 1,
+ * i.e. nothing maps it. When every entry fails that test the old code fell
+ * through, handed the new page back with NO ENTRY and its allocation
+ * reference intact, and fault.c's do_file() then added a second reference and
+ * one PTE -- rmap_count 1 + pcache_holds 0 against a pmm refcount of 2, which
+ * fails reclaim's eligibility test forever and loses one 4 KiB frame per
+ * fault when the process exits. Nothing counted it and nothing printed it,
+ * which is why it survived: the fault SUCCEEDS, so no test that asks "did the
+ * program run" can see it.
+ *
+ * This phase manufactures exactly that state. There are no page tables in
+ * this test (pcache.c never touches one), so "mapped" is spelled the only way
+ * the cache can read it: an extra pmm reference on the frame, which is
+ * precisely what a PTE is worth to pmm_refcount(). Then it asks for one more
+ * page and requires the new behaviour -- an entry ORPHANED, the victim page
+ * left alive and mapped, the newcomer properly cached, and NOTHING leaked.
+ * ==================================================================== */
+static void t_pool_full_of_mapped(void)
+{
+    phase("the pool full of MAPPED pages: an entry is orphaned, and no frame leaks");
+
+    int fid = sim_add_file("/data/mapped.bin", 64ull * 4096);
+    int fh = pcache_file_open("/data/mapped.bin");
+    mm_ok(fh >= 0, "opened the file");
+
+    /* Every frame the pool currently holds, referenced once more. `filled` may
+     * name a frame twice (an evicted frame goes back to the allocator and can
+     * be handed out again for a later page), so each is taken at most once --
+     * a double reference here would be this test leaking, not the cache. */
+    static uint64_t refd[POOL_FRAMES_MAX];
+    int nref = 0;
+    for (int i = 0; i < POOL_FRAMES_MAX; i++) {
+        uint64_t f = filled[i];
+        if (!f || !pcache_holds(f)) continue;
+        int seen = 0;
+        for (int j = 0; j < nref; j++) if (refd[j] == f) { seen = 1; break; }
+        if (seen) continue;
+        pmm_ref(f);
+        refd[nref++] = f;
+    }
+    mm_ok(nref > 0, "took a reference on all %d resident frames -- the pool is now "
+                    "full of pages something maps", nref);
+
+    uint64_t orphan_before   = pcache_orphaned();
+    uint64_t evict_before    = pcache_evicted();
+    uint64_t uncached_before = pcache_uncached();
+    uint64_t resident_before = pcache_resident();
+    uint64_t free_before     = pmm_free_frames();
+
+    uint64_t nf = pcache_get(fh, 0);
+    mm_ok(nf != 0, "the new page was served");
+    mm_ok(pcache_holds(nf), "...and it is CACHED, not handed back naked -- "
+                            "the whole point of the orphan pass");
+    mm_eqi((long long)(pcache_orphaned() - orphan_before), 1,
+           "exactly one entry was orphaned to make room");
+    mm_eqi((long long)(pcache_evicted() - evict_before), 0,
+           "and no ORDINARY eviction happened -- pass 1 had nothing it could take");
+    mm_eqi((long long)(pcache_uncached() - uncached_before), 0,
+           "nothing was handed back uncached: the leak path did not run");
+    mm_eqf((long long)pcache_resident(), (long long)resident_before,
+           "the pool is still exactly full -- one entry out, one in");
+    mm_eqf(bad_byte(nf, fid, 0, 4096), -1, "the new page holds its real bytes");
+
+    /* THE LEAK ASSERTION, and it is the reason this phase exists. One frame
+     * was allocated for the new page and one entry was orphaned; orphaning
+     * drops the CACHE's reference on a frame something else still holds, so
+     * that frame must NOT return to the allocator. Net free frames must
+     * therefore fall by exactly one. The old code's number here was also one
+     * -- and then never came back, which is what the release below checks. */
+    mm_eqf((long long)(free_before - pmm_free_frames()), 1,
+           "one frame went to the new page and the orphaned one stayed alive");
+
+    /* Release the manufactured mappings. Every frame must now be reachable
+     * again: the orphaned one has no cache entry and no reference left, so it
+     * goes back to the allocator; the rest keep the cache's reference. If the
+     * orphan pass had double-freed or forgotten a reference, pmm_bugs() is
+     * where it lands. */
+    uint64_t free_mid = pmm_free_frames();
+    for (int i = 0; i < nref; i++) pmm_free(refd[i]);
+    mm_eqf((long long)(pmm_free_frames() - free_mid), 1,
+           "releasing the mappings returns exactly the ONE orphaned frame -- "
+           "the others are still the cache's");
+    mm_eqi((long long)pmm_bugs(), 0, "no allocator invariant was violated");
+    mm_eqi(pcache_audit(), 0, "audit clean: no entry names a freed frame");
 }
 
 /* ======================================================================== */
@@ -677,6 +791,7 @@ int main(void)
     t_file_ref_put_idles();
     t_idle_slot_eviction();
     t_pool_bounded();
+    t_pool_full_of_mapped();    /* must run AFTER it: it needs a full pool */
 
     mm_eqi(pcache_audit(), 0, "final audit: every entry sane, no dangling frame");
     mm_eqi((long long)pmm_bugs(), 0, "no frame-allocator invariant violations");
