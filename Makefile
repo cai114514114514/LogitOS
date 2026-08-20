@@ -4229,3 +4229,21 @@ bench-aui: $(ISO) $(DISK)
 
 # DOMParser: `make test-domparser`. See the fragment header.
 -include tests/domparser.mk
+
+# ---------------------------------------------------------------------------
+# Fragments written by parallel work that was told NOT to edit this file.
+#
+# The instruction was right -- six agents editing one Makefile is a merge
+# conflict per agent -- but it has a failure mode that looks exactly like
+# success from inside the fragment: the rules are written, the file is
+# syntactically fine, and `make test-nn` answers "No rule to make target".
+# Six fragments existed at once with no include line between them and make,
+# so every gate they define was unreachable and nothing said so. That is the
+# audit's UNWIRED category, manufactured live. Adding the line is the whole
+# fix and it belongs to whoever reserved the file, not to the fragment.
+-include tests/nn.mk
+-include tests/net.mk
+-include tests/route.mk
+-include tests/tlsx.mk
+-include tests/module.mk
+-include tests/cssdecl.mk
