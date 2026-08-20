@@ -72,6 +72,20 @@ static inline long sys_kheap_stress(long iters, int size, unsigned long seed) { 
 static inline int  sys_waitpid(int pid, int *status) { return (int)_sys(SYS_WAITPID, pid, (long)status, 0); }
 static inline int  sys_execve(const char *p, char *const argv[], char *const envp[]) { return (int)_sys(SYS_EXECVE, (long)p, (long)argv, (long)envp); }
 
+/* --- SYS_SCHED: nice / weight (see include/abi/logit_abi.h) ---------------
+ * pid 0 means the caller. sys_nice_set returns the CLAMPED value it installed,
+ * or SCHED_E_PERM / SCHED_E_SRCH -- all three are negative and the clamped
+ * value can also be negative (nice -20), so a caller that wants to tell them
+ * apart compares against the SCHED_E_* constants rather than testing < 0.
+ * That is a real trap and it is why these are not "return 0 on success":
+ * -20 IS a success, and the number matters to /bin/nice, which prints it. */
+static inline int  sys_nice_get(int pid) { return (int)_sys(SYS_SCHED, SCHEDCTL_GET_NICE, pid, 0); }
+static inline int  sys_nice_set(int pid, int nice) { return (int)_sys(SYS_SCHED, SCHEDCTL_SET_NICE, pid, nice); }
+/* The weight the kernel's pick loop actually uses. Exists so a test reads the
+ * scheduler's number instead of re-deriving the nice->weight table, which
+ * cannot catch the table itself being wrong. */
+static inline int  sys_sched_weight(int pid) { return (int)_sys(SYS_SCHED, SCHEDCTL_GET_WEIGHT, pid, 0); }
+
 /* --- entropy (SYS_GETRANDOM) ------------------------------------------------
  * The kernel's SHA-256 Hash_DRBG, reachable from ring 3. Use this and nothing
  * else for anything that must be unpredictable -- there is no /dev/urandom
@@ -261,6 +275,38 @@ static inline int snd_close(int h, int drain) { return (int)_sys(SYS_SND_CLOSE, 
 static inline int snd_state(int h, struct logit_sndstate *st)
 { return (int)_sys(SYS_SND_STATE, h, (long)st, 0); }
 
+/* --- capture (mic / line-in) ------------------------------------------------
+ * See the long note on SYS_SND_CAP_* in include/abi/logit_abi.h. `f` is
+ * in/out: pass rate=0 for "whatever the hardware has" and read the real
+ * rate/channels/format back out of it once this returns >= 0. */
+static inline int snd_cap_open(struct logit_sndfmt *f)
+{ return (int)_sys(SYS_SND_CAP_OPEN, (long)f, 0, 0); }
+
+static inline int snd_cap_open_native(struct logit_sndfmt *f)
+{ f->rate = 0; f->channels = 0; f->format = 0; f->buffer_ms = 0; f->flags = 0;
+  return snd_cap_open(f); }
+
+/* Bytes DELIVERED, which may be less than `bytes`. Parks the thread until a
+ * hardware period has arrived unless the stream was opened SND_F_NONBLOCK. */
+static inline int snd_cap_read(int h, void *buf, int bytes)
+{ return (int)_sys(SYS_SND_CAP_READ, h, (long)buf, bytes); }
+
+static inline int snd_cap_avail(int h) { return (int)_sys(SYS_SND_CAP_AVAIL, h, 0, 0); }
+static inline int snd_cap_close(int h) { return (int)_sys(SYS_SND_CAP_CLOSE, h, 0, 0); }
+static inline int snd_cap_state(int h, struct logit_sndstate *st)
+{ return (int)_sys(SYS_SND_CAP_STATE, h, (long)st, 0); }
+
+/* Read until `bytes` is full, however many short reads that takes. Returns
+ * bytes read, or the negative SND_E_* that stopped it. */
+static inline int snd_cap_read_all(int h, void *buf, int bytes)
+{ char *p = (char *)buf; int off = 0;
+  while (off < bytes) {
+      int k = snd_cap_read(h, p + off, bytes - off);
+      if (k < 0) return k;
+      off += k;
+  }
+  return off; }
+
 /* Write it all, however many short writes that takes. Returns bytes written,
  * or the negative SND_E_* that stopped it. */
 static inline int snd_write_all(int h, const void *buf, int bytes)
@@ -437,6 +483,45 @@ static inline int sys_sendto(int fd, const struct logit_dgram *d)
  * than assert the machine did not crash. */
 static inline long sys_sockstat(int what)
 { return _sys(SYS_SOCKSTAT, what, 0, 0); }
+
+/* --- AF_UNIX: sockets that never touch a wire ------------------------------
+ *
+ * The same fd in every respect -- sys_read/sys_write/sys_close/sys_dup2 work on
+ * one and a fork inherits it. Two calls are new because a local socket needs
+ * them and an AF_INET one here never did: connect(), because there is no
+ * hostname to hand to SYS_SOCK_OPEN, and socketpair(), which is a pipe with
+ * both directions.
+ *
+ * A path is resolved against the process cwd like every other path in this
+ * ABI, so "log" and "/var/run/log" both work. */
+
+/* bind() with an AF_UNIX address. A SEPARATE wrapper from sys_bind() rather
+ * than an overload, because the two take different structs -- SYS_BIND reads
+ * the family out of the first two bytes and sizes the rest of its copy-in from
+ * it, and a caller that passed the wrong one would be handing over 8 bytes
+ * where 110 are read. */
+static inline int sys_bind_unix(int fd, const struct logit_sockaddr_un *a)
+{ return (int)_sys(SYS_BIND, fd, (long)a, sizeof *a); }
+
+static inline int sys_connect_unix(int fd, const struct logit_sockaddr_un *a)
+{ return (int)_sys(SYS_CONNECT, fd, (long)a, sizeof *a); }
+
+/* `sv` is filled with two fds. Returns 0, or an LSK_E_*; on failure sv is
+ * UNTOUCHED, so a caller cannot half-close a pair it never got. */
+static inline int sys_socketpair(int type, int sv[2])
+{ return (int)_sys(SYS_SOCKETPAIR, LOGIT_AF_UNIX, type, (long)sv); }
+
+/* Fill an AF_UNIX address. Truncates at LOGIT_UNIX_PATH_MAX-1 and returns 0 if
+ * it had to -- a silently shortened path names a DIFFERENT socket, so the one
+ * caller that could notice is given the chance to. */
+static inline int sockaddr_un_set(struct logit_sockaddr_un *a, const char *path)
+{
+    a->family = LOGIT_AF_UNIX;
+    int i = 0;
+    for (; i < LOGIT_UNIX_PATH_MAX - 1 && path[i]; i++) a->path[i] = path[i];
+    a->path[i] = 0;
+    return path[i] == 0;
+}
 
 /* Fill an address for bind(). Port and IP are HOST order throughout this ABI. */
 static inline void sockaddr_set(struct logit_sockaddr *a, unsigned ip, int port)

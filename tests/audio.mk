@@ -13,7 +13,8 @@
 # shared CLI list.
 
 .PHONY: test-audio test-audio-pcm test-audio-pcm-negctl \
-        test-audio-wav test-audio-mix test-audio-underrun test-audio-none
+        test-audio-wav test-audio-mix test-audio-underrun test-audio-none \
+        test-hda-capture-graph test-hda-capture-graph-negctl
 
 # --- /bin/sndtest: the ring-3 instrument -------------------------------------
 # `CLI +=` is deferred, and the $(DISK) recipe expands $(CLI) when it RUNS, so
@@ -34,6 +35,21 @@ $(eval $(call CLI_RULE,sndtest))
 $(DISK): $(BUILD)/sndtest.aex
 else
 $(warning tests/audio.mk: $(CLIDIR)/sndtest.c is missing -- /bin/sndtest will not be built, and the on-device audio targets cannot run)
+endif
+
+# --- /bin/rec: the capture-side instrument, same self-contained wiring ------
+# Captures from c/drivers/audio/hda.c's input path to a WAV file via
+# SYS_SND_CAP_*; see the file's own header for what it checks and writes.
+# Same guard-by-$(wildcard) posture as sndtest above and for the identical
+# reason -- this fragment must not be able to break `make build/disk.img`
+# for anyone else if rec.c is ever missing from their checkout.
+REC_SRC := $(wildcard $(CLIDIR)/rec.c)
+ifneq ($(REC_SRC),)
+CLI += rec
+$(eval $(call CLI_RULE,rec))
+$(DISK): $(BUILD)/rec.aex
+else
+$(warning tests/audio.mk: $(CLIDIR)/rec.c is missing -- /bin/rec will not be built, and capture cannot be exercised on device)
 endif
 
 # --- host: the PCM layer ------------------------------------------------------
@@ -88,5 +104,45 @@ test-audio-underrun: $(ISO) $(DISK)
 test-audio-none: $(ISO) $(DISK)
 	@bash tests/boot/run-audio-none-test.sh $(ISO) $(DISK)
 
+# --- host: the CAPTURE widget-graph search -----------------------------------
+# See tests/unit/hda_capture_graph_test.c's own header before reading this as
+# "hda.c was tested" -- it is a PORT of try_capture_path()'s algorithm against
+# a modelled widget graph, not the compiled driver, because that function
+# talks to real MMIO (the CORB/RIRB command bus) with no host build of its
+# own the way c/kernel/audio/pcm.c has. This is the fallback the capture work
+# was scoped to use when a real device-side capture signal is not available in
+# this environment (see the report: QEMU here has no audio backend that can
+# feed the guest real input, "wav" being record/output-only).
+test-hda-capture-graph:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -Wall -Wextra -o $(BUILD)/hda_capture_graph_test \
+	    tests/unit/hda_capture_graph_test.c
+	@./$(BUILD)/hda_capture_graph_test
+
+# NEGATIVE CONTROL, watched to fail exactly twice: reinstates the "guess the
+# first ADC and the first pin" fallback find_output_path uses on the OUTPUT
+# side, which the file's own header names as the specific wrong
+# implementation this gate exists to catch on the capture side. Reddens only
+# the no-edge case's two assertions (24 checks total, 22 survive) -- every
+# other case still finds its path by the SAME graph edge the fallback would
+# have skipped past, so a fallback that only ever fires when the real search
+# already failed cannot be seen by any check that passes on its own.
+test-hda-capture-graph-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DHDA_CAP_NEGCTL_GUESS -o $(BUILD)/hda_capture_graph_negctl \
+	    tests/unit/hda_capture_graph_test.c
+	@if ./$(BUILD)/hda_capture_graph_negctl >$(BUILD)/hda_capture_graph_negctl.out 2>&1; then \
+	    echo "FAIL: with the guess-fallback reinstated the suite still PASSED -- it cannot see the bug"; \
+	    exit 1; \
+	 else \
+	    n=$$(grep -c '^FAIL' $(BUILD)/hda_capture_graph_negctl.out); \
+	    if [ "$$n" != "2" ]; then \
+	        echo "FAIL: expected exactly 2 reddened checks, got $$n"; exit 1; \
+	    fi; \
+	    echo "PASS (negative control): guess-fallback reinstated -> exactly 2 checks failed, as required"; \
+	    grep '^FAIL' $(BUILD)/hda_capture_graph_negctl.out | sed 's/^/       /'; \
+	 fi
+
 test-audio: test-audio-pcm test-audio-pcm-negctl test-audio-wav test-audio-mix \
-            test-audio-underrun test-audio-none
+            test-audio-underrun test-audio-none \
+            test-hda-capture-graph test-hda-capture-graph-negctl

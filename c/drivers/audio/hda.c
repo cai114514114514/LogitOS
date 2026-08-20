@@ -114,6 +114,11 @@ void *memset(void *, int, size_t);
 #define VERB_SET_EAPD         0x70C
 #define VERB_GET_CONFIG_DEF   0xF1C
 #define VERB_SET_POWER        0x705
+#define VERB_SET_CONN_SELECT  0x701    /* choose which connection-list entry a
+                                        * multi-source widget (an ADC, a mixer,
+                                        * an input selector) actually listens
+                                        * to right now */
+#define VERB_GET_PIN_SENSE    0xF09    /* bit31 = a jack is physically present */
 
 #define PARAM_VENDOR          0x00
 #define PARAM_SUBNODE_COUNT   0x04
@@ -142,6 +147,16 @@ void *memset(void *, int, size_t);
 #define HDA_PERIODS   8
 #define HDA_RING_BYTES (HDA_PERIOD_BYTES * HDA_PERIODS)
 #define HDA_STREAM_TAG 1
+/* A separate tag, not because the two directions could collide on the wire --
+ * input and output streams are independent DMA rings and independent
+ * converter buses -- but because a stream tag is also how a codec verb
+ * (SET_STREAM_CHAN) says "listen to THIS one", and using the same number for
+ * both would make a trace of the verb log ambiguous about which engine a
+ * given SET_STREAM_CHAN was routing. Same geometry as playback (1024-frame
+ * periods x8): a period boundary is a period boundary regardless of which
+ * way the bytes are moving, and there is no QEMU-vs-TCG reason for capture to
+ * need a different size than the one already tuned for it. */
+#define HDA_CAPTURE_STREAM_TAG 2
 
 struct bdl_entry {
     uint64_t addr;
@@ -168,6 +183,27 @@ struct hda {
 
     struct snd_device snd;
     uint64_t          irqs;
+
+    /* -------------------------------------------------------- capture -- */
+    unsigned          in_base;    /* register offset of the first input SD;
+                                    * input descriptors are always first, so
+                                    * this is SD_BASE whenever iss > 0 -- kept
+                                    * as a field rather than a bare constant
+                                    * because hda_isr and hda_cap_start read it
+                                    * without a second copy of that fact. */
+    unsigned          adc_nid;    /* 0 = no capture path found/usable */
+    unsigned          cap_pin_nid;
+    unsigned          cap_sel_nid;    /* which widget's connection-select to
+                                        * program, 0 = none needed (the source
+                                        * is this ADC/selector's only input) */
+    unsigned          cap_sel_index;  /* the index to select on cap_sel_nid */
+
+    uint8_t          *cap_ring;   /* the PCM the DMA engine WRITES into */
+    struct bdl_entry *cap_bdl;
+
+    struct snd_capdevice cap;
+    uint64_t             cap_irqs;
+    int                  has_capture;
 };
 
 static struct hda g_hda;
@@ -330,12 +366,139 @@ static uint32_t codec_param(struct hda *h, unsigned nid, unsigned param)
 
 /* ------------------------------------------------------ codec discovery -- */
 
+/* Connection-list helpers, shared by the output pin search below (which
+ * already open-coded a short-form (4-per-response) connection list read) and
+ * the capture search that follows it. Only the short form is read -- real
+ * codecs in this tree's corpus so far (QEMU's, and every ALC datasheet this
+ * driver was cross-checked against) never exceed a handful of sources, so 8
+ * is generous rather than tight. */
+static int hda_conn_len(struct hda *h, unsigned nid)
+{
+    int n = (int)(codec_param(h, nid, PARAM_CONN_LIST_LEN) & 0x7F);
+    return n > 8 ? 8 : n;
+}
+
+static int hda_conn_entry(struct hda *h, unsigned nid, unsigned idx, unsigned *out)
+{
+    uint32_t e = 0;
+    if (codec_cmd(h, h->codec_addr, nid, VERB_GET_CONN_LIST, idx & ~3u, &e) != 0)
+        return -1;
+    *out = (e >> ((idx & 3) * 8)) & 0xFF;      /* short form, 4 per response */
+    return 0;
+}
+
+static int nid_in(unsigned nid, const unsigned *arr, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++) if (arr[i] == nid) return 1;
+    return 0;
+}
+
+/* Read GET_PIN_SENSE (0xF09): bit31 is presence -- a jack physically
+ * inserted. Only meaningful on a pin whose own PIN_CAP says it has the
+ * hardware to sense at all; treating an unsensed pin's read as "0 = nothing
+ * plugged in" would be exactly the plausible-small-number failure this tree
+ * has been bitten by before (see CLAUDE.md's units-bugs section), so a pin
+ * without the capability says so instead of reporting a fake absent. */
+static void hda_report_jack(struct hda *h, const char *label, unsigned nid)
+{
+    uint32_t pcap = codec_param(h, nid, PARAM_PIN_CAP);
+    if (pcap & (1u << 2)) {
+        uint32_t sense = 0;
+        codec_cmd(h, h->codec_addr, nid, VERB_GET_PIN_SENSE, 0, &sense);
+        kprintf("[hda] %s pin %u: jack %s\n", label, nid,
+                (sense & 0x80000000u) ? "present" : "absent");
+    } else {
+        kprintf("[hda] %s pin %u: no presence-detect hardware\n", label, nid);
+    }
+}
+
+/* Walk from each ADC's own connection list, up to two hops, looking for one
+ * of the input-capable pins `find_output_path` already validated (connected,
+ * PIN_CAP input bit set). The capture-side twin of the pin-to-DAC search
+ * below, run in the opposite direction because the ADC is the SINK here
+ * instead of the source.
+ *
+ * Two hops covers both real shapes: a pin wired straight to the ADC (the
+ * simple case -- QEMU's codec, and plenty of real ones with a single fixed
+ * input) and a pin that goes through an explicit input-selector or
+ * summing-mixer widget first (the layout most real multi-input codecs use to
+ * offer mic AND line-in on one ADC). Sets h->adc_nid / h->cap_pin_nid /
+ * h->cap_sel_nid / h->cap_sel_index on success and returns 1.
+ *
+ * UNLIKE find_output_path, there is no "just wire the first ADC to the first
+ * pin" fallback when the graph search comes up empty. An unproven OUTPUT
+ * guess plays into a jack that may not be live -- silent, harmless. An
+ * unproven CAPTURE guess reads an ADC that may be listening to a different,
+ * disconnected source -- which produces something that LOOKS like a working
+ * microphone (silence, or noise off a dead input) and is exactly the
+ * "stubbed to success" shape this tree forbids. Refuse instead. */
+static int try_capture_path(struct hda *h, const unsigned *adcs, unsigned nadc,
+                            const unsigned *inpins, unsigned ninpin)
+{
+    unsigned a;
+    if (!nadc || !ninpin) {
+        kprintf("[hda]   fg: %u ADC(s), %u usable input pin(s) -- no capture path\n",
+                nadc, ninpin);
+        return 0;
+    }
+    for (a = 0; a < nadc; a++) {
+        int len = hda_conn_len(h, adcs[a]);
+        unsigned k;
+        for (k = 0; k < (unsigned)len; k++) {
+            unsigned entry, t;
+            if (hda_conn_entry(h, adcs[a], k, &entry) != 0) break;
+            t = (codec_param(h, entry, PARAM_AUDIO_WIDGET_CAP) >> 20) & 0xF;
+            if (t == WIDGET_PIN && nid_in(entry, inpins, ninpin)) {
+                h->adc_nid = adcs[a];
+                h->cap_pin_nid = entry;
+                if (len > 1) { h->cap_sel_nid = adcs[a]; h->cap_sel_index = k; }
+                kprintf("[hda]   capture: adc %u <- pin %u direct (index %u/%d)\n",
+                        h->adc_nid, h->cap_pin_nid, k, len);
+                return 1;
+            }
+            if (t == WIDGET_SEL || t == WIDGET_MIXER) {
+                int len2 = hda_conn_len(h, entry);
+                unsigned k2;
+                for (k2 = 0; k2 < (unsigned)len2; k2++) {
+                    unsigned e2;
+                    if (hda_conn_entry(h, entry, k2, &e2) != 0) break;
+                    if (nid_in(e2, inpins, ninpin)) {
+                        h->adc_nid = adcs[a];
+                        h->cap_pin_nid = e2;
+                        /* A mixer sums every input with no select verb; only
+                         * a selector (or the ADC itself, if IT has more than
+                         * one source) needs one programmed. */
+                        if (t == WIDGET_SEL && len2 > 1) {
+                            h->cap_sel_nid = entry; h->cap_sel_index = k2;
+                        } else if (len > 1) {
+                            h->cap_sel_nid = adcs[a]; h->cap_sel_index = k;
+                        }
+                        kprintf("[hda]   capture: adc %u <- %s %u <- pin %u\n",
+                                h->adc_nid, t == WIDGET_SEL ? "sel" : "mix", entry,
+                                h->cap_pin_nid);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    kprintf("[hda]   capture: %u ADC(s), %u input pin(s), no connection-list "
+            "edge between any pair -- refusing rather than guessing\n", nadc, ninpin);
+    return 0;
+}
+
 /* Walk the widget graph and find a DAC that can reach a usable output pin.
+ * While it is walking the graph anyway, it also gathers the ADCs and
+ * input-capable pins this fg has and hands them to try_capture_path -- one
+ * widget scan instead of two, and capture is resolved independently of
+ * whether THIS fg also has a usable output path (a codec can fail one
+ * direction and still serve the other).
  *
  * Deliberately generic rather than hardcoded to QEMU's node numbering. QEMU's
  * hda-output codec happens to put the DAC at nid 2 and the pin at nid 3, and
  * hardcoding that would work today and drive nothing else -- which defeats the
- * point of driving HDA at all. Returns 0 on success. */
+ * point of driving HDA at all. Returns 0 if an OUTPUT path was found (capture
+ * may or may not have been; check h->adc_nid). */
 static int find_output_path(struct hda *h)
 {
     uint32_t sub, cap;
@@ -357,6 +520,8 @@ static int find_output_path(struct hda *h)
         unsigned w_start, w_count, j;
         unsigned dacs[16], ndac = 0;
         unsigned pins[16], npin = 0;
+        unsigned adcs[16], nadc = 0;
+        unsigned inpins[16], ninpin = 0;
 
         {
             uint32_t t = codec_param(h, fg, PARAM_FG_TYPE);
@@ -383,22 +548,38 @@ static int find_output_path(struct hda *h)
             if (type == WIDGET_DAC && ndac < 16) {
                 dacs[ndac++] = nid;
                 kprintf("[hda]   nid %u: DAC (cap %x)\n", nid, cap);
-            } else if (type == WIDGET_PIN && npin < 16) {
+            } else if (type == WIDGET_ADC && nadc < 16) {
+                adcs[nadc++] = nid;
+                kprintf("[hda]   nid %u: ADC (cap %x)\n", nid, cap);
+            } else if (type == WIDGET_PIN) {
                 uint32_t pcap = codec_param(h, nid, PARAM_PIN_CAP);
                 uint32_t cfg = 0;
+                int connected;
                 codec_cmd(h, h->codec_addr, nid, VERB_GET_CONFIG_DEF, 0, &cfg);
                 kprintf("[hda]   nid %u: PIN (cap %x pincap %x cfg %x)\n",
                         nid, cap, pcap, cfg);
-                if (!(pcap & (1u << 4))) continue;        /* not output-capable */
                 /* Port connectivity 0x1 == "no physical connection". Picking
-                 * one of those is how sound goes to a jack that does not
-                 * exist -- every register correct, nothing audible. */
-                if (((cfg >> 30) & 0x3) == 0x1) continue;
-                pins[npin++] = nid;
+                 * one of those is how sound goes to (or is expected FROM) a
+                 * jack that does not exist -- every register correct, nothing
+                 * audible or nothing captured. Checked once for both
+                 * directions rather than duplicated per branch, because a pin
+                 * can be output-capable, input-capable, or (real hardware's
+                 * combo mic/line jacks) both. */
+                connected = ((cfg >> 30) & 0x3) != 0x1;
+                if (connected && (pcap & (1u << 4)) && npin   < 16) pins[npin++]     = nid;
+                if (connected && (pcap & (1u << 5)) && ninpin < 16) inpins[ninpin++] = nid;
             } else {
                 kprintf("[hda]   nid %u: type %u (cap %x)\n", nid, type, cap);
             }
         }
+
+        /* Independent of the output check below: a fg with no usable output
+         * pin can still have a working microphone, and the reverse. Guarded
+         * so a second fg (rare, but the loop does not assume there is only
+         * one AFG) does not overwrite a capture path an earlier fg already
+         * proved. */
+        if (!h->adc_nid)
+            try_capture_path(h, adcs, nadc, inpins, ninpin);
 
         if (!ndac || !npin) {
             kprintf("[hda]   fg %u: %u DAC(s), %u usable output pin(s)\n",
@@ -469,6 +650,57 @@ static void codec_setup_output(struct hda *h)
     codec_cmd(h, h->codec_addr, h->dac_nid, VERB_SET_POWER, 0, 0);
 }
 
+/* The capture-side twin of codec_setup_output. Same verbs, opposite amp
+ * direction bit, and one extra step output never needs: programming WHICH
+ * source a multi-input ADC (or an intermediate selector) actually listens to,
+ * because unlike a DAC -- which only ever has one thing to say -- an ADC can
+ * have several possible inputs and defaults to an unspecified one. */
+static void codec_setup_capture(struct hda *h)
+{
+    if (h->cap_sel_nid)
+        codec_cmd(h, h->codec_addr, h->cap_sel_nid, VERB_SET_CONN_SELECT,
+                  h->cap_sel_index, 0);
+
+    /* Route: tell the ADC which stream tag to FILL and which channel to start
+     * at. Same connection the DAC needs on the output side -- without it the
+     * engine runs, LPIB advances, and the bytes that land in the ring are
+     * whatever was there before (typically the zeroed startup buffer), not
+     * anything the pin is receiving. */
+    codec_cmd(h, h->codec_addr, h->adc_nid, VERB_SET_STREAM_FMT, HDA_FMT_48K_S16_2CH, 0);
+    codec_cmd(h, h->codec_addr, h->adc_nid, VERB_SET_STREAM_CHAN,
+              (HDA_CAPTURE_STREAM_TAG << 4) | 0, 0);
+
+    {
+        /* b14 SET-INPUT instead of output's b15 SET-OUTPUT is the whole
+         * difference from codec_setup_output's amp write, and getting it
+         * backwards is invisible for the exact reason this file's header
+         * warns about generally: the verb completes, the register reads back
+         * programmed, and only the direction that actually reaches the wire
+         * is wrong. The index field (bits 11:8) selects which of the ADC's
+         * several possible SOURCES this gain applies to on a multi-source
+         * ADC -- leaving it 0 on a widget where cap_sel_index != 0 would
+         * gain-stage a source that is not the one actually selected, and
+         * leave the real one at its power-on default (frequently muted). */
+        unsigned idx = (h->cap_sel_nid == h->adc_nid) ? h->cap_sel_index : 0;
+        unsigned p = (1u << 14) | (1u << 13) | (1u << 12) | (idx << 8) | 0x2A;
+        codec_cmd(h, h->codec_addr, h->adc_nid, VERB_SET_AMP, p, 0);
+        codec_cmd(h, h->codec_addr, h->cap_pin_nid, VERB_SET_AMP,
+                  (1u << 14) | (1u << 13) | (1u << 12) | 0x2A, 0);
+    }
+
+    /* Pin: Input Enable is bit5 (0x20) -- NOT bit6/bit7, which are Output
+     * Enable and Headphone-Amp-Enable on the output side. VREF (bits 2:0) is
+     * left at its power-on default (HiZ / no bias): QEMU's virtual codec
+     * models no analogue bias network for this to matter to, and a real
+     * external mic that needs VREF bias to produce a signal at all is a
+     * real-hardware gap this driver has -- named here and in the report
+     * rather than left silent, not fixed, because there is no way to verify
+     * it against anything this environment can run. */
+    codec_cmd(h, h->codec_addr, h->cap_pin_nid, VERB_SET_PIN_CTL, 0x20, 0);
+    codec_cmd(h, h->codec_addr, h->cap_pin_nid, VERB_SET_POWER, 0, 0);
+    codec_cmd(h, h->codec_addr, h->adc_nid, VERB_SET_POWER, 0, 0);
+}
+
 /* ---------------------------------------------------------- the engine --- */
 
 static void hda_stop(struct snd_device *d)
@@ -522,10 +754,21 @@ static int hda_start(struct snd_device *d)
 
     /* Global interrupt enable + this stream's bit. The stream's INTCTL bit is
      * indexed by its position among ALL descriptors, not among the output
-     * ones -- input streams come first. */
+     * ones -- input streams come first.
+     *
+     * READ-MODIFY-WRITE, not the plain overwrite this line used to be. INTCTL
+     * is ONE register shared by every stream on the controller: an overwrite
+     * here would silently clear the capture stream's enable bit if capture
+     * had already been started (hda_cap_start below sets its own bit the same
+     * way) -- and the reverse just as true if capture starts after playback.
+     * The failure mode is nasty precisely because it is not visible from
+     * either engine's own registers: SD_CTL still reads RUN, LPIB still
+     * advances, and the OTHER stream simply stops generating interrupts,
+     * which looks exactly like "the ISR was never wired" from that stream's
+     * side. */
     {
         unsigned idx = (h->out_base - SD_BASE) / 0x20;
-        w32(h, INTCTL, (1u << 31) | (1u << 30) | (1u << idx));
+        w32(h, INTCTL, r32(h, INTCTL) | (1u << 31) | (1u << 30) | (1u << idx));
     }
     return 0;
 }
@@ -536,24 +779,99 @@ static uint64_t hda_position(struct snd_device *d)
     return r32(h, h->out_base + SD_LPIB) / (HDA_CHANNELS * 2u);
 }
 
+/* -------------------------------------------------------- capture engine -- */
+
+static void hda_cap_stop(struct snd_capdevice *d)
+{
+    struct hda *h = (struct hda *)d->priv;
+    unsigned sd = h->in_base;
+    w8(h, sd + SD_CTL, 0);
+    udelay(100);
+    w8(h, sd + SD_STS, 0x1C);
+}
+
+static int hda_cap_start(struct snd_capdevice *d)
+{
+    struct hda *h = (struct hda *)d->priv;
+    unsigned sd = h->in_base, i;
+    uint64_t ring_phys = (uint64_t)(uintptr_t)h->cap_ring;
+    uint64_t bdl_phys  = (uint64_t)(uintptr_t)h->cap_bdl;
+
+    /* Identical reset/program/run sequence to hda_start -- the DMA engine
+     * does not know or care which direction it moves bytes, only that SRST
+     * must be OBSERVED both asserted and cleared before the descriptor is
+     * touched. See hda_start's comment for why that observation matters. */
+    w32(h, sd + SD_CTL, 1);
+    for (i = 0; i < 100 && !(r8(h, sd + SD_CTL) & 1); i++) udelay(10);
+    w32(h, sd + SD_CTL, 0);
+    for (i = 0; i < 100 && (r8(h, sd + SD_CTL) & 1); i++) udelay(10);
+    if (r8(h, sd + SD_CTL) & 1) {
+        kprintf("[hda] capture stream reset did not clear\n");
+        return -1;
+    }
+
+    for (i = 0; i < HDA_PERIODS; i++) {
+        h->cap_bdl[i].addr  = ring_phys + (uint64_t)i * HDA_PERIOD_BYTES;
+        h->cap_bdl[i].len   = HDA_PERIOD_BYTES;
+        h->cap_bdl[i].flags = 1;                   /* IOC */
+    }
+
+    w32(h, sd + SD_BDPL, (uint32_t)(bdl_phys & 0xFFFFFFFFu));
+    w32(h, sd + SD_BDPU, (uint32_t)(bdl_phys >> 32));
+    w32(h, sd + SD_CBL, HDA_RING_BYTES);
+    w16(h, sd + SD_LVI, HDA_PERIODS - 1);
+    w16(h, sd + SD_FMT, HDA_FMT_48K_S16_2CH);
+    w8 (h, sd + SD_STS, 0x1C);
+
+    w32(h, sd + SD_CTL, (HDA_CAPTURE_STREAM_TAG << 20) | (1u << 2) | (1u << 1));
+
+    /* Same read-modify-write as hda_start, and for the identical reason: this
+     * is the SAME INTCTL register playback's engine also owns a bit of. */
+    {
+        unsigned idx = (h->in_base - SD_BASE) / 0x20;
+        w32(h, INTCTL, r32(h, INTCTL) | (1u << 31) | (1u << 30) | (1u << idx));
+    }
+    return 0;
+}
+
 static void hda_isr(void *arg)
 {
     struct hda *h = (struct hda *)arg;
     uint32_t sts = r32(h, INTSTS);
-    uint8_t  ss;
-    unsigned idx = (h->out_base - SD_BASE) / 0x20;
+    unsigned out_idx = (h->out_base - SD_BASE) / 0x20;
 
-    if (!(sts & (1u << idx))) return;
+    /* ONE shared, level-triggered interrupt line for the whole controller --
+     * both engines' status bits must be checked and, if set, ACKED, every
+     * time this fires. The previous version returned after checking only
+     * out_idx: with capture wired to the same INTx/MSI vector (there is only
+     * one to wire it to), a capture-only completion would hit that early
+     * return, leave SD_STS unacknowledged, and re-fire immediately -- an
+     * interrupt storm, the exact failure the write-1-to-clear comment below
+     * already names as the worst way this driver can fail. Checking BOTH
+     * unconditionally, ack-then-report per stream, is what makes coexistence
+     * safe rather than merely usually-working. */
+    if (sts & (1u << out_idx)) {
+        uint8_t ss = r8(h, h->out_base + SD_STS);
+        /* Write-1-to-clear. Not clearing leaves the line asserted, and with a
+         * level-triggered INTx that is an interrupt storm that wedges the
+         * machine -- the worst possible way for an audio driver to fail. */
+        w8(h, h->out_base + SD_STS, ss & 0x1C);
+        if (ss & 0x04) {                 /* BCIS: a buffer (period) completed */
+            h->irqs++;
+            snd_period_elapsed(&h->snd);
+        }
+    }
 
-    ss = r8(h, h->out_base + SD_STS);
-    /* Write-1-to-clear. Not clearing leaves the line asserted, and with a
-     * level-triggered INTx that is an interrupt storm that wedges the machine
-     * -- the worst possible way for an audio driver to fail. */
-    w8(h, h->out_base + SD_STS, ss & 0x1C);
-
-    if (ss & 0x04) {                 /* BCIS: a buffer (period) completed */
-        h->irqs++;
-        snd_period_elapsed(&h->snd);
+    if (h->has_capture) {
+        unsigned in_idx = (h->in_base - SD_BASE) / 0x20;
+        if (sts & (1u << in_idx)) {
+            uint8_t ss = r8(h, h->in_base + SD_STS);
+            w8(h, h->in_base + SD_STS, ss & 0x1C);
+            if (ss & 0x04) {              /* BCIS: a buffer (period) filled */
+                h->cap_irqs++;
+                snd_capture_period_elapsed(&h->cap);
+            }
+        }
     }
 }
 
@@ -595,6 +913,15 @@ static int hda_probe(struct device *dev)
         oss = (cap >> 12) & 0xF;
         if (!oss) { kprintf("[hda] %s: no output streams\n", dev->name); return -1; }
         h->out_base = SD_BASE + iss * 0x20;    /* input descriptors come first */
+        /* Input descriptors occupy [SD_BASE, SD_BASE + iss*0x20); the first
+         * one is capture's, when there is one at all. GCAP reporting 0 input
+         * streams is a real controller shape (an output-only HDA function),
+         * not a bug to work around -- capture is simply impossible on it, and
+         * probe() below says so rather than treating in_base as valid anyway. */
+        h->in_base = SD_BASE;
+        if (!iss)
+            kprintf("[hda] %s: GCAP reports 0 input streams -- capture impossible on this controller\n",
+                    dev->name);
     }
 
     statests = r16(h, STATESTS);
@@ -648,6 +975,14 @@ static int hda_probe(struct device *dev)
         return -1;
     }
 
+    hda_report_jack(h, "output", h->pin_nid);
+    if (h->adc_nid)
+        hda_report_jack(h, "capture", h->cap_pin_nid);
+    else if (iss)
+        kprintf("[hda] %s: codec %u exposes no usable capture path -- input disabled\n",
+                dev->name, h->codec_addr);
+    /* (iss == 0 already reported above, at the GCAP read.) */
+
     {
         uint32_t vid = codec_param(h, 0, PARAM_VENDOR);
         char *p = h->snd.codec;
@@ -665,7 +1000,25 @@ static int hda_probe(struct device *dev)
         *p = 0;
     }
 
+    if (h->adc_nid) {
+        uint32_t vid = codec_param(h, 0, PARAM_VENDOR);
+        char *p = h->cap.codec;
+        char *end = h->cap.codec + sizeof h->cap.codec - 1;
+        p = put_str(p, end, "codec");
+        p = put_dec(p, end, h->codec_addr);
+        p = put_str(p, end, " ");
+        p = put_hex4(p, end, (unsigned)(vid >> 16));
+        p = put_str(p, end, ":");
+        p = put_hex4(p, end, (unsigned)(vid & 0xFFFF));
+        p = put_str(p, end, " adc=");
+        p = put_dec(p, end, h->adc_nid);
+        p = put_str(p, end, " pin=");
+        p = put_dec(p, end, h->cap_pin_nid);
+        *p = 0;
+    }
+
     codec_setup_output(h);
+    if (h->adc_nid) codec_setup_capture(h);
 
     /* The PCM ring the engine walks, and the BDL that describes it. Contiguous
      * because a BDL entry is a physical extent -- a ring stitched from scattered
@@ -681,6 +1034,27 @@ static int hda_probe(struct device *dev)
         memset((void *)h->bdl, 0, 4096);
     }
 
+    /* Capture's own ring + BDL, same shape and same contiguity argument as
+     * the output ring above -- allocated only when a capture path exists, so
+     * a machine (or a controller) with none pays nothing extra. A failure
+     * here disables capture rather than failing the whole probe: playback is
+     * the mandatory half of this driver (see the `return -1` above this
+     * block on the output ring), capture is additive. */
+    if (h->adc_nid) {
+        uint64_t cringp = pmm_alloc_contig((HDA_RING_BYTES + 4095) / 4096);
+        uint64_t cbdlp  = pmm_alloc();
+        if (!cringp || !cbdlp) {
+            kprintf("[hda] %s: no memory for the capture DMA ring -- capture disabled\n",
+                    dev->name);
+            h->adc_nid = 0;     /* the has_capture gate below reads this */
+        } else {
+            h->cap_ring = (uint8_t *)(uintptr_t)cringp;
+            h->cap_bdl  = (struct bdl_entry *)(uintptr_t)cbdlp;
+            memset(h->cap_ring, 0, HDA_RING_BYTES);
+            memset((void *)h->cap_bdl, 0, 4096);
+        }
+    }
+
     h->snd.name = "hda";
     h->snd.rate = HDA_RATE;
     h->snd.channels = HDA_CHANNELS;
@@ -693,15 +1067,48 @@ static int hda_probe(struct device *dev)
     h->snd.position = hda_position;
     h->snd.priv = h;
 
-    if (dev_irq_request(dev, hda_isr, h, "hda") >= 0)
+    if (h->adc_nid && h->cap_ring) {
+        h->cap.name = "hda-in";
+        h->cap.rate = HDA_RATE;
+        h->cap.channels = HDA_CHANNELS;
+        h->cap.format = SND_FMT_S16;
+        h->cap.period_bytes = HDA_PERIOD_BYTES;
+        h->cap.periods = HDA_PERIODS;
+        h->cap.ring = h->cap_ring;
+        h->cap.start = hda_cap_start;
+        h->cap.stop = hda_cap_stop;
+        h->cap.priv = h;
+        h->has_capture = 1;
+    }
+
+    /* ONE shared interrupt for the whole controller -- there is only one
+     * vector to wire either engine to, which is exactly why hda_isr checks
+     * both stream indices unconditionally (see its comment) rather than each
+     * engine registering its own handler. h->has_capture must already be set
+     * (just above) before this: hda_isr is live the instant dev_irq_request
+     * returns, and its capture branch is gated on that flag. */
+    if (dev_irq_request(dev, hda_isr, h, "hda") >= 0) {
         h->snd.irq_mode = dev->irq_mode;
-    else
+        if (h->has_capture) h->cap.irq_mode = dev->irq_mode;
+    } else {
         kprintf("[hda] %s: no interrupt could be wired -- refills would stall\n",
                 dev->name);
+    }
 
     dev_set_drvdata(dev, h);
 
     if (snd_register_device(&h->snd) != 0) return -1;
+    if (h->has_capture && snd_register_capture_device(&h->cap) != 0) {
+        /* Registration failing here (format/geometry rejected, or a second
+         * capture device already claimed) does not fail the probe -- exactly
+         * the "capture is additive" posture the ring-allocation comment
+         * above already established. The DMA engine for it is simply never
+         * started (snd_cap_engine_start only runs from the first SYS_SND_CAP_OPEN,
+         * and there is no open without a registered device to open against). */
+        kprintf("[hda] %s: capture device registration failed -- input disabled\n",
+                dev->name);
+        h->has_capture = 0;
+    }
     /* Start the mixer here rather than from kmain: driver.h's whole point is
      * that adding a driver requires editing no other file.
      *

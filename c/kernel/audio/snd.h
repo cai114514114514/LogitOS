@@ -139,6 +139,65 @@ void snd_report_once(void);
  * than carrying six cases of audio-specific pointer validation. */
 long snd_syscall(long num, long a, long b, long c);
 
+/* ------------------------------------------------------- the capture card -- */
+/* What a card driver registers for the INPUT direction. Mirrors struct
+ * snd_device but is deliberately a separate type rather than a `dir` flag on
+ * the same one: the two differ in who owns `ring` (the mixer WRITES a
+ * playback ring and NEVER reads it; the kernel READS a capture ring and NEVER
+ * writes it), and folding both into one struct would need every field's
+ * comment to say "for playback" or "for capture" instead of the type doing
+ * it. See c/kernel/audio/capture.c for the layer this feeds -- the read-side
+ * twin of mixer.c, single-consumer instead of N-stream-summed because there
+ * is exactly one microphone, not an app-defined number of players. */
+struct snd_capdevice {
+    const char *name;                 /* "hda-in" -- appears in the boot line */
+    char        codec[48];            /* what the codec/path was, adc=/pin= */
+
+    unsigned    rate;
+    unsigned short channels;
+    unsigned short format;            /* SND_FMT_* the hardware DELIVERS */
+
+    unsigned    period_bytes;         /* one DMA period, i.e. one IOC interrupt */
+    unsigned    periods;              /* periods in `ring` */
+    uint8_t    *ring;                 /* periods * period_bytes, DMA-able, the
+                                        * DEVICE writes here -- the kernel only
+                                        * ever reads it, the mirror image of
+                                        * struct snd_device's `ring`. */
+
+    int  (*start)(struct snd_capdevice *d);   /* 0 on success */
+    void (*stop)(struct snd_capdevice *d);
+
+    unsigned irq_mode;
+    void    *priv;
+};
+
+/* Called by a card driver from its probe(). Same "first one wins" policy as
+ * snd_register_device(), same reason: no notion yet of which of two capture
+ * devices should be the default. */
+int  snd_register_capture_device(struct snd_capdevice *d);
+
+/* Called by the card driver FROM ITS INTERRUPT HANDLER when the engine has
+ * finished WRITING a period -- the read-side twin of snd_period_elapsed().
+ * Same interrupt-safety contract: a counter and a sem_post, nothing else. */
+void snd_capture_period_elapsed(struct snd_capdevice *d);
+
+int  snd_capture_present(void);
+
+/* Idempotent; safe to call whether or not a capture device is registered.
+ * Called once from snd_init() (mixer.c) so a machine with no capture path
+ * pays nothing extra beyond the check. Allocates the single stream's waitq;
+ * does NOT start the DMA engine or spawn kcapture -- see snd_cap_engine_ensure,
+ * same boot-order landmine snd_engine_ensure documents for playback
+ * (thread_create() before sched_init() faults). */
+void snd_cap_init(void);
+
+/* One line, printed from snd_report() (mixer.c) right after the playback
+ * line -- "no line" and "the line says none" need to stay distinguishable on
+ * the input side exactly as much as they do on the output side (see the
+ * comment on snd_report() itself), so this prints on the no-capture-device
+ * path too. */
+void snd_cap_report(void);
+
 /* --------------------------------------------------------- stream handles -- */
 /* These are what the SYS_SND_* syscalls call. They are the same functions the
  * on-device self-test uses, so the test drives production paths.
@@ -153,6 +212,23 @@ void snd_info_fill(struct logit_sndinfo *si);
 /* Close every stream belonging to `owner`. Called when a process exits, so a
  * player that faults mid-tone stops making noise. */
 void snd_owner_release(void *owner);
+
+/* The capture-side twins, in c/kernel/audio/capture.c. Exactly one stream can
+ * be open at a time (see the ABI note in logit_abi.h); a second SYS_SND_CAP_OPEN
+ * gets SND_E_NOMEM, same code the playback side returns for the same reason
+ * (no free slot) rather than a new error the caller has to special-case.
+ *
+ * `f` is filled in place with the format actually delivered -- see the ABI
+ * note on rate==0. */
+int  snd_cap_open(void *owner, struct logit_sndfmt *f);
+int  snd_cap_read(void *owner, int h, void *buf, int bytes);
+int  snd_cap_avail(void *owner, int h);
+int  snd_cap_close(void *owner, int h);
+int  snd_cap_state(void *owner, int h, struct logit_sndstate *st);
+/* Close the capture stream if `owner` holds it. Same shape as
+ * snd_owner_release() and the same caveat applies: see the report on whether
+ * anything actually calls either of them from proc_exit(). */
+void snd_cap_owner_release(void *owner);
 
 /* ============================ pcm.c: pure functions ======================= */
 /* Everything below is free of kernel dependencies on purpose -- it is compiled

@@ -100,6 +100,54 @@ long snd_syscall(long num, long a, long b, long c)
         return rc;
     }
 
+    /* ---- capture (mic / line-in) ------------------------------------- */
+    case SYS_SND_CAP_OPEN: {
+        struct logit_sndfmt f;
+        int h;
+        if (!user_range_ok((void *)a, sizeof f, 1)) return SND_E_FAULT;
+        user_copy_from(&f, (const void *)a, sizeof f);
+        h = snd_cap_open(owner, &f);
+        /* Written back even on failure, matching what the caller already had
+         * -- SND_E_FORMAT specifically wants the caller able to inspect what
+         * it asked for against snd_info()'s report without a second syscall.
+         * On success this is the resolved rate/channels/format (rate==0 in,
+         * real numbers out); on failure it is an unchanged echo. Either way
+         * the copy is unconditional, not "on success only", so there is one
+         * rule instead of two. */
+        user_copy_to((void *)a, &f, sizeof f);
+        return h;
+    }
+
+    case SYS_SND_CAP_READ: {
+        /* Same bounce-buffer posture as SYS_SND_WRITE and the same BKL-only
+         * safety note applies (see SND_BOUNCE above): one shared buffer is
+         * safe only because audio syscalls are not on syscall_is_bkl_free(). */
+        static uint8_t bounce[SND_BOUNCE];
+        int want = (int)c;
+        int got;
+        if (want <= 0) return 0;
+        if (want > SND_BOUNCE) want = SND_BOUNCE;
+        if (!user_range_ok((void *)b, (uint64_t)want, 1)) return SND_E_FAULT;
+        got = snd_cap_read(owner, (int)a, bounce, want);
+        if (got > 0) user_copy_to((void *)b, bounce, (uint64_t)got);
+        return got;
+    }
+
+    case SYS_SND_CAP_AVAIL:
+        return snd_cap_avail(owner, (int)a);
+
+    case SYS_SND_CAP_CLOSE:
+        return snd_cap_close(owner, (int)a);
+
+    case SYS_SND_CAP_STATE: {
+        struct logit_sndstate st;
+        int rc;
+        if (!user_range_ok((void *)b, sizeof st, 1)) return SND_E_FAULT;
+        rc = snd_cap_state(owner, (int)a, &st);
+        if (rc == 0) user_copy_to((void *)b, &st, sizeof st);
+        return rc;
+    }
+
     default:
         return SND_E_BADH;
     }

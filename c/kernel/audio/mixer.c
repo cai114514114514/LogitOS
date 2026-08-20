@@ -420,6 +420,15 @@ void snd_init(void)
      * probes after sched_init(), this call succeeds here and the deferral never
      * happens -- so the behaviour is "as early as is safe", not "always late". */
     snd_engine_start(1);   /* quiet: at probe time deferral is the design */
+
+    /* Capture's own init (capture.c), called from here rather than from
+     * hda.c a second time: "adding a driver requires editing no other file"
+     * (see the comment at hda_probe's snd_init() call) applies just as much
+     * to capture as to playback, and snd_init() is already the ONE place
+     * every card driver calls unconditionally. Safe when no capture device
+     * registered -- snd_cap_init() only sets up a waitq and a semaphore, no
+     * g_capdev check needed because it does not touch g_capdev at all. */
+    snd_cap_init();
 }
 
 void snd_report(void)
@@ -429,6 +438,7 @@ void snd_report(void)
          * hardware "there is no line" and "the line says none" are completely
          * different diagnoses, and only the second one is evidence. */
         kprintf("[snd] no audio device found -- output is silent\n");
+        snd_cap_report();      /* symmetric: no controller means no input either */
         return;
     }
     kprintf("[snd] %s: %s, %u Hz %u ch s16, period %u B (%u frames, %u ms) x %u = %u ms buffer, irq=%s\n",
@@ -440,6 +450,7 @@ void snd_report(void)
             (g_dev->period_bytes / (g_dev->channels * 2u)) * 1000u * g_dev->periods / g_dev->rate,
             g_dev->irq_mode == 3 ? "msix" : g_dev->irq_mode == 2 ? "msi"
           : g_dev->irq_mode == 1 ? "intx" : "polled");
+    snd_cap_report();
 }
 
 /* ------------------------------------------------------------- streams --- */
