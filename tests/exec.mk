@@ -177,3 +177,20 @@ test-exec-bases: $(AEX)
 # readable and the writable ones are writable, under the real MMU in ring 3.
 test-exec-os: $(ISO) $(DISK)
 	@bash tests/boot/run-exec-test.sh $(ISO) $(DISK)
+
+# poll(), eventfd and timerfd -- c/kernel/exec/kpoll.c and kpollsys.c. Its own
+# fragment, included from here rather than from the top-level Makefile, because
+# the Makefile is contended and `-include` nests. See the header of tests/poll.mk.
+-include tests/poll.mk
+
+# /proc -- c/fs/procfs.c + procfs_src.c, and /bin/{ps,free,uptime}. Its own
+# fragment, included from here rather than from the top-level Makefile, because
+# the Makefile is contended and `-include` nests. See the header of
+# tests/procfs.mk.
+-include tests/procfs.mk
+
+# Core dumps -- c/kernel/exec/coredump.c + c/apps/coreutils/corefmt.h. Its own
+# fragment, included from here rather than from the top-level Makefile, for the
+# reason tests/poll.mk and tests/procfs.mk both give: the Makefile is contended
+# and `-include` nests. See the header of tests/coredump.mk.
+-include tests/coredump.mk
