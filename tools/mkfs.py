@@ -81,8 +81,110 @@ LOG_MAGIC = 0x4C4F4735                           # "LOG5"
 LOGH_MAGIC, LOGH_GEN, LOGH_COUNT, LOGH_BCRC, LOGH_TARGET = 0, 1, 2, 3, 4
 LOGH_HCRC = BS // 4 - 1
 
-TOTAL_BLOCKS = 16384            # 64 MiB image
-INODE_COUNT = 256
+# --- HOW BIG, AND WHY THESE TWO NUMBERS -------------------------------------
+#
+# Both are PARAMETERS, not format. Every one of them is written into the
+# superblock and read back at mount (c/fs/logitfs.c:logitfs_mount sizes the
+# in-RAM bitmap, the inode table and the deferred-free map from sb.*), so
+# changing them here does not bump LFS_VERSION and does not stop an older image
+# mounting. The C mirror is LFS_MKFS_* in c/fs/logitfs_fmt.h, and
+# tests/unit/fs_format_test.c reads the image these produce and asserts the two
+# agree -- see the comment there for why the mirror exists at all.
+#
+# WHAT THE MEASUREMENT SAID. A toolchain, sizes taken off this build host on
+# 2026-08-20 (`gcc -print-prog-name`, `stat -c %s`), gcc 15 x86_64-linux-gnu:
+#
+#     cc1                37,475,472 B      as                   826,608 B
+#     cc1plus            39,797,952 B      ld.bfd             1,890,472 B
+#     libgcc.a            3,237,076 B      ar                    55,944 B
+#     libc.a (static)     6,238,228 B      crtbegin+crtend        3,600 B
+#     gcc's own include/  3,039,517 B in 164 files
+#     ----------------------------------------------------------------
+#     C toolchain        92,564,869 B = 88.3 MiB in 172 files + 64 libc headers
+#     + libstdc++ headers 13,441,680 B in 811 files  (C++ only)
+#
+# Those cc1/cc1plus are DYNAMICALLY linked. LogitOS has no dynamic linker, so
+# the real figures are the static ones -- with gmp/mpfr/mpc/isl folded in,
+# 50-60 MB each, i.e. ~140 MiB for the C toolchain rather than 88.
+#
+# INODES: 256 -> 8192.
+#   Committed:  239 already on this image (read out of the built image on
+#                   2026-08-21, not remembered: 18 directories + 221 files.
+#                   It DRIFTS by a file or two as other lines add fixtures --
+#                   treat a small difference as the image moving, not as this
+#                   number being wrong)
+#             + 164 gcc headers + 8 binaries/archives
+#             +  64 mini-libc headers (c/apps/libc/include, counted)
+#             = 475 for C, leaving 7,717.  With libstdc++'s 811 headers, 1,286,
+#               leaving 6,906.
+#   So 4096 was rejected: it leaves 2,810 after a C++ toolchain, and a source
+#   tree plus its object files is thousands of files -- the wall this change
+#   exists to remove would come straight back one level up.
+#   COST: 8192 x 128 B = 1 MiB, i.e. inode_blocks 8 -> 256, taken out of the
+#   data area, and the SAME 1 MiB of contiguous kernel heap at every mount
+#   (logitfs.c kmallocs inode_blocks * BS and holds it while mounted).
+#   131,072 is the ceiling fsck_super_valid already allows (inode_blocks <=
+#   4096); nothing here is near it.
+#
+# BLOCKS: 16384 -> 131072, i.e. 64 MiB -> 512 MiB.
+#   Committed: 140 MiB toolchain (static) + 33.3 MiB of what is already on the
+#              image (measured, blocks not bytes) + 3 MiB of gcc headers
+#              = 176 MiB, before the compiler has written a single .o.
+#   1 GiB was rejected and it was NOT rejected for disk space. balloc() is a
+#   linear first-fit over the free bitmap, so filling an image costs O(n^2) bit
+#   tests: measured on this host, 133 M iterations to fill 64 MiB, 8.5 G to fill
+#   512 MiB, 34.3 G to fill 1 GiB (0.068 s / 4.46 s / 19.7 s native, and this
+#   machine runs under TCG). Doubling the image quadruples that. 512 MiB leaves
+#   334 MiB free after the toolchain, which is the headroom the measurement
+#   asks for, at a quarter of the worst-case allocator cost. (The allocation
+#   HINT added to logitfs.c in the same change takes the fill back to O(n); the
+#   size was still chosen against the un-hinted number, because the hint is an
+#   optimisation and the geometry is a commitment.)
+#
+# WHAT THE PAIR COSTS ON DISK, exactly:
+#   bitmap_blocks = ceil(131072 / (8*4096))          =   4   (was 1)
+#   inode_blocks  = ceil(8192 * 128 / 4096)          = 256   (was 8)
+#   data_start    = 1 + 4 + 256 + 64                 = 325   (was 74)
+#   metadata      = 325 blocks = 1,331,200 B = 1.27 MiB
+#   data area     = 131072 - 325 = 130,747 blocks = 510.73 MiB
+#   As a FRACTION of the image the fixed metadata FALLS, 0.452% -> 0.248%,
+#   even though the inode table grew 32x -- the image grew faster.
+#
+# AND THE ONE THAT IS NOT FREE: flush_bitmap() stages EVERY bitmap block into
+# the transaction on every commit, so a commit now spends 4 of the log's 63
+# slots on the bitmap instead of 1, and the largest file ONE inode_write can
+# journal drops by 12 MiB. Measured, not derived -- the formula below was
+# checked against the filesystem at three points (n succeeds, n+1 is refused,
+# on a fresh image each time, with the LOG shrunk rather than the file grown,
+# because a file big enough to exhaust a full-size log overflows the simulated
+# device's pending queue). Two CREATE points and one OVERWRITE point; a second
+# OVERWRITE point could not be taken, because an overwrite needs the old and the
+# new blocks at once -- inode_trunc defers its frees -- and the probe ran out of
+# disk before it ran out of log:
+#
+#   max blocks = NDIRECT + PPB + (log_max - overhead) * PPB
+#   overhead(CREATE)    = bitmap_blocks + 2 + dir_data_blocks + 1 ind + 1 dind
+#   overhead(OVERWRITE) = bitmap_blocks + 1 + 1 ind + 1 dind
+#
+#                      before (bitmap 1)      now (bitmap 4)
+#     CREATE            232.05 MiB            220.05 MiB   <- the binding one
+#     OVERWRITE         240.05 MiB            228.05 MiB
+#
+# THE TWO PATHS DIFFER BY TWO SLOTS and it is worth knowing why, because the
+# first version of this comment quoted the OVERWRITE number for both and was
+# wrong by 8 MiB: log_add does NOT dedupe, and creating a file calls
+# flush_inode TWICE (the new inode and its parent -- two slots even though both
+# inodes live in the same table block) and stages the parent directory's data
+# block as well. `dir_data_blocks` is 1 for every directory on this image and
+# becomes 2 past 64 entries, which costs one more L2 slot, i.e. 4 MiB.
+#
+# 220 MiB is 3.7x the largest static toolchain binary and 5.8x cc1plus as
+# measured above, so LOG_BLOCKS is deliberately NOT raised: it would move
+# data_start for a ceiling nothing measured comes near. The refusal past it is
+# clean -- checked on an unhacked image: write() returns -1, a bystander file is
+# byte-for-byte intact, and fsck is clean.
+TOTAL_BLOCKS = 131072           # 512 MiB image
+INODE_COUNT = 8192
 LOG_BLOCKS = 64                 # 1 header + 63 data blocks; a transaction's
                                 # metadata is a handful of blocks, never near this
 

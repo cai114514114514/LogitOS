@@ -42,6 +42,62 @@
 #define LFS_T_FILE      1
 #define LFS_T_DIR       2
 
+/* --- the geometry tools/mkfs.py builds, and NOTHING ELSE MAY READ IT --------
+ *
+ * These are not format. The driver must never use them: total_blocks and
+ * inode_count are superblock FIELDS, and logitfs_mount() sizes every allocation
+ * it makes from sb.* precisely so that an image built by a different mkfs -- an
+ * older one, a bigger one, tests/unit/fsstub/fs_sim.h's -- mounts and is read
+ * correctly. A compile-time total_blocks in the driver would silently misread
+ * every image that disagreed with it, which is the worst outcome available
+ * here, so the invariant is worth stating as a rule rather than a habit:
+ *
+ *     grep -r LFS_MKFS_ c/  must return this file and nothing else.
+ *
+ * What they are FOR is the two-definition-site problem this header opens with.
+ * The offsets below have a Python mirror and are checked against a real image;
+ * the image's SIZE had no mirror at all, so tools/mkfs.py could raise
+ * INODE_COUNT past what fsck_super_valid() accepts and produce an image the
+ * kernel refuses to mount, with nothing between the edit and a machine that
+ * does not boot. tests/unit/fs_format_test.c now reads the real image and
+ * asserts its geometry against these, so the drift is caught on the host.
+ *
+ * On 2026-08-20 they went 16384/256 -> 131072/8192 (64 MiB -> 512 MiB, 256 ->
+ * 8192 inodes) because ONE FILE of a C toolchain -- cc1plus, 39,797,952 B
+ * measured on the build host -- did not fit in the whole filesystem. The
+ * arithmetic, the measurement it came from, and the two things it cost are in
+ * tools/mkfs.py above these same constants.
+ *
+ * LFS_VERSION IS STILL 4, and this is the claim to be sure of before believing
+ * anything else here: every changed quantity is already a superblock field, so
+ * a pre-2026-08-20 image (total_blocks 16384, inode_count 256, bitmap_blocks 1,
+ * inode_blocks 8, data_start 74) mounts on the new kernel unchanged and is read
+ * with its own geometry. A bump would have been the wrong tool anyway -- it
+ * cannot rescue an incompatible change and it costs a real thing, because
+ * c/drivers/block/blkdev.c hard-codes LOGITFS_VERSION 4 in the root-selection
+ * probe. Compatibility here is a property of where the numbers LIVE, not of a
+ * version word, and it is proved by mounting an old image, not by asserting it.
+ *
+ * SO IT WAS MOUNTED. A copy of the last pre-growth build/disk.img was kept and
+ * tests/boot/run-fsmount-test.sh was pointed at it with the new kernel: two real
+ * boots, NO -snapshot, "[fsck] mount check: clean" on both, and the files the
+ * kernel WROTE during boot 1 read back in boot 2. Reading an old image is the
+ * weaker half of that and would have been the easy thing to check; writing to
+ * one is where a wrong bitmap_blocks or inode_blocks would actually corrupt. */
+#define LFS_MKFS_TOTAL_BLOCKS  131072u        /* 512 MiB at LFS_BS */
+#define LFS_MKFS_INODE_COUNT   8192u
+#define LFS_MKFS_LOG_BLOCKS    64u
+
+/* Derived exactly as tools/mkfs.py's serialize() derives them, so the test can
+ * compare a computation against the image instead of a hand-copied number: a
+ * constant typed twice is the drift this file exists to prevent. */
+#define LFS_MKFS_BITMAP_BLOCKS \
+    ((LFS_MKFS_TOTAL_BLOCKS + 8u * LFS_BS - 1u) / (8u * LFS_BS))
+#define LFS_MKFS_INODE_BLOCKS \
+    ((LFS_MKFS_INODE_COUNT * LFS_INODE_SIZE + LFS_BS - 1u) / LFS_BS)
+#define LFS_MKFS_DATA_START \
+    (1u + LFS_MKFS_BITMAP_BLOCKS + LFS_MKFS_INODE_BLOCKS + LFS_MKFS_LOG_BLOCKS)
+
 /* Largest byte count inode_write / imap can address: direct + single + double. */
 #define LFS_MAX_FILE_SZ \
     ((uint64_t)(LFS_NDIRECT + LFS_PPB + (uint64_t)LFS_PPB * LFS_PPB) * LFS_BS)
