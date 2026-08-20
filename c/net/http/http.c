@@ -350,7 +350,30 @@ int res_fetch(const char *src, uint8_t **buf, int *len)
     if (url_resolve(&cur, src, abs, sizeof abs) != 0) return -1;
     if (url_parse(abs, &u) != 0) return -1;
 
+    /* A WALL-CLOCK CAP ON THE WHOLE THING, redirects included, for exactly the
+     * reason wm.c gives above HTTP_FETCH_CAP_TICKS and then applies to
+     * SYS_HTTP_GET only: the timeouts BELOW this loop multiply. tcp_connect is
+     * 5 s and http's idle budget is 8 s, so four hops is up to ~52 s during
+     * which this call holds the big kernel lock and the WM's net_poll does not
+     * run -- and a page issues one of these PER IMAGE.
+     *
+     * The g_net_busy watchdog in the WM loop does not cover this. It exists to
+     * clear a flag left behind by a thread that died mid-fetch (wm.c:1783); it
+     * neither bounds nor interrupts a fetch that is merely slow.
+     *
+     * The cap lives HERE rather than at the call site because the loop is
+     * here: SYS_HTTP_GET can check between hops because its hop loop is in
+     * wm.c, and this one's is not. 1500 ticks is the same 15 s and the same
+     * argument for that number applies unchanged. */
+    uint64_t cap_t0 = timer_ticks();
     for (int hop = 0; hop < 4; hop++) {
+        /* -2, not -1, and not a printf: this file has no logging facility at
+         * all and adding one for a single line would put the kernel's console
+         * into the network layer. The only caller (wm.c SYS_RES_FETCH) already
+         * prints on failure and can now say WHICH failure -- "timed out" and
+         * "the server said no" are different findings and a page that shows a
+         * broken image deserves the difference in its log. */
+        if (timer_ticks() - cap_t0 > 1500) return -2;
         if (fetch_once(&u) != 0) return -1;
         int code = status_code(raw, raw_len);
         if (code >= 300 && code < 400) {

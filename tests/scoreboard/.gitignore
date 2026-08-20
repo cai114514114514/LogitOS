@@ -9,3 +9,17 @@
 *.png
 *.ppm
 net.pcap
+
+# The HOST DOCUMENT is the same trade and was missed when it was added
+# (2026-08-20). qmp_site.py fetches each site's HTML with the guest's own
+# User-Agent and drops it beside the run, which is how bing's `_w is not
+# defined` and stripe's two stacked <h1>s were read -- genuinely useful, and
+# genuinely not diffable: 72 files and 18.7 MB after two passes, in a tree
+# whose own rules say a commit must be path-limited because another session
+# shares the workspace. Burying the real diff under 72 lines of `git status`
+# is how the wrong thing gets `git add -A`'d, and these are copies of other
+# people's websites.
+#
+# The reasoning above was already written down, in this file, for the PNGs.
+# It was not applied to a new artefact class with the same property.
+*.host.html

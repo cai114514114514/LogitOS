@@ -30,6 +30,12 @@ const char *http_body(int *len);
 /* Fetch a sub-resource (image) relative to the page loaded by the last
  * http_get; handles data: URIs. On success returns 0 with a kmalloc'd buffer the
  * caller must kfree. Used by the layout engine for <img>. */
+/* 0 with a kmalloc'd body the caller frees; -1 on any failure; -2 when the
+ * 15 s wall-clock cap on the whole request (redirects included) expired. The
+ * cap exists because the timeouts below this call MULTIPLY across up to four
+ * redirect hops -- ~52 s of holding the big kernel lock, per image on a page.
+ * -2 is separate from -1 so a log can say "we gave up" rather than "it
+ * refused"; they send a reader to different places. */
 int  res_fetch(const char *src, uint8_t **buf, int *len);
 
 #endif /* LOGIT_HTTP_H */
