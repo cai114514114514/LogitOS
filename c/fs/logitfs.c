@@ -351,6 +351,40 @@ static void itouch(struct dinode *in, int which)
 
 static int  bit_test(uint32_t b)  { return bitmap[b >> 3] & (1 << (b & 7)); }
 static void bit_set(uint32_t b)   { bitmap[b >> 3] |=  (1 << (b & 7)); }
+
+/* --- the allocation hint, and why it changes NOTHING but the cost -----------
+ *
+ * balloc() is a linear first-fit from sb.data_start, so filling an image costs
+ * O(n^2) bit tests. That was invisible at 16,384 blocks and is not at 131,072:
+ * measured on the build host, 133 M iterations to fill a 64 MiB image against
+ * 8.5 G to fill a 512 MiB one -- 0.068 s against 4.46 s NATIVE, on a machine
+ * that runs under TCG. The 512 MiB geometry (tools/mkfs.py) would have shipped
+ * that 64x with it.
+ *
+ * `alloc_hint` is a pure memoization of the scan, not a change of policy, and
+ * the difference matters: a rotating or next-fit allocator would return
+ * DIFFERENT blocks, and this filesystem has a gate that depends on which --
+ * test-bulkread bounds a 900-block read at 14 device commands, which only holds
+ * while a file's blocks come out contiguous. So the invariant is chosen to make
+ * the result identical rather than merely acceptable:
+ *
+ *     every block in [sb.data_start, alloc_hint) is marked USED in `bitmap`.
+ *
+ * Given that, "lowest free block at or above alloc_hint" IS "lowest free block
+ * at or above data_start", so balloc returns the same block it always did, and
+ * "found nothing from the hint" is "disk full" for the same reason. Three sites
+ * touch a bit, and each keeps the invariant: balloc sets b and moves the hint to
+ * b+1; every clear lowers the hint to the block it freed -- which is why the
+ * lowering lives in bit_clear itself rather than in bfree_now and bfree_apply,
+ * where it would be two places to forget it; and the two bulk RELOADS of the
+ * bitmap (mount, and after an fsck repair rewrote it) reset the hint to
+ * data_start, the weakest value, because a reloaded bitmap vouches for nothing.
+ *
+ * -DLFS_NO_ALLOC_HINT compiles the whole thing out and restores the plain scan.
+ * That is the control for the equivalence claim, not for a bug: the two must
+ * agree on every block number they hand out, and differ only in how long they
+ * take to say it. */
+#ifdef LFS_NO_ALLOC_HINT
 static void bit_clear(uint32_t b) { bitmap[b >> 3] &= ~(1 << (b & 7)); }
 
 static uint32_t balloc(void)
@@ -359,6 +393,36 @@ static uint32_t balloc(void)
         if (!bit_test(b)) { bit_set(b); return b; }
     return 0;                            /* disk full (0 = none) */
 }
+static void alloc_hint_reset(void) { }
+#else
+static uint32_t alloc_hint;              /* see the invariant above */
+
+static void bit_clear(uint32_t b)
+{
+    bitmap[b >> 3] &= ~(1 << (b & 7));
+#ifndef LFS_ALLOC_HINT_NO_LOWER
+    if (b < alloc_hint) alloc_hint = b;  /* restore the invariant */
+#endif
+    /* -DLFS_ALLOC_HINT_NO_LOWER drops that one line and is the negative control
+     * for test-fs-allochint. It is the PLAUSIBLE wrong version, not an absent
+     * one: a hint that only ever advances is what "remember where you got to"
+     * means to most readers, it never hands out a block that is in use, it never
+     * loses data, and it passes every correctness test in this tree. What it
+     * does is skip every hole a delete leaves, so a long-lived filesystem
+     * silently stops reusing freed space and reports itself full with a third
+     * of the disk unallocated. Nothing but a differential against the plain
+     * scan can see it, which is the whole argument for this gate existing. */
+}
+
+static uint32_t balloc(void)
+{
+    uint32_t start = alloc_hint < sb.data_start ? sb.data_start : alloc_hint;
+    for (uint32_t b = start; b < sb.total_blocks; b++)
+        if (!bit_test(b)) { bit_set(b); alloc_hint = b + 1; return b; }
+    return 0;                            /* disk full (0 = none) */
+}
+static void alloc_hint_reset(void) { alloc_hint = sb.data_start; }
+#endif
 
 /* --- freeing is DEFERRED to commit, and that is load-bearing ---------------
  *
@@ -1002,6 +1066,11 @@ int logitfs_fsck(int repair)
             if (bread(sb.bitmap_start + i, bitmap + i * BS)) return -1;
         for (uint32_t i = 0; i < sb.inode_blocks; i++)
             if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) return -1;
+        /* A repair rewrote the bitmap underneath us -- typically to RELEASE
+         * leaked blocks, i.e. to make blocks below the hint free again. The
+         * hint's invariant is about the bitmap we were tracking, and this is a
+         * different one, so it vouches for nothing. */
+        alloc_hint_reset();
     }
     if (r.fatal)
         kprintf("[fsck] REFUSED: the image is not repairable in place\n");
@@ -1063,6 +1132,7 @@ static int logitfs_mount(void)
         if (bread(sb.bitmap_start + i, bitmap + i * BS)) goto oom;
     for (uint32_t i = 0; i < sb.inode_blocks; i++)
         if (bread(sb.inode_start + i, (uint8_t *)inodes + i * BS)) goto oom;
+    alloc_hint_reset();                    /* a freshly read bitmap vouches for nothing */
 
     /* A READ-ONLY consistency check on every mount.
      *
@@ -1072,8 +1142,25 @@ static int logitfs_mount(void)
      * is that every boot in this tree, including all the harnesses that were
      * written for something else entirely, now asserts that the bitmap agrees
      * with the inodes, that no block is claimed twice, and that the directory
-     * tree is a tree. For a 64 MiB image with 256 inodes that is a few hundred
-     * mostly-cached block reads.
+     * tree is a tree.
+     *
+     * WHAT IT COSTS grew with the image on 2026-08-20 and the old number here
+     * ("a few hundred mostly-cached block reads", written for 64 MiB / 256
+     * inodes) is no longer the one to quote. The check reads the superblock,
+     * the bitmap and the WHOLE inode table whether or not the inodes are live,
+     * so its floor is 1 + sb.bitmap_blocks + sb.inode_blocks: 10 blocks before,
+     * 261 now, plus each live file's indirect blocks and each directory's data.
+     * It is 26x more block reads and they are sequential, which is the shape
+     * bcache_read_run coalesces best.
+     *
+     * IT ALSO ALLOCATES A SECOND COPY of the bitmap and the inode table
+     * (fsck.c: c.bitmap, c.inodes), so mount now makes TWO 1 MiB contiguous
+     * kmalloc requests where it used to make two of 32 KiB. The two fail
+     * differently and only one of them is dangerous: fsck's returns
+     * `rep->fatal` and this call site prints "structurally unusable" and boots
+     * on, while the mount's own `inodes` allocation above has no fallback and
+     * loses the root filesystem. Measured on the smallest machine any harness
+     * in this tree boots (192 MiB, `make test-swap`), both succeed.
      *
      * A failure here never fails the mount: the filesystem is still the best
      * one available, and refusing to boot over a leaked block would be a worse
