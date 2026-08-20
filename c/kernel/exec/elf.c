@@ -6,6 +6,7 @@
 #include "prot.h"      /* PTE_NX + cpu_prot_nx(): W^X is decided here */
 #include "rng.h"       /* kernel_random_bytes(): AT_RANDOM's 16 bytes */
 #include "kprintf.h"
+#include "crc32.h"     /* the streaming CRC below folds the image as it reads */
 #ifndef LOGIT_HOSTTEST
 #include "vma.h"       /* VMA_READ/VMA_EXEC + the file-mapping entry point */
 #else
@@ -21,6 +22,139 @@
 
 void *memcpy(void *, const void *, size_t);   /* lib/string.c */
 void *memset(void *, int, size_t);
+
+/* c/fs/vfs.c's partial read. WEAK for exactly the reason vma_reserve_file_fixed
+ * below is: tests/unit/exechost links this file against a simulated MMU with no
+ * filesystem, so the symbol is absent there, `rd->path` is never used, and the
+ * host tests go on measuring the eager loader byte for byte. A hard reference
+ * would make them a link error instead. */
+int vfs_pread(const char *path, void *buf, int max, long long off) __attribute__((weak));
+
+/* THE BOUNCE, AND WHY THE FILE BYTES DO NOT GO STRAIGHT TO THEIR DESTINATION.
+ *
+ * The obvious streaming loader preads a segment directly into the user pages it
+ * has just mapped, and the first draft of this comment said that would be
+ * CORRUPTION -- c/drivers/virtio/virtio_blk.c builds its descriptor as
+ * `{ (uint64_t)(uintptr_t)buf, ... }`, the buffer's VIRTUAL address used as the
+ * DMA physical address, and a user VA at 0x50000000 is physical 1.25 GiB, which
+ * on a 511 MiB machine is nowhere at all.
+ *
+ * THAT IS WRONG, and it is worth recording rather than quietly deleting,
+ * because it is the reasoning anyone will reach for. The block layer already
+ * closes it: `dma_reachable()` (c/drivers/block/blkdev.c:155) refuses any
+ * buffer above BLK_DMA_LIMIT -- 1 GiB, boot.asm's identity-mapped span, the
+ * same number -- and blk_rw() then reads through its OWN static bounce in
+ * 32 KiB chunks. Every path from bcache reaches the device through blk_dev_read
+ * -> blk_rw, so a user VA is handled, not misdirected.
+ *
+ * The real reason is PERFORMANCE, and it is the mirror image: a destination the
+ * device cannot reach forces the block layer's bounce, which chops every
+ * transfer into 32 KiB and pays a memcpy per chunk anyway. This buffer is in
+ * .bss, far below 1 GiB, so `dma_reachable` is true, the device does one
+ * transfer per fill, and the memcpy out is the only copy in the path -- the
+ * same one the other route would have paid, plus the chunking it would not.
+ *
+ * (Consequence to keep in view: this is only true while the kernel's .bss stays
+ * under 1 GiB. It is at 11.5 MB.)
+ *
+ * STATIC, not on the stack: a thread kstack is 32 KiB, this file already wants
+ * 3.5 KiB of it for the program-header copy, and the size below is larger than
+ * the whole stack. Static is safe here for one reason, worth stating rather
+ * than assuming -- every path into this loader runs under the BKL
+ * (c/kernel/cpu/interrupts.c takes it on every kernel entry) and the block
+ * drivers' poll windows are explicitly non-preemptible, so two loads cannot
+ * interleave. If either of those ever changes, this buffer is what breaks.
+ *
+ * THE SIZE IS 128 x 4096 AND IT WAS MEASURED, TWICE, on this machine. The first
+ * version was 16 KiB, reasoned about and not measured, and it cost a factor of
+ * THIRTY-TWO. Loading the 64 MiB pad binary (tests/exec.mk's test-bigexec),
+ * container+CRC phase, TCG, -m 512M:
+ *
+ *     16 KiB chunks    789,736 Mcyc      4,096 vfs_pread calls
+ *     512 KiB chunks    24,244 Mcyc        128 vfs_pread calls
+ *
+ * 32.6x for 32x fewer calls, i.e. the cost was per-CALL and essentially none of
+ * it was the CRC arithmetic -- which is the opposite of what the first draft of
+ * this comment assumed, and is why the number is here.
+ *
+ * 128 blocks is not a round number, it is READ_RUN (c/fs/logitfs.c:604): the
+ * most blocks the filesystem will put in ONE device command. Below it, a fill
+ * costs several commands; above it, a fill costs several commands again and the
+ * extra bytes buy only fewer path resolutions, which the measurement above
+ * shows are no longer where the time goes. It is also above bcache's
+ * `install = (n <= nbuf/4)` line (64 blocks), so a fill is correctly treated as
+ * a STREAM and does not evict the buffer cache's working set to hold 64 MiB of
+ * bytes nobody will read twice.
+ *
+ * COST: 512 KiB of .bss, measured with nm, against an unbounded contiguous
+ * kmalloc of the whole file -- which for a 128 MiB program was 256 MiB. */
+#ifndef ELF_BOUNCE
+#define ELF_BOUNCE (128 * 4096)          /* = READ_RUN * BS, see above */
+#endif
+static uint8_t g_bounce[ELF_BOUNCE];
+
+int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n)
+{
+    if (!rd || !dst) return -1;
+    if (off > rd->size || n > rd->size - off) return -1;   /* subtraction form: no wrap */
+    if (!n) return 0;
+
+    if (rd->mem) { memcpy(dst, rd->mem + off, (size_t)n); return 0; }
+    if (!rd->path || !vfs_pread) return -1;
+
+    uint8_t *out = (uint8_t *)dst;
+    while (n) {
+        uint64_t want = n > ELF_BOUNCE ? ELF_BOUNCE : n;
+        int got = vfs_pread(rd->path, g_bounce, (int)want,
+                            (long long)(rd->base + off));
+        /* A SHORT read is a failure here, not a partial success. Every offset
+         * this loader asks for was already bounded against the image size, so
+         * the file cannot legitimately end early -- and the caller's next move
+         * on a partial segment would be to jump into it. */
+        if (got != (int)want) return -1;
+        memcpy(out, g_bounce, (size_t)want);
+        out += want; off += want; n -= want;
+    }
+    return 0;
+}
+
+/* Fold a range of the image into a running CRC-32 WITHOUT MATERIALISING IT.
+ *
+ * It lives here, beside the bounce, rather than in aex.c where its only caller
+ * is, because the alternative is a second scratch buffer in a second file --
+ * and the whole reason this change exists is that the loader had one buffer too
+ * many. aex.c's integrity record covers the entire ELF image, so on the
+ * streaming path that check is the one thing that still has to touch every
+ * byte; doing it through the reader means it touches them one bounce-full at a
+ * time instead of all at once.
+ *
+ * It is also, on a big program, the ONLY thing that still reads the whole file:
+ * the segments themselves come from the page cache. Measured on the 64 MiB pad,
+ * container+CRC 24,244 Mcyc against 643 Mcyc for the entire ELF load. That is
+ * not this change's to fix -- aex.c argues the CRC's existence, and names the
+ * 256-entry table as the lever if it ever matters -- but it is where the time
+ * in a big exec now is, and nobody should have to re-derive that. */
+int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32_t *crc)
+{
+    if (!rd || !crc) return -1;
+    if (off > rd->size || n > rd->size - off) return -1;
+    uint32_t c = CRC32_INIT;
+    if (rd->mem) {
+        c = crc32_update(c, rd->mem + off, (size_t)n);
+    } else {
+        if (!rd->path || !vfs_pread) return -1;
+        while (n) {
+            uint64_t want = n > ELF_BOUNCE ? ELF_BOUNCE : n;
+            int got = vfs_pread(rd->path, g_bounce, (int)want,
+                                (long long)(rd->base + off));
+            if (got != (int)want) return -1;
+            c = crc32_update(c, g_bounce, (size_t)want);
+            off += want; n -= want;
+        }
+    }
+    *crc = crc32_final(c);
+    return 0;
+}
 
 struct elf64_ehdr {
     uint8_t  e_ident[16];
@@ -385,16 +519,35 @@ int elf_load_image(void *image, uint64_t image_size, struct elf_image *out)
 int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
                       const struct elf_src *src)
 {
+    struct elf_reader rd = { .mem = (const uint8_t *)image, .path = 0,
+                             .base = 0, .size = image_size };
+    return elf_load_reader(&rd, out, src);
+}
+
+int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
+                    const struct elf_src *src)
+{
     struct elf_image blank;
     if (!out) out = &blank;
     memset(out, 0, sizeof *out);
     out->stack_flags = PF_R | PF_W;      /* the default when no PT_GNU_STACK */
 
-    struct elf64_ehdr *eh = image;
+    if (!rd) return reject(ELF_E_SHORT, "no image source", 0, 0);
+    uint64_t image_size = rd->size;
+
+    /* THE HEADERS ARE COPIED, NOT POINTED AT. In the streaming source there is
+     * nothing to point at; in the memory source there was, and the copy is what
+     * makes the two sources ONE code path below rather than two that can
+     * disagree. 64 bytes for the ELF header, and see the phdr copy for the
+     * other 3.5 KiB. */
+    struct elf64_ehdr ehbuf;
+    struct elf64_ehdr *eh = &ehbuf;
 
     /* --- the identification header ------------------------------------- */
     if (image_size < sizeof *eh)
         return reject(ELF_E_SHORT, "image shorter than an ELF64 header", image_size, sizeof *eh);
+    if (elf_read(rd, 0, eh, sizeof *eh) < 0)
+        return reject(ELF_E_SHORT, "could not read the ELF header", 0, sizeof *eh);
     if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' ||
         eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F')
         return reject(ELF_E_MAGIC, "bad ELF magic", eh->e_ident[0], eh->e_ident[1]);
@@ -466,7 +619,16 @@ int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
         return reject(ELF_E_ENTRY, "entry point outside the user region",
                       eh->e_entry, USER_VA_BASE);
 
-    struct elf64_phdr *ph = (struct elf64_phdr *)((uint8_t *)image + eh->e_phoff);
+    /* The program-header table, copied out of the image. ELF_MAX_PHNUM is 64
+     * and a phdr is 56 bytes, so this is 3,584 bytes of a 32 KiB kernel stack
+     * -- the largest single thing this function keeps, and bounded by a cap the
+     * header was already checked against three lines above. */
+    struct elf64_phdr phbuf[ELF_MAX_PHNUM];
+    if (elf_read(rd, eh->e_phoff, phbuf,
+                 (uint64_t)eh->e_phnum * sizeof(struct elf64_phdr)) < 0)
+        return reject(ELF_E_PHTAB, "could not read the program-header table",
+                      eh->e_phoff, eh->e_phnum);
+    struct elf64_phdr *ph = phbuf;
     int phnum = eh->e_phnum;
 
     /* ================= PASS 0: validate every program header ==============
@@ -740,25 +902,34 @@ int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
             if (pr == 2) out->copied_pages++;
         }
 
-        /* The bytes. With no run this is the one memcpy it always was; with a
+        /* The bytes. With no run this is the one transfer it always was; with a
          * run it is at most two, and the run's own pages are deliberately NOT
          * written -- they are the file, already, and writing them would fault
-         * (they are absent) or, worse, would dirty a shared page. */
+         * (they are absent) or, worse, would dirty a shared page.
+         *
+         * The transfer is elf_read() rather than a memcpy so the same two lines
+         * serve a memory image and a streamed one. For the memory source it
+         * compiles to exactly the memcpy that was here; for a file it is the
+         * bounce loop at the top of this file. */
         uint64_t fs_start = ph[i].p_vaddr, fs_end = ph[i].p_vaddr + ph[i].p_filesz;
         const struct elf_run *r = 0;
         for (int k = 0; k < nrun; k++)
             if (runs[k].va >= start && runs[k].va < end) { r = &runs[k]; break; }
         if (!r) {
-            memcpy((void *)fs_start, (uint8_t *)image + ph[i].p_offset, ph[i].p_filesz);
+            if (elf_read(rd, ph[i].p_offset, (void *)fs_start, ph[i].p_filesz) < 0)
+                return reject(ELF_E_SEGRANGE, "could not read a segment's bytes",
+                              ph[i].p_offset, ph[i].p_filesz);
         } else {
             uint64_t rlo = r->va, rhi = r->va + (r->pages << 12);
-            if (rlo > fs_start)
-                memcpy((void *)fs_start, (uint8_t *)image + ph[i].p_offset,
-                       rlo - fs_start);
-            if (fs_end > rhi)
-                memcpy((void *)rhi,
-                       (uint8_t *)image + ph[i].p_offset + (rhi - fs_start),
-                       fs_end - rhi);
+            if (rlo > fs_start &&
+                elf_read(rd, ph[i].p_offset, (void *)fs_start, rlo - fs_start) < 0)
+                return reject(ELF_E_SEGRANGE, "could not read a segment's head",
+                              ph[i].p_offset, rlo - fs_start);
+            if (fs_end > rhi &&
+                elf_read(rd, ph[i].p_offset + (rhi - fs_start), (void *)rhi,
+                         fs_end - rhi) < 0)
+                return reject(ELF_E_SEGRANGE, "could not read a segment's tail",
+                              ph[i].p_offset + (rhi - fs_start), fs_end - rhi);
         }
     }
 
@@ -923,7 +1094,9 @@ int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
                                     (nx_on ? PTE_NX : 0)))
                 return reject(ELF_E_OOM, "out of physical frames for the TLS block", a, 0);
         memset((void *)(tp - tlsoff), 0, tlsoff + tcb);
-        memcpy((void *)(tp - tlsoff), (uint8_t *)image + tls->p_offset, tls->p_filesz);
+        if (elf_read(rd, tls->p_offset, (void *)(tp - tlsoff), tls->p_filesz) < 0)
+            return reject(ELF_E_TLS, "could not read the PT_TLS initialisation image",
+                          tls->p_offset, tls->p_filesz);
         *(uint64_t *)tp       = tp;              /* %fs:0  = self-pointer */
         *(uint64_t *)(tp + 8) = 0;               /* %fs:8  = dtv          */
 

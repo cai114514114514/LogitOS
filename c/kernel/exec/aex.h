@@ -174,6 +174,13 @@ struct aex_info {
  * AEX_E_* -- and prints a line naming what was wrong. */
 int aex_parse(const void *file, uint64_t file_size, struct aex_info *out);
 
+/* The same, reading the file instead of a buffer of it. `file_size` is the
+ * file's TRUE size (vfs_size). Every refusal, every bound and the CRC check are
+ * the same code -- the only things it cannot report are `elf`, `app_id` and
+ * `types`, which are pointers into a buffer that deliberately does not exist;
+ * see the comment at AEX_T_APPID in aex.c. */
+int aex_parse_path(const char *path, uint64_t file_size, struct aex_info *out);
+
 #define AEX_OK          0
 #define AEX_E_SHORT    -1   /* smaller than the fixed header                */
 #define AEX_E_MAGIC    -2   /* not "AEX1"                                   */
@@ -231,6 +238,23 @@ int aex_elf_range(const void *file, uint64_t file_size, const void **elf, uint64
  * Kept at its v1 signature: c/kernel/gui/wm.c and c/kernel/exec/exec.c call it
  * with a buffer and no length, and both belong to other lines. */
 int aex_info(const void *file, char *out_name, char *out_ext);
+
+/* THE LOAD THAT NEEDS NO BUFFER. Same arguments as aex_load_image_ex() except
+ * that the image is named rather than passed, and `file_size` is the file's
+ * true size. This is the entry point exec.c uses: a 64 MiB program costs the
+ * kernel a 16 KiB bounce and a 3.5 KiB program-header copy, where the buffered
+ * path cost one contiguous kmalloc of the next power of two above the file.
+ *
+ * `fh` is borrowed exactly as above -- the caller opens it and the caller puts
+ * it, on success and on failure alike. */
+int aex_load_path(const char *path, uint64_t file_size, char *out_name, char *out_ext,
+                  struct elf_image *out, int fh);
+
+/* aex_info() from a path: reads the 64 fixed bytes and nothing else. What a
+ * Dock scan needs, and what exec.c needs BEFORE it destroys an address space --
+ * a refusal here is still a returnable error, and a refusal after is a dead
+ * process. */
+int aex_info_path(const char *path, char *out_name, char *out_ext);
 
 /* The user-stack hint, in pages, or 0 if the file does not carry one.
  *

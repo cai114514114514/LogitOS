@@ -247,9 +247,83 @@ Key notes:
   timer tick; the two numbers never meet.
   `net/` = eth/arp/ip/icmp/udp/dns; `net_poll()` is pumped from the WM loop.
   Static IP (QEMU SLIRP: 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3) in
-  `net_cfg` (DHCP hook later). Run/test attach `-netdev user -device e1000`
+  `net_cfg`. **"(DHCP hook later)" USED TO END THAT SENTENCE AND IS STALE**:
+  `c/net/core/dhcp.c` exists, `make test-dhcp-host` is 16 checks, and a boot
+  on 2026-08-20 printed `[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3`
+  before any traffic. The static values above are the fallback, not the path.
+  Run/test attach `-netdev user -device e1000`
   (+ `filter-dump` pcap for `make run`). e1000 gotcha: QEMU's `set_rx_control`
   defers the RX-queue flush ~1s, so RX needs a real time base to observe.
+- **M9.5 the four things `c/net/core` could not do, landed 2026-08-20.** Each
+  had the same shape going in: a number in a header the kernel had never heard
+  of, or a decision hard-coded where a table belonged. All numbers below are
+  HOST unless the line says DEVICE.
+  - **An interface TABLE, not `g_nic`.** `netdev.c:51` was one global pointer,
+    so with four drivers in the tree (e1000, rtl8139, rtl8169, virtio-net)
+    whichever registered last won and the rest were invisible. `struct netif`
+    + `netif_register/by_index/by_name/addr_add/src_for` replaces it;
+    **loopback registers FIRST** so `RT_OIF_LO == 1` holds by construction
+    (`_Static_assert`). DEVICE: a boot prints `[net] if 1 lo ... 127.0.0.1/8`
+    and `[net] if 2 eth0 ... [primary]`. `test-netif` 43, negctl reddens 7.
+  - **A routing table, not a ternary.** `ip.c:56` was
+    `((dst & mask) == (ip & mask)) ? dst : gw` -- one gateway, and no way to
+    say "no route": an unroutable datagram went to the gateway, which is a
+    leak, not a fallback. `c/net/core/route.c` is longest-prefix-then-metric
+    with the default route as **plen 0** (same loop, no branch).
+    `nm -u route.o` is **EMPTY** -- it knows only integers, which is why its
+    gate stubs nothing. DEVICE: `[route] 127.0.0.0/8 onlink dev 1 ... local` /
+    `10.0.2.0/24 onlink dev 2` / `0.0.0.0/0 via 10.0.2.2 dev 2`, printed
+    during a passing `test-net-os`. `test-route` 64, `test-ip-route` 25,
+    negctls redden 9 and 11. **The negctl for the inset is the OLD TERNARY on
+    a `-D` switch, not a broken version** -- the version that shipped until
+    that day, which is the only control worth having, because everything it
+    does still looks right.
+  - **`SOCK_RAW` was a number in a header the kernel had never heard of.**
+    `c/apps/libc/include/sys/socket.h:42` defined it; grepping the whole
+    kernel for it returned nothing, and `ping` was a bespoke syscall
+    (`SYS_NET_PING`), so ICMP was unreachable by any general mechanism.
+    `c/net/core/raw.c` + an `S_RAW` kind in `lsock.c`, root-only, with
+    **IP_HDRINCL refused outright** (a caller-built IP header is the mechanism
+    for forging a source address). DEVICE, same boot, same target: the old
+    `net ping` printed `reply: 10 ms` and the new `/bin/ping 10.0.2.2` printed
+    **4 packets transmitted, 4 received, 0% packet loss** -- two independent
+    paths to one gateway, which is what says the raw socket carried real ICMP
+    rather than a plausible number. `test-raw-host` 21.
+  - **AF_UNIX existed nowhere in the tree** -- zero occurrences of
+    `AF_UNIX`/`sockaddr_un`. `c/net/core/unix.c` is stream + datagram +
+    **seqpacket** (which fell out: datagram already needs a record-length
+    ring, so seqpacket is the stream path with that ring on -- one
+    comparison). Bindings live in `unix.c`, **not as VFS nodes**, and the cost
+    is stated rather than hidden: no `ls`, no `stat`, unlink does not release.
+    Abstract namespace (leading-NUL `sun_path`) is **refused, not stubbed**.
+    `test-unix` 132 checks, and THREE controls because three properties fail
+    independently -- record boundaries (8), the wake (1), one buffer for both
+    directions i.e. a socket built on `struct pipe` (18).
+
+  **THE PATH BOTH SIDES AGREED ON WAS WRONG, and agreeing is why it survived.**
+  `/bin/syslogd` is AF_UNIX's consumer and mini-libc's `syslog()` is the
+  writer; both said `/dev/log`, as every Unix has since 4.2BSD. On DEVICE that
+  is `[vfs] create refused in /dev: mode 0644` / `syslogd: bind failed: -7`,
+  because **`/dev` here is not a directory** -- `c/fs/vfsctl.c` synthesises it
+  and it holds exactly eight control files, so nothing can be created in it by
+  anyone. The name is one `LOGIT_PATH_LOG` in `include/abi/logit_abi.h` now
+  (`/var/log/sock`), which is the only header a mini-libc TU and a `clib.h`
+  binary both see; two literals that must agree is the "one jar, TWO doors"
+  shape, and they agreed on the wrong value. DEVICE after: `syslogd:
+  listening on /var/log/sock`, and a second instance is refused BY NAME
+  (`already bound`), which is what says the namespace is real and exclusive
+  rather than merely accepting.
+
+  **What is NOT true yet: nothing has crossed that socket on device.** No
+  shipped program calls `syslog()` -- the writer half's only coverage is
+  host-side. The daemon binds, listens, and has no clients.
+- **DNS grew owner-name matching, EDNS0 + a real TCP fallback, and per-record
+  TTLs** (`c/net/dns/dns.c`). Worth knowing: the legacy `dns_start()`/
+  `dns_result()` API and the async pool used to be TWO independent
+  implementations of the same parsing, so fixing one would have reproduced the
+  cookie-jar bug exactly; they are one `dq_advance()` now. `test-dns` 29,
+  negctl reddens **exactly 1** (the unrelated-name case) -- a control that
+  reddens the whole suite is not measuring the one thing it claims.
 - M10 TCP (`net/tcp.c`): client byte stream over IP proto 6 (IP_PROTO_TCP via
   ip_input's weak hook); tcp_connect/send/recv/close; single outstanding seg +
   timeout retransmit. **M26 robustness:** receive now does **out-of-order
@@ -282,9 +356,13 @@ Key notes:
   is a TLS 1.3 client (X25519 KX, both AEADs, SHA-256 transcript, HKDF schedule);
   `net/x509.c` does DER/X.509 parse + **strict** chain verification to built-in
   roots (`crypto/roots.c`). http_get's https branch layers tls_connect over the
-  TCP socket. Each primitive is verified against published/openssl vectors. Only
-  TLS 1.3 + the two suites above; no resumption/0-RTT/client-certs. Like all
-  blocking net ops, tls_connect needs IF=1 (SYS_HTTP_GET re-enables it).
+  TCP socket. Each primitive is verified against published/openssl vectors. Like
+  all blocking net ops, tls_connect needs IF=1 (SYS_HTTP_GET re-enables it).
+  **The sentence that used to end this bullet -- "Only TLS 1.3 + the two suites
+  above; no resumption/0-RTT/client-certs" -- was wrong on two of its four
+  clauses and cost a day: on 2026-08-20 it was read as the current state and a
+  work order was written against it. TLS 1.2 and resumption both exist. See the
+  TLS section below, which is the live one.**
 - M12.5 RSA + real CA bundle (the "open most of the web" follow-up): `crypto/rsa.c`
   adds from-scratch RSA verify -- bignum modexp (double-and-add modmul, no wide
   product; 4096-bit modulus, e=65537) + **PKCS#1 v1.5** (cert-chain sigs) and
@@ -367,6 +445,93 @@ test that proved a refusal into a test that proved nothing. It is 20 now
 (SHA-1's length -- `sha1.c` is in the tree and HMAC still does not dispatch to
 it, which is the property actually being pinned).
 
+## TLS: what it speaks, and the four things it does not
+
+Written 2026-08-20 because the M12 bullet's closing parenthesis ("no
+resumption/0-RTT/client-certs") was stale in both directions and was quoted as
+a work order that day. `c/net/tls` is 4,476 lines and `c/crypto` 4,721 --
+against OpenSSL's ~500,000, which is the honest frame for everything below:
+the primitives are strong and differentially tested, and the PROTOCOL SURFACE
+is narrow.
+
+**WHAT EXISTS**, all of it measured against `openssl s_server`/`s_client`
+3.5.5 in one run (`bash tests/unit/run-tls-interop.sh`, **73 passed 0 failed**):
+
+| | |
+|---|---|
+| versions | TLS **1.3** (`tls.c`) and TLS **1.2** (`tls12.c`) -- both CLIENT |
+| 1.3 suites | AES-128-GCM-SHA256, CHACHA20-POLY1305-SHA256, AES-256-GCM-SHA384 |
+| 1.2 suites | ECDHE×{ECDSA,RSA}×{AES-128-GCM, AES-256-GCM, ChaCha20} = 6 |
+| groups | x25519, secp256r1, secp384r1, **X25519MLKEM768** (1.3 only) |
+| certs | RSA PKCS#1 v1.5 + PSS, ECDSA P-256/384/**521**, Ed25519 anchors, 130 roots |
+| resumption | PSK / session tickets (`tls_psk.c`) -- **exists**, 23 checks |
+| ocsp | stapling, checked, REVOKED refused; no online fetch |
+| **server** | `tls_server.c`, TLS 1.3 only, 3 suites, 3 groups, **no hybrid** |
+
+The **hybrid is client-only and asymmetric on purpose**: the ClientHello
+carries the hybrid share AND a bare x25519 share, because leading with the
+hybrid alone made every classical server answer HelloRetryRequest (measured:
+29 interop failures, all "HRR: X25519MLKEM768 -> x25519"). 36 bytes buys that
+back. `tls_group_supported()` deliberately EXCLUDES the hybrid so a TLS 1.2
+server cannot name a KEM as its ECDHE curve.
+
+**THE ONE THAT WAS NOT A GAP BUT A HOLE, found and closed 2026-08-20.**
+`verify_flight()` is a dispatch over whatever messages the server chose to
+send, not a state machine, so every check is conditional on the message that
+carries it arriving. The CertificateVerify signature check lives inside
+`if (mt == HS_CERT_VERIFY)`; **omit the message and the branch never runs**,
+and nothing afterwards noticed -- `tls_check_chain` proves the certificate is
+AUTHENTIC and says nothing about whether the peer holds its private key.
+Certificates are public. An on-path attacker could replay any site's real
+chain, skip the signature, and this client printed "chain of 2 verified for
+localhost" and proceeded. Closed with a presence flag set only after the
+signature verifies, plus a post-loop refusal on the non-resumed path.
+`bash tests/unit/run-tls13-certverify-bypass-probe.sh` is the gate and its
+control is the honest-but-garbage-signature case, which must still be refused.
+
+**WHAT IS NOT THERE.** Named individually because an absent claim is worse
+than a stale one -- a reader of the green tick after M12 sees none of this:
+
+- **No client certificates**, either side. The client never answers a
+  CertificateRequest (no handler; `tls12.c:16` names it only in a comment
+  diagram) and the server never sends one. `1.2 declines client cert` is a
+  real interop case and declining is all it does.
+- **No 0-RTT / early data.** Resumption exists; `psk_ke` without a fresh
+  ECDHE and the whole early-data path do not.
+- **No Certificate Transparency.** Chrome REQUIRES SCTs for publicly trusted
+  certificates. Nothing here parses an SCT, reads the `1.3.6.1.4.1.11129.2.4.2`
+  extension, or holds a log list. A certificate issued by a CA that no log
+  ever saw verifies here exactly like one that was logged.
+- **No DTLS**, no renegotiation beyond sending `renegotiation_info`, no
+  compression, no session-ticket issuance from our server.
+- **NO PROTOCOL STATE MACHINE, and this is the structural one.** FREAK,
+  Logjam, SMACK and CCS-injection are all state-machine bugs in which the
+  primitives are perfect and the handshake "succeeds". The CertificateVerify
+  hole above was exactly that shape. What exists now is one presence flag; a
+  message arriving TWICE, or in the wrong ORDER, is still only bounded by
+  whether the transcript hash then matches. **There is no test that sends
+  handshake messages out of order or repeats one** -- the tamper proxy
+  corrupts CONTENT, not sequence.
+- **Constant-time discipline is per-site, not global.** `aes_modes.c`'s CBC
+  pad check is a deliberate constant-time accumulate and says so; `ocsp.c`
+  compares hashes with plain `memcmp`, which is safe there only because both
+  operands are public values in a signed response an attacker cannot vary
+  adaptively. That is a per-call argument, and no rule or gate enforces one.
+
+  `make test-tls-interop` (73) · `test-tls-server` (26) · `test-tls-psk` (23) ·
+  `test-mlkem-openssl` · `test-ecdsa-sign` · `test-crypto-diff` (140,214) ·
+  `test-x509-fuzz` · `bash tests/unit/run-tls13-certverify-bypass-probe.sh`
+
+**The trust store is generated and CAN silently become empty.**
+`tools/genroots.py` takes the roots directory as `argv[1]`, so any stale or
+mistyped path globs zero PEMs -- on 2026-08-20 the working tree was found with
+`logit_roots[] = {}`, 25 lines down from 4,519, with all 130 PEMs still in
+`tools/roots/`. It COMPILES: an empty C array is legal, and x509.c's two root
+loops are both bounded by `logit_nroots`, so the machine fails CLOSED and
+every https fetch dies with a chain error naming no cause. The generator now
+refuses an empty result and exits non-zero; a caller that MEANS zero anchors
+(run-tls-interop.sh's fail-closed block) passes `--allow-empty`.
+
 ## Application platform (on top of M8)
 - Apps are `.aex` files on the LogitFS disk = real **ring-3 processes** scheduled
   by M4. `kernel/wm.c` is the window manager AND the GUI/app backend.
@@ -418,7 +583,10 @@ through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
 **Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
 `js_dtoa` formats numbers via `snprintf("%+.*e")` so a correct `%e` is required;
 `scan_apps` read each `.aex` into a 32 KiB buffer — fixed to size-to-file so the
-1 MiB app registers in the Dock. **`user/browser.c` now links the engine too**
+1 MiB app registers in the Dock. (**And size-to-file is gone too, 2026-08-21**:
+it reads the 64-byte header with `vfs_pread` and allocates nothing. Both of the
+earlier shapes existed only because this VFS had no partial read; the size-to-
+file one was reading 7.9 MB at every boot to look at 704 bytes.) **`user/browser.c` now links the engine too**
 (Makefile shares `ENGINE_OBJ` between js.aex and browser.aex) and runs a page's
 inline `<script>`: the kernel `collect_scripts` walks the DOM, `SYS_PAGE_SCRIPTS`
 hands the concatenated source to the app, which `JS_Eval`s it; `console.log`
@@ -1122,6 +1290,152 @@ so its staleness is not inert: three negative controls stopped linking on
 `gfx_path_ellipse` this week, and nothing here explained why a symbol that
 "does not exist" was being referenced.
 
+### G4 — the consumers, and the four symbols that are still dead
+
+**Phase 2 built the capability; G4 is the browser's painter finally ASKING for
+it.** The reconnaissance that opened this line is the number worth keeping:
+of 41 exported `gfx_` functions, SIX had zero callers outside the engine, and
+`browser_paint.c` contained the string `transform` 0 times, `bold`/`italic` 0
+times and `box-shadow` once against `aui.c`'s 45. **The engine was ahead of its
+consumers, not behind** — only 4 of the browser's 12 largest visual gaps were
+the engine's fault.
+
+What now reaches the screen, all of it through calls that already existed:
+
+- **box-shadow** on the 9-slice — four blurred `GFX_MASK_SHADOW` corner tiles,
+  four `gfx_shadow_falloff` edge strips, three interior bands. Three exactness
+  tiers chosen from the corpus rather than from taste (102 sheets of
+  `tests/fixtures/cssweb`: 1,045 individual shadows, 320 literal).
+  **Blurred inset is REFUSED and counted** (22 of 320): inverting
+  `GFX_MASK_SHADOW` gives `255*(2t-t²)` where the inward ramp needs `255*t²`,
+  and writing that tile in the painter would put a second shadow-profile
+  generator beside `gfx_corner_shadow`.
+- **linear-gradient** backgrounds — `gfx_paint_linear` + `gfx_paint_sample`.
+  The direction census is the design: of the corpus's **385** unprefixed
+  `linear-gradient(` calls, 203 implicit `to bottom` + 146 axis-aligned = **349
+  (91%)** are a 1×n ramp the compositor replicates for free; the diagonal tenth
+  goes through a bounded 128-device-px surface. Refused values fall back to the
+  background COLOUR, never to an approximation.
+- **transform** — `css_interp.c`'s parser wired to the affine layer, which
+  had existed with nothing connecting them. `b==0 && c==0` is exact and
+  unbounded; rotate/skew is one rasterized path bounded at 128 device px.
+  **Note the engine contract runs the OPPOSITE way from `js_canvas.c`**: canvas
+  must leave the path matrix at identity because its CTM changes mid-build,
+  while CSS knows its matrix before the first point, so `gfx_path_matrix()` is
+  set and the arcs flatten in DEVICE space — shorter and more accurate under a
+  scale.
+- **border-radius with no background — the `has_bg` guard was a real bug.**
+  `if (r > 0 && e->has_bg)` answered "is there a fill to draw" for a question
+  that asked "is the border rounded", so `border:1px solid; border-radius:8px`
+  drew SQUARE. Restricted to a uniform solid border on purpose: the rounded
+  path collapses four edges into one ring, so a single-edge border would go
+  from one line to a ring all the way round.
+
+**Path clipping has its FIRST consumer** — `gfx_fill_mask_clipped()` from
+`fill_rclip()`, for `overflow:hidden` on a rounded box, bounded by the RADIUS
+rather than the box. The measurement that made it fire at all is the most
+useful number in the work: the first rule was "the clipper's border box equals
+the stamped clip rect", which matched **3 of 682** candidate items and would
+have shipped as a feature the web appears not to use. Layout's clip is the
+PADDING box, intersected with every ancestor, with `0x3FFFFFFF` for an auto
+height; testing each EDGE against the padding box gives **682 clipped items →
+78 rounded clippers → 179 matching edges → 100 real corners on 74 items**, and
+the radius must be reduced by the border width PER CORNER (using the widest of
+the four threw away 52 of the 74).
+
+**THE ONE EDIT OUTSIDE THE PAINTER, and it was mandatory.** `layout.c`'s
+"does this element generate a box" predicate — `st->has_bg || any_border(st)`,
+spelled out at nine sites — became `st_inked()`, which also accepts
+`xraw[XR_BG_IMAGE]` and `xraw[XR_BOX_SHADOW]`. Neither declaration reaches
+`has_bg` or `border_w` (both are absent from the vendored LibCSS property
+table), so an element whose only decoration is `background: linear-gradient(…)`
+— every hero section — or `box-shadow` on a transparent input — every focus
+ring — generated NO display-list item and the painter never saw it. `has_bg`
+stays false on the emitted item, so every existing background-colour path is
+untouched. `test-layout-box` 51 checks and `test-cssom-abi` green after it.
+
+**A latent buffer overflow found on the way in** (pre-existing):
+`static int ctl_pt[128]` passed to `gfx_path_init(&p, ctl_pt, 128, …)`.
+The capacity is in POINTS and the buffer is x,y INTERLEAVED — `push_pt` writes
+`pt[npt*2]` and `pt[npt*2+1]` while the bound check is on `npt` — so this
+described a buffer twice the size of the one that exists, and `overflow`, the
+flag that exists to catch exactly this, could never fire because the count it
+checks was the one that was right. Never reached (the widest shape through it
+is ~50 points), one bigger control away from 512 bytes past a file static.
+`gfx_mask.c` has the convention written correctly (`cpt[512 * 2]`).
+
+  `make test-paint-gfx` — **75 checks, 0 failures**, every row naming a pixel
+  or a count computed from the CSS. FOUR controls, each watched failing at its
+  predicted count: `ROUND_HASBG` **4**, `XF_NO_ORIGIN` **3**,
+  `SHADOW_NO_CLIP` **2**, `NO_RCLIP` **4**. Each is the PLAUSIBLE wrong
+  implementation, not the absent one — all four draw a perfectly good picture,
+  and `XF_NO_ORIGIN` leaves every `translate()` on the page correct.
+
+**WHAT IS STILL DEAD, measured the same way as the opening census (2026-08-20).
+Two of the six were revived, not three, and the headline one was not:**
+
+| symbol | callers outside `c/lib/gfx` |
+|---|---|
+| `gfx_fill_mask_clipped` | **1** — `browser_paint.c:1238`. Path clipping is consumed |
+| `gfx_paint_sample` | **2** — `browser_paint.c:845,873` |
+| `gfx_fill_clipped` | **still 0.** Only its own gate |
+| `gfx_fill_subs` | **still 0** (called once inside the engine) |
+| `gfx_m_invert` | **still 0** (called once inside the engine) |
+| `gfx_gradient_strip_paint` | **still 0, deliberately** — argued at `browser_paint.c:654`: its contract is `t` running 0→65536 across the strip, which is only the right ramp when the strip IS the whole extent; `to top` runs UP the box and a rounded box's three bands each index a SUB-RANGE |
+
+So `gfx_fill_clipped` — the SURFACE-writing half of path clipping — is still a
+correct, gated, dead feature. The browser reaches the screen through
+`gui_blit`, so it needs the MASK half; nothing in the tree composites into a
+`gfx_surface` and clips at the same time.
+
+**Still shallow, and the layer that owns each:**
+
+- **bold and italic are still 0 occurrences, and NOT the painter's to fix.**
+  `gui_text_run(x, y, px, mono, colour, s, len)` has no weight or slant
+  parameter, and `fsroot/fonts/` ships exactly `ui.ttf` and `mono.ttf` — there
+  is no bold face on the disk. Every `<h1>` and `<strong>` on the web renders
+  at regular weight, and closing it is a font asset + an ABI parameter +
+  kernel face selection, in that order.
+- **SVG** is still decoded at intrinsic size and nearest-neighbour stretched,
+  which loses the point of SVG. `svg.c` is already a full consumer of the
+  engine; what is missing is the painter asking it to rasterize at DEVICE size.
+- **radial-gradient** is refused, and the gate pins the refusal: the engine has
+  `gfx_paint_radial`, the parser does not yet produce it, and the background
+  COLOUR paints exactly as before.
+- **Rotated text and rotated images** are refused and counted
+  (`browser_paint_xform_stats`) — the ABI has no rotated text or blit call.
+- **G5 (groups and layers) is not started**, and it is the prerequisite for
+  `mix-blend-mode` and `filter`. Group opacity needs an offscreen
+  `gfx_surface` and a group concept the display list does not have; all three
+  ways of faking it double-darken overlapping children at the seams.
+
+**TWO INSTRUMENTS COULD NOT ANSWER FOR THIS WORK, and saying so is the point:**
+
+- **`bench-gfx-frame` cannot see G4 at all.** It builds `gallery_cost.aex` —
+  the gallery through `aui.c` — and `nm build/gallery_cost.elf` returns **0**
+  `browser_paint` symbols. It measures the engine as `aui.c` uses it and never
+  as the browser does. Worse, under a loaded machine it is not repeatable:
+  two runs of the SAME binary on 2026-08-20 read 2560x1600 wall
+  **19,871 µs and 12,707 µs** (1.57x), engine share 15.6% and 15.8%. Any
+  comparison against the recorded 16.4 / 11.1 / 6.4 needs an idle machine.
+- **The scoreboard's VERDICT counts were not comparable that day.** A first
+  full run was VOID — both control rows came back FLAKY, and the cause was
+  another workflow's `pkill` SIGTERMing four of the boots mid-run (the serial
+  logs show the pages had painted). The re-run's controls are PAINTED and
+  identical to 0818-c (example 19/109, wikipedia 198/1132 vs 199/1142), but
+  six sites still went FLAKY on live-web and harness volatility, so
+  PAINTED 5 → 2 is an artifact of that and not a result.
+
+  **`text run/B` is what survived, and it is the delta worth having**: taking
+  each site's better run against 0818-c, **+60 painted text runs and +441
+  bytes** across the corpus (357 → 417 runs, 3,018 → 3,459 bytes). It is
+  carried by **jd 0/0 → 63/429** — a page that scored BLANK with no painted
+  text at all now paints 63 runs — with bilibili 56/471 → 61/524, baidu
+  29/346 → 32/393, stripe 38/164 → 40/171 and douyin 1/9 → 2/13. One row went
+  the other way and is unresolved: **github 17/99 → 3/14**, whose load time
+  also went 103.9 s → 153.4 s under the same contention, so it is not yet
+  known whether that is a regression or a budget.
+
 ## How big a program can this machine load? 12 MiB, measured
 
 Asked because a Python port turns on it, and answered without CPython, without a
@@ -1157,6 +1471,60 @@ MiB. But `tools/mkfs.py`'s `INODE_COUNT` is **256**, and 223 are already in use.
 A runtime shipping a stdlib as thousands of `.py` files exhausts the inode table
 long before the disk, which is why a frozen single binary is the only shape this
 filesystem permits.
+
+### 12 MiB was the measurement, not the limit -- it is 64 MiB and more (2026-08-21)
+
+**Everything above is a true record of that day and two of its conclusions have
+since been overtaken, both deliberately.** `tools/mkfs.py` is 131,072 blocks and
+8,192 inodes now (512 MiB, ~240 used), so the inode wall is gone; and the load
+path no longer materialises the file at all.
+
+**What the ceiling actually was.** `exec.c` did `kmalloc(whole file)`, which
+falls through to kheap's `grow()` -- it DOUBLES an arena until it covers the
+request and then asks `pmm_alloc_contig()` for that many CONTIGUOUS frames.
+So the cost was never the file, it was the next power of two above it, in one
+piece. Measured before the change: 128 MiB of file took a 256 MiB arena, and a
+256 MiB file was refused with **456 MiB free**, because the doubling asked for
+512 MiB on a 511 MiB machine.
+
+**The loader streams now** (`struct elf_reader` in `c/kernel/exec/elf.h`): the
+ELF header, the program-header table and each segment are read through
+`vfs_pread` into a single 512 KiB static bounce, and read-only whole pages never
+come through it at all -- they are mapped from the page cache as before. Same
+boot, same three programs, `make test-bigexec`:
+
+| | before | after |
+|---|---|---|
+| peak kernel heap arena | **249,856 KiB** | **16,384 KiB** |
+| heap growths | 7 (+32/+64/+128 MiB among them) | 4, all +4 MiB |
+| 64 MiB program | one 128 MiB contiguous run | 3 pages copied, 16,385 file-backed |
+
+`[exec] load /bin/pad64: 16385 pages file-backed in 1 areas, 3 copied`.
+
+**And the second phase is the one that proves it.** `pmm_alloc_contig` is a
+linear first-fit with NO fallback, so a load that works on a machine that has
+just booted says nothing. The gate runs the same three programs again after
+112 MiB of page cache has been taken and dropped and five other programs have
+run: 24,295 Mcyc for the 64 MiB load fresh, **24,016 after the churn** -- within
+1%, because nothing on this path wants a contiguous run to begin with.
+
+**And `scan_apps()` no longer kmallocs anything**, so the "never the root" advice
+above is retired: it read all 11 root `.aex` files WHOLE at boot -- 7,911,576
+bytes, peaking at 4,721,200 for `browser.aex` -- to look at 704 bytes of header.
+`vfs_pread` exists now; it is 64 bytes on the stack, eleven times.
+
+**Where the time in a big exec now is, measured, and it is not the loader:** the
+container's CRC-32 covers the whole ELF, so it is the only thing left that reads
+every byte. 64 MiB pad, TCG: **container+CRC 24,244 Mcyc, the entire ELF load
+643 Mcyc.** The bounce size is 32x of that number -- at 16 KiB the same phase
+cost 789,736 Mcyc, so the cost is per-CALL and hardly any of it is the CRC
+arithmetic. 128 x 4096 is `READ_RUN * BS`, the most blocks logitfs puts in one
+device command.
+
+  `make test-bigexec` (2 phases, fresh + churned) · `test-bigexec-negctl`
+  (`-DEXEC_NEGCTL_SLURP` restores the whole-file kmalloc; **both** kernels boot
+  at `-m 192M` so the difference cannot be read as "you gave one less memory",
+  and the control must FAIL at 64 MiB and PASS at 16)
 
 ## Six subsystems this file did not describe, found by counting
 

@@ -310,17 +310,27 @@ long proc_execve(struct registers *r)
         return -1;
     }
 
-    /* 2. Load + validate the program image (kernel buffer) before destroying the
-     *    old space, so a bad path/exec leaves the caller intact and returns -1. */
+    /* 2. Validate the container's fixed header before destroying the old space,
+     *    so a bad path/exec leaves the caller intact and returns -1.
+     *
+     * THIS USED TO BE A kmalloc OF THE WHOLE FILE and one vfs_read into it, and
+     * that was the ceiling on how big a program this machine could run: kmalloc
+     * -> kheap grow() -> pmm_alloc_contig(), which DOUBLES an arena to cover the
+     * request and then wants it in ONE contiguous physical run. Measured
+     * 2026-08-20: a 128 MiB file took a 256 MiB arena, and a 256 MiB file was
+     * refused with 456 MiB free, because the doubling asked for 512 MiB on a
+     * 511 MiB machine. Now nothing here holds the image at all -- aex_load_path
+     * reads the header, then each segment, straight out of the file.
+     *
+     * What is still checked HERE rather than later is the 64 bytes every AEX
+     * version agrees on. That placement is the whole point of splitting it out:
+     * everything after the vmm_free_user() below is fatal to the caller, so the
+     * cheap "is this a program at all" answer has to come before it, exactly as
+     * the old aex_info(img, ...) did. */
     int sz = vfs_size(abs);
     if (sz < AEX_HDR_SIZE) { kprintf("[execve] %s: missing/too small (%d)\n", abs, sz); return -1; }
-    if (sz > 0x7fffffff - 511) return -1;    /* sz + 511 would overflow int */
-    int bytes = ((sz + 511) / 512) * 512;
-    void *img = kmalloc((unsigned)bytes);
-    if (!img) { kprintf("[execve] %s: kmalloc %d failed\n", abs, bytes); return -1; }
-    if (vfs_read(abs, img, bytes) <= 0) { kprintf("[execve] %s: read failed\n", abs); kfree(img); return -1; }
     char nm[32], ext[8];
-    if (aex_info(img, nm, ext) != 0) { kprintf("[execve] %s: bad aex header\n", abs); kfree(img); return -1; }
+    if (aex_info_path(abs, nm, ext) != 0) { kprintf("[execve] %s: bad aex header\n", abs); return -1; }
 
     /* M28 D1: `p->caps` and `p->fs_prefix` are DELIBERATELY untouched anywhere
      * in this function, and that silence is the load-bearing part of the
@@ -352,9 +362,36 @@ long proc_execve(struct registers *r)
      * unstattable path, a backend with no real inode numbers) is not an error
      * here: the loader copies, exactly as it always did. */
     int fh = pcache_file_open(abs);
-    int lrc = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh);  /* maps into the active (p->cr3) space */
+#ifdef EXEC_NEGCTL_SLURP
+    /* THE NEGATIVE CONTROL (tests/exec.mk's test-bigexec-negctl): this function
+     * exactly as it was before the streaming loader -- kmalloc the whole file,
+     * one vfs_read into it, load from memory. It is not "the feature switched
+     * off"; it is the PLAUSIBLE implementation, the one that shipped, and it
+     * loads every ordinary program on this disk perfectly well. What it cannot
+     * do is the thing being measured, and it cannot do it at a size the
+     * measurement names rather than at any size at all -- which is why the gate
+     * requires a SMALL pad to still pass against this build. A control that
+     * fails everywhere is measuring "did I break the loader", not the ceiling.
+     *
+     * The refusal it produces is `[oom] kmalloc(N) refused` from kheap's grow()
+     * -> pmm_alloc_contig(), with the frames-free count printed beside it, and
+     * that free count is normally far LARGER than the request. */
+    int lrc = -1;
+    if (sz <= 0x7fffffff - 511) {
+        int bytes = ((sz + 511) / 512) * 512;
+        void *img = kmalloc((unsigned)bytes);
+        if (img) {
+            if (vfs_read(abs, img, bytes) > 0)
+                lrc = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh);
+            kfree(img);
+        } else {
+            kprintf("[execve] %s: kmalloc %d failed\n", abs, bytes);
+        }
+    }
+#else
+    int lrc = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh);  /* maps into the active (p->cr3) space */
+#endif
     if (fh >= 0) pcache_file_put(fh);          /* the VMAs hold their own */
-    kfree(img);
     uint64_t t_load = exec_rdtsc();
     if (lrc != 0) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
     exec_note_load(abs, &ei);   /* after the refusal: a load that failed part-way
@@ -397,16 +434,11 @@ int proc_spawn(const char *path, char **argv)
 {
     int sz = vfs_size(path);
     if (sz < AEX_HDR_SIZE) return -1;        /* aex_info reads the 64-byte header */
-    if (sz > 0x7fffffff - 511) return -1;    /* sz + 511 would overflow int */
-    int bytes = ((sz + 511) / 512) * 512;
-    void *img = kmalloc((unsigned)bytes);
-    if (!img) return -1;
-    if (vfs_read(path, img, bytes) <= 0) { kfree(img); return -1; }
     char nm[32], ext[8];
-    if (aex_info(img, nm, ext) != 0) { kfree(img); return -1; }
+    if (aex_info_path(path, nm, ext) != 0) return -1;
 
     uint64_t space = vmm_new_space();
-    if (!space) { kfree(img); return -1; }
+    if (!space) return -1;
 
     int argc = 0; while (argv && argv[argc]) argc++;
 
@@ -417,19 +449,42 @@ int proc_spawn(const char *path, char **argv)
      * inside the interrupts-off window would be a device wait with no timer. */
     int fh = pcache_file_open(path);
 
-    /* Load + build the stack with the new space active (it isn't current yet). */
+    /* Load + build the stack with the new space active (it isn't current yet).
+     *
+     * THE LOADER NOW READS THE DISK FROM INSIDE THIS WINDOW, which the comment
+     * above pcache_file_open() warns against, so here is why it is safe and
+     * what would make it stop being safe.
+     *
+     * The worry that comment names is "a device wait with no timer" -- a poll
+     * whose timeout comes from the PIT, which does not advance with IF=0. There
+     * is exactly ONE place a synchronous block transfer waits, and it is not in
+     * a driver: c/drivers/block/blkdev.c's blk_wait() saves RFLAGS, raises
+     * g_ata_busy, does its OWN sti, polls, and restores the caller's IF. Every
+     * backend goes through it. So the read gets interrupts whatever this
+     * function's IF is, and its completion does not depend on the tick
+     * (virtio.c polls a spin COUNT, 200,000,000 iterations).
+     *
+     * The non-preemption matters far more than the timer here, and it is the
+     * part specific to this call site: g_ata_busy makes interrupts.c skip
+     * schedule() (c/kernel/cpu/interrupts.c:288), and without that the sti
+     * inside blk_wait could switch this thread out -- which would restore this
+     * THREAD's cr3 on the way back, leaving the loader writing its segments
+     * into the wrong address space, silently.
+     *
+     * So the requirement is precise and it is one function's: if blk_wait ever
+     * stops holding the no-preemption flag across a transfer, this call site
+     * breaks. Nothing about which driver is underneath matters. */
     uint64_t prev;
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_path(path, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, path, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
     if (fh >= 0) pcache_file_put(fh);
     if (entry) exec_note_load(path, &ei);
-    kfree(img);
     if (!entry || !sp) { vmm_free_space(space); return -1; }
 
     struct proc *p = proc_create(space, NULL, nm, 0);
@@ -542,16 +597,11 @@ long proc_cap_spawn(struct registers *r)
     }
     int sz = vfs_size(abs);
     if (sz < AEX_HDR_SIZE) return LOGIT_CAP_E_NOENT;
-    if (sz > 0x7fffffff - 511) return LOGIT_CAP_E_NOENT;   /* sz + 511 would overflow int */
-    int bytes = ((sz + 511) / 512) * 512;
-    void *img = kmalloc((unsigned)bytes);
-    if (!img) return LOGIT_CAP_E_NOMEM;
-    if (vfs_read(abs, img, bytes) <= 0) { kfree(img); return LOGIT_CAP_E_NOENT; }
     char nm[32], ext[8];
-    if (aex_info(img, nm, ext) != 0) { kfree(img); return LOGIT_CAP_E_NOENT; }
+    if (aex_info_path(abs, nm, ext) != 0) return LOGIT_CAP_E_NOENT;
 
     uint64_t space = vmm_new_space();
-    if (!space) { kfree(img); return LOGIT_CAP_E_NOMEM; }
+    if (!space) return LOGIT_CAP_E_NOMEM;
 
     /* Load + build the stack with the new space active, exactly like
      * proc_spawn() above (the target space is not current yet, so the
@@ -563,13 +613,12 @@ long proc_cap_spawn(struct registers *r)
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_path(abs, (uint64_t)sz, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, abs, cs_argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
     if (fh >= 0) pcache_file_put(fh);
     if (entry) exec_note_load(abs, &ei);
-    kfree(img);
     if (!entry || !sp) { vmm_free_space(space); return LOGIT_CAP_E_NOENT; }
 
     struct proc *child = proc_create(space, NULL, nm, p->pid);

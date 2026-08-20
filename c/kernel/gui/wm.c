@@ -5052,17 +5052,27 @@ static void scan_apps(void)
         char nm[64];
         scopy(nm, vfs_ent_name("/", i), sizeof nm);
         if (!ends_aex(nm)) continue;
-        /* logitfs reads whole-file (errors if the buffer is smaller), so size the
-         * buffer to the file -- the JS app's .aex is ~1 MiB, far over any header
-         * scratch. We only need the header, but read it all then free. */
+        /* THE 64 BYTES, AND ONLY THE 64 BYTES.
+         *
+         * This used to kmalloc the whole file and read it whole, because
+         * logitfs's vfs_read is all-or-nothing (a buffer smaller than the file
+         * is an ERROR, not a short read) and there was no partial read in the
+         * VFS at all. So the Dock scan -- which runs at boot, before anything
+         * else has allocated -- took a contiguous kmalloc the size of the
+         * largest .aex in the root, to look at its first 64 bytes. That is what
+         * put "never put a big binary in the root" in CLAUDE.md.
+         *
+         * vfs_pread() exists now (c/fs/vfs.c), so the workaround is unnecessary
+         * and so is the advice: 64 bytes on the stack, one read, no allocation
+         * on the boot path at all. `sz` is still taken because the fixed header
+         * carries no length and a file shorter than one is not a program. */
         int sz = vfs_size(nm);
         if (sz < AEX_HDR_SIZE) continue;    /* aex_info reads the 64-byte header */
-        char *buf = kmalloc(sz);
-        if (!buf) continue;
-        if (vfs_read(nm, buf, sz) <= 0) { kfree(buf); continue; }
+        struct aex_header hb;
+        if (vfs_pread(nm, &hb, AEX_HDR_SIZE, 0) != AEX_HDR_SIZE) continue;
         char name[32], ext[8];
-        if (aex_info(buf, name, ext) == 0) {
-            struct aex_header *h = (struct aex_header *)buf;
+        if (aex_info(&hb, name, ext) == 0) {
+            struct aex_header *h = &hb;
             scopy(reg[nreg].file, nm, sizeof reg[nreg].file);
             scopy(reg[nreg].name, name, sizeof reg[nreg].name);
             scopy(reg[nreg].ext, ext, sizeof reg[nreg].ext);
@@ -5075,7 +5085,6 @@ static void scan_apps(void)
                 : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
             nreg++;
         }
-        kfree(buf);
     }
 }
 

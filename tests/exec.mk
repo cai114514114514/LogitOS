@@ -17,6 +17,11 @@
 #   test-exec-asan     the same battery under ASan + UBSan.
 #   test-exec-os       ON THE MACHINE: every program under /bin is fork+exec'd
 #                      by the real shell and has to run.
+#   test-bigexec       HOW BIG a program the machine can load -- 16/32/64 MiB,
+#                      on a fresh machine and again on a churned one, with
+#                      test-bigexec-negctl running the pre-streaming loader on
+#                      the SAME machine so the difference cannot be read as
+#                      "you gave one of them less memory".
 #
 # The host tests link c/kernel/exec/elf.c and aex.c UNMODIFIED and replace only
 # the machine under them (tests/unit/exechost/space.c), which uses the host MMU
@@ -178,6 +183,90 @@ test-exec-bases: $(AEX)
 test-exec-os: $(ISO) $(DISK)
 	@bash tests/boot/run-exec-test.sh $(ISO) $(DISK)
 
+# --- test-bigexec ----------------------------------------------------------
+# HOW BIG A PROGRAM THIS MACHINE CAN LOAD, on the machine, with a control.
+#
+# The question is not academic and it is not about compilers: `cc1` is 35.7 MB
+# dynamically linked and 50-60 MB static, so ONE file of a toolchain is larger
+# than every .aex on this disk put together. Before the streaming loader the
+# ceiling was exec.c's `kmalloc(whole file)`, and the shape of that ceiling is
+# what makes a gate worth writing -- it is not "you run out of memory", it is
+# kheap's grow() DOUBLING an arena and then asking pmm_alloc_contig() for one
+# contiguous physical run. So the failure lands at the next power of two above
+# the file, in one piece, with most of the machine still free.
+#
+# Three sizes and TWO phases in one boot. The second phase is the one that
+# matters: pmm_alloc_contig is a linear first-fit with no fallback, so a load
+# that works on a machine that has just booted says nothing about the same load
+# after the desktop, the page cache and a browser-shaped workload have used and
+# released memory. Phase 2 runs the identical three binaries after that churn.
+#
+# Every number the harness asserts on is printed by the guest: the pad program
+# prints the byte count it actually touched and the SUM of three planted bytes
+# (so a wrong-bytes load fails, not just a crash), and the kernel prints its own
+# frame counters. Nothing is inferred from "it did not hang".
+BIGEXEC_SIZES := 16 32 64
+BIGEXEC_DIR   := $(BUILD)/bigexec
+
+# The blob, the object, the ELF, the container. Written out per size rather than
+# through a $(foreach) template because the .incbin path has to reach the
+# assembler as a -D and a template hides that.
+define BIGEXEC_RULE
+$(BIGEXEC_DIR)/pad-$(1).bin: tests/unit/bigexec_gen.py
+	@mkdir -p $(BIGEXEC_DIR)
+	@python3 tests/unit/bigexec_gen.py $$$$(( $(1) * 1024 * 1024 )) $$@
+$(BIGEXEC_DIR)/pad-$(1).elf: $(BIGEXEC_DIR)/pad-$(1).bin tests/unit/bigexec_pad.c \
+                             tests/unit/bigexec_pad.S $(APPDIR)/crt0_cli.asm
+	@$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BIGEXEC_DIR)/crt0c-$(1).o
+	@$(CC) $(UCFLAGS) -c tests/unit/bigexec_pad.c -o $(BIGEXEC_DIR)/pad-$(1).o
+	@$(CC) $(UCFLAGS) -DPADFILE='"$(BIGEXEC_DIR)/pad-$(1).bin"' \
+	    -c tests/unit/bigexec_pad.S -o $(BIGEXEC_DIR)/blob-$(1).o
+	@$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ \
+	    $(BIGEXEC_DIR)/crt0c-$(1).o $(BIGEXEC_DIR)/pad-$(1).o $(BIGEXEC_DIR)/blob-$(1).o
+$(BIGEXEC_DIR)/pad-$(1).aex: $(BIGEXEC_DIR)/pad-$(1).elf tools/mkaex.py
+	@python3 tools/mkaex.py $$< $$@ pad$(1) - '*' --cli --category test \
+	    --id os.logit.bigexec$(1) > /dev/null
+endef
+$(foreach s,$(BIGEXEC_SIZES),$(eval $(call BIGEXEC_RULE,$(s))))
+
+BIGEXEC_AEX := $(foreach s,$(BIGEXEC_SIZES),$(BIGEXEC_DIR)/pad-$(s).aex)
+BIGEXEC_MAP := $(foreach s,$(BIGEXEC_SIZES),$(BIGEXEC_DIR)/pad-$(s).aex:/bin/pad$(s))
+
+# The image. NOT $(DISK): the pads are 112 MiB of test fixture and putting them
+# on the disk every other harness boots would slow every one of them down and
+# change what the page cache holds under tests that measure it.
+$(BIGEXEC_DIR)/disk.img: $(BIGEXEC_AEX) $(DISK) tests/unit/bigexec_img.py tools/mkfs.py
+	@mkdir -p $(BIGEXEC_DIR)
+	@$(MAKE) -n $(DISK) > $(BIGEXEC_DIR)/make-n.txt
+	@python3 tests/unit/bigexec_img.py . $(BIGEXEC_DIR)/make-n.txt $@ $(BIGEXEC_MAP)
+
+test-bigexec: $(ISO) $(BIGEXEC_DIR)/disk.img
+	@bash tests/boot/run-bigexec.sh $(ISO) $(BIGEXEC_DIR)/disk.img
+
+# --- test-bigexec-negctl ---------------------------------------------------
+# The whole-file materialisation, restored on a -D (EXEC_NEGCTL_SLURP in
+# c/kernel/exec/exec.c). It is the PLAUSIBLE wrong implementation -- the one
+# that shipped, and one that loads every ordinary program on this disk -- so the
+# gate demands BOTH halves: the 64 MiB pad must fail against it, and the 16 MiB
+# pad must still pass. A control that fails at every size is measuring "did I
+# break the loader", not the ceiling this work exists to remove.
+#
+# It needs its own kernel, hence its own ISO, and the ISO rule has no -D hook --
+# so the object is rebuilt in place, the ISO relinked, and the tree's own
+# `make $(ISO)` restores it afterwards. The restore is in a trap: leaving a
+# crippled kernel in build/ would poison every later harness in the sweep.
+test-bigexec-negctl: $(ISO) $(BIGEXEC_DIR)/disk.img
+	@bash tests/boot/run-bigexec-negctl.sh $(BIGEXEC_DIR)/disk.img
+
+.PHONY: test-bigexec test-bigexec-negctl
+# The control runs WITH its positive, as a PREREQUISITE and never as a recipe
+# line -- see the note above test-exec, and tests/audit-stranded.baseline for
+# what naming it on a `ci-boot:` line instead would buy: it would satisfy the
+# UNWIRED audit and still run the control never.
+test-bigexec: test-bigexec-negctl
+# Two QEMU boots and 112 MiB of fixture, so this is a boot suite, not a host one.
+ci-boot: test-bigexec
+
 # poll(), eventfd and timerfd -- c/kernel/exec/kpoll.c and kpollsys.c. Its own
 # fragment, included from here rather than from the top-level Makefile, because
 # the Makefile is contended and `-include` nests. See the header of tests/poll.mk.
@@ -194,3 +283,12 @@ test-exec-os: $(ISO) $(DISK)
 # reason tests/poll.mk and tests/procfs.mk both give: the Makefile is contended
 # and `-include` nests. See the header of tests/coredump.mk.
 -include tests/coredump.mk
+
+# How big the filesystem IS -- the image geometry gate and its drift control.
+# Its own fragment, included from here rather than from the top-level Makefile,
+# for the reason tests/poll.mk, tests/procfs.mk and tests/coredump.mk all give:
+# the Makefile is contended and `-include` nests. It hangs off exec.mk because
+# the image was grown to hold a PROGRAM this loader could not otherwise be given
+# -- one file of a C toolchain did not fit in the whole 64 MiB filesystem. See
+# the header of tests/fsgeom.mk.
+-include tests/fsgeom.mk

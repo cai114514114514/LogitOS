@@ -250,6 +250,51 @@ struct elf_src {
     uint64_t file_pages;    /* the whole file's size in 4 KiB pages           */
 };
 
+/* WHERE THE LOADER'S BYTES COME FROM, and the reason this type exists at all.
+ *
+ * Until now every caller handed the loader a POINTER, which meant somebody had
+ * to materialise the whole file first: exec.c did `kmalloc(bytes)` + one
+ * `vfs_read`. Measured on this machine (2026-08-20) that is not a constant
+ * factor, it is a WALL -- kmalloc falls through to kheap's grow(), which
+ * DOUBLES an arena until it covers the request and then asks
+ * pmm_alloc_contig() for one contiguous run, so a 128 MiB program needs a
+ * 256 MiB contiguous physical run and a 256 MiB program needs 512 MiB on a
+ * machine that has 511. `[oom] kmalloc(268452864) refused -- 116807 frames
+ * free` is the recorded failure: 456 MiB free and the load refused, because
+ * the number asked for was the next power of two, in one piece.
+ *
+ * So the image is a SOURCE, not a buffer. `mem` is the old shape, unchanged,
+ * and is what tests/unit/exechost uses (it has no filesystem). `path` is the
+ * streaming shape: the loader reads the header, then each segment, straight
+ * out of the file through vfs_pread(), and never holds more of it than elf.c's
+ * one 512 KiB bounce, whose size is argued and measured there.
+ *
+ * `base` is the byte offset of the ELF INSIDE that file -- the .aex header --
+ * so every offset elf.c computes stays relative to the ELF image and none of
+ * the arithmetic in this file had to learn about containers. */
+struct elf_reader {
+    const uint8_t *mem;     /* the whole image in memory, or NULL             */
+    const char *path;       /* the file holding it, when mem is NULL          */
+    uint64_t    base;       /* byte offset of the image inside that file      */
+    uint64_t    size;       /* bytes of the IMAGE, whichever source it is     */
+};
+
+/* `n` bytes at image-relative `off` into `dst`. 0 on success, -1 if the range
+ * is outside the image or the read failed. `dst` may be a USER virtual address
+ * in the active space -- see the bounce-buffer comment in elf.c for why it may
+ * not be handed to the block layer directly. */
+int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n);
+
+/* The CRC-32 of `n` bytes at `off`, computed without holding them. 0 on
+ * success. aex.c's integrity record is the one check that must see every byte
+ * of the image, and this is how it sees them on the streaming path. */
+int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32_t *crc);
+
+/* The loader, over a source. elf_load_image_ex() is this with a `mem` reader,
+ * so there is ONE loader and not a streaming copy of it that can drift. */
+int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
+                    const struct elf_src *src);
+
 /* Load a static ELF64 executable image (already in memory, `image_size` bytes)
  * into the CURRENTLY ACTIVE address space as user pages. The image is untrusted
  * on-disk data and every field read from it is bounded against image_size.
