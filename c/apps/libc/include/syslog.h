@@ -2,14 +2,22 @@
 #define _SYSLOG_H
 #include <stdarg.h>
 
-/* There is no syslogd on LogitOS -- no log daemon, no /dev/log socket -- so
- * this is not a client for one. It is the same shape autoconf/configure and
- * daemonizing programs assume, wired to the one log sink this system actually
- * has: SYS_WRITE fd 1, which the kernel fans to both the VGA/GUI console and
- * the serial line (see kprintf in CLAUDE.md's Conventions). A message sent
- * through syslog() really is written, really does appear, and really is
- * prefixed with its priority -- it just is not filed by facility or rotated,
- * because nothing here reads it back. */
+/* THIS IS NOW A REAL SYSLOG CLIENT. The paragraph that stood here said "There
+ * is no syslogd on LogitOS -- no log daemon, no /dev/log socket -- so this is
+ * not a client for one", and described writing to fd 1 instead. Both halves
+ * have changed: AF_UNIX landed (c/net/core/unix.c) and /bin/syslogd binds
+ * /dev/log (c/apps/coreutils/syslogd.c), so syslog() connects a SOCK_DGRAM
+ * socket to that path and sends each message as one record.
+ *
+ * The old sink was actively wrong, not merely limited: fd 1 is the program's
+ * STDOUT, so a log line from inside a pipeline became part of the pipeline's
+ * data. The fallback when no daemon is running is fd 2 now -- the descriptor
+ * that is for diagnostics and the one a shell leaves on the console when it
+ * redirects stdout.
+ *
+ * Still not done, and still not pretended: messages are not filed by facility,
+ * not rotated, and not forwarded anywhere. See the daemon for why each of those
+ * is absent rather than stubbed. */
 
 #define LOG_EMERG   0
 #define LOG_ALERT   1
@@ -45,10 +53,19 @@
 #define LOG_LOCAL7   (23<<3)
 #define LOG_MAKEPRI(fac, pri) ((fac) | (pri))
 
-/* openlog() options: accepted, and LOG_PERROR is the one that is real (every
- * message already goes to fd 1, which the kernel fans to serial too -- see
- * above -- so honouring it costs nothing and NOT honouring the others is
- * still true: LOG_PID really does tag each line, because getpid() works). */
+/* openlog() options. THREE are real now, and which three matters:
+ *   LOG_PID     tags each line with getpid(), as it always did.
+ *   LOG_PERROR  writes the message to stderr AS WELL AS to the daemon. When
+ *               there is no daemon it does NOT double the line -- the fallback
+ *               already goes to stderr, and printing twice on exactly the
+ *               machines that have no daemon is the bug this note exists to
+ *               prevent.
+ *   LOG_NDELAY  connects at openlog() instead of at the first message. The one
+ *               option here that is about the socket, and it only became
+ *               meaningful when there was a socket.
+ * LOG_CONS, LOG_ODELAY and LOG_NOWAIT are accepted and do nothing: ODELAY is
+ * the default behaviour, and the other two describe failure handling this
+ * client does not have a second path for. */
 #define LOG_PID    0x01
 #define LOG_CONS   0x02
 #define LOG_ODELAY 0x04
