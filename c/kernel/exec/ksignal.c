@@ -17,6 +17,10 @@
 #include "kprintf.h"
 #include "usercopy.h"
 #include "logit_abi.h"
+/* Path-qualified for the reason file.c gives: mini-libc ships
+ * c/apps/libc/include/sys/wait.h and INCDIRS is one flat sorted list. */
+#include "kernel/core/wait.h"   /* the console's wait queue -- poll() needs one */
+#include "file.h"               /* file_timerfd_tick(): the tick IS timerfd's clock */
 
 spinlock_t   g_sig_lock = SPINLOCK_INIT;
 struct sigst g_sig[NPROC];
@@ -320,6 +324,15 @@ int ksig_fault(int signo, uint64_t cr2, uint64_t err, uint64_t vector)
 static char          g_ttyq[TTYQ_SZ];
 static volatile int  g_ttyq_head, g_ttyq_tail;
 static volatile int  g_tty_fg;
+/* Nobody sleeps on this today -- tty_read() above still drops the BKL and
+ * halts, which is a different mechanism and is left alone deliberately: it also
+ * has to cover the between-ticks UART fallback, and rewriting it is not what
+ * poll() needed. This queue exists for poll() registrations, and it is woken by
+ * the ONE producer of bytes into the ring below. */
+static struct waitq  g_tty_wq = WAITQ_INIT;
+
+struct waitq *ksig_tty_waitq(void) { return &g_tty_wq; }
+int           ksig_tty_avail(void) { return g_ttyq_tail != g_ttyq_head; }
 
 void ksig_tty_set_fg(int pid) { g_tty_fg = pid; }
 
@@ -373,6 +386,7 @@ void ksig_tick(void)
      * test harness typing a command that never arrives. Leaving the byte in the
      * device is the flow control; the queue is only ever a place to put what
      * has already been taken out. */
+    int pushed = 0;
     for (int i = 0; i < 16 && !ttyq_full(); i++) {   /* bounded: never spin in an IRQ */
         int c = serial_getc();
         if (c < 0) break;
@@ -382,7 +396,23 @@ void ksig_tick(void)
             continue;                            /* ^C is consumed, not echoed */
         }
         ttyq_push((char)c);
+        pushed = 1;
     }
+    /* Announce the bytes to anybody polling the console. The wake is AFTER the
+     * pushes, never between them: a poller woken mid-drain would read the ring,
+     * find one byte, and be told nothing more had arrived -- correct but
+     * needlessly chatty. waitq_wake_all is interrupt-safe by design
+     * (c/kernel/core/wait.h rule 3), which is what makes this legal here. */
+    if (pushed) waitq_wake_all(&g_tty_wq);
+
+    /* timerfd. Same argument for putting it here as for the console drain: this
+     * is already the one function the 100 Hz tick calls that is allowed to do
+     * bookkeeping, and file_timerfd_tick() returns after a single load on any
+     * machine with no timerfd open -- which is every machine that does not use
+     * one. It is NOT gated by g_alarm_armed below: an alarm(2) and a timerfd
+     * are unrelated facilities, and hanging one off the other's guard is how a
+     * feature silently stops working when the other is unused. */
+    file_timerfd_tick();
 
     if (!g_alarm_armed) return;
 

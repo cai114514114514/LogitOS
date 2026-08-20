@@ -115,6 +115,22 @@ void ksig_tty_set_fg(int pid);
  * of one field read. */
 void ksig_tty_claim_fg(void);
 
+/* --- the console as a POLLABLE object -------------------------------------
+ * poll() needs two things from any object: a queue to register on, and its
+ * readiness right now. The console's producer is ksig_tick(), which is why
+ * both live here and not in file.c -- the queue has to be woken by whatever
+ * fills the ring, and this file is what fills it.
+ *
+ * ksig_tty_avail() reports ONLY the ring, never the UART register. It could
+ * not report the register even if that were desirable: serial_getc() is
+ * destructive, so a "peek" that found a byte would have consumed the one the
+ * caller's read() then needs, and would additionally rob ksig_tick() of a ^C.
+ * The cost is that a byte arriving between two ticks is invisible for up to
+ * 10 ms -- the same 10 ms tty_read() already waits, not a new latency. */
+struct waitq;
+struct waitq *ksig_tty_waitq(void);
+int           ksig_tty_avail(void);
+
 /* --- syscalls ------------------------------------------------------------ */
 long ksig_syscall(long num, long a, long b, long c);
 /* SYS_KILL's signal half, called from proc.c's proc_syscall so that the ONE

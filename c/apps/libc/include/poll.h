@@ -1,41 +1,40 @@
 #ifndef _POLL_H
 #define _POLL_H
 
-/* poll()/select() over a kernel that has NO generic fd-readiness primitive
- * (no FIONREAD-equivalent, no wait-for-any-of-these-fds syscall). What is
- * real and what is not, precisely:
+/* poll() over SYS_POLL. See the block at SYS_POLL in include/abi/logit_abi.h
+ * for the readiness model -- what LPOLLIN promises, which bits arrive
+ * unrequested, and which descriptor types can be answered for.
  *
- *   REGULAR FILES AND DIRECTORIES are always reported readable and
- *   writable, and that is not an approximation: c/kernel/exec/file.c's F_VFS
- *   holds the whole file in a kmalloc buffer, so a read or write on one never
- *   blocks and never has "not yet" to report.
+ * WHAT THIS HEADER USED TO SAY, and why it is worth recording rather than
+ * quietly deleting. Until SYS_POLL existed there was no fd-readiness primitive
+ * in this kernel at all, so this file implemented poll() by SEEKING each
+ * descriptor: a seekable fd is a regular file and was reported ready, and
+ * everything else -- every pipe, every tty, every socket -- was reported NEVER
+ * READY. It said so in forty lines, honestly, and it ended:
  *
- *   PIPES AND THE TTY (F_PIPE / F_TTY) cannot be answered honestly. Their
- *   ONLY readiness signal is what <unistd.h> already documents: open the fd
- *   O_NONBLOCK (SYS_SETNB) and let read()/write() return -1/EAGAIN when
- *   there is nothing to do -- and that signal is destructive to peek with
- *   (a "peek" read that succeeds has just consumed the byte a real read call
- *   would need). So poll()/select() report these fds NEVER READY rather than
- *   guessing, and:
- *     - a call with timeout 0 (a non-blocking probe) returns immediately, 0
- *       fds ready, which is always a SAFE answer (it costs the caller a
- *       spurious retry, never a lost wakeup or a lie);
- *     - a call with timeout >= 0 sleeps the requested time and then reports
- *       0 ready, which is honest ("nothing became ready that we could
- *       detect") even though it may be wrong (something WAS ready) --
- *       stated here so a caller relying on prompt pipe wakeups through this
- *       interface knows to poll its pipe directly with O_NONBLOCK instead;
- *     - a call with an INFINITE timeout (-1) over a set that contains a
- *       pipe/tty fd is refused outright (errno ENOSYS) rather than blocking
- *       forever with no way to ever return.
- *   A kernel fix that would close this gap: a syscall that reports bytes
- *   queued in a pipe/tty ring without consuming them (see the libc inventory
- *   report, bucket C). */
+ *     "A kernel fix that would close this gap: a syscall that reports bytes
+ *      queued in a pipe/tty ring without consuming them."
+ *
+ * What landed is not that syscall, and the difference matters: a "bytes
+ * queued" call would have made poll() a POLLING LOOP -- ask, sleep, ask again
+ * -- which is a wakeup latency and a wasted timeslice per iteration. SYS_POLL
+ * parks the caller on the wait queues of the objects themselves, so it is
+ * woken BY the write, not by a clock. The old implementation's three documented
+ * behaviours are all gone with it: a pipe is no longer permanently unready, a
+ * timeout no longer means "sleep and then report nothing", and an infinite
+ * timeout over a pipe is no longer refused with ENOSYS.
+ *
+ * ONE LIMIT REMAINS AND IT IS THE KERNEL'S: nfds may not exceed 32 (NFD, the
+ * number of descriptors a process can hold). A larger request is EINVAL, not a
+ * truncated answer, because a poll that silently ignored entries would be worse
+ * than one that refused. */
 
 typedef unsigned long nfds_t;
 
+/* Must match the LPOLL* block in include/abi/logit_abi.h -- the same convention
+ * and the same note as <fcntl.h>'s O_* values. */
 #define POLLIN   0x001
-#define POLLPRI  0x002
+#define POLLPRI  0x002       /* never set: no out-of-band data exists here */
 #define POLLOUT  0x004
 #define POLLERR  0x008
 #define POLLHUP  0x010

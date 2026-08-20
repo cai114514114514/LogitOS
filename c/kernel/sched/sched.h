@@ -136,4 +136,24 @@ unsigned long sched_hlt_waits(void);
  * not an actionable sentence, and this is what makes it one. */
 int sched_hlt_who(int i, unsigned long *ra, unsigned long *n);
 
+/* ------------------------------------------------------------------------
+ * Per-thread CPU time + RLIMIT_CPU (SYS_RUSAGE). See the long comment on
+ * SYS_RUSAGE in include/abi/logit_abi.h for the ABI and the design argument,
+ * and the "RLIMIT_CPU ENFORCEMENT" comment above sched_cpu_tick_check() in
+ * sched.c for why enforcement is a separate entry point from the accounting
+ * one, called from a different file.
+ */
+uint64_t sched_cpu_ns_self(void);        /* the calling thread's own ns, folded to now */
+uint64_t sched_cpu_ns_proc(void);        /* + every still-alive sibling thread's ns */
+int      sched_cpu_limit_set(long seconds);   /* <0 = clear; -> 0, or -1 (no current thread) */
+long     sched_cpu_limit_get_s(void);         /* -> seconds, or -1 = unlimited */
+long     sched_rusage_syscall(long cmd, long a, long b);   /* SYS_RUSAGE dispatch */
+
+/* Timer-tick RLIMIT_CPU check. Called from c/kernel/cpu/interrupts.c, in the
+ * same non-nested/BKL-held window as ksig_tick(), BEFORE schedule() -- not
+ * from inside schedule() itself; see the long comment above this function's
+ * definition for why that placement is load-bearing and not a style choice.
+ * Returns a pid to ksig_post(pid, LOGIT_SIGXCPU), or 0. */
+int sched_cpu_tick_check(void);
+
 #endif /* LOGIT_SCHED_H */

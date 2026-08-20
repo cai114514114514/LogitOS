@@ -76,6 +76,23 @@ $(eval $(call THRTEST_RULE,thrtest-leak,-DTHR_NEGCTL_LEAK))
 CLI += thrtest-serial thrtest-tls thrtest-nolock thrtest-leak
 $(DISK): $(BUILD)/thrtest-serial.aex $(BUILD)/thrtest-tls.aex \
          $(BUILD)/thrtest-nolock.aex $(BUILD)/thrtest-leak.aex
+
+# thrtest-noguard: the BEFORE half of the guard-page measurement.
+#
+# It is NOT one of the four above and its shape is different, which is worth
+# saying because it sits in the same ifdef. The four are builds that must FAIL,
+# and run-thread-negctl.sh requires each to fail on its own assertion. This one
+# must SUCCEED, loudly, at doing the wrong thing: it is `/bin/thrtest guard`
+# with pthread_attr_setguardsize(&a, 0) instead of 4096, and what it
+# demonstrates is that the identical stack overrun causes NO FAULT and
+# corrupts the mapping below the stack instead. It lives on the negctl disk
+# rather than the shipped one for the same reason the other four do -- a
+# shipped disk should not carry a program built to misbehave -- and beside
+# them so that ONE boot can run the before and the after against the same
+# kernel, the same allocator and the same addresses.
+$(eval $(call THRTEST_RULE,thrtest-noguard,-DTHR_NEGCTL_NOGUARD))
+CLI += thrtest-noguard
+$(DISK): $(BUILD)/thrtest-noguard.aex
 endif
 
 else
@@ -90,3 +107,22 @@ test-thread: $(ISO) $(DISK)
 test-thread-negctl:
 	@$(MAKE) THR_NEGCTL=1 DISK=$(BUILD)/disk_thrneg.img $(BUILD)/disk_thrneg.img
 	@sh tests/boot/run-thread-negctl.sh $(ISO) $(BUILD)/disk_thrneg.img
+
+# The guard page, both sides, in ONE boot. Needs the negctl disk because that
+# is where /bin/thrtest-noguard is; /bin/thrtest is on every disk, so the same
+# boot carries the before and the after. See tests/boot/run-guard-test.sh for
+# what each half has to show.
+.PHONY: test-guard
+test-guard: $(ISO)
+	@$(MAKE) THR_NEGCTL=1 DISK=$(BUILD)/disk_thrneg.img $(BUILD)/disk_thrneg.img
+	@bash tests/boot/run-guard-test.sh $(ISO) $(BUILD)/disk_thrneg.img
+
+# WIRED TO test-thread-negctl AND NOT TO test-thread, and the choice is about
+# cost rather than taste: test-guard needs the THR_NEGCTL disk, which
+# test-thread-negctl already builds and test-thread does not. Hanging it there
+# adds one QEMU boot to a target that already does five; hanging it on
+# test-thread would add a whole disk build to a target that does one boot.
+# Named on SOME suite either way -- CLAUDE.md's stranded-controls category
+# exists because "a separate target that nobody names" runs never while looking
+# exactly like a control that is covered.
+test-thread-negctl: test-guard

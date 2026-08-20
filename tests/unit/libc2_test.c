@@ -157,9 +157,118 @@ static void t_mmap(void)
         CHK(b[0] == 0xAB && b[65535] == 0xCD, "mmap read back what was written");
         CHK(munmap(p, 65536) == 0, "munmap ok");
     }
-    void *bad = mmap(0, 4096, PROT_READ, MAP_PRIVATE, 3 /* a real fd */, 0);
-    CHK(bad == MAP_FAILED && errno == ENODEV, "mmap file-backed refused honestly");
     CHK(mmap(0, 0, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) == MAP_FAILED, "mmap len 0 refused");
+
+    /* MAP_SHARED on an ANONYMOUS mapping. This used to be ACCEPTED and
+     * silently made private -- fork maps every anonymous page copy-on-write
+     * here, so a parent and child sharing a lock word through such a mapping
+     * would each get their own copy on the first write. */
+    CHK(mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED
+        && errno == ENOTSUP, "MAP_SHARED|MAP_ANONYMOUS refused, not silently made private");
+
+    /* ---- FILE-BACKED mmap ----------------------------------------------
+     * THE ASSERTION HERE USED TO BE THE OPPOSITE ONE: `mmap file-backed
+     * refused honestly`, ENODEV, against fd 3. It was true when it was
+     * written and had stopped being true before it was changed -- the kernel
+     * grew SYS_MMAP_FILE against the page cache, elf_load has been mapping
+     * program text through it, and the only thing missing was a way for ring
+     * 3 to ask. Note that the old check would have kept PASSING after the
+     * fix, because fd 3 is not open in this program and an unopened fd still
+     * fails: it was testing the wrong thing in a way no run could show.
+     *
+     * The bar is the BYTES. A mapping that returns an address proves nothing
+     * -- an anonymous fallback returns one too, full of zeroes -- so every
+     * byte is compared against what read() gives for the same file. */
+    {
+        const char *path = "/bin/thrtest";       /* any real file on the disk;
+                                                  * a program, so it is bigger
+                                                  * than one page */
+        int fd = open(path, O_RDONLY);
+        CHK(fd >= 0, "open a real file to map");
+        if (fd >= 0) {
+            static unsigned char via_read[8192];
+            long n = read(fd, via_read, sizeof via_read);
+            CHK(n == (long)sizeof via_read, "read the first two pages");
+
+            unsigned char *m = mmap(0, sizeof via_read, PROT_READ, MAP_PRIVATE, fd, 0);
+            CHK(m != MAP_FAILED, "mmap file-backed SUCCEEDS (this was ENODEV until now)");
+            if (m != MAP_FAILED && n == (long)sizeof via_read) {
+                int bad = -1;
+                for (unsigned i = 0; i < sizeof via_read; i++)
+                    if (m[i] != via_read[i]) { bad = (int)i; break; }
+                CHK(bad < 0, "and every mapped byte equals what read() returned");
+
+                /* A second mapping of the same file: pcache keys on (dev,ino),
+                 * so this is the SAME frames, not a second copy. Not asserted
+                 * on the addresses -- they are different virtual addresses of
+                 * one physical page and ring 3 cannot see that -- but the
+                 * bytes must agree. */
+                unsigned char *m2 = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
+                CHK(m2 != MAP_FAILED && memcmp(m2, m, 4096) == 0,
+                    "a second mapping of the same file reads the same bytes");
+                if (m2 != MAP_FAILED) munmap(m2, 4096);
+
+                /* An OFFSET into the file, which is the part SYS_MMAP's three
+                 * registers had no room for and the reason it is a separate
+                 * syscall taking a struct. */
+                unsigned char *m3 = mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 4096);
+                CHK(m3 != MAP_FAILED && memcmp(m3, via_read + 4096, 4096) == 0,
+                    "an offset mapping reads from that offset in the file");
+                if (m3 != MAP_FAILED) munmap(m3, 4096);
+
+                CHK(munmap(m, sizeof via_read) == 0, "munmap the file mapping");
+            }
+
+            /* REFUSED OUT LOUD, never downgraded to a private copy: there is
+             * no writeback anywhere in this kernel, so a writable file mapping
+             * would be a program whose writes go nowhere. */
+            CHK(mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0) == MAP_FAILED
+                && errno == ENOTSUP, "a WRITABLE file mapping is refused, not downgraded");
+            CHK(mmap(0, 4096, PROT_READ, MAP_PRIVATE, fd, 100) == MAP_FAILED
+                && errno == EINVAL, "an unaligned offset is refused");
+            close(fd);
+        }
+        CHK(mmap(0, 4096, PROT_READ, MAP_PRIVATE, 999, 0) == MAP_FAILED,
+            "a bogus fd is refused");
+    }
+}
+
+/* mprotect, which was ENOSYS unconditionally until SYS_MPROTECT landed. The
+ * PROT_NONE case is the one worth having on device rather than only in
+ * tests/unit/mm_protect_test.c: it is the mechanism pthread_create's guard page
+ * is built from, and here it is exercised through the same libc call a ported
+ * program would make. */
+static void t_mprotect(void)
+{
+    unsigned char *p = mmap(0, 3 * 4096, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHK(p != MAP_FAILED, "mmap three pages to protect");
+    if (p == MAP_FAILED) return;
+
+    for (int k = 0; k < 3; k++) p[k * 4096] = (unsigned char)(0x40 + k);
+
+    CHK(mprotect(p + 4096, 4096, PROT_READ) == 0, "mprotect the middle page read-only");
+    CHK(p[4096] == 0x41, "and it is still readable, with its contents");
+
+    CHK(mprotect(p + 4096, 4096, PROT_NONE) == 0, "mprotect it PROT_NONE");
+    CHK(mprotect(p + 4096, 4096, PROT_READ | PROT_WRITE) == 0, "and back to read-write");
+    CHK(p[4096] == 0x41,
+        "THE BYTES SURVIVED PROT_NONE -- an implementation that dropped the frame "
+        "would read 0 here, and 0 is what an anonymous page legitimately gives");
+    p[4096] = 0x99;
+    CHK(p[4096] == 0x99, "and it is writable again");
+
+    /* The neighbours were never involved. */
+    CHK(p[0] == 0x40 && p[2 * 4096] == 0x42, "the pages either side are untouched");
+
+    /* Refusals. */
+    CHK(mprotect(p + 1, 4096, PROT_READ) == -1 && errno == EINVAL,
+        "a misaligned address is refused");
+    CHK(mprotect(p, 3 * 4096 + 4096, PROT_READ) == -1 && errno == ENOMEM,
+        "a range running past the end of the mapping is refused, not applied as far as it goes");
+    CHK(p[0] == 0x40, "...and that refusal changed nothing");
+
+    CHK(munmap(p, 3 * 4096) == 0, "munmap the protected region");
 }
 
 static void t_sched(void)
@@ -272,6 +381,7 @@ int main(void)
     t_uname();
     t_pwgrp();
     t_mmap();
+    t_mprotect();
     t_sched();
     t_resource();
     t_glob_fnmatch();

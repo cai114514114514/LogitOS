@@ -12,6 +12,10 @@
 #include "work.h"         /* work_init(): the kworker thread (deferred work) */
 #include "wait_selftest.h"
 #include "kbench.h"       /* kbench_start(): what the kernel's primitives cost */
+#include "ktime.h"        /* time_mono_raw_ns(): the per-thread CPU-time clock */
+#include "proc.h"         /* struct proc*: struct thread::data, for the pid a
+                           * budget-exceeded thread's SIGXCPU is posted to */
+#include "logit_abi.h"    /* SYS_RUSAGE's RUCTL_* command constants */
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -65,7 +69,34 @@ struct thread {
      * thread the ring cannot find, and waking one by id is the whole job. */
     uint64_t fsbase;
     struct thread *all_next;
+
+    /* --- per-thread CPU time (2026-08-20) -------------------------------
+     * cpu_ns: total ns this thread has been the DISPATCHED thread on some
+     * core, EXACT -- folded from time_mono_raw_ns() at every point it stops
+     * being current (cpu_fold(), called from schedule()/block_self()/
+     * thread_exit()) and at every 100 Hz tick it is NOT switched away from
+     * (sched_cpu_tick_check(), so a lone CPU-bound thread is still folded
+     * regularly and not only at an actual context switch). Never sampled, so
+     * never has the tick-quantisation error c/kernel/core/ktime.c's
+     * account_sample() documents on itself.
+     * cpu_stamp_ns: time_mono_raw_ns() at the last fold point above -- either
+     * the instant this thread became current, or the instant its running
+     * time was last folded in while it stayed current.
+     * cpu_limit_ns: RLIMIT_CPU in ns; CPU_LIMIT_NONE (~0ull) = no cap.
+     * cpu_limit_hit: latches the moment cpu_ns first reaches cpu_limit_ns, so
+     * a thread that keeps running past its budget (no handler installed, or
+     * one that returns) is not signalled again on every following tick. */
+    uint64_t cpu_ns;
+    uint64_t cpu_stamp_ns;
+    uint64_t cpu_limit_ns;
+    int      cpu_limit_hit;
 };
+
+/* "No RLIMIT_CPU set." Matches userland's RLIM_INFINITY (~0UL) --
+ * c/apps/libc/include/sys/resource.h -- so RUCTL_GET_LIMIT_S -> -1 and
+ * RUCTL_SET_LIMIT_S(negative) round-trip through this exact value with no
+ * separate sentinel to keep in sync. */
+#define CPU_LIMIT_NONE (~0ull)
 
 /* IA32_FS_BASE. See the SYS_SET_TLS note in include/abi/logit_abi.h for why
  * this and not `wrfsbase`. */
@@ -248,6 +279,33 @@ static void block_fields_init(struct thread *t, int on_ring)
     t->timed_out = 0;
     t->fsbase    = 0;
     t->all_next  = NULL;
+    t->cpu_ns        = 0;
+    t->cpu_stamp_ns  = 0;    /* set for real at first dispatch -- see cpu_fold()
+                              * call sites and the two direct-current-assignment
+                              * sites (sched_init's `main`, thread_create_idle)
+                              * that stamp it themselves because they bypass
+                              * every dispatch site. */
+    t->cpu_limit_ns  = CPU_LIMIT_NONE;
+    t->cpu_limit_hit = 0;
+}
+
+/* Fold the ns this thread has been running, from its last fold point to
+ * `now`, into cpu_ns, and re-stamp. Caller holds g_sched_lock (every field
+ * this touches is protected by it, same as ->slices). Pure accounting: no
+ * limit check, no side effect beyond the two fields -- see
+ * sched_cpu_tick_check() for where RLIMIT_CPU is actually enforced, and the
+ * long comment there for why the two are deliberately not the same
+ * function. Idempotent to call twice in quick succession (the second delta
+ * is whatever tiny amount of real time passed, never negative: `now` is a
+ * single shared monotonic clock, not a per-core rdtsc -- see
+ * time_mono_raw_ns() in c/kernel/core/ktime.c for why that is safe under
+ * -smp on TCG without a separate cross-core calibration of our own). */
+static uint64_t cpu_fold(struct thread *t, uint64_t now)
+{
+    uint64_t dt = now > t->cpu_stamp_ns ? now - t->cpu_stamp_ns : 0;
+    t->cpu_ns += dt;
+    t->cpu_stamp_ns = now;
+    return t->cpu_ns;
 }
 
 /* --- run-ring membership. Both callers hold g_sched_lock. ---
@@ -315,6 +373,16 @@ void sched_init(void)
     g_ring = main;
     all_link(main);
     this_cpu()->current = main;     /* BSP (this_cpu falls back to g_cpus[0]) */
+    /* `main` becomes current WITHOUT going through a dispatch site (schedule/
+     * block_self/thread_exit, the three places that stamp cpu_stamp_ns on
+     * every OTHER thread's first run) -- it is the one thread that IS current
+     * from its own creation. Stamped here for the same reason
+     * thread_create_idle() stamps its AP idle threads below: skipping this
+     * would leave cpu_stamp_ns at 0, and the first fold anywhere would then
+     * charge `main` the entire time since time_init() as CPU it used. pit_init
+     * (and therefore time_init) runs from kmain.c long before wm_run() calls
+     * this, so the clock is already live. */
+    main->cpu_stamp_ns = time_mono_raw_ns();
 
     /* The BSP gets a dedicated idle thread too (separate from the WM) so
      * thread_exit()/schedule() on core 0 always have a valid idle fallback. It
@@ -591,6 +659,14 @@ __attribute__((noinline)) void schedule(void)
     }
 
     if (next && next != prev) {
+        {
+            /* Fold prev's slice and hand next its opening stamp with the SAME
+             * `now`, so the two are back-to-back with no gap and no overlap:
+             * every ns is credited to exactly one thread. */
+            uint64_t now = time_mono_raw_ns();
+            cpu_fold(prev, now);
+            next->cpu_stamp_ns = now;
+        }
         if (!prev->is_idle) prev->running = 0;
         next->running = 1;
         next->slices++;
@@ -640,6 +716,14 @@ __attribute__((noinline)) void schedule(void)
          * `current`, so without this line it would never notice an unmap at
          * all. With it, every core is at most one timer tick behind. */
         tlb_gen_sync(me, 0);
+        /* Same reason: prev is STILL running (next == prev), so this is the
+         * fold that keeps a lone CPU-bound thread's cpu_ns moving even though
+         * it is never actually switched away from. Without this line a thread
+         * with the ring to itself would show 0 until something else finally
+         * became runnable -- silently correct on a busy desktop and silently
+         * wrong on the one machine shape (a single spinning app) the gate for
+         * this feature actually tests. */
+        cpu_fold(prev, time_mono_raw_ns());
         spin_unlock_irqrestore(&g_sched_lock, flags);
     }
 }
@@ -675,6 +759,17 @@ void thread_exit(void)
     dead->running = 0;
     dead->alive = 0;
     all_unlink(dead);
+    {
+        /* Close out `dead`'s own final slice before it leaves g_all, so
+         * cpu_ns is accurate right up to the instant it stopped running --
+         * not read by anything today (all_unlink already took it out of
+         * sched_cpu_ns_proc()'s walk, and nothing queries a dead thread's
+         * cpu_ns by tid), but "accurate unconditionally" is a much smaller
+         * invariant to defend than "accurate except while exiting". */
+        uint64_t now = time_mono_raw_ns();
+        cpu_fold(dead, now);
+        next->cpu_stamp_ns = now;
+    }
     dead->next = dead_threads;
     dead_threads = dead;
 
@@ -777,6 +872,13 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
      * has saved our rsp), so it can only ever observe a fully parked thread. */
     spin_unlock(outer);
 
+    {
+        /* Same fold-then-stamp pair as schedule()'s switch branch: `self` is
+         * about to stop running (it is parking), so its slice ends HERE. */
+        uint64_t now = time_mono_raw_ns();
+        cpu_fold(self, now);
+        next->cpu_stamp_ns = now;
+    }
     next->running = 1;
     next->slices++;
     me->current = next;
@@ -909,6 +1011,180 @@ void sched_set_fsbase(uint64_t v)
     if (t) t->fsbase = v;
     fsbase_load(v);
     if (fl & 0x200) __asm__ volatile ("sti");
+}
+
+/* ==========================================================================
+ * Per-thread CPU time: the query and RLIMIT_CPU half of SYS_RUSAGE (the other
+ * half, cpu_fold(), lives with struct thread above). See the long comment on
+ * SYS_RUSAGE in include/abi/logit_abi.h for the ABI and the two design calls
+ * (per-thread not per-process; independent of c/kernel/core/ktime.c's
+ * existing, sampled, per-pid accounting) -- this section is the mechanism.
+ * ========================================================================== */
+
+/* The calling thread's own accumulated CPU time, folded to THIS instant --
+ * not merely whatever it was as of the last dispatch/tick, which matters for
+ * a thread asking about ITSELF: nobody else can fold its live, still-running
+ * slice for it. */
+uint64_t sched_cpu_ns_self(void)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread *t = this_cpu()->current;
+    uint64_t ns = t ? cpu_fold(t, time_mono_raw_ns()) : 0;
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return ns;
+}
+
+/* The calling thread's process aggregate: itself plus every OTHER thread
+ * still walking g_all whose ->data is the same struct proc*. (A kernel
+ * thread's ->data is NULL; NULL is not "a process", so that case falls back
+ * to just the caller's own time rather than summing every kernel thread in
+ * the machine into one meaningless total.)
+ *
+ * WHAT THIS DOES NOT COVER, stated rather than silently dropped: a sibling
+ * thread that has ALREADY EXITED before this call contributes nothing. Its
+ * struct thread left g_all in thread_exit() (all_unlink(), before this
+ * function could ever see it) and nothing retains its final cpu_ns anywhere
+ * -- there is no proc-level accumulator collecting a thread's total on its
+ * way out, because that field belongs to c/kernel/exec/proc.c's struct proc
+ * and this task's scope is this file's own directory. For a single-threaded process
+ * -- the ordinary case on this kernel; M30 pthreads are the exception --
+ * this caveat never applies, because there are no siblings to lose. */
+uint64_t sched_cpu_ns_proc(void)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread *self = this_cpu()->current;
+    uint64_t total = 0;
+    if (self) {
+        uint64_t now = time_mono_raw_ns();
+        if (!self->data) {
+            total = cpu_fold(self, now);          /* not a process: just me */
+        } else {
+            for (struct thread *t = g_all; t; t = t->all_next) {
+                if (t->data != self->data) continue;
+                /* The caller's own slice is folded fresh, to `now`. A
+                 * sibling currently running on ANOTHER core right now is
+                 * summed as of ITS OWN last fold point -- at most one 100 Hz
+                 * tick stale (sched_cpu_tick_check() folds every core's
+                 * current thread every tick) -- because folding it from HERE
+                 * would mean reading and writing another core's thread while
+                 * it may be mid-dispatch on that core; g_sched_lock makes
+                 * that memory-safe but not meaningful; the tick is what
+                 * bounds the staleness instead. */
+                total += (t == self) ? cpu_fold(t, now) : t->cpu_ns;
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return total;
+}
+
+/* RUCTL_SET_LIMIT_S: arm (seconds >= 0) or clear (seconds < 0) the CALLING
+ * thread's RLIMIT_CPU. Re-arms cpu_limit_hit so a limit raised after it was
+ * hit gets its own fresh chance rather than staying permanently latched.
+ * Returns 0, or -1 if the caller is not a thread the scheduler knows (never
+ * true from a live syscall -- kept honest rather than assumed). */
+int sched_cpu_limit_set(long seconds)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread *t = this_cpu()->current;
+    int ok = (t != NULL);
+    if (t) {
+        if (seconds < 0) {
+            t->cpu_limit_ns = CPU_LIMIT_NONE;
+        } else {
+            uint64_t s = (uint64_t)seconds;
+            /* Clamp rather than let s * NS_PER_SEC wrap 64 bits. A value this
+             * large (> ~584 years) is indistinguishable from "unlimited" for
+             * any process that will ever be measured; silently wrapping to a
+             * SMALL ns count would look like an enforced limit that is not
+             * the one the caller asked for, which is the wrong direction to
+             * be wrong in. */
+            t->cpu_limit_ns = (s > (uint64_t)-1 / NS_PER_SEC) ? CPU_LIMIT_NONE
+                                                               : s * NS_PER_SEC;
+        }
+        t->cpu_limit_hit = 0;
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return ok ? 0 : -1;
+}
+
+/* RUCTL_GET_LIMIT_S: seconds, or -1 = unlimited. Whole seconds, truncating --
+ * matching POSIX rlim_t's own unit; a caller that set N seconds and reads it
+ * back gets N, never N-1 from a rounding direction chosen the other way. */
+long sched_cpu_limit_get_s(void)
+{
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread *t = this_cpu()->current;
+    long r = (!t || t->cpu_limit_ns == CPU_LIMIT_NONE) ? -1
+           : (long)(t->cpu_limit_ns / NS_PER_SEC);
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return r;
+}
+
+/* SYS_RUSAGE's dispatcher, forwarded whole from c/kernel/exec/syscall.c for
+ * the reason mm_syscall()/uthread_syscall() give: the state this reads and
+ * writes (struct thread's new fields) is private to this file. */
+long sched_rusage_syscall(long cmd, long a, long b)
+{
+    (void)b;
+    switch ((int)cmd) {
+    case RUCTL_GET_NS:        return (long)(a ? sched_cpu_ns_proc() : sched_cpu_ns_self());
+    case RUCTL_SET_LIMIT_S:   return sched_cpu_limit_set(a);
+    case RUCTL_GET_LIMIT_S:   return sched_cpu_limit_get_s();
+    default:                  return -1;
+    }
+}
+
+/* ==========================================================================
+ * RLIMIT_CPU ENFORCEMENT: why this is its own entry point and not folded into
+ * cpu_fold()/schedule(), even though schedule() is where every OTHER fold
+ * happens.
+ *
+ * schedule() dispatches threads through a COROUTINE-style context_switch: the
+ * code textually AFTER context_switch() in schedule()'s switch branch is NOT
+ * "what runs next" on this core -- it is what runs the NEXT TIME the
+ * suspended thread (`prev` at the point of that specific call) is itself
+ * redispatched, which the pick loop bounds only by fairness, not by a tick
+ * count. Detecting "prev just crossed its budget" IS safe to do before the
+ * switch (cpu_fold's caller already holds every fact it needs, synchronously,
+ * in straight-line code) -- but ACTING on it is not: posting a signal means
+ * calling ksig_post(), which calls sched_wake_id(), which takes
+ * g_sched_lock -- already held here, by this same core, non-reentrant ->
+ * self-deadlock. Releasing g_sched_lock mid-dispatch to make room for that
+ * call would reopen exactly the kind of window every long comment in this
+ * file (the TLB generation counter, the lost-wakeup argument in sched.h) was
+ * written to close, for a feature this task explicitly says not to oversell.
+ *
+ * So the check runs from a DIFFERENT place with the SAME data: the timer IRQ,
+ * BEFORE it calls schedule() at all (c/kernel/cpu/interrupts.c, right beside
+ * the existing ksig_tick() call -- same non-nested, BKL-held context that
+ * call already relies on). That is straight-line code with no switch in it,
+ * runs on EVERY core (not gated to the BSP, unlike ktime.c's
+ * account_sample()), and fires on every 100 Hz tick regardless of whether
+ * schedule() goes on to switch threads or not -- which is what makes "at N
+ * plus at most one tick" a fact about this function rather than a hope about
+ * how soon a coroutine happens to resume.
+ *
+ * Returns the pid to signal (0 = nothing to do); does not call ksig_post()
+ * itself, matching every other TU in this kernel: this file has no reason to
+ * take g_sig_lock, and the call belongs in interrupts.c beside ksig_tick(),
+ * which already signals from this exact context for the identical reason
+ * (SIGINT/SIGALRM). */
+int sched_cpu_tick_check(void)
+{
+    int pid = 0;
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    struct thread *t = this_cpu()->current;
+    if (t && t->data) {
+        cpu_fold(t, time_mono_raw_ns());
+        if (t->cpu_limit_ns != CPU_LIMIT_NONE && !t->cpu_limit_hit &&
+            t->cpu_ns >= t->cpu_limit_ns) {
+            t->cpu_limit_hit = 1;
+            pid = ((struct proc *)t->data)->pid;
+        }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return pid;
 }
 
 /* Deadline expiry, driven from the timer IRQ BEFORE the BKL is acquired (see
@@ -1089,6 +1365,10 @@ void thread_create_idle(int idx)
     t->next = t;            /* off the shared ring */
     t->prev = t;
     block_fields_init(t, 0);
+    /* Same reason sched_init() stamps `main`: this AP idle thread becomes
+     * g_cpus[idx].current a few lines below WITHOUT passing through a
+     * dispatch site, so nothing else will ever stamp cpu_stamp_ns for it. */
+    t->cpu_stamp_ns = time_mono_raw_ns();
 
     g_cpus[idx].idle = t;
     all_link(t);

@@ -14,6 +14,8 @@
 #include "proc.h"      /* SYS_MMAP_FILE: proc_current()/proc_fd_get() to turn an fd into a path */
 #include "file.h"      /* struct file, F_VFS, ->path -- see the case for why an fd has one */
 #include "pcache.h"    /* SYS_MMAP_FILE: pcache_file_open()/pcache_file_put() */
+#include "shm.h"       /* SYS_SHM_*: the shared-segment table */
+#include "vfs_cred.h"  /* SYS_SHM_OPEN: the asking uid, for the mode check */
 
 /* Diagnostics selected by SYS_MEMINFO with a NULL buffer. Deliberately defined
  * here and not in include/abi/logit_abi.h: that header is the cross-cutting
@@ -25,7 +27,7 @@
 #define MMCTL_STATS    4
 
 /* The userland face of memory management: mmap (anonymous AND file-backed),
- * munmap, meminfo.
+ * mprotect, munmap, meminfo.
  *
  * It lives here, in one function, rather than as cases inside syscall.c's
  * switch, for two reasons. The obvious one is ownership -- this line owns
@@ -42,6 +44,7 @@
  *     ...
  *     case SYS_MMAP:
  *     case SYS_MMAP_FILE:
+ *     case SYS_MPROTECT:
  *     case SYS_MUNMAP:
  *     case SYS_MEMINFO:
  *         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
@@ -151,6 +154,63 @@ long mm_syscall(long num, long a, long b, long c)
         return (long)base;
     }
 
+    /* mprotect. Two halves, in this order and not the other:
+     *
+     *   vma_protect()          changes what the range MEANS. It is the half
+     *                          that can FAIL (an unreserved page in the middle,
+     *                          a writable file area, no slot for a split), and
+     *                          it fails having changed nothing -- so putting it
+     *                          first is what makes the whole call all-or-
+     *                          nothing rather than "the PTEs moved and the
+     *                          reservation did not".
+     *   vmm_protect_range_in() changes what the pages ALREADY THERE permit.
+     *                          It cannot fail: it allocates nothing and frees
+     *                          nothing.
+     *
+     * Both are needed and neither is enough. The VMA alone leaves a page that
+     * has been touched still writable through its existing PTE; the PTEs alone
+     * leave the next fault re-deriving the OLD protection out of the VMA.
+     *
+     * PROT_NONE IS NOT FLOORED HERE, unlike SYS_MMAP twenty lines above. That
+     * floor exists because a reservation nobody may touch is indistinguishable
+     * from not reserving it -- true when you are CREATING one, false when you
+     * are changing one, and its inverse is the guard page. See logit_abi.h. */
+    case SYS_MPROTECT: {
+        uint64_t start, end;
+        /* A MISALIGNED START IS REFUSED, not rounded down -- which is where
+         * this differs from SYS_MUNMAP two cases below, deliberately. Rounding
+         * an unmap OUT releases only pages the caller named some byte of;
+         * rounding a protect DOWN would change the permissions of a page the
+         * caller never mentioned, and the page below a buffer is exactly the
+         * page somebody else's data is on. POSIX says EINVAL here for the same
+         * reason. Checked before vma_range() because vma_range's job is to
+         * round, so asking it would be asking after the evidence is gone. */
+        if ((uint64_t)a & 0xFFF) return LOGIT_MPROTECT_E_RANGE;
+        if (vma_range((uint64_t)a, (uint64_t)b, &start, &end) < 0)
+            return LOGIT_MPROTECT_E_RANGE;
+
+        int prot = (int)c;
+        /* An unknown protection bit is REFUSED, not masked off. Masking would
+         * let a program ask for something this kernel does not implement and be
+         * told it got it -- which is the same silent downgrade the writable
+         * file mapping is refused for. */
+        if (prot & ~(MMAP_PROT_READ | MMAP_PROT_WRITE | MMAP_PROT_EXEC))
+            return LOGIT_MPROTECT_E_RANGE;
+
+        uint32_t p = 0;
+        if (prot & MMAP_PROT_READ)  p |= VMA_READ;
+        if (prot & MMAP_PROT_WRITE) p |= VMA_WRITE;
+        if (prot & MMAP_PROT_EXEC)  p |= VMA_EXEC;
+
+        int r = vma_protect(cr3, start, end - start, p);
+        if (r == VMA_E_ACCES) return LOGIT_MPROTECT_E_ACCES;
+        if (r == VMA_E_RANGE) return LOGIT_MPROTECT_E_RANGE;
+        if (r != 0)           return LOGIT_MPROTECT_E_NOMEM;
+
+        vmm_protect_range_in(cr3, start, end - start, p);
+        return 0;
+    }
+
     case SYS_MUNMAP: {
         uint64_t start, end;
         if (vma_range((uint64_t)a, (uint64_t)b, &start, &end) < 0) return -1;
@@ -162,6 +222,92 @@ long mm_syscall(long num, long a, long b, long c)
         vmm_unmap_range_in(cr3, start, end - start);
         return 0;
     }
+
+    /* ------------------------------------------------------- shared memory --
+     *
+     * The four SYS_SHM_* calls. They live in this switch rather than in a file
+     * of their own for the reason the header of this file gives about mmap: the
+     * argument validation for a memory ABI belongs next to the code that
+     * enforces the bounds, and c/kernel/exec/syscall.c needed nothing but four
+     * more case labels on the group that already forwards here.
+     *
+     * THE UID IS FETCHED HERE AND THE CHECK IS MADE IN shm.c, which is the one
+     * split worth explaining. vfs_cred.h lives in c/fs, and c/kernel/mm is also
+     * compiled for the host test (-DMM_HOSTTEST) where c/fs is not on the
+     * include path -- so shm.c cannot ask who is calling. But a permission rule
+     * that lives at the syscall boundary is a rule that the next caller of the
+     * mechanism forgets. So shm_open() TAKES the uid and enforces the mode
+     * itself, and this file's only job is to say who is asking. The rule is
+     * therefore testable on the host (mm_shm_test drives it with explicit uids)
+     * and cannot be bypassed by a second caller. */
+    case SYS_SHM_OPEN: {
+        struct vcred cr;
+        vfs_cred_current(&cr);
+        /* A NULL name asks for an UNNAMED segment -- nothing can look it up, so
+         * it is reachable only through the mapping and whatever inherits that
+         * mapping across fork. It is what mini-libc builds
+         * mmap(MAP_SHARED|MAP_ANONYMOUS) out of, and it rides on this number
+         * rather than a fifth one because it is the same object with the same
+         * lifetime: only the lookup differs. */
+        if (!a)
+            return shm_create_anon((unsigned)b, cr.uid);
+
+        char name[SHM_NAMEMAX];
+        if (user_copy_string(name, (int)sizeof name, (const char *)(uint64_t)a) < 0)
+            return SHM_E_INVAL;
+        unsigned packed = (unsigned)c;
+        unsigned flags = packed & 0xFu;
+        unsigned mode  = (packed >> 4) & 0777u;
+        unsigned sf = 0;
+        if (flags & SHM_O_CREAT) sf |= SHM_CREAT;
+        if (flags & SHM_O_EXCL)  sf |= SHM_EXCL;
+        if (flags & SHM_O_WRITE) sf |= SHM_WRITE;
+        return shm_open(name, (unsigned)b, mode, sf, cr.uid);
+    }
+
+    case SYS_SHM_MAP: {
+        int sh = (int)a;
+        uint64_t len = (uint64_t)b;
+        uint64_t packed = (uint64_t)c;
+        int prot = (int)(packed >> 32);
+        uint64_t off = (packed & 0xFFFFFFFFu) * 4096;   /* the ABI passes PAGES */
+
+        uint32_t p = 0;
+        if (prot & MMAP_PROT_READ)  p |= VMA_READ;
+        if (prot & MMAP_PROT_WRITE) p |= VMA_WRITE;
+        if (prot & MMAP_PROT_EXEC)  p |= VMA_EXEC;
+        if (!p) p = VMA_READ;              /* PROT_NONE floor, same as SYS_MMAP */
+
+        /* The handle must be one this process legitimately holds -- but there is
+         * no per-process handle table here, so what stops a program guessing an
+         * integer is the mode check it already had to pass at SYS_SHM_OPEN. Said
+         * out loud because it is the weakest part of this ABI: a handle is a
+         * small integer in a GLOBAL table, so a process that never opened a
+         * segment can name it, and the only thing between it and the memory is
+         * that shm_open refused it. That is enough for a mode-0600 segment and
+         * is NOT enough to call these handles capabilities. Making them
+         * per-process is a proc.c change and belongs with whoever owns that
+         * file; c/kernel/exec/proc.h's fd table is the shape it would take. */
+        uint64_t base = vma_reserve_shm(cr3, 0, len, p, sh, off);
+        return (long)base;
+    }
+
+    case SYS_SHM_UNLINK: {
+        char name[SHM_NAMEMAX];
+        if (user_copy_string(name, (int)sizeof name, (const char *)(uint64_t)a) < 0)
+            return SHM_E_INVAL;
+        struct vcred cr;
+        vfs_cred_current(&cr);
+        return shm_unlink(name, cr.uid);
+    }
+
+    case SYS_SHM_CLOSE:
+        /* Drops the caller's handle only. Any MAPPING keeps its own reference
+         * (vma_reserve_shm took one), so this cannot pull memory out from under
+         * a running process -- which is what makes open/map/close/unlink the
+         * complete idiom rather than a leak. */
+        shm_put((int)a);
+        return 0;
 
     case SYS_MEMINFO: {
         struct logit_meminfo mi;

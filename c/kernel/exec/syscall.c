@@ -30,16 +30,24 @@
  * searches the including file's own directory first.) */
 #include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
-#include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MMAP_FILE / SYS_MUNMAP / SYS_MEMINFO */
+#include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MMAP_FILE / SYS_MPROTECT / SYS_MUNMAP / SYS_MEMINFO */
 #include "settings.h"    /* settings_syscall: SYS_SETTING_* */
 #include "clipboard.h"   /* clip_syscall:   SYS_CLIP_SET / _GET / _INFO */
 #include "notify.h"      /* notify_syscall: SYS_NOTIFY */
 #include "kbench.h"      /* per-syscall accounting, off by default */
+#include "kpoll.h"       /* poll_syscall: SYS_POLL / SYS_EVENTFD / SYS_TIMERFD.
+                          * NOT "poll.h" -- see kpoll.h's own first paragraph,
+                          * and the wait.h note twenty lines up for the same
+                          * INCDIRS trap in its earlier form. */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
 #include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
 #include "vfs_cred.h"    /* id_syscall:   SYS_GETUID .. SYS_GETSESSION (150-159) */
 #include "power.h"       /* kernel_poweroff / kernel_reboot: SYS_POWEROFF / SYS_REBOOT */
+/* mod_syscall: SYS_MODULE_LOAD/_UNLOAD/_LIST/_SYM (182-185). Bare include is
+ * safe here -- `module.h` is a unique basename under c/ and include/ (checked),
+ * unlike the wait.h case documented above. */
+#include "module.h"
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -74,6 +82,43 @@ static long kheap_stress(long iters, int size, unsigned long seed)
 }
 
 static void syscall_do(struct registers *r);
+
+/* ONE COPY-IN AND ONE RESOLUTION for the two AF_UNIX calls that take a path
+ * (SYS_BIND with an AF_UNIX address, and SYS_CONNECT).
+ *
+ * Three things have to happen to a `struct logit_sockaddr_un`, and all three
+ * are easy to leave out of a second copy of them:
+ *   1. THE PATH IS NUL-TERMINATED HERE. A user program is free to hand over
+ *      108 bytes with no terminator, and every reader below it is a C string
+ *      function.
+ *   2. IT IS RESOLVED against the process cwd, so a relative name works exactly
+ *      as it does for open() and chdir(). c/net/core/unix.c never sees a
+ *      relative path and does not have to know what a cwd is.
+ *   3. IT IS RESOLVED INTO 256 BYTES, not into 128. proc_resolve TRUNCATES
+ *      silently when its output buffer is too small, and a truncated path is
+ *      not a shorter name -- it is a name that collides with a different one.
+ *      Resolving into a buffer that cannot overflow and letting unix.c refuse
+ *      what does not fit keeps that rule in ONE place.
+ *
+ * `connecting` picks which of the two calls to make: the difference between
+ * bind and connect here is genuinely that one line. */
+static long unix_addr_call(struct proc *p, struct file *f, const void *uaddr,
+                           int connecting)
+{
+    if (!user_range_ok(uaddr, sizeof(struct logit_sockaddr_un), 0))
+        return LSK_E_ARG;
+    struct logit_sockaddr_un ua = *(const struct logit_sockaddr_un *)uaddr;
+    ua.path[sizeof ua.path - 1] = 0;                       /* (1) */
+    /* An empty path is Linux's abstract namespace, which this kernel does not
+     * implement. Passed through UNRESOLVED so that unix.c refuses it by name:
+     * proc_resolve("") returns the cwd, which is a real path, and the caller
+     * would silently bind something it never asked for. */
+    if (!ua.path[0])
+        return connecting ? lsock_connect_unix(f, "") : lsock_bind_unix(f, "");
+    char abs[256];                                         /* (3) */
+    proc_resolve(p, ua.path, abs, sizeof abs);             /* (2) */
+    return connecting ? lsock_connect_unix(f, abs) : lsock_bind_unix(f, abs);
+}
 
 /* SYS_PROCS / SYS_KILL live in proc.c (the table they read is static there);
  * these are prototyped here rather than in proc.h because that header belongs
@@ -143,6 +188,16 @@ static int syscall_cap_class(int num)
     case SYS_RES_FETCH:
     case SYS_SOCK_OPEN: case SYS_SOCK_POLL: case SYS_SOCK_SEND:
     case SYS_SOCK_RECV: case SYS_SOCK_ALPN: case SYS_SOCK_CLOSE:
+    /* SYS_CONNECT is here with the rest of the family even though its ONLY
+     * working case today is AF_UNIX, which touches a path and not the network.
+     * The class is per NUMBER and this number is polymorphic, so it is filed
+     * with its siblings and the discrepancy is written down rather than
+     * silently resolved one way: a call that can be either CAP_FS or CAP_NET
+     * depending on its argument is a question for the capability line, not
+     * something to decide in passing here. SYS_SOCKETPAIR is deliberately NOT
+     * listed -- it names no path and reaches no network, so it is CAP_NONE like
+     * SYS_PIPE, which is exactly what it is a two-way version of. */
+    case SYS_CONNECT:
     case SYS_SOCKET: case SYS_BIND: case SYS_LISTEN: case SYS_ACCEPT:
     case SYS_GETSOCKNAME: case SYS_SETSOCKOPT: case SYS_SHUTDOWN:
     case SYS_RECVFROM: case SYS_SENDTO: case SYS_SOCKSTAT:
@@ -177,6 +232,16 @@ static int syscall_cap_class(int num)
      * call ITSELF by CAP_FS/CAP_NET would conflate "may this process spawn a
      * child" (not a thing M28 defines) with "may this process touch files/
      * network" (a different, already-covered question). */
+    /*
+     * SYS_POLL / SYS_EVENTFD / SYS_TIMERFD: waiting is not a category either.
+     * SYS_POLL reaches nothing the caller does not already hold -- an fd it
+     * cannot open cannot be in the array, and an fd it can open it can already
+     * read() with no gate here. SYS_EVENTFD and SYS_TIMERFD create a
+     * descriptor out of nothing: no path, no host, no device, exactly like
+     * SYS_PIPE two entries up in spirit, which is also ungated. Classifying
+     * them CAP_FS because the word "descriptor" appears would gate a counter
+     * and a clock behind the filesystem grant, which is the kind of
+     * over-reach the block above refuses for the clipboard. */
     default:
         return 0;
     }
@@ -827,15 +892,65 @@ static void syscall_do(struct registers *r)
         r->rax = (uint64_t)(long)fd;
         return;
     }
+    /* AF_UNIX arrives here too, and the two families have DIFFERENT address
+     * structs (8 bytes of number vs 110 bytes of path). The family is read
+     * first, from the two bytes both shapes share at offset 0, and the rest of
+     * the copy-in is sized from it -- copying `sizeof(struct logit_sockaddr_un)`
+     * unconditionally would fault an AF_INET caller who legitimately passed an
+     * 8-byte struct at the end of a page. */
     case SYS_BIND: {
         struct proc *p = proc_current();
         struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        unsigned short fam;
+        if (!f || !user_range_ok((const void *)r->rsi, sizeof fam, 0))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        fam = *(const unsigned short *)r->rsi;
+        if (fam == LOGIT_AF_UNIX) {
+            r->rax = (uint64_t)(long)unix_addr_call(p, f, (const void *)r->rsi, 0);
+            return;
+        }
         struct logit_sockaddr a;
-        if (!f || !user_range_ok((const void *)r->rsi, sizeof a, 0))
+        if (!user_range_ok((const void *)r->rsi, sizeof a, 0))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         a = *(const struct logit_sockaddr *)r->rsi;   /* struct assignment: no
                                      * libc memcpy is declared in this TU */
         r->rax = (uint64_t)(long)lsock_bind(f, &a);
+        return;
+    }
+    /* SYS_CONNECT is AF_UNIX ONLY -- see the block above it in logit_abi.h. An
+     * AF_INET address is refused by name here rather than being handed to a
+     * lsock_connect() that does not exist. */
+    case SYS_CONNECT: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        unsigned short fam;
+        if (!f || !user_range_ok((const void *)r->rsi, sizeof fam, 0))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        fam = *(const unsigned short *)r->rsi;
+        if (fam != LOGIT_AF_UNIX) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        r->rax = (uint64_t)(long)unix_addr_call(p, f, (const void *)r->rsi, 1);
+        return;
+    }
+    case SYS_SOCKETPAIR: {
+        struct proc *p = proc_current();
+        int *sv = (int *)r->rdx;
+        if (!p || !user_range_ok(sv, 2 * sizeof(int), 1))
+            { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        struct file *fa = NULL, *fb = NULL;
+        int err = 0;
+        if (lsock_socketpair((int)r->rdi, (int)r->rsi, 0, p->pid, &fa, &fb, &err) != 0)
+            { r->rax = (uint64_t)(long)err; return; }
+        /* Both fds are installed BEFORE anything is copied out, and if the
+         * second slot cannot be had the first is given back -- a caller whose
+         * sv[] holds one live descriptor and one -1 has leaked a socket it was
+         * never told about. */
+        int a = proc_fd_alloc(p, fa);
+        if (a < 0) { file_close(fa); file_close(fb); r->rax = (uint64_t)(long)LSK_E_FULL; return; }
+        int b = proc_fd_alloc(p, fb);
+        if (b < 0) { file_close(p->fd[a]); p->fd[a] = NULL; file_close(fb);
+                      r->rax = (uint64_t)(long)LSK_E_FULL; return; }
+        sv[0] = a; sv[1] = b;
+        r->rax = 0;
         return;
     }
     case SYS_LISTEN: {
@@ -869,8 +984,22 @@ static void syscall_do(struct registers *r)
     case SYS_GETSOCKNAME: {
         struct proc *p = proc_current();
         struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+        /* Dispatched on the SOCKET, not on the buffer, because the buffer is
+         * write-only here and has nothing in it to read a family out of. An
+         * AF_UNIX socket answers with a path; every other kind refuses the path
+         * form and falls through to the address one. */
+        struct logit_sockaddr_un un;
+        if (lsock_getsockname_unix(f, un.path, sizeof un.path) == 0) {
+            if (!user_range_ok((void *)r->rsi, sizeof un, 1))
+                { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
+            un.family = LOGIT_AF_UNIX;
+            *(struct logit_sockaddr_un *)r->rsi = un;
+            r->rax = 0;
+            return;
+        }
         struct logit_sockaddr a;
-        if (!f || !user_range_ok((void *)r->rsi, sizeof a, 1))
+        if (!user_range_ok((void *)r->rsi, sizeof a, 1))
             { r->rax = (uint64_t)(long)LSK_E_ARG; return; }
         int rc = lsock_getsockname(f, &a);
         if (rc == 0) *(struct logit_sockaddr *)r->rsi = a;
@@ -980,15 +1109,44 @@ static void syscall_do(struct registers *r)
     case SYS_SND_AVAIL:
     case SYS_SND_CLOSE:
     case SYS_SND_STATE:
+    /* Capture (mic / line-in), added with the HDA capture work. Same
+     * forwarding reason as the playback six above: which argument is a user
+     * buffer is an audio fact, not a dispatcher fact. */
+    case SYS_SND_CAP_OPEN:
+    case SYS_SND_CAP_READ:
+    case SYS_SND_CAP_AVAIL:
+    case SYS_SND_CAP_CLOSE:
+    case SYS_SND_CAP_STATE:
         r->rax = (uint64_t)snd_syscall((long)r->rax, (long)r->rdi,
                                        (long)r->rsi, (long)r->rdx);
         return;
 
     case SYS_MMAP:
+    case SYS_MPROTECT:   /* (addr, len, prot); three scalars, so it needs nothing
+                          * here beyond the label -- see logit_abi.h for why it
+                          * is its own number and not a flag on SYS_MMAP */
     case SYS_MMAP_FILE:  /* file-backed mmap; one argument, a struct pointer in
                           * rdi -- see the case in mmsys.c for the whole story */
+    /* SYS_RUSAGE: per-thread CPU time and RLIMIT_CPU. Handled here rather
+     * than falling to wm_gui_syscall's default, for the same reason
+     * SYS_THREAD_* is -- a CLI process with no window still has a CPU-time
+     * budget. Recovered from stash@{0}; see branch rescue-1845. */
+    case SYS_RUSAGE:
+        r->rax = (uint64_t)sched_rusage_syscall((long)r->rdi, (long)r->rsi,
+                                                (long)r->rdx);
+        return;
+
     case SYS_MUNMAP:
     case SYS_MEMINFO:
+    /* Shared memory (176-179). Four more labels on the group that already
+     * forwards here: every one of them is three scalars in rdi/rsi/rdx, so the
+     * dispatch line needed nothing beyond the labels themselves. The bodies and
+     * the argument validation are in c/kernel/mm/mmsys.c, which is where that
+     * file argues they belong. */
+    case SYS_SHM_OPEN:
+    case SYS_SHM_MAP:
+    case SYS_SHM_UNLINK:
+    case SYS_SHM_CLOSE:
         r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
                                       (long)r->rsi, (long)r->rdx);
         return;
@@ -1009,6 +1167,18 @@ static void syscall_do(struct registers *r)
     case SYS_THREAD_INFO:
         r->rax = (uint64_t)uthread_syscall((long)r->rax, (long)r->rdi,
                                            (long)r->rsi, (long)r->rdx);
+        return;
+
+    /* Waiting on several descriptors at once. Forwarded whole to
+     * c/kernel/exec/kpollsys.c for the reason mm_syscall() and uthread_syscall()
+     * are: which argument is a user pointer and what it means are facts about
+     * this subsystem. Proc-level and not GUI -- a server has no window, and the
+     * shell's own descriptors are exactly what this is for. */
+    case SYS_POLL:
+    case SYS_EVENTFD:
+    case SYS_TIMERFD:
+        r->rax = (uint64_t)poll_syscall((long)r->rax, (long)r->rdi,
+                                        (long)r->rsi, (long)r->rdx);
         return;
 
     case SYS_PROCS:
@@ -1213,6 +1383,21 @@ static void syscall_do(struct registers *r)
         if (me.uid != 0) { r->rax = (uint64_t)ID_E_PERM; return; }
         kernel_reboot();
     }
+
+    /* Loadable kernel modules (c/kernel/module/). The uid check is NOT here
+     * with the two above it: mod_syscall does it per operation, because
+     * SYS_MODULE_LIST is deliberately not root-only and a check at this level
+     * could not express that. mod_syscall must NOT go on
+     * syscall_is_bkl_free()'s allow-list -- it calls kmalloc, the VFS and
+     * driver_register, and the last of those mutates a global list that has no
+     * lock of its own because it was written for boot-time use. */
+    case SYS_MODULE_LOAD:
+    case SYS_MODULE_UNLOAD:
+    case SYS_MODULE_LIST:
+    case SYS_MODULE_SYM:
+        r->rax = (uint64_t)mod_syscall((long)r->rax, (long)r->rdi,
+                                       (long)r->rsi, (long)r->rdx);
+        return;
 
     default:
         /* GUI + misc system calls are handled by the window manager, which

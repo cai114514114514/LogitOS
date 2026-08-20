@@ -14,12 +14,19 @@
  *             a separate handle table like the client sockets in
  *             c/net/core/sock.c, because the point of an ACCEPTED connection is
  *             being able to hand it to something: dup2 it onto a child's stdin,
- *             inherit it across fork, pass it to a function that takes an fd.  */
-#define F_NONE 0
-#define F_VFS  1
-#define F_PIPE 2
-#define F_TTY  3
-#define F_SOCK 4
+ *             inherit it across fork, pass it to a function that takes an fd.
+ *   F_EVENT -- an eventfd or a timerfd: a 64-bit counter with a wait queue and
+ *             no I/O behind it at all. ONE type for both, because they differ
+ *             only in what increments the counter -- a write() from another
+ *             thread, or the 100 Hz tick. Two types would have duplicated the
+ *             read side, the wait side and the poll side to distinguish two
+ *             producers. See `struct eventobj` in file.c.  */
+#define F_NONE  0
+#define F_VFS   1
+#define F_PIPE  2
+#define F_TTY   3
+#define F_SOCK  4
+#define F_EVENT 5
 
 struct file {
     int   type;
@@ -51,6 +58,28 @@ long          file_write(struct file *f, const void *buf, long len);
 long          file_lseek(struct file *f, long off, int whence);
 int           file_fsync(struct file *f);   /* F_VFS: flush dirty data to disk now */
 int           file_pipe(struct file **rd, struct file **wr);  /* P3 */
+
+/* --- readiness: what poll() asks a descriptor ------------------------------
+ * Returns the LPOLL* mask for `f` RIGHT NOW, having first registered `pt` on
+ * whatever wait queue would announce a change. `pt` may be NULL, which makes
+ * this a pure probe that registers nothing.
+ *
+ * THE ORDER INSIDE IS THE CONTRACT and it is stated in c/kernel/exec/kpoll.h:
+ * register before reading state, or an event landing between the two is lost.
+ * This declaration takes `struct poll_table *` by name only, so file.h does not
+ * have to pull kpoll.h in for every one of its readers. */
+struct poll_table;
+short         file_poll(struct file *f, struct poll_table *pt);
+
+/* --- eventfd / timerfd (F_EVENT) ------------------------------------------
+ * Both return a description with refcount 1, or NULL. `flags` carries
+ * O_NONBLOCK / EFD_SEMAPHORE. file_timerfd_arm() sets or clears the deadline;
+ * value_ms == 0 disarms. file_timerfd_tick() is called from the 100 Hz timer
+ * and is the ONLY thing that advances a timerfd's counter. */
+struct file  *file_eventfd(uint64_t initval, int flags);
+struct file  *file_timerfd(int flags);
+int           file_timerfd_arm(struct file *f, long value_ms, long interval_ms);
+void          file_timerfd_tick(void);
 
 /* Peak simultaneous open descriptions since boot, and refused allocations.
  * NFILE is a guess until it is checked against one of these. */

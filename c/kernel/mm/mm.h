@@ -124,6 +124,9 @@ enum mm_fault_kind {
     MM_FAULT_SWAP,          /* the page is on the swap device; read it back */
     MM_FAULT_FILE,          /* first touch of a FILE-backed page; read it from
                              * the page cache (c/kernel/mm/pcache.c) */
+    MM_FAULT_SHM,           /* first touch of a page in a SHARED segment; take a
+                             * reference on the frame the segment already holds
+                             * (c/kernel/mm/shm.c) */
 };
 /* MM_FAULT_FILE is APPENDED rather than placed beside MM_FAULT_ANON, which is
  * where it belongs semantically -- fault.c's own comment calls it "purely a
@@ -147,9 +150,20 @@ enum mm_fault_kind {
  * back from the slot and NOT from the file -- correct, because by then the
  * file's bytes may have moved on and the process is entitled to the ones it was
  * given. */
+/* `vma_shm` is 1 when the VMA covering this address names a shared segment. It
+ * sits beside `vma_file` and is consulted at the same point for the same
+ * reason: like the file case it distinguishes only WHERE an absent page's bytes
+ * come from, not whether the fault is ours. The two are mutually exclusive
+ * (vma.h) and `vma_file` is asked first, so a caller that somehow passed both
+ * gets the file answer rather than an undefined one.
+ *
+ * Unlike the file case, a shared page can be written: the segment IS the
+ * storage, so there is nothing to write back and no dirty state to track. The
+ * write permission comes from the VMA and is already tested two clauses above,
+ * which is why this needs no clause of its own for it. */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
                       int pte_cow, int pte_user, int vma_prot, int pte_swap,
-                      int vma_file);
+                      int vma_file, int vma_shm);
 
 void     mm_set_cow(int on);
 int      mm_cow_enabled(void);
@@ -160,6 +174,7 @@ uint64_t mm_cow_reuse(void);       /* write faults resolved WITHOUT copying (sol
 uint64_t mm_anon_faults(void);     /* first-touch anonymous pages filled */
 uint64_t mm_fault_declined(void);  /* faults mm did not claim (genuine faults) */
 uint64_t mm_swapin_faults(void);   /* faults resolved by reading the swap device */
+uint64_t mm_shm_faults(void);      /* first touches of a shared-segment page */
 uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
 
 /* mm-internal: leaf PTEs currently carrying VMM_PTE_COW. Raised by the clone

@@ -10,11 +10,14 @@
  * A mutex whose fast path entered the kernel would turn every `with lock:` in
  * a Python program into a global stop-the-world point.
  *
- * THREE THINGS LIVE IN ONE mmap PER THREAD, deliberately:
+ * FOUR THINGS LIVE IN ONE mmap PER THREAD, deliberately:
  *
- *     base                                                     base+len
- *     [ stack, grows down ............. | TLS image | TCB      ]
- *                                       ^tls_lo     ^tp = %fs base
+ *     base          base+guard                                 base+len
+ *     [ PROT_NONE | stack, grows down ... | TLS image | TCB    ]
+ *       ^guard                             ^tls_lo    ^tp = %fs base
+ *
+ * (it was three until the guard page landed -- see pthread_create for why the
+ * guard is an mprotect INSIDE this mapping rather than a second one beside it)
  *
  * so a thread costs exactly one mapping, needs no malloc to start (which
  * matters: malloc's own lock is one of the things being bootstrapped), and its
@@ -120,6 +123,12 @@ struct tcb {
     void         *arg;
     void         *stack_base;    /* the mmap, for pthread_getattr_np */
     unsigned long stack_len;
+    unsigned long guard_len;     /* the PROT_NONE bytes at stack_base, so
+                                  * pthread_getattr_np can report the usable
+                                  * stack rather than the whole reservation --
+                                  * a caller that computes "how much room is
+                                  * left" from the wrong one of those two walks
+                                  * into the guard believing it is stack */
     void         *keys[PTHREAD_KEYS_MAX];
 };
 
@@ -339,26 +348,65 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr,
     if (want > LOGIT_THREAD_STACK_MAX) return EINVAL;
     want = (want + 4095) & ~(size_t)4095;
 
+    /* THE GUARD PAGE, which is at the BOTTOM of the mapping because the stack
+     * grows down and the bottom is the end it runs off:
+     *
+     *   mem                mem+guard                                mem+len
+     *   [ PROT_NONE ...... | stack, grows down ... | TLS | TCB     ]
+     *                      ^ the lowest address the thread may touch
+     *
+     * It is one mmap and then an mprotect, NOT two mmaps and not an mmap plus
+     * a munmap of the first page. Both alternatives leave the guard's address
+     * range UNRESERVED, and vma_reserve places first-fit from MM_MMAP_BASE
+     * upward -- so the hole under thread 1's stack is the first thing a later
+     * small mapping is handed, and the guard silently becomes somebody's data.
+     * mprotect keeps the range reserved and merely makes it untouchable, which
+     * is the difference the whole SYS_MPROTECT call exists for. */
+    size_t guard = (attr ? attr->guardsize : (size_t)LOGIT_THREAD_GUARD_DEFAULT);
+    guard = (guard + 4095) & ~(size_t)4095;
+    /* NOT CLAMPED to something this function thinks is reasonable. The first
+     * version of this line silently reduced a guard larger than the stack to
+     * one page, which is the same silent downgrade <sys/mman.h> refuses for a
+     * writable file mapping: the caller asked for N bytes of boundary, was told
+     * yes, and got 4096. There is no reason to clamp -- the guard is added to
+     * the reservation rather than carved out of it, so a large one costs
+     * address space and nothing else. An absurd one is refused OUT LOUD. */
+    if (guard > LOGIT_THREAD_STACK_MAX) return EINVAL;
+
     /* Room for the TLS block and the control block ON TOP of what the caller
-     * asked for, so a stacksize request means what it says. Cheap: the kernel's
-     * mmap is a RESERVATION -- pages arrive on first touch through the ordinary
-     * fault path -- so the whole 8 MiB default costs address space and two page
-     * tables, not 8 MiB of RAM. */
-    size_t len = want + tls_size() + sizeof(struct tcb) + 4096;
+     * asked for, so a stacksize request means what it says. The guard is on top
+     * of it too, for the same reason. Cheap: the kernel's mmap is a
+     * RESERVATION -- pages arrive on first touch through the ordinary fault
+     * path -- so the whole 8 MiB default costs address space and two page
+     * tables, not 8 MiB of RAM, and the guard costs neither (it is never
+     * touched, so it never has a frame at all). */
+    size_t len = guard + want + tls_size() + sizeof(struct tcb) + 4096;
     len = (len + 4095) & ~(size_t)4095;
 
     void *mem = mmap(NULL, len, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) return EAGAIN;
 
+    /* A FAILED GUARD FAILS THE THREAD. The alternative -- carry on without it
+     * -- is a thread whose caller asked for a boundary, was told yes, and does
+     * not have one; the overrun then lands in whatever the allocator put below
+     * it and is blamed on that. EAGAIN, because the one way this fails on a
+     * working kernel is running out of VMA slots (vma.h VMA_MAXAREA), which is
+     * a resource and not a mistake. */
+    if (guard && mprotect(mem, guard, PROT_NONE) != 0) {
+        munmap(mem, len);
+        return EAGAIN;
+    }
+
     void *stack_top = NULL;
     struct tcb *t = NULL;
-    uintptr_t tp = tls_layout(mem, len, &stack_top, &t);
+    uintptr_t tp = tls_layout((char *)mem + guard, len - guard, &stack_top, &t);
     if (!tp) { munmap(mem, len); return ENOMEM; }
     t->start = start;
     t->arg   = arg;
     t->stack_base = mem;
     t->stack_len  = len;
+    t->guard_len  = guard;
 
     struct logit_thread_spec spec;
     spec.entry      = (unsigned long)(uintptr_t)&__logit_thread_entry;
@@ -417,8 +465,19 @@ int pthread_equal(pthread_t a, pthread_t b) { return a == b; }
 
 /* --- attributes --------------------------------------------------------- */
 
+/* `stacksize` 0 means "the default"; `guardsize` does NOT, because 0 is a legal
+ * guard size that means "none". So the default has to be written in here rather
+ * than resolved later the way the stack size is -- and it is a page, matching
+ * pthread_create's fallback for a NULL attr (LOGIT_THREAD_GUARD_DEFAULT), so
+ * passing an initialised attr and passing NULL give the same thread. */
 int pthread_attr_init(pthread_attr_t *a)
-{ if (!a) return EINVAL; a->stacksize = 0; a->detachstate = PTHREAD_CREATE_JOINABLE; a->guardsize = 0; return 0; }
+{
+    if (!a) return EINVAL;
+    a->stacksize = 0;
+    a->detachstate = PTHREAD_CREATE_JOINABLE;
+    a->guardsize = (size_t)LOGIT_THREAD_GUARD_DEFAULT;
+    return 0;
+}
 int pthread_attr_destroy(pthread_attr_t *a) { (void)a; return 0; }
 
 int pthread_attr_setstacksize(pthread_attr_t *a, size_t sz)
@@ -445,31 +504,55 @@ int pthread_attr_getdetachstate(const pthread_attr_t *a, int *st)
 int pthread_attr_setscope(pthread_attr_t *a, int scope)
 { (void)a; return scope == 0 ? 0 : ENOTSUP; }
 
-/* No guard page. Said out loud because "guardsize 0" is a real property: a
- * thread that overruns its stack walks into the reservation below it rather
- * than faulting at a known boundary. Adding one is a PROT_NONE page at the
- * bottom of the mmap, which needs an mprotect this kernel does not have
- * (c/apps/libc/src/mman.c returns ENOSYS). */
+/* THE GUARD PAGE IS REAL NOW, and this function used to be the place that said
+ * it was not: it forced `guardsize` to 0 and returned ENOTSUP for any request,
+ * because "adding one is a PROT_NONE page at the bottom of the mmap, which
+ * needs an mprotect this kernel does not have". SYS_MPROTECT exists, mman.c
+ * reaches it, and pthread_create installs the page.
+ *
+ * Rounded UP to a page and never down: a caller asking for 1 byte of guard is
+ * asking for a boundary, and rounding that to zero would answer "yes" and give
+ * none. 0 is still accepted and still means no guard -- POSIX says so, and a
+ * program that has counted its own stack use is entitled to spend the VMA slot
+ * on something else. */
 int pthread_attr_setguardsize(pthread_attr_t *a, size_t sz)
-{ if (!a) return EINVAL; a->guardsize = 0; return sz == 0 ? 0 : ENOTSUP; }
+{
+    if (!a) return EINVAL;
+    if (sz > LOGIT_THREAD_STACK_MAX) return EINVAL;
+    a->guardsize = sz ? ((sz + 4095) & ~(size_t)4095) : 0;
+    return 0;
+}
+
+int pthread_attr_getguardsize(const pthread_attr_t *a, size_t *sz)
+{ if (!a || !sz) return EINVAL; *sz = a->guardsize; return 0; }
 
 int pthread_getattr_np(pthread_t th, pthread_attr_t *a)
 {
     if (!a || tls_init_main() < 0) return EINVAL;
     if (th != pthread_self()) return ENOSYS;    /* only the caller's own is knowable */
     struct tcb *t = self_tcb();
-    a->stacksize   = t->stack_len ? t->stack_len : (size_t)LOGIT_THREAD_STACK_DEFAULT;
+    /* THE GUARD IS SUBTRACTED FROM WHAT IS REPORTED AS STACK, and it has to be:
+     * pthread_getattr_np is what a program calls to work out how much room it
+     * has left before recursing, and glibc's contract is that the guard is
+     * outside the reported stack. Reporting the whole reservation would tell
+     * the caller it has one more page than it does, and the page it would
+     * spend that on is the guard -- i.e. the number would be wrong in exactly
+     * the direction that makes the guard fire. */
+    a->stacksize   = t->stack_len ? t->stack_len - t->guard_len
+                                  : (size_t)LOGIT_THREAD_STACK_DEFAULT;
     a->detachstate = PTHREAD_CREATE_JOINABLE;
-    a->guardsize   = 0;
+    a->guardsize   = t->guard_len;
     return 0;
 }
 int pthread_attr_getstack(const pthread_attr_t *a, void **addr, size_t *sz)
 {
     if (!a || !addr || !sz || tls_init_main() < 0) return EINVAL;
     struct tcb *t = self_tcb();
-    *addr = t->stack_base;
-    *sz   = t->stack_len;
-    return (*addr && *sz) ? 0 : ENOSYS;
+    /* Same rule as getattr_np above: `addr` is the lowest address the thread
+     * may TOUCH, which is past the guard, not the base of the reservation. */
+    *addr = (char *)t->stack_base + t->guard_len;
+    *sz   = t->stack_len - t->guard_len;
+    return (t->stack_base && *sz) ? 0 : ENOSYS;
 }
 
 /* --- mutexes ------------------------------------------------------------ */

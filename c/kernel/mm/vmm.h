@@ -22,10 +22,29 @@
  *                     re-derived by faulting it again             (mm owns)
  *   bit 11   FILE     OS: this page is a PAGE-CACHE page: its contents came
  *                     from a file and can be re-derived by re-reading it
- *   bits 52-62        OS: FREE
+ *   bit 52   SHM      OS: this page belongs to a SHARED segment and must NOT
+ *                     be privatised by fork                       (mm owns)
+ *   bit 53   NOACCESS OS: not present, but the frame in it is still LIVE and
+ *                     still referenced -- mprotect(PROT_NONE) over a resident
+ *                     page                                      (mm owns)
+ *   bits 54-62        OS: FREE
  *   bit 63   NX       hardware: no-execute (the user/kernel-separation line)
  *
- * mm claims 9, 10 and 11 and nothing else. */
+ * mm claims 9, 10, 11, 52 and 53, and nothing else. 52 and 53 rather than more
+ * bits down in 9-11 because there are no more bits down there; 52-62 are
+ * ignored by the CPU in a leaf entry exactly as 9-11 are, and MM_PTE_FLAGS
+ * (mm.h) already carries everything above 51 across a fork and a copy-on-write
+ * copy, which is the one property these bits need from the rest of the tree.
+ *
+ * THE TWO COLLIDED, and it is worth recording because the collision was CAUSED
+ * BY A DATA LOSS rather than by anybody choosing badly. NOACCESS took 52
+ * first; an agent's `git stash` then wiped every tracked modification in the
+ * tree (recovered on branch rescue-1845); SHM was written afterwards against a
+ * header where 52 read as free, and claimed it too. They are NOT mutually
+ * exclusive -- a shared page can be mprotect(PROT_NONE)'d -- so aliasing them
+ * would be silently wrong rather than merely tight. Syscall numbers were
+ * pre-assigned across the parallel work that produced these two; PTE BITS WERE
+ * NOT, and that is the lesson. */
 #define VMM_PTE_COW  (1ull << 9)
 
 /* Zero-fill-on-demand origin. Set by the anonymous fault, carried through fork
@@ -54,6 +73,72 @@
  * from elf_load and can only be swapped, which is the pre-existing behaviour
  * and stays. */
 #define VMM_PTE_FILE (1ull << 11)
+
+/* SHARED-SEGMENT origin: this page belongs to a c/kernel/mm/shm.h segment, and
+ * the frame under it is shared with every other process mapping that segment.
+ *
+ * IT IS THE ONE PTE BIT THAT CHANGES WHAT FORK DOES, and that is its entire
+ * reason to exist. vmm_clone_user walks PTEs, not VMAs -- so without a mark in
+ * the entry itself, telling a shared page from a private one would mean a VMA
+ * table scan per page across a 512x512 walk, under vma_lock, in the middle of
+ * fork. With the mark, the clone's shared branch is three lines and the
+ * property is local to the entry it is about.
+ *
+ * A shared page is the ONLY page in this kernel that a fork must hand to the
+ * child STILL WRITABLE and NOT marked copy-on-write. Every other writable page
+ * goes read-only + COW so the first write privatises it; doing that to a shared
+ * page is precisely the bug -- the two processes each get their own copy on
+ * their first write and stop communicating, with no error anywhere and nothing
+ * in either address space that looks wrong. `-DSHM_FORK_COPY` is that mistake
+ * on a switch (vmm.c) and the gate is required to fail against it.
+ *
+ * MUTUALLY EXCLUSIVE WITH ANON AND FILE, by construction and of necessity, not
+ * merely by tidiness: both of those bits are a PROMISE TO RECLAIM that the
+ * page's contents can be re-derived by faulting it again, and for a shared page
+ * both re-derivations produce a PRIVATE frame (do_anon allocates a fresh one;
+ * a swap-in reads into a fresh one). A shared page marked ANON would be
+ * eligible for the drop tier the moment it happened to be all zeroes, which is
+ * exactly what a freshly created segment looks like. shm.h argues this at
+ * length; do_shm() sets this bit and neither of the others. */
+#define VMM_PTE_SHM  (1ull << 52)
+
+/* ------------------------------------------------------- PROT_NONE -------
+ * A page that is RESIDENT and that nothing may touch: mprotect(PROT_NONE) over
+ * a range whose pages have already been faulted in. The frame is still ours,
+ * its contents are still the process's, and a later mprotect back to readable
+ * must give those bytes back -- so the frame cannot be freed and cannot be
+ * forgotten, but no user access to it may succeed.
+ *
+ * THE HARDWARE OFFERS NO ENCODING FOR THAT, which is why this bit exists.
+ * With P=1 there is no combination of W and U that refuses a READ from ring 3
+ * (U=0 refuses it, but then the entry is indistinguishable from a kernel page
+ * mapped inside the user subtree, and every teardown loop in vmm.c uses
+ * exactly `(PRESENT|USER)` to decide what to free). So the entry is made NOT
+ * PRESENT -- which is what makes the access fault -- and this bit says the
+ * frame address in it is still live and still referenced.
+ *
+ * Bit 52 rather than 9/10/11: those three are taken (COW/ANON/FILE) and the
+ * map above records 52-62 as free. It sits ABOVE the frame field, so
+ * MM_PTE_ADDR still extracts the frame and vmm_clone_user's "install the entry
+ * whole" carries it across a fork untouched.
+ *
+ * IT IS NOT A SWAP ENTRY AND CANNOT BE MISTAKEN FOR ONE: vmm_pte_is_swap()
+ * requires bit 1, and a PROT_NONE page is never writable, so bit 1 is always
+ * clear here. The classifier sees P=0, no swap marker, and a VMA whose prot is
+ * 0, and returns MM_FAULT_NONE -- a fault at exactly the faulting address,
+ * which is the whole point of a guard page.
+ *
+ * THE COST, stated rather than discovered: a PROT_NONE resident page has no
+ * rmap entry (rmap tracks PRESENT|USER PTEs only), so rmap_count is 0 while
+ * pmm_refcount is 1, and reclaim's "evict only if they are equal" rule makes
+ * it structurally un-evictable -- the same way a page-table frame is. That is
+ * the safe direction (rmap_audit permits FEWER mappings than references and
+ * says so) and it is bounded by how much a process chooses to make PROT_NONE,
+ * which for the only caller today is one page per thread. */
+#define VMM_PTE_NOACCESS (1ull << 53)
+
+static inline int vmm_pte_is_noaccess(uint64_t e)
+{ return !(e & 1) && (e & VMM_PTE_NOACCESS) != 0; }
 
 /* The hardware reference bits, named. Reclaim samples A to find pages nobody is
  * using, and reads D to know whether a page has been modified. */
@@ -159,6 +244,17 @@ void vmm_clone_stats(uint64_t *shared, uint64_t *copied);
 /* Unmap [virt, virt+len) in `cr3`, dropping a reference on each frame that was
  * present. Returns the number of pages actually unmapped. */
 uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len);
+
+/* Re-apply VMA_* protection `prot` to the pages of [virt, virt+len) that are
+ * ALREADY RESIDENT in `cr3`. The other half of mprotect: vma_protect() changes
+ * what the range MEANS (and so what a future fault does), this changes what
+ * the pages already there permit. Absent, swapped and PROT_NONE pages are all
+ * handled; nothing is allocated and no frame is freed, so a partial range
+ * cannot leave the space inconsistent. Returns the number of PTEs changed.
+ *
+ * COPY-ON-WRITE IS RE-DERIVED HERE RATHER THAN CARRIED, and that is the one
+ * subtle thing in it -- see the comment on the function. */
+uint64_t vmm_protect_range_in(uint64_t cr3, uint64_t virt, uint64_t len, uint32_t prot);
 
 /* execve(): free the user subtree but keep the (empty) address space alive. */
 void vmm_free_user(uint64_t cr3);

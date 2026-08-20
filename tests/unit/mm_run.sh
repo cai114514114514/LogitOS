@@ -36,7 +36,10 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 # not "one fewer thing under test", it is a link error -- which is exactly how
 # it was found. The thing under test is the whole of c/kernel/mm, wired the way
 # the kernel wires it.
-MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c"
+# shm.c joins for the third time the same argument has been made in this file:
+# fault.c's shared case and vma.c's segment-backed areas call straight into it,
+# so leaving it out is not "one fewer thing under test", it is a link error.
+MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c"
 
 fail=0
 run_one() {
@@ -83,6 +86,7 @@ run_one mm_rmap_test
 run_one mm_reclaim_test
 run_one mm_pcache_test
 run_one mm_forkfile_test
+run_one mm_shm_test
 
 run_negative mm_reclaim_test RECLAIM_NO_PIN_CHECK \
     "a pinned frame IS evicted without the pin check -- so the check is what protects a page the kernel holds a pointer into"
@@ -90,6 +94,9 @@ run_negative mm_reclaim_test RECLAIM_NO_ZERO_CHECK \
     "a page with data IS dropped instead of swapped without the zero check -- and comes back as zeroes, silently"
 run_negative mm_forkfile_test VMM_FORK_REASSEMBLE \
     "a forked child's file PTE is taken apart and put back together (frame from the top, flags from the low twelve bits) instead of installed whole -- the child's copy of a NO-EXECUTE page comes back EXECUTABLE, and the program still runs, which is why only a bit-for-bit assertion catches it"
+run_negative mm_shm_test SHM_FORK_COPY \
+    "fork privatises a MAP_SHARED page instead of handing the child the same memory -- which is exactly what adding shared memory and not touching vmm_clone_user looks like. Nothing else breaks: the child gets the right bytes, the right permissions and a balanced refcount, rmap_audit stays clean, and both address spaces are well formed. The two processes simply stop hearing from each other on the first write, with no error anywhere. Only an assertion on FRAME IDENTITY across the fork can see it"
+
 run_negative mm_pcache_test PCACHE_PER_OPEN \
     "keyed per-open instead of per-inode, two opens of the same file stop sharing a page and a page dropped by reclaim comes back in a DIFFERENT frame than a second handle still expects -- the exact bug the (dev,ino) key exists to prevent"
 

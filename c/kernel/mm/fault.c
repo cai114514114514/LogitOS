@@ -6,6 +6,7 @@
 #include "pmm.h"
 #include "rmap.h"
 #include "pcache.h"
+#include "shm.h"
 #include "reclaim.h"
 #include "mmhost.h"
 #include "kprintf.h"
@@ -69,6 +70,7 @@ static inline uint64_t fault_cyc(void)
 #endif
 static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin, g_cyc_file;
 static uint64_t g_swapin, g_file;
+static uint64_t g_shm, g_cyc_shm;
 
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc)
@@ -89,7 +91,7 @@ uint64_t mm_fault_declined(void) { return g_declined; }
 /* ------------------------------------------------------- the decision --- */
 int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
                       int pte_cow, int pte_user, int vma_prot, int pte_swap,
-                      int vma_file)
+                      int vma_file, int vma_shm)
 {
     /* A reserved bit set in a page-table entry means the tables themselves are
      * malformed. That is a kernel bug and must never be "handled". */
@@ -166,6 +168,16 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
      * from. `vma_file` is the VMA saying it has a backing file. */
     if (vma_file)
         return MM_FAULT_FILE;
+    /* A shared segment, on the same footing as the file case and for the same
+     * reason: the conditions above have already decided the fault is ours and
+     * that the access is permitted; this only says where the bytes live. Last,
+     * after the swap marker, so a shared page that somehow reached a swap slot
+     * comes back from the slot rather than being silently re-derived -- though
+     * it cannot: shm.h's refcount arrangement makes a segment frame fail
+     * reclaim's eligibility test, so no swap entry for one can exist. The
+     * ordering costs nothing and does not depend on that being true. */
+    if (vma_shm)
+        return MM_FAULT_SHM;
     return MM_FAULT_ANON;
 }
 
@@ -364,6 +376,54 @@ static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
     return 1;
 }
 
+/* A SHARED SEGMENT'S FAULT. Beside do_file(), deliberately the same shape, and
+ * the only difference is that the backing object is a c/kernel/mm/shm.h segment
+ * instead of the page cache -- so there is no device read, no miss, and no way
+ * for this to fail for want of memory: shm_create() allocated every frame up
+ * front (shm.h says why the fault path may not allocate).
+ *
+ * THE REFERENCE IS THE WHOLE OF IT, and it is do_file()'s sentence word for
+ * word because it is the same sentence: shm_frame() hands back a frame the
+ * SEGMENT holds a reference on and does not take one for us; this PTE is a
+ * second, independent reference, so pmm_ref() before the mapping. One too few
+ * and the frame is freed while this PTE still points at it; one too many and
+ * the arithmetic reclaim uses stops meaning anything.
+ *
+ * WRITABLE, unlike do_file(), and that is the feature rather than an oversight.
+ * A file page may not be written because there is no writeback; a segment page
+ * may, because the frame IS the storage and a write is exactly what the other
+ * process is waiting to see. The permission comes from the VMA, so a segment
+ * mapped read-only stays read-only.
+ *
+ * NEITHER ANON NOR FILE IS SET, and vmm.h's VMM_PTE_SHM comment argues why at
+ * length: both of those bits promise reclaim that the page can be re-derived by
+ * faulting it again, and both re-derivations produce a PRIVATE frame. Marking a
+ * shared page ANON would make it droppable the moment it was all zeroes -- which
+ * is what a segment looks like before its first write. */
+static int do_shm(uint64_t cr3, uint64_t page, int sh, uint64_t index,
+                  uint32_t prot, int active)
+{
+    uint64_t f = shm_frame(sh, index);
+    if (!f)
+        return 0;                   /* past the end of the segment, or the
+                                     * segment is gone: decline, and the process
+                                     * dies as it would for any other address it
+                                     * may not have */
+    if (pmm_ref(f) < 0)
+        return 0;                   /* saturated refcount. Refuse rather than
+                                     * copy: for a shared page the sharing IS
+                                     * the semantics, so a private copy would be
+                                     * a silent wrong answer (vmm.c's clone
+                                     * makes the identical argument). */
+    vmm_map_page_in(cr3, page, f,
+                    VMM_USER | VMM_PTE_SHM |
+                    ((prot & VMA_WRITE) ? VMM_WRITABLE : 0) |
+                    ((prot & VMA_EXEC)  ? 0 : MM_PTE_NX));
+    if (active) mm_invlpg(page);
+    g_shm++;
+    return 1;
+}
+
 int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 {
     if (!cr3) { g_declined++; return 0; }
@@ -377,11 +437,21 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     uint64_t findex = 0;
     uint32_t fprot = 0;
     int has_file = vma_file_at(cr3, page, &fh, &findex, &fprot);
-    uint32_t prot = has_file ? fprot : vma_prot_at(cr3, page);
+    int sh = -1;
+    uint64_t sindex = 0;
+    uint32_t sprot = 0;
+    /* Asked only when the area is not file-backed. The two are mutually
+     * exclusive (vma.h), so a second scan when the first already answered would
+     * be a table walk under vma_lock that cannot change the outcome -- and the
+     * fault path is the one place in this file where that cost is paid on every
+     * page of every process. */
+    int has_shm = has_file ? 0 : vma_shm_at(cr3, page, &sh, &sindex, &sprot);
+    uint32_t prot = has_file ? fprot : (has_shm ? sprot : vma_prot_at(cr3, page));
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
 
     uint64_t t0 = fault_cyc();
-    switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped, has_file)) {
+    switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped,
+                              has_file, has_shm)) {
     case MM_FAULT_COW: {
         uint64_t before = g_cow_copies;
         if (do_cow(cr3, page, pte, active)) {
@@ -408,6 +478,16 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
             return 1;
         }
         break;
+    case MM_FAULT_SHM:
+        /* Timed separately from the file case for the reason that one is timed
+         * separately from anon: this path has no device read and no allocation
+         * at all, so averaging it into either would hide that a shared fault is
+         * the cheapest non-trivial fault on the machine. */
+        if (do_shm(cr3, page, sh, sindex, prot, active)) {
+            g_cyc_shm += fault_cyc() - t0;
+            return 1;
+        }
+        break;
     case MM_FAULT_SWAP:
         /* THE ONE FAULT THAT GOES TO A DISK. Everything above resolves in
          * microseconds out of memory; this one is milliseconds and can give up
@@ -430,6 +510,7 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 
 uint64_t mm_swapin_faults(void) { return g_swapin; }
 uint64_t mm_file_faults(void)   { return g_file; }
+uint64_t mm_shm_faults(void)    { return g_shm; }
 
 int mm_fault(uint64_t cr2, uint64_t err, uint64_t rip)
 {
@@ -474,6 +555,10 @@ void mm_report(const char *tag)
     kprintf("[mm] %s: file faults %d (%d kcycles total / %d each)\n",
             tag ? tag : "-", (int)g_file, (int)(g_cyc_file / 1000),
             (int)(g_file ? g_cyc_file / g_file : 0));
+    kprintf("[mm] %s: shm faults %d (%d kcycles total / %d each)\n",
+            tag ? tag : "-", (int)g_shm, (int)(g_cyc_shm / 1000),
+            (int)(g_shm ? g_cyc_shm / g_shm : 0));
     pcache_report(tag);
+    shm_report(tag);
     reclaim_report(tag);
 }

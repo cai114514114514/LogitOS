@@ -15,6 +15,10 @@
  * the userland header. Same note as syscall.c, same build failure. */
 #include "kernel/core/wait.h"   /* M27: a pipe waits, it does not poll */
 #include "ksignal.h"    /* signals: ^C on the console, SIGPIPE, EINTR */
+#include "kpoll.h"      /* poll_wait(): the readiness half of every backend here.
+                         * NOT "poll.h" -- mini-libc owns that basename and
+                         * INCDIRS is flat; kpoll.h's own header says why. */
+#include "pit.h"        /* timerfd: the 100 Hz tick IS its clock */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -26,6 +30,12 @@ void *memcpy(void *, const void *, size_t);
 long lsock_file_read(struct file *f, void *buf, long len) __attribute__((weak));
 long lsock_file_write(struct file *f, const void *buf, long len) __attribute__((weak));
 void lsock_file_release_backing(void *backing) __attribute__((weak));
+/* The readiness half of the same seam, and the ONE function the network line
+ * has to write for a socket to become pollable. Same weak treatment and the
+ * same meaning when absent: this build has no sockets. Its exact contract --
+ * which queue to register on for a connection and for a listener -- is in
+ * c/kernel/exec/kpoll.h, written for whoever picks it up. */
+short lsock_file_poll(struct file *f, struct poll_table *pt) __attribute__((weak));
 
 /* --------------------------------------------------------------------------
  * WHAT THE CONSOLE WAIT COSTS.
@@ -227,6 +237,307 @@ static long pipe_write(struct file *f, const void *vbuf, long len)
         if (n > before) waitq_wake_all(&p->wq);              /* there is data now */
     }
     return n;
+}
+
+/* ==========================================================================
+ * F_EVENT: eventfd and timerfd.
+ *
+ * WHY THEY ARE ONE TYPE. An eventfd is a 64-bit counter, a wait queue, and a
+ * rule for how read() drains it. A timerfd is a 64-bit counter, a wait queue,
+ * and a rule for how read() drains it. The ONLY difference is what increments
+ * the counter -- another thread's write(), or the timer tick -- so two types
+ * would have been two copies of the read side, the blocking side and the poll
+ * side in order to distinguish two producers. `is_timer` is that difference,
+ * and it appears in exactly three places below.
+ *
+ * WHY EVENTFD AT ALL, when this kernel has had pipes since M18. A poll loop
+ * that can only be woken by its own descriptors cannot be told to stop and
+ * cannot be handed work. The portable answer is the self-pipe trick, which
+ * works here -- and costs TWO of the 512 open-file descriptions plus an 8 KiB
+ * ring buffer (PIPE_SZ above) to move one bit. This is one description and
+ * eight bytes. It also cannot desynchronise: a self-pipe's byte count and the
+ * work queue it stands for are two numbers that have to be kept equal by hand.
+ *
+ * THE COUNTER SATURATES rather than blocking the writer. Linux blocks a write
+ * that would overflow; doing that here would mean a writer wait queue and a
+ * second blocking path, to protect against a case that needs 2^64 wakeups
+ * nobody read. It saturates at UINT64_MAX-1 and that is stated in the ABI.
+ * ======================================================================== */
+struct eventobj {
+    struct waitq wq;
+    uint64_t     val;         /* eventfd counter / timerfd expirations pending */
+    int          semflag;     /* EFD_SEMAPHORE: read() takes 1, not all */
+    int          is_timer;
+    uint64_t     deadline;    /* timer_ticks() value of the next expiry; 0 = disarmed */
+    uint64_t     interval;    /* ticks between expiries; 0 = one-shot */
+};
+
+/* THE ARMED-TIMER REGISTRY, and why it is a fixed array rather than a walk of
+ * files[].
+ *
+ * file_timerfd_tick() runs inside the 100 Hz timer interrupt. Walking all 512
+ * open-file descriptions there would put 51,200 loads a second on the IRQ path
+ * to serve a facility that is usually unused, and it would do it while holding
+ * whatever the interrupt entry holds. This array is scanned instead: it is as
+ * long as the number of timerfds that can exist, and the scan is skipped
+ * entirely when the count is zero, which is the state of every machine that is
+ * not using timerfd.
+ *
+ * SIXTEEN. It is a limit and it is refused out loud (file_timerfd() returns
+ * NULL, SYS_TIMERFD answers POLL_E_NOMEM) rather than silently creating a timer
+ * that never fires -- which is what an unregistered timerfd would be, and which
+ * would look exactly like a poll() bug. */
+#define TIMERFD_MAX 16
+static struct eventobj *g_timers[TIMERFD_MAX];
+static int              g_ntimers;
+static spinlock_t       g_timer_lock = SPINLOCK_INIT;
+
+static int timer_register(struct eventobj *e)
+{
+    uint64_t f = spin_lock_irqsave(&g_timer_lock);
+    int ok = 0;
+    for (int i = 0; i < TIMERFD_MAX; i++)
+        if (!g_timers[i]) { g_timers[i] = e; g_ntimers++; ok = 1; break; }
+    spin_unlock_irqrestore(&g_timer_lock, f);
+    return ok;
+}
+
+static void timer_unregister(struct eventobj *e)
+{
+    uint64_t f = spin_lock_irqsave(&g_timer_lock);
+    for (int i = 0; i < TIMERFD_MAX; i++)
+        if (g_timers[i] == e) { g_timers[i] = 0; if (g_ntimers) g_ntimers--; break; }
+    spin_unlock_irqrestore(&g_timer_lock, f);
+}
+
+/* Called from the 100 Hz timer interrupt (ksig_tick). Interrupt context, so it
+ * must never block and never allocate: it does neither -- waitq_wake_all() is
+ * explicitly interrupt-safe (c/kernel/core/wait.h rule 3) and the registry is
+ * static.
+ *
+ * The expiry count is computed rather than incremented by one, so a machine
+ * that spent 300 ms in a device poll reports THREE expirations of a 100 ms
+ * timer instead of quietly losing two. That is the whole reason read() returns
+ * a count instead of a byte. */
+void file_timerfd_tick(void)
+{
+    if (!g_ntimers) return;                     /* the common case: no timerfds */
+    uint64_t now = timer_ticks();
+    struct eventobj *fire[TIMERFD_MAX];
+    int nf = 0;
+
+    uint64_t f = spin_lock_irqsave(&g_timer_lock);
+    for (int i = 0; i < TIMERFD_MAX; i++) {
+        struct eventobj *e = g_timers[i];
+        if (!e || !e->deadline) continue;
+        if ((int64_t)(now - e->deadline) < 0) continue;
+        if (e->interval) {
+            uint64_t n = 1 + (now - e->deadline) / e->interval;
+            e->val     += n;
+            e->deadline += n * e->interval;
+        } else {
+            e->val++;
+            e->deadline = 0;                    /* one-shot: disarmed by firing */
+        }
+        if (nf < TIMERFD_MAX) fire[nf++] = e;
+    }
+    spin_unlock_irqrestore(&g_timer_lock, f);
+
+    /* The wakes happen OUTSIDE g_timer_lock. waitq_wake_all takes the queue's
+     * own lock and, for a poll registration, the poller's lock inside it -- so
+     * doing it under g_timer_lock would add a third lock to that chain from
+     * interrupt context for no reason. Lock order stays q->lock -> xlock. */
+    for (int i = 0; i < nf; i++) waitq_wake_all(&fire[i]->wq);
+}
+
+static long evt_read(struct file *f, void *vbuf, long len)
+{
+    struct eventobj *e = (struct eventobj *)f->backing;
+    /* EXACTLY 8 BYTES, refused rather than truncated. Linux's contract, and
+     * every ported program assumes it; a short read that "worked" would hand
+     * back half a counter and leave the rest to be misread as the next one. */
+    if (len < 8) return -1;
+    if (!(f->flags & O_NONBLOCK)) {
+        /* ksig_interrupted() in the PREDICATE for the reason pipe_read gives
+         * above: a signal's wake says nothing about the counter, so a
+         * wait_event that did not know about it would simply re-park. */
+        wait_event(&e->wq, e->val > 0 || ksig_interrupted());
+        if (e->val == 0 && ksig_interrupted()) return SIG_E_INTR;
+    }
+    if (e->val == 0) return EAGAIN_RC;
+    uint64_t out;
+    if (e->semflag && !e->is_timer) { out = 1; e->val--; }
+    else                            { out = e->val; e->val = 0; }
+    memcpy(vbuf, &out, sizeof out);
+    /* Wake the queue: with EFD_SEMAPHORE several readers share one counter, and
+     * a reader that took one of five has left four for somebody else. */
+    if (e->val) waitq_wake_all(&e->wq);
+    return 8;
+}
+
+static long evt_write(struct file *f, const void *vbuf, long len)
+{
+    struct eventobj *e = (struct eventobj *)f->backing;
+    /* A timerfd is written by the clock and by nothing else. Refused rather
+     * than accepted-and-ignored: a program that thinks it armed a timer by
+     * writing to it would wait forever with no error to look at. */
+    if (e->is_timer) return -1;
+    if (len < 8) return -1;
+    uint64_t add;
+    memcpy(&add, vbuf, sizeof add);
+    /* A write of 0 wakes nobody, deliberately -- see the ABI note. It is not an
+     * error, so a caller looping over a buffer of counts does not have to
+     * special-case it. */
+    if (add == 0) return 8;
+    if (e->val > 0xfffffffffffffffeULL - add) e->val = 0xfffffffffffffffeULL;
+    else                                      e->val += add;
+    waitq_wake_all(&e->wq);
+    return 8;
+}
+
+static short evt_poll(struct file *f, struct poll_table *pt)
+{
+    struct eventobj *e = (struct eventobj *)f->backing;
+    poll_wait(pt, &e->wq);                      /* FIRST -- see kpoll.h */
+    short m = 0;
+    if (e->val > 0) m |= LPOLLIN;
+    /* A timerfd is never writable: evt_write refuses it, so claiming LPOLLOUT
+     * would be promising that a call which always fails will not block. */
+    if (!e->is_timer) m |= LPOLLOUT;
+    return m;
+}
+
+static struct file *evt_alloc(int is_timer, uint64_t initval, int flags)
+{
+    struct eventobj *e = (struct eventobj *)kmalloc(sizeof *e);
+    if (!e) return 0;
+    waitq_init(&e->wq);
+    e->val      = initval;
+    e->semflag  = (flags & EFD_SEMAPHORE) ? 1 : 0;
+    e->is_timer = is_timer;
+    e->deadline = 0;
+    e->interval = 0;
+    if (is_timer && !timer_register(e)) { kfree(e); return 0; }
+    struct file *f = file_alloc();
+    if (!f) { if (is_timer) timer_unregister(e); kfree(e); return 0; }
+    f->type    = F_EVENT;
+    f->flags   = flags & O_NONBLOCK;
+    f->amode   = O_RDWR;
+    f->backing = e;
+    return f;
+}
+
+struct file *file_eventfd(uint64_t initval, int flags) { return evt_alloc(0, initval, flags); }
+struct file *file_timerfd(int flags)                   { return evt_alloc(1, 0, flags); }
+
+/* Arm, re-arm or disarm. value_ms == 0 disarms and CLEARS the pending count:
+ * a program that cancels a timer and then reads the fd should not receive an
+ * expiry that happened before the cancel.
+ *
+ * The conversion rounds UP and adds a tick, exactly as wait_deadline_ms() does
+ * and for the same reason: a 10 ms timer must never fire early, which a
+ * truncating conversion plus an about-to-arrive tick would make it do. The
+ * consequence, stated because it is visible: a 1 ms timer fires on the next
+ * tick, i.e. after up to 10 ms, and its "interval" is one tick. */
+int file_timerfd_arm(struct file *f, long value_ms, long interval_ms)
+{
+    if (!f || f->type != F_EVENT) return -1;
+    struct eventobj *e = (struct eventobj *)f->backing;
+    if (!e || !e->is_timer) return -1;
+    if (value_ms < 0 || interval_ms < 0) return -1;
+
+    uint64_t fl = spin_lock_irqsave(&g_timer_lock);
+    if (value_ms == 0) {
+        e->deadline = 0;
+        e->interval = 0;
+        e->val      = 0;
+    } else {
+        uint64_t vt = ((uint64_t)value_ms * TIMER_HZ + 999) / 1000;
+        uint64_t it = ((uint64_t)interval_ms * TIMER_HZ + 999) / 1000;
+        if (interval_ms > 0 && it == 0) it = 1;   /* sub-tick interval = one tick */
+        e->deadline = timer_ticks() + (vt ? vt : 1) + 1;
+        e->interval = it;
+        e->val      = 0;
+    }
+    spin_unlock_irqrestore(&g_timer_lock, fl);
+    return 0;
+}
+
+/* ==========================================================================
+ * file_poll -- the type switch, and the ONE place it is allowed to be.
+ *
+ * kpoll.c has no switch over fd types on purpose (its header argues why). This
+ * is the switch, and it is here because this is the file that already knows
+ * what each type's state means -- the pipe's counters are three lines up, the
+ * console's queue belongs to ksignal.c, and the socket's belongs to a file this
+ * line of work does not own.
+ *
+ * READ p->count AND p->readers/p->writers WITHOUT A LOCK, exactly as
+ * pipe_read() and pipe_write() do fifty lines above. That is not an oversight
+ * being copied: those counters are protected by the BKL (every syscall holds
+ * it) plus g_file_lock for the close accounting, and taking g_file_lock here
+ * would introduce a lock this file takes INSIDE a poll table's registration
+ * window -- a new edge in the lock graph to serve a read that the BKL already
+ * serialises. When the BKL goes, all four sites move together.
+ * ======================================================================== */
+short file_poll(struct file *f, struct poll_table *pt)
+{
+    if (!f) return LPOLLNVAL;
+    switch (f->type) {
+    case F_VFS:
+        /* Always ready, and it is not an approximation: the whole file is in a
+         * kernel buffer, so neither read() nor write() can block or have "not
+         * yet" to report. Registering on nothing is correct here -- there is no
+         * state change to wait for. */
+        return LPOLLIN | LPOLLOUT;
+
+    case F_PIPE: {
+        struct pipe *p = (struct pipe *)f->backing;
+        if (!p) return LPOLLNVAL;
+        poll_wait(pt, &p->wq);                  /* FIRST -- see kpoll.h */
+        short m = 0;
+        if (f->is_write) {
+            /* No readers left: a write() would post SIGPIPE and fail. That is
+             * LPOLLERR, not LPOLLOUT -- reporting writable would send the
+             * caller into a write that kills it. */
+            if (p->readers == 0) m |= LPOLLERR;
+            else if (p->count < PIPE_SZ) m |= LPOLLOUT;
+        } else {
+            if (p->count > 0)  m |= LPOLLIN;
+            /* LPOLLHUP without LPOLLIN once the ring is drained, which is
+             * Linux's answer and the one every event loop is written against:
+             * revents is non-zero, so the fd is returned, and the read() that
+             * follows gets 0 = EOF. A poll loop that watched only LPOLLIN would
+             * otherwise spin on a dead pipe forever. */
+            if (p->writers == 0) m |= LPOLLHUP;
+        }
+        return m;
+    }
+
+    case F_TTY:
+        /* The console queue the 100 Hz tick drains the UART into. There is no
+         * serial receive interrupt on this machine, so a byte can sit in the
+         * UART for up to one tick before it is visible here -- 10 ms of
+         * latency, the same 10 ms a blocking read of the console already had.
+         * The alternative, peeking at the port directly, is NOT available:
+         * serial_getc() is destructive and would eat the byte the subsequent
+         * read() needs, and ksig_tick's ^C handling would never see it. */
+        poll_wait(pt, ksig_tty_waitq());
+        return (short)(LPOLLOUT | (ksig_tty_avail() ? LPOLLIN : 0));
+
+    case F_EVENT:
+        return evt_poll(f, pt);
+
+    case F_SOCK:
+        /* LPOLLNVAL, not 0, while the hook does not exist. "This kernel cannot
+         * answer for that fd" and "that fd will never be ready" are different
+         * findings: the first returns immediately and tells the caller, the
+         * second parks it forever. mini-libc's old poll() made the second
+         * choice for pipes and said so in its own header; this does not repeat
+         * it. The one function that closes this is named in kpoll.h. */
+        return lsock_file_poll ? lsock_file_poll(f, pt) : LPOLLNVAL;
+    }
+    return LPOLLNVAL;
 }
 
 /* Open-file-description pool. Every fd in every process points at one of these;
@@ -472,9 +783,10 @@ long file_read(struct file *f, void *buf, long len)
         f->off += n;
         return n;
     }
-    if (f->type == F_PIPE) return pipe_read(f, buf, len);
-    if (f->type == F_TTY)  return tty_read(f, buf, len);
-    if (f->type == F_SOCK) return lsock_file_read ? lsock_file_read(f, buf, len) : -1;
+    if (f->type == F_PIPE)  return pipe_read(f, buf, len);
+    if (f->type == F_TTY)   return tty_read(f, buf, len);
+    if (f->type == F_EVENT) return evt_read(f, buf, len);
+    if (f->type == F_SOCK)  return lsock_file_read ? lsock_file_read(f, buf, len) : -1;
     return -1;
 }
 
@@ -492,9 +804,10 @@ long file_write(struct file *f, const void *buf, long len)
         f->dirty = 1;
         return len;
     }
-    if (f->type == F_PIPE) return pipe_write(f, buf, len);
-    if (f->type == F_TTY)  return tty_write(f, buf, len);
-    if (f->type == F_SOCK) return lsock_file_write ? lsock_file_write(f, buf, len) : -1;
+    if (f->type == F_PIPE)  return pipe_write(f, buf, len);
+    if (f->type == F_TTY)   return tty_write(f, buf, len);
+    if (f->type == F_EVENT) return evt_write(f, buf, len);
+    if (f->type == F_SOCK)  return lsock_file_write ? lsock_file_write(f, buf, len) : -1;
     return -1;
 }
 
@@ -587,6 +900,21 @@ void file_close(struct file *f)
          * live until every copy is gone, exactly like every other type here.
          * f->backing was cleared above, hence the local copy. */
         if (lsock_file_release_backing) lsock_file_release_backing(backing);
+    } else if (type == F_EVENT) {
+        struct eventobj *e = (struct eventobj *)backing;
+        if (e) {
+            /* Off the tick registry FIRST, then wake, then free. The order is
+             * the whole safety argument: after timer_unregister() the interrupt
+             * can no longer reach this object, and the wake releases anybody
+             * parked in evt_read() so that no thread is inside it when the
+             * memory goes. A blocked reader holds an fd reference of its own,
+             * so refcount cannot have reached 0 while one exists -- the wake is
+             * the belt to that braces, and it costs one uncontended lock on a
+             * path that runs once per descriptor. */
+            timer_unregister(e);
+            waitq_wake_all(&e->wq);
+            kfree(e);
+        }
     } else if (type == F_PIPE) {
         struct pipe *p = (struct pipe *)backing;
         if (p) {

@@ -41,7 +41,9 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 #include "logit_abi.h"
@@ -269,8 +271,143 @@ static void *detached_worker(void *arg)
     return 0;
 }
 
-int main(void)
+/* ---------------------------------------------------------------------------
+ * 5. THE GUARD PAGE -- `/bin/thrtest guard`, and it is NOT part of the run
+ *    above because on a working kernel it ENDS THE PROCESS. That is the point:
+ *    the thing being demonstrated is a fault at an address computed in advance.
+ *
+ * The measurement is a BEFORE and an AFTER of the same overrun, and the two
+ * builds differ in exactly one line -- the guardsize this passes to
+ * pthread_attr_setguardsize:
+ *
+ *   -DTHR_NEGCTL_NOGUARD  guardsize 0. The overrun walks out of the bottom of
+ *                         the stack into the mapping below it, CORRUPTS it,
+ *                         and returns. No fault happens at the overflow at
+ *                         all; the program lives to print how many bytes of
+ *                         somebody else's buffer it wrote over.
+ *   (default)             guardsize one page. The same overrun faults on the
+ *                         first byte past the end of the stack, inside a range
+ *                         this program PRINTS BEFORE IT STARTS -- so the
+ *                         kernel's `[fault] ... cr2=` line can be checked
+ *                         against a number nobody chose after the fact.
+ *
+ * THE VICTIM BUFFER IS WHY THE TWO ARE COMPARABLE. It is mmap'd immediately
+ * before the thread, and vma_reserve places first-fit from MM_MMAP_BASE up, so
+ * the thread's mapping lands directly on top of it. The address the overrun
+ * reaches is therefore the SAME in both builds: in one it is the guard page, in
+ * the other it is the last pages of this buffer. The program asserts that
+ * adjacency out loud rather than assuming it -- if the allocator ever places
+ * them apart, this prints ADJACENCY-LOST and the harness reports that instead
+ * of quietly measuring something else.
+ *
+ * Sizes are small on purpose: a 64 KiB stack overrun by 16 KiB touches 20
+ * pages, where the 8 MiB default would touch 2048 and cost 8 MiB of real
+ * frames to prove the same thing.
+ * ------------------------------------------------------------------------- */
+#define GUARD_STACK   (64u * 1024)
+#define GUARD_VICTIM  (64u * 1024)
+#define GUARD_OVERRUN (16u * 1024)
+#define GUARD_PAT(i)  ((unsigned char)((i) * 31u + 0x5Au))
+
+static volatile unsigned long g_sink;
+static unsigned long g_limit;             /* descend until &frame <= this */
+
+/* Not tail-recursive -- the `g_sink +=` AFTER the call is what stops the
+ * compiler turning this into a loop, which would grow no stack at all and
+ * prove nothing. `frame` is volatile and written at both ends so every page it
+ * spans is actually touched: a guard page only fires on a page somebody
+ * touches. */
+__attribute__((noinline)) static void descend(void)
 {
+    volatile unsigned char frame[192];
+    frame[0] = 0xA5;
+    frame[sizeof frame - 1] = 0x5A;
+    if ((unsigned long)(uintptr_t)&frame[0] > g_limit) descend();
+    g_sink += frame[0] + frame[sizeof frame - 1];
+}
+
+static void *guard_worker(void *arg)
+{
+    unsigned long guard_lo = (unsigned long)(uintptr_t)arg;   /* the victim's top edge,
+                                                               * i.e. where the thread
+                                                               * mapping begins */
+    pthread_attr_t a;
+    void *stack_lo = 0;
+    size_t stack_sz = 0, gsz = 0;
+
+    if (pthread_getattr_np(pthread_self(), &a) != 0) {
+        printf("thrtest: GUARD-FAIL pthread_getattr_np refused\n");
+        return 0;
+    }
+    pthread_attr_getguardsize(&a, &gsz);
+    pthread_attr_getstack(&a, &stack_lo, &stack_sz);
+
+    printf("thrtest: guardsize %lu\n", (unsigned long)gsz);
+    printf("thrtest: stack  [%p,%p)\n", stack_lo, (char *)stack_lo + stack_sz);
+    printf("thrtest: guard  [%p,%p)\n",
+           (char *)stack_lo - gsz, stack_lo);
+    if ((unsigned long)(uintptr_t)stack_lo - gsz != guard_lo)
+        printf("thrtest: ADJACENCY-LOST victim ends at %p, thread mapping begins at %p\n",
+               (void *)guard_lo, (char *)stack_lo - gsz);
+    else
+        printf("thrtest: adjacency ok -- the overrun lands on %s\n",
+               gsz ? "the guard page" : "the victim buffer");
+
+    g_limit = (unsigned long)(uintptr_t)stack_lo - GUARD_OVERRUN;
+    printf("thrtest: descending from %p to %p (%u bytes past the stack bottom)\n",
+           (void *)(uintptr_t)&a, (void *)g_limit, GUARD_OVERRUN);
+    fflush(stdout);
+
+    descend();
+
+    /* Only a build with no guard gets here. */
+    printf("thrtest: SURVIVED the overrun -- no fault at the stack bottom\n");
+    fflush(stdout);
+    return 0;
+}
+
+static int guard_mode(void)
+{
+    unsigned char *victim = mmap(0, GUARD_VICTIM, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (victim == MAP_FAILED) { printf("thrtest: GUARD-FAIL victim mmap\n"); return 1; }
+    for (unsigned i = 0; i < GUARD_VICTIM; i++) victim[i] = GUARD_PAT(i);
+    printf("thrtest: victim [%p,%p)\n", victim, victim + GUARD_VICTIM);
+
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, GUARD_STACK);
+#ifdef THR_NEGCTL_NOGUARD
+    /* THE BEFORE. One line, and it is the whole difference. */
+    int rc = pthread_attr_setguardsize(&a, 0);
+#else
+    int rc = pthread_attr_setguardsize(&a, 4096);
+#endif
+    if (rc != 0) { printf("thrtest: GUARD-FAIL setguardsize -> %d\n", rc); return 1; }
+
+    pthread_t t;
+    rc = pthread_create(&t, &a, guard_worker, victim + GUARD_VICTIM);
+    if (rc != 0) { printf("thrtest: GUARD-FAIL pthread_create -> %d\n", rc); return 1; }
+    pthread_join(t, 0);
+    pthread_attr_destroy(&a);
+
+    /* Reached only when the thread survived, i.e. only in the no-guard build.
+     * Count what it wrote over -- "it did not crash" is not the finding; the
+     * finding is that it corrupted a live buffer instead. */
+    unsigned bad = 0, first = GUARD_VICTIM;
+    for (unsigned i = 0; i < GUARD_VICTIM; i++)
+        if (victim[i] != GUARD_PAT(i)) { if (first == GUARD_VICTIM) first = i; bad++; }
+    printf("thrtest: victim corrupted: %u of %u bytes, first at +%u (%p)\n",
+           bad, (unsigned)GUARD_VICTIM, first, victim + first);
+    printf("thrtest: GUARD_TEST_NOFAULT\n");
+    fflush(stdout);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "guard") == 0) return guard_mode();
+
     printf("thrtest: start\n");
 
     /* --- 1. concurrency, by wall clock ----------------------------------

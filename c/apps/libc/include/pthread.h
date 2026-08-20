@@ -76,7 +76,13 @@ typedef unsigned int  pthread_key_t;
 
 #define PTHREAD_ONCE_INIT 0
 
-typedef struct { size_t stacksize; int detachstate; int guardsize; } pthread_attr_t;
+/* `guardsize` is a size_t and used to be an int. It is a byte count that
+ * pthread_attr_setguardsize takes as a size_t and pthread_attr_getguardsize
+ * hands back as one, and it is now a real number rather than a hardcoded 0 --
+ * an int would have silently truncated any request above 2 GiB into a
+ * NEGATIVE guard, which is the shape of request a program makes when it is
+ * computing a guard from a stack size. */
+typedef struct { size_t stacksize; int detachstate; size_t guardsize; } pthread_attr_t;
 typedef struct { int type; int pshared; } pthread_mutexattr_t;
 typedef struct { int clock; int pshared; } pthread_condattr_t;
 
@@ -122,6 +128,7 @@ int  pthread_attr_setdetachstate(pthread_attr_t *a, int state);
 int  pthread_attr_getdetachstate(const pthread_attr_t *a, int *state);
 int  pthread_attr_setscope(pthread_attr_t *a, int scope);
 int  pthread_attr_setguardsize(pthread_attr_t *a, size_t sz);
+int  pthread_attr_getguardsize(const pthread_attr_t *a, size_t *sz);
 int  pthread_getattr_np(pthread_t th, pthread_attr_t *a);
 int  pthread_attr_getstack(const pthread_attr_t *a, void **addr, size_t *sz);
 

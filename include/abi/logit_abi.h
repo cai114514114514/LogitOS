@@ -406,6 +406,44 @@ struct logit_clockinfo {
 #define SYS_SND_CLOSE  90 /* (h, drain) -> 0; drain != 0 plays out what is queued first */
 #define SYS_SND_STATE  91 /* (h, struct logit_sndstate*) -> 0, or SND_E_* */
 
+/* ---- audio CAPTURE (mic / line-in), added with the HDA capture work --------
+ * See c/drivers/audio/hda.c for the codec-side half (widget-graph search for
+ * an ADC + input pin) and c/kernel/audio/capture.c for the kernel half.
+ *
+ * Deliberately NOT symmetric with playback in two respects, both because the
+ * upstream side of capture is real hardware instead of a file a decoder
+ * chose the rate for:
+ *
+ *   - Exactly ONE stream. There is one ADC wired to one input pin, so there
+ *     is exactly one capture stream; SYS_SND_CAP_OPEN returns SND_E_NOMEM
+ *     ("no free slot") if one is already open -- the same code the playback
+ *     mixer's full stream table returns, for the same reason.
+ *   - NO resampling. Playback resamples every stream to the card's rate
+ *     because a decoder's rate is a fact about a FILE nobody here controls;
+ *     capture has no file upstream of it, so the device's native rate simply
+ *     IS the stream's rate.
+ *
+ * SYS_SND_CAP_OPEN takes the same struct SYS_SND_OPEN does, with rate == 0 as
+ * a sentinel meaning "give me whatever the hardware captures at" -- the
+ * kernel overwrites the struct in place with the real rate/channels/format
+ * before returning, so a caller that does not care still ends up knowing
+ * what it got. A caller that names an explicit rate/channels/format and gets
+ * it wrong is refused (SND_E_FORMAT), never silently reinterpreted -- this
+ * ABI does not have a "close enough" anywhere else and capture does not
+ * start being the exception. */
+#define SYS_SND_CAP_OPEN  168 /* (struct logit_sndfmt* inout) -> handle >= 0, or SND_E_* */
+#define SYS_SND_CAP_READ  169 /* (h, buf, bytes) -> bytes DELIVERED (may be short), or SND_E_* */
+#define SYS_SND_CAP_AVAIL 170 /* (h) -> bytes captured and waiting right now, or SND_E_* */
+#define SYS_SND_CAP_CLOSE 171 /* (h) -> 0. Nothing to drain on the input side. */
+#define SYS_SND_CAP_STATE 172 /* (h, struct logit_sndstate*) -> 0, or SND_E_*.
+                               * Same struct as playback, direction-appropriate
+                               * reuse rather than a mirror-image ABI for five
+                               * numbers: frames_played means frames CAPTURED,
+                               * and underruns means OVERRUNS -- the ring was
+                               * full and the oldest hardware period was
+                               * dropped rather than the newest, so a slow
+                               * reader loses the past, not the present. */
+
 /* Sample formats. S16 is the one every path supports and the one a decoder
  * should emit unless it has a reason not to; the rest are converted on write. */
 #define SND_FMT_S16  0   /* signed 16-bit little-endian (native everywhere) */
@@ -1620,6 +1658,39 @@ struct logit_sigctx {
  * giving the network a timer of its own.
  * ======================================================================== */
 
+/* --- AF_UNIX (137-139) -----------------------------------------------------
+ *
+ * The two calls the socket block above never needed and a local socket cannot
+ * do without. They sit BELOW SYS_SOCKET rather than after SYS_SOCKSTAT because
+ * 137-139 were the free numbers adjacent to the family; nothing reads meaning
+ * into the ordering.
+ *
+ * WHY connect() DID NOT EXIST. The AF_INET side of this ABI has two disjoint
+ * halves and neither one needed it: SYS_SOCK_OPEN takes a HOST NAME AND PORT in
+ * one call and does the DNS itself (c/net/core/sock.c), and SYS_SOCKET..
+ * SYS_ACCEPT is the passive side. So the whole machine could answer a
+ * connection and could fetch a URL, and could not connect a descriptor to an
+ * address. AF_UNIX has no host name to look up and no listener of its own to
+ * reach otherwise, so it is the call that has to exist.
+ *
+ * SYS_CONNECT REFUSES AF_INET TODAY, out loud, with LSK_E_ARG. That is not a
+ * stub: wiring it to tcp_connect() means teaching c/net/core/lsock.c an active
+ * open and a connecting state, and a SYS_CONNECT that half-worked on AF_INET
+ * would be worse than one that names its limit -- a caller that gets 0 from
+ * connect() believes it has a socket. */
+#define SYS_CONNECT     137 /* (fd, const struct logit_sockaddr_un *, len) -> 0.
+                             * AF_UNIX only. For SOCK_STREAM/SOCK_SEQPACKET it
+                             * returns as soon as the connection is QUEUED on
+                             * the listener -- it does not wait for accept(),
+                             * which is why a client may write immediately. For
+                             * SOCK_DGRAM it records the default destination and
+                             * sends nothing. */
+#define SYS_SOCKETPAIR  138 /* (domain, type, int sv[2]) -> 0, filling sv.
+                             * AF_UNIX only; any of the three types. TWO
+                             * INDEPENDENT BIDIRECTIONAL ENDS -- which is the
+                             * whole difference from SYS_PIPE, whose two fds are
+                             * one direction of one buffer. */
+
 #define SYS_SOCKET      140 /* (domain, type, protocol) -> fd, or LSK_E_*.
                              * domain = AF_INET, type = SOCK_STREAM|SOCK_DGRAM,
                              * protocol 0. No fd is bound to anything yet. */
@@ -1653,9 +1724,52 @@ struct logit_sigctx {
 
 /* Address families and socket types. Only what is implemented is defined: an
  * AF_INET6 constant this kernel would refuse is worse than no constant. */
+#define LOGIT_AF_UNIX    1     /* also spelled AF_LOCAL; the numbers are BSD's,
+                                * so a ported program's own headers agree */
 #define LOGIT_AF_INET    2
 #define LOGIT_SOCK_STREAM 1
 #define LOGIT_SOCK_DGRAM  2
+/* SOCK_RAW -- see c/net/core/raw.c. Root only (checked at SYS_SOCKET against
+ * c/fs/vfs_cred.c, the one privilege boundary this machine has -- see that
+ * file's own note that "root" means "the login session is root or nobody has
+ * logged in" rather than a hardened boundary yet). ONLY IPPROTO_ICMP is
+ * accepted as the third argument; a raw socket for any other protocol number
+ * is refused with LSK_E_ARG rather than silently accepted and never fed
+ * anything. Deliberately numbered 3 to match <sys/socket.h>'s SOCK_RAW (the
+ * mini-libc POSIX header, c/apps/libc/include/sys/socket.h) -- the two are
+ * not wired together (see that header's own note on why not), but a value
+ * that already agrees is one fewer thing to get backwards later. */
+#define LOGIT_SOCK_RAW    3
+#define LOGIT_IPPROTO_ICMP 1
+
+/* SOCK_SEQPACKET is here because it FELL OUT, not because it was aimed at: an
+ * AF_UNIX connection already carries a ring of record lengths beside its ring of
+ * bytes (SOCK_DGRAM needs one), and the connection machinery is the stream one.
+ * So seqpacket = the stream path with that ring switched on, and it costs one
+ * comparison in c/net/core/unix.c. The alternative was to ALIAS it to
+ * SOCK_STREAM, which is refused on this tree's own terms: a caller that asked
+ * for message boundaries and silently got a byte stream reassembles two
+ * messages into one and does not find out until the data is wrong. AF_INET does
+ * NOT accept it -- there is no SCTP here. */
+#define LOGIT_SOCK_SEQPACKET 5
+
+/* An AF_UNIX address: a PATH, not a number.
+ *
+ * 108 bytes because that is the number every ported program already assumes
+ * (`sizeof(((struct sockaddr_un *)0)->sun_path)` on Linux and the BSDs), and a
+ * program that lays out its own struct and passes it to bind() has to agree
+ * with this one byte for byte.
+ *
+ * The path is resolved against the caller's cwd exactly like every other path in
+ * this ABI, so a relative name works. Linux's ABSTRACT NAMESPACE (a sun_path
+ * whose first byte is NUL, naming a socket with no filesystem entry) is NOT
+ * implemented and is refused rather than silently treated as the empty path --
+ * see c/net/core/unix.c for why accepting it would be worse than refusing it. */
+#define LOGIT_UNIX_PATH_MAX 108
+struct logit_sockaddr_un {
+    unsigned short family;                     /* LOGIT_AF_UNIX */
+    char           path[LOGIT_UNIX_PATH_MAX];  /* NUL-terminated */
+};
 
 /* An address. PORT AND ADDR ARE HOST ORDER, like every other IP in this ABI
  * (see SYS_NET_PING and struct logit_netinfo) -- NOT network order as in
@@ -1719,6 +1833,21 @@ struct logit_dgram {
 #define SOCKSTAT_REFUSED_NOPORT  4   /* a SYN for a port nobody listens on */
 #define SOCKSTAT_FREE_CONNS      5   /* connection slots still available */
 #define SOCKSTAT_LISTENERS       6   /* listening ports right now */
+/* The same idea for AF_UNIX, read through SYS_SOCKSTAT with the selector offset
+ * by UNIXSTAT_BASE. ONE selector space, because a caller asking "what is the
+ * socket layer doing" should not have to know which of two syscalls to use; the
+ * offset keeps the two counter sets from colliding as either grows. */
+#define UNIXSTAT_BASE          100
+#define UNIXSTAT_SOCKS         100   /* AF_UNIX sockets alive right now */
+#define UNIXSTAT_NAMES         101   /* bound paths right now */
+#define UNIXSTAT_CONNS         102   /* connections (a socketpair counts one) */
+#define UNIXSTAT_REFUSED_NAME  103   /* connect() to a path nobody holds */
+#define UNIXSTAT_REFUSED_LISTEN 104  /* connect() to a bound, non-listening path */
+#define UNIXSTAT_REFUSED_PERM  105   /* connect() refused on the name's mode */
+#define UNIXSTAT_REFUSED_INUSE 106   /* bind() to a path already held */
+#define UNIXSTAT_REFUSED_FULL  107   /* no socket slot / no memory */
+#define UNIXSTAT_ACCEPTED      108
+#define UNIXSTAT_DGRAMS        109   /* datagrams and seqpackets delivered */
 
 /* SYS_SOCKET..SYS_SENDTO results. Distinct codes, for the reason the settings
  * and thread blocks both give: one "-1" covering "bad descriptor", "port taken"
@@ -1733,6 +1862,20 @@ struct logit_dgram {
                              * unbound one, sendto on a stream -- the call is
                              * fine, the socket is in the wrong state for it */
 #define LSK_E_NET    (-6)   /* no NIC is up */
+#define LSK_E_PERM   (-7)   /* Refused on a CREDENTIAL rather than on a state.
+                             * Two producers, deliberately sharing one code
+                             * because a caller's response to both is the same:
+                             * SOCK_RAW from a non-root credential
+                             * (c/fs/vfs_cred.c), and an AF_UNIX bind() or
+                             * connect() the name's own mode does not permit
+                             * (c/net/core/unix.c). */
+#define LSK_E_CONNREFUSED (-8) /* AF_UNIX connect(): the path names nothing, or
+                             * names a socket that is not listening. A separate
+                             * code from LSK_E_ARG for the reason the block above
+                             * gives: "there is no daemon there" is the single
+                             * most common thing a client has to tell apart from
+                             * "you passed a bad descriptor", and it is the one a
+                             * retry loop is written around. */
 
 /* --- M32 identity: who is running this (150-159) ---------------------------
  *
@@ -1997,4 +2140,389 @@ struct logit_capreq {
  * wants to drain a queue without sleeping (a game loop, a benchmark). */
 #define SYS_WAIT_EVENT 165
 
+/* --- SYS_MODULE_*: loadable kernel modules (182-185) ----------------------
+ *
+ * WHY THIS EXISTS. Every driver in this kernel is statically linked, so the
+ * machine can only drive hardware it was compiled with. Linux has thousands of
+ * drivers because a driver can be written, built and loaded without rebuilding
+ * the kernel; this block is that door. The registration half already existed
+ * -- DRIVER_DECLARE (c/drivers/core/driver.h) puts a driver in a linker
+ * section and dev_probe_all() walks it, so a driver file needs no call in
+ * kmain -- and what these add is everything on the other side of the link
+ * step. The design, the relocation set measured on real drivers, and the
+ * security argument are in c/kernel/module/module.h; only the ABI is here.
+ *
+ * A MODULE IS A PLAIN ET_REL OBJECT: the output of `clang -c driver.c`, no
+ * container. See module.h for why (an aex-style wrapper would be a second
+ * record of the section list, and two records disagree).
+ *
+ * ROOT ONLY, except _LIST. Loading a module is arbitrary ring-0 code
+ * execution -- that is not a weakness of the implementation, it is what the
+ * feature is. SYS_MODULE_LOAD takes a PATH and the kernel reads it through the
+ * VFS, deliberately rather than taking a user buffer as Linux's init_module
+ * does: with a buffer the bytes that become ring-0 code never had to exist on
+ * disk, so no file mode ever guards them; with a path, a root-owned mode-0700
+ * /lib/modules is a boundary this machine can keep across a reboot (vfs_meta
+ * persists modes -- see CLAUDE.md Storage). There is NO signature check.
+ *
+ * Errors are the MOD_E_* codes in c/kernel/module/module.h, negative and one
+ * per situation -- notably MOD_E_UNDEF (-8) for a symbol the kernel does not
+ * export, which is the failure a new module actually hits, and which the
+ * kernel additionally prints BY NAME on the console. */
+#define SYS_MODULE_LOAD   182 /* (const char *path, 0, 0) -> module id >= 1,
+                               * else a negative MOD_E_*. */
+#define SYS_MODULE_UNLOAD 183 /* (int id, 0, 0) -> ALWAYS MOD_E_NOUNLOAD (-10).
+                               * Not unimplemented-by-omission: the device
+                               * model has driver_register() and no
+                               * driver_unregister(), so freeing a module's
+                               * block would leave a live `struct driver *` in
+                               * a global list pointing into freed kernel heap,
+                               * read by the next dev_probe_all(). The refusal
+                               * is argued in full above mod_unload() together
+                               * with the exact one-function change to
+                               * c/drivers/core/device.c that makes it real. */
+#define SYS_MODULE_LIST   184 /* (struct logit_modinfo *out, int max, 0) ->
+                               * the TOTAL number loaded, which may exceed
+                               * `max`; `max` entries are written. Returning
+                               * the written count instead would make a
+                               * truncated answer look complete. Not root-only:
+                               * which modules are loaded is diagnostic, and
+                               * this struct carries no kernel address.
+                               * (NULL, 0) additionally dumps the table to the
+                               * console -- the same "NULL buffer means report"
+                               * spelling SYS_MEMINFO uses. */
+#define SYS_MODULE_SYM    185 /* (const char *name, uint64_t *out_addr, 0) ->
+                               * 1 if `name` is part of the kernel's module
+                               * ABI (and *out_addr is set, if non-NULL), 0 if
+                               * it is not, MOD_E_PERM if not root. The status
+                               * is not the address: a call that returned the
+                               * pointer could not express "not exported"
+                               * without picking an address that means it. */
+
+#define LOGIT_MODNAME_LEN 32
+struct logit_modinfo {
+    int      id;
+    char     name[LOGIT_MODNAME_LEN];
+    unsigned size;        /* bytes of relocated image */
+    int      ndrivers;    /* drivers registered out of its logit_drivers section */
+    int      nbound;      /* devices currently bound to one of them */
+};
+
+/* ===========================================================================
+ * WAITING ON SEVERAL DESCRIPTORS AT ONCE (173-175) -- poll(), eventfd, timerfd
+ *
+ * THIS BLOCK RETRACTS A SENTENCE THIS FILE MAKES ABOUT ITSELF. The
+ * server-socket section above says, in as many words: "THERE IS NO
+ * select/poll/epoll IN THIS ABI ... So a server CANNOT wait on several
+ * connections at once. The model that works today is a THREAD PER CONNECTION
+ * ... A server that needs hundreds of idle connections needs poll(), and
+ * poll() is not this block." It is this one. That paragraph is left standing
+ * where it is, because it is still the accurate description of what /bin/httpd
+ * does today and of what the ceiling was before this block existed.
+ *
+ * THE CEILING, MEASURED rather than remembered -- tests/boot/run-poll-test.sh
+ * prints both halves on the machine: threads per process, by creating them
+ * until one fails; and descriptors per process, which is NFD in
+ * c/kernel/exec/proc.h. The SECOND number is what binds a poll()-based server,
+ * and it is 32 -- so the concurrency one process can hold is 32 descriptors
+ * minus its stdin/stdout/stderr and its listener, in ONE thread, against the
+ * thirteen the thread-per-connection model reached.
+ *
+ * WHY poll() AND NOT epoll. epoll exists because poll is O(n) in the size of
+ * the set on EVERY call, and that cost only matters when n is large and mostly
+ * idle. Here n cannot exceed NFD = 32 by construction -- a process has nowhere
+ * to put a 33rd descriptor -- so the argument for epoll's ready-list is not
+ * available: the scan it would save is 32 pointer loads. The number that would
+ * make it worth building is NFD in the thousands, which is a different change
+ * (a growable per-process fd table, and a bigger `struct proc`) and would have
+ * to come first.
+ *
+ * WHY select() IS NOT HERE. fd_set is a USERLAND representation -- a bitmap
+ * whose width is a compile-time constant of the C library. Putting it in the
+ * ABI would freeze FD_SETSIZE into the kernel forever, and it would be the
+ * WRONG constant the moment NFD moves. select() is implemented in mini-libc on
+ * top of SYS_POLL (c/apps/libc/src/poll.c) and costs the kernel nothing.
+ *
+ * THE READINESS MODEL, said plainly, because "ready" is a promise:
+ *   LPOLLIN   a read() will not block. It does NOT promise how many bytes.
+ *   LPOLLOUT  a write() will not block. It does NOT promise how many.
+ *   LPOLLHUP  reported for a pipe read end whose last writer has gone, and it
+ *             is reported EVEN IF it was not requested -- so are LPOLLERR and
+ *             LPOLLNVAL. A caller that asks only for LPOLLIN still learns the
+ *             fd is dead, which is the only reason a poll loop over a closed
+ *             pipe terminates instead of spinning.
+ *   LPOLLNVAL the fd is not open in this process. It is an ANSWER, not a
+ *             failure: poll() counts it as ready and returns, rather than
+ *             blocking forever on a descriptor that can never become ready. A
+ *             NEGATIVE fd is skipped entirely (revents 0) -- that is POSIX,
+ *             and it is how a caller disables one slot of a fixed array.
+ *   LPOLLPRI  never set. There is no out-of-band data anywhere in this kernel,
+ *             so setting it would be an invention.
+ *
+ * WHAT IS POLLABLE, and what each answer comes FROM:
+ *   regular files    always LPOLLIN|LPOLLOUT. Not an approximation: F_VFS
+ *                    holds the file in a kernel buffer, so neither call can
+ *                    block and neither has "not yet" to report.
+ *   pipes            the pipe's own wait queue -- the same one a blocking
+ *                    read() parks on, so there is no second notion of "ready"
+ *                    that could disagree with read().
+ *   the tty          the console queue the 100 Hz timer drains the UART into.
+ *                    LATENCY IS ONE TICK, 10 ms, and it is the same 10 ms a
+ *                    blocking read of the console already had -- there is no
+ *                    serial receive interrupt on this machine. Said out loud
+ *                    because "poll returned late" is otherwise a mystery.
+ *   eventfd/timerfd  their own queue (below).
+ *   sockets          NOT YET. c/net/core/lsock.c belongs to another line of
+ *                    work; the hook it needs is ONE function and its exact
+ *                    signature is in c/kernel/exec/kpoll.h. Until it exists a
+ *                    socket fd polls as LPOLLNVAL rather than as never-ready,
+ *                    because "this kernel cannot answer for that fd" and "that
+ *                    fd will never be ready" are different findings and only
+ *                    one of them is the caller's problem.
+ * ========================================================================= */
+
+/* Event bits. mini-libc's <poll.h> defines the same values; the two must
+ * agree, and that duplication is the convention every other shared constant in
+ * that directory follows (see <fcntl.h>'s O_* block and its note). */
+#define LPOLLIN     0x001
+#define LPOLLPRI    0x002   /* never set -- there is no out-of-band data here */
+#define LPOLLOUT    0x004
+#define LPOLLERR    0x008   /* always reported, never requested */
+#define LPOLLHUP    0x010   /* always reported, never requested */
+#define LPOLLNVAL   0x020   /* always reported, never requested */
+#define LPOLLRDNORM 0x040   /* treated as LPOLLIN */
+#define LPOLLWRNORM 0x080   /* treated as LPOLLOUT */
+
+/* The array element. Byte-identical to POSIX's struct pollfd, on purpose: the
+ * point of this block is software that was not written for LogitOS, and a
+ * private layout would make mini-libc's poll() a copy loop instead of a
+ * pass-through. */
+struct logit_pollfd {
+    int   fd;
+    short events;    /* what the caller wants to hear about */
+    short revents;   /* what the kernel found; written even when 0 */
+};
+
+/* (struct logit_pollfd *fds, long nfds, long timeout_ms)
+ *   ->  n > 0       that many entries came back with a non-zero revents
+ *       0           the timeout expired with nothing ready
+ *       SIG_E_INTR  a signal arrived. The wait is NOT restarted -- see the
+ *                   SIG_E_INTR note above; a poll loop must handle it.
+ *       POLL_E_*    below
+ *
+ * timeout_ms < 0 waits indefinitely. timeout_ms == 0 is a pure probe: it
+ * registers on no wait queue and never sleeps.
+ *
+ * nfds is capped at LOGIT_POLL_MAX. That is not a resource limit dressed up as
+ * an ABI -- it is NFD, the number of descriptors a process can have open at
+ * all, so a larger request is asking about descriptors that cannot exist. */
+#define SYS_POLL 173
+#define LOGIT_POLL_MAX 32
+
+#define POLL_E_ARG   (-1)   /* nfds out of range, or a malformed request */
+#define POLL_E_FAULT (-2)   /* the fds array is not the caller's memory */
+#define POLL_E_NOMEM (-3)   /* more wait-queue registrations than the table
+                             * holds. Refused OUT LOUD rather than sleeping on
+                             * a partial registration, which is precisely the
+                             * lost wakeup this design exists to close.
+                             * Unreachable while every backend registers one
+                             * queue per fd and nfds <= LOGIT_POLL_MAX. */
+
+/* --- eventfd (174): what makes an event loop CLOSABLE ----------------------
+ * (unsigned initval, int flags) -> fd, or POLL_E_*.
+ *
+ * A poll loop that can only be woken by its own descriptors cannot be told to
+ * stop and cannot be handed work by another thread. The portable workaround is
+ * the self-pipe trick, which this kernel already supports and which costs TWO
+ * of the 512 open-file descriptions and an 8 KiB ring buffer to move one bit.
+ * An eventfd is one description, 8 bytes of state, and a counter that cannot
+ * be desynchronised from the number of wakeups.
+ *
+ * read()  takes exactly 8 bytes: the counter, which is then zeroed (or 1 and
+ *         decremented, with EFD_SEMAPHORE). Blocks while the counter is 0
+ *         unless the fd is O_NONBLOCK.
+ * write() takes exactly 8 bytes and ADDS them. A write of 0 is a no-op that
+ *         wakes nobody -- deliberately, so "wake the loop" is always a write
+ *         of a non-zero value and never accidentally a no-op.
+ *
+ * The 8-byte host-order integer is Linux's contract and every ported program
+ * assumes it. A short read or write is REFUSED, not truncated. */
+#define SYS_EVENTFD 174
+#define EFD_SEMAPHORE 0x0001   /* read() takes 1, not the whole counter */
+#define EFD_NONBLOCK  0x0800   /* == O_NONBLOCK, deliberately the same bit */
+
+/* --- timerfd (175): a deadline that is a descriptor -------------------
+ * SYS_TIMERFD (int fd, const struct logit_itimer *, int flags)
+ *   fd <  0  ->  CREATE a timerfd and arm it from the struct; returns the fd.
+ *   fd >= 0  ->  RE-ARM (or, with value_ms == 0, disarm) that timerfd;
+ *                returns 0.
+ *
+ * ONE NUMBER FOR BOTH, and the discriminator is not a flag: a descriptor is
+ * never negative, so the two shapes cannot be confused by a caller that got
+ * the argument order wrong. Linux spends two numbers here
+ * (timerfd_create/timerfd_settime); this ABI had exactly THREE numbers left in
+ * the range assigned to this work (see the note at the end of this block), and
+ * spending one of the three on a call that only ever runs once per timer was
+ * the worse trade. timerfd_create() and timerfd_settime() in mini-libc are
+ * both this call.
+ *
+ * poll() already takes ONE timeout, so a timerfd is not how a program waits
+ * for a single deadline -- it is how a program waits for SEVERAL independent
+ * ones without recomputing "the nearest deadline" on every pass and without
+ * losing an expiry to rounding. read() returns an 8-byte count of expirations
+ * since the last read, so a loop that falls behind learns BY HOW MUCH instead
+ * of silently missing ticks.
+ *
+ * THE CLOCK IS THE 100 Hz TICK and nothing here pretends otherwise: the fields
+ * are milliseconds, the granularity is 10 ms, and a 1 ms interval fires once
+ * per tick rather than ten times. Same statement SYS_MONOTONIC_MS makes. */
+#define SYS_TIMERFD     175
+
+struct logit_itimer {
+    long value_ms;      /* ms until the first expiry; 0 DISARMS the timer */
+    long interval_ms;   /* ms between expiries after the first; 0 = one-shot */
+};
+
+/* 172-175 are reserved for this line of work and are deliberately unused.
+ * Recorded rather than left blank: a hole nobody claims is a hole the next
+ * person fills with something unrelated, and a stale .aex calling a recycled
+ * number gets a DIFFERENT syscall rather than an error -- the failure mode the
+ * retired numbers (28, 29, 31-35, 42-46) exist to warn about. */
+
+
+/* ===========================================================================
+ * SHARED MEMORY (176-179) -- the first IPC on this machine that is not a copy.
+ *
+ * WHAT WAS MISSING, PLAINLY. Every non-file channel between two processes here
+ * was a pipe, and a pipe is a COPY: the writer's bytes are memcpy'd into a ring
+ * buffer and memcpy'd out again. File-backed sharing already existed and was
+ * already real -- c/kernel/mm/pcache.c keys pages on (dev, ino), so two
+ * processes mapping one file share the frames -- but it is READ-ONLY, because
+ * there is no writeback in this kernel. There was no way at all to share memory
+ * that two processes could both WRITE.
+ *
+ * These four calls are that. They are not POSIX shm_open/ftruncate/mmap,
+ * deliberately: this ABI's mmap (SYS_MMAP, 92) takes no `flags` argument, so
+ * MAP_SHARED could not be expressed by extending it without changing the shape
+ * of a call every program already makes. A separate number is honest about
+ * being a separate thing, and mini-libc's <sys/mman.h> puts the POSIX face back
+ * on top -- mmap(MAP_SHARED|MAP_ANONYMOUS) is SHM_OPEN with no name followed by
+ * SHM_MAP, which is exactly what shm_open()+mmap() would have been anyway.
+ *
+ * THE SEGMENT IS THE OBJECT AND THE MAPPING IS A VIEW OF IT, which is why
+ * opening and mapping are two calls rather than one. A process that only wants
+ * to hand the segment to a child (or unlink it) never has to map it, and a
+ * process can map one segment twice at different offsets. Folding them together
+ * would make the common case one call shorter and the other two impossible.
+ *
+ * LIFETIME IS POSIX'S, and it is the part worth knowing before using these: the
+ * NAME dies at SYS_SHM_UNLINK, the MEMORY dies when the last handle and the
+ * last mapping are gone. So "create, map, unlink immediately" is the safe idiom
+ * -- the segment stays alive for everyone who already has it and no latecomer
+ * can join a conversation it was not part of.
+ *
+ * WHAT THIS COSTS, said here because a caller should know: a segment's pages
+ * are allocated when it is created and CANNOT BE RECLAIMED under memory
+ * pressure. There is nowhere to evict them to -- swapping a shared page breaks
+ * the sharing (c/kernel/mm/swap.h says the sharing is not restored on the way
+ * back), and there is no file behind it to re-read. A segment is memory spent
+ * until it is unlinked and unmapped. The ceiling is 8 segments of 2 MiB.
+ *
+ * NOT A FUTEX CHANNEL YET. Two processes can share a word through this and
+ * cannot BLOCK on it: SYS_FUTEX keys its wait queue on (cr3, virtual address)
+ * -- see c/kernel/sched/uthread.c, whose comment justifies the virtual key with
+ * "nothing on this machine shares memory between address spaces". That
+ * justification is what these four calls remove. Until the key becomes the
+ * physical frame, cross-process synchronisation over a segment must poll, and
+ * sem_init(pshared != 0) / sem_open() still return ENOSYS rather than a
+ * semaphore that never wakes anybody. Written down rather than discovered.
+ * ======================================================================== */
+
+/* (name, pages, (mode << 4) | flags) -> a handle >= 0, or SHM_E_*.
+ *
+ * `name` is a NUL-terminated string of at most 31 bytes with no '/' in it: this
+ * is a kernel table, not a filesystem, and a name that looked like a path would
+ * invite a caller to believe the two namespaces agree. `pages` and `mode` are
+ * used only when creating; an open of an existing segment gets the size it
+ * already has, never the size the second caller guessed.
+ *
+ * mode is the usual owner/other rwx triples (0600 = owner read+write). There is
+ * no GROUP class -- see c/kernel/mm/shm.c, which explains why a non-owner is
+ * checked against the "other" bits, the least permissive answer available.
+ *
+ * The mode and the flags share one argument because this ABI's syscalls take
+ * three longs and this call wanted four values. mode is shifted up by 4, which
+ * leaves room for every flag below and cannot collide with 0777.
+ *
+ * A NULL `name` asks for an UNNAMED segment of `pages` pages: nothing can look
+ * it up, so it is reachable only through the mapping and whatever inherits that
+ * mapping across fork. It is the same object with the same lifetime -- only the
+ * lookup differs -- which is why it rides on this number instead of a fifth,
+ * and it is what mini-libc's mmap(MAP_SHARED|MAP_ANONYMOUS) is built on. */
+#define SYS_SHM_OPEN   176
+#define SHM_O_CREAT  0x1    /* create it if it does not exist */
+#define SHM_O_EXCL   0x2    /* with CREAT: fail if it already exists */
+#define SHM_O_WRITE  0x4    /* the caller intends to write; needs the w bit */
+
+/* (handle, len, (prot << 32) | (page offset)) -> base address, or 0.
+ *
+ * `prot` is the MMAP_PROT_* set, and unlike SYS_MMAP_FILE, MMAP_PROT_WRITE is
+ * ACCEPTED -- a segment's frames are the storage, so there is nothing to write
+ * back and a write is simply visible to everyone else mapping it. The offset is
+ * in PAGES, not bytes, so it cannot be unaligned; a byte offset would only add
+ * a way to get it wrong. The range must lie inside the segment, and a request
+ * that runs past the end is refused here rather than faulting forever later. */
+#define SYS_SHM_MAP    177
+
+/* (name, 0, 0) -> 0, or SHM_E_*. Removes the NAME. Requires write permission,
+ * which is the closest this table has to permission on the directory a name
+ * lives in -- a reader that could unlink could take the segment away from
+ * everyone who has not opened it yet. */
+#define SYS_SHM_UNLINK 178
+
+/* (handle, 0, 0) -> 0. Drops the caller's handle. The MAPPING keeps its own
+ * reference, so closing the handle does not unmap anything -- which is what
+ * makes "open, map, close, unlink" the complete idiom. */
+#define SYS_SHM_CLOSE  179
+
+/* Errors, mirrored from c/kernel/mm/shm.h. Distinct rather than one "it
+ * failed": a caller that cannot tell "no such segment" from "not yours" cannot
+ * report either, and those two send an operator to completely different
+ * places. */
+#define SHM_E_INVAL  (-1)   /* bad name, zero/oversized length, bad handle */
+#define SHM_E_NOENT  (-2)   /* no such segment, and SHM_O_CREAT was not asked */
+#define SHM_E_EXIST  (-3)   /* SHM_O_EXCL and it is already there */
+#define SHM_E_ACCES  (-4)   /* the mode forbids this uid */
+#define SHM_E_NOMEM  (-5)   /* no table slot, or not enough memory for the pages */
+
+/* 180-181 are reserved for this line of work and are deliberately unused, for
+ * the reason the 172-175 note above gives. */
+
 #endif /* LOGIT_ABI_H */
+
+/* --- recovered from stash@{0} (branch rescue-1845) ---------------------
+ * These were lost when an agent ran `git stash` at 18:45 to get a clean
+ * build: stash takes EVERY tracked modification in the repository, not the
+ * caller's files, and the `stash pop` that was meant to undo it conflicted
+ * against two minutes of other agents' writes and did not complete. 166 and
+ * 167 were already taken by this work before the loss and are re-taken here,
+ * not reassigned -- the numbers below 168 were free precisely because these
+ * two had claimed them. Everything the same stash held that has since been
+ * rewritten by other work is deliberately NOT restored here. */
+#define SYS_MPROTECT 166
+#define LOGIT_MPROTECT_E_RANGE (-1)   /* zero/wrapping len, or a range that leaves
+                                       * the private user region entirely */
+#define LOGIT_MPROTECT_E_NOMEM (-2)   /* part of the range is not reserved, or the
+                                       * split it needs has no free VMA slot. The
+                                       * range is UNCHANGED -- this is refused
+                                       * before anything is mutated, never halfway */
+#define LOGIT_MPROTECT_E_ACCES (-3)   /* MMAP_PROT_WRITE over a file-backed area */
+#define LOGIT_THREAD_GUARD_DEFAULT (4096ul)
+#define LOGIT_SIGXCPU   24      /* RLIMIT_CPU exceeded; see SYS_RUSAGE below.
+                                 * c/apps/libc/include/signal.h has carried
+                                 * SIGXCPU=24 since before this kernel side
+                                 * existed -- nothing posted it. */
+#define SYS_RUSAGE 167
+#define RUCTL_GET_NS      0
+#define RUCTL_SET_LIMIT_S 1
+#define RUCTL_GET_LIMIT_S 2

@@ -250,6 +250,19 @@ void interrupt_handler(struct registers *r, void *fxarea)
              * anything is reading. Under the BKL and only on a non-nested
              * entry, so it can never contend with tty_read for the port. */
             if (!nested) ksig_tick();
+            /* Per-thread RLIMIT_CPU: fold + test the thread THIS core is
+             * about to (maybe) preempt, in the SAME non-nested/BKL-held
+             * window as ksig_tick() just above, and for the same shape of
+             * reason (SIGINT/SIGALRM there, SIGXCPU here) -- this is a safe
+             * place to call ksig_post() from and schedule() is not: see the
+             * long "RLIMIT_CPU ENFORCEMENT" comment above
+             * sched_cpu_tick_check() in c/kernel/sched/sched.c. Runs on every
+             * core (not gated to index==0 the way timer_tick() itself is),
+             * because a thread dispatched onto an AP has to be checked too. */
+            if (!nested) {
+                int xpid = sched_cpu_tick_check();
+                if (xpid) ksig_post(xpid, LOGIT_SIGXCPU);
+            }
             /* Don't preempt mid block-I/O, and never re-enter the scheduler from
              * a NESTED IRQ (the sti window inside an in-progress kernel op). */
             if (!nested && !ata_busy() && !virtio_busy() && !nvme_busy())

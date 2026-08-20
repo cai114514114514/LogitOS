@@ -505,11 +505,47 @@ static long ut_detach(int tid)
  * lost-wakeup argument (the long comment in sched.h) is what makes the
  * "compare the word, then park" sequence atomic against a waker.
  *
- * THE KEY is (cr3, address). Not a physical frame: nothing on this machine
- * shares memory between address spaces -- there is no MAP_SHARED, no shm, and
- * no file-backed mapping at all (c/kernel/mm/mmsys.c) -- so two processes can
- * never be waiting on the same word, and a virtual key is both correct and
- * immune to the page moving under swap.
+ * THE KEY is (cr3, address) -- see fwait()/fwake() below, which build it as
+ * `uaddr ^ (cr3 << 1)`.
+ *
+ * THE JUSTIFICATION THAT USED TO BE HERE IS NO LONGER TRUE, and it is corrected
+ * in place rather than quietly deleted because it was load-bearing. It read:
+ * "Not a physical frame: nothing on this machine shares memory between address
+ * spaces -- there is no MAP_SHARED, no shm, and no file-backed mapping at all
+ * (c/kernel/mm/mmsys.c) -- so two processes can never be waiting on the same
+ * word, and a virtual key is both correct and immune to the page moving under
+ * swap."
+ *
+ * Every clause of that premise has since fallen. File-backed mappings landed
+ * (c/kernel/mm/pcache.c keys pages on (dev, ino), so two processes mapping one
+ * file share the frames), and SHARED ANONYMOUS MEMORY landed with it
+ * (c/kernel/mm/shm.c + SYS_SHM_* 176-179): two processes CAN now hold the same
+ * physical word at two different virtual addresses in two different address
+ * spaces.
+ *
+ * WHAT THAT MEANS FOR THIS CODE, stated exactly, because "the comment was
+ * wrong" and "the code is wrong" are different findings and only the first one
+ * applies: the key is still SOUND -- it never wakes the wrong waiter, because
+ * two distinct (cr3, address) pairs are two distinct keys and each process's
+ * own threads still share its cr3. What it is no longer is COMPLETE. Two
+ * processes waiting on the same word of one shared segment hash to two
+ * different buckets, so neither can ever wake the other, and there is no error
+ * anywhere -- the waker simply finds an empty bucket and returns 0.
+ *
+ * So cross-process synchronisation over a shared segment must POLL today. That
+ * is written down in include/abi/logit_abi.h's SHM block and in
+ * <sys/mman.h> and <logit_shm.h> as well, and it is why
+ * sem_init(pshared != 0) and sem_open() still return ENOSYS rather than a
+ * semaphore that never wakes anybody.
+ *
+ * MAKING IT COMPLETE means keying a SHARED mapping on its physical frame while
+ * a private one keeps the virtual key -- which is why the original note's last
+ * clause matters: a physical key is NOT immune to the page moving under swap,
+ * and would need reclaim to rehash any waiter on a frame it moves. A shared
+ * segment's frames are structurally unevictable (shm.h), so that hazard does
+ * not arise for exactly the mappings that would need the physical key. That is
+ * the shape of the fix; it is not made here because this file belongs to the
+ * scheduler line and the change deserves its own gate.
  *
  * READING THE USER WORD UNDER THE BUCKET LOCK. The compare has to happen under
  * the same lock the wake takes, or the wake slips between the compare and the

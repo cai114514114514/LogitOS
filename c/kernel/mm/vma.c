@@ -3,6 +3,7 @@
 #include "vma.h"
 #include "mm.h"
 #include "pcache.h"
+#include "shm.h"
 #include "spinlock.h"
 #include "kprintf.h"
 
@@ -27,7 +28,8 @@ static int space_overflow;        /* spaces that could not get a slot */
  * time that slot is handed out, and a pcache file entry driven to zero
  * references while a mapping is still live purges pages that are in somebody's
  * page table. So there is exactly one way to empty a slot, and this is it. */
-static inline void slot_clear(struct vma *v) { v->used = 0; v->file = -1; v->foff = 0; }
+static inline void slot_clear(struct vma *v)
+{ v->used = 0; v->file = -1; v->shm = -1; v->foff = 0; }
 
 /* Handles are collected under vma_lock and released after it, because
  * pcache_file_put() can purge a file's pages, which takes the pcache lock and
@@ -37,6 +39,20 @@ static inline void slot_clear(struct vma *v) { v->used = 0; v->file = -1; v->fof
 static void put_all(int *fh, int n)
 {
     for (int i = 0; i < n; i++) if (fh[i] >= 0) pcache_file_put(fh[i]);
+}
+
+/* The same, for shm segment handles, and deliberately a SEPARATE array at every
+ * call site rather than one tagged list. Every place below that collects a
+ * `file` now collects a `shm` on the line beneath it, so the pair is visible in
+ * one glance -- which is the only real defence against the bug this whole
+ * arrangement exists to prevent, an area whose backing reference was moved for
+ * one kind and forgotten for the other. shm_put can free a segment's frames, so
+ * it is called after vma_lock is dropped for the reason pcache_file_put already
+ * is: the order is BKL -> vma_lock -> {pcache, shm} -> pmm, and doing the put
+ * outside is what keeps vma_lock a leaf. */
+static void shm_put_all(int *sh, int n)
+{
+    for (int i = 0; i < n; i++) if (sh[i] >= 0) shm_put(sh[i]);
 }
 
 static struct space *find(uint64_t cr3)
@@ -57,14 +73,18 @@ void vma_space_new(uint64_t cr3)
      * handed straight back out. Reclaim any stale slot with the same cr3 first
      * so a new space never inherits a dead one's areas. */
     int stale[VMA_PUTMAX], nstale = 0;
+    int sstale[VMA_PUTMAX], nsstale = 0;
     for (int i = 0; i < VMA_MAXSPACE; i++)
         if (spaces[i].cr3 == cr3) {
             /* A dead space whose CR3 frame has been handed straight back out.
              * Its areas' file references go with it, or the handle leaks and
              * the file entry never releases its pages. */
-            for (int j = 0; j < VMA_MAXAREA; j++)
+            for (int j = 0; j < VMA_MAXAREA; j++) {
                 if (spaces[i].v[j].used && spaces[i].v[j].file >= 0 && nstale < VMA_PUTMAX)
                     stale[nstale++] = spaces[i].v[j].file;
+                if (spaces[i].v[j].used && spaces[i].v[j].shm >= 0 && nsstale < VMA_PUTMAX)
+                    sstale[nsstale++] = spaces[i].v[j].shm;
+            }
             spaces[i].cr3 = 0; spaces_live--;
         }
     for (int i = 0; i < VMA_MAXSPACE; i++)
@@ -74,11 +94,13 @@ void vma_space_new(uint64_t cr3)
             spaces_live++;
             spin_unlock_irqrestore(&vma_lock, fl);
             put_all(stale, nstale);
+            shm_put_all(sstale, nsstale);
             return;
         }
     space_overflow++;
     spin_unlock_irqrestore(&vma_lock, fl);
     put_all(stale, nstale);
+    shm_put_all(sstale, nsstale);
     /* Not fatal: a space with no slot simply cannot mmap (vma_reserve returns
      * 0 -> ENOMEM to the app). Loud, because it means VMA_MAXSPACE is too
      * small for the workload, not that the workload is wrong. */
@@ -89,34 +111,46 @@ void vma_space_new(uint64_t cr3)
 void vma_space_free(uint64_t cr3)
 {
     int put[VMA_PUTMAX], np = 0;
+    int sput[VMA_PUTMAX], nsp = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     struct space *s = find(cr3);
     if (s) {
-        for (int j = 0; j < VMA_MAXAREA; j++)
+        for (int j = 0; j < VMA_MAXAREA; j++) {
             if (s->v[j].used && s->v[j].file >= 0) put[np++] = s->v[j].file;
+            if (s->v[j].used && s->v[j].shm  >= 0) sput[nsp++] = s->v[j].shm;
+        }
         for (int j = 0; j < VMA_MAXAREA; j++) slot_clear(&s->v[j]);
         s->cr3 = 0; spaces_live--;
     }
     spin_unlock_irqrestore(&vma_lock, fl);
     put_all(put, np);
+    shm_put_all(sput, nsp);
 }
 
 void vma_space_clear(uint64_t cr3)
 {
     int put[VMA_PUTMAX], np = 0;
+    int sput[VMA_PUTMAX], nsp = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     struct space *s = find(cr3);
     if (s) for (int j = 0; j < VMA_MAXAREA; j++) {
         if (s->v[j].used && s->v[j].file >= 0) put[np++] = s->v[j].file;
+        /* execve: a shared segment does NOT survive the image being replaced.
+         * The new program never asked for it and has no handle to it, so the
+         * mapping goes with everything else in the old address space and the
+         * segment lives on only for whoever else still holds it. */
+        if (s->v[j].used && s->v[j].shm  >= 0) sput[nsp++] = s->v[j].shm;
         slot_clear(&s->v[j]);
     }
     spin_unlock_irqrestore(&vma_lock, fl);
     put_all(put, np);
+    shm_put_all(sput, nsp);
 }
 
 int vma_space_clone(uint64_t dst_cr3, uint64_t src_cr3)
 {
     int take[VMA_PUTMAX], nt = 0;
+    int stake[VMA_PUTMAX], nst = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     struct space *d = find(dst_cr3), *s = find(src_cr3);
     int ret = 0;
@@ -129,9 +163,18 @@ int vma_space_clone(uint64_t dst_cr3, uint64_t src_cr3)
          * bookkeeping that stops the file entry, and with it those frames,
          * from being purged when the parent exits first. */
         if (d->v[j].used && d->v[j].file >= 0 && nt < VMA_PUTMAX) take[nt++] = d->v[j].file;
+        /* fork: the child's area is a SECOND reference to the same SEGMENT, and
+         * unlike the file case above the PTEs it describes are not
+         * copy-on-write -- vmm_clone_user's VMM_PTE_SHM branch hands the child
+         * the parent's entries verbatim, still writable. This reference is what
+         * keeps the segment (and every frame in it) alive if the parent exits
+         * first, which is the ordinary shape of a server that forks a worker
+         * and then returns. */
+        if (d->v[j].used && d->v[j].shm >= 0 && nst < VMA_PUTMAX) stake[nst++] = d->v[j].shm;
     }
     spin_unlock_irqrestore(&vma_lock, fl);
     for (int i = 0; i < nt; i++) pcache_file_ref(take[i]);
+    for (int i = 0; i < nst; i++) shm_ref(stake[i]);
     return ret;
 }
 
@@ -157,6 +200,26 @@ int vma_file_at(uint64_t cr3, uint64_t va, int *file, uint64_t *index, uint32_t 
             if (s->v[j].used && va >= s->v[j].start && va < s->v[j].end) {
                 if (s->v[j].file >= 0) {
                     if (file)  *file  = s->v[j].file;
+                    if (index) *index = (s->v[j].foff + (va - s->v[j].start)) / 4096;
+                    if (prot)  *prot  = s->v[j].prot;
+                    got = 1;
+                }
+                break;
+            }
+    spin_unlock_irqrestore(&vma_lock, fl);
+    return got;
+}
+
+int vma_shm_at(uint64_t cr3, uint64_t va, int *shm, uint64_t *index, uint32_t *prot)
+{
+    int got = 0;
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    if (s)
+        for (int j = 0; j < VMA_MAXAREA; j++)
+            if (s->v[j].used && va >= s->v[j].start && va < s->v[j].end) {
+                if (s->v[j].shm >= 0) {
+                    if (shm)   *shm   = s->v[j].shm;
                     if (index) *index = (s->v[j].foff + (va - s->v[j].start)) / 4096;
                     if (prot)  *prot  = s->v[j].prot;
                     got = 1;
@@ -235,6 +298,7 @@ uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot)
     s->v[slot].end = got + need;
     s->v[slot].prot = prot ? prot : VMA_READ;
     s->v[slot].file = -1;
+    s->v[slot].shm  = -1;
     s->v[slot].foff = 0;
     s->v[slot].used = 1;
 out:
@@ -269,6 +333,59 @@ uint64_t vma_reserve_file(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t pr
     return base;
 }
 
+/* Beside vma_reserve_file(), and deliberately its exact shape: reserve through
+ * vma_reserve() so that ALL of the placement arithmetic and ALL of the overlap
+ * refusal happen in one function, then attach the backing. Repeating any of
+ * that here would be a second copy of the code an mmap ABI is attacked
+ * through.
+ *
+ * WRITABLE IS ALLOWED HERE and refused in the file version, which is the one
+ * real difference between the two and is worth stating rather than leaving to
+ * be noticed. A writable FILE mapping would be a dirty page nothing can clean:
+ * there is no writeback in this tree. A writable SEGMENT has nothing to write
+ * back TO -- the frames ARE the storage, there is no second copy anywhere, and
+ * a write is simply visible to everyone else mapping it. That is the entire
+ * point, so the prot arrives from the caller untouched. */
+uint64_t vma_reserve_shm(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot,
+                         int sh, uint64_t off)
+{
+    if (sh < 0) return 0;
+    if (off & 0xFFF) return 0;              /* the fault path divides by 4096 */
+
+    /* The range must lie inside the segment. Checked HERE, before the area
+     * exists, because the alternative is a mapping whose upper pages fault
+     * forever against a segment that ends below them -- do_shm() would decline,
+     * the process would die, and the address it died on would be one the kernel
+     * had told it it could have. */
+    uint64_t need = (len + 0xFFF) & ~(uint64_t)0xFFF;
+    if (!len || need < len) return 0;
+    uint64_t pages = shm_pages(sh);
+    if (!pages) return 0;                                   /* not a live segment */
+    if (off / 4096 + need / 4096 > pages) return 0;
+
+    uint64_t base = vma_reserve(cr3, hint, len, prot);
+    if (!base) return 0;
+
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    int ok = 0;
+    if (s)
+        for (int j = 0; j < VMA_MAXAREA; j++)
+            if (s->v[j].used && s->v[j].start == base) {
+                s->v[j].shm  = sh;
+                s->v[j].foff = off;
+                ok = 1;
+                break;
+            }
+    spin_unlock_irqrestore(&vma_lock, fl);
+    if (!ok) { vma_release(cr3, base, len); return 0; }
+    /* The AREA's own reference, taken after the area exists and never before:
+     * the caller keeps the one it came in with, exactly as vma_reserve_file()
+     * promises for a pcache handle. */
+    shm_ref(sh);
+    return base;
+}
+
 int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot)
 {
     uint64_t a, b;
@@ -285,6 +402,7 @@ int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot)
             s->v[j].end   = b;
             s->v[j].prot  = prot ? prot : VMA_READ;
             s->v[j].file  = -1;
+            s->v[j].shm   = -1;
             s->v[j].foff  = 0;
             s->v[j].used  = 1;
             ret = 0;
@@ -367,6 +485,8 @@ int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
 
     int put[VMA_PUTMAX], np = 0;
     int take[VMA_PUTMAX], nt = 0;
+    int sput[VMA_PUTMAX], nsp = 0;
+    int stake[VMA_PUTMAX], nst = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     struct space *s = find(cr3);
     int ret = -1;
@@ -402,6 +522,7 @@ int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
         touched = 1;
         if (start <= vs && end >= ve) {                  /* whole area goes */
             if (s->v[j].file >= 0) put[np++] = s->v[j].file;
+            if (s->v[j].shm  >= 0) sput[nsp++] = s->v[j].shm;
             slot_clear(&s->v[j]);
         } else if (start > vs && end < ve) {             /* punched out of the middle: split */
             int slot = -1;
@@ -413,6 +534,12 @@ int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
             s->v[slot].foff += end - vs;
             s->v[slot].used = 1;
             if (s->v[slot].file >= 0 && nt < VMA_PUTMAX) take[nt++] = s->v[slot].file;
+            /* The far half is a NEW area over the SAME segment, so it needs a
+             * reference of its own -- and `foff` above already advanced by
+             * `end - vs`, which is the segment offset for exactly the same
+             * reason it is the file offset: both count bytes from the start of
+             * whatever backs the area. */
+            if (s->v[slot].shm >= 0 && nst < VMA_PUTMAX) stake[nst++] = s->v[slot].shm;
         } else if (start <= vs) {                        /* trimmed at the front */
             s->v[j].foff += end - vs;
             s->v[j].start = end;
@@ -424,7 +551,131 @@ int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
 out:
     spin_unlock_irqrestore(&vma_lock, fl);
     for (int i = 0; i < nt; i++) pcache_file_ref(take[i]);
+    for (int i = 0; i < nst; i++) shm_ref(stake[i]);
     put_all(put, np);
+    shm_put_all(sput, nsp);
+    return ret;
+}
+
+/* Split the area containing `b` so that `b` becomes an area boundary. A no-op
+ * if `b` already is one (or is in no area). Returns 0, or -1 if a split was
+ * needed and no slot was free -- which the caller has already ruled out, so a
+ * -1 here is belt and braces exactly as vma_release's second slot check is.
+ *
+ * The far half is a NEW area over the same file, so it takes a reference, and
+ * its `foff` advances by the bytes that stayed behind -- the same three-line
+ * rule vma_release's split obeys, and getting the foff wrong would make every
+ * page of the remainder read from the wrong offset in the file, silently.
+ * Called with vma_lock held; the ref is taken by the caller after the unlock. */
+static int split_at(struct space *s, uint64_t b, int *take, int *nt)
+{
+    for (int j = 0; j < VMA_MAXAREA; j++) {
+        if (!s->v[j].used) continue;
+        if (b <= s->v[j].start || b >= s->v[j].end) continue;
+        int slot = -1;
+        for (int k = 0; k < VMA_MAXAREA; k++) if (!s->v[k].used) { slot = k; break; }
+        if (slot < 0) return -1;
+        s->v[slot] = s->v[j];
+        s->v[slot].start = b;
+        s->v[slot].foff += b - s->v[j].start;
+        s->v[slot].used = 1;
+        s->v[j].end = b;
+        if (s->v[slot].file >= 0 && *nt < VMA_PUTMAX) take[(*nt)++] = s->v[slot].file;
+        return 0;
+    }
+    return 0;
+}
+
+int vma_protect(uint64_t cr3, uint64_t addr, uint64_t len, uint32_t prot)
+{
+    uint64_t start, end;
+    if (vma_range(addr, len, &start, &end) < 0) return VMA_E_RANGE;
+
+    int take[VMA_PUTMAX], nt = 0;
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    int ret = VMA_E_NOMEM;
+    if (!s) goto out;
+
+    /* ---- DECIDE EVERYTHING FIRST, MUTATE NOTHING ------------------------
+     * Three refusals, all computed before the first write, because a partially
+     * applied mprotect is worse than a refused one: the caller is told the
+     * protection did not change and half of it did. */
+
+    /* (1) the range must be RESERVED end to end. POSIX calls this ENOMEM and
+     * it is the check that makes mprotect safe to hand a computed address:
+     * without it, protecting a range that runs off the end of a mapping would
+     * succeed and change less than it said. Areas never overlap, so walking
+     * forward from `start` and jumping to each covering area's end either
+     * reaches `end` or finds a hole. */
+#ifndef VMA_PROTECT_NO_COVERAGE
+    {
+        uint64_t a = start;
+        while (a < end) {
+            uint64_t next = 0;
+            for (int j = 0; j < VMA_MAXAREA; j++)
+                if (s->v[j].used && a >= s->v[j].start && a < s->v[j].end) {
+                    next = s->v[j].end; break;
+                }
+            if (!next) goto out;                 /* a hole: ret is VMA_E_NOMEM */
+            a = next;
+        }
+    }
+#else
+    /* NEGATIVE CONTROL (tests/unit/mm_run.sh): the coverage check removed, and
+     * removed rather than inverted because THE PLAUSIBLE WRONG VERSION IS THE
+     * ONE THAT LOOKS FINE. Without it, mprotect over a range that runs past the
+     * end of a mapping reports success and changes only the part that was
+     * mapped -- every assertion about the pages that ARE mapped still passes,
+     * and the caller is told the boundary it asked for exists. */
+#endif
+
+    /* (2) a file-backed area may never become writable. Checked over every area
+     * the range touches, not only the first. */
+    if (prot & VMA_WRITE)
+        for (int j = 0; j < VMA_MAXAREA; j++)
+            if (s->v[j].used && s->v[j].file >= 0 &&
+                start < s->v[j].end && s->v[j].start < end) { ret = VMA_E_ACCES; goto out; }
+
+    /* (3) the splits. At most two: one at each edge of the range, each in a
+     * different area (or the same one, when the range sits strictly inside a
+     * single area -- which is the case that needs both). Count what is
+     * actually needed rather than reserving two unconditionally, because
+     * VMA_MAXAREA is 16 and the common case (protecting a whole area) needs
+     * none. */
+    {
+        int need = 0, spare = 0;
+        for (int j = 0; j < VMA_MAXAREA; j++) {
+            if (!s->v[j].used) { spare++; continue; }
+            if (start > s->v[j].start && start < s->v[j].end) need++;
+            if (end   > s->v[j].start && end   < s->v[j].end) need++;
+        }
+        if (spare < need) goto out;              /* ret is VMA_E_NOMEM */
+    }
+
+    /* ---- now it cannot fail --------------------------------------------- */
+    /* Belt and braces: the slot pre-check above makes a -1 here unreachable.
+     * If it were reached, the areas would be split and NO protection would have
+     * changed -- the split is invisible from outside (same coverage, same
+     * prots) and its file reference is taken on the way out like every other
+     * path, so "the call failed and nothing about the space changed" still
+     * holds for anything a caller can observe. */
+    if (split_at(s, start, take, &nt) < 0) goto out;
+    if (split_at(s, end,   take, &nt) < 0) goto out;
+
+    /* After both splits every area is entirely inside the range or entirely
+     * outside it, so this is a straight assignment and no area is half-changed.
+     * NOT floored to VMA_READ: see the header -- prot 0 is the guard page. */
+    for (int j = 0; j < VMA_MAXAREA; j++)
+        if (s->v[j].used && s->v[j].start >= start && s->v[j].end <= end)
+            s->v[j].prot = prot;
+    ret = 0;
+out:
+    spin_unlock_irqrestore(&vma_lock, fl);
+    /* Outside the lock, like every other pcache call here: BKL -> vma_lock ->
+     * pcache -> pmm, and vma_lock stays a leaf. A split that happened before a
+     * later step failed still owns its reference, so this runs on every path. */
+    for (int i = 0; i < nt; i++) pcache_file_ref(take[i]);
     return ret;
 }
 
