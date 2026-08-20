@@ -71,6 +71,65 @@ static inline int tls13_suite_hash(int suite)
 #define GRP_P384    0x0018
 #define GRP_X25519  0x001d
 
+/* X25519MLKEM768 (draft-ietf-tls-ecdhe-mlkem), the post-quantum hybrid Chrome
+ * and Firefox negotiate by default in 2026. TLS 1.3 ONLY -- it is a KEM, not a
+ * curve, so there is no ServerKeyExchange form of it and tls_group_supported()
+ * deliberately does NOT report it (see tls.c). That is what keeps a TLS 1.2
+ * server from naming it in a ServerKeyExchange and reaching the hybrid code
+ * with no encapsulation to decapsulate.
+ *
+ * Wire layout, established by MEASUREMENT rather than from the draft text
+ * (build/tlsx/split_hybrid.py captures a real openssl ClientHello and asks
+ * which half passes FIPS 203's modulus check -- a non-key passes it with
+ * probability about 10^-69, so the answer is not a judgement call):
+ *
+ *   client key_share  = ML-KEM-768 ek   (1184) || X25519 public  (32) = 1216
+ *   server key_share  = ML-KEM-768 ct   (1088) || X25519 public  (32) = 1120
+ *   shared secret     = ML-KEM ss         (32) || X25519 ss      (32) =   64
+ *
+ * TWO KEY SHARES GO OUT, NOT ONE, and that is not a luxury -- it was measured.
+ * Leading with the hybrid alone made every server that does not do PQ answer
+ * with a HelloRetryRequest, costing a whole extra round trip on the majority of
+ * the internet; the interop suite caught it immediately (29 of 65 cases turned
+ * red with "HelloRetryRequest: X25519MLKEM768 -> x25519"). So the ClientHello
+ * carries the hybrid share AND a bare x25519 share, exactly as Chrome and
+ * Firefox do, and the server takes whichever it prefers with no extra trip
+ * either way. Cost: 36 bytes of ClientHello.
+ *
+ * The x25519 half of the hybrid IS the bare x25519 offer -- one scalar, offered
+ * twice in the same hello. That is safe because at most one of the two can be
+ * selected, so the key is still used exactly once; the alternative, a second
+ * independent scalar, would cost another keygen and 32 more bytes to make no
+ * difference. It is also why the scalar lives FIRST in priv[]: the existing
+ * GRP_X25519 code path then reads priv[0..32] and is completely unchanged.
+ *
+ * Note the ML-KEM half comes FIRST here. The NIST-curve hybrids
+ * (SecP256r1MLKEM768) put the curve first instead; we offer only this one, so
+ * the asymmetry costs nothing, but it is why the order is measured and not
+ * assumed to be uniform across the family. */
+#define GRP_X25519MLKEM768  0x11ec
+
+#define HYB_EK_LEN    1184
+#define HYB_CT_LEN    1088
+#define HYB_X_LEN       32
+#define HYB_DK_LEN    2400
+#define HYB_SHARE_CLI (HYB_EK_LEN + HYB_X_LEN)   /* 1216 */
+#define HYB_SHARE_SRV (HYB_CT_LEN + HYB_X_LEN)   /* 1120 */
+#define HYB_SS_LEN    (32 + HYB_X_LEN)           /*   64 */
+
+/* Key-exchange buffer bounds. These are sized by the hybrid because it is the
+ * largest thing offered; the classical groups use a prefix of the same buffers.
+ * Cost, MEASURED with sizeof (not estimated): struct tls_sess goes 56,968 ->
+ * 60,464 B, so +3,496 B per session and +55,936 B across the 16-session table.
+ * That is paid whether or not the hybrid is negotiated, which is the honest
+ * trade for keeping ONE key-exchange code path instead of a union plus a
+ * discriminant that every future reader has to keep straight. */
+#define TLS_KX_PRIV_MAX  (HYB_X_LEN + HYB_DK_LEN)  /* 2432: x25519 scalar || ML-KEM dk */
+#define HYB_DK_OFF       HYB_X_LEN                 /* dk starts after the scalar */
+#define TLS_KX_PUB_MAX   HYB_SHARE_CLI             /* 1216 */
+#define TLS_KX_PEER_MAX  HYB_SHARE_SRV             /* 1120 */
+#define TLS_KX_SS_MAX    HYB_SS_LEN                /*   64 */
+
 /* handshake message types */
 #define HS_CLIENT_HELLO   1
 #define HS_SERVER_HELLO   2
@@ -195,8 +254,20 @@ struct tls_sess {
     uint8_t random[32], sid[32];
 
     int group;                               /* GRP_* we have a private key for */
-    uint8_t priv[48];                        /* x25519 scalar (32) or EC scalar (32/48) */
-    uint8_t pub[97];                         /* our share, on the wire */
+    /* A SECOND group offered in the same ClientHello, or 0. Only ever
+     * GRP_X25519, alongside the hybrid -- see the two-key-share note above.
+     * Cleared on a HelloRetryRequest, where the server has named exactly one
+     * group and offering it a choice again would be answering a question it
+     * did not ask. */
+    int group2;
+    /* x25519/EC scalar first (32 or 48 bytes), then -- for
+     * GRP_X25519MLKEM768 only -- the ML-KEM decapsulation key at HYB_DK_OFF.
+     * The scalar leads so that every pre-existing group reads priv[0] exactly
+     * as it did before this field grew. One buffer rather than a union: the
+     * hybrid needs both halves live at once, so a union would have to be a
+     * struct anyway, and a second field is a second place to forget to wipe. */
+    uint8_t priv[TLS_KX_PRIV_MAX];
+    uint8_t pub[TLS_KX_PUB_MAX];             /* our share, on the wire */
     int publen;
     int hrr_seen;                            /* exactly one HelloRetryRequest allowed */
     int ccs_sent;                            /* 1.3: the one compat CCS (RFC 8446 D.4) */
@@ -294,7 +365,8 @@ int  tls_aead_decrypt(const struct aead *a, const uint8_t nonce[12],
 int  tls_gen_share(struct tls_sess *s);
 int  tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
                         uint8_t *out, int *outlen);
-int  tls_group_supported(int grp);
+int  tls_group_supported(int grp);        /* ECDHE curves -- TLS 1.2 asks this */
+int  tls_group_supported13(int grp);      /* the above plus the PQ hybrid */
 const char *tls_group_name(int grp);
 
 /* Chain verification + the "say WHY it was refused" logging, shared by both

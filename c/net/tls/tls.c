@@ -11,6 +11,7 @@
 #include "roots.h"
 #include "kprintf.h"
 #include "rng.h"
+#include "mlkem.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -272,10 +273,26 @@ static int group_curve(int grp) { return grp == GRP_P256 ? 256 : grp == GRP_P384
 const char *tls_group_name(int grp)
 {
     return grp == GRP_X25519 ? "x25519" : grp == GRP_P256 ? "secp256r1"
-         : grp == GRP_P384 ? "secp384r1" : "?";
+         : grp == GRP_P384 ? "secp384r1"
+         : grp == GRP_X25519MLKEM768 ? "X25519MLKEM768" : "?";
 }
+
+/* "Is this an ECDHE curve we can do a ServerKeyExchange over?" -- which is what
+ * TLS 1.2 is asking when it calls this (tls12.c:465). The hybrid is
+ * deliberately NOT reported here even though we support it: it is a KEM and
+ * TLS 1.2 has no message that carries an encapsulation. Reporting it would let
+ * a 1.2 server name 0x11ec as its curve and walk us into the hybrid path with
+ * nothing to decapsulate. Refusing it structurally beats adding a version check
+ * to the 1.2 reader, which is a check somebody can later delete without seeing
+ * why it was there. */
 int tls_group_supported(int grp)
 { return grp == GRP_X25519 || grp == GRP_P256 || grp == GRP_P384; }
+
+/* The TLS 1.3 key_share list, which is the above PLUS the hybrid. Used for the
+ * HelloRetryRequest retry group, where a server may legitimately ask us to
+ * move to any group we offered. */
+int tls_group_supported13(int grp)
+{ return tls_group_supported(grp) || grp == GRP_X25519MLKEM768; }
 
 /* Generate a fresh ephemeral private key + public share for s->group.
  * The EC path retries on an out-of-range scalar rather than reducing one: a
@@ -285,7 +302,22 @@ int tls_gen_share(struct tls_sess *s)
 {
     TLSPROF_BEGIN(tls_kx_keygen);
     int rc = -1;
-    if (s->group == GRP_X25519) {
+    s->group2 = 0;
+    if (s->group == GRP_X25519MLKEM768) {
+        /* Hybrid: an ML-KEM keypair and an X25519 keypair, independent of one
+         * another. priv = x25519 scalar || ML-KEM dk; pub = ek || x25519 pub
+         * (see tls_int.h for how that wire order was established).
+         *
+         * group2 makes the SAME x25519 key pair a second, bare offer in the
+         * ClientHello, so a server with no PQ support answers immediately
+         * instead of spending a HelloRetryRequest on us. */
+        rand_bytes(s->priv, HYB_X_LEN);
+        x25519_base(s->pub + HYB_EK_LEN, s->priv);
+        mlkem768_keygen(s->pub, s->priv + HYB_DK_OFF);   /* ek -> pub, dk -> priv */
+        s->publen = HYB_SHARE_CLI;
+        s->group2 = GRP_X25519;
+        rc = 0;
+    } else if (s->group == GRP_X25519) {
         rand_bytes(s->priv, 32);
         x25519_base(s->pub, s->priv);
         s->publen = 32;
@@ -312,7 +344,40 @@ int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
 {
     TLSPROF_BEGIN(tls_kx_shared);
     int rc = -1;
-    if (s->group == GRP_X25519) {
+    if (s->group == GRP_X25519MLKEM768) {
+        /* The server's share is ct || x25519_pub. Decapsulate, then do the
+         * X25519, and concatenate the two secrets ML-KEM FIRST -- the same
+         * order as the key shares.
+         *
+         * THERE IS NO ERROR PATH OUT OF THE DECAPSULATION AND THERE MUST NOT
+         * BE. ML-KEM rejects implicitly: a ct that does not re-encrypt to
+         * itself yields a pseudorandom secret rather than a failure, so a
+         * wrong ct simply produces a key the server does not share and the
+         * handshake dies at the server Finished MAC. Turning that into an
+         * early return here would hand an on-path attacker a decryption
+         * oracle -- they could tell a mauled ciphertext that decrypted from
+         * one that did not, which is exactly what the FO transform exists to
+         * deny. See mlkem.h.
+         *
+         * The X25519 half keeps its contributory check, and that is the half
+         * where a zero result IS a refusal: an all-zero X25519 output means
+         * the peer sent a low-order point. The asymmetry is deliberate -- the
+         * two halves have different failure semantics and combining them into
+         * one "did the key exchange work" flag would flatten that. Security
+         * holds if EITHER half is sound, which is the whole point of hybrid. */
+        if (splen == HYB_SHARE_SRV) {
+            mlkem768_decaps(s->priv + HYB_DK_OFF, spub, out);
+            uint8_t xs[32];
+            x25519(xs, s->priv, spub + HYB_CT_LEN);
+            uint8_t z = 0; for (int i = 0; i < 32; i++) z |= xs[i];
+            if (z) {
+                for (int i = 0; i < 32; i++) out[32 + i] = xs[i];
+                *outlen = HYB_SS_LEN;
+                rc = 0;
+            }
+            crypto_wipe(xs, sizeof xs);
+        }
+    } else if (s->group == GRP_X25519) {
         if (splen == 32) {
             x25519(out, s->priv, spub);
             /* RFC 7748/8446 contributory check: an all-zero shared secret means
@@ -422,8 +487,9 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * server that refuses x25519 gets a HelloRetryRequest it can act on
      * instead of a handshake_failure. In TLS 1.2 this same list is what the
      * server picks its ServerKeyExchange curve from. */
-    n += put_u16(ch + n, EXT_SUPPORTED_GRPS); n += put_u16(ch + n, 8);
-    n += put_u16(ch + n, 6);
+    n += put_u16(ch + n, EXT_SUPPORTED_GRPS); n += put_u16(ch + n, 10);
+    n += put_u16(ch + n, 8);
+    n += put_u16(ch + n, GRP_X25519MLKEM768);
     n += put_u16(ch + n, GRP_X25519);
     n += put_u16(ch + n, GRP_P256);
     n += put_u16(ch + n, GRP_P384);
@@ -508,11 +574,22 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
      * the common handshake cheap -- a P-256 keygen on this bignum is far more
      * expensive than the extra round trip an HRR costs, and the servers that
      * need it are rare. */
-    if (n + 12 + s->publen > max) return -1;
-    n += put_u16(ch + n, EXT_KEY_SHARE); n += put_u16(ch + n, s->publen + 6);
-    n += put_u16(ch + n, s->publen + 4);
+    /* One entry normally; TWO when a PQ hybrid is being offered, so that a
+     * server without PQ support can answer from the bare x25519 share instead
+     * of spending a HelloRetryRequest. The second entry re-uses the x25519
+     * public that already sits at the tail of the hybrid share -- see the
+     * two-key-share note in tls_int.h for why one scalar serving both offers
+     * is sound. */
+    int extra = s->group2 ? (4 + HYB_X_LEN) : 0;
+    if (n + 12 + s->publen + extra > max) return -1;
+    n += put_u16(ch + n, EXT_KEY_SHARE); n += put_u16(ch + n, s->publen + 6 + extra);
+    n += put_u16(ch + n, s->publen + 4 + extra);
     n += put_u16(ch + n, s->group); n += put_u16(ch + n, s->publen);
     memcpy(ch + n, s->pub, (size_t)s->publen); n += s->publen;
+    if (s->group2) {
+        n += put_u16(ch + n, s->group2); n += put_u16(ch + n, HYB_X_LEN);
+        memcpy(ch + n, s->pub + HYB_EK_LEN, (size_t)HYB_X_LEN); n += HYB_X_LEN;
+    }
 
     /* pre_shared_key -- RFC 8446 4.2.11 requires it to be the LAST extension,
      * because the binder is an HMAC over the ClientHello truncated at exactly
@@ -544,7 +621,27 @@ static int build_ch(struct tls_sess *s, uint8_t *ch, int max,
 
 static int step_send_ch(struct tls_sess *s)
 {
-    uint8_t ch[2048];
+    /* 3072, not 2048, and the extra kilobyte is the PQ hybrid's bill.
+     *
+     * MEASURED, by capturing our own ClientHello off the wire
+     * (build/tlsx/chsize_host.sh): the hybrid key_share takes the hello from
+     * ~230 B to 1446 B for a 9-character host, growing one byte per SNI
+     * character. A resumption pre_shared_key extension needs up to
+     *   4 + 2 + 2 + TICKET_BLOB_MAX(512) + 4 + 2 + 1 + 32 = 559 B
+     * on top of that. At 2048 the two no longer fit together:
+     *   SNI  40 -> 1477 B, headroom 571  -- PSK fits
+     *   SNI 100 -> 1537 B, headroom 511  -- PSK DROPPED
+     * build_ch drops the offer rather than truncating, so the symptom was not
+     * corruption; it was TLS 1.3 resumption silently ceasing to work for any
+     * host name over ~52 characters, which is an ordinary length. That is a
+     * performance regression that would never have produced an error message.
+     *
+     * The absolute worst case is a 255-char SNI plus a full ALPN list plus a
+     * 512-byte ticket plus the 1216-byte hybrid share, about 2372 B; 3072
+     * clears it with room. It costs stack in this frame only, and not on the
+     * deepest chain -- the peak during a handshake is the ML-KEM keygen under
+     * step_recv_sh (~9.9 KiB), which this function does not nest inside. */
+    uint8_t ch[3072];
     int trunc_len = 0, binder_off = 0;
     int n = build_ch(s, ch, (int)sizeof ch, &trunc_len, &binder_off);
     if (n < 0) return fail(s, TLS_E_PROTO);
@@ -610,6 +707,7 @@ struct sh_info {
     int suite;
     int version;                             /* from supported_versions, or 0 */
     const uint8_t *spub; int splen;          /* TLS 1.3 key_share */
+    int sel_group;                           /* which of our offers it answered */
     int retry_group;                         /* HelloRetryRequest key_share */
     int ems;                                 /* server echoed extended_master_secret */
     const uint8_t *alpn; int alpnlen;        /* TLS 1.2 puts ALPN here, not in EE */
@@ -648,7 +746,12 @@ static int parse_sh(struct tls_sess *s, const uint8_t *body, int shend,
                 if (el < 4) return -1;
                 int grp = (body[p] << 8) | body[p+1];
                 int kl = (body[p+2] << 8) | body[p+3];
-                if (grp != s->group || kl != el - 4) return -1;   /* must answer our offer */
+                /* Must answer ONE OF the offers we actually made. group2 is
+                 * nonzero only while a hybrid is on the table, so this cannot
+                 * silently widen to a group we never sent a share for. */
+                if ((grp != s->group && !(s->group2 && grp == s->group2)) || kl != el - 4)
+                    return -1;
+                out->sel_group = grp;
                 out->spub = body + p + 4; out->splen = kl;
             }
         } else if (et == EXT_COOKIE && is_hrr) {
@@ -748,7 +851,11 @@ static int step_recv_sh(struct tls_sess *s)
         /* The retry must ask for a group we offered in supported_groups and
          * did NOT already send a share for; otherwise the server is either
          * confused or trying to make us loop. */
-        if (!group_supported(grp) || grp == s->group) {
+        /* group2 is in the test because a hybrid ClientHello sends TWO shares:
+         * a retry naming either of them is asking for something it was already
+         * given, which is the loop this check exists to refuse. */
+        if (!tls_group_supported13(grp) || grp == s->group ||
+            (s->group2 && grp == s->group2)) {
             kprintf("[tls] HRR asked for group 0x%x (unusable) -- aborting\n", grp);
             return fail(s, TLS_E_PROTO);
         }
@@ -874,18 +981,28 @@ static int step_recv_sh(struct tls_sess *s)
     }
     s->suite = suite;
 
+    /* Commit to whichever of our two offers the server answered, BEFORE any key
+     * material is derived -- tls_compute_shared dispatches on s->group, so
+     * leaving it at the hybrid after the server picked bare x25519 would
+     * decapsulate a 32-byte share as if it were a 1120-byte one. parse_sh has
+     * already refused anything that is not one of the groups we offered. */
+    if (sh.sel_group && sh.sel_group != s->group) {
+        s->group  = sh.sel_group;
+        s->group2 = 0;
+    }
+
     /* Copy the peer's share out before rec_drop() compacts the receive buffer:
      * spub points INTO s->rxrec, and dropping the record memmoves everything
      * behind it down over exactly those bytes. Reading it afterwards is not a
      * crash -- it silently agrees on the wrong secret, which then surfaces
      * hundreds of lines later as a Finished MAC mismatch. */
-    uint8_t speer[97];
+    uint8_t speer[TLS_KX_PEER_MAX];
     if (splen > (int)sizeof speer) return fail(s, TLS_E_PROTO);
     memcpy(speer, spub, (size_t)splen);
     rec_drop(s);
 
     /* --- key schedule: handshake secrets --- */
-    uint8_t shared[48]; int sharedlen = 0;
+    uint8_t shared[TLS_KX_SS_MAX]; int sharedlen = 0;
     if (compute_shared(s, speer, splen, shared, &sharedlen) != 0) {
         crypto_wipe(shared, sizeof shared);
         return fail(s, TLS_E_CRYPTO);
@@ -1021,6 +1138,32 @@ static int verify_flight(struct tls_sess *s)
     /* Hash through Certificate. Zeroed so that a CertificateVerify arriving
      * before any Certificate fails verification rather than reading garbage. */
     uint8_t th_cert[48] = { 0 };
+    /* Did a CertificateVerify with a VERIFIED signature actually arrive?
+     *
+     * This loop is a dispatch over whatever messages the server chose to send,
+     * not a state machine, so every check below is conditional on the message
+     * that carries it being present. The signature check lives inside
+     * `if (mt == HS_CERT_VERIFY)`; omit that message and the branch simply
+     * never runs. Nothing after the loop noticed: tls_check_chain proves the
+     * certificate is AUTHENTIC (chains to a root, matches the host, in date)
+     * and says nothing about whether the peer holds its private key -- which
+     * is the one thing CertificateVerify exists to prove.
+     *
+     * Certificates are public. They are sent in the clear on every real
+     * connection and mirrored in CT logs, so "hold the target's certificate"
+     * is not an attacker capability, it is a download. An on-path attacker
+     * could therefore replay any site's real chain, skip the signature, and
+     * this client printed "chain of N verified for <host>" and proceeded --
+     * measured on 2026-08-20 by tests/unit/run-tls13-certverify-bypass-probe.sh,
+     * which watched exactly that happen against a genuine chain.
+     *
+     * RFC 8446 4.4.3: the message is mandatory in every handshake that
+     * authenticates with a certificate. Recording presence rather than
+     * reordering the loop into a real state machine is deliberate -- the state
+     * machine is the right long-term shape and is a much larger change (see
+     * the report's state-machine section); this closes the authentication hole
+     * without touching the parse of any message. */
+    int cv_ok = 0;
     const uint8_t *flight = s->hsbuf;
     int flen = s->hslen;
     int q = 0;
@@ -1152,6 +1295,11 @@ static int verify_flight(struct tls_sess *s)
                 kprintf("[tls] CertificateVerify rejected (sigalg 0x%x, %d certs)\n", sigalg, ncert);
                 return TLS_E_CERT;
             }
+            /* Set only here, after okv -- i.e. only a signature that VERIFIED
+             * counts as presence. Setting it on entry to the branch would make
+             * a malformed CertificateVerify satisfy the post-loop gate, which
+             * is the same hole one message along. */
+            cv_ok = 1;
             tls_th_update(s, flight + q, 4 + ml);
         } else if (mt == HS_FINISHED) {
             const int hl = s->hashlen;
@@ -1190,6 +1338,23 @@ static int verify_flight(struct tls_sess *s)
         kprintf("[tls] resumed session for %s (no chain, no signature)%s%s\n", s->host,
                 s->alpn_sel[0] ? ", alpn=" : "", s->alpn_sel[0] ? s->alpn_sel : "");
         return 0;
+    }
+
+    /* A full handshake MUST have carried a verified CertificateVerify. Checked
+     * BEFORE tls_check_chain so the refusal names the real defect: a chain that
+     * verifies is exactly what an attacker replaying a public certificate
+     * presents, so letting the chain check run first would print "chain
+     * verified" and then reject, which reads like a chain problem.
+     *
+     * Deliberately NOT guarded by a -D switch. The negative control for this
+     * gate is the probe's own honest-but-garbage-signature case, which is a
+     * property of the server it talks to rather than a build of ours; a
+     * compile-time way to remove an authentication check is a second, quieter
+     * way to ship without one. */
+    if (!cv_ok) {
+        kprintf("[tls] no CertificateVerify from %s -- the peer never proved it "
+                "holds the certificate's private key; aborting\n", s->host);
+        return TLS_E_CERT;
     }
 
     {
@@ -1389,7 +1554,7 @@ int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now)
     }
     rand_bytes(s->random, 32);
     rand_bytes(s->sid, 32);
-    s->group = GRP_X25519;
+    s->group = GRP_X25519MLKEM768;
     if (gen_share(s) != 0) { fail(s, TLS_E_CRYPTO); return TLS_E_CRYPTO; }
     s->state = TS_SEND_CH;
     /* hashlen stays 32 until a cipher suite says otherwise; both transcripts

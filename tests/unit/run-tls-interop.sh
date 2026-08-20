@@ -145,6 +145,7 @@ cp "$ROOT/c/crypto/trust/roots.c" "$TMP/roots_test.c"
 # path the kernel will use against a real openssl s_server, which is the only
 # place the two implementations meet a third-party peer.
 INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
+      -I$ROOT/c/crypto/pq \
       -I$ROOT/c/net/tls -I$ROOT/c/net/core \
       -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
       -I$ROOT/c/kernel/cpu"
@@ -154,7 +155,13 @@ INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
 # compiled in" is a property of the build line, not a claim in a comment.
 SRC_NOTRUST="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c $ROOT/c/net/tls/tls_psk.c \
      $ROOT/c/net/tls/x509.c $ROOT/c/net/tls/ocsp.c $ROOT/c/kernel/cpu/cpufeat.c \
-     $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" -name '*.c')"
+     $(find "$ROOT/c/crypto/aead" "$ROOT/c/crypto/hash" "$ROOT/c/crypto/pubkey" "$ROOT/c/crypto/pq" -name '*.c')"
+# NOTE the shape of that list: it names crypto SUBDIRECTORIES one at a time
+# rather than globbing c/crypto, because c/crypto/trust must be excluded (the
+# fail-closed block substitutes its own roots.c). The cost is that a NEW crypto
+# directory is invisible to it -- adding c/crypto/pq broke this build outright,
+# at the #include rather than at the link, which is the loud version of the
+# failure. Anything added under c/crypto from here on needs a word here too.
 SRC="$SRC_NOTRUST $TMP/roots_test.c"
 # ASan+UBSan: this binary parses adversarial-shaped input (certificates, records)
 # with the same code the kernel runs, so it is the cheapest place to catch a
@@ -301,6 +308,84 @@ case_run "rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf.key
 # shellcheck disable=SC2086
 case_run "1.3 still wins when offered" 0 "$TMP/ec.pem" "$TMP/ec.key" \
     $CHAIN -groups X25519 -- --expect-version 13
+
+# --------------------------------------- post-quantum: X25519MLKEM768 (0x11ec)
+# The end-to-end proof for c/crypto/pq: a whole TLS 1.3 handshake whose key
+# exchange is ML-KEM-768 + X25519, against openssl's implementation of the same
+# hybrid. The ML-KEM differential (build/tlsx/mlkem_vs_openssl.sh) already shows
+# our KEM agrees with openssl byte for byte; what these cases add is that the
+# agreement survives being wired into a key schedule -- the shared secret is
+# 64 bytes in the right ORDER, and a wrong order still produces a 64-byte
+# secret, so nothing short of a completed handshake catches it.
+SECTION="pq"
+if [ -z "$ONLY" ] || [ "$ONLY" = "$SECTION" ]; then
+  if $OPENSSL list -kem-algorithms 2>/dev/null | grep -qi X25519MLKEM768; then
+    # The headline: no HelloRetryRequest. We lead with the hybrid share, so a
+    # server that wants it answers on the FIRST flight.
+    # shellcheck disable=SC2086
+    case_run "X25519MLKEM768 (no retry)" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups X25519MLKEM768 --
+    # ALSO no retry, and this is the case that justifies sending two key shares:
+    # a server that has never heard of ML-KEM must not cost us a round trip.
+    # shellcheck disable=SC2086
+    case_run "classical server costs no retry" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups X25519 --
+    # The server prefers the hybrid but will take x25519; it must pick the
+    # hybrid, and we must follow it there rather than onto our own second offer.
+    # shellcheck disable=SC2086
+    case_run "hybrid preferred over x25519" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups X25519MLKEM768:X25519 --
+    # The same two groups with the SERVER's order reversed. It still lands on
+    # the hybrid, and the label says so rather than what the case was written
+    # to look for: openssl resolves the group from the client's preference (we
+    # list the hybrid first and send its key_share first), so a server list of
+    # "X25519:X25519MLKEM768" does NOT make x25519 win. Measured, and worth a
+    # case anyway -- it is the property we actually want, PQ whenever both
+    # ends can do it. The case that proves we can still be pushed onto the
+    # SECOND offer is "classical server costs no retry" above, where the
+    # server knows no hybrid at all and we finish on x25519 with no retry.
+    # shellcheck disable=SC2086
+    case_run "both offered: hybrid still wins" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups X25519:X25519MLKEM768 --
+    # A hybrid handshake still has to do all the ordinary work: an RSA leaf
+    # means a PSS CertificateVerify over a transcript keyed by PQ material.
+    # shellcheck disable=SC2086
+    case_run "hybrid + RSA leaf (PSS certverify)" 0 "$TMP/rsa.pem" "$TMP/rsa.key" \
+        $CHAIN -groups X25519MLKEM768 --
+    # SHA-384 key schedule over a 64-byte hybrid secret: the hashlen and the
+    # secret length are independent, and this is the only case where both are
+    # non-default at once.
+    # shellcheck disable=SC2086
+    case_run "hybrid + AES-256-GCM-SHA384" 0 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups X25519MLKEM768 -ciphersuites TLS_AES_256_GCM_SHA384 --
+    # A server offering ONLY a NIST curve still retries us onto it -- the hybrid
+    # must not have broken the HRR path it now leads.
+    # shellcheck disable=SC2086
+    case_run "HRR from hybrid to P-256" 1 "$TMP/ec.pem" "$TMP/ec.key" \
+        $CHAIN -groups P-256 --
+    # Trust still decides. A hybrid key exchange with an untrusted anchor must
+    # fail exactly as the classical one does -- PQ key agreement is not
+    # authentication, and a handshake that "succeeded" here would be the
+    # CertificateVerify bypass shape all over again.
+    #
+    # --expect-fail passes on ANY failure, so on its own this case would also be
+    # satisfied by a hybrid that did not work at all. It is stronger than that,
+    # and the reason is worth writing down because the flag does not show it.
+    # Observed by running this case WITHOUT --expect-fail so the harness prints
+    # the client log:
+    #     [tls] ServerHello: ... group X25519MLKEM768
+    #     [tls] chain of 2 rejected for localhost: no path to a trusted root (-3)
+    # Reaching a TRUST verdict means the encrypted flight carrying the
+    # certificates was successfully DECRYPTED with keys derived from the hybrid
+    # secret. A wrong secret fails earlier and differently, at the AEAD tag -- so
+    # this refusal is evidence about the key exchange as well as about trust.
+    case_run "hybrid rejects untrusted anchor" 0 "$TMP/rogue_leaf.pem" "$TMP/rogue_leaf.key" \
+        -cert_chain "$TMP/rogue.pem" -groups X25519MLKEM768 -- --expect-fail
+  else
+    echo "skip X25519MLKEM768: this openssl has no ML-KEM (needs 3.5+)"
+  fi
+fi
+SECTION="core"
 
 # ------------------------------------------------- session resumption (PSK) --
 # Every case here runs TWO handshakes inside ONE client process, because the
@@ -573,7 +658,12 @@ tamper_case() {   # tamper_case <label> <mode> [want-log-line]
     # that rejected the tampered handshake at some earlier parse error would
     # also reject an honest server, and would pass a bare "it failed" check.
     if [ $rc -eq 0 ] && grep -q "$want" "$TMP/client.log"; then
-        echo "ok   $label"; pass=$((pass+1))
+        # Print the line that matched, not just "ok". Every other case in this
+        # suite echoes what the client actually said; these three were the only
+        # ones whose evidence was visible ONLY when they failed, so the three
+        # refusal REASONS -- the whole point of an on-path attacker test -- had
+        # never been seen by anyone reading a green run.
+        echo "ok   $label  <- $(grep -m1 "$want" "$TMP/client.log")"; pass=$((pass+1))
     else
         echo "FAIL $label (rc=$rc, expected '$want' in the log)"
         sed 's/^/    | /' "$TMP/client.log"; sed 's/^/    p /' "$TMP/proxy.log"
@@ -636,7 +726,13 @@ if [ -n "$NRCTL" ]; then NRSRCDIR="$TMP/roots"; NRWANT="nonzero"; fi
 
 nrfail() { echo "FAIL fail-closed: $1"; fail=$((fail+1)); }
 
-if ! python3 "$ROOT/tools/genroots.py" "$NRSRCDIR" "$TMP/nr/roots_bundle.inc" >"$TMP/nr/gen.log" 2>&1; then
+# --allow-empty: this block MEANS zero roots. genroots.py refuses an empty
+# bundle by default since 2026-08-20, because the working tree was found that
+# day with a 0-root store (down from 130) written by an accidental invocation
+# -- it compiles, and then every chain verification fails at runtime naming no
+# cause. The flag is how a caller that wants zero anchors says so on purpose;
+# without it this legitimate case and that accident are the same command.
+if ! python3 "$ROOT/tools/genroots.py" --allow-empty "$NRSRCDIR" "$TMP/nr/roots_bundle.inc" >"$TMP/nr/gen.log" 2>&1; then
     nrfail "tools/genroots.py could not build a bundle from $NRSRCDIR"
     sed 's/^/    | /' "$TMP/nr/gen.log"
 else
