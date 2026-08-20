@@ -32,6 +32,10 @@
  *   launch <path> [reps]        what wm_launch does: size, allocate, read
  *   cache                       buffer-cache counters
  *   all [reps]                  the launch table: big app, small app, blk sizes
+ *   openmax                     the largest file this machine can put behind a
+ *                               descriptor, as a bracket (see bench_openmax)
+ *   openfd <path>               what ONE open descriptor costs in kernel heap,
+ *                               with a checksum proving it still reads the file
  *
  * The report also goes to the serial log with a "[bench]" prefix, so a boot
  * harness can grep it without a shell round trip. */

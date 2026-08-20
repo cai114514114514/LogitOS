@@ -560,40 +560,94 @@ void logitfs_set_read_run(uint32_t n)
 }
 uint32_t logitfs_read_run(void) { return read_run; }
 
-static int inode_read(struct dinode *in, void *buf, int max)
+/* Read `max` bytes starting at byte `off`. Returns the count -- SHORT at end of
+ * file, 0 at or past it -- or -1.
+ *
+ * THIS IS THE ONLY PLACE THAT WALKS A FILE'S BLOCKS FOR A READ. inode_read()
+ * below is a bounds check in front of it, deliberately: two block walkers that
+ * can disagree is the failure this filesystem is least able to detect, because
+ * both produce a file of exactly the right LENGTH and only one of them holds
+ * the right bytes. The cost of the unification is the head/tail handling below,
+ * which the whole-file caller never exercises with a non-zero head.
+ *
+ * The three regions are the three shapes a device read can take:
+ *
+ *   HEAD  the partial block `off` starts inside. One block, staged through
+ *         blk_buf, because the caller's buffer has nowhere to put the bytes
+ *         before `off` and reading a whole block into it would overwrite what
+ *         the caller asked to keep.
+ *   MIDDLE whole blocks, straight into the caller's buffer, coalesced into runs
+ *         that are contiguous ON THE DEVICE -- the same loop inode_read has
+ *         always used, and the reason a 64 KiB read out of the middle of a
+ *         4.5 MB file costs ONE device command and not sixteen.
+ *   TAIL  the last partial block, staged for the same reason as HEAD.
+ *
+ * A hole anywhere in the range is -1 and not a short read: this filesystem
+ * allocates every block of a file at write time, so a zero pointer is a broken
+ * chain, and returning "the file ends here" for it would report corruption as
+ * end of file. */
+static int inode_pread(struct dinode *in, void *buf, int max, uint64_t off)
 {
     uint32_t size = in->size;
     /* size is untrusted on-disk data: compare unsigned so a value >= 2^31
      * can't wrap negative and bypass the bound, and cap it to what imap() can
-     * actually reach (keeps nblk below from wrapping too). */
-    if (max < 0 || size > (uint32_t)max || !size_ok(size)) return -1;
-    uint8_t  *out   = buf;
-    uint32_t  nblk  = (size + BS - 1) / BS;
-    uint32_t  whole = size / BS;             /* blocks that are entirely file data */
+     * actually reach (keeps the block indices below from wrapping too). */
+    if (max < 0 || !size_ok(size)) return -1;
+    if (off >= (uint64_t)size) { itouch(in, TS_A); return 0; }   /* at or past EOF */
 
-    /* Whole blocks go straight into the caller's buffer, in runs that are
-     * contiguous ON THE DEVICE. A file laid down by mkfs is one run; a file
-     * fragmented by the allocator is several, and each one is still a single
-     * command, so fragmentation degrades this smoothly instead of falling off
-     * a cliff back to one command per block. */
-    for (uint32_t i = 0; i < whole; ) {
-        uint32_t want = whole - i;
-        if (want > read_run) want = read_run;
-        uint32_t got = imap_fill(in, i, want, run_map);
-        if (!got) return -1;                 /* hole or broken chain: not a readable file */
-        uint32_t run = 1;
-        while (run < got && run_map[run] == run_map[0] + run) run++;
-        if (bread_run(run_map[0], run, out + (size_t)i * BS)) return -1;
-        i += run;
-    }
-    if (nblk > whole) {                      /* the short tail block */
-        uint32_t blk = imap(in, whole);
+    uint64_t avail = (uint64_t)size - off;
+    uint32_t want  = avail < (uint64_t)max ? (uint32_t)avail : (uint32_t)max;
+
+    uint8_t *out  = buf;
+    uint32_t done = 0;
+
+    if (want && (off % BS)) {                       /* HEAD */
+        uint32_t o = (uint32_t)(off % BS);
+        uint32_t n = BS - o;
+        if (n > want) n = want;
+        uint32_t blk = imap(in, (uint32_t)(off / BS));
         if (!blk) return -1;
         if (bread(blk, blk_buf)) return -1;
-        memcpy(out + (size_t)whole * BS, blk_buf, size - whole * BS);
+        memcpy(out, blk_buf + o, n);
+        done = n;
     }
+
+    uint32_t whole = (want - done) / BS;            /* MIDDLE */
+    uint32_t base  = (uint32_t)((off + done) / BS);
+    for (uint32_t i = 0; i < whole; ) {
+        uint32_t w = whole - i;
+        if (w > read_run) w = read_run;
+        uint32_t got = imap_fill(in, base + i, w, run_map);
+        if (!got) return -1;                        /* hole or broken chain */
+        uint32_t run = 1;
+        while (run < got && run_map[run] == run_map[0] + run) run++;
+        if (bread_run(run_map[0], run, out + done + (size_t)i * BS)) return -1;
+        i += run;
+    }
+    done += whole * BS;
+
+    if (done < want) {                              /* TAIL */
+        uint32_t blk = imap(in, (uint32_t)((off + done) / BS));
+        if (!blk) return -1;
+        if (bread(blk, blk_buf)) return -1;
+        memcpy(out + done, blk_buf, want - done);
+        done = want;
+    }
+
     itouch(in, TS_A);      /* lazytime: RAM only, no transaction (see above) */
-    return (int)size;
+    return (int)done;
+}
+
+/* The WHOLE-FILE read, unchanged in meaning: ALL OR NOTHING. A request that
+ * does not cover the file is refused rather than truncated, because every one
+ * of this function's callers sizes its buffer from vfs_size() and treats a
+ * short return as failure -- see vfs.h's ->pread for why that meaning is kept
+ * and a second op added beside it instead. */
+static int inode_read(struct dinode *in, void *buf, int max)
+{
+    uint32_t size = in->size;
+    if (max < 0 || size > (uint32_t)max || !size_ok(size)) return -1;
+    return inode_pread(in, buf, (int)size, 0);
 }
 
 /* `rel` is how blocks are released: bfree (deferred to commit -- the normal
@@ -1081,6 +1135,16 @@ static int logitfs_read(const char *path, void *buf, int max)
     return inode_read(in, buf, max);
 }
 
+static int logitfs_pread(const char *path, void *buf, int max, long long off)
+{
+    if (off < 0) return -1;
+    uint32_t ino = resolve(path);
+    if (ino == NOINO) return -1;
+    struct dinode *in = iget(ino);
+    if (!in || in->type != T_FILE) return -1;
+    return inode_pread(in, buf, max, (uint64_t)off);
+}
+
 static int logitfs_write(const char *path, const void *buf, int size)
 {
     uint32_t ino = resolve(path);
@@ -1383,6 +1447,7 @@ struct filesystem logitfs = {
     .list     = logitfs_list,
     .size     = logitfs_size,
     .read     = logitfs_read,
+    .pread    = logitfs_pread,
     .count      = logitfs_count,
     .ent_name   = logitfs_ent_name,
     .ent_size   = logitfs_ent_size,

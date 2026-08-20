@@ -11,6 +11,11 @@
 #include "ktime.h"
 #include "kheap.h"
 #include "kprintf.h"
+#include "pmm.h"       /* openmax: an arena is frames pmm never sees again */
+#include "file.h"      /* openfd: what ONE descriptor costs, measured here
+                        * rather than argued from file.c, because the answer
+                        * is a kheap delta and kheap is on this machine */
+#include "logit_abi.h" /* O_RDONLY */
 
 void *memset(void *, int, size_t);
 
@@ -251,6 +256,167 @@ static void bench_cache(void)
     emit(b);
 }
 
+/* --- openmax: the largest file this machine can put behind a descriptor -----
+ *
+ * The question is not academic and it is not about the filesystem. An F_VFS
+ * descriptor holds the WHOLE file in one kmalloc (c/kernel/exec/file.c: "the
+ * whole file lives in a kmalloc buffer with an offset"), so "the largest file
+ * that can be opened" is exactly "the largest kmalloc that succeeds". Nothing
+ * else in the open path has a smaller ceiling on this machine: vfs_size's int
+ * return caps at 2 GiB and inode_read reaches the double-indirect ceiling near
+ * 4 GiB, both far above any allocation this heap can serve.
+ *
+ * DESCENDING, and stopping at the first success, is the only shape that
+ * measures anything. A kheap arena is PERMANENT -- grow() takes frames from the
+ * PMM and never gives them back -- so an ascending probe would consume the
+ * machine on the way to its answer and then report a number smaller than the
+ * one it had just destroyed. A failed probe costs nothing but one
+ * "[kheap] grow: pmm_alloc_contig(N frames) FAILED" line; exactly one probe
+ * succeeds, and it is freed immediately.
+ *
+ * The answer is therefore a BRACKET -- "N succeeded, 2N did not" -- and it is
+ * printed as one rather than refined. Refining upward means asking for MORE
+ * than the block just freed, which needs a second arena, which is the same
+ * destruction one step smaller: a number obtained that way would be measuring
+ * the probe. */
+static void bench_openmax(void)
+{
+    char b[176];
+    uint64_t f0 = pmm_free_frames();
+    struct kheap_stats k0; kheap_get_stats(&k0);
+    ksnprintf(b, (int)sizeof b,
+              "openmax: before -- pmm free %u frames (%u MiB), kheap arena %u KiB, live %u KiB",
+              (unsigned)f0, (unsigned)(f0 / 256u),
+              (unsigned)(k0.arena_bytes / 1024), (unsigned)(k0.live_bytes / 1024));
+    emit(b);
+
+    size_t failed = 0;
+    for (size_t n = (size_t)512u << 20; n >= (size_t)1u << 20; n >>= 1) {
+        void *p = kmalloc(n);
+        if (!p) { failed = n; continue; }
+        kfree(p);
+        uint64_t f1 = pmm_free_frames();
+        struct kheap_stats k1; kheap_get_stats(&k1);
+        if (failed)
+            ksnprintf(b, (int)sizeof b,
+                      "openmax: kmalloc(%u MiB) OK, kmalloc(%u MiB) REFUSED -- the largest "
+                      "openable file today is in [%u, %u) MiB",
+                      (unsigned)(n >> 20), (unsigned)(failed >> 20),
+                      (unsigned)(n >> 20), (unsigned)(failed >> 20));
+        else
+            ksnprintf(b, (int)sizeof b,
+                      "openmax: kmalloc(%u MiB) OK on the first probe -- the ceiling is at "
+                      "or above where this probe starts, so this is a LOWER BOUND",
+                      (unsigned)(n >> 20));
+        emit(b);
+        ksnprintf(b, (int)sizeof b,
+                  "openmax: after  -- pmm free %u frames (%u MiB), kheap arena %u KiB, "
+                  "%u arena grow(s) charged to this probe",
+                  (unsigned)f1, (unsigned)(f1 / 256u),
+                  (unsigned)(k1.arena_bytes / 1024), (unsigned)(k1.grows - k0.grows));
+        emit(b);
+        emit("OPENMAX-DONE");
+        return;
+    }
+    emit("openmax: even 1 MiB was refused");
+    emit("OPENMAX-DONE");
+}
+
+/* --- openfd: what ONE descriptor costs, and proof it still reads the file ---
+ *
+ * The claim about the F_VFS backend is a MEMORY claim, so the measurement is a
+ * kheap `live_bytes` delta across file_open_vfs() and nothing else.
+ *
+ * The checksum is the other half and it is not decoration: a descriptor that
+ * got cheaper by reading fewer bytes is not a smaller descriptor, it is a
+ * broken one, and those two are indistinguishable from the size alone. FNV-1a
+ * over every byte file_read() hands back, against FNV-1a over the same file
+ * read whole by vfs_read -- two independent paths through the filesystem, one
+ * number, and the reference is taken FIRST and freed so its own allocation is
+ * not standing inside the delta being measured.
+ *
+ * Device commands are reported for the read loop for the same reason
+ * test-bulkread exists: a descriptor that costs kilobytes because it asks the
+ * device once per 4 KiB has moved the cost rather than removed it. */
+static uint32_t fnv1a(const void *p, long n, uint32_t h)
+{
+    const uint8_t *b = (const uint8_t *)p;
+    for (long i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+
+#define OPENFD_CHUNK 4096
+static uint8_t openfd_buf[OPENFD_CHUNK];
+
+static void bench_openfd(const char *path)
+{
+    char b[176];
+    int sz = vfs_size(path);
+    if (sz <= 0) { ksnprintf(b, (int)sizeof b, "openfd %s: not a readable file", path); emit(b); emit("OPENFD-DONE"); return; }
+
+    /* The reference, taken and released before anything is measured -- so its
+     * own allocation is not standing inside the delta, and its device traffic
+     * is the number the descriptor's traffic is compared against. */
+    uint32_t want = 2166136261u;
+    struct bcache_stats r0, r1;
+    {
+        void *img = kmalloc((size_t)sz);
+        if (!img) { emit("openfd: the REFERENCE read could not be allocated -- no comparison possible"); emit("OPENFD-DONE"); return; }
+        go_cold();
+        bcache_getstats(&r0);
+        int n = vfs_read(path, img, sz);
+        bcache_getstats(&r1);
+        if (n != sz) { kfree(img); ksnprintf(b, (int)sizeof b, "openfd %s: vfs_read gave %d of %d", path, n, sz); emit(b); emit("OPENFD-DONE"); return; }
+        want = fnv1a(img, n, want);
+        kfree(img);
+    }
+
+    /* Cold again, so the descriptor pays for its own bytes rather than reading
+     * them out of the cache the reference just filled. Without this every
+     * number below is zero and the comparison says nothing. */
+    go_cold();
+
+    struct kheap_stats k0, k1, k2;
+    struct bcache_stats c0, c1, c2;
+    kheap_get_stats(&k0);
+    bcache_getstats(&c0);
+    struct file *f = file_open_vfs(path, O_RDONLY);
+    bcache_getstats(&c1);
+    kheap_get_stats(&k1);
+    if (!f) { ksnprintf(b, (int)sizeof b, "openfd %s: open REFUSED", path); emit(b); emit("OPENFD-DONE"); return; }
+
+    uint32_t got = 2166136261u;
+    long total = 0, n;
+    while ((n = file_read(f, openfd_buf, OPENFD_CHUNK)) > 0) { got = fnv1a(openfd_buf, n, got); total += n; }
+    bcache_getstats(&c2);
+    kheap_get_stats(&k2);
+    file_close(f);
+
+    ksnprintf(b, (int)sizeof b,
+              "openfd %s: size=%d OPEN-COST=%u B  peak-held=%u B",
+              path, sz,
+              (unsigned)(k1.live_bytes - k0.live_bytes),
+              (unsigned)(k2.live_bytes - k0.live_bytes));
+    emit(b);
+    ksnprintf(b, (int)sizeof b,
+              "openfd %s: devcmds open=%u read=%u total=%u  (whole-file reference=%u) "
+              "devblocks total=%u",
+              path,
+              (unsigned)(c1.dev_reads - c0.dev_reads),
+              (unsigned)(c2.dev_reads - c1.dev_reads),
+              (unsigned)(c2.dev_reads - c0.dev_reads),
+              (unsigned)(r1.dev_reads - r0.dev_reads),
+              (unsigned)(c2.dev_blocks - c0.dev_blocks));
+    emit(b);
+    ksnprintf(b, (int)sizeof b,
+              "openfd %s: read %u B in %u B chunks, fnv1a %s (fd %u vs vfs_read %u)",
+              path, (unsigned)total, (unsigned)OPENFD_CHUNK,
+              (got == want && total == sz) ? "MATCH" : "MISMATCH",
+              (unsigned)got, (unsigned)want);
+    emit(b);
+    emit("OPENFD-DONE");
+}
+
 /* --- the standard table ---------------------------------------------------- */
 static void bench_all(int reps)
 {
@@ -332,8 +498,11 @@ int fsbench_command(const char *buf, int len)
         return 0;
     }
     if (c_eq(a[0], "all"))         { bench_all((int)num(a[1])); return 0; }
+    if (c_eq(a[0], "openmax"))     { bench_openmax(); return 0; }
+    if (c_eq(a[0], "openfd"))      { bench_openfd(a[1]); return 0; }
 
-    emit("usage: blk <sectors> <reps> | file <path> [reps] | launch <path> [reps] | cache | all [reps]");
+    emit("usage: blk <sectors> <reps> | file <path> [reps] | launch <path> [reps] | "
+         "cache | all [reps] | openmax | openfd <path>");
     return -1;
 }
 

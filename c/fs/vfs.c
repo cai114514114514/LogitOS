@@ -76,6 +76,9 @@ static int fs_size(struct filesystem *f, const char *p)
 { return f->iops ? (f->iops->size ? f->iops->size(f, p) : -1) : (f->size ? f->size(p) : -1); }
 static int fs_read(struct filesystem *f, const char *p, void *b, int m)
 { return f->iops ? (f->iops->read ? f->iops->read(f, p, b, m) : -1) : (f->read ? f->read(p, b, m) : -1); }
+static int fs_pread(struct filesystem *f, const char *p, void *b, int m, long long o)
+{ return f->iops ? (f->iops->pread ? f->iops->pread(f, p, b, m, o) : VFS_ENOSYS)
+                 : (f->pread ? f->pread(p, b, m, o) : VFS_ENOSYS); }
 static int fs_count(struct filesystem *f, const char *d)
 { return f->iops ? (f->iops->count ? f->iops->count(f, d) : -1) : (f->count ? f->count(d) : -1); }
 static const char *fs_ent_name(struct filesystem *f, const char *d, int i)
@@ -699,6 +702,50 @@ int vfs_read(const char *path, void *buf, int max)
     if (!m) return -1;
     char sub[VFS_PATH_MAX];
     return fs_read(m->fs, sub_path(m, real, sub, (int)sizeof sub), buf, max);
+}
+
+/* read(2)'s shape. See vfs.h for why this is an addition rather than a change
+ * to vfs_read, and struct filesystem's ->pread for what a backend owes it. */
+int vfs_pread(const char *path, void *buf, int max, long long off)
+{
+    if (max < 0 || off < 0) return -1;
+
+    char abs[VFS_PATH_MAX];
+    int rc = resolve(path, abs, (int)sizeof abs, 1);
+    if (rc < 0) return rc;
+
+    struct vcred c; cred_now(&c);
+
+    /* A SYNTHETIC node is refused at any non-zero offset rather than served by
+     * rendering it again and discarding the prefix.
+     *
+     * These nodes generate their contents on demand -- /proc-style counters,
+     * /dev/vfsmounts, /dev/fsbench's report -- so two renders are two different
+     * answers, and a caller stitching bytes 0..4095 of one onto bytes
+     * 4096..8191 of the next gets a file that never existed at any instant.
+     * kdiag.c:90 makes the same point from the other side: it goes out of its
+     * way to hand vfs_size and vfs_read the SAME snapshot. Emulating pread here
+     * would quietly undo that.
+     *
+     * The discriminator is syn_size and not a trial k_read, because k_read
+     * writes into the caller's buffer before it can report that the node is not
+     * its own -- fine for vfs_read, which is committed by then, and wrong here
+     * where the answer may still be a refusal. */
+    if (syn_size(abs) != SYN_NOT_MINE) {
+        if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
+        if (off != 0) return VFS_ENOSYS;
+        int n = k_read(abs, buf, max);
+        if (n != SYN_NOT_MINE) return n;
+        return vfsctl_read(abs, buf, max);
+    }
+
+    if ((rc = check_file(abs, &c, MAY_READ)) < 0) return rc;
+
+    const char *real = vmeta_canon(abs);
+    struct vmountent *m = mount_for(real);
+    if (!m) return -1;
+    char sub[VFS_PATH_MAX];
+    return fs_pread(m->fs, sub_path(m, real, sub, (int)sizeof sub), buf, max, off);
 }
 
 int vfs_write(const char *path, const void *buf, int size)

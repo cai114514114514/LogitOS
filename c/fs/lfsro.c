@@ -159,23 +159,38 @@ static int lr_size(struct filesystem *f, const char *path)
     return ino.type == LFS_T_FILE ? (int)ino.size : -1;
 }
 
-static int lr_read(struct filesystem *f, const char *path, void *buf, int max)
+/* `max` bytes from byte `off`; short at end of file, 0 at or past it.
+ *
+ * This reader already walked the file a block at a time through a single
+ * staging buffer, so the offset form is the same loop with the file position
+ * carried rather than assumed to start at zero -- which is why lr_read is now
+ * this function at offset 0 instead of a second copy of the walk. */
+static int lr_pread(struct filesystem *f, const char *path, void *buf, int max, long long off)
 {
     struct lro *L = self(f);
     struct lfs_dinode ino;
+    if (max < 0 || off < 0) return -1;
     if (path_ino(L, path, &ino) == LFSRO_NOINO || ino.type != LFS_T_FILE) return -1;
-    int want = (int)ino.size < max ? (int)ino.size : max;
+    if ((uint64_t)off >= (uint64_t)ino.size) return 0;
+    uint64_t avail = (uint64_t)ino.size - (uint64_t)off;
+    int want = avail < (uint64_t)max ? (int)avail : max;
     int done = 0;
     while (done < want) {
-        uint32_t phys = bmap(L, &ino, (uint32_t)(done / LFS_BS));
-        int off = done % LFS_BS;
-        int n = LFS_BS - off;
+        uint64_t pos = (uint64_t)off + (uint64_t)done;
+        uint32_t phys = bmap(L, &ino, (uint32_t)(pos / LFS_BS));
+        int o = (int)(pos % LFS_BS);
+        int n = LFS_BS - o;
         if (n > want - done) n = want - done;
         if (!phys || rd(L, phys, L->blk) < 0) return done ? done : -1;
-        memcpy((char *)buf + done, L->blk + off, (size_t)n);
+        memcpy((char *)buf + done, L->blk + o, (size_t)n);
         done += n;
     }
     return done;
+}
+
+static int lr_read(struct filesystem *f, const char *path, void *buf, int max)
+{
+    return lr_pread(f, path, buf, max, 0);
 }
 
 static int lr_count(struct filesystem *f, const char *dir)
@@ -249,6 +264,7 @@ static const struct fs_iops lfsro_iops = {
     lr_mount, lr_umount, NULL,
     lr_size, lr_read, lr_count, lr_ent_name, lr_ent_size, lr_ent_is_dir,
     NULL, NULL, NULL, NULL,
+    lr_pread,                    /* positional: pread is LAST in struct fs_iops */
 };
 
 struct filesystem *lfsro_create(const char *dev)

@@ -63,6 +63,10 @@ struct fs_iops {
     int  (*del)(struct filesystem *, const char *path);
     int  (*mkdir)(struct filesystem *, const char *path);
     int  (*rename)(struct filesystem *, const char *o, const char *n);
+    /* Appended at the END on purpose: ramfs_iops and lfsro_iops are POSITIONAL
+     * initializers, so a member inserted anywhere else silently re-aims every
+     * pointer after it. See ->pread on struct filesystem for what it is. */
+    int  (*pread)(struct filesystem *, const char *path, void *buf, int max, long long off);
 };
 
 struct filesystem {
@@ -86,6 +90,26 @@ struct filesystem {
      * Implementing one is a bug and is treated as implementing neither. */
     int  (*getattr)(const char *path, struct vattr *a);
     int  (*setattr)(const char *path, const struct vattr *a);
+    /* Read `max` bytes of `path` starting at byte `off`. Returns the count
+     * actually read -- SHORT at end of file, 0 at or past it -- or -1.
+     *
+     * A SEPARATE op and not a widening of ->read, because ->read already means
+     * something that several callers depend on: on logitfs it is ALL OR
+     * NOTHING (`if (size > (uint32_t)max) return -1` -- a request that does not
+     * cover the whole file is REFUSED, not truncated), and twenty callers pass
+     * a buffer sized from vfs_size and treat any short return as failure.
+     * Changing what ->read means is a flag day; adding what it never had is
+     * not.
+     *
+     * A backend that leaves this NULL is one whose files can only be read
+     * whole, and vfs_pread refuses out loud (VFS_ENOSYS) rather than emulating
+     * it by slurping the file and throwing the prefix away. That emulation is
+     * O(off) per call, so a sequential walk of an n-page file costs O(n^2)
+     * bytes of copying -- it is exactly the workaround that lived in
+     * c/kernel/mm/pcache_vfs.c until this op existed, and it is deleted rather
+     * than kept as a second path that can disagree with this one. */
+    int  (*pread)(const char *path, void *buf, int max, long long off);
+
     /* Unmount hook: flush and release. */
     void (*umount)(void);
     /* Present => this backend is instance-aware and `iops` is used instead of
@@ -115,6 +139,12 @@ void vfs_list(void);
 /* --- the path-addressed operations (unchanged signatures) ---------------- */
 int  vfs_size(const char *path);
 int  vfs_read(const char *path, void *buf, int max);
+/* read(2)'s shape, at last: `max` bytes from byte `off`, short at EOF, 0 at or
+ * past it. Every other operation in this header is whole-file, which is why the
+ * kernel could map a file before anything above it could ask for part of one.
+ * Negative return = a VFS_E*; VFS_ENOSYS = this backend cannot read part of a
+ * file (see ->pread on struct filesystem). */
+int  vfs_pread(const char *path, void *buf, int max, long long off);
 int  vfs_count(const char *dir);
 const char *vfs_ent_name(const char *dir, int i);
 int  vfs_ent_size(const char *dir, int i);

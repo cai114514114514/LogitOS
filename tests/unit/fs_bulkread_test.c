@@ -205,6 +205,138 @@ int main(void)
     fs_ok(bcache_read(2003, got) == 0, "one-block plain read");
     fs_ok(memcmp(run16, got, LFS_BS) == 0, "and they agree");
 
+    /* ---------------------------------------------------------------------
+     * PARTIAL READS -- read(2)'s shape, which this filesystem did not have.
+     *
+     * ->read is ALL OR NOTHING: `if (size > (uint32_t)max) return -1`. Asking
+     * for the first 12 KiB of a 36 KiB file returned -1, not 12 KiB. That is
+     * measured below rather than described, because it is the invariant the new
+     * op had to leave alone: twenty callers size a buffer from vfs_size and
+     * read a short return as failure.
+     *
+     * ->pread is the addition, and it walks the SAME block-mapping loop --
+     * inode_read is now a bounds check in front of inode_pread. Two walkers
+     * that can disagree is the failure this filesystem is least able to see,
+     * because both produce a file of exactly the right LENGTH.
+     *
+     * These checks are skipped, loudly, on the b9b33ef negative-control build,
+     * whose logitfs.c predates ->pread and leaves the member NULL.
+     * ------------------------------------------------------------------- */
+    bcache_shutdown();
+    fs_ok(bcache_init(sim_nblocks, 64) == 0, "re-init the cache for the partial-read section");
+
+    if (!logitfs.pread) {
+        printf("  [pread] SKIPPED: this build's logitfs has no ->pread member "
+               "(the b9b33ef negative-control source). 0 partial-read checks ran.\n");
+    } else {
+        static uint8_t pbuf[4 * LFS_BS];
+
+        /* THE CASE THAT NAMED THE BUG: the first 12 KiB of a 36 KiB file. */
+        #define P36 (36 * 1024)
+        fill(wbuf, P36, 36);
+        fs_ok(logitfs.write("/p36", wbuf, P36) == P36, "write a 36 KiB file");
+        bcache_sync();
+
+        fs_ok(logitfs.read("/p36", pbuf, 12 * 1024) == -1,
+              "ALL-OR-NOTHING PRESERVED: ->read of 12 KiB from a 36 KiB file is still refused");
+        memset(pbuf, 0, sizeof pbuf);
+        fs_ok(logitfs.pread("/p36", pbuf, 12 * 1024, 0) == 12 * 1024,
+              "->pread of the first 12 KiB returns 12288");
+        fs_ok(memcmp(pbuf, wbuf, 12 * 1024) == 0, "and they are the right 12288 bytes");
+        memset(pbuf, 0, sizeof pbuf);
+        fs_ok(logitfs.pread("/p36", pbuf, 12 * 1024, 12 * 1024) == 12 * 1024,
+              "->pread of the SECOND 12 KiB returns 12288");
+        fs_ok(memcmp(pbuf, wbuf + 12 * 1024, 12 * 1024) == 0, "and those are right too");
+
+        /* The whole file through the new op must equal the whole file through
+         * the old one. If these ever differ, one of the two walkers is wrong. */
+        fill(wbuf, BIGSZ, 7);                    /* /big was written with tag 7 */
+        memset(rbuf, 0, BIGSZ);
+        fs_ok(logitfs.pread("/big", rbuf, BIGSZ, 0) == BIGSZ,
+              "->pread at offset 0 for the whole 900-block file");
+        fs_ok(memcmp(rbuf, wbuf, BIGSZ) == 0, "and it agrees with ->read byte for byte");
+
+        /* UNALIGNED HEAD: an offset inside a block. The head is staged through
+         * blk_buf precisely so the bytes before `off` never reach the caller. */
+        memset(pbuf, 0xAA, sizeof pbuf);
+        fs_ok(logitfs.pread("/big", pbuf, 100, LFS_BS + 1) == 100, "100 bytes at offset 4097");
+        fs_ok(memcmp(pbuf, wbuf + LFS_BS + 1, 100) == 0, "the unaligned head lands correctly");
+        fs_ok(pbuf[100] == 0xAA, "and nothing was written past what was asked for");
+
+        /* HEAD AND TAIL INSIDE ONE BLOCK -- no whole block at all. */
+        memset(pbuf, 0, sizeof pbuf);
+        fs_ok(logitfs.pread("/big", pbuf, 7, 5000) == 7, "7 bytes wholly inside one block");
+        fs_ok(memcmp(pbuf, wbuf + 5000, 7) == 0, "and they are the right 7");
+
+        /* HEAD + WHOLE BLOCKS + TAIL, the three-region case. */
+        memset(pbuf, 0, sizeof pbuf);
+        fs_ok(logitfs.pread("/big", pbuf, 3 * LFS_BS + 5, LFS_BS + 1) == 3 * LFS_BS + 5,
+              "head + 3 whole blocks + tail");
+        fs_ok(memcmp(pbuf, wbuf + LFS_BS + 1, 3 * LFS_BS + 5) == 0, "all three regions agree");
+
+        /* THE NDIRECT SEAM. Block 12 is the first one behind the indirect
+         * block, so a read that straddles it exercises both mapper paths in one
+         * call -- and an off-by-one there returns the right LENGTH of the wrong
+         * bytes, which is the failure mode a length check cannot see. */
+        memset(pbuf, 0, sizeof pbuf);
+        long seam = (long)12 * LFS_BS - 10;
+        fs_ok(logitfs.pread("/big", pbuf, 20, seam) == 20, "20 bytes across the NDIRECT seam");
+        fs_ok(memcmp(pbuf, wbuf + seam, 20) == 0, "and they are the right 20");
+
+        /* PAST THE READ_RUN CHUNK. inode_pread's MIDDLE loop asks the mapper
+         * for at most read_run (128) blocks at a time, so a request longer than
+         * that takes the loop round more than once -- the one place a stale
+         * base index would show up. 129 blocks, aligned. */
+        static uint8_t bigslice[129 * LFS_BS];
+        long boff = (long)200 * LFS_BS;
+        memset(bigslice, 0, sizeof bigslice);
+        fs_ok(logitfs.pread("/big", bigslice, sizeof bigslice, boff) == (int)sizeof bigslice,
+              "129 blocks (past one READ_RUN chunk) in a single ->pread");
+        fs_ok(memcmp(bigslice, wbuf + boff, sizeof bigslice) == 0,
+              "and the second chunk is not a repeat of the first");
+
+        /* CLAMPING AT END OF FILE, and what lies past it. */
+        memset(pbuf, 0, sizeof pbuf);
+        fs_ok(logitfs.pread("/big", pbuf, 4096, BIGSZ - 10) == 10,
+              "a request straddling EOF returns only what exists (10)");
+        fs_ok(memcmp(pbuf, wbuf + BIGSZ - 10, 10) == 0, "and those 10 are right");
+        fs_ok(logitfs.pread("/big", pbuf, 4096, BIGSZ) == 0, "at EOF: 0, not an error");
+        fs_ok(logitfs.pread("/big", pbuf, 4096, BIGSZ + 1000000) == 0, "past EOF: 0, not an error");
+        fs_ok(logitfs.pread("/big", pbuf, 0, 0) == 0, "a zero-length request is 0");
+
+        /* REFUSALS. A negative offset or length is a caller bug, not a clamp. */
+        fs_ok(logitfs.pread("/big", pbuf, 100, -1) == -1, "a negative offset is refused");
+        fs_ok(logitfs.pread("/big", pbuf, -1, 0) == -1, "a negative length is refused");
+        fs_ok(logitfs.pread("/nosuchfile", pbuf, 100, 0) == -1, "a missing file is refused");
+
+        /* THE COMMAND COUNT, which is what the 64 KiB descriptor window rests
+         * on: an aligned 64 KiB slice is sixteen file-consecutive blocks and
+         * must cost ONE device command, not sixteen.
+         *
+         * The metadata is warmed on purpose first, and the number is worse
+         * without saying so. A bare bcache_drop() charges this read for the
+         * directory block AND the file's indirect block as well -- MEASURED:
+         * 3 commands and 18 blocks for a 16-block slice, which is a true number
+         * about a cold path and the wrong answer to "what does one window
+         * refill cost". A descriptor refills its window many times and resolves
+         * its path once. So: drop everything, read ONE block at 299 (in the
+         * single-indirect region, so it pulls in the directory and the indirect
+         * block and nothing this read will want), then measure. Blocks 300..315
+         * are still untouched, so the run itself is genuinely cold. */
+        bcache_drop();
+        static uint8_t win[16 * LFS_BS];
+        long woff = (long)300 * LFS_BS;
+        (void)logitfs.pread("/big", win, LFS_BS, woff - LFS_BS);   /* warm: dir + indirect */
+        reset_counters();
+        fs_ok(logitfs.pread("/big", win, sizeof win, woff) == (int)sizeof win,
+              "a cold aligned 64 KiB ->pread");
+        fs_ok(memcmp(win, wbuf + woff, sizeof win) == 0, "with the right bytes");
+        fs_ok(sim_reads == 1,
+              "WINDOW COST: 64 KiB aligned costs %lu device command(s), must be 1", sim_reads);
+        printf("  a cold aligned 64 KiB ->pread: %lu device command(s), %lu blocks\n",
+               sim_reads, sim_read_blocks);
+    }
+
     bcache_sync();
     logitfs_unmount();
     sim_close();

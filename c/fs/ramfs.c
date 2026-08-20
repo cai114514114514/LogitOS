@@ -106,6 +106,30 @@ static int rf_size(struct filesystem *f, const char *path)
     return (e && !e->is_dir) ? e->size : -1;
 }
 
+/* `max` bytes from byte `off`; short at end of file, 0 at or past it.
+ *
+ * A ramfs entry is a slice of one contiguous arena, so this is a bounds check
+ * and a copy -- which is the point of implementing it here rather than letting
+ * the VFS refuse: leaving ->pread NULL would make the second mount the one
+ * place on the machine where a partial read is impossible, and the failure
+ * would surface far from here (a fault that cannot be filled, a stream that
+ * returns -1 on its first refill). */
+static int rf_pread(struct filesystem *f, const char *path, void *buf, int max, long long off)
+{
+    struct rinst *R = self(f);
+    struct rent *e = ent_find(R, path);
+    if (!e || e->is_dir || max < 0 || off < 0) return -1;
+    if (off >= (long long)e->size) return 0;
+    int n = e->size - (int)off;
+    if (n > max) n = max;
+    if (n > 0) r_mov((char *)buf, R->arena + e->off + (int)off, n);
+    return n;
+}
+
+/* Whole-file, and note that ramfs has ALWAYS truncated rather than refused --
+ * unlike logitfs, whose ->read is all-or-nothing. That difference is older than
+ * this file's involvement and is left exactly as it was; vfs_pread is the entry
+ * point that behaves the same on every backend. */
 static int rf_read(struct filesystem *f, const char *path, void *buf, int max)
 {
     struct rinst *R = self(f);
@@ -218,6 +242,7 @@ static const struct fs_iops ramfs_iops = {
     rf_mount, rf_umount, NULL,
     rf_size, rf_read, rf_count, rf_ent_name, rf_ent_size, rf_ent_is_dir,
     rf_write, rf_del, rf_mkdir, rf_rename,
+    rf_pread,                    /* positional: pread is LAST in struct fs_iops */
 };
 
 struct filesystem *ramfs_create(const char *label)
