@@ -250,7 +250,7 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # nothing observable changes, but an .svg dropped at that exact path would
 # now be refused rather than decoded. See not_done for the one-line wm.c
 # consequence, which is not this unit's file to edit.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -1140,8 +1140,27 @@ $(BUILD)/dot.png: tests/unit/dot_gen.py
 # the host tests do -- a guest-only fixture would compare two different files.
 IMG_FIXTURES := $(sort $(wildcard tests/fixtures/image/*))
 IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f)))
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX)
+
+# build/model.lm is NOT in this Makefile's build graph: it comes from running
+# the HOST trainer by hand (`build/lmtrain --corpus ... --out build/model.lm
+# --steps N`, tools/lmtrain.md) against a corpus nobody has picked for this
+# Makefile to choose automatically, and training takes minutes, not something
+# `make build/disk.img` should trigger as a side effect. $(wildcard ...) is
+# re-evaluated on every make invocation, so this is a live conditional, not a
+# one-time check: a tree with no build/model.lm yet packs a disk with none (no
+# missing-prerequisite error, nothing at /model.lm), and running lmtrain once
+# and re-running `make build/disk.img` picks the file up with no other change.
+MODEL_LM         := $(wildcard $(BUILD)/model.lm)
+MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
+
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM)
 	@mkdir -p $(BUILD)
+	@if [ -n "$(MODEL_LM)" ]; then \
+	    sz=$$(stat -c%s $(MODEL_LM)); \
+	    echo "disk: /model.lm is $$sz bytes ($$((sz / 1024)) KiB) against a 64 MiB (65536 KiB) image"; \
+	else \
+	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
+	fi
 	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
@@ -1163,6 +1182,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    $(BUILD)/imgcheck.aex:/bin/imgcheck \
 	    $(BUILD)/asnative.aex:/bin/asnative \
+	    $(BUILD)/lm.aex:/bin/lm $(MODEL_LM_ON_DISK) \
 	    $(IMG_FIXTURES_ON_DISK) \
 	    $(JSBENCH_PACK) \
 	    $(CH_PACK) \
@@ -2862,6 +2882,7 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # js_platform.c + js_select.c. Own fragment; see the file.
 -include tests/webapi_platform.mk
 -include tests/canvas.mk
+-include tests/nn.mk
 
 # The platform globals: TextEncoder/TextDecoder against the WPT encoding
 # subset with its negative control, and the task/microtask/timer ordering
@@ -4209,6 +4230,58 @@ bench-aui: $(ISO) $(DISK)
 # `-include features.h` is load-bearing, not tidiness.
 -include tests/libm.mk
 
+# --- LOGITLM inference, built for the target --------------------------------
+# c/lib/nn is ring-3 (nn.h says why: it allocates and holds tens of megabytes
+# of live weights, and a matmul under the BKL would hold it for the length of
+# a layer) and is filtered out of C_SRC above -- same shape as VID_OBJ/VID_SRC,
+# built again here with USERLAND flags against mini-libc. Named LM_NN_* rather
+# than reusing tests/nn.mk's own NN_SRC/NN_OBJ: that fragment's NN_SRC is
+# deliberately narrower (just tensor/matmul/ops, the kernel set test-nn gates)
+# and is a DEFERRED (=) assignment re-evaluated wherever referenced, so giving
+# this one the same name would make which definition wins depend on -include
+# order rather than on anything in this file.
+#
+# THIS BLOCK MUST COME AFTER `-include tests/libm.mk` ABOVE, not merely near
+# the other ring-3-library rules (VID_OBJ/IMGCHK_OBJ) it otherwise resembles.
+# c/lib/nn/ops.c calls the DOUBLE transcendentals (sqrt/exp/pow/cos/sin; see
+# nn.h's "ACCUMULATION IS f32, THE GATE IS f64" and the top-level CLAUDE.md
+# note that expf/sqrtf/etc DO NOT EXIST in this tree's libm), and mini-libc's
+# own math_basic.c is float-suffixed bit-twiddling ONLY -- no libm dependency
+# on purpose, so /bin/as's link stays libm-free. So /bin/lm needs $(LIBM_OBJ),
+# and that variable is a prerequisite-list reference: GNU make expands a
+# rule's prerequisites when it READS that rule, not at build time, so placing
+# this above tests/libm.mk's -include would silently expand $(LIBM_OBJ) to
+# EMPTY (the variable not existing yet) rather than erroring -- a link failure
+# with no line in this file that explains it. (Recipe *bodies* are the
+# opposite: deferred to run time. $(LIBC_OBJS) below is fine used from a rule
+# above its own definition for exactly that reason, and IS above it: this file
+# already relies on that distinction, unremarked, at $(BUILD)/vidcheck.elf.)
+LM_NN_SRC  := $(wildcard c/lib/nn/*.c)
+LM_NN_HDRS := $(wildcard c/lib/nn/*.h)
+LM_NN_OBJ  := $(patsubst %.c,$(BUILD)/lmnnobj/%.o,$(LM_NN_SRC))
+
+$(BUILD)/lmnnobj/%.o: %.c $(LM_NN_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+# /bin/lm -- the one consumer, same link shape as /bin/vidcheck: mini-libc +
+# crt0_cli at the common CLI base (c/apps/lm/lm.c's own header comment says
+# so explicitly), plus $(LIBM_OBJ) for the reason above. No extra -I: c/lib/nn
+# is a plain directory under c/, so $(INCDIRS) (folded into $(UCFLAGS)) already
+# resolves lm.c's bare #include "model.h" / "infer.h" the same way every other
+# colocated header resolves in this tree.
+$(BUILD)/lmobj/c/apps/lm/lm.o: c/apps/lm/lm.c $(LM_NN_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD)/lm.elf: $(BUILD)/lmobj/c/apps/lm/lm.o $(LM_NN_OBJ) $(LIBM_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/lm.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/lm.crt0c.o \
+	    $(BUILD)/lmobj/c/apps/lm/lm.o $(LM_NN_OBJ) $(LIBM_OBJ) $(LIBC_OBJS)
+$(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/lm.elf $@ lm - 'L' 90 60 160
+
 # Power control: `make test-power` (poweroff syncs + ACPI-goes-down + a second
 # boot proves the write survived and the journal had nothing to replay; a
 # third boot proves reboot round-trips) and its negative control
@@ -4235,13 +4308,11 @@ bench-aui: $(ISO) $(DISK)
 #
 # The instruction was right -- six agents editing one Makefile is a merge
 # conflict per agent -- but it has a failure mode that looks exactly like
-# success from inside the fragment: the rules are written, the file is
-# syntactically fine, and `make test-nn` answers "No rule to make target".
-# Six fragments existed at once with no include line between them and make,
-# so every gate they define was unreachable and nothing said so. That is the
-# audit's UNWIRED category, manufactured live. Adding the line is the whole
-# fix and it belongs to whoever reserved the file, not to the fragment.
--include tests/nn.mk
+# success from inside the fragment: the rules are written, the file parses,
+# and `make test-net` answers "No rule to make target". Five fragments
+# existed at once with no include line between them and make, so every gate
+# they define was unreachable and nothing said so -- the audit's UNWIRED
+# category, manufactured live. The line belongs to whoever reserved the file.
 -include tests/net.mk
 -include tests/route.mk
 -include tests/tlsx.mk
