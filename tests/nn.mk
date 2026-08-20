@@ -219,3 +219,20 @@ test-lm-os: $(ISO) $(DISK) $(BUILD)/lm_host
 # positive -- the two halves of not landing in tests/audit-stranded.baseline.
 ci-host: test-nn test-lm-format test-lm-infer
 ci-boot: test-lm-os
+
+# --- build/lmshape: the model writer ----------------------------------------
+#
+# WHY IT IS A RULE AND WAS NOT. tools/lmshape.c had no target anywhere in the
+# tree -- every agent that used it retyped the link line from the file's own
+# header comment. That header records that its link line was WRONG for as long
+# as the file existed (it named neither infer.c nor quant4.c, so the documented
+# command did not build), which is exactly what an unrun command line does. A
+# rule cannot rot that way: it is the only copy and it is exercised.
+#
+# It reuses $(NN_SRC) and $(NN_CF) rather than restating flags, and adds
+# model.c + infer.c the same way $(BUILD)/lm_host does one target above --
+# --verify needs the loader, --forward needs lm_forward.
+$(BUILD)/lmshape: tools/lmshape.c $(wildcard c/lib/nn/*.c) $(wildcard c/lib/nn/*.h)
+	@mkdir -p $(BUILD)
+	$(CC) $(NN_CF) -o $@ tools/lmshape.c \
+	    c/lib/nn/model.c c/lib/nn/infer.c $(NN_SRC) -lm
