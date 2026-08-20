@@ -61,6 +61,20 @@ void *memcpy(void *, const void *, size_t);
 #define CFG9346_UNLOCK 0xC0
 #define CFG9346_LOCK   0x00
 
+/* PHYstatus (0x6C) bits, from the r8169 Linux driver's rtl_register_content
+ * enum (drivers/net/ethernet/realtek/r8169_main.c). Sourced rather than
+ * remembered, and worth flagging exactly BECAUSE it cannot be checked the way
+ * MSR_LINKB above was: there is no QEMU rtl8169 model to boot this against
+ * (see the file header), so this decode is unverified by execution the same
+ * way the rest of this driver is -- it is a passive read+print at probe, not
+ * a polled link-state machine, precisely so that a wrong bit here costs one
+ * misleading log line and nothing else. */
+#define PHYSTATUS_LINK  0x02
+#define PHYSTATUS_FDX   0x01
+#define PHYSTATUS_1000M 0x10
+#define PHYSTATUS_100M  0x08
+#define PHYSTATUS_10M   0x04
+
 #define RX_DESC   32
 #define TX_DESC   16
 #define BUF_SIZE  2048
@@ -239,8 +253,17 @@ int rtl8169_probe(struct device *dev)
 
     rx_cur = tx_cur = 0;
     ready = 1;
-    kprintf("[rtl8169] up (UNVERIFIED on device): mmio=%p phy=%x\n",
-            (void *)(uintptr_t)base, m8(R_PHYSTATUS));
+    {
+        uint8_t phy = m8(R_PHYSTATUS);
+        const char *mbps = (phy & PHYSTATUS_1000M) ? "1000" :
+                            (phy & PHYSTATUS_100M)  ? "100"  :
+                            (phy & PHYSTATUS_10M)   ? "10"   : "?";
+        kprintf("[rtl8169] up (UNVERIFIED on device): mmio=%p phy=%x "
+                "(decode, unverified: link=%s %sMb/s %s duplex)\n",
+                (void *)(uintptr_t)base, phy,
+                (phy & PHYSTATUS_LINK) ? "up" : "down", mbps,
+                (phy & PHYSTATUS_FDX) ? "full" : "half");
+    }
     dev_set_drvdata(dev, &rtl_dev);
     return 0;
 }

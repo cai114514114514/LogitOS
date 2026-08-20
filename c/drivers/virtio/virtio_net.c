@@ -6,6 +6,7 @@
 #include "pci.h"
 #include "pmm.h"
 #include "net.h"
+#include "pit.h"
 #include "kprintf.h"
 
 /* virtio-net over the existing modern virtio-pci transport.
@@ -31,6 +32,14 @@ void *memcpy(void *, const void *, size_t);
 #define VIRTIO_NET_F_MAC     (1u << 5)
 #define VIRTIO_NET_F_STATUS  (1u << 16)
 
+/* virtio-v1.1 sec 5.1.4, struct virtio_net_config: mac[6] then a little-endian
+ * u16 `status` at byte offset 6 -- present in the device-specific config
+ * region only when VIRTIO_NET_F_STATUS was ACCEPTED (same trap as the MAC
+ * read below: a device that did not offer the feature has nothing meaningful
+ * at this offset, so this is read only behind the same features_lo check). */
+#define VIRTIO_NET_CFG_STATUS_OFF 6
+#define VIRTIO_NET_S_LINK_UP      1u   /* bit 0 of the status field */
+
 /* Queue 0 receives, queue 1 transmits. (With VIRTIO_NET_F_MQ, which we do not
  * negotiate, there would be more pairs and a control queue.) */
 #define VQ_RX 0
@@ -54,6 +63,78 @@ static uint8_t           tx_free[TX_BUFS];
 static uint16_t          tx_cur;
 static int               ready;
 static net_rx_cb         g_rxcb;
+static int               have_status_cfg;  /* VIRTIO_NET_F_STATUS actually accepted */
+
+/* ======================================================================== */
+/* STATISTICS AND LINK STATE -- the same gap e1000.c had (see its own header  */
+/* comment on the block of the same name), closed the same shape here. There  */
+/* is no hardware read-to-clear accumulator to fold on this device the way    */
+/* e1000's GPRC/GORCL/etc are: virtio-net's spec has no statistics feature    */
+/* this transport negotiates, so these are SOFTWARE counters, incremented at  */
+/* the one place in tx/rx each outcome is already decided.                    */
+/* ======================================================================== */
+
+static uint32_t g_rx_ok, g_tx_ok, g_tx_qfull;   /* software counters */
+
+static int      g_link_known;   /* 0 until the first observation */
+static int      g_link_up;      /* last reported state */
+static uint64_t g_stat_next_ms;
+static uint32_t g_report_pkts;
+static uint32_t g_report_losses;
+
+#define STAT_PERIOD_MS     1000   /* same period and argument as e1000's */
+#define REPORT_EVERY_PKTS  512    /* same argument as e1000's -- stay silent on
+                                    * a DHCP/ARP-only boot; see e1000.c */
+
+static void link_report(int up)
+{
+    kprintf("[virtio-net] link: %s\n", up ? "UP" : "DOWN");
+}
+
+/* Once per transition, mirroring e1000's link_check(). Without
+ * VIRTIO_NET_F_STATUS accepted there is nothing to read -- report UP once,
+ * unconditionally, which is what every version of this driver before this
+ * change silently assumed by never checking at all. */
+static void link_check(void)
+{
+    int up = 1;
+    if (have_status_cfg) {
+        uint16_t status = (uint16_t)vnet.device[VIRTIO_NET_CFG_STATUS_OFF] |
+                           ((uint16_t)vnet.device[VIRTIO_NET_CFG_STATUS_OFF + 1] << 8);
+        up = (status & VIRTIO_NET_S_LINK_UP) != 0;
+    }
+    if (!g_link_known) { g_link_known = 1; g_link_up = up; link_report(up); return; }
+    if (up == g_link_up) return;
+    g_link_up = up;
+    link_report(up);
+}
+
+static void stats_report(void)
+{
+    kprintf("[virtio-net] stats: rx %u ok, tx %u ok / %u ring-full\n",
+            g_rx_ok, g_tx_ok, g_tx_qfull);
+}
+
+/* Called from inside rx_poll, under net_lock -- same placement as e1000's and
+ * rtl8139's stats_poll(). Unlike rtl8139's rx_poll, this driver already reads
+ * an extra register every call (vnet.isr, to ack -- see the comment above that
+ * read), so an additional access rate-limited to once/second is a much
+ * smaller relative addition here than it was on the 8139. */
+static void stats_poll(void)
+{
+    uint64_t now = timer_ms();
+    if (now < g_stat_next_ms) return;
+    g_stat_next_ms = now + STAT_PERIOD_MS;
+
+    link_check();
+
+    uint32_t pkts = g_rx_ok + g_tx_ok;
+    if (g_tx_qfull != g_report_losses || pkts >= g_report_pkts + REPORT_EVERY_PKTS) {
+        g_report_losses = g_tx_qfull;
+        g_report_pkts = pkts;
+        stats_report();
+    }
+}
 
 static inline void barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
 
@@ -96,7 +177,7 @@ static int vnet_tx(const void *frame, uint16_t len)
          * and an unbounded wait there is a machine freeze, not a slow send. */
         for (int spins = 0; spins < 200000 && !tx_free[tx_cur]; spins++)
             tx_reclaim();
-        if (!tx_free[tx_cur]) return -1;
+        if (!tx_free[tx_cur]) { g_tx_qfull++; return -1; }
     }
     uint16_t d = tx_cur;
     memset(tx_buf[d], 0, VNET_HDR_LEN);        /* no checksum offload, no GSO */
@@ -106,6 +187,7 @@ static int vnet_tx(const void *frame, uint16_t len)
     vq_publish(&txq, d, tx_buf[d], VNET_HDR_LEN + len, 0);
     barrier();
     *txq.notify = VQ_TX;
+    g_tx_ok++;
     return 0;
 }
 
@@ -141,14 +223,17 @@ static int vnet_rx_poll(net_rx_cb cb)
         if (id < RX_BUFS) {
             /* `got` counts what the DEVICE wrote, header included. Anything at
              * or below the header length carries no frame. */
-            if (got > VNET_HDR_LEN && got <= BUF_SIZE)
+            if (got > VNET_HDR_LEN && got <= BUF_SIZE) {
                 cb(rx_buf[id] + VNET_HDR_LEN, (uint16_t)(got - VNET_HDR_LEN));
+                g_rx_ok++;
+            }
             vq_publish(&rxq, (uint16_t)id, rx_buf[id], BUF_SIZE, 1);
             reposted++;
         }
         n++;
     }
     if (reposted) { barrier(); *rxq.notify = VQ_RX; }
+    stats_poll();
     net_unlock(f);
     return n;
 }
@@ -221,6 +306,11 @@ int virtio_net_probe(struct device *dev)
         memcpy(vnet_dev.mac, fallback, 6);
         kprintf("[virtio-net] device offers no MAC; using a local one\n");
     }
+    /* Same ACCEPTED-not-merely-ASKED-for rule as the MAC just above: read the
+     * status field only when the device actually offered VIRTIO_NET_F_STATUS,
+     * or link_check() would decode bytes of an unrelated field (or, on a
+     * device with a shorter config than ours, bytes past it). */
+    have_status_cfg = (vnet.features_lo & VIRTIO_NET_F_STATUS) && vnet.device;
     vnet_dev.irq_line = dev->irq_line;
 
     /* Post the whole receive ring BEFORE DRIVER_OK. The device may not touch a

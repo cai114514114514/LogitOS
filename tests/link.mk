@@ -102,7 +102,8 @@ test-link-nics: $(ISO) $(DISK)
 test-ip-arp-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_NET_HOST \
-		-o $(BUILD)/ip_arp_test tests/unit/ip_arp_test.c $(LINK_INC) -Ic/net/ip
+		-o $(BUILD)/ip_arp_test tests/unit/ip_arp_test.c c/net/core/route.c \
+		$(LINK_INC) -Ic/net/ip
 	@./$(BUILD)/ip_arp_test
 
 # Negative control: IP_NEGCTL_ARP_DROP restores the old `if (arp_resolve(...)
@@ -112,7 +113,8 @@ test-ip-arp-host:
 test-ip-arp-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -w -DLOGIT_NET_HOST -DIP_NEGCTL_ARP_DROP \
-		-o $(BUILD)/ip_arp_negctl tests/unit/ip_arp_test.c $(LINK_INC) -Ic/net/ip
+		-o $(BUILD)/ip_arp_negctl tests/unit/ip_arp_test.c c/net/core/route.c \
+		$(LINK_INC) -Ic/net/ip
 	@if ./$(BUILD)/ip_arp_negctl >$(BUILD)/ip_arp_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes while ip.c drops on an ARP miss"; \
 		exit 1; \

@@ -92,11 +92,26 @@ fail() {
     exit 1
 }
 
-BOUND="$(grep -ao '\[net\] NIC bound: [a-z0-9-]*' "$LOG" | head -1 | sed 's/.*: //')"
+# The interface-table rewrite (c/drivers/net/netdev.c, in flight alongside this
+# task) changed the log shape from "NIC bound: e1000" to "NIC bound: eth0 =
+# e1000" -- the driver name moved behind an interface name and an " = ". This
+# regex accepts either: the optional "IFNAME = " prefix is non-greedy about
+# whether it is there at all, so an old-format log (or a future format that
+# drops the "=" again) still yields the driver name, not "eth0".
+BOUND="$(grep -ao '\[net\] NIC bound: .*' "$LOG" | head -1 | \
+         sed -E 's/^\[net\] NIC bound: ([a-z0-9-]+ = )?([a-z0-9-]+).*/\2/')"
 [ -n "$BOUND" ] || fail "no NIC was bound at all"
 [ "$BOUND" = "$DRV" ] || fail "expected driver '$DRV', the registry bound '$BOUND'"
 grep -aq "\[dhcp\] bound 10.0.2.15" "$LOG" || fail "driver '$DRV' bound but got no DHCP lease"
 grep -aq "http bytes 32768 fnv1a" "$LOG" || fail "DHCP lease taken but the 32768-byte HTTP body never completed"
+
+# Every driver in the NIC line now reports link state once at probe (each
+# prints "[<drv>] link: UP" or "...DOWN" the first time its rx path runs,
+# which happens well before this point since net_poll from the WM loop calls
+# it long before the shell command above). Free to check -- same log, no
+# extra boot -- and it is the property tests/nic.mk's own header names as
+# "observable the way e1000 is about to become" for the other two cards.
+grep -aq "\[$DRV\] link: " "$LOG" || fail "driver '$DRV' never reported link status"
 
 MAC="$(grep -ao '\[net\] NIC bound: .*' "$LOG" | head -1)"
 echo "PASS[$DEV]: $MAC"
