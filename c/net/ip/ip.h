@@ -30,6 +30,13 @@ void ip_input(const uint8_t *frame, uint16_t len);
  * MAC isn't known yet (ARP request sent; caller retries). */
 int ip_send(uint32_t dst, uint8_t proto, const void *payload, uint16_t len);
 
+/* Datagrams ip_send refused because the routing table had no entry for the
+ * destination. Exposed because "no route" and "the card would not take it" are
+ * both -1 to the caller and are opposite problems; tests/unit/ip_route_test.c
+ * is what reads it, and it is the assertion that separates a real refusal from
+ * the old behaviour of quietly handing the datagram to the gateway. */
+uint32_t ip_no_route_count(void);
+
 /* Upper-layer receive hooks (defined in icmp.c / udp.c / tcp.c; weak so
  * layers are optional). udp_input additionally gets a pointer to the
  * original IP header (needed for the pseudo-header destination -- which may
