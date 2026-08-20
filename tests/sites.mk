@@ -39,10 +39,17 @@ scoreboard-quick: $(ISO) $(DISK)
 	    --jobs $(SCOREBOARD_JOBS) --repeat 1 --label $(SCOREBOARD_DATE)
 
 # One site, by its name in tests/qmp/sites_corpus.tsv:  make scoreboard-1 SITE=bing
+# BOXES=--boxes adds the display-list dump to that one site's serial log.
+# Not on the full scoreboard and not on by default: the list of a real page is
+# thousands of lines on the same serial console every other measurement here
+# arrives on, and an instrument that floods the log it writes to has replaced
+# the thing it was measuring. Use it when the question is "how wide does
+# layout think that box is" -- e.g.
+#   make scoreboard-1 SITE=stripe BOXES=--boxes
 scoreboard-1: $(ISO) $(DISK)
 	@test -n "$(SITE)" || { echo "usage: make scoreboard-1 SITE=<name from tests/qmp/sites_corpus.tsv>"; exit 2; }
 	python3 tests/qmp/sites_run.py --iso $(ISO) --disk $(DISK) \
-	    --only $(SITE) --jobs 1 --repeat 1 --label $(SCOREBOARD_DATE)
+	    --only $(SITE) --jobs 1 --repeat 1 --label $(SCOREBOARD_DATE) $(BOXES)
 
 # THE PRODUCT. A snapshot on its own is a list of complaints; the delta between
 # two is the only form in which this line's work is visible.

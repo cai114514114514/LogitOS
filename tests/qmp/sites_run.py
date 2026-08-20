@@ -129,6 +129,8 @@ def run_one(row, args, outdir, attempt):
     cmd = [sys.executable, DRIVER, "--iso", args.iso, "--disk", args.disk,
            "--name", name, "--url", row["url"], "--out", out,
            "--shots", outdir]
+    if getattr(args, "boxes", False):
+        cmd.append("--boxes")
     t0 = time.time()
     try:
         subprocess.run(cmd, cwd=ROOT, timeout=args.per_site_timeout,
@@ -422,6 +424,10 @@ def main():
     # the wrong one makes tomorrow's diff meaningless.
     ap.add_argument("--commit", default=None)
     ap.add_argument("--diff", nargs=2, default=None)
+    # Passed straight through to the driver; see its --boxes help for why it
+    # is off by default.
+    ap.add_argument("--boxes", action="store_true",
+                    help="dump each page's display list to its serial log")
     args = ap.parse_args()
 
     if args.diff:

@@ -1177,6 +1177,53 @@ static void load(const char *u)
         set_status("painted text dumped to the serial console");
         return;
     }
+    /* about:boxes -- the display list, one line per item, through the same
+     * channel and for the same reason as about:text.
+     *
+     * WHAT IT IS FOR, and it is a specific question rather than a general
+     * curiosity. `[dl] painted text` says WHICH WORDS reached the screen; the
+     * screenshot then shows them in the wrong place, and the next question is
+     * always "how wide does layout think that box is". Today that is answered
+     * by a person counting pixels in a PNG. MEASURED on stripe.com the day
+     * this went in: two <h1>s that a real browser stacks are laid out side by
+     * side, each about 40 px wide, so the headline wraps one character per
+     * line -- and nothing in any log said 40.
+     *
+     * Bounded and honest about it, like the text dump: past the cap the count
+     * keeps counting and the lines stop, and the trailer says which happened. */
+    if (cur[0] == 'a' && cur[1] == 'b' && cur[2] == 'o' && cur[3] == 'u' &&
+        cur[4] == 't' && cur[5] == ':' && cur[6] == 'b' && cur[7] == 'o' &&
+        cur[8] == 'x' && cur[9] == 'e' && cur[10] == 's' && cur[11] == 0) {
+        const struct item *it = layout_items();
+        int n = layout_count(), shown = 0;
+        static const char *KIND[] = { "rect", "text", "img", "video", "ctrl", "canvas" };
+        printf("[dl] boxes: %d item(s)\n", n);
+        printf("[dl] ---8<--- begin boxes\n");
+        for (int i = 0; i < n; i++) {
+            if (shown >= 2048) break;
+            const struct item *e = &it[i];
+            const char *k = (e->type >= 0 && e->type < 6) ? KIND[e->type] : "?";
+            const char *tag = (e->node && e->node->tag) ? e->node->tag : "-";
+            const char *id = 0; int idl = 0;
+            const char *cls = 0; int cll = 0;
+            if (e->node) {
+                id  = js_dom_attr_len(e->node, "id", &idl);
+                cls = js_dom_attr_len(e->node, "class", &cll);
+            }
+            /* class is truncated at 48: a utility-class page carries two
+             * hundred characters of them and the line would stop being
+             * readable, which is the same trade the text dump makes. */
+            if (cll > 48) cll = 48;
+            printf("[dl] %-6s %5d,%-5d %4dx%-4d <%s>%s%.*s%s%.*s\n",
+                   k, e->x, e->y, e->w, e->h, tag,
+                   idl ? " #" : "", idl, id ? id : "",
+                   cll ? " ." : "", cll, cls ? cls : "");
+            shown++;
+        }
+        printf("[dl] ---8<--- end boxes (%d shown of %d)\n", shown, n);
+        set_status("display list dumped to the serial console");
+        return;
+    }
     /* THE INVARIANT: after load(u), the browser is AT u. Every in-app caller
      * already wrote `url` before calling, so this is a no-op for them -- but it
      * has to be stated, because the moment it is only true by convention it
@@ -2995,6 +3042,17 @@ void app_main(void)
                          * navigation in a boot silently produced
                          * `https://site/what-was-typed`. */
                         editing = 1; ulen = 0; url[0] = 0;
+                        /* ONE LINE, because "the keystroke never arrived" and
+                         * "it arrived and the bar did not take it" are
+                         * different failures and the log could not tell them
+                         * apart. MEASURED: after the canvas context landed,
+                         * qmp_site.py's about:text step stopped reaching the
+                         * guest on stripe -- three retries, no `[browser]
+                         * load: about:text` -- and nothing anywhere said
+                         * whether Ctrl+L had been seen at all. An instrument
+                         * whose trigger cannot be observed is not an
+                         * instrument; this makes the trigger observable. */
+                        printf("[browser] ctrl+L: address bar focused\n");
                         handled = 1;
                     }
                 }

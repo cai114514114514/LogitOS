@@ -147,6 +147,7 @@ struct canvas2d {
     int curx, cury;                /* USER 24.8 */
     struct cv_grad grads[CV_GRADS];
     JSValue elval;                 /* keeps the element wrapper alive */
+    struct canvas2d *next;         /* g_all, so the painter can find one by node */
 };
 
 static JSClassID cv_class_id;
@@ -194,26 +195,23 @@ static void st_reset(struct cv_state *s)
 static struct canvas2d *cv_of(JSValueConst v)
 { return (struct canvas2d *)JS_GetOpaque(v, cv_class_id); }
 
-#define CV_REG 8
-static struct { struct node *n; struct canvas2d *c; } g_reg[CV_REG];
-
-static void reg_add(struct node *n, struct canvas2d *c)
-{
-    for (int i = 0; i < CV_REG; i++)
-        if (!g_reg[i].n || g_reg[i].n == n) { g_reg[i].n = n; g_reg[i].c = c; return; }
-    printf("[canvas] %d canvases already have contexts; this one will not reach "
-           "the screen\n", CV_REG);
-}
+/* A LIST, not a fixed table. It was eight slots for one run, and qq.com opened
+ * more than eight canvases on its front page -- so the ninth printed "will not
+ * reach the screen" and did not, honestly and uselessly. There is no natural
+ * number here: a page decides how many canvases it has. The link costs one
+ * pointer inside a struct that is malloc'd anyway, and removes the cap rather
+ * than raising it to the next number that a page will exceed. */
+static struct canvas2d *g_all;
 
 static void cv_finalizer(JSRuntime *rt, JSValue val)
 {
     struct canvas2d *c = (struct canvas2d *)JS_GetOpaque(val, cv_class_id);
     if (!c) return;
-    /* Out of the registry first: browser_paint.c reaches the pixels through it
-     * every frame, and an entry pointing at freed memory would be read before
-     * anything noticed the context was gone. */
-    for (int i = 0; i < CV_REG; i++)
-        if (g_reg[i].c == c) { g_reg[i].n = NULL; g_reg[i].c = NULL; }
+    /* Off the list FIRST: browser_paint.c walks it every frame, and a link to
+     * freed memory would be read before anything noticed the context was
+     * gone. */
+    for (struct canvas2d **pp = &g_all; *pp; pp = &(*pp)->next)
+        if (*pp == c) { *pp = c->next; break; }
     if (c->px) free(c->px);
     JS_FreeValueRT(rt, c->elval);
     free(c);
@@ -1183,7 +1181,7 @@ static JSValue el_getContext(JSContext *ctx, JSValueConst t, int argc, JSValueCo
     if (JS_IsException(obj)) { JS_FreeValue(ctx, c->elval); free(c->px); free(c); return obj; }
     JS_SetOpaque(obj, c);
     JS_SetPropertyStr(ctx, t, "__ctx2d", JS_DupValue(ctx, obj));
-    reg_add(n, c);
+    c->next = g_all; g_all = c;
     return obj;
 }
 
@@ -1273,11 +1271,8 @@ static const JSCFunctionListEntry canvas_el_funcs[] = {
  * the call site exists there anyway. */
 const unsigned char *canvas_pixels(struct node *n, int *w, int *h)
 {
-    for (int i = 0; i < CV_REG; i++)
-        if (g_reg[i].n == n && g_reg[i].c && g_reg[i].c->px) {
-            *w = g_reg[i].c->w; *h = g_reg[i].c->h;
-            return g_reg[i].c->px;
-        }
+    for (struct canvas2d *c = g_all; c; c = c->next)
+        if (c->el == n && c->px) { *w = c->w; *h = c->h; return c->px; }
     return 0;
 }
 

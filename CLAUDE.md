@@ -1438,6 +1438,27 @@ own blind spot: *"`changed px` ... cannot tell a rendered page from a flat
 dark block. Nothing here checks whether the RIGHT pixels changed -- that is
 what reftests are for, and none of WPT's 17,155 of them run on this machine."*
 
+**THE DELTA IT WAS BUILT FOR, measured 2026-08-18** — two full runs of the
+same 17 sites, an hour apart, differing only in the browser:
+
+|                | 0818-b | 0818-c |
+|----------------|--------|--------|
+| PAINTED        | 3      | **5**  |
+| BLANK          | 4      | 4      |
+| ERRORS         | 8      | 8      |
+| FLAKY          | 2      | **0**  |
+
+`0818-b` already had `Node.isEqualNode`; `0818-c` adds the canvas 2D context.
+**stripe FLAKY -> PAINTED** (and its `asked/got` gap closed to 80/80),
+**openai BLANK -> PAINTED**, nothing moved down. And the callee census the
+first run produced -- 33 `getContext`, 1 `write`, 1 `appendChild` -- reads
+**0 `getContext`** in the second, with `write` and `appendChild` the only
+names left in the whole corpus.
+
+Read the two control rows before believing any of that: `control-example` and
+`control-wikipedia` are PAINTED in both, which is what says the harness, the
+network and the build were working during each pass.
+
 Reftests are the right answer to "is the layout correct" and they are a long
 way off. **`text run/B` is the cheap middle**: not WHERE the pixels are, but
 WHICH WORDS are among them, with the coordinate of every run. It judges no
@@ -1469,6 +1490,36 @@ Three things about it worth knowing before touching it:
 - **It is OFF unless `browser_paint_text_log(1)` is called**, which only
   browser.c does. Five host harnesses link that TU without being a browser,
   and the first version put a `[dl]` line between every reftest verdict.
+
+**`about:boxes` is the same instrument one question further down.** The text
+dump says WHICH WORDS reached the screen; the screenshot then shows them in
+the wrong place, and the next question is always *how wide does layout think
+that box is* -- answered until now by a person counting pixels in a PNG. It
+prints the display list, one line per item: kind, x, y, w x h, tag, `#id` and
+a class list truncated at 48. Same channel as `about:text` and for the same
+reason (the address bar is the trigger that is proven), bounded the same way,
+and it does not navigate -- the question is about the page already loaded.
+
+The case it was built for, and the state of it: with canvas landed stripe
+renders its real content, and its hero headline wraps ONE CHARACTER PER LINE
+in two narrow columns. The markup says why there are two columns -- stripe
+stacks `--background` and `--foreground` copies of the same `<h1>`, which a
+real browser positions on top of each other -- and says nothing at all about
+the WIDTH, which is the number that would name the bug. The screenshot says
+"about 40 px" to a person with a ruler; the dump is what would say it without
+one.
+
+**It has not yet produced that number, and the reason is worth more than the
+number would be.** The address-bar trigger stopped arriving the moment canvas
+made stripe a heavy page: `about:text` reached the guest on every run through
+0818-b and on none after, three retries each, and the `text run/B` column kept
+working only because the painted-text dump needs no trigger and prints itself.
+`about:boxes` has no such fallback and would simply have been missing, in
+silence. `qmp_site.py` now CONFIRMS the trigger against the `[browser] load:`
+line the browser prints for every load, retries, and records
+`about_text_arrived` / `about_boxes_arrived` either way -- because "the dump
+did not happen" and "the page painted nothing" are different findings and only
+the first one is the harness's.
 
 **Two harness bugs fell out of chasing that trigger, and both had hidden for
 the same reason -- nothing had ever needed a SECOND navigation in one boot.**

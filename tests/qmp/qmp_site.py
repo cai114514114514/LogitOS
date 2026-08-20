@@ -541,6 +541,14 @@ def main():
     ap.add_argument("--out", required=True, help="where to write the JSON record")
     ap.add_argument("--shots", default=None, help="directory for the screenshots")
     ap.add_argument("--keep", action="store_true", help="keep the serial log and PPMs")
+    # OFF by default and that is not timidity: the display list of a real page
+    # is thousands of lines and the serial console is the same one every other
+    # measurement in this file arrives on. An instrument that floods the log it
+    # writes to has replaced the thing it was measuring -- the same rule the
+    # painted-text dump states about its own auto-print. Turn it on for one
+    # site when the question is "how wide does layout think that box is".
+    ap.add_argument("--boxes", action="store_true",
+                    help="also dump the display list (about:boxes) -- verbose")
     args = ap.parse_args()
 
     shots_dir = args.shots or os.path.dirname(os.path.abspath(args.out))
@@ -808,10 +816,43 @@ def main():
         # about:text does NOT navigate -- it prints and returns, leaving the
         # page and its last paint exactly where they were, which is the whole
         # point: the question is about the page that is loaded.
-        ctrl(ui, "l")
-        ui.typ("about:text")
-        ui.key("ret")
-        time.sleep(2.5)
+        # TYPED AND THEN CONFIRMED, because typing is not arriving.
+        #
+        # MEASURED: `about:text` reached the guest on every run until the
+        # canvas context landed, and on none afterwards -- 0818-b has it,
+        # 0818-c and 0818-cv do not. Nothing about the trigger changed. What
+        # changed is that stripe now renders its real page instead of an error
+        # boundary, so the load runs 31 s, the paint budget expires before the
+        # page settles, and the keystrokes go into a browser that is still
+        # inside a blocking fetch -- against a PS/2 controller with a one-byte
+        # buffer. The column kept working only because the painted-text dump
+        # needs no trigger and prints itself; about:boxes has no such fallback
+        # and would simply have been missing, silently.
+        #
+        # So the trigger is confirmed against the log line the browser prints
+        # for every load, and retried if it did not arrive. The outcome is
+        # RECORDED either way: "the dump did not happen" and "the page painted
+        # nothing" are different findings and only the first is the harness's.
+        def about(word, settle, tries=3):
+            for _ in range(tries):
+                frm = len(serial())
+                ctrl(ui, "l")
+                ui.typ("about:" + word)
+                ui.key("ret")
+                if wait_for("[browser] load: about:" + word, 6.0, frm):
+                    time.sleep(settle)
+                    return True
+                time.sleep(1.0)
+            return False
+
+        rec["about_text_arrived"] = about("text", 2.5)
+
+        # The display list, on request only. Same channel, same
+        # does-not-navigate property, and after about:text so that a run with
+        # both gives the words first and then their boxes -- which is the
+        # order the two questions are actually asked in.
+        if args.boxes:
+            rec["about_boxes_arrived"] = about("boxes", 3.0)
 
         # The document the HOST was served, beside the log for the same
         # reason. Not the guest's copy -- we have no way to read that back --

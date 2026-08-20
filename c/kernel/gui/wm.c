@@ -5218,7 +5218,7 @@ static void wm_perf_report(void)
     if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0) return;   /* idle */
     kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
             "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu "
-            "torn=%lu defer=%lu late=%lu drawmax=%lu\n",
+            "torn=%lu defer=%lu late=%lu drawmax=%lu evdrop=%lu\n",
             (unsigned long)ms, (unsigned long)perf_composites,
             (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
             (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
@@ -5227,7 +5227,16 @@ static void wm_perf_report(void)
             (unsigned long)perf_cpx, (unsigned long)fb_present_px(),
             (unsigned long)perf_present_ns,
             (unsigned long)perf_torn, (unsigned long)perf_defer,
-            (unsigned long)perf_late, (unsigned long)perf_drawmax);
+            (unsigned long)perf_late, (unsigned long)perf_drawmax,
+            /* EVENTS LOST TO A FULL RING, and evq.h already says this is "the
+             * number that has to stay 0 -- a dropped click is a click the user
+             * made and the machine did not act on". It was counted and
+             * reachable only through the sysinfo string, which no serial log
+             * carries -- so on the one occasion it was wanted (six Ctrl+L
+             * chords aimed at a heavy page, none of which reached the browser)
+             * the record could not say whether the keys had been dropped or
+             * never delivered. A counter you cannot read back is a comment. */
+            (unsigned long)evq_dropped());
 }
 
 /* The desktop proper. Called at boot on a machine with no accounts, and on the
