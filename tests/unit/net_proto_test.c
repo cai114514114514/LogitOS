@@ -85,6 +85,43 @@ void kernel_random_bytes(uint8_t *out, int len)
     for (int i = 0; i < len; i++) out[i] = (uint8_t)(0x5Au + (unsigned)i);
 }
 
+/* dns.c's TCP fallback needs tcp.c's client API to LINK. Nothing below sets
+ * TC on a response, so the fallback is never actually taken in this file --
+ * see tests/unit/dns_test.c for that path exercised against a model TCP. */
+int  tcp_connect_start(uint32_t dst, uint16_t port) { (void)dst; (void)port; return -1; }
+int  tcp_connect_status(int id) { (void)id; return -1; }
+int  tcp_send_nb(int id, const void *b, int len) { (void)id; (void)b; (void)len; return -1; }
+int  tcp_recv(int id, void *b, int max) { (void)id; (void)b; (void)max; return -1; }
+void tcp_close(int id) { (void)id; }
+
+/* ip.c grew a routing decision (route_sync()/route_lookup(), 2026-08-20) and
+ * this link line did not follow -- test-net-proto stopped LINKING, which is
+ * exactly the rot CLAUDE.md's test-suite section names: "a source file grew a
+ * dependency and a link line did not follow". Two groups of undefined symbol:
+ *
+ *   route_*   -- route.c is included WHOLE, the same white-box way ip.c and
+ *                udp.c below are, rather than added to the compile line. The
+ *                compile line lives in the main Makefile, which several
+ *                concurrent workflows are holding; a fix that has to land in
+ *                a file somebody else owns is a fix that does not land. It
+ *                costs nothing here: `nm -u build/c/net/core/route.o` is
+ *                EMPTY -- route.c knows only integers (an interface is an
+ *                `int oif`), so it drags in no netdev, no PCI, no driver.
+ *                tests/link.mk's ip_arp_test passes it on the command line
+ *                instead; both end up as one translation unit either way.
+ *
+ *   kprintf   -- ip.c prints the table whenever it changes. Swallowed rather
+ *                than forwarded to stdout: this file's output is a list of
+ *                pass/fail lines a person reads, and a route dump interleaved
+ *                through them is noise. ip_arp_test.c stubs it identically.
+ *
+ * REJECTED: stubbing route_lookup() to return the old on-link-or-gateway
+ * ternary. That would make this file test a routing decision the kernel no
+ * longer makes -- worse than not testing it, because the gate would stay
+ * green straight through a real regression in route.c. */
+void kprintf(const char *fmt, ...) { (void)fmt; }
+#include "route.c"
+
 /* Avoid fortified memcpy macros conflicting with the kernel prototypes. */
 #undef memcpy
 #undef memset
@@ -169,12 +206,14 @@ static int used_slots(void)
     return n;
 }
 
-/* White-box reset of the UDP socket table between groups (dns.c's socket id
- * is invalidated along with it). */
+/* White-box reset of the UDP socket table between groups (dns.c's legacy
+ * query slot is invalidated along with it -- the socket table it references
+ * was just wiped out from under it). */
 static void treset(void)
 {
     memset(socks, 0, sizeof socks);
-    dns_sock = -1;
+    legacy_dq.used = 0;
+    legacy_dq.sock = -1;
 }
 
 /* Receive on a socket with the old one-shot API's reading: -1 = nothing. */
@@ -388,8 +427,8 @@ int main(void)
     treset();
     uint8_t ouh[sizeof(struct udp_hdr) + 4];
     dns_start("example.com");            /* binds an ephemeral-port socket */
-    CHECK(dns_sock >= 0, "dns_start did not bind a socket");
-    uint16_t dport = socks[dns_sock].port;
+    CHECK(legacy_dq.sock >= 0, "dns_start did not bind a socket");
+    uint16_t dport = socks[legacy_dq.sock].port;
     make_udp(ouh, LOCAL_IP, DNS_IP, dport, 53, (const uint8_t *)"A?", 2, 0);
     uint16_t mlen = make_icmp_error(datagram, 3, 3, LOCAL_IP, DNS_IP,
                                     IP_PROTO_UDP, ouh, sizeof ouh);
@@ -398,11 +437,11 @@ int main(void)
     ip_input(frame, (uint16_t)flen);
     CHECK(dns_result() == 0xFFFFFFFFu,
           "icmp error: dns_result did not fail fast (got %08x)", dns_result());
-    CHECK(dns_sock < 0, "icmp error: dns socket not released");
+    CHECK(legacy_dq.sock < 0, "icmp error: dns socket not released");
 
     ticks = 10;
     dns_start("example.com");            /* re-arms (fresh socket) */
-    CHECK(dns_sock >= 0, "dns re-start did not bind a socket");
+    CHECK(legacy_dq.sock >= 0, "dns re-start did not bind a socket");
     make_udp(ouh, LOCAL_IP, DNS_IP, 0x4444, 53, (const uint8_t *)"A?", 2, 0);
     mlen = make_icmp_error(datagram, 3, 3, LOCAL_IP, DNS_IP,
                            IP_PROTO_UDP, ouh, sizeof ouh);

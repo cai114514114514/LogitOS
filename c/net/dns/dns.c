@@ -1,17 +1,46 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "dns.h"
 #include "udp.h"
+#include "tcp.h"
 #include "net.h"
 #include "arp.h"
 #include "pit.h"
 #include "rng.h"
 #include "ip6.h"
 
-/* A tiny DNS client: one A-query to the configured resolver (net_cfg.dns,
- * from DHCP or the static fallback), parse the first A answer. No compression
- * building (we only emit one QNAME); answer parsing skips compressed names
- * via the 0xC0 pointer form.
+/* A DNS client for LogitOS.
+ *
+ * WHAT THIS IS, PLAINLY: A STUB RESOLVER. It asks exactly ONE upstream server
+ * (net_cfg.dns -- DHCP option 6, or the static SLIRP fallback 10.0.2.3) and
+ * trusts whatever it says. There is no local root-hints walk, no iterative
+ * referral-following, no DNSSEC validation -- all of "how do I turn a name
+ * into an address" past the first hop is outsourced to that one configured
+ * server, which is what "stub resolver" means (RFC 1034 s5.3.1). That is the
+ * right amount of resolver for a client that always has exactly one,
+ * DHCP-handed, trusted-by-construction upstream; it is not a placeholder for
+ * a fuller resolver written later. If this file ever grows real recursion or
+ * DNSSEC, THIS PARAGRAPH IS WHAT MUST CHANGE, not just the roadmap notes.
+ *
+ * WHAT IT DOES beyond the stub minimum, and why each exists (2026-08-20):
+ *   - it checks the OWNER NAME of every record before accepting it, and
+ *     follows CNAME chains explicitly (bounded, DNS_MAX_CNAME hops), rather
+ *     than taking any A/AAAA record anywhere in the answer section as the
+ *     answer to OUR question. Skipping this was a real bug, not a
+ *     simplification: a response carrying an unrelated name's address
+ *     alongside ours, or one carrying only a CNAME's final target, used to
+ *     be accepted as ours regardless of whose name it actually named.
+ *   - EDNS0 (RFC 6891): every query advertises a receive size of
+ *     DNS_MSG_MAX (4096), so the classic 512-byte UDP cap essentially never
+ *     truncates a real answer. When a response still comes back with TC set,
+ *     it is re-asked over TCP (length-prefixed, RFC 1035 s4.2.2) instead of
+ *     being accepted as-is -- a truncated UDP response is not a partial
+ *     answer, it is an UNRELIABLE one, and taking it at face value is how a
+ *     resolver silently drops the very records truncation warns are missing.
+ *   - the TTL is read off the record (clamped to [DNS_TTL_FLOOR,
+ *     DNS_TTL_CEIL]) instead of a fixed 120 s. See those two constants for
+ *     what each bound is for.
  *
  * IPv6 changes the SHAPE of a lookup, not just the record type. A name has an
  * A set and a AAAA set, they arrive in separate transactions that finish at
@@ -21,22 +50,89 @@
  * (IPv4 carried as ::ffff:a.b.c.d, which is how RFC 6724 compares the two),
  * and hands the ordered list to sock.c.
  *
- * The transport stays IPv4. DNS runs over UDP and this stack has no UDP over
- * IPv6 (c/net/transport/ belongs to another line); asking an IPv4 resolver for
- * AAAA records is normal and complete -- what a stack must never do is assume
- * that no IPv6 transport means no IPv6 addresses.
+ * The transport stays IPv4 for UDP (c/net/transport/ has no UDP over IPv6);
+ * asking an IPv4 resolver for AAAA records is normal and complete -- what a
+ * stack must never do is assume that no IPv6 transport means no IPv6
+ * addresses. The IPv4 TCP fallback runs over the same tcp.c client http.c
+ * already uses.
  *
- * AAAA is only asked for when ip6_up() reports a routable address AND a default
- * router. On a v4-only network not one extra byte goes on the wire and this
- * file behaves exactly as it did before IPv6 existed. */
+ * AAAA is only asked for when ip6_up() reports a routable address AND a
+ * default router. On a v4-only network not one extra byte goes on the wire
+ * and this file behaves exactly as it did before IPv6 existed.
+ *
+ * THE LEGACY dns_start()/dns_result() API and the async pool
+ * (dns_query_start()/dns_poll()) below share ONE parsing/state-advancement
+ * implementation (dq_advance / collect_answers), on purpose: the two used to
+ * be independent copies, and a name-matching or TTL fix landing in only one
+ * of them is exactly the "cookie jar, two doors" shape this tree has been
+ * bitten by before -- a gate aimed at a rule has to be aimed at every caller
+ * of the rule. The one deliberate behavioural difference that survives the
+ * merge is that dns_start()/dns_resolve() never reads the name cache (see
+ * dns_start()'s comment) -- everything else is identical code. */
 
-#define DNS_PORT   53
-#define DNS_T_A    1
-#define DNS_T_AAAA 28
+/* ---- constants ------------------------------------------------------------ */
+
+#define DNS_PORT    53
+#define DNS_T_A     1
+#define DNS_T_AAAA  28
+#define DNS_T_CNAME 5
 
 /* Longest answer set kept per name. Eight covers every real round-robin set
  * worth trying before giving up on a host. */
-#define DNS_MAXA   8
+#define DNS_MAXA    8
+
+/* How many CNAMEs one response may chain through before we stop following.
+ * RFC 1035 sets no limit; a real chain (CDN indirection) is 1-3 hops. Eight
+ * bounds the cost of a hostile chain to a fixed, small number of extra
+ * comparisons rather than a search over the whole answer section per hop. */
+#define DNS_MAX_CNAME 8
+
+/* How many compression-pointer redirections read_name() will follow while
+ * decoding one name. A real name needs at most a couple (an owner pointing
+ * back at the question, say); this is headroom, not a budget anyone should
+ * ever spend all of. It is what actually defeats a pointer LOOP -- see
+ * read_name()'s comment for why the "point strictly backward" rule alone
+ * does not, by itself, prove termination. */
+#define DNS_MAX_PTR_JUMPS 20
+
+/* Both the EDNS0 UDP payload size we advertise/accept and the cap on a
+ * DNS-over-TCP response we will parse. One constant on purpose: advertising
+ * a bigger receive size than the buffer that actually backs it is its own
+ * bug class. 4096 is what most resolvers themselves advertise -- big enough
+ * that a real answer essentially never truncates, not 65535 (which would
+ * invite a fragmented UDP reply, exactly the kind of packet an off-path
+ * spoofer benefits from and several middleboxes drop outright). */
+#define DNS_MSG_MAX  4096
+
+/* Upper bound on an OUTGOING query we build (name <= 253 + header + EDNS0
+ * OPT is nowhere near this; it is shared by every query-building buffer in
+ * this file so there is one number to check against overflow). */
+#define DNS_QMSG_MAX 512
+
+/* TTL floor and ceiling, in SECONDS, applied to whatever the record itself
+ * says (see collect_answers()). The old code did not read the TTL at all --
+ * a fixed 120 s, argued as "short enough that a re-pointed name recovers
+ * within a page reload, long enough that a page's thirty-odd sub-resources
+ * cost one lookup per host". Reading the real value and clamping it keeps
+ * both properties for the common case while still respecting an operator's
+ * legitimate TTL choice within bounds:
+ *   FLOOR 5 s: a 0 s/1 s TTL is legitimate (a load balancer doing
+ *   per-request DNS rotation), but re-querying on literally every
+ *   sub-resource of one page is real cost for no benefit to a browser that
+ *   only ever holds one TCP connection per host at a time. A short floor
+ *   also raises the bar on DNS REBINDING: an attacker who wants this name to
+ *   re-resolve to a different address between a same-origin check and the
+ *   connection that follows it has to win a race against this floor, not
+ *   against a TTL of their own choosing.
+ *   CEILING 3600 s (1 h): bounds how long a stale record can survive a
+ *   re-pointed name or an operator's mistaken very-large TTL. The old fixed
+ *   value was 120 s for the same reason (recover within a session); 3600 s
+ *   is generous by comparison -- most CDNs advertise 60-3600 s anyway -- and
+ *   still recovers well inside a single desktop session. */
+#define DNS_TTL_FLOOR 5
+#define DNS_TTL_CEIL  3600
+
+/* ---- names: build, skip, decode, compare ---------------------------------- */
 
 /* Encode "a.b.c" as length-prefixed labels into out; returns bytes written. */
 static int encode_qname(uint8_t *out, const char *name)
@@ -56,7 +152,12 @@ static int encode_qname(uint8_t *out, const char *name)
     return o;
 }
 
-/* Skip a (possibly compressed) DNS name starting at off; return new offset. */
+/* Skip a (possibly compressed) DNS name starting at off; return new offset.
+ * Does not follow a pointer's target -- a compression pointer is always the
+ * LAST element of a name (RFC 1035 s4.1.4), so the byte right after it is
+ * where the caller's next field starts, whether or not anyone ever reads
+ * what the pointer points at. read_name() below is the one that follows it,
+ * for names we actually need the text of. */
 static int skip_name(const uint8_t *msg, int off, int len)
 {
     int depth = 0;
@@ -70,152 +171,73 @@ static int skip_name(const uint8_t *msg, int off, int len)
     return off;
 }
 
-static uint8_t resp[512];
-static uint64_t dns_started;
-static uint16_t txid;           /* of the query in flight (spoofing guard) */
-
-/* Build an A-query for `name` into q; returns its length, or -1. The
- * transaction id is generated here and handed back through *out_txid, so each
- * concurrent query in the async pool below keeps its own spoofing guard rather
- * than sharing one module-global. */
-static int build_query_type(uint8_t *q, const char *name, int qtype,
-                            uint16_t *out_txid)
+/* Lower-cased copy of `name`, presentation form, with exactly one trailing
+ * '.' -- the same canonical form read_name() produces for a decoded wire
+ * name, so ownership can be checked with a plain strcmp() rather than a
+ * DNS-aware equality routine that would have to special-case the dot. */
+static void canon_name(char *out, int outmax, const char *name)
 {
-    uint16_t id;
-    kernel_random_bytes((uint8_t *)&id, sizeof id);
-    id ^= (uint16_t)timer_ticks();
-    *out_txid = id;
-    q[0] = (uint8_t)(id >> 8); q[1] = (uint8_t)(id & 0xFF);
-    q[2] = 0x01; q[3] = 0x00;
-    q[4] = 0; q[5] = 1; q[6] = 0; q[7] = 0; q[8] = 0; q[9] = 0; q[10] = 0; q[11] = 0;
-    int o = 12;
-    int n = encode_qname(q + o, name);
-    if (n < 0) return -1;
-    o += n;
-    q[o++] = (uint8_t)(qtype >> 8); q[o++] = (uint8_t)qtype;
-    q[o++] = 0; q[o++] = 1;     /* QCLASS IN */
-    return o;
+    int i = 0;
+    for (; name[i] && i < outmax - 2; i++) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        out[i] = c;
+    }
+    if (i == 0 || out[i - 1] != '.') out[i++] = '.';
+    out[i] = 0;
 }
 
-static int build_query_id(uint8_t *q, const char *name, uint16_t *out_txid)
+/* Decode a (possibly compressed) name starting at `off` into `out` --
+ * lower-cased, dot-terminated after every label including the last (so
+ * "www"+"example"+"com" becomes "www.example.com."), NUL-terminated and
+ * truncated rather than overflowing if it does not fit `outmax`. Returns the
+ * offset just past the name AS IT APPEARS AT THE CALL SITE (a pointer counts
+ * as 2 bytes there, same contract as skip_name), or -1 if the name is
+ * malformed: a label or pointer running past `len`, a pointer that does not
+ * point strictly backward (RFC 1035 compression may only reference a PRIOR
+ * occurrence -- a forward or self pointer is invalid on its own), or a
+ * pointer chain longer than DNS_MAX_PTR_JUMPS hops.
+ *
+ * The backward-only rule is necessary but NOT sufficient to prove
+ * termination by itself: label traversal between two pointer jumps can
+ * advance `pos` past where an earlier jump landed, so a chain of jumps that
+ * are each individually backward relative to their OWN position can still
+ * revisit the same neighbourhood indefinitely (jump to 5, read labels
+ * forward to 20, jump backward to 15, read forward to 25, jump backward to
+ * 5, ...). DNS_MAX_PTR_JUMPS is the actual termination guarantee; the
+ * backward-only check is spec-correctness on top of it, not instead of it. */
+static int read_name(const uint8_t *msg, int off, int len, char *out, int outmax)
 {
-    return build_query_type(q, name, DNS_T_A, out_txid);
-}
-
-/* Collect every A and AAAA answer out of msg[0..rlen) into `out` (IPv4 records
- * become ::ffff:a.b.c.d). Returns the number appended, or -1 if the response is
- * not ours -- which is a different outcome from "ours, but empty": a NODATA
- * answer for AAAA is a definitive "this name has no IPv6 address" and must end
- * that half of the lookup rather than sit there retransmitting. */
-static int collect_answers(const uint8_t *msg, int rlen, uint16_t want,
-                           ip6_addr *out, int max, int *nout)
-{
-    if (rlen < 12) return -1;
-    /* Reject a response whose transaction ID doesn't match our query (the
-     * per-query txid set by build_query_type) -- a basic guard against off-path
-     * spoofed answers landing in our receive slot. */
-    if (msg[0] != (uint8_t)(want >> 8) || msg[1] != (uint8_t)(want & 0xFF))
-        return -1;
-    int added = 0;
-    int ancount = (msg[6] << 8) | msg[7];
-
-    /* Skip the question section (one QNAME + QTYPE + QCLASS). */
-    int off = skip_name(msg, 12, rlen) + 4;
-    for (int a = 0; a < ancount && off + 12 <= rlen; a++) {
-        off = skip_name(msg, off, rlen);
-        if (off + 10 > rlen) break;
-        int type = (msg[off] << 8) | msg[off + 1];
-        int rdlen = (msg[off + 8] << 8) | msg[off + 9];
-        int rdata = off + 10;
-        if (rdata + rdlen > rlen) break;                /* truncated record */
-        if (type == DNS_T_A && rdlen == 4 && *nout < max) {
-            ip6_from_v4(IPV4(msg[rdata], msg[rdata + 1],
-                             msg[rdata + 2], msg[rdata + 3]), &out[*nout]);
-            (*nout)++; added++;
-        } else if (type == DNS_T_AAAA && rdlen == 16 && *nout < max) {
-            /* A AAAA record that is not a usable unicast address is a
-             * misconfiguration at best and a redirection primitive at worst:
-             * a name resolving to ::1 or to a multicast group must not be
-             * connected to. */
-            ip6_addr v;
-            for (int i = 0; i < 16; i++) v.b[i] = msg[rdata + i];
-            if (!ip6_is_multicast(&v) && !ip6_is_loopback(&v) &&
-                !ip6_is_unspecified(&v) && !ip6_is_v4mapped(&v)) {
-                out[*nout] = v;
-                (*nout)++; added++;
-            }
+    int pos = off;
+    int end = -1;
+    int jumps = 0;
+    int olen = 0;
+    if (outmax > 0) out[0] = 0;
+    for (;;) {
+        if (pos < 0 || pos >= len) return -1;
+        uint8_t l = msg[pos];
+        if (l == 0) { if (end < 0) end = pos + 1; break; }
+        if ((l & 0xC0) == 0xC0) {
+            if (pos + 1 >= len) return -1;
+            int ptr = ((l & 0x3F) << 8) | msg[pos + 1];
+            if (end < 0) end = pos + 2;
+            if (ptr >= pos) return -1;          /* must point strictly backward */
+            if (++jumps > DNS_MAX_PTR_JUMPS) return -1;
+            pos = ptr;
+            continue;
         }
-        off = rdata + rdlen;
-    }
-    return added;
-}
-
-/* Parse the first A answer out of msg[0..rlen); 0 if none. The legacy blocking
- * resolver's view, unchanged in behaviour. */
-static uint32_t parse_answer_id(const uint8_t *msg, int rlen, uint16_t want)
-{
-    ip6_addr a[DNS_MAXA];
-    int n = 0;
-    if (collect_answers(msg, rlen, want, a, DNS_MAXA, &n) < 0) return 0;
-    for (int i = 0; i < n; i++)
-        if (ip6_is_v4mapped(&a[i])) return ip6_to_v4(&a[i]);
-    return 0;
-}
-
-static int      dns_sock = -1;  /* UDP socket for the query in flight */
-
-/* Random ephemeral source port (well clear of the DHCP client port 68). */
-static uint16_t pick_lport(void)
-{
-    uint16_t r;
-    kernel_random_bytes((uint8_t *)&r, sizeof r);
-    return (uint16_t)(49152 + r % 10000);
-}
-
-/* Non-blocking: send the query, arm the receive socket, record the start time. */
-void dns_start(const char *name)
-{
-    uint8_t q[512];
-    int o = build_query_id(q, name, &txid);
-    if (o < 0) { dns_sock = -1; return; }
-    if (dns_sock < 0) {
-        for (int tries = 0; tries < 16 && dns_sock < 0; tries++)
-            dns_sock = udp_bind(pick_lport());
-        if (dns_sock < 0) return;       /* no free socket: dns_result fails */
-    }
-    dns_started = timer_ticks();
-    udp_send_to(dns_sock, net_cfg.dns, DNS_PORT, q, (uint16_t)o);
-}
-
-/* 0 = pending, 0xFFFFFFFF = timeout/ICMP error, else the resolved IP (host
- * order). A terminal answer releases the socket. */
-uint32_t dns_result(void)
-{
-    if (dns_sock < 0)
-        return 0xFFFFFFFFu;             /* dns_start could not arm a query */
-    uint32_t src;
-    uint16_t sport;
-    int rlen = udp_recv(dns_sock, resp, sizeof resp, &src, &sport);
-    uint32_t rc = 0;
-    if (rlen < 0) {
-        /* An ICMP error (e.g. port-unreachable) against the query port fails
-         * the lookup immediately instead of riding out the 3 s timeout. */
-        rc = 0xFFFFFFFFu;
-    } else if (rlen > 0) {
-        if (src == net_cfg.dns && sport == DNS_PORT) {
-            uint32_t ip = parse_answer_id(resp, rlen, txid);
-            rc = ip ? ip : 0xFFFFFFFFu;
+        if (pos + 1 + l > len) return -1;
+        for (int i = 0; i < l; i++) {
+            uint8_t c = msg[pos + 1 + i];
+            if (c >= 'A' && c <= 'Z') c = (uint8_t)(c + 32);
+            if (olen + 1 < outmax) out[olen++] = (char)c;
         }
-        /* else: someone else's datagram on our ephemeral port -- ignore it
-         * and stay pending (the one-shot slot used to fail outright here). */
-    } else if (timer_ticks() - dns_started > 300) {     /* ~3 s */
-        rc = 0xFFFFFFFFu;
+        if (olen + 1 < outmax) out[olen++] = '.';
+        pos += 1 + l;
     }
-    if (rc) {
-        udp_close(dns_sock);
-        dns_sock = -1;
-    }
-    return rc;
+    if (olen == 0 && outmax > 1) { out[0] = '.'; olen = 1; }
+    out[olen < outmax ? olen : outmax - 1] = 0;
+    return end;
 }
 
 /* Dotted-decimal IP literal "a.b.c.d" -> host-order IP, or 0 if not a literal. */
@@ -232,95 +254,6 @@ static uint32_t parse_ip_literal(const char *s)
     return *s == 0 ? ip : 0;
 }
 
-static void dns_cache_put(const char *name, uint32_t ip);   /* pool cache, below */
-
-/* Deliberately WRITES the shared cache but never READS it. dns_resolve is the
- * blocking resolver on the legacy SYS_HTTP_GET path, which has to keep behaving
- * exactly as it did -- a cache hit there would change what that path does on a
- * stale record, and that path is the one every existing https test rides. So it
- * only warms the cache for the async sockets, which do read it. */
-uint32_t dns_resolve(const char *name)
-{
-    uint32_t lit = parse_ip_literal(name);   /* skip DNS for "10.0.2.2" etc. */
-    if (lit) return lit;
-    arp_warm(net_cfg.dns, 30);                /* resolve the resolver's MAC first, so the */
-    dns_start(name);                          /* query isn't dropped on a cold ARP cache */
-    uint64_t start = timer_ticks(), last = start;
-    while (timer_ticks() - start < 300) {
-        net_poll();
-        uint32_t r = dns_result();
-        if (r == 0xFFFFFFFFu) return 0;
-        if (r) { dns_cache_put(name, r); return r; }
-        if (timer_ticks() - last >= 50) {       /* retransmit */
-            last = timer_ticks();
-            dns_start(name);
-        }
-        net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
-    }
-    if (dns_sock >= 0) {                            /* overall timeout: release */
-        udp_close(dns_sock);
-        dns_sock = -1;
-    }
-    return 0;
-}
-
-/* ---- async resolver pool (the non-blocking socket path) -------------------
- *
- * dns_resolve() above owns the network for the ~200 ms a lookup takes: it spins
- * on net_poll() and cannot be called from a syscall or from net_poll() itself.
- * A connection pool needs the opposite -- several lookups outstanding at once,
- * each advanced a little on every net_poll() and never waited on. That is this.
- *
- * The slots are independent (own UDP socket, own transaction id, own timers), so
- * eight names resolve simultaneously; the legacy single-shot dns_start/
- * dns_result slot above is untouched and does not share state with them. */
-
-#define DNS_NQ      8               /* concurrent lookups */
-#define DNS_RETX    50             /* retransmit after ~500 ms */
-#define DNS_GIVEUP  300            /* fail after ~3 s (matches dns_resolve) */
-
-/* How long the lookup waits for the SECOND family after the first one answers.
- * RFC 8305 s3 ("Resolution Delay") puts this at 50 ms and applies it the other
- * way round -- wait for AAAA, then proceed on A. 500 ms here because the
- * resolver is a hop away over emulated hardware and because a lookup that ends
- * one family short costs a whole connection attempt to discover. It only ever
- * applies when both families were asked for, i.e. never on a v4-only network. */
-#define DNS_2ND_GRACE 50
-
-struct dns_query {
-    int      used;
-    int      done;                  /* 1 once the address list is final */
-    int      failed;
-    int      sock;                  /* UDP socket, -1 for a cache hit */
-    uint16_t txid;                  /* the A transaction */
-    uint16_t txid6;                 /* the AAAA transaction */
-    uint8_t  want6;                 /* 1 if AAAA was asked for at all */
-    uint8_t  got4, got6;            /* a definitive answer arrived for each */
-    uint32_t ip;                    /* first A record, for the legacy uint32 API */
-    ip6_addr addrs[DNS_MAXA];
-    uint8_t  naddr;
-    uint64_t t0, last, t_first;     /* t_first: when the first family answered */
-    char     name[DNS_NAME_MAX];
-};
-static struct dns_query dq[DNS_NQ];
-
-/* A tiny name cache. THIS IS A KNOWN SHORTCUT: the TTL is fixed rather than read
- * off the record, because we do not parse the answer's TTL field. 120 s is short
- * enough that a re-pointed name recovers within a page reload and long enough
- * that the thirty-odd sub-resources of one page cost one lookup per host. */
-#define DNS_NCACHE  16
-#define DNS_TTL     (100 * 120)     /* ticks (100 Hz) = 120 s */
-
-struct dns_cent {
-    char     name[DNS_NAME_MAX];
-    uint32_t ip;                    /* first A record (the pre-IPv6 field) */
-    ip6_addr addrs[DNS_MAXA];       /* the full mixed-family set */
-    uint8_t  naddr;
-    uint64_t exp;
-};
-static struct dns_cent dcache[DNS_NCACHE];
-static int dcache_w;                /* round-robin victim: no LRU, 16 entries */
-
 static int name_eq(const char *a, const char *b)
 {
     while (*a && *a == *b) { a++; b++; }
@@ -334,6 +267,57 @@ static void name_copy(char *d, const char *s)
     d[i] = 0;
 }
 
+/* Build an A/AAAA query for `name` into q; returns its length, or -1. The
+ * transaction id is generated here and handed back through *out_txid, so each
+ * concurrent query in the async pool (and each TCP fallback attempt) keeps
+ * its own spoofing guard rather than sharing one module-global.
+ *
+ * Every query carries an EDNS0 OPT pseudo-RR (RFC 6891) advertising a
+ * DNS_MSG_MAX receive size -- see that constant for why 4096 and not 65535. */
+static int build_query_type(uint8_t *q, const char *name, int qtype,
+                            uint16_t *out_txid)
+{
+    uint16_t id;
+    kernel_random_bytes((uint8_t *)&id, sizeof id);
+    id ^= (uint16_t)timer_ticks();
+    *out_txid = id;
+    q[0] = (uint8_t)(id >> 8); q[1] = (uint8_t)(id & 0xFF);
+    q[2] = 0x01; q[3] = 0x00;                       /* RD=1 */
+    q[4] = 0; q[5] = 1;                             /* QDCOUNT=1 */
+    q[6] = 0; q[7] = 0;                             /* ANCOUNT=0 */
+    q[8] = 0; q[9] = 0;                             /* NSCOUNT=0 */
+    q[10] = 0; q[11] = 1;                           /* ARCOUNT=1 (the EDNS0 OPT) */
+    int o = 12;
+    int n = encode_qname(q + o, name);
+    if (n < 0) return -1;
+    o += n;
+    q[o++] = (uint8_t)(qtype >> 8); q[o++] = (uint8_t)qtype;
+    q[o++] = 0; q[o++] = 1;                         /* QCLASS IN */
+    /* EDNS0 OPT: NAME=root, TYPE=41, CLASS=advertised UDP size, TTL carries
+     * the extended-rcode/version/flags (0: no DNSSEC OK, no extended rcode),
+     * RDLENGTH=0 (no options). */
+    q[o++] = 0;
+    q[o++] = 0; q[o++] = 41;
+    q[o++] = (uint8_t)(DNS_MSG_MAX >> 8); q[o++] = (uint8_t)DNS_MSG_MAX;
+    q[o++] = 0; q[o++] = 0; q[o++] = 0; q[o++] = 0;
+    q[o++] = 0; q[o++] = 0;
+    return o;
+}
+
+/* ---- the name cache -------------------------------------------------------- */
+
+#define DNS_NCACHE  16
+
+struct dns_cent {
+    char     name[DNS_NAME_MAX];
+    uint32_t ip;                    /* first A record (the pre-IPv6 field) */
+    ip6_addr addrs[DNS_MAXA];       /* the full mixed-family set */
+    uint8_t  naddr;
+    uint64_t exp;
+};
+static struct dns_cent dcache[DNS_NCACHE];
+static int dcache_w;                /* round-robin victim: no LRU, 16 entries */
+
 static struct dns_cent *dns_cache_find(const char *name)
 {
     uint64_t now = timer_ticks();
@@ -343,12 +327,14 @@ static struct dns_cent *dns_cache_find(const char *name)
     return NULL;
 }
 
-/* Store the full answer set. The single-address entry point below keeps the
- * pre-IPv6 signature so dns_resolve()'s cache warming is untouched. */
-static void dns_cache_put_set(const char *name, const ip6_addr *a, int n)
+/* Store the full answer set, expiring after `ttl_secs` clamped to
+ * [DNS_TTL_FLOOR, DNS_TTL_CEIL]. */
+static void dns_cache_put_set(const char *name, const ip6_addr *a, int n, uint32_t ttl_secs)
 {
     if (n <= 0) return;
     if (n > DNS_MAXA) n = DNS_MAXA;
+    if (ttl_secs < DNS_TTL_FLOOR) ttl_secs = DNS_TTL_FLOOR;
+    if (ttl_secs > DNS_TTL_CEIL)  ttl_secs = DNS_TTL_CEIL;
     uint64_t now = timer_ticks();
     struct dns_cent *e = NULL;
     for (int i = 0; i < DNS_NCACHE; i++)          /* refresh an existing entry */
@@ -363,20 +349,175 @@ static void dns_cache_put_set(const char *name, const ip6_addr *a, int n)
         e->addrs[i] = a[i];
         if (!e->ip && ip6_is_v4mapped(&a[i])) e->ip = ip6_to_v4(&a[i]);
     }
-    e->exp = now + DNS_TTL;
+    e->exp = now + (uint64_t)ttl_secs * TIMER_HZ;
 }
 
-static void dns_cache_put(const char *name, uint32_t ip)
+/* ---- parsing one response -------------------------------------------------- */
+
+/* Collect every A and AAAA answer in msg[0..rlen) that is actually OURS: its
+ * owner name must equal `qname`, or the target of a CNAME chain that started
+ * at `qname` (bounded, DNS_MAX_CNAME hops). IPv4 records become
+ * ::ffff:a.b.c.d. Returns the number newly appended, or -1 if the response is
+ * not ours at all (wrong transaction id, too short to be a header, or not
+ * marked as a response) -- which is a different outcome from "ours, but
+ * empty": a NODATA answer for AAAA is a definitive "this name has no IPv6
+ * address" and must end that half of the lookup rather than sit there
+ * retransmitting. `*ttl_out` receives the smallest TTL among the records
+ * accepted THIS CALL (0 if none were).
+ *
+ * Before this function compared owner names, ANY A/AAAA record anywhere in
+ * the answer section -- for whatever name -- was accepted as the answer to
+ * OUR question. DNS_NO_NAME_MATCH restores exactly that (never defined in the
+ * kernel build; `make test-dns-negctl` only), so a caller of this file can
+ * see, by name, which check closes that hole. */
+static int collect_answers(const uint8_t *msg, int rlen, uint16_t want,
+                           const char *qname, ip6_addr *out, int max, int *nout,
+                           uint32_t *ttl_out)
 {
-    if (!ip) return;
-    ip6_addr a;
-    ip6_from_v4(ip, &a);
-    dns_cache_put_set(name, &a, 1);
+    if (ttl_out) *ttl_out = 0;
+    if (rlen < 12) return -1;
+    /* Reject a response whose transaction ID doesn't match our query (the
+     * per-query txid set by build_query_type) -- a basic guard against off-path
+     * spoofed answers landing in our receive slot. */
+    if (msg[0] != (uint8_t)(want >> 8) || msg[1] != (uint8_t)(want & 0xFF))
+        return -1;
+    if (!(msg[2] & 0x80)) return -1;            /* QR not set: not a response */
+
+    int added = 0;
+    int qdcount = (msg[4] << 8) | msg[5];
+    int ancount = (msg[6] << 8) | msg[7];
+
+    /* Skip the question section (QDCOUNT questions -- normally 1, but read the
+     * real count rather than assuming). */
+    int off = 12;
+    for (int i = 0; i < qdcount; i++) {
+        off = skip_name(msg, off, rlen);
+        off += 4;                               /* QTYPE + QCLASS */
+        if (off > rlen) return -1;
+    }
+
+    /* The name every accepted record's OWNER must equal. Starts as the
+     * question we asked; a matching CNAME updates it to the CNAME's target,
+     * so a later record in the same response can match the NEW name. */
+    char target[DNS_NAME_MAX];
+    canon_name(target, sizeof target, qname);
+    int cnames_followed = 0;
+    uint32_t min_ttl = 0;
+    int have_ttl = 0;
+
+    for (int a = 0; a < ancount && off < rlen; a++) {
+        char owner[DNS_NAME_MAX];
+        int noff = read_name(msg, off, rlen, owner, sizeof owner);
+        if (noff < 0 || noff + 10 > rlen) break;    /* malformed owner name: stop here, keep what we have */
+        off = noff;
+        int type = (msg[off] << 8) | msg[off + 1];
+        uint32_t ttl = ((uint32_t)msg[off + 4] << 24) | ((uint32_t)msg[off + 5] << 16) |
+                       ((uint32_t)msg[off + 6] << 8) | msg[off + 7];
+        int rdlen = (msg[off + 8] << 8) | msg[off + 9];
+        int rdata = off + 10;
+        if (rdata + rdlen > rlen) break;            /* truncated record */
+
+#ifdef DNS_NO_NAME_MATCH
+        /* NEGATIVE CONTROL ONLY (`make test-dns-negctl`), never in the kernel
+         * build: accept a record regardless of whose name it is for -- the
+         * bug this file used to have. tests/unit/dns_test.c's
+         * unrelated-name case must FAIL with this defined. */
+        int owner_ok = 1;
+#else
+        int owner_ok = (strcmp(owner, target) == 0);
+#endif
+
+        if (owner_ok && type == DNS_T_CNAME) {
+            char cn[DNS_NAME_MAX];
+            int coff = read_name(msg, rdata, rlen, cn, sizeof cn);
+            if (coff >= 0 && cnames_followed < DNS_MAX_CNAME) {
+                cnames_followed++;
+                int j = 0;
+                while (cn[j] && j < DNS_NAME_MAX - 1) { target[j] = cn[j]; j++; }
+                target[j] = 0;
+            }
+            /* Too many CNAMEs, or an unparsable target: stop following (but
+             * keep scanning -- a later record still matching `target` as it
+             * stood is correctly accepted; one that doesn't is correctly
+             * ignored, which is the common case once the chain is cut). */
+        } else if (owner_ok && type == DNS_T_A && rdlen == 4 && *nout < max) {
+            ip6_from_v4(IPV4(msg[rdata], msg[rdata + 1],
+                             msg[rdata + 2], msg[rdata + 3]), &out[*nout]);
+            (*nout)++; added++;
+            if (!have_ttl || ttl < min_ttl) { min_ttl = ttl; have_ttl = 1; }
+        } else if (owner_ok && type == DNS_T_AAAA && rdlen == 16 && *nout < max) {
+            /* A AAAA record that is not a usable unicast address is a
+             * misconfiguration at best and a redirection primitive at worst:
+             * a name resolving to ::1 or to a multicast group must not be
+             * connected to. */
+            ip6_addr v;
+            for (int i = 0; i < 16; i++) v.b[i] = msg[rdata + i];
+            if (!ip6_is_multicast(&v) && !ip6_is_loopback(&v) &&
+                !ip6_is_unspecified(&v) && !ip6_is_v4mapped(&v)) {
+                out[*nout] = v;
+                (*nout)++; added++;
+                if (!have_ttl || ttl < min_ttl) { min_ttl = ttl; have_ttl = 1; }
+            }
+        }
+        off = rdata + rdlen;
+    }
+    if (ttl_out) *ttl_out = have_ttl ? min_ttl : 0;
+    return added;
+}
+
+/* ---- shared query state ----------------------------------------------------
+ *
+ * ONE state machine (dq_advance, below) backs both entry points:
+ *   - the async pool, dq[DNS_NQ]        -- several lookups outstanding at
+ *     once, none of them waited on (dns_query_start/_result/_addrs/_free).
+ *   - the legacy single-shot slot, legacy_dq -- what dns_start()/dns_result()
+ *     (and therefore the blocking dns_resolve()) drive.
+ * They are independent instances of the same struct; nothing here shares
+ * mutable state between a pool slot and legacy_dq beyond the code that
+ * advances them. */
+
+#define DNS_NQ      8               /* concurrent pool lookups */
+#define DNS_RETX    50              /* retransmit after ~500 ms */
+#define DNS_GIVEUP  300             /* fail after ~3 s */
+
+/* How long the lookup waits for the SECOND family after the first one answers.
+ * RFC 8305 s3 ("Resolution Delay") puts this at 50 ms and applies it the other
+ * way round -- wait for AAAA, then proceed on A. 500 ms here because the
+ * resolver is a hop away over emulated hardware and because a lookup that ends
+ * one family short costs a whole connection attempt to discover. It only ever
+ * applies when both families were asked for, i.e. never on a v4-only network. */
+#define DNS_2ND_GRACE 50
+
+struct dns_query {
+    int      used;
+    int      done;                  /* 1 once the address list is final */
+    int      failed;
+    int      sock;                  /* UDP socket, -1 for a cache/literal hit */
+    uint16_t txid;                  /* the A transaction */
+    uint16_t txid6;                 /* the AAAA transaction */
+    uint8_t  want6;                 /* 1 if AAAA was asked for at all */
+    uint8_t  got4, got6;            /* a definitive answer arrived for each */
+    uint32_t ip;                    /* first A record, for the legacy uint32 API */
+    ip6_addr addrs[DNS_MAXA];
+    uint8_t  naddr;
+    uint32_t ttl;                   /* smallest clamped TTL seen so far, 0 = none yet */
+    uint64_t t0, last, t_first;     /* t_first: when the first family answered */
+    char     name[DNS_NAME_MAX];
+};
+static struct dns_query dq[DNS_NQ];
+static struct dns_query legacy_dq;  /* backs dns_start()/dns_result() -- see the bottom of this file */
+
+/* Random ephemeral source port (well clear of the DHCP client port 68). */
+static uint16_t pick_lport(void)
+{
+    uint16_t r;
+    kernel_random_bytes((uint8_t *)&r, sizeof r);
+    return (uint16_t)(49152 + r % 10000);
 }
 
 static void dq_send(struct dns_query *q)
 {
-    uint8_t buf[512];
+    uint8_t buf[DNS_QMSG_MAX];
     int o = build_query_type(buf, q->name, DNS_T_A, &q->txid);
     if (o < 0) { q->done = 1; q->failed = 1; return; }
     q->last = timer_ticks();
@@ -386,6 +527,246 @@ static void dq_send(struct dns_query *q)
     if (o > 0)
         udp_send_to(q->sock, net_cfg.dns, DNS_PORT, buf, (uint16_t)o);
 }
+
+/* Parse `msg` as the answer to `q`'s A transaction (for6=0) or AAAA
+ * transaction (for6=1) -- `want` is the exact txid to require, passed
+ * explicitly rather than read back off `q` because the TCP-fallback path
+ * (below) uses a txid of its own that has nothing to do with q->txid/txid6.
+ * Folds any new addresses into `q`. This is the ONE place "the answer
+ * arrived" is decided, shared by the direct UDP receive path and the
+ * TCP-fallback completion. */
+static void dq_accept(struct dns_query *q, const uint8_t *msg, int rlen, int for6, uint16_t want)
+{
+    int n = q->naddr;
+    uint32_t ttl = 0;
+    int got = collect_answers(msg, rlen, want, q->name, q->addrs, DNS_MAXA, &n, &ttl);
+    if (got < 0) return;                    /* not ours / malformed: ignore */
+    if (for6) q->got6 = 1; else q->got4 = 1;
+    if (n > q->naddr) {
+        q->naddr = (uint8_t)n;
+        if (!q->ip)
+            for (int k = 0; k < n; k++)
+                if (ip6_is_v4mapped(&q->addrs[k])) { q->ip = ip6_to_v4(&q->addrs[k]); break; }
+    }
+    if (got > 0 && (!q->ttl || ttl < q->ttl))
+        q->ttl = ttl;
+    if (!q->t_first) q->t_first = timer_ticks();
+}
+
+/* ---- DNS-over-TCP fallback --------------------------------------------------
+ *
+ * Triggered when a UDP response comes back with TC set: the answer we just
+ * received is not a partial one, it is an UNRELIABLE one (RFC 1035 s4.1.1),
+ * so it is discarded rather than parsed, and the same question is re-asked
+ * over TCP, which has no 512/4096-byte ceiling. DNS-over-TCP framing is one
+ * big-endian 2-byte length prefix followed by the message (RFC 1035 s4.2.2);
+ * tcp.c is already a full client (http.c's transport), so this is plumbing,
+ * not new protocol.
+ *
+ * DNS_TCP_NQ concurrent attempts, not one per dq[]/legacy_dq slot: EDNS0
+ * above avoids truncation for essentially every real answer, so more than a
+ * couple of these in flight at once has never happened on this network in
+ * practice. If every slot is busy, a family's fallback simply does not
+ * start -- that family's lookup stays pending until the OWNING query's own
+ * DNS_GIVEUP, exactly as if the resolver had gone silent. That is an honest
+ * degrade under a pile-up nothing here has produced, not a silent success. */
+
+#define DNS_TCP_NQ 2
+
+struct dns_tcp_fb {
+    int      used;
+    struct dns_query *owner;        /* &dq[i] or &legacy_dq */
+    int      for6;                  /* 0 = chasing the A answer, 1 = AAAA */
+    int      id;                    /* tcp.c connection id */
+    int      stage;                 /* 0 connecting, 1 sending, 2 reading length, 3 reading body */
+    uint16_t txid;                  /* THIS attempt's own txid -- independent of owner->txid[6] */
+    uint8_t  qbuf[DNS_QMSG_MAX + 2]; int qlen, qsent;
+    uint8_t  lb[2]; int lhave;
+    uint8_t  body[DNS_MSG_MAX]; int need, have;
+};
+static struct dns_tcp_fb tcpfb[DNS_TCP_NQ];
+
+static int dns_tcp_find_existing(struct dns_query *q, int for6)
+{
+    for (int i = 0; i < DNS_TCP_NQ; i++)
+        if (tcpfb[i].used && tcpfb[i].owner == q && tcpfb[i].for6 == for6)
+            return i;
+    return -1;
+}
+
+/* Close and free every TCP fallback attempt belonging to `q`. MUST be called
+ * before `q` is freed or re-armed (dns_query_free, legacy_release): without
+ * it, a fallback started against the OLD lookup can outlive it, and if the
+ * slot is reused for a DIFFERENT lookup before the fallback completes, its
+ * eventual response gets folded into the wrong query -- `owner` is a raw
+ * pointer to the slot, not a generation-tagged handle, so "the pointer is
+ * still valid" and "it still names the same lookup" are not the same fact
+ * once a slot can be freed and reused. */
+static void dns_tcp_abandon_owner(struct dns_query *q)
+{
+    for (int i = 0; i < DNS_TCP_NQ; i++)
+        if (tcpfb[i].used && tcpfb[i].owner == q) {
+            if (tcpfb[i].id >= 0) tcp_close(tcpfb[i].id);
+            tcpfb[i].used = 0;
+        }
+}
+
+static void dns_tcp_start(struct dns_query *q, int for6)
+{
+    if (dns_tcp_find_existing(q, for6) >= 0) return;   /* already in flight */
+    int slot = -1;
+    for (int i = 0; i < DNS_TCP_NQ; i++) if (!tcpfb[i].used) { slot = i; break; }
+    if (slot < 0) return;                              /* see the header comment above */
+
+    struct dns_tcp_fb *f = &tcpfb[slot];
+    for (unsigned i = 0; i < sizeof *f; i++) ((uint8_t *)f)[i] = 0;
+    f->owner = q;
+    f->for6 = for6;
+
+    int qtype = for6 ? DNS_T_AAAA : DNS_T_A;
+    int o = build_query_type(f->qbuf + 2, q->name, qtype, &f->txid);
+    if (o < 0) return;                                 /* f->used stays 0 */
+    f->qbuf[0] = (uint8_t)(o >> 8);
+    f->qbuf[1] = (uint8_t)o;
+    f->qlen = o + 2;
+
+    f->id = tcp_connect_start(net_cfg.dns, DNS_PORT);
+    if (f->id < 0) return;                             /* f->used stays 0 */
+    f->stage = 0;
+    f->used = 1;
+}
+
+/* Advance every TCP fallback attempt a little. Called once per dns_poll(). */
+static void dns_tcp_pump(void)
+{
+    for (int i = 0; i < DNS_TCP_NQ; i++) {
+        struct dns_tcp_fb *f = &tcpfb[i];
+        if (!f->used) continue;
+        if (!f->owner->used || f->owner->done) {
+            /* The lookup this was chasing finished (or was abandoned)
+             * through some other path while we were mid-flight -- e.g. the
+             * OTHER family answered and the grace period elapsed. Nothing
+             * left to deliver this to. */
+            if (f->id >= 0) tcp_close(f->id);
+            f->used = 0;
+            continue;
+        }
+        switch (f->stage) {
+        case 0: {                                       /* connecting */
+            int st = tcp_connect_status(f->id);
+            if (st < 0) { tcp_close(f->id); f->used = 0; break; }
+            if (st == 1) { f->stage = 1; f->qsent = 0; }
+            break;
+        }
+        case 1: {                                       /* sending the length-prefixed query */
+            int n = tcp_send_nb(f->id, f->qbuf + f->qsent, f->qlen - f->qsent);
+            if (n < 0) { tcp_close(f->id); f->used = 0; break; }
+            f->qsent += n;
+            if (f->qsent >= f->qlen) { f->stage = 2; f->lhave = 0; }
+            break;
+        }
+        case 2: {                                       /* the 2-byte length prefix */
+            int n = tcp_recv(f->id, f->lb + f->lhave, 2 - f->lhave);
+            if (n < 0) { tcp_close(f->id); f->used = 0; break; }
+            f->lhave += n;
+            if (f->lhave == 2) {
+                f->need = (f->lb[0] << 8) | f->lb[1];
+                if (f->need == 0 || f->need > (int)sizeof f->body) {
+                    /* Refused, not truncated further: a DNS-over-TCP answer
+                     * this tree would ever ask about is a handful of A/AAAA
+                     * records, nowhere near DNS_MSG_MAX. A resolver sending
+                     * more is broken or hostile, and keeping only the first
+                     * DNS_MSG_MAX bytes would silently parse a truncated
+                     * MIDDLE of a message as if it were whole -- worse than
+                     * refusing outright. */
+                    tcp_close(f->id); f->used = 0; break;
+                }
+                f->stage = 3; f->have = 0;
+            }
+            break;
+        }
+        case 3: {                                       /* the body */
+            int n = tcp_recv(f->id, f->body + f->have, f->need - f->have);
+            if (n < 0) { tcp_close(f->id); f->used = 0; break; }
+            f->have += n;
+            if (f->have >= f->need) {
+                dq_accept(f->owner, f->body, f->need, f->for6, f->txid);
+                tcp_close(f->id);
+                f->used = 0;
+            }
+            break;
+        }
+        }
+    }
+}
+
+/* ---- advancing one query ---------------------------------------------------
+ *
+ * Receive whatever is queued, retransmit, or finalize -- shared by every
+ * pool slot and by legacy_dq. Reachable only from dns_poll(). */
+
+static uint8_t poll_buf[DNS_MSG_MAX];   /* scratch: dns_poll() runs single-threaded, one query at a time */
+
+static void dq_advance(struct dns_query *q)
+{
+    uint64_t now = timer_ticks();
+    if (!q->used || q->done || q->sock < 0) return;
+
+    uint32_t src; uint16_t sport;
+    int rlen;
+    int died = 0;
+    /* Drain: with two transactions in flight on one socket, the A and AAAA
+     * responses are usually both already queued by the time we look. */
+    while ((rlen = udp_recv(q->sock, poll_buf, sizeof poll_buf, &src, &sport)) != 0) {
+        if (rlen < 0) {                     /* ICMP error against our port */
+            q->done = 1; q->failed = 1;
+            died = 1;
+            break;
+        }
+        if (src != net_cfg.dns || sport != DNS_PORT)
+            continue;                       /* someone else's datagram */
+        if (rlen < 12) continue;            /* not even a header */
+
+        int is_a = (poll_buf[0] == (uint8_t)(q->txid >> 8) && poll_buf[1] == (uint8_t)(q->txid & 0xFF));
+        int is_6 = q->want6 && (poll_buf[0] == (uint8_t)(q->txid6 >> 8) && poll_buf[1] == (uint8_t)(q->txid6 & 0xFF));
+        if (!is_a && !is_6)
+            continue;                       /* neither transaction: spoofed or stale, ignore */
+
+        if (poll_buf[2] & 0x02) {           /* TC: truncated, not a usable answer */
+            dns_tcp_start(q, is_a ? 0 : 1);
+            continue;
+        }
+        dq_accept(q, poll_buf, rlen, is_a ? 0 : 1, is_a ? q->txid : q->txid6);
+    }
+    if (died) return;
+
+    /* Finished when both families have answered -- or when one has and the
+     * other has had its grace period. A name with an A record and a slow
+     * (or filtered) AAAA must not stall the connection behind it. */
+    int both = q->got4 && (!q->want6 || q->got6);
+    int graced = q->t_first && (now - q->t_first >= DNS_2ND_GRACE);
+    if (both || (q->t_first && graced)) {
+        q->done = 1;
+        q->failed = (q->naddr == 0);
+        if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, q->ttl ? q->ttl : DNS_TTL_FLOOR);
+        return;
+    }
+    if (now - q->t0 >= DNS_GIVEUP) {
+        /* Out of time. Whatever arrived is still usable: a lookup that got
+         * an A record and never heard about AAAA has an answer. */
+        q->done = 1;
+        q->failed = (q->naddr == 0);
+        if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr, q->ttl ? q->ttl : DNS_TTL_FLOOR);
+        return;
+    }
+    if (now - q->last >= DNS_RETX) dq_send(q);
+}
+
+/* ---- async resolver pool (the non-blocking socket path) --------------------
+ *
+ * Several lookups outstanding at once, each advanced a little on every
+ * dns_poll() and never waited on -- what sock.c needs. The slots are
+ * independent (own UDP socket, own transaction ids, own timers). */
 
 /* Start a lookup. Returns a query id (>= 0) the caller polls with
  * dns_query_result() and MUST release with dns_query_free(), or -1 if the name
@@ -503,77 +884,118 @@ int dns_query_addrs(int id, ip6_addr *out, int max)
 void dns_query_free(int id)
 {
     if (id < 0 || id >= DNS_NQ || !dq[id].used) return;
+    dns_tcp_abandon_owner(&dq[id]);
     if (dq[id].sock >= 0) udp_close(dq[id].sock);
     dq[id].sock = -1;
     dq[id].used = 0;
 }
 
-/* Pumped from net_poll(): receive answers, retransmit, time out. Every slot
- * advances on every call, which is what makes the lookups concurrent. */
+/* Pumped from net_poll(): receive answers, retransmit, time out, and advance
+ * any TCP fallback in flight. Every slot (and legacy_dq) advances on every
+ * call, which is what makes the pool lookups concurrent. */
 void dns_poll(void)
 {
-    uint64_t now = timer_ticks();
-    for (int i = 0; i < DNS_NQ; i++) {
-        struct dns_query *q = &dq[i];
-        if (!q->used || q->done || q->sock < 0) continue;
+    for (int i = 0; i < DNS_NQ; i++) dq_advance(&dq[i]);
+    dq_advance(&legacy_dq);
+    dns_tcp_pump();
+}
 
-        /* Drain: with two transactions in flight on one socket, the A and AAAA
-         * responses are usually both already queued by the time we look. */
-        uint8_t buf[512];
-        uint32_t src; uint16_t sport;
-        int rlen;
-        int died = 0;
-        while ((rlen = udp_recv(q->sock, buf, sizeof buf, &src, &sport)) != 0) {
-            if (rlen < 0) {                 /* ICMP error against our port */
-                q->done = 1; q->failed = 1;
-                died = 1;
-                break;
-            }
-            if (src != net_cfg.dns || sport != DNS_PORT)
-                continue;                   /* someone else's datagram */
-            int n = q->naddr;
-            /* Which transaction is this? Both are matched, so a spoofed or
-             * stale response for the other family cannot be mistaken for ours. */
-            if (collect_answers(buf, rlen, q->txid, q->addrs, DNS_MAXA, &n) >= 0) {
-                q->got4 = 1;
-            } else if (q->want6 &&
-                       collect_answers(buf, rlen, q->txid6, q->addrs, DNS_MAXA, &n) >= 0) {
-                q->got6 = 1;
-            } else {
-                continue;                   /* neither: ignore, stay pending */
-            }
-            if (n > q->naddr) {
-                q->naddr = (uint8_t)n;
-                if (!q->ip)
-                    for (int k = 0; k < n; k++)
-                        if (ip6_is_v4mapped(&q->addrs[k])) {
-                            q->ip = ip6_to_v4(&q->addrs[k]);
-                            break;
-                        }
-            }
-            if (!q->t_first) q->t_first = now;
-        }
-        if (died) continue;
+/* ---- the legacy single-shot API --------------------------------------------
+ *
+ * dns_start()/dns_result() predate the pool above and are kept as their own
+ * documented entry point (SYS_NET_DNS/SYS_NET_DNS_RESULT, and dns_resolve()'s
+ * blocking wrapper for the SYS_HTTP_GET path) rather than folded into it,
+ * because of ONE deliberate behavioural difference: this path never reads
+ * the name cache. dns_resolve() is what every existing https test rides, and
+ * a cache hit here would change what a fetch does on a stale record in a way
+ * nothing asked for. Everything else -- name matching, CNAME chasing, EDNS0,
+ * the TCP fallback, real TTLs -- is the SAME code as the pool, via
+ * dq_advance()/dns_poll(), not a second copy of it. */
 
-        /* Finished when both families have answered -- or when one has and the
-         * other has had its grace period. A name with an A record and a slow
-         * (or filtered) AAAA must not stall the connection behind it. */
-        int both = q->got4 && (!q->want6 || q->got6);
-        int graced = q->t_first && (now - q->t_first >= DNS_2ND_GRACE);
-        if (both || (q->t_first && graced)) {
-            q->done = 1;
-            q->failed = (q->naddr == 0);
-            if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr);
-            continue;
-        }
-        if (now - q->t0 >= DNS_GIVEUP) {
-            /* Out of time. Whatever arrived is still usable: a lookup that got
-             * an A record and never heard about AAAA has an answer. */
-            q->done = 1;
-            q->failed = (q->naddr == 0);
-            if (q->naddr) dns_cache_put_set(q->name, q->addrs, q->naddr);
-            continue;
-        }
-        if (now - q->last >= DNS_RETX)      dq_send(q);
+static void legacy_release(void)
+{
+    dns_tcp_abandon_owner(&legacy_dq);
+    if (legacy_dq.sock >= 0) udp_close(legacy_dq.sock);
+    legacy_dq.sock = -1;
+    legacy_dq.used = 0;
+}
+
+/* Non-blocking: send the query, arm the receive socket, record the start time. */
+void dns_start(const char *name)
+{
+    if (legacy_dq.used) legacy_release();       /* a lookup was already in flight: abandon it */
+    for (unsigned i = 0; i < sizeof legacy_dq; i++) ((uint8_t *)&legacy_dq)[i] = 0;
+    legacy_dq.used = 1;
+    legacy_dq.sock = -1;                         /* zero is a VALID socket index; the bind loop
+                                                     below only runs while sock is negative */
+    name_copy(legacy_dq.name, name);
+
+    uint32_t fast = parse_ip_literal(name);
+    if (fast) {
+        ip6_from_v4(fast, &legacy_dq.addrs[0]);
+        legacy_dq.naddr = 1;
+        legacy_dq.ip = fast;
+        legacy_dq.done = 1;
+        return;
     }
+
+    /* IPv4-only on purpose: this is the legacy uint32 entry point (the
+     * Network app's diagnostic, and dns_resolve()'s transport), and asking
+     * for AAAA here would put a second datagram on the wire for an answer
+     * nothing reads. dns_query_start() is where dual-stack lookups belong. */
+    legacy_dq.want6 = 0;
+
+    for (int tries = 0; tries < 16 && legacy_dq.sock < 0; tries++)
+        legacy_dq.sock = udp_bind(pick_lport());
+    if (legacy_dq.sock < 0) { legacy_dq.used = 0; return; }   /* no free socket: dns_result fails */
+    { uint8_t mac[ETH_ALEN]; arp_resolve(net_cfg.dns, mac); }
+    legacy_dq.t0 = timer_ticks();
+    dq_send(&legacy_dq);
+}
+
+/* 0 = pending, 0xFFFFFFFF = timeout/ICMP error/no socket, else the resolved
+ * IP (host order). A terminal answer releases the socket.
+ *
+ * Self-pumping (calls dns_poll()): the ORIGINAL implementation did its own
+ * udp_recv() inline, so a caller that is not itself part of a net_poll() loop
+ * (a syscall handler polled directly by userland, or a host unit test with no
+ * background pump at all) still saw progress on every call. Folding the
+ * receive/retransmit/finalize logic into dq_advance()/dns_poll() must not
+ * lose that property -- in the real kernel dns_poll() is ALSO reached every
+ * frame via the WM loop's net_poll(), so this is a second, redundant call
+ * there, not a second mechanism; dq_advance() is cheap to call twice in one
+ * tick (retransmit is time-gated, receive just drains whatever is queued). */
+uint32_t dns_result(void)
+{
+    dns_poll();
+    if (!legacy_dq.used) return 0xFFFFFFFFu;
+    if (!legacy_dq.done) return 0;
+    uint32_t rc = (legacy_dq.failed || !legacy_dq.ip) ? 0xFFFFFFFFu : legacy_dq.ip;
+    legacy_release();
+    return rc;
+}
+
+uint32_t dns_resolve(const char *name)
+{
+    uint32_t lit = parse_ip_literal(name);
+    if (lit) return lit;
+    arp_warm(net_cfg.dns, 30);                /* resolve the resolver's MAC first, so the */
+    dns_start(name);                          /* query isn't dropped on a cold ARP cache */
+    uint64_t start = timer_ticks();
+    /* dq_advance()'s own DNS_GIVEUP is the real deadline (retransmission
+     * included -- dns_result() pumps dns_poll() every call, which retransmits
+     * every DNS_RETX ticks on its own now). This loop only needs to run long
+     * enough to observe that deadline fire, plus a little slack for
+     * scheduling jitter -- not a SECOND independent timeout to keep in sync
+     * with the first, which is what the old code had (two 300-tick constants
+     * that happened to agree because nothing had yet made them disagree). */
+    while (timer_ticks() - start < DNS_GIVEUP + TIMER_HZ) {
+        net_poll();
+        uint32_t r = dns_result();
+        if (r == 0xFFFFFFFFu) return 0;
+        if (r) return r;                      /* dq_advance already cached it; dns_result already freed the slot */
+        net_idle();                                  /* sleep to the next tick; don't peg the host CPU */
+    }
+    legacy_release();                          /* outer bound reached first: don't leak the socket */
+    return 0;
 }

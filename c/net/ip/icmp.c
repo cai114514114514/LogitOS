@@ -7,6 +7,11 @@
 
 void *memcpy(void *, const void *, size_t);
 
+/* raw.c's fan-out hook -- weak because a build without SOCK_RAW linked (e.g.
+ * a host test that #includes only ip.c/icmp.c, see net_proto_test.c) must
+ * not fail to link over a socket feature it never asked for. */
+void raw_icmp_deliver(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+
 #define ICMP_ECHO_REPLY   0
 #define ICMP_ECHO_REQUEST 8
 
@@ -118,6 +123,19 @@ void icmp_input(uint32_t src, const uint8_t *data, uint16_t len)
         return;
     if (ip_checksum(data, len) != 0)
         return;
+
+    /* Every raw ICMP socket sees a copy of everything that reaches here --
+     * echo requests we are about to auto-answer, replies to a ping this
+     * process never sent, error types nothing below handles. That is what a
+     * raw socket IS: below icmp_input's own echo/error handling, not
+     * instead of it, exactly as SYS_NET_PING and a SOCK_RAW /bin/ping both
+     * seeing the same reply is supposed to work. Placed after the checksum
+     * check (not before): a corrupt-on-the-wire message is not a message,
+     * and nothing downstream of a real raw socket implementation is
+     * expected to hand a caller bytes that failed the protocol's own
+     * integrity check. */
+    if (raw_icmp_deliver) raw_icmp_deliver(src, data, len);
+
     const struct icmp_hdr *in = (const struct icmp_hdr *)data;
 
     if (in->type == ICMP_ECHO_REQUEST && in->code == 0) {

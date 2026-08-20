@@ -65,6 +65,17 @@ int arp_resolve(uint32_t ip, uint8_t mac[ETH_ALEN])
 int arp_warm(uint32_t ip, int t) { (void)ip; (void)t; return 0; }
 void arp_input(const uint8_t *f, uint16_t l) { (void)f; (void)l; }
 
+/* dns.c's TCP fallback (on a truncated UDP response) needs tcp.c's client
+ * API to LINK; none of the scenarios below ever set TC, so the fallback path
+ * is never actually taken here -- these only need to exist, not do anything
+ * useful. tests/unit/dns_test.c is where the TCP fallback itself is tested,
+ * against a real model TCP connection. */
+int  tcp_connect_start(uint32_t dst, uint16_t port) { (void)dst; (void)port; return -1; }
+int  tcp_connect_status(int id) { (void)id; return -1; }
+int  tcp_send_nb(int id, const void *b, int len) { (void)id; (void)b; (void)len; return -1; }
+int  tcp_recv(int id, void *b, int max) { (void)id; (void)b; (void)max; return -1; }
+void tcp_close(int id) { (void)id; }
+
 /* ---- the model UDP socket ------------------------------------------------ */
 
 #define NSOCK6 8

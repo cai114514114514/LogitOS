@@ -4,6 +4,12 @@
 #include <stdint.h>
 #include "ip6.h"        /* ip6_addr: a lookup's answer set is mixed-family */
 
+/* A stub resolver: one upstream server (net_cfg.dns), trusted, no local
+ * recursion or DNSSEC. See the header comment in dns.c for exactly what that
+ * means and what this file does beyond the stub minimum (owner-name
+ * matching + CNAME chasing, EDNS0 + a TCP fallback on TC, real per-record
+ * TTLs). */
+
 /* Resolve `name` to an IPv4 address (host order) via the SLIRP DNS server
  * (10.0.2.3) over UDP. Blocking-ish: pumps net_poll() with a timeout. Returns
  * the address, or 0 on failure/timeout. Must run with interrupts enabled. */
@@ -22,8 +28,9 @@ uint32_t dns_result(void);
  * dns_query_start() returns a query id, dns_query_result() reports 0 pending /
  * 0xFFFFFFFF failed / the address, dns_query_free() releases the slot, and
  * dns_poll() (pumped from net_poll) is what advances all of them. Answers are
- * kept in a small fixed-TTL name cache, so a page's many sub-resource hosts cost
- * one lookup each rather than one per connection. */
+ * kept in a small name cache, expiring per the record's own TTL (clamped --
+ * see DNS_TTL_FLOOR/DNS_TTL_CEIL in dns.c), so a page's many sub-resource
+ * hosts cost one lookup each rather than one per connection. */
 int      dns_query_start(const char *name);
 uint32_t dns_query_result(int id);
 void     dns_query_free(int id);
