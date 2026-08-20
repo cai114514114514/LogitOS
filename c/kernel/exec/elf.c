@@ -6,6 +6,18 @@
 #include "prot.h"      /* PTE_NX + cpu_prot_nx(): W^X is decided here */
 #include "rng.h"       /* kernel_random_bytes(): AT_RANDOM's 16 bytes */
 #include "kprintf.h"
+#ifndef LOGIT_HOSTTEST
+#include "vma.h"       /* VMA_READ/VMA_EXEC + the file-mapping entry point */
+#else
+/* tests/unit/exechost has no c/kernel/mm on its include path, and no VMAs to
+ * reserve -- the weak vma_reserve_file_fixed below is absent there and the
+ * loader takes the eager path. These two exist only so the prot expression
+ * compiles; if they ever disagree with vma.h the host build cannot notice,
+ * which is why the kernel build includes the real header instead of copying
+ * the values. */
+#define VMA_READ 0x1
+#define VMA_EXEC 0x4
+#endif
 
 void *memcpy(void *, const void *, size_t);   /* lib/string.c */
 void *memset(void *, int, size_t);
@@ -19,10 +31,8 @@ struct elf64_ehdr {
     uint16_t e_ehsize, e_phentsize, e_phnum, e_shentsize, e_shnum, e_shstrndx;
 } __attribute__((packed));
 
-struct elf64_phdr {
-    uint32_t p_type, p_flags;
-    uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
-} __attribute__((packed));
+/* struct elf64_phdr moved to elf.h: elf_file_runs() is part of the interface
+ * now, and a host test that enumerates the predicate needs the type. */
 
 /* e_ident indices + the values this machine accepts. */
 #define EI_CLASS      4
@@ -182,10 +192,138 @@ static uint64_t read_cr3(void)
 
 static int is_pow2(uint64_t v) { return v && (v & (v - 1)) == 0; }
 
-/* Allocate + map one zeroed user page at `va`, or return 0. Skips the
- * allocation if something is already mapped there (two PT_LOADs sharing a
- * page: allocating again would map a second frame over the first and throw
- * away the bytes already copied into it). */
+/* ------------------------------------------------------- FILE-BACKED TEXT --
+ * The predicate elf.h states in full. Pure by construction: it reads program
+ * headers and returns runs, and the two things that could make it lie -- the
+ * page table and the allocator -- are not reachable from here.
+ *
+ * The trims are written as loops over the two ENDS rather than a per-page
+ * filter because PT_LOADs are ascending and non-overlapping (PASS 0 refuses
+ * anything else), so a segment's eligible pages are ONE contiguous run and
+ * condition (a) can only remove pages at its edges. A per-page filter would
+ * produce the same answer for every real link and a set of disjoint runs for a
+ * malformed one -- more VMAs than there are slots, from disk-controlled input. */
+static int seg_count_at(const struct elf64_phdr *ph, int phnum, uint64_t page)
+{
+    int n = 0;
+    for (int i = 0; i < phnum; i++) {
+        if (ph[i].p_type != PT_LOAD) continue;
+        if (ph[i].p_memsz > (uint64_t)-1 - ph[i].p_vaddr) continue;   /* PASS 0 refuses it */
+        uint64_t s = ph[i].p_vaddr & ~(uint64_t)0xFFF;
+        uint64_t v = ph[i].p_vaddr + ph[i].p_memsz;
+        if (v > (uint64_t)-1 - 0xFFF) continue;
+        uint64_t e = (v + 0xFFF) & ~(uint64_t)0xFFF;
+        if (page >= s && page < e) n++;
+    }
+    return n;
+}
+
+int elf_file_runs(const struct elf64_phdr *ph, int phnum, uint64_t hdr_off,
+                  uint64_t file_pages, struct elf_run *out, int max)
+{
+    int n = 0;
+    if (!ph || phnum <= 0 || !out || max <= 0) return 0;
+    if (hdr_off & 0xFFF) return 0;                     /* (d), the cheap half */
+
+    for (int i = 0; i < phnum && n < max; i++) {
+        if (ph[i].p_type != PT_LOAD) continue;
+        if (ph[i].p_flags & PF_W) continue;            /* (b) */
+        if (ph[i].p_filesz > ph[i].p_memsz) continue;  /* PASS 0 refuses it */
+        if (ph[i].p_filesz < 0x1000) continue;         /* no whole page to share */
+        if (ph[i].p_filesz > (uint64_t)-1 - ph[i].p_vaddr) continue;
+
+        /* (c): whole pages strictly inside [p_vaddr, p_vaddr + p_filesz). */
+        uint64_t lo = (ph[i].p_vaddr + 0xFFF) & ~(uint64_t)0xFFF;
+#ifdef ELF_NEGCTL_FILETAIL
+        /* THE NEGATIVE CONTROL (tests/exec.mk), and it is the PLAUSIBLE wrong
+         * version rather than the feature switched off: round the end of the
+         * run UP instead of down, so the run covers the whole segment "as far
+         * as the file goes". Every page it maps really is in the file and
+         * really does hold the right bytes, so the program still starts, its
+         * text is still correct, and the permissions are still right -- what
+         * changes is the p_filesz < p_memsz BOUNDARY page, which is part file
+         * and part .bss. Mapped from the cache it arrives holding the file's
+         * next bytes where zeroes belong, shared with every other process
+         * running the same binary. That is R3, and it is a silent wrong
+         * answer: the failure is a global that was never zero, days later,
+         * somewhere else. exec_test's elf_file_runs cases must FAIL against
+         * this build. */
+        uint64_t hi = (ph[i].p_vaddr + ph[i].p_filesz + 0xFFF) & ~(uint64_t)0xFFF;
+#else
+        uint64_t hi = (ph[i].p_vaddr + ph[i].p_filesz) & ~(uint64_t)0xFFF;
+#endif
+        if (lo >= hi) continue;
+
+        /* (a). */
+        while (lo < hi && seg_count_at(ph, phnum, lo) > 1) lo += 0x1000;
+        while (hi > lo && seg_count_at(ph, phnum, hi - 0x1000) > 1) hi -= 0x1000;
+        if (lo >= hi) continue;
+
+        /* The private user region, because a run outside it is not a run: PASS
+         * 1 SKIPS the low read-only headers segment some lld versions emit at
+         * 0x200000 (mapping it with USER would open a window into the shared
+         * kernel page tables), and vma_reserve_file_fixed refuses the address
+         * anyway. Returning it would be a run that is always dropped, which
+         * costs a "could not be reserved" line on every load of every binary
+         * that has one -- a warning that means nothing, printed forever. */
+        if (lo < USER_VA_BASE || hi > USER_VA_END) continue;
+
+        /* (d) in full. Redundant with the hdr_off test above for any image
+         * PASS 0 accepted (p_offset == p_vaddr mod 4096) and kept because the
+         * predicate is called on unvalidated headers by the host test, where
+         * "the congruence check upstream guarantees it" is not true. */
+        uint64_t foff = hdr_off + ph[i].p_offset + (lo - ph[i].p_vaddr);
+        if (foff & 0xFFF) continue;
+        if (foff < hdr_off) continue;                  /* wrapped */
+
+        uint64_t pages = (hi - lo) >> 12;
+        uint64_t first = foff >> 12;
+        /* (e). TRIMMED, not refused: a run that runs off the end of the file
+         * is still a legitimate run for the pages that ARE in the file, and
+         * losing the whole segment to a short tail would silently un-share a
+         * binary for a reason nobody could see from outside. */
+        if (first >= file_pages) continue;
+        if (file_pages - first < pages) pages = file_pages - first;
+        if (!pages) continue;
+
+        out[n].va = lo;
+        out[n].foff = foff;
+        out[n].pages = pages;
+        out[n].prot = ph[i].p_flags & (uint32_t)(PF_R | PF_X);
+        n++;
+    }
+    return n;
+}
+
+/* Is `va` inside one of the runs? The loop is over at most ELF_MAX_RUNS
+ * entries and runs once per page of the image, which is 870 x 2 comparisons
+ * for the biggest binary here -- cheaper than building a per-page bitmap that
+ * would have to be allocated somewhere. */
+static int in_runs(const struct elf_run *runs, int nrun, uint64_t va)
+{
+    for (int i = 0; i < nrun; i++)
+        if (va >= runs[i].va && va < runs[i].va + (runs[i].pages << 12)) return 1;
+    return 0;
+}
+
+/* c/kernel/mm's fixed-address file mapping. WEAK on purpose, exactly as vmm.c
+ * declares tlb_flush_all: tests/unit/exechost links elf.c against a simulated
+ * MMU with no VMAs and no page cache, so the symbol is absent there, the call
+ * is skipped, and the host tests go on measuring the eager loader byte for
+ * byte. A hard reference would make them a link error instead. */
+int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
+                           uint32_t prot, int fh, uint64_t foff) __attribute__((weak));
+
+/* Allocate + map one zeroed user page at `va`. Returns 0 on OOM, 1 if a page
+ * was already there, 2 if this call allocated one. Skips the allocation if
+ * something is already mapped there (two PT_LOADs sharing a page: allocating
+ * again would map a second frame over the first and throw away the bytes
+ * already copied into it).
+ *
+ * The 1-vs-2 distinction is new and is not decoration: it is what makes
+ * out->copied_pages a count of FRAMES rather than of loop iterations, and a
+ * page reached from two segments would otherwise be counted twice in the
+ * number a gate reads to decide whether file-backing did anything. */
 static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
 {
     uint64_t *e = vmm_pte(cr3, va);
@@ -194,7 +332,7 @@ static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
     if (!frame) return 0;
     memset((void *)frame, 0, 0x1000);
     vmm_map_page(va, frame, flags);
-    return 1;
+    return 2;
 }
 
 /* ---------------------------------------------------------------------------
@@ -240,6 +378,12 @@ static int place_page(uint64_t cr3, uint64_t va, uint64_t flags)
  * ------------------------------------------------------------------------ */
 
 int elf_load_image(void *image, uint64_t image_size, struct elf_image *out)
+{
+    return elf_load_image_ex(image, image_size, out, 0);
+}
+
+int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
+                      const struct elf_src *src)
 {
     struct elf_image blank;
     if (!out) out = &blank;
@@ -543,10 +687,43 @@ int elf_load_image(void *image, uint64_t image_size, struct elf_image *out)
         return reject(ELF_E_SEGVA, "no room above the image for the info page",
                       out->top, USER_VA_END);
 
-    /* ================= PASS 1: map + copy ================================ */
     int nx_on = cpu_prot_nx_usable();
     uint64_t cr3 = read_cr3();
 
+    /* ================= PASS 0.5: the file-backed runs =====================
+     * Before a single frame is allocated, because the whole point is not to
+     * allocate them. Each run becomes a VMA over the page cache; PASS 1 then
+     * skips those pages and PASS 2 finds them absent and leaves them alone.
+     * They arrive on first touch through fault.c's do_file(), read-only, with
+     * NX from the VMA's prot -- the same protection map_flags() would have
+     * given them, arrived at by the other route.
+     *
+     * A run that cannot be reserved (no VMA slot, the range already claimed)
+     * is DROPPED, not fatal: PASS 1 then maps and copies it exactly as before.
+     * That is the only failure mode this feature is allowed to have, because
+     * the eager path is still right -- it is merely more expensive. */
+    struct elf_run runs[ELF_MAX_RUNS];
+    int nrun = 0;
+    if (src && src->fh >= 0 && vma_reserve_file_fixed) {
+        int want = elf_file_runs(ph, phnum, src->base_off, src->file_pages,
+                                 runs, ELF_MAX_RUNS);
+        int kept = 0;
+        for (int i = 0; i < want; i++) {
+            uint32_t vprot = VMA_READ | ((runs[i].prot & PF_X) ? VMA_EXEC : 0);
+            if (vma_reserve_file_fixed(cr3, runs[i].va, runs[i].pages << 12,
+                                       vprot, src->fh, runs[i].foff) == 0) {
+                runs[kept++] = runs[i];
+                out->file_pages += (uint32_t)runs[i].pages;
+            }
+        }
+        nrun = kept;
+        out->file_runs = (uint32_t)nrun;
+        if (kept < want)
+            kprintf("[elf] %d of %d file-backed runs could not be reserved; "
+                    "those pages are being copied\n", want - kept, want);
+    }
+
+    /* ================= PASS 1: map + copy ================================ */
     for (int i = 0; i < phnum; i++) {
         if (ph[i].p_type != PT_LOAD) continue;
         uint64_t start = ph[i].p_vaddr & ~(uint64_t)0xFFF;
@@ -554,12 +731,35 @@ int elf_load_image(void *image, uint64_t image_size, struct elf_image *out)
         if (end <= USER_VA_BASE) continue;          /* the skipped headers segment */
 
         for (uint64_t a = start; a < end; a += 0x1000) {
+            if (in_runs(runs, nrun, a)) continue;   /* the page cache owns it */
             /* Writable for now, whatever the segment says -- the memcpy below
              * needs it. Pass 2 takes it away again. */
-            if (!place_page(cr3, a, VMM_WRITABLE | VMM_USER))
+            int pr = place_page(cr3, a, VMM_WRITABLE | VMM_USER);
+            if (!pr)
                 return reject(ELF_E_OOM, "out of physical frames mapping a segment", a, i);
+            if (pr == 2) out->copied_pages++;
         }
-        memcpy((void *)ph[i].p_vaddr, (uint8_t *)image + ph[i].p_offset, ph[i].p_filesz);
+
+        /* The bytes. With no run this is the one memcpy it always was; with a
+         * run it is at most two, and the run's own pages are deliberately NOT
+         * written -- they are the file, already, and writing them would fault
+         * (they are absent) or, worse, would dirty a shared page. */
+        uint64_t fs_start = ph[i].p_vaddr, fs_end = ph[i].p_vaddr + ph[i].p_filesz;
+        const struct elf_run *r = 0;
+        for (int k = 0; k < nrun; k++)
+            if (runs[k].va >= start && runs[k].va < end) { r = &runs[k]; break; }
+        if (!r) {
+            memcpy((void *)fs_start, (uint8_t *)image + ph[i].p_offset, ph[i].p_filesz);
+        } else {
+            uint64_t rlo = r->va, rhi = r->va + (r->pages << 12);
+            if (rlo > fs_start)
+                memcpy((void *)fs_start, (uint8_t *)image + ph[i].p_offset,
+                       rlo - fs_start);
+            if (fs_end > rhi)
+                memcpy((void *)rhi,
+                       (uint8_t *)image + ph[i].p_offset + (rhi - fs_start),
+                       fs_end - rhi);
+        }
     }
 
     /* ================= PASS 2: the real protections ======================

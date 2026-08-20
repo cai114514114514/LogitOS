@@ -7,6 +7,7 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "vma.h"         /* the CLI stack is a RESERVATION, faulted in on touch */
+#include "pcache.h"      /* the file handle a program's text is mapped from */
 #include "aex.h"
 #include "elf.h"      /* struct elf_image + the AT_* auxv tags */
 #include "vfs.h"
@@ -31,6 +32,41 @@ void *memcpy(void *, const void *, size_t);
  * whole exec rounds to 0 or 1 of the 100 Hz ticks. */
 static uint64_t g_execs, g_exec_cyc, g_exec_stack_cyc, g_exec_load_cyc;
 
+/* WHAT THE LOADER DID WITH THE PAGES, across every load this boot -- execve,
+ * proc_spawn, cap_spawn and wm_launch alike, so the number covers the desktop
+ * and not only the shell.
+ *
+ * It is here and not in elf.c because elf.c is compiled into the host loader
+ * tests, where a boot-lifetime counter would be a global that survives between
+ * cases. exec_note_load() is called by every site that loads an image, which
+ * is also what makes "a load that took the eager path" visible: file_runs 0
+ * with copied nonzero is the eager loader, and that is what a v1 image, an
+ * unstattable path and a full pcache file table all look like from here. */
+static uint64_t g_ld_loads, g_ld_filepg, g_ld_copypg, g_ld_runs, g_ld_eager;
+
+/* The per-load line is BOUNDED and printed from the first load onward, rather
+ * than folded into exec_report()'s every-eighth-exec cadence. Two reasons, both
+ * learned the hard way on this change: a boot that never reaches a shell does
+ * two loads, so an every-8 line never prints at all and the feature reads as
+ * dead; and the interesting comparison is between NAMED programs -- 870 pages
+ * for the browser and 5 for /bin/login are the same feature working, and an
+ * average over both says nothing about either. */
+#define LOAD_REPORT_MAX 24
+
+void exec_note_load(const char *what, const struct elf_image *ei)
+{
+    if (!ei) return;
+    g_ld_loads++;
+    g_ld_filepg += ei->file_pages;
+    g_ld_copypg += ei->copied_pages;
+    g_ld_runs   += ei->file_runs;
+    if (!ei->file_runs) g_ld_eager++;
+    if (g_ld_loads <= LOAD_REPORT_MAX)
+        kprintf("[exec] load %s: %d pages file-backed in %d areas, %d copied\n",
+                what ? what : "?", (int)ei->file_pages, (int)ei->file_runs,
+                (int)ei->copied_pages);
+}
+
 static inline uint64_t exec_rdtsc(void)
 {
     uint32_t lo, hi;
@@ -48,6 +84,14 @@ static void exec_report(void)
             (int)g_execs, (int)(g_exec_cyc / g_execs / 1000),
             (int)(g_exec_load_cyc / g_execs / 1000),
             (int)(g_exec_stack_cyc / g_execs / 1000), CLI_STACK_PAGES);
+    /* Beside it, because the two answer one question together: the cycles say
+     * what a load cost and this says why. A gate reads `file` going up and
+     * `copied` coming down; `eager` going up instead is the whole feature
+     * being declined, quietly, which is the failure mode worth naming. */
+    kprintf("[exec] loader: %d loads (%d eager), %d pages from the page cache "
+            "in %d areas, %d pages copied\n",
+            (int)g_ld_loads, (int)g_ld_eager, (int)g_ld_filepg,
+            (int)g_ld_runs, (int)g_ld_copypg);
 }
 
 static int kstrlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
@@ -250,6 +294,22 @@ long proc_execve(struct registers *r)
     int envc = copy_uvec((char **)r->rdx, envp, argstore, &used, ARGBUFSZ);
     if (envc < 0) { kprintf("[execve] %s: bad envp\n", abs); return -1; }
 
+    /* 1.5. The execute bit. vfs_read()/vfs_size() below check MAY_READ (a
+     * loadable file must be readable) but nothing on this path has ever asked
+     * MAY_EXEC -- the two real call sites in c/fs/vfs.c (search permission on
+     * a directory being traversed, and the parent-write check for create/
+     * remove/rename) are both about directories, never about the FILE being
+     * run. So the execute bit stored on a regular file (vfs_meta.c, durable
+     * across reboot -- see CLAUDE.md's Storage section) was recorded and never
+     * consulted: any process that could read /bin/sh could execve() a data
+     * file with no x bit at all. Checked here, before the old address space is
+     * torn down, so a refusal leaves the caller exactly as vfs_read failing
+     * already does two lines below. */
+    if (vfs_access(abs, MAY_EXEC) < 0) {
+        kprintf("[execve] %s: permission denied (not executable)\n", abs);
+        return -1;
+    }
+
     /* 2. Load + validate the program image (kernel buffer) before destroying the
      *    old space, so a bad path/exec leaves the caller intact and returns -1. */
     int sz = vfs_size(abs);
@@ -285,10 +345,20 @@ long proc_execve(struct registers *r)
     uint64_t cr3 = p->cr3;
     vmm_free_user(cr3);
     struct elf_image ei;
-    int lrc = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei);  /* maps into the active (p->cr3) space */
+    /* AFTER vmm_free_user, which drops the OLD image's areas and with them
+     * their references to whatever this process was running a moment ago --
+     * so re-exec'ing the same binary puts the old handle before taking the new
+     * one, and the entry never briefly counts twice. A -1 (no slot, an
+     * unstattable path, a backend with no real inode numbers) is not an error
+     * here: the loader copies, exactly as it always did. */
+    int fh = pcache_file_open(abs);
+    int lrc = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh);  /* maps into the active (p->cr3) space */
+    if (fh >= 0) pcache_file_put(fh);          /* the VMAs hold their own */
     kfree(img);
     uint64_t t_load = exec_rdtsc();
     if (lrc != 0) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
+    exec_note_load(abs, &ei);   /* after the refusal: a load that failed part-way
+                                 * left counts that describe no running program */
     uint64_t entry = ei.entry;
 
     /* PT_TLS: install the thread pointer the loader laid out. Through
@@ -340,16 +410,25 @@ int proc_spawn(const char *path, char **argv)
 
     int argc = 0; while (argv && argv[argc]) argc++;
 
+    /* BEFORE the cli below, and that placement is the whole reason this is not
+     * one line inside the block: pcache_file_open() stats the path, which is a
+     * filesystem call, and this kernel's block drivers poll with interrupts ON
+     * (c/kernel/cpu/interrupts.c's non-preemptible busy flags). Opening it
+     * inside the interrupts-off window would be a device wait with no timer. */
+    int fh = pcache_file_open(path);
+
     /* Load + build the stack with the new space active (it isn't current yet). */
     uint64_t prev;
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, path, argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
+    if (fh >= 0) pcache_file_put(fh);
+    if (entry) exec_note_load(path, &ei);
     kfree(img);
     if (!entry || !sp) { vmm_free_space(space); return -1; }
 
@@ -452,7 +531,15 @@ long proc_cap_spawn(struct registers *r)
     }
 
     /* From here down: load + validate the image before creating anything the
-     * caller or anyone else can observe, same discipline as proc_execve(). */
+     * caller or anyone else can observe, same discipline as proc_execve() --
+     * including the execute-bit check proc_execve() carries above (B3: this
+     * call is the second, and until now only, unguarded loader in this file --
+     * fixing proc_execve() alone would have left SYS_CAP_SPAWN as a standing
+     * bypass of the very check just added). */
+    if (vfs_access(abs, MAY_EXEC) < 0) {
+        kprintf("[cap_spawn] %s: permission denied (not executable)\n", abs);
+        return LOGIT_CAP_E_NOENT;
+    }
     int sz = vfs_size(abs);
     if (sz < AEX_HDR_SIZE) return LOGIT_CAP_E_NOENT;
     if (sz > 0x7fffffff - 511) return LOGIT_CAP_E_NOENT;   /* sz + 511 would overflow int */
@@ -470,15 +557,18 @@ long proc_cap_spawn(struct registers *r)
      * proc_spawn() above (the target space is not current yet, so the
      * kernel's own writes into it -- argv/envp/auxv -- must happen with it
      * switched in, and switched back out before anything else can run). */
+    int fh = pcache_file_open(abs);           /* outside the cli: see proc_spawn */
     uint64_t prev;
     __asm__ volatile ("cli");
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev));
     vmm_switch(space);
     struct elf_image ei;
-    uint64_t entry = aex_load_image(img, (uint64_t)bytes, nm, ext, &ei) == 0 ? ei.entry : 0;
+    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, nm, ext, &ei, fh) == 0 ? ei.entry : 0;
     uint64_t sp = entry ? setup_cli_stack(space, &ei, abs, cs_argv, argc, 0, 0) : 0;
     vmm_switch(prev);
     __asm__ volatile ("sti");
+    if (fh >= 0) pcache_file_put(fh);
+    if (entry) exec_note_load(abs, &ei);
     kfree(img);
     if (!entry || !sp) { vmm_free_space(space); return LOGIT_CAP_E_NOENT; }
 

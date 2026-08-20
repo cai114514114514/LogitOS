@@ -636,7 +636,12 @@ static void m_flags(uint8_t *p, long *n)     { (void)n; p[6] = 0; p[7] = 0x80; }
 static void m_arch(uint8_t *p, long *n)      { (void)n; p[56] = 2; }
 static void m_abi(uint8_t *p, long *n)       { (void)n; p[57] = 7; }
 static void m_hdrsmall(uint8_t *p, long *n)  { (void)n; p[52] = 60; p[53] = 0; }
-static void m_hdrbig(uint8_t *p, long *n)    { (void)n; p[52] = 0x08; p[53] = 0x10; }
+/* Past AEX_HDR_MAX, which is 16384 since the alignment pad landed (mkaex.py's
+ * HDR_ALIGN comment): 0x1008 = 4104 is now a perfectly legal hdr_size and this
+ * case would have gone on passing for the WRONG reason -- hdr_size 4104 is not
+ * 8-aligned-and-past-the-cap, it is past the END of a small reference file, so
+ * the same AEX_E_HDRSIZE would have come back from a different check. */
+static void m_hdrbig(uint8_t *p, long *n)    { (void)n; p[52] = 0x08; p[53] = 0x40; }
 static void m_hdrodd(uint8_t *p, long *n)    { (void)n; p[52] = 68 + 1; p[53] = 0; }
 /* hdr_size 3840 with only 100 bytes of file: past the END, which is a different
  * check from past the CAP. */
@@ -785,6 +790,255 @@ static void container(void)
     free(g_v2);
 }
 
+/* ===========================================================================
+ * part 5: elf_file_runs() -- which pages may be mapped out of the file
+ *
+ * This is a PURE function (elf.h states the five conditions), so unlike every
+ * other part of this file it can be driven by BUILDING program headers rather
+ * than by loading an image: the whole decision table is reachable, including
+ * the cases no linker in this tree emits. That is the point of it being pure.
+ *
+ * What is at stake here is not "does it map fewer frames". It is that every
+ * page in a returned run is a page whose bytes the process may see UNCHANGED
+ * FROM THE FILE and SHARED WITH EVERY OTHER PROCESS running the same binary.
+ * A run that is one page too long at the end covers the p_filesz < p_memsz
+ * boundary page -- part file, part .bss -- and the program's zero-initialised
+ * data silently starts out holding the file's next bytes. Nothing crashes.
+ * -DELF_NEGCTL_FILETAIL is exactly that mistake, and these cases must fail
+ * against it. */
+#define PGSZ 4096ull
+
+static struct elf64_phdr mkload(uint64_t off, uint64_t va, uint64_t fs,
+                                uint64_t ms, uint32_t fl)
+{
+    struct elf64_phdr p;
+    memset(&p, 0, sizeof p);
+    p.p_type = 1;                 /* PT_LOAD */
+    p.p_flags = fl;
+    p.p_offset = off; p.p_vaddr = va; p.p_paddr = va;
+    p.p_filesz = fs; p.p_memsz = ms; p.p_align = PGSZ;
+    return p;
+}
+
+static void file_runs(void)
+{
+    printf("\n-- part 5: elf_file_runs(), the file-backed predicate --\n");
+    struct elf_run r[ELF_MAX_RUNS];
+    const uint64_t HDR = PGSZ;    /* what mkaex.py pads hdr_size to */
+
+    /* A REAL SHAPE, taken from a binary this tree builds: a text segment and a
+     * rodata segment whose start is not page aligned, in the layout lld emits.
+     * Text 0x45000000 filesz 0x2A5400 (browser.aex, measured), rodata at
+     * 0x452A6900 -- the case elf.h names, where the previous segment's memsz
+     * ends exactly on a page boundary and this one starts mid-page, so (a)
+     * sees ONE segment on the leading partial page and only (c) excludes it. */
+    struct elf64_phdr ph[3];
+    ph[0] = mkload(0x1000, 0x45000000, 0x2A5400, 0x2A5400, PF_R | PF_X);
+    ph[1] = mkload(0x2A6900, 0x452A6900, 0xC2212, 0xC2212, PF_R);
+    ph[2] = mkload(0x369000, 0x45369000, 0x2000, 0x800000, PF_R | PF_W);
+
+    int n = elf_file_runs(ph, 3, HDR, 0x1000, r, ELF_MAX_RUNS);
+    ck(n == 2, "two runs for a text + rodata + data image (the writable one is not one)");
+    if (n == 2) {
+        ck(r[0].va == 0x45000000 && r[0].prot == (PF_R | PF_X),
+           "the text run starts at the segment's own page, executable");
+        ck(r[0].foff == HDR + 0x1000, "and at hdr_size + p_offset in the FILE");
+        ck(r[0].va + (r[0].pages << 12) <= 0x45000000 + 0x2A5400,
+           "and ends inside p_filesz -- never on the boundary page");
+        ck(r[1].va == 0x452A7000,
+           "the rodata run skips its LEADING partial page (0x452A6900 rounds up)");
+        ck(r[1].foff == HDR + 0x2A7000,
+           "and its file offset moves with it, not with p_offset alone");
+        ck(r[1].prot == PF_R, "rodata is not executable");
+        ck((r[0].foff & 0xFFF) == 0 && (r[1].foff & 0xFFF) == 0,
+           "every run's file offset is page aligned -- the whole point");
+    }
+    /* THE COUNT is the honest headline, and it is what a reader will quote. */
+    if (n >= 1) {
+        uint64_t tot = 0;
+        for (int i = 0; i < n; i++) tot += r[i].pages;
+        printf("    (browser-shaped image: %llu pages file-backed across %d runs)\n",
+               (unsigned long long)tot, n);
+    }
+
+    /* (b) A WRITABLE SEGMENT IS NEVER A RUN. There is no writeback and no
+     * private-file COW case; a writable file mapping is refused out loud by
+     * mmsys.c and must not arrive by another door. */
+    {
+        struct elf64_phdr w = mkload(0x1000, 0x50000000, 0x8000, 0x8000, PF_R | PF_W);
+        ck(elf_file_runs(&w, 1, HDR, 0x100, r, ELF_MAX_RUNS) == 0,
+           "(b) a writable PT_LOAD produces no run, whatever else is true of it");
+    }
+
+    /* (c) THE BOUNDARY PAGE. p_filesz stops mid-page and p_memsz runs on: the
+     * page holding the transition is part file and part zero and may never be
+     * shared. This is the case -DELF_NEGCTL_FILETAIL gets wrong. */
+    {
+        struct elf64_phdr b = mkload(0x1000, 0x50000000, 0x2800, 0x9000, PF_R);
+        int m = elf_file_runs(&b, 1, HDR, 0x100, r, ELF_MAX_RUNS);
+        ck(m == 1, "(c) a segment with .bss after it still has a run");
+        if (m == 1) {
+            ck(r[0].pages == 2,
+               "and it is TWO pages, not three: the page where p_filesz ends "
+               "is part file and part zero");
+            ck(r[0].va + (r[0].pages << 12) == 0x50002000,
+               "the run stops at 0x50002000 -- below the boundary page");
+        }
+        /* Exactly on a page boundary: nothing is partial, and the .bss page
+         * that follows is entirely zero, so it is still not in the run. */
+        struct elf64_phdr e = mkload(0x1000, 0x50000000, 0x3000, 0x9000, PF_R);
+        m = elf_file_runs(&e, 1, HDR, 0x100, r, ELF_MAX_RUNS);
+        ck(m == 1 && r[0].pages == 3,
+           "with p_filesz landing exactly on a page boundary, all three file "
+           "pages qualify and no .bss page does");
+    }
+
+    /* (a) TWO SEGMENTS ON ONE PAGE. The page's permission is the UNION of
+     * both, which is a thing a shared read-only mapping cannot express, and
+     * the bytes come from two places. Constructed so the shared page is at the
+     * END of the first segment's run. */
+    {
+        struct elf64_phdr t[2];
+        t[0] = mkload(0x1000, 0x50000000, 0x3000, 0x3400, PF_R | PF_X);
+        t[1] = mkload(0x4400, 0x50003400, 0x1000, 0x1000, PF_R);
+        int m = elf_file_runs(t, 2, HDR, 0x100, r, ELF_MAX_RUNS);
+        ck(m == 1, "(a) the shared page belongs to two segments, so one run survives");
+        if (m == 1)
+            ck(r[0].pages == 3 && r[0].va == 0x50000000,
+               "and it stops before the shared page rather than claiming it");
+    }
+
+    /* (d) A v1 .aex: hdr_size 64, so no page of it lines up with a file page.
+     * There is no version test anywhere in the loader -- the arithmetic
+     * refuses by itself, which is why this is written as a full congruence. */
+    {
+        struct elf64_phdr v = mkload(0x0, 0x50000000, 0x8000, 0x8000, PF_R | PF_X);
+        ck(elf_file_runs(&v, 1, 64, 0x100, r, ELF_MAX_RUNS) == 0,
+           "(d) a v1 image (hdr_size 64) produces no run at all -- refused by "
+           "arithmetic, not by a version check");
+        ck(elf_file_runs(&v, 1, 0, 0x100, r, ELF_MAX_RUNS) == 1,
+           "and the same headers at hdr_off 0 (a bare ELF) do produce one");
+    }
+
+    /* (e) PAST THE END OF THE FILE. pcache_get() returns 0 past EOF and the
+     * fault then kills the process, so a run must be trimmed to the file
+     * rather than built and discovered at first touch. */
+    {
+        struct elf64_phdr s = mkload(0x1000, 0x50000000, 0x8000, 0x8000, PF_R | PF_X);
+        int m = elf_file_runs(&s, 1, HDR, 4, r, ELF_MAX_RUNS);   /* file is 4 pages */
+        ck(m == 1 && r[0].pages == 2,
+           "(e) a run is TRIMMED to the file: 8 pages asked, 2 pages of file "
+           "left after the header and the offset");
+        ck(elf_file_runs(&s, 1, HDR, 2, r, ELF_MAX_RUNS) == 0,
+           "and a run entirely past the end produces nothing rather than a "
+           "mapping that faults fatally on first touch");
+    }
+
+    /* Outside the private user region. PASS 1 skips the low read-only headers
+     * segment lld emits at 0x200000 rather than mapping it -- a USER mapping
+     * there is a window into the shared kernel page tables -- so a run over it
+     * is one the loader could never use. */
+    {
+        struct elf64_phdr l = mkload(0x0, 0x200000, 0x4000, 0x4000, PF_R);
+        ck(elf_file_runs(&l, 1, HDR, 0x100, r, ELF_MAX_RUNS) == 0,
+           "a segment below the private user region produces no run");
+    }
+
+    /* Degenerate inputs. The predicate is handed disk-controlled headers
+     * before PASS 0 in the host test, so it refuses rather than trusting. */
+    {
+        struct elf64_phdr z = mkload(0x1000, 0x50000000, 0x800, 0x800, PF_R);
+        ck(elf_file_runs(&z, 1, HDR, 0x100, r, ELF_MAX_RUNS) == 0,
+           "a segment shorter than a page has no whole page to share");
+        struct elf64_phdr o = mkload(0x1000, 0xFFFFFFFFFFFFF000ull,
+                                     0xF000, 0xF000, PF_R);
+        ck(elf_file_runs(&o, 1, HDR, 0x100, r, ELF_MAX_RUNS) >= 0,
+           "a p_vaddr + p_filesz that wraps is refused, not wrapped around");
+        ck(elf_file_runs(ph, 3, HDR, 0x1000, r, 0) == 0, "max 0 writes nothing");
+        ck(elf_file_runs(0, 3, HDR, 0x1000, r, ELF_MAX_RUNS) == 0, "no headers, no runs");
+    }
+}
+
+/* The same predicate, against the REAL headers of every .aex the build
+ * produced, rather than against headers this file wrote. Two different jobs:
+ * the table above proves the decision, this proves it on the shapes lld
+ * actually emits -- and prints the number, which is the thing anyone reading
+ * this change wants to know and which no hand-built header can honestly give.
+ *
+ * The three e_* offsets are read raw because struct elf64_ehdr is private to
+ * elf.c and exporting it would be a wider change than this needs. They are
+ * ELF64 spec constants, not this tree's choices: e_phoff at 0x20 (u64),
+ * e_phentsize at 0x36 and e_phnum at 0x38 (u16). elf.c's own PASS 0 checks
+ * e_phentsize == 56 for every one of these files, so a wrong offset here shows
+ * up as a nonsense count rather than as a silent zero. */
+static void file_runs_real(int argc, char **argv)
+{
+    printf("\n-- part 5b: elf_file_runs() on every built .aex --\n");
+    struct elf_run r[ELF_MAX_RUNS];
+    int files = 0, backed = 0, eager = 0;
+    uint64_t worst_pages = 0;
+    char worst[256] = "";
+
+    for (int a = 1; a < argc; a++) {
+        long n = 0;
+        uint8_t *f = slurp(argv[a], &n);
+        if (!f) continue;
+        struct aex_info in;
+        space_quiet(1);
+        int rc = aex_parse(f, (uint64_t)n, &in);
+        space_quiet(0);
+        if (rc != AEX_OK) { free(f); continue; }
+        files++;
+
+        const uint8_t *eh = in.elf;
+        uint64_t phoff; uint16_t phent, phnum;
+        memcpy(&phoff, eh + 0x20, 8);
+        memcpy(&phent, eh + 0x36, 2);
+        memcpy(&phnum, eh + 0x38, 2);
+        if (phent != sizeof(struct elf64_phdr) || !phnum ||
+            phoff + (uint64_t)phnum * phent > in.elf_size) { free(f); continue; }
+        const struct elf64_phdr *ph = (const struct elf64_phdr *)(const void *)(eh + phoff);
+
+        uint64_t fpages = ((uint64_t)in.hdr_size + in.elf_size + 4095) / 4096;
+        int m = elf_file_runs(ph, phnum, in.hdr_size, fpages, r, ELF_MAX_RUNS);
+        uint64_t tot = 0;
+        for (int i = 0; i < m; i++) {
+            /* The invariants, on every run of every real binary. Each one is a
+             * silent wrong answer if it fails, not a crash. */
+            ckq((r[i].foff & 0xFFF) == 0, "a real run's file offset is page aligned");
+            ckq((r[i].va & 0xFFF) == 0, "a real run's virtual address is page aligned");
+            ckq(!(r[i].prot & PF_W), "a real run is never writable");
+            ckq(r[i].pages > 0, "a real run is not empty");
+            ckq(r[i].foff / 4096 + r[i].pages <= fpages,
+                "a real run stays inside the file");
+            /* Every byte the run claims must really be in the FILE, at the
+             * offset the run says. This is the assertion that catches an
+             * off-by-one in the header arithmetic, and it is checked against
+             * the bytes rather than against the headers that produced them. */
+            for (uint64_t p = 0; p < r[i].pages; p++) {
+                uint64_t fo = r[i].foff + p * 4096;
+                ckq(fo + 4096 <= (uint64_t)n, "a real run's page is inside the file image");
+            }
+            tot += r[i].pages;
+        }
+        if (m) backed++; else eager++;
+        if (tot > worst_pages) {
+            worst_pages = tot;
+            snprintf(worst, sizeof worst, "%s", argv[a]);
+        }
+    }
+    printf("    %d .aex parsed: %d have file-backed runs, %d take the eager path\n",
+           files, backed, eager);
+    if (worst_pages)
+        printf("    largest: %s at %llu pages (%llu KiB of text+rodata shared "
+               "rather than copied per process)\n",
+               worst, (unsigned long long)worst_pages,
+               (unsigned long long)(worst_pages * 4));
+    ck(files > 0, "at least one .aex was available to measure");
+    ck(backed > 0, "and at least one of them has pages the loader can map "
+                   "from its file -- 0 here means the alignment pad is gone");
+}
+
 int main(int argc, char **argv)
 {
     /* Line-buffered even when stdout is a file. This test is capable of
@@ -808,6 +1062,8 @@ int main(int argc, char **argv)
     rejection_matrix();
     header_behaviour();
     container();
+    file_runs();
+    file_runs_real(argc, argv);
 
     printf("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

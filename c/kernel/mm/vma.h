@@ -88,6 +88,17 @@ uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot);
  * 0, or -1 (bad range / no free slot / already occupied). */
 int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot);
 
+/* An EXACT range backed by pcache file handle `fh` from byte offset `foff`.
+ * The kernel-internal counterpart of vma_reserve_file(), for c/kernel/exec's
+ * ELF loader: a program's text is at the address it was LINKED at, which is
+ * nowhere near the mmap window vma_reserve() places into. Takes its own
+ * reference on `fh`; the caller keeps the one it came in with. Refuses
+ * VMA_WRITE, an unaligned `foff`, a range that would be rounded, a range
+ * outside the private user region, and any overlap. Returns 0 or -1; a -1 is
+ * a reason to copy the pages, never a reason to fail a load. */
+int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
+                           uint32_t prot, int fh, uint64_t foff);
+
 /* Release [addr, addr+len). Returns 0, or -1 if the range is not a subset of
  * reserved space. Splits an area when the range is punched out of its middle. */
 int vma_release(uint64_t cr3, uint64_t addr, uint64_t len);

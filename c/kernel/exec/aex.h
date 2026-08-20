@@ -100,9 +100,22 @@ struct aex_header {
 #define AEX_VERSION_MAX  2      /* anything above is refused, by number  */
 #define AEX_HDR_SIZE     64     /* the FIXED part. Callers still use this
                                  * as the minimum sensible file size.    */
-#define AEX_HDR_MAX      4096   /* hdr_size cap: the header is read into
+#define AEX_HDR_MAX      16384  /* hdr_size cap: the header is read into
                                  * kernel memory before anything else is
-                                 * known about the file.                 */
+                                 * known about the file. Four pages, not one.
+                                 *
+                                 * It was 4096, and mkaex.py now pads hdr_size
+                                 * up to the next multiple of 4096 so the ELF
+                                 * image starts on a page boundary (see
+                                 * elf_file_runs: a file page and a virtual page
+                                 * can only be the same page if it does). A file
+                                 * whose metadata already reached 4096 would
+                                 * then pad to 8192 and be refused by a cap it
+                                 * had not grown past -- so the cap has to sit
+                                 * above the alignment, not on it. Still four
+                                 * pages of kernel memory read from an
+                                 * untrusted file, which is the thing the cap
+                                 * is for.                               */
 
 /* flags. Unknown bits are REFUSED -- see the contract above. */
 #define AEX_F_GUI     0x0001    /* opens a window; a Dock candidate      */
@@ -134,6 +147,14 @@ struct aex_header {
                                     * order files landed on the disk.          */
 #define AEX_T_TYPES   0x50595441u  /* "ATYP": u16[] of logit_sniff SN_* ids the
                                     * app can open. See the note in aex.c.     */
+#define AEX_T_APAD    0x44415041u  /* "APAD": zero bytes, present only to push
+                                    * hdr_size to a multiple of 4096 so the ELF
+                                    * image starts on a page boundary. Carries
+                                    * no information and is READ BY NOTHING --
+                                    * a record rather than raw zeroes so the
+                                    * header stays self-describing, and a v2
+                                    * loader that predates it ignores it under
+                                    * the unknown-tag rule instead of choking. */
 
 struct elf_image;
 
@@ -184,6 +205,23 @@ uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *ou
  * does not. Returns 0 on success. */
 int aex_load_image(const void *file, uint64_t file_size, char *out_name, char *out_ext,
                    struct elf_image *out);
+
+/* The same two, told which FILE the buffer came from, so the loader can map a
+ * program's read-only whole pages straight out of the page cache instead of
+ * allocating a frame and copying into them (elf.h's elf_file_runs). `fh` is a
+ * c/kernel/mm/pcache.h handle from pcache_file_open(), or -1 for "no identity"
+ * -- which is exactly the old behaviour and is what a caller passes when it
+ * has no path (see the note above wm_launch's call site).
+ *
+ * The handle is BORROWED. Each VMA the loader creates takes its own reference;
+ * the caller still owns and must put the one it passed in, on success and on
+ * failure alike. That is mmsys.c's rule for SYS_MMAP_FILE, unchanged, because
+ * an ownership convention that differs between two callers of the same cache
+ * is a leak or a double-free waiting for whichever one is read second. */
+int aex_load_image_ex(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                      struct elf_image *out, int fh);
+uint64_t aex_load_ex(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                     uint64_t *out_top, int fh);
 
 /* Where the embedded ELF image starts and how long it is. The ELF used to begin
  * at a hardcoded +64 at every call site; it begins where the header says. */

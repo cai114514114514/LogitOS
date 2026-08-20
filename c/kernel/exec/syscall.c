@@ -701,8 +701,14 @@ static void syscall_do(struct registers *r)
         return;
     }
     case SYS_WAITPID: {
+        /* rdx is WNOHANG (or 0), per logit_abi.h's own doc comment on
+         * SYS_WAITPID -- it names `opts` as part of the ABI already. Before
+         * this it was read nowhere, so a caller asking not to block (M31's
+         * comment on SIG_E_INTR in proc.c already notes /bin/sh works around
+         * exactly this) blocked anyway, quietly. proc_waitpid() now refuses
+         * (SIG_E_NOSYS) any bit it does not implement instead of ignoring it. */
         int status = 0;
-        long rc = proc_waitpid((int)r->rdi, &status);
+        long rc = proc_waitpid((int)r->rdi, &status, (int)r->rdx);
         if (rc >= 0 && r->rsi) user_copy_to((void *)r->rsi, &status, sizeof(int));
         r->rax = (uint64_t)rc;
         return;

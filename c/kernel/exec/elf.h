@@ -68,6 +68,84 @@
 #define PF_W 0x2
 #define PF_R 0x4
 
+/* The program header, exported for elf_file_runs() below. It is here rather
+ * than in elf.c so the predicate can be called -- and enumerated -- by a host
+ * test that never maps anything, which is the whole reason it is a separate
+ * function. (c/boot/efi/loader.c carries its own copy and includes none of
+ * this; it is a different program, linked into the EFI stub.) */
+struct elf64_phdr {
+    uint32_t p_type, p_flags;
+    uint64_t p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align;
+} __attribute__((packed));
+
+/* ------------------------------------------------------- FILE-BACKED TEXT --
+ *
+ * A run of whole pages inside one PT_LOAD whose bytes are in the file, are
+ * never written, and line up page-for-page with the file -- so the loader can
+ * hand the range to the page cache as a VMA instead of allocating a frame and
+ * copying into it. Two processes running the same binary then map the SAME
+ * frames, and a page nothing ever executes is never read off the disk at all.
+ *
+ * elf_file_runs() is PURE: no page tables, no allocator, no globals. That is
+ * the same split fault.c makes for mm_fault_classify ("pure ... so the whole
+ * table can be enumerated in a host test"), and for the same reason -- the
+ * five conditions below are where this feature is either correct or silently
+ * wrong, and a wrong answer is not a crash, it is a program running with
+ * somebody else's bytes in it.
+ *
+ * A page is eligible iff ALL FIVE hold. Stated per PAGE and not per SEGMENT,
+ * because elf.c already argues that two PT_LOADs can share a page and that a
+ * page's permission is the UNION of them; a per-segment rule re-opens exactly
+ * that bug.
+ *
+ *   (a) exactly ONE PT_LOAD covers the page. Kills the text/rodata and
+ *       rodata/data boundary pages, which hold two segments' bytes and need
+ *       the unioned permission.
+ *   (b) that segment is not PF_W. There is no private-file COW fault case, and
+ *       mmsys.c refuses a writable file mapping OUT LOUD rather than quietly
+ *       handing back a private copy; .data and .bss keep the eager copy.
+ *   (c) the page is entirely inside [p_vaddr, p_vaddr + p_filesz). TWO bounds,
+ *       not one. The upper excludes the p_filesz < p_memsz boundary page, which
+ *       is part file and part zero -- mapping it shared leaks file bytes into
+ *       .bss, a silent wrong answer rather than a crash. The lower excludes a
+ *       leading partial page, whose bytes below p_vaddr belong to the previous
+ *       segment; (a) usually catches that and does not always -- when the
+ *       previous segment's memsz ends exactly on a page boundary and this one
+ *       starts mid-page (the browser's rodata at 0x452A6900) the page is
+ *       covered by one segment and only (c) saves you.
+ *   (d) the file offset of the page is page-aligned:
+ *       (hdr_off + p_offset + (page - p_vaddr)) % 4096 == 0. Since elf.c
+ *       already enforces p_offset == p_vaddr (mod 4096), this reduces to
+ *       hdr_off % 4096 -- but it is written in the full form on purpose,
+ *       because that one line is what makes a v1 .aex (hdr_off = 64) take the
+ *       eager path with NO version test anywhere in the loader.
+ *   (e) the page is inside the file. pcache_get() returns 0 past EOF and the
+ *       fault then kills the process, so a run is TRIMMED to the file rather
+ *       than built and discovered at first touch.
+ *
+ * Everything else is copied eagerly, byte for byte as before.
+ *
+ * `hdr_off` is where the ELF image starts inside the FILE (a .aex's hdr_size;
+ * 0 for a bare ELF). `file_pages` is the file's size rounded up to pages.
+ * Returns the number of runs written to `out` (at most `max`), which may be 0.
+ * The phdrs must already have passed elf.c's PASS 0; on unvalidated input this
+ * refuses rather than trusting the arithmetic, but it does not diagnose. */
+struct elf_run {
+    uint64_t va;      /* first virtual address, page aligned */
+    uint64_t foff;    /* byte offset of `va` in the FILE, page aligned */
+    uint64_t pages;   /* whole 4 KiB pages */
+    uint32_t prot;    /* PF_R | PF_X. Never PF_W -- see (b). */
+};
+
+#define ELF_MAX_RUNS 8      /* one per non-writable PT_LOAD; every binary this
+                             * tree builds has two (text + rodata), and
+                             * ELF_MAX_PHNUM is 64, so this is the shape of a
+                             * real link and not a guess. A ninth run is
+                             * dropped to the eager path, never mis-mapped. */
+
+int elf_file_runs(const struct elf64_phdr *ph, int phnum, uint64_t hdr_off,
+                  uint64_t file_pages, struct elf_run *out, int max);
+
 /* ------------------------------------------------------------- AUXV --
  * The SysV auxiliary vector tags, at their standard numbers. They live here
  * rather than in include/abi/logit_abi.h on purpose: these are not LogitOS's
@@ -149,6 +227,27 @@ struct elf_image {
     uint32_t seen;          /* ELF_SEEN_*                                     */
     uint32_t nload;         /* PT_LOADs that were mapped                      */
     uint64_t bytes_mapped;  /* how much memory the image cost                 */
+
+    /* What the file-backed path actually did to THIS image, so a gate can read
+     * it instead of inferring it from free-frame arithmetic. Both are 0 on the
+     * eager path, which is also what a v1 image and a bare ELF report. */
+    uint32_t file_pages;    /* pages handed to the page cache as a VMA        */
+    uint32_t copied_pages;  /* pages allocated and copied, as before          */
+    uint32_t file_runs;     /* VMAs created (0 = the whole image was copied)  */
+};
+
+/* WHERE THE IMAGE CAME FROM, for the file-backed path. Passing NULL is the
+ * eager loader, unchanged and byte for byte -- which is what the host tests
+ * (tests/unit/exechost) get, because they have no page cache and no VMAs.
+ *
+ * `fh` is a c/kernel/mm/pcache.h handle on the FILE (not the .aex's ELF
+ * sub-range), so `base_off` is what turns a segment's p_offset into a file
+ * offset. The loader takes no ownership of `fh`: each VMA it creates takes its
+ * own reference, and the caller puts the one it came in with either way. */
+struct elf_src {
+    int      fh;            /* pcache handle, or -1 for "no file identity"    */
+    uint64_t base_off;      /* byte offset of the ELF image inside the file   */
+    uint64_t file_pages;    /* the whole file's size in 4 KiB pages           */
 };
 
 /* Load a static ELF64 executable image (already in memory, `image_size` bytes)
@@ -159,6 +258,13 @@ struct elf_image {
  * the address space itself may hold pages the caller must free (every caller
  * already does this by dropping the whole space). */
 int elf_load_image(void *image, uint64_t image_size, struct elf_image *out);
+
+/* The same, told where the image came from so read-only whole pages can be
+ * mapped out of the page cache instead of copied. `src` NULL is exactly
+ * elf_load_image(). Nothing about the refusal set, the permissions or the auxv
+ * changes; the only difference is which pages are present when it returns. */
+int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
+                      const struct elf_src *src);
 
 /* The pre-existing shape, kept because two callers only want these two numbers.
  * Returns the entry virtual address, or 0 on failure. */

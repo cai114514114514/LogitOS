@@ -82,11 +82,14 @@ run_one mm_vmm_test
 run_one mm_rmap_test
 run_one mm_reclaim_test
 run_one mm_pcache_test
+run_one mm_forkfile_test
 
 run_negative mm_reclaim_test RECLAIM_NO_PIN_CHECK \
     "a pinned frame IS evicted without the pin check -- so the check is what protects a page the kernel holds a pointer into"
 run_negative mm_reclaim_test RECLAIM_NO_ZERO_CHECK \
     "a page with data IS dropped instead of swapped without the zero check -- and comes back as zeroes, silently"
+run_negative mm_forkfile_test VMM_FORK_REASSEMBLE \
+    "a forked child's file PTE is taken apart and put back together (frame from the top, flags from the low twelve bits) instead of installed whole -- the child's copy of a NO-EXECUTE page comes back EXECUTABLE, and the program still runs, which is why only a bit-for-bit assertion catches it"
 run_negative mm_pcache_test PCACHE_PER_OPEN \
     "keyed per-open instead of per-inode, two opens of the same file stop sharing a page and a page dropped by reclaim comes back in a DIFFERENT frame than a second handle still expects -- the exact bug the (dev,ino) key exists to prevent"
 

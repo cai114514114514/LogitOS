@@ -235,20 +235,53 @@ uint16_t aex_stack_pages(const void *file, uint64_t file_size)
 int aex_load_image(const void *file, uint64_t file_size, char *out_name, char *out_ext,
                    struct elf_image *out)
 {
+    return aex_load_image_ex(file, file_size, out_name, out_ext, out, -1);
+}
+
+/* The container's half of the file-backed path, and the only thing it adds is
+ * ARITHMETIC: the ELF's p_offset is relative to the ELF image, and the page
+ * cache indexes the FILE, so somebody has to add hdr_size. This is the one
+ * place that knows it -- exec.c has the path and the size but not the header,
+ * elf.c has the header but not the file. `fh` is borrowed: the caller opened
+ * it and the caller puts it, whatever happens here.
+ *
+ * `file_size` is the caller's buffer length, which is the file rounded UP to a
+ * sector (exec.c reads in 512-byte units), so file_pages is derived from the
+ * true byte count -- hdr_size + elf_size -- and never from the padding. A page
+ * index past the real end of the file reads back as zeroes through
+ * pcache_get()'s tail handling, which for an executable page means a program
+ * that jumps into 4 KiB of `add [rax],al`. */
+int aex_load_image_ex(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                      struct elf_image *out, int fh)
+{
     struct aex_info in;
     if (aex_parse(file, file_size, &in) != AEX_OK)
         return -1;
     if (out_name) copy_field(out_name, in.name, 32);
     if (out_ext)  copy_field(out_ext, in.ext, 8);
-    return elf_load_image((void *)in.elf, in.elf_size, out) == ELF_OK ? 0 : AEX_E_ELF;
+
+    uint64_t bytes = (uint64_t)in.hdr_size + in.elf_size;
+    struct elf_src src = {
+        .fh = fh,
+        .base_off = in.hdr_size,
+        .file_pages = (bytes + 0xFFF) >> 12,
+    };
+    return elf_load_image_ex((void *)in.elf, in.elf_size, out, &src) == ELF_OK
+               ? 0 : AEX_E_ELF;
 }
 
 uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext,
                   uint64_t *out_top)
 {
+    return aex_load_ex(file, file_size, out_name, out_ext, out_top, -1);
+}
+
+uint64_t aex_load_ex(const void *file, uint64_t file_size, char *out_name, char *out_ext,
+                     uint64_t *out_top, int fh)
+{
     struct elf_image img;
     if (out_top) *out_top = 0;
-    if (aex_load_image(file, file_size, out_name, out_ext, &img) != 0)
+    if (aex_load_image_ex(file, file_size, out_name, out_ext, &img, fh) != 0)
         return 0;
     if (out_top) *out_top = img.top;
     return img.entry;

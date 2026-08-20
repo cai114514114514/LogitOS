@@ -309,12 +309,56 @@ static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
         return 0;                   /* unreadable, past EOF, or out of memory:
                                      * decline, and the process dies as it would
                                      * for any other address it may not have */
+
+#ifdef MM_NEGCTL_NOSHARE
+    /* THE NEGATIVE CONTROL FOR THE SHARING GATE (tests/boot/run-execshare-test.sh).
+     *
+     * It is the PLAUSIBLE WRONG IMPLEMENTATION, not the feature switched off,
+     * and the distinction is the whole reason it is written this way. The page
+     * is still fetched THROUGH THE PAGE CACHE, so the read is still
+     * demand-paged -- a page nothing touches is still never read off the disk,
+     * and the second process still finds the page already resident and pays no
+     * device round trip. What changes is one thing only: the process is given
+     * a PRIVATE COPY of the cached frame instead of a second reference to it.
+     *
+     * That is the mistake a reader is most likely to make here, because it is
+     * the shape do_cow() twenty lines above uses and it looks safe: every byte
+     * the process sees is identical, the permissions are identical, W^X is
+     * intact, and nothing can observe the difference from inside ring 3. Every
+     * functional assertion in this tree still passes against it. The ONLY
+     * thing it loses is the memory, which is the entire point of the feature --
+     * so a gate that cannot see this control is a gate measuring "the loader
+     * still works" while claiming to measure sharing.
+     *
+     * The PTE keeps VMM_PTE_FILE, which is the honest encoding rather than a
+     * second deliberate error: the page really is file-backed and really is
+     * re-derivable by reading the file again. The frame simply is not the
+     * cache's, so pcache_holds() is false for it and reclaim's tier-1 cached
+     * drop cannot take it -- a real consequence of not sharing, not an extra
+     * fault injected to make the control easier to detect.
+     *
+     * Note what it does NOT break, because the gate has to be built around it:
+     * a fork()ed child still shares these frames with its parent through
+     * vmm_clone_user's read-only branch. Only two INDEPENDENT execs of the same
+     * binary stop sharing. So the gate must launch the same program twice, not
+     * fork one process in two. */
+    uint64_t priv = pmm_alloc();
+    if (!priv) return 0;
+    memcpy(mm_p2v(priv), mm_p2v(f), 4096);
+    vmm_map_page_in(cr3, page, priv,
+                    VMM_USER | VMM_PTE_FILE |
+                    ((prot & VMA_EXEC) ? 0 : MM_PTE_NX));
+    if (active) mm_invlpg(page);
+    g_file++;
+    return 1;
+#else
     if (pmm_ref(f) < 0)
         return 0;                   /* saturated refcount: refuse to share it,
                                      * exactly as the copy-on-write clone does */
     vmm_map_page_in(cr3, page, f,
                     VMM_USER | VMM_PTE_FILE |
                     ((prot & VMA_EXEC) ? 0 : MM_PTE_NX));
+#endif
     if (active) mm_invlpg(page);
     g_file++;
     return 1;

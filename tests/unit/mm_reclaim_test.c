@@ -799,7 +799,7 @@ static long pc_test_read(const char *path, uint64_t off, void *dst, uint64_t len
     return (long)len;
 }
 
-static const struct pcache_ops pc_test_ops = { pc_test_stat, pc_test_read };
+static const struct pcache_ops pc_test_ops = { pc_test_stat, pc_test_read, 0 };
 
 static void t_pcache(void)
 {

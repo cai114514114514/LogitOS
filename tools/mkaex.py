@@ -33,6 +33,30 @@ CATS = {"none": 0, "system": 1, "media": 2, "dev": 3, "net": 4, "util": 5, "test
 T_CRC32 = 0x43524341   # "ACRC"
 T_APPID = 0x44495841   # "AXID"
 T_TYPES = 0x50595441   # "ATYP"
+T_APAD  = 0x44415041   # "APAD": the alignment pad, below
+
+# THE ELF IMAGE STARTS ON A PAGE BOUNDARY, and this one line is what makes
+# file-backed text possible at all.
+#
+# The kernel maps a page of a program's text by handing the page cache a FILE
+# PAGE INDEX -- (hdr_size + p_offset + delta) / 4096 -- so a file page and a
+# virtual page only line up when hdr_size is a multiple of 4096. It was 104,
+# 112 or 120 across every .aex this tree builds (measured over all 78 on
+# 2026-08-20), so nothing was eligible and elf.c's file path was unreachable.
+#
+# The pad lives INSIDE the TLV region and is a real record rather than raw
+# zeroes, so the header stays self-describing: a v2 loader that has never heard
+# of this change reads a padded file correctly, because aex.c's TLV walk
+# already ignores an unknown tag by contract. That is why this is a REBUILD and
+# not a format break -- no version bump, and hdr_size was already read from the
+# header and bounds-checked by every v2 loader.
+#
+# Cost, measured: +3976..+3992 bytes per file, 78 files, ~310 KiB, ~76 more
+# 4 KiB blocks on a 16384-block image that was using ~7136. No inode change.
+HDR_ALIGN = 4096
+HDR_MAX   = 16384      # c/kernel/exec/aex.h AEX_HDR_MAX; raised from 4096 when
+                       # the pad landed, so padding to 4096 is not padding ONTO
+                       # the cap with no room for the next TLV.
 
 # The CLI programs all link here (see the CLI_RULE note in the Makefile); a GUI
 # app gets its own base below it. That is the only signal in the file that says
@@ -118,9 +142,21 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
     if opts.types:
         ids = [int(t, 0) for t in opts.types.split(",") if t.strip()]
         body += tlv(T_TYPES, struct.pack("<%dH" % len(ids), *ids))
+    # Pad to a page boundary with a self-describing record. `tlv` already
+    # rounds a record up to 8 bytes, so the payload is (target - here - 8): the
+    # gap is always >= 8 because HDR_FIXED + len(body) is 8-aligned and short of
+    # the page, and a target exactly equal to the current size would mean the
+    # metadata already filled a page to the byte -- in which case the next page
+    # is taken and the record is a whole page of pad.
     hdr_size = HDR_FIXED + len(body)
-    if hdr_size > 4096:
-        die("the metadata region is larger than the 4096-byte cap the loader reads")
+    target = ((hdr_size + 8 + HDR_ALIGN - 1) // HDR_ALIGN) * HDR_ALIGN
+    body += tlv(T_APAD, b"\0" * (target - hdr_size - 8))
+    hdr_size = HDR_FIXED + len(body)
+    if hdr_size != target:
+        die("internal: the alignment pad did not land on the page boundary")
+    if hdr_size > HDR_MAX:
+        die("the metadata region is larger than the %d-byte cap the loader reads"
+            % HDR_MAX)
 
     hdr = bytearray(HDR_FIXED)
     hdr[0:4] = b"AEX1"
@@ -150,7 +186,12 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
         hdr[40:40 + len(eb)] = eb
         hdr[48] = ord(icon[0]) if icon else 0
         hdr[49], hdr[50], hdr[51] = r, g, b
-        return bytes(hdr) + elf_bytes, entry, base, app_id, flags, hdr_size
+        # HDR_FIXED, not the padded hdr_size computed above: a v1 file has no
+        # TLV region at all, so reporting the v2 number would describe a file
+        # this branch does not write. (It is also why a v1 image can never take
+        # the file-backed path -- 64 % 4096 != 0, and elf.c's predicate refuses
+        # by arithmetic rather than by a version test.)
+        return bytes(hdr) + elf_bytes, entry, base, app_id, flags, HDR_FIXED
 
     return bytes(hdr) + body + elf_bytes, entry, base, app_id, flags, hdr_size
 

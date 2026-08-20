@@ -422,6 +422,7 @@ static void retire_if_idle(int fh)
 void pcache_invalidate_file(int fh)
 {
     if (fh < 0 || fh >= PCACHE_MAXFILE) return;
+    if (pc_ops && pc_ops->forget) pc_ops->forget(pf[fh].used ? pf[fh].path : 0);
     purge(fh, &c_inval);
     retire_if_idle(fh);
 }
@@ -435,6 +436,11 @@ void pcache_invalidate_path(const char *path)
     return;
 #else
     if (!pc_ready || !path) return;
+    /* The backend first, and unconditionally: it may be holding a copy of this
+     * file's bytes whether or not any PAGE of it is resident here, so making
+     * this conditional on a hit below would leave the stale copy behind in
+     * exactly the case where nothing else would notice. */
+    if (pc_ops && pc_ops->forget) pc_ops->forget(path);
     /* By PATH and not by (dev, ino): the caller is a mutation that may have
      * just made the name mean a different inode (rename, delete-and-recreate),
      * so the identity on the medium is not necessarily the one to look up. Both

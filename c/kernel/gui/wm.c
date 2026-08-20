@@ -14,6 +14,8 @@
 #include "settings.h"   /* settings line: theme + wallpaper are persisted */
 #include "rtc.h"
 #include "aex.h"
+#include "elf.h"        /* struct elf_image: wm_launch reports what the loader did */
+#include "pcache.h"     /* the app's own file, so two instances share their text */
 #include "blkdev.h"
 #include "img.h"
 #include "gfx.h"        /* Open Logit: build_arrow's fill+stroke, below */
@@ -1519,12 +1521,29 @@ void wm_launch(const char *aex_file, const char *arg)
      * kernel's -- otherwise returning into the interrupted app would run it
      * with the wrong address space. (Input IRQs no longer reach here: they
      * only enqueue into inq[], and the WM thread calls us.) */
+    /* The page-cache handle for the app's own file, opened BEFORE the cli
+     * below because it stats the path and the block drivers here poll with
+     * interrupts on. With it, the loader maps the app's read-only whole pages
+     * straight out of the cache instead of copying them, so a second instance
+     * of the same .aex -- or the same one relaunched -- shares its text rather
+     * than getting a private copy of every byte. -1 (no slot, no real inode)
+     * is not an error: the loader copies, exactly as it did before. */
+    int fh = pcache_file_open(aex_file);
+
     uint64_t prev_cr3, fl;
     __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");   /* save IF, then off */
     __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
     vmm_switch(space);
     uint64_t img_top = 0;
-    uint64_t entry = aex_load(img, (uint64_t)bytes, name, ext, &img_top);   /* maps + copies into `space` */
+    struct elf_image wei;
+    /* aex_load_image_ex, not aex_load_ex, only so exec_note_load() below gets
+     * the page counts -- a launch from the Dock is a load like any other and
+     * the loader's line on the serial log has to cover it, or the number reads
+     * as if the desktop's apps were exempt. entry/top are the same two fields
+     * aex_load_ex would have returned. */
+    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, name, ext, &wei, fh) == 0
+                         ? wei.entry : 0;
+    if (entry) { img_top = wei.top; exec_note_load(aex_file, &wei); }
     uint64_t ustack_top = 0;
     if (entry) {
         /* The stack must sit ABOVE the whole app image. browser/js link a large
@@ -1536,7 +1555,28 @@ void wm_launch(const char *aex_file, const char *arg)
          * the image is bigger. The stack is 8 MiB for the browser because QuickJS
          * recurses deeply throwing errors on real pages' scripts (github overran a
          * 256 KiB stack inside JS_ThrowError2); other apps get 4 MiB. */
-        int stk_pages = streq(name, "browser.aex") ? 2048 : 1024;
+        /* THE HINT IN THE HEADER, which the build system has been writing and
+         * this line has been ignoring since it was added.
+         *
+         * It used to read `streq(name, "browser.aex") ? 2048 : 1024`, and that
+         * comparison CAN NEVER BE TRUE: `name` comes from aex_info() -> the
+         * header's name field, and tools/mkaex.py writes the DISPLAY name
+         * there -- "Browser", from Makefile:890. So the browser has been
+         * running on 1024 pages (4 MiB), which is exactly the size the comment
+         * above says is not enough for it.
+         *
+         * Every piece of the intended mechanism was already built and none of
+         * it was connected: the Makefile passes `--stack-pages 2048`, mkaex.py
+         * packs it at offset 52, aex.h declares the field, and
+         * aex_stack_pages() exists to read it -- with ZERO callers in the
+         * tree. This is that call.
+         *
+         * A missing or zero hint keeps the 1024-page default, so every app
+         * built before the flag existed is unaffected, and an app that wants
+         * more asks for it in the one place that already knows: its own
+         * build rule. */
+        uint16_t hint = aex_stack_pages(img, (uint64_t)bytes);
+        int stk_pages = hint ? (int)hint : 1024;
         ustack_top = entry + 0x2800000;          /* 40 MiB above the link base */
         uint64_t need = img_top + 0x400000 + (uint64_t)stk_pages * 0x1000;
         if (img_top && need > ustack_top) ustack_top = need;
@@ -1563,6 +1603,12 @@ void wm_launch(const char *aex_file, const char *arg)
      * expects it still off; a blind sti here leaks IF=1 through the whole
      * return path (nested-IRQ windows the gate never planned for). */
     if (fl & 0x200) __asm__ volatile ("sti");
+    /* The loader's VMAs took their own references; this is the transient one
+     * this function opened, and it is put on BOTH paths -- the failure return
+     * below would otherwise leave a live file entry pinning a slot for the
+     * rest of the boot (32 of them exist). Put after the sti, because
+     * pcache_file_put can purge pages and reach the frame allocator. */
+    if (fh >= 0) pcache_file_put(fh);
     if (!entry) { serial_puts("[wm] launch: load failed\n"); vmm_free_space(space); kfree(img); return; }
 
     int ai = -1;
@@ -2269,7 +2315,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
         g_net_busy = 0;
         net_busy_t0 = 0;
         __asm__ volatile ("cli");
-        if (rc != 0 || !rb) { kprintf("[res] fetch FAILED rc=%d url=%s\n", rc, src); return -1; }
+        if (rc != 0 || !rb) {
+            /* rc == -2 is the 15 s wall-clock cap res_fetch now applies to its
+             * own redirect loop (c/net/http/http.c). Named separately because
+             * "the server refused" and "we gave up" send a reader to different
+             * places, and this line is the only trace either leaves. */
+            kprintf("[res] fetch %s rc=%d url=%s\n",
+                    rc == -2 ? "TIMED OUT (15 s cap)" : "FAILED", rc, src);
+            return -1;
+        }
         kprintf("[res] ok %d bytes url=%s\n", rl, src);
         int n = rl < max ? rl : max;
         memcpy(buf, rb, (size_t)n);

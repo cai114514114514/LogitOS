@@ -295,6 +295,71 @@ out:
     return ret;
 }
 
+/* THE LOADER'S FILE MAPPING, and it exists because vma_reserve_file() cannot
+ * do this job: that one delegates placement to vma_reserve(), which only ever
+ * hands out addresses inside [MM_MMAP_BASE, MM_MMAP_TOP) and honours a hint
+ * only if the hint is inside that window too. Every program on this machine
+ * links at 0x40000000..0x50000000, so a hint at 0x45000000 is silently ignored
+ * and the area lands at 0x60000000 -- a file mapping of the right bytes at the
+ * wrong address, which is a worse outcome than no mapping at all.
+ *
+ * So this is vma_reserve_fixed() plus two fields plus one reference, and it
+ * lives HERE rather than in mmsys.c for the reason mmsys.c states about
+ * itself: that file is the userland face, where "the argument validation for
+ * an mmap ABI belongs next to the code that enforces those bounds". This has
+ * no ABI and no user argument -- elf.c is the only caller and its arguments
+ * came from a program header the loader already validated. What it does keep
+ * is vma_range()'s bounds (so a mapping still cannot leave the private user
+ * region) and overlaps()'s refusal (so it still cannot take an area away from
+ * anything), because those two are what make a fixed reservation safe at all.
+ *
+ * Returns 0, or -1 for a bad range / no free slot / an occupied range / a
+ * handle the cache has forgotten. A -1 here is NOT fatal to a load: elf.c
+ * copies the run eagerly instead, which is the behaviour that was there before
+ * this function existed. */
+int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
+                           uint32_t prot, int fh, uint64_t foff)
+{
+    if (fh < 0) return -1;
+    /* A file mapping is never writable: there is no writeback in this line and
+     * no private-file COW fault case, so a writable file PTE would be a dirty
+     * page nothing can ever clean. mmsys.c refuses this out loud for the mmap
+     * ABI; refusing it here too means the invariant is a property of the
+     * mechanism rather than of the one caller that currently respects it. */
+    if (prot & VMA_WRITE) return -1;
+    if (foff & 0xFFF) return -1;              /* the fault path divides by 4096 */
+
+    uint64_t a, b;
+    if (vma_range(start, len, &a, &b) < 0) return -1;
+    if (a != start) return -1;                /* the loader's ranges are already
+                                               * page aligned; a rounded one would
+                                               * shift every file page index by
+                                               * the rounding, silently */
+
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    int ret = -1;
+    if (!s) goto out;
+    if (overlaps(s, a, b)) goto out;
+    for (int j = 0; j < VMA_MAXAREA; j++)
+        if (!s->v[j].used) {
+            s->v[j].start = a;
+            s->v[j].end   = b;
+            s->v[j].prot  = prot ? prot : VMA_READ;
+            s->v[j].file  = fh;
+            s->v[j].foff  = foff;
+            s->v[j].used  = 1;
+            ret = 0;
+            break;
+        }
+out:
+    spin_unlock_irqrestore(&vma_lock, fl);
+    /* Outside the lock, like every other pcache call in this file: lock order
+     * is BKL -> vma_lock -> pcache -> pmm and vma_lock stays a leaf. */
+    if (ret == 0) pcache_file_ref(fh);
+    return ret;
+}
+
 int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
 {
     uint64_t start, end;

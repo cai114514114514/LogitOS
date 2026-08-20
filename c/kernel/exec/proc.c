@@ -450,6 +450,25 @@ void proc_exit(int code)
          * -- the same class of leak the g_net_busy watchdog exists to catch on
          * the blocking path, except here it can simply be closed properly. */
         if (sock_close_owner) sock_close_owner(p->pid);
+        /* Stored RAW -- the plain code passed to proc_exit(), not the POSIX
+         * (code<<8)|signo wait-status encoding c/apps/libc/include/sys/wait.h's
+         * WIFEXITED/WEXITSTATUS macros expect. Verified deliberate, not fixed
+         * here, because the raw convention is the one actually load-bearing in
+         * this tree today: c/apps/logit.h's sys_waitpid() -- used directly by
+         * c/apps/coreutils/sh.c for `$?`, plus entropy.c/smptest.c/studio.c --
+         * hands this value straight through with no decode, and sh.c's own
+         * comment (job_running(), sh.c) already argues from "there is no
+         * WNOHANG" to a workaround built on that raw value. SYS_WAITPID has one
+         * wire format for every caller (the kernel cannot tell a mini-libc
+         * program from a logit.h one at the syscall gate), so shifting it here
+         * would fix mini-libc's WIFEXITED/WEXITSTATUS -- today unused by
+         * anything in the tree, per grep -- by silently breaking sh.c's `$?`
+         * for every real command a user types (exit 1 would read back 256).
+         * The encode belongs where the two conventions can be kept apart: mini-
+         * libc's own waitpid()/wait() (c/apps/libc/src/io.c), translating the
+         * kernel's raw code into the POSIX status word for ITS callers only.
+         * That file is outside this change's ownership; this comment is the
+         * record for whoever picks it up. */
         uint64_t fl = spin_lock_irqsave(&g_proc_lock);
         p->exit_code = code;
         p->state = PROC_ZOMBIE;
@@ -489,12 +508,30 @@ void proc_exit(int code)
                            * proc_waitpid (parent) or proc_reap (orphan/GUI). */
 }
 
-/* Reap one zombie child of the current process. Blocks (cooperatively) until a
- * matching child is a zombie. pid == -1 waits for any child. */
-long proc_waitpid(int pid, int *status)
+/* WNOHANG, matching c/apps/libc/include/sys/wait.h's #define WNOHANG 1 (this
+ * file cannot include that header -- see the comment on proc_waitpid() in
+ * proc.h). The one caller found by grepping the tree for it,
+ * c/apps/as/as_port.c's as_proc_drop(), is explicit about why: it is a GC
+ * finalizer, and "block until this child exits" would freeze the interpreter
+ * on a live child's own timeline, which its own comment calls "a worse
+ * failure than a zombie". Before this, SYS_WAITPID never read its options
+ * argument at all (syscall.c), so that call blocked anyway -- silently, the
+ * exact failure the finalizer was written to avoid. */
+#define PROC_WNOHANG 1
+
+/* Reap one zombie child of the current process. With options==0, blocks
+ * (cooperatively) until a matching child is a zombie -- pid == -1 waits for
+ * any child. With WNOHANG set, never blocks: returns 0 if a matching child
+ * exists but none has exited yet (POSIX), same as it always has otherwise.
+ * Any other bit in `options` is refused with SIG_E_NOSYS rather than
+ * silently ignored -- a caller that asks for an option this kernel does not
+ * implement (WUNTRACED; job control does not exist here) gets a loud error,
+ * not a call that quietly behaves as if it had not asked. */
+long proc_waitpid(int pid, int *status, int options)
 {
     struct proc *self = proc_current();
     if (!self) return -1;
+    if (options & ~PROC_WNOHANG) return SIG_E_NOSYS;
 
     for (;;) {
         int have_child = 0, rpid = -1, code = 0; uint64_t freed_cr3 = 0;
@@ -518,6 +555,10 @@ long proc_waitpid(int pid, int *status)
             return rpid;
         }
         if (!have_child) return -1;
+        if (options & PROC_WNOHANG) {   /* asked not to block: say so, don't park */
+            if (status) *status = 0;
+            return 0;
+        }
         /* M31: EINTR, and this is the first place in the kernel that has one.
          *
          * A blocking wait cut short by a signal must be distinguishable from

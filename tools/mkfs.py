@@ -92,6 +92,9 @@ class Builder:
         # inode 0 = root directory
         self.itype = [T_FREE] * INODE_COUNT
         self.content = [b""] * INODE_COUNT       # files: bytes; dirs: filled later
+        # 0 = never set, which is what every inode was before programs needed an
+        # execute bit; see is_program() above.
+        self.xmode = [0] * INODE_COUNT
         self.children = {}                        # ino -> list[(name, child_ino)]
         self.next_ino = 0
         self.root = self.alloc_inode(T_DIR)       # ino 0
@@ -126,6 +129,34 @@ class Builder:
             cur = c
         return cur
 
+    # WHICH FILES GET AN EXECUTE BIT, and why this exists at all.
+    #
+    # The comment above OFF_XMODE says mkfs leaves the mode zero on purpose, so
+    # the kernel reports the 0644/0755 DEFAULT with "not stored" clear. That was
+    # right while nothing enforced the bit. On 2026-08-20 execve started calling
+    # vfs_access(path, MAY_EXEC) -- a real and correct enforcement of a
+    # permission this filesystem has stored durably since the statmeta work --
+    # and every program on the image became unlaunchable in the same instant:
+    #
+    #     [execve] /bin/sh: permission denied (not executable)
+    #     login: could not exec /bin/sh
+    #
+    # A regular file defaulting to 0644 is correct POSIX. What was missing is
+    # that a PROGRAM shipped in the image is not an ordinary regular file, and
+    # nothing had ever had to say so, because nothing had ever asked.
+    #
+    # The rule is by DESTINATION, not by content: a file that lands in a
+    # program directory or carries the .aex extension is a program. Sniffing
+    # for an ELF magic instead would also mark every test FIXTURE that happens
+    # to contain one, and would silently mark nothing on the day a program
+    # stops being an ELF.
+    EXEC_DIRS = ("/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/")
+
+    @staticmethod
+    def is_program(dest):
+        d = "/" + dest.strip("/")
+        return d.endswith(".aex") or any(d.startswith(x) for x in Builder.EXEC_DIRS)
+
     def add_file(self, dest, data):
         parts = [p for p in dest.split("/") if p]
         if not parts:
@@ -139,6 +170,8 @@ class Builder:
         ino = self.alloc_inode(T_FILE)
         self.content[ino] = data
         self.children[parent].append((leaf, ino))
+        if self.is_program(dest):
+            self.xmode[ino] = MODE_SET | 0o755
 
     def serialize(self):
         # 1) materialize directory contents now that all inos are assigned
@@ -232,6 +265,11 @@ class Builder:
             struct.pack_into("<I", img, off + OFF_DINDIRECT, dindirect[ino])
             if self.itype[ino] != T_FREE:
                 struct.pack_into("<qqq", img, off + OFF_ATIME, now, now, now)
+                # uid/gid stay 0 (root): this image has one user until a real
+                # one exists, and writing a made-up owner would be a fact the
+                # kernel would then have to be told to disbelieve.
+                if self.xmode[ino]:
+                    struct.pack_into("<I", img, off + OFF_XMODE, self.xmode[ino])
 
         return img, nextb
 

@@ -8,7 +8,16 @@
  * independent of any window. A GUI app is just a proc whose `gui` is non-NULL.
  * The shell, coreutils and forked children are procs with no window.          */
 #define NPROC 32
-#define NFD   16
+/* Must equal c/apps/libc/include/limits.h's OPEN_MAX -- that header already
+ * says so ("c/kernel/exec/proc.c fd table") and is not aspirational, so 16 here
+ * was the stale side of the pair: a program trusting its own limits.h opened
+ * fd 17 and got a plain failure, no ENFILE, no hint that the table it thinks
+ * it has is twice the one it was given. Cost of raising it: `struct file
+ * *fd[NFD]` gains 16 pointers (8 bytes each = 128 B) per proc; NPROC=32 slots
+ * makes that 4096 B (4 KiB) of extra .bss total -- against a kheap arena
+ * measured in tens of MiB (see the M "12 MiB program" section of CLAUDE.md),
+ * this is noise. */
+#define NFD   32
 
 enum proc_state { PROC_FREE = 0, PROC_RUNNING, PROC_ZOMBIE };
 
@@ -61,10 +70,22 @@ long          proc_fork(struct registers *r);
 void          proc_exit(int code);                  /* never returns */
 long          proc_execve(struct registers *r);     /* replace the user address space (exec.c) */
 int           proc_spawn(const char *path, char **argv);  /* init: launch a CLI proc on the tty (exec.c) */
+/* Every site that loads a program image calls this with what the loader
+ * reported, so the "how many pages came from the page cache" line in
+ * exec_report() covers the DESKTOP's launches too and not only the shell's.
+ * It lives in exec.c because a boot-lifetime counter inside elf.c would be a
+ * global surviving between cases in the host loader tests. */
+struct elf_image;
+void          exec_note_load(const char *what, const struct elf_image *ei);
 long          proc_cap_spawn(struct registers *r);  /* M28: SYS_CAP_SPAWN -- fork+exec a capability-
                                                       * bounded child (exec.c). Returns the child pid,
                                                       * or a negative LOGIT_CAP_E_* code. */
-long          proc_waitpid(int pid, int *status);   /* reap a zombie child */
+/* reap a zombie child. `options` is the SYS_WAITPID third argument (WNOHANG,
+ * bit 1, matching c/apps/libc/include/sys/wait.h -- this header cannot include
+ * that one, so the bit is a literal known to agree with it, same shape as
+ * SYS_KILL's LOGIT_KILL_SIGNAL flag in logit_abi.h). Any other bit is refused
+ * (SIG_E_NOSYS) rather than silently ignored -- see proc.c. */
+long          proc_waitpid(int pid, int *status, int options);
 void          proc_reap(void);                      /* free orphan/GUI zombies (WM loop) */
 
 /* fd table (P2). */

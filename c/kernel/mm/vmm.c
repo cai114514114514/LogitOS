@@ -391,17 +391,60 @@ int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
                  * have. Installing the entry verbatim cannot lose a bit, and
                  * it is what the code meant -- shared_e already has PRESENT
                  * (checked above), so the two are otherwise identical. */
+#ifdef VMM_FORK_REASSEMBLE
+                /* NEGATIVE CONTROL (tests/unit/mm_run.sh): the entry taken
+                 * apart and put back together -- frame from the top, flags
+                 * from the bottom twelve bits -- which is what this line said
+                 * before the NX comment above was written. It loses every bit
+                 * 52..63, so the child's copy of a file-backed text page comes
+                 * back without MM_PTE_NX; and it is the plausible wrong
+                 * version rather than the feature switched off, because the
+                 * child still gets the right FRAME and the program still runs.
+                 * mm_forkfile_test requires this build to fail, and to fail on
+                 * the bit-for-bit assertion and not on the refcounts. */
+                vmm_map_page_in(dst_cr3, va, shared_e & MM_PTE_ADDR, shared_e & 0xFFF);
+#else
                 vmm_map_raw_in(dst_cr3, va, shared_e);
+#endif
                 g_clone_shared++;
                 continue;
             }
 
             /* No COW (disabled), or the refcount saturated and the frame may
-             * not be shared: copy it, exactly as the eager clone always did. */
+             * not be shared: copy it, exactly as the eager clone always did.
+             *
+             * THE FLAGS ARE CARRIED, not rebuilt from WRITABLE alone, and that
+             * changed when file-backed text landed. This line used to say
+             * `VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0)`, which drops
+             * MM_PTE_NX -- a forked child silently got an executable stack its
+             * parent did not have -- and, now that a program's text can be a
+             * page-cache page, also drops VMM_PTE_FILE: the child would hold a
+             * private anonymous frame that says it is neither anonymous nor
+             * file-backed, so reclaim can neither drop it (try_drop_cached
+             * demands VMM_PTE_FILE on every PTE) nor swap it (try_drop demands
+             * VMM_PTE_ANON), and the page becomes permanently unreclaimable.
+             * The expression is do_cow()'s (fault.c), for the same reason: a
+             * private copy has the original's protections and only its sharing
+             * changes.
+             *
+             * TWO BITS ARE CLEARED, and the second is the one worth arguing.
+             * VMM_PTE_COW, because nothing is shared here. And VMM_PTE_FILE,
+             * because this frame is NOT the page cache's -- it is a private
+             * copy of what the cache held, and a PTE claiming FILE over a
+             * frame pcache_holds() says nothing about is the exact
+             * disagreement reclaim.c declines to act on. The copy is left
+             * marked neither FILE nor ANON, which makes it unreclaimable and
+             * is precisely what every page copied down this path has been
+             * since the path was written; do_cow() may carry FILE across
+             * because it can never see a file PTE (they are read-only and not
+             * COW, so a write to one is a genuine protection fault the
+             * classifier declines), and this loop sees every PTE there is. */
             uint64_t nf = pmm_alloc();
             if (!nf) return -1;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
             memcpy(mm_p2v(nf), mm_p2v(frame), 4096);
-            vmm_map_page_in(dst_cr3, va, nf, VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0));
+            vmm_map_page_in(dst_cr3, va, nf,
+                            (e & MM_PTE_FLAGS) &
+                                ~(uint64_t)(VMM_PTE_COW | VMM_PTE_FILE));
             g_clone_copied++;
         }
     }

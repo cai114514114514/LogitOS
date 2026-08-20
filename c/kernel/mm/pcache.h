@@ -216,10 +216,19 @@ long pcache_pread(const char *path, void *buf, uint64_t off, uint64_t len);
  *
  *   stat  -- path -> (dev, ino, size). The identity, and the size.
  *   read  -- path, byte offset, destination, length -> bytes read, or < 0.
- *            Always page aligned and at most 4096 bytes from here. */
+ *            Always page aligned and at most 4096 bytes from here.
+ *   forget -- OPTIONAL (may be NULL). "this file's bytes are no longer what
+ *            you last read." It exists because a backend that cannot pread
+ *            has to hold a copy of the file to serve one page of it (see
+ *            pcache_vfs.c), and a second copy nobody invalidates is the very
+ *            bug pcache_invalidate_path() exists to prevent, one layer down.
+ *            Called from every invalidation path here, so the backend does not
+ *            have to guess. A backend that reads straight off a device leaves
+ *            it NULL and nothing changes. */
 struct pcache_ops {
     int  (*stat)(const char *path, uint64_t *dev, uint64_t *ino, uint64_t *size);
     long (*read)(const char *path, uint64_t off, void *dst, uint64_t len);
+    void (*forget)(const char *path);
 };
 void pcache_set_ops(const struct pcache_ops *ops);
 

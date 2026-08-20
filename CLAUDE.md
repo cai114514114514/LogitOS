@@ -734,13 +734,23 @@ harness was built first.
   real user page the kernel is touching right now.
 - **Two tiers, cheapest first.** TIER 1 drops a page and re-derives it on the next
   fault, no device involved; TIER 2 writes it to a swap slot. NOTE, said plainly:
-  this kernel has **no file-backed user mapping at all** -- mmap takes no fd
-  (`mmsys.c`), an ELF image is read *eagerly* into anon frames by `elf_load` (so
-  app text is NOT backed by its `.aex` and must be swapped, never dropped), and
-  an fd read lands in a kmalloc buffer in no user page table. So the classic
-  "drop a clean page-cache page" tier has no producer here; building it first
-  would have been building a mechanism with nothing to feed it. The equivalent
-  that does exist is the **zero page** -- an anonymous page (`VMM_PTE_ANON`, bit
+  **THIS PARAGRAPH WAS TRUE ON 2026-08-08 AND IS NOT TRUE NOW.** It said "this
+  kernel has no file-backed user mapping at all -- mmap takes no fd", and
+  therefore that tier 1's classic producer, a clean page-cache page, did not
+  exist here. `c/kernel/mm/pcache.c` (26 KB), `pcache_vfs.c`, `MM_FAULT_FILE`
+  and a SEPARATE `SYS_MMAP_FILE` syscall all landed between 08-12 and 08-15,
+  and `reclaim.c:43` now opens with "TIER 1's two producers". The stale
+  sentence cost real time on 2026-08-20: it was quoted, in good faith, as the
+  justification for a whole line of work that was going to build what already
+  existed.
+
+  What IS true, and is the more useful fact: **that machinery has never had a
+  real workload.** The only caller of `SYS_MMAP_FILE` in the tree is
+  `fsroot/as/examples/pcachecheck.as`, a script written to exercise it. A
+  mechanism whose sole consumer is its own check is in exactly the state this
+  paragraph was warning against, one level up.
+
+  The other tier-1 producer, which was already here, is the **zero page** -- an anonymous page (`VMM_PTE_ANON`, bit
   10) currently all zero, re-derivable by `do_anon`. Tier 1 tests the CONTENTS,
   not the dirty bit, so a page the process zeroed also qualifies. (It used to be
   dominated by browser.elf's ~105 MiB `.bss`; the libc line has since moved that

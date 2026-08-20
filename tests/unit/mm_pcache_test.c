@@ -119,7 +119,11 @@ static long sim_read(const char *path, uint64_t off, void *dst, uint64_t len)
     return (long)n;
 }
 
-static const struct pcache_ops sim_ops = { sim_stat, sim_read };
+/* `forget` is NULL: this backend reads straight out of its own byte buffers,
+ * so there is no second copy of a file for an invalidation to have to reach.
+ * Named rather than left to the initializer, because "the field is absent"
+ * and "the field is deliberately unused" read identically otherwise. */
+static const struct pcache_ops sim_ops = { sim_stat, sim_read, 0 };
 
 /* First byte of `frame`'s page that disagrees with file `fileid` at page
  * `page`, or -1 if the whole page (up to `n` bytes, <= 4096) matches. */
