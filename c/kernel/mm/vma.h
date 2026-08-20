@@ -191,10 +191,24 @@ int vma_release(uint64_t cr3, uint64_t addr, uint64_t len);
 #define VMA_E_ACCES (-3)
 int vma_protect(uint64_t cr3, uint64_t addr, uint64_t len, uint32_t prot);
 
+/* THE WHOLE TABLE, copied out, ascending by `start`. Returns how many areas
+ * exist, which may exceed `max` (in which case the `max` lowest are written).
+ * The only enumerator in this header -- everything else answers about one
+ * address -- and it exists because c/kernel/exec/coredump.c has to describe a
+ * dying process's entire address space. See the definition in vma.c for why it
+ * copies rather than lending a pointer into the locked table. */
+int      vma_snapshot(uint64_t cr3, struct vma *out, int max);
+
 /* Accounting. */
 uint64_t vma_reserved_bytes(uint64_t cr3);
 int      vma_count(uint64_t cr3);
 int      vma_spaces_live(void);
+
+/* Enumeration: the i'th LIVE area of `cr3`, copied out. 1 = filled, 0 = there
+ * is no i'th area. `i` counts live areas, not slots -- see the long comment on
+ * the definition for why that distinction is load-bearing, and why this
+ * returns a copy rather than a pointer. Added for /proc/<pid>/maps. */
+int      vma_nth(uint64_t cr3, int i, struct vma *out);
 
 /* Page-aligned range arithmetic, shared with mmap and munmap. Returns 0 on
  * success and fills `*out_start` / `*out_end` with the rounded-out range;

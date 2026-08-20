@@ -700,4 +700,93 @@ int vma_count(uint64_t cr3)
     return n;
 }
 
+/* THE TABLE, COPIED OUT, ascending by start.
+ *
+ * Added for c/kernel/exec/coredump.c, which has to describe a dying process's
+ * whole address space and had nothing to ask: this file exports vma_count()
+ * and vma_prot_at()/vma_file_at()/vma_shm_at(), all of which answer about ONE
+ * address, so enumerating an address space meant probing every page of a 1 GiB
+ * region -- 262,144 four-level walks to recover a table of at most 32 rows that
+ * is sitting right here.
+ *
+ * A COPY rather than a borrowed pointer, and the lock is the reason: every
+ * other reader of `spaces` holds vma_lock for the length of its answer, and a
+ * caller handed `&s->v[0]` would be reading a live table with no lock at all --
+ * from the fault path, where the process it describes is being torn down. 32 x
+ * 40 bytes is a memcpy; the caller's buffer is the caller's problem.
+ *
+ * Returns how many areas EXIST, which may be more than `max` (nothing on this
+ * machine can produce more than VMA_MAXAREA, but a caller sizing its buffer at
+ * something smaller has to be able to tell "that was all" from "there was more"
+ * -- the same contract vma_count() would give it and the same one getgroups(2)
+ * gives). Areas are written in ascending `start` order; the slot array is not
+ * sorted, so this sorts, which costs 32^2 comparisons at most and saves every
+ * consumer from having to. */
+int vma_snapshot(uint64_t cr3, struct vma *out, int max)
+{
+    if (!out || max < 0) return 0;
+    int n = 0;
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    if (s) for (int j = 0; j < VMA_MAXAREA; j++) {
+        if (!s->v[j].used) continue;
+        int stored = n < max ? n : max;
+        int k = stored;
+        if (k == max) {
+            /* Full. Keep the `max` LOWEST addresses rather than the first
+             * `max` slots visited: the slot array is not in address order, so
+             * "the first ones I met" would hand back an arbitrary subset while
+             * looking like a prefix. Only reachable if a caller passes a `max`
+             * below VMA_MAXAREA -- nothing here does, and a truncation rule
+             * that only exists for a caller that does not exist yet is exactly
+             * where a silently-wrong answer waits. */
+            if (max == 0 || out[max - 1].start <= s->v[j].start) { n++; continue; }
+            k = max - 1;
+        }
+        while (k > 0 && out[k - 1].start > s->v[j].start) { out[k] = out[k - 1]; k--; }
+        out[k] = s->v[j];
+        n++;
+    }
+    spin_unlock_irqrestore(&vma_lock, fl);
+    return n;
+}
+
 int vma_spaces_live(void) { return spaces_live; }
+
+/* The i'th LIVE area of `cr3`, by value.
+ *
+ * Added for /proc/<pid>/maps (c/fs/procfs_src.c), which was the first caller
+ * in the tree that wanted to SEE an address space rather than ask a question
+ * about one address in it. Everything else here answers "what is at this va" --
+ * vma_prot_at, vma_file_at, vma_shm_at -- and none of them can enumerate, so
+ * until now the shape of a process's address space was known to this file and
+ * to nothing else.
+ *
+ * BY VALUE, not by pointer, for the reason every accessor in this file is:
+ * `spaces[]` is mutated under vma_lock from the fault path, and a pointer
+ * handed out here would be read after the lock is dropped. A copy of 40 bytes
+ * costs nothing against that.
+ *
+ * `i` INDEXES LIVE AREAS, not slots. A slot index would make the caller's loop
+ * depend on VMA_MAXAREA and on the free-slot layout, so an munmap between two
+ * calls would silently renumber everything after the hole -- and a maps file
+ * that skips an area because a slot went free is exactly the kind of wrong
+ * that reads as correct. Two calls with an intervening change can still show a
+ * seam; procfs's latch (c/fs/procfs.h, point 4) is what bounds that to one
+ * read pass. Returns 1 if there is an i'th area, 0 otherwise. */
+int vma_nth(uint64_t cr3, int i, struct vma *out)
+{
+    if (!out || i < 0) return 0;
+    int n = 0, got = 0;
+    uint64_t fl = spin_lock_irqsave(&vma_lock);
+    struct space *s = find(cr3);
+    if (s) for (int j = 0; j < VMA_MAXAREA; j++) {
+        if (!s->v[j].used) continue;
+        if (n++ != i) continue;
+        *out = s->v[j];
+        got = 1;
+        break;
+    }
+    spin_unlock_irqrestore(&vma_lock, fl);
+    return got;
+}

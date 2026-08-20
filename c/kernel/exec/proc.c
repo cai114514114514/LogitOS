@@ -16,6 +16,7 @@
 #include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
 #include "uthread.h"            /* M30: a process is a set of threads */
 #include "ksignal.h"            /* M31: signals -- lifecycle, SIGCHLD, EINTR, kill */
+#include "ptrace.h"             /* a dying process is either end of a trace link */
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
 /* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
@@ -494,6 +495,12 @@ void proc_exit(int code)
          * it -- released here rather than at reap, so that a pid recycled
          * before the zombie is collected cannot find the old handlers. */
         ksig_proc_free(p->pid);
+        /* And any ptrace link at EITHER end, for the same reason and released
+         * at the same point: a recycled pid must not inherit the right to read
+         * somebody's memory, and a tracee whose tracer has just died must not
+         * be left parked in the stop loop with nobody to continue it.
+         * c/kernel/exec/ptrace.c handles both cases. */
+        ptrace_proc_free(p->pid);
         /* AFTER the unlock, and before thread_exit() (which never returns).
          * Outside the lock because the waiter holds g_child_wq.lock while it
          * takes g_proc_lock, so a waker holding g_proc_lock here would close an
@@ -852,4 +859,204 @@ long proc_syscall(long num, long a, long b, long c)
     default:
         return -1;
     }
+}
+
+/* ===========================================================================
+ * /proc's source, for the process-table half of it.
+ *
+ * These three functions are DECLARED in c/fs/procfs.h and implemented here,
+ * the same way vfs_cred_pid() is declared in c/fs/vfs.h and implemented in
+ * c/fs/vfs_cred.c: the fact lives here, behind this file's lock, so the
+ * accessor belongs here too. c/fs/procfs.c includes no kernel header at all
+ * and reaches the process table through nothing but these -- which is what
+ * lets the whole namespace, its pid parsing and its lifetime rules run in a
+ * host unit test against a table the test controls.
+ *
+ * procfs.h costs this file nothing to include: it depends on <stdint.h> and
+ * on no kernel header, deliberately.
+ *
+ * WHY A COPY AND NOT A `struct proc *`. proc_by_pid() already hands out a
+ * pointer, and /proc must never hold one -- see the lifetime argument in
+ * procfs.h. A snapshot taken under g_proc_lock and returned by value cannot
+ * dangle and cannot tear; a pointer read after the lock is dropped can do
+ * both, and the window is exactly the one a process exiting on another core
+ * occupies.
+ *
+ * NOT A SECOND ACCOUNTING. Every field is read straight out of struct proc,
+ * as proc_list() (SYS_PROCS) does thirty lines above -- the two are two
+ * readers of one table and neither computes anything the other does not. What
+ * they do not share is a struct: logit_procinfo is a published ABI copied to
+ * user memory, and widening or narrowing it to serve /proc would change what
+ * c/apps/gui/monitor.c is compiled against. Two callers, two shapes, one
+ * table, no third copy of the facts.
+ * ======================================================================== */
+/* Included here, beside its only three users, rather than in the block at the
+ * top of this file: this is a self-contained appendix, and the top of proc.c
+ * is edited by several lines at once. */
+#include "procfs.h"
+
+int procfs_src_pids(int *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    int n = 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    for (int i = 0; i < NPROC && n < max; i++)
+        if (procs[i].state != PROC_FREE) out[n++] = procs[i].pid;
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return n;
+}
+
+int procfs_src_task(int pid, struct procfs_task *out)
+{
+    if (!out || pid <= 0) return 0;
+    int found = 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    for (int i = 0; i < NPROC; i++) {
+        struct proc *p = &procs[i];
+        if (p->state == PROC_FREE || p->pid != pid) continue;
+        out->pid   = p->pid;
+        out->ppid  = p->ppid;
+        out->tid   = p->tid;
+        out->state = (p->state == PROC_ZOMBIE) ? PROCFS_ZOMBIE : PROCFS_RUN;
+        out->gui   = p->gui ? 1 : 0;
+        out->dying = g_killmark[i] ? 1 : 0;
+        out->caps  = p->caps;
+        out->cr3   = p->cr3;
+        out->nfd_max = NFD;
+        out->nfds  = 0;
+        for (int f = 0; f < NFD; f++) if (p->fd[f]) out->nfds++;
+        scopy(out->name, p->name, (int)sizeof out->name);
+        scopy(out->cwd,  p->cwd,  (int)sizeof out->cwd);
+        scopy(out->fs_prefix, p->fs_prefix, (int)sizeof out->fs_prefix);
+        found = 1;
+        break;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return found;
+}
+
+/* Unlocked on purpose, and it is not the same question as the two above:
+ * sched_current_data() returns the proc THIS core is running, which cannot be
+ * freed while it is running -- it is the caller. There is nothing to race
+ * against. */
+int procfs_src_self(void)
+{
+    struct proc *p = proc_current();
+    return p ? p->pid : 0;
+}
+
+/* ======================================================================
+ * THE OUT-OF-MEMORY KILLER'S SEAM  (c/kernel/mm/oom.h)
+ *
+ * c/kernel/mm must not include this header: mm is UNDERNEATH exec -- the fault
+ * path is reached from the scheduler, and pulling the process table down into
+ * c/kernel/mm would make every mm host test link the world. So the killer
+ * declares four functions and this block is the machine's implementation of
+ * them, beside the table and its lock, exactly as the /proc seam above is.
+ *
+ * The include is here rather than at the top of the file for a reason that is
+ * about this tree and not about C: several lines are editing proc.c's
+ * neighbourhood, and a change that is ONE contiguous append at the end cannot
+ * conflict with a change made anywhere above it.
+ * ====================================================================== */
+#include "oom.h"
+
+/* The killer's scratch table is sized at compile time because it may not
+ * allocate (oom.h). If NPROC ever passes it, the sweep would silently ignore
+ * the tail of the table -- i.e. quietly stop considering some processes -- so
+ * it is a build error instead. */
+_Static_assert(OOM_MAXTASK >= NPROC, "oom.h's OOM_MAXTASK must cover NPROC");
+
+int oom_task_at(int idx, struct oom_task *out)
+{
+    if (idx < 0 || idx >= NPROC || !out) return 0;
+    int live = 0;
+    uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+    struct proc *p = &procs[idx];
+    if (p->state == PROC_RUNNING && p->cr3) {
+        out->pid    = p->pid;
+        out->cr3    = p->cr3;
+        out->gui    = p->gui ? 1 : 0;
+        /* THE SAME PREDICATE proc_kill() REFUSES ON, evaluated here rather than
+         * discovered by trying: the killer has to skip init while CHOOSING, or
+         * it picks the console shell, gets refused, and reports "no victim"
+         * having never looked at the process actually holding the memory.
+         * proc_list() already makes this same argument for the task manager. */
+        out->immune = (!p->gui && p->ppid == 0);
+        out->dying  = g_killmark[idx] ? 1 : 0;
+        scopy(out->name, p->name, (int)sizeof out->name);
+        live = 1;
+    }
+    spin_unlock_irqrestore(&g_proc_lock, fl);
+    return live;
+}
+
+int oom_task_kill(int pid)
+{
+    return proc_kill(pid) == LOGIT_KILL_OK ? 0 : -1;
+}
+
+int oom_task_self(void)
+{
+    struct proc *p = proc_current();
+    return p ? p->pid : 0;
+}
+
+/* THE CHEAPEST VICTIM IS ONE THAT IS ALREADY DEAD.
+ *
+ * proc_exit() makes a process a zombie and leaves its ADDRESS SPACE intact:
+ * "freed by proc_waitpid (parent) or proc_reap (orphan/GUI)". That is right for
+ * a machine with memory -- the teardown runs on somebody's stack, not the dying
+ * thread's -- and it is a trap for the killer, because the two reapers are:
+ *
+ *   proc_waitpid   the parent, when it gets around to it. /bin/sh only sweeps
+ *                  finished background jobs in its INTERACTIVE loop
+ *                  (reap_background(), sh.c) -- the serial console runs the
+ *                  non-interactive branch, which never calls it. A background
+ *                  job killed there stays a zombie holding every frame it took.
+ *   proc_reap      the window manager's loop, and only for ORPHANS.
+ *
+ * So "kill the biggest process" can free nothing at all, for an unbounded time,
+ * on the exact machine that has no memory. The frames of a process that has
+ * already exited belong to nobody: taking them back is not a policy decision
+ * and needs no victim.
+ *
+ * vmm_free_user() is the whole operation -- it drops the private user subtree
+ * and leaves the PML4/PDPT husk for whichever reaper eventually arrives. IT IS
+ * IDEMPOTENT: it clears pdpt[USER_PDPT_IDX] on the way out, so the later
+ * vmm_free_space() returns at its second line and then frees the two table
+ * frames as it always did. That is what makes this safe to do early rather than
+ * a race with the reaper -- the alternative, teaching proc_waitpid() that
+ * somebody else may have got there first, would have put a new invariant in
+ * the exit path to pay for a memory optimisation.
+ *
+ * Returns the number of ZOMBIE address spaces it visited, including ones that
+ * were already empty -- a second call is a no-op and still counts. The caller
+ * measures FRAMES (pmm_free_frames() across the call), because that is the
+ * question actually being asked and this number cannot answer it.
+ *
+ * THE WINDOW, stated rather than hidden: proc_exit() sets PROC_ZOMBIE and only
+ * then calls wm_app_exit() and thread_exit(), so the dying thread can still be
+ * executing kernel code on this cr3 when this runs. It touches no user memory
+ * in that window (its stack is a kernel stack, kmalloc'd, outside this
+ * subtree). The pre-existing proc_waitpid() path frees the PML4 FRAME ITSELF in
+ * the same window, which is strictly the larger exposure; this is not the place
+ * to close either. */
+int oom_task_reap_dead(void)
+{
+    int n = 0;
+    for (int i = 0; i < NPROC; i++) {
+        uint64_t cr3 = 0;
+        uint64_t fl = spin_lock_irqsave(&g_proc_lock);
+        struct proc *p = &procs[i];
+        if (p->state == PROC_ZOMBIE && p->cr3) cr3 = p->cr3;
+        spin_unlock_irqrestore(&g_proc_lock, fl);
+        /* Outside the lock: vmm_free_user() calls into the PMM and the VMA
+         * table, and this file's lock order is g_proc_lock -> ... -> g_pmm_lock
+         * with "nothing under g_proc_lock calls vmm/kheap" (top of file). The
+         * pid stays in the table with its cr3, so the reaper's later
+         * vmm_free_space() still runs -- this only empties the space. */
+        if (cr3) { vmm_free_user(cr3); n++; }
+    }
+    return n;
 }

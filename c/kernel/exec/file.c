@@ -488,7 +488,12 @@ short file_poll(struct file *f, struct poll_table *pt)
         /* Always ready, and it is not an approximation: the whole file is in a
          * kernel buffer, so neither read() nor write() can block or have "not
          * yet" to report. Registering on nothing is correct here -- there is no
-         * state change to wait for. */
+         * state change to wait for.
+         *
+         * A GENERATED file (`live`, /proc) has no buffer and the sentence above
+         * is not its reason, but the answer is the same and for a stronger one:
+         * its bytes are computed synchronously inside the read, so there is
+         * nothing it could ever wait for either. */
         return LPOLLIN | LPOLLOUT;
 
     case F_PIPE: {
@@ -593,6 +598,13 @@ struct file *file_alloc(void)
                 f->type = F_NONE; f->refcount = 1; f->flags = 0; f->is_write = 0;  /* claim under lock */
                 f->amode = 0;
                 f->off = 0; f->size = 0; f->cap = 0; f->dirty = 0;
+                /* Cleared here, in the one place a slot is claimed, for the
+                 * same reason `dirty` and `backing` are: a recycled
+                 * description that inherited live = 1 would serve an ordinary
+                 * disk file by re-reading its path on every read -- which
+                 * happens to work, right up until the file is written or
+                 * deleted underneath it. */
+                f->live = 0;
                 f->backing = 0; f->path[0] = 0;
                 inuse++;                     /* the one just claimed */
             }
@@ -735,6 +747,21 @@ static void open_refused(const char *path, const char *gate, int flags)
             "-- said once per boot\n", gate, path, flags, pid, c.uid, c.gid);
 }
 
+/* Is `path` a file /proc GENERATES rather than stores? Weak, for the reason
+ * vfs.c declares kdiag weakly: file.c is linked into host harnesses that have
+ * no filesystem layer at all, and a hard reference would make every one of
+ * them fail to link over a facility they never mount. Absent, this is 0 and
+ * every file behaves exactly as it did before /proc existed. */
+int procfs_owns_path(const char *abs) __attribute__((weak));
+static int is_generated(const char *p) { return procfs_owns_path ? procfs_owns_path(p) : 0; }
+/* KNOWN LIMIT, stated rather than found later: this asks about the path the
+ * SYSCALL LAYER handed us -- absolute and with "." and ".." collapsed by
+ * proc_resolve, but with symlinks NOT expanded. A symlink pointing into /proc
+ * therefore opens as an ordinary file and is slurped, i.e. read as a snapshot
+ * taken at open. Closing it means a vfs_resolve() on every open of every file
+ * on the machine to serve a case nothing in this tree creates; the trade is
+ * recorded here instead of paid. */
+
 struct file *file_open_vfs(const char *path, int flags)
 {
     int sz = vfs_size(path);
@@ -752,7 +779,23 @@ struct file *file_open_vfs(const char *path, int flags)
     if (!f) return 0;
     f->type = F_VFS; f->flags = flags; f->off = 0; f->dirty = 0;
     f->amode = flags & 3;
+    f->live = 0;
     scopy(f->path, path, sizeof f->path);
+
+    /* A GENERATED file is not read here. This is the whole of what makes
+     * /proc live rather than a snapshot: the bytes are fetched by file_read()
+     * through vfs_pread() at the moment the reader asks for them.
+     *
+     * It also has to come BEFORE the O_CREAT/O_TRUNC branch below, which sets
+     * dirty = 1 so an empty new file still materialises. A live description
+     * has no buffer to write back, and a dirty one would try -- vfs_write on
+     * /proc fails (the backend publishes no write op at all, deliberately),
+     * so it would be a refusal reported at close(), where nobody is looking. */
+    if (is_generated(path)) {
+        f->live = 1;
+        f->backing = 0; f->cap = 0; f->size = 0; f->dirty = 0;
+        return f;
+    }
 
     if (exists && !(flags & O_TRUNC)) {
         long cap = sz > 0 ? sz : 1;
@@ -776,6 +819,19 @@ long file_read(struct file *f, void *buf, long len)
          * checked here rather than at the descriptor: a dup of a write-only fd
          * is still write-only, and a fork inherits the same answer. */
         if (f->amode == O_WRONLY) return -1;
+        /* GENERATED (/proc): ask now. `f->size` is meaningless here -- nothing
+         * was ever slurped -- so end of file is what vfs_pread reports (0), and
+         * a negative is passed on as -1 rather than turned into EOF. That
+         * distinction is the lifetime rule reaching userland: a read of a file
+         * whose process has exited must be a FAILURE and not an empty file.
+         * See c/fs/procfs.h, point 2. */
+        if (f->live) {
+            if (!f->path[0]) return -1;
+            int n = vfs_pread(f->path, buf, (int)(len > 0x7ffffff0 ? 0x7ffffff0 : len), f->off);
+            if (n < 0) return -1;
+            f->off += n;
+            return n;
+        }
         long avail = f->size - f->off;
         if (avail <= 0) return 0;                 /* EOF */
         long n = len < avail ? len : avail;
@@ -795,6 +851,10 @@ long file_write(struct file *f, const void *buf, long len)
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
         if (f->amode == O_RDONLY) return -1;
+        /* A generated file has no buffer to write into and no backend write op
+         * to flush to. Refused HERE rather than at close, where the failure
+         * would be reported to nobody. */
+        if (f->live) return -1;
         if (f->flags & O_APPEND) f->off = f->size;
         if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;
@@ -814,8 +874,18 @@ long file_write(struct file *f, const void *buf, long len)
 long file_lseek(struct file *f, long off, int whence)
 {
     if (!f || f->type != F_VFS) return -1;
+    /* SEEK_END on a generated file asks the length NOW, because `f->size` is
+     * 0 for one and always will be. It is still a length that was true at some
+     * instant and may not be at the next read -- which is a property of the
+     * file, not a defect here, and the reason nothing in /proc is meant to be
+     * seeked to from the end. */
+    long endlen = f->size;
+    if (f->live && whence == SEEK_END) {
+        int n = f->path[0] ? vfs_size(f->path) : -1;
+        endlen = n > 0 ? n : 0;
+    }
     long base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? f->off
-              : whence == SEEK_END ? f->size : -1;
+              : whence == SEEK_END ? endlen : -1;
     if (base < 0) return -1;
     /* base+off can overflow signed long (UB). base >= 0 here, so a positive off
      * overflows iff off > LONG_MAX - base; a negative off can't overflow. */

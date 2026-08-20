@@ -26,6 +26,7 @@
 #include "kdiag.h"
 #include "pcache.h"
 #include "pcache_vfs.h"
+#include "procfs.h"       /* /proc -- mounted below, right after the root */
 #include "cpu_report.h"   /* cpu_simd_selftest -- see the call below pit_init */
 #include "blkdev.h"
 #include "pci.h"
@@ -137,6 +138,34 @@ void kernel_main(uint64_t mb_info)
     vfs_register(&logitfs);
     int fs_ok = (vfs_mount() == 0);
     kprintf(fs_ok ? "[fs] mounted\n" : "[fs] mount FAILED\n");
+
+    /* /proc, on top of the root that just arrived.
+     *
+     * THE MKDIR IS NOT A WORKAROUND, it is what vfs_mount_at() requires and
+     * says so: "a mount point that does not exist is a filesystem you can only
+     * reach by knowing it is there". The alternative was to pack an empty
+     * /proc into the disk image, which costs a line in the $(DISK) recipe --
+     * in the Makefile, which several lines are editing at once -- and costs
+     * the same ONE inode out of the 256 tools/mkfs.py formats. So the mkdir is
+     * the same price with no shared-file edit. It is idempotent: on every boot
+     * after the first the directory is already there, logitfs refuses to make
+     * it again, and the mount happens regardless -- which is why the return
+     * value of the mkdir is deliberately ignored and the MOUNT's is not.
+     *
+     * Failure here is not fatal and must not be. A machine with no /proc is
+     * the machine this tree had yesterday; every one of its consumers reports
+     * a missing file, which is a better outcome than refusing to boot. */
+    if (fs_ok) {
+        vfs_mkdir("/proc");
+        int prc = procfs_mount("/proc");
+        /* The success line names the mount point through procfs_mountpoint()
+         * rather than repeating the literal: what that returns is the string
+         * procfs_owns_path() will compare against, so a boot log saying
+         * "/proc mounted" is evidence about the ownership test and not just
+         * about the mount table. */
+        if (prc == 0) kprintf("[fs] %s mounted\n", procfs_mountpoint());
+        else          kprintf("[fs] /proc mount FAILED (%d)\n", prc);
+    }
 
     /* The page cache's backend (pcache.h's struct pcache_ops, built over
      * c/fs/vfs.h in pcache_vfs.c). Installed here, after vfs_mount(), rather

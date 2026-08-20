@@ -41,6 +41,23 @@ struct file {
     long  size;         /* F_VFS current length */
     long  cap;          /* F_VFS buffer capacity */
     int   dirty;        /* F_VFS needs write-back at last close */
+    /* F_VFS: this file is GENERATED (/proc), so it has no bytes to hold.
+     *
+     * The ordinary F_VFS description slurps the whole file into `backing` at
+     * open and serves reads out of it. For a generated file that would make
+     * every read return a snapshot taken at OPEN -- correct-looking, correctly
+     * formatted, and describing a machine that has moved on. `live` says
+     * "there is nothing here; go and ask at read() time", so the offset is the
+     * only state this description carries. See c/fs/procfs.h, point 4, for
+     * what makes a multi-read pass over one such file still coherent.
+     *
+     * A field and not a sixth F_* type: the type tag decides which BACKEND
+     * owns the description, and the backend here is still the VFS. Every one
+     * of file.c's F_VFS paths -- close, fsync, poll, the exhaustion census --
+     * stays correct with `backing` NULL and `dirty` 0, which is exactly what a
+     * live description is. A new type would have needed all six of them
+     * duplicated to say the same thing. */
+    int   live;
     void *backing;      /* F_VFS: file bytes; F_PIPE: struct pipe* */
     char  path[128];    /* F_VFS write-back path */
 };
