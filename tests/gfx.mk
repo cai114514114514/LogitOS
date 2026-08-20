@@ -183,3 +183,114 @@ $(BUILD)/gallery_cost.elf: $(GUIDIR)/gallery.c $(APPDIR)/crt0.asm $(APPDIR)/logi
 	    $(BUILD)/apps/gallery_cost.o $(BUILD)/apps/aui_cost.o $(GFX_OBJ)
 $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery_cost.elf $@ 'Gallery' - 'G' 120 140 250
+
+# ============================================================================
+# G4 -- THE CONSUMERS. Does the browser's painter actually ASK the engine for
+# what CSS declared?
+#
+#   make test-paint-gfx          the gate
+#   make test-paint-gfx-negctl   THREE controls, each of which MUST fail and
+#                                must redden an EXACT count
+#
+# Why this lives here and not beside paint_test: paint_test's link line
+# deliberately carries neither css_extra.c nor css_interp.c, and `transform`,
+# `box-shadow` and every gradient value have NO producer without css_extra's
+# raw-declaration scan -- they are absent from the vendored LibCSS property
+# table, so the cascade cannot carry them. paint_test is therefore structurally
+# unable to see any of this, which is correct for what it measures. This binary
+# links the whole road instead: parse -> cascade -> css_extra capture -> layout
+# -> the real browser_paint.c -> the real c/lib/gfx.
+#
+# THE ONE SOURCE THIS ADDS over the cssdecl gate is c/lib/image/svg.c, and it
+# is not optional: img_css_color() lives there and is this tree's ONE CSS
+# colour evaluator (see the argument in svg.c and in css.h's XR_* comment). A
+# gradient stop's colour is resolved by calling it. Writing a second colour
+# parser in the painter is the failure that file names -- two evaluators for
+# one question do not fail by being approximate, they fail by DISAGREEING.
+.PHONY: test-paint-gfx test-paint-gfx-negctl
+
+PAINTGFX_DIR := $(BUILD)/paintgfx
+PAINTGFX_SRC := tests/unit/paint_gfx_test.c \
+                c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+                c/apps/browser/css_extra.c c/apps/browser/css_interp.c \
+                c/lib/image/svg.c
+
+# $1 = output binary, $2 = extra -D flags
+define PAINTGFX_BUILD
+	@mkdir -p $(PAINTGFX_DIR)
+	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) $(2) -o $(1) \
+	    $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+endef
+
+$(PAINTGFX_DIR)/paint_gfx_test: $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	$(call PAINTGFX_BUILD,$@,)
+
+$(PAINTGFX_DIR)/pg_hasbg: $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	$(call PAINTGFX_BUILD,$@,-DPAINT_NEGCTL_ROUND_HASBG)
+
+$(PAINTGFX_DIR)/pg_noorigin: $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	$(call PAINTGFX_BUILD,$@,-DPAINT_NEGCTL_XF_NO_ORIGIN)
+
+$(PAINTGFX_DIR)/pg_norclip: $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	$(call PAINTGFX_BUILD,$@,-DPAINT_NEGCTL_NO_RCLIP)
+
+$(PAINTGFX_DIR)/pg_noclip: $(PAINTGFX_SRC) $(GFX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
+	$(call PAINTGFX_BUILD,$@,-DPAINT_NEGCTL_SHADOW_NO_CLIP)
+
+test-paint-gfx: $(PAINTGFX_DIR)/paint_gfx_test test-paint-gfx-negctl
+	@$(PAINTGFX_DIR)/paint_gfx_test
+
+# THE CONTROLS. Four, because the four features fail independently and a
+# control only covers the one it reverts. Each must redden an EXACT count: a
+# control that reddens everything proves the binary was rebuilt and nothing
+# else, and a control that reddens nothing is worse than no control because it
+# reads like one.
+#
+# Each is the PLAUSIBLE wrong implementation rather than the absent one -- all
+# four of them draw a perfectly good picture:
+#
+#   ROUND_HASBG    the `&& e->has_bg` guard exactly as it stood before this
+#                  work, so a rounded border with no background falls back to
+#                  the square path. Every rounded CARD still looks right,
+#                  because a card has a background; only outlines lose their
+#                  corners. Reddens the rounded-outline rows.
+#   XF_NO_ORIGIN   transform about the box's top-left instead of its
+#                  transform-origin. This is what falls out of applying the
+#                  matrix to the item's coordinates directly, and every
+#                  translate() is UNAFFECTED (the origin cancels) -- so a page
+#                  full of translate(-50%,-50%) centring still looks perfect
+#                  and every rotated or scaled element is in the wrong place.
+#   SHADOW_NO_CLIP the outer shadow painted whole, letting the element's
+#                  background cover what CSS says to clip. Over an opaque card
+#                  the difference is invisible; on a transparent input it
+#                  washes the shadow colour across the whole control.
+#   NO_RCLIP       the rectangular overflow clip alone -- exactly what this
+#                  painter did before path clipping had a caller. Every
+#                  scroller still clips, everything still lands in the right
+#                  place, and only the four corners of a ROUNDED one are
+#                  square. It is also the control that proves the rows are
+#                  measuring gfx_fill_mask_clipped and not merely that a
+#                  clipped box paints.
+test-paint-gfx-negctl: $(PAINTGFX_DIR)/pg_hasbg $(PAINTGFX_DIR)/pg_noorigin \
+                       $(PAINTGFX_DIR)/pg_noclip $(PAINTGFX_DIR)/pg_norclip
+	@for c in hasbg:4 noorigin:3 noclip:2 norclip:4; do \
+	   b=$${c%%:*}; want=$${c##*:}; \
+	   if $(PAINTGFX_DIR)/pg_$$b > $(PAINTGFX_DIR)/$$b.log 2>&1; then \
+	     echo "test-paint-gfx-negctl: FAILED -- pg_$$b PASSED, so nothing in the"; \
+	     echo "  suite is measuring what it reverts."; exit 1; \
+	   fi; \
+	   n=`grep -c '^FAIL:' $(PAINTGFX_DIR)/$$b.log`; \
+	   if [ "$$n" != "$$want" ]; then \
+	     echo "test-paint-gfx-negctl: FAILED -- pg_$$b reddened $$n rows, expected $$want."; \
+	     echo "  Re-measure it; never adjust the number to whatever the run printed."; \
+	     grep '^FAIL:' $(PAINTGFX_DIR)/$$b.log; exit 1; \
+	   fi; \
+	   echo "test-paint-gfx-negctl: ok -- pg_$$b reddens exactly $$n row(s):"; \
+	   grep '^FAIL:' $(PAINTGFX_DIR)/$$b.log | sed 's/^/    /'; \
+	 done
+
+# Named on the suite so it runs, and its control is a prerequisite of the
+# positive above so the control runs too -- the two halves of not being in
+# tests/audit-stranded.baseline.
+ci-host: test-paint-gfx

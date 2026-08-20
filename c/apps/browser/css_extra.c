@@ -304,6 +304,12 @@ struct xpatch {
     const char *gr[GR__COUNT];
     int gr_len[GR__COUNT];
     int gr_any;
+    /* The paint properties, same shape and the same lifetime rule: transform,
+     * transform-origin, the background's linear-gradient() call and the shadow
+     * list. See parse_xraw() below and css.h's XR_* comment. */
+    const char *xr[XR__COUNT];
+    int xr_len[XR__COUNT];
+    int xr_any;
 };
 
 /* One px length from `v`, advancing *i. Accepts a leading '-'; returns -1 and
@@ -500,12 +506,210 @@ static void gr_drop(struct xpatch *p)
 {
     for (int g = 0; g < GR__COUNT; g++) { p->gr[g] = 0; p->gr_len[g] = 0; }
     p->gr_any = 0;
+    /* The paint spans point into the same non-stable buffer and go for the
+     * same reason. Forgetting them here would not fail at the free: it would
+     * hand browser_paint.c a pointer into a buffer the caller has since
+     * rewritten IN PLACE, so the shadow it draws is whatever declaration
+     * happens to occupy those bytes now. */
+    for (int g = 0; g < XR__COUNT; g++) { p->xr[g] = 0; p->xr_len[g] = 0; }
+    p->xr_any = 0;
 }
+
+/* ---- the PAINT declarations: transform, box-shadow, gradients ------------
+ *
+ * Four properties LibCSS has no representation for at all, captured as spans
+ * exactly the way the grid properties above are. The argument for text rather
+ * than values is in css.h above the XR_* enum and is not repeated here; the
+ * one thing to keep in view while editing THIS half is that it runs ONCE PER
+ * SHEET, so it may not look at an element and must not try.
+ *
+ * find_decl already refuses a key that does not start a declaration, which is
+ * what keeps `transform` out of `text-transform` and `-webkit-transform`, and
+ * `background` out of `background-image` and `background-color`.
+ *
+ * THE PREFIXED SPELLINGS ARE A FALLBACK, AND ORDER IS NOT THE ARGUMENT FOR IT.
+ * This comment used to say the unprefixed spelling wins because "it is later
+ * in every sheet that writes both". That is false, and measuring it is what
+ * found the right reason. Over the 102 sheets of tests/fixtures/cssweb, split
+ * into declaration blocks:
+ *
+ *     transform         both spellings in 452 blocks -- unprefixed LAST in
+ *                       449 of them and FIRST in 3
+ *     box-shadow        both in 98 blocks -- unprefixed last in 59, FIRST IN 39
+ *
+ * Two fifths of the box-shadow blocks put the prefix last, so an order rule
+ * would take the prefixed value there. The real reason is that these are
+ * DIFFERENT PROPERTIES: they do not cascade against each other at all, and a
+ * real browser applies `box-shadow` and drops `-webkit-box-shadow` as an
+ * unknown property no matter which came last. So unprefixed always wins, by
+ * key order in the table below and not by position in the sheet.
+ *
+ * WHICH PREFIXES ARE WORTH CARRYING is then a question about blocks that write
+ * ONLY a prefix, since every other block is served by the unprefixed key.
+ * Measured the same way -- prefix-only blocks, by prefix:
+ *
+ *     transform         24   (-webkit- 11, -moz- 7, -o- 6, -ms- 2)
+ *     box-shadow         3   (-webkit- 3, -moz- 2; one block writes both)
+ *     transform-origin   0
+ *
+ * -moz- and -o- are each worth MORE than -ms- here, which is why all four are
+ * in the transform table: taking -webkit- and -ms- alone covered 13 of those
+ * 24 blocks. transform-origin's prefixed spellings reach nothing in this
+ * corpus and `-webkit-transform-origin` is kept anyway -- it costs one table
+ * entry, the corpus is 102 sheets rather than the web, and the alternative is
+ * an element that transforms about the wrong point with nothing to explain it.
+ * Every prefixed spelling taken here shares the unprefixed GRAMMAR, which is
+ * what makes the fallback safe.
+ *
+ * `-webkit-linear-gradient` is NOT taken, and that asymmetry is the point: the
+ * prefixed gradient's angle convention is a different one (0deg = to right,
+ * counter-clockwise), so accepting it under the modern rule rotates every one
+ * of them by ninety degrees. 22 of those, plus 7 `-moz-`, 7 `-o-` and 28 of
+ * the ancient two-point `-webkit-gradient()`. */
+
+static int lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+/* Case-insensitive compare of [s,s+n) against a lowercase literal. */
+static int ieq(const char *s, int n, const char *lit)
+{
+    int i = 0;
+    for (; i < n; i++) { if (!lit[i] || lc((unsigned char)s[i]) != lit[i]) return 0; }
+    return lit[i] == 0;
+}
+
+/* Trim whitespace and a trailing `!important` off a value span. The '!' cut is
+ * safe because none of the four values can otherwise contain one. */
+static void trim_val(const char *d, int *vs, int *ve)
+{
+    for (int i = *vs; i < *ve; i++) if (d[i] == '!') { *ve = i; break; }
+    while (*vs < *ve && spc(d[*vs])) (*vs)++;
+    while (*ve > *vs && spc(d[*ve - 1])) (*ve)--;
+}
+
+/* The first of `keys` that is declared in the block, trimmed. 1 if found.
+ * Order is preference order, and it is the caller's cascade: the unprefixed
+ * spelling first, always. */
+static int decl_first(const char *d, int dlen, const char *const *keys, int nkeys,
+                      int *vs, int *ve)
+{
+    for (int k = 0; k < nkeys; k++) {
+        if (!find_decl(d, dlen, keys[k], vs, ve)) continue;
+        trim_val(d, vs, ve);
+        if (*ve > *vs) return 1;
+    }
+    return 0;
+}
+
+/* Number of TOP-LEVEL (outside parens and quotes) comma-separated components
+ * in [v,v+len). A background with more than one layer is refused rather than
+ * half-painted: the layers composite, and drawing only the first is a guess
+ * about what is underneath it. */
+static int top_commas(const char *v, int len)
+{
+    int depth = 0, n = 1; char q = 0;
+    for (int i = 0; i < len; i++) {
+        char c = v[i];
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == '\'' || c == '"') { q = c; continue; }
+        if (c == '(') depth++;
+        else if (c == ')') { if (depth) depth--; }
+        else if (c == ',' && depth == 0) n++;
+    }
+    return n;
+}
+
+/* Locate the `linear-gradient(` CALL inside a background value and return its
+ * whole span, parens included. The ident-boundary check on the left is what
+ * declines `repeating-linear-gradient(` and `-webkit-linear-gradient(`, both
+ * of which contain this name as a substring and neither of which means what
+ * this one means. */
+static int find_lgrad(const char *v, int len, int *gs, int *ge)
+{
+    static const char *nm = "linear-gradient";
+    int nl = 15;
+    for (int i = 0; i + nl < len; i++) {
+        if (i > 0 && ident((unsigned char)v[i-1])) continue;
+        if (!ieq(v + i, nl, nm)) continue;
+        int j = i + nl;
+        while (j < len && spc(v[j])) j++;
+        if (j >= len || v[j] != '(') continue;
+        int depth = 0, k = j;
+        for (; k < len; k++) {
+            if (v[k] == '(') depth++;
+            else if (v[k] == ')') { depth--; if (!depth) { k++; break; } }
+        }
+        if (depth) return 0;                    /* unbalanced: not a value */
+        *gs = i; *ge = k;
+        return 1;
+    }
+    return 0;
+}
+
+static void xr_set(struct xpatch *p, int idx, const char *s, int len)
+{
+    if (len <= 0) return;
+    p->xr[idx] = s; p->xr_len[idx] = len; p->xr_any = 1;
+}
+
+#ifdef CSS_NEGCTL_NO_XCAPTURE
+/* NEGATIVE CONTROL: the capture reverted. Everything else in this file --
+ * radius, grid, gaps, the logical properties, the animation approximation --
+ * is untouched, so exactly the cases that read cstyle.xraw[] may redden. */
+static void parse_xraw(const char *d, int dlen, struct xpatch *p)
+{
+    (void)d; (void)dlen; (void)p;
+    /* The capture helpers stay compiled (they are the thing being reverted,
+     * not deleted) so the control differs from the shipped build in exactly
+     * one behaviour and not in what the file contains. */
+    (void)decl_first; (void)top_commas; (void)find_lgrad; (void)xr_set;
+}
+#else
+static void parse_xraw(const char *d, int dlen, struct xpatch *p)
+{
+    /* Unprefixed FIRST in every one of these -- see the comment above for why
+     * that is a property-identity rule and not a source-order one. */
+    static const char *const k_xform[]  = { "transform", "-webkit-transform",
+                                            "-moz-transform", "-o-transform",
+                                            "-ms-transform" };
+    static const char *const k_orig[]   = { "transform-origin", "-webkit-transform-origin" };
+    static const char *const k_shadow[] = { "box-shadow", "-webkit-box-shadow",
+                                            "-moz-box-shadow" };
+    static const char *const k_bg[]     = { "background-image", "background" };
+    int vs, ve;
+
+    if (decl_first(d, dlen, k_xform, 5, &vs, &ve))
+        xr_set(p, XR_TRANSFORM, d + vs, ve - vs);
+    if (decl_first(d, dlen, k_orig, 2, &vs, &ve))
+        xr_set(p, XR_TRANSFORM_ORIGIN, d + vs, ve - vs);
+    if (decl_first(d, dlen, k_shadow, 3, &vs, &ve))
+        xr_set(p, XR_BOX_SHADOW, d + vs, ve - vs);
+
+    /* The gradient is looked for in BOTH `background-image` and the
+     * `background` shorthand, because more than a third of them are written in
+     * the shorthand. Measured over tests/fixtures/cssweb by splitting the 102
+     * sheets into declarations and asking which values contain an unprefixed,
+     * non-repeating `linear-gradient(`: 134 in `background-image` and 77 in
+     * `background`, so 36% of them. Reading only the longhand would have lost
+     * those 77 silently -- the same mistake the grid-template shorthand
+     * comment above records, one property along. */
+    for (int k = 0; k < 2; k++) {
+        if (!find_decl(d, dlen, k_bg[k], &vs, &ve)) continue;
+        trim_val(d, &vs, &ve);
+        if (ve <= vs) continue;
+        if (top_commas(d + vs, ve - vs) != 1) continue;   /* multiple layers: refused */
+        int gs, ge;
+        if (!find_lgrad(d + vs, ve - vs, &gs, &ge)) continue;
+        xr_set(p, XR_BG_IMAGE, d + vs + gs, ge - gs);
+        break;                                  /* longhand wins over shorthand */
+    }
+}
+#endif
 
 static void parse_decls(const char *d, int dlen, struct xpatch *p)
 {
     memset(p, 0, sizeof *p);
     parse_grid_raw(d, dlen, p);
+    parse_xraw(d, dlen, p);
     if (decls_vish(d, dlen)) p->do_none = 1;
     if (decls_masked(d, dlen)) p->do_masked = 1;
     if (decls_radius(d, dlen, &p->px, &p->pct)) p->do_radius = 1;
@@ -746,6 +950,18 @@ static void apply_patch(struct node *n, const struct xpatch *p)
             st->grid_rawlen[g] = (unsigned short)l;
         }
     }
+    /* The paint spans, merged PER PROPERTY for the same reason grid's are: an
+     * element matching one rule that sets `transform` and another that sets
+     * `box-shadow` must end up with both. */
+    if (p->xr_any) {
+        for (int g = 0; g < XR__COUNT; g++) {
+            if (!p->xr[g]) continue;
+            int l = p->xr_len[g];
+            if (l > 0xffff) l = 0xffff;
+            st->xraw[g] = p->xr[g];
+            st->xrawlen[g] = (unsigned short)l;
+        }
+    }
     if (p->gx_set) st->grid_gap_x = p->gx;
     if (p->gy_set) st->grid_gap_y = p->gy;
     /* Logical properties, already resolved to physical edges by parse_logical.
@@ -959,7 +1175,7 @@ static int compile_sheet(const char *css, int len)
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
         if (p.do_none || p.do_masked || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
-            p.gr_any || xpatch_has_logical(&p))
+            p.gr_any || p.xr_any || xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
     g_compiled = 1;
@@ -1018,4 +1234,520 @@ void css_extra_apply(struct node *root, const char *css, int len)
         apply_uncompiled(root, css, len);       /* out of memory: scan as before */
     walk_inline(root);
     walk_anim(root);
+}
+
+/* ======================================================================
+ * The paint values, PARSED
+ *
+ * Everything above this line runs once per SHEET and captures spans. This
+ * half runs at the point of use -- where a font size and, for the box-relative
+ * parts, a box are in scope -- and turns a span into numbers. The split is the
+ * whole design and css.h's XR_* comment argues it; the short version is that
+ * `translateY(-50%)`, `0 .5em 1em` and a stop at `62.5%` have no numeric value
+ * until an element is named, and inventing one at capture time is exactly how
+ * `padding-top:56.25%` became fifty-six pixels.
+ *
+ * Integer only, string.h only. No libm, no allocator, no LibCSS, nothing from
+ * c/lib/gfx and nothing from css_interp.c -- see css.h on the eighteen host
+ * source lists that constraint comes from.
+ * ====================================================================== */
+
+struct vscan { const char *s; int n, i; };
+
+/* A CSS <number> in MILLI-UNITS (value * 1000), plus the unit token that
+ * followed it. Returns 1 on success and leaves *k past the unit.
+ *
+ * Milli rather than double, and the reason is a link line rather than taste
+ * (above). Three decimals is what every consumer here needs: an angle in
+ * millidegrees, a percentage in hundredths, a length rounded to whole pixels.
+ * DIGITS PAST THE THIRD ARE TRUNCATED, stated because `0.0005em` is
+ * representable in a sheet and is not representable here -- it truncates to
+ * zero, which is the right direction (a sub-milli length is a sub-pixel
+ * nothing) but is a loss and not a rounding.
+ *
+ * Scientific notation is NOT accepted. css_interp.c's scanner takes it because
+ * WPT asks it to; no declaration in tests/fixtures/cssweb writes one, and
+ * accepting `1e3px` here would only widen what this file claims to render. */
+static int scan_num(struct vscan *k, long long *out, char *unit, int umax)
+{
+    while (k->i < k->n && spc(k->s[k->i])) k->i++;
+    int st = k->i, neg = 0, seen = 0;
+    long long v = 0;
+    if (k->i < k->n && (k->s[k->i] == '+' || k->s[k->i] == '-')) {
+        neg = (k->s[k->i] == '-'); k->i++;
+    }
+    while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') {
+        if (v < 1000000) v = v * 10 + (k->s[k->i] - '0');
+        k->i++; seen = 1;
+    }
+    v *= 1000;
+    if (k->i < k->n && k->s[k->i] == '.') {
+        k->i++;
+        long long scale = 100;
+        while (k->i < k->n && k->s[k->i] >= '0' && k->s[k->i] <= '9') {
+            if (scale) { v += (k->s[k->i] - '0') * scale; scale /= 10; }
+            k->i++; seen = 1;
+        }
+    }
+    if (!seen) { k->i = st; return 0; }
+    int o = 0;
+    if (k->i < k->n && k->s[k->i] == '%') { k->i++; if (umax > 1) unit[o++] = '%'; }
+    else while (k->i < k->n && ((k->s[k->i] >= 'a' && k->s[k->i] <= 'z') ||
+                                (k->s[k->i] >= 'A' && k->s[k->i] <= 'Z'))) {
+        if (o < umax - 1) unit[o++] = (char)lc((unsigned char)k->s[k->i]);
+        k->i++;
+    }
+    unit[o] = 0;
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* Rounded division, half away from zero. Truncation here would put every
+ * converted length one step low and always in the same direction, which is the
+ * error the gfx rasterizer's own g_acc fix was about one layer down. */
+static int mdiv(long long num, long long den)
+{
+    if (den == 0) return 0;
+    if ((num < 0) != (den < 0)) return (int)((num - den / 2) / den);
+    return (int)((num + den / 2) / den);
+}
+
+/* milli-units + unit -> px. 0 if the unit is one we decline.
+ *
+ * ex and ch are fs/2, which is what css_interp.c's len_px() uses -- the same
+ * approximation in both, deliberately, because two different guesses at an
+ * x-height would make the same declaration mean two things depending on which
+ * file read it. Viewport units go through css_media_width/height, already this
+ * file's dependency (compile_sheet keys its cache on them). */
+static int milli_px(long long m, const char *u, int fs, int root, int *out)
+{
+    if (!u[0]) { *out = 0; return m == 0; }         /* unitless: only 0 is a length */
+    if (!strcmp(u, "px"))  { *out = mdiv(m, 1000); return 1; }
+    if (!strcmp(u, "em"))  { *out = mdiv(m * fs, 1000); return 1; }
+    if (!strcmp(u, "rem")) { *out = mdiv(m * root, 1000); return 1; }
+    if (!strcmp(u, "ex") || !strcmp(u, "ch")) { *out = mdiv(m * fs, 2000); return 1; }
+    if (!strcmp(u, "pt"))  { *out = mdiv(m * 96, 72 * 1000); return 1; }
+    if (!strcmp(u, "pc"))  { *out = mdiv(m * 16, 1000); return 1; }
+    if (!strcmp(u, "in"))  { *out = mdiv(m * 96, 1000); return 1; }
+    if (!strcmp(u, "cm"))  { *out = mdiv(m * 9600, 254 * 1000); return 1; }
+    if (!strcmp(u, "mm"))  { *out = mdiv(m * 9600, 2540 * 1000); return 1; }
+    if (!strcmp(u, "q"))   { *out = mdiv(m * 9600, 10160 * 1000); return 1; }
+    if (!strcmp(u, "vw"))  { *out = mdiv(m * css_media_width(), 100 * 1000); return 1; }
+    if (!strcmp(u, "vh"))  { *out = mdiv(m * css_media_height(), 100 * 1000); return 1; }
+    return 0;
+}
+
+/* Split [v,len) at top-level whitespace -- outside parens and quotes, so
+ * `rgba(0, 0, 0, .5)` and `rgb(0 0 0 / 50%)` are ONE token and not four.
+ * Returns the count, capped at `max`. */
+static int ws_tokens(const char *v, int len, int *ts, int *te, int max)
+{
+    int n = 0, i = 0, depth = 0;
+    char q = 0;
+    while (i < len && n < max) {
+        while (i < len && spc(v[i])) i++;
+        if (i >= len) break;
+        int s = i;
+        for (; i < len; i++) {
+            char c = v[i];
+            if (q) { if (c == q) q = 0; continue; }
+            if (c == 0x27 /* ' */ || c == '"') { q = c; continue; }
+            if (c == '(') depth++;
+            else if (c == ')') { if (depth) depth--; }
+            else if (spc(c) && depth == 0) break;
+        }
+        ts[n] = s; te[n] = i; n++;
+    }
+    return n;
+}
+
+/* The same, at top-level commas. */
+static int comma_parts(const char *v, int len, int *ps, int *pe, int max)
+{
+    int n = 0, i = 0, depth = 0, s = 0;
+    char q = 0;
+    for (; i < len && n < max; i++) {
+        char c = v[i];
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == 0x27 /* ' */ || c == '"') { q = c; continue; }
+        if (c == '(') depth++;
+        else if (c == ')') { if (depth) depth--; }
+        else if (c == ',' && depth == 0) { ps[n] = s; pe[n] = i; n++; s = i + 1; }
+    }
+    if (n < max) { ps[n] = s; pe[n] = len; n++; }
+    return n;
+}
+
+static void span_trim(const char *v, int *s, int *e)
+{
+    while (*s < *e && spc(v[*s])) (*s)++;
+    while (*e > *s && spc(v[*e - 1])) (*e)--;
+}
+
+/* ---------------------------------------------------------- transform-origin */
+enum { OK_NONE = 0, OK_LEFT, OK_RIGHT, OK_CENTER, OK_TOP, OK_BOTTOM };
+
+static int origin_kw(const char *v, int len)
+{
+    if (ieq(v, len, "left")) return OK_LEFT;
+    if (ieq(v, len, "right")) return OK_RIGHT;
+    if (ieq(v, len, "center")) return OK_CENTER;
+    if (ieq(v, len, "top")) return OK_TOP;
+    if (ieq(v, len, "bottom")) return OK_BOTTOM;
+    return OK_NONE;
+}
+
+/* One component -> (value, is_pct). A keyword's percentage is its axis
+ * position; `center` is 50% on either axis, which is why the keyword table is
+ * shared and the caller decides which axis it landed on. */
+static int origin_one(const char *v, int len, int fs, int root, int horiz,
+                      int *val, int *pct)
+{
+    int kw = origin_kw(v, len);
+    if (kw) {
+        if (kw == OK_CENTER) { *val = 5000; *pct = 1; return 1; }
+        if (horiz) {
+            if (kw == OK_LEFT) *val = 0;
+            else if (kw == OK_RIGHT) *val = 10000;
+            else return 0;
+        } else {
+            if (kw == OK_TOP) *val = 0;
+            else if (kw == OK_BOTTOM) *val = 10000;
+            else return 0;
+        }
+        *pct = 1;
+        return 1;
+    }
+    struct vscan k = { v, len, 0 };
+    long long m;
+    char u[8];
+    if (!scan_num(&k, &m, u, 8)) return 0;
+    while (k.i < k.n && spc(k.s[k.i])) k.i++;
+    if (k.i != k.n) return 0;                      /* trailing junk: not a value */
+    if (!strcmp(u, "%")) { *val = (int)(m / 10); *pct = 1; return 1; }
+    if (!milli_px(m, u, fs, root, val)) return 0;
+    *pct = 0;
+    return 1;
+}
+
+int css_origin_parse(const char *v, int len, int fs_px, int root_px, struct corigin *out)
+{
+    if (!out) return 0;
+    /* The CSS initial value, and it is filled in FIRST so that an absent or
+     * unreadable declaration still leaves a usable origin. (0,0) would rotate
+     * and scale every element about its top-left corner, which is a plausible
+     * picture and the wrong one -- and the caller could not tell, because a
+     * struct full of zeroes is what a failed parse looks like too. */
+    out->x = out->y = 5000;
+    out->x_pct = out->y_pct = 1;
+    if (!v || len <= 0) return 1;
+
+    int ts[4], te[4];
+    int n = ws_tokens(v, len, ts, te, 4);
+    if (n < 1 || n > 3) return 0;
+
+    if (n == 1) {
+        int kw = origin_kw(v + ts[0], te[0] - ts[0]);
+        /* `transform-origin: top` is a VERTICAL keyword, so it sets y and
+         * leaves x centred -- reading it into x would put the origin on the
+         * left edge of every element that writes it (7 of the corpus's 107
+         * unprefixed transform-origin declarations). */
+        if (kw == OK_TOP || kw == OK_BOTTOM)
+            return origin_one(v + ts[0], te[0] - ts[0], fs_px, root_px, 0, &out->y, &out->y_pct);
+        return origin_one(v + ts[0], te[0] - ts[0], fs_px, root_px, 1, &out->x, &out->x_pct);
+    }
+
+    int a = ts[0], al = te[0] - ts[0], b = ts[1], bl = te[1] - ts[1];
+    int ka = origin_kw(v + a, al);
+    /* `top left` is legal and means `left top`: when the first component is an
+     * exclusively-vertical keyword the pair is written y-then-x. 9 of the
+     * corpus's 107 unprefixed transform-origin declarations are written that
+     * way. */
+    if (ka == OK_TOP || ka == OK_BOTTOM) {
+        int t = a, tl = al;
+        a = b; al = bl; b = t; bl = tl;
+    }
+    if (!origin_one(v + a, al, fs_px, root_px, 1, &out->x, &out->x_pct)) return 0;
+    if (!origin_one(v + b, bl, fs_px, root_px, 0, &out->y, &out->y_pct)) return 0;
+    /* A third component is the Z origin. Parsed for validity and DISCARDED --
+     * this is a 2D painter, and silently accepting a value nothing reads is
+     * better than refusing a declaration whose 2D half we do render. */
+    if (n == 3) {
+        int z, zp;
+        if (!origin_one(v + ts[2], te[2] - ts[2], fs_px, root_px, 1, &z, &zp)) return 0;
+    }
+    return 1;
+}
+
+/* -------------------------------------------------------------- box-shadow */
+int css_shadow_parse(const char *v, int len, int fs_px, int root_px,
+                     struct cshadow *out, int max)
+{
+    if (!v || len <= 0 || !out || max <= 0) return 0;
+    int s = 0, e = len;
+    span_trim(v, &s, &e);
+    for (int i = s; i < e; i++) if (v[i] == '!') { e = i; break; }
+    span_trim(v, &s, &e);
+    if (e <= s) return 0;
+    if (ieq(v + s, e - s, "none")) return 0;
+
+    int ps[CS_MAXSHADOW + 1], pe[CS_MAXSHADOW + 1];
+    int np = comma_parts(v + s, e - s, ps, pe, CS_MAXSHADOW + 1);
+    int n = 0;
+    for (int i = 0; i < np && n < max; i++) {
+        int cs = ps[i] + s, ce = pe[i] + s;
+        span_trim(v, &cs, &ce);
+        if (ce <= cs) continue;
+        int ts[8], te[8];
+        int nt = ws_tokens(v + cs, ce - cs, ts, te, 8);
+        int lens[4], nl = 0, inset = 0, bad = 0;
+        const char *col = 0;
+        int collen = 0;
+        for (int t = 0; t < nt; t++) {
+            const char *tk = v + cs + ts[t];
+            int tl = te[t] - ts[t];
+            if (ieq(tk, tl, "inset")) { inset = 1; continue; }
+            struct vscan k = { tk, tl, 0 };
+            long long m;
+            char u[8];
+            int px = 0;
+            int isnum = scan_num(&k, &m, u, 8);
+            if (isnum) while (k.i < k.n && spc(k.s[k.i])) k.i++;
+            if (isnum && k.i == k.n && strcmp(u, "%") && milli_px(m, u, fs_px, root_px, &px)) {
+                if (nl < 4) lens[nl++] = px; else bad = 1;
+                continue;
+            }
+            /* Not a length and not `inset`: it is the colour. The FIRST such
+             * token wins -- CSS lets the colour sit at either end and a second
+             * one is a parse error, so taking the first and refusing the rest
+             * is the honest reading of a malformed value. */
+            if (!col) { col = tk; collen = tl; }
+            else bad = 1;
+        }
+        /* <length>{2,4} is required, and a negative blur is a parse error
+         * rather than a zero -- clamping it would paint a hard-edged shadow
+         * for a declaration a real browser drops entirely. */
+        if (bad || nl < 2 || nl > 4) continue;
+        if (nl >= 3 && lens[2] < 0) continue;
+        out[n].dx = lens[0];
+        out[n].dy = lens[1];
+        out[n].blur = nl >= 3 ? lens[2] : 0;
+        out[n].spread = nl >= 4 ? lens[3] : 0;
+        out[n].color = col;
+        out[n].colorlen = collen;
+        out[n].inset = inset;
+        n++;
+    }
+    return n;
+}
+
+/* ---------------------------------------------------------- linear-gradient */
+
+/* `to <side-or-corner>` -> a direction. 0 if the keywords are not a pair we
+ * recognise. */
+static int grad_to(const char *v, int len, struct cgradient *out)
+{
+    int ts[3], te[3];
+    int n = ws_tokens(v, len, ts, te, 3);
+    if (n < 2 || n > 3 || !ieq(v + ts[0], te[0] - ts[0], "to")) return 0;
+    int k1 = origin_kw(v + ts[1], te[1] - ts[1]);
+    int k2 = n == 3 ? origin_kw(v + ts[2], te[2] - ts[2]) : OK_NONE;
+    if (n == 2) {
+        out->dir = CG_DIR_ANGLE;
+        switch (k1) {
+        case OK_TOP:    out->angle_mdeg = 0;      return 1;
+        case OK_RIGHT:  out->angle_mdeg = 90000;  return 1;
+        case OK_BOTTOM: out->angle_mdeg = 180000; return 1;
+        case OK_LEFT:   out->angle_mdeg = 270000; return 1;
+        default: return 0;
+        }
+    }
+    int vert = (k1 == OK_TOP || k1 == OK_BOTTOM) ? k1
+             : ((k2 == OK_TOP || k2 == OK_BOTTOM) ? k2 : OK_NONE);
+    int horz = (k1 == OK_LEFT || k1 == OK_RIGHT) ? k1
+             : ((k2 == OK_LEFT || k2 == OK_RIGHT) ? k2 : OK_NONE);
+    if (!vert || !horz) return 0;
+    out->dir = CG_DIR_CORNER;
+    if (vert == OK_TOP) out->corner = (horz == OK_LEFT) ? CG_CORNER_TL : CG_CORNER_TR;
+    else                out->corner = (horz == OK_LEFT) ? CG_CORNER_BL : CG_CORNER_BR;
+    return 1;
+}
+
+/* A single <angle> component -> millidegrees, or 0 if it is not one. An angle
+ * ALWAYS carries a unit -- `linear-gradient(45, ...)` is a parse error and so
+ * is a bare 0 -- which is the same rule css_interp.c's ang_rad() states, and
+ * for the same reason: a unitless number is a valid <length>, never a valid
+ * <angle>, so accepting one here would take a declaration the cascade drops. */
+static int grad_angle(const char *v, int len, int *mdeg)
+{
+    struct vscan k = { v, len, 0 };
+    long long m;
+    char u[8];
+    if (!scan_num(&k, &m, u, 8)) return 0;
+    while (k.i < k.n && spc(k.s[k.i])) k.i++;
+    if (k.i != k.n) return 0;
+    long long d;
+    if (!strcmp(u, "deg")) d = m;
+    else if (!strcmp(u, "turn")) d = m * 360;
+    else if (!strcmp(u, "grad")) d = m * 9 / 10;
+    /* rad -> mdeg is m * (180/pi). 57295779/1000000 is 180/pi to eight
+     * figures; over the whole legal angle range that is under a thousandth of
+     * a degree of error, and it needs no libm. */
+    else if (!strcmp(u, "rad")) d = m * 57295779LL / 1000000LL;
+    else return 0;
+    d %= 360000;
+    if (d < 0) d += 360000;
+    *mdeg = (int)d;
+    return 1;
+}
+
+/* One stop position token -> (kind, value). */
+static int grad_pos(const char *v, int len, int fs, int root, int *kind, int *val)
+{
+    struct vscan k = { v, len, 0 };
+    long long m;
+    char u[8];
+    if (!scan_num(&k, &m, u, 8)) return 0;
+    while (k.i < k.n && spc(k.s[k.i])) k.i++;
+    if (k.i != k.n) return 0;
+    if (!strcmp(u, "%")) {
+#ifdef CSS_NEGCTL_GRAD_PCT_AS_PX
+        /* NEGATIVE CONTROL: a percentage stored as a pixel count. This is the
+         * shape of the bug this tree already paid for once (CLAUDE.md, M17:
+         * `padding-top:56.25%` became fifty-six pixels) -- nothing is zero,
+         * nothing overflows, every gradient still has its stops in a plausible
+         * order, and only the stops that are percentages land in the wrong
+         * place. */
+        *kind = CG_POS_PX; *val = (int)(m / 1000);
+#else
+        *kind = CG_POS_PCT; *val = (int)(m / 10);   /* hundredths of a percent */
+#endif
+        return 1;
+    }
+    if (!milli_px(m, u, fs, root, val)) return 0;
+    *kind = CG_POS_PX;
+    return 1;
+}
+
+int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
+                       struct cgradient *out)
+{
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    if (!v || len <= 0) return 0;
+    int s = 0, e = len;
+    span_trim(v, &s, &e);
+    for (int i = s; i < e; i++) if (v[i] == '!') { e = i; break; }
+    span_trim(v, &s, &e);
+
+    /* The function name, matched WHOLE. `repeating-linear-gradient`,
+     * `-webkit-linear-gradient`, `-moz-` and `-o-` all contain this name and
+     * none of them means what it means; a suffix match would render 49 calls
+     * in the corpus as something they are not (13 + 22 + 7 + 7, counted over
+     * the same 102 sheets as everything else here). */
+    int i = s;
+    while (i < e && ident((unsigned char)v[i])) i++;
+    if (!ieq(v + s, i - s, "linear-gradient")) return 0;
+    while (i < e && spc(v[i])) i++;
+    if (i >= e || v[i] != '(') return 0;
+    int bs = i + 1, depth = 0, be = -1;
+    for (int k = i; k < e; k++) {
+        if (v[k] == '(') depth++;
+        else if (v[k] == ')') { depth--; if (!depth) { be = k; break; } }
+    }
+    if (be < 0) return 0;
+
+    int ps[CG_MAXSTOP + 3], pe[CG_MAXSTOP + 3];
+    int np = comma_parts(v + bs, be - bs, ps, pe, CG_MAXSTOP + 3);
+    if (np < 1) return 0;
+    for (int k = 0; k < np; k++) { ps[k] += bs; pe[k] += bs; span_trim(v, &ps[k], &pe[k]); }
+
+    int first = 0;
+    out->kind = CG_LINEAR;
+    out->dir = CG_DIR_ANGLE;
+    out->angle_mdeg = 180000;                  /* the implicit direction: to bottom */
+    {
+        const char *c = v + ps[0];
+        int cl = pe[0] - ps[0];
+        int ts[3], te[3];
+        int nt = ws_tokens(c, cl, ts, te, 3);
+        if (nt >= 1 && ieq(c + ts[0], te[0] - ts[0], "to")) {
+            if (!grad_to(c, cl, out)) return 0;
+            first = 1;
+        } else if (nt >= 1 && ieq(c + ts[0], te[0] - ts[0], "in")) {
+            /* `in oklab` / `in hsl longer hue`: a colour interpolation space
+             * we do not have. Interpolating in sRGB instead is not a rounding
+             * difference -- it is visibly a different ramp through the middle
+             * -- so the declaration is refused and the background-color shows.
+             * 20 in the corpus. */
+            return 0;
+        } else if (grad_angle(c, cl, &out->angle_mdeg)) {
+            first = 1;
+        }
+    }
+
+    int n = 0;
+    for (int k = first; k < np; k++) {
+        const char *c = v + ps[k];
+        int cl = pe[k] - ps[k];
+        if (cl <= 0) return 0;
+        int ts[4], te[4];
+        int nt = ws_tokens(c, cl, ts, te, 4);
+        if (nt < 1 || nt > 3) return 0;
+        /* THE COLOUR TOKEN MUST NOT BE A NUMBER, and two different malformed
+         * values arrive that way -- both of which would otherwise become a
+         * stop with an INVENTED colour rather than a refusal:
+         *
+         *   `#fff, 40%, #000`  a bare percentage between two colours is a
+         *                      COLOUR HINT: it moves the halfway point of the
+         *                      ramp without adding a colour. Read as a stop it
+         *                      needs a colour nobody wrote; dropped silently it
+         *                      moves every colour after it.
+         *   `linear-gradient(45, #fff, #000)`
+         *                      a unitless first component is a malformed angle
+         *                      (an <angle> always carries a unit), so it falls
+         *                      through to the stop loop. Read as a colour it
+         *                      makes a THREE-stop gradient whose first stop is
+         *                      whatever the colour parser does with "45" --
+         *                      which is nothing, so the first band comes out
+         *                      the previous colour. Found by the gate: this
+         *                      row was written as a refusal and returned 1.
+         *
+         * No CSS colour begins with a digit, a sign or a dot, so "the whole
+         * token scans as a number" is an exact test rather than a heuristic. */
+        {
+            struct vscan nk = { c + ts[0], te[0] - ts[0], 0 };
+            long long nm; char nu[8];
+            if (scan_num(&nk, &nm, nu, 8)) {
+                while (nk.i < nk.n && spc(nk.s[nk.i])) nk.i++;
+                if (nk.i == nk.n) return 0;
+            }
+        }
+        int kind1 = CG_POS_AUTO, val1 = 0, kind2 = CG_POS_AUTO, val2 = 0;
+        if (nt >= 2 && !grad_pos(c + ts[1], te[1] - ts[1], fs_px, root_px, &kind1, &val1)) return 0;
+        if (nt == 3 && !grad_pos(c + ts[2], te[2] - ts[2], fs_px, root_px, &kind2, &val2)) return 0;
+        if (n >= CG_MAXSTOP) return 0;
+        out->stop[n].color = c + ts[0];
+        out->stop[n].colorlen = te[0] - ts[0];
+        out->stop[n].pos_kind = kind1;
+        out->stop[n].pos = val1;
+        n++;
+        /* `red 10% 20%` is the two-stop shorthand: the same colour at both
+         * positions, i.e. a hard band. Expanded here rather than making every
+         * consumer know the shorthand, which keeps a stop list a stop list. */
+        if (nt == 3) {
+            if (n >= CG_MAXSTOP) return 0;
+            out->stop[n] = out->stop[n - 1];
+            out->stop[n].pos_kind = kind2;
+            out->stop[n].pos = val2;
+            n++;
+        }
+    }
+    /* Fewer than two stops is not a gradient -- `linear-gradient(red)` is a
+     * parse error, and the 43 one-component values in the corpus are all
+     * var() references that survived expansion unresolved. Refusing them
+     * leaves the background-color, which is what the page falls back to. */
+    if (n < 2) return 0;
+    out->nstop = n;
+    return 1;
 }

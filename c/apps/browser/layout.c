@@ -516,6 +516,30 @@ static void rotate_item_back(int at)
 static int any_border(const struct cstyle *st)
 { return st->border_w[0] || st->border_w[1] || st->border_w[2] || st->border_w[3]; }
 
+/* Does this element put INK in its border box -- i.e. is there anything for
+ * browser_paint.c to draw there?
+ *
+ * `st->has_bg || any_border(st)` was that question, spelled out at nine sites,
+ * and it stopped being the whole of it when the painter learned `box-shadow`
+ * and `linear-gradient`. Both are absent from the vendored LibCSS property
+ * table, so neither reaches `has_bg` or `border_w`: an element whose ONLY
+ * decoration is `background: linear-gradient(...)` -- every hero section on
+ * the web -- or `box-shadow: 0 0 0 2px` on a transparent input -- every focus
+ * ring -- generated no IT_RECT at all, so the painter never saw it and the
+ * declaration could not fail visibly. It simply was not there.
+ *
+ * The two spans are the ONLY thing added. `has_bg` deliberately stays false on
+ * the emitted item, so the painter's existing background-colour path is
+ * untouched and the gradient/shadow code is what fills the box -- which is
+ * also what keeps a refused gradient (radial, conic, prefixed) falling back to
+ * "no background" rather than to a fabricated one. */
+static int st_inked(const struct cstyle *st)
+{
+    if (!st) return 0;
+    return st->has_bg || any_border(st) ||
+           st->xraw[XR_BG_IMAGE] != 0 || st->xraw[XR_BOX_SHADOW] != 0;
+}
+
 /* ---- box model ----
  * Every width/height below is a BORDER-BOX size: the rectangle the background
  * and borders are painted into, and the one CSS `box-sizing:border-box` names
@@ -959,7 +983,7 @@ static struct ibox *g_ibox;           /* innermost open inline element */
 static int ibox_wanted(const struct cstyle *st)
 {
     if (!st) return 0;
-    return st->has_bg || any_border(st) ||
+    return st_inked(st) ||
            st->pl || st->pr || st->pt || st->pb ||
            st->ml > 0 || st->mr > 0;
 }
@@ -978,7 +1002,7 @@ static void ibox_emit(struct ibox *b, int x1, int y, int last)
      * inline with padding but no background still has a border box, and
      * layout_node_box() unions an element's fragments. */
     box_close(box_open(b->node, b->x0, top, w, h), b->x0, top, w, h);
-    if (!st->has_bg && !any_border(st)) { b->item0 = nitem; return; }
+    if (!st_inked(st)) { b->item0 = nitem; return; }
     struct item *it = additem(IT_RECT, b->node);
     if (!it) return;
     fill_rect_item(it, st, b->x0, top, w);
@@ -1510,7 +1534,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         int bx = f->bx0 + (st && st->ml > 0 ? st->ml : 0);
         int bw = block_width(st, avail);
         int bgidx = -1;
-        if (st && (st->has_bg || any_border(st))) {
+        if (st && st_inked(st)) {
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, f->y, bw); }
         }
@@ -2053,7 +2077,7 @@ static void place_float(struct node *c, struct cstyle *st, int bx0, int bx1, int
         ch = fh;
     } else {
         int bgidx = -1;
-        if (st->has_bg || any_border(st)) {
+        if (st_inked(st)) {
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, fx, top, fw); }
         }
@@ -2301,7 +2325,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
             if (st->has_z) g_z = st->z_index;
             int omark = nitem, obmark = nbox;
             int bgidx = -1;
-            if (st->has_bg || any_border(st)) {
+            if (st_inked(st)) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, ox, oy, ow); }
             }
@@ -2480,7 +2504,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
             if (st->has_z && st->position != POS_STATIC) g_z = st->z_index;
             if (st->list_item) emit_list_marker(c, st, bx + cx_off(st), top, x);
             int bgidx = -1;
-            if (st->has_bg || any_border(st)) {
+            if (st_inked(st)) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, top, bw); }
             }
@@ -2843,7 +2867,7 @@ static int flex_place(struct flexslot *f, int px, int py, int iw, int forced_h, 
     /* z-index applies to a flex ITEM even when it is not positioned -- that is
      * the one place CSS lets an unpositioned box make a stacking context. */
     if (st->has_z) g_z = st->z_index;
-    if (st->has_bg || any_border(st)) {
+    if (st_inked(st)) {
         struct item *bg = additem(IT_RECT, f->n);
         if (bg) { f->bgidx = (int)(bg - items); fill_rect_item(bg, st, px, py, iw); }
     }
@@ -3657,7 +3681,7 @@ static int layout_grid(struct node *n, int x, int y, int w)
         cw = clamp_w(st, cw, colw[col]);
         int top = cy + (st && st->mt > 0 ? st->mt : 0);
         int bgidx = -1;
-        if (st && (st->has_bg || any_border(st))) {
+        if (st && st_inked(st)) {
             struct item *bg = additem(IT_RECT, c);
             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
         }
@@ -3786,7 +3810,7 @@ static int layout_table(struct node *t, int x, int y, int w)
             int ml = st && st->ml > 0 ? st->ml : 0;
             int cx = rx + ml, top = cy + (st && st->mt > 0 ? st->mt : 0);
             int bgidx = -1;
-            if (st && (st->has_bg || any_border(st))) {
+            if (st && st_inked(st)) {
                 struct item *bg = additem(IT_RECT, c);
                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
             }

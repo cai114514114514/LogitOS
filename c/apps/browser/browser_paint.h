@@ -39,6 +39,42 @@ void browser_paint_text_dump(void);
  * replaced it. browser.c arms it; nothing else should. */
 void browser_paint_text_log(int on);
 
+/* ---- WHAT THE PAINTER REFUSED, counted ----------------------------------
+ *
+ * Three visual features landed with a named, measured limit rather than an
+ * approximation, and a limit nobody can query is indistinguishable from a bug
+ * in whatever the page put there. Same reasoning as gfx_mask_refused(): a
+ * degradation is acceptable only once it is a number someone can read.
+ *
+ * Both are cumulative for the process's life and never reset -- a harness
+ * takes a reading before and after, exactly as gfx_mask_stats() is used.
+ *
+ *   inset_blur_skipped   blurred `inset` box-shadows not painted. The inward
+ *                        falloff needs a tile whose ramp runs the other way,
+ *                        and inverting GFX_MASK_SHADOW does not produce it
+ *                        (255*(2t-t^2) against the 255*t^2 wanted). 22 of the
+ *                        320 literal shadows in tests/fixtures/cssweb.
+ *   blur_tightened       shadows whose blur was shrunk to fit the engine's
+ *                        largest corner tile. A tighter shadow, never a
+ *                        missing one.
+ *   xf_unbounded         rotated/skewed boxes whose transformed bounding box
+ *                        was past XF_MAX device pixels a side; drawn at that
+ *                        bounding box, unrotated.
+ *   xf_unrotated         non-rect items (text, images) under a rotation:
+ *                        placed at their transformed box and drawn level,
+ *                        because the ABI has no rotated text or blit call.
+ *   rclip applied/refused
+ *                        boxes painted through the ROUNDED overflow clip
+ *                        (gfx_fill_mask_clipped), and boxes whose clipper's
+ *                        radius was past the same bound and fell back to the
+ *                        rectangular clip. `applied` is the useful one in the
+ *                        other direction: it is how a gate proves the path
+ *                        clip RAN rather than that a clipped box painted.
+ */
+void browser_paint_shadow_stats(int *inset_blur_skipped, int *blur_tightened);
+void browser_paint_xform_stats(int *xf_unbounded, int *xf_unrotated);
+void browser_paint_rclip_stats(int *applied, int *refused);
+
 /* Hit-test a viewport-local point; on a link, copy its href (NUL-terminated)
  * into buf (<= max) and return 1, else 0. */
 int  browser_hittest(int x, int y, int scroll, char *buf, int max);

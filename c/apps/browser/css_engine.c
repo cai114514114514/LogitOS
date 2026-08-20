@@ -7,10 +7,13 @@
 #include "css_interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
 
 /* ...and the one function taken from it is WEAK, for the reason the block at
- * js_dom_dirty() below gives about that one. THIRTEEN tests/*.mk fragments
- * link css_engine.c and none of them link css_interp.c; a hard reference would
- * turn a CSS.supports improvement into thirteen link failures in other lines'
- * files. Weak and guarded, so a build without the transform parser answers
+ * js_dom_dirty() below gives about that one. Re-measured 2026-08-20 with the
+ * Makefile continuations JOINED (this line read "thirteen", and CLAUDE.md
+ * records four in-tree tools that got that wrong the same way): FIFTY-ONE
+ * source lists name css_engine.c and do NOT name css_interp.c -- 24 in the
+ * Makefile and 27 across nineteen fragments under tests/. A hard reference
+ * would turn a CSS.supports improvement into fifty-one link failures in other
+ * lines' files. Weak and guarded, so a build without the transform parser answers
  * exactly what it answered before. Spelled __attribute__((__weak__)) and not
  * the lowercase `weak`, which is a macro in the force-included features.h. */
 extern int ci_transform_parse(const char *s, int len, double fs_px,
@@ -753,6 +756,22 @@ static int vh_px(void) { return g_vh ? g_vh : 540; }
  * been styled (see style_node); 16 until then, which is also what CSS says a
  * `rem` on the root element itself means. */
 static int g_root_px = 16;
+
+/* The `root_px` argument of css_gradient_parse / css_shadow_parse /
+ * css_origin_parse, and the only way to answer it from outside this file.
+ *
+ * WITHOUT THIS THE THREE PARSERS ARE UNUSABLE FOR `rem`, which is not a corner
+ * case: browser_paint.c holds a cstyle (so it has font_px for `em`) and has no
+ * route at all to the root's font size, because g_root_px is static and the
+ * value is not on any cstyle -- it is a property of the DOCUMENT. The two
+ * alternatives were both worse. Walking to the root node and reading its
+ * cstyle.font_px duplicates a fact this file already computes at two sites
+ * with real logic (style_node's is_root branch and the js_dom re-style path),
+ * so the copy drifts the first time either changes. Passing a constant 16 is
+ * the plausible-wrong-number failure this whole line exists to avoid: every
+ * page that sets `html{font-size:62.5%}` -- the 10px-root idiom -- would
+ * resolve every rem in a shadow, an origin or a gradient stop at 1.6x. */
+int css_root_px(void) { return g_root_px; }
 
 /* CSS pixels per unit, in css_fixed.
  *

@@ -59,6 +59,111 @@ enum { GR_TEMPL_COLS = 0, GR_TEMPL_ROWS, GR_TEMPL_AREAS,
        GR_JUSTIFY_ITEMS, GR_JUSTIFY_SELF,
        GR__COUNT };
 
+/* ---- the PAINT declarations LibCSS drops on the floor --------------------
+ *
+ * `transform`, `transform-origin`, `box-shadow` and every gradient value are
+ * absent from our vendored LibCSS's property table -- not mis-parsed, ABSENT
+ * (checked: the only `transform` in
+ * third_party/css/libcss/src/select/select_config.py is `text_transform`, and
+ * there is no gradient value type at all). So the cascade cannot carry them
+ * and css_extra.c's raw-declaration scan is their only producer, exactly as it
+ * is for the grid properties above.
+ *
+ * WHY TEXT AND NOT VALUES, which is the whole design and has a reason the grid
+ * table did not: css_extra compiles the author sheet ONCE PER SHEET, not once
+ * per element. At capture time there is no font-size and no box, so
+ * `box-shadow: 0 .5em 1em`, `translateY(-50%)` and a colour stop at `20px`
+ * cannot be turned into numbers there -- and a capture that quietly resolved
+ * them against some default would produce a PLAUSIBLE WRONG NUMBER, which is
+ * the exact shape of the padding-percentage bug this tree already paid for
+ * (CLAUDE.md, M17: `padding-top:56.25%` stored as fifty-six pixels). The
+ * parsers below take the font size, and the ones whose answer depends on the
+ * box hand the box-dependent part back to the caller unresolved.
+ *
+ * Storage cost, measured with a sizeof probe: `struct cstyle` 616 -> 656
+ * bytes, +6.5%, for four pointers and four lengths -- and the probe also
+ * reports offsetof(xraw) == 616, so those 40 bytes are the whole of the
+ * difference and none of it is padding. The rejected alternative was typed
+ * fields: `struct cgradient` alone measures 216 bytes, so the three parsed
+ * forms would have cost 264 on EVERY element to serve the handful per page
+ * that carry one (385 unprefixed, non-repeating linear-gradient() calls across
+ * the 102 sheets of tests/fixtures/cssweb, under four per sheet).
+ *
+ * LIFETIME is grid_raw[]'s, unchanged: these point into css_extra.c's private
+ * copy of the author sheet or into a node's own style="" attribute, are NOT
+ * NUL-terminated, and nothing frees them from here. APPEND ONLY. */
+enum { XR_TRANSFORM = 0,        /* the <transform-list>, or `none`           */
+       XR_TRANSFORM_ORIGIN,     /* 1-3 components, css_origin_parse          */
+       XR_BG_IMAGE,             /* the `linear-gradient(...)` call, verbatim */
+       XR_BOX_SHADOW,           /* the whole shadow list                     */
+       XR__COUNT };
+
+/* ---- linear-gradient, parsed ----
+ *
+ * `pos` is in HUNDREDTHS OF A PERCENT of the gradient line, the same unit and
+ * for the same reason as cstyle's pt0..pl0: `linear-gradient(#fff 62.5%,...)`
+ * is a real declaration and 62 is a different pixel.
+ *
+ * The COLOUR IS A SPAN, not an RGBA, and that is measured rather than lazy.
+ * This tree's CSS colour parser is `img_css_color()` in c/lib/image/svg.c --
+ * one evaluator for the question, as that file argues at length -- but svg.c
+ * makes 76 gfx_* calls since the G3 rasterizer merge, so a call to it from the
+ * style layer drags the whole 2D engine into the EIGHTEEN host source lists
+ * that name css_extra.c today and carry neither -- 4 in the Makefile and 14
+ * across nine fragments under tests/, counted with the continuations JOINED
+ * (see CLAUDE.md on why they must be; this number read fourteen until the
+ * joiner was fixed, which is that same trap one more time). Writing a second
+ * colour parser here instead is the failure svg.c's own comment names: two
+ * evaluators for one question do not fail by being approximate, they fail by
+ * DISAGREEING. So the span travels and the consumer -- browser_paint.c, which
+ * already links both -- calls img_css_color. It is also the only reading that
+ * can resolve `currentColor` (782 uses across the corpus, of which 1 is a
+ * gradient stop), which needs the element's own colour and is therefore not
+ * answerable at capture time either. */
+enum { CG_NONE = 0, CG_LINEAR };
+enum { CG_DIR_ANGLE = 0, CG_DIR_CORNER };
+/* `to bottom right` is NOT a fixed angle: CSS Images 3 puts the gradient line
+ * perpendicular to the box's OTHER diagonal, so it depends on w/h. Kept as a
+ * keyword and resolved by whoever holds the box. */
+enum { CG_CORNER_TL = 0, CG_CORNER_TR, CG_CORNER_BR, CG_CORNER_BL };
+enum { CG_POS_AUTO = 0, CG_POS_PCT, CG_POS_PX };
+
+#define CG_MAXSTOP 8            /* == GFX_MAX_STOPS; the engine's cap, not ours */
+
+struct cgstop {
+    const char *color; int colorlen;    /* span into the sheet; see above     */
+    int pos_kind;                       /* CG_POS_*                           */
+    int pos;                            /* hundredths of a percent, or px     */
+};
+
+struct cgradient {
+    int kind;                           /* CG_NONE / CG_LINEAR                */
+    int dir;                            /* CG_DIR_ANGLE / CG_DIR_CORNER       */
+    int corner;                         /* CG_CORNER_* when dir == CORNER     */
+    int angle_mdeg;                     /* MILLIdegrees, CSS convention:
+                                         * 0 = to top, 90000 = to right,
+                                         * clockwise. Normalised to [0,360000) */
+    int nstop;
+    struct cgstop stop[CG_MAXSTOP];
+};
+
+/* ---- box-shadow, parsed ---- */
+#define CS_MAXSHADOW 4
+
+struct cshadow {
+    int dx, dy, blur, spread;           /* px, already resolved from em/rem   */
+    const char *color; int colorlen;    /* span, or NULL for "use the text
+                                         * colour", which is what CSS says an
+                                         * omitted shadow colour means        */
+    int inset;
+};
+
+/* ---- transform-origin, parsed ---- */
+struct corigin {
+    int x, y;                           /* px, or hundredths of a percent     */
+    int x_pct, y_pct;                   /* 1 when the matching field is a %   */
+};
+
 /* Computed style for one node. Lengths are px unless a *_pct flag says percent.
  *
  * A length that came from calc() can be BOTH: `w_pct` set with `width` the
@@ -217,6 +322,15 @@ struct cstyle {
      * reading freed text. */
     const char    *grid_raw[GR__COUNT];
     unsigned short grid_rawlen[GR__COUNT];
+
+    /* ---- the PAINT declarations, also RAW ----
+     * transform / transform-origin / the background's linear-gradient() /
+     * box-shadow. See the XR_* comment near the top of this file for why they
+     * are text, what that costs, and the lifetime rule they share with
+     * grid_raw[] above. NULL means the property was never declared, which is
+     * the correct answer for nearly every element. */
+    const char    *xraw[XR__COUNT];
+    unsigned short xrawlen[XR__COUNT];
 };
 
 /* ---------------- CSSOM: the property surface ----------------
@@ -452,6 +566,113 @@ void css_extra_apply(struct node *root, const char *page_css, int page_len);
 /* Test seam: rules in the last COMPILED sheet (see css_extra.c), or -1 if the
  * compile fell back to scanning the text. */
 int  css_extra_rules(void);
+
+/* ---- the paint-value parsers (css_extra.c) -------------------------------
+ *
+ * Each one takes the SPAN css_extra captured into cstyle.xraw[] and turns it
+ * into values. They are deliberately not called at capture time: see the XR_*
+ * comment at the top of this file. All three are integer-only and depend on
+ * nothing outside string.h, which is what keeps css_extra.c linkable into the
+ * eighteen host source lists that name it today without dragging in libm, the
+ * 2D engine or css_interp.c.
+ *
+ * `fs_px` is the element's font-size and `root_px` the root element's, for em
+ * and rem. The first is `cstyle.font_px` on the same style the span came from;
+ * the second is NOT on any cstyle -- it is a property of the document, so it
+ * comes from css_root_px() below. Passing a constant 16 for it is wrong on
+ * every page using the `html{font-size:62.5%}` 10px-root idiom, and wrong by
+ * 1.6x rather than visibly.
+ */
+
+/* The root element's font-size in px, for the `root_px` argument above.
+ * Defined in css_engine.c, which is the only thing that knows it; 16 before a
+ * root has been styled, which is also what CSS says a rem on the root element
+ * itself means. */
+int  css_root_px(void);
+
+/* linear-gradient(...) -> a gradient. Returns 1 on success, 0 if the value is
+ * not one we render -- and 0 must mean "paint the background-color as before",
+ * never "paint something approximate". WHAT IS REFUSED, and why each:
+ *
+ * The counts are calls in tests/fixtures/cssweb's 102 sheets, each spelling
+ * matched WHOLE (a plain `linear-gradient(` count is 436 and 51 of those are
+ * one of the spellings below wearing it as a suffix, which is the mistake the
+ * whole-name match downstream exists to avoid).
+ *
+ *   repeating-linear-gradient()  a different tiling rule; ignoring the
+ *                                repetition draws one band and calls it a
+ *                                gradient. 13.
+ *   radial-gradient()            gfx_paint_radial exists and this parser does
+ *                                not produce it yet; 72 (+1 repeating-), named
+ *                                here so the next person sees the gap.
+ *   conic-gradient()             the engine has no conic paint at all. 40
+ *                                (+1 repeating-).
+ *   -webkit-linear-gradient()    the PREFIXED angle convention is DIFFERENT
+ *                                (0deg = to right, counter-clockwise), so
+ *                                accepting it with the modern rule rotates
+ *                                every one of them 90 degrees. 22, plus 7
+ *                                `-moz-` and 7 `-o-` that share its rule, and
+ *                                28 of the older two-point `-webkit-gradient()`
+ *                                whose grammar is not this grammar at all.
+ *   more than one background layer
+ *                                the layers composite, and painting only the
+ *                                first is a guess about what is under it.
+ *   `in oklab` / `in hsl ...`    a colour interpolation space we do not have;
+ *                                interpolating in sRGB instead is visibly
+ *                                different through the middle of the ramp. 20.
+ *   a colour hint (`#fff, 40%, #000`)
+ *                                a bare percentage between two colours moves
+ *                                the 50% point; treating it as a stop with no
+ *                                colour would invent one.
+ *   more than CG_MAXSTOP stops   1 of 385 in the corpus.
+ */
+int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
+                       struct cgradient *out);
+
+/* box-shadow -> up to `max` shadows, in paint order (CSS paints the FIRST
+ * listed shadow on top). Returns how many were written, 0 for `none` or for a
+ * value we could not read.
+ *
+ * BLUR IS CAPTURED FOR A PAINTER THAT WILL APPROXIMATE IT, and the
+ * approximation is named rather than left to be discovered: c/lib/gfx has no
+ * general blur (CLAUDE.md's phase-2 plan still lists groups/blend/blur as
+ * unbuilt) but it does have gfx_corner_shadow + gfx_shadow_falloff, a
+ * quadratic ease-out from 255 at the caster's edge to 0 at `blur` -- which is
+ * what c/apps/gui/aui.c already paints 45 shadows a frame with. That is NOT a
+ * Gaussian: CSS defines box-shadow's blur as a Gaussian of standard deviation
+ * blur/2, so the falloff curve differs in the middle of the ramp and the
+ * shadow reads slightly harder. The alternative -- refusing to paint a blurred
+ * shadow at all -- loses 372 of the corpus's 1,051 individual shadows, 35%.
+ * (This comment said 90% until the number was actually taken, and the gap is
+ * instructive rather than embarrassing: the modern idiom is the ZERO-blur ring
+ * `0 0 0 1px #ccc`, so two thirds of real shadows need no blur at all and the
+ * approximation is on a smaller hook than it looked. It is still the right
+ * trade -- the desktop has shipped this same falloff on every window since
+ * M8.) Spread is exact (it is a geometry change, not a filter).
+ *
+ * Two more shapes, measured over the same 863 declarations, that a caller
+ * should know are NOT fully served:
+ *   - 66 declarations list MORE than CS_MAXSHADOW shadows; the first four are
+ *     returned and the rest are dropped. Layered shadows are a soft-stack
+ *     idiom, so dropping the tail loses the widest and faintest layers, which
+ *     is the least-bad end to lose.
+ *   - 3 declarations omit the colour entirely (`color` comes back NULL, which
+ *     CSS says means the element's own text colour). Three, not none: the
+ *     path is real and almost never taken, so it is the one a painter is most
+ *     likely to leave unhandled and never notice. */
+int css_shadow_parse(const char *v, int len, int fs_px, int root_px,
+                     struct cshadow *out, int max);
+
+/* transform-origin -> an origin. Returns 1 on success. The CSS initial value
+ * is `50% 50%`, which is what `out` is filled with when the property is absent
+ * -- so a caller with no XR_TRANSFORM_ORIGIN span passes NULL/0 and still gets
+ * a correct origin rather than (0,0), which would rotate every element about
+ * its top-left corner. The z component is parsed and DISCARDED (we are 2D).
+ * Percentages stay percentages: they resolve against the element's own border
+ * box, which this layer does not have -- the same rule as everything else in
+ * this section. */
+int css_origin_parse(const char *v, int len, int fs_px, int root_px,
+                     struct corigin *out);
 /* Test seams for the two "do this once per sheet, not once per mutation"
  * caches: how many times the author stylesheet has been handed to LibCSS to
  * PARSE, and how many times css_extra has COMPILED it. Both are cumulative for
