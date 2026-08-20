@@ -7,11 +7,78 @@
  * through, and it ships under dozens of vendor:device IDs -- so it is matched by
  * PCI CLASS (01/06/01), never by ID.
  *
- * Scope: one command at a time per port (slot 0 only), polled, no NCQ, no
- * interrupts, no port multipliers, no ATAPI. That matches how logitfs uses the
- * block layer (strictly synchronous bread/bwrite) and it is the same shape as
- * virtio_blk.c and nvme.c, so the waiting discipline below is the one the rest
- * of the kernel already assumes.
+ * Scope: one command at a time per port (slot 0 only), polled, no interrupts,
+ * no port multipliers, no ATAPI. The block layer grew submit/poll on
+ * 2026-08-20 (blkdev.h) and this driver went with it, so "one at a time" is now
+ * an interlock rather than a call that cannot return.
+ *
+ * ---------------------------------------------------------------------------
+ * NCQ: WHY THERE IS STILL ONLY SLOT 0, AND THE NUMBER THAT DECIDES IT
+ *
+ * This line used to read "no NCQ" with no reason attached, which is the shape
+ * of omission that gets read as "nobody got to it yet". It was asked for
+ * directly on 2026-08-20 -- READ/WRITE_FPDMA_QUEUED, up to 32 tags through
+ * SActive -- and it is not here because the arithmetic says it would move
+ * nothing on this machine and could only make it slower. The arithmetic, not
+ * the reluctance, is the part worth keeping:
+ *
+ *   A queue needs something to put in it, and there are exactly two sources.
+ *
+ *   1. TWO REQUESTS AT ONCE ON ONE MEDIUM. There are none. blkdev.h's
+ *      interlock is explicit -- "ONE IN FLIGHT PER MEDIUM" -- and blk_submit()
+ *      drives an already-in-flight request to completion before starting
+ *      another. That interlock is not incidental: `make test-blk-async-negctl`
+ *      deletes it and exactly 3 of 75 checks redden, which is the only witness
+ *      there is that two commands never sit on the medium at once. So queue
+ *      depth from this source is 1, by construction, and lifting it is a
+ *      change to the block layer's contract and to every driver under it --
+ *      a work order, not a flag in this file.
+ *
+ *   2. ONE REQUEST SPLIT INTO SEVERAL COMMANDS. One command here already
+ *      describes AHCI_PRDT * AHCI_PRD_MAX = 8 x 4 MiB = 32 MiB. The largest
+ *      transfer anything in this tree asks for is a coalesced bcache run of a
+ *      whole file, and the largest file is the 12 MiB ceiling measured in
+ *      CLAUDE.md -- 24,576 sectors against the 65,535 this driver will put in
+ *      one command (the PRDT would carry 65,536; the LBA48 sector-count field
+ *      is the tighter of the two). So a request is ONE command, and
+ *      ahci_count_cmd() below reports it rather than asserting it: if that
+ *      line never prints, no request on this boot ever needed a second
+ *      command and there was never a second tag to issue. The host gate pins
+ *      the same property directly -- tests/unit/blkreq_test.c case 12 drives
+ *      a request through a driver whose bound is this one's 65,535 and
+ *      requires exactly ONE command; forcing the bound below the request
+ *      reddens that check and its sector-count sibling, watched, 2 of 75.
+ *
+ *      MEASURED, 2026-08-20, and this is the number the whole argument turns
+ *      on: a full boot off an AHCI root (ich9-ahci, `make test-ahci` raw --
+ *      mount, mount-time fsck, the desktop, a file read back byte-correct)
+ *      printed that line ZERO times. Every request on the disk was one
+ *      command. A 32-deep queue would have held exactly one entry, all boot.
+ *
+ *   And making source 2 produce work on purpose -- issuing a big read as eight
+ *   4 MiB commands so the tags have something to hold -- is a REGRESSION here,
+ *   measured: an AHCI command costs a flat ~110 us for 8 sectors and 288 us
+ *   for 2048, i.e. a fixed per-command charge that dominates. Commit f8d2ca4
+ *   is the whole record of that: reading a 3 MB app as 741 commands cost
+ *   97.6 ms and as 9 commands costs 1.35 ms. Splitting to fill a queue pays
+ *   that charge back N times to overlap latency QEMU does not have.
+ *
+ * WHAT IS HERE INSTEAD is the half that has a consumer today: CAP.SNCQ and
+ * CAP.NCS are read and PRINTED, so the question "does this controller support
+ * queuing, and how deep" has an answer on the boot log for the first time; and
+ * the per-request command count is counted, so whoever picks the work order up
+ * has the number that says whether it would have bought anything. Neither
+ * costs a command.
+ *
+ * THE TRAP, recorded for that reader because it is the expensive part and it
+ * is not in the register list: an NCQ completion is NOT a per-command
+ * interrupt. You learn what finished by reading SActive and diffing against
+ * what you issued, and a task-file error takes the WHOLE queue down at once --
+ * every outstanding tag is aborted, and the device refuses further queued
+ * commands until READ LOG EXT page 0x10 has been read to find which tag
+ * failed. An implementation that skips that log read appears to work on a
+ * healthy disk and silently loses the other 31 commands on a sick one, which
+ * is worse than not queuing at all.
  *
  * DMA memory: one 4 KiB page per port, identity-mapped like every kernel page
  * here, laid out to satisfy AHCI's alignment rules by construction --
@@ -70,6 +137,7 @@ void *memset(void *, int, size_t);
 #define GHC_AE     (1u << 31)   /* AHCI enable */
 
 #define CAP_S64A   (1u << 31)
+#define CAP_SNCQ   (1u << 30)   /* native command queuing supported */
 #define CAP_SSS    (1u << 27)   /* staggered spin-up supported */
 
 #define BOHC_BOS   (1u << 0)    /* BIOS owned semaphore */
@@ -136,6 +204,22 @@ void *memset(void *, int, size_t);
 #define SPIN_INIT   20000000L
 #define SPIN_CMD    200000000L
 
+/* One device command. The block layer's request is chunked into a sequence of
+ * these; IDENTIFY is one on its own. It lives in the PORT rather than in the
+ * caller's frame because a command now outlives the call that issued it -- a
+ * retry after a task-file error re-issues the SAME spec, and the poll that
+ * performs the retry may be several returns away from the submit. */
+struct ahci_cmdspec {
+    uint8_t  command;
+    int      write;
+    uint64_t lba;
+    uint32_t sectors;
+    void    *buf;
+    uint32_t bytes;
+};
+
+#define AHCI_RETRIES 8
+
 struct ahci_port {
     int      index;
     volatile uint8_t *reg;          /* port register block */
@@ -144,6 +228,20 @@ struct ahci_port {
     int      lba48;
     char     model[41];
     char     name[8];               /* "ahci0" ... */
+
+    /* the command in flight, and how it is going */
+    struct ahci_cmdspec cur;
+    int      attempt;               /* retries already spent on `cur` */
+    uint64_t deadline;              /* timer_ms() by which it must complete */
+
+    /* HOW DEEP A QUEUE WOULD EVER HAVE BEEN. See the NCQ paragraph at the top
+     * of this file: the only source of a second outstanding tag is a request
+     * that needs a second command, so counting commands per request answers
+     * the question NCQ exists to answer. Kept per port rather than globally
+     * because two ports are two queues and a max over both would hide which
+     * one has the traffic. */
+    uint32_t req_cmds;              /* commands issued for the request in flight */
+    int      reported_multi;        /* the one-shot below has fired */
 };
 
 static volatile uint8_t *g_abar;
@@ -219,65 +317,36 @@ static void port_recover(struct ahci_port *p)
  * Issuing a command
  * ------------------------------------------------------------------------ */
 
-/* Build slot 0's command header + command table and run it to completion.
+/* Build slot 0's command header + command table from p->cur and ISSUE it.
  *
- * `write` selects the H2D direction bit, `buf`/`bytes` describe the (identity
- * mapped, hence physically contiguous) data area, 0 bytes means a non-data
- * command such as FLUSH.
- *
- * Waiting discipline, and why it is this one: completions are produced by
- * QEMU's IO thread, which only runs when this vCPU yields, so a tight IF=0
- * busy-poll starves the very completion it is waiting for and always times out.
- * So interrupts are ENABLED across the poll. But the timer must not preempt us
- * mid-command -- a context switch here abandons a controller with CI still set
- * and a PRDT pointing at a buffer the next thread may reuse. g_ata_busy is the
- * flag c/kernel/cpu/interrupts.c already consults to skip schedule() for exactly
- * this reason (ata_busy()); AHCI shares it rather than adding a second one,
- * because it is the same claim -- an ATA-family transfer is in flight -- and
- * because interrupts.c is not this change's to edit.
+ * This is the half of the old ahci_cmd_once() that talks to the controller.
+ * The other half -- the spin waiting for CI to clear -- is ahci_check() below,
+ * and separating them is the whole of this file's part in the block layer's
+ * submit/poll split (blkdev.h). Nothing about the FIS or the PRDT changed; the
+ * only deletion is `g_ata_busy++ / sti`, which moved UP into blkdev.c's
+ * blk_wait() so that it is raised once for a whole request rather than once per
+ * chunk, and is not raised at all for an asynchronous one.
  *
  * ---------------------------------------------------------------------------
- * WHY THIS IS STILL A POLL, AFTER THE WAIT QUEUES LANDED
+ * WHY THIS IS STILL A POLL AND NOT AN INTERRUPT, MEASURED
  *
- * c/kernel/core/wait.h gives a driver everything it needs to stop spinning:
- * sem_wait_timeout() in the command thread, sem_post() from a completion ISR,
- * and dev_irq_request() (c/drivers/core/driver.h) to wire the interrupt --
- * whose own documentation uses `ahci_isr` as its worked example. So the
- * question was not whether it could be done here, but what it would buy and
- * what it would cost. Both were measured (make bench-fs BENCH_BLK=ahci):
- *
- *   AHCI, polled, per command:    8 sectors 110 us | 255 sectors 122 us
- *                              1024 sectors 159 us | 2048 sectors 288 us
- *   virtio-blk, same host:        8 sectors  86 us | 1024 sectors 148 us
- *
- * The poll is about 30% dearer than the paravirtual device and, crucially, it
- * is FLAT in the size of the transfer, exactly like virtio's. Polling is not
- * where the time went. The COMMAND COUNT was: reading the 3 MB browser.aex used
- * to issue 745 commands and spend 97.6 ms of BKL-held, non-preemptible time on
- * this port. It now issues 9 and spends 1.35 ms. That is 98.6% of the stolen
- * CPU returned to the rest of the machine by asking the device fewer times --
- * which is the same thing a blocking wait would have been trying to achieve,
- * arrived at without touching the scheduler.
- *
- * What converting the remaining 1.35 ms would require, and why it is NOT a
- * local change to this file: a sleeping wait DROPS THE BKL across the switch.
- * c/fs/logitfs.c states the invariant it relies on in as many words --
- *
- *     "every op runs under the kernel BKL and the shared static staging buffers
- *      above (blk_buf/ind_buf/dind_buf/namebuf) carry no lock of their own.
- *      Correctness relies on the BKL never being dropped mid-operation."
- *
- * -- and every call that reaches this driver comes through those buffers. Park
- * inside a command and a second thread walks straight into a filesystem holding
- * half-built state in file-static memory. So the ORDER is: a sleeping mutex
- * around the filesystem's entry points first, then the driver's wait. Doing the
- * driver half alone would trade 1.35 ms of spin for a data-corruption race, and
- * the previous scheduler change that got this wrong froze the whole machine
- * (see ff910e6 and bkl_hlt_wait()).
+ * c/kernel/core/wait.h and dev_irq_request() would let a completion ISR wake a
+ * sleeper, and driver.h's own worked example is called `ahci_isr`. It is still
+ * not done, and the reason is arithmetic rather than reluctance. There is no
+ * completion interrupt wired on this port (P_IE is 0), so the only thing that
+ * can wake a halted waiter is the 100 Hz timer -- 10 ms. Measured on this
+ * machine, an AHCI command costs 110 us for 8 sectors and 288 us for 2048
+ * (make bench-fs BENCH_BLK=ahci), and `make test-swap` moves ~50,000 pages in
+ * one run. Parking on the tick would turn 8.8 s of device time into 8.5
+ * MINUTES. So the asynchronous path here gives the BKL back around a BOUNDED
+ * SPIN and not around a halt, and closing the rest needs the interrupt, which
+ * needs dev_irq_request() at a point where the LAPIC is live -- blk_init() runs
+ * at kmain.c:135, smp_init() at :183. That ordering, not this file, is what
+ * stands in the way.
  * ------------------------------------------------------------------------- */
-static int ahci_cmd_once(struct ahci_port *p, int write, uint8_t command,
-                         uint64_t lba, uint32_t sectors, void *buf, uint32_t bytes)
+static int ahci_issue(struct ahci_port *p)
 {
+    const struct ahci_cmdspec *s = &p->cur;
     uint32_t *hdr = (uint32_t *)p->dma;                 /* command header, slot 0 */
     uint8_t  *tbl = p->dma + 0x800;                     /* command table */
     uint8_t  *fis = tbl;                                /* CFIS at table offset 0 */
@@ -288,8 +357,8 @@ static int ahci_cmd_once(struct ahci_port *p, int write, uint8_t command,
     memset(tbl, 0, 0x80 + AHCI_PRDT * 16);
 
     int nprd = 0;
-    uint64_t addr = (uint64_t)(uintptr_t)buf;
-    uint32_t left = bytes;
+    uint64_t addr = (uint64_t)(uintptr_t)s->buf;
+    uint32_t left = s->bytes;
     while (left > 0 && nprd < AHCI_PRDT) {
         uint32_t chunk = left > AHCI_PRD_MAX ? AHCI_PRD_MAX : left;
         uint32_t *e = (uint32_t *)(prd + nprd * 16);
@@ -304,21 +373,21 @@ static int ahci_cmd_once(struct ahci_port *p, int write, uint8_t command,
     /* Host-to-device register FIS. */
     fis[0]  = 0x27;                                     /* FIS type: H2D register */
     fis[1]  = 0x80;                                     /* C: this is a command, not a control write */
-    fis[2]  = command;
+    fis[2]  = s->command;
     fis[3]  = 0;                                        /* features */
-    fis[4]  = (uint8_t)(lba);
-    fis[5]  = (uint8_t)(lba >> 8);
-    fis[6]  = (uint8_t)(lba >> 16);
+    fis[4]  = (uint8_t)(s->lba);
+    fis[5]  = (uint8_t)(s->lba >> 8);
+    fis[6]  = (uint8_t)(s->lba >> 16);
     fis[7]  = 0x40;                                     /* device: LBA mode */
-    fis[8]  = (uint8_t)(lba >> 24);
-    fis[9]  = (uint8_t)(lba >> 32);
-    fis[10] = (uint8_t)(lba >> 40);
+    fis[8]  = (uint8_t)(s->lba >> 24);
+    fis[9]  = (uint8_t)(s->lba >> 32);
+    fis[10] = (uint8_t)(s->lba >> 40);
     fis[11] = 0;
-    fis[12] = (uint8_t)(sectors);
-    fis[13] = (uint8_t)(sectors >> 8);
+    fis[12] = (uint8_t)(s->sectors);
+    fis[13] = (uint8_t)(s->sectors >> 8);
 
     hdr[0] = (5u)                                       /* CFL: 5 dwords of FIS */
-           | (write ? (1u << 6) : 0u)                   /* W: host to device */
+           | (s->write ? (1u << 6) : 0u)                /* W: host to device */
            | ((uint32_t)nprd << 16);                    /* PRDTL */
     hdr[1] = 0;                                         /* PRDBC: device fills this in */
     hdr[2] = (uint32_t)(uintptr_t)tbl;
@@ -326,102 +395,204 @@ static int ahci_cmd_once(struct ahci_port *p, int write, uint8_t command,
 
     w32(p->reg, P_IS, r32(p->reg, P_IS));               /* clear stale status */
     barrier();
-
-    uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
-    g_ata_busy++;
-    __asm__ volatile ("sti");
     w32(p->reg, P_CI, 1u);                              /* issue slot 0 */
+    p->deadline = timer_ms() + 8000;
+    return 0;
+}
 
-    int rc = -1;
-    uint64_t deadline = timer_ms() + 8000;
-    for (long i = 0; i < SPIN_CMD; i++) {
-        uint32_t is = r32(p->reg, P_IS);
-        if (is & IS_TFES) break;                        /* device reported a task-file error */
-        if ((r32(p->reg, P_CI) & 1u) == 0) {
-            rc = (r32(p->reg, P_TFD) & TFD_ERR) ? -1 : 0;
-            break;
-        }
-        if ((i & 0xFFFF) == 0xFFFF && timer_ms() > deadline) break;
-    }
-    if (!(fl & 0x200)) __asm__ volatile ("cli");        /* restore the caller's IF */
-    g_ata_busy--;
+/* ONE look at the port. 1 = the command finished cleanly, 0 = still running,
+ * -1 = it failed. No loop and no waiting: a poll that spun would be the thing
+ * this split exists to remove. */
+static int ahci_check(struct ahci_port *p)
+{
+    if (r32(p->reg, P_IS) & IS_TFES) return -1;         /* device reported a task-file error */
+    if (r32(p->reg, P_CI) & 1u) return 0;
+    if (r32(p->reg, P_TFD) & TFD_ERR) return -1;
 
     /* A read must have moved every byte it asked for. Without this a short DMA
      * -- the shape a truncated or mis-programmed PRDT produces -- returns
      *  success with a buffer that is partly whatever was there before. */
-    if (rc == 0 && !write && bytes && hdr[1] < bytes) rc = -1;
-    return rc;
+    const uint32_t *hdr = (const uint32_t *)p->dma;
+    if (!p->cur.write && p->cur.bytes && hdr[1] < p->cur.bytes) return -1;
+    return 1;
 }
 
-/* Retry the whole command, recovering the port in between.
- *
- * ata.c carries the same 8x loop and CLAUDE.md records why: under -smp TCG the
- * AP's framebuffer present contends the big QEMU lock and delays the device
- * thread past a bounded poll, which surfaces as a nondeterministic "file not
- * found" rather than as an I/O error. AHCI completions come off the same IO
- * thread under the same lock, so the same fragility applies and is designed for
- * up front rather than discovered as flakiness. The recovery between attempts
- * is the part ata.c does not need: a timed-out AHCI command leaves CI set and
- * SERR latched, and re-issuing into that state fails forever. */
-static int ahci_cmd(struct ahci_port *p, int write, uint8_t command,
-                    uint64_t lba, uint32_t sectors, void *buf, uint32_t bytes)
+/* Start `s` on the port. Nothing else may be in flight -- the block layer's
+ * one-request-per-medium interlock is what guarantees that, and IDENTIFY runs
+ * before the port is registered at all. */
+static int ahci_begin(struct ahci_port *p, const struct ahci_cmdspec *s)
 {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (ahci_cmd_once(p, write, command, lba, sectors, buf, bytes) == 0) return 0;
-        port_recover(p);
+    p->cur = *s;
+    p->attempt = 0;
+    return ahci_issue(p);
+}
+
+/* One look, WITH the retry. 1 = done, 0 = still running (possibly re-issued
+ * after a recovery), -1 = gave up. `expired` is the caller's verdict on the
+ * deadline, because the two callers measure time differently and cannot both
+ * be right with one rule: the block path has a live PIT and uses milliseconds,
+ * bring-up runs with IF=0 where the tick does not advance and must count spins
+ * instead. A single ms deadline would simply never fire during init.
+ *
+ * The retry itself is ata.c's 8x loop and CLAUDE.md records why it is there:
+ * under -smp TCG the AP's framebuffer present contends the big QEMU lock and
+ * delays the device thread past a bounded poll, which surfaces as a
+ * nondeterministic "file not found" rather than as an I/O error. The recovery
+ * between attempts is the part ata.c does not need -- a timed-out AHCI command
+ * leaves CI set and SERR latched, and re-issuing into that state fails
+ * forever. */
+static int ahci_step(struct ahci_port *p, int expired)
+{
+    int r = ahci_check(p);
+    if (r == 1) return 1;
+    if (r == 0 && !expired) return 0;
+    if (++p->attempt >= AHCI_RETRIES) return -1;
+    port_recover(p);
+    if (ahci_issue(p) != 0) return -1;
+    return 0;
+}
+
+/* Begin + step to completion, for the bring-up path only (IDENTIFY).
+ *
+ * A spin count, not a millisecond deadline, for the reason above; and it keeps
+ * its own IF/no-preempt handling because it runs from blk_init() before any
+ * blk_req exists. Every OTHER caller reaches the same two functions through
+ * blkdev.c, so there is one state machine with two drivers of it and not two
+ * implementations. */
+static int ahci_run(struct ahci_port *p, const struct ahci_cmdspec *s)
+{
+    uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
+    g_ata_busy++;
+    __asm__ volatile ("sti");
+
+    int rc = -1;
+    if (ahci_begin(p, s) == 0) {
+        long i = 0;
+        int last = p->attempt;
+        for (;;) {
+            int st = ahci_step(p, i >= SPIN_CMD);
+            if (st) { rc = (st == 1) ? 0 : -1; break; }
+            if (p->attempt != last) { last = p->attempt; i = 0; }  /* re-issued: fresh budget */
+            else i++;
+            __asm__ volatile ("pause");
+        }
     }
-    return -1;
+
+    if (!(fl & 0x200)) __asm__ volatile ("cli");        /* restore the caller's IF */
+    g_ata_busy--;
+    return rc;
 }
 
 /* --------------------------------------------------------------------------
  * Block device ops
  * ------------------------------------------------------------------------ */
 
-static int ahci_rw(void *ctx, int write, uint64_t lba, uint32_t count, void *buf)
-{
-    struct ahci_port *p = (struct ahci_port *)ctx;
-    if (count == 0) return -1;
-    if (lba >= p->nsectors || (uint64_t)count > p->nsectors - lba) return -1;
+static void ahci_count_cmd(struct ahci_port *p);   /* defined below, with its rationale */
 
-    while (count > 0) {
-        /* Bound each command by the smallest of: what the PRDT can describe,
-         * what the sector-count field can express, and (for a drive without
-         * LBA48) what the 28-bit addressing can reach. */
-        uint32_t n = count;
-        uint32_t prd_max = (AHCI_PRDT * AHCI_PRD_MAX) / 512;
-        if (n > prd_max) n = prd_max;
-        if (p->lba48) { if (n > 65535) n = 65535; }
-        else {
-            if (n > 255) n = 255;
-            if (lba + n > (1u << 28)) return -1;
-        }
-        uint8_t cmd = p->lba48 ? (write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT)
-                               : (write ? ATA_WRITE_DMA     : ATA_READ_DMA);
-        if (ahci_cmd(p, write, cmd, lba, n, buf, n * 512u) != 0) return -1;
-        buf = (uint8_t *)buf + (uint64_t)n * 512;
-        lba += n; count -= n;
+/* Start the chunk at r->done. The chunking that used to be ahci_rw()'s while
+ * loop is now this function plus the "issue the next one" branch in
+ * ahci_blk_poll -- same bounds, same commands, driven across returns. */
+static int ahci_begin_chunk(struct ahci_port *p, struct blk_req *r)
+{
+    struct ahci_cmdspec s;
+    s.write = (r->op == BLK_OP_WRITE);
+
+    if (r->op == BLK_OP_FLUSH) {
+        /* FLUSH CACHE (EXT) -- the barrier the journal's ordering rests on. A
+         * SATA disk has a writeback cache by default, so a completed WRITE DMA
+         * means the drive accepted the data, not that a platter holds it. */
+        s.command = p->lba48 ? ATA_FLUSH_EXT : ATA_FLUSH;
+        s.lba = 0; s.sectors = 0; s.buf = NULL; s.bytes = 0; s.write = 0;
+        r->chunk = 0;
+        int frc = ahci_begin(p, &s);
+        if (frc == 0) ahci_count_cmd(p);
+        return frc;
     }
-    return 0;
+
+    uint64_t lba = r->dev_lba + r->done;
+    uint32_t n   = r->count - r->done;
+
+    /* Bound each command by the smallest of: what the PRDT can describe, what
+     * the sector-count field can express, and (for a drive without LBA48) what
+     * the 28-bit addressing can reach. */
+    uint32_t prd_max = (AHCI_PRDT * AHCI_PRD_MAX) / 512;
+    if (n > prd_max) n = prd_max;
+    if (p->lba48) { if (n > 65535) n = 65535; }
+    else {
+        if (n > 255) n = 255;
+        if (lba + n > (1u << 28)) return -1;
+    }
+
+    s.command = p->lba48 ? (s.write ? ATA_WRITE_DMA_EXT : ATA_READ_DMA_EXT)
+                         : (s.write ? ATA_WRITE_DMA     : ATA_READ_DMA);
+    s.lba     = lba;
+    s.sectors = n;
+    s.buf     = (uint8_t *)r->buf + (uint64_t)r->done * 512;
+    s.bytes   = n * 512u;
+    r->chunk  = n;
+    int rc = ahci_begin(p, &s);
+    if (rc == 0) ahci_count_cmd(p);
+    return rc;
 }
 
-static int ahci_op_read(void *ctx, uint64_t lba, uint32_t count, void *buf)
+/* Count the command this request just started, and say so the FIRST time a
+ * request needs a second one.
+ *
+ * A one-shot rather than a counter somebody has to go and read, and printed by
+ * the driver itself rather than behind a trigger, for the reason the browser's
+ * painted-text dump was built that way: an instrument whose trigger has to be
+ * remembered is an instrument that reports nothing on the run that mattered.
+ * The absence of this line over a whole boot IS the measurement -- it says
+ * every request was one command, and therefore that a 32-deep queue would have
+ * held exactly one entry. */
+static void ahci_count_cmd(struct ahci_port *p)
 {
-    return ahci_rw(ctx, 0, lba, count, buf);
+    p->req_cmds++;
+    /* Only "was it ever more than one" is recorded, and no running maximum:
+     * that is the whole question NCQ turns on, and a deepest-so-far field with
+     * no reader would be state carried for its own sake. */
+    if (p->req_cmds > 1 && !p->reported_multi) {
+        p->reported_multi = 1;
+        kprintf("[ahci] %s: a request needed a %d%s command (%u sectors) -- "
+                "NCQ would have had something to queue here\n",
+                p->name, (int)p->req_cmds,
+                p->req_cmds == 2 ? "nd" : (p->req_cmds == 3 ? "rd" : "th"),
+                (unsigned)p->cur.sectors);
+    }
 }
-static int ahci_op_write(void *ctx, uint64_t lba, uint32_t count, const void *buf)
-{
-    return ahci_rw(ctx, 1, lba, count, (void *)buf);
-}
-/* FLUSH CACHE (EXT) -- the barrier the journal's ordering rests on. A SATA disk
- * has a writeback cache by default, so a completed WRITE DMA means the drive
- * accepted the data, not that a platter holds it. */
-static int ahci_op_flush(void *ctx)
+
+static int ahci_blk_submit(void *ctx, struct blk_req *r)
 {
     struct ahci_port *p = (struct ahci_port *)ctx;
-    return ahci_cmd(p, 0, p->lba48 ? ATA_FLUSH_EXT : ATA_FLUSH, 0, 0, NULL, 0);
+    /* blkdev.c has already bounded the request against the blkdev's length; this
+     * bounds it against what the PORT reported, which is the number that came
+     * from IDENTIFY and is the one a lying partition table cannot inflate. */
+    if (r->op != BLK_OP_FLUSH) {
+        if (r->count == 0) return -1;
+        if (r->dev_lba >= p->nsectors || (uint64_t)r->count > p->nsectors - r->dev_lba)
+            return -1;
+    }
+    p->req_cmds = 0;                /* a new request; the depth count starts over */
+    return ahci_begin_chunk(p, r);
 }
 
-static const struct blk_ops ahci_ops = { ahci_op_read, ahci_op_write, ahci_op_flush };
+static int ahci_blk_poll(void *ctx, struct blk_req *r)
+{
+    struct ahci_port *p = (struct ahci_port *)ctx;
+    int st = ahci_step(p, timer_ms() > p->deadline);
+    if (st == 0) return 0;
+    if (st < 0) { r->status = -1; return 1; }
+
+    r->done += r->chunk;
+    if (r->op != BLK_OP_FLUSH && r->done < r->count) {
+        if (ahci_begin_chunk(p, r) != 0) { r->status = -1; return 1; }
+        return 0;                                       /* the next chunk is in flight */
+    }
+    r->status = 0;
+    return 1;
+}
+
+static const struct blk_ops ahci_ops = { .submit = ahci_blk_submit, .poll = ahci_blk_poll };
 
 /* --------------------------------------------------------------------------
  * Discovery
@@ -512,7 +683,8 @@ static int port_identify(struct ahci_port *p)
 {
     static uint16_t id[256] __attribute__((aligned(64)));   /* identity mapped DMA target */
     memset(id, 0, sizeof id);
-    if (ahci_cmd(p, 0, ATA_IDENTIFY, 0, 0, id, sizeof id) != 0) return -1;
+    struct ahci_cmdspec s = { ATA_IDENTIFY, 0, 0, 0, id, sizeof id };
+    if (ahci_run(p, &s) != 0) return -1;
 
     p->lba48 = (id[83] & (1u << 10)) ? 1 : 0;
     uint64_t caps = p->lba48
@@ -567,11 +739,18 @@ static int ahci_bring_up(const struct ahci_hba *dev)
     int nports = (int)(cap & 0x1F) + 1;
     int ncs    = (int)((cap >> 8) & 0x1F) + 1;
 
-    kprintf("[ahci] %x:%x at %02x:%02x.%d abar=%x ver=%d.%d ports=%d impl=%x slots=%d addr64=%s\n",
+    /* ncq= is new, and it is the answer to a question nothing in this tree
+     * could ask before: SNCQ says whether the controller can queue at all and
+     * NCS says how deep. Printed even though the driver does not queue,
+     * because "we do not use it" and "the hardware does not have it" are
+     * different findings and only one of them is about this file. */
+    kprintf("[ahci] %x:%x at %02x:%02x.%d abar=%x ver=%d.%d ports=%d impl=%x slots=%d "
+            "addr64=%s ncq=%s(%d deep, unused -- see the NCQ note in ahci.c)\n",
             dev->vendor, dev->device, (int)dev->bus, (int)dev->slot, (int)dev->func,
             (unsigned)dev->abar,
             (int)(vs >> 16), (int)((vs >> 8) & 0xFF), nports, pi, ncs,
-            (cap & CAP_S64A) ? "yes" : "no");
+            (cap & CAP_S64A) ? "yes" : "no",
+            (cap & CAP_SNCQ) ? "yes" : "no", ncs);
 
     int found = 0;
     for (int i = 0; i < AHCI_MAX_PORTS && i < 32; i++) {

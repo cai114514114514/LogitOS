@@ -12,6 +12,35 @@ void *memset(void *, int, size_t);
 void *memcpy(void *, const void *, size_t);
 
 /* --------------------------------------------------------------------------
+ * The host-test seam, and it is deliberately three macros wide.
+ *
+ * tests/unit/blkreq_test.c compiles THIS FILE and drives the request engine
+ * against fake drivers. Two things in here cannot run in ring 3 on Linux:
+ * `sti`/`cli` are privileged (a plain SIGSEGV, with no hint of why), and the
+ * DMA-reachability bound is the kernel's identity-mapped first gigabyte, which
+ * no host malloc is anywhere near -- so on the host every buffer would take
+ * the bounce path and the ordinary path would never be measured at all.
+ *
+ * The seam does NOT touch the engine: blk_submit, blk_poll, blk_wait, the
+ * interlock and the bounce loop are the same lines in both builds. Anything
+ * conditional inside those would make the gate a test of a different program.
+ * ------------------------------------------------------------------------ */
+#ifdef BLK_HOSTTEST
+uint64_t blk_hosttest_dma_limit = ~0ull;      /* the test moves this to force a bounce */
+#  define BLK_IRQ_SAVE(f)     ((f) = 0x200)
+#  define BLK_IRQ_ENABLE()    ((void)0)
+#  define BLK_IRQ_DISABLE()   ((void)0)
+#  define BLK_RELAX()         ((void)0)
+#  define BLK_DMA_LIMIT       blk_hosttest_dma_limit
+#else
+#  define BLK_IRQ_SAVE(f)     __asm__ volatile ("pushfq; pop %0" : "=r"(f) :: "memory")
+#  define BLK_IRQ_ENABLE()    __asm__ volatile ("sti")
+#  define BLK_IRQ_DISABLE()   __asm__ volatile ("cli")
+#  define BLK_RELAX()         __asm__ volatile ("pause")
+#  define BLK_DMA_LIMIT       (1ull << 30)    /* boot.asm:80: the identity-mapped span */
+#endif
+
+/* --------------------------------------------------------------------------
  * The registry
  * ------------------------------------------------------------------------ */
 
@@ -107,14 +136,19 @@ static int in_bounds(struct blkdev *d, uint64_t lba, uint32_t count)
  * allocation-free, and costs exactly the memcpy the resident-cache path
  * already pays on every hit.
  *
- * ONE static buffer is safe for the same reason swap documents for its own
- * path: every block driver here is submit-and-poll inside one call, under the
- * BKL, so there is never a second transfer in flight. If the block layer ever
- * grows the async submit/poll pair that CLAUDE.md names as the follow-up,
- * this must become per-request state -- that is a design note, not a comment
- * to delete.
+ * ONE static buffer USED TO BE safe because every block driver here was
+ * submit-and-poll inside one call, under the BKL, so there was never a second
+ * transfer in flight. That is no longer true (see blkdev.h), and the design
+ * note this comment used to carry -- "this must become per-request state" --
+ * has been answered the other way round, deliberately: the bounce stayed
+ * single and the ASYNC PATH GAVE IT UP. blk_submit refuses an async request
+ * that would need it (BLK_E_NODMA), and only blk_rw() below -- the synchronous
+ * convenience, which holds the no-preemption flag across the whole chunked
+ * loop -- ever touches it. Making it per-request means an allocation on the
+ * page-fault path that swap.c forbids in as many words, or a pool sized by
+ * guesswork; refusing costs the one caller that could ever hit it (swap, whose
+ * pages are identity-mapped frames and therefore never do) a counted fallback.
  * ------------------------------------------------------------------------ */
-#define BLK_DMA_LIMIT   (1ull << 30)     /* boot.asm:80: the identity-mapped span */
 #define BLK_BOUNCE_SECT 64u              /* 32 KiB a chunk */
 static uint8_t blk_bounce[BLK_BOUNCE_SECT * BLK_SECTOR];
 
@@ -125,42 +159,213 @@ static int dma_reachable(const void *buf, uint32_t count)
     return a + n >= a && a + n <= BLK_DMA_LIMIT;
 }
 
-int blk_dev_read(struct blkdev *d, uint64_t lba, uint32_t count, void *buf)
+/* --------------------------------------------------------------------------
+ * The request engine
+ *
+ * Everything funnels through blk_submit/blk_poll: blk_dev_read is literally
+ * init + submit + poll-to-completion. There is no second path, and that is the
+ * property which makes the asynchrony testable rather than hopeful -- a
+ * synchronous read drives the same driver state machine an asynchronous one
+ * does, so an ordinary boot exercises it thousands of times before any swap
+ * page is written.
+ *
+ * NON-PREEMPTION, AND WHY IT IS g_ata_busy. c/kernel/cpu/interrupts.c skips
+ * schedule() while ata_busy() || virtio_busy() || nvme_busy(), and ahci.c
+ * already shared ata.c's flag rather than adding a third, arguing it is the
+ * same claim. It is now the BLOCK LAYER's flag, raised in one place, for that
+ * one claim: "a synchronous block transfer this core must not be preempted out
+ * of is in flight". Raising it here rather than in each driver also closes a
+ * window that enabling interrupts earlier would otherwise open. schedule()
+ * DROPS the BKL across a context switch (c/kernel/sched/sched.c:703) and
+ * c/fs/logitfs.c relies on it never being dropped mid-operation, so there must
+ * be no moment where IF is on and the flag is down. The order below is
+ * flag-then-sti and never the reverse.
+ *
+ * An ASYNC request raises nothing. That is the entire point of it: its
+ * submitter intends to give the CPU up, and the in-flight interlock -- not the
+ * absence of a context switch -- is what protects the controller.
+ * ------------------------------------------------------------------------ */
+
+/* A partition shares its parent's ops and ctx, so the queue belongs to the
+ * whole disk. One level is enough: this tree publishes no partition of a
+ * partition (scan_partitions is called on disks only). */
+static struct blkdev *medium(struct blkdev *d)
 {
+    return (d && d->parent) ? d->parent : d;
+}
+
+void blk_req_init(struct blk_req *r, struct blkdev *d, int op,
+                  uint64_t lba, uint32_t count, void *buf)
+{
+    memset(r, 0, sizeof *r);
+    r->dev   = d;
+    r->op    = (uint8_t)op;
+    r->lba   = lba;
+    r->count = (op == BLK_OP_FLUSH) ? 0 : count;
+    r->buf   = buf;
+    r->state = BLK_REQ_IDLE;
+}
+
+/* Finish a request. The medium is released HERE and nowhere else, so there is
+ * exactly one place that can leave a disk permanently busy. */
+static int req_finish(struct blk_req *r, int status)
+{
+    struct blkdev *m = medium(r->dev);
+    if (m && m->inflight == r) m->inflight = NULL;
+    r->status = status;
+    r->state  = BLK_REQ_DONE;
+    return status;
+}
+
+/* The whole transfer through a driver that has only read/write/flush. It is
+ * complete when this returns -- that is what those transports do, so saying so
+ * is honest; a driver that can do better implements submit/poll and never
+ * reaches here. The buffer is already known to be DMA-reachable: bouncing is
+ * blk_rw()'s job, not this function's, because the single static bounce buffer
+ * has to be held across a whole chunked transfer and that window belongs to
+ * the caller. */
+static int run_sync_ops(struct blk_req *r)
+{
+    struct blkdev *d = r->dev;
+    uint64_t lba = d->start + r->lba;
+
+    if (r->op == BLK_OP_FLUSH)
+        return d->ops->flush ? d->ops->flush(d->ctx) : -1;
+    if (r->op == BLK_OP_WRITE)
+        return d->ops->write ? d->ops->write(d->ctx, lba, r->count, r->buf) : -1;
+    return d->ops->read ? d->ops->read(d->ctx, lba, r->count, r->buf) : -1;
+}
+
+static unsigned long blk_nodma_refusals;
+unsigned long blk_async_refusals(void) { return blk_nodma_refusals; }
+
+int blk_poll(struct blk_req *r)
+{
+    if (!r) return 1;
+    if (r->state != BLK_REQ_INFLIGHT) return 1;   /* DONE, or never submitted */
+    struct blkdev *d = r->dev;
+    if (!d->ops->poll) { req_finish(r, -1); return 1; }  /* only submit leaves INFLIGHT set */
+    if (d->ops->poll(d->ctx, r) == 0) return 0;
+    req_finish(r, r->status);
+    return 1;
+}
+
+int blk_submit(struct blk_req *r)
+{
+    if (!r) return BLK_E_ARG;
+    struct blkdev *d = r->dev;
+    if (!d || !d->ops) return req_finish(r, BLK_E_ARG);
+    if (r->op != BLK_OP_FLUSH && !in_bounds(d, r->lba, r->count))
+        return req_finish(r, BLK_E_ARG);
+
+    /* Somebody else's request is on this medium: DRIVE IT, do not wait for its
+     * submitter to be scheduled (blkdev.h says why). The pointer is re-read
+     * every time round because this loop can be preempted when we are the
+     * async path -- while we are away another thread may finish that request
+     * and start a third. */
+    struct blkdev *m = medium(d);
+#ifndef BLK_NO_INTERLOCK
+    while (m->inflight && m->inflight != r)
+        (void)blk_poll(m->inflight);
+#endif
+
+    /* A buffer the device cannot reach needs the shared bounce, which an
+     * asynchronous request may not have. Refuse it AS ITSELF -- the request is
+     * fine, this way of making it is not, and the caller has a correct
+     * fallback. */
+    if (r->op != BLK_OP_FLUSH && r->async && !dma_reachable(r->buf, r->count)) {
+        blk_nodma_refusals++;
+        return req_finish(r, BLK_E_NODMA);        /* medium untouched: never claimed */
+    }
+
+    r->state   = BLK_REQ_INFLIGHT;
+    r->status  = 0;
+    r->done    = 0;
+    r->attempt = 0;
+    r->dev_lba = d->start + r->lba;
+    m->inflight = r;
+
+    if (!d->ops->submit) return req_finish(r, run_sync_ops(r));
+
+    int rc = d->ops->submit(d->ctx, r);
+    if (rc < 0) return req_finish(r, rc);
+    return 0;
+}
+
+int blk_wait(struct blk_req *r)
+{
+    if (!r) return BLK_E_ARG;
+    if (r->state == BLK_REQ_DONE) return r->status;
+
+    uint64_t fl;
+    BLK_IRQ_SAVE(fl);
+    g_ata_busy++;                       /* flag BEFORE sti -- see the header above */
+    BLK_IRQ_ENABLE();
+
+    if (blk_submit(r) == 0)
+        while (!blk_poll(r)) BLK_RELAX();
+
+    if (!(fl & 0x200)) BLK_IRQ_DISABLE();
+    g_ata_busy--;
+    return r->status;
+}
+
+/* The synchronous convenience, including the bounce. The whole chunked loop
+ * runs inside ONE no-preemption window, which is what keeps the single static
+ * bounce buffer this core's for the duration. */
+static int blk_rw(struct blkdev *d, int op, uint64_t lba, uint32_t count, void *buf)
+{
+    struct blk_req r;
+
+    if (op == BLK_OP_FLUSH) {
+        blk_req_init(&r, d, BLK_OP_FLUSH, 0, 0, NULL);
+        return blk_wait(&r) ? -1 : 0;
+    }
     if (!in_bounds(d, lba, count)) return -1;
-    if (dma_reachable(buf, count))
-        return d->ops->read(d->ctx, d->start + lba, count, buf);
-    uint8_t *out = (uint8_t *)buf;
-    for (uint32_t done = 0; done < count; ) {
+    if (dma_reachable(buf, count)) {
+        blk_req_init(&r, d, op, lba, count, buf);
+        return blk_wait(&r) ? -1 : 0;
+    }
+
+    uint64_t fl;
+    BLK_IRQ_SAVE(fl);
+    g_ata_busy++;
+    BLK_IRQ_ENABLE();
+
+    int rc = 0;
+    uint8_t *p = (uint8_t *)buf;
+    for (uint32_t done = 0; done < count && rc == 0; ) {
         uint32_t n = count - done;
         if (n > BLK_BOUNCE_SECT) n = BLK_BOUNCE_SECT;
-        if (d->ops->read(d->ctx, d->start + lba + done, n, blk_bounce)) return -1;
-        memcpy(out + (size_t)done * BLK_SECTOR, blk_bounce, (size_t)n * BLK_SECTOR);
+        if (op == BLK_OP_WRITE)
+            memcpy(blk_bounce, p + (size_t)done * BLK_SECTOR, (size_t)n * BLK_SECTOR);
+        blk_req_init(&r, d, op, lba + done, n, blk_bounce);
+        if (blk_wait(&r) != 0) { rc = -1; break; }
+        if (op == BLK_OP_READ)
+            memcpy(p + (size_t)done * BLK_SECTOR, blk_bounce, (size_t)n * BLK_SECTOR);
         done += n;
     }
-    return 0;
+
+    if (!(fl & 0x200)) BLK_IRQ_DISABLE();
+    g_ata_busy--;
+    return rc;
+}
+
+int blk_dev_read(struct blkdev *d, uint64_t lba, uint32_t count, void *buf)
+{
+    return blk_rw(d, BLK_OP_READ, lba, count, buf);
 }
 
 int blk_dev_write(struct blkdev *d, uint64_t lba, uint32_t count, const void *buf)
 {
-    if (!in_bounds(d, lba, count)) return -1;
-    if (dma_reachable(buf, count))
-        return d->ops->write(d->ctx, d->start + lba, count, buf);
-    const uint8_t *in = (const uint8_t *)buf;
-    for (uint32_t done = 0; done < count; ) {
-        uint32_t n = count - done;
-        if (n > BLK_BOUNCE_SECT) n = BLK_BOUNCE_SECT;
-        memcpy(blk_bounce, in + (size_t)done * BLK_SECTOR, (size_t)n * BLK_SECTOR);
-        if (d->ops->write(d->ctx, d->start + lba + done, n, blk_bounce)) return -1;
-        done += n;
-    }
-    return 0;
+    return blk_rw(d, BLK_OP_WRITE, lba, count, (void *)buf);
 }
 
 int blk_dev_flush(struct blkdev *d)
 {
-    if (!d || !d->ops || !d->ops->flush) return -1;
-    return d->ops->flush(d->ctx);
+    if (!d || !d->ops) return -1;
+    if (!d->ops->submit && !d->ops->flush) return -1;
+    return blk_rw(d, BLK_OP_FLUSH, 0, 0, NULL);
 }
 
 /* --------------------------------------------------------------------------
@@ -256,23 +461,34 @@ static int narrow_rw(int (*rd)(uint32_t, uint8_t, void *),
     return 0;
 }
 
-/* NVMe needs no chunking here: its own request builder already loops, caps at
- * the controller's MDTS and builds a PRP list, so the wide entry points hand it
- * a 512 KiB read as ONE command. Only legacy ATA PIO is genuinely narrow. */
-static int nvme_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return n ? nvme_read_n(lba, n, b) : -1; }
-static int nvme_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return n ? nvme_write_n(lba, n, b) : -1; }
-static int nvme_f(void *c)                                           { (void)c; return nvme_flush(); }
-static const struct blk_ops nvme_bops = { nvme_r, nvme_w, nvme_f };
+/* NVMe implements the ASYNC pair and nothing else -- one implementation, so a
+ * synchronous read and an asynchronous one cannot come to disagree about
+ * chunking or ordering. The chunking that used to live in nvme_io (MDTS cap,
+ * PRP list) is now driven across polls; see nvme.c. */
+static int nvme_sub(void *c, struct blk_req *r) { (void)c; return nvme_blk_submit(r); }
+static int nvme_pol(void *c, struct blk_req *r) { (void)c; return nvme_blk_poll(r); }
+static const struct blk_ops nvme_bops = { .submit = nvme_sub, .poll = nvme_pol };
 
+/* virtio-blk stays SYNCHRONOUS, and the reason is worth stating rather than
+ * leaving as an omission: its completion is read out of the used ring inside
+ * virtio.c's one request/poll call, which is shared with every other virtio
+ * device in the tree (net, gpu, rng, balloon). Splitting it is a change to
+ * c/drivers/virtio/virtio.c, which is not this file's, and the block layer
+ * asks nothing of it -- a driver with only read/write is complete when submit
+ * returns and the engine above says so truthfully. */
 static int vblk_r(void *c, uint64_t lba, uint32_t n, void *b)        { (void)c; return virtio_blk_read(lba, n, b); }
 static int vblk_w(void *c, uint64_t lba, uint32_t n, const void *b)  { (void)c; return virtio_blk_write(lba, n, b); }
 static int vblk_f(void *c)                                           { (void)c; return virtio_blk_flush(); }
-static const struct blk_ops vblk_bops = { vblk_r, vblk_w, vblk_f };
+static const struct blk_ops vblk_bops = { .read = vblk_r, .write = vblk_w, .flush = vblk_f };
 
+/* ATA PIO CANNOT be split, and this is the case that proves the fallback is
+ * not laziness: the data crosses through the CPU's IO port, sixteen bits at a
+ * time, inside the command. There is no in-flight token because there is no
+ * moment at which the transfer exists without a thread driving it. */
 static int ata_r(void *c, uint64_t lba, uint32_t n, void *b)         { (void)c; return narrow_rw(ata_read, 0, lba, n, b); }
 static int ata_w(void *c, uint64_t lba, uint32_t n, const void *b)   { (void)c; return narrow_rw(0, ata_write, lba, n, (void *)b); }
 static int ata_f(void *c)                                            { (void)c; return ata_flush(); }
-static const struct blk_ops ata_bops = { ata_r, ata_w, ata_f };
+static const struct blk_ops ata_bops = { .read = ata_r, .write = ata_w, .flush = ata_f };
 
 /* --------------------------------------------------------------------------
  * Partition discovery
