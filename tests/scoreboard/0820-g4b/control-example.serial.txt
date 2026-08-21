@@ -1,0 +1,56 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21096 composites=161 ns=3051529845 max=267118484 motions=18 curmoves=9 curns=572444 full=124 rects=161 cpx=31478500 fpx=31445412 presns=150658261 torn=0 defer=95 late=0 drawmax=289 evdrop=0
+[wm] perf t=22151 composites=173 ns=3528667088 max=267118484 motions=18 curmoves=9 curns=572444 full=136 rects=173 cpx=33526500 fpx=33493412 presns=167796161 torn=0 defer=105 late=0 drawmax=299 evdrop=0
+[browser] load: http://example.com/
+[sock] connected example.com via ipv4 ::ffff:198.18.0.124
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[browser] scripts collected: 0 external classic, 0 external module, 0 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[wm] perf t=41214 composites=245 ns=4508832981 max=267118484 motions=18 curmoves=9 curns=572444 full=172 rects=245 cpx=41800420 fpx=41767332 presns=200509802 torn=0 defer=134 late=0 drawmax=299 evdrop=0

@@ -1,0 +1,87 @@
+{
+ "name": "jd",
+ "url": "https://www.jd.com/",
+ "started": "2026-08-20T22:12:47",
+ "verdict": "ERRORS",
+ "why": "painted 217268 changed px in 24.7s but 3 JS exception(s)",
+ "host": {
+  "ok": false,
+  "error": "URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>",
+  "elapsed": 6.1
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "TypeError: cannot read property 'length' of undefined",
+    "stack": [
+     "at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.6.js?v=2024-06-20-17:4)",
+     "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.6.js?v=2024-06-20-17)",
+     "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.6.js?v=2024-06-20-17:5)",
+     "at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.6.js?v=2024-06-20-17:5)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: javaEnabled is not a function (it is undefined)",
+    "stack": [
+     "at <anonymous> (https://wl.jd.com/unify.min.js)",
+     "at <anonymous> (https://wl.jd.com/unify.min.js)",
+     "at <eval> (https://wl.jd.com/unify.min.js:2)"
+    ],
+    "count": 1
+   },
+   {
+    "message": "TypeError: javaEnabled is not a function (it is undefined)",
+    "stack": [
+     "at _e (https://wl.jd.com/wl.js)",
+     "at <anonymous> (https://wl.jd.com/wl.js)",
+     "at <anonymous> (https://wl.jd.com/wl.js)",
+     "at <eval> (https://wl.jd.com/wl.js:2)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 26,
+  "dials": 14,
+  "reused": 15,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 6732,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 24.7,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 217268,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 10136,
+  "ink_px_blank": 3902,
+  "colours": 9707,
+  "rich_tiles_proxy": 430
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/jd.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/jd.serial.txt",
+ "about_text_arrived": true,
+ "text_runs": 63,
+ "text_bytes": 429,
+ "text": "18,76 1.\n36,76 多\n55,76 品类齐全，轻松购物\n18,96 2.\n36,96 快\n55,96 多仓直发，极速配送\n18,116 3.\n36,116 好\n55,116 正品行货，精致服务\n18,136 4.\n36,136 省\n55,136 天天低价，畅选无忧\n8,172 购物指南\n75,172 物流配送\n142,172 帮助中心\n209,172 联系我们\n276,172 关注我们\n8,200 关于我们\n75,200 |\n82,200 联系我们\n149,200 |\n156,200 联系客服\n223,200 |\n230,200 合作招商\n297,200 |\n304,200 商家帮助\n371,200 |\n378,200 营销中心\n445,200 |\n452,200 手机京东\n519,200 |\n526,200 友情链接\n593,200 |\n600,200 销售联盟\n667,200 |\n674,200 京东社区\n741,200 |\n748,200 风险监测\n815,200 |\n822,200 隐私政策\n889,200 |\n896,200 京东公益\n963,200 |\n970,200 Media\n1015,200 &\n1028,200 IR\n8,236 京公网安备\n91,236 11000002000088号\n222,236 |\n229,236 京ICP备11041704号\n368,236 |\n375,236 ICP\n402,236 |\n409,236 互联网药品信息服务资格证编号(京)-经营性-2014-0008\n789,236 |\n796,236 新出发京零\n879,236 字第大120007号\n8,264 互联网出版许可证编号新出网证(京)字150号\n317,264 |\n324,264 出版物经营许可证\n455,264 |\n462,264 网络文化经营许可证京网文〔2020〕6112-1201号\n806,264 |\n813,264 违法和不良信息举报电话：4006561155\n8,292 Copyright\n81,292 ©\n100,292 2004\n135,292 -\n143,292 2018\n178,292 京东JD.com\n267,292 版权所有\n334,292 |\n341,292 消费者维权热线：4006067733\n552,292 经营证照\n619,292 |\n626,292 (京)网械平台备字(2018)第00003号\n865,292 |\n872,292 营业执照\n939,292 |\n8,312 增值电信业务经营许可证\n8,340 京东旗下网站：\n123,340 京东钱包\n190,340 |\n197,340 京东云\n8,376 可信网站信用评估\n139,376 诚信网站\n206,376 中国互联网举报中心\n353,376 网络举报APP下载\n8,396 国家知识产权",
+ "subresources": {
+  "host_inventory": null,
+  "gap": null
+ },
+ "finished": "2026-08-20T22:13:54"
+}

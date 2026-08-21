@@ -1,0 +1,312 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20845 composites=185 ns=3212284520 max=118092823 motions=18 curmoves=10 curns=479093 full=139 rects=185 cpx=35278464 fpx=35154384 presns=151257763 torn=0 defer=107 late=0 drawmax=75 evdrop=0
+[browser] load: https://www.deepseek.com/
+[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.46
+[wm] perf t=21845 composites=267 ns=3401996799 max=118092823 motions=18 curmoves=10 curns=479093 full=220 rects=267 cpx=38381184 fpx=38257104 presns=157693560 torn=0 defer=185 late=0 drawmax=75 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.deepseek.com, alpn=http/1.1
+[tls] OCSP staple: good (www.deepseek.com)
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 52854s, 1 cached)
+[dl] painted text: 56 run(s), 609 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,95 获取
+[dl] 49,95 APP
+[dl] 35,119 扫码下载
+[dl] 102,119 DeepSeek
+[dl] 174,119 App
+[dl] 14,147 中文
+[dl] 68,147 EN
+[dl] 8,227 DeepSeek
+[dl] 80,227 网页版
+[dl] 131,227 DeepSeek
+[dl] 203,227 App
+[dl] 233,227 API
+[dl] 259,227 开放平台
+[dl] 326,227 DeepSeek
+[dl] 398,227 Harness
+[dl] 458,227 API
+[dl] 484,227 文档
+[dl] 519,227 加入我们
+[dl] 14,251 中文
+[dl] 68,251 EN
+[dl] 8,315 热招中
+[dl] 59,315 加入
+[dl] 94,315 DeepSeek
+[dl] 166,315 共赴星辰大海
+[dl] 25,335 DeepSeek-V4-Pro
+[dl] 149,335 正式版发布，Agent
+[dl] 289,335 能力大幅提升，支持
+[dl] 436,335 Responses
+[dl] 513,335 API
+[dl] 539,335 和
+[dl] 558,335 Codex
+[dl] 604,335 接入，已在网页端、APP
+[dl] 780,335 和
+[dl] 799,335 API
+[dl] 825,335 全面上线，欢迎测试和反馈
+[dl] 8,369 探索未至之境
+[dl] 8,437 开始对话
+[dl] 75,437 与
+[dl] 94,437 DeepSeek
+[dl] 166,437 免费对话
+[dl] 233,437 体验全新旗舰模型
+[dl] 364,437 API
+[dl] 390,437 开放平台
+[dl] 457,437 调用
+[dl] 492,437 DeepSeek
+[dl] 564,437 最新模型
+[dl] 631,437 快速集成、流畅体验
+[dl] 8,457 加入
+[dl] 43,457 DeepSeek
+[dl] 8,477 共赴星辰大海
+[dl] 107,477 查看岗位
+[dl] 8,520 浙ICP备2023025841号
+[dl] 163,520 浙B2-20250178
+[dl] 269,520 浙公网安备33010502011812号
+[dl] 35,572 扫码关注公众号
+[dl] 8,620 产品
+[dl] ---8<--- end painted text
+[sock] connected www.deepseek.com via ipv4 ::ffff:198.18.0.46
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[net] rx path: frames 68 irq 71 softirq 34 inline 0 poll 2 idle 0/0 halt/skip
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 52852s, 1 cached)
+[browser] heap peak 6732K
+[dl] painted text: 19 run(s), 119 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 931,76 获取
+[dl] 931,76 APP
+[dl] 942,117 扫码下载
+[dl] 996,117 DeepSeek
+[dl] 1056,117 App
+[dl] 1053,77 中
+[dl] 1053,92 文
+[dl] 1094,77 EN
+[dl] 24,212 DeepSeek
+[dl] 106,212 网页版
+[dl] 24,283 DeepSeek
+[dl] 106,283 App
+[dl] 24,354 API
+[dl] 54,354 开放平台
+[dl] 24,425 DeepSeek
+[dl] 106,425 Harness
+[dl] 24,496 API
+[dl] 54,496 文档
+[dl] 24,567 加入我们
+[dl] ---8<--- end painted text
+[mm] low: 110600 frames free (432 MiB), 20437 used, 552 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 552 shared, 0 bugs
+[browser] scripts collected: 18 external classic, 0 external module, 22 inline
+[mm] low: 110088 frames free (430 MiB), 20949 used, 552 shared, 0 bugs
+[wm] perf t=29987 composites=302 ns=5046873171 max=317642803 motions=18 curmoves=10 curns=479093 full=244 rects=302 cpx=53055104 fpx=52931024 presns=212395502 torn=0 defer=195 late=0 drawmax=543 evdrop=0
+[wm] perf t=31009 composites=316 ns=5324316902 max=317642803 motions=18 curmoves=10 curns=479093 full=256 rects=316 cpx=58236544 fpx=58112464 presns=224014889 torn=0 defer=202 late=0 drawmax=543 evdrop=0
+[e1000] stats: rx 307 pkt / 344312 B, tx 293 pkt / 28194 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 318 (+318)
+[wm] perf t=32011 composites=326 ns=5442228292 max=317642803 motions=18 curmoves=10 curns=479093 full=264 rects=326 cpx=60345984 fpx=60221904 presns=228589531 torn=0 defer=208 late=0 drawmax=543 evdrop=0
+[mm] low: 109832 frames free (429 MiB), 21205 used, 552 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 552 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 557 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 557 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 562 shared, 0 bugs
+[webapi] navigation requested: https://www.deepseek.com/en/ (the loader does not consume this yet)
+[mm] low: 108552 frames free (424 MiB), 22485 used, 586 shared, 0 bugs
+%c[__httpRequest]:%c httpRequest GET https://chat.deepseek.com/api/v0/ip_to_country_code color: blue;  [object Object] 
+[browser] load done: 22 requests, 2 connections dialled, 20 reused, 0 modules loaded (0 failed)
+[browser] pool: 20 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 21 from network (tab 2 of 3)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 74441s, 1 cached)
+[dl] painted text: 115 run(s), 660 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,95 Get
+[dl] 42,95 App
+[dl] 35,119 Scan
+[dl] 73,119 to
+[dl] 91,119 get
+[dl] 117,119 DeepSeek
+[dl] 189,119 App
+[dl] 14,147 中文
+[dl] 68,147 EN
+[dl] 8,227 DeepSeek
+[dl] 80,227 Web
+[dl] 114,227 Download
+[dl] 189,227 App
+[dl] 219,227 API
+[dl] 245,227 Platform
+[dl] 311,227 DeepSeek
+[dl] 383,227 Harness
+[dl] 443,227 API
+[dl] 469,227 Docs
+[dl] 507,227 Join
+[dl] 540,227 Us
+[dl] 14,251 中文
+[dl] 68,251 EN
+[dl] 8,315 Hiring
+[dl] 54,315 Now
+[dl] 89,315 Join
+[dl] 122,315 DeepSeek
+[dl] 194,315 To
+[dl] 215,315 the
+[dl] 241,315 Stars
+[dl] 281,315 and
+[dl] 311,315 Beyond
+[dl] 25,335 The
+[dl] 54,335 official
+[dl] 105,335 version
+[dl] 159,335 of
+[dl] 176,335 DeepSeek-V4-Pro
+[dl] 300,335 has
+[dl] 328,335 been
+[dl] 365,335 released,
+[dl] 431,335 featuring
+[dl] 499,335 significantly
+[dl] 588,335 enhanced
+[dl] 660,335 agent
+[dl] 704,335 capabilities
+[dl] 788,335 and
+[dl] 818,335 support
+[dl] 876,335 for
+[dl] 899,335 the
+[dl] 925,335 Responses
+[dl] 1002,335 API
+[dl] 1028,335 and
+[dl] 1058,335 Codex
+[dl] 8,355 integration.
+[dl] 94,355 It
+[dl] 107,355 is
+[dl] 121,355 now
+[dl] 154,355 fully
+[dl] 187,355 available
+[dl] 254,355 across
+[dl] 303,355 the
+[dl] 329,355 web,
+[dl] 365,355 mobile
+[dl] 416,355 app,
+[dl] 450,355 and
+[dl] 480,355 API;
+[dl] 510,355 we
+[dl] 533,355 welcome
+[dl] 599,355 your
+[dl] 634,355 testing
+[dl] 686,355 and
+[dl] 716,355 feedback.
+[dl] 8,389 Into
+[dl] 74,389 the
+[dl] 129,389 Unknown
+[dl] 8,457 Chat
+[dl] 45,457 Now
+[dl] 80,457 Free
+[dl] 113,457 access
+[dl] 163,457 to
+[dl] 181,457 DeepSeek.
+[dl] 257,457 Experience
+[dl] 336,457 the
+[dl] 362,457 intelligent
+[dl] 436,457 model.
+[dl] 487,457 Access
+[dl] 537,457 API
+[dl] 563,457 Build
+[dl] 602,457 with
+[dl] 636,457 the
+[dl] 662,457 latest
+[dl] 705,457 DeepSeek
+[dl] 777,457 models.
+[dl] 835,457 Powerful
+[dl] 901,457 models,
+[dl] 959,457 smooth
+[dl] 1016,457 experience.
+[dl] 8,477 Join
+[dl] 41,477 DeepSeek
+[dl] 8,497 To
+[dl] 29,497 the
+[dl] 55,497 Stars
+[dl] 95,497 and
+[dl] 125,497 Beyond
+[dl] 181,497 Browse
+[dl] 236,497 Positions
+[dl] 8,540 浙ICP备2023025841号
+[dl] 163,540 浙B2-20250178
+[dl] 269,540 浙公网安备33010502011812号
+[dl] 35,592 Scan
+[dl] 73,592 to
+[dl] 91,592 follow
+[dl] 137,592 DeepSeek
+[dl] 209,592 on
+[dl] 230,592 WeChat
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] resumed session for www.deepseek.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.deepseek.com (138 bytes, lifetime 63645s, 1 cached)
+[browser] heap peak 14755K
+[dl] painted text: 22 run(s), 95 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 938,76 Get
+[dl] 938,76 App
+[dl] 944,117 Scan
+[dl] 973,117 to
+[dl] 986,117 get
+[dl] 1006,117 DeepSeek
+[dl] 1066,117 App
+[dl] 1053,77 中
+[dl] 1053,92 文
+[dl] 1094,77 EN
+[dl] 24,212 DeepSeek
+[dl] 106,212 Web
+[dl] 24,283 Download
+[dl] 110,283 App
+[dl] 24,354 API
+[dl] 54,354 Platform
+[dl] 24,425 DeepSeek
+[dl] 106,425 Harness
+[dl] 24,496 API
+[dl] 54,496 Docs
+[dl] 24,567 Join
+[dl] 61,567 Us
+[dl] ---8<--- end painted text
+[browser] scripts collected: 18 external classic, 0 external module, 19 inline
+[wm] perf t=43193 composites=365 ns=7441067373 max=317642803 motions=18 curmoves=10 curns=479093 full=285 rects=365 cpx=80354944 fpx=80230864 presns=314260902 torn=0 defer=210 late=0 drawmax=543 evdrop=0
+[net] rx path: frames 580 irq 613 softirq 290 inline 5 poll 13 idle 0/0 halt/skip
+[wm] perf t=44208 composites=392 ns=7503085981 max=317642803 motions=18 curmoves=10 curns=479093 full=311 rects=392 cpx=81409664 fpx=81285584 presns=316703839 torn=0 defer=235 late=0 drawmax=543 evdrop=0
+[e1000] stats: rx 598 pkt / 672364 B, tx 575 pkt / 55630 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 632 (+314)
+[mm] low: 108296 frames free (423 MiB), 22741 used, 593 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 593 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 593 shared, 0 bugs
+[browser] script LOST: https://www.deepseek.com/_next/static/chunks/5195-92e48909c9793be7.js: no body (status 202)
+[browser] script LOST: https://www.deepseek.com/_next/static/chunks/8261-603f83f6262f48f9.js: no body (status 202)
+[browser] script LOST: https://www.deepseek.com/_next/static/chunks/app/%5Blocale%5D/template-d92da56b432d6eb2.js: no body (status 202)
+[browser] script LOST: https://www.deepseek.com/_next/static/chunks/webpack-3c24b8ec13c077cd.js: no body (status 202)
+[browser] load done: 22 requests, 2 connections dialled, 20 reused, 0 modules loaded (0 failed)
+[browser] pool: 40 hits, 0 evicted, 4 closed
+[browser] resources: 0 from tab, 21 from network (tab 2 of 3)
+[wm] perf t=47257 composites=411 ns=8008339881 max=317642803 motions=18 curmoves=10 curns=479093 full=325 rects=411 cpx=88731264 fpx=88607184 presns=332713017 torn=0 defer=242 late=0 drawmax=543 evdrop=0
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 22 run(s), 95 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 938,76 Get
+[dl] 938,76 App
+[dl] 944,117 Scan
+[dl] 973,117 to
+[dl] 986,117 get
+[dl] 1006,117 DeepSeek
+[dl] 1066,117 App
+[dl] 1053,77 中
+[dl] 1053,92 文
+[dl] 1094,77 EN
+[dl] 24,212 DeepSeek
+[dl] 106,212 Web
+[dl] 24,283 Download
+[dl] 110,283 App
+[dl] 24,354 API
+[dl] 54,354 Platform
+[dl] 24,425 DeepSeek
+[dl] 106,425 Harness
+[dl] 24,496 API
+[dl] 54,496 Docs
+[dl] 24,567 Join
+[dl] 61,567 Us
+[dl] ---8<--- end painted text
+[wm] perf t=52295 composites=481 ns=8480315314 max=317642803 motions=18 curmoves=10 curns=479093 full=386 rects=481 cpx=96175744 fpx=96051664 presns=348083332 torn=0 defer=296 late=0 drawmax=543 evdrop=0

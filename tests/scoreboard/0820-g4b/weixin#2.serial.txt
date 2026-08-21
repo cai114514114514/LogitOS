@@ -1,0 +1,301 @@
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 48/56 known features present: fpu tsc msr cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0 (AVX deliberately off -- see boot/long.asm)
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=3517417 cycles, c=19877181 cycles, speedup x5.65
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 3417.646 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 3419444659 3417646711 3417613064 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (7 ticks) crypto_mismatch=0 kat=0 (700 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[mm] boot: 131037 frames total (511 MiB), 127497 free, 3540 used, 0 shared, 3540 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[mm] boot: metadata 415 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 127496 frames free (498 MiB), 3541 used, 0 shared, 0 bugs
+[mm] low: 127240 frames free (497 MiB), 3797 used, 0 shared, 0 bugs
+[mm] low: 126984 frames free (496 MiB), 4053 used, 0 shared, 0 bugs
+[rmap] 131037 frames, 196555 nodes (2831 KiB total: 511 KiB heads + 2303 KiB nodes)
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 126728 frames free (495 MiB), 4309 used, 0 shared, 0 bugs
+[mm] low: 126472 frames free (494 MiB), 4565 used, 0 shared, 0 bugs
+[pcache] up: 65518 page slots (262072 KiB ceiling), 32 file slots, 16384 buckets; tables 2112 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[acpi] RSDP from the bootloader's multiboot2 tag
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 126216 frames free (493 MiB), 4821 used, 0 shared, 0 bugs
+[mm] low: 125960 frames free (492 MiB), 5077 used, 0 shared, 0 bugs
+[mm] low: 125704 frames free (491 MiB), 5333 used, 0 shared, 0 bugs
+[mm] low: 125448 frames free (490 MiB), 5589 used, 0 shared, 0 bugs
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:03.0, 2 queues)
+[mm] low: 125192 frames free (489 MiB), 5845 used, 0 shared, 0 bugs
+[mm] low: 124936 frames free (488 MiB), 6101 used, 0 shared, 0 bugs
+[mm] low: 124680 frames free (487 MiB), 6357 used, 0 shared, 0 bugs
+[mm] low: 124424 frames free (486 MiB), 6613 used, 0 shared, 0 bugs
+[virtio-gpu] 1280x800, RAM fb @ 0x16b0000, cursor plane yes
+[virtio] 1001 up (0000:00:02.0, 4 queues)
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 131072 sectors (64.0 MiB)
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=712 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:04.0
+[mm] low: 124168 frames free (485 MiB), 6869 used, 0 shared, 0 bugs
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfeb80000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (1990 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[mm] low: 123912 frames free (484 MiB), 7125 used, 0 shared, 0 bugs
+[mm] low: 123656 frames free (483 MiB), 7381 used, 0 shared, 0 bugs
+[mm] low: 123400 frames free (482 MiB), 7637 used, 0 shared, 0 bugs
+[mm] low: 123144 frames free (481 MiB), 7893 used, 0 shared, 0 bugs
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 3500 KiB, free 4692 KiB, over-allocated 0 KiB
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 122888 frames free (480 MiB), 8149 used, 0 shared, 0 bugs
+[mm] low: 122632 frames free (479 MiB), 8405 used, 0 shared, 0 bugs
+[mm] low: 122376 frames free (478 MiB), 8661 used, 0 shared, 0 bugs
+[mm] low: 122120 frames free (477 MiB), 8917 used, 0 shared, 0 bugs
+[mm] low: 121864 frames free (476 MiB), 9173 used, 0 shared, 0 bugs
+[mm] low: 121608 frames free (475 MiB), 9429 used, 0 shared, 0 bugs
+[mm] low: 121352 frames free (474 MiB), 9685 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[wm] pointer: display cursor plane (motion does not composite)
+[mm] low: 121096 frames free (473 MiB), 9941 used, 0 shared, 0 bugs
+[mm] low: 120840 frames free (472 MiB), 10197 used, 0 shared, 0 bugs
+[mm] low: 120584 frames free (471 MiB), 10453 used, 0 shared, 0 bugs
+[mm] low: 120328 frames free (470 MiB), 10709 used, 0 shared, 0 bugs
+[mm] low: 120072 frames free (469 MiB), 10965 used, 0 shared, 0 bugs
+[mm] low: 119816 frames free (468 MiB), 11221 used, 0 shared, 0 bugs
+[mm] low: 119560 frames free (467 MiB), 11477 used, 0 shared, 0 bugs
+[mm] low: 119304 frames free (466 MiB), 11733 used, 0 shared, 0 bugs
+[kheap] grow #3: +8192 KiB -> arena 16384 KiB, live 4242 KiB, free 12142 KiB, over-allocated 0 KiB
+[wm] dock 11 apps: clock.aex textedit.aex monitor.aex terminal.aex widgets.aex files.aex preview.aex studio.aex browser.aex gallery.aex settings.aex
+[mm] low: 119048 frames free (465 MiB), 11989 used, 0 shared, 0 bugs
+[mm] low: 118792 frames free (464 MiB), 12245 used, 0 shared, 0 bugs
+[mm] low: 118536 frames free (463 MiB), 12501 used, 0 shared, 0 bugs
+[mm] low: 118280 frames free (462 MiB), 12757 used, 0 shared, 0 bugs
+[kheap] grow #4: +4096 KiB -> arena 20480 KiB, live 8910 KiB, free 11570 KiB, over-allocated 0 KiB
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC (NIC gsi=11)
+[smp] CPU 1 apic_id=1 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] 4/4 CPUs online
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=- caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfeba0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=- caps=msix,vndr, bar1=0xfeba1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 bar0=0xfeb80000/0x20000 bar1=io:0xc080/0x40
+[dev] 7 device(s), 1 bound, 6 unclaimed
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[mm] low: 118024 frames free (461 MiB), 13013 used, 0 shared, 0 bugs
+[exec] load files.aex: 18 pages file-backed in 1 areas, 166 copied
+[mm] low: 117768 frames free (460 MiB), 13269 used, 0 shared, 0 bugs
+[mm] low: 117512 frames free (459 MiB), 13525 used, 0 shared, 0 bugs
+[mm] low: 117256 frames free (458 MiB), 13781 used, 0 shared, 0 bugs
+[mm] low: 117000 frames free (457 MiB), 14037 used, 0 shared, 0 bugs
+[wm] launched Finder
+[exec] load /bin/login: 5 pages file-backed in 1 areas, 5 copied
+[sched] first-run tid 7 (login)
+[sched] first-run tid 6 (Finder)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 4094 frames (15 MiB free), stop at 8189 (31 MiB); swap OFF (drop tier only)
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[exec] load /bin/sh: 7 pages file-backed in 1 areas, 22 copied
+[wm] ptr 640 400
+LogitOS shell -- type 'help'
+/ $ [wm] win 0 frame 110 70 640 474 content 640 444 pt zoom 0 min 0 Finder
+[time] accuracy n=32 late_us min=1102 p50=6112 p90=9222 max=10155 (TCG; delivery is quantised to the 100Hz tick)
+[ip6] dad ok fec0::5054:ff:fe12:3456/64
+[wm] ptr 832 753
+[mm] low: 116744 frames free (456 MiB), 14293 used, 7 shared, 0 bugs
+[mm] low: 116488 frames free (455 MiB), 14549 used, 7 shared, 0 bugs
+[mm] low: 116232 frames free (454 MiB), 14805 used, 7 shared, 0 bugs
+[mm] low: 115976 frames free (453 MiB), 15061 used, 7 shared, 0 bugs
+[mm] low: 115720 frames free (452 MiB), 15317 used, 7 shared, 0 bugs
+[mm] low: 115464 frames free (451 MiB), 15573 used, 7 shared, 0 bugs
+[mm] low: 115208 frames free (450 MiB), 15829 used, 7 shared, 0 bugs
+[mm] low: 114952 frames free (449 MiB), 16085 used, 7 shared, 0 bugs
+[mm] low: 114696 frames free (448 MiB), 16341 used, 7 shared, 0 bugs
+[mm] low: 114440 frames free (447 MiB), 16597 used, 7 shared, 0 bugs
+[mm] low: 114184 frames free (446 MiB), 16853 used, 7 shared, 0 bugs
+[exec] load browser.aex: 880 pages file-backed in 2 areas, 2843 copied
+[mm] low: 113928 frames free (445 MiB), 17109 used, 7 shared, 0 bugs
+[mm] low: 113672 frames free (444 MiB), 17365 used, 7 shared, 0 bugs
+[mm] low: 113416 frames free (443 MiB), 17621 used, 7 shared, 0 bugs
+[mm] low: 113160 frames free (442 MiB), 17877 used, 7 shared, 0 bugs
+[mm] low: 112904 frames free (441 MiB), 18133 used, 7 shared, 0 bugs
+[mm] low: 112648 frames free (440 MiB), 18389 used, 7 shared, 0 bugs
+[mm] low: 112392 frames free (439 MiB), 18645 used, 7 shared, 0 bugs
+[mm] low: 112136 frames free (438 MiB), 18901 used, 7 shared, 0 bugs
+[wm] launched Browser
+[sched] first-run tid 20 (Browser)
+[wm] perf t=5702 composites=26 ns=724859994 max=59275608 motions=5 curmoves=4 curns=200804 full=5 rects=27 cpx=7105972 fpx=6998436 presns=19873077 torn=0 defer=0 late=0 drawmax=50 evdrop=0
+[mm] low: 111880 frames free (437 MiB), 19157 used, 21 shared, 0 bugs
+[waitq] 200 ms of waiting: bkl_hlt_wait spin re-tested 59 times / 1 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=1 work=1 blocked_now=3
+
+WAITQ_SELFTEST_OK (0 failures)
+[time] xcheck src=tsc rtc=5s mono=4204ms tick=3720ms err=-159ppt OK
+[time] negctl 2x-tick err=+681ppt -> REJECTED (guard works)
+[wm] win 1 frame 138 98 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[browser] session restored 0 tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[time] fallback pit ran 500ms (want ~500), switch back rc=0 continuity=3774ns monotonic
+[kbench] --- kernel entry cost, boot through desktop live (4 cores, TCG) ---
+[kbench] entry syscall: 657001 entries, mean 13206.839 ns each, 8676 ms total
+[kbench] entry timer: 9273 entries, mean 1796234.243 ns each, 16656 ms total
+[kbench] entry fault: 163 entries, mean 8064832.678 ns each, 1314 ms total
+[kbench] entry irq: 30 entries, mean 545036.084 ns each, 16 ms total
+[kbench] tty console wait: 1838 wakes, 513780 us awake in total (279.532 us each), 9051 ms uptime -- 56/1000 of ONE core
+[kbench] scheduler: 488 context switches, 2 threads parked now, 63 poll passes through bkl_hlt_wait
+[kbench]   poll 0x11652c: 63 pass(es)
+[kbench] tlb: 0 shootdown(s) never acked
+[kbench] BKL holders: 604 samples, held in 201 (33%), 0 lost to collision
+[kbench]   bkl 0x119fbe: 133 samples (66% of held)
+[kbench]   bkl 0x13d30e: 53 samples (26% of held)
+[kbench]   bkl 0x154c17: 5 samples (2% of held)
+[kbench]   bkl 0x155df3: 4 samples (1% of held)
+[kbench]   bkl 0x13d06e: 3 samples (1% of held)
+[kbench]   bkl 0x154c52: 2 samples (0% of held)
+[kbench]   bkl 0x11ff89: 1 samples (0% of held)
+[kbench] syscalls: 656948 calls, 471 ms inside the dispatcher (BKL already held; blocking calls include time descheduled)
+[kbench]   SYS 8: 328399 calls (49%), mean 544.897 ns in handler, 178 ms total
+[kbench]   SYS 12: 328346 calls (49%), mean 500.701 ns in handler, 164 ms total
+[kbench]   SYS 20: 43 calls (0%), mean 45161.272 ns in handler, 1 ms total
+[kbench]   SYS 37: 31 calls (0%), mean 13093.309 ns in handler, 0 ms total
+[kbench]   SYS 1: 25 calls (0%), mean 144668.024 ns in handler, 3 ms total
+[kbench]   SYS 38: 24 calls (0%), mean 148213.320 ns in handler, 3 ms total
+[kbench]   SYS 71: 18 calls (0%), mean 61464.312 ns in handler, 1 ms total
+[kbench]   SYS 72: 12 calls (0%), mean 6080955.711 ns in handler, 72 ms total
+[kbench]   SYS 41: 6 calls (0%), mean 14082.138 ns in handler, 0 ms total
+[kbench]   SYS 5: 5 calls (0%), mean 22630.143 ns in handler, 0 ms total
+[kbench]   SYS 6: 5 calls (0%), mean 237630.201 ns in handler, 1 ms total
+[kbench]   SYS 102: 4 calls (0%), mean 20133.669 ns in handler, 0 ms total
+[kbench]   SYS 11: 3 calls (0%), mean 251478.587 ns in handler, 0 ms total
+[kbench]   SYS 76: 3 calls (0%), mean 157597.014 ns in handler, 0 ms total
+[kbench]   SYS 81: 3 calls (0%), mean 82483.074 ns in handler, 0 ms total
+[kbench]   SYS 103: 3 calls (0%), mean 17483.757 ns in handler, 0 ms total
+[kbench] BKL: 673264 acquisitions, 5987 contended (0%); wait mean 11031.380 ns, hold mean 5199.006 ns
+[kbench] BKL: 7427 ms spent waiting, 3500 ms spent holding, across 4 cores
+[mm] kbench: 131037 frames total (511 MiB), 111750 free, 19287 used, 130 shared, 19417 refs (+130 saved = 520 KiB), 0 pinned, 0 bugs
+[mm] kbench: metadata 415 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] kbench: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[kheap] kbench: arena 20480 KiB, live 8969 KiB (151 blocks), free 11508 KiB, over-allocated 1 KiB of 30961 KiB served, 239 allocs, 88 frees, 4 grows, 225 splits, 70 merges
+[mm] kbench: cow=on, 0 pages shared copy-on-write; faults: 0 copied, 0 reused, 32 anon, 0 declined; 3 address spaces with areas
+[mm] kbench: fault cost (kcycles total / cycles each): cow-copy 0/0, cow-reuse 0/0, anon 1689/52790, swap-in 0/0
+[mm] kbench: file faults 131 (1084362 kcycles total / 8277575 each)
+[mm] kbench: shm faults 0 (0 kcycles total / 0 each)
+[pcache] kbench: 131 pages resident (peak 131 of 65518 slots), 4 files; 0 hits, 131 misses, 0 shared
+[pcache] kbench: 0 dropped by reclaim, 0 evicted here, 0 invalidated by a write, 0 whole-file reads bypassed
+[pcache] kbench: pool 131/65518 slots used at peak (0%); 0 entries orphaned (pool full of mapped pages), 0 pages handed back UNCACHED AND LEAKED
+[shm] kbench: 0 segments, 0 pages (0 KiB unreclaimable), 0 bugs
+[reclaim] kbench: on, 0 passes, 0 frames scanned, 0 evicted (0 dropped free [0 zero + 0 cache] + 0 swapped), 0 second chances
+[reclaim] kbench: skipped 0 unmapped / 0 pinned / 0 partially-known / 0 too-shared / 0 running elsewhere; failed 0 no-slot / 0 io; 0 bugs
+[reclaim] kbench: page-cache frames met 0, dropped 0, UNACCOUNTED-FOR REFERENCE 0, too-shared 0
+[reclaim] kbench: 0 swap-ins (0 failed); 0 kcycles scanning (0 per frame evicted)
+[rmap] kbench: 6271/196555 nodes used (peak 6271), 0 overflows, 0 frames incomplete, 0 bugs
+[swap] kbench: OFF (no device)
+KBENCH_DONE
+[time] smp-mono cores=4 seen=7 reads=400000 observed-backsteps=0 clamped=0 max=0ns
+[wm] perf t=16087 composites=73 ns=4663802464 max=361278103 motions=5 curmoves=4 curns=200804 full=40 rects=74 cpx=29126228 fpx=29002148 presns=124158922 torn=0 defer=14 late=0 drawmax=300 evdrop=0

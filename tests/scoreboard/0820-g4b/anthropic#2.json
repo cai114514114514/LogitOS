@@ -1,0 +1,85 @@
+{
+ "name": "anthropic#2",
+ "url": "https://www.anthropic.com/",
+ "started": "2026-08-20T22:18:31",
+ "verdict": "ERRORS",
+ "why": "painted 7368 changed px in 13.9s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.anthropic.com/",
+  "bytes": 185094,
+  "redirects": [],
+  "script_tags": 20,
+  "script_src": 11,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 11,
+   "inline_scripts": 9,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 13
+  },
+  "elapsed": 0.8
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "timer: ReferenceError: 'CSSStyleDeclaration' is not defined",
+   "timer: TypeError: cannot read property 'pageYOffset' of undefined",
+   "timer: TypeError: cannot read property 'pageYOffset' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 14,
+  "dials": 7,
+  "reused": 7,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8338,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 13.9,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 7368,
+  "changed_bbox": [
+   148,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 5084,
+  "ink_px_blank": 3902,
+  "colours": 767,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/anthropic#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/anthropic#2.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/anthropic#2.host.html",
+ "text_runs": 15,
+ "text_bytes": 71,
+ "text": "8,68 Skip\n41,68 to\n59,68 main\n98,68 content\n8,88 Skip\n41,88 to\n59,88 footer\n14,132 •\n36,132 Research\n14,152 •\n36,152 Policy\n14,172 •\n36,172 Commitments\n14,492 •\n36,492 Learn",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 11,
+   "inline_scripts": 9,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 13
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:19:29"
+}

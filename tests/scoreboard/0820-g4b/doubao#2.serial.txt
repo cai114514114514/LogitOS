@@ -1,0 +1,129 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=23559 composites=235 ns=3993228553 max=297173982 motions=17 curmoves=9 curns=897441 full=177 rects=235 cpx=41648400 fpx=41416784 presns=110238652 torn=0 defer=140 late=0 drawmax=410 evdrop=0
+[browser] load: https://www.doubao.com/
+[sock] connected www.doubao.com via ipv4 ::ffff:198.18.0.48
+[wm] perf t=24559 composites=301 ns=4195955190 max=297173982 motions=17 curmoves=9 curns=897441 full=243 rects=301 cpx=44720400 fpx=44488784 presns=118070815 torn=0 defer=203 late=0 drawmax=410 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.doubao.com, alpn=http/1.1
+[net] rx path: frames 65 irq 73 softirq 35 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 506 shared, 0 bugs
+[sock] connected lf-flow-web-cdn.doubao.com via ipv4 ::ffff:198.18.0.50
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-flow-web-cdn.doubao.com, alpn=http/1.1
+[tls] ticket stored for lf-flow-web-cdn.doubao.com (208 bytes, lifetime 21600s, 1 cached)
+[tls] ticket stored for lf-flow-web-cdn.doubao.com (208 bytes, lifetime 21600s, 2 cached)
+[mm] low: 110344 frames free (431 MiB), 20693 used, 509 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 509 shared, 0 bugs
+[browser] heap peak 8592K
+[mm] low: 109832 frames free (429 MiB), 21205 used, 510 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 510 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 4 external classic, 0 external module, 9 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf-flow-web-cdn.doubao.com (no chain, no signature), alpn=http/1.1
+[mm] low: 109320 frames free (427 MiB), 21717 used, 510 shared, 0 bugs
+[e1000] stats: rx 288 pkt / 313367 B, tx 275 pkt / 25641 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 289 (+289)
+[mm] low: 109064 frames free (426 MiB), 21973 used, 510 shared, 0 bugs
+[net] rx path: frames 581 irq 512 softirq 252 inline 0 poll 8 idle 0/0 halt/skip
+[mm] low: 108808 frames free (425 MiB), 22229 used, 510 shared, 0 bugs
+[e1000] stats: rx 634 pkt / 765954 B, tx 565 pkt / 44592 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 524 (+235)
+[mm] low: 108552 frames free (424 MiB), 22485 used, 510 shared, 0 bugs
+[mm] low: 108296 frames free (423 MiB), 22741 used, 510 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 510 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 523 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 526 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 527 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 528 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 528 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 528 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 528 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 530 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 530 shared, 0 bugs
+[mm] low: 105480 frames free (412 MiB), 25557 used, 530 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 530 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 530 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 530 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 530 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 530 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 530 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 530 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 530 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 530 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 530 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 530 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 530 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf3-short.ibytedapm.com, alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 2 cached)
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 3 cached)
+[mm] low: 102152 frames free (399 MiB), 28885 used, 564 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 564 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 564 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[mm] low: 101384 frames free (396 MiB), 29653 used, 565 shared, 0 bugs
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[browser] load done: 8 requests, 4 connections dialled, 5 reused, 0 modules loaded (0 failed)
+[browser] pool: 5 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[error] TypeError: cannot read property 'history' of undefined
+    at m (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at c (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at b (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at useMemo (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at p (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at ak (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at i (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oD (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oF (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at oE (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at ox (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-react.42af9304.js)
+    at S (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at C (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/5657.20b7bdba.js)
+    at apply (native)
+    at <anonymous> (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at k (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at j (https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/static/js/lib-polyfill.39a59115.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[bxfer] h2 mcs.doubao.com:443 closed: streams=1 peak=1 frames=4/4 hpack_in=0
+[bxfer] h2 www.doubao.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=75
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=7/5 hpack_in=6243
+[e1000] stats: rx 914 pkt / 1047481 B, tx 805 pkt / 71794 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 780 (+256)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=6272
+[bxfer] h2 mcs.doubao.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=38
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.doubao.com, alpn=h2
+[bxfer] h2 mcs.doubao.com:443 closed: streams=5 peak=5 frames=21/18 hpack_in=2682
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=4/4 hpack_in=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for opt.doubao.com, alpn=h2
+[bxfer] h2 opt.doubao.com:443 closed: streams=1 peak=1 frames=4/5 hpack_in=0
+[mm] low: 101128 frames free (395 MiB), 29909 used, 581 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 581 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for mssdk.bytedance.com, alpn=h2
+[tls] ticket stored for mssdk.bytedance.com (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for mssdk.bytedance.com (240 bytes, lifetime 900s, 5 cached)
+[bxfer] h2 mssdk.bytedance.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=60
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=62818 composites=431 ns=6346469598 max=348025449 motions=17 curmoves=9 curns=897441 full=301 rects=431 cpx=65364240 fpx=65132624 presns=214122735 torn=0 defer=243 late=0 drawmax=618 evdrop=0

@@ -1,0 +1,57 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21076 composites=200 ns=3478682905 max=140246538 motions=18 curmoves=10 curns=546824 full=152 rects=201 cpx=35656080 fpx=35498912 presns=160757854 torn=0 defer=120 late=0 drawmax=106 evdrop=0
+[browser] load: http://example.com/
+[sock] connected example.com via ipv4 ::ffff:198.18.0.124
+[wm] perf t=22126 composites=225 ns=3788010137 max=205849426 motions=18 curmoves=10 curns=546824 full=176 rects=226 cpx=37734800 fpx=37577632 presns=174813274 torn=0 defer=142 late=0 drawmax=106 evdrop=0
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[browser] scripts collected: 0 external classic, 0 external module, 0 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[browser] ctrl+L: address bar focused
+[wm] perf t=42300 composites=287 ns=4834666864 max=240439343 motions=18 curmoves=10 curns=546824 full=200 rects=288 cpx=44022160 fpx=43864992 presns=231044841 torn=0 defer=161 late=0 drawmax=414 evdrop=0
+[browser] load: about:text
+[dl] painted text: 19 run(s), 109 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,170 Example
+[dl] 98,170 Domain
+[dl] 0,214 This
+[dl] 32,214 domain
+[dl] 89,214 is
+[dl] 103,214 for
+[dl] 126,214 use
+[dl] 153,214 in
+[dl] 169,214 documentation
+[dl] 281,214 examples
+[dl] 350,214 without
+[dl] 408,214 needing
+[dl] 467,214 permission.
+[dl] 551,214 Avoid
+[dl] 593,214 use
+[dl] 620,214 in
+[dl] 0,234 operations.
+[dl] 0,262 Learn
+[dl] 43,262 more
+[dl] ---8<--- end painted text
+[wm] perf t=43300 composites=310 ns=4995074161 max=240439343 motions=18 curmoves=10 curns=546824 full=222 rects=311 cpx=47124880 fpx=46967712 presns=236079709 torn=0 defer=180 late=0 drawmax=414 evdrop=0

@@ -1,0 +1,12 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21253 composites=184 ns=3802811782 max=293591934 motions=18 curmoves=10 curns=457357 full=130 rects=185 cpx=38424608 fpx=38209536 presns=128160544 torn=2 defer=96 late=2 drawmax=253 evdrop=0
+[browser] load: https://www.deepseek.c/
+[sock] connected www.deepseek.c via ipv4 ::ffff:198.18.0.141
+[wm] perf t=22254 composites=195 ns=4419114870 max=293591934 motions=18 curmoves=10 curns=457357 full=141 rects=196 cpx=43544608 fpx=43329536 presns=142833990 torn=5 defer=102 late=5 drawmax=1591 evdrop=0
+[browser] page fetch failed: TLS refused: handshake or certificate verification failed (https://www.deepseek.c/)
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=40316 composites=267 ns=5376797134 max=293591934 motions=18 curmoves=10 curns=457357 full=179 rects=268 cpx=52781088 fpx=52566016 presns=170507784 torn=5 defer=132 late=5 drawmax=1591 evdrop=0

@@ -1,0 +1,81 @@
+{
+ "name": "deepseek#2",
+ "url": "https://www.deepseek.com/",
+ "started": "2026-08-20T22:17:10",
+ "verdict": "FETCH-FAIL",
+ "why": "the guest could not fetch it (TLS refused: handshake or certificate verification failed (https://www.deepseek.c/)) while the host got HTTP 200",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.deepseek.com/",
+  "bytes": 86450,
+  "redirects": [],
+  "script_tags": 41,
+  "script_src": 19,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "elapsed": 1.5
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": null,
+  "dials": null,
+  "reused": null,
+  "modules": null,
+  "modules_failed": null,
+  "heap_peak_k": null,
+  "load_done": false,
+  "page_fetch_failed": "TLS refused: handshake or certificate verification failed (https://www.deepseek.c/)",
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 1.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 13644,
+  "changed_bbox": [
+   152,
+   0,
+   1256,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/deepseek#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/deepseek#2.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/deepseek#2.host.html",
+ "text_runs": 0,
+ "text_bytes": 0,
+ "text": "",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 22,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:17:54"
+}

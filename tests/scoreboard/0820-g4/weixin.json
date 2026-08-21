@@ -1,0 +1,81 @@
+{
+ "name": "weixin",
+ "url": "https://weixin.qq.com/",
+ "started": "2026-08-20T21:58:16",
+ "verdict": "PAINTED",
+ "why": "painted 14424 changed px in 8.5s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://weixin.qq.com/",
+  "bytes": 112697,
+  "redirects": [],
+  "script_tags": 10,
+  "script_src": 5,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "elapsed": 2.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 5,
+  "dials": 3,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 6732,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 8.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 14424,
+  "changed_bbox": [
+   152,
+   0,
+   1264,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 595,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4/weixin.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/weixin.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4/weixin.host.html",
+ "text_runs": 23,
+ "text_bytes": 151,
+ "text": "343,328 微信\n380,328 4.1.13\n427,328 for\n451,328 Windows\n522,328 全新发布\n749,328 08-18\n343,342 微信\n380,342 4.1.13\n427,342 for\n451,342 Mac\n484,342 全新发布\n749,342 08-18\n343,360 微信输入法\n431,360 2.1.2\n469,360 for\n493,360 Windows\n564,360 发布\n749,360 08-17\n343,387 更多日志\n-24,92 WeChat\n35,92 (繁体)\n97,92 WeChat\n-32,108 (EN)",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T21:59:06"
+}

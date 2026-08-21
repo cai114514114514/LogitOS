@@ -1,0 +1,233 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=22176 composites=239 ns=2781810936 max=237184278 motions=18 curmoves=11 curns=3657280 full=195 rects=240 cpx=28292532 fpx=28184996 presns=126928945 torn=0 defer=170 late=0 drawmax=180 evdrop=0
+[browser] load: https://www.bilibili.com/
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.71
+[wm] perf t=23185 composites=271 ns=2963134436 max=237184278 motions=18 curmoves=11 curns=3657280 full=226 rects=272 cpx=31395252 fpx=31287716 presns=132700059 torn=0 defer=198 late=0 drawmax=180 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[mm] low: 110600 frames free (432 MiB), 20437 used, 514 shared, 0 bugs
+[dl] painted text: 76 run(s), 516 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,84 •
+[dl] 57,84 首页
+[dl] 14,104 •
+[dl] 36,104 番剧
+[dl] 14,124 •
+[dl] 36,124 直播
+[dl] 14,144 •
+[dl] 36,144 游戏中心
+[dl] 14,164 •
+[dl] 36,164 会员购
+[dl] 14,184 •
+[dl] 36,184 漫画
+[dl] 14,204 •
+[dl] 36,204 赛事
+[dl] 14,224 •
+[dl] 55,224 下载客户端
+[dl] 8,360 动态
+[dl] 8,402 热门
+[dl] 8,422 番剧
+[dl] 43,422 电影
+[dl] 78,422 国创
+[dl] 113,422 电视剧
+[dl] 164,422 综艺
+[dl] 199,422 纪录片
+[dl] 250,422 动画
+[dl] 285,422 游戏
+[dl] 320,422 鬼畜
+[dl] 355,422 音乐
+[dl] 390,422 舞蹈
+[dl] 425,422 影视
+[dl] 460,422 娱乐
+[dl] 495,422 知识
+[dl] 530,422 科技数码
+[dl] 597,422 资讯
+[dl] 632,422 美食
+[dl] 667,422 小剧场
+[dl] 718,422 汽车
+[dl] 753,422 时尚美妆
+[dl] 820,422 体育运动
+[dl] 887,422 动物
+[dl] 922,422 vlog
+[dl] 955,422 绘画
+[dl] 990,422 人工智能
+[dl] 8,442 家装房产
+[dl] 75,442 户外潮流
+[dl] 142,442 健身
+[dl] 177,442 手工
+[dl] 212,442 旅游出行
+[dl] 279,442 三农
+[dl] 314,442 亲子
+[dl] 349,442 健康
+[dl] 384,442 情感
+[dl] 419,442 生活兴趣
+[dl] 486,442 生活经验
+[dl] 553,442 公益
+[dl] 588,442 超高清
+[dl] 639,442 视频播客
+[dl] 8,462 更多
+[dl] 35,482 专栏
+[dl] 94,482 直播
+[dl] 153,482 活动
+[dl] 212,482 课堂
+[dl] 271,482 社区中心
+[dl] 362,482 新歌热榜
+[dl] 8,562 正在直播LPL：LGD
+[dl] 147,562 vs
+[dl] 165,562 BLG！
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] ---8<--- end painted text
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.86
+[wm] perf t=25185 composites=279 ns=3041971173 max=237184278 motions=18 curmoves=11 curns=3657280 full=230 rects=280 cpx=32542132 fpx=32434596 presns=135966766 torn=0 defer=201 late=0 drawmax=180 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] ticket stored for s1.hdslb.com (224 bytes, lifetime 1800s, 1 cached)
+[tls] ticket stored for s1.hdslb.com (224 bytes, lifetime 1800s, 2 cached)
+[net] rx path: frames 64 irq 71 softirq 26 inline 6 poll 2 idle 0/0 halt/skip
+[mm] low: 110344 frames free (431 MiB), 20693 used, 535 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 536 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 536 shared, 0 bugs
+[browser] heap peak 9610K
+[dl] painted text: 61 run(s), 524 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 70,279 动态
+[dl] 106,279 热门
+[dl] 478,233 番剧
+[dl] 478,271 电影
+[dl] 1154,233 国创
+[dl] 1147,271 电视剧
+[dl] 1830,233 综艺
+[dl] 1823,271 纪录片
+[dl] 2506,233 动画
+[dl] 2506,271 游戏
+[dl] 3182,233 鬼畜
+[dl] 3182,271 音乐
+[dl] 3858,233 舞蹈
+[dl] 3858,271 影视
+[dl] 4534,233 娱乐
+[dl] 4534,271 知识
+[dl] 5197,233 科技数码
+[dl] 5210,271 资讯
+[dl] 5886,233 美食
+[dl] 5878,271 更多
+[dl] 1046,236 专栏
+[dl] 1046,274 直播
+[dl] 1276,236 活动
+[dl] 1276,274 课堂
+[dl] 1480,236 社区中心
+[dl] 1480,274 新歌热榜
+[dl] 313,458 土地的枷锁，后发国家的现代化
+[dl] 313,480 困局
+[dl] 332,506 宣传委员凌凌
+[dl] 416,506 ·
+[dl] 313,523 08-17
+[dl] 573,458 EP03
+[dl] 609,458 盗月社X刘旸教主：燃烧我
+[dl] 573,480 的卡路里
+[dl] 636,480 ｜
+[dl] 654,480 死肌肉大挑战！
+[dl] 592,506 刘旸教主
+[dl] 650,506 ·
+[dl] 573,523 10小时前
+[dl] 833,458 火影版本T0
+[dl] 912,458 体术鸣人两千飞脚
+[dl] 852,506 大大波杰克
+[dl] 923,506 ·
+[dl] 833,523 08-18
+[dl] 342,330 76.5万
+[dl] 414,330 381
+[dl] 511,330 07:53
+[dl] 602,330 13.9万
+[dl] 674,330 1639
+[dl] 771,330 58:35
+[dl] 862,330 39.4万
+[dl] 934,330 345
+[dl] 1031,330 04:38
+[dl] 45,60 首页
+[dl] 89,60 番剧
+[dl] 130,60 直播
+[dl] 171,60 游戏中心
+[dl] 240,60 会员购
+[dl] 295,60 漫画
+[dl] 336,60 赛事
+[dl] 396,60 下载客户端
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i1.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 4 verified for i2.hdslb.com, alpn=http/1.1
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 3 cached)
+[tls] ticket stored for i1.hdslb.com (224 bytes, lifetime 1800s, 4 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 5 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 6 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for i0.hdslb.com (208 bytes, lifetime 21600s, 8 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 9 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 10 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 11 cached)
+[tls] ticket stored for i2.hdslb.com (208 bytes, lifetime 21600s, 12 cached)
+[e1000] stats: rx 390 pkt / 404160 B, tx 357 pkt / 37027 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 359 (+359)
+[mm] low: 109576 frames free (428 MiB), 21461 used, 560 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 560 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 560 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 560 shared, 0 bugs
+[mm] low: 108552 frames free (424 MiB), 22485 used, 560 shared, 0 bugs
+[mm] low: 108296 frames free (423 MiB), 22741 used, 560 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 560 shared, 0 bugs
+[img] 7/7 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 7/256 ents 6945K]
+[mm] low: 107784 frames free (421 MiB), 23253 used, 560 shared, 0 bugs
+[browser] scripts collected: 5 external classic, 1 external module, 12 inline
+[net] rx path: frames 579 irq 543 softirq 234 inline 30 poll 9 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for s1.hdslb.com (no chain, no signature), alpn=http/1.1
+[mm] low: 107528 frames free (420 MiB), 23509 used, 560 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 560 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 560 shared, 0 bugs
+[e1000] stats: rx 960 pkt / 1149548 B, tx 896 pkt / 76769 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 880 (+521)
+[mm] low: 106760 frames free (417 MiB), 24277 used, 560 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 567 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 598 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 599 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 599 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 105480 frames free (412 MiB), 25557 used, 600 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 600 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 600 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 600 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 601 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 601 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 601 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 609 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 609 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 609 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 610 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[mm] low: 102664 frames free (401 MiB), 28373 used, 611 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 611 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 611 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for i0.hdslb.com (no chain, no signature), alpn=h2
+[mm] low: 101896 frames free (398 MiB), 29141 used, 615 shared, 0 bugs
+[browser] load done: 20 requests, 9 connections dialled, 11 reused, 0 modules loaded (0 failed)
+[browser] pool: 11 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[mm] low: 101640 frames free (397 MiB), 29397 used, 624 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 624 shared, 0 bugs
+[net] rx path: frames 1091 irq 1035 softirq 473 inline 30 poll 18 idle 0/0 halt/skip

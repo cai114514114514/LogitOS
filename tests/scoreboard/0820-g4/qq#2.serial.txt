@@ -1,0 +1,473 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20825 composites=168 ns=3117545432 max=119304861 motions=18 curmoves=11 curns=656887 full=119 rects=168 cpx=36745252 fpx=36621172 presns=89367913 torn=0 defer=86 late=0 drawmax=82 evdrop=0
+[browser] load: https://www.qq.com/
+[sock] connected www.qq.com via ipv4 ::ffff:198.18.0.99
+[wm] perf t=21825 composites=219 ns=3360190862 max=119304861 motions=18 curmoves=11 curns=656887 full=170 rects=219 cpx=39817252 fpx=39693172 presns=97724891 torn=0 defer=134 late=0 drawmax=92 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.qq.com, alpn=http/1.1
+[dl] painted text: 45 run(s), 249 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,117 搜索
+[dl] 68,100 问AI
+[dl] 8,124 邮箱
+[dl] 8,144 网页设置
+[dl] 8,164 快捷访问
+[dl] 8,184 安装电脑版
+[dl] 8,204 内容更精彩
+[dl] 14,232 •
+[dl] 36,232 要闻
+[dl] 14,252 •
+[dl] 36,252 科技
+[dl] 14,272 •
+[dl] 36,272 财经
+[dl] 14,292 •
+[dl] 36,292 AI
+[dl] 14,312 •
+[dl] 36,312 热问
+[dl] 14,332 •
+[dl] 36,332 教育
+[dl] 14,352 •
+[dl] 36,352 国际
+[dl] 14,372 •
+[dl] 36,372 军事
+[dl] 14,392 •
+[dl] 36,392 娱乐
+[dl] 14,412 •
+[dl] 36,412 电视剧
+[dl] 14,432 •
+[dl] 36,432 体育
+[dl] 14,452 •
+[dl] 36,452 NBA
+[dl] 14,472 •
+[dl] 36,472 汽车
+[dl] 14,492 •
+[dl] 36,492 房产
+[dl] 14,512 •
+[dl] 36,512 游戏
+[dl] 14,532 •
+[dl] 36,532 健康
+[dl] 14,552 •
+[dl] 36,552 QQ游戏
+[dl] 14,572 •
+[dl] 36,572 小游戏中心
+[dl] 14,592 •
+[dl] 36,592 更多
+[dl] ---8<--- end painted text
+[sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.102
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 67 irq 73 softirq 35 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 532 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 533 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 534 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 534 shared, 0 bugs
+[browser] heap peak 9480K
+[dl] painted text: 70 run(s), 1034 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 707,112 邮箱
+[dl] 743,96 网页设置
+[dl] 835,88 快捷访问
+[dl] 976,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 习近平致电祝贺希奇莱马当选连任赞比亚总统
+[dl] -156,344 习近平：中厄自贸协定释放红利、彰显潜力
+[dl] 170,344 培育发展新质生产力的新动能
+[dl] -156,422 今年前7个月
+[dl] -65,422 社会消费商品和服务零售总额同比增长2.6%
+[dl] -156,444 国门之下
+[dl] -89,444 同心同行
+[dl] -156,488 在红军寨窑洞中读懂岁月静好的来之不易
+[dl] -156,532 视频丨日本民众举行抗议集会
+[dl] 55,532 反对高市扩军修宪动向
+[dl] 300,422 长江十年行
+[dl] 383,422 |
+[dl] 390,422 文润大江，解锁千年文脉的焕新密码
+[dl] 300,444 铁路投资稳增长，流动中国幸福更绵长
+[dl] 300,488 赋能者
+[dl] 351,488 |
+[dl] 358,488 甜美非洲
+[dl] 300,532 谁说戈壁滩没有“桃花源”？各民族携手9年治荒6万亩
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,459 微信
+[dl] 843,459 QQ
+[dl] 882,459 QQ浏览器
+[dl] 963,459 ima
+[dl] 1004,459 QQ音乐
+[dl] 1071,459 搜狗输入法
+[dl] 1160,459 应用宝
+[dl] 812,503 企微
+[dl] 843,503 腾讯元宝
+[dl] 918,503 腾讯会议
+[dl] 993,503 腾讯文档
+[dl] 1068,503 腾讯电子签
+[dl] 812,529 电脑管家
+[dl] 812,537 QQ游戏
+[dl] 863,537 棋牌赛事
+[dl] 938,537 斗地主
+[dl] 999,537 仙逆
+[dl] 1046,537 软件中心
+[dl] 1121,537 客户端下载
+[dl] -157,622 热点精选
+[dl] 791,622 今日热播
+[dl] 290,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for inews.gtimg.com, alpn=http/1.1
+[tls] OCSP staple: good (inews.gtimg.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for inews.gtimg.com, alpn=http/1.1
+[tls] OCSP staple: good (inews.gtimg.com)
+[mm] low: 109576 frames free (428 MiB), 21461 used, 554 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 554 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 554 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 554 shared, 0 bugs
+[img] 3/3 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 3/256 ents 3695K]
+[browser] scripts collected: 6 external classic, 0 external module, 6 inline
+[mm] low: 108552 frames free (424 MiB), 22485 used, 557 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 108296 frames free (423 MiB), 22741 used, 557 shared, 0 bugs
+[e1000] stats: rx 394 pkt / 452270 B, tx 360 pkt / 34800 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 332 (+332)
+[net] rx path: frames 579 irq 506 softirq 241 inline 0 poll 13 idle 0/0 halt/skip
+[mm] low: 108040 frames free (422 MiB), 22997 used, 557 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 557 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 557 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 557 shared, 0 bugs
+[e1000] stats: rx 727 pkt / 926525 B, tx 704 pkt / 56816 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 652 (+320)
+[mm] low: 107016 frames free (418 MiB), 24021 used, 564 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 569 shared, 0 bugs
+[error] Uncaught (in promise) undefined
+[mm] low: 106504 frames free (416 MiB), 24533 used, 583 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 583 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 583 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 589 shared, 0 bugs
+[mm] low: 105480 frames free (412 MiB), 25557 used, 590 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 590 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 590 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 590 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 590 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 590 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 590 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 590 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 590 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 590 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 590 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 592 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 592 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 592 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 592 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 592 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 592 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 592 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 592 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 592 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 592 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 592 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 592 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 592 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 592 shared, 0 bugs
+[mm] low: 99080 frames free (387 MiB), 31957 used, 605 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for staticfile.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for vm.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 1091 irq 1053 softirq 504 inline 0 poll 20 idle 0/0 halt/skip
+[mm] low: 98824 frames free (386 MiB), 32213 used, 613 shared, 0 bugs
+[e1000] stats: rx 1091 pkt / 1353851 B, tx 1073 pkt / 89190 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1053 (+401)
+[mm] low: 98568 frames free (385 MiB), 32469 used, 614 shared, 0 bugs
+[browser] load done: 16 requests, 7 connections dialled, 9 reused, 0 modules loaded (0 failed)
+[browser] pool: 9 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[dl] painted text: 70 run(s), 1028 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 625,112 邮箱
+[dl] 661,96 网页设置
+[dl] 753,88 快捷访问
+[dl] 870,86 登录
+[dl] 985,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 习近平致电祝贺希奇莱马当选连任赞比亚总统
+[dl] -156,344 习近平：中厄自贸协定释放红利、彰显潜力
+[dl] 170,344 培育发展新质生产力的新动能
+[dl] -156,422 今年前7个月
+[dl] -65,422 社会消费商品和服务零售总额同比增长2.6%
+[dl] -156,444 国门之下
+[dl] -89,444 同心同行
+[dl] -156,488 在红军寨窑洞中读懂岁月静好的来之不易
+[dl] -156,532 视频丨日本民众举行抗议集会
+[dl] 55,532 反对高市扩军修宪动向
+[dl] 300,422 长江十年行
+[dl] 383,422 |
+[dl] 390,422 文润大江，解锁千年文脉的焕新密码
+[dl] 300,444 铁路投资稳增长，流动中国幸福更绵长
+[dl] 300,488 赋能者
+[dl] 351,488 |
+[dl] 358,488 甜美非洲
+[dl] 300,532 谁说戈壁滩没有“桃花源”？各民族携手9年治荒6万亩
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,459 微信
+[dl] 843,459 QQ
+[dl] 882,459 QQ浏览器
+[dl] 963,459 ima
+[dl] 1004,459 QQ音乐
+[dl] 1071,459 搜狗输入法
+[dl] 1160,459 应用宝
+[dl] 812,503 企微
+[dl] 843,503 腾讯元宝
+[dl] 918,503 腾讯会议
+[dl] 993,503 腾讯文档
+[dl] 1068,503 腾讯电子签
+[dl] 812,529 电脑管家
+[dl] 812,537 QQ游戏
+[dl] 863,537 棋牌赛事
+[dl] 938,537 斗地主
+[dl] 999,537 仙逆
+[dl] 1046,537 软件中心
+[dl] 1121,537 客户端下载
+[dl] 791,622 今日热播
+[dl] 290,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[webapi] fetch: connection failed
+[error] Uncaught (in promise) AxiosError: Network Error
+Error
+    at H (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202682017130/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/202682017130/static/js/index.js)
+    at call (native)
+    at _fire (<webapi>:1018)
+    at <anonymous> (<webapi>:1059)
+
+[error] Uncaught (in promise) [object Object]
+[error] Uncaught (in promise) [object Object]
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for news.ssp.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[dl] painted text: 71 run(s), 1040 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 565,87 邮箱
+[dl] 565,137 最新游戏
+[dl] 667,96 网页设置
+[dl] 759,88 快捷访问
+[dl] 875,86 登录
+[dl] 988,57 内容更精彩
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 习近平致电祝贺希奇莱马当选连任赞比亚总统
+[dl] -156,344 习近平：中厄自贸协定释放红利、彰显潜力
+[dl] 170,344 培育发展新质生产力的新动能
+[dl] -156,422 今年前7个月
+[dl] -65,422 社会消费商品和服务零售总额同比增长2.6%
+[dl] -156,444 国门之下
+[dl] -89,444 同心同行
+[dl] -156,488 在红军寨窑洞中读懂岁月静好的来之不易
+[dl] -156,532 视频丨日本民众举行抗议集会
+[dl] 55,532 反对高市扩军修宪动向
+[dl] 300,422 长江十年行
+[dl] 383,422 |
+[dl] 390,422 文润大江，解锁千年文脉的焕新密码
+[dl] 300,444 铁路投资稳增长，流动中国幸福更绵长
+[dl] 300,488 赋能者
+[dl] 351,488 |
+[dl] 358,488 甜美非洲
+[dl] 300,532 谁说戈壁滩没有“桃花源”？各民族携手9年治荒6万亩
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,459 微信
+[dl] 843,459 QQ
+[dl] 882,459 QQ浏览器
+[dl] 963,459 ima
+[dl] 1004,459 QQ音乐
+[dl] 1071,459 搜狗输入法
+[dl] 1160,459 应用宝
+[dl] 812,503 企微
+[dl] 843,503 腾讯元宝
+[dl] 918,503 腾讯会议
+[dl] 993,503 腾讯文档
+[dl] 1068,503 腾讯电子签
+[dl] 812,529 电脑管家
+[dl] 812,537 QQ游戏
+[dl] 863,537 棋牌赛事
+[dl] 938,537 斗地主
+[dl] 999,537 仙逆
+[dl] 1046,537 软件中心
+[dl] 1121,537 客户端下载
+[dl] 791,622 今日热播
+[dl] 290,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for h5.ssp.qq.com, alpn=http/1.1
+[e1000] stats: rx 1377 pkt / 1634450 B, tx 1323 pkt / 120620 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1354 (+301)
+[net] rx path: frames 1605 irq 1578 softirq 760 inline 2 poll 29 idle 0/0 halt/skip
+[e1000] stats: rx 1794 pkt / 2194283 B, tx 1739 pkt / 147919 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1758 (+404)
+[mm] low: 98312 frames free (384 MiB), 32725 used, 630 shared, 0 bugs
+[net] rx path: frames 2117 irq 2065 softirq 1004 inline 2 poll 30 idle 0/0 halt/skip
+[e1000] stats: rx 2252 pkt / 2837579 B, tx 2203 pkt / 178290 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 2202 (+444)
+[mm] low: 98056 frames free (383 MiB), 32981 used, 630 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 630 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 630 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 630 shared, 0 bugs
+[mm] low: 97032 frames free (379 MiB), 34005 used, 630 shared, 0 bugs
+[mm] low: 96776 frames free (378 MiB), 34261 used, 630 shared, 0 bugs
+[mm] low: 96520 frames free (377 MiB), 34517 used, 630 shared, 0 bugs
+[mm] low: 96264 frames free (376 MiB), 34773 used, 630 shared, 0 bugs
+[mm] low: 96008 frames free (375 MiB), 35029 used, 630 shared, 0 bugs
+[mm] low: 95752 frames free (374 MiB), 35285 used, 630 shared, 0 bugs
+[mm] low: 95496 frames free (373 MiB), 35541 used, 630 shared, 0 bugs
+[mm] low: 95240 frames free (372 MiB), 35797 used, 630 shared, 0 bugs
+[mm] low: 94984 frames free (371 MiB), 36053 used, 630 shared, 0 bugs
+[mm] low: 94728 frames free (370 MiB), 36309 used, 630 shared, 0 bugs
+[mm] low: 94472 frames free (369 MiB), 36565 used, 630 shared, 0 bugs
+[mm] low: 94216 frames free (368 MiB), 36821 used, 630 shared, 0 bugs
+[mm] low: 93960 frames free (367 MiB), 37077 used, 630 shared, 0 bugs
+[mm] low: 93704 frames free (366 MiB), 37333 used, 630 shared, 0 bugs
+[mm] low: 93448 frames free (365 MiB), 37589 used, 630 shared, 0 bugs
+[mm] low: 93192 frames free (364 MiB), 37845 used, 630 shared, 0 bugs
+[mm] low: 92936 frames free (363 MiB), 38101 used, 630 shared, 0 bugs
+[mm] low: 92680 frames free (362 MiB), 38357 used, 630 shared, 0 bugs
+[mm] low: 92424 frames free (361 MiB), 38613 used, 630 shared, 0 bugs
+[img] 8/16 decoded (0 failed, cap 8) [+0 from cache, 0 unfetchable, 8 deferred, 0 refused; cache 11/256 ents 25457K]
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i.news.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for h5.ssp.qq.com, alpn=http/1.1
+[e1000] stats: rx 2632 pkt / 3289558 B, tx 2544 pkt / 207677 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 2595 (+393)
+[net] rx path: frames 2635 irq 2597 softirq 1262 inline 4 poll 38 idle 0/0 halt/skip
+[mm] low: 92168 frames free (360 MiB), 38869 used, 630 shared, 0 bugs
+[wm] perf t=70993 composites=349 ns=6220241133 max=119304861 motions=18 curmoves=11 curns=656887 full=205 rects=349 cpx=76527652 fpx=76403572 presns=190640804 torn=0 defer=136 late=0 drawmax=175 evdrop=0
+[e1000] stats: rx 3146 pkt / 3997007 B, tx 3037 pkt / 239901 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 3038 (+443)
+[net] rx path: frames 3149 irq 3041 softirq 1481 inline 4 poll 45 idle 0/0 halt/skip
+[e1000] stats: rx 3578 pkt / 4592333 B, tx 3313 pkt / 258015 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 3176 (+138)
+[mm] low: 91912 frames free (359 MiB), 39125 used, 630 shared, 0 bugs
+[mm] low: 91656 frames free (358 MiB), 39381 used, 630 shared, 0 bugs
+[mm] low: 91400 frames free (357 MiB), 39637 used, 630 shared, 0 bugs
+[mm] low: 91144 frames free (356 MiB), 39893 used, 630 shared, 0 bugs
+[mm] low: 90888 frames free (355 MiB), 40149 used, 630 shared, 0 bugs
+[mm] low: 90632 frames free (354 MiB), 40405 used, 630 shared, 0 bugs
+[mm] low: 90376 frames free (353 MiB), 40661 used, 630 shared, 0 bugs
+[mm] low: 90120 frames free (352 MiB), 40917 used, 630 shared, 0 bugs
+[mm] low: 89864 frames free (351 MiB), 41173 used, 630 shared, 0 bugs
+[mm] low: 89608 frames free (350 MiB), 41429 used, 630 shared, 0 bugs
+[mm] low: 89352 frames free (349 MiB), 41685 used, 630 shared, 0 bugs
+[mm] low: 89096 frames free (348 MiB), 41941 used, 630 shared, 0 bugs
+[mm] low: 88840 frames free (347 MiB), 42197 used, 630 shared, 0 bugs
+[mm] low: 88584 frames free (346 MiB), 42453 used, 630 shared, 0 bugs
+[mm] low: 88328 frames free (345 MiB), 42709 used, 630 shared, 0 bugs
+[mm] low: 88072 frames free (344 MiB), 42965 used, 630 shared, 0 bugs
+[mm] low: 87816 frames free (343 MiB), 43221 used, 630 shared, 0 bugs
+[mm] low: 87560 frames free (342 MiB), 43477 used, 630 shared, 0 bugs
+[mm] low: 87304 frames free (341 MiB), 43733 used, 630 shared, 0 bugs
+[mm] low: 87048 frames free (340 MiB), 43989 used, 630 shared, 0 bugs
+[mm] low: 86792 frames free (339 MiB), 44245 used, 630 shared, 0 bugs
+[mm] low: 86536 frames free (338 MiB), 44501 used, 630 shared, 0 bugs
+[mm] low: 86280 frames free (337 MiB), 44757 used, 630 shared, 0 bugs
+[mm] low: 86024 frames free (336 MiB), 45013 used, 630 shared, 0 bugs
+[mm] low: 85768 frames free (335 MiB), 45269 used, 630 shared, 0 bugs
+[img] 8/8 decoded (0 failed, cap 8) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 19/256 ents 49681K]
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)

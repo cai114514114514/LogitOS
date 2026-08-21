@@ -1,0 +1,24 @@
+{
+ "name": "openai",
+ "url": "https://openai.com/",
+ "started": "2026-08-20T22:12:59",
+ "verdict": "HARNESS",
+ "why": "the self-test page never loaded -- the keyboard, Ctrl+T, the address bar or SLIRP is broken, so nothing was measured about this site",
+ "host": {
+  "ok": true,
+  "status": 403,
+  "final_url": "https://openai.com/",
+  "bytes": 0,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": null,
+  "elapsed": 0.5
+ },
+ "guest": {},
+ "pixels": {},
+ "shot": null,
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/openai.serial.txt",
+ "finished": "2026-08-20T22:14:45"
+}

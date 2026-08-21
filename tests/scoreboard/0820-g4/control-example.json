@@ -1,0 +1,34 @@
+{
+ "name": "control-example",
+ "url": "http://example.com/",
+ "started": "2026-08-20T21:59:49",
+ "verdict": "HARNESS",
+ "why": "driver error: BrokenPipeError(32, 'Broken pipe') [QEMU exited 0: qemu-system-x86_64: terminating on signal 15 from pid 1017066 (pkill)]",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "http://example.com/",
+  "bytes": 559,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 0,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.9,
+  "_body": "<!doctype html><html lang=\"en\"><head><title>Example Domain</title><link rel=\"icon\" href=\"data:,\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>body{background:#eee;width:60vw;margin:15vh auto;font-family:system-ui,sans-serif}h1{font-size:1.5em}div{opacity:0.8}a:link,a:visited{color:#348}</style></head><body><div><h1>Example Domain</h1><p>This domain is for use in documentation examples without needing permission. Avoid use in operations.</p><p><a href=\"https://iana.org/domains/example\">Learn more</a></p></div></body></html>\n"
+ },
+ "guest": {},
+ "pixels": {},
+ "shot": null,
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/control-example.serial.txt",
+ "traceback": "Traceback (most recent call last):\n  File \"/mnt/d/ststem/tests/qmp/qmp_site.py\", line 779, in main\n    ui.screendump(after_ppm, settle=0.6)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/d/ststem/tests/qmp/qmp_ui.py\", line 266, in screendump\n    self.cmd({\"execute\": \"screendump\", \"arguments\": {\"filename\": path}})\n    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/d/ststem/tests/qmp/qmp_ui.py\", line 164, in cmd\n    self.f.flush()\n    ~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/socket.py\", line 743, in write\n    return self._sock.send(b)\n           ~~~~~~~~~~~~~~~^^^\nBrokenPipeError: [Errno 32] Broken pipe\n",
+ "finished": "2026-08-20T22:00:20"
+}

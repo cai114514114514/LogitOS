@@ -1,0 +1,212 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20731 composites=249 ns=2707208810 max=93200126 motions=18 curmoves=11 curns=367439 full=196 rects=250 cpx=41077296 fpx=40903584 presns=90747273 torn=0 defer=159 late=0 drawmax=66 evdrop=0
+[browser] load: https://openai.com/
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.67
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[wm] perf t=21733 composites=260 ns=2828175933 max=93200126 motions=18 curmoves=11 curns=367439 full=206 rects=261 cpx=43156016 fpx=42982304 presns=94151179 torn=0 defer=167 late=0 drawmax=66 evdrop=0
+[mm] low: 110600 frames free (432 MiB), 20437 used, 515 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 517 shared, 0 bugs
+[dl] painted text: 55 run(s), 261 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 main
+[dl] 98,68 content
+[dl] 14,120 •
+[dl] 36,120 Research
+[dl] 14,148 •
+[dl] 42,152 Products
+[dl] 14,176 •
+[dl] 36,176 Business
+[dl] 14,204 •
+[dl] 36,204 Developers
+[dl] 14,232 •
+[dl] 36,232 Company
+[dl] 14,260 •
+[dl] 36,260 Foundation
+[dl] 120,260 (opens
+[dl] 170,260 in
+[dl] 186,260 a
+[dl] 198,260 new
+[dl] 230,260 window)
+[dl] 14,356 Log
+[dl] 43,356 in
+[dl] 75,352 Try
+[dl] 101,352 ChatGPT
+[dl] 179,352 (opens
+[dl] 229,352 in
+[dl] 245,352 a
+[dl] 257,352 new
+[dl] 289,352 window)
+[dl] 14,416 •
+[dl] 42,420 Research
+[dl] 14,444 •
+[dl] 42,448 Products
+[dl] 14,472 •
+[dl] 42,476 Business
+[dl] 14,500 •
+[dl] 42,504 Developers
+[dl] 14,528 •
+[dl] 42,532 Company
+[dl] 14,556 •
+[dl] 36,556 Foundation
+[dl] 129,556 (opens
+[dl] 179,556 in
+[dl] 195,556 a
+[dl] 207,556 new
+[dl] 239,556 window)
+[dl] 8,584 Try
+[dl] 34,584 ChatGPT
+[dl] 110,584 (opens
+[dl] 160,584 in
+[dl] 176,584 a
+[dl] 188,584 new
+[dl] 220,584 window)
+[dl] 286,588 Login
+[dl] ---8<--- end painted text
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.67
+[net] rx path: frames 65 irq 41 softirq 18 inline 0 poll 2 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[mm] low: 110088 frames free (430 MiB), 20949 used, 535 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 537 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 537 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 537 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 537 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 537 shared, 0 bugs
+[browser] heap peak 12466K
+[dl] painted text: 10 run(s), 66 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 126,78 Research
+[dl] 195,78 Products
+[dl] 263,78 Business
+[dl] 328,78 Developers
+[dl] 410,78 Company
+[dl] 482,78 Foundation
+[dl] 607,80 Log
+[dl] 636,80 in
+[dl] 666,80 Try
+[dl] 692,80 ChatGPT
+[dl] ---8<--- end painted text
+[mm] low: 108552 frames free (424 MiB), 22485 used, 555 shared, 0 bugs
+[browser] scripts collected: 82 external classic, 0 external module, 8 inline
+[mm] low: 108296 frames free (423 MiB), 22741 used, 555 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 555 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 555 shared, 0 bugs
+[e1000] stats: rx 323 pkt / 391619 B, tx 236 pkt / 33108 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 175 (+175)
+[mm] low: 107528 frames free (420 MiB), 23509 used, 555 shared, 0 bugs
+[net] rx path: frames 590 irq 275 softirq 136 inline 0 poll 11 idle 0/0 halt/skip
+[mm] low: 107272 frames free (419 MiB), 23765 used, 555 shared, 0 bugs
+[e1000] stats: rx 646 pkt / 815603 B, tx 444 pkt / 58283 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 297 (+122)
+[mm] low: 107016 frames free (418 MiB), 24021 used, 555 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 555 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 555 shared, 0 bugs
+[net] rx path: frames 1169 irq 500 softirq 234 inline 14 poll 15 idle 0/0 halt/skip
+[mm] low: 106248 frames free (415 MiB), 24789 used, 555 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 555 shared, 0 bugs
+[e1000] stats: rx 1361 pkt / 1775039 B, tx 882 pkt / 105160 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 538 (+241)
+[mm] low: 105736 frames free (413 MiB), 25301 used, 555 shared, 0 bugs
+[mm] low: 105480 frames free (412 MiB), 25557 used, 555 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 555 shared, 0 bugs
+[net] rx path: frames 1735 irq 598 softirq 283 inline 17 poll 15 idle 0/0 halt/skip
+[mm] low: 104968 frames free (410 MiB), 26069 used, 555 shared, 0 bugs
+[e1000] stats: rx 1815 pkt / 2411916 B, tx 1153 pkt / 125979 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 623 (+85)
+[mm] low: 104712 frames free (409 MiB), 26325 used, 555 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 555 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 555 shared, 0 bugs
+[net] rx path: frames 2248 irq 728 softirq 331 inline 32 poll 17 idle 0/0 halt/skip
+[e1000] stats: rx 2284 pkt / 3060273 B, tx 1429 pkt / 150625 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 732 (+109)
+[mm] low: 103944 frames free (406 MiB), 27093 used, 555 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 555 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 555 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 555 shared, 0 bugs
+[e1000] stats: rx 2714 pkt / 3648601 B, tx 1681 pkt / 171650 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 813 (+81)
+[net] rx path: frames 2785 irq 838 softirq 390 inline 32 poll 23 idle 0/0 halt/skip
+[mm] low: 102920 frames free (402 MiB), 28117 used, 555 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 557 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 559 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 560 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 566 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 566 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 566 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 566 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 566 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 566 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 566 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 570 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 570 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 570 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 570 shared, 0 bugs
+[mm] low: 99080 frames free (387 MiB), 31957 used, 570 shared, 0 bugs
+[mm] low: 98824 frames free (386 MiB), 32213 used, 570 shared, 0 bugs
+[mm] low: 98568 frames free (385 MiB), 32469 used, 570 shared, 0 bugs
+[mm] low: 98312 frames free (384 MiB), 32725 used, 570 shared, 0 bugs
+[mm] low: 98056 frames free (383 MiB), 32981 used, 570 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 570 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 570 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 570 shared, 0 bugs
+[mm] low: 97032 frames free (379 MiB), 34005 used, 570 shared, 0 bugs
+[mm] low: 96776 frames free (378 MiB), 34261 used, 570 shared, 0 bugs
+[mm] low: 96520 frames free (377 MiB), 34517 used, 570 shared, 0 bugs
+[mm] low: 96264 frames free (376 MiB), 34773 used, 570 shared, 0 bugs
+[mm] low: 96008 frames free (375 MiB), 35029 used, 570 shared, 0 bugs
+[mm] low: 95752 frames free (374 MiB), 35285 used, 571 shared, 0 bugs
+[mm] low: 95496 frames free (373 MiB), 35541 used, 571 shared, 0 bugs
+[mm] low: 95240 frames free (372 MiB), 35797 used, 571 shared, 0 bugs
+[mm] low: 94984 frames free (371 MiB), 36053 used, 571 shared, 0 bugs
+[mm] low: 94728 frames free (370 MiB), 36309 used, 571 shared, 0 bugs
+[mm] low: 94472 frames free (369 MiB), 36565 used, 572 shared, 0 bugs
+[mm] low: 94216 frames free (368 MiB), 36821 used, 572 shared, 0 bugs
+[mm] low: 93960 frames free (367 MiB), 37077 used, 572 shared, 0 bugs
+[mm] low: 93704 frames free (366 MiB), 37333 used, 572 shared, 0 bugs
+[mm] low: 93448 frames free (365 MiB), 37589 used, 572 shared, 0 bugs
+[mm] low: 93192 frames free (364 MiB), 37845 used, 572 shared, 0 bugs
+[mm] low: 92936 frames free (363 MiB), 38101 used, 572 shared, 0 bugs
+[mm] low: 92680 frames free (362 MiB), 38357 used, 572 shared, 0 bugs
+[mm] low: 92424 frames free (361 MiB), 38613 used, 572 shared, 0 bugs
+[mm] low: 92168 frames free (360 MiB), 38869 used, 572 shared, 0 bugs
+[mm] low: 91912 frames free (359 MiB), 39125 used, 572 shared, 0 bugs
+[mm] low: 91656 frames free (358 MiB), 39381 used, 572 shared, 0 bugs
+[mm] low: 91400 frames free (357 MiB), 39637 used, 572 shared, 0 bugs
+[mm] low: 91144 frames free (356 MiB), 39893 used, 572 shared, 0 bugs
+[mm] low: 90888 frames free (355 MiB), 40149 used, 572 shared, 0 bugs
+[mm] low: 90632 frames free (354 MiB), 40405 used, 572 shared, 0 bugs
+[mm] low: 90376 frames free (353 MiB), 40661 used, 572 shared, 0 bugs
+[mm] low: 90120 frames free (352 MiB), 40917 used, 572 shared, 0 bugs
+[mm] low: 89864 frames free (351 MiB), 41173 used, 572 shared, 0 bugs
+[mm] low: 89608 frames free (350 MiB), 41429 used, 572 shared, 0 bugs
+[mm] low: 89352 frames free (349 MiB), 41685 used, 572 shared, 0 bugs
+[mm] low: 89096 frames free (348 MiB), 41941 used, 572 shared, 0 bugs
+[mm] low: 88840 frames free (347 MiB), 42197 used, 572 shared, 0 bugs
+[error] Uncaught (in promise) InvariantError: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+Error: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+    at n (https://openai.com/_next/static/immutable/chunks/3qt20_t1xiggl.js)
+    at l (https://openai.com/_next/static/immutable/chunks/00y4cy1x12tvy.js)
+    at a (https://openai.com/_next/static/immutable/chunks/00y4cy1x12tvy.js)
+    at module evaluation (https://openai.com/_next/static/immutable/chunks/00y4cy1x12tvy.js)
+    at F (https://openai.com/_next/static/immutable/chunks/turbopack-3ej0a76-3kc0k.js)
+    at <anonymous> (https://openai.com/_next/static/immutable/chunks/turbopack-3ej0a76-3kc0k.js)
+    at registerChunk (https://openai.com/_next/static/immutable/chunks/turbopack-3ej0a76-3kc0k.js)
+
+[browser] load done: 96 requests, 2 connections dialled, 94 reused, 0 modules loaded (0 failed)
+[browser] pool: 94 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 95 from network (tab 2 of 3)
+[wm] perf t=85121 composites=480 ns=11079908575 max=271333020 motions=18 curmoves=11 curns=367439 full=310 rects=481 cpx=148095536 fpx=147921824 presns=395611190 torn=0 defer=172 late=0 drawmax=428 evdrop=0
+[browser] ctrl+L: address bar focused
+[wm] perf t=102174 composites=522 ns=11772757643 max=271333020 motions=18 curmoves=11 curns=367439 full=320 rects=523 cpx=151126576 fpx=150952864 presns=420736332 torn=0 defer=180 late=0 drawmax=428 evdrop=0
+[browser] load: about:text
+[dl] painted text: 10 run(s), 66 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 126,78 Research
+[dl] 195,78 Products
+[dl] 263,78 Business
+[dl] 328,78 Developers
+[dl] 410,78 Company
+[dl] 482,78 Foundation
+[dl] 607,80 Log
+[dl] 636,80 in
+[dl] 666,80 Try
+[dl] 692,80 ChatGPT
+[dl] ---8<--- end painted text
+[wm] perf t=103180 composites=543 ns=11853465388 max=271333020 motions=18 curmoves=11 curns=367439 full=340 rects=544 cpx=152181296 fpx=152007584 presns=423304335 torn=0 defer=199 late=0 drawmax=428 evdrop=0

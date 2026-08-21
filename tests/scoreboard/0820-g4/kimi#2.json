@@ -1,0 +1,83 @@
+{
+ "name": "kimi#2",
+ "url": "https://www.kimi.com/",
+ "started": "2026-08-20T22:04:47",
+ "verdict": "ERRORS",
+ "why": "painted 23456 changed px in 65.5s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.kimi.com/",
+  "bytes": 483268,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 3,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 29,
+   "script_src": 3,
+   "inline_scripts": 2,
+   "images": 2,
+   "preloads": 86,
+   "fonts": 0,
+   "mandatory": 33
+  },
+  "elapsed": 1.5
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://statics.moonshot.cn/kimi-web-seo/assets/index-CBuQPJrn.js: InternalError: interrupted"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 115,
+  "dials": 3,
+  "reused": 112,
+  "modules": 83,
+  "modules_failed": 0,
+  "heap_peak_k": 30704,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 65.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 23456,
+  "changed_bbox": [
+   144,
+   0,
+   1264,
+   764
+  ],
+  "ink_px": 8286,
+  "ink_px_blank": 3902,
+  "colours": 767,
+  "rich_tiles_proxy": 20
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4/kimi#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/kimi#2.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4/kimi#2.host.html",
+ "text_runs": 5,
+ "text_bytes": 59,
+ "text": "35,96 新建会话\n8,120 Ctrl\n8,140 K\n35,176 插件\n94,176 定时任务\n185,176 PPT\n241,176 集群\n300,176 深度研究\n391,176 文档\n450,176 网站\n509,176 表格\n568,176 设计\n41,204 收起\n35,228 Kimi\n70,228 Work\n150,228 Kimi\n185,228 Code\n41,256 Kimi\n76,256 Claw\n14,324 •\n14,324 •\n14,324 •\n14,324 •\n14,324 •\n8,380 尽管问，或做个\n123,380 Agent\n167,380 任务...\n65,441 探索灵感\n14,465 滑动探索",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 29,
+   "script_src": 3,
+   "inline_scripts": 2,
+   "images": 2,
+   "preloads": 86,
+   "fonts": 0,
+   "mandatory": 33
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:06:34"
+}

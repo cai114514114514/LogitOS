@@ -1,0 +1,187 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=23364 composites=128 ns=4650170635 max=289555042 motions=18 curmoves=10 curns=542323 full=86 rects=129 cpx=33862672 fpx=33763408 presns=169382087 torn=0 defer=55 late=0 drawmax=371 evdrop=0
+[browser] load: https://www.apple.com/
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.106
+[wm] perf t=24365 composites=166 ns=4849411148 max=289555042 motions=18 curmoves=10 curns=542323 full=123 rects=167 cpx=36965392 fpx=36866128 presns=176447377 torn=0 defer=89 late=0 drawmax=371 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for www.apple.com, alpn=http/1.1
+[tls] OCSP staple: good (www.apple.com)
+[net] rx path: frames 64 irq 67 softirq 30 inline 2 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 515 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 515 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 528 shared, 0 bugs
+[dl] painted text: 18 run(s), 73 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 Apple
+[dl] 14,188 •
+[dl] 70,188 Apple
+[dl] 14,244 •
+[dl] 49,244 ◦
+[dl] 97,244 Store
+[dl] 49,304 ◦
+[dl] 90,304 Mac
+[dl] 49,364 ◦
+[dl] 91,364 iPad
+[dl] 49,424 ◦
+[dl] 105,424 iPhone
+[dl] 49,484 ◦
+[dl] 102,484 Watch
+[dl] 49,544 ◦
+[dl] 101,544 Vision
+[dl] 49,604 ◦
+[dl] 110,604 AirPods
+[dl] ---8<--- end painted text
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.106
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for www.apple.com, alpn=http/1.1
+[tls] OCSP staple: good (www.apple.com)
+[browser] fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error
+[mm] low: 109832 frames free (429 MiB), 21205 used, 529 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 532 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 533 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 533 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 533 shared, 0 bugs
+[mm] low: 108552 frames free (424 MiB), 22485 used, 534 shared, 0 bugs
+[browser] heap peak 13836K
+[dl] painted text: 21 run(s), 86 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 363,196 College,
+[dl] 581,196 sorted.
+[dl] 251,261 Get
+[dl] 301,261 a
+[dl] 322,261 gift
+[dl] 369,261 card
+[dl] 431,261 from
+[dl] 497,261 $100
+[dl] 563,261 to
+[dl] 595,261 $150
+[dl] 661,261 *
+[dl] 680,261 when
+[dl] 756,261 you
+[dl] 277,292 buy
+[dl] 330,292 Mac
+[dl] 387,292 or
+[dl] 419,292 iPad
+[dl] 481,292 with
+[dl] 542,292 education
+[dl] 675,292 savings.
+[dl] 541,341 Shop
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[mm] low: 108296 frames free (423 MiB), 22741 used, 554 shared, 0 bugs
+[e1000] stats: rx 554 pkt / 670730 B, tx 532 pkt / 44698 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 531 (+531)
+[net] rx path: frames 576 irq 552 softirq 260 inline 7 poll 13 idle 0/0 halt/skip
+[net] rx path: frames 1090 irq 867 softirq 415 inline 7 poll 19 idle 0/0 halt/skip
+[e1000] stats: rx 1179 pkt / 1548084 B, tx 1058 pkt / 79550 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 920 (+389)
+[mm] low: 108040 frames free (422 MiB), 22997 used, 554 shared, 0 bugs
+[net] rx path: frames 1607 irq 1283 softirq 616 inline 7 poll 30 idle 0/0 halt/skip
+[mm] low: 107784 frames free (421 MiB), 23253 used, 554 shared, 0 bugs
+[e1000] stats: rx 1720 pkt / 2299898 B, tx 1571 pkt / 113788 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1394 (+474)
+[mm] low: 107528 frames free (420 MiB), 23509 used, 554 shared, 0 bugs
+[e1000] stats: rx 2058 pkt / 2764411 B, tx 1842 pkt / 132711 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1609 (+215)
+[mm] low: 107272 frames free (419 MiB), 23765 used, 554 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 554 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 556 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 556 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 556 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 556 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 556 shared, 0 bugs
+[mm] low: 105480 frames free (412 MiB), 25557 used, 556 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 556 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 556 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 556 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 556 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 556 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 556 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 556 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 556 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 556 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 556 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 556 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 556 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 556 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 556 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 556 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 556 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 556 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 556 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 556 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 556 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 556 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 556 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 556 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 556 shared, 0 bugs
+[img] 18/18 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 18/256 ents 32855K]
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] scripts collected: 8 external classic, 5 external module, 1 inline
+[net] rx path: frames 2119 irq 1668 softirq 808 inline 7 poll 34 idle 0/0 halt/skip
+[mm] low: 99080 frames free (387 MiB), 31957 used, 556 shared, 0 bugs
+[e1000] stats: rx 2338 pkt / 3102268 B, tx 2085 pkt / 149247 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 1859 (+250)
+[wm] perf t=42830 composites=240 ns=8178147278 max=307128602 motions=18 curmoves=10 curns=542323 full=166 rects=241 cpx=73757712 fpx=73658448 presns=299177503 torn=0 defer=97 late=0 drawmax=910 evdrop=0
+[mm] low: 98824 frames free (386 MiB), 32213 used, 564 shared, 0 bugs
+[mm] low: 98568 frames free (385 MiB), 32469 used, 565 shared, 0 bugs
+[mm] low: 98312 frames free (384 MiB), 32725 used, 570 shared, 0 bugs
+[mm] low: 98056 frames free (383 MiB), 32981 used, 570 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 570 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 576 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 591 shared, 0 bugs
+[js] module loaded 4359 bytes: https://www.apple.com/v/home/a/scripts/ComponentMap-thvKzGgL.built.js
+[js] module loaded 779 bytes: https://www.apple.com/v/home/a/scripts/inlineMediaSource-9OnjO25M.built.js
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for www.apple.com, alpn=h2
+[tls] OCSP staple: good (www.apple.com)
+[js] module loaded 983 bytes: https://www.apple.com/v/home/a/scripts/HpViewport-DHyTaS-L.built.js
+[js] module loaded 635 bytes: https://www.apple.com/v/home/a/scripts/_commonjsHelpers-JypJ4tLA.built.js
+[js] module loaded 1921 bytes: https://www.apple.com/v/home/a/scripts/AnimSystemModel-CyyfEbM8.built.js
+[mm] low: 97032 frames free (379 MiB), 34005 used, 595 shared, 0 bugs
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[browser] module rejected https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function
+[mm] low: 96776 frames free (378 MiB), 34261 used, 599 shared, 0 bugs
+[js] module loaded 258 bytes: https://www.apple.com/v/home/a/scripts/index-DSp7vY0t.built.js
+[mm] low: 96520 frames free (377 MiB), 34517 used, 600 shared, 0 bugs
+[browser] load done: 47 requests, 4 connections dialled, 43 reused, 6 modules loaded (0 failed)
+[browser] pool: 43 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 39 from network (tab 2 of 3)
+[webapi] fetch: connection closed mid-message
+[bxfer] h2 www.apple.com:443 closed: streams=1 peak=1 frames=1/3 hpack_in=0
+[js] uncaught in timer: TypeError: javaEnabled is not a function (it is undefined)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group X25519MLKEM768
+[tls] chain of 2 verified for www.apple.com, alpn=h2
+[tls] OCSP staple: good (www.apple.com)
+[bxfer] h2 www.apple.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=46005
+[mm] low: 96264 frames free (376 MiB), 34773 used, 616 shared, 0 bugs

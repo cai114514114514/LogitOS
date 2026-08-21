@@ -1,0 +1,446 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21723 composites=92 ns=3198070507 max=289852137 motions=18 curmoves=10 curns=591510 full=54 rects=92 cpx=26220912 fpx=26163008 presns=128663594 torn=0 defer=30 late=0 drawmax=375 evdrop=0
+[browser] load: https://stripe.com/
+[sock] connected stripe.com via ipv4 ::ffff:198.18.0.112
+[wm] perf t=22723 composites=164 ns=3339451303 max=289852137 motions=18 curmoves=10 curns=591510 full=125 rects=164 cpx=28299632 fpx=28241728 presns=133182902 torn=0 defer=99 late=0 drawmax=375 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=http/1.1
+[net] rx path: frames 158 irq 41 softirq 21 inline 0 poll 4 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 512 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 512 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 512 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 512 shared, 0 bugs
+[dl] painted text: 69 run(s), 419 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,101 •
+[dl] 42,105 Products
+[dl] 14,129 •
+[dl] 42,133 Solutions
+[dl] 14,157 •
+[dl] 42,161 Developers
+[dl] 14,185 •
+[dl] 42,189 Resources
+[dl] 14,213 •
+[dl] 36,213 Pricing
+[dl] 14,233 •
+[dl] 36,233 Sign
+[dl] 70,233 in
+[dl] 8,269 Start
+[dl] 47,269 now
+[dl] 85,269 Contact
+[dl] 145,269 sales
+[dl] 23,293 Back
+[dl] 14,353 •
+[dl] 55,353 Sign
+[dl] 89,353 in
+[dl] 14,373 •
+[dl] 36,373 Contact
+[dl] 96,373 sales
+[dl] 8,409 Global
+[dl] 57,409 GDP
+[dl] 92,409 running
+[dl] 150,409 on
+[dl] 171,409 Stripe:
+[dl] 8,443 Financial
+[dl] 147,443 infrastructure
+[dl] 354,443 to
+[dl] 392,443 grow
+[dl] 473,443 your
+[dl] 546,443 revenue.
+[dl] 678,443 Accept
+[dl] 784,443 payments,
+[dl] 943,443 offer
+[dl] 8,483 financial
+[dl] 140,483 services,
+[dl] 269,483 and
+[dl] 332,483 implement
+[dl] 498,483 custom
+[dl] 614,483 revenue
+[dl] 738,483 models—from
+[dl] 950,483 your
+[dl] 1023,483 first
+[dl] 8,523 transaction
+[dl] 182,523 to
+[dl] 220,523 your
+[dl] 293,523 billionth.
+[dl] 8,577 Financial
+[dl] 147,577 infrastructure
+[dl] 354,577 to
+[dl] 392,577 grow
+[dl] 473,577 your
+[dl] 546,577 revenue.
+[dl] 678,577 Accept
+[dl] 784,577 payments,
+[dl] 943,577 offer
+[dl] 8,617 financial
+[dl] 140,617 services,
+[dl] 269,617 and
+[dl] 332,617 implement
+[dl] 498,617 custom
+[dl] 614,617 revenue
+[dl] 738,617 models—from
+[dl] 950,617 your
+[dl] 1023,617 first
+[dl] ---8<--- end painted text
+[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.120
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[mm] low: 109576 frames free (428 MiB), 21461 used, 534 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 537 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 537 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 537 shared, 0 bugs
+[mm] low: 108552 frames free (424 MiB), 22485 used, 537 shared, 0 bugs
+[browser] heap peak 14125K
+[dl] painted text: 38 run(s), 164 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 109,192 Fin
+[dl] 109,247 an
+[dl] 109,302 cial
+[dl] 109,357 infr
+[dl] 109,412 ast
+[dl] 109,467 ruc
+[dl] 109,522 tur
+[dl] 109,577 e
+[dl] 76,90 Products
+[dl] 160,90 Solutions
+[dl] 246,90 Developers
+[dl] 344,90 Resources
+[dl] 436,90 Pricing
+[dl] 490,90 Sign
+[dl] 524,90 in
+[dl] 891,86 Sign
+[dl] 925,86 in
+[dl] 990,88 Contact
+[dl] 1050,88 sales
+[dl] 16,192 Global
+[dl] 57,192 GDP
+[dl] 16,209 running
+[dl] 66,209 on
+[dl] 16,226 Stripe:
+[dl] 202,192 Fin
+[dl] 202,247 an
+[dl] 202,302 cial
+[dl] 202,357 infr
+[dl] 202,412 ast
+[dl] 202,467 ruc
+[dl] 202,522 tur
+[dl] 202,577 e
+[dl] 295,192 Get
+[dl] 323,192 started
+[dl] 310,216 Sign
+[dl] 344,216 up
+[dl] 365,216 with
+[dl] 399,216 Google
+[dl] ---8<--- end painted text
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="text/comment"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 73 external classic, 0 external module, 0 inline
+[wm] perf t=29734 composites=197 ns=4200371066 max=289852137 motions=18 curmoves=10 curns=591510 full=146 rects=197 cpx=39932272 fpx=39874368 presns=164003949 torn=0 defer=109 late=0 drawmax=375 evdrop=0
+[mm] low: 108296 frames free (423 MiB), 22741 used, 555 shared, 0 bugs
+[e1000] stats: rx 314 pkt / 339982 B, tx 237 pkt / 28188 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 198 (+198)
+[net] rx path: frames 683 irq 304 softirq 151 inline 0 poll 14 idle 0/0 halt/skip
+[mm] low: 108040 frames free (422 MiB), 22997 used, 555 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 555 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 555 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 555 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 555 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 555 shared, 0 bugs
+[e1000] stats: rx 851 pkt / 1061299 B, tx 568 pkt / 54443 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 342 (+144)
+[mm] low: 106504 frames free (416 MiB), 24533 used, 555 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 555 shared, 0 bugs
+[net] rx path: frames 1238 irq 521 softirq 221 inline 36 poll 15 idle 0/0 halt/skip
+[mm] low: 105992 frames free (414 MiB), 25045 used, 555 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 555 shared, 0 bugs
+[e1000] stats: rx 1266 pkt / 1586746 B, tx 838 pkt / 78079 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 537 (+195)
+[mm] low: 105480 frames free (412 MiB), 25557 used, 557 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 558 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 563 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 576 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 578 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 578 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 578 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 578 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 578 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 578 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 578 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 578 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 578 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 578 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 578 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 582 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 589 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 589 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 589 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 589 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 590 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 590 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 590 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 590 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 591 shared, 0 bugs
+[mm] low: 99080 frames free (387 MiB), 31957 used, 591 shared, 0 bugs
+[mm] low: 98824 frames free (386 MiB), 32213 used, 591 shared, 0 bugs
+[mm] low: 98568 frames free (385 MiB), 32469 used, 591 shared, 0 bugs
+[mm] low: 98312 frames free (384 MiB), 32725 used, 591 shared, 0 bugs
+[mm] low: 98056 frames free (383 MiB), 32981 used, 591 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 596 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 598 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 598 shared, 0 bugs
+[mm] low: 97032 frames free (379 MiB), 34005 used, 602 shared, 0 bugs
+[mm] low: 96776 frames free (378 MiB), 34261 used, 603 shared, 0 bugs
+[browser] load done: 79 requests, 3 connections dialled, 76 reused, 0 modules loaded (0 failed)
+[browser] pool: 76 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 78 from network (tab 2 of 3)
+EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+[mm] low: 96520 frames free (377 MiB), 34517 used, 611 shared, 0 bugs
+[mm] low: 96264 frames free (376 MiB), 34773 used, 611 shared, 0 bugs
+[mm] low: 96008 frames free (375 MiB), 35029 used, 611 shared, 0 bugs
+[mm] low: 95752 frames free (374 MiB), 35285 used, 611 shared, 0 bugs
+[mm] low: 95496 frames free (373 MiB), 35541 used, 611 shared, 0 bugs
+[mm] low: 95240 frames free (372 MiB), 35797 used, 611 shared, 0 bugs
+[mm] low: 94984 frames free (371 MiB), 36053 used, 611 shared, 0 bugs
+[mm] low: 94728 frames free (370 MiB), 36309 used, 611 shared, 0 bugs
+[mm] low: 94472 frames free (369 MiB), 36565 used, 611 shared, 0 bugs
+[mm] low: 94216 frames free (368 MiB), 36821 used, 611 shared, 0 bugs
+[mm] low: 93960 frames free (367 MiB), 37077 used, 611 shared, 0 bugs
+[mm] low: 93704 frames free (366 MiB), 37333 used, 611 shared, 0 bugs
+[error] Error: Minified React error #425; visit https://reactjs.org/docs/error-decoder.html?invariant=425 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at rh (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oD (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #423; visit https://reactjs.org/docs/error-decoder.html?invariant=423 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at ox (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[mm] low: 93448 frames free (365 MiB), 37589 used, 617 shared, 0 bugs
+[mm] low: 93192 frames free (364 MiB), 37845 used, 617 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=h2
+[mm] low: 92936 frames free (363 MiB), 38101 used, 619 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for errors.stripe.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for ext.stripe.com, alpn=h2
+[mm] low: 92680 frames free (362 MiB), 38357 used, 619 shared, 0 bugs
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 38 run(s), 164 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 109,192 Fin
+[dl] 109,247 an
+[dl] 109,302 cial
+[dl] 109,357 infr
+[dl] 109,412 ast
+[dl] 109,467 ruc
+[dl] 109,522 tur
+[dl] 109,577 e
+[dl] 76,90 Products
+[dl] 160,90 Solutions
+[dl] 246,90 Developers
+[dl] 344,90 Resources
+[dl] 436,90 Pricing
+[dl] 490,90 Sign
+[dl] 524,90 in
+[dl] 891,86 Sign
+[dl] 925,86 in
+[dl] 990,88 Contact
+[dl] 1050,88 sales
+[dl] 16,192 Global
+[dl] 57,192 GDP
+[dl] 16,209 running
+[dl] 66,209 on
+[dl] 16,226 Stripe:
+[dl] 202,192 Fin
+[dl] 202,247 an
+[dl] 202,302 cial
+[dl] 202,357 infr
+[dl] 202,412 ast
+[dl] 202,467 ruc
+[dl] 202,522 tur
+[dl] 202,577 e
+[dl] 295,192 Get
+[dl] 323,192 started
+[dl] 295,208 Sign
+[dl] 329,208 up
+[dl] 350,208 with
+[dl] 384,208 Google
+[dl] ---8<--- end painted text
+[mm] low: 92424 frames free (361 MiB), 38613 used, 625 shared, 0 bugs
+[mm] low: 92168 frames free (360 MiB), 38869 used, 625 shared, 0 bugs
+[mm] low: 91912 frames free (359 MiB), 39125 used, 625 shared, 0 bugs

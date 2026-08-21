@@ -1,0 +1,91 @@
+{
+ "name": "openai",
+ "url": "https://openai.com/",
+ "started": "2026-08-20T21:57:21",
+ "verdict": "ERRORS",
+ "why": "painted 15268 changed px in 3.1s but 3 JS exception(s) -- and the document asked for 96 subresources (13 stylesheets, 82 script srcs) against 2 requests issued, short by 94",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://openai.com/",
+  "bytes": 430089,
+  "redirects": [],
+  "script_tags": 91,
+  "script_src": 83,
+  "img_tags": 19,
+  "inventory": {
+   "stylesheets": 13,
+   "script_src": 82,
+   "inline_scripts": 8,
+   "images": 18,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 96
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'document' of undefined",
+   "timer: TypeError: not a function",
+   "timer: TypeError: cannot read property 'querySelector' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 2,
+  "dials": 2,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 3.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 15268,
+  "changed_bbox": [
+   152,
+   0,
+   1264,
+   764
+  ],
+  "ink_px": 4740,
+  "ink_px_blank": 3902,
+  "colours": 642,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4/openai.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/openai.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4/openai.host.html",
+ "text_runs": 0,
+ "text_bytes": 0,
+ "text": "",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 13,
+   "script_src": 82,
+   "inline_scripts": 8,
+   "images": 18,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 96
+  },
+  "gap": {
+   "mandatory": 96,
+   "requested": 2,
+   "short_by": 94,
+   "stylesheets": 13,
+   "script_src": 82
+  }
+ },
+ "finished": "2026-08-20T21:58:06"
+}

@@ -1,0 +1,220 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20868 composites=224 ns=2728295674 max=223087961 motions=18 curmoves=10 curns=542473 full=182 rects=226 cpx=37161888 fpx=37046080 presns=104768718 torn=0 defer=148 late=0 drawmax=84 evdrop=0
+[browser] load: https://www.2345.com/
+[sock] connected www.2345.com via ipv4 ::ffff:198.18.0.44
+[wm] perf t=21873 composites=269 ns=2863429173 max=223087961 motions=18 curmoves=10 curns=542473 full=226 rects=271 cpx=39240608 fpx=39124800 presns=108687522 torn=0 defer=190 late=0 drawmax=84 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.2345.com, alpn=http/1.1
+[tls] OCSP staple: good (www.2345.com)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
+[mm] low: 110600 frames free (432 MiB), 20437 used, 515 shared, 0 bugs
+[dl] painted text: 41 run(s), 475 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,96 8月20日
+[dl] 67,96 星期四
+[dl] 8,124 七月初八
+[dl] 75,124 宜：
+[dl] 110,124 破屋
+[dl] 8,160 星座运势
+[dl] 75,160 月历壁纸
+[dl] 8,180 旗下产品
+[dl] 8,200 旗下产品
+[dl] 75,200 下载浏览器
+[dl] 158,200 魔方办公
+[dl] 225,200 装软件赚钱
+[dl] 8,220 163邮箱
+[dl] 8,240 163邮箱
+[dl] 67,240 QQ邮箱
+[dl] 124,240 126邮箱
+[dl] 183,240 腾讯企邮
+[dl] 250,240 139邮箱
+[dl] 309,240 新浪邮箱
+[dl] 376,240 yeah邮箱
+[dl] 445,240 搜狐邮箱
+[dl] 512,240 更多邮箱
+[dl] 8,260 反馈
+[dl] 43,260 换肤
+[dl] 78,260 登录
+[dl] 8,280 登录2345帐号
+[dl] 107,280 注册
+[dl] 142,280 收藏夹
+[dl] 193,280 王牌技术联盟
+[dl] 8,300 把2345设为主页
+[dl] 8,336 [切换]
+[dl] 8,372 今  
+[dl] 33,372 晴
+[dl] 8,392 明
+[dl] 27,392 晴
+[dl] 8,428 15天
+[dl] 8,456 天气
+[dl] 8,580 “绝对的女汉子”任上落马
+[dl] 8,600 公积金新政来了，有哪些利好
+[dl] 8,620 俄猎人开枪射母熊被扑咬
+[dl] 187,620 猎犬救主
+[dl] ---8<--- end painted text
+[net] rx path: frames 64 irq 65 softirq 28 inline 3 poll 2 idle 0/0 halt/skip
+[sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.49
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
+[mm] low: 110344 frames free (431 MiB), 20693 used, 529 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 529 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 530 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 530 shared, 0 bugs
+[browser] heap peak 10918K
+[dl] painted text: 22 run(s), 234 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,562 “绝对的女汉子”任上落马
+[dl] 1011,578 公积金新政来了，有哪些利好
+[dl] 809,204 8月20日
+[dl] 809,220 星期四
+[dl] 809,244 七月初八
+[dl] 809,260 宜：
+[dl] 837,260 破屋
+[dl] 809,312 星座运势
+[dl] 809,333 月历壁纸
+[dl] 816,358 旗下产品
+[dl] 816,382 163邮箱
+[dl] 809,438 反馈
+[dl] 825,459 换肤
+[dl] 810,480 登录
+[dl] 810,502 把2345设为主页
+[dl] 668,193 [切换]
+[dl] 668,211 今  
+[dl] 686,211 晴
+[dl] 668,305 明
+[dl] 689,305 晴
+[dl] 764,336 15天
+[dl] 764,355 天气
+[dl] ---8<--- end painted text
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260806/97a18a382e558320a353699e7b0f8650.png: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260817/05f5e8e9c0a1fef58f50193ca291f79f.png: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/84154debf6327942ea24bfb97125317d.png: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20230906/1781dbcded406f08bbf439758e3fcefd.jpg: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260508/f48489087f22906e6b57073f11e0fa43.png: TLS refused: handshake or certificate verification failed
+[img] fetch failed: //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260806/97a18a382e558320a353699e7b0f8650.png
+[img] fetch failed: //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260817/05f5e8e9c0a1fef58f50193ca291f79f.png
+[img] fetch failed: //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260731/84154debf6327942ea24bfb97125317d.png
+[e1000] stats: rx 260 pkt / 183168 B, tx 253 pkt / 39334 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 308 (+308)
+[img] fetch failed: //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20230906/1781dbcded406f08bbf439758e3fcefd.jpg
+[img] fetch failed: //www-cdn.2345cdn.net/dhrest/upload/mkz_icon/20260508/f48489087f22906e6b57073f11e0fa43.png
+[img] 7/12 decoded (0 failed, cap 128) [+0 from cache, 5 unfetchable, 0 deferred, 0 refused; cache 12/256 ents 112K]
+[js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+[webapi] prelude failed: InternalError: interrupted
+[mm] low: 109320 frames free (427 MiB), 21717 used, 540 shared, 0 bugs
+[browser] scripts collected: 12 external classic, 0 external module, 4 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.2345.com (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www-stream.2345cdn.net (no chain, no signature), alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 729s, 4 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 727s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 729s, 6 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for passport-plugin.hao184.com, alpn=http/1.1
+[mm] low: 109064 frames free (426 MiB), 21973 used, 540 shared, 0 bugs
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 7 cached)
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 8 cached)
+[mm] low: 108808 frames free (425 MiB), 22229 used, 540 shared, 0 bugs
+[e1000] stats: rx 574 pkt / 519682 B, tx 519 pkt / 69193 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 509 (+201)
+[net] rx path: frames 576 irq 513 softirq 210 inline 29 poll 13 idle 0/0 halt/skip
+[mm] low: 108552 frames free (424 MiB), 22485 used, 540 shared, 0 bugs
+[browser] script REFUSED (HTML, not JS): https://www.2345.com/ (status 200, 169030 bytes)
+[mm] low: 108296 frames free (423 MiB), 22741 used, 543 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 555 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 563 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 563 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 563 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 563 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 563 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 563 shared, 0 bugs
+[mm] low: 106248 frames free (415 MiB), 24789 used, 565 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 565 shared, 0 bugs
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[mm] low: 105736 frames free (413 MiB), 25301 used, 595 shared, 0 bugs
+[browser] JS exception: TypeError: appendChild is not a function (it is undefined)
+TypeError: appendChild is not a function (it is undefined)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at rA06 (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at o (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at map (native)
+    at qUnD (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at call (native)
+    at c (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at n (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js)
+    at <eval> (https://www-stream.2345cdn.net/s/new2345/js/app.c9b47a74.js:2)
+[browser] JS exception: TypeError: write is not a function (it is undefined)
+TypeError: write is not a function (it is undefined)
+    at <anonymous> (https://www.2345.com/#inline-script-4:7)
+    at <eval> (https://www.2345.com/#inline-script-4:8)
+[browser] load done: 37 requests, 18 connections dialled, 19 reused, 0 modules loaded (0 failed)
+[browser] pool: 19 hits, 3 evicted, 14 closed
+[browser] resources: 0 from tab, 26 from network (tab 2 of 3)
+[error] Failed to calculate load time: TypeError: cannot read property 'loadEventEnd' of undefined
+TypeError: cannot read property 'loadEventEnd' of undefined
+    at getLoadTime (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at next (native)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at Promise (native)
+    at w (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at calculateAndReport (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+[error] Failed to calculate resource size: TypeError: cannot read property 'transferSize' of undefined
+TypeError: cannot read property 'transferSize' of undefined
+    at getResourceSize (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at next (native)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at Promise (native)
+    at w (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at calculateAndReport (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+[wm] perf t=205631 composites=708 ns=12883032338 max=300325501 motions=18 curmoves=10 curns=542473 full=319 rects=710 cpx=135885728 fpx=135769920 presns=509643481 torn=0 defer=199 late=0 drawmax=678 evdrop=0
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[browser] ctrl+L: address bar focused
+[wm] perf t=221817 composites=764 ns=13783199405 max=300325501 motions=18 curmoves=10 curns=542473 full=345 rects=766 cpx=143975328 fpx=143859520 presns=533328229 torn=0 defer=218 late=0 drawmax=678 evdrop=0
+[browser] load: about:text
+[dl] painted text: 22 run(s), 234 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,562 “绝对的女汉子”任上落马
+[dl] 1011,578 公积金新政来了，有哪些利好
+[dl] 809,204 8月20日
+[dl] 809,220 星期四
+[dl] 809,244 七月初八
+[dl] 809,260 宜：
+[dl] 837,260 破屋
+[dl] 809,312 星座运势
+[dl] 809,333 月历壁纸
+[dl] 816,358 旗下产品
+[dl] 816,382 163邮箱
+[dl] 809,438 反馈
+[dl] 825,459 换肤
+[dl] 810,480 登录
+[dl] 810,502 把2345设为主页
+[dl] 668,193 [切换]
+[dl] 668,211 今  
+[dl] 686,211 晴
+[dl] 668,305 明
+[dl] 689,305 晴
+[dl] 764,336 15天
+[dl] 764,355 天气
+[dl] ---8<--- end painted text
+[wm] perf t=222818 composites=781 ns=13968042498 max=300325501 motions=18 curmoves=10 curns=542473 full=361 rects=783 cpx=146054048 fpx=145938240 presns=541077003 torn=0 defer=232 late=0 drawmax=678 evdrop=0

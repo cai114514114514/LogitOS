@@ -1,0 +1,2005 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20805 composites=236 ns=3112682797 max=103390513 motions=18 curmoves=10 curns=520604 full=185 rects=236 cpx=41906000 fpx=41740560 presns=112507316 torn=0 defer=147 late=0 drawmax=132 evdrop=0
+[browser] load: https://github.com/
+[sock] connected github.com via ipv4 ::ffff:198.18.0.43
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for github.com, alpn=http/1.1
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 1 cached)
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 2 cached)
+[wm] perf t=21805 composites=245 ns=3191021858 max=103390513 motions=18 curmoves=10 curns=520604 full=192 rects=245 cpx=42991440 fpx=42826000 presns=115201754 torn=0 defer=153 late=0 drawmax=132 evdrop=0
+[net] rx path: frames 64 irq 36 softirq 16 inline 1 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 514 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 514 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 516 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 533 shared, 0 bugs
+[mm] low: 109576 frames free (428 MiB), 21461 used, 533 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 533 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 533 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 533 shared, 0 bugs
+[mm] low: 108552 frames free (424 MiB), 22485 used, 533 shared, 0 bugs
+[mm] low: 108296 frames free (423 MiB), 22741 used, 533 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 533 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 533 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 533 shared, 0 bugs
+[dl] painted text: 89 run(s), 467 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 content
+[dl] 8,132 Navigation
+[dl] 130,132 Menu
+[dl] 8,262 Sign
+[dl] 42,262 in
+[dl] 14,290 •
+[dl] 42,294 Platform
+[dl] 49,326 ◦
+[dl] 64,326 AI
+[dl] 80,326 CODE
+[dl] 124,326 CREATION
+[dl] 76,354 ▪
+[dl] 111,354 GitHub
+[dl] 164,354 Copilot
+[dl] 218,354 Write
+[dl] 259,354 better
+[dl] 305,354 code
+[dl] 342,354 with
+[dl] 376,354 AI
+[dl] 76,374 ▪
+[dl] 111,374 GitHub
+[dl] 164,374 Copilot
+[dl] 218,374 app
+[dl] 248,374 Direct
+[dl] 294,374 agents
+[dl] 345,374 from
+[dl] 382,374 issue
+[dl] 420,374 to
+[dl] 438,374 merge
+[dl] 76,394 ▪
+[dl] 111,394 MCP
+[dl] 146,394 Registry
+[dl] 207,394 Integrate
+[dl] 275,394 external
+[dl] 335,394 tools
+[dl] 49,430 ◦
+[dl] 64,430 DEVELOPER
+[dl] 153,430 WORKFLOWS
+[dl] 76,458 ▪
+[dl] 111,458 Actions
+[dl] 166,458 Automate
+[dl] 239,458 any
+[dl] 268,458 workflow
+[dl] 76,478 ▪
+[dl] 111,478 Codespaces
+[dl] 198,478 Instant
+[dl] 251,478 dev
+[dl] 279,478 environments
+[dl] 76,498 ▪
+[dl] 111,498 Issues
+[dl] 156,498 Plan
+[dl] 191,498 and
+[dl] 221,498 track
+[dl] 261,498 work
+[dl] 76,518 ▪
+[dl] 111,518 Code
+[dl] 150,518 Review
+[dl] 203,518 Manage
+[dl] 262,518 code
+[dl] 299,518 changes
+[dl] 76,538 ▪
+[dl] 111,538 Code
+[dl] 150,538 Quality
+[dl] 204,538 Enforce
+[dl] 261,538 quality
+[dl] 313,538 at
+[dl] 331,538 merge
+[dl] 49,574 ◦
+[dl] 64,574 APPLICATION
+[dl] 162,574 SECURITY
+[dl] 76,602 ▪
+[dl] 111,602 GitHub
+[dl] 164,602 Advanced
+[dl] 236,602 Security
+[dl] 297,602 Find
+[dl] 330,602 and
+[dl] 360,602 fix
+[dl] 379,602 vulnerabilities
+[dl] 76,622 ▪
+[dl] 111,622 Code
+[dl] 150,622 security
+[dl] 209,622 Secure
+[dl] 260,622 your
+[dl] 295,622 code
+[dl] 332,622 as
+[dl] 351,622 you
+[dl] 380,622 build
+[dl] ---8<--- end painted text
+[sock] connected github.githubassets.com via ipv4 ::ffff:198.18.0.101
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[mm] low: 107272 frames free (419 MiB), 23765 used, 534 shared, 0 bugs
+[e1000] stats: rx 335 pkt / 412182 B, tx 231 pkt / 23641 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 144 (+144)
+[mm] low: 107016 frames free (418 MiB), 24021 used, 534 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 534 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 534 shared, 0 bugs
+[wm] perf t=30148 composites=281 ns=5288216877 max=329973712 motions=18 curmoves=10 curns=520604 full=217 rects=281 cpx=61761360 fpx=61595920 presns=213794630 torn=0 defer=160 late=0 drawmax=414 evdrop=0
+[mm] low: 106248 frames free (415 MiB), 24789 used, 534 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 534 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 534 shared, 0 bugs
+[mm] low: 105480 frames free (412 MiB), 25557 used, 535 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 535 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 535 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 535 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 535 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 535 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 535 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 535 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 535 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 535 shared, 0 bugs
+[browser] heap peak 34454K
+[dl] painted text: 3 run(s), 14 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1083,135 Sign
+[dl] 1112,135 in
+[dl] -6,234 Platform
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[wm] perf t=34163 composites=296 ns=5409493940 max=329973712 motions=18 curmoves=10 curns=520604 full=224 rects=296 cpx=63031120 fpx=62865680 presns=217735920 torn=0 defer=166 late=0 drawmax=414 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 41742s, 3 cached)
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 52530s, 4 cached)
+[net] rx path: frames 579 irq 263 softirq 105 inline 13 poll 6 idle 0/0 halt/skip
+[mm] low: 102920 frames free (402 MiB), 28117 used, 567 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 567 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 567 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 572 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 572 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 572 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 572 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 572 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 572 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 572 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 572 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 572 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 572 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 572 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 572 shared, 0 bugs
+[mm] low: 99080 frames free (387 MiB), 31957 used, 572 shared, 0 bugs
+[mm] low: 98824 frames free (386 MiB), 32213 used, 572 shared, 0 bugs
+[mm] low: 98568 frames free (385 MiB), 32469 used, 572 shared, 0 bugs
+[mm] low: 98312 frames free (384 MiB), 32725 used, 572 shared, 0 bugs
+[mm] low: 98056 frames free (383 MiB), 32981 used, 572 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 572 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 572 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 572 shared, 0 bugs
+[img] 8/8 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 8/256 ents 20979K]
+[mm] low: 97032 frames free (379 MiB), 34005 used, 572 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 0 external classic, 9 external module, 0 inline
+[e1000] stats: rx 732 pkt / 912010 B, tx 504 pkt / 50069 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 332 (+188)
+[mm] low: 96776 frames free (378 MiB), 34261 used, 572 shared, 0 bugs
+[net] rx path: frames 1091 irq 397 softirq 140 inline 41 poll 7 idle 0/0 halt/skip
+[e1000] stats: rx 1093 pkt / 1434458 B, tx 704 pkt / 63101 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 399 (+67)
+[js] module loaded 4572 bytes: https://github.githubassets.com/assets/app-foundation-6b28beb3a488d40d.js
+[js] module loaded 82401 bytes: https://github.githubassets.com/assets/app-runtime-daffae66dfc976e8.js
+[mm] low: 96520 frames free (377 MiB), 34517 used, 585 shared, 0 bugs
+[js] module loaded 7170 bytes: https://github.githubassets.com/assets/fetch-utilities-7b6fb98f6a1b382e.js
+[js] module loaded 29374 bytes: https://github.githubassets.com/assets/78205-ee23aacea4530923.js
+[js] module loaded 6410 bytes: https://github.githubassets.com/assets/catalyst-4cbc4856b6c4069d.js
+[js] module loaded 3956 bytes: https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js
+[js] module loaded 20323 bytes: https://github.githubassets.com/assets/relative-time-element-d82da87ed4cd5e62.js
+[js] module loaded 20255 bytes: https://github.githubassets.com/assets/296-a42a557b17e98f4f.js
+[js] module loaded 14027 bytes: https://github.githubassets.com/assets/816-0618a896a22d101f.js
+[js] module loaded 18120 bytes: https://github.githubassets.com/assets/65637-accc4e9208dcd17e.js
+[js] module loaded 18700 bytes: https://github.githubassets.com/assets/58494-041cd1803d1acff2.js
+[js] module loaded 16950 bytes: https://github.githubassets.com/assets/31721-f6f9b53de938591c.js
+[js] module loaded 12269 bytes: https://github.githubassets.com/assets/46740-fa2d6042e69cdff3.js
+[mm] low: 96264 frames free (376 MiB), 34773 used, 596 shared, 0 bugs
+[js] module loaded 132398 bytes: https://github.githubassets.com/assets/98944-d8943a5fe11b81d6.js
+[mm] low: 96008 frames free (375 MiB), 35029 used, 596 shared, 0 bugs
+[error] TypeError: cannot read property 'call' of undefined
+    at <anonymous> (https://github.githubassets.com/assets/78205-ee23aacea4530923.js)
+    at connectedCallback (https://github.githubassets.com/assets/58494-041cd1803d1acff2.js)
+    at upgradeOne (<platform>:901)
+    at <anonymous> (<platform>:916)
+    at walk (<platform>:909)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at walk (<platform>:911)
+    at upgradeTree (<platform>:917)
+    at define (<platform>:933)
+    at 330861 (https://github.githubassets.com/assets/58494-041cd1803d1acff2.js:103)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-d3595dce6e8e4dc8.js)
+    at 239673 (https://github.githubassets.com/assets/98944-d8943a5fe11b81d6.js)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-d3595dce6e8e4dc8.js)
+    at 918699 (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-d3595dce6e8e4dc8.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js:2)
+
+[mm] low: 95752 frames free (374 MiB), 35285 used, 597 shared, 0 bugs
+[mm] low: 95496 frames free (373 MiB), 35541 used, 597 shared, 0 bugs
+[js] module loaded 3128 bytes: https://github.githubassets.com/assets/runtime-helpers-199eecb878185733.js
+[js] module loaded 550 bytes: https://github.githubassets.com/assets/aria-live-50f912630c91395a.js
+[js] module loaded 5314 bytes: https://github.githubassets.com/assets/hotkey-d7eacd5a5172ab36.js
+[mm] low: 95240 frames free (372 MiB), 35797 used, 598 shared, 0 bugs
+[js] module loaded 267582 bytes: https://github.githubassets.com/assets/react-core-141a601b8644198b.js
+[mm] low: 94984 frames free (371 MiB), 36053 used, 598 shared, 0 bugs
+[js] module loaded 195190 bytes: https://github.githubassets.com/assets/react-lib-d96943e9b6ba45be.js
+[mm] low: 94728 frames free (370 MiB), 36309 used, 598 shared, 0 bugs
+[js] module loaded 10274 bytes: https://github.githubassets.com/assets/50841-083351978b4c9277.js
+[js] module loaded 16160 bytes: https://github.githubassets.com/assets/2761-43f8f84b23ba0e06.js
+[js] module loaded 9898 bytes: https://github.githubassets.com/assets/88475-1eaca5eebf3b5a73.js
+[js] module loaded 75181 bytes: https://github.githubassets.com/assets/26533-ba17ec41bc728e34.js
+[js] module loaded 10017 bytes: https://github.githubassets.com/assets/3609-1c60db4625bf1d59.js
+[js] module loaded 41668 bytes: https://github.githubassets.com/assets/87644-f3da34e156df8833.js
+[js] module loaded 36096 bytes: https://github.githubassets.com/assets/21880-58cbc165a56a0bc3.js
+[js] module loaded 34271 bytes: https://github.githubassets.com/assets/87220-075dd2ef3f1fd851.js
+[e1000] stats: rx 1402 pkt / 1814897 B, tx 926 pkt / 83427 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 590 (+191)
+[js] module loaded 15885 bytes: https://github.githubassets.com/assets/49583-12ef1686e4d5fa25.js
+[js] module loaded 11896 bytes: https://github.githubassets.com/assets/55887-80b8fa5e9698bb0b.js
+[mm] low: 94472 frames free (369 MiB), 36565 used, 598 shared, 0 bugs
+[mm] low: 94216 frames free (368 MiB), 36821 used, 604 shared, 0 bugs
+[js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at [Symbol.split] (native)
+    at split (native)
+    at classesOf (<select>:312)
+    at matchSimple (<select>:506)
+    at matchCompound (<select>:532)
+    at matchSteps (<select>:538)
+    at matchAny (<select>:555)
+    at <anonymous> (<select>)
+    at descendants (<select>:605)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at <anonymous> (https://github.githubassets.com/assets/selector-observer-68d21c8f08e4d02a.js)
+    at h (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at r (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at u (https://github.githubassets.com/assets/github-elements-ba281043a71bd906.js)
+    at <anonymous> (<platform>:624)
+    at forEach (native)
+    at <anonymous> (<platform>:625)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:409)
+    at onReject (<platform>:1143)
+
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 677486 (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-d3595dce6e8e4dc8.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js:35)
+
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 677486 (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-d3595dce6e8e4dc8.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js:35)
+
+[browser] module rejected https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js: TypeError: not an object
+[js] module loaded 15564 bytes: https://github.githubassets.com/assets/4234-972830f96fcb3b2c.js
+[mm] low: 93960 frames free (367 MiB), 37077 used, 605 shared, 0 bugs
+[mm] low: 93704 frames free (366 MiB), 37333 used, 605 shared, 0 bugs
+[mm] low: 93448 frames free (365 MiB), 37589 used, 605 shared, 0 bugs
+[mm] low: 93192 frames free (364 MiB), 37845 used, 605 shared, 0 bugs
+[mm] low: 92936 frames free (363 MiB), 38101 used, 605 shared, 0 bugs
+[mm] low: 92680 frames free (362 MiB), 38357 used, 605 shared, 0 bugs
+[mm] low: 92424 frames free (361 MiB), 38613 used, 605 shared, 0 bugs
+[js] module loaded 676048 bytes: https://github.githubassets.com/assets/primer-react-b810611ec011141a.js
+[mm] low: 92168 frames free (360 MiB), 38869 used, 605 shared, 0 bugs
+[mm] low: 91912 frames free (359 MiB), 39125 used, 605 shared, 0 bugs
+[mm] low: 91656 frames free (358 MiB), 39381 used, 605 shared, 0 bugs
+[js] module loaded 28765 bytes: https://github.githubassets.com/assets/76256-17c15f523e72591f.js
+[js] module loaded 17866 bytes: https://github.githubassets.com/assets/2927-12fe04b2ee11e2b4.js
+[js] module loaded 67301 bytes: https://github.githubassets.com/assets/13365-32873c68369b5c8c.js
+[js] module loaded 17139 bytes: https://github.githubassets.com/assets/10668-59cd6d0a1d02960f.js
+[net] rx path: frames 1607 irq 670 softirq 274 inline 45 poll 8 idle 0/0 halt/skip
+[js] module loaded 99628 bytes: https://github.githubassets.com/assets/81674-48f2d85e9073baa5.js
+[js] module loaded 19586 bytes: https://github.githubassets.com/assets/58636-8122626f90f24e1b.js
+[js] module loaded 201214 bytes: https://github.githubassets.com/assets/4731-2167f29f1bb89be4.js
+[js] module loaded 268862 bytes: https://github.githubassets.com/assets/40307-62b0783274b0cb28.js
+[mm] low: 91400 frames free (357 MiB), 39637 used, 608 shared, 0 bugs
+[js] module loaded 11413 bytes: https://github.githubassets.com/assets/71236-e3cbad5c0244a092.js
+[js] module loaded 53085 bytes: https://github.githubassets.com/assets/43831-42797eeb443e8c18.js
+[js] module loaded 69785 bytes: https://github.githubassets.com/assets/70666-08bcd51602c0ff23.js
+[mm] low: 91144 frames free (356 MiB), 39893 used, 608 shared, 0 bugs
+[e1000] stats: rx 1732 pkt / 2240649 B, tx 1144 pkt / 100727 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 725 (+135)
+[js] module loaded 113841 bytes: https://github.githubassets.com/assets/6948-4c2a07857de692bc.js
+[mm] low: 90888 frames free (355 MiB), 40149 used, 608 shared, 0 bugs
+[js] module loaded 14130 bytes: https://github.githubassets.com/assets/86432-60632c705a64dcfd.js
+[js] module loaded 469278 bytes: https://github.githubassets.com/assets/47166-3023fb54a8d58d5f.js
+[mm] low: 90632 frames free (354 MiB), 40405 used, 608 shared, 0 bugs
+[mm] low: 90376 frames free (353 MiB), 40661 used, 608 shared, 0 bugs
+[mm] low: 90120 frames free (352 MiB), 40917 used, 608 shared, 0 bugs
+[js] module loaded 40570 bytes: https://github.githubassets.com/assets/48761-01418c0272dd5815.js
+[js] module loaded 125327 bytes: https://github.githubassets.com/assets/35518-97cfb25776f514de.js
+[js] module loaded 3866 bytes: https://github.githubassets.com/assets/40067-b9d4590e1869d0ba.js
+[js] module loaded 20107 bytes: https://github.githubassets.com/assets/43681-d2815a3162affc8e.js
+[js] module loaded 6218 bytes: https://github.githubassets.com/assets/65390-b5e389a86afba794.js
+[js] module loaded 25235 bytes: https://github.githubassets.com/assets/74972-81b938f930467de5.js
+[js] module loaded 32424 bytes: https://github.githubassets.com/assets/23187-4fca99e7c52320b5.js
+[js] module loaded 100745 bytes: https://github.githubassets.com/assets/24360-58c4d85aef273d16.js
+[js] module loaded 17984 bytes: https://github.githubassets.com/assets/7255-bbcb7fd53b37d4d7.js
+[js] module loaded 63630 bytes: https://github.githubassets.com/assets/78890-9f9a3ba59744bcb4.js
+[js] module loaded 10526 bytes: https://github.githubassets.com/assets/83144-07ccdaee4d1726a1.js
+[js] module loaded 29824 bytes: https://github.githubassets.com/assets/93633-1ade25bff28bbafb.js
+[js] module loaded 97374 bytes: https://github.githubassets.com/assets/73064-fe989e2d720491eb.js
+[mm] low: 89864 frames free (351 MiB), 41173 used, 608 shared, 0 bugs
+[js] module loaded 10093 bytes: https://github.githubassets.com/assets/95771-c98fb91109467183.js
+[mm] low: 89608 frames free (350 MiB), 41429 used, 621 shared, 0 bugs
+[mm] low: 89352 frames free (349 MiB), 41685 used, 622 shared, 0 bugs
+[mm] low: 89096 frames free (348 MiB), 41941 used, 625 shared, 0 bugs
+[mm] low: 88840 frames free (347 MiB), 42197 used, 625 shared, 0 bugs
+[mm] low: 88584 frames free (346 MiB), 42453 used, 625 shared, 0 bugs
+[mm] low: 88328 frames free (345 MiB), 42709 used, 625 shared, 0 bugs
+[mm] low: 88072 frames free (344 MiB), 42965 used, 625 shared, 0 bugs
+[mm] low: 87816 frames free (343 MiB), 43221 used, 625 shared, 0 bugs
+[mm] low: 87560 frames free (342 MiB), 43477 used, 625 shared, 0 bugs
+[mm] low: 87304 frames free (341 MiB), 43733 used, 628 shared, 0 bugs
+[browser] load done: 95 requests, 5 connections dialled, 90 reused, 59 modules loaded (0 failed)
+[browser] pool: 90 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 35 from network (tab 2 of 3)
+[error] Uncaught (in promise) TypeError: value is not iterable
+    at $4 (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js)
+    at nZ (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js)
+

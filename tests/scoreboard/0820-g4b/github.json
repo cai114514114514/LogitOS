@@ -1,0 +1,83 @@
+{
+ "name": "github",
+ "url": "https://github.com/",
+ "started": "2026-08-20T22:13:51",
+ "verdict": "ERRORS",
+ "why": "painted 203812 changed px in 153.4s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://github.com/",
+  "bytes": 574778,
+  "redirects": [],
+  "script_tags": 15,
+  "script_src": 9,
+  "img_tags": 24,
+  "inventory": {
+   "stylesheets": 19,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 78,
+   "fonts": 1,
+   "mandatory": 29
+  },
+  "elapsed": 0.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://github.githubassets.com/assets/behaviors-3ce61087cd37f0d4.js: TypeError: not an object"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 6,
+  "requests": 95,
+  "dials": 5,
+  "reused": 90,
+  "modules": 59,
+  "modules_failed": 0,
+  "heap_peak_k": 34454,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 153.4,
+  "paint_seconds": 16.4,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 203812,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 185768,
+  "ink_px_blank": 3902,
+  "colours": 625,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/github.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/github.serial.txt",
+ "about_text_arrived": false,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/github.host.html",
+ "text_runs": 3,
+ "text_bytes": 14,
+ "text": "8,68 Skip\n41,68 to\n59,68 content\n8,132 Navigation\n130,132 Menu\n8,262 Sign\n42,262 in\n14,290 •\n42,294 Platform\n49,326 ◦\n64,326 AI\n80,326 CODE\n124,326 CREATION\n76,354 ▪\n111,354 GitHub\n164,354 Copilot\n218,354 Write\n259,354 better\n305,354 code\n342,354 with\n376,354 AI\n76,374 ▪\n111,374 GitHub\n164,374 Copilot\n218,374 app\n248,374 Direct\n294,374 agents\n345,374 from\n382,374 issue\n420,374 to\n438,374 merge\n76,394 ▪\n111,394 MCP\n146,394 Registry\n207,394 Integrate\n275,394 external\n335,394 tools\n49,430 ◦\n64,430 DEVELOPER\n153,430 WORKFLOWS\n76,458 ▪\n111,458 Actions\n166,458 Automate\n239,458 any\n268,458 workflow\n76,478 ▪\n111,478 Codespaces\n198,478 Instant\n251,478 dev\n279,478 environments\n76,498 ▪\n111,498 Issues\n156,498 Plan\n191,498 and\n221,498 track\n261,498 work\n76,518 ▪\n111,518 Code\n150,518 Review\n203,518 Manage\n262,518 code\n299,518 changes\n76,538 ▪\n111,538 Code\n150,538 Quality\n204,538 Enforce\n261,538 quality\n313,538 at\n331,538 merge\n49,574 ◦\n64,574 APPLICATION\n162,574 SECURITY\n76,602 ▪\n111,602 GitHub\n164,602 Advanced\n236,602 Security\n297,602 Find\n330,602 and\n360,602 fix\n379,602 vulnerabilities\n76,622 ▪\n111,622 Code\n150,622 security\n209,622 Secure\n260,622 your\n295,622 code\n332,622 as\n351,622 you\n380,622 build",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 19,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 78,
+   "fonts": 1,
+   "mandatory": 29
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:17:27"
+}

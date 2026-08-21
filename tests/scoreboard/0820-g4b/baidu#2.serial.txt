@@ -1,0 +1,176 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20866 composites=239 ns=2880748053 max=108102853 motions=18 curmoves=11 curns=567806 full=194 rects=239 cpx=37831808 fpx=37740816 presns=83026914 torn=0 defer=164 late=0 drawmax=67 evdrop=0
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.47
+[wm] perf t=21866 composites=262 ns=2975783500 max=108102853 motions=18 curmoves=11 curns=567806 full=216 rects=262 cpx=38886528 fpx=38795536 presns=86632232 torn=0 defer=185 late=0 drawmax=67 evdrop=0
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 64 irq 63 softirq 30 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 506 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 519 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 521 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 521 shared, 0 bugs
+[dl] painted text: 32 run(s), 393 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题讨论、查资料、做分析、写文案，都帮你完成
+[dl] 641,245 
+[dl] 245,470 
+[dl] 958,457 
+[dl] 960,472 换一换
+[dl] 242,492 
+[dl] 245,512 “培育发展新质生产力的新动能”
+[dl] 300,481 5
+[dl] 300,498 “不怕楼上跑跳的”房子要来了吗
+[dl] 308,478 热
+[dl] 245,549 1
+[dl] 245,566 医院能办结婚证了
+[dl] 253,546 新
+[dl] 632,535 6
+[dl] 632,552 今年秋裤可能真的不用穿了
+[dl] 632,589 7
+[dl] 632,606 男子卖树叶10元一片
+[dl] 779,606 收入将捐出去
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[sock] connected pss.bdstatic.com via ipv4 ::ffff:198.18.0.51
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/static/font/cosmic/pc/cos-icon_3df378f.css: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/css/ubase_sync-d600f57804.css?v=md5: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 109576 frames free (428 MiB), 21461 used, 559 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 559 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed
+[browser] fetch failed (status 0) https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js: TLS refused: handshake or certificate verification failed
+[wm] perf t=70292 composites=374 ns=5674027605 max=287705122 motions=18 curmoves=11 curns=567806 full=239 rects=374 cpx=61076608 fpx=60985616 presns=229174679 torn=0 defer=189 late=0 drawmax=557 evdrop=0
+[wm] perf t=71292 composites=380 ns=5750053376 max=287705122 motions=18 curmoves=11 curns=567806 full=243 rects=380 cpx=62162048 fpx=62071056 presns=231771345 torn=0 defer=192 late=0 drawmax=557 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[e1000] stats: rx 324 pkt / 328381 B, tx 318 pkt / 36672 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 328 (+328)
+[mm] low: 109064 frames free (426 MiB), 21973 used, 559 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 559 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for hectorstatic.baidu.com, alpn=http/1.1
+[browser] fetch failed (status 0) https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/polyfill_9354efa.js: TLS refused: handshake or certificate verification failed
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/lib/jquery-1-edb203c114.10.2.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] script LOST: https://pss.bdstatic.com/static/superman/js/lib/esl-cf7161da9a.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] JS exception: ReferenceError: 'require' is not defined
+ReferenceError: 'require' is not defined
+    at addPaths (https://www.baidu.com/#inline-script-11)
+    at <anonymous> (https://www.baidu.com/#inline-script-11:5)
+    at <eval> (https://www.baidu.com/#inline-script-11:5)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-12)
+    at <eval> (https://www.baidu.com/#inline-script-12:1)
+[mm] low: 108552 frames free (424 MiB), 22485 used, 560 shared, 0 bugs
+[browser] script LOST: https://pss.bdstatic.com/r/www/cache/static/protocol/https/bundles/polyfill_9354efa.js: TLS refused: handshake or certificate verification failed (status 0)
+[browser] JS exception: ReferenceError: 'define' is not defined
+ReferenceError: 'define' is not defined
+    at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/instant_search_newi_e1a452c.js:1)
+[mm] low: 108296 frames free (423 MiB), 22741 used, 582 shared, 0 bugs
+[mm] low: 108040 frames free (422 MiB), 22997 used, 583 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 583 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 583 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 583 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 583 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 583 shared, 0 bugs
+[mm] low: 106504 frames free (416 MiB), 24533 used, 583 shared, 0 bugs
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:6)
+    at <eval> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:7)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:56)
+    at initPreload (https://pss.bdstatic.com/r/www/cache/static/protocol/https/global/js/all_async_search_0340377.js:57)
+    at <eval> (https://www.baidu.com/#inline-script-13:17)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://www.baidu.com/#inline-script-14:1)
+    at <eval> (https://www.baidu.com/#inline-script-14:6)
+[browser] JS exception: ReferenceError: 'define' is not defined
+ReferenceError: 'define' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/sbase-21fd9d540c.js:1)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-15:1)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://www.baidu.com/#inline-script-16:2)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/s_super_index-895c0c52f8.js:3)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/min_super-ddbbf93ae3.js:1)
+[browser] JS exception: ReferenceError: 'F' is not defined
+ReferenceError: 'F' is not defined
+    at <eval> (https://pss.bdstatic.com/static/superman/js/components/hotsearch-2e7b839d0b.js:1)
+Error
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 16 requests, 10 connections dialled, 6 reused, 0 modules loaded (0 failed)
+[browser] pool: 6 hits, 1 evicted, 7 closed
+[browser] resources: 0 from tab, 9 from network (tab 2 of 3)
+[net] rx path: frames 577 irq 569 softirq 263 inline 11 poll 12 idle 0/0 halt/skip
+[wm] perf t=98509 composites=444 ns=7968843683 max=287705122 motions=18 curmoves=11 curns=567806 full=262 rects=444 cpx=77880448 fpx=77789456 presns=313512822 torn=0 defer=197 late=0 drawmax=557 evdrop=0
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 32 run(s), 393 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 598,245 复杂问题讨论、查资料、做分析、写文案，都帮你完成
+[dl] 641,245 
+[dl] 245,470 
+[dl] 958,457 
+[dl] 960,472 换一换
+[dl] 242,492 
+[dl] 245,512 “培育发展新质生产力的新动能”
+[dl] 300,481 5
+[dl] 300,498 “不怕楼上跑跳的”房子要来了吗
+[dl] 308,478 热
+[dl] 245,549 1
+[dl] 245,566 医院能办结婚证了
+[dl] 253,546 新
+[dl] 632,535 6
+[dl] 632,552 今年秋裤可能真的不用穿了
+[dl] 632,589 7
+[dl] 632,606 男子卖树叶10元一片
+[dl] 779,606 收入将捐出去
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[wm] perf t=115517 composites=531 ns=8789078895 max=287705122 motions=18 curmoves=11 curns=567806 full=317 rects=531 cpx=89103488 fpx=89012496 presns=341560078 torn=0 defer=242 late=0 drawmax=557 evdrop=0

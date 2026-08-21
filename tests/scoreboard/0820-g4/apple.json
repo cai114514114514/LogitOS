@@ -1,0 +1,87 @@
+{
+ "name": "apple",
+ "url": "https://www.apple.com/",
+ "started": "2026-08-20T21:58:42",
+ "verdict": "ERRORS",
+ "why": "painted 67964 changed px in 30.1s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.apple.com/",
+  "bytes": 254352,
+  "redirects": [],
+  "script_tags": 18,
+  "script_src": 13,
+  "img_tags": 98,
+  "inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "elapsed": 2.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "timer: TypeError: javaEnabled is not a function (it is undefined)"
+  ],
+  "module_exceptions": [
+   "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+  ],
+  "fetch_failed": [
+   "fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 4,
+  "requests": 47,
+  "dials": 4,
+  "reused": 43,
+  "modules": 6,
+  "modules_failed": 0,
+  "heap_peak_k": 13836,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 30.1,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 67964,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 52908,
+  "ink_px_blank": 3902,
+  "colours": 888,
+  "rich_tiles_proxy": 17
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4/apple.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/apple.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4/apple.host.html",
+ "text_runs": 21,
+ "text_bytes": 86,
+ "text": "8,82 Apple\n14,188 •\n70,188 Apple\n14,244 •\n49,244 ◦\n97,244 Store\n49,304 ◦\n90,304 Mac\n49,364 ◦\n91,364 iPad\n49,424 ◦\n105,424 iPhone\n49,484 ◦\n102,484 Watch\n49,544 ◦\n101,544 Vision\n49,604 ◦\n110,604 AirPods",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 9,
+   "script_src": 13,
+   "inline_scripts": 1,
+   "images": 42,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 23
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:00:08"
+}

@@ -1,0 +1,83 @@
+{
+ "name": "doubao",
+ "url": "https://www.doubao.com/",
+ "started": "2026-08-20T21:56:12",
+ "verdict": "PAINTED",
+ "why": "painted 15032 changed px in 20.5s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.doubao.com/chat/",
+  "bytes": 374462,
+  "redirects": [
+   "302 -> https://www.doubao.com/chat/"
+  ],
+  "script_tags": 15,
+  "script_src": 4,
+  "img_tags": 1,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 4,
+   "inline_scripts": 9,
+   "images": 1,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "elapsed": 4.7
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 2,
+  "requests": 8,
+  "dials": 4,
+  "reused": 5,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 8592,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 20.5,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 15032,
+  "changed_bbox": [
+   152,
+   0,
+   1264,
+   764
+  ],
+  "ink_px": 3902,
+  "ink_px_blank": 3902,
+  "colours": 587,
+  "rich_tiles_proxy": 15
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4/doubao.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4/doubao.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4/doubao.host.html",
+ "text_runs": 0,
+ "text_bytes": 0,
+ "text": "",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 4,
+   "inline_scripts": 9,
+   "images": 1,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T21:57:16"
+}

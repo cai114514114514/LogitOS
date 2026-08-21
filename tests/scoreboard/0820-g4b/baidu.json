@@ -1,0 +1,85 @@
+{
+ "name": "baidu",
+ "url": "https://www.baidu.com/",
+ "started": "2026-08-20T22:11:57",
+ "verdict": "ERRORS",
+ "why": "painted 29964 changed px in 30.1s but 3 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.baidu.com/",
+  "bytes": 695641,
+  "redirects": [],
+  "script_tags": 34,
+  "script_src": 12,
+  "img_tags": 20,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 2.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "event listener: TypeError: cannot read property 'ownerDocument' of undefined",
+   "timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_f7fe0a6)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 5,
+  "requests": 19,
+  "dials": 6,
+  "reused": 13,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 10811,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 30.1,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 29964,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   768
+  ],
+  "ink_px": 6964,
+  "ink_px_blank": 3902,
+  "colours": 929,
+  "rich_tiles_proxy": 19
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/baidu.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/baidu.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/baidu.host.html",
+ "text_runs": 31,
+ "text_bytes": 379,
+ "text": "598,245 复杂问题讨论、查资料、做分析、写文案，都帮你完成\n641,245 \n245,470 \n958,457 \n960,472 换一换\n242,492 \n245,512 “培育发展新质生产力的新动能”\n300,481 5\n300,498 “不怕楼上跑跳的”房子要来了吗\n308,478 热\n245,549 1\n245,566 医院能办结婚证了\n253,546 新\n632,535 6\n632,552 今年秋裤可能真的不用穿了\n632,589 7\n632,606 6岁女童15天暴走380公里\n912,295 百度一下\n612,79 新闻\n604,121 hao123\n612,163 地图\n612,205 贴吧\n612,247 视频\n612,289 图片\n612,331 网盘\n612,373 文库\n612,415 文心\n599,457 百度搭子\n612,499 更多\n709,79 设置\n243,120 登录",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 12,
+   "inline_scripts": 17,
+   "images": 18,
+   "preloads": 7,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:13:10"
+}

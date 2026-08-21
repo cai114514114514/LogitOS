@@ -1,0 +1,26 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21059 composites=232 ns=2887579443 max=125935598 motions=18 curmoves=10 curns=425560 full=183 rects=232 cpx=43139668 fpx=43073492 presns=99217975 torn=0 defer=152 late=0 drawmax=69 evdrop=0
+[browser] load: https://openai.com/
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.67
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[wm] perf t=22060 composites=241 ns=2965650553 max=125935598 motions=18 curmoves=10 curns=425560 full=191 rects=241 cpx=44194388 fpx=44128212 presns=101625158 torn=0 defer=159 late=0 drawmax=94 evdrop=0
+[browser] scripts collected: 0 external classic, 0 external module, 2 inline
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.67
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[net] rx path: frames 98 irq 45 softirq 23 inline 0 poll 3 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 527 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 527 shared, 0 bugs
+[browser] load done: 2 requests, 2 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: cannot read property 'document' of undefined
+[js] uncaught in timer: TypeError: not a function
+[js] uncaught in timer: TypeError: cannot read property 'querySelector' of undefined
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=43098 composites=314 ns=4125123286 max=125935598 motions=18 curmoves=10 curns=425560 full=224 rects=314 cpx=57711188 fpx=57645012 presns=139090636 torn=0 defer=180 late=0 drawmax=94 evdrop=0

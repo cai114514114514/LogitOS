@@ -1,0 +1,81 @@
+{
+ "name": "qq",
+ "url": "https://www.qq.com/",
+ "started": "2026-08-20T22:13:54",
+ "verdict": "PAINTED",
+ "why": "painted 241912 changed px in 48.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 131212,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 1.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 16,
+  "dials": 7,
+  "reused": 9,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9480,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 48.3,
+  "paint_seconds": 16.4,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 241912,
+  "changed_bbox": [
+   140,
+   12,
+   1260,
+   764
+  ],
+  "ink_px": 146161,
+  "ink_px_blank": 3902,
+  "colours": 1183,
+  "rich_tiles_proxy": 55
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/qq.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/qq.serial.txt",
+ "about_text_arrived": false,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/qq.host.html",
+ "text_runs": 70,
+ "text_bytes": 1037,
+ "text": "14,117 搜索\n68,100 问AI\n8,124 邮箱\n8,144 网页设置\n8,164 快捷访问\n8,184 安装电脑版\n8,204 内容更精彩\n14,232 •\n36,232 要闻\n14,252 •\n36,252 科技\n14,272 •\n36,272 财经\n14,292 •\n36,292 AI\n14,312 •\n36,312 热问\n14,332 •\n36,332 教育\n14,352 •\n36,352 国际\n14,372 •\n36,372 军事\n14,392 •\n36,392 娱乐\n14,412 •\n36,412 电视剧\n14,432 •\n36,432 体育\n14,452 •\n36,452 NBA\n14,472 •\n36,472 汽车\n14,492 •\n36,492 房产\n14,512 •\n36,512 游戏\n14,532 •\n36,532 健康\n14,552 •\n36,552 QQ游戏\n14,572 •\n36,572 小游戏中心\n14,592 •\n36,592 更多",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:15:46"
+}

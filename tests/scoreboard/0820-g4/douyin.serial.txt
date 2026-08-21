@@ -1,0 +1,109 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20778 composites=220 ns=1988313794 max=93664541 motions=18 curmoves=10 curns=423453 full=181 rects=220 cpx=28255152 fpx=28205520 presns=65276184 torn=0 defer=155 late=0 drawmax=64 evdrop=0
+[browser] load: https://www.douyin.com/
+[sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.74
+[wm] perf t=21785 composites=260 ns=2094127760 max=93664541 motions=18 curmoves=10 curns=423453 full=220 rects=260 cpx=30333872 fpx=30284240 presns=68959327 torn=0 defer=192 late=0 drawmax=64 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 900s, 2 cached)
+[dl] painted text: 2 run(s), 13 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Please
+[dl] 57,68 wait...
+[dl] ---8<--- end painted text
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[sock] connected lf-waf-js.byted-static.com via ipv4 ::ffff:198.18.0.93
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf3-short.ibytedapm.com, alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 4 cached)
+[net] rx path: frames 66 irq 68 softirq 24 inline 6 poll 2 idle 0/0 halt/skip
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[browser] load: https://www.douyin.com/
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 892s, 4 cached)
+[mm] low: 110600 frames free (432 MiB), 20437 used, 535 shared, 0 bugs
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf3-short.ibytedapm.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 892s, 4 cached)
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 1 hits, 0 evicted, 5 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[browser] load: https://www.douyin.com/
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 883s, 4 cached)
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf3-short.ibytedapm.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 886s, 4 cached)
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 2 hits, 0 evicted, 9 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[browser] load: https://www.douyin.com/
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 878s, 4 cached)
+[wm] perf t=45886 composites=339 ns=4343192596 max=93664541 motions=18 curmoves=10 curns=423453 full=254 rects=339 cpx=61412272 fpx=61362640 presns=145672217 torn=0 defer=197 late=0 drawmax=85 evdrop=0
+[mm] low: 110344 frames free (431 MiB), 20693 used, 535 shared, 0 bugs
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[e1000] stats: rx 264 pkt / 172647 B, tx 257 pkt / 44095 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 326 (+326)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf3-short.ibytedapm.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 880s, 4 cached)
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 3 hits, 0 evicted, 13 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[wm] perf t=49903 composites=355 ns=4574052903 max=93664541 motions=18 curmoves=10 curns=423453 full=263 rects=355 cpx=64699312 fpx=64649680 presns=154854617 torn=0 defer=203 late=0 drawmax=85 evdrop=0
+[browser] load: https://www.douyin.com/
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 871s, 4 cached)
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf3-short.ibytedapm.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 874s, 4 cached)
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 4 hits, 0 evicted, 17 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[browser] load: https://www.douyin.com/
+[wm] perf t=56939 composites=390 ns=5695301265 max=93664541 motions=18 curmoves=10 curns=423453 full=287 rects=390 cpx=82445232 fpx=82395600 presns=194652788 torn=0 defer=210 late=0 drawmax=85 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 866s, 4 cached)
+[browser] scripts collected: 1 external classic, 0 external module, 2 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-waf-js.byted-static.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf3-short.ibytedapm.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 868s, 4 cached)
+[browser] load done: 3 requests, 3 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 5 hits, 0 evicted, 21 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 2 run(s), 13 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Please
+[dl] 57,68 wait...
+[dl] ---8<--- end painted text
+[wm] perf t=63010 composites=423 ns=6769812941 max=93664541 motions=18 curmoves=10 curns=423453 full=309 rects=423 cpx=100191152 fpx=100141520 presns=232723451 torn=0 defer=215 late=0 drawmax=85 evdrop=0
+[browser] load: https://www.douyin.com/
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.douyin.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.douyin.com (240 bytes, lifetime 858s, 4 cached)

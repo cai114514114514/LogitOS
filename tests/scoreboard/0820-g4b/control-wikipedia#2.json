@@ -1,0 +1,92 @@
+{
+ "name": "control-wikipedia#2",
+ "url": "https://en.wikipedia.org/wiki/Operating_system",
+ "started": "2026-08-20T22:22:07",
+ "verdict": "PAINTED",
+ "why": "painted 91144 changed px in 15.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+  "bytes": 676183,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 1,
+  "img_tags": 26,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 1,
+   "inline_scripts": 3,
+   "images": 24,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "elapsed": 0.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Wiki_letter_w_cropped.svg/20px-Wiki_letter_w_cropped.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/8/8a/OOjs_UI_icon_edit-ltr-progressive.svg/20px-OOjs_UI_icon_edit-ltr-progressive.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Virtual_memory.svg/250px-Virtual_memory.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/5/51/Dolphin_FileManager.png/250px-Dolphin_FileManager.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 37,
+  "dials": 4,
+  "reused": 33,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 17937,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 15.7,
+  "paint_seconds": 16.5,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 91144,
+  "changed_bbox": [
+   152,
+   0,
+   1264,
+   764
+  ],
+  "ink_px": 18604,
+  "ink_px_blank": 3902,
+  "colours": 1584,
+  "rich_tiles_proxy": 59
+ },
+ "shot": "/mnt/d/ststem/tests/scoreboard/0820-g4b/control-wikipedia#2.png",
+ "serial_log": "/mnt/d/ststem/tests/scoreboard/0820-g4b/control-wikipedia#2.serial.txt",
+ "about_text_arrived": true,
+ "host_document": "/mnt/d/ststem/tests/scoreboard/0820-g4b/control-wikipedia#2.host.html",
+ "text_runs": 198,
+ "text_bytes": 1132,
+ "text": "8,68 Jump\n51,68 to\n69,68 content\n24,88 Main\n61,88 menu\n8,108 Main\n45,108 menu\n14,132 move\n56,132 to\n74,132 sidebar\n148,132 hide\n8,156 Navigation\n14,192 •\n36,192 Main\n73,192 page\n14,212 •\n36,212 Contents\n14,232 •\n36,232 Current\n93,232 events\n14,252 •\n36,252 Random\n99,252 article\n14,272 •\n36,272 About\n81,272 Wikipedia\n14,292 •\n36,292 Contact\n96,292 us\n8,328 Contribute\n14,364 •\n36,364 Help\n14,384 •\n36,384 Learn\n79,384 to\n97,384 edit\n14,404 •\n36,404 Community\n122,404 portal\n14,424 •\n36,424 Recent\n88,424 changes\n14,444 •\n36,444 Upload\n90,444 file\n14,464 •\n36,464 Special\n90,464 pages\n8,550 Search\n14,602 Search",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 1,
+   "inline_scripts": 3,
+   "images": 24,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "gap": null
+ },
+ "finished": "2026-08-20T22:23:08"
+}

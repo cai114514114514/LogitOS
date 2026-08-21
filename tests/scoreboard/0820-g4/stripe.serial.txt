@@ -1,0 +1,734 @@
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 48/56 known features present: fpu tsc msr cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0 (AVX deliberately off -- see boot/long.asm)
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=3175716 cycles, c=29317079 cycles, speedup x9.23
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 3417.643 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 3418849579 3417608112 3417643470 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (6 ticks) crypto_mismatch=0 kat=0 (818 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[mm] boot: 131037 frames total (511 MiB), 127497 free, 3540 used, 0 shared, 3540 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[mm] boot: metadata 415 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 127496 frames free (498 MiB), 3541 used, 0 shared, 0 bugs
+[mm] low: 127240 frames free (497 MiB), 3797 used, 0 shared, 0 bugs
+[mm] low: 126984 frames free (496 MiB), 4053 used, 0 shared, 0 bugs
+[rmap] 131037 frames, 196555 nodes (2831 KiB total: 511 KiB heads + 2303 KiB nodes)
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 126728 frames free (495 MiB), 4309 used, 0 shared, 0 bugs
+[mm] low: 126472 frames free (494 MiB), 4565 used, 0 shared, 0 bugs
+[pcache] up: 65518 page slots (262072 KiB ceiling), 32 file slots, 16384 buckets; tables 2112 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[acpi] RSDP from the bootloader's multiboot2 tag
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 126216 frames free (493 MiB), 4821 used, 0 shared, 0 bugs
+[mm] low: 125960 frames free (492 MiB), 5077 used, 0 shared, 0 bugs
+[mm] low: 125704 frames free (491 MiB), 5333 used, 0 shared, 0 bugs
+[mm] low: 125448 frames free (490 MiB), 5589 used, 0 shared, 0 bugs
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:03.0, 2 queues)
+[mm] low: 125192 frames free (489 MiB), 5845 used, 0 shared, 0 bugs
+[mm] low: 124936 frames free (488 MiB), 6101 used, 0 shared, 0 bugs
+[mm] low: 124680 frames free (487 MiB), 6357 used, 0 shared, 0 bugs
+[mm] low: 124424 frames free (486 MiB), 6613 used, 0 shared, 0 bugs
+[virtio-gpu] 1280x800, RAM fb @ 0x16b0000, cursor plane yes
+[virtio] 1001 up (0000:00:02.0, 4 queues)
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 131072 sectors (64.0 MiB)
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=712 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:04.0
+[mm] low: 124168 frames free (485 MiB), 6869 used, 0 shared, 0 bugs
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfeb80000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (1990 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[mm] low: 123912 frames free (484 MiB), 7125 used, 0 shared, 0 bugs
+[mm] low: 123656 frames free (483 MiB), 7381 used, 0 shared, 0 bugs
+[mm] low: 123400 frames free (482 MiB), 7637 used, 0 shared, 0 bugs
+[mm] low: 123144 frames free (481 MiB), 7893 used, 0 shared, 0 bugs
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 3500 KiB, free 4692 KiB, over-allocated 0 KiB
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 122888 frames free (480 MiB), 8149 used, 0 shared, 0 bugs
+[mm] low: 122632 frames free (479 MiB), 8405 used, 0 shared, 0 bugs
+[mm] low: 122376 frames free (478 MiB), 8661 used, 0 shared, 0 bugs
+[mm] low: 122120 frames free (477 MiB), 8917 used, 0 shared, 0 bugs
+[mm] low: 121864 frames free (476 MiB), 9173 used, 0 shared, 0 bugs
+[mm] low: 121608 frames free (475 MiB), 9429 used, 0 shared, 0 bugs
+[mm] low: 121352 frames free (474 MiB), 9685 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[wm] pointer: display cursor plane (motion does not composite)
+[mm] low: 121096 frames free (473 MiB), 9941 used, 0 shared, 0 bugs
+[mm] low: 120840 frames free (472 MiB), 10197 used, 0 shared, 0 bugs
+[mm] low: 120584 frames free (471 MiB), 10453 used, 0 shared, 0 bugs
+[mm] low: 120328 frames free (470 MiB), 10709 used, 0 shared, 0 bugs
+[mm] low: 120072 frames free (469 MiB), 10965 used, 0 shared, 0 bugs
+[mm] low: 119816 frames free (468 MiB), 11221 used, 0 shared, 0 bugs
+[mm] low: 119560 frames free (467 MiB), 11477 used, 0 shared, 0 bugs
+[mm] low: 119304 frames free (466 MiB), 11733 used, 0 shared, 0 bugs
+[kheap] grow #3: +8192 KiB -> arena 16384 KiB, live 4242 KiB, free 12142 KiB, over-allocated 0 KiB
+[wm] dock 11 apps: clock.aex textedit.aex monitor.aex terminal.aex widgets.aex files.aex preview.aex studio.aex browser.aex gallery.aex settings.aex
+[mm] low: 119048 frames free (465 MiB), 11989 used, 0 shared, 0 bugs
+[mm] low: 118792 frames free (464 MiB), 12245 used, 0 shared, 0 bugs
+[mm] low: 118536 frames free (463 MiB), 12501 used, 0 shared, 0 bugs
+[mm] low: 118280 frames free (462 MiB), 12757 used, 0 shared, 0 bugs
+[kheap] grow #4: +4096 KiB -> arena 20480 KiB, live 8910 KiB, free 11570 KiB, over-allocated 0 KiB
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC (NIC gsi=11)
+[smp] CPU 1 apic_id=1 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] 4/4 CPUs online
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=- caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfeba0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=- caps=msix,vndr, bar1=0xfeba1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 bar0=0xfeb80000/0x20000 bar1=io:0xc080/0x40
+[dev] 7 device(s), 1 bound, 6 unclaimed
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[mm] low: 118024 frames free (461 MiB), 13013 used, 0 shared, 0 bugs
+[exec] load files.aex: 18 pages file-backed in 1 areas, 166 copied
+[mm] low: 117768 frames free (460 MiB), 13269 used, 0 shared, 0 bugs
+[mm] low: 117512 frames free (459 MiB), 13525 used, 0 shared, 0 bugs
+[mm] low: 117256 frames free (458 MiB), 13781 used, 0 shared, 0 bugs
+[mm] low: 117000 frames free (457 MiB), 14037 used, 0 shared, 0 bugs
+[wm] launched Finder
+[exec] load /bin/login: 5 pages file-backed in 1 areas, 5 copied
+[sched] first-run tid 6 (login)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 4094 frames (15 MiB free), stop at 8189 (31 MiB); swap OFF (drop tier only)
+[sched] first-run tid 5 (Finder)
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[exec] load /bin/sh: 7 pages file-backed in 1 areas, 22 copied
+[wm] ptr 640 400
+LogitOS shell -- type 'help'
+/ $ [wm] win 0 frame 110 70 640 474 content 640 444 pt zoom 0 min 0 Finder
+[time] accuracy n=32 late_us min=875 p50=5881 p90=9866 max=9955 (TCG; delivery is quantised to the 100Hz tick)
+[ip6] dad ok fec0::5054:ff:fe12:3456/64
+[wm] perf t=2667 composites=10 ns=237267227 max=51387509 motions=0 curmoves=1 curns=51479 full=7 rects=10 cpx=5212160 fpx=5212160 presns=11374935 torn=0 defer=2 late=0 drawmax=32 evdrop=0
+[wm] ptr 832 753
+[mm] low: 116744 frames free (456 MiB), 14293 used, 7 shared, 0 bugs
+[mm] low: 116488 frames free (455 MiB), 14549 used, 7 shared, 0 bugs
+[mm] low: 116232 frames free (454 MiB), 14805 used, 7 shared, 0 bugs
+[mm] low: 115976 frames free (453 MiB), 15061 used, 7 shared, 0 bugs
+[mm] low: 115720 frames free (452 MiB), 15317 used, 7 shared, 0 bugs
+[mm] low: 115464 frames free (451 MiB), 15573 used, 7 shared, 0 bugs
+[mm] low: 115208 frames free (450 MiB), 15829 used, 7 shared, 0 bugs
+[mm] low: 114952 frames free (449 MiB), 16085 used, 7 shared, 0 bugs
+[mm] low: 114696 frames free (448 MiB), 16341 used, 7 shared, 0 bugs
+[mm] low: 114440 frames free (447 MiB), 16597 used, 7 shared, 0 bugs
+[mm] low: 114184 frames free (446 MiB), 16853 used, 7 shared, 0 bugs
+[exec] load browser.aex: 880 pages file-backed in 2 areas, 2843 copied
+[mm] low: 113928 frames free (445 MiB), 17109 used, 7 shared, 0 bugs
+[mm] low: 113672 frames free (444 MiB), 17365 used, 7 shared, 0 bugs
+[mm] low: 113416 frames free (443 MiB), 17621 used, 7 shared, 0 bugs
+[mm] low: 113160 frames free (442 MiB), 17877 used, 7 shared, 0 bugs
+[mm] low: 112904 frames free (441 MiB), 18133 used, 7 shared, 0 bugs
+[mm] low: 112648 frames free (440 MiB), 18389 used, 7 shared, 0 bugs
+[mm] low: 112392 frames free (439 MiB), 18645 used, 7 shared, 0 bugs
+[mm] low: 112136 frames free (438 MiB), 18901 used, 7 shared, 0 bugs
+[wm] launched Browser
+[sched] first-run tid 20 (Browser)
+[mm] low: 111880 frames free (437 MiB), 19157 used, 21 shared, 0 bugs
+[wm] perf t=5707 composites=20 ns=570223369 max=93851360 motions=5 curmoves=4 curns=213525 full=10 rects=20 cpx=8646816 fpx=8630272 presns=20260343 torn=0 defer=2 late=0 drawmax=32 evdrop=0
+[wm] win 1 frame 138 98 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[browser] session restored 0[time] xcheck src=tsc rtc=5s mono=4187ms tick=3380ms err=-162ppt OK
+[time] negctl 2x-tick err=+675ppt -> REJECTED (guard works)
+ tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[waitq] 200 ms of waiting: bkl_hlt_wait spin re-tested 34 times / 2 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=1 work=1 blocked_now=3
+
+WAITQ_SELFTEST_OK (0 failures)
+[wm] perf t=6707 composites=45 ns=1445313833 max=97950829 motions=5 curmoves=4 curns=213525 full=29 rects=45 cpx=17465984 fpx=17399808 presns=38690635 torn=0 defer=13 late=0 drawmax=61 evdrop=0
+[time] fallback pit ran 500ms (want ~500), switch back rc=0 continuity=8364ns monotonic
+[kbench] --- kernel entry cost, boot through desktop live (4 cores, TCG) ---
+[kbench] entry syscall: 937391 entries, mean 9711.622 ns each, 9103 ms total
+[kbench] entry timer: 9639 entries, mean 1404168.122 ns each, 13534 ms total
+[kbench] entry fault: 163 entries, mean 5380855.958 ns each, 877 ms total
+[kbench] entry irq: 28 entries, mean 30903.549 ns each, 0 ms total
+[kbench] tty console wait: 2878 wakes, 652001 us awake in total (226.546 us each), 8822 ms uptime -- 73/1000 of ONE core
+[kbench] scheduler: 504 context switches, 2 threads parked now, 68 poll passes through bkl_hlt_wait
+[kbench]   poll 0x11652c: 68 pass(es)
+[kbench] tlb: 0 shootdown(s) never acked
+[kbench] BKL holders: 604 samples, held in 147 (24%), 0 lost to collision
+[kbench]   bkl 0x119fbe: 93 samples (63% of held)
+[kbench]   bkl 0x13d30e: 44 samples (29% of held)
+[kbench]   bkl 0x154c17: 5 samples (3% of held)
+[kbench]   bkl 0x157023: 2 samples (1% of held)
+[kbench]   bkl 0x13d06e: 2 samples (1% of held)
+[kbench]   bkl 0x11ff89: 1 samples (0% of held)
+[kbench] syscalls: 937337 calls, 590 ms inside the dispatcher (BKL already held; blocking calls include time descheduled)
+[kbench]   SYS 8: 468594 calls (49%), mean 501.597 ns in handler, 235 ms total
+[kbench]   SYS 12: 468540 calls (49%), mean 502.872 ns in handler, 235 ms total
+[kbench]   SYS 20: 43 calls (0%), mean 38528.778 ns in handler, 1 ms total
+[kbench]   SYS 37: 31 calls (0%), mean 12084.322 ns in handler, 0 ms total
+[kbench]   SYS 1: 25 calls (0%), mean 71835.996 ns in handler, 1 ms total
+[kbench]   SYS 38: 24 calls (0%), mean 144016.620 ns in handler, 3 ms total
+[kbench]   SYS 71: 18 calls (0%), mean 53660.455 ns in handler, 0 ms total
+[kbench]   SYS 72: 12 calls (0%), mean 5764522.217 ns in handler, 69 ms total
+[kbench]   SYS 41: 6 calls (0%), mean 13556.189 ns in handler, 0 ms total
+[kbench]   SYS 5: 5 calls (0%), mean 38438.630 ns in handler, 0 ms total
+[kbench]   SYS 6: 5 calls (0%), mean 287008.779 ns in handler, 1 ms total
+[kbench]   SYS 102: 4 calls (0%), mean 26363.476 ns in handler, 0 ms total
+[kbench]   SYS 11: 3 calls (0%), mean 83021.949 ns in handler, 0 ms total
+[kbench]   SYS 76: 3 calls (0%), mean 166131.109 ns in handler, 0 ms total
+[kbench]   SYS 81: 3 calls (0%), mean 120843.820 ns in handler, 0 ms total
+[kbench]   SYS 103: 3 calls (0%), mean 17768.998 ns in handler, 0 ms total
+[kbench] BKL: 955449 acquisitions, 8110 contended (0%); wait mean 6234.487 ns, hold mean 3314.806 ns
+[kbench] BKL: 5956 ms spent waiting, 3167 ms spent holding, across 4 cores
+[mm] kbench: 131037 frames total (511 MiB), 111750 free, 19287 used, 130 shared, 19417 refs (+130 saved = 520 KiB), 0 pinned, 0 bugs
+[mm] kbench: metadata 415 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] kbench: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[kheap] kbench: arena 20480 KiB, live 8969 KiB (150 blocks), free 11508 KiB, over-allocated 1 KiB of 30961 KiB served, 238 allocs, 88 frees, 4 grows, 226 splits, 67 merges
+[mm] kbench: cow=on, 0 pages shared copy-on-write; faults: 0 copied, 0 reused, 32 anon, 0 declined; 3 address spaces with areas
+[mm] kbench: fault cost (kcycles total / cycles each): cow-copy 0/0, cow-reuse 0/0, anon 787/24611, swap-in 0/0
+[mm] kbench: file faults 131 (946306 kcycles total / 7223710 each)
+[mm] kbench: shm faults 0 (0 kcycles total / 0 each)
+[pcache] kbench: 131 pages resident (peak 131 of 65518 slots), 4 files; 0 hits, 131 misses, 0 shared
+[pcache] kbench: 0 dropped by reclaim, 0 evicted here, 0 invalidated by a write, 0 whole-file reads bypassed
+[pcache] kbench: pool 131/65518 slots used at peak (0%); 0 entries orphaned (pool full of mapped pages), 0 pages handed back UNCACHED AND LEAKED
+[shm] kbench: 0 segments, 0 pages (0 KiB unreclaimable), 0 bugs
+[reclaim] kbench: on, 0 passes, 0 frames scanned, 0 evicted (0 dropped free [0 zero + 0 cache] + 0 swapped), 0 second chances
+[reclaim] kbench: skipped 0 unmapped / 0 pinned / 0 partially-known / 0 too-shared / 0 running elsewhere; failed 0 no-slot / 0 io; 0 bugs
+[reclaim] kbench: page-cache frames met 0, dropped 0, UNACCOUNTED-FOR REFERENCE 0, too-shared 0
+[reclaim] kbench: 0 swap-ins (0 failed); 0 kcycles scanning (0 per frame evicted)
+[rmap] kbench: 6271/196555 nodes used (peak 6271), 0 overflows, 0 frames incomplete, 0 bugs
+[swap] kbench: OFF (no device)
+KBENCH_DONE
+[time] smp-mono cores=4 seen=e reads=400000 observed-backsteps=0 clamped=0 max=0ns
+[wm] perf t=13720 composites=105 ns=2257443106 max=97950829 motions=5 curmoves=4 curns=213525 full=77 rects=105 cpx=32170624 fpx=32104448 presns=68843941 torn=0 defer=47 late=0 drawmax=61 evdrop=0
+[browser] load: http://10.0.2.2:46769/sb.html
+[route] 127.0.0.0/8 onlink dev 1 src 127.0.0.1 metric 0 local
+[route] 10.0.2.0/24 onlink dev 2 src 10.0.2.15 metric 0
+[route] 0.0.0.0/0 via 10.0.2.2 dev 2 src 10.0.2.15 metric 0
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[mm] low: 111624 frames free (436 MiB), 19413 used, 190 shared, 0 bugs
+[wm] perf t=14720 composites=129 ns=2671012902 max=97950829 motions=5 curmoves=4 curns=213525 full=101 rects=129 cpx=40362624 fpx=40296448 presns=85151796 torn=0 defer=63 late=0 drawmax=61 evdrop=0
+[dl] painted text: 1 run(s), 5 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 READY
+[dl] ---8<--- end painted text
+[mm] low: 111368 frames free (435 MiB), 19669 used, 315 shared, 0 bugs
+[mm] low: 111112 frames free (434 MiB), 19925 used, 421 shared, 0 bugs
+[mm] low: 110856 frames free (433 MiB), 20181 used, 480 shared, 0 bugs
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+SB-READY-32584
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 1 of 2)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] ptr 55 400
+[wm] perf t=19722 composites=145 ns=3036455283 max=97950829 motions=18 curmoves=10 curns=437763 full=106 rects=145 cpx=45894352 fpx=45819904 presns=99244922 torn=0 defer=63 late=0 drawmax=61 evdrop=0
+[browser] ctrl+L: address bar focused
+[wm] perf t=20725 composites=174 ns=3381582830 max=97950829 motions=18 curmoves=10 curns=437763 full=134 rects=174 cpx=52069072 fpx=51994624 presns=110282157 torn=0 defer=85 late=0 drawmax=61 evdrop=0
+[browser] load: https://stripe.com/
+[sock] connected stripe.com via ipv4 ::ffff:198.18.0.112
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[wm] perf t=21725 composites=225 ns=3714289486 max=97950829 motions=18 curmoves=10 curns=437763 full=185 rects=225 cpx=58213072 fpx=58138624 presns=121438145 torn=0 defer=130 late=0 drawmax=61 evdrop=0
+[tls] chain of 2 verified for stripe.com, alpn=http/1.1
+[net] rx path: frames 78 irq 45 softirq 20 inline 0 poll 4 idle 0/0 halt/skip
+[mm] low: 110600 frames free (432 MiB), 20437 used, 512 shared, 0 bugs
+[mm] low: 110344 frames free (431 MiB), 20693 used, 512 shared, 0 bugs
+[mm] low: 110088 frames free (430 MiB), 20949 used, 512 shared, 0 bugs
+[mm] low: 109832 frames free (429 MiB), 21205 used, 512 shared, 0 bugs
+[dl] painted text: 69 run(s), 419 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,101 •
+[dl] 42,105 Products
+[dl] 14,129 •
+[dl] 42,133 Solutions
+[dl] 14,157 •
+[dl] 42,161 Developers
+[dl] 14,185 •
+[dl] 42,189 Resources
+[dl] 14,213 •
+[dl] 36,213 Pricing
+[dl] 14,233 •
+[dl] 36,233 Sign
+[dl] 70,233 in
+[dl] 8,269 Start
+[dl] 47,269 now
+[dl] 85,269 Contact
+[dl] 145,269 sales
+[dl] 23,293 Back
+[dl] 14,353 •
+[dl] 55,353 Sign
+[dl] 89,353 in
+[dl] 14,373 •
+[dl] 36,373 Contact
+[dl] 96,373 sales
+[dl] 8,409 Global
+[dl] 57,409 GDP
+[dl] 92,409 running
+[dl] 150,409 on
+[dl] 171,409 Stripe:
+[dl] 8,443 Financial
+[dl] 147,443 infrastructure
+[dl] 354,443 to
+[dl] 392,443 grow
+[dl] 473,443 your
+[dl] 546,443 revenue.
+[dl] 678,443 Accept
+[dl] 784,443 payments,
+[dl] 943,443 offer
+[dl] 8,483 financial
+[dl] 140,483 services,
+[dl] 269,483 and
+[dl] 332,483 implement
+[dl] 498,483 custom
+[dl] 614,483 revenue
+[dl] 738,483 models—from
+[dl] 950,483 your
+[dl] 1023,483 first
+[dl] 8,523 transaction
+[dl] 182,523 to
+[dl] 220,523 your
+[dl] 293,523 billionth.
+[dl] 8,577 Financial
+[dl] 147,577 infrastructure
+[dl] 354,577 to
+[dl] 392,577 grow
+[dl] 473,577 your
+[dl] 546,577 revenue.
+[dl] 678,577 Accept
+[dl] 784,577 payments,
+[dl] 943,577 offer
+[dl] 8,617 financial
+[dl] 140,617 services,
+[dl] 269,617 and
+[dl] 332,617 implement
+[dl] 498,617 custom
+[dl] 614,617 revenue
+[dl] 738,617 models—from
+[dl] 950,617 your
+[dl] 1023,617 first
+[dl] ---8<--- end painted text
+[sock] connected b.stripecdn.com via ipv4 ::ffff:198.18.0.120
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 2 verified for b.stripecdn.com, alpn=http/1.1
+[tls] OCSP staple: good (b.stripecdn.com)
+[mm] low: 109576 frames free (428 MiB), 21461 used, 534 shared, 0 bugs
+[mm] low: 109320 frames free (427 MiB), 21717 used, 537 shared, 0 bugs
+[mm] low: 109064 frames free (426 MiB), 21973 used, 537 shared, 0 bugs
+[mm] low: 108808 frames free (425 MiB), 22229 used, 537 shared, 0 bugs
+[mm] low: 108552 frames free (424 MiB), 22485 used, 537 shared, 0 bugs
+[browser] heap peak 14125K
+[dl] painted text: 38 run(s), 164 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 109,192 Fin
+[dl] 109,247 an
+[dl] 109,302 cial
+[dl] 109,357 infr
+[dl] 109,412 ast
+[dl] 109,467 ruc
+[dl] 109,522 tur
+[dl] 109,577 e
+[dl] 76,90 Products
+[dl] 160,90 Solutions
+[dl] 246,90 Developers
+[dl] 344,90 Resources
+[dl] 436,90 Pricing
+[dl] 490,90 Sign
+[dl] 524,90 in
+[dl] 891,86 Sign
+[dl] 925,86 in
+[dl] 990,88 Contact
+[dl] 1050,88 sales
+[dl] 16,192 Global
+[dl] 57,192 GDP
+[dl] 16,209 running
+[dl] 66,209 on
+[dl] 16,226 Stripe:
+[dl] 202,192 Fin
+[dl] 202,247 an
+[dl] 202,302 cial
+[dl] 202,357 infr
+[dl] 202,412 ast
+[dl] 202,467 ruc
+[dl] 202,522 tur
+[dl] 202,577 e
+[dl] 295,192 Get
+[dl] 323,192 started
+[dl] 310,216 Sign
+[dl] 344,216 up
+[dl] 365,216 with
+[dl] 399,216 Google
+[dl] ---8<--- end painted text
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="text/comment"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 73 external classic, 0 external module, 0 inline
+[mm] low: 108296 frames free (423 MiB), 22741 used, 555 shared, 0 bugs
+[e1000] stats: rx 309 pkt / 338000 B, tx 236 pkt / 28096 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 207 (+207)
+[wm] perf t=32825 composites=287 ns=6137729930 max=97950829 motions=18 curmoves=10 curns=437763 full=229 rects=287 cpx=98702032 fpx=98627584 presns=205605985 torn=0 defer=135 late=0 drawmax=65 evdrop=0
+[net] rx path: frames 603 irq 312 softirq 148 inline 0 poll 13 idle 0/0 halt/skip
+[mm] low: 108040 frames free (422 MiB), 22997 used, 555 shared, 0 bugs
+[mm] low: 107784 frames free (421 MiB), 23253 used, 555 shared, 0 bugs
+[mm] low: 107528 frames free (420 MiB), 23509 used, 555 shared, 0 bugs
+[mm] low: 107272 frames free (419 MiB), 23765 used, 555 shared, 0 bugs
+[mm] low: 107016 frames free (418 MiB), 24021 used, 555 shared, 0 bugs
+[mm] low: 106760 frames free (417 MiB), 24277 used, 555 shared, 0 bugs
+[e1000] stats: rx 760 pkt / 939841 B, tx 517 pkt / 50646 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 332 (+125)
+[mm] low: 106504 frames free (416 MiB), 24533 used, 555 shared, 0 bugs
+[net] rx path: frames 1174 irq 500 softirq 239 inline 0 poll 23 idle 0/0 halt/skip
+[mm] low: 106248 frames free (415 MiB), 24789 used, 555 shared, 0 bugs
+[mm] low: 105992 frames free (414 MiB), 25045 used, 555 shared, 0 bugs
+[mm] low: 105736 frames free (413 MiB), 25301 used, 555 shared, 0 bugs
+[e1000] stats: rx 1256 pkt / 1587119 B, tx 832 pkt / 77934 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 514 (+182)
+[mm] low: 105480 frames free (412 MiB), 25557 used, 557 shared, 0 bugs
+[mm] low: 105224 frames free (411 MiB), 25813 used, 558 shared, 0 bugs
+[mm] low: 104968 frames free (410 MiB), 26069 used, 563 shared, 0 bugs
+[mm] low: 104712 frames free (409 MiB), 26325 used, 576 shared, 0 bugs
+[mm] low: 104456 frames free (408 MiB), 26581 used, 578 shared, 0 bugs
+[mm] low: 104200 frames free (407 MiB), 26837 used, 578 shared, 0 bugs
+[mm] low: 103944 frames free (406 MiB), 27093 used, 578 shared, 0 bugs
+[mm] low: 103688 frames free (405 MiB), 27349 used, 578 shared, 0 bugs
+[mm] low: 103432 frames free (404 MiB), 27605 used, 578 shared, 0 bugs
+[mm] low: 103176 frames free (403 MiB), 27861 used, 578 shared, 0 bugs
+[mm] low: 102920 frames free (402 MiB), 28117 used, 578 shared, 0 bugs
+[mm] low: 102664 frames free (401 MiB), 28373 used, 578 shared, 0 bugs
+[mm] low: 102408 frames free (400 MiB), 28629 used, 578 shared, 0 bugs
+[mm] low: 102152 frames free (399 MiB), 28885 used, 578 shared, 0 bugs
+[mm] low: 101896 frames free (398 MiB), 29141 used, 578 shared, 0 bugs
+[mm] low: 101640 frames free (397 MiB), 29397 used, 582 shared, 0 bugs
+[mm] low: 101384 frames free (396 MiB), 29653 used, 589 shared, 0 bugs
+[mm] low: 101128 frames free (395 MiB), 29909 used, 589 shared, 0 bugs
+[mm] low: 100872 frames free (394 MiB), 30165 used, 589 shared, 0 bugs
+[mm] low: 100616 frames free (393 MiB), 30421 used, 589 shared, 0 bugs
+[mm] low: 100360 frames free (392 MiB), 30677 used, 590 shared, 0 bugs
+[mm] low: 100104 frames free (391 MiB), 30933 used, 590 shared, 0 bugs
+[mm] low: 99848 frames free (390 MiB), 31189 used, 590 shared, 0 bugs
+[mm] low: 99592 frames free (389 MiB), 31445 used, 590 shared, 0 bugs
+[mm] low: 99336 frames free (388 MiB), 31701 used, 591 shared, 0 bugs
+[mm] low: 99080 frames free (387 MiB), 31957 used, 591 shared, 0 bugs
+[mm] low: 98824 frames free (386 MiB), 32213 used, 591 shared, 0 bugs
+[mm] low: 98568 frames free (385 MiB), 32469 used, 591 shared, 0 bugs
+[mm] low: 98312 frames free (384 MiB), 32725 used, 591 shared, 0 bugs
+[mm] low: 98056 frames free (383 MiB), 32981 used, 591 shared, 0 bugs
+[mm] low: 97800 frames free (382 MiB), 33237 used, 591 shared, 0 bugs
+[mm] low: 97544 frames free (381 MiB), 33493 used, 598 shared, 0 bugs
+[mm] low: 97288 frames free (380 MiB), 33749 used, 598 shared, 0 bugs
+[mm] low: 97032 frames free (379 MiB), 34005 used, 602 shared, 0 bugs
+[mm] low: 96776 frames free (378 MiB), 34261 used, 603 shared, 0 bugs
+[browser] load done: 79 requests, 3 connections dialled, 76 reused, 0 modules loaded (0 failed)
+[browser] pool: 76 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 78 from network (tab 2 of 3)
+EmptyErrorView Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+[mm] low: 96520 frames free (377 MiB), 34517 used, 611 shared, 0 bugs
+[mm] low: 96264 frames free (376 MiB), 34773 used, 611 shared, 0 bugs
+[mm] low: 96008 frames free (375 MiB), 35029 used, 611 shared, 0 bugs
+[mm] low: 95752 frames free (374 MiB), 35285 used, 611 shared, 0 bugs
+[mm] low: 95496 frames free (373 MiB), 35541 used, 611 shared, 0 bugs
+[mm] low: 95240 frames free (372 MiB), 35797 used, 611 shared, 0 bugs
+[mm] low: 94984 frames free (371 MiB), 36053 used, 611 shared, 0 bugs
+[mm] low: 94728 frames free (370 MiB), 36309 used, 611 shared, 0 bugs
+[mm] low: 94472 frames free (369 MiB), 36565 used, 611 shared, 0 bugs
+[mm] low: 94216 frames free (368 MiB), 36821 used, 611 shared, 0 bugs
+[mm] low: 93960 frames free (367 MiB), 37077 used, 611 shared, 0 bugs
+[mm] low: 93704 frames free (366 MiB), 37333 used, 611 shared, 0 bugs
+[error] Error: Minified React error #425; visit https://reactjs.org/docs/error-decoder.html?invariant=425 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at rh (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oD (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at lg (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[error] Error: Minified React error #423; visit https://reactjs.org/docs/error-decoder.html?invariant=423 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.
+    at i (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oO (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at <anonymous> (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oF (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at ox (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at oS (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at S (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at z (https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/chunks/framework-bfbcaa5a2903bc7d.js)
+    at _deliver (<platform>:171)
+    at <anonymous> (<platform>:178)
+
+[mm] low: 93448 frames free (365 MiB), 37589 used, 617 shared, 0 bugs
+[mm] low: 93192 frames free (364 MiB), 37845 used, 617 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for stripe.com, alpn=h2
+[mm] low: 92936 frames free (363 MiB), 38101 used, 619 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for errors.stripe.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for ext.stripe.com, alpn=h2
+[mm] low: 92680 frames free (362 MiB), 38357 used, 619 shared, 0 bugs
+[mm] low: 92424 frames free (361 MiB), 38613 used, 625 shared, 0 bugs
+[mm] low: 92168 frames free (360 MiB), 38869 used, 625 shared, 0 bugs
+[mm] low: 91912 frames free (359 MiB), 39125 used, 625 shared, 0 bugs
+[mm] low: 91656 frames free (358 MiB), 39381 used, 625 shared, 0 bugs
+[mm] low: 91400 frames free (357 MiB), 39637 used, 625 shared, 0 bugs
+[mm] low: 91144 frames free (356 MiB), 39893 used, 625 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for r.stripe.com, alpn=h2
