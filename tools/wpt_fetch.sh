@@ -3,7 +3,7 @@
 # measured against, as DATA. Nothing executable from upstream is used: the
 # runner is tests/unit/wpt_test.c and the Makefile fragment is tests/wpt.mk.
 #
-#   bash tools/wpt_fetch.sh [dest]     default dest: third_party/wpt
+#   bash tools/wpt_fetch.sh [dest]     default dest: build/wpt (gitignored)
 #
 # WHY A SCRIPT AND NOT A COMMITTED TREE ONLY. Two reasons, and they are the
 # same reason from opposite ends:
@@ -23,7 +23,13 @@
 
 set -euo pipefail
 
-DEST="${1:-third_party/wpt}"
+DEST="${1:-build/wpt}"
+# THE PIN. tools/wpt_revision.txt is tracked; the corpus is not (it was, until
+# 2026-08-21: 59,422 files and 90 MB of every clone, for data the runner already
+# treated as optional). Fetching HEAD and RECORDING what arrived is not a pin --
+# the 17,452-entry reftest baseline and the expected-failure ratchet were measured
+# against one revision, and a corpus from another makes both of them lie quietly.
+PIN="$(tr -d "[:space:]" < "$(dirname "$0")/wpt_revision.txt")"
 UPSTREAM="${WPT_UPSTREAM:-https://github.com/web-platform-tests/wpt}"
 
 # The subsets. resources/ and common/ are not test directories -- they are what
@@ -94,13 +100,22 @@ rm -rf "$DEST.tmp"
 
 # Blobless + sparse + shallow: the full history is 3 GB and none of it is
 # wanted. This pulls the tree of one commit and only the paths above.
-git clone --filter=blob:none --no-checkout --depth=1 "$UPSTREAM" "$DEST.tmp"
+# Fetch EXACTLY the pinned commit, not HEAD. GitHub serves a reachable SHA to
+# fetch directly; --depth=1 keeps it to one commit and --filter=blob:none defers
+# every blob until the sparse checkout asks for it.
+rm -rf "$DEST.tmp"; mkdir -p "$DEST.tmp"
+git -C "$DEST.tmp" init --quiet
+git -C "$DEST.tmp" remote add origin "$UPSTREAM"
+git -C "$DEST.tmp" fetch --quiet --filter=blob:none --depth=1 origin "$PIN"
 (
     cd "$DEST.tmp"
     git sparse-checkout init --cone
     git sparse-checkout set "${SUBSETS[@]}"
-    git checkout --quiet
+    git checkout --quiet FETCH_HEAD
     REV="$(git rev-parse HEAD)"
+    if [ "$REV" != "$PIN" ]; then
+        echo "wpt-fetch: got $REV, pinned $PIN -- refusing" >&2; exit 1
+    fi
     for p in "${PRUNE[@]}"; do rm -rf "$p"; done
     # The git metadata is a third of the download and is not data.
     rm -rf .git
@@ -115,8 +130,10 @@ mv "$DEST.tmp" "$DEST"
 # of these files, and a .dat/.html corpus rewritten to CRLF measures line
 # endings. .gitattributes marks the whole tree -text; assert it is there rather
 # than assuming, because the failure is silent.
-if ! grep -q 'third_party/wpt' .gitattributes 2>/dev/null; then
-    echo "wpt-fetch: WARNING -- .gitattributes has no 'third_party/wpt/** -text'"
+# The corpus lives under build/ now, which git ignores entirely, so the old
+# .gitattributes -text check is moot: nothing here is ever committed.
+if false; then
+    echo "unreachable"
     echo "  rule. Committing this corpus under autocrlf=true would rewrite every"
     echo "  file's line endings and the suite would measure that instead."
 fi

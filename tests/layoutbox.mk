@@ -80,7 +80,7 @@ test-layout-box-negctl: $(BUILD)/libcss_host.a
 # document, so the two populations are not the same one. What it can settle,
 # and what it is for, is whether the table answers the NOBOX class at all --
 # a per-call weighting cannot turn "answers all of them" into less.
-LBOX_WPT ?= third_party/wpt
+LBOX_WPT ?= build/wpt
 LBOX_DIRS ?= css/css-align css/css-sizing css/css-flexbox css/css-grid css/cssom-view
 
 layout-box-survey: $(LBOX_DIR)/layout_box_survey

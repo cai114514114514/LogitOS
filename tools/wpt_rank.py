@@ -268,7 +268,7 @@ def main():
     args = [a for a in sys.argv[1:]]
     top = 30
     only = None
-    root = "third_party/wpt"
+    root = "build/wpt"
     paths = []
     i = 0
     while i < len(args):

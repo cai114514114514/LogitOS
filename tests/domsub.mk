@@ -34,7 +34,7 @@
 
 .PHONY: test-urlelem test-urlelem-negctl
 
-URLELEM_ROOT ?= third_party/wpt
+URLELEM_ROOT ?= build/wpt
 
 # The link. It is the SHIPPING browser's JS layer, not a stub of it -- the
 # reason tests/wpt.mk gives for the same choice: a harness over stubs measures

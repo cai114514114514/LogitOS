@@ -124,7 +124,7 @@ test-semantics-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # a time because a whole-subset run is long enough that a crash anywhere in it
 # costs the entire measurement -- and one did, twice, on the night this was
 # written.
-SEM_WPT_ROOT ?= third_party/wpt
+SEM_WPT_ROOT ?= build/wpt
 semantics-rank: $(BUILD)/wpt_test
 	@mkdir -p $(BUILD)/sem
 	@for d in $(SEM_WPT_ROOT)/html/semantics/*/; do \

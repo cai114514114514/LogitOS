@@ -43,7 +43,7 @@
 .PHONY: test-wpt wpt wpt-baseline wpt-rank wpt-fetch wpt-list
 .PHONY: test-wpt-negctl test-wpt-harness
 
-WPT_ROOT ?= third_party/wpt
+WPT_ROOT ?= build/wpt
 WPT_BASELINE := tests/unit/wpt_expected_fail.txt
 
 # ===========================================================================

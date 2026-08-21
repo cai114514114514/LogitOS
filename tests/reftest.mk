@@ -76,7 +76,7 @@
         test-reftest-negctl test-reftest-css-negctl reftest-ahem-fetch \
         test-reftest-perturb-negctl
 
-WPT_ROOT      ?= third_party/wpt
+WPT_ROOT      ?= build/wpt
 REFT_BIN      := $(BUILD)/reftest/reftest
 REFT_MANIFEST := $(BUILD)/reftest/manifest.txt
 REFT_BASELINE := tests/unit/reftest_expected_fail.txt
@@ -164,7 +164,7 @@ $(REFT_BIN): $(REFT_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) \
 test-reftest-ahem: $(BUILD)/reftest/ahem_test
 	@if [ ! -f "$(REFT_AHEM)" ]; then \
 	    echo "test-reftest-ahem: $(REFT_AHEM) not present -- run 'make reftest-ahem-fetch'"; \
-	    echo "  (Ahem is NOT in third_party/wpt: our vendored subset omits fonts/.)"; \
+	    echo "  (Ahem is NOT in the WPT subset wpt_fetch.sh takes: it omits fonts/.)"; \
 	    exit 1; \
 	 fi
 	@$(BUILD)/reftest/ahem_test $(REFT_AHEM)

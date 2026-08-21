@@ -1,4 +1,0 @@
-rules:
-- margin-border-padding-*: []
-- margin-*: [margin]
-- padding-*: [padding]

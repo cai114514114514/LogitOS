@@ -15,7 +15,7 @@ completed with zero subtests" says nothing about the cause, so those files are
 opened and classified by what they were WAITING for -- a body onload handler,
 a support script's setup(), a window load listener.
 
-    python3 tools/cssom_rank.py build/cssom/before.tsv [--wpt-root third_party/wpt]
+    python3 tools/cssom_rank.py build/cssom/before.tsv [--wpt-root build/wpt]
 """
 import collections
 import os
@@ -114,7 +114,7 @@ def classify_zero(path, root):
 
 def main():
     args = [a for a in sys.argv[1:]]
-    root = "third_party/wpt"
+    root = "build/wpt"
     if "--wpt-root" in args:
         i = args.index("--wpt-root")
         root = args[i + 1]

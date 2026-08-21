@@ -1,2 +1,0 @@
-rules:
-- direction-unicode-bidi-*: [layout-direction-override]

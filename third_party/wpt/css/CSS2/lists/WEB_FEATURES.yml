@@ -1,5 +1,0 @@
-rules:
-- counter-*: [counters]
-- increment-counter-001.xht: [counters]
-- reset-counter-001.xht: [counters]
-- list-style-*: [list-style]

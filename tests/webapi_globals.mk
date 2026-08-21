@@ -27,7 +27,7 @@
 
 .PHONY: test-encoding test-encoding-negctl test-eventloop wg-local-root
 
-WG_ROOT     ?= third_party/wpt
+WG_ROOT     ?= build/wpt
 WG_LOCAL    := tests/wpt-local
 # The floor. 11373 passed on 2026-08-08 (94.1% of 12086). The margin absorbs
 # a corpus refresh that renames a handful of subtests; it does not absorb a

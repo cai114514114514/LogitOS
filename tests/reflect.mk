@@ -84,8 +84,8 @@ test-reflect-negctl: $(BUILD)/libcss_host.a
 # is not, so the vendored data can be deleted later without deleting the check.
 # It says so out loud rather than passing quietly.
 test-reflect-table:
-	@if [ ! -d third_party/wpt/html/dom ]; then \
-	    echo "test-reflect-table: SKIP -- no corpus at third_party/wpt/html/dom."; \
+	@if [ ! -d $(WPT_ROOT)/html/dom ]; then \
+	    echo "test-reflect-table: SKIP -- no corpus at $(WPT_ROOT)/html/dom (make wpt-fetch)."; \
 	    echo "  The committed js_reflect.inc stands; \`make wpt-fetch\` brings the"; \
 	    echo "  data back. A missing corpus is not a regression in the table."; \
 	 else \
