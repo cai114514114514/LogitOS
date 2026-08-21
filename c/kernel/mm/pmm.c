@@ -7,6 +7,11 @@
 #include "spinlock.h"
 #include "kprintf.h"
 
+/* The out-of-memory recorder (c/kernel/mm/oom.h). Weak for the reason given at
+ * the same declaration in fault.c: this file is compiled by host harnesses with
+ * no process table behind them. */
+void oom_alloc_fail(void) __attribute__((weak));
+
 /* M25 P1/P2: the physical frame allocator is peeled out from under the BKL --
  * pmm_alloc/free/alloc_contig take their own lock so BKL-free paths on other
  * cores can allocate concurrently. irqsave: pmm is reachable from fault/IRQ
@@ -441,6 +446,21 @@ uint64_t pmm_alloc(void)
     uint64_t ret = alloc_locked(0);
     if (!ret) alloc_fails++;
     spin_unlock_irqrestore(&pmm_lock, fl);
+    /* OUTSIDE THE LOCK -- oom_alloc_fail() calls back into pmm_free_frames(),
+     * which takes it, and this kernel's spinlocks are not recursive.
+     *
+     * It RECORDS and does not kill, which is the one asymmetry worth explaining
+     * here rather than in oom.c: this function is the bottom of every allocation
+     * in the kernel, including speculative ones that handle a 0 perfectly well
+     * (vmm.c's next_table, reclaim's own probes) and ones made from interrupt
+     * context or from the BKL-free syscall, where the reverse map may not be
+     * walked at all. The two callers that MEAN it -- a user page fault and
+     * kmalloc -- ask for a victim one layer up, where the failure is known to be
+     * terminal. What this adds is the moment: `alloc_fails` was already counted
+     * and mm_report() already printed the total, but nothing said a word at the
+     * instant the machine first ran out, so the first refusal of a run was
+     * invisible until somebody thought to ask for a report. */
+    if (!ret && oom_alloc_fail) oom_alloc_fail();
     return ret;
 }
 

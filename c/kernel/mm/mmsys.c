@@ -7,6 +7,7 @@
 #include "rmap.h"
 #include "swap.h"
 #include "reclaim.h"
+#include "oom.h"       /* MMCTL_OOM: the killer's counters, readable from ring 3 */
 #include "sched.h"
 #include "usercopy.h"
 #include "kprintf.h"
@@ -25,6 +26,12 @@
 #define MMCTL_AUDIT    2
 #define MMCTL_RECLAIM  3
 #define MMCTL_STATS    4
+/* 5 CLAIMED BY THE OUT-OF-MEMORY KILLER, 2026-08-20. Grepped first: nothing
+ * else in the tree names a fifth mmctl. A process that vanishes with no record
+ * is indistinguishable from a crash, so the killer's decisions have to be
+ * readable from ring 3 by a program rather than only greppable from a serial
+ * log by a person -- that is what makes the on-device gate assert on numbers. */
+#define MMCTL_OOM      5
 
 /* The userland face of memory management: mmap (anonymous AND file-backed),
  * mprotect, munmap, meminfo.
@@ -371,6 +378,15 @@ long mm_syscall(long num, long a, long b, long c)
                         (int)(pmm_bugs() + rmap_bugs() + reclaim_bugs()));
                 return 0;
             }
+            case MMCTL_OOM:
+                /* Prose AND the one machine-readable line, for the reason
+                 * MMCTL_STATS gives about its own: a harness greps [oomstat]
+                 * and a person reads the sentence. The RETURN VALUE is the kill
+                 * count, so `as -e 'print(syscall(94,0,5,0))'` answers "has
+                 * anything been killed?" without parsing anything at all. */
+                oom_report("on demand");
+                oom_stats();
+                return (long)oom_kills();
             default:
                 return -1;
             }

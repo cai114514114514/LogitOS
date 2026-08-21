@@ -8,8 +8,21 @@
 #include "pcache.h"
 #include "shm.h"
 #include "reclaim.h"
+#include "oom.h"
 #include "mmhost.h"
 #include "kprintf.h"
+
+/* WEAK, and the reason is about the test tree rather than about the kernel.
+ * c/kernel/mm/oom.c reads the PROCESS TABLE, so it only makes sense where there
+ * is one; tests/unit/mm_run.sh and tests/unit/leak_run.sh both compile this
+ * file over a simulated physical memory with no processes at all, and their two
+ * source lists are required to be identical to each other by a comment in both.
+ * A hard call would make "the fault path asks the killer" a link error in a
+ * dozen host suites that are about something else -- so the hook is weak, the
+ * kernel always provides it (C_SRC globs c/kernel/mm), and a harness that does
+ * not link it gets exactly the behaviour that existed before this line. The
+ * same trick, for the same reason, as proc.c's sock_close_owner. */
+int oom_fault_retry(void) __attribute__((weak));
 
 void reclaim_late_init(void);
 #ifndef MM_HOSTTEST
@@ -50,6 +63,14 @@ void *memcpy(void *, const void *, size_t);
 
 static int g_cow_on = MM_COW_DEFAULT;
 static uint64_t g_cow_copies, g_cow_reuse, g_anon, g_declined;
+/* Set by fault_frame() when a fault is about to be declined FOR WANT OF MEMORY,
+ * which is a different event from every other decline in this file: a decline
+ * for a bad address is the process's own doing and killing it is correct, while
+ * a decline for want of memory kills whoever happened to touch a page next.
+ * Only mm_fault_in() reads it, and it clears it first, so it never carries
+ * across faults. */
+static int g_oom_decline;
+static uint64_t g_oom_retry, g_oom_saved;
 
 /* WHAT A FAULT COSTS. Demand paging and copy-on-write moved work OFF fork and
  * ONTO the page fault -- fork of /bin/sh went from 258 pages copied to 0. That
@@ -257,6 +278,21 @@ static uint64_t fault_frame(void)
     uint64_t f = pmm_alloc();
     if (f) return f;
     if (reclaim_emergency(64)) f = pmm_alloc();
+    /* WHY THE KILLER IS NOT CALLED FROM HERE, one frame short of it.
+     *
+     * The obvious place to ask for a victim is right on this line, and it is
+     * the wrong one: oom_fault_retry() PARKS (it drops the big kernel lock, see
+     * oom.c), and do_cow()'s caller is holding a `uint64_t *pte` obtained by
+     * walking the page tables before the call. Another thread of the same
+     * process can fault on that page while this one is parked, so the entry
+     * behind that pointer may be a different entry by the time this returns --
+     * and do_cow() would then install its copy over somebody else's, leaking a
+     * frame and handing this process a stale page.
+     *
+     * So this function only RECORDS that the decline was for want of memory,
+     * and mm_fault_in() -- which holds no pointer into the tables -- does the
+     * kill and re-walks the fault from the top. */
+    if (!f) g_oom_decline = 1;
     return f;
 }
 
@@ -424,7 +460,7 @@ static int do_shm(uint64_t cr3, uint64_t page, int sh, uint64_t index,
     return 1;
 }
 
-int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
+static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
 {
     if (!cr3) { g_declined++; return 0; }
     uint64_t page = va & ~(uint64_t)0xFFF;
@@ -507,6 +543,46 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     g_declined++;
     return 0;
 }
+
+/* THE ONE LINE THIS WHOLE FILE USED TO GET WRONG.
+ *
+ * fault_once() returning 0 ends a process. Until the killer existed there was
+ * nothing else to do about it, and the consequence was recorded honestly in
+ * do_cow() -- "the process dies, the kernel does not" -- but the process that
+ * died was whoever touched memory NEXT, which on a machine one program has
+ * emptied is almost never that program. It is the shell, or the app the user
+ * just opened, or the compositor's client.
+ *
+ * So a decline FOR WANT OF MEMORY (and only that: g_oom_decline, set at the one
+ * allocation site) now gets one more chance. oom_kill() either takes back the
+ * memory of a process that has already exited, or marks the largest eligible
+ * live one, and this retries the fault FROM THE TOP -- a second full walk of
+ * the page tables, because oom_fault_retry() can park and drop the big kernel
+ * lock, so nothing read before it may be reused after it. The retry is why the
+ * body above is a separate function.
+ *
+ * ONE retry, not a loop. If the fault fails again the machine is out of memory
+ * in a way one kill did not fix, and spinning here would hold this process in
+ * the kernel while it happened. The behaviour then is exactly what it was
+ * before this existed: decline, and the process dies. */
+int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
+{
+    g_oom_decline = 0;
+    int r = fault_once(cr3, va, err);
+    if (r || !g_oom_decline) return r;
+
+    if (!oom_fault_retry) return 0;     /* no killer linked: the old behaviour */
+    g_oom_retry++;
+    if (!oom_fault_retry()) return 0;   /* we were the victim, or nothing helped */
+
+    g_oom_decline = 0;
+    r = fault_once(cr3, va, err);
+    if (r) g_oom_saved++;
+    return r;
+}
+
+uint64_t mm_oom_retries(void) { return g_oom_retry; }
+uint64_t mm_oom_saved(void)   { return g_oom_saved; }
 
 uint64_t mm_swapin_faults(void) { return g_swapin; }
 uint64_t mm_file_faults(void)   { return g_file; }

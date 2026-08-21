@@ -174,6 +174,11 @@ uint64_t mm_cow_reuse(void);       /* write faults resolved WITHOUT copying (sol
 uint64_t mm_anon_faults(void);     /* first-touch anonymous pages filled */
 uint64_t mm_fault_declined(void);  /* faults mm did not claim (genuine faults) */
 uint64_t mm_swapin_faults(void);   /* faults resolved by reading the swap device */
+uint64_t mm_oom_retries(void);     /* faults that ran out of memory and asked the
+                                    * out-of-memory killer for one more chance */
+uint64_t mm_oom_saved(void);       /* ...and the ones that then SUCCEEDED, i.e.
+                                    * processes that would have died before
+                                    * c/kernel/mm/oom.c existed */
 uint64_t mm_shm_faults(void);      /* first touches of a shared-segment page */
 uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
 

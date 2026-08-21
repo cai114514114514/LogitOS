@@ -6,6 +6,12 @@
 #include "spinlock.h"
 #include "kprintf.h"
 
+/* The kernel's own out-of-memory hook (c/kernel/mm/oom.h). Weak for the reason
+ * given at the same declaration in fault.c: tests/unit/leak_run.sh compiles
+ * this file with no process table behind it, and a hard call would turn a
+ * diagnostic into a link error in a suite that is about heap growth. */
+void oom_kheap_fail(uint64_t bytes) __attribute__((weak));
+
 /* M25 P1: kheap is peeled out from under the BKL -- kmalloc/kfree take their own
  * lock so they are safe to call from BKL-free kernel paths running concurrently
  * on other cores. irqsave: kmalloc may be reached from IRQ context, and a core
@@ -497,6 +503,26 @@ void *kmalloc(size_t size)
         st_allocs++;
     }
     spin_unlock_irqrestore(&kheap_lock, f);
+    /* AFTER THE UNLOCK, and that is the whole of why this is one line here and
+     * not three inside the loop above. oom_kheap_fail() reads the process table
+     * and the reverse map, and this file's lock order is kheap_lock -> pmm_lock
+     * with nothing above it; calling out under kheap_lock would invert it
+     * against g_proc_lock and stall every other core's allocations for the
+     * length of a 131,072-frame sweep.
+     *
+     * `ret == NULL` here means the heap could not serve the request AND grow()
+     * could not take frames from the PMM -- the kernel's own out-of-memory,
+     * which until now was silent: kmalloc returned NULL and each caller
+     * invented its own recovery, so a machine dying of memory pressure showed
+     * up as an unrelated subsystem failing. This does not make the allocation
+     * succeed (there is nothing to retry -- the caller has already been told
+     * no); it names the moment and gives the shortage a victim that is not the
+     * next innocent process to fault. */
+    /* `req` and not `size`: the caller asked for req bytes, and size is that
+     * rounded up to 16 with a MIN_PAYLOAD floor. A diagnostic that reports the
+     * rounded figure sends whoever reads it looking for an allocation nobody
+     * made. */
+    if (!ret && oom_kheap_fail) oom_kheap_fail(req);
     return ret;
 }
 

@@ -200,3 +200,16 @@ test-oom:
 
 test-oom-os: $(ISO) $(DISK)
 	@bash tests/boot/run-oom-test.sh $(ISO) $(DISK) $(OOM_RAM) $(OOM_HOG) $(OOM_SMALL)
+
+# Into the host suite, from the fragment that owns the target. `ci-host:` takes
+# prerequisites from any fragment, so membership is this one line and nothing in
+# the Makefile changes. test-oom is a pure host gate -- one $(CC), no QEMU, no
+# gdb, no corpus -- and it carries its own negative control inside
+# tests/unit/oom_run.sh (-DOOM_KILL_NEWEST, 12 assertions), so wiring the
+# positive wires the control with it.
+#
+# test-oom-os is deliberately NOT on ci-boot: it boots QEMU on a 320 MiB machine
+# for about four minutes and would fight a parallel `make` for build/. Run it
+# alone. Recorded here rather than left to be rediscovered from the audit's
+# UNWIRED list, where it looks like an oversight.
+ci-host: test-oom
