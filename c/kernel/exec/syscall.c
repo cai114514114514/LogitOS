@@ -41,6 +41,7 @@
                           * INCDIRS trap in its earlier form. */
 #include "uthread.h"     /* M30: SYS_THREAD_* / SYS_SET_TLS / SYS_FUTEX */
 #include "ksignal.h"     /* signals: SYS_SIGACTION..SYS_SIGQUERY, execve reset */
+#include "ptrace.h"      /* SYS_PTRACE: attach, registers, peek/poke */
 #include "meta.h"        /* meta_syscall: SYS_STAT / SYS_GETDENTS / SYS_CHMOD ... */
 #include "vfs_cred.h"    /* id_syscall:   SYS_GETUID .. SYS_GETSESSION (150-159) */
 #include "power.h"       /* kernel_poweroff / kernel_reboot: SYS_POWEROFF / SYS_REBOOT */
@@ -1121,12 +1122,51 @@ static void syscall_do(struct registers *r)
                                        (long)r->rsi, (long)r->rdx);
         return;
 
+    /* SYS_PTRACE: one process reading another. Handled here rather than
+     * falling through to wm_gui_syscall's default for the reason SYS_RUSAGE
+     * gives about itself -- a debugger has no window. Three scalars, so the
+     * dispatch needs nothing beyond the label; every rule about who may is in
+     * c/kernel/exec/ptrace.c. */
+    case SYS_PTRACE:
+        r->rax = (uint64_t)ptrace_syscall((long)r->rdi, (long)r->rsi,
+                                          (long)r->rdx);
+        return;
+
     case SYS_MMAP:
     case SYS_MPROTECT:   /* (addr, len, prot); three scalars, so it needs nothing
                           * here beyond the label -- see logit_abi.h for why it
                           * is its own number and not a flag on SYS_MMAP */
     case SYS_MMAP_FILE:  /* file-backed mmap; one argument, a struct pointer in
                           * rdi -- see the case in mmsys.c for the whole story */
+        /* THESE THREE FELL THROUGH INTO SYS_RUSAGE AND WERE ANSWERED BY
+         * sched_rusage_syscall(), 2026-08-20, from f3b2a97f6 -- a commit about
+         * a PTE-bit collision that inserted the SYS_RUSAGE label into the
+         * middle of this group and took its `mm_syscall` forwarding with it.
+         * SYS_MUNMAP and SYS_MEMINFO below kept theirs, so munmap and meminfo
+         * worked and mmap did not, which is why nothing looked obviously
+         * broken at boot.
+         *
+         * WHAT IT COST, because it is worth knowing how quiet this was: every
+         * mini-libc program on the machine. c/apps/libc/src/malloc.c's
+         * arena_map() is `return (void *)arena_sys(92, ...)` with no check for
+         * a negative return -- vma_reserve() reports failure as 0, so NULL was
+         * the only failure the caller was written for -- and rusage's -1 became
+         * the heap base. /bin/as then faulted on its FIRST malloc, storing to
+         * 0xffffffffffffffff, before printing a single character. On the serial
+         * log that is one [fault] line with an address in it and nothing else.
+         *
+         * Found by the core dump this line of work adds: the dump named the
+         * faulting instruction (`mov %edx,(%rax)` in malloc_nl), said rax was
+         * -1, and listed the process's whole region table with NO anonymous
+         * mmap area in it -- which is three facts pointing at one call, from a
+         * file, in one step. That is the entire argument for having them.
+         *
+         * The shape restored here is the one c/kernel/mm/mmsys.c:52-59 writes
+         * out verbatim as the dispatch it expects. */
+        r->rax = (uint64_t)mm_syscall((long)r->rax, (long)r->rdi,
+                                      (long)r->rsi, (long)r->rdx);
+        return;
+
     /* SYS_RUSAGE: per-thread CPU time and RLIMIT_CPU. Handled here rather
      * than falling to wm_gui_syscall's default, for the same reason
      * SYS_THREAD_* is -- a CLI process with no window still has a CPU-time
@@ -1134,6 +1174,16 @@ static void syscall_do(struct registers *r)
     case SYS_RUSAGE:
         r->rax = (uint64_t)sched_rusage_syscall((long)r->rdi, (long)r->rsi,
                                                 (long)r->rdx);
+        return;
+
+    /* SYS_SCHED: nice/weight. Handled beside SYS_RUSAGE and for the identical
+     * reason -- a CLI process with no window still has a priority, so it must
+     * not fall through to wm_gui_syscall's default. Three scalars, so the
+     * dispatch needs nothing beyond the label; the state, the permission rule
+     * and the clamp all live in c/kernel/sched/sched.c. */
+    case SYS_SCHED:
+        r->rax = (uint64_t)sched_prio_syscall((long)r->rdi, (long)r->rsi,
+                                              (long)r->rdx);
         return;
 
     case SYS_MUNMAP:

@@ -17,14 +17,24 @@
  * -Ic/apps/libc/include/uonly (userland-only) provides without ever putting
  * it on the kernel's search path.
  *
- * LogitOS runs one preemptive priority-less round-robin scheduler
- * (c/kernel/sched/sched.c) with no notion of a process's scheduling POLICY or
- * PRIORITY -- every thread is equal. sched_yield() is therefore real
- * (SYS_YIELD) and sched_getcpu() is real (SYS_CPU_INDEX, the SMP-proof
- * counter CLAUDE.md's M25 note describes); everything about setting a policy
- * or priority is refused rather than silently accepted, because accepting a
- * priority this kernel cannot honour is how a program ends up believing its
- * realtime thread is realtime. */
+ * LogitOS runs ONE scheduling POLICY (SCHED_OTHER) and, since 2026-08-20, a
+ * WEIGHTED share within it: c/kernel/sched/sched.c charges each thread real
+ * CPU time divided by a weight derived from its nice value and always
+ * dispatches the thread furthest behind. So "every thread is equal", which
+ * this paragraph said until that day, is no longer true -- but the correction
+ * is narrower than it looks and the refusals below all stand:
+ *
+ *   - NICE is real and belongs to <sys/resource.h> (getpriority/setpriority)
+ *     and <unistd.h> (nice). That is where POSIX puts it and where it is.
+ *   - SCHED_FIFO / SCHED_RR / sched_param::sched_priority are still refused,
+ *     and nice does not make them any more available: a nice-weighted share is
+ *     not a realtime priority, it cannot preempt on release, and there is no
+ *     bound on when a SCHED_FIFO thread would run. Accepting a priority this
+ *     kernel cannot honour is how a program ends up believing its realtime
+ *     thread is realtime, which is exactly what this file exists to prevent.
+ *
+ * sched_yield() is real (SYS_YIELD) and sched_getcpu() is real (SYS_CPU_INDEX,
+ * the SMP-proof counter CLAUDE.md's M25 note describes). */
 
 struct sched_param { int sched_priority; };
 

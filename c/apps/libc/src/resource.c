@@ -110,3 +110,59 @@ int getrusage(int who, struct rusage *usage)
     usage->ru_utime.tv_usec = (long)((ns % 1000000000L) / 1000L);
     return 0;
 }
+
+/* --- getpriority / setpriority / nice -------------------------------------
+ * Real as of 2026-08-20: c/kernel/sched/sched.c weights the pick loop by nice,
+ * so these set something the scheduler consults on every dispatch. Before that
+ * this file had no priority calls at all and c/apps/libc/src/sched.c said in
+ * as many words that "there is no priority scheduler at all"; that sentence is
+ * now wrong and has been corrected there.
+ *
+ * WHICH: only PRIO_PROCESS is real. PRIO_PGRP and PRIO_USER are refused with
+ * EINVAL rather than quietly treated as PRIO_PROCESS -- this kernel has no
+ * process groups (c/kernel/exec/proc.c has no pgid field at all) and no
+ * per-user process enumeration, so accepting them would renice ONE process
+ * while the caller believed it had reniced a whole group. That is the failure
+ * mode this tree's house rule about stubbing to success exists for.
+ *
+ * THE -1 TRAP, which is why errno is cleared here and not only on failure:
+ * getpriority legitimately RETURNS -1 (nice -1 is a valid priority), so POSIX
+ * makes the caller clear errno first and inspect it after. Doing the clear
+ * inside the function as well is harmless and saves every caller that forgets;
+ * what it must NOT do is return -1 with errno untouched on a real error, which
+ * is why the error branches all set it explicitly. */
+int getpriority(int which, id_t who)
+{
+    if (which != PRIO_PROCESS) { errno = EINVAL; return -1; }
+    errno = 0;
+    long r = sys(SYS_SCHED, SCHEDCTL_GET_NICE, (long)who, 0);
+    if (r == SCHED_E_SRCH)  { errno = ESRCH;  return -1; }
+    if (r == SCHED_E_INVAL) { errno = EINVAL; return -1; }
+    return (int)r;
+}
+
+int setpriority(int which, id_t who, int prio)
+{
+    if (which != PRIO_PROCESS) { errno = EINVAL; return -1; }
+    long r = sys(SYS_SCHED, SCHEDCTL_SET_NICE, (long)who, prio);
+    if (r == SCHED_E_SRCH)  { errno = ESRCH;  return -1; }
+    if (r == SCHED_E_PERM)  { errno = EPERM;  return -1; }
+    if (r == SCHED_E_INVAL) { errno = EINVAL; return -1; }
+    return 0;   /* the kernel returns the CLAMPED value; POSIX's setpriority
+                 * returns 0, so it is dropped here on purpose. A caller that
+                 * wants to know what was actually installed calls getpriority,
+                 * which is what /bin/nice does. */
+}
+
+/* nice(inc) is RELATIVE and returns the NEW value, which is the 4.3BSD/POSIX
+ * behaviour glibc has; the old SysV "returns 0" version is what makes callers
+ * think it failed. -1 is a legal new value, so the same errno dance applies. */
+int nice(int inc)
+{
+    errno = 0;
+    int cur = getpriority(PRIO_PROCESS, 0);
+    if (cur == -1 && errno) return -1;
+    if (setpriority(PRIO_PROCESS, 0, cur + inc) != 0) return -1;
+    errno = 0;
+    return getpriority(PRIO_PROCESS, 0);
+}

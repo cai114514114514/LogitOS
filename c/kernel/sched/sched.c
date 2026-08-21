@@ -15,7 +15,13 @@
 #include "ktime.h"        /* time_mono_raw_ns(): the per-thread CPU-time clock */
 #include "proc.h"         /* struct proc*: struct thread::data, for the pid a
                            * budget-exceeded thread's SIGXCPU is posted to */
-#include "logit_abi.h"    /* SYS_RUSAGE's RUCTL_* command constants */
+#include "logit_abi.h"    /* SYS_RUSAGE's RUCTL_* / SYS_SCHED's SCHEDCTL_* */
+#include "vfs_cred.h"     /* vfs_cred_current/get: who may renice whom. The one
+                           * fs include in this file, and it is here rather than
+                           * the check living in syscall.c because splitting a
+                           * permission rule from the state it protects is how a
+                           * second caller ends up not having it -- CLAUDE.md's
+                           * cookie section is that mistake, one subsystem over. */
 
 #define STACK_SIZE  16384
 #define KSTACK_SIZE 32768
@@ -90,7 +96,69 @@ struct thread {
     uint64_t cpu_stamp_ns;
     uint64_t cpu_limit_ns;
     int      cpu_limit_hit;
+
+    /* --- weighted scheduling (2026-08-20) -------------------------------
+     * See the long WEIGHTED SCHEDULING comment in sched.h for the design
+     * argument; this is only what the fields are.
+     *
+     * nice   POSIX nice in [SCHED_NICE_MIN, SCHED_NICE_MAX]. 0 is the default
+     *        and reproduces the previous behaviour EXACTLY (all vmul equal ->
+     *        every vtime advances at the same rate -> minimum-vtime is plain
+     *        round robin over the ring, which is what was here before).
+     * weight g_prio_weight[nice + 20]. Read by SCHEDCTL_GET_WEIGHT so a test
+     *        can see the number the pick loop sees.
+     * vmul   (SCHED_W_REF << SCHED_VSHIFT) / weight, recomputed only when nice
+     *        changes. Precomputed because cpu_fold() runs on every tick on
+     *        every core and a 64-bit divide there would be paid ~100x/s/core
+     *        to recompute a constant.
+     * vtime  WEIGHTED cpu nanoseconds: the same dt cpu_ns is credited with,
+     *        scaled by vmul. It is NOT a second measurement -- cpu_fold()
+     *        already had the exact delta in hand and this is one more add on
+     *        it, which is the whole reason the accounting that landed this
+     *        morning is a prerequisite rather than a coincidence.
+     *        Compared with (int64_t)(a - b) everywhere, never with <, so it
+     *        wraps safely the way ->deadline already does. */
+    int      nice;
+    unsigned weight;
+    unsigned vmul;
+    uint64_t vtime;
 };
+
+/* nice -> weight, weight = round(1024 * 2^(-nice/10)). Written out rather than
+ * computed because the kernel has no pow() and this is a compile-time constant;
+ * the generating expression is above so it can be checked, and it is chosen so
+ * that a DECADE of nice is exactly a factor of two -- nice 0 vs nice 10 is
+ * 1024:512, exactly 2.000, with no rounding anywhere. That matters for the gate:
+ * an expected ratio that is itself rounded cannot be distinguished from a
+ * scheduler that is slightly wrong.
+ *
+ * Span end to end is 4096:274 = 14.9:1, and that number is a decision, not a
+ * consequence -- see the PRIORITY INVERSION paragraph in sched.h. Linux's table
+ * spans about 5900:1, which on a kernel where a demoted thread can hold a
+ * sleeping lock means the holder waits tens of seconds. */
+static const unsigned short g_prio_weight[40] = {
+    /* -20 */ 4096, 3822, 3566, 3327, 3104, 2896, 2702, 2521, 2353, 2195,
+    /* -10 */ 2048, 1911, 1783, 1663, 1552, 1448, 1351, 1261, 1176, 1097,
+    /*   0 */ 1024,  955,  891,  832,  776,  724,  676,  630,  588,  549,
+    /*  10 */  512,  478,  446,  416,  388,  362,  338,  315,  294,  274,
+};
+#define SCHED_W_REF   1024u      /* g_prio_weight[nice 0] */
+#define SCHED_VSHIFT  10         /* vmul's fixed-point shift */
+
+/* g_vnow: the run ring's virtual "now" -- the smallest vtime among the threads
+ * the last pick considered, held monotone. It exists for exactly one problem,
+ * and without it the feature is worse than useless: a thread created now, or
+ * one waking after five seconds parked, carries a vtime far BELOW everyone
+ * else's and would then monopolise the CPU until it caught up. Placing it at
+ * g_vnow gives it the floor -- it runs soon (good: that is a woken interactive
+ * thread) but banks no credit for having slept (good: that is the hog).
+ *
+ * The rejected alternative was placing a joiner at the ring MAXIMUM, which
+ * needs no global at all. It is not free: it sends every woken thread to the
+ * back of the queue, which is strictly worse than the round robin this
+ * replaces, and it would have shown up as the desktop feeling slower with no
+ * number naming the cause. Guarded by g_sched_lock like everything else here. */
+static uint64_t g_vnow = 0;
 
 /* "No RLIMIT_CPU set." Matches userland's RLIM_INFINITY (~0UL) --
  * c/apps/libc/include/sys/resource.h -- so RUCTL_GET_LIMIT_S -> -1 and
@@ -287,6 +355,58 @@ static void block_fields_init(struct thread *t, int on_ring)
                               * every dispatch site. */
     t->cpu_limit_ns  = CPU_LIMIT_NONE;
     t->cpu_limit_hit = 0;
+    /* nice 0 = the historical schedule, byte for byte: every vmul equal means
+     * every vtime advances at the same rate, and minimum-vtime over the ring
+     * is then exactly the round robin this replaced. The four creation sites
+     * overwrite these under g_sched_lock via prio_inherit() (which also places
+     * vtime at g_vnow); the defaults here are what sched_init's `main` and
+     * thread_create_idle's per-core idle threads keep, since both bypass every
+     * splice site. */
+    t->nice   = 0;
+    t->weight = SCHED_W_REF;
+    t->vmul   = 1u << SCHED_VSHIFT;
+    t->vtime  = 0;
+}
+
+/* nice -> (weight, vmul). The ONE place the table is read, so a caller cannot
+ * hold a weight the pick loop disagrees with.
+ *
+ * SCHED_IGNORE_WEIGHT is the negative control, and it is placed HERE and
+ * nowhere else on purpose: it leaves ->nice and ->weight correct, so
+ * getpriority() and SCHEDCTL_GET_WEIGHT still report exactly what was asked
+ * for, and only the CHARGE stops depending on the weight. That is the
+ * plausible wrong implementation -- "I stored the nice value, wired the
+ * syscall and the table, and never made the pick loop use it" -- rather than
+ * the absent one, so every check except the measured ratio keeps passing. A
+ * control that reddens everything proves only that the build changed. */
+static void prio_apply(struct thread *t, int nice)
+{
+    if (nice < SCHED_NICE_MIN) nice = SCHED_NICE_MIN;
+    if (nice > SCHED_NICE_MAX) nice = SCHED_NICE_MAX;
+    t->nice   = nice;
+    t->weight = g_prio_weight[nice - SCHED_NICE_MIN];
+#ifdef SCHED_IGNORE_WEIGHT
+    t->vmul   = 1u << SCHED_VSHIFT;
+#else
+    t->vmul   = (unsigned)((SCHED_W_REF << SCHED_VSHIFT) / t->weight);
+#endif
+}
+
+/* A newly spliced thread takes the CREATOR's nice and the ring's virtual now.
+ * Caller holds g_sched_lock (every splice site already does).
+ *
+ * Inheriting rather than defaulting to 0 is what makes `nice -n 10 sh -c ...`
+ * mean what it says: the shell's children are forked, and a child that reset
+ * to 0 would quietly undo the demotion the user asked for. It is also what
+ * fork() does on every other system, so a ported program does not get a
+ * surprise. execve is unaffected by construction -- it replaces the image in
+ * the SAME thread, so nice survives it with no code at all, which is exactly
+ * what /bin/nice needs. */
+static void prio_inherit(struct thread *t)
+{
+    struct thread *cur = this_cpu()->current;
+    prio_apply(t, cur ? cur->nice : 0);
+    t->vtime = g_vnow;
 }
 
 /* Fold the ns this thread has been running, from its last fold point to
@@ -305,6 +425,17 @@ static uint64_t cpu_fold(struct thread *t, uint64_t now)
     uint64_t dt = now > t->cpu_stamp_ns ? now - t->cpu_stamp_ns : 0;
     t->cpu_ns += dt;
     t->cpu_stamp_ns = now;
+    /* The weighted charge rides on the SAME dt. Adding a second measurement
+     * for the scheduler -- a tick counter, or its own rdtsc pair -- would give
+     * two clocks that drift apart and a pair of numbers nobody could reconcile
+     * when they disagreed; this way "CPU time received" and "virtual time
+     * charged" are provably the same interval scaled by one constant, which is
+     * what lets the gate cross-check the userland work count against
+     * SYS_RUSAGE. Overflow: at the largest vmul (3827, nice +19) vtime grows
+     * 3.8e12 per real second, so a uint64 wraps after ~55 days of continuous
+     * running -- and it is compared as a signed difference throughout, so even
+     * that is correct rather than merely unlikely. */
+    t->vtime += (dt * (uint64_t)t->vmul) >> SCHED_VSHIFT;
     return t->cpu_ns;
 }
 
@@ -328,6 +459,14 @@ static void ring_unlink(struct thread *t)
 static void ring_link(struct thread *t)
 {
     if (t->on_ring || !g_ring) return;
+    /* Rejoining the ring after a park: catch up to virtual now, never past it.
+     * A thread that slept accrued no vtime, so without this line it would come
+     * back arbitrarily far below the floor and hold the CPU until it caught up
+     * -- i.e. sleeping would be the way to get scheduled, which is the exact
+     * opposite of the intended reading of the number. The one-sided test is
+     * what keeps it from being a PENALTY as well: a thread that parked for one
+     * tick is already at or above the floor and is left alone. */
+    if ((int64_t)(t->vtime - g_vnow) < 0) t->vtime = g_vnow;
     t->next = g_ring->next;
     t->prev = g_ring;
     t->next->prev = t;
@@ -491,6 +630,9 @@ void thread_create(void (*entry)(void), const char *name)
     t->rsp = (uint64_t)sp;
 
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    /* Under the lock, because it reads g_vnow and this core's current thread:
+     * take the creator's nice and the ring's virtual now. See prio_inherit(). */
+    prio_inherit(t);
     t->next = g_ring->next;
     t->prev = g_ring;
     t->next->prev = t;
@@ -539,6 +681,9 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->rsp = (uint64_t)sp;
 
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    /* Under the lock, because it reads g_vnow and this core's current thread:
+     * take the creator's nice and the ring's virtual now. See prio_inherit(). */
+    prio_inherit(t);
     t->next = g_ring->next;
     t->prev = g_ring;
     t->next->prev = t;
@@ -602,6 +747,9 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     t->rsp = (uint64_t)sp;
 
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    /* Under the lock, because it reads g_vnow and this core's current thread:
+     * take the creator's nice and the ring's virtual now. See prio_inherit(). */
+    prio_inherit(t);
     t->next = g_ring->next;
     t->prev = g_ring;
     t->next->prev = t;
@@ -609,6 +757,56 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return t->id;
+}
+
+/* ==========================================================================
+ * THE PICK RULE -- one copy, three callers.
+ *
+ * schedule(), block_self() and thread_exit() each had their own hand-written
+ * "walk the ring, take the first eligible thread" loop. They had to move
+ * together and not one at a time: a weight that applies at the timer tick but
+ * not when a thread parks is a weight that applies only to workloads that
+ * never block, and the desktop is the workload that blocks constantly. Two
+ * pick rules in one scheduler is also the shape CLAUDE.md's cookie section
+ * names -- a rule gated at one of its callers certifies that caller, not the
+ * rule.
+ *
+ * Returns the eligible thread with the smallest vtime, or NULL. `self` (the
+ * thread being switched away from) is never returned; schedule() adds it back
+ * as a candidate itself, because it is the only one of the three whose `self`
+ * may keep running.
+ *
+ * Two things this deliberately does NOT do. It does not fall back to an idle
+ * thread -- each caller's fallback is different (schedule() may keep prev,
+ * thread_exit() must halt the core) and folding them in would hide that.
+ * And the walk still starts at `anchor->next` rather than at g_ring: with a
+ * minimum-vtime rule the start point cannot change WHICH thread is chosen, but
+ * it decides ties in favour of the thread after the current one, which is the
+ * old round-robin order and is what keeps equal-weight behaviour identical to
+ * what shipped before. Caller holds g_sched_lock. */
+static struct thread *pick_min_locked(struct thread *self)
+{
+    struct thread *anchor = (self->is_idle || !self->on_ring) ? g_ring : self;
+    if (!anchor) return NULL;
+    struct thread *best = NULL, *s = anchor->next, *start = s;
+    do {
+        if (s != self && s->alive && !s->running && !s->is_idle &&
+            s->state == THREAD_READY) {
+            if (!best || (int64_t)(s->vtime - best->vtime) < 0) best = s;
+        }
+        s = s->next;
+    } while (s != start);
+    return best;
+}
+
+/* Advance the ring's virtual now to the thread just chosen. Applied to the
+ * FINAL choice rather than inside pick_min_locked(), because schedule() may
+ * override that choice with `prev` -- whose vtime is smaller -- and a floor set
+ * above the running thread's own vtime would erase that thread's remaining
+ * deficit the next time it parked and rejoined. Caller holds g_sched_lock. */
+static inline void vnow_advance(struct thread *t)
+{
+    if (t && !t->is_idle && (int64_t)(t->vtime - g_vnow) > 0) g_vnow = t->vtime;
 }
 
 /* SMP scheduler (BKL model). schedule() runs with the BKL held by this core; the
@@ -636,37 +834,57 @@ __attribute__((noinline)) void schedule(void)
         return;
     }
 
-    /* Pick the next runnable thread from the SHARED ring (g_ring), skipping ones
-     * running on another core, dead ones, and idle threads (idle is per-core, off
-     * the shared ring). We always traverse g_ring -- not prev->next -- because an
-     * idle prev is off-ring and couldn't otherwise reach shared-ring threads.
-     * Start the scan one past prev when prev is on the ring (round-robin); else
-     * from g_ring's successor. */
-    /* An anchor that is no longer ON the ring (it parked and was unlinked) has
-     * next==itself, so scanning from it would see nothing: fall back to g_ring. */
-    struct thread *anchor = (prev->is_idle || !prev->on_ring) ? g_ring : prev;
-    struct thread *next = NULL, *s = anchor->next, *start = s;
-    do {
-        if (s != prev && s->alive && !s->running && !s->is_idle &&
-            s->state == THREAD_READY) { next = s; break; }
-        s = s->next;
-    } while (s != start);
+    /* FOLD BEFORE THE PICK, and this move is load-bearing rather than tidying.
+     * Both branches below used to fold prev AFTER deciding. That was fine while
+     * the decision ignored prev's history, and it is a bug the moment the
+     * decision READS prev->vtime: prev would be compared using a vtime up to a
+     * whole tick stale, i.e. exactly one quantum of free running, every single
+     * time it was considered. `now` is taken once and used for the fold and for
+     * next->cpu_stamp_ns below, so the two remain back-to-back with no gap and
+     * no overlap: every ns is still credited to exactly one thread. */
+    uint64_t now = time_mono_raw_ns();
+    cpu_fold(prev, now);
+
+    /* Pick from the SHARED ring (g_ring), skipping ones running on another core,
+     * dead ones, and idle threads (idle is per-core, off the shared ring). We
+     * always traverse g_ring -- not prev->next -- because an idle prev is
+     * off-ring and couldn't otherwise reach shared-ring threads.
+     *
+     * WHAT CHANGED: this used to take the FIRST eligible thread one step past
+     * prev and switch to it unconditionally, which is round robin and gives
+     * every thread the same share by construction. It now takes the eligible
+     * thread with the SMALLEST vtime -- weighted CPU time, see cpu_fold() -- so
+     * the same walk that already had to visit every ring member now answers
+     * "who is furthest behind" instead of "who is next". The loop is the same
+     * loop and the cost is one comparison per member.
+     *
+     * prev is a candidate too, and that is how a heavier thread keeps the CPU
+     * for several consecutive ticks without a separate budget counter: it holds
+     * the minimum until its own charge catches up with everyone else's. The
+     * comparison is STRICTLY less-than, so a tie leaves `best` at prev and no
+     * switch happens -- which is both the cheaper outcome and, at equal
+     * weights, the one that reproduces the old round robin exactly (prev has
+     * just been charged for the tick it ran, so it is no longer the minimum).
+     *
+     * The walk itself is pick_min_locked(), shared with block_self() and
+     * thread_exit() -- see the note there for why all three had to move
+     * together rather than only this one. */
+    struct thread *next = pick_min_locked(prev);
+
+    if (!prev->is_idle && prev->alive && prev->on_ring &&
+        prev->state == THREAD_READY &&
+        (!next || (int64_t)(prev->vtime - next->vtime) <= 0))
+        next = prev;
 
     if (!next) {
         /* Nothing else runnable. An idle/non-running core goes to its idle thread;
          * a running thread (e.g. the WM) just stays on. */
         next = (prev->is_idle || prev->running == 0) ? me->idle : prev;
     }
+    vnow_advance(next);
 
     if (next && next != prev) {
-        {
-            /* Fold prev's slice and hand next its opening stamp with the SAME
-             * `now`, so the two are back-to-back with no gap and no overlap:
-             * every ns is credited to exactly one thread. */
-            uint64_t now = time_mono_raw_ns();
-            cpu_fold(prev, now);
-            next->cpu_stamp_ns = now;
-        }
+        next->cpu_stamp_ns = now;   /* prev was folded with this same `now` above */
         if (!prev->is_idle) prev->running = 0;
         next->running = 1;
         next->slices++;
@@ -716,14 +934,15 @@ __attribute__((noinline)) void schedule(void)
          * `current`, so without this line it would never notice an unmap at
          * all. With it, every core is at most one timer tick behind. */
         tlb_gen_sync(me, 0);
-        /* Same reason: prev is STILL running (next == prev), so this is the
-         * fold that keeps a lone CPU-bound thread's cpu_ns moving even though
-         * it is never actually switched away from. Without this line a thread
-         * with the ring to itself would show 0 until something else finally
-         * became runnable -- silently correct on a busy desktop and silently
-         * wrong on the one machine shape (a single spinning app) the gate for
-         * this feature actually tests. */
-        cpu_fold(prev, time_mono_raw_ns());
+        /* The fold that used to be here -- the one that keeps a lone CPU-bound
+         * thread's cpu_ns moving even though it is never switched away from --
+         * has moved to the TOP of this function, where the weighted pick needs
+         * it too. It is not lost and it is not duplicated: `prev` is folded on
+         * every entry to schedule() now, which is a superset of the two branch
+         * sites it used to have. Doing it twice would be harmless (cpu_fold is
+         * idempotent) and would still be wrong to leave, because the second
+         * call's `now` would be a different reading and the two folds would
+         * split one interval across two clock samples. */
         spin_unlock_irqrestore(&g_sched_lock, flags);
     }
 }
@@ -737,13 +956,23 @@ void thread_exit(void)
     struct cpu *me = this_cpu();
     struct thread *dead = me->current;
 
-    /* Pick a runnable successor (skip running-on-other-core / idle / parked). */
-    struct thread *next = dead->next;
-    while (next != dead && (next->running || next->is_idle ||
-                            next->state != THREAD_READY)) next = next->next;
-    if (next == dead) next = me->idle;            /* nothing runnable: go idle */
+    /* Pick a runnable successor (skip running-on-other-core / idle / parked),
+     * by the same minimum-vtime rule the timer tick uses -- see
+     * pick_min_locked(). The loop this replaces also omitted the ->alive test
+     * the other two sites had; adding it can only exclude a thread that was
+     * never safe to dispatch, and having one filter instead of three is the
+     * point of the shared helper. */
+    struct thread *next = pick_min_locked(dead);
+    if (!next) next = me->idle;                   /* nothing runnable: go idle */
+    vnow_advance(next);
 
-    if (next == dead) {                           /* truly nothing: stop this core */
+    /* `!next` as well as `next == dead`: me->idle is NULL on a core that has not
+     * been given one yet, and the old code tested only the second condition, so
+     * that case fell through into dereferencing NULL a dozen lines below. It has
+     * never been reachable (every core gets an idle thread before it can run a
+     * thread that could exit) and it costs one comparison to make that a fact
+     * about the code rather than about the boot order. */
+    if (!next || next == dead) {                  /* truly nothing: stop this core */
         spin_unlock_irqrestore(&g_sched_lock, flags);
         for (;;) __asm__ volatile ("hlt");
     }
@@ -838,15 +1067,11 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
         return;
     }
 
-    /* Pick a successor from the shared ring (same rules as schedule()). */
-    struct thread *anchor = self->on_ring ? self : g_ring;
-    struct thread *next = NULL, *s = anchor->next, *start = s;
-    do {
-        if (s != self && s->alive && !s->running && !s->is_idle &&
-            s->state == THREAD_READY) { next = s; break; }
-        s = s->next;
-    } while (s != start);
+    /* Pick a successor from the shared ring (same rules as schedule(), and now
+     * literally the same code -- pick_min_locked()). */
+    struct thread *next = pick_min_locked(self);
     if (!next) next = me->idle;
+    vnow_advance(next);
     if (next == self) {                       /* cannot happen (idle != self) */
         spin_unlock(&g_sched_lock);
         spin_unlock_irqrestore(outer, flags);
@@ -1132,6 +1357,125 @@ long sched_rusage_syscall(long cmd, long a, long b)
     case RUCTL_SET_LIMIT_S:   return sched_cpu_limit_set(a);
     case RUCTL_GET_LIMIT_S:   return sched_cpu_limit_get_s();
     default:                  return -1;
+    }
+}
+
+/* ==========================================================================
+ * SYS_SCHED: nice, and who is allowed to change whose.
+ *
+ * The unit of NICE is the PROCESS, while the unit of SCHEDULING here is the
+ * thread -- so a set walks every thread of the target pid and a get reads the
+ * first one found. That is POSIX's rule (setpriority takes a pid) and it is
+ * also the only reading that does not silently half-work: an M30 program that
+ * spawned four pthreads and then demoted itself would otherwise keep three
+ * threads at full weight and look like nice did nothing.
+ * ========================================================================== */
+
+/* Resolve the caller's own pid, or 0 for a kernel thread (which has no proc
+ * and can only ever mean itself). Reads only this core's `current`, so it does
+ * not need g_sched_lock -- and must not take it, since both callers below
+ * consult the credential store first and that walks the process table under a
+ * different lock. */
+static int prio_self_pid(void)
+{
+    struct thread *t = this_cpu()->current;
+    return (t && t->data) ? ((struct proc *)t->data)->pid : 0;
+}
+
+int sched_nice_get(int pid)
+{
+    if (pid == 0) pid = prio_self_pid();
+    int nice = SCHED_E_SRCH;
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    if (pid == 0) {                       /* kernel thread: itself, no proc */
+        struct thread *t = this_cpu()->current;
+        if (t) nice = t->nice;
+    } else {
+        for (struct thread *t = g_all; t; t = t->all_next)
+            if (t->data && ((struct proc *)t->data)->pid == pid) { nice = t->nice; break; }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return nice;
+}
+
+int sched_weight_get(int pid)
+{
+    if (pid == 0) pid = prio_self_pid();
+    int w = SCHED_E_SRCH;
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    if (pid == 0) {
+        struct thread *t = this_cpu()->current;
+        if (t) w = (int)t->weight;
+    } else {
+        for (struct thread *t = g_all; t; t = t->all_next)
+            if (t->data && ((struct proc *)t->data)->pid == pid) { w = (int)t->weight; break; }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return w;
+}
+
+int sched_nice_set(int pid, int nice)
+{
+    int self = prio_self_pid();
+    if (pid == 0) pid = self;
+
+    /* CLAMP rather than refuse. `nice -n 100 make` is a thing people type and
+     * every other system quietly pins it to the maximum; returning an error
+     * would make the wrapper fail to run the command at all, which is a much
+     * worse answer than "as low as this machine goes". The clamped value is
+     * RETURNED, so a caller that cares can see it was clamped. */
+    if (nice < SCHED_NICE_MIN) nice = SCHED_NICE_MIN;
+    if (nice > SCHED_NICE_MAX) nice = SCHED_NICE_MAX;
+
+    /* Permission, and it is computed BEFORE g_sched_lock is taken -- not as a
+     * style preference. vfs_cred_get() walks the process table up the ppid
+     * chain under its own lock, and taking that under g_sched_lock would add a
+     * second lock order to the one file the rest of this kernel's ordering is
+     * written around (see the lost-wakeup argument in sched.h). Nothing is
+     * mutated before this returns, so a refusal leaves the target untouched.
+     *
+     * Two rules, both POSIX's: you may not touch a process that is not yours,
+     * and you may not RAISE priority (lower the number) at all. The second is
+     * the one that matters -- without it "nice" is a way for any program to
+     * take the machine, and on a kernel with a big lock that is worse than on
+     * one without, because the thread it starves may be holding something. */
+    if (pid != 0) {
+        struct vcred me, them;
+        vfs_cred_current(&me);
+        if (vfs_cred_get(pid, &them) != 0) return SCHED_E_SRCH;
+        if (me.uid != 0) {
+            if (them.uid != me.uid) return SCHED_E_PERM;
+            int cur = sched_nice_get(pid);
+            if (cur == SCHED_E_SRCH) return SCHED_E_SRCH;
+            if (nice < cur) return SCHED_E_PERM;
+        }
+    }
+
+    int found = 0;
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
+    if (pid == 0) {
+        struct thread *t = this_cpu()->current;
+        if (t) { prio_apply(t, nice); found = 1; }
+    } else {
+        /* EVERY thread of the process, not just the one backing proc->tid.
+         * vtime is deliberately NOT rebased here: a thread that has already
+         * used its share this round keeps that debt across a reweight, so
+         * renice cannot be used as a way to jump the queue by setting the
+         * value it already had. */
+        for (struct thread *t = g_all; t; t = t->all_next)
+            if (t->data && ((struct proc *)t->data)->pid == pid) { prio_apply(t, nice); found = 1; }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, f);
+    return found ? nice : SCHED_E_SRCH;
+}
+
+long sched_prio_syscall(long cmd, long a, long b)
+{
+    switch ((int)cmd) {
+    case SCHEDCTL_GET_NICE:   return sched_nice_get((int)a);
+    case SCHEDCTL_SET_NICE:   return sched_nice_set((int)a, (int)b);
+    case SCHEDCTL_GET_WEIGHT: return sched_weight_get((int)a);
+    default:                  return SCHED_E_INVAL;
     }
 }
 

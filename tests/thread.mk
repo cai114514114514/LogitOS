@@ -126,3 +126,10 @@ test-guard: $(ISO)
 # exists because "a separate target that nobody names" runs never while looking
 # exactly like a control that is covered.
 test-thread-negctl: test-guard
+
+# Weighted scheduling (nice/renice/schedtest + test-sched) lives in its own
+# fragment. Pulled in here rather than through a sixth `-include tests/*.mk`
+# line in the Makefile, which several lines are editing concurrently: the
+# threads line and the scheduler line are the same subsystem, so this is the
+# fragment it belongs behind.
+-include tests/sched.mk

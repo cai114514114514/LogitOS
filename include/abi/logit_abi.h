@@ -1771,6 +1771,41 @@ struct logit_sockaddr_un {
     char           path[LOGIT_UNIX_PATH_MAX];  /* NUL-terminated */
 };
 
+/* THE SYSTEM LOG SOCKET'S NAME, and it is NOT /dev/log.
+ *
+ * Every Unix has put it there since 4.2BSD and both sides of this tree were
+ * written to that convention, which is why they agreed with each other and
+ * still did not work: MEASURED ON DEVICE 2026-08-20, /bin/syslogd printed
+ *
+ *     [vfs] create refused in /dev: mode 0644 owner 0:0, asked by 0:0
+ *     syslogd: bind failed: -7
+ *
+ * because /dev on this machine is not a directory. It is synthesised by
+ * c/fs/vfsctl.c and holds exactly eight control files (kmsg, kstat, ktrigger,
+ * kprof, vfsctl, vfsmounts, vfsmeta, fsbench); nothing can be created in it,
+ * by root or anyone, because there is no directory inode there to create into.
+ * So AF_UNIX shipped with one consumer and that consumer could not start.
+ *
+ * WHY THE CONSTANT IS HERE rather than in a header only one side reads. The
+ * writer is mini-libc (c/apps/libc/src/syslog.c) and the reader is a clib.h
+ * program (c/apps/coreutils/syslogd.c) that links no mini-libc, so the two
+ * worlds share no header EXCEPT this one -- putting it in <sys/un.h> would
+ * drag mini-libc's string.h into a freestanding binary. Two string literals
+ * that must agree is the "one jar, TWO doors" shape CLAUDE.md records about
+ * cookies: they agreed on the wrong value here, and a later fix to one of them
+ * would have silently disconnected the pair. One definition cannot.
+ *
+ * REJECTED: making /dev hold it. That means giving vfsctl.c a real directory
+ * inode and a create path -- an edit to the storage line's files for a name
+ * that never holds a byte, which is the same trade c/net/core/unix.c already
+ * refused when it declined to put bindings in the VFS.
+ *
+ * syslogd creates the two directories at startup (they are not on the mkfs
+ * image); a writer never creates anything, it only connects. */
+#define LOGIT_PATH_LOG      "/var/log/sock"
+#define LOGIT_PATH_LOG_DIR  "/var/log"
+#define LOGIT_PATH_LOG_DIR0 "/var"
+
 /* An address. PORT AND ADDR ARE HOST ORDER, like every other IP in this ABI
  * (see SYS_NET_PING and struct logit_netinfo) -- NOT network order as in
  * <netinet/in.h>. That is a deliberate break with BSD: this ABI has used host
@@ -2199,6 +2234,50 @@ struct logit_capreq {
                                * pointer could not express "not exported"
                                * without picking an address that means it. */
 
+/* --- ptrace (c/kernel/exec/ptrace.h) --------------------------------------
+ * SYS_PTRACE 187. CLAIMED 2026-08-20.
+ *
+ * IT WAS 186 FOR ABOUT TEN MINUTES AND THAT WAS ALREADY WRONG. 185
+ * (SYS_MODULE_SYM) was the highest number in this header when this line
+ * started, so 186 was the obvious next one -- and the scheduler line took it
+ * for SYS_SCHED in the same session, in the working tree, without either of us
+ * seeing the other. The collision surfaced as `duplicate case value '186'` from
+ * the compiler, which is the LUCKY outcome: both cases were in one switch. Had
+ * they landed in different dispatch files the two syscalls would simply have
+ * been each other, and the symptom would have been a debugger setting a
+ * thread's priority.
+ *
+ * So: 187, re-grepped against the whole tree at the moment of claiming rather
+ * than against a number remembered from an earlier grep. 180 and 181 are still
+ * free and are still left alone -- they sit inside the shared-memory / module
+ * block and a later addition to either line would reach for them first.
+ *
+ *   (request, pid, arg) -> PT_OK (0) or a PT_E_* (c/kernel/exec/ptrace.h)
+ *
+ * `arg` is a USER POINTER for the requests that take one and is ignored
+ * otherwise: PTRACE_GETREGS/SETREGS point at uint64_t[27], PEEKDATA/POKEDATA
+ * at a `struct logit_ptrace_word`. It is not a raw address, because PEEKDATA
+ * has to return a full 64-bit word AND a status, and no single return value
+ * can hold both without a word that means "error" being a word the tracee
+ * might legitimately have in memory. Linux's ptrace(2) has exactly that flaw
+ * and papers over it with errno; this ABI has no errno.
+ *
+ * The register array is in the SAME order NT_PRSTATUS uses in a core dump
+ * (c/kernel/exec/coredump.h's CORE_R15..CORE_GS, which is glibc's
+ * user_regs_struct order and is diffed against it by
+ * tests/unit/coredump_test.c). One order, so a tracer and a dump reader index
+ * registers identically. */
+#define SYS_PTRACE 187
+
+struct logit_ptrace_word {
+    unsigned long long addr;   /* in:  address in the TRACEE, 8-byte aligned */
+    unsigned long long data;   /* PEEK: out. POKE: in. `unsigned long long` and
+                                * not uint64_t: this header is included by TUs
+                                * that do not pull <stdint.h> (c/kernel/gui/evq.c
+                                * is one, measured), and every other 64-bit field
+                                * in it is spelled the same way. */
+};
+
 #define LOGIT_MODNAME_LEN 32
 struct logit_modinfo {
     int      id;
@@ -2497,6 +2576,61 @@ struct logit_itimer {
 
 /* 180-181 are reserved for this line of work and are deliberately unused, for
  * the reason the 172-175 note above gives. */
+
+/* --- SYS_SCHED (186): weighted scheduling ---------------------------------
+ *
+ * 186 AND NOT 180, which was free: 180-181 are reserved above by the shared
+ * memory line and 182-185 are the module line's. Taking a number out of
+ * somebody else's reserved block is the mistake that put two features on PTE
+ * bit 52 in this tree on 2026-08-20; the next free number after every claimed
+ * block is the only choice that cannot do that.
+ *
+ * ONE number with a command selector rather than three (nice/getpriority/
+ * setpriority), for the reason SYS_RUSAGE gives: the syscall number is the
+ * scarce resource here, the dispatch is a switch either way, and three
+ * adjacent numbers for one small piece of state is how a table runs out.
+ *
+ * (cmd, a, b) -> long:
+ *   SCHEDCTL_GET_NICE   (pid, -)     -> nice in [-20,19], or SCHED_E_SRCH
+ *   SCHEDCTL_SET_NICE   (pid, nice)  -> the CLAMPED nice actually set, or
+ *                                       SCHED_E_SRCH / SCHED_E_PERM
+ *   SCHEDCTL_GET_WEIGHT (pid, -)     -> the weight the pick loop uses (1024 at
+ *                                       nice 0; 4096 at -20, 274 at +19), or
+ *                                       SCHED_E_SRCH
+ * pid 0 means the caller. A set applies to EVERY thread of the target process
+ * -- see the comment above sched_nice_set() in c/kernel/sched/sched.c.
+ *
+ * SET_NICE CLAMPS AND DOES NOT REFUSE an out-of-range value, which is the one
+ * thing about this ABI worth reading twice. `nice -n 100 cmd` must still run
+ * the command; an EINVAL there means the wrapper fails and the user's job does
+ * not start, which is a worse answer than "as low as this machine goes". The
+ * value actually installed comes back in the return, so nothing has to guess.
+ *
+ * Permission is POSIX's: a non-root caller may not touch another user's
+ * process, and may not LOWER the number (raise priority) at all -- including
+ * its own. On a kernel with a big lock that second rule matters more than it
+ * does elsewhere, because a thread starved by somebody else's promotion may be
+ * holding a sleeping lock the promoted thread will then wait on. */
+#define SYS_SCHED 186
+#define SCHEDCTL_GET_NICE   0
+#define SCHEDCTL_SET_NICE   1
+#define SCHEDCTL_GET_WEIGHT 2
+
+/* Distinct rather than one "it failed", the same argument SHM_E_* makes above:
+ * "no such process" and "you may not" send an operator to different places. */
+#define SCHED_E_SRCH  (-1)   /* no such pid, or it has no thread any more */
+#define SCHED_E_PERM  (-2)   /* not yours, or a non-root attempt to raise */
+#define SCHED_E_INVAL (-3)   /* unknown cmd */
+
+/* THE NICE RANGE IS POSIX'S, THE WEIGHT SPAN IS NOT LINUX'S. weight =
+ * round(1024 * 2^(-nice/10)), so ten nice levels are exactly a factor of two
+ * and the whole range spans 4096:274 = 14.9:1. Linux's table spans about
+ * 5900:1. The narrower span is a decision about priority inversion and is
+ * argued at length in c/kernel/sched/sched.h; the short form is that a demoted
+ * thread here can hold a sleeping lock, and 14.9:1 bounds how long the holder
+ * waits at well under a second while 5900:1 does not bound it usefully at all. */
+#define SCHED_NICE_LO (-20)
+#define SCHED_NICE_HI   19
 
 #endif /* LOGIT_ABI_H */
 

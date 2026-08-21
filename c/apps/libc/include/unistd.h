@@ -83,6 +83,14 @@ int     usleep(unsigned usecs);
 long    sysconf(int name);
 int     gethostname(char *buf, size_t n);
 
+/* nice() is declared here because POSIX puts it here, and IMPLEMENTED in
+ * c/apps/libc/src/resource.c next to getpriority/setpriority, which it is
+ * defined in terms of -- splitting it into its own TU would put two halves of
+ * one rule in two files. It is the 4.3BSD/POSIX form: RELATIVE increment,
+ * returns the NEW nice value, and -1 is therefore a legal success. Clear errno
+ * before calling, as with getpriority(). See <sys/resource.h>. */
+int     nice(int inc);
+
 /* getopt() -- POSIX declares the short-option half here, not in <getopt.h>.
  * <getopt.h> (c/apps/libc/include/getopt.h) includes this header for exactly
  * that reason, and adds only getopt_long()/struct option on top. A ported

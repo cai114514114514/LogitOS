@@ -75,4 +75,38 @@ int getrlimit(int resource, struct rlimit *rlim);
 int setrlimit(int resource, const struct rlimit *rlim);
 int getrusage(int who, struct rusage *usage);
 
+/* --- process priority (2026-08-20) -----------------------------------------
+ * REAL, and it is worth saying so beside the paragraph above that lists what
+ * is not: c/kernel/sched/sched.c weights its pick loop by nice, so a value set
+ * here changes which thread the scheduler dispatches, measurably (make
+ * test-sched). This is the second thing in this header that a downstream check
+ * genuinely consults, after RLIMIT_CPU.
+ *
+ * PRIO_PGRP and PRIO_USER are DECLARED because a ported program writes
+ * PRIO_PROCESS by name and needs the others to exist for its switch statement
+ * to compile -- and they are REFUSED with EINVAL at runtime, because this
+ * kernel has no process groups and no per-user process list. Accepting either
+ * would renice one process while the caller believed it had reniced a group.
+ *
+ * getpriority() returns -1 for the legal nice value -1, so POSIX's rule
+ * applies: clear errno, call, then inspect errno. See the implementation note
+ * in c/apps/libc/src/resource.c. */
+#ifndef __LOGIT_ID_T_DEFINED
+#define __LOGIT_ID_T_DEFINED
+typedef int id_t;
+#endif
+
+#define PRIO_PROCESS 0
+#define PRIO_PGRP    1
+#define PRIO_USER    2
+
+#define PRIO_MIN (-20)
+#define PRIO_MAX   20   /* exclusive upper bound, as on Linux: the highest
+                         * settable nice is 19. Kept at 20 rather than 19 so a
+                         * program that loops `for (n = PRIO_MIN; n < PRIO_MAX;
+                         * n++)` covers exactly the real range. */
+
+int getpriority(int which, id_t who);
+int setpriority(int which, id_t who, int prio);
+
 #endif /* _SYS_RESOURCE_H */

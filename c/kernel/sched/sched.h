@@ -156,4 +156,114 @@ long     sched_rusage_syscall(long cmd, long a, long b);   /* SYS_RUSAGE dispatc
  * Returns a pid to ksig_post(pid, LOGIT_SIGXCPU), or 0. */
 int sched_cpu_tick_check(void);
 
+/* ------------------------------------------------------------------------
+ * WEIGHTED SCHEDULING (SYS_SCHED, 2026-08-20).
+ *
+ * Until now every thread got the same share: the pick loop took the first
+ * eligible thread one step round the ring, every 10 ms tick, unconditionally.
+ * There was nothing anywhere in this file that could say one thread matters
+ * more than another. Now there is, and it is ONE number per thread.
+ *
+ * WHAT KIND OF PRIORITY, and why not the other one
+ * ------------------------------------------------
+ * Two designs were on the table. A weighted round robin -- a thread's weight
+ * decides how many consecutive ticks it holds the CPU -- and a virtual-runtime
+ * scheduler (CFS): charge each thread real time DIVIDED by its weight, and
+ * always dispatch the smallest.
+ *
+ * They are the same schedule. At a 10 ms preemption granularity with weights
+ * 4:1, both produce four ticks for the heavy thread and one for the light one;
+ * a vruntime tie is broken in the running thread's favour, which IS the "keep
+ * it for another tick" rule the WRR spells out by hand. So the choice is not
+ * about the schedule, it is about what each COSTS here:
+ *
+ *   - WRR needs a per-turn budget AND a second mechanism to express LOWER
+ *     priority, because a turn cannot be shorter than one tick. Demotion is
+ *     the direction that matters on this machine (see the WM note below), so
+ *     the cheap-looking design needs its expensive half immediately.
+ *   - CFS's cost is the red-black tree. But the tree buys O(log n) selection,
+ *     and schedule() ALREADY walks the whole ring linearly to find an eligible
+ *     thread -- so on a ring of about a dozen threads, taking the minimum
+ *     instead of the first costs one comparison inside a loop that already
+ *     runs. The charge itself is one multiply-shift-add per fold.
+ *
+ * So this takes CFS's RULE and rejects CFS's TREE, and it is worth being
+ * explicit that the rejected part is the only part that was expensive. What is
+ * NOT taken: sleeper credit, group scheduling, and the 1.25x-per-level table
+ * whose span is about 5900:1. The span here is 14.9:1 end to end, which is a
+ * deliberate bound and is argued under PRIORITY INVERSION below.
+ *
+ * WHAT IT DOES NOT CHANGE, measured before it was written
+ * ------------------------------------------------------
+ * CLAUDE.md's BKL section is the reason to expect little from this on an idle
+ * desktop, and it should be read before anyone quotes a scheduler number: on
+ * one core the compositor is 99% of BKL-HELD time, and the desktop idles with
+ * 98.5% of samples on a halted core. A machine whose threads are nearly all
+ * parked has no shares to redistribute. This is a mechanism for the case where
+ * runnable threads COMPETE -- a background build against the browser -- and it
+ * is measured in exactly that case (make test-sched) and claimed nowhere else.
+ *
+ * PRIORITY INVERSION, and what was actually done about it
+ * ------------------------------------------------------
+ * Making a thread wait longer is the whole feature, so it can make latency
+ * WORSE the moment a demoted thread holds something a promoted one needs.
+ * Three facts bound that here, and none of them is "we were careful":
+ *
+ *   1. A SPINLOCK CANNOT BE HELD ACROSS A PREEMPTION. Every lock in this
+ *      kernel is taken with spin_lock_irqsave (IF off) or from a context that
+ *      already has IF off, so no timer tick arrives while one is held, so the
+ *      scheduler never runs. The classic inversion -- low-priority holder
+ *      descheduled with the lock -- is structurally impossible for them.
+ *   2. THE BKL IS RELEASED AT THE SWITCH, not carried away by the preempted
+ *      thread: schedule() does spin_unlock(&g_bkl) immediately before
+ *      context_switch and the incoming thread re-takes it. So a preempted
+ *      thread is not a BKL holder either.
+ *   3. What IS left is a SLEEPING lock (c/kernel/core/wait.c's mutex/semaphore),
+ *      which a demoted thread can hold while descheduled. Nothing here does
+ *      priority inheritance for it, deliberately: that is an edit to a file
+ *      this line does not own, and a hand-off protocol nothing in the tree
+ *      would exercise is a mechanism with no reference. What is done instead
+ *      is to BOUND the damage, and that bound is the reason the weight span is
+ *      14.9:1 and not Linux's 5900:1 -- the worst a demoted holder can be
+ *      delayed by is its share of the ring, and at 14.9:1 against one
+ *      competitor that is under 150 ms, against a compositor whose own
+ *      worst-case full-screen frame CLAUDE.md measures at 34.6 ms. At Linux's
+ *      span the same holder waits tens of seconds.
+ *
+ * And starvation is impossible rather than unlikely: a thread that does not
+ * run does not advance its vtime, so it becomes the ring minimum after a
+ * bounded number of ticks and is then dispatched. There is no ageing hack
+ * here because the currency does not need one.
+ *
+ * THE ONE LINE THE WM WOULD NEED, and why it is not taken -- see the report
+ * with this change. wm_run() IS the boot thread (sched_init adopts it as
+ * "main"), so the whole edit would be sched_nice_set(0, -10) at the top of
+ * wm_run(), or beside kmain.c's call to it. It is NOT taken because the only
+ * measurement this tree has says the compositor is not CPU-starved -- it is
+ * what everything else waits behind. Promoting it cannot give it time it is
+ * already getting and can only delay the threads producing what it composites.
+ * Demotion of a background load is the direction with a consumer (/bin/nice).
+ */
+#define SCHED_NICE_MIN (-20)
+#define SCHED_NICE_MAX   19
+
+/* SYS_SCHED's dispatcher (SCHEDCTL_* in include/abi/logit_abi.h). Forwarded
+ * whole from c/kernel/exec/syscall.c, the same shape sched_rusage_syscall()
+ * uses and for the same reason: the state lives here. */
+long sched_prio_syscall(long cmd, long a, long b);
+
+/* nice of `pid` (0 = the caller), or SCHED_E_SRCH. Read by SYS_PROCS's owner
+ * if it ever wants the column; the syscall above is the only caller today. */
+int sched_nice_get(int pid);
+/* Set every thread of `pid` (0 = the caller) to `nice`, CLAMPED to
+ * [SCHED_NICE_MIN, SCHED_NICE_MAX] rather than refused -- `nice -n 100 cmd`
+ * must behave, which is what POSIX and every existing caller expect. Returns
+ * the clamped value, or SCHED_E_SRCH / SCHED_E_PERM. */
+int sched_nice_set(int pid, int nice);
+/* The weight the pick loop actually uses for `pid`. Exists so a test can read
+ * the number the scheduler reads instead of re-deriving the table in the
+ * harness -- a harness that recomputes the table cannot catch the table being
+ * wrong. */
+int sched_weight_get(int pid);
+
 #endif /* LOGIT_SCHED_H */
