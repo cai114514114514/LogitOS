@@ -25,14 +25,25 @@ void waitq_init(struct waitq *q)
 }
 
 /* FIFO append. Caller holds q->lock. */
-void waitq_enqueue(struct waitq *q, struct waiter *w)
+void waitq_enqueue_hook(struct waitq *q, struct waiter *w,
+                        spinlock_t *xlock, int *xflag)
 {
     w->thread = sched_current_thread();
     w->next   = NULL;
     w->woken  = 0;
     w->queued = 1;
+    w->xlock  = xlock;
+    w->xflag  = xflag;
     if (q->tail) q->tail->next = w; else q->head = w;
     q->tail = w;
+}
+
+void waitq_enqueue(struct waitq *q, struct waiter *w)
+{
+    /* NULL, NULL is what keeps every pre-poll sleeper byte-identical in
+     * behaviour: wake_waiter() below takes the hook branch only for a waiter
+     * that asked for it. */
+    waitq_enqueue_hook(q, w, NULL, NULL);
 }
 
 /* Caller holds q->lock. Idempotent: a waiter the waker already popped has
@@ -68,12 +79,37 @@ static struct waiter *waitq_pop(struct waitq *q)
     return w;
 }
 
+/* Unpark one popped waiter. Caller holds q->lock.
+ *
+ * THE HOOK BRANCH IS THE POLL WAKEUP, and the order inside it is the whole
+ * point: `*xflag` is published BEFORE sched_wake(), under `xlock`, which is the
+ * same lock the poller hands to its sleep. So a poller that has not parked yet
+ * sees the flag when it tests it (and does not park), and a poller that HAS
+ * parked is unparked by the sched_wake() -- there is no third case, because
+ * both of those happen with `xlock` held and this call holds it too.
+ *
+ * The alternative that does NOT work, written down because it is the obvious
+ * one: set a flag with no lock and let the poller re-test it before parking.
+ * That leaves exactly the window this hook exists to close -- the poller reads
+ * 0, the waker sets 1 and calls sched_wake() on a thread that is not yet
+ * BLOCKED (wake_locked returns 0, doing nothing), and the poller then parks
+ * with nobody left to wake it. */
+static int wake_waiter(struct waiter *w)
+{
+    if (!w->xlock) return sched_wake(w->thread);
+    uint64_t xf = spin_lock_irqsave(w->xlock);
+    if (w->xflag) *w->xflag = 1;
+    int n = sched_wake(w->thread);
+    spin_unlock_irqrestore(w->xlock, xf);
+    return n;
+}
+
 int waitq_wake_one(struct waitq *q)
 {
     int n = 0;
     uint64_t f = spin_lock_irqsave(&q->lock);
     struct waiter *w = waitq_pop(q);
-    if (w) { n = sched_wake(w->thread); q->wakes++; }
+    if (w) { n = wake_waiter(w); q->wakes++; }
     spin_unlock_irqrestore(&q->lock, f);
     return n;
 }
@@ -83,7 +119,7 @@ int waitq_wake_all(struct waitq *q)
     int n = 0;
     uint64_t f = spin_lock_irqsave(&q->lock);
     struct waiter *w;
-    while ((w = waitq_pop(q)) != NULL) { n += sched_wake(w->thread); q->wakes++; }
+    while ((w = waitq_pop(q)) != NULL) { n += wake_waiter(w); q->wakes++; }
     spin_unlock_irqrestore(&q->lock, f);
     return n;
 }

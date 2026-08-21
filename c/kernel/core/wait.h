@@ -52,6 +52,41 @@ struct waiter {
     struct waiter *next;
     int            woken;      /* set by the waker under wq->lock */
     int            queued;
+    /* --- THE POLL HOOK, and why a waiter needs one at all -----------------
+     *
+     * Every other sleeper in this kernel waits on exactly ONE queue, and rule 2
+     * above closes its lost wakeup by construction: the predicate is evaluated
+     * under q->lock and q->lock is handed to sched_block_self_unlock(), which
+     * releases it only after the thread is marked BLOCKED.
+     *
+     * poll() waits on SEVERAL queues at once, so there is no single lock to
+     * hand the sleep. Holding all of them would be a lock-order cycle waiting
+     * to happen (two pollers with the same fds in different orders), and
+     * dropping the ordering rule is not on the table. The alternative that was
+     * rejected: one GLOBAL poll lock every pollable object takes on every wake
+     * -- which would serialise every pipe write and every arriving segment on
+     * a lock whose only purpose is a facility nobody may be using.
+     *
+     * So the waiter carries the poller's OWN lock and flag. A waker holding
+     * q->lock takes `xlock`, sets `*xflag`, and only then calls sched_wake();
+     * the poller tests `*xflag` under `xlock` and hands `xlock` to the sleep.
+     * That is rule 2 again, with the poll table standing in for the object --
+     * the lock the condition is tested under is the lock the wake is published
+     * under, which is the whole content of the rule.
+     *
+     * Lock order is q->lock -> xlock -> g_sched_lock. The poller never takes a
+     * q->lock while holding xlock (it registers and unregisters with xlock
+     * free), so the chain has no cycle.
+     *
+     * BOTH POINTERS ARE THE POLLER'S STACK, and that is safe for the same
+     * reason `thread` is: the poller dequeues under q->lock before its frame
+     * returns, so a waker that can still see this waiter is a waker whose
+     * q->lock hold began before that dequeue.
+     *
+     * NULL in every waiter that is not a poll registration -- waitq_enqueue()
+     * zeroes them, so nothing above this line changed. */
+    spinlock_t    *xlock;
+    int           *xflag;
 };
 
 struct waitq {
@@ -73,6 +108,13 @@ void waitq_init(struct waitq *q);
 
 /* Enqueue the current thread. Caller MUST already hold q->lock. */
 void waitq_enqueue(struct waitq *q, struct waiter *w);
+/* Same, but the waker will additionally take `xlock` and set `*xflag` to 1
+ * BEFORE unparking. Used only by c/kernel/exec/kpoll.c -- see the poll-hook
+ * comment on struct waiter for why a multi-queue sleeper cannot close its lost
+ * wakeup with the queue's own lock. Caller MUST already hold q->lock, which is
+ * what makes the half-initialised waiter unobservable. */
+void waitq_enqueue_hook(struct waitq *q, struct waiter *w,
+                        spinlock_t *xlock, int *xflag);
 /* Remove `w` if still queued. Caller MUST already hold q->lock. */
 void waitq_dequeue(struct waitq *q, struct waiter *w);
 
