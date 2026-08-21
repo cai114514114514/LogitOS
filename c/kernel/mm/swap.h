@@ -110,6 +110,15 @@ uint64_t swap_io_errors(void);
 uint64_t swap_waits(void);           /* times a caller queued behind another */
 uint64_t swap_bkl_cycles(void);      /* cycles the BKL was held inside the device */
 uint64_t swap_bkl_worst(void);       /* worst single transfer, cycles */
+/* Since the block layer grew submit/poll (c/drivers/block/blkdev.h) the two
+ * above are no longer the same as how long the DEVICE took: a transfer that
+ * runs past SWAP_BKL_BUDGET_CYC gives the lock back and keeps going. Reporting
+ * only the BKL figure would let "we hold the lock less" be read as "the disk
+ * got faster", which it is not. */
+uint64_t swap_dev_cycles(void);      /* cycles of transfer, BKL held or not */
+uint64_t swap_dev_worst(void);       /* worst single transfer, wall cycles */
+uint64_t swap_bkl_releases(void);    /* times a transfer gave the BKL back mid-flight */
+uint64_t swap_bounced(void);         /* async submissions refused for BLK_E_NODMA */
 void     swap_report(const char *tag);
 
 #endif /* LOGIT_SWAP_H */
