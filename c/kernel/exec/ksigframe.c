@@ -51,6 +51,7 @@
 #include "kprintf.h"
 #include "usercopy.h"
 #include "logit_abi.h"
+#include "ptrace.h"      /* the stop below is where a tracer reads registers */
 
 #define SIGBIT(n) (1ull << (n))
 #define SIG_UNMASKABLE (SIGBIT(LOGIT_SIGKILL) | SIGBIT(LOGIT_SIGSTOP))
@@ -292,6 +293,15 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
              * thread is still on the run ring and is dispatched once per tick
              * to test one flag. A stopped process is rare and this is ten
              * instructions of it. */
+
+            /* THE ONE PLACE A COMPLETE USER REGISTER FRAME EXISTS FOR A
+             * PROCESS THAT IS NOT RUNNING. ptrace (c/kernel/exec/ptrace.h)
+             * hangs off this stop rather than inventing a second one: `r` here
+             * is exactly what would have been iretq'd, so it is what GETREGS
+             * must report and what SETREGS must be able to rewrite. Both calls
+             * are a load of one global and a not-taken branch when nothing is
+             * being traced, which is every machine almost all of the time. */
+            ptrace_note_stop(p->pid, r);
             for (;;) {
                 uint64_t f2 = spin_lock_irqsave(&g_sig_lock);
                 struct sigst *s2 = ksig_find_locked(p->pid);
@@ -304,6 +314,11 @@ void ksig_deliver(struct registers *r, void *fxarea, uint64_t sysnr)
                 if (!still) break;
                 bkl_hlt_wait();
             }
+            /* Applies a SETREGS the tracer made while this thread was parked,
+             * and drops the saved frame -- leaving it would let a GETREGS
+             * after the resume report registers from a stop that has ended,
+             * which is worse than refusing because it looks like an answer. */
+            ptrace_note_resume(p->pid, r);
             continue;
         }
 

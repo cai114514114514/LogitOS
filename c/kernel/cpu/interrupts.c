@@ -22,6 +22,7 @@
 #include "work.h"        /* M27: softirq_run_pending() on the kernel-exit path */
 #include "kbench.h"      /* entry/exit accounting, off by default */
 #include "ksignal.h"     /* M31: faults become signals; delivery on the way out */
+#include "coredump.h"    /* the trap frame is the only register file there is  */
 #include "logit_abi.h"   /* SYS_SIGRETURN, LOGIT_SIG* */
 
 static const char *const exception_names[32] = {
@@ -220,6 +221,25 @@ void interrupt_handler(struct registers *r, void *fxarea)
             int signo = fault_signal(r->vector);
             if (signo && ksig_fault(signo, cr2, r->error_code, r->vector))
                 goto done;
+
+            /* THE DUMP, and it happens HERE and can happen nowhere else.
+             *
+             * `r` is the only complete, consistent picture of the program's
+             * registers that will ever exist -- proc_exit() below does not
+             * return, and by the time anything downstream of it runs the trap
+             * frame is gone and the address space is being torn down. The
+             * dump also has to read the dying process's memory, which is only
+             * addressable while CR3 still points at it, i.e. right now.
+             *
+             * Before proc_exit and after ksig_fault, in that order and for two
+             * reasons: a process that CAUGHT the fault has not died and must
+             * not be dumped, and a process that has not caught it is about to
+             * lose the address space the dump reads.
+             *
+             * It never fails this path -- it prints and returns, whatever
+             * happened -- because "the filesystem was full" must not be able
+             * to turn a dead app into a dead kernel. */
+            coredump_take(r, fxarea, signo, cr2);
 
             kprintf("\n[fault] app exception: %s (vector %d) rip=%p err=%x cr2=%p rsp=%p -- terminating app\n",
                     exception_names[r->vector & 31], (int)r->vector,
