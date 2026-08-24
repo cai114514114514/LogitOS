@@ -2,6 +2,10 @@
 #include <stddef.h>
 #include "pcache.h"
 #include "pmm.h"
+/* For reclaim_low() only, and only so readahead can refuse to be the thing
+ * that pushes the machine into reclaim. Nothing here calls a reclaim path --
+ * that direction (reclaim.c -> pcache.h) is the one that already existed. */
+#include "reclaim.h"
 #include "mm.h"
 #include "mmhost.h"
 #include "spinlock.h"
@@ -64,6 +68,23 @@ struct pfile {
      * the new end resident and stale. Never decreased while any entry of the
      * file lives; reset to 0 by a purge that emptied the file. */
     uint64_t hiwater;
+    /* READAHEAD'S ENTIRE STATE, and it is here rather than in a table of its
+     * own because a second table keyed on (dev, ino) would be a second thing
+     * to keep in step with this one -- and the one that fell behind would be
+     * the one nothing audits. Eight bytes on a struct that already exists.
+     *
+     * ra_next is the index the NEXT request must carry to count as sequential,
+     * i.e. (last index asked) + 1, with 0 meaning "nothing asked yet". That
+     * encoding is why a first touch of page 0 never prefetches: 0 is not a
+     * page index anyone can be resuming from. (An index of 0xFFFFFFFF wraps it
+     * back to 0 and merely turns readahead off for a 16 TiB file's last page,
+     * which is the harmless direction to fail in.)
+     *
+     * ra_win is K: how many pages the LAST batch fetched beyond the faulting
+     * one. 0 means the window is cold -- set by any non-sequential request and
+     * by a short read from the backend. */
+    uint32_t ra_next;
+    uint32_t ra_win;
     char     path[PCACHE_PATHMAX];
 };
 
@@ -109,6 +130,7 @@ static void purge(int fh, uint64_t *counter);
 
 static uint64_t c_hit, c_miss, c_drop, c_evict, c_inval, c_bypass, c_peak, c_resident;
 static uint64_t c_orphan, c_uncached;
+static uint64_t c_ra_run, c_ra_pages, c_ra_reads, c_ra_short;
 static uint64_t c_bug;
 
 uint64_t pcache_hits(void)        { return c_hit; }
@@ -122,6 +144,10 @@ uint64_t pcache_bypassed(void)    { return c_bypass; }
 uint64_t pcache_orphaned(void)    { return c_orphan; }
 uint64_t pcache_uncached(void)    { return c_uncached; }
 uint64_t pcache_slots(void)       { return pc_npage; }
+uint64_t pcache_ra_runs(void)     { return c_ra_run; }
+uint64_t pcache_ra_pages(void)    { return c_ra_pages; }
+uint64_t pcache_ra_reads(void)    { return c_ra_reads; }
+uint64_t pcache_ra_short(void)    { return c_ra_short; }
 int      pcache_ready(void)       { return pc_ready; }
 
 uint64_t pcache_files(void)
@@ -230,6 +256,15 @@ void pcache_init(uint64_t total_frames)
             (int)(frames * FRAME_SIZE / (total_frames ? total_frames : 1)),
 #ifdef PCACHE_PER_OPEN
             "  [NEGATIVE CONTROL: keyed per-open, not per-inode]"
+#elif defined(PCACHE_NO_READAHEAD)
+            /* Said at boot, because a control kernel's log is otherwise
+             * indistinguishable from the real one until somebody reads the
+             * right counter -- and a control that cannot be told apart from
+             * the thing it controls is how a measurement gets attributed to
+             * the wrong build. */
+            "  [NEGATIVE CONTROL: readahead compiled out]"
+#elif defined(PCACHE_RA_ALWAYS)
+            "  [NEGATIVE CONTROL: readahead WITHOUT the sequential test]"
 #else
             ""
 #endif
@@ -352,6 +387,8 @@ int pcache_file_open(const char *path)
             pf[i].ino = ino;
             pf[i].size = size;
             pf[i].hiwater = 0;      /* a fresh identity has installed nothing */
+            pf[i].ra_next = 0;      /* ...and nobody has read it in any order */
+            pf[i].ra_win  = 0;
             size_t n = pc_slen(path);
             if (n >= PCACHE_PATHMAX) { pf[i].used = 0; goto out; }
             memcpy(pf[i].path, path, n + 1);
@@ -383,9 +420,16 @@ int pcache_file_open(const char *path)
                                          * OLD hiwater -- which is why the reset
                                          * below comes after, not before */
             fl = spin_lock_irqsave(&pc_lock);
-            if (pf[ret].used && pf[ret].dev == dev && pf[ret].ino == ino)
+            if (pf[ret].used && pf[ret].dev == dev && pf[ret].ino == ino) {
                 pf[ret].hiwater = 0;    /* still ours: the new identity has
                                          * installed nothing yet */
+                /* The sequence state goes with the identity for the same
+                 * reason: the previous file's trail would make this file's
+                 * first request look like a resumption of a walk through a
+                 * file it has nothing to do with, and prefetch pages of it. */
+                pf[ret].ra_next = 0;
+                pf[ret].ra_win  = 0;
+            }
             spin_unlock_irqrestore(&pc_lock, fl);
             return ret;
         }
@@ -656,6 +700,228 @@ static uint64_t evict_one_locked(void)
     return 0;                    /* pc_npage == 0: the cache never came up */
 }
 
+/* Caller holds pc_lock, and has already established that (fh, index) is NOT in
+ * the table. Takes an entry FROM THE FREE LIST ONLY and returns 0, or -1 if the
+ * pool has none.
+ *
+ * It never evicts, and that is the point of it being a function. The
+ * single-page path below calls evict_one_locked() first and then this;
+ * readahead calls only this. So "a speculative page never displaces a page
+ * somebody actually asked for" is enforced by which function is reachable from
+ * where, rather than by a rule a later reader has to remember to keep. */
+static int install_locked(int fh, uint64_t index, uint64_t frame)
+{
+    if (pc_free < 0) return -1;
+    int32_t e = pc_free;
+    pc_free = pg[e].hnext;
+    pg[e].fh = (int16_t)fh;
+    pg[e].index = (uint32_t)index;
+    pg[e].phys = frame;
+    uint32_t b = hash(fh, index);
+    pg[e].hnext = bucket[b];
+    bucket[b] = e;
+    pc_of_frame[frame / FRAME_SIZE] = (uint32_t)e + 1;
+    if (index + 1 > pf[fh].hiwater) pf[fh].hiwater = index + 1;   /* purge's bound */
+    c_resident++;
+    if (c_resident > c_peak) c_peak = c_resident;
+    return 0;
+}
+
+/* ------------------------------------------------------------ readahead --
+ * pcache.h's READAHEAD block is the design and the three bounds on K; this is
+ * the mechanism. */
+
+/* How many pages this request should bring in, INCLUDING the one being asked
+ * for. 1 means no prefetch and is the old behaviour exactly.
+ *
+ * Caller holds pc_lock. This is the ONE place the sequence state moves, and it
+ * moves on every request, HIT OR MISS. A window that only misses could advance
+ * would collapse on its own success: once N..N+K are resident the faults for
+ * N+1..N+K are hits, so the next miss at N+K+1 would look like a fresh random
+ * touch and the window would restart from nothing on every batch. */
+static unsigned ra_advance(int fh, uint64_t index, int hit)
+{
+    struct pfile *f = &pf[fh];
+    int seq = (f->ra_next != 0 && (uint64_t)f->ra_next == index);
+#ifdef PCACHE_RA_ALWAYS
+    /* NEGATIVE CONTROL: readahead without the sequential test -- prefetch on
+     * every miss. This is the PLAUSIBLE wrong version, not the feature broken:
+     * it makes the sequential case look exactly as good (which is why somebody
+     * would ship it), and pays K pages of device time and K frames for every
+     * single page of a random walk. Only a test that measures the RANDOM case
+     * can tell the two apart. */
+    seq = 1;
+#endif
+    f->ra_next = (uint32_t)(index + 1);
+    if (!seq) { f->ra_win = 0; return 1; }
+    if (hit) return 1;              /* the trail was the point; the page is here */
+#ifdef PCACHE_NO_READAHEAD
+    /* NEGATIVE CONTROL: never prefetch. The trail above is still kept so the
+     * control differs from the shipped code in exactly one thing -- whether
+     * anything is fetched -- and in nothing else. */
+    return 1;
+#else
+    unsigned k = f->ra_win ? f->ra_win * 2 : PCACHE_RA_MIN;
+    if (k > PCACHE_RA_MAX) k = PCACHE_RA_MAX;
+    f->ra_win = k;
+    return k + 1;
+#endif
+}
+
+/* Caller holds pc_lock. How many entries the free list has, counted up to
+ * `max` and NOT ONE FURTHER: the list is tens of thousands of links long on a
+ * 512 MiB machine and the only question ever asked of it is "at least this
+ * many?". Walking it beats keeping a count that a second structure would have
+ * to maintain correctly on every install, evict, purge and forget. */
+static unsigned free_slots_locked(unsigned max)
+{
+    unsigned n = 0;
+    for (int32_t e = pc_free; e >= 0 && n < max; e = pg[e].hnext) n++;
+    return n;
+}
+
+/* Fetch pages `first` .. `first + want - 1` in as few backend calls as the
+ * frames allow, install them, and return the frame holding page `first`. A
+ * return of 0 means "this did nothing at all", and sends the caller to the
+ * ordinary single-page path -- which is why every bound below can SHRINK the
+ * batch to nothing without a special case: the demand page is served either
+ * way, by one path or the other.
+ *
+ * THE ORDER IS ALLOCATE, THEN READ, THEN INSTALL, and it is not the obvious
+ * one. Installing each page as it arrives is wrong here, for a reason worth
+ * writing down because nothing about it is visible at the call site:
+ * pmm_alloc() calls reclaim_on_alloc(), and a page THIS BATCH has already
+ * installed is rmap_count 0, pcache_holds 1, refcount 1 -- reclaim's cheapest
+ * and most eligible candidate on the whole machine (pcache.h says so in as
+ * many words). Reclaim would take back the page we are in the middle of
+ * serving and hand its frame to the very next prefetch allocation, and this
+ * function would return a frame that by then holds a DIFFERENT page of the
+ * file. The fault maps it, the process reads the wrong 4 KiB, and nothing logs
+ * anything. Doing every allocation first closes the window rather than
+ * covering it: after the last pmm_alloc() there is no allocation left on this
+ * path, so nothing installed below can be reclaimed before the caller has its
+ * own reference. (pmm_pin() across the batch was the other candidate. It also
+ * works, costs a pin/unpin pair, and leaves the hazard present-but-guarded
+ * instead of absent.) */
+static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
+{
+    uint64_t frames[PCACHE_RA_MAX + 1];
+    unsigned n = want > PCACHE_RA_MAX + 1 ? PCACHE_RA_MAX + 1 : want;
+
+    /* (1) The file's end. */
+    uint64_t size = pf[fh].size;
+    uint64_t npages = (size + FRAME_SIZE - 1) / FRAME_SIZE;
+    if (first >= npages) return 0;
+    if ((uint64_t)n > npages - first) n = (unsigned)(npages - first);
+
+    /* (2) What is resident already, and what the pool can hold. Trimming at the
+     * FIRST page that is already here keeps the run contiguous, which is the
+     * only shape the block layer can merge -- a batch with a hole in it would
+     * cost two device commands to save one. */
+    uint64_t fl = spin_lock_irqsave(&pc_lock);
+    unsigned m = 0;
+    while (m < n && find(fh, first + m) < 0) m++;
+    if (m < n) n = m;
+    unsigned slots = free_slots_locked(n);
+    spin_unlock_irqrestore(&pc_lock, fl);
+    if (slots < n) n = slots;               /* the pool is full: prefetch less */
+
+    /* (3) Memory. A speculative read may not be the thing that pushes the
+     * machine into reclaim: below the low watermark every pmm_alloc() runs a
+     * pass, and adding pages nobody asked for to that is making work for the
+     * hand. reclaim_low() is 0 until reclaim_init() runs, which reads as "all
+     * the free frames are available" -- correct on a machine that has no
+     * reclaim yet, and the same expression. */
+    uint64_t freef = pmm_free_frames(), lowmark = reclaim_low();
+    uint64_t headroom = freef > lowmark ? freef - lowmark : 0;
+    if ((uint64_t)n > headroom) n = (unsigned)headroom;
+
+    if (n < 2) return 0;                    /* one page IS the ordinary path */
+
+    /* (4) Every frame, before any of them is installed. See the note above. */
+    unsigned got = 0;
+    while (got < n) {
+        uint64_t f = pmm_alloc();
+        if (!f) break;
+        frames[got++] = f;
+    }
+    if (got < 2) {
+        for (unsigned i = 0; i < got; i++) pmm_free(frames[i]);
+        return 0;
+    }
+    n = got;
+    c_ra_run++;
+
+    /* (5) Zero, then read over it. Zeroing every page and not only the file's
+     * tail is what makes a short read SAFE TO DETECT rather than dangerous to
+     * miss: an uncovered page holds zeroes, never the previous owner's bytes.
+     * The disclosure rule is do_anon()'s and pcache_get()'s, unchanged. */
+    for (unsigned i = 0; i < n; i++) memset(mm_p2v(frames[i]), 0, FRAME_SIZE);
+
+    unsigned covered = 0;       /* pages from `first` that hold real file bytes */
+    int shortread = 0;
+    for (unsigned i = 0; i < n; ) {
+        /* The maximal run of frames that is CONTIGUOUS IN PHYSICAL MEMORY.
+         * mm_p2v is the identity map, so one call fills all of them and the
+         * filesystem sees one byte range it can coalesce (logitfs's inode_pread
+         * MIDDLE loop -> bread_run). pmm's allocator hands out ascending frames
+         * from a rotating hint, so on a cold sequential load this is usually
+         * ONE run for the whole batch; it is measured (pcache_ra_reads) rather
+         * than assumed, because on a fragmented machine it is not. */
+        unsigned j = i + 1;
+        while (j < n && frames[j] == frames[j - 1] + FRAME_SIZE) j++;
+
+        uint64_t off = (first + i) * (uint64_t)FRAME_SIZE;
+        uint64_t len = (uint64_t)(j - i) * FRAME_SIZE;
+        if (off + len > size) len = size - off;      /* off < size: bounded at (1) */
+        long r = pc_ops->read(pf[fh].path, off, mm_p2v(frames[i]), len);
+        c_ra_reads++;
+        if (r < 0) break;
+
+        uint64_t nb = (uint64_t)r;
+        /* CLAMPED TO WHAT WE ASKED FOR, and this is not defensive decoration:
+         * `covered` indexes frames[], which is on the stack, so a backend that
+         * reported more bytes than it was given room for would walk this batch
+         * off the end of that array and install frames nobody allocated. The
+         * ops table is a seam a filesystem implements (pcache.h), so "no
+         * backend would do that" is a promise made by code this file does not
+         * own. We own `len` bytes of buffer; nothing above that is real. */
+        if (nb > len) nb = len;
+        unsigned whole = (unsigned)(nb / FRAME_SIZE);
+        /* Rounding UP is legal for exactly one page in the file -- the tail,
+         * which is genuinely shorter than 4096 and complete anyway. Rounding up
+         * on any other short return would install a page with a hole of zeroes
+         * in the middle of it and call it file data. */
+        if ((nb % FRAME_SIZE) && off + nb == size) whole++;
+        covered = i + whole;
+        if (nb < len) { shortread = 1; break; }
+        i = j;
+    }
+
+    /* (6) Install. Free list only -- never evict for a page nobody asked for. */
+    unsigned installed = 0;
+    fl = spin_lock_irqsave(&pc_lock);
+    for (unsigned i = 0; i < covered; i++) {
+        if (find(fh, first + i) >= 0) break;        /* not reachable under the BKL */
+        if (install_locked(fh, first + i, frames[i]) < 0) break;   /* pool full */
+        installed++;
+    }
+    if (installed) c_ra_pages += installed - 1;     /* the demand page is not
+                                                     * ahead of anyone */
+    if (shortread) {
+        /* The backend could not serve the run. Cold the window rather than
+         * doubling it: the next sequential miss starts again at PCACHE_RA_MIN,
+         * so a backend that can only ever hand back one page wastes four frames
+         * per miss instead of thirty-two. */
+        c_ra_short++;
+        pf[fh].ra_win = 0;
+    }
+    spin_unlock_irqrestore(&pc_lock, fl);
+
+    for (unsigned i = installed; i < n; i++) pmm_free(frames[i]);
+    return installed ? frames[0] : 0;
+}
+
 uint64_t pcache_get(int fh, uint64_t index)
 {
     if (!pc_ready || !pc_ops || !pc_ops->read) return 0;
@@ -664,6 +930,7 @@ uint64_t pcache_get(int fh, uint64_t index)
 
     uint64_t fl = spin_lock_irqsave(&pc_lock);
     int32_t e = find(fh, index);
+    unsigned batch = ra_advance(fh, index, e >= 0);
     if (e >= 0) {
         uint64_t phys = pg[e].phys;
         c_hit++;
@@ -671,6 +938,17 @@ uint64_t pcache_get(int fh, uint64_t index)
         return phys;
     }
     spin_unlock_irqrestore(&pc_lock, fl);
+
+    /* A SEQUENTIAL MISS. One batch, one backend call per contiguous run of
+     * frames, and the page asked for is the first of them. A 0 back means the
+     * batch declined for one of its bounds and nothing was installed, so the
+     * single-page path below runs exactly as it always did -- which is also
+     * what makes -DPCACHE_NO_READAHEAD the old code and not an approximation
+     * of it. */
+    if (batch > 1) {
+        uint64_t phys = ra_batch(fh, index, batch);
+        if (phys) { c_miss++; return phys; }
+    }
 
     /* MISS. Off the lock, because this reads a disk. */
     uint64_t off = index * (uint64_t)FRAME_SIZE;
@@ -706,42 +984,31 @@ uint64_t pcache_get(int fh, uint64_t index)
             fl = spin_lock_irqsave(&pc_lock);
         }
     }
-    if (pc_free < 0) {
-        /* UNREACHABLE, and counted rather than trusted.
-         *
-         * evict_one_locked()'s second pass takes a slot from ANY entry, so it
-         * can only come back empty when the pool holds no entries at all --
-         * and if it holds none then pc_free cannot be empty either. So getting
-         * here means the free list and the entry array disagree, which is a
-         * bug in this file and nowhere else.
-         *
-         * The old code got here whenever the pool was full of mapped pages,
-         * returned the frame UNCACHED, and leaked it (see evict_one_locked).
-         * Handing it back is still the least-bad thing to do -- the fault
-         * succeeds and the process runs -- so that is kept, but it is now
-         * SAID: this counter is a leak counter, one 4 KiB frame per tick, and
-         * a nonzero value is a defect report, not a capacity report. */
-        c_uncached++;
+    if (install_locked(fh, index, frame) == 0) {
         spin_unlock_irqrestore(&pc_lock, fl);
-        kprintf("[pcache] BUG: pool of %d slots has no free entry and nothing "
-                "to evict; page %d of %s handed back UNCACHED (frame %p LEAKED, "
-                "%d so far)\n", (int)pc_npage, (int)index, pf[fh].path,
-                (void *)frame, (int)c_uncached);
         return frame;
     }
-    e = pc_free;
-    pc_free = pg[e].hnext;
-    pg[e].fh = (int16_t)fh;
-    pg[e].index = (uint32_t)index;
-    pg[e].phys = frame;
-    uint32_t b = hash(fh, index);
-    pg[e].hnext = bucket[b];
-    bucket[b] = e;
-    pc_of_frame[frame / FRAME_SIZE] = (uint32_t)e + 1;
-    if (index + 1 > pf[fh].hiwater) pf[fh].hiwater = index + 1;   /* purge's bound */
-    c_resident++;
-    if (c_resident > c_peak) c_peak = c_resident;
+    /* UNREACHABLE, and counted rather than trusted.
+     *
+     * evict_one_locked()'s second pass takes a slot from ANY entry, so it can
+     * only come back empty when the pool holds no entries at all -- and if it
+     * holds none then pc_free cannot be empty either. So getting here means the
+     * free list and the entry array disagree, which is a bug in this file and
+     * nowhere else. (Readahead cannot reach this: it installs through
+     * install_locked() alone and simply stops when the free list runs out.)
+     *
+     * The old code got here whenever the pool was full of mapped pages,
+     * returned the frame UNCACHED, and leaked it (see evict_one_locked).
+     * Handing it back is still the least-bad thing to do -- the fault
+     * succeeds and the process runs -- so that is kept, but it is now
+     * SAID: this counter is a leak counter, one 4 KiB frame per tick, and
+     * a nonzero value is a defect report, not a capacity report. */
+    c_uncached++;
     spin_unlock_irqrestore(&pc_lock, fl);
+    kprintf("[pcache] BUG: pool of %d slots has no free entry and nothing "
+            "to evict; page %d of %s handed back UNCACHED (frame %p LEAKED, "
+            "%d so far)\n", (int)pc_npage, (int)index, pf[fh].path,
+            (void *)frame, (int)c_uncached);
     return frame;
 }
 
@@ -848,4 +1115,16 @@ void pcache_report(const char *tag)
             tag ? tag : "-", (int)c_peak, (int)pc_npage,
             (int)(pc_npage ? (c_peak * 100) / pc_npage : 0),
             (int)c_orphan, (int)c_uncached);
+    /* READAHEAD, and every number here is half of a ratio on purpose. `pages
+     * per read` is the coalescing factor -- 1 means the frames came back
+     * scattered and the block layer had nothing to merge, which is a real
+     * outcome on a fragmented machine and is not distinguishable from "the
+     * feature is off" without this line. `short` is a backend that stopped
+     * early; on logitfs it should be 0, and a nonzero value there means
+     * vfs_pread is refusing multi-page reads, not that the cache is wrong. */
+    kprintf("[pcache] %s: readahead %d batches, %d pages ahead, %d backend "
+            "reads (%d pages/read), %d short; K %d..%d\n",
+            tag ? tag : "-", (int)c_ra_run, (int)c_ra_pages, (int)c_ra_reads,
+            (int)(c_ra_reads ? (c_ra_pages + c_ra_run) / c_ra_reads : 0),
+            (int)c_ra_short, (int)PCACHE_RA_MIN, (int)PCACHE_RA_MAX);
 }

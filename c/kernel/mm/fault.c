@@ -352,6 +352,19 @@ static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
 static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
                    uint32_t prot, int active)
 {
+    /* ONE PAGE IS RETURNED AND SEVERAL MAY HAVE ARRIVED. pcache_get() runs
+     * readahead underneath this call (pcache.h's READAHEAD block): if the
+     * previous request on this file was for page index-1, it fetches a run of
+     * pages in one backend read and installs them, then hands back this one.
+     * Nothing here changes -- the extra pages are in the cache with no PTE, so
+     * the next fault on them is a HIT and this function maps them one at a
+     * time exactly as before.
+     *
+     * It is written down here because this is where a reader stands when they
+     * ask why one fault caused a 132 KiB device read, and because the frames
+     * those pages hold are charged to nobody visible from this file: they are
+     * rmap 0 / pcache_holds 1 / refcount 1, which reclaim.h's three-term test
+     * makes the cheapest eligible page on the machine rather than a leak. */
     uint64_t f = pcache_get(fh, index);
     if (!f)
         return 0;                   /* unreadable, past EOF, or out of memory:

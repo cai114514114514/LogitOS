@@ -55,7 +55,7 @@
  * about. A file-backed case belongs in tests/unit/mm_pcache_test.c, beside the
  * code that produces one. */
 #define mm_fault_classify(cr2, err, p, cow, u, prot, swap) \
-        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), (swap), 0)
+        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), (swap), 0, 0)
 
 #define PRESENT  0x1
 #define WRITABLE 0x2

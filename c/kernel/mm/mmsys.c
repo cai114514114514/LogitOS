@@ -365,9 +365,26 @@ long mm_syscall(long num, long a, long b, long c)
                 /* One machine-readable line. The harness greps this rather than
                  * the prose report, so a change to the report's wording cannot
                  * silently break the test. */
+                /* APPENDED, never reordered or renamed: three boot harnesses
+                 * (run-elfshare.sh, run-execshare-test.sh, run-swap-test.sh)
+                 * scrape this line by field name, so a new field at the end
+                 * costs them nothing and a field moved out from under them
+                 * costs them everything.
+                 *
+                 * THE PAGE CACHE'S OWN NUMBERS BELONG HERE, not only in the
+                 * prose report: cold-loading the 355 MiB model read 91,054
+                 * misses and 0 hits (DEVICE, 2026-08-20), and the only place
+                 * that was visible was a sentence a person had to read. A
+                 * harness can now assert that a sequential load costs far
+                 * fewer misses than it has pages, which is the whole claim of
+                 * readahead -- and ra_pages/ra_reads is the coalescing factor,
+                 * which says whether the block layer got a run to merge or a
+                 * string of single pages. */
                 kprintf("[mmstat] free=%d total=%d evicted=%d dropped=%d swapped=%d "
                         "swapin=%d swapfail=%d second=%d slots=%d pins=%d "
-                        "reserve_hits=%d allocfail=%d bugs=%d\n",
+                        "reserve_hits=%d allocfail=%d bugs=%d "
+                        "pc_hits=%d pc_misses=%d pc_resident=%d "
+                        "ra_runs=%d ra_pages=%d ra_reads=%d ra_short=%d\n",
                         (int)pmm_free_frames(), (int)pmm_total_frames(),
                         (int)(reclaim_dropped() + reclaim_swapped()),
                         (int)reclaim_dropped(), (int)reclaim_swapped(),
@@ -375,7 +392,11 @@ long mm_syscall(long num, long a, long b, long c)
                         (int)reclaim_second_chance(), (int)swap_slots_used(),
                         (int)pmm_pins_live(), (int)pmm_reserve_hits(),
                         (int)pmm_alloc_failures(),
-                        (int)(pmm_bugs() + rmap_bugs() + reclaim_bugs()));
+                        (int)(pmm_bugs() + rmap_bugs() + reclaim_bugs()),
+                        (int)pcache_hits(), (int)pcache_misses(),
+                        (int)pcache_resident(), (int)pcache_ra_runs(),
+                        (int)pcache_ra_pages(), (int)pcache_ra_reads(),
+                        (int)pcache_ra_short());
                 return 0;
             }
             case MMCTL_OOM:

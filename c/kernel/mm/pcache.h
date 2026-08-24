@@ -255,6 +255,82 @@
 #define PCACHE_NO_ORPHAN 1
 #endif
 
+/* ===========================================================================
+ * READAHEAD: ONE DEVICE COMMAND FOR A RUN OF PAGES, AND THE THREE BOUNDS ON K
+ *
+ * MEASURED, cold-loading a 355.5 MiB model through file-backed mmap (DEVICE,
+ * 2026-08-20): 91,054 file faults, 0 hits, 91,054 misses, 868 seconds. Every
+ * 4 KiB page fetched alone, ~9.5 ms each. Warm, the same load is 0.040 s. The
+ * block layer underneath has coalesced since f8d2ca4 -- a 900-block read costs
+ * TEN device commands, not 902 (test-bulkread) -- and this cache never asked
+ * it for more than one page, so the coalescing had nothing to coalesce.
+ *
+ * THE POLICY, and every clause of it is a bound rather than a preference:
+ *
+ *   TRIGGER. A fault at page N prefetches only when the previous request on
+ *   this (dev, ino) was for page N-1. Two consecutive pages is the whole
+ *   signal -- a first touch never prefetches, a random touch never prefetches,
+ *   and a backwards walk never prefetches (nothing below coalesces backwards
+ *   either, so there would be no command to save).
+ *
+ *   THE TRAIL IS KEPT BY HITS AS WELL AS MISSES, which is what makes one
+ *   window survive a whole file. Once N..N+K are resident, faults N+1..N+K are
+ *   hits; if only misses advanced the trail, the miss at N+K+1 would look
+ *   random and the window would collapse to nothing on every batch.
+ *
+ *   K DOUBLES, PCACHE_RA_MIN -> PCACHE_RA_MAX, and resets to 0 on any request
+ *   that is not sequential. Doubling is what keeps a short sequential burst
+ *   cheap (the first batch is 5 pages, not 33) while a real streaming read
+ *   reaches the cap in four batches.
+ *
+ * WHY 4 AND 32 -- three independent ceilings, and the smallest wins:
+ *
+ *   1. THE FILESYSTEM'S RUN. c/fs/logitfs.c's READ_RUN is 128 blocks = 512 KiB
+ *      per bread_run, and bcache.h measures a device round trip at ~80 us for
+ *      8 sectors and ~120 us for 255 -- so the fixed cost dominates and a
+ *      bigger request is nearly free until the run splits. 33 pages is a
+ *      quarter of that run, so a batch is ONE command whenever the frames are
+ *      physically adjacent, with room for the read to sit inside a run the
+ *      filesystem may already have partly split.
+ *
+ *   2. LATENCY, because this prefetch is SYNCHRONOUS inside the fault. The
+ *      faulting thread pays for all K+1 pages. 132 KiB at ~150 us against
+ *      4 KiB at ~80 us is 33x the data for 2x the wait; at 128 pages it would
+ *      be four commands and four times the stall for a page nobody asked for.
+ *      An asynchronous prefetch would lift this bound and is NOT what this is
+ *      -- c/kernel/core/work.c exists and the wire to it does not.
+ *
+ *   3. WASTE. A pattern that looks sequential twice and then jumps pulls K
+ *      pages nobody reads. At the cap that is 128 KiB, and every one of those
+ *      pages is rmap 0 / refcount 1 -- the cheapest frame on the machine for
+ *      reclaim to take back (see THE REFCOUNT DECISION above; this is exactly
+ *      the "cached but unmapped" page argued there, and it is EVICTABLE, not
+ *      pinned). Waste here costs a sweep, never a leak.
+ *
+ * WHAT IT MAY NOT DO. Prefetch never evicts: it takes entries from the free
+ * list only, never through evict_one_locked(), so a speculative page can never
+ * displace a page somebody actually asked for. It never takes the machine
+ * below reclaim's low watermark. If either bound bites, the batch SHRINKS --
+ * "prefetch less" is always available and is always the right answer, because
+ * the demand page is the first page of the batch and is served either way.
+ *
+ * NO NEW TABLE. The two words of sequence state live in the file entry that
+ * already exists (struct pfile in pcache.c). A file with no entry cannot
+ * prefetch, which is the correct degradation and costs nothing to arrange.
+ *
+ * THE NEGATIVE CONTROLS, both watched failing:
+ *   -DPCACHE_NO_READAHEAD  the trigger returns 1 always: the code exactly as
+ *                          it shipped. The sequential case must go back to one
+ *                          miss per page.
+ *   -DPCACHE_RA_ALWAYS     the PLAUSIBLE WRONG VERSION -- prefetch on every
+ *                          miss, without the sequential test. It passes the
+ *                          sequential case (that is why it is plausible) and
+ *                          must fail the random one, where it reads K pages
+ *                          nobody will look at for every page somebody does.
+ * ======================================================================== */
+#define PCACHE_RA_MIN 4u
+#define PCACHE_RA_MAX 32u
+
 /* Files above this are read STRAIGHT THROUGH, not installed. The argument is
  * bcache.c's, one layer up and for the same reason: a 2.2 MiB font or a 1 MiB
  * .aex read once, sequentially, and never read again would evict everything
@@ -322,7 +398,22 @@ long pcache_pread(const char *path, void *buf, uint64_t off, uint64_t len);
  *
  *   stat  -- path -> (dev, ino, size). The identity, and the size.
  *   read  -- path, byte offset, destination, length -> bytes read, or < 0.
- *            Always page aligned and at most 4096 bytes from here.
+ *            Always page aligned. AT MOST (PCACHE_RA_MAX + 1) PAGES, and it
+ *            used to say "at most 4096 bytes" -- readahead is the caller that
+ *            widened it, and the widening is the whole mechanism: one call for
+ *            a run of pages is what reaches the block layer's coalescing, and
+ *            a loop of one-page calls is what does not.
+ *
+ *            A SHORT RETURN IS LEGAL AND IS NOT AN ERROR. Only the pages fully
+ *            covered by the returned length are installed (plus the file's own
+ *            tail page, which is legitimately shorter than 4096); the rest are
+ *            dropped and the window resets. So a backend that can only ever
+ *            serve one page still works -- it degrades to exactly the old
+ *            behaviour, having wasted the frames of one batch. That is not
+ *            hypothetical: three of this tree's host-test backends clamp at
+ *            4096 (tests/unit/mm_{forkfile,protect,reclaim}_test.c), which is
+ *            why the short-read path is written and counted rather than
+ *            assumed away.
  *   forget -- OPTIONAL (may be NULL). "this file's bytes are no longer what
  *            you last read." It exists because a backend that cannot pread
  *            has to hold a copy of the file to serve one page of it (see
@@ -355,6 +446,18 @@ uint64_t pcache_uncached(void);     /* THE FAILURE THAT USED TO BE INVISIBLE: a 
                                      * cannot happen without a bug, and pcache.c for
                                      * what it costs when it does. */
 uint64_t pcache_slots(void);        /* the pool's size, decided at init from RAM */
+
+/* --- readahead. The point of the whole thing is a RATIO, so both halves of
+ * every one of them is here rather than a single "it worked" flag. --------- */
+uint64_t pcache_ra_runs(void);      /* batches issued (== sequential misses served) */
+uint64_t pcache_ra_pages(void);     /* pages installed ahead of anyone asking */
+uint64_t pcache_ra_reads(void);     /* backend read calls those batches cost.
+                                     * pages/reads is the coalescing factor: 1
+                                     * means the frames came back scattered and
+                                     * the block layer had nothing to merge. */
+uint64_t pcache_ra_short(void);     /* batches whose backend read came back short --
+                                     * see struct pcache_ops. Nonzero on the real
+                                     * filesystem means vfs_pread stopped early. */
 uint64_t pcache_invalidated(void);  /* pages a write threw away */
 uint64_t pcache_shared(void);       /* pages currently mapped more than once */
 uint64_t pcache_bypassed(void);     /* whole-file reads too big to install */

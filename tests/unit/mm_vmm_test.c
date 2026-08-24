@@ -47,7 +47,7 @@
  * shadowing it with a macro is a convenience for the common shape, not a way to
  * hide a parameter. */
 #define mm_fault_classify(cr2, err, p, cow, u, prot) \
-        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), 0, 0)
+        mm_fault_classify((cr2), (err), (p), (cow), (u), (prot), 0, 0, 0)
 
 #define PRESENT  0x1
 #define WRITABLE 0x2

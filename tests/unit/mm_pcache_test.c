@@ -38,6 +38,12 @@
 #include "mm_common.h"
 #include "pmm.h"
 #include "pcache.h"
+/* The readahead phases at the bottom ask reclaim to take a prefetched page and
+ * then audit the reverse map, because "is a prefetched page evictable" is a
+ * question about all three structures at once and cannot be answered from
+ * inside pcache.c alone. Both files are already in mm_run.sh's MMSRC. */
+#include "reclaim.h"
+#include "rmap.h"
 
 static void phase(const char *s) { printf("-- %s\n", s); }
 
@@ -599,6 +605,257 @@ static void t_idle_slot_eviction(void)
     mm_eqi(pcache_audit(), 0, "final audit for this phase");
 }
 
+/* ========================================================================
+ * READAHEAD (pcache.h's READAHEAD block is the design).
+ *
+ * THE MEASUREMENT THIS EXISTS TO MAKE is a COUNT, not a behaviour: every page
+ * of a sequential walk was already served correctly before readahead existed,
+ * one device read at a time, and every assertion in this file passed. So a
+ * test that asks "did the pages arrive and do they hold the right bytes"
+ * cannot see this feature at all -- which is exactly why -DPCACHE_NO_READAHEAD
+ * is a control worth having: it must move a NUMBER, and nothing else.
+ *
+ * The bytes are still checked, on every page, because the one way readahead
+ * can be catastrophically wrong is to install page N+3's bytes under index
+ * N+2 -- and pfpat() is a function of (file, offset), so a wrong-offset
+ * install is a byte mismatch and not a silent success.
+ * ==================================================================== */
+#define RA_SEQ_PAGES 1000
+
+/* The bound on misses, DERIVED from the window constants rather than written
+ * down. Batch b costs exactly one miss and brings in K_b + 1 pages, with K_b
+ * running MIN, 2*MIN, ... MAX and staying at MAX; page 0 is a miss on its own
+ * because there is nothing for it to be sequential with. If PCACHE_RA_MIN or
+ * PCACHE_RA_MAX changes, this follows -- a literal 34 here would become a
+ * number nobody could re-derive the day it started failing. */
+static long long ra_miss_bound(long long pages)
+{
+    long long covered = 1, bound = 1;           /* page 0, on its own */
+    for (unsigned k = PCACHE_RA_MIN; k < PCACHE_RA_MAX; k *= 2) {
+        covered += (long long)k + 1;
+        bound++;
+    }
+    if (pages > covered)
+        bound += (pages - covered + PCACHE_RA_MAX) / ((long long)PCACHE_RA_MAX + 1);
+    return bound;
+}
+
+static void t_readahead_sequential(void)
+{
+    phase("a sequential walk of 1,000 pages costs one miss per BATCH, not one per page");
+
+    int fid = sim_add_file("/data/model.bin", (uint64_t)RA_SEQ_PAGES * 4096);
+    int fh = pcache_file_open("/data/model.bin");
+    mm_ok(fh >= 0, "opened the 1,000-page file");
+
+    uint64_t miss0 = pcache_misses(), hit0 = pcache_hits();
+    uint64_t run0 = pcache_ra_runs(), page0 = pcache_ra_pages();
+    uint64_t read0 = pcache_ra_reads(), short0 = pcache_ra_short();
+
+    int bad = -1, unserved = -1;
+    for (int i = 0; i < RA_SEQ_PAGES; i++) {
+        uint64_t f = pcache_get(fh, (uint64_t)i);
+        /* One assertion for the loop, not 1,000 that can only agree with each
+         * other -- t_pool_bounded's argument, and the same reason. */
+        if (!f) { if (unserved < 0) unserved = i; continue; }
+        if (bad < 0 && bad_byte(f, fid, i, 4096) >= 0) bad = i;
+    }
+    mm_eqf(unserved, -1, "every one of the %d pages was served", RA_SEQ_PAGES);
+    mm_eqf(bad, -1, "and every page holds ITS OWN bytes -- a prefetched page "
+                    "installed under the wrong index would read as the wrong file offset");
+
+    long long misses = (long long)(pcache_misses() - miss0);
+    long long hits   = (long long)(pcache_hits() - hit0);
+    long long runs   = (long long)(pcache_ra_runs() - run0);
+    long long ahead  = (long long)(pcache_ra_pages() - page0);
+    long long reads  = (long long)(pcache_ra_reads() - read0);
+    long long bound  = ra_miss_bound(RA_SEQ_PAGES);
+
+    printf("   [ra] %lld pages: %lld misses (bound %lld), %lld hits; "
+           "%lld batches, %lld pages ahead, %lld backend reads "
+           "(%lld pages/read), %lld short\n",
+           (long long)RA_SEQ_PAGES, misses, bound, hits, runs, ahead, reads,
+           reads ? (ahead + runs) / reads : 0,
+           (long long)(pcache_ra_short() - short0));
+
+    /* THE GATE. Without readahead this is 1,000. */
+    mm_ok(misses <= bound,
+          "%lld misses for %lld pages, within the bound the window constants "
+          "give (%lld) -- one device round trip per batch, not per page",
+          misses, (long long)RA_SEQ_PAGES, bound);
+    mm_eqf(misses + hits, RA_SEQ_PAGES,
+           "every request was one or the other: %lld hits + %lld misses", hits, misses);
+    mm_ok(hits > RA_SEQ_PAGES * 9 / 10,
+          "%lld of %lld requests were served from a page fetched before anyone "
+          "asked for it", hits, (long long)RA_SEQ_PAGES);
+    mm_eqf(runs, misses - 1,
+           "one batch per miss after the first: page 0 has nothing to be "
+           "sequential with, so it is the one miss that fetches alone");
+    mm_eqf(ahead, RA_SEQ_PAGES - misses,
+           "and the pages fetched ahead are exactly the ones that became hits");
+
+    /* THE COALESCING CLAIM, and it is the reason the batch is one backend call
+     * per CONTIGUOUS RUN of frames rather than one per page. The block layer
+     * merges a contiguous byte range into one device command (test-bulkread:
+     * 900 blocks, 10 commands); it cannot merge anything if this cache asks
+     * for 4096 bytes at a time. `reads` is what it was asked. */
+    mm_ok(reads >= runs, "at least one backend read per batch (%lld/%lld)", reads, runs);
+    mm_ok(reads < ahead / 2,
+          "and far fewer reads (%lld) than pages fetched (%lld) -- the frames "
+          "came back adjacent and one call filled a run of them",
+          reads, ahead);
+
+    mm_eqi(pcache_audit(), 0, "audit clean after 1,000 prefetched pages");
+
+    /* Put the pool back roughly as it was: the phases after this one measure
+     * the pool's own capacity, and a thousand of my pages sitting in it would
+     * make their numbers mine. */
+    pcache_file_put(fh);
+    pcache_invalidate_path("/data/model.bin");
+}
+
+static void t_readahead_random(void)
+{
+    phase("a random walk does NOT prefetch -- the trigger is two consecutive pages and nothing else");
+
+#define RA_RND_PAGES  2000      /* the file */
+#define RA_RND_TOUCH  200       /* what this walk actually asks for */
+#define RA_RND_STRIDE 397
+    /* THE FILE IS TEN TIMES THE WALK, and that is the whole design of this
+     * phase rather than an arbitrary size. On a file the same size as the walk,
+     * a readahead that ignores the access pattern reads the file once and comes
+     * out looking GOOD -- 31 misses instead of 200, measured, with
+     * -DPCACHE_RA_ALWAYS. The waste only becomes visible when most of what it
+     * prefetches is never asked for, which is the real shape: the model this
+     * line exists for is 91,054 pages and no walk touches all of them.
+     *
+     * gcd(397, 2000) == 1, so the 200 touches are distinct pages, and the step
+     * between consecutive visits is +397 or -1603 -- never +1, in either
+     * direction, including at the wrap. A shuffle would have been worse: it can
+     * produce a consecutive pair by chance, and then this phase fails once in a
+     * while for a reason that is not a defect. */
+    int fid = sim_add_file("/data/scatter.bin", (uint64_t)RA_RND_PAGES * 4096);
+    int fh = pcache_file_open("/data/scatter.bin");
+    mm_ok(fh >= 0, "opened the %d-page file", RA_RND_PAGES);
+
+    uint64_t miss0 = pcache_misses(), run0 = pcache_ra_runs(), page0 = pcache_ra_pages();
+    int bad = -1, unserved = -1, consecutive = 0, prev = -1;
+    for (int i = 0; i < RA_RND_TOUCH; i++) {
+        int p = (i * RA_RND_STRIDE) % RA_RND_PAGES;
+        if (prev >= 0 && p == prev + 1) consecutive++;
+        prev = p;
+        uint64_t f = pcache_get(fh, (uint64_t)p);
+        if (!f) { if (unserved < 0) unserved = p; continue; }
+        if (bad < 0 && bad_byte(f, fid, p, 4096) >= 0) bad = p;
+    }
+    mm_eqf(unserved, -1, "every page was served");
+    mm_eqf(bad, -1, "and holds its own bytes");
+    /* The control on the pattern itself: if this were ever nonzero the phase
+     * would be measuring a partly-sequential walk and its verdict would mean
+     * nothing. It is checked rather than argued because the stride is arithmetic
+     * somebody could change. */
+    mm_eqi(consecutive, 0, "the access pattern contains no consecutive pair at all");
+
+    long long misses = (long long)(pcache_misses() - miss0);
+    printf("   [ra] random: %d touches into a %d-page file: %lld misses, "
+           "%lld batches, %lld pages ahead\n",
+           RA_RND_TOUCH, RA_RND_PAGES, misses,
+           (long long)(pcache_ra_runs() - run0),
+           (long long)(pcache_ra_pages() - page0));
+
+    /* THE GATE, and the one -DPCACHE_RA_ALWAYS is required to redden: a
+     * readahead that skips the sequential test looks exactly as good on the
+     * phase above and spends K frames and K pages of device time here for
+     * every single page anybody wanted. */
+    mm_eqi((long long)(pcache_ra_runs() - run0), 0,
+           "not one readahead batch was issued");
+    mm_eqi((long long)(pcache_ra_pages() - page0), 0,
+           "and not one page was fetched ahead");
+    mm_eqf(misses, RA_RND_TOUCH,
+           "one miss per page ASKED FOR, which is correct here: nothing about "
+           "this pattern predicts the next page, so a page fetched ahead is a "
+           "page read for nobody");
+
+    mm_eqi(pcache_audit(), 0, "audit clean");
+    pcache_file_put(fh);
+    pcache_invalidate_path("/data/scatter.bin");
+}
+
+/* THE INVARIANT, which is the first question readahead has to answer: a page
+ * that is in the cache and mapped by NOBODY has rmap_count 0, pcache_holds 1
+ * and pmm_refcount 1. reclaim.h's rule is
+ *
+ *      evict only if   rmap_count(f) + pcache_holds(f) == pmm_refcount(f)
+ *
+ * so 0 + 1 == 1 and the page IS evictable -- it is exactly the "cached but
+ * unmapped" page pcache.h calls the cheapest frame on the machine, and
+ * try_drop_cached() already handles n == 0 by name. A readahead that
+ * manufactured UNEVICTABLE pages would be a leak with a good name, and the
+ * only way to know which one this is, is to build the state and then make
+ * reclaim take it. */
+static void t_readahead_evictable(void)
+{
+    phase("a prefetched page nobody maps is evictable -- the three numbers agree, and reclaim takes it");
+
+    int fid = sim_add_file("/data/ahead.bin", 64ull * 4096);
+    int fh = pcache_file_open("/data/ahead.bin");
+    mm_ok(fh >= 0, "opened it");
+
+    uint64_t run0 = pcache_ra_runs();
+    mm_ok(pcache_get(fh, 0) != 0, "page 0: a first touch, which never prefetches");
+    mm_eqi((long long)(pcache_ra_runs() - run0), 0, "...and did not");
+    mm_ok(pcache_get(fh, 1) != 0, "page 1: the second consecutive page fires the first batch");
+    mm_eqi((long long)(pcache_ra_runs() - run0), 1, "...exactly one batch");
+
+    /* Page 3 was fetched by that batch and NOBODY has asked for it. Reading it
+     * through pcache_get() here would make it a hit and prove nothing, so the
+     * frame is found through the cache's own frame table instead. */
+    uint64_t f3 = 0;
+    {
+        uint64_t before = pcache_hits();
+        f3 = pcache_get(fh, 3);
+        mm_ok(pcache_hits() > before,
+              "page 3 is resident WITHOUT anyone having asked for it -- it was prefetched");
+    }
+    mm_ok(f3 != 0 && pcache_holds(f3), "the cache holds it");
+    mm_eqf(bad_byte(f3, fid, 3, 4096), -1, "with page 3's real bytes");
+
+    /* THE THREE NUMBERS, each from a structure maintained independently of the
+     * other two. This is the whole safety argument, asserted rather than
+     * assumed. */
+    mm_eqi((long long)rmap_count(f3), 0, "rmap_count is 0: no PTE anywhere maps it");
+    mm_eqi((long long)(pcache_holds(f3) ? 1 : 0), 1, "pcache_holds is 1: the cache's own reference");
+    mm_eqi((long long)pmm_refcount(f3), 1, "pmm_refcount is 1: and there is no third holder");
+    mm_eqi((long long)(rmap_count(f3) + (pcache_holds(f3) ? 1u : 0u)),
+           (long long)pmm_refcount(f3),
+           "so rmap_count + pcache_holds == pmm_refcount: reclaim MAY take it");
+    mm_eqi((long long)pmm_pincount(f3), 0,
+           "and nothing pinned it -- readahead takes no pin, deliberately: a pin "
+           "here would make every speculative page permanently unevictable");
+
+    /* Now make reclaim prove it. `want` is larger than the machine, so the hand
+     * sweeps everything once and every eligible page goes -- deterministic,
+     * unlike asking for one frame and hoping the hand is near this one. */
+    uint64_t dc0 = reclaim_dropped_cache(), dz0 = reclaim_dropped_zero();
+    uint64_t freed = reclaim_frames(pmm_total_frames());
+    mm_ok(freed > 0, "reclaim freed %llu frames", (unsigned long long)freed);
+    mm_ok(reclaim_dropped_cache() > dc0,
+          "%llu of them through the CACHE-drop tier",
+          (unsigned long long)(reclaim_dropped_cache() - dc0));
+    mm_eqi((long long)(reclaim_dropped_zero() - dz0), 0,
+           "and none through the zero-page tier -- a file page is not an anonymous one");
+    mm_ok(!pcache_holds(f3), "the prefetched page is gone: it was never a pin");
+    mm_eqi((long long)pmm_refcount(f3), 0,
+           "and its frame is back on the allocator, not dangling");
+
+    mm_eqi(rmap_audit(), 0, "reverse map clean after prefetch + forced reclaim");
+    mm_eqi(pcache_audit(), 0, "page cache clean: no entry names a freed frame");
+    mm_eqi((long long)pmm_bugs(), 0, "no allocator invariant was violated");
+
+    pcache_file_put(fh);
+    pcache_invalidate_path("/data/ahead.bin");
+}
+
 /* Every frame t_pool_bounded installed, so t_pool_full_of_mapped can take a
  * reference on the ones still resident. Sized from the 16 MiB simulated
  * machine below, not from the pool: pcache_slots() is not a compile-time
@@ -790,6 +1047,12 @@ int main(void)
     t_stream_bypass();
     t_file_ref_put_idles();
     t_idle_slot_eviction();
+    /* BEFORE the two pool phases, and it matters: those measure the pool's own
+     * capacity, and a thousand pages of mine sitting in it would make their
+     * numbers mine. Each readahead phase hands its pages back on the way out. */
+    t_readahead_sequential();
+    t_readahead_random();
+    t_readahead_evictable();
     t_pool_bounded();
     t_pool_full_of_mapped();    /* must run AFTER it: it needs a full pool */
 

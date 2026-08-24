@@ -97,6 +97,11 @@ run_negative mm_forkfile_test VMM_FORK_REASSEMBLE \
 run_negative mm_shm_test SHM_FORK_COPY \
     "fork privatises a MAP_SHARED page instead of handing the child the same memory -- which is exactly what adding shared memory and not touching vmm_clone_user looks like. Nothing else breaks: the child gets the right bytes, the right permissions and a balanced refcount, rmap_audit stays clean, and both address spaces are well formed. The two processes simply stop hearing from each other on the first write, with no error anywhere. Only an assertion on FRAME IDENTITY across the fork can see it"
 
+run_negative mm_pcache_test PCACHE_NO_READAHEAD \
+    "the cache never prefetches -- the sequential walk of 1,000 pages goes back to 1,000 misses and 0 hits, which is the code exactly as it shipped. It is a COUNT and nothing else: every page still arrives, every byte is still right, and every other assertion in the suite still passes, so only a test that measures device round trips can see this feature at all"
+run_negative mm_pcache_test PCACHE_RA_ALWAYS \
+    "readahead WITHOUT the sequential test -- the plausible wrong version, not the feature removed. It makes the sequential case look exactly as good (33 batches, same coalescing), which is why somebody would ship it; what it does is fetch 1,842 pages for the 200 a random walk asked for. Note that it also makes the random walk's MISS COUNT look better (130 instead of 200), so the naive metric ENDORSES it -- only an assertion on batches issued can tell the two apart"
+
 run_negative mm_pcache_test PCACHE_PER_OPEN \
     "keyed per-open instead of per-inode, two opens of the same file stop sharing a page and a page dropped by reclaim comes back in a DIFFERENT frame than a second handle still expects -- the exact bug the (dev,ino) key exists to prevent"
 

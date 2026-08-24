@@ -50,10 +50,16 @@ $(BUILD)/arena_page_mem: tests/unit/arena_page_mem.c $(BUILD)/libcss_host.a \
 	    -o $@ tests/unit/arena_page_mem.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
 	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
-	    $(HTML_PARSER_SRC) c/apps/libc/src/malloc.c $(BUILD)/libcss_host.a
+	    $(HTML_PARSER_SRC) c/apps/libc/src/malloc.c $(BUILD)/libcss_host.a -lm
 
 bench-arena: $(BUILD)/arena_page_mem
-	@$(BUILD)/arena_page_mem $(ARENA_PAGES)
+	@if [ -z "$(strip $(ARENA_PAGES))" ]; then \
+	    echo "bench-arena: no corpus under tests/fixtures/cssweb -- nothing to measure."; \
+	    echo "bench-arena: this is not a failure. Re-capture with (see tests/fixtures/cssweb/README):"; \
+	    echo "  ./tests/fixtures/cssweb/capture.py <name> <url>"; \
+	 else \
+	    $(BUILD)/arena_page_mem $(ARENA_PAGES); \
+	 fi
 
 # --- bench-arena-js: can the heap hold a WHOLE web application? -------------
 # js_bench compiles one bundle at a time and frees the runtime between fixtures,
