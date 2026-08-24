@@ -191,7 +191,14 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # kernel link, where it failed with six undefined symbols. Its consumers link it
 # with LIBC_OBJS, like the video decoder does.
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
-             c/net/http/hpack.c c/net/http/http2.c
+             c/net/http/hpack.c c/net/http/http2.c \
+             $(wildcard c/net/ssh/*.c)
+# c/net/ssh is a PROTOCOL and lives with the other protocols (c/net/tls is the
+# precedent: crypto holds primitives, net holds what is built on them). It is
+# written freestanding so the kernel COULD link it -- nothing in the kernel
+# calls it, and sshd is a ring-3 program, so it is filtered out exactly the way
+# the browser's HTTP is. A wildcard rather than a file list, because a new
+# ssh_*.c that silently rejoined the kernel is the c/lib/nn mistake again.
 #
 # c/lib/gfx -- Open Logit -- USED to be excluded here, and the reason it gave
 # was right about the risk and wrong about the caller. It said: "Nothing in the
