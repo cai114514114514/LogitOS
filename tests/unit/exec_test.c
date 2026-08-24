@@ -721,6 +721,70 @@ static void container(void)
     aex_case(m_nocrc,       AEX_E_NOCRC,    "a v2 file with no integrity record");
     aex_case(m_unknown_tag, AEX_OK,         "an unknown metadata tag is ignored, not refused");
 
+    /* A BARE ELF: the reference file's own body, handed over with no container
+     * around it -- what tcc, ld and every toolchain a port brings will produce.
+     * Accepted as a synthesised view (aex.h), with the 64-byte header verdict
+     * applied up front and NO integrity record, reported as such. The
+     * refusal cases are what tests/tcc.mk's control (-DAEX_NEGCTL_NOHDR)
+     * must turn red. */
+    {
+        struct aex_info v;
+        space_quiet(1);
+        int r = aex_parse(g_v2, (uint64_t)g_v2n, &v);
+        space_quiet(0);
+        if (r == AEX_OK) {
+            uint64_t en = v.elf_size;
+            uint8_t *c = malloc((size_t)en);
+            memcpy(c, v.elf, (size_t)en);
+            struct aex_info b;
+            uint32_t before = aex_bare_images();
+            space_quiet(1);
+            int rb = aex_parse(c, en, &b);
+            space_quiet(0);
+            ck(rb == AEX_OK, "a bare ELF (the reference file's body, no container) is accepted");
+            ck(b.version == AEX_VERSION_BARE && b.hdr_size == 0 &&
+               b.elf_size == (uint32_t)en && b.elf == c,
+               "... as the view: body at offset 0, length = file length, no container version");
+            ck(b.crc32 == 0 && b.stack_pages == 0,
+               "... with NO integrity record and no stack hint -- reported, not faked");
+            ck(aex_bare_images() == before + 1, "... and COUNTED as a bare image");
+            ck(strcmp(b.name, "(elf)") == 0, "... named '(elf)' when no path is known");
+            char nm[32], ex[8];
+            ck(aex_info(c, nm, ex) == 0 && strcmp(nm, "(elf)") == 0,
+               "aex_info() reaches the same verdict from the first 64 bytes");
+
+            uint64_t entry0; memcpy(&entry0, c + 24, 8);
+            uint64_t bad = 0x4000b0;                    /* a stock toolchain's default */
+            memcpy(c + 24, &bad, 8);
+            space_quiet(1); space_msgs_reset();
+            rb = aex_parse(c, en, 0);
+            int msgs = space_msgs();
+            space_quiet(0);
+            ck(rb == AEX_E_BARE, "a bare ELF whose entry is 0x4000b0 (shared kernel low memory) is refused");
+            ck(msgs >= 2, "... out loud, by the loader ([elf]) AND the container ([aex])");
+            space_quiet(1);
+            int ri = aex_info(c, nm, ex);
+            space_quiet(0);
+            ck(ri == -1, "... and by aex_info(), the question exec.c asks before tearing the caller down");
+            memcpy(c + 24, &entry0, 8);
+
+            uint16_t m0; memcpy(&m0, c + 18, 2);
+            uint16_t m386 = 3;
+            memcpy(c + 18, &m386, 2);
+            space_quiet(1);
+            rb = aex_parse(c, en, 0);
+            space_quiet(0);
+            ck(rb == AEX_E_BARE, "a bare ELF for another machine (EM_386) is refused");
+            memcpy(c + 18, &m0, 2);
+
+            space_quiet(1);
+            rb = aex_parse(c, 63, 0);
+            space_quiet(0);
+            ck(rb == AEX_E_SHORT, "63 bytes of ELF is shorter than any header this loader reads");
+            free(c);
+        }
+    }
+
     /* THE NEGATIVE CONTROL FOR THE FORMAT CHANGE. An old-format file must be
      * refused or migrated DELIBERATELY, never silently mis-loaded. It is
      * migrated: accepted with v1 rules, and the loader says on the log that it

@@ -326,4 +326,28 @@ uint64_t elf_load(void *image, uint64_t image_size, uint64_t *out_top);
 #define USER_VA_BASE 0x40000000ull
 #define USER_VA_END  0x80000000ull
 
+/* THE ONE PREDICATE for "an entry point this machine can jump to": inside the
+ * private user region, with 64 MiB of headroom above it, because
+ * setup_cli_stack() maps the CLI stack at (entry & ~0xFFFFF) + 0x4000000.
+ * Subtraction form, so a huge e_entry cannot wrap the comparison.
+ *
+ * An inline in the header rather than a static in elf.c because it now has
+ * two callers that must agree: the loader, and the container's 64-byte
+ * pre-check (aex.c) that runs BEFORE exec.c tears down the caller's address
+ * space. A second copy of the constant in aex.c is the thing that drifts. */
+static inline int elf_entry_in_user_region(uint64_t e)
+{
+    return e >= USER_VA_BASE && e <= USER_VA_END - 0x4000000;
+}
+
+/* The identification half of the loader's header matrix -- magic, class,
+ * byte order, EI_VERSION/OSABI/ABIVERSION, ET_EXEC, EM_X86_64, and the entry
+ * predicate above -- over 64 bytes and nothing else. ELF_OK, or the ELF_E_*
+ * the loader itself would have returned, printed the same way. The loader
+ * calls it first; aex.c calls it on a bare ELF's first 64 bytes so that a
+ * binary linked at 0x400000 is refused by name while exec.c can still return
+ * -1 to the caller instead of killing it. One function, so the two cannot
+ * disagree about what "a runnable header" means. */
+int elf_check_header64(const void *hdr64);
+
 #endif /* LOGIT_ELF_H */

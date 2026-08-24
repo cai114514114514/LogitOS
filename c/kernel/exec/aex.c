@@ -43,6 +43,110 @@ static uint32_t g_v1_images;
 
 uint32_t aex_v1_images(void) { return g_v1_images; }
 
+/* ---- a bare ELF -----------------------------------------------------------
+ *
+ * THE KERNEL EXECUTED AEX1 ONLY, and that was a wall in front of every
+ * toolchain: tcc emits a bare ELF, ld emits a bare ELF, and so will whatever a
+ * port brings next. So \x7fELF in the first four bytes is accepted here as a
+ * SYNTHESISED container view -- body at offset 0, body length = file length,
+ * stack hint 0 (the launcher's default), name = the file's basename -- and
+ * handed to the same elf.c loader an AEX's body goes to.
+ *
+ * WHAT IT DOES NOT GET, said out loud: an integrity record. The AEX CRC-32
+ * covers the body; a bare ELF carries none, so there is nothing to compare
+ * and `crc32` is reported as 0. The rejected alternative was to compute a CRC
+ * over the file and compare it with itself, which passes every time and
+ * reads, in a log, exactly like a check that ran. A missing check that says
+ * it is missing (the once-per-boot line below, and the counter a test can
+ * read) is the honest shape; the v1 wrapper is accepted the same way.
+ *
+ * WHAT IT DOES GET, and why it happens here rather than in elf.c: the 64-byte
+ * header verdict (elf_check_header64 -- class, machine, ET_EXEC, entry point
+ * in the private user region) runs on the SAME 64 bytes aex_info() reads for
+ * an AEX, which exec.c asks for BEFORE it tears down the caller's address
+ * space. So a binary linked at a stock toolchain's 0x400000 -- shared kernel
+ * low memory, the commonest wrong binary this machine will ever be handed --
+ * is refused by name and the shell gets -1, where elf.c's own identical check
+ * would fire after vmm_free_user() and kill the child with 127 and no
+ * message a user would connect to a link address. The kernel is the last
+ * line that can name that case, so it names it. */
+static int g_said_bare;
+static uint32_t g_bare_images;
+
+uint32_t aex_bare_images(void) { return g_bare_images; }
+
+static int is_elf_magic(const char *m)
+{
+    return m[0] == 0x7F && m[1] == 'E' && m[2] == 'L' && m[3] == 'F';
+}
+
+/* A bare ELF has no display name, so it is the file's basename -- which only
+ * the path-shaped callers have. The memory-shaped ones (wm.c's launch buffer,
+ * the host test) get "(elf)": a name that says what it is rather than an
+ * empty string that looks like a field nobody filled. */
+static void bare_name(const char *path, char *out)
+{
+    const char *b = "(elf)";
+    if (path && path[0]) {
+        b = path;
+        for (const char *q = path; *q; q++)
+            if (*q == '/' && q[1]) b = q + 1;
+    }
+    copy_field(out, b, 32);
+}
+
+/* The 64-byte verdict. `hdr64` is the file's first 64 bytes, which for an ELF
+ * is exactly the ELF64 header (the two formats' fixed headers are both 64
+ * bytes -- a coincidence, and a convenient one: every reader here already
+ * reads that much before deciding anything). */
+static int bare_elf_check(const void *hdr64)
+{
+#ifdef AEX_NEGCTL_NOHDR
+    /* THE NEGATIVE CONTROL (tests/tcc.mk): the plausible wrong version --
+     * "elf.c checks the header anyway, so the container need not look". True
+     * for the load, false for the property this check exists for: with it
+     * gone, a 0x400000 binary is accepted HERE, exec.c tears the caller down,
+     * and the refusal comes from elf.c as a dead child. The host battery's
+     * bare-ELF refusal cases must FAIL against this build. */
+    (void)hdr64;
+    return AEX_OK;
+#else
+    int erc = elf_check_header64(hdr64);
+    if (erc != ELF_OK) {
+        uint64_t entry;
+        for (int i = 0; i < 8; i++) ((uint8_t *)&entry)[i] = ((const uint8_t *)hdr64)[24 + i];
+        return reject(AEX_E_BARE, "a bare ELF this machine cannot run -- see the "
+                      "[elf] line above; a LogitOS program links at 0x50000000",
+                      entry, (uint64_t)(int64_t)erc);
+    }
+    return AEX_OK;
+#endif
+}
+
+/* Fill the synthesised view. `file_size` is the body length; the u32 field it
+ * lands in is the same one a v2 header's elf_size uses, so the same cap. */
+static int bare_elf_fill(struct aex_info *out, const char *path, uint64_t file_size)
+{
+    if (file_size > 0xFFFFFFFFull)
+        return reject(AEX_E_ELFSIZE, "a bare ELF larger than elf_size can describe",
+                      file_size, 0xFFFFFFFFull);
+    out->version     = AEX_VERSION_BARE;
+    out->flags       = 0;                /* the file does not say GUI or CLI */
+    out->hdr_size    = 0;                /* body at offset 0 -- page-aligned,
+                                          * so the file-backed text path in
+                                          * elf.c applies to it unchanged */
+    out->stack_pages = 0;                /* the launcher's default */
+    out->arch        = AEX_ARCH_X86_64;  /* elf_check_header64 said EM_X86_64 */
+    out->abi         = AEX_ABI_LOGIT1;   /* nothing in an ELF says otherwise */
+    out->category    = AEX_CAT_NONE;
+    out->sort        = 0;
+    out->elf_size    = (uint32_t)file_size;
+    out->crc32       = 0;                /* NO integrity record: see above */
+    bare_name(path, out->name);
+    out->ext[0] = 0;
+    return AEX_OK;
+}
+
 /* THE CONTAINER READER, over the same source the ELF loader uses.
  *
  * `rd->mem` non-NULL is the old shape and behaves exactly as it did, down to
@@ -69,6 +173,33 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
 
     if (file_size < AEX_HDR_SIZE)
         return reject(AEX_E_SHORT, "file shorter than the AEX header", file_size, AEX_HDR_SIZE);
+
+    /* ---- a bare ELF: the synthesised view, argued above bare_elf_check ---- */
+    if (is_elf_magic(h->magic)) {
+        int rc = bare_elf_check(h);
+        if (rc != AEX_OK) return rc;
+        rc = bare_elf_fill(out, rd->path, file_size);
+        if (rc != AEX_OK) return rc;
+        out->elf = p;                    /* offset 0; NULL on the streaming path */
+        g_bare_images++;
+        if (!g_said_bare) {
+            /* Inside aex_load_path's timed region, and it shows: the FIRST
+             * bare-ELF load of a boot reports ~200 Mcyc of "container" time
+             * (195, 209 and 276 Mcyc on three boots, 2026-08-21) that is this
+             * line going out the serial port under TCG; the second reports
+             * 0-1 Mcyc. The v1 line above has the same shape. Left where it
+             * is because the number is right about what happened -- it is
+             * the label "container+crc" that does not mention the printer --
+             * and this note is cheaper than a deferred-print mechanism for a
+             * line that prints once. */
+            g_said_bare = 1;
+            kprintf("[aex] '%s' is a bare ELF: no container, no stack hint and no "
+                    "integrity record. Accepted; the loader's own checks are the "
+                    "only ones it gets.\n", out->name);
+        }
+        return AEX_OK;
+    }
+
     if (h->magic[0] != 'A' || h->magic[1] != 'E' || h->magic[2] != 'X' || h->magic[3] != '1')
         return reject(AEX_E_MAGIC, "not an AEX1 file", h->magic[0], h->magic[1]);
     if (h->version < AEX_VERSION_MIN || h->version > AEX_VERSION_MAX)
@@ -266,13 +397,22 @@ int aex_parse_path(const char *path, uint64_t file_size, struct aex_info *out)
     return aex_parse_src(&rd, out);
 }
 
-int aex_info(const void *file, char *out_name, char *out_ext)
+/* aex_info() and aex_info_path() share this so a bare ELF gets the same
+ * verdict through both doors; `path` is what the buffer-shaped caller lacks
+ * and is only used for the display name. */
+static int info_from_hdr(const void *file, const char *path, char *out_name, char *out_ext)
 {
-    /* No length, so this can validate the FIXED header and nothing else: no
-     * TLV walk, no CRC. Kept at that signature because c/kernel/gui/wm.c's Dock
-     * scan and exec.c both call it this way and both belong to other lines.
-     * Everything it reads is at an offset v1 and v2 agree on. */
     const struct aex_header *h = file;
+    if (is_elf_magic(h->magic)) {
+        /* The 64 bytes are the whole ELF header, so this is the full 64-byte
+         * verdict -- which is the point: exec.c asks here before it destroys
+         * the caller's address space. Not counted and not announced; the
+         * count is of loads, and this is a question, not a load. */
+        if (bare_elf_check(h) != AEX_OK) return -1;
+        if (out_name) bare_name(path, out_name);
+        if (out_ext)  out_ext[0] = 0;
+        return 0;
+    }
     if (h->magic[0] != 'A' || h->magic[1] != 'E' || h->magic[2] != 'X' || h->magic[3] != '1')
         return -1;
     if (h->version < AEX_VERSION_MIN || h->version > AEX_VERSION_MAX)
@@ -280,6 +420,16 @@ int aex_info(const void *file, char *out_name, char *out_ext)
     if (out_name) copy_field(out_name, h->name, 32);
     if (out_ext)  copy_field(out_ext, h->ext, 8);
     return 0;
+}
+
+int aex_info(const void *file, char *out_name, char *out_ext)
+{
+    /* No length, so this can validate the FIXED header and nothing else: no
+     * TLV walk, no CRC. Kept at that signature because c/kernel/gui/wm.c's Dock
+     * scan and exec.c both call it this way and both belong to other lines.
+     * Everything it reads is at an offset v1 and v2 agree on -- and, for a
+     * bare ELF, at an offset the ELF64 header defines. */
+    return info_from_hdr(file, 0, out_name, out_ext);
 }
 
 int aex_elf_range(const void *file, uint64_t file_size, const void **elf, uint64_t *elf_size)
@@ -411,7 +561,7 @@ int aex_info_path(const char *path, char *out_name, char *out_ext)
     struct aex_header h;
     if (!vfs_pread) return -1;
     if (vfs_pread(path, &h, AEX_HDR_SIZE, 0) != AEX_HDR_SIZE) return -1;
-    return aex_info(&h, out_name, out_ext);
+    return info_from_hdr(&h, path, out_name, out_ext);
 }
 
 uint64_t aex_load(const void *file, uint64_t file_size, char *out_name, char *out_ext,

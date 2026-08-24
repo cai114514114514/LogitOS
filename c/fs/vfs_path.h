@@ -60,7 +60,28 @@
  * the scratch space during expansion, which can legitimately be longer than
  * either the input or the result while a symlink target is spliced in. */
 #define VFS_PATH_MAX  256
-#define VFS_NAME_MAX   60      /* one component; matches the on-disk dirent */
+
+/* One path component. DERIVED from the on-disk dirent, not typed here, and the
+ * reason is a bug that printed nothing (measured on device 2026-08-20): this
+ * line said 60 "to match the on-disk dirent", and the dirent's name field IS
+ * 60 bytes -- with its NUL, so logitfs refuses anything over 59. A 60-byte
+ * name passed this check, the open was granted, the file was created in RAM,
+ * and the write-back at close was refused by the filesystem with nobody left
+ * to tell: `touch` returned 0 and `ls` never showed the file. 59 worked, 61
+ * was refused out loud; exactly 60 fell in the crack between two copies of
+ * one number. c/fs/logitfs_fmt.h is the single definition site for the
+ * format, so the limit is read from there; the header stays free of KERNEL
+ * headers (the walker compiles into tests/unit/vfs_path_test.c), and the
+ * format header is <stdint.h> and nothing else.
+ *
+ * VFS_NAME_MAX_LEGACY is the negative control (tests/exec.mk's
+ * test-namemax-negctl): the crack as it shipped, for a gate to fail against. */
+#include "logitfs_fmt.h"
+#ifdef VFS_NAME_MAX_LEGACY
+#define VFS_NAME_MAX   60
+#else
+#define VFS_NAME_MAX   (LFS_NAME_MAX - 1)   /* the field minus its NUL */
+#endif
 #define VFS_SYMLOOP_MAX 8      /* Linux uses 40 nested; 8 is plenty here and the
                                 * bound is what matters, not its size */
 

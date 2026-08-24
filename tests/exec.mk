@@ -292,3 +292,92 @@ ci-boot: test-bigexec
 # -- one file of a C toolchain did not fit in the whole 64 MiB filesystem. See
 # the header of tests/fsgeom.mk.
 -include tests/fsgeom.mk
+
+# --- the argv / line / name LIMITS, and what happens one past each -----------
+#
+# Four silent truncations, measured on device 2026-08-20 and all fixed the
+# same way: the limit is raised to what a toolchain needs, and one past it is
+# a LOUD refusal that does not run the command. The places:
+#   /bin/sh                 c/apps/coreutils/sh.c  (words per command, bytes per line,
+#                           glob expansion, expanded-argv arena)
+#   the kernel's execve     c/kernel/exec/exec.c copy_uvec (LOGIT_EXEC_E2BIG)
+#   the file-name limit     c/fs/vfs_path.h now DERIVES VFS_NAME_MAX from the on-disk
+#                           LFS_NAME_MAX instead of carrying its own 60
+# include/abi/logit_exec.h is the one definition both ends of execve read.
+#
+# Three gates, each with a negative control that is the code AS IT SHIPPED on
+# a -D switch, and each control must redden EXACTLY the checks that look for a
+# refusal -- the checks that exercise a command AT the limit have to keep
+# passing against it, or the suite is measuring "did it break" rather than
+# "does it refuse". The expected counts are pinned below; a control that
+# reddens more or fewer is a changed test, not a passing one.
+.PHONY: test-sh-limits test-sh-limits-negctl test-namemax test-namemax-negctl \
+        test-argv-limits-os
+
+SH_LIMITS_INC := -Itests/unit -Ic/apps/coreutils -Ic/apps -Iinclude/abi
+SH_LIMITS_NEGCTL_REDDENS := 11
+NAMEMAX_NEGCTL_REDDENS   := 3
+
+# The REAL sh.c against the host stub, exactly as test-sh builds it.
+test-sh-limits: test-sh-limits-negctl
+test-sh-limits:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/sh_limits_test tests/unit/sh_limits_test.c $(SH_LIMITS_INC)
+	@$(BUILD)/sh_limits_test
+
+test-sh-limits-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DSH_LIMITS_NEGCTL -o $(BUILD)/sh_limits_negctl tests/unit/sh_limits_test.c $(SH_LIMITS_INC)
+	@if $(BUILD)/sh_limits_negctl > $(BUILD)/sh_limits_negctl.log 2>&1; then \
+	    echo "FAIL: the silently-truncating shell PASSES the limits suite -- it measures nothing"; exit 1; fi
+	@n=$$(grep -c '^FAIL' $(BUILD)/sh_limits_negctl.log); \
+	 if [ "$$n" -ne $(SH_LIMITS_NEGCTL_REDDENS) ]; then \
+	    echo "FAIL: the control must redden exactly $(SH_LIMITS_NEGCTL_REDDENS) refusal checks, got $$n:"; \
+	    grep '^FAIL' $(BUILD)/sh_limits_negctl.log; exit 1; fi
+	@if grep -q 'must tokenize whole\|must fork exactly once\|must be read whole\|two matches into two slots' $(BUILD)/sh_limits_negctl.log; then \
+	    echo "FAIL: an at-the-limit check reddened under the control -- the control broke the shell, not just its refusals"; \
+	    grep '^FAIL' $(BUILD)/sh_limits_negctl.log; exit 1; fi
+	@echo "negative control ok: the silently-truncating shell fails exactly $(SH_LIMITS_NEGCTL_REDDENS) refusal checks and passes every at-the-limit one"
+
+# The VFS walker and the REAL logitfs (on the simulated device the crash tests
+# use) asked the same question at every length. FS_CFLAGS/FS_CORE/FS_STUB are
+# the Makefile's own fs-host variables: recipe-time expansion, so the order of
+# -include does not matter.
+test-namemax: test-namemax-negctl
+test-namemax:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/namemax_test tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs_path.c $(FS_STUB)
+	@$(BUILD)/namemax_test
+
+test-namemax-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -DVFS_NAME_MAX_LEGACY -o $(BUILD)/namemax_negctl tests/unit/namemax_test.c $(FS_CORE) c/fs/vfs_path.c $(FS_STUB)
+	@if $(BUILD)/namemax_negctl > $(BUILD)/namemax_negctl.log 2>&1; then \
+	    echo "FAIL: the typed-60 VFS_NAME_MAX PASSES the name-limit suite -- the crack is not measured"; exit 1; fi
+	@n=$$(grep -c 'FAIL:' $(BUILD)/namemax_negctl.log); \
+	 if [ "$$n" -ne $(NAMEMAX_NEGCTL_REDDENS) ]; then \
+	    echo "FAIL: the control must redden exactly $(NAMEMAX_NEGCTL_REDDENS) checks (both about length 60), got $$n:"; \
+	    grep 'FAIL:' $(BUILD)/namemax_negctl.log; exit 1; fi
+	@grep -q 'length 60: vfs accepts, logitfs refuses' $(BUILD)/namemax_negctl.log || \
+	    { echo "FAIL: the control reddened, but not on the length-60 disagreement it exists to show"; exit 1; }
+	@echo "negative control ok: with the typed 60 back, length 60 is accepted by the VFS and refused by logitfs, and nothing else moves"
+
+# ON THE MACHINE: every limit at its bound and one past it, through the real
+# /bin/sh over the serial console, the real filesystem, and a hand-built argv
+# from /bin/as for the kernel's own bound (the shell cannot overshoot it).
+test-argv-limits-os: $(ISO) $(DISK)
+	@bash tests/boot/run-argv-limits-test.sh $(ISO) $(DISK)
+
+ci-host: test-sh-limits test-namemax
+ci-boot: test-argv-limits-os
+
+# What an open file DESCRIPTION costs -- c/kernel/exec/file.c's F_VFS backend
+# holds no bytes for a read-only open. Its own fragment, included from here
+# rather than from the top-level Makefile, for the reason tests/poll.mk,
+# tests/procfs.mk, tests/coredump.mk and tests/fsgeom.mk all give: the Makefile
+# is contended and `-include` nests. It hangs off exec.mk because it is the same
+# change one layer up from the streaming exec loader above -- test-bigexec asks
+# how big a program can be LOADED, test-fdstream asks how big a file can be
+# OPENED, and until now the second question had the smaller answer. See the
+# header of tests/fdstream.mk.
+-include tests/fdstream.mk

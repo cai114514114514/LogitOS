@@ -72,6 +72,15 @@
  *   - an unknown TLV tag is IGNORED. An unknown `flags` bit is REFUSED. That
  *     split is the whole forward-compatibility contract: metadata may grow
  *     silently, behaviour may not.
+ *   - a BARE ELF (\x7fELF where "AEX1" would be) is ACCEPTED, as the view
+ *     "body at offset 0, body length = file length, no stack hint, NO
+ *     integrity record". The kernel executed AEX1 only until 2026-08-21, and
+ *     every toolchain a port will ever bring -- tcc, ld, the one after them
+ *     -- emits a bare ELF. The CRC is not faked: it covers the body, and a
+ *     bare ELF carries none, so aex_info.crc32 reads 0 and nothing is
+ *     compared. The header IS checked before the caller's address space is
+ *     torn down (elf_check_header64), which is what turns "linked at
+ *     0x400000" from a dead child into a refusal by name.
  */
 
 struct aex_header {
@@ -98,6 +107,11 @@ struct aex_header {
 #define AEX_VERSION      2      /* what mkaex.py writes today            */
 #define AEX_VERSION_MIN  1      /* the oldest this loader will accept    */
 #define AEX_VERSION_MAX  2      /* anything above is refused, by number  */
+#define AEX_VERSION_BARE 0      /* reported in aex_info.version for a bare
+                                 * ELF: there is no container, so there is
+                                 * no container version. 0 is the value an
+                                 * AEX1 header is REFUSED for, which is why
+                                 * it can never be confused with one.      */
 #define AEX_HDR_SIZE     64     /* the FIXED part. Callers still use this
                                  * as the minimum sensible file size.    */
 #define AEX_HDR_MAX      16384  /* hdr_size cap: the header is read into
@@ -193,6 +207,15 @@ int aex_parse_path(const char *path, uint64_t file_size, struct aex_info *out);
 #define AEX_E_CRC      -9   /* the integrity record disagrees with the bytes*/
 #define AEX_E_NOCRC   -10   /* a v2 file with no integrity record           */
 #define AEX_E_ELF     -11   /* the ELF inside was refused (see [elf] lines) */
+#define AEX_E_BARE    -12   /* a bare ELF whose 64-byte header this machine
+                             * cannot run: wrong class/machine/type, or an
+                             * entry point outside the private user region
+                             * (the stock-toolchain 0x400000 case). The [elf]
+                             * line before it names the field.              */
+
+/* How many bare ELFs this boot has accepted. Same shape and same reason as
+ * aex_v1_images(): the log line is printed once, the counter every time. */
+uint32_t aex_bare_images(void);
 
 /* How many v1 images this boot has accepted. The log line above says so once --
  * a disk full of them would otherwise bury everything else on the serial port --

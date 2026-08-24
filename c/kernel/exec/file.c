@@ -485,15 +485,17 @@ short file_poll(struct file *f, struct poll_table *pt)
     if (!f) return LPOLLNVAL;
     switch (f->type) {
     case F_VFS:
-        /* Always ready, and it is not an approximation: the whole file is in a
-         * kernel buffer, so neither read() nor write() can block or have "not
-         * yet" to report. Registering on nothing is correct here -- there is no
-         * state change to wait for.
+        /* Always ready, and it is not an approximation. For a WRITABLE
+         * description the whole file is in a kernel buffer, so neither read()
+         * nor write() can block or have "not yet" to report. For a STREAMED one
+         * (`stream`: every read-only file, and every generated /proc file) the
+         * bytes are fetched synchronously inside the read -- the block layer
+         * polls, it does not park the caller behind a wait queue this could
+         * register on -- so there is nothing it could ever wait for either.
+         * Two different reasons, one answer, and neither is a guess.
          *
-         * A GENERATED file (`live`, /proc) has no buffer and the sentence above
-         * is not its reason, but the answer is the same and for a stronger one:
-         * its bytes are computed synchronously inside the read, so there is
-         * nothing it could ever wait for either. */
+         * Registering on nothing is therefore correct here: there is no state
+         * change to announce. */
         return LPOLLIN | LPOLLOUT;
 
     case F_PIPE: {
@@ -603,8 +605,10 @@ struct file *file_alloc(void)
                  * description that inherited live = 1 would serve an ordinary
                  * disk file by re-reading its path on every read -- which
                  * happens to work, right up until the file is written or
-                 * deleted underneath it. */
-                f->live = 0;
+                 * deleted underneath it. `stream` is cleared here for the
+                 * mirror-image reason: inherited on a WRITABLE description it
+                 * would leave `backing` NULL under a path that writes into it. */
+                f->live = 0; f->stream = 0;
                 f->backing = 0; f->path[0] = 0;
                 inuse++;                     /* the one just claimed */
             }
@@ -663,9 +667,25 @@ void file_dup(struct file *f)
 static void scopy(char *d, const char *s, int max)
 { int i = 0; for (; s && i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
 
-/* --- F_VFS backend: the whole file lives in a kmalloc buffer with an offset
- *     cursor; writes grow the buffer and mark dirty; the last close flushes it
- *     back to the on-disk filesystem. Avoids touching logitfs block logic. --- */
+/* --- F_VFS backend. TWO SHAPES, decided once at open and never again:
+ *
+ *   READ-ONLY   holds nothing. `backing` is NULL, `size` is the length at open,
+ *               and every read is a vfs_pread() at the cursor. An fd costs the
+ *               same handful of bytes whatever the file is -- which is the
+ *               point: opening a 128 MiB file used to grow the kernel heap by
+ *               256 MiB, and a 256 MiB one was refused outright by the
+ *               allocator, so "can this machine open that file" was a question
+ *               about kmalloc rather than about the filesystem.
+ *   WRITABLE    the whole file in a kmalloc buffer with an offset cursor;
+ *               writes grow it and mark dirty; the last close flushes it back.
+ *               NOT a leftover: the VFS write op is whole-file (c/fs/vfs.h --
+ *               ->write is create-or-overwrite and there is no ->pwrite), so a
+ *               description that may change part of a file has to hold all of
+ *               it. Still avoids touching logitfs block logic.
+ *
+ * The old sentence here -- "the whole file lives in a kmalloc buffer" -- was
+ * quoted as an argument in at least one other file, so it is corrected rather
+ * than deleted. --- */
 
 static int vfs_ensure_cap(struct file *f, long need)
 {
@@ -757,10 +777,65 @@ static int is_generated(const char *p) { return procfs_owns_path ? procfs_owns_p
 /* KNOWN LIMIT, stated rather than found later: this asks about the path the
  * SYSCALL LAYER handed us -- absolute and with "." and ".." collapsed by
  * proc_resolve, but with symlinks NOT expanded. A symlink pointing into /proc
- * therefore opens as an ordinary file and is slurped, i.e. read as a snapshot
- * taken at open. Closing it means a vfs_resolve() on every open of every file
- * on the machine to serve a case nothing in this tree creates; the trade is
- * recorded here instead of paid. */
+ * therefore opens as an ordinary file and is streamed by the branch below, i.e.
+ * read as bytes rather than as a live rendering. Closing it means a
+ * vfs_resolve() on every open of every file on the machine to serve a case
+ * nothing in this tree creates; the trade is recorded here instead of paid. */
+
+/* Can this path be read a PIECE at a time, or only whole?
+ *
+ * Not every name under / sits on a filesystem. The SYNTHETIC nodes -- kdiag's
+ * counters, /dev/vfsmounts, /dev/vfsctl, /dev/fsbench's own report -- are
+ * RENDERED on demand, and vfs_pread refuses them at any non-zero offset
+ * (VFS_ENOSYS) rather than rendering twice and throwing a prefix away, because
+ * two renders are two different answers. A description that streamed one would
+ * serve its first read and return -1 on the second, which `cat` reports as an
+ * I/O error on a file that works today. So they keep the buffer.
+ *
+ * THE PROBE IS AT OFFSET 1, NOT 0, and that is the whole of it: offset 0 is the
+ * one offset a synthetic node DOES serve, so a probe there cannot tell the two
+ * apart. At offset 1 a synthetic node is refused unconditionally, and every
+ * real backend in the tree (logitfs, ramfs, lfsro, procfs) returns 0 at or past
+ * end of file -- so a 0-byte and a 1-byte file answer "yes" like any other.
+ *
+ * COST: one byte at offset 1 is inside block 0, which is the block the first
+ * read() of the file asks for anyway, so the probe is a cache hit for any file
+ * that is opened and then read.
+ *
+ * MEASURED (DEVICE, test-fdstream, 512M TCG -smp 4), because the sentence that
+ * stood here said the probe "is the number openfd reports as `devcmds open=`"
+ * and that counter is not the probe -- it is the whole open, inode walk
+ * included, and reading it as the probe's price over-states it several fold:
+ *
+ *     file             streamed open   -DFILE_SLURP open
+ *     /fonts/mono.ttf         3               4
+ *     /fonts/ui.ttf           4               9
+ *     /dev/vfsmounts          1               1     (buffered in both)
+ *
+ * The streamed open is CHEAPER at the device than the one it replaced, at both
+ * sizes, even though only the streamed one runs a probe -- the buffered open
+ * reads the file's data blocks inside open() and the probe touches one block
+ * that the resolution has already brought in. So the probe's own marginal cost
+ * is below what this counter can resolve, which is the honest form of the
+ * claim. (The READ side is the opposite way round and is not this comment's
+ * business: 542 commands to stream ui.ttf against 9 to read it whole. That is
+ * the request size, and it is the readahead line's.)
+ *
+ * Any OTHER negative is treated as "not streamable" too, and falls back to the
+ * path that worked yesterday rather than inventing a new way for an open to
+ * fail. VFS_ENOSYS is the one that actually occurs.
+ *
+ * Inside the same FILE_SLURP guard as its only call site, so the negative
+ * control compiles WITHOUT A WARNING. A control that builds noisily gets read
+ * as broken, and then the one warning that matters is in the same paragraph as
+ * one that does not. */
+#ifndef FILE_SLURP
+static int vfs_streamable(const char *path)
+{
+    char probe;
+    return vfs_pread(path, &probe, 1, 1) >= 0;
+}
+#endif
 
 struct file *file_open_vfs(const char *path, int flags)
 {
@@ -779,7 +854,12 @@ struct file *file_open_vfs(const char *path, int flags)
     if (!f) return 0;
     f->type = F_VFS; f->flags = flags; f->off = 0; f->dirty = 0;
     f->amode = flags & 3;
-    f->live = 0;
+    /* Both already 0 from file_alloc()'s slot claim; re-asserted here for the
+     * reason the `live = 0` line was written that way before `stream` existed
+     * -- this function must not depend on the clearing happening somewhere
+     * else, and the two fields have to move together or a description can end
+     * up streaming without being live, or live without a read path. */
+    f->live = 0; f->stream = 0;
     scopy(f->path, path, sizeof f->path);
 
     /* A GENERATED file is not read here. This is the whole of what makes
@@ -792,12 +872,63 @@ struct file *file_open_vfs(const char *path, int flags)
      * /proc fails (the backend publishes no write op at all, deliberately),
      * so it would be a refusal reported at close(), where nobody is looking. */
     if (is_generated(path)) {
-        f->live = 1;
+        f->live = 1; f->stream = 1;
         f->backing = 0; f->cap = 0; f->size = 0; f->dirty = 0;
         return f;
     }
 
     if (exists && !(flags & O_TRUNC)) {
+        /* READ-ONLY: hold nothing. The bytes are fetched by file_read() through
+         * vfs_pread() at the moment the reader asks for them, exactly as a
+         * generated file's are -- the only difference is that this one has a
+         * length, so `size` is set and fstat and SEEK_END keep working.
+         *
+         * WHAT THIS COSTS, said out loud because it is a real semantic change
+         * and not only a memory one: two reads through the same descriptor no
+         * longer come from one snapshot taken at open. If the file is rewritten
+         * between them, the second read sees the new bytes. That is what
+         * read(2) means everywhere else, and the snapshot was an ARTEFACT of
+         * the buffer rather than a promise anything here made -- but it is a
+         * behaviour change, so: a reader that needs a consistent image of a
+         * file being rewritten under it never had one across two read() calls
+         * anyway (only within one), and still does not.
+         *
+         * WHAT IT DOES NOT CHANGE: `size` is the length at open, so an fstat
+         * on this fd answers what it answered before. A file that SHRINKS is
+         * still safe -- vfs_pread reports the real end of file, so `size` being
+         * stale can only over-state, never over-read.
+         *
+         * FILE_SLURP is the negative control: it restores the kmalloc for
+         * regular files ONLY. It deliberately leaves the `live` branch above
+         * alone -- disabling /proc too would make the control measure "did
+         * anything break" instead of "what does the buffer cost". */
+#ifndef FILE_SLURP
+        if (f->amode == O_RDONLY && vfs_streamable(path)) {
+            f->stream = 1;
+            f->backing = 0; f->cap = 0;
+            f->size = sz;
+            return f;
+        }
+#endif
+        /* WRITABLE (O_WRONLY / O_RDWR without O_TRUNC), i.e. "open for update".
+         * The buffer stays, and it is not a leftover: vfs_write is whole-file,
+         * so changing byte 7 means handing the backend all the others. Its cost
+         * is exactly what it was -- this branch is untouched -- and the shape
+         * that pays it is narrow: `sh`'s `>` carries O_TRUNC and takes the
+         * else-branch below, allocating nothing. What pays is O_WRONLY or
+         * O_RDWR on an EXISTING file without O_TRUNC, i.e. open-for-update and
+         * O_APPEND.
+         *
+         * MEASURED (DEVICE, test-fdstream-negctl at 512M, which builds exactly
+         * this branch for every file via -DFILE_SLURP and so measures it):
+         * 9,636 B file -> 9,648 B of kheap, 2,222,276 B file -> 2,222,288 B.
+         * The whole file and 12 B of block header, the SAME 12 at both sizes,
+         * so there is no second copy hiding in the number -- and the ceiling is
+         * therefore still kmalloc's: `openmax` on the same boot reports
+         * kmalloc(128 MiB) OK and kmalloc(256 MiB) REFUSED. A writable open of
+         * a file larger than that is still refused, and closing THAT needs a
+         * ->pwrite in the op table, which is c/fs's to add and not this file's
+         * to fake. */
         long cap = sz > 0 ? sz : 1;
         f->backing = kmalloc((size_t)cap);
         if (!f->backing) { f->refcount = 0; f->type = F_NONE; return 0; }
@@ -819,13 +950,21 @@ long file_read(struct file *f, void *buf, long len)
          * checked here rather than at the descriptor: a dup of a write-only fd
          * is still write-only, and a fork inherits the same answer. */
         if (f->amode == O_WRONLY) return -1;
-        /* GENERATED (/proc): ask now. `f->size` is meaningless here -- nothing
-         * was ever slurped -- so end of file is what vfs_pread reports (0), and
-         * a negative is passed on as -1 rather than turned into EOF. That
+        /* NO BUFFER: ask the filesystem now, at this description's offset.
+         *
+         * END OF FILE IS WHAT vfs_pread REPORTS (0), NOT `f->size - f->off`,
+         * and the difference matters in both directions. For a GENERATED file
+         * (`live`) `f->size` is meaningless -- nothing was ever slurped. For a
+         * regular one it is the length at OPEN, so trusting it would truncate a
+         * file that has since grown and, worse, report bytes that a file which
+         * has since shrunk no longer has. The filesystem knows; this does not.
+         *
+         * A NEGATIVE IS PASSED ON AS -1 rather than turned into EOF. That
          * distinction is the lifetime rule reaching userland: a read of a file
-         * whose process has exited must be a FAILURE and not an empty file.
-         * See c/fs/procfs.h, point 2. */
-        if (f->live) {
+         * whose process has exited must be a FAILURE and not an empty file
+         * (c/fs/procfs.h, point 2), and by the same token a regular file that
+         * was DELETED under an open fd now says so instead of going quiet. */
+        if (f->stream) {
             if (!f->path[0]) return -1;
             int n = vfs_pread(f->path, buf, (int)(len > 0x7ffffff0 ? 0x7ffffff0 : len), f->off);
             if (n < 0) return -1;
@@ -851,10 +990,15 @@ long file_write(struct file *f, const void *buf, long len)
     if (!f || len < 0) return -1;
     if (f->type == F_VFS) {
         if (f->amode == O_RDONLY) return -1;
-        /* A generated file has no buffer to write into and no backend write op
-         * to flush to. Refused HERE rather than at close, where the failure
-         * would be reported to nobody. */
-        if (f->live) return -1;
+        /* No buffer to write into. Unreachable through an ordinary open -- the
+         * amode check one line above already refuses a read-only description,
+         * and read-only is the only thing that streams -- but it is the
+         * INVARIANT rather than the redundancy that is being stated: `stream`
+         * means `backing` is NULL, and the memcpy below would take a null
+         * pointer. For a generated file it is also the honest answer on its own
+         * merits, since there is no backend write op to flush to; refused HERE
+         * rather than at close, where the failure would be reported to nobody. */
+        if (f->stream) return -1;
         if (f->flags & O_APPEND) f->off = f->size;
         if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;

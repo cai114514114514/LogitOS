@@ -14,13 +14,19 @@
 #include "kheap.h"
 #include "usercopy.h"
 #include "logit_abi.h"
+#include "logit_exec.h"  /* LOGIT_ARG_MAX / LOGIT_ARG_BYTES: the ONE definition sh.c also reads */
 #include "kprintf.h"
 #include "prot.h"        /* PTE_NX + cpu_prot_nx(): the user stack is data */
 
 void *memcpy(void *, const void *, size_t);
 
-#define MAXARG          48
-#define ARGBUFSZ        4096          /* total bytes for all argv + envp strings */
+/* Both from include/abi/logit_exec.h and not from a number typed here, because
+ * a number typed here was 48 while /bin/sh's was 32, and a 49-argument execve
+ * returned success with arguments 49..n gone (copy_uvec stopped at MAXARG and
+ * never looked at whether uvec[MAXARG] was NULL). The header says what the
+ * values are sized for and what they cost. */
+#define MAXARG          LOGIT_ARG_MAX
+#define ARGBUFSZ        LOGIT_ARG_BYTES /* total bytes for all argv + envp strings */
 #define CLI_STACK_PAGES 256           /* 1 MiB user stack for a CLI program */
 
 /* WHAT AN EXEC COSTS, split so the answer is actionable.
@@ -98,8 +104,34 @@ static int kstrlen(const char *s) { int n = 0; while (s[n]) n++; return n; }
 static void scopy(char *d, const char *s, int max)
 { int i = 0; for (; s && i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
 
-/* Copy a user argv/envp vector into kernel storage. Returns the count, or -1.
- * Each string is packed into `store` (advancing *used); vec[] gets kernel ptrs. */
+/* Length of a user string if it ends within `max` bytes; -1 if any byte of it
+ * is not readable user memory; -2 if no NUL turns up within `max`. Split out
+ * from the copy because user_copy_string() folds both failures into -1, and
+ * the two deserve different answers: one is a bad pointer, the other is a
+ * command that is simply too big, and "bad argv" in the log for a 17 KiB link
+ * line sends the reader to the wrong place. */
+static int user_strnlen(const char *src, int max)
+{
+    for (int i = 0; i < max; i++) {
+        if (!user_range_ok(src + i, 1, 0)) return -1;
+        if (src[i] == 0) return i;
+    }
+    return -2;
+}
+
+/* Copy a user argv/envp vector into kernel storage. Returns the count; -1 for
+ * a vector or string that is not readable; LOGIT_EXEC_E2BIG when the vector
+ * has more than MAXARG entries or its strings do not fit what is left of
+ * `store`. Each string is packed into `store` (advancing *used); vec[] gets
+ * kernel ptrs.
+ *
+ * THE CHECK AFTER THE LOOP IS THE FIX (2026-08-20). The loop used to run to
+ * MAXARG and return n, so a vector with MAXARG+1 entries came back as a
+ * perfectly good vector of MAXARG -- the last arguments gone, no message, the
+ * program run. Now the slot the loop never reached is read: a NULL there is
+ * the terminator, anything else is a vector too long to represent, and the
+ * exec is refused rather than shortened. A driver that appends `-o file` last
+ * is exactly the shape that used to lose its output name. */
 static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int storemax)
 {
     if (!uvec) return 0;                          /* NULL vector -> empty */
@@ -109,12 +141,32 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
         char *uptr = uvec[n];
         if (!uptr) break;                         /* NULL terminator */
         char *dst = store + *used;
-        int wrote = user_copy_string(dst, storemax - *used, uptr);
-        if (wrote < 0) return -1;
+        int room = storemax - *used;
+        int len = user_strnlen(uptr, room);
+        if (len == -1) return -1;
+        if (len == -2) return LOGIT_EXEC_E2BIG;   /* no NUL within the budget left */
+        int wrote = user_copy_string(dst, room, uptr);
+        if (wrote < 0) return -1;                 /* changed under us: a bad pointer after all */
         vec[n] = dst;
         *used += wrote + 1;
     }
+    if (n == MAXARG) {
+        if (!user_range_ok(&uvec[n], sizeof(char *), 0)) return -1;
+        if (uvec[n]) return LOGIT_EXEC_E2BIG;     /* entry MAXARG+1 exists: too many */
+    }
     return n;
+}
+
+/* One line per refusal, naming the limit that was hit, so that the limit a
+ * reader sees in the log is the one the build was compiled with. */
+static void uvec_refused(const char *who, const char *abs, const char *which, int rc)
+{
+    if (rc == LOGIT_EXEC_E2BIG)
+        kprintf("[%s] %s: %s too big -- the limit is %d entries and %d bytes of "
+                "argv+envp strings (include/abi/logit_exec.h); refused, not truncated\n",
+                who, abs, which, MAXARG, ARGBUFSZ);
+    else
+        kprintf("[%s] %s: bad %s (unreadable vector or string)\n", who, abs, which);
 }
 
 /* How much of the stack is mapped up front. Everything the kernel itself writes
@@ -134,13 +186,43 @@ static int copy_uvec(char **uvec, char *vec[MAXARG], char *store, int *used, int
 /* The auxiliary vector costs 2 words a pair, and the executable's own path is
  * pushed as a string for AT_EXECFN. */
 #define AUXV_PAIRS      14
-#define CLI_STACK_HEAD  (ARGBUFSZ + 160 + (2 * MAXARG + 3 + 2 * AUXV_PAIRS) * 8 + 48)
-#define CLI_STACK_EAGER 2
-/* If the head ever outgrows the eager window, exec would write into an unmapped
- * page from kernel context with the wrong CR3 semantics -- so it is a build
- * error, not a runtime surprise. */
-_Static_assert(CLI_STACK_HEAD <= CLI_STACK_EAGER * 4096,
-               "the SysV initial stack no longer fits the eagerly mapped pages");
+#define CLI_STACK_HEAD_MAX (ARGBUFSZ + 160 + (2 * MAXARG + 3 + 2 * AUXV_PAIRS) * 8 + 48)
+#define CLI_STACK_EAGER_MIN 2
+#define CLI_STACK_EAGER_MAX ((CLI_STACK_HEAD_MAX + 4095) / 4096)
+/* THE EAGER WINDOW IS SIZED FROM THE ARGV ACTUALLY PASSED, not from the
+ * maxima above. When LOGIT_ARG_BYTES went 4 KiB -> 16 KiB the fixed two-page
+ * window stopped covering the worst case, and the obvious fix -- make it six
+ * pages -- would have charged every exec on the machine four frames for a
+ * command line almost none of them has, and would have quietly retired the
+ * evidence argument above: with six eager pages /bin/sh never faults its own
+ * stack in and the demand-paging path stops being exercised on every boot
+ * (tests/boot/run-kbench.sh asserts that it is). So setup_cli_stack() counts
+ * the bytes it is about to write and maps just enough pages for them, two at
+ * the least. The head can never outgrow the window because the window is
+ * computed from the head; what the assert pins is the CEILING, so that the
+ * next person to raise LOGIT_ARG_BYTES sees what a maximal exec will cost in
+ * eagerly mapped frames before it ships. */
+_Static_assert(CLI_STACK_EAGER_MAX <= 8,
+               "a maximal argv would eagerly map more than 8 stack pages per exec -- "
+               "raise this bound on purpose, not by accident");
+_Static_assert(CLI_STACK_EAGER_MAX <= CLI_STACK_PAGES,
+               "the SysV initial stack no longer fits the user stack at all");
+
+/* Bytes setup_cli_stack() will write below `top`, for the vectors it was
+ * handed: the strings, the execfn, the pointer block, and the two 16-byte
+ * alignments. Counted the same way the function then lays them out, so a
+ * drift between the two is a miscount the auxv check below already reports. */
+static uint64_t cli_stack_head(const char *execfn, char **argv, int argc, char **envp, int envc)
+{
+    uint64_t bytes = 0;
+    for (int i = 0; i < argc; i++) bytes += (uint64_t)kstrlen(argv[i]) + 1;
+    for (int i = 0; i < envc; i++) bytes += (uint64_t)kstrlen(envp[i]) + 1;
+    if (execfn) bytes += (uint64_t)kstrlen(execfn) + 1;
+    bytes += 16;                                               /* sp &= ~0xF */
+    bytes += (uint64_t)(1 + (argc + 1) + (envc + 1) + 2 * AUXV_PAIRS) * 8;
+    bytes += 16;                                               /* sp &= ~0xF */
+    return bytes;
+}
 
 /* Map a CLI user stack above the program image and build the SysV initial stack
  * (argc, argv[], NULL, envp[], NULL, strings). The target space MUST be active,
@@ -168,6 +250,8 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
     uint64_t base = entry & ~(uint64_t)0xFFFFF;
     uint64_t top = base + 0x4000000;                 /* 64 MiB above base */
     uint64_t bottom = top - (uint64_t)CLI_STACK_PAGES * 0x1000;
+    int need = (int)((cli_stack_head(execfn, argv, argc, envp, envc) + 4095) / 4096);
+    if (need < CLI_STACK_EAGER_MIN) need = CLI_STACK_EAGER_MIN;
 
 #ifdef KBENCH_NEGCTL
     /* The negative control (tests/kbench.mk): map the whole megabyte up front,
@@ -176,11 +260,12 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
      * anonymous-fault count, which goes to zero because nothing is ever
      * missing. */
     int eager = CLI_STACK_PAGES;
-    (void)bottom;
+    (void)bottom; (void)need; (void)cr3;   /* cr3 is the reservation's, and the
+                                            * negctl maps instead of reserving */
 #else
     int reserved = (vma_reserve_fixed(cr3, bottom, (uint64_t)CLI_STACK_PAGES * 0x1000,
                                       VMA_READ | VMA_WRITE) == 0);
-    int eager = reserved ? CLI_STACK_EAGER : CLI_STACK_PAGES;
+    int eager = reserved ? need : CLI_STACK_PAGES;
 #endif
 
     /* NX on the stack: it is data, and without it the classic shape -- overflow
@@ -214,7 +299,13 @@ static uint64_t setup_cli_stack(uint64_t cr3, const struct elf_image *img,
         if (!frame) return 0;
         vmm_map_page(top - (uint64_t)i * 0x1000, frame, stack_flags);
     }
-    uint64_t sp = top, uargv[MAXARG], uenvp[MAXARG], uexecfn = 0;
+    /* Static rather than two 2 KiB arrays on the kernel stack: at LOGIT_ARG_MAX
+     * entries they are 4 KiB together, an eighth of the 32 KiB kstack, for a
+     * function that is never re-entered -- every caller (proc_execve,
+     * proc_spawn, proc_cap_spawn) runs with IF=0 under the BKL, which is the
+     * same argument proc_execve's argstore already rests on. */
+    static uint64_t uargv[MAXARG], uenvp[MAXARG];
+    uint64_t sp = top, uexecfn = 0;
     for (int i = 0; i < argc; i++) { int l = kstrlen(argv[i]); sp -= l + 1; memcpy((void *)sp, argv[i], l + 1); uargv[i] = sp; }
     for (int i = 0; i < envc; i++) { int l = kstrlen(envp[i]); sp -= l + 1; memcpy((void *)sp, envp[i], l + 1); uenvp[i] = sp; }
     if (execfn) { int l = kstrlen(execfn); sp -= l + 1; memcpy((void *)sp, execfn, l + 1); uexecfn = sp; }
@@ -290,9 +381,9 @@ long proc_execve(struct registers *r)
     static char *argv[MAXARG], *envp[MAXARG];
     int used = 0;
     int argc = copy_uvec((char **)r->rsi, argv, argstore, &used, ARGBUFSZ);
-    if (argc < 0) { kprintf("[execve] %s: bad argv\n", abs); return -1; }
+    if (argc < 0) { uvec_refused("execve", abs, "argv", argc); return argc; }
     int envc = copy_uvec((char **)r->rdx, envp, argstore, &used, ARGBUFSZ);
-    if (envc < 0) { kprintf("[execve] %s: bad envp\n", abs); return -1; }
+    if (envc < 0) { uvec_refused("execve", abs, "envp", envc); return envc; }
 
     /* 1.5. The execute bit. vfs_read()/vfs_size() below check MAY_READ (a
      * loadable file must be readable) but nothing on this path has ever asked
@@ -394,8 +485,6 @@ long proc_execve(struct registers *r)
     if (fh >= 0) pcache_file_put(fh);          /* the VMAs hold their own */
     uint64_t t_load = exec_rdtsc();
     if (lrc != 0) { kprintf("[execve] %s: aex_load failed\n", abs); proc_exit(127); }
-    exec_note_load(abs, &ei);   /* after the refusal: a load that failed part-way
-                                 * left counts that describe no running program */
     uint64_t entry = ei.entry;
 
     /* PT_TLS: install the thread pointer the loader laid out. Through
@@ -419,6 +508,16 @@ long proc_execve(struct registers *r)
         g_exec_stack_cyc += t_end  - t_load;
         exec_report();
     }
+    /* AFTER the stopwatch, not between its two readings. It sat between them,
+     * and its kprintf -- a 70-character line drawn onto the console for each
+     * of the first LOAD_REPORT_MAX loads -- was being charged to "the user
+     * stack": measured on device 2026-08-21 over 56 execs of /bin/true, the
+     * running average of that split read 1925 kcycles at 8 execs and 678 at
+     * 56, and solving the two windows gives ~1500 for the line and ~33 for the
+     * stack itself. Still after the refusal above, for the reason it was
+     * there: a load that failed part-way left counts that describe no running
+     * program. */
+    exec_note_load(abs, &ei);
 
     /* 6. Rewrite the syscall-return frame to land in the new program. */
     scopy(p->name, nm, sizeof p->name);
@@ -568,7 +667,13 @@ long proc_cap_spawn(struct registers *r)
     static char *cs_argv[MAXARG];
     int used = 0;
     int argc = copy_uvec((char **)r->rsi, cs_argv, cs_argstore, &used, ARGBUFSZ);
-    if (argc < 0) { kprintf("[cap_spawn] %s: bad argv\n", abs); return LOGIT_CAP_E_ARG; }
+    /* An over-long argv is reported on the log by its real cause, but it
+     * returns LOGIT_CAP_E_ARG and not LOGIT_EXEC_E2BIG: this call's return
+     * values are the LOGIT_CAP_E_* table (logit_abi.h, -1..-4), and -7 is not
+     * in it -- a caller switching on that table would read a new number as
+     * "unknown failure", which is no better than the old -1 and costs a
+     * second table to keep in step. */
+    if (argc < 0) { uvec_refused("cap_spawn", abs, "argv", argc); return LOGIT_CAP_E_ARG; }
 
     struct logit_capreq req;
     if (!user_range_ok((const void *)r->rdx, sizeof req, 0)) return LOGIT_CAP_E_ARG;

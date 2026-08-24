@@ -524,30 +524,10 @@ int elf_load_image_ex(void *image, uint64_t image_size, struct elf_image *out,
     return elf_load_reader(&rd, out, src);
 }
 
-int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
-                    const struct elf_src *src)
+int elf_check_header64(const void *hdr64)
 {
-    struct elf_image blank;
-    if (!out) out = &blank;
-    memset(out, 0, sizeof *out);
-    out->stack_flags = PF_R | PF_W;      /* the default when no PT_GNU_STACK */
-
-    if (!rd) return reject(ELF_E_SHORT, "no image source", 0, 0);
-    uint64_t image_size = rd->size;
-
-    /* THE HEADERS ARE COPIED, NOT POINTED AT. In the streaming source there is
-     * nothing to point at; in the memory source there was, and the copy is what
-     * makes the two sources ONE code path below rather than two that can
-     * disagree. 64 bytes for the ELF header, and see the phdr copy for the
-     * other 3.5 KiB. */
-    struct elf64_ehdr ehbuf;
-    struct elf64_ehdr *eh = &ehbuf;
-
-    /* --- the identification header ------------------------------------- */
-    if (image_size < sizeof *eh)
-        return reject(ELF_E_SHORT, "image shorter than an ELF64 header", image_size, sizeof *eh);
-    if (elf_read(rd, 0, eh, sizeof *eh) < 0)
-        return reject(ELF_E_SHORT, "could not read the ELF header", 0, sizeof *eh);
+    const struct elf64_ehdr *eh = hdr64;
+    if (!eh) return reject(ELF_E_SHORT, "no header", 0, 0);
     if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' ||
         eh->e_ident[2] != 'L'  || eh->e_ident[3] != 'F')
         return reject(ELF_E_MAGIC, "bad ELF magic", eh->e_ident[0], eh->e_ident[1]);
@@ -573,6 +553,49 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
         return reject(ELF_E_TYPE, "not ET_EXEC", eh->e_type, 0);
     if (eh->e_machine != EM_X86_64)
         return reject(ELF_E_MACHINE, "not EM_X86_64", eh->e_machine, 0);
+
+    /* The entry point must land in the user region, with 64 MiB of headroom
+     * above it -- elf.h's predicate says why. This is the check that names
+     * the most common wrong binary on this machine: one linked at a stock
+     * toolchain's 0x400000, which is shared kernel low memory. */
+    if (!elf_entry_in_user_region(eh->e_entry))
+        return reject(ELF_E_ENTRY, "entry point outside the user region "
+                                   "(a LogitOS program links at 0x50000000)",
+                      eh->e_entry, USER_VA_BASE);
+    return ELF_OK;
+}
+
+int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
+                    const struct elf_src *src)
+{
+    struct elf_image blank;
+    if (!out) out = &blank;
+    memset(out, 0, sizeof *out);
+    out->stack_flags = PF_R | PF_W;      /* the default when no PT_GNU_STACK */
+
+    if (!rd) return reject(ELF_E_SHORT, "no image source", 0, 0);
+    uint64_t image_size = rd->size;
+
+    /* THE HEADERS ARE COPIED, NOT POINTED AT. In the streaming source there is
+     * nothing to point at; in the memory source there was, and the copy is what
+     * makes the two sources ONE code path below rather than two that can
+     * disagree. 64 bytes for the ELF header, and see the phdr copy for the
+     * other 3.5 KiB. */
+    struct elf64_ehdr ehbuf;
+    struct elf64_ehdr *eh = &ehbuf;
+
+    /* --- the identification header ------------------------------------- */
+    if (image_size < sizeof *eh)
+        return reject(ELF_E_SHORT, "image shorter than an ELF64 header", image_size, sizeof *eh);
+    if (elf_read(rd, 0, eh, sizeof *eh) < 0)
+        return reject(ELF_E_SHORT, "could not read the ELF header", 0, sizeof *eh);
+    /* Identification, type, machine and entry: the part that can be judged
+     * from 64 bytes, shared with aex.c's pre-check -- see elf.h. The entry
+     * check used to sit below the section-header checks; it moved up with the
+     * rest of the 64-byte verdict, which changes which refusal a header with
+     * TWO defects gets and nothing else. */
+    int hrc = elf_check_header64(eh);
+    if (hrc != ELF_OK) return hrc;
     if (eh->e_version != EV_CURRENT)
         return reject(ELF_E_VERSION, "e_version != EV_CURRENT", eh->e_version, 0);
     if (eh->e_ehsize != sizeof *eh)
@@ -612,12 +635,7 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
                       eh->e_shoff, eh->e_shentsize);
     }
 
-    /* The entry point must land in the user region too, with 64 MiB of headroom
-     * above it: setup_cli_stack() maps the CLI stack at (entry & ~0xFFFFF) +
-     * 0x4000000. (Subtraction form: no overflow for a huge e_entry.) */
-    if (eh->e_entry < USER_VA_BASE || eh->e_entry > USER_VA_END - 0x4000000)
-        return reject(ELF_E_ENTRY, "entry point outside the user region",
-                      eh->e_entry, USER_VA_BASE);
+    /* (The entry-point range check is in elf_check_header64 above.) */
 
     /* The program-header table, copied out of the image. ELF_MAX_PHNUM is 64
      * and a phdr is 56 bytes, so this is 3,584 bytes of a 32 KiB kernel stack

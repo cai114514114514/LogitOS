@@ -5,8 +5,11 @@
 
 /* An open file description (the thing a file descriptor points at). Shared by
  * dup/dup2/fork via refcount. Three backends:
- *   F_VFS  -- a regular file; `backing` holds the whole file in a kmalloc buffer
- *             with an offset cursor (P2). Avoids touching logitfs block logic.
+ *   F_VFS  -- a regular file. A READ-ONLY description holds NO bytes at all and
+ *             serves every read from vfs_pread() at its own offset (`stream`,
+ *             below); a WRITABLE one holds the whole file in a kmalloc buffer
+ *             with an offset cursor, because the VFS write op is whole-file and
+ *             there is nothing else to modify a piece of. See file_open_vfs().
  *   F_PIPE -- an in-kernel ring buffer with two ends (P3).
  *   F_TTY  -- the serial console (P5).
  *   F_SOCK -- a network socket; `backing` is owned by c/net/core/lsock.c and
@@ -38,18 +41,42 @@ struct file {
                          * a property of THIS description -- a dup shares it, a
                          * fork inherits it, and a later SYS_SETNB cannot alter it */
     long  off;          /* F_VFS cursor */
-    long  size;         /* F_VFS current length */
-    long  cap;          /* F_VFS buffer capacity */
+    long  size;         /* F_VFS length. For a buffered description this is
+                         * CURRENT -- a write past the end raises it, which is
+                         * what makes fstat agree with a following read. For a
+                         * streamed one it is the length AT OPEN and nothing
+                         * updates it, because nothing here can: end of file is
+                         * whatever vfs_pread reports, and this field exists so
+                         * fstat and SEEK_END keep the answers they had. */
+    long  cap;          /* F_VFS buffer capacity; 0 when `stream` */
     int   dirty;        /* F_VFS needs write-back at last close */
-    /* F_VFS: this file is GENERATED (/proc), so it has no bytes to hold.
+    /* F_VFS: this description holds NO bytes. `backing` is NULL and every read
+     * is a vfs_pread() at `off`; `size` is the length as it was at open, which
+     * is what fstat reports (c/kernel/exec/meta.c) and what SEEK_END uses.
      *
-     * The ordinary F_VFS description slurps the whole file into `backing` at
-     * open and serves reads out of it. For a generated file that would make
+     * WHY NOT ALWAYS. open() is the only place that decides, because the VFS
+     * write op is WHOLE-FILE -- `int (*write)(path, buf, size)`, create-or-
+     * overwrite, and there is no ->pwrite beside ->pread (c/fs/vfs.h). A
+     * description that may be written therefore has to materialise the file in
+     * order to change part of it. So O_RDONLY streams and every other access
+     * mode keeps the buffer, and that split is a property of the op table
+     * rather than a policy choice here.
+     *
+     * `live` IMPLIES `stream` and adds one thing on top: no fixed length. */
+    int   stream;
+    /* F_VFS: this file is GENERATED (/proc), so it has no LENGTH to hold
+     * either -- `stream` says the bytes are fetched at read() time, and `live`
+     * adds that asking twice may give two different answers.
+     *
+     * The F_VFS description used to slurp the whole file into `backing` at
+     * open and serve reads out of it. For a generated file that would make
      * every read return a snapshot taken at OPEN -- correct-looking, correctly
      * formatted, and describing a machine that has moved on. `live` says
-     * "there is nothing here; go and ask at read() time", so the offset is the
-     * only state this description carries. See c/fs/procfs.h, point 4, for
-     * what makes a multi-read pass over one such file still coherent.
+     * "there is nothing here, and no length either; go and ask at read() time",
+     * so the offset is the only state this description carries. See
+     * c/fs/procfs.h, point 4, for what makes a multi-read pass over one such
+     * file still coherent. It is what `stream` was generalised OUT of: a
+     * read-only regular file wants the same read path and keeps its length.
      *
      * A field and not a sixth F_* type: the type tag decides which BACKEND
      * owns the description, and the backend here is still the VFS. Every one

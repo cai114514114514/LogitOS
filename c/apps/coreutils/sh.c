@@ -40,11 +40,30 @@
  * and is called out in the report rather than faked here.
  */
 
-#define LINE   512
-#define MAXTOK 64
-#define MAXARG 32
-#define MAXCMD 8
-#define HISTN  64
+/* LIMITS, and what happens at them. Every one below is a FIXED buffer, and
+ * every one is now a loud refusal that does not run the command -- because
+ * each used to be a silent truncation that did (measured on device
+ * 2026-08-20: echo with 40 arguments printed 31, a 600-byte line ran as its
+ * first 506 bytes, both with exit status 0). Running the shortened command is
+ * strictly worse than refusing it: `rm` with a dropped argument is a different
+ * rm, and a link line with the last object gone links a different program.
+ *
+ * WHY FIXED AND NOT GROWN. This program links crt0 + clib.h and nothing else
+ * -- there is no allocator to grow a buffer from -- and growing one would only
+ * move the refusal to the kernel's LOGIT_ARG_BYTES, which is fixed anyway: a
+ * line the kernel will not accept as an argv is not made runnable by a shell
+ * that can hold it. So the line buffer is sized to what a toolchain needs
+ * (a 2 KiB gcc link line, twice over) and the expanded-argv arena is sized to
+ * EXACTLY the kernel's budget, so the shell can never build an argv the kernel
+ * then refuses on size. Every refusal prints the constant it refused on, so the
+ * message cannot drift from the number. */
+#include "logit_exec.h"            /* LOGIT_ARG_MAX / LOGIT_ARG_BYTES: the ONE definition exec.c reads too */
+#define LINE   4096                /* one command line, with its NUL */
+#define MAXTOK 512                 /* words + operators on one line */
+#define MAXARG LOGIT_ARG_MAX       /* argv entries per command, argv[0] included */
+#define MAXCMD 8                   /* stages in a pipeline */
+#define HISTN  64                  /* history entries retained */
+#define STORE  LOGIT_ARG_BYTES     /* expanded words + glob matches, one arena */
 
 /* ------------------------------------------------------------ environment -- */
 
@@ -313,21 +332,53 @@ static void job_reap(struct job *j)
 
 static char lbuf[LINE];
 static int  llen, lcur;
-static char hist[HISTN][LINE];
 static int  hcount, hpos;
 static char hstash[LINE];
 
-static void hist_add(const char *s)
+/* HISTORY IS A PACKED ARENA, not hist[HISTN][LINE]. At LINE 512 that array
+ * was 32 KiB; at LINE 4096 it would be 256 KiB of .bss, and .bss is not free
+ * here: c/kernel/exec/elf.c maps every page of p_memsz eagerly at load, so
+ * each 4 KiB is a frame zeroed on every exec of this shell and a page counted
+ * against run-kbench.sh's "fork shares <= 100 pages" bound (31 today). A
+ * history line is almost never 4 KiB, so the arena stores each entry at its
+ * own length: HIST_BYTES total, HISTN entries, oldest dropped first when
+ * either runs out. Nothing is ever truncated on the way in -- an entry that
+ * does not fit evicts until it does, and LINE < HIST_BYTES so it always can.
+ * Re-running a truncated history line would be the silent-prefix bug again,
+ * reached by the Up key. */
+#define HIST_BYTES 16384
+static char hist_arena[HIST_BYTES];
+static int  hist_off[HISTN];                /* byte offset of each retained entry, oldest first */
+static int  hist_n;                         /* retained entries, <= HISTN */
+static int  hist_used;                      /* bytes of the arena in use */
+
+static void hist_drop_oldest(void)
 {
-    if (!s[0]) return;
-    if (hcount > 0 && c_streq(hist[(hcount - 1) % HISTN], s)) return;
-    c_strcpy(hist[hcount % HISTN], s, LINE);
-    hcount++;
+    if (hist_n == 0) return;
+    int next = hist_n > 1 ? hist_off[1] : hist_used;
+    int gap = next - hist_off[0];
+    for (int i = next; i < hist_used; i++) hist_arena[i - gap] = hist_arena[i];
+    for (int i = 1; i < hist_n; i++) hist_off[i - 1] = hist_off[i] - gap;
+    hist_used -= gap;
+    hist_n--;
 }
 static const char *hist_at(int back)        /* back = 1 -> most recent */
 {
-    if (back <= 0 || back > hcount || back > HISTN) return 0;
-    return hist[(hcount - back) % HISTN];
+    if (back <= 0 || back > hist_n) return 0;
+    return hist_arena + hist_off[hist_n - back];
+}
+static void hist_add(const char *s)
+{
+    if (!s[0]) return;
+    const char *last = hist_at(1);
+    if (last && c_streq(last, s)) return;
+    int need = c_strlen(s) + 1;
+    if (need > HIST_BYTES) return;          /* cannot happen: LINE < HIST_BYTES */
+    while (hist_n >= HISTN || hist_used + need > HIST_BYTES) hist_drop_oldest();
+    hist_off[hist_n++] = hist_used;
+    for (int i = 0; i < need; i++) hist_arena[hist_used + i] = s[i];
+    hist_used += need;
+    hcount++;
 }
 
 static void prompt_text(char *out, int max)
@@ -481,7 +532,7 @@ static void apply_key(int k)
     case KEY_END:   lcur = llen; break;
     case KEY_UP:
         if (hpos == 0) c_strcpy(hstash, lbuf, LINE);
-        if (hpos < hcount && hpos < HISTN) {
+        if (hpos < hist_n) {                /* retained entries, not ever-added ones */
             hpos++;
             const char *h = hist_at(hpos);
             if (h) { c_strcpy(lbuf, h, LINE); llen = c_strlen(lbuf); lcur = llen; }
@@ -656,20 +707,48 @@ struct tok { char *s; unsigned char op; unsigned char glob; };
 
 /* Quote-aware split. Operators are recognized only OUTSIDE quotes, which is the
  * whole reason the old spacify()-then-split approach had to go: it turned
- * `echo "a|b"` into a pipeline. $VAR and $? expand here too (not in '...'). */
+ * `echo "a|b"` into a pipeline. $VAR and $? expand here too (not in '...').
+ *
+ * Returns the token count, or TOK_E_WORDS (more than `maxtok` words) or
+ * TOK_E_BYTES (the expanded text does not fit `store`). NEVER a prefix: the
+ * old `if (n >= maxtok) break;` returned the first 64 words of a 65-word line
+ * as if that were the line, and `while (*p && si < storemax - 1)` stopped
+ * copying in the MIDDLE of a word and then went on to parse the rest of that
+ * word as the next one. An expansion is where the bytes come from -- `$A` is
+ * two characters in the line and up to ENVLEN-2 in the store, so a line that
+ * fits LINE can still overflow any store. tok_used reports how much of the
+ * store the tokens took, so the glob expander can append after them. */
+#define TOK_E_WORDS (-1)
+#define TOK_E_BYTES (-2)
+static int tok_used;
+#ifdef SH_LIMITS_NEGCTL
+/* THE NEGATIVE CONTROL (tests/exec.mk's test-sh-limits-negctl): every limit in
+ * this file as it shipped -- silently truncating. tests/unit/sh_limits_test.c
+ * must FAIL against this build on exactly the checks that look for a refusal
+ * and keep passing on the ones that exercise a command within the limits; a
+ * test that fails everywhere against it is measuring "did the shell break",
+ * not "does the shell refuse". */
+#define TOK_PUT(c)  do { if (si < storemax - 1) store[si++] = (c); } while (0)
+#else
+#define TOK_PUT(c)  do { if (si >= storemax - 1) return TOK_E_BYTES; store[si++] = (c); } while (0)
+#endif
 static int tokenize(const char *in, char *store, int storemax, struct tok *out, int maxtok)
 {
     int n = 0, si = 0;
     const char *p = in;
+    tok_used = 0;
     for (;;) {
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
+#ifdef SH_LIMITS_NEGCTL
         if (n >= maxtok) break;
+#else
+        if (n >= maxtok) return TOK_E_WORDS;
+#endif
 
         if (*p == '|' || *p == '<' || *p == '>' || *p == '&') {
-            if (si + 2 >= storemax) break;
             out[n].s = store + si;
-            store[si++] = *p; store[si++] = 0;
+            TOK_PUT(*p); TOK_PUT(0);
             out[n].op = (unsigned char)*p; out[n].glob = 0;
             n++; p++;
             continue;
@@ -678,21 +757,21 @@ static int tokenize(const char *in, char *store, int storemax, struct tok *out, 
         out[n].s = store + si;
         out[n].op = 0; out[n].glob = 0;
         int q = 0;                            /* 0 none, 1 single, 2 double */
-        while (*p && si < storemax - 1) {
+        while (*p) {
             char c = *p;
             if (!q && (c == ' ' || c == '\t' || c == '|' || c == '<' || c == '>' || c == '&')) break;
             if (!q && c == '\'') { q = 1; p++; continue; }
             if (!q && c == '"')  { q = 2; p++; continue; }
             if (q == 1 && c == '\'') { q = 0; p++; continue; }
             if (q == 2 && c == '"')  { q = 0; p++; continue; }
-            if (q != 1 && c == '\\' && p[1]) { store[si++] = p[1]; p += 2; continue; }
+            if (q != 1 && c == '\\' && p[1]) { TOK_PUT(p[1]); p += 2; continue; }
             if (q != 1 && c == '$' && p[1]) {
                 p++;
                 if (*p == '?') {
                     char t[16];
                     outn_str(t, last_status);
                     p++;
-                    for (int i = 0; t[i] && si < storemax - 1; i++) store[si++] = t[i];
+                    for (int i = 0; t[i]; i++) TOK_PUT(t[i]);
                     continue;
                 }
                 char name[64]; int k = 0;
@@ -700,18 +779,20 @@ static int tokenize(const char *in, char *store, int storemax, struct tok *out, 
                               (*p >= '0' && *p <= '9') || *p == '_') && k < 63) name[k++] = *p++;
                 name[k] = 0;
                 const char *v = k ? env_get(name) : 0;
-                if (v) for (int i = 0; v[i] && si < storemax - 1; i++) store[si++] = v[i];
+                if (v) for (int i = 0; v[i]; i++) TOK_PUT(v[i]);
                 continue;
             }
             if (!q && (c == '*' || c == '?')) out[n].glob = 1;
-            store[si++] = c;
+            TOK_PUT(c);
             p++;
         }
-        store[si++] = 0;
+        TOK_PUT(0);
         n++;
     }
+    tok_used = si;
     return n;
 }
+#undef TOK_PUT
 
 /* --------------------------------------------------------------- globbing -- */
 
@@ -727,7 +808,17 @@ static int glob_match(const char *pat, const char *s)
 }
 
 /* Expand one globbed token into argv. Returns how many entries were added; 0
- * means "no match", and the caller keeps the literal word (sh's rule). */
+ * means "no match", and the caller keeps the literal word (sh's rule).
+ *
+ * Or GLOB_E_ARGS / GLOB_E_BYTES when a match exists that there is no room
+ * for -- in argv or in the store. Never a partial expansion: `rm *.o` over a
+ * directory with one more object than fits is NOT "rm the ones that fit", it
+ * is a refusal, because the matches that were dropped are exactly the ones
+ * the user could not see. The loop therefore runs to the END of the
+ * directory rather than stopping at the bound: a bound hit with nothing left
+ * to match is not an overflow. */
+#define GLOB_E_ARGS  (-1)
+#define GLOB_E_BYTES (-2)
 static int glob_expand(const char *word, char *store, int *si, int storemax,
                        char **argv, int argc, int maxarg)
 {
@@ -735,7 +826,7 @@ static int glob_expand(const char *word, char *store, int *si, int storemax,
     split_path(word, dir, sizeof dir, leaf, sizeof leaf);
     const char *d = dir[0] ? dir : ".";
     int n = dir_count(d), added = 0;
-    for (int i = 0; i < n && argc + added < maxarg; i++) {
+    for (int i = 0; i < n; i++) {
         char nm[64];
         if (dir_name(d, i, nm) == -1) continue;
         if (nm[0] == '.' && leaf[0] != '.') continue;
@@ -744,7 +835,13 @@ static int glob_expand(const char *word, char *store, int *si, int storemax,
         if (dir[0] && !c_streq(dir, ".")) path_join(full, dir, nm, sizeof full);
         else c_strcpy(full, nm, sizeof full);
         int l = c_strlen(full);
+#ifdef SH_LIMITS_NEGCTL
+        if (argc + added >= maxarg) break;       /* the silent version: keep what fit */
         if (*si + l + 1 >= storemax) break;
+#else
+        if (argc + added >= maxarg) return GLOB_E_ARGS;
+        if (*si + l + 1 >= storemax) return GLOB_E_BYTES;
+#endif
         argv[argc + added] = store + *si;
         c_strcpy(store + *si, full, l + 1);
         *si += l + 1;
@@ -756,6 +853,22 @@ static int glob_expand(const char *word, char *store, int *si, int storemax,
 /* --------------------------------------------------------------- pipeline -- */
 
 struct cmd { char *argv[MAXARG + 1]; int argc; char *infile, *outfile; int append; };
+
+/* The kernel refused the argv on SIZE (LOGIT_EXEC_E2BIG). This shell's own
+ * bounds are the kernel's, so the only way here is the environment: the
+ * kernel's LOGIT_ARG_BYTES budget covers argv AND envp together, and a line
+ * that fills the arena plus a full environment is over it. Said as what it is
+ * rather than falling through to "command not found", which is what every
+ * failed execve used to read as. 126 is "found but cannot execute", bash's
+ * status for the same refusal. */
+static void exec_too_big(const char *name)
+{
+    errs("sh: "); errs(name);
+    errs(": argument list too long for the kernel (limit ");
+    outn_fd(2, LOGIT_ARG_MAX); errs(" entries, "); outn_fd(2, LOGIT_ARG_BYTES);
+    errs(" bytes of argv+envp)\n");
+    app_exit(126);
+}
 
 static void run_external(char **argv, char **envp)
 {
@@ -778,9 +891,9 @@ static void run_external(char **argv, char **envp)
         c_strcpy(buf, "/bin/", sizeof buf);
         int n = 5; for (int i = 0; argv[0][i] && n < (int)sizeof buf - 1; i++) buf[n++] = argv[0][i];
         buf[n] = 0;
-        sys_execve(buf, argv, envp);
+        if (sys_execve(buf, argv, envp) == LOGIT_EXEC_E2BIG) exec_too_big(argv[0]);
     }
-    sys_execve(argv[0], argv, envp);
+    if (sys_execve(argv[0], argv, envp) == LOGIT_EXEC_E2BIG) exec_too_big(argv[0]);
     errs("sh: command not found: "); errs(argv[0]); errs("\n");
     app_exit(127);
 }
@@ -1001,9 +1114,9 @@ static int builtin(struct cmd *c)
         last_status = 0; return 1;
     }
     if (c_streq(a0, "history")) {
-        for (int i = hcount > HISTN ? hcount - HISTN : 0; i < hcount; i++) {
+        for (int i = hcount - hist_n; i < hcount; i++) {
             char n[16]; outn_str(n, i + 1);
-            rt_out(n); rt_out("  "); rt_out(hist[i % HISTN]); rt_out("\n");
+            rt_out(n); rt_out("  "); rt_out(hist_at(hcount - i)); rt_out("\n");
         }
         last_status = 0; return 1;
     }
@@ -1032,21 +1145,41 @@ static int builtin(struct cmd *c)
 
 /* ------------------------------------------------------------- exec a line -- */
 
+/* A refusal: the line is NOT run, not even its prefix, and the message names
+ * the constant so it cannot disagree with the build. Exit status 1 like any
+ * other shell error, so a script that checks $? sees it. */
+static void refuse(const char *what, int limit, const char *unit)
+{
+    errs("sh: "); errs(what); errs(" (limit "); outn_fd(2, limit); errs(" "); errs(unit);
+    errs("); the command was not run\n");
+    last_status = 1;
+}
+
 static void exec_line(char *line)
 {
-    static char store[LINE * 3];
-    static char gstore[LINE * 3];
+    /* One arena for the expanded words AND the glob matches, sized to exactly
+     * the kernel's argv budget (STORE == LOGIT_ARG_BYTES): every byte of argv
+     * this shell can build is a byte the kernel will accept, so a command that
+     * gets past this function is never refused one layer down on size alone.
+     * (The kernel's budget also covers envp; see exec_too_big.) Static because
+     * 16 KiB on the user stack is a demand fault per page on every command,
+     * and in .bss it is four pages mapped once per exec of the shell. The
+     * token and command tables stay on the stack: they are touched only as far
+     * as the line needs, and a one-command line touches 2 KiB of them. */
+    static char store[STORE];
     struct tok tk[MAXTOK];
     int nt = tokenize(line, store, sizeof store, tk, MAXTOK);
+    if (nt == TOK_E_WORDS) { refuse("too many words on one line", MAXTOK, "words"); return; }
+    if (nt == TOK_E_BYTES) { refuse("the line expands past the argument arena", STORE, "bytes"); return; }
     if (nt == 0) return;
 
     struct cmd cmds[MAXCMD];
-    int ncmd = 0, background = 0, gi = 0;
+    int ncmd = 0, background = 0, gi = tok_used;
     cmds[0].argc = 0; cmds[0].infile = cmds[0].outfile = 0; cmds[0].append = 0;
     for (int i = 0; i < nt; i++) {
         if (tk[i].op == '|') {
             cmds[ncmd].argv[cmds[ncmd].argc] = 0;
-            if (++ncmd >= MAXCMD) { errs("sh: pipeline too long\n"); return; }
+            if (++ncmd >= MAXCMD) { refuse("pipeline too long", MAXCMD, "stages"); return; }
             cmds[ncmd].argc = 0; cmds[ncmd].infile = cmds[ncmd].outfile = 0; cmds[ncmd].append = 0;
         } else if (tk[i].op == '<') { if (i + 1 < nt) cmds[ncmd].infile = tk[++i].s; }
         else if (tk[i].op == '>') {
@@ -1054,12 +1187,22 @@ static void exec_line(char *line)
             if (i + 1 < nt) cmds[ncmd].outfile = tk[++i].s;
         }
         else if (tk[i].op == '&') { background = 1; }
-        else if (cmds[ncmd].argc < MAXARG) {
+        else {
             if (tk[i].glob) {
-                int added = glob_expand(tk[i].s, gstore, &gi, (int)sizeof gstore,
+                int added = glob_expand(tk[i].s, store, &gi, (int)sizeof store,
                                         cmds[ncmd].argv, cmds[ncmd].argc, MAXARG);
+                if (added == GLOB_E_ARGS)  { refuse("a glob matches more names than one command may carry", MAXARG, "words including the command name"); return; }
+                if (added == GLOB_E_BYTES) { refuse("a glob expands past the argument arena", STORE, "bytes"); return; }
                 if (added) { cmds[ncmd].argc += added; continue; }
             }
+#ifdef SH_LIMITS_NEGCTL
+            if (cmds[ncmd].argc >= MAXARG) continue;   /* the silent version: drop the word */
+#else
+            /* THE 33RD ARGUMENT. This was `else if (argc < MAXARG) { ... }` with
+             * no else: the word past the bound was simply not appended, and
+             * the command ran without it. */
+            if (cmds[ncmd].argc >= MAXARG) { refuse("too many words in one command", MAXARG, "words including the command name"); return; }
+#endif
             cmds[ncmd].argv[cmds[ncmd].argc++] = tk[i].s;
         }
     }
@@ -1077,6 +1220,37 @@ static void exec_line(char *line)
         return;
     }
     last_status = wait_foreground(j);
+}
+
+/* Read one line from fd into buf[max] for the NON-INTERACTIVE shell. Returns
+ * the length, -1 at EOF with nothing read, or READ_E_LONG when the line did
+ * not fit -- in which case the REST OF THE LINE HAS BEEN CONSUMED and nothing
+ * of it is in buf. clib.h's readline() keeps the first max-1 bytes and drops
+ * the rest in silence, which is right for a `cat`-shaped reader and wrong for
+ * a shell: a 600-byte `echo` ran as its first 506 bytes with status 0. Local
+ * to this file rather than a change to clib.h's, because clib.h's contract is
+ * shared by every coreutil and "return the prefix" is the one some of them
+ * want. The interactive editor has no equivalent problem: ins_char() refuses
+ * the keystroke and the buffer the terminal shows IS the buffer that runs. */
+#define READ_E_LONG (-2)
+static int sh_readline(int fd, char *buf, int max)
+{
+    int n = 0, over = 0;
+    for (;;) {
+        char c;
+        int r = sys_read(fd, &c, 1);
+        if (r <= 0) { if (n == 0 && !over) return -1; break; }   /* EOF */
+        if (c == '\n') break;
+        if (c == '\b' || c == 127) { if (n > 0) n--; continue; }
+#ifdef SH_LIMITS_NEGCTL
+        if (n < max - 1) buf[n++] = c;          /* the silent version: keep the prefix */
+#else
+        if (n < max - 1) buf[n++] = c;
+        else over = 1;                          /* keep reading: the rest is THIS line */
+#endif
+    }
+    buf[n] = 0;
+    return over ? READ_E_LONG : n;
 }
 
 /* Sweep finished background jobs so their slots (and zombies) do not pile up. */
@@ -1112,13 +1286,16 @@ int main(int argc, char **argv)
     rt_reset(&enc);
 
     if (!interactive) {
-        /* Unchanged from the pre-rich shell, deliberately. */
+        /* Unchanged from the pre-rich shell, deliberately -- except that a line
+         * longer than the buffer is now refused whole instead of run as its
+         * prefix (see sh_readline). */
         outs("LogitOS shell -- type 'help'\n");
         char line[LINE];
         for (;;) {
             char cwd[128]; sys_getcwd(cwd, sizeof cwd);
             outs(cwd); outs(" $ ");
-            int n = readline(0, line, sizeof line);
+            int n = sh_readline(0, line, sizeof line);
+            if (n == READ_E_LONG) { refuse("line too long", LINE - 1, "bytes"); continue; }
             if (n < 0) break;
             if (n == 0) continue;
             exec_line(line);
