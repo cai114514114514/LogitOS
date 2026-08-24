@@ -4358,6 +4358,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/ssh.mk
 -include tests/sysroot.mk
 -include tests/tcc.mk
+-include tests/vp9.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:
