@@ -34,6 +34,7 @@
 #include "ktime.h"
 #include "evq.h"
 #include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
+#include "ime_ui.h"     /* IME-HOOK 1/4: the pinyin candidate bar (see ime_ui.h) */
 #include "keyboard.h"
 #include "net.h"
 #include "http.h"
@@ -51,6 +52,11 @@
 #include "power.h"      /* kernel_poweroff/kernel_reboot -- the LogitOS menu's Shut Down/Restart */
 
 #define MAXWIN     16
+/* The input method keeps one small parked record per window index (ime_ui.c);
+ * sizing that table smaller than this one would not fail to build, it would
+ * make the IME quietly stop working in the highest-numbered windows, because
+ * ime_ui_key() bounds-checks and reports the key as not-consumed. */
+_Static_assert(IME_UI_MAXWIN >= MAXWIN, "ime_ui.h IME_UI_MAXWIN < wm.c MAXWIN");
 /* ---- units ----------------------------------------------------------------
  * Every geometry constant in this file is in POINTS; `struct win`'s x/y/w/h and
  * everything that touches a pixel are in DEVICE pixels. S() converts one to the
@@ -716,6 +722,19 @@ static int g_ui_dark;
  * theme instead of carrying its own idea of it. Declared in wm.h. */
 int wm_dark(void) { return g_ui_dark; }
 static void wm_set_dark(int on);
+static int top_visible(void);   /* fwd: wm_ime_anchor, immediately below */
+
+/* IME-HOOK (the one call in the other direction; declared in wm.h). The
+ * FOCUSED window, not the top of the z-order -- top_visible() already draws
+ * that distinction for the keystroke itself, and the bar has to sit under the
+ * window the characters are going to. */
+int wm_ime_anchor(int *wi, int *x, int *y, int *w, int *h)
+{
+    int i = top_visible();
+    if (i < 0 || !wins[i].used || wins[i].kind != WK_APP) return 0;
+    *wi = i; *x = wins[i].x; *y = wins[i].y; *w = wins[i].w; *h = TBH;
+    return 1;
+}
 static int cascade;
 
 /* app registry built by scanning the disk for *.aex */
@@ -2494,6 +2513,12 @@ static void reap(void)
                 if (dragging == wi) dragging = -1;   /* don't drag a reaped (soon reused) slot */
                 if (mouse_capture == wi) mouse_capture = -1;   /* ...nor deliver its drag to the slot's next tenant */
                 if (rz_win == wi) { rz_win = -1; rz_edge = 0; }   /* ...nor resize it */
+                /* IME-HOOK: ...nor let the slot's next tenant inherit this
+                 * window's half-typed composition or its pinyin on/off state.
+                 * Exactly the argument the surf.px comment above makes: the
+                 * slot is REUSED, so state keyed on the index has to end when
+                 * the window does, not when somebody notices. */
+                ime_ui_win_gone(wi);
             }
             apps[i].used = 0;
         }
@@ -4114,6 +4139,13 @@ static int render_region(const struct drect *R)
      * pointer. No rect_hit guard: the fb clip is already this rectangle and
      * every primitive notify_compose uses is clip-exact (it is deliberately not
      * glass, so it needs no entry in dmg_expand). See notify.h. */
+    /* IME-HOOK 4/4: the candidate bar, BELOW a notification and above every
+     * window. A notification is the system speaking and the bar is the user
+     * typing; if both are up, the system's message must not be the thing that
+     * gets covered. No rect_hit guard, notify's reason exactly (clip-exact
+     * primitives, no glass, no dmg_expand entry). Costs one load and a branch
+     * when nothing is being composed. */
+    ime_ui_compose();
     notify_compose();
     if (!hw_cursor) draw_cursor_back(mx, my);   /* no plane: arrow into the composite */
     fb_clear_clip();
@@ -4517,6 +4549,31 @@ static void wm_process_key(int c, int mods)
     if (wi < 0) return;
     struct win *w = &wins[wi];
     if (w->kind == WK_APP) {
+        /* IME-HOOK 3/4: the input method, and it is the LAST thing between a
+         * key and the app rather than the first, so every rule above -- the
+         * lock, Expose, the menus, the Cmd table -- still wins over a
+         * composition. See ime_ui.h for the three-way return.
+         *
+         * COST WHEN NOT COMPOSING: ime_ui_key returns -1 after a bounds check,
+         * one byte load and one compare (measured in the disassembly of this
+         * build), so a machine typing ASCII pays that and the branch below and
+         * nothing else. It is a call and not an inline test on purpose: an
+         * inline `if (ime_on[wi])` here would put the IME's state layout into
+         * wm.c and give the feature two homes.
+         *
+         * A committed character is delivered as EV_KEY with a = the codepoint
+         * and mods = 0 -- deliberately 0 and not `mods`, because the Shift
+         * that was held while typing the romanisation says nothing about the
+         * character produced, and an app reading mods would see a phantom
+         * Shift+<Han character>. */
+        uint32_t cps[IME_UI_MAXCP];
+        int nc = ime_ui_key(wi, c, mods, cps, IME_UI_MAXCP);
+        if (nc >= 0) {
+            for (int i = 0; i < nc; i++)
+                enqueue_input(w, EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
+            if (nc > 0) dirty_win(w);
+            return;
+        }
         /* `a` is unchanged -- Ctrl+S still arrives as 0x13, because a decade of
          * terminal habit lives on that mapping and TextEdit reads it. `mods` is
          * additional information, not a replacement encoding. */
@@ -5120,6 +5177,16 @@ void wm_init(void)
      * desk space or the same desk space at 2.25x the pixels. */
     kprintf("[wm] display %ux%u px, scale %d%%, desktop %dx%d pt\n",
             fb_width(), fb_height(), fb_scale(), fb_width_pt(), fb_height_pt());
+
+    /* IME-HOOK 2/4: the pinyin dictionary. HERE rather than in kmain beside
+     * text_init() for one reason worth stating: the two are the same kind of
+     * thing (a large read-only artefact off the LogitFS disk that stays
+     * resident), but the font is needed by anything that draws text and the
+     * dictionary is needed only by the window manager's key path -- so it
+     * belongs to the subsystem that owns that path. A failure is NOT fatal and
+     * is not silent: ime_ui_init() names the file on serial and the toggle
+     * then passes Ctrl+Space through, leaving ASCII input exactly as it was. */
+    ime_ui_init();
 
     /* Ask the display for a pointer plane. Everything downstream branches on
      * the answer, and the answer is worth a line of its own: "the pointer is

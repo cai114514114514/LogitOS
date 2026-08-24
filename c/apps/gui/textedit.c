@@ -49,6 +49,86 @@ static int geom_dirty;
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+/* ---- UTF-8, at the one place a raw EV_KEY codepoint becomes bytes in `text`
+ * ----
+ *
+ * logit_abi.h: EV_KEY's `a` is "a character, or a KEY_* code ... all > 0xFF
+ * so they never collide with a character". Above ASCII, `a` is either one of
+ * the eight enumerated navigation codes or a Unicode code point -- the pinyin
+ * IME commits CJK this way. `(char)a` truncates a code point to its low byte;
+ * te_apply_key and te_utf8_encode are the fix, factored out so
+ * tests/unit/textedit_test.c can drive them without a window (no gui_create,
+ * no poll_event -- text/tlen/saved are the same file statics app_main uses).
+ *
+ * -DAUI_BYTE_BACKSPACE is the negative control: it reverts backspace to
+ * removing one BYTE, the original bug -- a CJK character deleted this way
+ * leaves its lead byte's continuation bytes in the buffer, decodable as
+ * neither the old character nor a new one. Named to match aui.c's control
+ * rather than invented separately: both text-entry sites share one flag and
+ * one falsifiable claim ("delete a whole character"). */
+static int te_is_nav_key(int a)
+{
+    return a == KEY_UP || a == KEY_DOWN || a == KEY_PGUP || a == KEY_PGDN ||
+           a == KEY_HOME || a == KEY_END || a == KEY_LEFT || a == KEY_RIGHT;
+}
+
+static int te_utf8_encode(unsigned cp, char out[4])
+{
+    if (cp < 0x80)    { out[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (char)(0xC0 | (cp >> 6));
+                        out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12));
+                        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+static int te_is_cont(char c) { return ((unsigned char)c & 0xC0) == 0x80; }
+
+/* One key against `text`/`tlen`/`saved` -- the whole EV_KEY handler pulled out
+ * of app_main's event loop. `wrote` reports whether Ctrl+S was actually asked
+ * to write (the test has no filesystem, so it can only check the request was
+ * made, not that it landed). Returns 1 if anything changed that a repaint
+ * should reflect, 0 for a key this app ignores (navigation) or a no-op
+ * (buffer full). */
+static int te_apply_key(int a, int *wrote)
+{
+    if (te_is_nav_key(a)) return 0;        /* navigation, not text -- see the
+                                             * file header: append-only, no
+                                             * caret to move */
+    if (a == CTRL_S) { if (wrote) *wrote = 1; return 1; }
+    if (a == '\b') {
+        if (tlen <= 0) return 0;
+#ifdef AUI_BYTE_BACKSPACE
+        tlen--;
+#else
+        int p = tlen - 1;
+        while (p > 0 && te_is_cont(text[p])) p--;
+        tlen = p;
+#endif
+        text[tlen] = 0;
+        saved = 0;
+        return 1;
+    }
+    if (a > 0 && a <= 0x7F) {
+        if (tlen >= MAXT) return 0;
+        text[tlen++] = (char)a; text[tlen] = 0; saved = 0;
+        return 1;
+    }
+    if (a > 0x7F) {
+        char enc[4]; int el = te_utf8_encode((unsigned)a, enc);
+        if (tlen + el >= MAXT) return 0;
+        for (int i = 0; i < el; i++) text[tlen++] = enc[i];
+        text[tlen] = 0; saved = 0;
+        return 1;
+    }
+    return 0;
+}
+
 static void itoa_(int v, char *b)
 {
     char t[16]; int n = 0, p = 0;
@@ -229,18 +309,9 @@ void app_main(void)
             if (e.type == EV_THEME)  changed = 1;
             if (e.type == EV_WHEEL)  { scroll += e.wheel; if (scroll < 0) scroll = 0; changed = 1; }
             if (e.type == EV_KEY) {
-                if (e.a > 0xFF) continue;      /* arrows/Home/End: navigation, not text */
-                char c = (char)e.a;
-                if (c == CTRL_S) {
-                    if (write_file(fname, text, tlen) >= 0) saved = 1;
-                    changed = 1;
-                } else if (c == '\b') {
-                    if (tlen > 0) text[--tlen] = 0;
-                    saved = 0; changed = 1;
-                } else if (tlen < MAXT) {
-                    text[tlen++] = c; text[tlen] = 0;
-                    saved = 0; changed = 1;
-                }
+                int wrote = 0;
+                if (te_apply_key(e.a, &wrote)) changed = 1;
+                if (wrote) { if (write_file(fname, text, tlen) >= 0) saved = 1; changed = 1; }
             }
         }
         if (changed) draw();

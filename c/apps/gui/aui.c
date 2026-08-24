@@ -1450,6 +1450,63 @@ static int tf_owner, tf_caret, tf_anchor;
  * keystroke and only start blinking once the field has been left alone. */
 static unsigned tf_touch;
 
+/* ---- UTF-8, at the one place a raw EV_KEY codepoint becomes bytes in this
+ * buffer ----
+ *
+ * logit_abi.h: EV_KEY's `a` is "a character, or a KEY_* code ... all > 0xFF
+ * so they never collide with a character" -- i.e. above ASCII, `a` is either
+ * one of the eight enumerated navigation codes or a Unicode code point (the
+ * pinyin IME commits CJK this way). `(char)k` truncates a code point to its
+ * low byte, which for U+4F60 (你) used to store a lone 0x60 -- a stray
+ * backtick where a character should have been, and every byte after it still
+ * decoded as if the buffer were well-formed UTF-8, which it no longer was.
+ * tf_is_nav_key is enumerated rather than range-tested against KEY_UP/
+ * KEY_RIGHT so a future non-contiguous KEY_* addition cannot silently start
+ * being typed into text fields. */
+static int tf_is_nav_key(int a)
+{
+    return a == KEY_UP || a == KEY_DOWN || a == KEY_PGUP || a == KEY_PGDN ||
+           a == KEY_HOME || a == KEY_END || a == KEY_LEFT || a == KEY_RIGHT;
+}
+
+static int tf_utf8_encode(unsigned cp, char out[4])
+{
+    if (cp < 0x80)    { out[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (char)(0xC0 | (cp >> 6));
+                        out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12));
+                        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* A UTF-8 CONTINUATION byte (10xxxxxx). The caret and every insert/delete
+ * boundary must never land on one -- gui_text_run and SYS_TEXT_MEASURE are
+ * handed a byte range and decode it as UTF-8 from its start, so a boundary
+ * one byte into a multi-byte sequence hands them a lead byte's tail as if it
+ * were a new character and desyncs every character after it. */
+static int tf_is_cont(char c) { return ((unsigned char)c & 0xC0) == 0x80; }
+
+static int tf_step_left(const char *s, int i)
+{
+    if (i <= 0) return 0;
+    i--;
+    while (i > 0 && tf_is_cont(s[i])) i--;
+    return i;
+}
+
+static int tf_step_right(const char *s, int n, int i)
+{
+    if (i >= n) return n;
+    i++;
+    while (i < n && tf_is_cont(s[i])) i++;
+    return i;
+}
+
 static int tf_index_at(const char *buf, int n, int px_off)
 {
     int lo = 0, hi = n;
@@ -1457,6 +1514,7 @@ static int tf_index_at(const char *buf, int n, int px_off)
         int mid = (lo + hi + 1) / 2;
         if (twn(buf, mid) <= px_off) lo = mid; else hi = mid - 1;
     }
+    while (lo > 0 && tf_is_cont(buf[lo])) lo--;   /* never split a UTF-8 char */
     return lo;
 }
 
@@ -1468,6 +1526,74 @@ static void tf_erase_sel(char *buf, int *n)
     *n -= (b - a);
     buf[*n] = 0;
     tf_caret = tf_anchor = a;
+}
+
+/* One key against the field's buffer and caret -- pulled out of
+ * aui_textfield_ex's body so tests/unit/aui_textfield_test.c can drive it
+ * directly (`#include "aui.c"`, same technique as aui_mask_test.c) without
+ * exercising a single drawing syscall: this function never calls gui_text_run,
+ * aui_round or anything else that reaches the kernel. Returns 1 on Enter
+ * (aui_textfield_ex's documented "returns 1 on Enter" contract), 0 if some
+ * other key was consumed, -1 if the key was not this widget's to take (the
+ * caller must not set in.key_used).
+ *
+ * -DAUI_BYTE_BACKSPACE is the negative control: it reverts backspace/delete to
+ * removing one BYTE instead of one character, which is the original bug --
+ * mid-buffer text after a deleted lead byte is left holding orphaned
+ * continuation bytes, decodable as neither the old character nor a new one. */
+static int tf_apply_key(char *buf, int cap, int *np, int k, int shift)
+{
+    int n = *np, ret = 0;
+    if (k == '\n') ret = 1;
+    else if (k == 1) { tf_anchor = 0; tf_caret = n; }             /* Ctrl+A */
+    else if (k == '\b' || k == 127) {
+        if (tf_caret != tf_anchor) tf_erase_sel(buf, &n);
+        else if (k == '\b' && tf_caret > 0) {
+#ifdef AUI_BYTE_BACKSPACE
+            int a = tf_caret - 1;
+#else
+            int a = tf_step_left(buf, tf_caret);
+#endif
+            int d = tf_caret - a;
+            for (int i = a; i + d <= n; i++) buf[i] = buf[i + d];
+            n -= d; tf_caret = a; tf_anchor = tf_caret;
+        } else if (k == 127 && tf_caret < n) {
+#ifdef AUI_BYTE_BACKSPACE
+            int b = tf_caret + 1;
+#else
+            int b = tf_step_right(buf, n, tf_caret);
+#endif
+            int d = b - tf_caret;
+            for (int i = tf_caret; i + d <= n; i++) buf[i] = buf[i + d];
+            n -= d;
+        }
+        buf[n] = 0;
+    }
+    else if (k == KEY_LEFT)  { if (tf_caret > 0) tf_caret = tf_step_left(buf, tf_caret); if (!shift) tf_anchor = tf_caret; }
+    else if (k == KEY_RIGHT) { if (tf_caret < n) tf_caret = tf_step_right(buf, n, tf_caret); if (!shift) tf_anchor = tf_caret; }
+    else if (k == KEY_HOME)  { tf_caret = 0; if (!shift) tf_anchor = 0; }
+    else if (k == KEY_END)   { tf_caret = n; if (!shift) tf_anchor = n; }
+    else if (k >= 32 && k < 127) {
+        if (tf_caret != tf_anchor) tf_erase_sel(buf, &n);
+        if (n < cap - 1) {
+            for (int i = n; i > tf_caret; i--) buf[i] = buf[i - 1];
+            buf[tf_caret++] = (char)k; n++; buf[n] = 0; tf_anchor = tf_caret;
+        }
+    }
+    else if (k > 0x7F && !tf_is_nav_key(k)) {
+        /* A code point above ASCII -- UTF-8 encode it and splice in all of its
+         * bytes as one atomic unit, same shape as the ASCII branch above. */
+        char enc[4]; int el = tf_utf8_encode((unsigned)k, enc);
+        if (tf_caret != tf_anchor) tf_erase_sel(buf, &n);
+        if (n + el < cap) {
+            for (int i = n + el - 1; i >= tf_caret + el; i--) buf[i] = buf[i - el];
+            for (int i = 0; i < el; i++) buf[tf_caret + i] = enc[i];
+            n += el; tf_caret += el; buf[n] = 0; tf_anchor = tf_caret;
+        }
+    }
+    else { *np = n; return -1; }                                  /* not ours */
+    *np = n;
+    return ret;
 }
 
 int aui_textfield_ex(int x, int y, int w, char *buf, int cap, const char *placeholder, int enabled)
@@ -1491,33 +1617,11 @@ int aui_textfield_ex(int x, int y, int w, char *buf, int cap, const char *placeh
 
     if (foc && (r.clicked || in.ev == EV_KEY)) tf_touch = frame_ms;
     if (foc && in.ev == EV_KEY && !in.key_used) {
-        int k = in.a, shift = in.mods & EV_MOD_SHIFT;
+        int shift = in.mods & EV_MOD_SHIFT;
         in.key_used = 1;
-        if (k == '\n') ret = 1;
-        else if (k == 1) { tf_anchor = 0; tf_caret = n; }            /* Ctrl+A */
-        else if (k == '\b' || k == 127) {
-            if (tf_caret != tf_anchor) tf_erase_sel(buf, &n);
-            else if (k == '\b' && tf_caret > 0) {
-                for (int i = tf_caret - 1; i < n; i++) buf[i] = buf[i + 1];
-                n--; tf_caret--; tf_anchor = tf_caret;
-            } else if (k == 127 && tf_caret < n) {
-                for (int i = tf_caret; i < n; i++) buf[i] = buf[i + 1];
-                n--;
-            }
-            buf[n] = 0;
-        }
-        else if (k == KEY_LEFT)  { if (tf_caret > 0) tf_caret--; if (!shift) tf_anchor = tf_caret; }
-        else if (k == KEY_RIGHT) { if (tf_caret < n) tf_caret++; if (!shift) tf_anchor = tf_caret; }
-        else if (k == KEY_HOME)  { tf_caret = 0; if (!shift) tf_anchor = 0; }
-        else if (k == KEY_END)   { tf_caret = n; if (!shift) tf_anchor = n; }
-        else if (k >= 32 && k < 127) {
-            if (tf_caret != tf_anchor) tf_erase_sel(buf, &n);
-            if (n < cap - 1) {
-                for (int i = n; i > tf_caret; i--) buf[i] = buf[i - 1];
-                buf[tf_caret++] = (char)k; n++; buf[n] = 0; tf_anchor = tf_caret;
-            }
-        }
-        else in.key_used = 0;                                        /* not ours */
+        int kr = tf_apply_key(buf, cap, &n, in.a, shift);
+        if (kr < 0) in.key_used = 0;                                  /* not ours */
+        else ret = kr;
     }
 
     unsigned bg = (r.st & AUI_OFF) ? AUI_DISABLED : AUI_SURFACE;

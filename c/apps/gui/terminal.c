@@ -1456,6 +1456,40 @@ static void ctl_send(int type, struct rt_enc *e)
 static char typed[256];
 static int  typed_n;
 static void type_char(char c) { if (typed_n < (int)sizeof typed) typed[typed_n++] = c; }
+
+/* Is `a` one of the eight enumerated KEY_* navigation codes (logit_abi.h),
+ * which go down the CONTROL channel (key_to_shell), rather than a character --
+ * ASCII or a Unicode code point above it -- which goes down stdin as text?
+ * Enumerated rather than range-tested against KEY_UP/KEY_RIGHT so a future
+ * non-contiguous KEY_* addition cannot silently start being typed. */
+static int key_is_nav(int a)
+{
+    return a == KEY_UP || a == KEY_DOWN || a == KEY_PGUP || a == KEY_PGDN ||
+           a == KEY_HOME || a == KEY_END || a == KEY_LEFT || a == KEY_RIGHT;
+}
+
+/* Encode a code point > 0x7F as UTF-8 into `out`, returning the byte count.
+ * This window never interprets a keystroke's TEXT -- it only forwards bytes
+ * to the shell's stdin, which is what makes byte-by-byte type_char() calls
+ * correct here where they would not be in aui.c or textedit.c (which have to
+ * splice a whole character into a buffer atomically). Kept in its own
+ * function anyway, both for the same reason those files' copies are: `(char)a`
+ * on a code point above 0xFF used to truncate it to one raw byte, which for
+ * U+4F60 (你) wrote a single 0x60 to the shell's stdin -- not a mojibake
+ * character but an actual wrong keystroke, a backtick the user never typed. */
+static int key_utf8_encode(unsigned cp, char out[4])
+{
+    if (cp < 0x800)   { out[0] = (char)(0xC0 | (cp >> 6));
+                        out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12));
+                        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
 static void type_flush(void)
 {
     if (!typed_n) return;
@@ -1751,7 +1785,13 @@ static void on_key(struct logit_event *e)
     if (a == KEY_DOWN && (mods & EV_MOD_SHIFT)) { scroll_by(1); return; }
     if (a == KEY_HOME && (mods & EV_MOD_SHIFT)) { scroll = 0; follow = 0; redraw = 1; return; }
     if (a == KEY_END && (mods & EV_MOD_SHIFT)) { follow = 1; redraw = 1; return; }
-    if (a > 0xFF) { key_to_shell(a); follow = 1; return; }
+    /* Only the eight navigation codes go down the control channel. This used
+     * to be `a > 0xFF`, which was right when the keyboard could only ever
+     * produce ASCII -- but a Unicode code point (the pinyin IME committing a
+     * CJK character) is also > 0xFF, and routing IT to key_to_shell would have
+     * sent 你好 to the terminal's SCROLLING, never to the shell it was typed
+     * into. */
+    if (key_is_nav(a)) { key_to_shell(a); follow = 1; return; }
 
     switch (a) {
     case 3:                                     /* ^C, or copy when text is selected */
@@ -1774,7 +1814,18 @@ static void on_key(struct logit_event *e)
         return;
     default: break;
     }
-    if (a > 0 && a <= 0xFF) { type_char((char)a); follow = 1; redraw = 1; }
+    if (a > 0 && a <= 0x7F) { type_char((char)a); follow = 1; redraw = 1; }
+    /* A code point above ASCII: UTF-8 encode it and forward the raw bytes.
+     * The shell's own line editor (c/apps/coreutils/sh.c, another line's) is
+     * what turns these bytes into an edited line and renders lcur -- this
+     * window's only job on the way in is to not corrupt them before they
+     * arrive, which byte-by-byte type_char() calls do not, since nothing here
+     * interprets the bytes as characters. */
+    else if (a > 0x7F) {
+        char enc[4]; int el = key_utf8_encode((unsigned)a, enc);
+        for (int i = 0; i < el; i++) type_char(enc[i]);
+        follow = 1; redraw = 1;
+    }
 }
 
 /* ----------------------------------------------------------------- main --- */

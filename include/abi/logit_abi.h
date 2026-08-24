@@ -199,10 +199,39 @@
 
 /* Event types returned by SYS_POLL_EVENT. */
 #define EV_NONE   0
-#define EV_KEY    1   /* a = character, or a KEY_* code below for non-printable keys */
+/* a = a UNICODE CODEPOINT when it is < KEY_UP, or a KEY_* code below.
+ *
+ * "a character" used to be the whole sentence, and on a machine whose only
+ * text source was a scancode-to-ASCII table it meant the same thing. It does
+ * not any more: c/kernel/gui/ime_ui.c commits Han characters through this
+ * event, one EV_KEY per character, mods = 0. An app that reads `a` as a byte
+ * gets the low 8 bits of a codepoint, which is a different character.
+ *
+ * THE RULE, in one line: 0x00..0x7F is ASCII exactly as before; 0x80..0x100
+ * is a codepoint; 0x101 and up is a KEY_* code and NOT text.
+ *
+ * That boundary is the whole of the compatibility argument and it is thinner
+ * than it looks. KEY_UP..KEY_RIGHT are 0x101..0x108, which as codepoints are
+ * U+0101..U+0108 -- a real, populated Unicode range (Latin Extended-A, and its
+ * first member is the macron vowel a pinyin IME would want). Nothing collides
+ * TODAY because the only non-ASCII producer is the pinyin input method and
+ * every codepoint its dictionary can commit was measured to lie in
+ * U+4E00..U+9F9F; ime_ui.c refuses anything outside that at the point of
+ * delivery rather than trusting the measurement to stay true.
+ *
+ * A SECOND text source -- an emoji picker, a compose key, a dead-key layout,
+ * a Latin-Extended keyboard -- BREAKS THIS, and the fix is not this comment.
+ * It is renumbering KEY_* out of the codepoint space (0x110000 and up is the
+ * only range Unicode will never use), which is an ABI break: every app in
+ * c/apps/ that switches on KEY_LEFT, plus c/apps/as/abi_layout.inc and
+ * `make check-abi`, move together in one commit. It is deliberately NOT done
+ * here, where nothing needs it, because a scarce-value renumber done ahead of
+ * its first real caller is a flag day nobody can test. */
+#define EV_KEY    1
 
 /* Non-printable key codes (delivered via EV_KEY, a = code; all > 0xFF so they
- * never collide with a character). */
+ * never collide with an ASCII character -- read the EV_KEY block above for
+ * what that does and does not promise now that codepoints ride here too). */
 #define KEY_UP    0x101
 #define KEY_DOWN  0x102
 #define KEY_PGUP  0x103

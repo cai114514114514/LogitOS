@@ -1147,6 +1147,33 @@ static void load(const char *u)
      * before calling. Copy first: the chain rewrites `url` on every hop. */
     { int i = 0; while (u[i] && i < (int)sizeof cur - 1) { cur[i] = u[i]; i++; } cur[i] = 0; }
 
+    /* RFC 3986: a URL is ASCII on the wire, and `cur` may not be -- a word
+     * typed through the pinyin IME lands in the address bar as UTF-8, or a
+     * restored session/history entry could hold one from before this line
+     * existed. %XX-encode every byte outside ASCII in place; nothing else
+     * moves, because every reserved/unreserved character a hand-typed URL
+     * uses (`:/?&=#` etc.) is itself ASCII and passes through untouched, and
+     * an already-percent-encoded "%20" is unaffected for the same reason
+     * ('%' is ASCII). What this does NOT do is IDNA/punycode a non-ASCII
+     * HOSTNAME -- percent-encoding a host is not valid per the URL Standard,
+     * and that is a different feature; today a non-ASCII host is still
+     * escaped byte-for-byte rather than sent raw, which is the narrower claim
+     * this line makes. */
+    { int nonascii = 0;
+      for (int i = 0; cur[i]; i++) if ((unsigned char)cur[i] > 0x7E) { nonascii = 1; break; }
+      if (nonascii) {
+          static const char H[] = "0123456789ABCDEF";
+          char enc[2048]; int o = 0;
+          for (int i = 0; cur[i] && o < (int)sizeof enc - 4; i++) {
+              unsigned char c = (unsigned char)cur[i];
+              if (c < 0x80) enc[o++] = (char)c;
+              else { enc[o++] = '%'; enc[o++] = H[c >> 4]; enc[o++] = H[c & 15]; }
+          }
+          enc[o] = 0;
+          { int i = 0; while (enc[i] && i < (int)sizeof cur - 1) { cur[i] = enc[i]; i++; } cur[i] = 0; }
+      }
+    }
+
     /* about:text -- print the words the LAST paint put on the screen, and stay
      * where we are. Not a navigation and not a page: it answers a question
      * about the page already loaded, so navigating away to answer it would
@@ -2109,9 +2136,38 @@ static int mods_of(const struct logit_event *e, struct js_event_init *ji)
 static int dom_button(int btn)
 { return btn == EV_BTN_RIGHT ? 2 : btn == EV_BTN_MIDDLE ? 1 : 0; }
 
+/* Is `k` one of the eight enumerated KEY_* navigation codes (logit_abi.h),
+ * rather than a character -- ASCII or a Unicode code point above it (the
+ * pinyin IME commits CJK this way)? Enumerated rather than range-tested
+ * against KEY_UP/KEY_RIGHT so a future non-contiguous KEY_* addition cannot
+ * silently start being typed into a field or a contenteditable. */
+static int is_nav_key(int k)
+{
+    return k == KEY_UP || k == KEY_DOWN || k == KEY_PGUP || k == KEY_PGDN ||
+           k == KEY_HOME || k == KEY_END || k == KEY_LEFT || k == KEY_RIGHT;
+}
+
+static int key_utf8_encode(unsigned cp, char out[4])
+{
+    if (cp < 0x80)    { out[0] = (char)cp; return 1; }
+    if (cp < 0x800)   { out[0] = (char)(0xC0 | (cp >> 6));
+                        out[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) { out[0] = (char)(0xE0 | (cp >> 12));
+                        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        out[2] = (char)(0x80 | (cp & 0x3F)); return 3; }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 /* The KeyboardEvent `key`/`code` for our key codes. Only the named keys need a
  * table; a printable character is its own `key`, which is exactly what the DOM
- * says. */
+ * says -- for a code point above ASCII (a pinyin candidate committed through
+ * EV_KEY) that means the UTF-8 encoding of it, not "Unidentified": `one` must
+ * hold up to 4 bytes + NUL, which is why every caller declares it `char
+ * one[5]` and not the `char one[2]` this used to be. */
 static const char *key_name(int k, char *one)
 {
     switch (k) {
@@ -2129,6 +2185,11 @@ static const char *key_name(int k, char *one)
     case 0x1b:      return "Escape";
     }
     if (k >= ' ' && k < 0x7f) { one[0] = (char)k; one[1] = 0; return one; }
+    if (k > 0x7F && !is_nav_key(k)) {
+        int n = key_utf8_encode((unsigned)k, one);
+        one[n] = 0;
+        return one;
+    }
     return "Unidentified";
 }
 
@@ -2729,6 +2790,16 @@ static int control_key(struct node *n, int k, const struct logit_event *ev,
         return 1;
     }
     if (k >= ' ' && k < 0x7f) { char c = (char)k; fc_edit_insert(n, &c, 1); return 1; }
+    /* A code point above ASCII (the pinyin IME commits a CJK candidate this
+     * way): UTF-8 encode it and hand fc_edit_insert the whole character as one
+     * splice. fc_edit_insert/splice are already byte-transparent -- forms.c's
+     * own comment above step_left says UTF-8 is stepped by character there --
+     * so the only bug was here, one truncating `(char)k` away. */
+    if (k > 0x7F && !is_nav_key(k)) {
+        char enc[4]; int el = key_utf8_encode((unsigned)k, enc);
+        fc_edit_insert(n, enc, el);
+        return 1;
+    }
     return 0;
 }
 
@@ -2793,6 +2864,15 @@ static int ce_key(struct node *host, int k, const struct logit_event *ev, int *d
     if (k >= ' ' && k < 0x7f) {
         char c = (char)k;
         if (fc_ce_insert(&c, 1)) *dirty = 1;
+        return 1;
+    }
+    /* A code point above ASCII: UTF-8 encode it and insert all of its bytes as
+     * one call, same shape as the ASCII branch. Same bug this file's control_key
+     * had -- a chat composer (a contenteditable, not a form control) could not
+     * receive a CJK candidate at all before this. */
+    if (k > 0x7F && !is_nav_key(k)) {
+        char enc[4]; int el = key_utf8_encode((unsigned)k, enc);
+        if (fc_ce_insert(enc, el)) *dirty = 1;
         return 1;
     }
     return 0;
@@ -3095,12 +3175,18 @@ void app_main(void)
                 int allow = 1;
                 struct node *fnode = 0;
                 if (!editing) {
-                    char one[2];
+                    char one[5];               /* up to 4 UTF-8 bytes + NUL -- see key_name */
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1;
                     ji.key = key_name(k, one);
                     ji.code = ji.key;
-                    ji.key_code = (k >= ' ' && k < 0x7f) ? k : k & 0xFF;
+                    /* Legacy .keyCode: the ASCII fast path is unchanged; a
+                     * navigation code keeps its old (masked) value, and a code
+                     * point above ASCII carries itself rather than an
+                     * arbitrary low byte -- k & 0xFF used to fold every CJK
+                     * candidate above U+00FF onto some other character's
+                     * keyCode entirely. */
+                    ji.key_code = (k >= ' ' && k < 0x7f) ? k : (is_nav_key(k) ? (k & 0xFF) : k);
                     mods_of(&e, &ji);
                     /* THE KEYSTROKE GOES TO THE FOCUSED ELEMENT.
                      *
@@ -3118,9 +3204,13 @@ void app_main(void)
                      * the focused element outright. Re-read rather than trust
                      * the pointer taken three lines ago. */
                     fnode = FOCUS_ROUTING ? focus_current() : 0;
-                    if (allow && k >= ' ' && k < 0x7f) {
+                    if (allow && ((k >= ' ' && k < 0x7f) || (k > 0x7F && !is_nav_key(k)))) {
                         /* keypress: legacy, but a very large amount of real
-                         * form code still cancels typing through it. */
+                         * form code still cancels typing through it -- and a
+                         * page that specifically filters keypress to reject
+                         * non-Latin input (a "digits only" field, say) needs to
+                         * see a CJK candidate arrive here too, or it can never
+                         * refuse one. */
                         struct js_event_init jp = ji;
                         allow = js_dom_dispatch(tgt, "keypress", &jp);
                         fnode = FOCUS_ROUTING ? focus_current() : 0;
@@ -3224,10 +3314,36 @@ void app_main(void)
                     else if (k == KEY_RIGHT) { if (hist_go(+1)) { editing = 0; load(url); navigated = 1; } }
                     else if (editing && k == '\n') { editing = 0; hist_push(url); load(url); navigated = 1; }
                     else if (k == '\b') {
-                        if (editing) { if (ulen > 0) url[--ulen] = 0; }
+                        if (editing) {
+                            /* Delete a whole UTF-8 character, not one byte --
+                             * one byte off a CJK address (typed via the pinyin
+                             * IME) used to leave a dangling lead byte that
+                             * every character after it, and every subsequent
+                             * backspace, would then decode wrong. The address
+                             * bar is append-at-end only (see KEY_LEFT/RIGHT
+                             * above: no caret to move), so "the last
+                             * character" is always the one ending at ulen. */
+                            if (ulen > 0) {
+                                int p = ulen - 1;
+                                while (p > 0 && ((unsigned char)url[p] & 0xC0) == 0x80) p--;
+                                ulen = p; url[ulen] = 0;
+                            }
+                        }
                         else if (hist_go(-1)) { load(url); navigated = 1; }   /* Backspace = back */
                     }
                     else if (editing && k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
+                    /* A code point above ASCII -- e.g. a pinyin candidate --
+                     * UTF-8 encoded and appended whole. load() percent-encodes
+                     * any non-ASCII byte in `url` before it reaches the wire
+                     * (RFC 3986); this is only about not corrupting what the
+                     * user sees typed in the bar before that happens. */
+                    else if (editing && k > 0x7F && !is_nav_key(k)) {
+                        char enc[4]; int el = key_utf8_encode((unsigned)k, enc);
+                        if (ulen + el < (int)sizeof url - 1) {
+                            for (int i = 0; i < el; i++) url[ulen++] = enc[i];
+                            url[ulen] = 0;
+                        }
+                    }
                 }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
                 sync_scroll();

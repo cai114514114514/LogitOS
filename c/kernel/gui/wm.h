@@ -41,4 +41,14 @@ void wm_app_exit(void);
 void wm_damage(int x, int y, int w, int h);
 int  wm_dark(void);                /* 1 if the system theme is dark */
 
+/* The third one, for the input method's candidate bar (c/kernel/gui/ime_ui.c).
+ * Fills the FOCUSED app window's index and its outer rectangle in device
+ * pixels; returns 0 (and touches nothing) when there is no focused app window.
+ *
+ * A rectangle and not a caret, because the window manager does not know where
+ * a caret is -- see the anchor note in ime_ui.c for why asking the app was
+ * rejected. Same shape as the two above: the overlay learns what it needs
+ * through a function instead of reaching into wm.c's statics. */
+int  wm_ime_anchor(int *wi, int *x, int *y, int *w, int *h);
+
 #endif /* LOGIT_WM_H */
