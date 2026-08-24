@@ -356,6 +356,13 @@ static unsigned popcount32(unsigned v)
 
 /* --- /dev/ktrigger -------------------------------------------------------- */
 
+/* c/net/core/net.c's WM-wedge instrument. Declared here rather than by
+ * including net.h so this file keeps building in any configuration that has no
+ * network layer; weak so such a build resolves to NULL and the verb reports
+ * itself unavailable instead of failing to link. */
+void net_debug_park(long ms) __attribute__((weak));
+void net_debug_tcp_on_wm(int on) __attribute__((weak));
+
 static void do_irqstorm(long rounds)
 {
     if (rounds <= 0)   rounds = 400;
@@ -512,6 +519,24 @@ int kdiag_write(const char *path, const void *buf, int len)
         do_logstorm(parse_long(&rest, e));
     } else if (cmd_is(b, e, "irqstorm", &rest)) {
         do_irqstorm(parse_long(&rest, e));
+    } else if (cmd_is(b, e, "netwedge", &rest)) {
+        /* The net line's WM-wedge instrument, and the one channel it could
+         * reach: c/net/core/net.c owns the knob, but a knob with no trigger is
+         * not an instrument, and c/kernel/gui/wm.c belongs to another line.
+         * Weak, so a build without the network layer says so instead of failing
+         * to link. `netwedge <ms>` parks net_poll(); `netwedge <ms> wm` first
+         * forces TCP's timers back onto the WM loop, which is that test's
+         * negative control. */
+        long ms = parse_long(&rest, e);
+        while (rest < e && *rest == ' ') rest++;
+        int on_wm = (rest + 1 < e && rest[0] == 'w' && rest[1] == 'm');
+        if (!net_debug_park) {
+            klog(KL_WARN, "KDIAG_NETWEDGE unavailable: no network layer linked");
+        } else {
+            if (net_debug_tcp_on_wm) net_debug_tcp_on_wm(on_wm);
+            net_debug_park(ms);
+            klog(KL_INFO, "KDIAG_NETWEDGE ms=%ld on_wm=%d", ms, on_wm);
+        }
     } else if (cmd_is(b, e, "assert", &rest)) {
         int zero = 0;
         KASSERT(zero == 1);          /* fires: panics with the expression text */
@@ -525,7 +550,8 @@ int kdiag_write(const char *path, const void *buf, int len)
         panic("deliberate panic from /dev/ktrigger: %s", i ? msg : "(no message)");
     } else {
         klog(KL_WARN, "KDIAG_TRIGGER unknown command "
-             "(bt|warn|warn_on|loglevel N|logstorm N|irqstorm N|assert|panic MSG)");
+             "(bt|warn|warn_on|loglevel N|logstorm N|irqstorm N|netwedge MS [wm]"
+             "|assert|panic MSG)");
     }
     return len;
 }

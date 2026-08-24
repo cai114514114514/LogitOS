@@ -1568,6 +1568,17 @@ static uint16_t pmtu_next_lower(uint16_t cur)
     return MIN_MSS;
 }
 
+/* WHERE THIS RUNS, because it changed and the name did not: a 10 ms periodic
+ * ktimer raises SOFTIRQ_NET and net.c's handler calls this, i.e. interrupt
+ * context with the BKL held and IF already 0 -- the same context tcp_input()
+ * has run in since the receive path moved onto the softirq. Every primitive
+ * below (send_seg, tcp_output, conn_closed, waitq_wake_all) is already reached
+ * from tcp_input on that softirq, so nothing here is new to it. net_lock()
+ * remains correct and remains necessary: it is the same `cli` on the entry from
+ * net_poll()'s thread context, and a no-op nested inside the softirq.
+ *
+ * The one thing that must NOT happen here is blocking -- there is a live
+ * interrupt frame underneath. Nothing in this function waits. */
 void tcp_poll(void)
 {
     uint64_t f = net_lock();            /* exclude the RX IRQ while we walk conns[] */

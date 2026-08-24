@@ -41,6 +41,20 @@ void net_rx_schedule(void);
 void net_idle(void);                /* sti;hlt -- yield the host CPU while a blocking fetch waits */
 extern volatile int g_net_busy;     /* 1 while a blocking fetch owns the network */
 
+/* TCP's timer pass no longer rides the window manager's loop: a 10 ms ktimer
+ * raises SOFTIRQ_NET and the pass runs there. See the long block above
+ * net_init() in net.c for the locking argument and the cadence. These three are
+ * the observability and the negative control; `fires` counts ktimer callbacks,
+ * `softirq` passes that ran on the softirq, `inl` passes net_poll() had to
+ * discharge because the raise landed on a nested entry. */
+void net_tcp_timer_stats(uint32_t *fires, uint32_t *softirq, uint32_t *inl);
+/* TEST ONLY, both of them, reached from `echo netwedge <ms> [wm|ktimer] >
+ * /dev/ktrigger`. The first parks net_poll() for <ms> -- a wedged compositor as
+ * far as the network can tell. The second forces the pre-change wiring back on
+ * at runtime, which is the negative control the wedge test must fail against. */
+void net_debug_park(long ms);
+void net_debug_tcp_on_wm(int on);
+
 /* Mutual exclusion between the RX interrupt (which runs eth/ip/tcp_input) and
  * mainline net code (tcp_recv/send/poll, udp). Everything net runs on the BSP,
  * and the NIC IRQ is routed to the BSP, so masking interrupts is enough. Save

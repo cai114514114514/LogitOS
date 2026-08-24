@@ -238,3 +238,142 @@ test-unix-negctl:
 #
 # Verified compiling clean for x86_64-elf with the exact UCFLAGS+INCDIRS that
 # rule uses; not added here because the Makefile is contended.
+
+# =============================================================================
+# TCP'S TIMERS OFF THE WINDOW MANAGER'S LOOP (2026-08-21).
+#
+# Added to this fragment for the reason its opening comment gives -- it is the
+# shared net-test landing spot several agents append to. Nothing here is needed
+# to BUILD the change: it is c/net/core/net.c, c/net/transport/tcp.{c,h} and one
+# verb in c/kernel/core/kdiag.c, all of which C_SRC already globs.
+#
+# WHAT CHANGED, in one sentence: tcp_poll() is TCP's timer wheel (retransmit,
+# delayed-ACK flush, zero-window persist, TIME_WAIT reaping, the drain that
+# pushes queued bytes when the window reopens) and its only steady-state caller
+# was `if (!g_net_busy) net_poll();` in c/kernel/gui/wm.c -- once per
+# composited frame. It is now raised by a 10 ms ktimer onto SOFTIRQ_NET, the
+# same context the receive path already ran in. net_poll() still calls it, but
+# only to discharge a pass the timer already owed, so that line is harmless and
+# its owner may delete it.
+#
+# THE HOST SIDE IS UNCHANGED AND THAT IS THE POINT. tests/unit/tcp_test.c drives
+# tcp_poll() directly with a fake clock; it does not care who calls it on the
+# machine, so `make test-tcp-host` is the regression check that the timer PASS
+# still does what it did (241 checks, unchanged before and after) while this
+# gate checks WHO RUNS IT.
+# =============================================================================
+
+.PHONY: test-tcp-timer test-tcp-timer-wedge
+
+# THE GATE. Boots LogitOS, backgrounds /bin/httpd, and fetches a 35 KB file
+# from the HOST three times -- cutting the virtual wire (QMP set_link) for 1.5 s
+# mid-response each time, so that only a retransmission TIMEOUT can restart the
+# flow. Round 1 has the WM running (the apparatus check), round 2 has net_poll
+# parked (`echo netwedge 30000 > /dev/ktrigger`), and round 3 parks net_poll AND
+# forces TCP's timers back onto it (`netwedge 30000 wm`) -- the pre-change
+# wiring at runtime, which MUST stall.
+#
+# WHY THE CUT IS NOT OPTIONAL, and why "wedge the WM and fetch a file" is not
+# this test: lsock_file_write() calls tcp_send_nb(), which calls tcp_output()
+# itself, and every subsequent push is driven by the peer's ACK arriving on the
+# receive softirq. Over SLIRP, which drops nothing, a whole response is
+# delivered with tcp_poll() never running once. A gate written that way would
+# pass identically before and after the change -- the exact shape CLAUDE.md
+# records for the WPT runner that linked layout.c and never called layout_page().
+#
+# WHY THE NEGATIVE CONTROL IS IN-RUN rather than a `test-tcp-timer-wedge-negctl`
+# target: a second boot doubles a three-minute device test, and -- the reason
+# that matters -- it would not share round 1's apparatus check, so a control
+# that "failed" because set_link had silently stopped cutting the wire would
+# read as a pass. The harness fails loudly with NEGATIVE CONTROL FAILED if
+# round 3 recovers. (It also sidesteps the stranded-control trap in
+# tools/audit_tests.py: a `*-negctl` target that no suite names is run never.)
+#
+# -DTCP_TIMERS_ON_WM is the same control at BUILD time and is the one the
+# design was written against; it is not a target here because adding it needs a
+# knob in the main Makefile (`ifeq ($(TCPONWM),1)`), which is contended. The
+# runtime switch sets the same variable, so one boot measures both wirings --
+# and in that build the runtime switch REFUSES to turn the timers back on, on
+# purpose: no ktimer was armed there, so honouring it would leave a machine
+# with no driver for tcp_poll at all and the gate would fail for a reason that
+# has nothing to do with the property.
+#
+# BOTH CONTROLS WERE WATCHED FAILING on this machine, 2026-08-21, and here is
+# what they printed. Runtime (round 3, every run): `complete=False
+# t_recover=never`, 8,192-16,384 of 35,149 body bytes, and the park's own
+# report reading `tcp timer fires +0, softirq passes +0`. Build-time (a whole
+# ISO compiled with the define, run through this same harness): R1 still
+# recovers in 1.60 s -- the WM is running, so net_poll still drives the pass --
+# and R2 reads `never` with `fires +0`, exit status 1, on the two lines
+#
+#   - R2: with the WM wedged the response never recovered from a 1.5 s wire
+#     cut -- the timers are still on the WM loop
+#   - R2: the park reported 0 ktimer fires / 0 softirq passes
+#
+# That R1 keeps passing in the control build is the part worth keeping: it is
+# what separates "the change is absent" from "the harness broke".
+test-tcp-timer-wedge: $(ISO) $(DISK)
+	@bash tests/boot/run-tcp-timer-wedge.sh $(ISO) $(DISK)
+
+test-tcp-timer: test-tcp-timer-wedge
+
+# THROUGHPUT, BEFORE AND AFTER -- not a gate, a measurement, and it needs two
+# ISOs so it cannot be a plain target. net_poll() no longer calls tcp_poll() on
+# every trip round a blocking fetch's loop; it runs the pass at most once per
+# 10 ms tick. Nothing in tcp.c can TIME differently -- every deadline in it is
+# compared against timer_ticks(), which only advances at 100 Hz -- but
+# tcp_output()'s unconditional call at the end of the pass did get rarer (~490
+# calls/s down to 100/s, measured from the park counters), so the claim had to
+# be measured rather than argued.
+#
+# MEASURED, 2026-08-21, tests/boot/run-net-ab.sh (paired, both arms booted
+# together, fetches round-robin so the samples are seconds apart -- read that
+# script's header on why unpaired numbers on this host are noise):
+#
+#   arm      n  median Mbit/s   IQR            retrans
+#   before   9  301.4           267.7-311.2    0/5757     (-DTCP_TIMERS_ON_WM)
+#   after    9  300.8           291.0-322.2    0/5760
+#   paired per-rep ratio: median 1.004, range 0.88-1.28, faster in 5/9
+#
+# 917,504-byte body, e1000 over netwire (delay 0, loss 0), TCG, -smp 4 -m 512M.
+# The two kernels differed ONLY by the define: the "after" kernel was rebuilt
+# after the "before" arm and came back md5-identical to the one saved before it
+# (944fa749d7c244f693b29f58a2a00329), which is what rules out a concurrent
+# agent's edit landing between the arms.
+#
+# THE DENOMINATOR, because a throughput number from a run that was silently
+# dropping frames is not a throughput number. e1000's own counters over the
+# same body on each build (tests/nic.mk; build/net-bench-{before,after}):
+#
+#   [e1000] stats: rx 1939 pkt / 2868822 B, tx 1034 pkt / 67430 B;
+#                  drop rnbc 0 mpc 0; err crc 0 rlec 0        (before)
+#   [e1000] stats: rx 1937 pkt / 2867260 B, tx 1036 pkt / 67558 B;
+#                  drop rnbc 0 mpc 0; err crc 0 rlec 0        (after)
+#
+# To repeat it:
+#     # add `#define TCP_TIMERS_ON_WM 1` to the top of c/net/core/net.c
+#     make build/logit.iso && cp build/logit.iso /tmp/before.iso
+#     # remove it again
+#     make build/logit.iso && md5sum build/kernel.elf   # must match the after
+#     make test-net-ab BEFORE=/tmp/before.iso REPS=9
+#
+# ONE APPARATUS NOTE, unrelated to this change and unresolved: both bench
+# harnesses print `!! bound eth0, wanted e1000`. The guest now says
+# `[net] NIC bound: eth0 = e1000` and the scripts still grep for the bare
+# driver name. It hits both arms identically so it cannot bias the comparison,
+# but run-net-bench.sh treats it as WRONG DRIVER and refuses to print a table,
+# which is why the counters above were read out of its serial log by hand.
+
+# WIRED, deliberately, and this is the one line that does it. The audit's
+# UNWIRED baseline is a set that must not GROW (CLAUDE.md, "the test suite"), so
+# a new test-* target that names no suite is debt the moment it lands -- and
+# worse, a gate nobody runs is a gate that rots silently. It is a QEMU boot of
+# about three minutes, the same order as the other ci-boot members
+# (test-sched, test-virtio-balloon, test-lm-os).
+#
+# THE PARENT, NOT THE MEMBER. Naming `test-tcp-timer-wedge` here satisfies the
+# audit for that one target and leaves the aggregate `test-tcp-timer` reported
+# as unwired -- CLAUDE.md's "wire the parent, not the member", measured: the
+# audit named `test-tcp-timer` as NEW UNWIRED with the member wired, and named
+# neither once the parent was.
+ci-boot: test-tcp-timer

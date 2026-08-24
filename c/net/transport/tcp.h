@@ -53,7 +53,17 @@ void tcp_input(uint32_t src, const uint8_t *data, uint16_t len);
 void tcp_input_af(const struct tcp_addr *src, const struct tcp_addr *dst,
                   const uint8_t *data, uint16_t len);
 
-/* Timer pump (called from net_poll): retransmit unacked data, advance timers. */
+/* TCP's TIMER WHEEL -- retransmission timeout, delayed-ACK flush, zero-window
+ * persist, FIN_WAIT/TIME_WAIT reaping, and the drain that pushes queued bytes
+ * when the peer's window reopens.
+ *
+ * NOT a poll, and no longer called from one. A 10 ms ktimer in c/net/core/net.c
+ * raises SOFTIRQ_NET and this runs in the softirq handler -- the same interrupt
+ * context, IF=0, BKL-held place tcp_input() has run in since the receive path
+ * moved there. It used to be driven only by net_poll() from the window
+ * manager's frame loop, so every deadline in this file ran at the compositor's
+ * frame rate and stopped when the compositor did. net_poll() still calls it,
+ * but only to discharge a pass the timer already owed. */
 void tcp_poll(void);
 
 /* Open a connection to dst:port (host order). Returns a connection id (>=0) on
