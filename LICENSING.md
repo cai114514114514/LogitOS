@@ -69,6 +69,9 @@ Important examples include:
   `/fonts/text.ttf`): Bitstream Vera Fonts License and the Arev fonts
   copyright;
 - AetherScript's clox-derived material: upstream MIT terms remain preserved;
+- TinyCC (`third_party/tcc/`): LGPL-2.1 for the compiler, and a separate
+  GPL-2.0-or-later grant with a linking exception for the runtime-support
+  object `lib/libtcc1.c` -- see THIRD_PARTY.md's dedicated section;
 - GRUB code embedded in generated ISO images: GPLv3-or-later under GRUB's own
   copyright and release obligations;
 - Rust compiler/runtime objects entering binaries: their upstream terms and

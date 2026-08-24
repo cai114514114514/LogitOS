@@ -1,0 +1,42 @@
+0376ab1d54c5f9803ce4b2e201a0ee7eef7b57b636e8a93c9b8d4860c96f5fa7	affirmtrust_commercial.pem	CN=AffirmTrust Commercial,O=AffirmTrust,C=US
+04048028bf1f2864d48f9ad4d83294366a828856553f3b14303f90147f5d40ef	autoridad_de_certificacion_firmaprofesional_cif_.pem	CN=Autoridad de Certificacion Firmaprofesional CIF A62634068,C=ES
+063e4afac491dfd332f3089b8542e94617d893d7fe944e10a7937ee29d9693c0	chambers_of_commerce_root_2008.pem	CN=Chambers of Commerce Root - 2008,O=AC Camerfirma S.A.,serialNumber=A82743287,L=Madrid (see current address at www.camerfirma.com/address),C=EU
+0753e940378c1bd5e3836e395daea5cb839e5046f1bd0eae1951cf10fec7c965	trustcor_rootcert_ca_2.pem	CN=TrustCor RootCert CA-2,OU=TrustCor Certificate Authority,O=TrustCor Systems S. de R.L.,L=Panama City,ST=Panama,C=PA
+0a81ec5a929777f145904af38d5d509f66b5e2c58fcdb531058b0e17f3f0b41b	affirmtrust_networking.pem	CN=AffirmTrust Networking,O=AffirmTrust,C=US
+136335439334a7698016a0d324de72284e079d7b5220bb8fbd747816eebebaca	global_chambersign_root_2008.pem	CN=Global Chambersign Root - 2008,O=AC Camerfirma S.A.,serialNumber=A82743287,L=Madrid (see current address at www.camerfirma.com/address),C=EU
+15d5b8774619ea7d54ce1ca6d0b0c403e037a917f131e8a04e1e6b7a71babce5	gts_root_r3.pem	CN=GTS Root R3,O=Google Trust Services LLC,C=US
+15f0ba00a3ac7af3ac884c072b1011a077bd77c097f40164b2f8598abd83860c	network_solutions_certificate_authority.pem	CN=Network Solutions Certificate Authority,O=Network Solutions L.L.C.,C=US
+16af57a9f676b0ab126095aa5ebadef22ab31119d644ac95cd4b93dbf3f26aeb	baltimore_cybertrust_root.pem	CN=Baltimore CyberTrust Root,OU=CyberTrust,O=Baltimore,C=IE
+2399561127a57125de8cefea610ddf2fa078b5c8067f4e828290bfb860e84b3c	verisign_universal_root_certification_authority.pem	CN=VeriSign Universal Root Certification Authority,OU=(c) 2008 VeriSign\, Inc. - For authorized use only,OU=VeriSign Trust Network,O=VeriSign\, Inc.,C=US
+4200f5043ac8590ebb527d209ed1503029fbcbd41ca1b506ec27f15ade7dac69	secure_global_ca.pem	CN=Secure Global CA,O=SecureTrust Corporation,C=US
+4d2491414cfe956746ec4cefa6cf6f72e28a1329432f9d8a907ac4cb5dadc15a	staat_der_nederlanden_ev_root_ca.pem	CN=Staat der Nederlanden EV Root CA,O=Staat der Nederlanden,C=NL
+55903859c8c0c3ebb8759ece4e2557225ff5758bbd38ebd48276601e1bd58097	trustwave_global_ecc_p384_certification_authorit.pem	CN=Trustwave Global ECC P384 Certification Authority,O=Trustwave Holdings\, Inc.,L=Chicago,ST=Illinois,C=US
+5a885db19c01d912c5759388938cafbbdf031ab2d48e91ee15589b42971d039c	trustcor_eca_1.pem	CN=TrustCor ECA-1,OU=TrustCor Certificate Authority,O=TrustCor Systems S. de R.L.,L=Panama City,ST=Panama,C=PA
+5edb7ac43b82a06a8761e8d7be4979ebf2611f7dd79bf91c1c6b566a219ed766	geotrust_primary_certification_authority_g2.pem	CN=GeoTrust Primary Certification Authority - G2,OU=(c) 2007 GeoTrust Inc. - For authorized use only,O=GeoTrust Inc.,C=US
+70a73f7f376b60074248904534b11482d5bf0e698ecc498df52577ebf2e93b9a	affirmtrust_premium.pem	CN=AffirmTrust Premium,O=AffirmTrust,C=US
+73c176434f1bc6d5adf45b0e76e727287c8de57616c1e6e6141a2b2cbc7d8e4c	entrust_root_certification_authority.pem	CN=Entrust Root Certification Authority,OU=(c) 2006 Entrust\, Inc.,OU=www.entrust.net/CPS is incorporated by reference,O=Entrust\, Inc.,C=US
+7908b40314c138100b518d0735807ffbfcf8518a0095337105ba386b153dd927	sonera_class2_ca.pem	CN=Sonera Class2 CA,O=Sonera,C=FI
+88497f01602f3154246ae28c4d5aef10f1d87ebb76626f4ae0b7f95ba7968799	ec_acc.pem	CN=EC-ACC,OU=Jerarquia Entitats de Certificacio Catalanes,OU=Vegeu https://www.catcert.net/verarrel (c)03,OU=Serveis Publics de Certificacio,O=Agencia Catalana de Certificacio (NIF Q-0801176-I),C=ES
+945bbc825ea554f489d1fd51a73ddf2ea624ac7019a05205225c22a78ccfa8b4	trustwave_global_ecc_p256_certification_authorit.pem	CN=Trustwave Global ECC P256 Certification Authority,O=Trustwave Holdings\, Inc.,L=Chicago,ST=Illinois,C=US
+960adf0063e96356750c2965dd0a0867da0b9cbd6e77714aeafb2349ab393da3	cybertrust_global_root.pem	CN=Cybertrust Global Root,O=Cybertrust\, Inc
+97552015f5ddfc3c8788c006944555408894450084f100867086bc1a2bb58dc8	trustwave_global_certification_authority.pem	CN=Trustwave Global Certification Authority,O=Trustwave Holdings\, Inc.,L=Chicago,ST=Illinois,C=US
+a45ede3bbbf09c8ae15c72efc07268d693a21c996fd51e67ca079460fd6d8873	quovadis_root_certification_authority.pem	CN=QuoVadis Root Certification Authority,OU=Root Certification Authority,O=QuoVadis Limited,C=BM
+b0bfd52bb0d7d9bd92bf5d4dc13da255c02c542f378365ea893911f55e55f23c	e_tugra_certification_authority.pem	CN=E-Tugra Certification Authority,OU=E-Tugra Sertifikasyon Merkezi,O=E-Tu\C4\9Fra EBG Bili\C5\9Fim Teknolojileri ve Hizmetleri A.\C5\9E.,L=Ankara,C=TR
+ba06d3d3e348fce7478cc84b422d0e638e9e221ef1a0b53adc14cc70e04b8ab8	sslcom_ecc_2022.pem	CN=SSL.com TLS ECC Root CA 2022,O=SSL Corporation,C=US
+bc104f15a48be709dca542a7e1d4b9df6f054527e802eaa92d595444258afe71	hellenic_academic_and_research_institutions_root_1.pem	CN=Hellenic Academic and Research Institutions RootCA 2011,O=Hellenic Academic and Research Institutions Cert. Authority,C=GR
+bd71fdf6da97e4cf62d1647add2581b07d79adf8397eb4ecba9c5e8488821423	affirmtrust_premium_ecc.pem	CN=AffirmTrust Premium ECC,O=AffirmTrust,C=US
+be6c4da2bbb9ba59b6f3939768374246c3c005993fa98f020d1dedbed48a81d5	swisssign_silver_ca_g2.pem	CN=SwissSign Silver CA - G2,O=SwissSign AG,C=CH
+bec94911c2955676db6c0a550986d76e3ba005667c442c9762b4fbb773de228c	globalsign.pem	CN=GlobalSign,O=GlobalSign,OU=GlobalSign ECC Root CA - R4
+bf0feefb9e3a581ad5f9e9db7589985743d261085c4d314f6f5d7259aa421612	securesign_rootca11.pem	CN=SecureSign RootCA11,O=Japan Certification Services\, Inc.,C=JP
+c0a6f4dc63a24bfdcf54ef2a6a082a0a72de35803e2ff5ff527ae5d87206dfd5	chunghwa_telecom_co.pem	OU=ePKI Root Certification Authority,O=Chunghwa Telecom Co.\, Ltd.,C=TW
+c1b48299aba5208fe9630ace55ca68a03eda5a519c8802a0d3a673be8f8e557d	trustis_limited.pem	OU=Trustis FPS Root CA,O=Trustis Limited,C=GB
+c45d7bb08e6d67e62e4235110b564e5f78fd92ef058c840aea4e6455d7585c60	gts_root_r2.pem	CN=GTS Root R2,O=Google Trust Services LLC,C=US
+ca42dd41745fd0b81eb902362cf9d8bf719da1bd1b1efc946f5b4c99f42c1b9e	globalsign_2.pem	CN=GlobalSign,O=GlobalSign,OU=GlobalSign Root CA - R2
+cecddc905099d8dadfc5b1d209b737cbe2c18cfb2c10c0ff0bcf0d3286fc1aa2	xramp_global_certification_authority.pem	CN=XRamp Global Certification Authority,O=XRamp Security Services Inc,OU=www.xrampsecurity.com,C=US
+d40e9c86cd8fe468c1776959f49ea774fa548684b6c406f3909261f4dce2575c	trustcor_rootcert_ca_1.pem	CN=TrustCor RootCert CA-1,OU=TrustCor Certificate Authority,O=TrustCor Systems S. de R.L.,L=Panama City,ST=Panama,C=PA
+dd6936fe21f8f077c123a1a521c12224f72255b73e03a7260693e8a24b0fa389	teliasonera_root_ca_v1.pem	CN=TeliaSonera Root CA v1,O=TeliaSonera
+e75e72ed9f560eec6eb4800073a43fc3ad19195a392282017895974a99026b6c	secom_trust_net.pem	OU=Security Communication RootCA1,O=SECOM Trust.net,C=JP
+eaa962c4fa4a6bafebe415196d351ccd888d4f53f3fa8ae6d7c466a94e6042bb	certsign.pem	OU=certSIGN ROOT CA,O=certSIGN,C=RO
+f1c1b50ae5a20dd8030ec9f6bc24823dd367b5255759b4e71b61fce9f7375d73	securetrust_ca.pem	CN=SecureTrust CA,O=SecureTrust Corporation,C=US
+f9e67d336c51002ac054c632022d66dda2e7e3fff10ad061ed31d8bbb410cfb2	hongkong_post_root_ca_1.pem	CN=Hongkong Post Root CA 1,O=Hongkong Post,C=HK
+ff856a2d251dcd88d36656f450126798cfabaade40799c722de4d2b5db36a73a	geotrust_global_ca.pem	CN=GeoTrust Global CA,O=GeoTrust Inc.,C=US
