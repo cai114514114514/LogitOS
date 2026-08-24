@@ -1012,11 +1012,13 @@ $(BUILD)/h2check.aex: $(BUILD)/h2check.elf tools/mkaex.py
 # /bin/vidcheck -- decodes a stream on-device and prints the same CRC32 the
 # host driver prints, which is what turns "it also works on LogitOS" into a
 # comparison rather than a claim. Driven by tests/boot/run-video-test.sh.
-$(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+$(BUILD)/vidcheck.elf: $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
+                       $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidcheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/vidcheck.crt0c.o \
-	    $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(LIBC_OBJS)
+	    $(BUILD)/vidobj/c/apps/video/vidcheck.o $(VID_OBJ) $(IMGCHK_OBJ) \
+	    $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 $(BUILD)/vidcheck.aex: $(BUILD)/vidcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidcheck.elf $@ vidcheck - 'V' 150 150 150
 
@@ -1114,13 +1116,14 @@ $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 # frames and an untrusted-input parser do not belong under the big lock.
 $(BUILD)/terminal.elf: $(GUIDIR)/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
                        $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(APPDIR)/crt0.asm \
-                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(LIBC_OBJS)
+                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(IMGCHK_OBJ) \
+                       $(RUST_LIB) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal.c -o $(BUILD)/apps/terminal.o
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
 	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
-	    $(VID_OBJ) $(LIBC_OBJS) --end-group
+	    $(VID_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
 $(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
 

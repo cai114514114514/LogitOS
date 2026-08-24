@@ -2260,6 +2260,60 @@ in `kheap.c`:
   the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
   `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
 
+## Two binaries that could not be linked, and `make` said ok -- 2026-08-24
+
+Found by DELETING `build/vidcheck.elf` and `build/terminal.elf` and asking
+for them back. They did not come back:
+
+```
+ld.lld: error: undefined symbol: img_decode
+ld.lld: error: undefined symbol: img_free
+ld.lld: error: undefined symbol: kmalloc
+ld.lld: error: undefined symbol: kfree
+```
+
+`c/lib/video/mjpeg.c` decodes each frame through `c/lib/image`'s
+`img_decode()` -- that is its design and its own header says so -- so **the
+video library now depends on the image library**, and every `$(VID_OBJ)`
+consumer must satisfy it. Two of the four did not: `preview` and `browser`
+already link `$(IMGCHK_OBJ)` and already carry the ring-3 allocator shim;
+`vidcheck` and `terminal` carried neither. Exactly the shape this file
+already records five instances of -- *a source file grew a dependency and a
+link line did not follow* -- except this time it is not a test target, it is
+the product, and `/bin/vidcheck` is the binary `make test-video` runs to turn
+"it also works on LogitOS" into a comparison.
+
+**IT SURVIVED BECAUSE make WAS RIGHT.** The stale `.elf` files were NEWER
+than the new `.o` files, so `make` correctly reported them up to date and
+relinked nothing. A full `make build/disk.img` exits 0, packs both binaries,
+and boots. Nothing is wrong until someone deletes a file or touches a video
+header -- and then it is not a subtle failure, it is four undefined symbols
+in a link line nobody edited.
+
+**`kmalloc` IN RING 3 IS A PER-APPLICATION SHIM, and it is not written down
+anywhere else.** `c/lib/image`'s five files and a dozen more in
+`c/apps/browser` declare `void *kmalloc(unsigned long);` as a bare extern and
+rely on the APPLICATION to define it; `preview.c:64` and `browser_rt.c:44`
+each carry `{ return malloc((size_t)n); }`. A new ring-3 program that links
+any of those libraries needs those two lines, and gets no diagnostic until
+the link.
+
+Cost of the fix, and it is not nothing: `$(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB)`
+pulls the whole image stack (jpeg, gif, svg, and Rust's png/webp) into both.
+
+| | before | after |
+|---|---|---|
+| `vidcheck.elf` | 459,728 | **1,766,096** |
+| `terminal.elf` | 591,760 | **1,867,904** |
+
+That is the real price of MJPEG reusing the JPEG decoder rather than carrying
+its own, and it is still the right trade -- a second baseline JPEG decoder in
+`c/lib/video` is the fourth-rasterizer mistake in another subsystem.
+
+**How to find the next one**: a link line is only proven by a link that
+actually runs. `rm` the binary and ask for it back; the timestamps cannot
+answer this question.
+
 ## The test suite: 610 targets, and a suite reaches 53
 
 **AND "UNWIRED" DOES NOT MEAN "CI DOES NOT RUN IT" -- 328 of the 350 are run.**

@@ -50,6 +50,14 @@
 #include "h264.h"
 #include "h265.h"
 
+/* c/lib/image allocates through the kernel heap's names, and c/lib/video's
+ * mjpeg.c reaches for it too (it decodes each frame through img_decode). In
+ * ring 3 those names are mini-libc's -- the same two-line shim preview.c:64
+ * and browser_rt.c:44 carry. See the Makefile note on this file's link line:
+ * the dependency arrived with MJPEG and the link line did not follow it. */
+void *kmalloc(unsigned long n) { return malloc((size_t)n); }
+void  kfree(void *p) { free(p); }
+
 /* ------------------------------------------------------------- geometry -- */
 
 #define PAD      8
