@@ -37,7 +37,14 @@ FONT_NOTICES := third_party/fonts/OFL-NotoSansSC.txt \
                 third_party/fonts/README.md
 RELEASE_NOTICES := LICENSE LICENSING.md \
                    LICENSES/GPL-3.0-or-later.txt LICENSES/MIT.txt \
-                   THIRD_PARTY.md $(FONT_NOTICES)
+                   LICENSES/MPL-2.0.txt \
+                   THIRD_PARTY.md third_party/fonts/LICENSE-DejaVu.txt \
+                   third_party/quickjs/LICENSE \
+                   third_party/css/libcss/COPYING \
+                   third_party/css/libparserutils/COPYING \
+                   third_party/css/libwapcaplet/COPYING \
+                   third_party/libm/COPYRIGHT \
+                   $(FONT_NOTICES)
 
 CC          := clang
 LD          := ld.lld
@@ -1172,10 +1179,16 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
 	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
 	    LICENSES/MIT.txt:/licenses/MIT.txt THIRD_PARTY.md:/licenses/THIRD_PARTY.md \
+	    LICENSES/MPL-2.0.txt:/licenses/MPL-2.0.txt \
 	    third_party/fonts/OFL-NotoSansSC.txt:/licenses/fonts/OFL-NotoSansSC.txt \
 	    third_party/fonts/OFL-NotoSansMono.txt:/licenses/fonts/OFL-NotoSansMono.txt \
 	    third_party/fonts/README.md:/licenses/fonts/SOURCES.md \
 	    third_party/fonts/LICENSE-DejaVu.txt:/licenses/fonts/LICENSE-DejaVu.txt \
+	    third_party/quickjs/LICENSE:/licenses/third_party/quickjs-LICENSE.txt \
+	    third_party/css/libcss/COPYING:/licenses/third_party/libcss-COPYING.txt \
+	    third_party/css/libparserutils/COPYING:/licenses/third_party/libparserutils-COPYING.txt \
+	    third_party/css/libwapcaplet/COPYING:/licenses/third_party/libwapcaplet-COPYING.txt \
+	    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
 	    $(ROOT_AEX_PACK) \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
