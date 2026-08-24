@@ -4318,3 +4318,24 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/tlsx.mk
 -include tests/module.mk
 -include tests/cssdecl.mk
+
+# Every tests/*.mk must be reachable from here. Eight were not (2026-08-24):
+# a feature line owns its own fragment and deliberately does not touch this
+# shared file, so nobody ever adds the include. The fragment builds and its
+# gates are run by hand with "make -f tests/X.mk", so the line ships claiming
+# them -- while "make test-X" answers "No rule to make target", which reads as
+# a typo in the documentation rather than as a missing line here. Two of the
+# eight were advertised in commit messages that had already landed.
+# "make test-mk-wired" is the gate that stops the ninth.
+-include tests/aui_text_utf8.mk
+-include tests/ime.mk
+-include tests/ime_os.mk
+-include tests/license.mk
+-include tests/mjpeg.mk
+-include tests/ssh.mk
+-include tests/sysroot.mk
+-include tests/tcc.mk
+
+.PHONY: test-mk-wired
+test-mk-wired:
+	@python3 tools/mk_wired.py
