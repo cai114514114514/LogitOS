@@ -24,7 +24,7 @@ SCOREBOARD_DATE ?= $(shell date +%F)
 SCOREBOARD_JOBS ?= 5
 SCOREBOARD_REPEAT ?= 2
 
-.PHONY: scoreboard scoreboard-1 scoreboard-diff scoreboard-quick
+.PHONY: scoreboard scoreboard-1 scoreboard-diff scoreboard-quick test-sites-merge test-sites-merge-negctl
 
 # The full corpus, every site twice (a site whose two runs disagree is recorded
 # FLAKY and is not scored -- the live web earns that).
@@ -57,3 +57,20 @@ scoreboard-1: $(ISO) $(DISK)
 scoreboard-diff:
 	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make scoreboard-diff FROM=<a.json> TO=<b.json>"; exit 2; }
 	python3 tests/qmp/sites_run.py --diff $(FROM) $(TO)
+
+# The merge rule, gated. A HOST test with no QEMU in it: merge_repeats is pure
+# bookkeeping over records, and the bug it had was pure bookkeeping too -- it
+# kept the WORST verdict of N runs, so a HARNESS record (guest {}, pixels {})
+# evicted a complete measurement sitting in the same pass. Three sites
+# published a row of dashes that way in tests/scoreboard/0820-g4b.
+test-sites-merge:
+	@python3 tests/unit/sites_merge_test.py
+
+# NEGATIVE CONTROL: the shipped-until-2026-08-25 rule, restored on a switch so
+# it can be watched discarding a measurement instead of that behaviour living
+# only in a commit message. It is the PLAUSIBLE WRONG RULE, not a mutilation --
+# ranking every run by severity is what anybody would write, and it is right
+# until one of the runs measured nothing. The count is asserted because "some
+# checks failed" would also be satisfied by a merge rule broken another way.
+test-sites-merge-negctl:
+	@out=$$(SITES_MERGE_WORST_WINS=1 python3 tests/unit/sites_merge_test.py 2>&1); n=$$(echo "$$out" | grep -c "^  FAIL"); echo "$$out" | tail -2; if [ "$$n" -ne 3 ]; then echo "CONTROL BROKEN: wanted exactly 3 reddened checks, got $$n"; exit 1; fi; echo "negative control ok: worst-wins reddens exactly the 3 checks about discarding a measurement"

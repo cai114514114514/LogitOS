@@ -164,16 +164,59 @@ def merge_repeats(name, url, reported, recs):
         return out
     # Prefer the record of the worst verdict as the one to keep the detail from,
     # so a FLAKY row still carries a stack to look at.
-    recs = sorted(recs, key=lambda r: ORDER.index(r["verdict"])
+    #
+    # BUT A HARNESS RUN IS NOT A MEASUREMENT OF THE BROWSER, and keeping it
+    # threw away four real ones. HARNESS records carry `guest: {}` and
+    # `pixels: {}` -- there is no stack in them to look at, which is the very
+    # thing this rule exists to preserve -- so the row published a line of
+    # dashes while a complete measurement sat in the same pass, in the same
+    # directory, unread. In tests/scoreboard/0820-g4b that happened to kimi
+    # (ERRORS, 5 text runs), openai (PAINTED, 10) and weixin (BLANK, 23);
+    # all three were HARNESS-plus-a-good-run, and all three published `-`.
+    #
+    # So: rank only the runs that actually measured. And if exactly one
+    # verdict survives that filter, the row is NOT flaky -- the browser did
+    # not disagree with itself, the harness broke once. Calling that FLAKY
+    # is how a harness fault gets filed as browser volatility.
+    # SITES_MERGE_WORST_WINS restores the rule that shipped until
+    # 2026-08-25, so tests/sites.mk's negative control can watch it discard a
+    # real measurement instead of that behaviour living only in a commit
+    # message. It is the plausible wrong rule, not a mutilation: ranking all
+    # runs by severity is what anybody would write, and it is right up to the
+    # moment one of the runs measured nothing.
+    if os.environ.get("SITES_MERGE_WORST_WINS"):
+        recs = sorted(recs, key=lambda r: ORDER.index(r["verdict"])
+                      if r["verdict"] in ORDER else 0)
+        out = dict(recs[0])
+        out.update(name=name, url=url, reported=reported, runs=len(recs),
+                   all_verdicts=verdicts, verdict="FLAKY")
+        out["why"] = ("verdicts disagreed across %d runs: %s"
+                      % (len(recs), ", ".join(verdicts)))
+        return out
+    NOT_A_MEASUREMENT = ("HARNESS",)
+    measured = [r for r in recs if r["verdict"] not in NOT_A_MEASUREMENT]
+    dropped = [r["verdict"] for r in recs if r["verdict"] in NOT_A_MEASUREMENT]
+    pool = measured if measured else recs
+    pool = sorted(pool, key=lambda r: ORDER.index(r["verdict"])
                   if r["verdict"] in ORDER else 0)
-    out = dict(recs[0])
+    out = dict(pool[0])
     out["name"] = name
     out["url"] = url
     out["reported"] = reported
     out["runs"] = len(recs)
     out["all_verdicts"] = verdicts
+    if dropped:
+        out["harness_failures"] = dropped
+    if len(set(r["verdict"] for r in pool)) == 1:
+        # One surviving verdict: report it, and say what was set aside.
+        out["why"] = ("%s; %d run(s) set aside as harness faults: %s"
+                      % (out.get("why", ""), len(dropped), ", ".join(dropped)))
+        return out
     out["verdict"] = "FLAKY"
-    out["why"] = "verdicts disagreed across %d runs: %s" % (len(recs), ", ".join(verdicts))
+    out["why"] = ("verdicts disagreed across %d measured run(s): %s"
+                  % (len(pool), ", ".join(r["verdict"] for r in pool))
+                  + ("; %d harness fault(s) excluded: %s" % (len(dropped), ", ".join(dropped))
+                     if dropped else ""))
     return out
 
 

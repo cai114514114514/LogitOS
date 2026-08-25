@@ -737,11 +737,50 @@ def main():
         base = PPM(base_ppm)
 
         # ---- the site ----
-        mark = len(serial())
-        ctrl(ui, "l")
-        ui.typ(args.url)
-        t0 = time.time()
-        ui.key("ret")
+        #
+        # THE URL IS CONFIRMED BEFORE ANYTHING IS MEASURED, and it was not
+        # until 2026-08-25. about() thirty lines below has retried and
+        # confirmed against the browser's own `[browser] load:` line since it
+        # was written; the SITE url -- the one every published verdict is
+        # about -- was typed once and never checked. Two standards in one
+        # file, and the unchecked one is the load-bearing half.
+        #
+        # What that cost, from tests/scoreboard/0820-g4b/deepseek#2: the
+        # harness typed https://www.deepseek.com/ and the guest received
+        #     [browser] load: https://www.deepseek.c/
+        # -- two characters lost to the unpaced key_shift this commit also
+        # fixes -- and the row was PUBLISHED as a browser FETCH-FAIL against
+        # a host that does not exist. An instrument that fabricates a finding
+        # about the thing it exists to measure is worse than no instrument.
+        #
+        # A mistyped URL is recorded as HARNESS, never as a browser verdict.
+        # That distinction is the whole point: "the browser failed", "the
+        # harness failed" and "the site refused us" are three findings and
+        # only the first one is ours.
+        typed = None
+        for attempt in range(3):
+            mark = len(serial())
+            ctrl(ui, "l")
+            ui.typ(args.url)
+            t0 = time.time()
+            ui.key("ret")
+            if not wait_for("[browser] load: ", 8.0, mark):
+                continue                      # the bar never took it at all
+            for ln in serial(mark).splitlines():
+                i = ln.find("[browser] load: ")
+                if i >= 0:
+                    typed = ln[i + len("[browser] load: "):].strip()
+                    break
+            if typed == args.url or typed == args.url.rstrip("/"):
+                break
+            rec.setdefault("url_mistypes", []).append(typed)
+            typed = None
+        if typed is None:
+            finish("HARNESS", "the URL never reached the address bar intact"
+                              " (typed %r, got %r)"
+                              % (args.url, rec.get("url_mistypes")))
+        rec["url_confirmed"] = typed
+        rec["url_attempts"] = attempt + 1
 
         loaded = False
         fetch_failed = False

@@ -10,6 +10,7 @@ the only version of this that stays true.
 """
 
 import json
+import os
 import socket
 import time
 
@@ -204,17 +205,61 @@ class Session:
         time.sleep(settle)
 
     def key_shift(self, qcode, settle=0.05):
-        self._input([{"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": True}},
-                     {"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": True}}])
-        self._input([{"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": False}},
-                     {"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": False}}])
-        time.sleep(settle)
+        """One shifted key. DELEGATES to key_mods, which is paced.
+
+        THIS FUNCTION USED TO SEND FOUR SCANCODES IN TWO UNPACED BURSTS, and
+        it cost this project 24% of the site scoreboard's corpus. The
+        docstring below key_mods used to say key_shift "stays as it is -- it
+        has callers and there is no reason to churn them". There was a
+        reason. It is written down here rather than deleted, because the
+        sentence was reasonable and the failure it caused was not visible
+        from this file.
+
+        WHAT IT LOOKED LIKE. The PS/2 controller this machine emulates has a
+        ONE-BYTE buffer. Sent unpaced, the shift RELEASE is the byte that
+        gets dropped, so everything typed after the first shifted key arrives
+        shifted -- and the guest does exactly what it was told. From
+        tests/scoreboard/0820-g4b/kimi.serial.txt:304, the harness typing
+        http://10.0.2.2:5829/sb.html:
+
+            [browser] load: http://10.0.2.2:%*@(?SB>HTML
+
+        `%*@(?` are the shifted forms of `5 8 2 9 /`, `>` is shifted `.`, and
+        `HTML` is shifted `html`. Nothing in the browser was wrong.
+
+        WHY IT WAS EXPENSIVE OUT OF ALL PROPORTION. The corrupted URL was the
+        harness's own self-test page, so the run was recorded as HARNESS with
+        no metrics -- and sites_run.py's merge rule keeps the WORST of two
+        runs, so a good measurement sitting in the same pass was discarded.
+        Three sites (kimi, openai, weixin) published a row of dashes that way.
+        A fourth, deepseek, lost two characters from the SITE url
+        (www.deepseek.com -> www.deepseek.c) and was published as a browser
+        FETCH-FAIL: an instrument fabricating a finding about the thing it
+        exists to measure.
+
+        THE NEGATIVE CONTROL IS AN ENVIRONMENT SWITCH, not a manual revert:
+        QMP_UNPACED_SHIFT=1 restores exactly the code that shipped, so the
+        corruption can be reproduced on demand by anyone, forever, instead of
+        living in a commit message. Run it against the self-test page and the
+        `[browser] load:` line comes back shifted.
+        """
+        if os.environ.get("QMP_UNPACED_SHIFT"):
+            # The shipped-until-2026-08-25 version, kept runnable on purpose.
+            self._input([{"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": True}},
+                         {"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": True}}])
+            self._input([{"type": "key", "data": {"key": {"type": "qcode", "data": qcode}, "down": False}},
+                         {"type": "key", "data": {"key": {"type": "qcode", "data": "shift"}, "down": False}}])
+            time.sleep(settle)
+            return
+        self.key_mods(("shift",), qcode, settle=settle)
 
     def key_mods(self, mods, qcode, settle=0.05):
         """A chord: hold every qcode in `mods`, tap `qcode`, release in reverse.
 
-        key_shift() above is this with mods=("shift",) and stays as it is --
-        it has callers and there is no reason to churn them. Release order is
+        key_shift() above IS this with mods=("shift",), and now calls it.
+        This docstring used to say key_shift "stays as it is -- it has callers
+        and there is no reason to churn them"; read key_shift's own comment
+        for what that cost. Release order is
         reversed on purpose: a driver that lets go of ctrl before the letter
         can deliver the letter WITHOUT the modifier, which is a keystroke the
         page was never sent and is very hard to see afterwards.
