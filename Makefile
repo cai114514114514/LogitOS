@@ -1109,7 +1109,7 @@ $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
 	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
 	    $(BUILD)/apps/crt0.o $(BUILD)/apps/preview.o $(VID_OBJ) $(MED_OBJ) \
-	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/preview.elf $@ Preview h264 'P' 200 150 110
 

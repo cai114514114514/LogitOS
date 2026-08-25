@@ -72,6 +72,29 @@ long long llrintf(float x) { long long i; __asm__ ("cvtss2si %1, %0" : "=r"(i) :
 long  lroundf(float x) { return (long)roundf(x); }
 long long llroundf(float x) { return (long long)roundf(x); }
 
+/* double-precision lrint/llrint: math.h (line 52-53) declares both but only
+ * the float (*f) variants existed -- unnoticed until c/lib/audio/opus.c
+ * (2026-08-24, another session's in-progress work, unrelated to this one)
+ * called lrint(double) and the link failed with "undefined symbol: lrint".
+ * Mirrors lrintf/llrintf above exactly, cvtsd2si in place of cvtss2si.
+ *
+ * WEAK ON PURPOSE. browser.elf/js.aex link third_party/libm, which already
+ * has its own lrint.c/llrint.c (double is libm's whole job) -- a strong
+ * definition here duplicate-symbol'd the browser link the first time this
+ * was tried. Every CLI/GUI app that does NOT link libm (mjpeg's caller among
+ * them) still needs a definition, so this stays a *fallback*: weak means the
+ * linker takes libm's copy when one is present and this one only when it
+ * isn't, instead of forcing a choice between "browser doesn't link" and
+ * "everything else doesn't link".
+ *
+ * Not adding lround/llround here: they would need round(double), which
+ * nothing in this file or its callers currently requires (this file's own
+ * comment at the top explains why the *f forms exist and the double forms
+ * mostly don't). Scope kept to the two symbols the linker actually asked
+ * for. */
+__attribute__((__weak__)) long  lrint(double x)  { long i; __asm__ ("cvtsd2si %1, %0" : "=r"(i) : "x"(x)); return i; }
+__attribute__((__weak__)) long long llrint(double x) { long long i; __asm__ ("cvtsd2si %1, %0" : "=r"(i) : "x"(x)); return i; }
+
 float fminf(float a, float b) { if (a != a) return b; if (b != b) return a; return a < b ? a : b; }
 float fmaxf(float a, float b) { if (a != a) return b; if (b != b) return a; return a > b ? a : b; }
 float fdimf(float a, float b) { if (a != a || b != b) return a + b; return a > b ? a - b : 0.0f; }
