@@ -144,13 +144,14 @@ test-h265-asan:
 FS_FILES += $(BUILD)/vidcheck265.aex:/bin/vidcheck265 \
             tests/fixtures/video265/sample.h265:/media/sample.h265
 $(DISK): $(BUILD)/vidcheck265.aex tests/fixtures/video265/sample.h265
-$(BUILD)/vidcheck265.elf: $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) \
+$(BUILD)/vidcheck265.elf: $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
                           $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidcheck265.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ \
 	    $(BUILD)/apps/vidcheck265.crt0c.o \
-	    $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) $(LIBC_OBJS)
+	    $(BUILD)/vidobj/c/apps/video/vidcheck265.o $(VID_OBJ) $(IMGCHK_OBJ) \
+	    $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 $(BUILD)/vidcheck265.aex: $(BUILD)/vidcheck265.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidcheck265.elf $@ vidcheck265 - 'V' 150 150 150
 

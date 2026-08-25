@@ -22,6 +22,17 @@
 #include "logit.h"
 #include "js_media.h"
 
+/* c/lib/video's mjpeg.c decodes each frame through c/lib/image's img_decode(),
+ * which allocates with the kernel heap's names. In ring 3 those names are
+ * mini-libc's -- the same two-line shim preview.c:64, browser_rt.c:44 and
+ * vidcheck.c carry. VID_OBJ is a wildcard over c/lib/video/*.c, so every
+ * consumer of it inherited this the day MJPEG landed; the link lines did not
+ * follow, and the break was invisible because the stale binaries on disk were
+ * newer than the new objects. See the Makefile note beside this file's rule. */
+#include <stdlib.h>
+void *kmalloc(unsigned long n) { return malloc((size_t)n); }
+void  kfree(void *p) { free(p); }
+
 /* ---- the platform, wired to the syscalls ---- */
 static unsigned long long p_now(void) { return monotonic_ns(); }
 static void p_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)

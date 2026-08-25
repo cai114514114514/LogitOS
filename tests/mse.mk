@@ -123,12 +123,14 @@ MSECHK_OBJ := $(BUILD)/mseobj/c/apps/browser/js_media_src.o \
               $(BUILD)/mseobj/c/apps/media/msecheck.o
 
 $(BUILD)/msecheck.elf: $(MSECHK_OBJ) $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) \
+                       $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
                        $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/msecheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/msecheck.crt0c.o $(MSECHK_OBJ) $(MED_OBJ) $(VID_OBJ) \
-	    $(AUD_OBJ) $(LIBC_OBJS) --end-group
+	    $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
+	    $(LIBC_OBJS) --end-group
 $(BUILD)/msecheck.aex: $(BUILD)/msecheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/msecheck.elf $@ msecheck - 'M' 120 170 220
 

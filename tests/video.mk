@@ -63,11 +63,13 @@ test-vidbench-host: $(BUILD)/vidbench_host $(VIDBENCH_STREAMS)
 # for the H.265 feature set it deliberately stays inside), so it does not ask
 # for one -- a special arena here would be measuring a machine no real app on
 # this OS is built with.
-$(BUILD)/vidbench.elf: $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+$(BUILD)/vidbench.elf: $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
+                       $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/vidbench.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/vidbench.crt0c.o \
-	    $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(LIBC_OBJS)
+	    $(BUILD)/vidobj/c/apps/video/vidbench.o $(VID_OBJ) $(IMGCHK_OBJ) \
+	    $(GFX_OBJ) $(RUST_LIB) $(LIBC_OBJS)
 $(BUILD)/vidbench.aex: $(BUILD)/vidbench.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/vidbench.elf $@ vidbench - 'V' 150 150 150
 

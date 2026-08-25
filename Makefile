@@ -1071,12 +1071,17 @@ $(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
 # LogitOS" into a comparison rather than a claim. FLAC additionally reports its
 # own STREAMINFO MD5 check, which needs no reference at all. Driven by
 # tests/boot/run-audio-test.sh.
-$(BUILD)/audiocheck.elf: $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) \
+# $(LIBM_OBJ): c/lib/audio is a wildcard, and opus_celt.c reaches for cos/sqrt/
+# exp2. The link line did not follow the dependency the day Opus landed -- the
+# same shape as mjpeg.c dragging c/lib/image into every VID_OBJ consumer, and
+# invisible for the same reason: the stale .elf on disk was newer than the new
+# .o files, so make reported it up to date and relinked nothing.
+$(BUILD)/audiocheck.elf: $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) \
                          $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/audiocheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/audiocheck.crt0c.o \
-	    $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBC_OBJS)
+	    $(BUILD)/audobj/c/apps/audio/audiocheck.o $(AUD_OBJ) $(LIBM_OBJ) $(LIBC_OBJS)
 $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/audiocheck.elf $@ audiocheck - 'A' 150 150 150
 
@@ -4360,7 +4365,21 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/tcc.mk
 -include tests/vp9.mk
 -include tests/subs.mk
+# Pre-wired for fragments that are being written now. `-include` tolerates a
+# file that does not exist yet, so adding these here -- once, from one place --
+# is what stops several concurrent lines from each editing this shared file and
+# none of them landing the include. That is the exact failure this Makefile
+# already carries a gate for (test-mk-wired), and pre-wiring is the cheaper
+# half of it: the gate catches the omission, this prevents it.
+-include tests/mpeg12.mk
+-include tests/mpeg4.mk
+-include tests/legacy.mk
+-include tests/opus.mk
+-include tests/containers.mk
+-include tests/fsgeom.mk
+-include tests/aui_text_utf8.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:
 	@python3 tools/mk_wired.py
+-include tests/vp8.mk

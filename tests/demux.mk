@@ -43,12 +43,14 @@ $(BUILD)/medobj/c/apps/media/demuxcheck.o: c/apps/media/demuxcheck.c $(MED_HDRS)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 $(BUILD)/demuxcheck.elf: $(BUILD)/medobj/c/apps/media/demuxcheck.o $(MED_OBJ) \
-                         $(VID_OBJ) $(AUD_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+                         $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
+                         $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/demuxcheck.crt0c.o
 	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ --start-group \
 	    $(BUILD)/apps/demuxcheck.crt0c.o $(BUILD)/medobj/c/apps/media/demuxcheck.o \
-	    $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) $(LIBC_OBJS) --end-group
+	    $(MED_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) \
+	    $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/demuxcheck.aex: $(BUILD)/demuxcheck.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/demuxcheck.elf $@ demuxcheck - 'M' 150 150 150
 
