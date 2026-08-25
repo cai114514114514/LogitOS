@@ -190,9 +190,9 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # it cannot be excluded by directory; the find below was dragging it into the
 # kernel link, where it failed with six undefined symbols. Its consumers link it
 # with LIBC_OBJS, like the video decoder does.
+RING3_SSH := $(wildcard c/net/ssh/*.c)
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
-             c/net/http/hpack.c c/net/http/http2.c \
-             $(wildcard c/net/ssh/*.c)
+             c/net/http/hpack.c c/net/http/http2.c $(RING3_SSH)
 # c/net/ssh is a PROTOCOL and lives with the other protocols (c/net/tls is the
 # precedent: crypto holds primitives, net holds what is built on them). It is
 # written freestanding so the kernel COULD link it -- nothing in the kernel
@@ -979,7 +979,15 @@ $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 # wired up in a later slice -- so `check-ring3-net` exists to keep it building
 # with the REAL freestanding flags rather than only under the host compiler,
 # which is where a stray <stdio.h> or a long-long division helper would hide.
-R3NET_SRC  := $(RING3_NET)
+# RING3_NET HAS TWO JOBS AND SSH ONLY BELONGS TO ONE OF THEM. As the
+# filter-out list above it means "do not compile this into the kernel", and
+# c/net/ssh belongs there. As the source list here it means "every consumer
+# of R3NET_OBJ links these", and ssh does NOT belong there: ssh_kex.c reaches
+# for x25519, ed25519_sign, sha256 and aes128_ctr, so adding it to this list
+# broke build/h2check.elf -- a diagnostic tool that wants HTTP/2 and no
+# crypto -- with nine undefined symbols. sshd links c/net/ssh explicitly
+# through tests/ssh.mk, which is where a program that WANTS ssh asks for it.
+R3NET_SRC  := $(filter-out $(RING3_SSH),$(RING3_NET))
 R3NET_HDRS := c/net/http/http1.h c/net/http/cookies.h c/net/http/hpool.h \
               c/net/http/hpack.h c/net/http/http2.h
 R3NET_OBJ  := $(patsubst %.c,$(BUILD)/r3netobj/%.o,$(R3NET_SRC))
@@ -3057,7 +3065,7 @@ SEED  ?= 0x243F6A8885A308D3
 test-http-fuzz: $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w $(BTEST_INC) \
-	    -o $(BUILD)/http1_fuzz tests/unit/http1_fuzz.c $(RING3_NET) \
+	    -o $(BUILD)/http1_fuzz tests/unit/http1_fuzz.c $(R3NET_SRC) \
 	    tests/unit/rust_host_shim.c $(RUST_LIB_HOST)
 	@ASAN_OPTIONS=detect_leaks=1 $(BUILD)/http1_fuzz $(SCALE) $(SEED)
 
