@@ -7,6 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "media_int.h"
+#include "avi.h"
+#include "ts.h"
+#include "ps.h"
+#include "flv.h"
 
 /* ------------------------------------------------------------- sniff ----- */
 /* By content. A file called .mp4 that is really Matroska opens as Matroska,
@@ -52,6 +56,17 @@ media_container media_sniff(const uint8_t *d, long n)
             off += (long)sz;
         }
     }
+
+    /* The four formats added alongside this dispatch (avi.c/ts.c/ps.c/
+     * flv.c). Their magic bytes are mutually exclusive with each other, with
+     * EBML and with an ISO-BMFF leading box -- container_test.c's own
+     * test_sniffs_disjoint() proves the four are pairwise exclusive on real
+     * magic, which this order relies on rather than re-deriving. */
+    if (avi_sniff(d, n)) return MEDIA_CONT_AVI;
+    if (ts_sniff(d, n))  return MEDIA_CONT_TS;
+    if (ps_sniff(d, n))  return MEDIA_CONT_PS;
+    if (flv_sniff(d, n)) return MEDIA_CONT_FLV;
+
     return MEDIA_CONT_UNKNOWN;
 }
 
@@ -60,6 +75,10 @@ const char *media_container_name(media_container c)
     switch (c) {
     case MEDIA_CONT_MP4: return "mp4";
     case MEDIA_CONT_MKV: return "matroska";
+    case MEDIA_CONT_AVI: return "avi";
+    case MEDIA_CONT_TS:  return "mpegts";
+    case MEDIA_CONT_PS:  return "mpeg";
+    case MEDIA_CONT_FLV: return "flv";
     default:             return "unknown";
     }
 }
@@ -198,11 +217,48 @@ mdemux *media_open(const uint8_t *data, long len, int *err)
     mdemux *m = (mdemux *)calloc(1, sizeof *m);
     if (!m) { if (err) *err = MEDIA_ERR_OOM; return 0; }
     m->data = data; m->len = len; m->kind = k;
-    m->movie_timescale = 1000;
+    /* Matches each format's own _open() wrapper exactly (avi_open/flv_open:
+     * 1000; ts_open/ps_open: 90000, the fixed 90 kHz system clock both MPEG
+     * transport formats use) -- neither avi_parse/flv_parse/ts_parse/
+     * ps_parse sets movie_timescale itself the way mp4_parse/mkv_parse do
+     * from their own header fields, so the caller must get this right
+     * BEFORE the parse call, not after. */
+    m->movie_timescale = (k == MEDIA_CONT_TS || k == MEDIA_CONT_PS) ? 90000 : 1000;
     m->movie_duration = -1;
     m->selected = -1;
 
-    e = (k == MEDIA_CONT_MP4) ? mp4_parse(m) : mkv_parse(m);
+    switch (k) {
+    case MEDIA_CONT_MP4: e = mp4_parse(m); break;
+    case MEDIA_CONT_MKV: e = mkv_parse(m); break;
+    case MEDIA_CONT_AVI: e = avi_parse(m); break;
+    case MEDIA_CONT_FLV: e = flv_parse(m); break;
+    case MEDIA_CONT_TS:
+        /* ts_parse REASSIGNS m->data to a scratch buffer it allocates on
+         * success (see media_int.h's owns_data field and ts.h) -- set the
+         * flag only once success is confirmed, so a failed parse (where
+         * m->data is still the caller's own buffer) never gets freed here. */
+        e = ts_parse(m);
+#ifndef CONTAINERS_CONTROL_NO_OWNS_DATA
+        if (e == MEDIA_OK) m->owns_data = 1;
+#endif
+        break;
+    case MEDIA_CONT_PS:
+        e = ps_parse(m);
+#ifndef CONTAINERS_CONTROL_NO_OWNS_DATA
+        if (e == MEDIA_OK) m->owns_data = 1;
+#endif
+        break;
+        /* CONTAINERS_CONTROL_NO_OWNS_DATA: the plausible wrong wiring --
+         * dispatch TS/PS through media_open() without ever setting the
+         * flag, exactly the state this file was in before this change (and
+         * exactly what ts.h's own header comment warned would happen: "not
+         * written here because media_int.h and demux.c belong to another
+         * workflow"). media_close() then frees only m->tr[i].s, never the
+         * reassembled scratch buffer -- a real leak on every TS/PS file the
+         * generic path closes, required to be caught by AddressSanitizer's
+         * leak detector specifically. See test-containers-negctl. */
+    default: e = MEDIA_ERR_UNSUPPORTED; break;
+    }
     if (e == MEDIA_OK && m->ntracks == 0) e = MEDIA_ERR_CORRUPT;
     if (e != MEDIA_OK) { media_close(m); if (err) *err = e; return 0; }
 
@@ -214,6 +270,11 @@ void media_close(mdemux *m)
 {
     if (!m) return;
     for (int i = 0; i < m->ntracks; i++) free(m->tr[i].s);
+    /* Only ts_parse/ps_parse ever set this, and only after reassigning
+     * `data` from the caller's buffer to a scratch buffer this library
+     * allocated -- freeing it here for any other kind would free memory
+     * media_open() never owned. See media_int.h's field comment. */
+    if (m->owns_data) free((void *)m->data);
     free(m);
 }
 

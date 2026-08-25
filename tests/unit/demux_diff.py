@@ -132,6 +132,22 @@ def split_ps(nals, is_ps):
             rest.append(nal)
     return ps, rest
 
+def starts_with_annexb(tool, build, path, t):
+    """True when track t's FIRST sample begins with an Annex B start code
+    (00 00 01 or 00 00 00 01) -- the positive, checkable signal that this
+    track's parameter sets are IN-BAND, not a discrete avcC/hvcC record.
+    Used instead of trusting "our extradata_size is 0" on its own, which a
+    real bug (this demuxer failing to find extradata that genuinely exists)
+    would look identical to -- this only skips the extradata comparison when
+    the sample bytes themselves prove there was nothing out-of-band to find."""
+    raw = os.path.join(build, "sig.bin")
+    try:
+        run([tool, "raw", path, str(t), raw])
+    except SystemExit:
+        return False
+    d = open(raw, "rb").read(4)
+    return d[:3] == b"\x00\x00\x01" or d[:4] == b"\x00\x00\x00\x01"
+
 def h264_is_ps(nal):
     return bool(nal) and (nal[0] & 0x1F) in (7, 8)
 
@@ -146,6 +162,27 @@ def check(path, tool, build, fail):
     hdr, otracks = our_info(tool, path)
     ftracks = ff_streams(path)
     is_mkv = hdr.get("container") == "matroska"
+    is_avi = hdr.get("container") == "avi"
+    is_ts = hdr.get("container") == "mpegts"
+    is_ps = hdr.get("container") == "mpeg"
+    is_flv = hdr.get("container") == "flv"
+    # POS IS A DIFFERENT QUANTITY FOR THREE OF THESE FORMATS, THE SAME WAY IT
+    # ALREADY IS FOR MATROSKA -- not a bug, a different coordinate space:
+    #   TS/PS: ts.h/ps.h both document it outright -- a sample's bytes are
+    #     REASSEMBLED into a scratch buffer this library allocates (a PES
+    #     payload is chopped across ~184-byte TS packets, and PS occasionally
+    #     splits too), so media_sample.file_off is an offset into THAT buffer,
+    #     never a transport/pack-stream file position.
+    #   FLV: media_sample.file_off is documented (media.h) as "where the
+    #     PAYLOAD starts", so ours points past the 11-byte FLV tag header AND
+    #     past the codec sub-header (AVCPacketType+CompositionTime, or
+    #     SoundFormat+AACPacketType) -- ffprobe's pos is the TAG's own start.
+    #     The difference is a fixed, exact, per-tag-type byte count (verified:
+    #     +16 for every AVC NALU tag, +13 for every raw AAC frame tag on this
+    #     corpus) and not a wrong offset -- FLV tags ARE contiguous file bytes
+    #     (flv.h's whole point), so this is a choice of what "pos" means, not
+    #     a lost track of where anything is.
+    pos_comparable = not (is_mkv or is_ts or is_ps or is_flv)
 
     if set(ours) != set(theirs):
         fail(name, "track set: ours %s ffmpeg %s" % (sorted(ours), sorted(theirs)))
@@ -153,6 +190,32 @@ def check(path, tool, build, fail):
 
     for t in sorted(ours):
         a, b = ours[t], theirs[t]
+        # AVI'S OWN TIME_BASE, NOT 1/timescale -- unlike MP4 and Matroska,
+        # where a stream's timescale IS its ffprobe time_base denominator
+        # (num=1), libavformat's AVI demuxer sets a stream's time_base to the
+        # RAW (dwScale, dwRate) pair from the strh -- e.g. 32/1225 for an MP3
+        # track muxed at 1225 ticks/s with 32 ticks/frame -- not the reduced
+        # 1/1225. So ffprobe's packet pts/dts count CHUNK-TIME-UNITS (one MP3
+        # frame here) while ours counts raw ticks (media.h's own contract:
+        # "ticks per second of this track's timestamps"), and the two differ
+        # by an EXACT integer factor (dwScale) with no rounding anywhere --
+        # not a tolerance, a unit conversion. Confirmed empirically: ffprobe
+        # reports time_base=32/1225 and our track's timescale=1225 for the
+        # identical stream, and every raw pts/dts pair disagrees by exactly
+        # 32x. Rescale ffprobe's ticks into ours before comparing, and ONLY
+        # when our timescale actually equals the time_base denominator (the
+        # one case the arithmetic below is valid for) -- otherwise leave the
+        # pair untouched and let a real mismatch fail loudly, same as today.
+        if is_avi:
+            tb = ftracks.get(t, {}).get("time_base", "")
+            our_ts = otracks.get(t, {}).get("timescale")
+            if "/" in tb and our_ts:
+                num_s, den_s = tb.split("/", 1)
+                if num_s.isdigit() and den_s.isdigit() and int(den_s) == int(our_ts):
+                    factor = int(num_s)
+                    b = [(p * factor if p is not None else None,
+                          d * factor if d is not None else None, sz, pos, key)
+                         for (p, d, sz, pos, key) in b]
         if len(a) != len(b):
             fail(name, "track %d sample count: ours %d ffmpeg %d" % (t, len(a), len(b)))
             continue
@@ -170,7 +233,8 @@ def check(path, tool, build, fail):
                 # decode ORDER is preserved because block order is decode order,
                 # which is what actually feeds the decoder.
                 fields.append(("dts", 1))
-                fields.append(("pos", 3))
+                if pos_comparable:
+                    fields.append(("pos", 3))
             for label, idx in fields:
                 if y[idx] is None:
                     continue
@@ -203,7 +267,28 @@ def check(path, tool, build, fail):
         # STREAMINFO PAYLOAD alone, so it strips the 8-byte prefix. Compare what
         # they have in common rather than pretending one of them is wrong.
         strip = 8 if (is_mkv and o.get("codec") == "flac") else 0
-        if fsz is not None and fsz != "N/A":
+        # IN-BAND PARAMETER SETS (Annex B: SPS/PPS as ordinary NALs ahead of
+        # the first slice) MEAN THERE IS NO DISCRETE RECORD TO COMPARE.
+        # ts.c's own header comment says as much for width/height ("a real
+        # player gets them by parsing the video SPS itself, which is a
+        # decoder's job, not this demuxer's") and the same argument applies
+        # to extradata: ffprobe's extradata_size/hash for an Annex-B stream
+        # is libavformat SYNTHESISING an avcC-shaped record by scanning the
+        # elementary stream itself -- there is no such record in the FILE
+        # for either side to disagree about the contents of. This is not
+        # limited to TS/PS (both always carry H.264 in-band) -- AVI can too,
+        # when ffmpeg encodes straight to it rather than remuxing an AVCC
+        # source (verified: containers-h264-mp3.avi's strf chunk is exactly
+        # the bare 40-byte BITMAPINFOHEADER, no extra bytes, and its first
+        # sample begins with a literal 00 00 00 01 start code) -- so the
+        # test is POSITIVE (does the sample itself start with a start code),
+        # not "which container is this" and not "is our extradata_size
+        # zero" -- the latter would just as happily hide a real bug (this
+        # demuxer failing to find an avcC that genuinely exists, exactly
+        # what avi.c's strf-extension fix in this same session corrected).
+        in_band_ps = (o.get("codec") in ("h264", "hevc") and
+                      starts_with_annexb(tool, build, path, t))
+        if fsz is not None and fsz != "N/A" and not in_band_ps:
             if int(o.get("extradata_size", -1)) - strip != int(fsz):
                 fail(name, "track %d extradata size: ours %s-%d ffmpeg %s"
                      % (t, o.get("extradata_size"), strip, fsz))

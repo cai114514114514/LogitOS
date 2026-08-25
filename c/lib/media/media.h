@@ -70,7 +70,11 @@
 typedef enum {
     MEDIA_CONT_UNKNOWN = 0,
     MEDIA_CONT_MP4,            /* ISO-BMFF: .mp4 .mov .m4a .m4v, fragmented too */
-    MEDIA_CONT_MKV             /* Matroska and WebM (the same parser) */
+    MEDIA_CONT_MKV,            /* Matroska and WebM (the same parser) */
+    MEDIA_CONT_AVI,            /* RIFF/AVI -- avi.c */
+    MEDIA_CONT_TS,             /* MPEG-2 Transport Stream -- ts.c */
+    MEDIA_CONT_PS,             /* MPEG Program Stream (.mpg/.vob) -- ps.c */
+    MEDIA_CONT_FLV             /* Flash Video -- flv.c */
 } media_container;
 
 typedef enum {
