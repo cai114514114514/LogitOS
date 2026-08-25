@@ -1124,7 +1124,8 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 # runs on content -- see opens_in_preview() in c/kernel/gui/wm.c.
 $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                       c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
-                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
+                      $(BUILD)/apps/crt0.o $(VID_OBJ) $(MED_OBJ) $(AUD_OBJ) \
+                      $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) $(LIBM_OBJ) \
                       $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
