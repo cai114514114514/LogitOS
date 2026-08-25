@@ -1066,6 +1066,19 @@ $(BUILD)/imgcheck.aex: $(BUILD)/imgcheck.elf tools/mkaex.py
 # every transcendental is a constant in the generated mp3_tables.h and the two
 # run-time nonlinearities are computed from scratch -- so it links with nothing
 # but LIBC_OBJS.
+# musl libm, cross-built for ring 3. DEFINED HERE, NOT IN tests/libm.mk,
+# because $(LIBM_OBJ) appears in PREREQUISITE lists below and a prerequisite
+# is expanded when the rule is read -- a definition that arrives with an
+# -include 3,000 lines later expands to nothing there, and the link then
+# names object files make was never told to build. The flags and the reason
+# they are scoped to $(BUILD)/libmobj are argued in tests/libm.mk's header.
+LIBM_SRC := $(sort $(wildcard third_party/libm/*.c))
+LIBM_OBJ := $(patsubst %.c,$(BUILD)/libmobj/%.o,$(LIBM_SRC))
+
+$(BUILD)/libmobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -include features.h -Ithird_party/libm -c $< -o $@
+
 AUD_SRC  := $(wildcard c/lib/audio/*.c)
 AUD_HDRS := $(wildcard c/lib/audio/*.h)
 AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
