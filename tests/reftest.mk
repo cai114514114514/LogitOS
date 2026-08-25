@@ -183,9 +183,20 @@ test-reftest-ahem: $(BUILD)/reftest/ahem_test
 $(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c $(REFT_KERNEL) $(GFX_SRC)
 	@mkdir -p $(BUILD)/reftest
 	$(CC) -O2 -w -Itests/unit/refhost -Ic/kernel/gui -Ic/lib/text -Ic/kernel/mm \
-	    -Ic/kernel/core -Ic/fs -Ic/drivers/virtio -Ic/lib/gfx -Ic/lib/image \
+	    -Ic/kernel/core -Ic/kernel/cpu -Ic/fs -Ic/drivers/virtio -Ic/lib/gfx \
+	    -Ic/lib/image \
 	    -o $@ tests/unit/ahem_test.c tests/unit/refhost/refhost.c \
 	    $(sort $(REFT_KERNEL) $(GFX_SRC)) -lm
+# -Ic/kernel/cpu was added 2026-08-25: c/kernel/gui/text.c includes
+# "spinlock.h" and this HAND-WRITTEN include list did not follow it, so
+# test-reftest-ahem -- the seconds-long prerequisite that every other reftest
+# number depends on -- did not compile at all. That is the second time this
+# one rule has broken for the same structural reason, and the paragraph above
+# records the first (raster.c's deletion). The root cause both times is that
+# this list is maintained by hand while the real build derives INCDIRS from
+# `find`. It is kept by hand on purpose -- the flat INCDIRS makes mini-libc's
+# headers shadow glibc's in a HOST build, which is the collision CLAUDE.md
+# documents -- so the cost is real and is paid here rather than hidden.
 
 # Ahem is not in the vendored WPT subset (third_party/wpt/fonts/ does not
 # exist), so it is fetched to .cache/ and gitignored, the same shape as the
