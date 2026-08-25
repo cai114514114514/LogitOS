@@ -196,7 +196,28 @@ void *memcpy(void *, const void *, size_t);
  * that manipulates it; this is a forward move, not a second home. */
 struct drect { int x0, y0, x1, y1; };          /* half-open, DEVICE pixels */
 
-enum wkind { WK_FINDER, WK_APP };
+/* WK_BUILDING is the state a slot is in between the moment SYS_GUI_CREATE
+ * CLAIMS it and the moment it is finished. It exists because the claim has
+ * to publish `used = 1` under win_lock -- two apps creating a window at once
+ * otherwise take the same slot -- and `used` alone is what several scans
+ * filter on. wm_apply_sizes() (the ONLY reallocator of a window surface)
+ * walks wins[] by `used && kind == WK_APP`, and a reused slot still carries
+ * the PREVIOUS tenant's kind, so a half-built window passed that filter and
+ * win_apply_size() ran against surf.px == NULL.
+ *
+ * MEASURED, because it is the opposite of what it looks like: publishing
+ * surf.px = NULL at the claim is the SAFER-looking move and it is what broke
+ * the desktop -- with the old garbage pointer every `if (px)` check passed
+ * and the read was silently wrong pixels; with NULL the same code faulted and
+ * took the WM thread with it, so no window appeared at all. Bisected: the
+ * peel was innocent, `used = 1` alone was innocent, zeroing the pointer was
+ * not. The pointer SHOULD be NULL; what was missing is a state that keeps
+ * the scanners away until the window is whole.
+ *
+ * All sixteen kind comparisons in this file are `== WK_APP`, `== WK_FINDER`
+ * or `!= WK_APP`; none is `!= WK_FINDER`, so a third value is excluded by
+ * every one of them without touching any of them. Checked, not assumed. */
+enum wkind { WK_FINDER, WK_APP, WK_BUILDING };
 
 struct app {
     int  used, alive, id;
@@ -760,21 +781,56 @@ static const char *ext_of(const char *s) {
 }
 
 /* ---------- z-order helpers ---------- */
+/*
+ * win_lock GUARDS THE WINDOW LIST, AND IT IS NOT ABOUT RENDERING.
+ *
+ * Two things live under it, and only two:
+ *   - the SLOT CLAIM in SYS_GUI_CREATE: the scan of wins[].used and the
+ *     `used = 1` that answers it. Two apps creating a window at once claim the
+ *     same slot otherwise, and nothing but the BKL was stopping them.
+ *   - order[] / norder, mutated here and read by every render path.
+ *
+ * IT IS DELIBERATELY NOT HELD ACROSS PIXELS. The compositor takes it to read
+ * the window list, copies what it needs, and lets go before it touches a
+ * surface -- which is what makes releasing the BKL across the pixel pass a
+ * small change rather than a rewrite. The reason that is safe at all is
+ * win_apply_size(): the only code that REALLOCATES a window surface, running
+ * on the WM thread in the same loop iteration, before wm_render(). So the
+ * use-after-free that would normally make this a project cannot happen
+ * between the snapshot and the blit.
+ *
+ * ORDERING: BKL -> win_lock -> text_lock -> kheap_lock. Nothing under
+ * win_lock takes the BKL, and input is deferred to the WM thread (see the
+ * input-deferral note further down), so this is the bare spin_lock and not
+ * the irqsave form.
+ *
+ * THE RULE order[] CARRIES, now asserted instead of accidental: a window is
+ * in order[] only after its surface exists. raise_win() is the last statement
+ * of SYS_GUI_CREATE for exactly that reason, and every render path walks
+ * order[] rather than scanning wins[] by `used`. Written down here because it
+ * was true by accident and one refactor away from not being.
+ */
+static spinlock_t win_lock = SPINLOCK_INIT;
+
 static void raise_win(int wi)
 {
+    spin_lock(&win_lock);
     int at = -1;
     for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) { order[norder++] = wi; return; }
+    if (at < 0) { order[norder++] = wi; spin_unlock(&win_lock); return; }
     for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
     order[norder - 1] = wi;
+    spin_unlock(&win_lock);
 }
 static void remove_win(int wi)
 {
+    spin_lock(&win_lock);
     int at = -1;
     for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) return;
+    if (at < 0) { spin_unlock(&win_lock); return; }
     for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
     norder--;
+    spin_unlock(&win_lock);
 }
 
 /* Send a window to the BACK. The exact inverse of raise_win, which is what
@@ -1966,8 +2022,32 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (ap->win >= 0) return 0;
         char title[64];
         if (user_copy_string(title, sizeof title, (const char *)a) < 0) return -1;
+        /* THE SLOT CLAIM IS THE RACE THE BKL IS CARRYING HERE, and it has
+         * nothing to do with rendering: two apps calling SYS_GUI_CREATE at
+         * once scan this array and claim the same `i`, and nothing else
+         * prevents it. The scan and the claim must be one critical section --
+         * which is also the cheapest one available, a byte per window.
+         *
+         * AND THE CLAIM PUBLISHES surf.px = NULL BEFORE ANYTHING ELSE. The
+         * old order was `used = 1; ... w->surf.px = kmalloc(...)`, so there
+         * was a window in which the slot read as live while its pixel pointer
+         * was the PREVIOUS TENANT'S FREED POINTER. The compositor survived
+         * that by an accident nobody had written down -- every render path
+         * walks order[] and never wins[] by `used`, and raise_win() is the
+         * last statement of this handler -- so a half-built window is
+         * unreachable from a frame. That accident is load-bearing and is
+         * asserted below rather than left to be rediscovered. */
         int wi = -1;
-        for (int i = 0; i < MAXWIN; i++) if (!wins[i].used) { wi = i; break; }
+        spin_lock(&win_lock);
+        for (int i = 0; i < MAXWIN; i++)
+            if (!wins[i].used) {
+                wi = i;
+                wins[i].used = 1;          /* claimed: no other core may take it */
+                wins[i].kind = WK_BUILDING; /* ...and no scan may act on it yet */
+                wins[i].surf.px = 0;        /* never the previous tenant's pointer */
+                break;
+            }
+        spin_unlock(&win_lock);
         if (wi < 0) return -1;
         /* (cw,ch) are POINTS. Every app in the tree passed device pixels here
          * before scaling existed, and at scale 100 the two are the same number,
@@ -1976,15 +2056,24 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * always got, and on a denser display gets the same window drawn with
          * more pixels. */
         int cw_pt = LOGIT_GUI_CREATE_B_W(b), ch_pt = LOGIT_GUI_CREATE_B_H(b);
-        if (cw_pt <= 0 || ch_pt <= 0) return -1;
+        /* Every failure path from here MUST release the claim: the slot was
+         * marked used by the scan above, and a bare `return -1` would leak it
+         * for the life of the boot. */
+        if (cw_pt <= 0 || ch_pt <= 0) { wins[wi].used = 0; return -1; }
         int cw = S(cw_pt), ch = S(ch_pt);
         /* cw,ch are each up to 65535 -- cw*ch*4 overflows int. A window larger
          * than the screen is meaningless, so cap to the framebuffer; do the size
          * math in 64-bit. */
-        if (cw > (int)fb_width() || ch > (int)fb_height()) return -1;
+        if (cw > (int)fb_width() || ch > (int)fb_height()) { wins[wi].used = 0; return -1; }
         uint64_t pxcount = (uint64_t)cw * (uint64_t)ch;
         struct win *w = &wins[wi];
-        w->used = 1; w->kind = WK_APP; w->app = ap;
+        /* NOT `kind = WK_APP` yet. The slot stays WK_BUILDING until the
+         * buffer below exists, because wm_apply_sizes() runs on the WM
+         * thread against `used && kind == WK_APP` and would otherwise see
+         * this window with surf.px still NULL -- ten lines is a wide enough
+         * window on a preempted machine, and it is exactly the ten lines in
+         * which the pointer is null. PUBLISH LAST. */
+        w->used = 1; w->app = ap;
         w->cw_pt = cw_pt; w->ch_pt = ch_pt;
         w->w = cw; w->h = TBH + ch;
         w->x = S(110 + cascade * 28); w->y = S(70 + cascade * 28);
@@ -1998,6 +2087,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
         w->surf_cap = (int)pxcount;      /* the canvas grows in steps from here */
+        w->kind = WK_APP;                /* NOW it is a window others may act on */
         for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
         w->drawing = 0; w->draw_t0 = 0;   /* a fresh canvas is a finished picture */
         /* WAKE the old tenant's waiters, do NOT waitq_init here. waitq_init
@@ -4355,6 +4445,58 @@ void wm_render(void)
 
     uint64_t t_start = time_mono_ns();
     int animating = 0;
+    /* ---- THE BKL COMES OFF HERE, for the pixel pass and nothing else ----
+     *
+     * WHY THIS LINE IS THE POINT. Sampled from inside the timer tick
+     * (kb_bkl_sample runs BEFORE the interrupt entry takes the lock, so the
+     * observer is not itself a holder), `wm_run` is 54% of BKL-held time on
+     * four cores and 99% on one. The lock is FREE about 80% of the time --
+     * this was never a contention problem. It is a HOLD-DURATION problem, and
+     * the duration is one composite: 16.1 ms against 0.81 ms for the present.
+     * Everything else on the machine waits behind a frame being painted.
+     *
+     * WHAT MAKES IT SAFE, each a property somebody had to go and check:
+     *   - The only code that REALLOCATES a window surface is win_apply_size(),
+     *     on this thread, earlier in this same loop iteration.
+     *   - The only code that FREES one is reap(), the first statement of this
+     *     function -- also this thread, also before any pixel is touched.
+     *   - The window list is win_lock's now, and order[] carries the rule that
+     *     a window is in it only after its surface exists.
+     *   - Text is text_lock's, added a step early for exactly this moment.
+     *   - The back buffer is the WM's alone.
+     * What is NOT excluded is an app writing its own surface mid-frame. That
+     * is TEARING, not corruption, and WM_MIDFRAME_GUARD / rect_blocked /
+     * perf_torn already exist for it.
+     *
+     * THE IF=0 WINDOWS ARE NOT OPTIONAL -- the same discipline the idle hlt
+     * below uses. A timer IRQ landing between `in_kernel = 0` and the unlock,
+     * or between the lock and `in_kernel = 1`, reads nested = 0 and
+     * re-acquires a lock this core already holds: self-deadlock, presenting
+     * as a flaky whole-system freeze.
+     *
+     * One entry, one exit: the only `return` in this function is the
+     * `!back || !bg` line above, before this point.
+     *
+     * AND IT IS GUARDED, because the first version was not and the kernel
+     * caught it on the first boot:
+     *
+     *   [bkl] BUG: unlock with ticket==serving at ra=0x13a874
+     *         -- serving passes ticket; every later acquirer spins forever
+     *
+     * kmain.c:208 calls wm_render() for the first frame, BEFORE wm_run()
+     * takes the BKL, so the release ran on a lock nobody held. That was found
+     * by enumerating callers with a grep of wm.c alone -- wm_render_first()
+     * is dead code and the real second caller is in another file. percpu.h:24
+     * defines in_kernel as "1 while this core holds the BKL", so it is the
+     * predicate, not a proxy for one. */
+    int bkl_peeled = 0;
+    __asm__ volatile ("cli");
+    if (this_cpu()->in_kernel) {
+        this_cpu()->in_kernel = 0;
+        spin_unlock(&g_bkl);
+        bkl_peeled = 1;
+    }
+    __asm__ volatile ("sti");
 #if WM_MIDFRAME_GUARD
     struct drect defer[NDMG];
     int ndef = 0, late = 0;
@@ -4369,6 +4511,16 @@ void wm_render(void)
         }
 #endif
         animating |= render_region(&r[k]);
+    }
+    /* ---- and back on, before anything that is not a pixel ----
+     * Everything below this line touches shared kernel state again: the
+     * damage list, the perf counters, dirty_full(). Re-acquire FIRST, with
+     * the same IF=0 window as the release above. */
+    if (bkl_peeled) {
+        __asm__ volatile ("cli");
+        spin_lock(&g_bkl);
+        this_cpu()->in_kernel = 1;
+        __asm__ volatile ("sti");
     }
     if (animating) dirty_full();           /* keep compositing until the pop settles */
 #if WM_MIDFRAME_GUARD
@@ -5296,10 +5448,32 @@ static void wm_geom_report(void)
                            w->zoomed, w->minimized, w->cw_pt, w->ch_pt };
         if (c.x != seen[i].x || c.y != seen[i].y || c.w != seen[i].w ||
             c.h != seen[i].h || c.z != seen[i].z || c.m != seen[i].m ||
-            c.cw != seen[i].cw || c.ch != seen[i].ch) { seen[i] = c; changed = 1; }
+            c.cw != seen[i].cw || c.ch != seen[i].ch) {
+            seen[i] = c; changed = 1; }
     }
     /* An empty desktop is the state this starts in, not a transition into it. */
-    if (!inited) { inited = 1; for (int i = 0; i < MAXWIN; i++) said[i] = seen[i]; return; }
+    /* THE BASELINE IS A SENTINEL, NOT THE FIRST OBSERVATION.
+     *
+     * This used to be `if (!inited) { said[i] = seen[i]; return; }` -- the
+     * first call established the baseline from whatever it saw. That silently
+     * swallows any window that ALREADY EXISTS at that moment: said == seen, so
+     * it never "changes", so it is never reported.
+     *
+     * It was harmless only because of a boot ordering nobody had written down:
+     * an app could not reach SYS_GUI_CREATE until the WM released the BKL at
+     * the idle hlt, which is AFTER this function runs. Peeling the BKL off the
+     * pixel pass ended that -- the Finder's window now exists before the first
+     * report -- and the desktop gate went from 16 checks passing to
+     * "the Finder never settled", with nothing wrong in the compositor at all.
+     *
+     * -2 cannot be a real value: an unused slot reports -1 and a used one
+     * reports a coordinate. So the first real geometry is always a change,
+     * whenever it arrives. */
+    if (!inited) {
+        inited = 1;
+        for (int i = 0; i < MAXWIN; i++)
+            said[i].x = said[i].y = said[i].w = said[i].h = -2;
+    }
     if (changed) { quiet_ms = time_mono_ms(); pending = 1; return; }
     if (!pending || time_mono_ms() - quiet_ms < 150) return;
     pending = 0;
