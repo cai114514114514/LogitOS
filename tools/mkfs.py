@@ -2,10 +2,13 @@
 """Build an LogitFS v4 disk image: a hierarchical, inode-based filesystem with a
 free-block bitmap, subdirectories, and a write-ahead log (Unix-style).
 
-Usage: mkfs.py <out.img> <host[:/dest/path] | host> ...
+Usage: mkfs.py <out.img> <host[:/dest/path] | host | dir[:/dest]> ...
   host                -> placed at /<basename(host)>
   host:/docs/note.txt -> placed at that absolute path (dirs auto-created)
   host:name.txt       -> placed at /name.txt
+  dir:/usr            -> the whole tree under dir, packed at /usr (add_tree:
+                         sorted walk, symlinks refused, kernel path limits
+                         checked on every destination)
 
 Layout (4 KiB blocks = 8 x 512B sectors):
   block 0                      superblock
@@ -53,6 +56,12 @@ NDIRECT = 12
 PPB = BS // 4                   # u32 pointers per (indirect) block (1024)
 DIRENT = 64
 NAME_MAX = 60                   # bytes in a dirent name (incl. NUL)
+# The kernel's path buffer (c/fs/vfs_path.h VFS_PATH_MAX, incl. NUL). A name
+# can fit its dirent while the path it sits at is one the kernel cannot open:
+# nothing in serialize() below sees a full path, so add_tree() is the place the
+# ceiling is enforced, and it is enforced on the DESTINATION, which is what the
+# device will type.
+PATH_MAX = 256
 T_FREE, T_FILE, T_DIR = 0, 1, 2
 
 # Inode field offsets (bytes from the start of the 128-byte inode).
@@ -222,6 +231,14 @@ class Builder:
         for p in parts:
             if not p:
                 continue
+            # A directory component was never checked here, only the leaf in
+            # add_file(); serialize() then TRUNCATED the name to NAME_MAX-1
+            # bytes and wrote the dirent without a word. add_tree() walks a
+            # real install tree, so this is where that would have been found
+            # -- by a header resolving to the wrong directory on the device.
+            if len(p.encode()) >= NAME_MAX:
+                sys.exit(f"mkfs: directory name too long ({len(p.encode())} bytes, "
+                         f"limit {NAME_MAX - 1}): {p}")
             c = self.lookup(cur, p)
             if c is None:
                 c = self.alloc_inode(T_DIR)
@@ -274,6 +291,92 @@ class Builder:
         self.children[parent].append((leaf, ino))
         if self.is_program(dest):
             self.xmode[ino] = MODE_SET | 0o755
+
+    # --- add_tree: pack a DIRECTORY, the way an install prefix is packed ------
+    #
+    # A sysroot is /usr/include plus /usr/lib: hundreds of files whose names
+    # and relative paths ARE the interface (a compiler resolves <sys/types.h>
+    # by path). Listing them one host:dest pair at a time in a Makefile is a
+    # second copy of the tree that goes stale the day a header is added. So
+    # the packer walks the tree itself, and add_file() stays the single place
+    # a file enters the image.
+    #
+    # Three refusals, each by name, and each chosen over the quiet alternative:
+    #
+    #   SYMLINKS ARE REFUSED, NOT FOLLOWED. os.walk(followlinks=False) would
+    #   still REPORT a symlink-to-file as a file and open() would follow it:
+    #   a link pointing out of the tree is how a build packs /etc/passwd into
+    #   an image that is then shipped. An image is a copy of a tree; a link
+    #   is not part of a tree, it is a reference to somewhere else.
+    #
+    #   ANYTHING THAT IS NOT A REGULAR FILE OR DIRECTORY is refused (a fifo,
+    #   a socket, a device node): LogitFS has no such inode types, and
+    #   open().read() on a fifo blocks forever rather than failing.
+    #
+    #   THE KERNEL'S LIMITS ARE CHECKED ON THE DESTINATION PATH: every
+    #   component against NAME_MAX (dirent) and the whole path against
+    #   PATH_MAX (vfs_path.h). A file the image can hold and the device
+    #   cannot name is worse than a refused build.
+    #
+    # SORTED, so that the image is a function of the tree's CONTENTS and not
+    # of the order a filesystem happens to return directory entries in
+    # (ext4 returns hash order, NTFS returns name order, and two hosts
+    # packing the same tree would otherwise disagree byte for byte).
+    # tests/unit/fs_format_test.c and the scoreboard both take "same inputs,
+    # same image" for granted.
+    #
+    # Empty directories are preserved (one inode each): a packer that drops
+    # a directory changes the shape of what it was asked to copy.
+    #
+    # Returns (files added, directories walked) -- walked, not created: a
+    # directory the image already had (/usr, say) is entered, not duplicated.
+    def add_tree(self, src_dir, dest_dir):
+        if os.path.islink(src_dir):
+            sys.exit(f"mkfs: refusing to pack a symlink: {src_dir}")
+        if not os.path.isdir(src_dir):
+            sys.exit(f"mkfs: not a directory: {src_dir}")
+        dest_root = "/" + dest_dir.strip("/")
+        nfiles = ndirs = 0
+        stack = [(src_dir, dest_root)]
+        while stack:
+            sdir, ddir = stack.pop()
+            self._check_path(ddir)
+            self.get_or_make_dir([p for p in ddir.split("/") if p])
+            ndirs += 1
+            # Files first, sorted; then subdirectories pushed in REVERSE so
+            # the stack pops them in sorted order. A directory's inode is
+            # therefore allocated before any of its children's, and the
+            # dirent order on disk is the sorted order.
+            entries = sorted(os.listdir(sdir))
+            for name in entries:
+                spath = os.path.join(sdir, name)
+                dpath = ddir.rstrip("/") + "/" + name
+                if os.path.islink(spath):
+                    sys.exit(f"mkfs: refusing to pack a symlink: {spath} "
+                             f"(-> {os.readlink(spath)}); copy the target in instead")
+                if os.path.isdir(spath):
+                    continue
+                if not os.path.isfile(spath):
+                    sys.exit(f"mkfs: not a regular file (fifo/socket/device?): {spath}")
+                self._check_path(dpath)
+                with open(spath, "rb") as f:
+                    self.add_file(dpath, f.read())
+                nfiles += 1
+            for name in reversed(entries):
+                spath = os.path.join(sdir, name)
+                if not os.path.islink(spath) and os.path.isdir(spath):
+                    stack.append((spath, ddir.rstrip("/") + "/" + name))
+        return nfiles, ndirs
+
+    @staticmethod
+    def _check_path(dest):
+        n = len(dest.encode())
+        if n >= PATH_MAX:
+            sys.exit(f"mkfs: path too long ({n} bytes, limit {PATH_MAX - 1}): {dest}")
+        for comp in dest.split("/"):
+            if len(comp.encode()) >= NAME_MAX:
+                sys.exit(f"mkfs: name too long ({len(comp.encode())} bytes, "
+                         f"limit {NAME_MAX - 1}): {comp} in {dest}")
 
     def serialize(self):
         # 1) materialize directory contents now that all inos are assigned
@@ -376,26 +479,48 @@ class Builder:
         return img, nextb
 
 
+def parse_spec(spec):
+    """host[:/dest] -> (host, dest). Shared with the scripts that import this
+    module (tests/unit/bigexec_img.py, build/scr/bigdisk.py re-derive it today),
+    so the drive-letter rule below has exactly one home."""
+    # Skip a Windows drive-letter prefix ("D:\..." / "D:/...") so the first
+    # colon of an absolute host path isn't read as the host:dest separator.
+    off = 2 if len(spec) > 2 and spec[1] == ":" and spec[2] in "/\\" else 0
+    host, sep, dest = spec[off:].partition(":")
+    host = spec[:off] + host
+    if not sep or not dest:
+        dest = "/" + os.path.basename(host)
+    return host, dest
+
+
+def add_spec(b, spec):
+    """Add one command-line spec to Builder b. A host path that is a DIRECTORY
+    packs the whole tree at dest (add_tree); a file is one add_file.
+    Returns (files, dirs) added."""
+    host, dest = parse_spec(spec)
+    if os.path.islink(host):
+        sys.exit(f"mkfs: refusing to pack a symlink: {host}")
+    if os.path.isdir(host):
+        return b.add_tree(host, dest)
+    with open(host, "rb") as f:
+        b.add_file(dest, f.read())
+    return 1, 0
+
+
 def main():
     if len(sys.argv) < 2:
-        sys.exit("usage: mkfs.py <out.img> [host[:/dest] ...]")
+        sys.exit("usage: mkfs.py <out.img> [host[:/dest] | dir[:/dest] ...]")
     out = sys.argv[1]
     b = Builder()
+    nfiles = 0
     for spec in sys.argv[2:]:
-        # Skip a Windows drive-letter prefix ("D:\..." / "D:/...") so the first
-        # colon of an absolute host path isn't read as the host:dest separator.
-        off = 2 if len(spec) > 2 and spec[1] == ":" and spec[2] in "/\\" else 0
-        host, sep, dest = spec[off:].partition(":")
-        host = spec[:off] + host
-        if not sep or not dest:
-            dest = "/" + os.path.basename(host)
-        with open(host, "rb") as f:
-            b.add_file(dest, f.read())
+        nfiles += add_spec(b, spec)[0]
     img, used = b.serialize()
     with open(out, "wb") as f:
         f.write(img)
     print(f"mkfs: {out} -> LogitFS v4, {TOTAL_BLOCKS} blocks "
-          f"({TOTAL_BLOCKS * BS // 1024} KiB), {used} used, {b.next_ino} inode(s)")
+          f"({TOTAL_BLOCKS * BS // 1024} KiB), {used} used, {b.next_ino} inode(s), "
+          f"{nfiles} file(s)")
 
 
 if __name__ == "__main__":
