@@ -18,6 +18,10 @@ mod png; // PNG decoder, ported to safe Rust (replaces png.c); calls inflate
 mod vp8; // VP8 bool decoder, quantisers, uncompressed frame header
 mod vp8_dec; // VP8 planes, transforms, header state
 mod vp8_frame; // VP8 key-frame driver: macroblock loop, loop filter, YUV->RGBA
+#[cfg(feature = "vp8-interframe")]
+mod vp8_inter; // VP8 INTER-frame driver (video): gated OFF the kernel build --
+               // see the module doc comment for why, and `nm` on RUST_LIB for
+               // the proof this cfg keeps every symbol in it out of ring 0.
 mod vp8_rec; // VP8 intra prediction, coefficient tokens, filter kernels
 mod vp8_tables; // VP8 probability tables, generated from RFC 6386
 mod webp; // WebP: RIFF container, VP8L lossless, VP8 lossy key frames, ALPH

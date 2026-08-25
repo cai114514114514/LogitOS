@@ -4377,7 +4377,6 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/opus.mk
 -include tests/containers.mk
 -include tests/fsgeom.mk
--include tests/aui_text_utf8.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:

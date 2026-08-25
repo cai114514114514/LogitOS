@@ -23,6 +23,19 @@ vp8-tr-from-subblock = []
 # 127/129 border rows into the DC instead of halving the sum -- the rule that
 # only DC_PRED asks about availability at all.
 vp8-dc-always-avail = []
+# VP8 INTER frames (video): reference-frame management, MV decode, motion
+# compensation. OFF the kernel build on purpose -- see rust/src/vp8_inter.rs's
+# module doc and CLAUDE.md's video-decoders-are-ring-3 rule. A ring-3 consumer
+# (browser/Preview, once wired) builds RUST_LIB with this feature turned on;
+# the kernel's $(RUST_LIB) invocation never passes --features, so it never
+# gets vp8_inter.rs or the inter-only tables it pulls in from vp8_tables.rs.
+vp8-interframe = []
+# NEGATIVE CONTROL for vp8-interframe: the sub-pixel interpolator applies its
+# vertical 6-tap pass BEFORE the horizontal one (VP8's spec order is
+# horizontal-then-vertical, observably different because the intermediate
+# rounding/clamp to u8 happens between the two passes). Inert unless
+# vp8-interframe is also enabled.
+vp8-sixtap-swap = []
 
 [profile.release]
 panic = "abort"

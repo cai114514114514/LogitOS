@@ -501,3 +501,82 @@ pub static CAT_PROBS: [[u8; 11]; 6] = [
 pub static CAT_LEN: [usize; 6] = [1, 2, 3, 4, 5, 11];
 pub static CAT_BASE: [i32; 6] = [5, 7, 11, 19, 35, 67];
 pub static ZIGZAG: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+
+// --- Inter-frame-only tables from here down. Gated behind `vp8-interframe`
+// (off by default -- see Cargo.toml) so that the kernel's $(RUST_LIB), which
+// never enables the feature, carries none of these symbols. Proved with `nm`,
+// not assumed: see the report in the commit that added vp8_inter.rs.
+#[cfg(feature = "vp8-interframe")]
+pub static Y_MODE_TREE: [i8; 8] = [0, 2, 4, 6, -1, -2, -3, -4];
+#[cfg(feature = "vp8-interframe")]
+pub static Y_MODE_PROB: [u8; 4] = [112, 86, 140, 37];
+#[cfg(feature = "vp8-interframe")]
+pub static UV_MODE_PROB: [u8; 3] = [162, 101, 204];
+#[cfg(feature = "vp8-interframe")]
+pub static INTER_B_MODE_PROB: [u8; 9] = [120, 90, 79, 133, 87, 85, 80, 111, 151];
+#[cfg(feature = "vp8-interframe")]
+pub static MV_REF_TREE: [i8; 8] = [-7, 2, -5, 4, -6, 6, -8, -9];
+#[cfg(feature = "vp8-interframe")]
+pub static MODE_CONTEXTS: [[u8; 4]; 6] = [
+    [7, 1, 1, 143],
+    [14, 18, 14, 107],
+    [135, 64, 57, 68],
+    [60, 56, 128, 65],
+    [159, 134, 128, 34],
+    [234, 188, 128, 28],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static SPLIT_MV_TREE: [i8; 6] = [-3, 2, -2, 4, 0, -1];
+#[cfg(feature = "vp8-interframe")]
+pub static SPLIT_MV_PROBS: [u8; 3] = [110, 111, 150];
+#[cfg(feature = "vp8-interframe")]
+pub static MV_PARTITIONS: [[i32; 16]; 4] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+    [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3],
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static SUBMV_REF_TREE: [i8; 6] = [-10, 2, -11, 4, -12, -13];
+#[cfg(feature = "vp8-interframe")]
+pub static SUBMV_REF_PROBS: [[u8; 3]; 5] = [
+    [147, 136, 18],
+    [106, 145, 1],
+    [179, 121, 1],
+    [223, 1, 34],
+    [208, 1, 1],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static SMALL_MV_TREE: [i8; 14] = [2, 8, 4, 6, 0, -1, -2, -3, 10, 12, -4, -5, -6, -7];
+#[cfg(feature = "vp8-interframe")]
+pub static MV_UPDATE_PROBS: [[u8; 19]; 2] = [
+    [237, 246, 253, 253, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 250, 250, 252, 254, 254],
+    [231, 243, 245, 253, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 251, 251, 254, 254, 254],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static DEFAULT_MV_PROBS: [[u8; 19]; 2] = [
+    [162, 128, 225, 146, 172, 147, 214, 39, 156, 128, 129, 132, 75, 145, 178, 206, 239, 254, 254],
+    [164, 128, 204, 170, 119, 235, 140, 230, 228, 128, 130, 130, 74, 148, 180, 203, 236, 254, 254],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static SIXTAP_FILTERS: [[i32; 6]; 8] = [
+    [0, 0, 128, 0, 0, 0],
+    [0, -6, 123, 12, -1, 0],
+    [2, -11, 108, 36, -8, 1],
+    [0, -9, 93, 50, -6, 0],
+    [3, -16, 77, 77, -16, 3],
+    [0, -6, 50, 93, -9, 0],
+    [1, -8, 36, 108, -11, 2],
+    [0, -1, 12, 123, -6, 0],
+];
+#[cfg(feature = "vp8-interframe")]
+pub static BILINEAR_FILTERS: [[i32; 6]; 8] = [
+    [0, 0, 128, 0, 0, 0],
+    [0, 0, 112, 16, 0, 0],
+    [0, 0, 96, 32, 0, 0],
+    [0, 0, 80, 48, 0, 0],
+    [0, 0, 64, 64, 0, 0],
+    [0, 0, 48, 80, 0, 0],
+    [0, 0, 32, 96, 0, 0],
+    [0, 0, 16, 112, 0, 0],
+];

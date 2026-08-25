@@ -71,8 +71,17 @@ def enums(text):
     """
     tbl = {}
     lines = text.split("\n")
+    # Two enums the reference decoder (dixie, Attachment One) declares WITHOUT
+    # `typedef` -- `enum reference_frame { CURRENT_FRAME, ... }` and
+    # `enum prediction_mode { DC_PRED, ..., SPLITMV, ..., LEFT4X4, ... }`. Every
+    # other enum in the document is `typedef enum { ... } name;`, which is why
+    # the loop below keys on that substring; these two need a second, narrow
+    # trigger rather than a bare "enum" substring match, which would also catch
+    # ordinary variable declarations (`enum reference_frame ref_frame;`) that
+    # have no brace to scan and could swallow whatever unrelated block follows.
+    plain_enum_re = re.compile(r"^\s*enum\s+(reference_frame|prediction_mode)\s*$")
     for i, ln in enumerate(lines):
-        if "typedef enum" not in ln:
+        if "typedef enum" not in ln and not plain_enum_re.match(ln):
             continue
         body, depth, started = [], 0, False
         for l2 in lines[i:i + 60]:
@@ -127,8 +136,12 @@ def grab_all(text, decl):
     # more times -- and brace-matching from a use swallows whatever block comes
     # next, which is how five "occurrences" came to disagree.
     name = decl.split("[")[0].strip()
-    declre = re.compile(r"(?:static\s+)?(?:const\s+)?(?:tree_index|Prob|int8_t|uint8_t|unsigned int|int)\s+"
-                        + re.escape(name) + r"\s*\[")
+    # filter_t is the interp-filter typedef (`typedef int filter_t[6]`, sec.
+    # 20.14/20.15) -- sixtap_filters/bilinear_filters are declared through it
+    # rather than a bare `int`, so it has to join the keyword set like the
+    # others or grab_all finds nothing and raises.
+    declre = re.compile(r"(?:static\s+)?(?:const\s+)?(?:tree_index|Prob|int8_t|uint8_t|unsigned int|"
+                        r"unsigned char|filter_t|MV_CONTEXT|int)\s+" + re.escape(name) + r"\s*\[")
     for i, ln in enumerate(lines):
         if not declre.search(ln):
             continue
@@ -168,13 +181,13 @@ def grab_all(text, decl):
     return found
 
 
-def emit_vals(name, ty, dims, vals, per_line=None):
+def emit_vals(name, ty, dims, vals, per_line=None, gate=None):
     """Same renderer, for a table this generator ASSEMBLES rather than lifts
     verbatim (the ragged Pcat lists padded into a rectangle)."""
-    return _render(name, ty, dims, vals, per_line, -1)
+    return _render(name, ty, dims, vals, per_line, -1, gate)
 
 
-def emit(name, ty, dims, decl, per_line=None):
+def emit(name, ty, dims, decl, per_line=None, gate=None):
     n = 1
     for d in dims:
         n *= d
@@ -191,10 +204,10 @@ def emit(name, ty, dims, decl, per_line=None):
         raise SystemExit("gen_vp8_tables: %s: occurrences at %s disagree"
                          % (name, [l for l, _ in fits]))
     line, vals = fits[0]
-    return _render(name, ty, dims, vals, per_line, line)
+    return _render(name, ty, dims, vals, per_line, line, gate)
 
 
-def _render(name, ty, dims, vals, per_line, line):
+def _render(name, ty, dims, vals, per_line, line, gate=None):
     digest = hashlib.sha256(",".join(str(v) for v in vals).encode()).hexdigest()[:12]
     n = 1
     for d in dims:
@@ -208,6 +221,22 @@ def _render(name, ty, dims, vals, per_line, line):
     tystr = ty
     for d in reversed(dims):
         tystr = "[%s; %d]" % (tystr, d)
+
+    # `gate`, if given, is a Cargo feature name: the emitted static gets its
+    # own `#[cfg(feature = "...")]` line. THIS IS NOT COSMETIC. It is the
+    # mechanism that keeps a video decoder's tables out of the kernel build
+    # (see vp8_inter.rs's module doc): the kernel's $(RUST_LIB) never passes
+    # --features, so a table with no cfg here compiles into ring 0
+    # unconditionally. Before this parameter existed the cfg lines were typed
+    # in by hand after generation -- which means `python3 tools/gen_vp8_tables.py
+    # build/vp8ref/rfc6386.txt`, the exact command this file's own header
+    # tells a reader to run to refresh the tables, would have silently deleted
+    # every one of them on the next run: the tool would have done exactly
+    # what its own instructions said, and the safety property would have been
+    # gone. Found and fixed 2026-08-25, before that command was ever run for
+    # real -- the gap was real, not hypothetical, for exactly as long as
+    # nobody had refreshed the tables yet.
+    cfg = ('#[cfg(feature = "%s")]\n' % gate) if gate else ""
 
     def block(vs, dd):
         if len(dd) == 1:
@@ -223,7 +252,7 @@ def _render(name, ty, dims, vals, per_line, line):
         inner = chr(10).join("    " + ln for ln in inner.split(chr(10)))
         return "[" + chr(10) + inner + "," + chr(10) + "]"
 
-    return "pub static %s: %s = %s;%s" % (name, tystr, block(vals, dims), chr(10))
+    return "%spub static %s: %s = %s;%s" % (cfg, name, tystr, block(vals, dims), chr(10))
 
 
 ENUMS = {}
@@ -293,6 +322,51 @@ def build(text):
     out.append(emit_vals("CAT_LEN", "usize", [6], lens))
     out.append(emit("CAT_BASE", "i32", [6], "categoryBase[6]"))
     out.append(emit("ZIGZAG", "usize", [16], "zigzag[16]"))
+
+    # --- inter-frame tables (VP8 interframe prediction, RFC 6386 secs
+    # 16-17). Pulled from Attachment One (dixie, the RFC's own reference
+    # decoder), which is the only place several of these are given as a
+    # single unambiguous declaration -- the prose walkthrough in secs 16-17
+    # states most of them only in running text or under a differently-cased
+    # name (`LEFT4x4` in prose vs `LEFT4X4` in dixie.h). dixie's names are
+    # used throughout so a reader can find each table by grep in Attachment
+    # One directly.
+    #
+    # EVERY ONE OF THESE IS GATE=INTER, and the comment block below is
+    # EMITTED (not just a Python-source comment) for the same reason: until
+    # 2026-08-25 the `#[cfg(feature = "vp8-interframe")]` line above each of
+    # these statics, and this explanatory comment, were typed into
+    # rust/src/vp8_tables.rs BY HAND after a generator run -- so `--check`
+    # verified the VALUES but the generator itself did not know the gate
+    # existed, and the documented refresh command
+    # (`python3 tools/gen_vp8_tables.py build/vp8ref/rfc6386.txt`) would have
+    # silently deleted the mechanism that keeps a video decoder's tables out
+    # of the kernel build the next time anyone ran it. Fixed by threading
+    # `gate=INTER` through `emit()` -> `_render()`, which is what actually
+    # prints the cfg line now -- see the comment there for the full argument.
+    INTER = "vp8-interframe"
+    out.append(
+        "\n"
+        "// --- Inter-frame-only tables from here down. Gated behind `vp8-interframe`\n"
+        "// (off by default -- see Cargo.toml) so that the kernel's $(RUST_LIB), which\n"
+        "// never enables the feature, carries none of these symbols. Proved with `nm`,\n"
+        "// not assumed: see the report in the commit that added vp8_inter.rs.\n")
+    out.append(emit("Y_MODE_TREE", "i8", [8], "y_mode_tree", gate=INTER))
+    out.append(emit("Y_MODE_PROB", "u8", [4], "k_default_y_mode_probs", gate=INTER))
+    out.append(emit("UV_MODE_PROB", "u8", [3], "k_default_uv_mode_probs", gate=INTER))
+    out.append(emit("INTER_B_MODE_PROB", "u8", [9], "default_b_mode_probs", gate=INTER))
+    out.append(emit("MV_REF_TREE", "i8", [8], "mv_ref_tree", gate=INTER))
+    out.append(emit("MODE_CONTEXTS", "u8", [6, 4], "mv_counts_to_probs", gate=INTER))
+    out.append(emit("SPLIT_MV_TREE", "i8", [6], "split_mv_tree", gate=INTER))
+    out.append(emit("SPLIT_MV_PROBS", "u8", [3], "split_mv_probs", gate=INTER))
+    out.append(emit("MV_PARTITIONS", "i32", [4, 16], "mv_partitions", per_line=16, gate=INTER))
+    out.append(emit("SUBMV_REF_TREE", "i8", [6], "submv_ref_tree", gate=INTER))
+    out.append(emit("SUBMV_REF_PROBS", "u8", [5, 3], "submv_ref_probs2", gate=INTER))
+    out.append(emit("SMALL_MV_TREE", "i8", [14], "small_mv_tree", gate=INTER))
+    out.append(emit("MV_UPDATE_PROBS", "u8", [2, 19], "vp8_mv_update_probs", per_line=19, gate=INTER))
+    out.append(emit("DEFAULT_MV_PROBS", "u8", [2, 19], "k_default_mv_probs", per_line=19, gate=INTER))
+    out.append(emit("SIXTAP_FILTERS", "i32", [8, 6], "sixtap_filters", per_line=6, gate=INTER))
+    out.append(emit("BILINEAR_FILTERS", "i32", [8, 6], "bilinear_filters", per_line=6, gate=INTER))
     return "".join(out)
 
 

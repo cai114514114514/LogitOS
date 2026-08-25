@@ -304,7 +304,7 @@ pub fn decode_vp8_keyframe(p: &[u8]) -> Option<(i32, i32, Buf)> {
     }
 
     if dec.filt.level > 0 {
-        loop_filter(&mut pl, &finfo, mb_w, mb_h, dec.filt.sharpness, dec.filt.simple);
+        loop_filter(&mut pl, &finfo, mb_w, mb_h, dec.filt.sharpness, dec.filt.simple, true);
     }
 
     // ---- YUV -> RGBA, cropped to the coded dimensions ----
@@ -337,8 +337,13 @@ pub fn decode_vp8_keyframe(p: &[u8]) -> Option<(i32, i32, Buf)> {
 // what the previous one wrote.
 // ---------------------------------------------------------------------------
 
-fn loop_filter(pl: &mut Planes, finfo: &Buf, mb_w: usize, mb_h: usize,
-               sharpness: i32, simple: bool) {
+// `pub(crate)`: also called from vp8_inter.rs (feature-gated) for interframe
+// video, which is why `is_keyframe` is a parameter rather than an assumption
+// -- the hev threshold gets one more +1 step for interframes at level >= 20
+// (RFC 6386's calculate_filter_parameters, dixie_loopfilter.c), a rule that
+// does not exist on the key-frame-only path this function used to be.
+pub(crate) fn loop_filter(pl: &mut Planes, finfo: &Buf, mb_w: usize, mb_h: usize,
+               sharpness: i32, simple: bool, is_keyframe: bool) {
     let ys = pl.ys;
     let cs = pl.cs;
     let yb = pl.yb;
@@ -365,8 +370,14 @@ fn loop_filter(pl: &mut Planes, finfo: &Buf, mb_w: usize, mb_h: usize,
             if il < 1 {
                 il = 1;
             }
-            // Key frame thresholds (RFC 6386 §15.2).
-            let hev_t = if lvl >= 40 { 2 } else if lvl >= 15 { 1 } else { 0 };
+            // RFC 6386 §15.2 / dixie's calculate_filter_parameters: the base
+            // two-step threshold applies to every frame; interframes get a
+            // third step at level >= 20 that key frames never see (the
+            // reference code's `if (filter_level >= 20 && !is_keyframe)`).
+            let mut hev_t = if lvl >= 40 { 2 } else if lvl >= 15 { 1 } else { 0 };
+            if !is_keyframe && lvl >= 20 {
+                hev_t += 1;
+            }
             let mbedge = (lvl + 2) * 2 + il;
             let subedge = lvl * 2 + il;
 
