@@ -107,7 +107,8 @@ test-ssh: test-ssh-wire test-ssh-packet test-ssh-kex
 # binaries above, which need a REAL aes_backend_ni() to link against (they
 # are plain host programs with no ring-3 stub of their own). sshd.c carries
 # its own aes_backend_ni() stub (see its own comment beside the definition,
-# and .sshwork/aes_ni_stub.c which records the identical host-side reason) --
+# and the identical host-side reason, which was recorded in a scratch
+# file during the port and is restated here because that file is not tracked) --
 # ring 3 has no business doing its own CPUID feature probing, so linking the
 # real aes_ni.c here would be a silent DUPLICATE SYMBOL, which is exactly
 # what happened the first time this rule was written (ld.lld: "duplicate

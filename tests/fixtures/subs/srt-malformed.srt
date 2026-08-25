@@ -1,0 +1,7 @@
+1
+this is not a timing line
+Text that never gets a cue.
+
+2
+00:00:01,000 --> 00:00:02,000
+The valid cue after the malformed block.

@@ -1,0 +1,26 @@
+1
+00:00:00,500 --> 00:00:02,000
+Plain cue, no tags.
+
+2
+00:00:02,500 --> 00:00:05,000
+<b>Bold</b> and <i>italic</i> and <u>underline</u>.
+
+3
+00:00:05,500 --> 00:00:08,000
+I'm going to talk about ruby text.
+
+4
+00:00:08,500 --> 00:00:11,000
+WWWWorld Wide Web
+
+5
+00:00:11,500 --> 00:00:14,000
+Karaoke: one two three
+
+6
+00:00:14,500 --> 00:00:17,000
+Multi-line cue
+with a second line
+and a third.
+

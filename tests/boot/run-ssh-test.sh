@@ -9,7 +9,7 @@
 # Needs /bin/sshd ON THE DISK IMAGE PASSED IN. sshd is not yet in the
 # coreutils APPS list (that edit is a Makefile line outside this file's
 # ownership -- see the session's final report), so today's caller has to
-# hand this script a disk image built the way .sshwork/make_ssh_disk.py
+# hand this script a disk image built the way tests/boot/mk_ssh_disk.py
 # does: the ordinary disk.img file list plus build/sshd.aex:/bin/sshd. Once
 # sshd is wired into APPS, an ordinary $(DISK) satisfies this without
 # modification.
@@ -122,7 +122,7 @@ echo "--- password auth, interactive shell, real OpenSSH client ---"
 # makes OpenSSH use it even with a real stdin attached), so this process's
 # own stdin is still free for the shell's channel data, same as the
 # publickey leg above.
-PW_OUT="$(printf 'echo SSH_PASSWORD_OK\nexit\n' | SSHTEST_PW="$PW" SSH_ASKPASS="$(dirname "$0")/../../.sshwork/askpass.sh" SSH_ASKPASS_REQUIRE=force \
+PW_OUT="$(printf 'echo SSH_PASSWORD_OK\nexit\n' | SSHTEST_PW="$PW" SSH_ASKPASS="$(dirname "$0")/ssh_askpass.sh" SSH_ASKPASS_REQUIRE=force \
     setsid "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=10 \
     "$USER@127.0.0.1" 2>&1)"
@@ -133,7 +133,7 @@ else
 fi
 
 echo "--- NEGATIVE CONTROL: wrong password must be refused ---"
-BAD_OUT="$(SSHTEST_PW="not-the-password" SSH_ASKPASS="$(dirname "$0")/../../.sshwork/askpass.sh" SSH_ASKPASS_REQUIRE=force \
+BAD_OUT="$(SSHTEST_PW="not-the-password" SSH_ASKPASS="$(dirname "$0")/ssh_askpass.sh" SSH_ASKPASS_REQUIRE=force \
     setsid "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10 \
     "$USER@127.0.0.1" 'echo SHOULD_NOT_RUN' </dev/null 2>&1)"

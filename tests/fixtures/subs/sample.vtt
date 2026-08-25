@@ -1,0 +1,33 @@
+WEBVTT - a hand-authored sample, not from web-platform-tests
+
+NOTE
+This file exists to be converted to SRT by `ffmpeg -f srt` (see
+tests/subs.mk's test-subs-srt-roundtrip) and to exercise the inline tags
+WebVTT defines that the WPT file-parsing corpus does not (b/i/u/c/v/ruby,
+timestamp spans) -- subs.c stores all of it as raw text, see subs.h.
+
+1
+00:00:00.500 --> 00:00:02.000
+Plain cue, no tags.
+
+2
+00:00:02.500 --> 00:00:05.000 align:start line:10%
+<b>Bold</b> and <i>italic</i> and <u>underline</u>.
+
+3
+00:00:05.500 --> 00:00:08.000
+<v Roger Bingham>I'm going to talk about <c.highlight>ruby text</c>.
+
+4
+00:00:08.500 --> 00:00:11.000
+<ruby>WWW<rt>World Wide Web</rt></ruby>
+
+5
+00:00:11.500 --> 00:00:14.000
+Karaoke: <00:00:12.000>one <00:00:13.000>two <00:00:13.500>three
+
+6
+00:00:14.500 --> 00:00:17.000
+Multi-line cue
+with a second line
+and a third.
