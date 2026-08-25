@@ -812,25 +812,35 @@ static const char *ext_of(const char *s) {
  */
 static spinlock_t win_lock = SPINLOCK_INIT;
 
+/* IRQSAVE, for the reason text_lock is irqsave -- see the block above its own
+ * acquisition in c/kernel/gui/text.c. Once the compositor stopped holding the
+ * BKL across the pixel pass, any BARE spinlock reachable from the WM thread
+ * can be held across a preemption, and sched.h:213 states that cannot happen
+ * ("A SPINLOCK CANNOT BE HELD ACROSS A PREEMPTION. Every lock in this kernel
+ * is taken with spin_lock_irqsave (IF off) or from a context that already has
+ * IF off"). win_lock is not reachable from inside the peel today and is
+ * irqsave anyway: the obvious fix for the unsnapshotted window list is to take
+ * it in render_region, and that fix would put this lock straight into the
+ * freeze text_lock has just come out of. */
 static void raise_win(int wi)
 {
-    spin_lock(&win_lock);
+    uint64_t wf = spin_lock_irqsave(&win_lock);
     int at = -1;
     for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) { order[norder++] = wi; spin_unlock(&win_lock); return; }
+    if (at < 0) { order[norder++] = wi; spin_unlock_irqrestore(&win_lock, wf); return; }
     for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
     order[norder - 1] = wi;
-    spin_unlock(&win_lock);
+    spin_unlock_irqrestore(&win_lock, wf);
 }
 static void remove_win(int wi)
 {
-    spin_lock(&win_lock);
+    uint64_t wf = spin_lock_irqsave(&win_lock);
     int at = -1;
     for (int i = 0; i < norder; i++) if (order[i] == wi) at = i;
-    if (at < 0) { spin_unlock(&win_lock); return; }
+    if (at < 0) { spin_unlock_irqrestore(&win_lock, wf); return; }
     for (int j = at; j < norder - 1; j++) order[j] = order[j + 1];
     norder--;
-    spin_unlock(&win_lock);
+    spin_unlock_irqrestore(&win_lock, wf);
 }
 
 /* Send a window to the BACK. The exact inverse of raise_win, which is what
@@ -2038,7 +2048,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * unreachable from a frame. That accident is load-bearing and is
          * asserted below rather than left to be rediscovered. */
         int wi = -1;
-        spin_lock(&win_lock);
+        uint64_t cf = spin_lock_irqsave(&win_lock);
         for (int i = 0; i < MAXWIN; i++)
             if (!wins[i].used) {
                 wi = i;
@@ -2047,7 +2057,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
                 wins[i].surf.px = 0;        /* never the previous tenant's pointer */
                 break;
             }
-        spin_unlock(&win_lock);
+        spin_unlock_irqrestore(&win_lock, cf);
         if (wi < 0) return -1;
         /* (cw,ch) are POINTS. Every app in the tree passed device pixels here
          * before scaling existed, and at scale 100 the two are the same number,
@@ -4489,14 +4499,53 @@ void wm_render(void)
      * is dead code and the real second caller is in another file. percpu.h:24
      * defines in_kernel as "1 while this core holds the BKL", so it is the
      * predicate, not a proxy for one. */
+    /* GATED TO ONE CORE, ON PURPOSE, AND THIS IS NOT CAUTION -- IT IS A LIST.
+     *
+     * An adversarial review of this peel (four independent lenses, each
+     * refuted by a skeptic) found that the five-bullet safety argument above
+     * enumerates the objects being DRAWN -- surfaces, the window list, the
+     * back buffer -- and omits the globals that SELECT and SCRATCH them. Every
+     * one of those is a file-scope mutable the BKL was serialising:
+     *
+     *   fb.c:35        `T`, the global draw target, re-read by clip_ij after
+     *                  the caller already read it (fb.c:207 vs :536)
+     *   fb.c:908,991   blur_scratch / glass_buf / glass_line -- grown in place
+     *                  with the pointer captured BEFORE a long write loop, and
+     *                  reachable from SYS_GUI_GLASS with an app-chosen size
+     *   icons.c:136    the icon cache: kfree, then four separate publishing
+     *                  stores read by three separate loads
+     *   gfx_raster.c   the rasterizer's file-static edge tables, which the
+     *                  file's own header says are NOT reentrant
+     *   glass.c:239    the LUT publishes its cache KEY after the tables
+     *   virtio.c:173   g_virtio_busy is a non-atomic RMW, and a lost update
+     *                  kills schedule() AND softirqs machine-wide, permanently
+     *
+     * All of them need two cores to bite. So the peel runs where it is proven
+     * and not where it is not: one core keeps the measured result (BKL-held
+     * samples 126/605 -> 3, 10, 10 of ~606), and every defect above is
+     * structurally unreachable because an app's GUI syscall on a single core
+     * runs IF=0 and non-preemptible.
+     *
+     * The condition to delete this gate is a LIST, not a feeling: make `T` and
+     * the clip per-CPU or a parameter (and collapse the double read), give the
+     * fb/icon/gfx scratches one lock ordered BKL -> fb_lock -> text_lock ->
+     * kheap_lock, publish the mask and glass keys AFTER their tables, and make
+     * g_virtio_busy atomic. Two of the ship blockers that review found are
+     * already fixed here: the unconditional `sti` below, and text_lock, which
+     * this peel had turned into a lock held across a preemption -- a
+     * whole-machine freeze that sched.h:213 says cannot happen. */
     int bkl_peeled = 0;
     __asm__ volatile ("cli");
-    if (this_cpu()->in_kernel) {
+    if (smp_cpu_count() <= 1 && this_cpu()->in_kernel) {
         this_cpu()->in_kernel = 0;
         spin_unlock(&g_bkl);
         bkl_peeled = 1;
     }
-    __asm__ volatile ("sti");
+    /* THE `sti` IS CONDITIONAL, and the first version of it was not. kmain.c
+     * calls wm_render() for the boot frame with the BKL not held and
+     * interrupts OFF; an unconditional `sti` there turns them on early, every
+     * single boot. Only restore what was actually changed. */
+    if (bkl_peeled) __asm__ volatile ("sti");
 #if WM_MIDFRAME_GUARD
     struct drect defer[NDMG];
     int ndef = 0, late = 0;

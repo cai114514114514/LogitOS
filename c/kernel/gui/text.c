@@ -205,9 +205,26 @@ static int layout_locked(int x, int y, const char *s, int len, int prefer, int p
 static int layout(int x, int y, const char *s, int len, int prefer, int px,
                   int cell, uint32_t color, int draw)
 {
-    spin_lock(&text_lock);
+    /* IRQSAVE, NOT THE BARE FORM, and the reason changed under this file.
+     *
+     * The comment above still argues correctly that text is never entered from
+     * an interrupt -- but that answers REENTRANCY, and the hazard here is
+     * DESCHEDULING. Once wm_render() stopped holding the BKL across its pixel
+     * pass, the compositor runs this with IF=1 and preemptible. A timer tick
+     * inside layout() then deschedules the WM thread WHILE IT HOLDS THIS LOCK,
+     * and the next thread to enter SYS_GUI_TEXT takes the BKL with IF=0 and
+     * spins here forever. That core takes no further ticks, so nothing can
+     * ever dispatch the WM again: a whole-machine freeze, on one core and on
+     * four, with nothing in the machine's state naming the cause.
+     *
+     * c/kernel/sched/sched.h:213 states the tree-wide invariant this was
+     * violating: "A SPINLOCK CANNOT BE HELD ACROSS A PREEMPTION. Every lock in
+     * this kernel is taken with spin_lock_irqsave (IF off) or from a context
+     * that already has IF off." Text used to be in the second category by
+     * virtue of the BKL. It is in the first now. */
+    unsigned long tf = spin_lock_irqsave(&text_lock);
     int r = layout_locked(x, y, s, len, prefer, px, cell, color, draw);
-    spin_unlock(&text_lock);
+    spin_unlock_irqrestore(&text_lock, tf);
     return r;
 }
 
