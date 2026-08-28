@@ -58,11 +58,15 @@ void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
 int   memcmp(const void *, const void *, size_t);
 void  kprintf(const char *fmt, ...);
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* L2/L3 dispatch handlers (defined in arp.c / ip.c, added in later layers). */
-void arp_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
-void ip_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
-void ip6_input(const uint8_t *frame, uint16_t len) __attribute__((weak));
+void arp_input(const uint8_t *frame, uint16_t len) LOGIT_WEAK;
+void ip_input(const uint8_t *frame, uint16_t len) LOGIT_WEAK;
+void ip6_input(const uint8_t *frame, uint16_t len) LOGIT_WEAK;
+LOGIT_WEAK_STUB(arp_input);
+LOGIT_WEAK_STUB(ip_input);
+LOGIT_WEAK_STUB(ip6_input);
 
 const uint8_t eth_broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
@@ -92,8 +96,54 @@ static int mac_eq(const uint8_t *a, const uint8_t *b)
 #define LOOPBACK_MAX_DEPTH 2
 static int loopback_depth;
 
+/* THE TRANSMIT FUNNEL, AND WHY IT NOW TAKES net_lock() ITSELF.
+ *
+ * e1000.c:333 states the contract in as many words -- "callers must hold
+ * net_lock (IF=0) -- the TX ring and tx_cur are not otherwise serialized. All
+ * current paths (eth/ip/tcp/udp/icmp send) do." The last sentence is FALSE, and
+ * it is false on the path this machine uses first: udp_send() takes no lock, so
+ *
+ *     udp_send -> ip_send -> ip_output -> (bcast) eth_send -> netdev_tx
+ *
+ * reaches every NIC's TX ring with nothing held. DHCPDISCOVER is exactly that
+ * datagram. The same call also reaches `detag` and the whole receive path
+ * through the loopback branch below, which is the buffer whose own comment says
+ * "a static buffer is safe here ... all four NIC drivers take net_lock()".
+ * Neither statement is wrong about what it looked at; both are unqualified, and
+ * what made them true was the BKL.
+ *
+ * eth_send is the ONE funnel every transmit passes through -- IPv4 unicast via
+ * arp_output, IPv4 broadcast and loopback via ip_output, IPv6 via ip6_output,
+ * ARP's own frames via send_arp -- so one acquisition here covers all of them
+ * for every address family, and the recursive lock makes it free for the paths
+ * (tcp, arp) that were already holding it. */
+static int eth_send_locked(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
+                           const void *payload, uint16_t len);
+
 int eth_send(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
              const void *payload, uint16_t len)
+{
+#ifdef NETLOCK_NEGCTL_NO_TX_LOCK
+    /* THE NEGATIVE CONTROL, and it is the SHIPPED code on a -D switch rather
+     * than a broken version -- the transmit path exactly as it was before step
+     * 4a, whose comments all said it was fine. The machine still boots, still
+     * gets a DHCP lease, still fetches and still passes run-link-test.sh --
+     * which is the whole problem. What changes is that the two
+     * net_lock_assert_held() calls below start firing for the senders that
+     * never held it (udp_send's broadcast path: DHCP), and `[netlock] ...
+     * violations` stops being 0. A control that cannot be watched failing reads
+     * like a control and is not one, so this is the one that must be run. */
+    return eth_send_locked(dst, ethertype, payload, len);
+#else
+    uint64_t f = net_lock();
+    int rc = eth_send_locked(dst, ethertype, payload, len);
+    net_unlock(f);
+    return rc;
+#endif
+}
+
+static int eth_send_locked(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
+                           const void *payload, uint16_t len)
 {
     uint8_t frame[ETH_FRAME_MAX];
     if (len > ETH_FRAME_MAX - ETH_HDR_LEN) {
@@ -125,6 +175,15 @@ int eth_send(const uint8_t dst[ETH_ALEN], uint16_t ethertype,
 
     stats.tx++;
     stats.tx_bytes += n;
+
+    /* THE TRANSMIT CONTRACT, CHECKED. e1000.c:333 requires net_lock() held here
+     * ("the TX ring and tx_cur are not otherwise serialized"), and virtio-net,
+     * rtl8139 and rtl8169 have the same ring. `stats` above and `loopback_depth`
+     * below are this file's own shared state and want the same thing. With the
+     * wrapper above this fires never; with -DNETLOCK_NEGCTL_NO_TX_LOCK it fires
+     * exactly on the senders that never held it -- udp_send()'s broadcast path,
+     * which is DHCP. */
+    net_lock_assert_held("eth_send");
 
     /* A frame addressed to ourselves never reaches the wire: a NIC does not
      * receive its own transmissions, so handing this to the driver would simply
@@ -192,6 +251,13 @@ static uint8_t detag[ETH_FRAME_MAX];
 
 void eth_input(const uint8_t *frame, uint16_t len)
 {
+    /* eth.h has said "CONTRACT: callers hold net_lock() for the duration" since
+     * this file was written, and nothing checked it. It is checked now: `detag`
+     * and `stats` below are the shared state that contract is about, and the
+     * loopback re-entry from eth_send() was reaching them from callers (udp_send)
+     * that held nothing at all. Prints once, counts thereafter. */
+    net_lock_assert_held("eth_input");
+
     stats.rx++;
 
     /* The length bounds are this layer's contract with the drivers, asserted
@@ -262,15 +328,15 @@ dispatch:
 #endif
     switch (type) {
     case ETHERTYPE_ARP:
-        if (arp_input) { stats.rx_arp++; arp_input(frame, len); }
+        if (LOGIT_HAVE(arp_input)) { stats.rx_arp++; arp_input(frame, len); }
         else stats.rx_unhandled++;
         return;
     case ETHERTYPE_IP:
-        if (ip_input) { stats.rx_ip++; ip_input(frame, len); }
+        if (LOGIT_HAVE(ip_input)) { stats.rx_ip++; ip_input(frame, len); }
         else stats.rx_unhandled++;
         return;
     case ETHERTYPE_IPV6:
-        if (ip6_input) { stats.rx_ip6++; ip6_input(frame, len); }
+        if (LOGIT_HAVE(ip6_input)) { stats.rx_ip6++; ip6_input(frame, len); }
         else stats.rx_unhandled++;
         return;
     default:

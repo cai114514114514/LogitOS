@@ -4,13 +4,15 @@
 #include "ip.h"
 #include "net.h"
 #include "pit.h"
+#include "../../../include/weaksym.h"   /* the weak hooks below are an ELF idiom; read it */
 
 void *memcpy(void *, const void *, size_t);
 
 /* raw.c's fan-out hook -- weak because a build without SOCK_RAW linked (e.g.
  * a host test that #includes only ip.c/icmp.c, see net_proto_test.c) must
  * not fail to link over a socket feature it never asked for. */
-void raw_icmp_deliver(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+void raw_icmp_deliver(uint32_t, const uint8_t *, uint16_t) LOGIT_WEAK;
+LOGIT_WEAK_STUB(raw_icmp_deliver);
 
 #define ICMP_ECHO_REPLY   0
 #define ICMP_ECHO_REQUEST 8
@@ -39,8 +41,10 @@ struct icmp_orig_ip {
 } __attribute__((packed));
 
 /* Transport-layer error hooks (weak until udp.c / tcp.c are linked in). */
-void udp_error(uint16_t, uint32_t, uint16_t, int, int) __attribute__((weak));
-void tcp_error(uint16_t, uint32_t, uint16_t, int, int) __attribute__((weak));
+void udp_error(uint16_t, uint32_t, uint16_t, int, int) LOGIT_WEAK;
+void tcp_error(uint16_t, uint32_t, uint16_t, int, int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(udp_error);
+LOGIT_WEAK_STUB(tcp_error);
 
 static uint16_t ping_id = 0xA10A, ping_seq;
 static uint16_t ping_wait_seq;
@@ -111,9 +115,9 @@ static void icmp_error(const uint8_t *data, uint16_t len)
     const uint8_t *ol4 = data + sizeof(struct icmp_hdr) + oihl;
     uint16_t lport = (uint16_t)(((uint16_t)ol4[0] << 8) | ol4[1]);
     uint16_t rport = (uint16_t)(((uint16_t)ol4[2] << 8) | ol4[3]);
-    if (oh->proto == IP_PROTO_UDP && udp_error)
+    if (oh->proto == IP_PROTO_UDP && LOGIT_HAVE(udp_error))
         udp_error(lport, rip, rport, in->type, in->code);
-    else if (oh->proto == IP_PROTO_TCP && tcp_error)
+    else if (oh->proto == IP_PROTO_TCP && LOGIT_HAVE(tcp_error))
         tcp_error(lport, rip, rport, in->type, in->code);
 }
 
@@ -134,7 +138,7 @@ void icmp_input(uint32_t src, const uint8_t *data, uint16_t len)
      * and nothing downstream of a real raw socket implementation is
      * expected to hand a caller bytes that failed the protocol's own
      * integrity check. */
-    if (raw_icmp_deliver) raw_icmp_deliver(src, data, len);
+    if (LOGIT_HAVE(raw_icmp_deliver)) raw_icmp_deliver(src, data, len);
 
     const struct icmp_hdr *in = (const struct icmp_hdr *)data;
 

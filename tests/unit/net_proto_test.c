@@ -119,6 +119,19 @@ void tcp_close(int id) { (void)id; }
  * ternary. That would make this file test a routing decision the kernel no
  * longer makes -- worse than not testing it, because the gate would stay
  * green straight through a real regression in route.c. */
+/* THE STUBS THIS TU MUST NOT EMIT. Since 2026-08-28 a weak declaration in
+ * c/net is spelled through include/weaksym.h, which on Mach-O turns "an
+ * undefined weak reference" (an ELF-only property, a hard link error here)
+ * into a weak DEFINITION of a trapping stub that a real provider overrides.
+ * That override only happens ACROSS objects -- and this file concatenates the
+ * providers into ONE translation unit, so ip.c's stub for icmp_input and
+ * icmp.c's definition of it would be a redefinition ("symbol '_icmp_input' is
+ * already defined"). Named per SYMBOL, not per file, because the stubs for
+ * tcp_input and tcp_error are still needed: nothing here defines those. */
+#define LOGIT_WEAK_LOCAL_icmp_input 1
+#define LOGIT_WEAK_LOCAL_udp_input 1
+#define LOGIT_WEAK_LOCAL_udp_error 1
+
 void kprintf(const char *fmt, ...) { (void)fmt; }
 #include "route.c"
 

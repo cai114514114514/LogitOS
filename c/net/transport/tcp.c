@@ -14,14 +14,17 @@
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* IPv6 output, provided by the IPv6 line. Weak: until that lands the symbol is
  * NULL and an AF_INET6 connection simply cannot be opened. Nothing else in this
  * file assumes a family. */
 int ip6_send(const uint8_t dst[16], uint8_t proto, const void *payload,
-             uint16_t len) __attribute__((weak));
+             uint16_t len) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ip6_send);
 /* Source-address selection for a given destination; 0 on success. */
-int ip6_local_addr(const uint8_t dst[16], uint8_t out[16]) __attribute__((weak));
+int ip6_local_addr(const uint8_t dst[16], uint8_t out[16]) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ip6_local_addr);
 
 /* TCP flags */
 #define FIN 0x01
@@ -328,7 +331,7 @@ static int af_send(const struct tcp_addr *dst, const void *seg, uint16_t len)
 {
     if (dst->af == TCP_AF_INET)
         return ip_send(dst->a.v4, IP_PROTO_TCP, seg, len);
-    if (ip6_send)
+    if (LOGIT_HAVE(ip6_send))
         return ip6_send(dst->a.v6, IP_PROTO_TCP, seg, len);
     return -1;                          /* no IPv6 output path linked in */
 }
@@ -337,7 +340,7 @@ static int af_send(const struct tcp_addr *dst, const void *seg, uint16_t len)
 static int af_local(const struct tcp_addr *dst, struct tcp_addr *out)
 {
     if (dst->af == TCP_AF_INET) { addr_v4(out, net_cfg.ip); return 0; }
-    if (!ip6_local_addr) return -1;
+    if (!LOGIT_HAVE(ip6_local_addr)) return -1;
     out->af = TCP_AF_INET6;
     return ip6_local_addr(dst->a.v6, out->a.v6);
 }
@@ -2017,15 +2020,41 @@ int tcp_accept(int lid)
 {
     if (lid < 0 || lid >= NLISTEN) return TCP_L_E_ARG;
     struct tcp_listener *l = &listeners[lid];
+    /* net_lock OUTSIDE lq->lock, and that nesting is not a preference -- it is
+     * the order backlog_push() already uses (tcp_input holds net_lock and takes
+     * lq->lock inside it), so acquiring in the other order here would be the
+     * AB-BA this file just finished removing from tcp_wait_readable.
+     *
+     * WHY IT IS NEEDED AT ALL, since the queue is lq->lock's: the two stores
+     * below are to conns[], which is net_lock's, and `id` is a BARE INDEX. With
+     * only lq->lock held, between
+     *
+     *     conns[id].in_backlog = 0;      (1)
+     *     conns[id].lst        = -1;     (2)
+     *
+     * another core under net_lock can run conn_closed() on a RST for id -- which
+     * now reads in_backlog == 0 and does c->used = 0 -- and then passive_open()
+     * can claim the freed slot for an unrelated SYN and set c->lst to ITS
+     * listener. Store (2) then lands on the new tenant, and when that handshake
+     * completes backlog_push() reads c->lst < 0 and drops the connection: a peer
+     * that connected and is never served, with no counter moved and no log line.
+     * Two instructions wide, on the one path where the app thread and the RX
+     * softirq touch the same slot from different cores.
+     *
+     * This is the same failure conn_closed()'s own comment argues against thirty
+     * lines up ("accept() would then hand the application somebody else's
+     * connection"); the BKL was what made the argument hold across two locks. */
+    uint64_t nf = net_lock();
     uint64_t f = spin_lock_irqsave(&l->wq.lock);
-    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); return TCP_L_E_ARG; }
-    if (l->qn == 0) { spin_unlock_irqrestore(&l->wq.lock, f); return TCP_L_E_AGAIN; }
+    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); net_unlock(nf); return TCP_L_E_ARG; }
+    if (l->qn == 0) { spin_unlock_irqrestore(&l->wq.lock, f); net_unlock(nf); return TCP_L_E_AGAIN; }
     int id = l->q[0];
     for (int i = 1; i < l->qn; i++) l->q[i - 1] = l->q[i];
     l->qn--;
     conns[id].in_backlog = 0;
     conns[id].lst = -1;
     spin_unlock_irqrestore(&l->wq.lock, f);
+    net_unlock(nf);
     return id;
 }
 
@@ -2051,21 +2080,41 @@ void tcp_listen_close(int lid)
 {
     if (lid < 0 || lid >= NLISTEN) return;
     struct tcp_listener *l = &listeners[lid];
+    /* net_lock spans the WHOLE function, lq->lock nested inside it -- same order
+     * as tcp_accept() and backlog_push(), never the reverse.
+     *
+     * It used to be taken only for the reset loop, AFTER lq->lock was dropped,
+     * and `drain[]` is the reason that cannot stand once the BKL is gone: it
+     * holds BARE SLOT INDICES, and the two stores above have already published
+     * every one of them as free-able (in_backlog = 0, so conn_closed() on a RST
+     * will do c->used = 0). In the window between the release and the acquire,
+     * another core under net_lock can therefore free any of those slots and
+     * passive_open()/tcp_connect() can hand one to a NEW connection -- whose
+     * `used` is 1, so the `if (c->used)` below passes, and the loop sends a RST
+     * on a stranger's connection and then frees its slot. Closing a listener
+     * would kill an unrelated live socket, once in a long while, silently.
+     *
+     * Holding net_lock across the whole thing makes drain[] mean the same thing
+     * when it is read as when it was written, which is the only property that
+     * makes an array of indices safe to carry across statements at all. */
+    uint64_t nf = net_lock();
     uint64_t f = spin_lock_irqsave(&l->wq.lock);
-    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); return; }
+    if (!l->used) { spin_unlock_irqrestore(&l->wq.lock, f); net_unlock(nf); return; }
     int drain[TCP_BACKLOG], n = l->qn;
     for (int i = 0; i < n; i++) { drain[i] = l->q[i]; conns[drain[i]].in_backlog = 0; }
     l->qn = 0;
     l->used = 0;
     spin_unlock_irqrestore(&l->wq.lock, f);
     waitq_wake_all(&l->wq);         /* an accept() parked on a closed listener
-                                     * must come back, not wait out its deadline */
+                                     * must come back, not wait out its deadline.
+                                     * Under net_lock: net_lock -> wq.lock ->
+                                     * g_sched_lock, which is what conn_closed()
+                                     * and backlog_push() already do. */
 
     /* Everything that was queued but never accepted is a connection this
      * machine established and will now never serve. Reset it rather than
      * closing it politely: the peer is owed the truth, and a FIN would claim we
      * had read its request. Half-opens still handshaking go the same way. */
-    uint64_t nf = net_lock();
     for (int i = 0; i < n; i++) {
         struct tcp_conn *c = &conns[drain[i]];
         if (c->used) {
@@ -2134,10 +2183,34 @@ void tcp_shutdown_write(int id)
  * makes this correct. */
 int tcp_wait_readable(int id, unsigned ms)
 {
+    if (id < 0 || id >= NCONN) return -1;
+    struct tcp_conn *c = &conns[id];
     int ok = 0;
-    wait_event_timeout(&rx_wq, tcp_available(id) != 0, ms, ok);
+    /* THE PREDICATE IS INLINED RATHER THAN CALLING tcp_available(), AND THAT IS
+     * THE WHOLE POINT OF THE LINE.
+     *
+     * wait_event_timeout evaluates `cond` with rx_wq.lock HELD. tcp_available()
+     * takes net_lock(), so this used to be  rx_wq.lock -> net_lock  -- while
+     * tcp_input_af() and conn_closed() run holding net_lock and call
+     * waitq_wake_all(&rx_wq), i.e.  net_lock -> rx_wq.lock. A textbook AB-BA,
+     * invisible for as long as net_lock was a bare `cli` (a `cli` never waits,
+     * so a cycle in the order costs nothing). The moment net_lock became a real
+     * lock it became a two-core deadlock: a reader parking on a socket against
+     * a segment arriving for any socket.
+     *
+     * The lost wakeup is unaffected, because net_lock was never what closed it:
+     * rule 2 of c/kernel/core/wait.h is satisfied by rx_wq.lock alone -- every
+     * waker takes rx_wq.lock AFTER making the condition true. net_lock only made
+     * the four reads mutually atomic, and each is a single aligned scalar whose
+     * worst case is one extra pass round a loop that re-tests. tcp_wait_writable
+     * twenty lines below has always read these same fields exactly this way.
+     *
+     * The condition is tcp_available(id) != 0 expanded: !used -> -1, rx_len > 0
+     * -> rx_len, peer_fin or CLOSED -> -1, otherwise 0. */
+    wait_event_timeout(&rx_wq,
+        !c->used || c->rx_len > 0 || c->peer_fin || c->state == CLOSED, ms, ok);
     (void)ok;
-    return tcp_available(id);
+    return tcp_available(id);       /* the authoritative read, lock held, no wq */
 }
 
 /* The same for the other direction: park until the send ring has room. A

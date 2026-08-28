@@ -22,6 +22,23 @@
  *
  * Built with -DLOGIT_NET_HOST so net_lock() is a no-op (cli/sti are ring 0). */
 
+/* WHITE-BOX TU, SO ONE WEAK STUB HAS TO BE SUPPRESSED. This file #includes
+ * nd.c (line 81) and then DEFINES tcp_error_af itself (line ~96). nd.c declares
+ * that symbol through include/weaksym.h, which on Mach-O emits a weak
+ * DEFINITION rather than leaving an undefined weak reference -- and a weak
+ * definition only yields to a strong one ACROSS objects. In one translation
+ * unit it is a plain redefinition:
+ *
+ *     error: symbol '_tcp_error_af' is already defined
+ *
+ * and `make test-nd-host` -- and `make test-net`, which depends on it -- did not
+ * compile at all. weaksym.h:63-78 names this exact case and provides the
+ * per-SYMBOL escape hatch used here; per-symbol and not per-file on purpose,
+ * since every other stub nd.c emits is for a symbol this TU does not define and
+ * must keep working. Correct rather than a workaround: in THIS link the symbol
+ * is not undefined, so no stub is wanted. */
+#define LOGIT_WEAK_LOCAL_tcp_error_af 1
+
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

@@ -6,6 +6,7 @@
 #include "work.h"
 #include "ktime.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* every weak hook below; an undefined weak ref is ELF-only */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -29,15 +30,19 @@ static int up;
 int net_up(void) { return up; }
 
 /* dhcp.c is linked into the kernel but kept optional like the other layers. */
-int  dhcp_run(int timeout_ticks) __attribute__((weak));
-void dhcp_poll(void) __attribute__((weak));
+int  dhcp_run(int timeout_ticks) LOGIT_WEAK;
+void dhcp_poll(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(dhcp_run);
+LOGIT_WEAK_STUB(dhcp_poll);
 
 /* The settings store, weak for exactly the reason dhcp_run is: net.c is linked
  * into host tests that have no filesystem to read a settings file from. On the
  * machine these resolve; host-side they are NULL and the configuration is the
  * DHCP-then-static path this file always had. */
-int      settings_get_int(const char *key, int def) __attribute__((weak));
-unsigned settings_get_ip(const char *key, unsigned def) __attribute__((weak));
+int      settings_get_int(const char *key, int def) LOGIT_WEAK;
+unsigned settings_get_ip(const char *key, unsigned def) LOGIT_WEAK;
+LOGIT_WEAK_STUB(settings_get_int);
+LOGIT_WEAK_STUB(settings_get_ip);
 
 /* A user who has turned automatic configuration off. The addresses come from
  * the store and are already validated -- settings_get_ip() returns the schema
@@ -47,7 +52,7 @@ unsigned settings_get_ip(const char *key, unsigned def) __attribute__((weak));
  * Returns 1 if a static configuration was applied, 0 to fall through to DHCP. */
 static int net_cfg_from_settings(void)
 {
-    if (!settings_get_int || !settings_get_ip) return 0;
+    if (!LOGIT_HAVE(settings_get_int) || !LOGIT_HAVE(settings_get_ip)) return 0;
     if (settings_get_int("net.dhcp", 1)) return 0;      /* automatic: DHCP below */
 
     net_cfg.ip   = settings_get_ip("net.ip",   IPV4(10, 0, 2, 15));
@@ -66,9 +71,12 @@ static int net_cfg_from_settings(void)
 
 /* Link-layer hooks, weak for the same reason: net.c is linked into host tests
  * that have no NIC and no ARP. */
-void arp_announce(void) __attribute__((weak));
-void arp_dump(void) __attribute__((weak));
-void eth_dump(void) __attribute__((weak));
+void arp_announce(void) LOGIT_WEAK;
+void arp_dump(void) LOGIT_WEAK;
+void eth_dump(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(arp_announce);
+LOGIT_WEAK_STUB(arp_dump);
+LOGIT_WEAK_STUB(eth_dump);
 
 /* ---------------------------------------------------------------------------
  * The receive path.
@@ -173,6 +181,59 @@ static void rx_report(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * THE LOCK'S OWN REPORT, AND WHY IT IS NOT PART OF rx_report() ABOVE.
+ *
+ * It was, for one afternoon, and that is the finding worth keeping: rx_report()
+ * fires at 64 RECEIVED FRAMES, and `make test-net-os` -- a complete 32 KiB
+ * HTTP fetch over e1000/IPv4/TCP, the gate that exercises this lock hardest --
+ * moves about two dozen. So the whole transfer ran, PASSED, and printed not one
+ * `[netlock]` line. The instrument said nothing and read exactly like a machine
+ * with nothing to say, which is rule 1 of CLAUDE.md happening to the instrument
+ * built to check rule 1.
+ *
+ * The trigger is therefore the LOCK'S OWN counter, not the wire's, and the
+ * cadence is GEOMETRIC -- 1, 8, 64, 512, 4096, ... -- which is not tidiness
+ * either. A flat "first, then every N" was tried and printed exactly one line
+ * per boot reading `acq 3 maxdepth 1`, because the first acquisition happens in
+ * DHCP's transmit before a single frame has been RECEIVED, and the receive path
+ * is the only thing that nests. A gate reading that line concluded "the lock
+ * never nested" about a machine whose lock nests on every ARP frame; the
+ * measurement was right and it was taken at the wrong moment. Doubling back the
+ * other way -- reporting often enough to catch it -- would put a line every few
+ * seconds into all ~128 boot logs. Geometric gives both: ~5 lines over a boot,
+ * front-loaded so the stack coming up is visible, and a LAST line that
+ * describes the whole run.
+ *
+ *   - a boot that touches the network at all prints a line, so `violations 0`
+ *     is an assertion somebody can read rather than an absence somebody can
+ *     mistake for one;
+ *   - a boot that does NOT touch the network prints nothing, which is what
+ *     keeps this out of the serial expectations of the other boot harnesses
+ *     (the reason rx_report() is quiet in the first place);
+ *   - and the cadence is in acquisitions, so it scales with the thing being
+ *     measured instead of with an unrelated one.
+ *
+ * `violations` is the number that must stay 0. It counts eth_input()/eth_send()
+ * entered without the lock and net_unlock() by a non-owner -- i.e. every place
+ * the old prose contract ("all current paths do") was wrong.
+ * `maxdepth` above 1 is the receive path re-entering itself (drain ->
+ * eth_input -> arp_input -> ... -> arp_output), which is WHY the lock is
+ * recursive; a maxdepth that fell to 1 would mean the nesting stopped happening
+ * and the recursion had stopped earning its keep.
+ * ------------------------------------------------------------------------- */
+static unsigned long nl_next_report = 1;
+
+static void netlock_report(void)
+{
+    unsigned long acq = 0, rec = 0, depth = 0, viol = 0;
+    net_lock_stats(&acq, &rec, &depth, &viol);
+    if (acq < nl_next_report) return;
+    nl_next_report = acq * 8 + 1;       /* 1, 8, 64, 512, 4096, ... */
+    kprintf("[netlock] acq %lu recursive %lu maxdepth %lu violations %lu\n",
+            acq, rec, depth, viol);
+}
+
+/* ---------------------------------------------------------------------------
  * TCP'S CLOCK, AND WHY IT IS NOT THE COMPOSITOR'S ANY MORE.
  *
  * tcp_poll() is not a poll. It is TCP's timer wheel: the retransmission
@@ -264,7 +325,8 @@ static void rx_report(void)
  *     above predicts.
  * ------------------------------------------------------------------------- */
 
-void tcp_poll(void) __attribute__((weak));
+void tcp_poll(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tcp_poll);
 
 /* One PIT tick. See the cadence argument above. */
 #define TCP_TICK_NS  (10ull * NS_PER_MS)
@@ -301,7 +363,7 @@ static void tcp_tick_run(uint32_t *counter)
      * kept, rather than being cleared by the pass that could not have seen it. */
     if (!__atomic_exchange_n(&tcp_tick_owed, 0u, __ATOMIC_SEQ_CST)) return;
     (*counter)++;
-    if (tcp_poll) tcp_poll();
+    if (LOGIT_HAVE(tcp_poll)) tcp_poll();
 }
 
 /* ktimer callback: INTERRUPT CONTEXT, NO BKL. One atomic OR and nothing else --
@@ -335,7 +397,7 @@ int net_init(void)
     /* Unconfigured while negotiating: DHCPDISCOVER leaves from 0.0.0.0, and
      * only broadcast UDP can come back in until we own an address. */
     if (!net_cfg_from_settings())
-        if (!dhcp_run || dhcp_run(300) != 0)    /* ~3 s */
+        if (!LOGIT_HAVE(dhcp_run) || dhcp_run(300) != 0)    /* ~3 s */
             net_cfg_fallback();
 
     /* RFC 5227 s3: announce the address we just took. Until now the machine
@@ -344,14 +406,14 @@ int net_init(void)
      * transmitted, and a second host taking the same address was never noticed
      * by anybody. One broadcast fixes all three, and it is also what makes the
      * conflict counter in arp_dump() able to be non-zero. */
-    if (arp_announce) arp_announce();
+    if (LOGIT_HAVE(arp_announce)) arp_announce();
 
     /* One line each from the two link-layer files, once, at the end of bring-up.
      * They are the only visibility this layer has ever had; a machine dropping
      * every frame for a wrong-destination or unsupported-ethertype reason used
      * to look exactly like a machine on an idle network. */
-    if (eth_dump) eth_dump();
-    if (arp_dump) arp_dump();
+    if (LOGIT_HAVE(eth_dump)) eth_dump();
+    if (LOGIT_HAVE(arp_dump)) arp_dump();
 
     /* TCP's clock, off the compositor. Armed AFTER the address is configured so
      * the first pass cannot run against a half-built stack, and last in this
@@ -379,14 +441,18 @@ int net_init(void)
 }
 
 /* tcp_poll is declared with the timer block above, which is its driver now. */
-void ip_poll(void) __attribute__((weak));
+void ip_poll(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ip_poll);
 /* The IPv4 neighbour cache's clock: solicitation retransmits, REACHABLE->STALE
  * ageing, unicast probes, expiry of failed lookups. Without a periodic call
  * nothing in c/net/link/arp.c ever ages, which is the state the old flat cache
  * was permanently in. */
-void arp_poll(void) __attribute__((weak));
-void dns_poll(void) __attribute__((weak));   /* async resolver pool */
-void sock_pump(void) __attribute__((weak));  /* non-blocking client sockets */
+void arp_poll(void) LOGIT_WEAK;
+void dns_poll(void) LOGIT_WEAK;   /* async resolver pool */
+void sock_pump(void) LOGIT_WEAK;  /* non-blocking client sockets */
+LOGIT_WEAK_STUB(arp_poll);
+LOGIT_WEAK_STUB(dns_poll);
+LOGIT_WEAK_STUB(sock_pump);
 
 /* Set while a blocking fetch (http_get/res_fetch, on the app thread) owns the
  * network. The WM render thread is preempted into ~100x/s and also calls
@@ -491,22 +557,23 @@ void net_poll(void)
          * pending from a nested entry (see net_rx_schedule). */
         net_rx_drain(&rx_n_poll);
         rx_report();
+        netlock_report();       /* its own cadence -- see the block above */
         /* NOT a poll any more: discharge an owed timer pass, if the 10 ms
          * ktimer's raise has not been able to run (a nested entry -- see the
          * timer block above). Under the negative-control wiring this is the
          * unconditional call it always was. */
-        if (tcp_on_wm) { if (tcp_poll) tcp_poll(); }
+        if (tcp_on_wm) { if (LOGIT_HAVE(tcp_poll)) tcp_poll(); }
         else           tcp_tick_run(&tcp_tick_inline);
-        if (ip_poll) ip_poll();
-        if (arp_poll) arp_poll();
-        if (dhcp_poll) dhcp_poll();
+        if (LOGIT_HAVE(ip_poll)) ip_poll();
+        if (LOGIT_HAVE(arp_poll)) arp_poll();
+        if (LOGIT_HAVE(dhcp_poll)) dhcp_poll();
         /* The async half, and the reason a fetch no longer freezes the desktop:
          * these two advance EVERY outstanding lookup and EVERY open socket by
          * whatever the bytes already received allow, then return. Ordering is
          * deliberate -- dns_poll first, so a name that resolves on this pass has
          * its socket move on to the SYN in the same pass rather than the next. */
-        if (dns_poll) dns_poll();
-        if (sock_pump) sock_pump();
+        if (LOGIT_HAVE(dns_poll)) dns_poll();
+        if (LOGIT_HAVE(sock_pump)) sock_pump();
     }
 }
 

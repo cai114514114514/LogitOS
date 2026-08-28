@@ -28,6 +28,38 @@ ifneq ($(E1000_ITR),)
 CFLAGS += -DE1000_ITR_VALUE=$(E1000_ITR)
 endif
 
+# THE REGISTER PROBE. A build knob, not a target, because the thing it answers
+# is a property of the DEVICE MODEL and the only way to ask is from inside the
+# guest:
+#
+#     make build/logit.iso E1000_PROBE=1
+#     bash tests/boot/run-e1000-mpc-probe.sh build/logit.iso build/disk.img
+#
+# It reads each statistics register TWICE IN A ROW and prints both, so
+# "read-to-clear" stops being an assumption inherited from the 8254x manual and
+# becomes an observation about the machine this tree actually runs on. A probe
+# build STEALS the counts from the ordinary stats line -- see the block above
+# e1000_probe_read() in c/drivers/net/e1000.c -- so the two must never be
+# quoted from the same boot.
+ifneq ($(E1000_PROBE),)
+CFLAGS += -DE1000_REG_PROBE
+endif
+
+# RX ring depth, for the probe build ONLY (see the block above RX_DESC in
+# c/drivers/net/e1000.c). MPC is incremented in one place in QEMU's model --
+# e1000_receiver_overrun -- so on the shipped 64-descriptor ring it never
+# leaves 0 under a SLIRP download and a probe of it observes nothing. This
+# shrinks the ring to MAKE the counter non-zero, so its read semantics can be
+# measured. Never set it for a benchmark: a short ring is a slower NIC.
+#
+#     make <iso> E1000_PROBE=1 E1000_RXDESC=8 E1000_RXREFILL=2 BUILD=<dir>
+ifneq ($(E1000_RXDESC),)
+CFLAGS += -DRX_DESC=$(E1000_RXDESC)
+endif
+ifneq ($(E1000_RXREFILL),)
+CFLAGS += -DRX_REFILL=$(E1000_RXREFILL)
+endif
+
 # Host unit test: descriptor-ring arithmetic, device header/status accessors,
 # and PCI match-table resolution -- read from the REAL tables (net_ids.inc), not
 # a copy. See the header comment in tests/unit/net_drv_test.c for why the
@@ -54,12 +86,23 @@ test-e1000-stats: test-e1000-stats-negctl test-e1000-linkmask-negctl
 		-o $(BUILD)/e1000_stats_test tests/unit/e1000_stats_test.c -Ic/drivers/net
 	@./$(BUILD)/e1000_stats_test
 
-# NEGATIVE CONTROL. -DE1000_STATS_NO_ACC compiles `sw = read()` in place of
-# `sw += read()` -- the naive read of a read-to-clear register, which is the
-# plausible wrong implementation rather than the absent one: every counter still
-# exists, still moves, and still looks like a total. REQUIRED TO FAIL, and the
-# count is pinned: 10 of the 61 checks redden and no others. If the number
-# changes, either a check moved or the control stopped controlling.
+# NEGATIVE CONTROL. -DE1000_STATS_NO_ACC compiles `sw = hw1` (the naive read of
+# THE FIRST of the two back-to-back reads e1000_stat_acc_auto() now takes) in
+# place of the auto-detecting accumulate -- the plausible wrong implementation
+# rather than the absent one: every counter still exists, still moves, and
+# still looks like a total. REQUIRED TO FAIL, and the count is pinned: 14 of
+# the 83 checks redden and no others. If the number changes, either a check
+# moved or the control stopped controlling.
+#
+# WAS 10 of 61. It moved to 14 of 83 the day e1000_stat_acc_auto() replaced
+# e1000_stat_acc() (the MPC sticky-register fix, see e1000_stats.h) and this
+# file grew 22 checks to prove it -- 4 of the new checks exercise the naive
+# form's failure directly (test_sticky_and_clearing_agree_on_total,
+# test_stat_acc_auto_directly's "double zero" and "reset underneath" cases)
+# and redden under NO_ACC same as the pre-existing ones did; the other 18 do
+# not touch the accumulate this control breaks and stay green. This is what
+# CLAUDE.md rule 2 asks for: a moved pinned number explained by name, not
+# quietly bumped.
 test-e1000-stats-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -DE1000_STATS_NO_ACC \
@@ -69,8 +112,8 @@ test-e1000-stats-negctl:
 	 if [ $$rc -eq 0 ]; then \
 	   echo "NEGCTL FAIL: -DE1000_STATS_NO_ACC still passes -- the gate proves nothing"; \
 	   exit 1; \
-	 elif [ "$$n" != "10" ]; then \
-	   echo "NEGCTL FAIL: expected exactly 10 reddened checks, got $$n"; \
+	 elif [ "$$n" != "14" ]; then \
+	   echo "NEGCTL FAIL: expected exactly 14 reddened checks, got $$n"; \
 	   printf '%s\n' "$$out"; exit 1; \
 	 else \
 	   echo "e1000_stats negctl OK: -DE1000_STATS_NO_ACC reddens exactly $$n checks"; \

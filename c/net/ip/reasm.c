@@ -3,6 +3,7 @@
 #include "reasm.h"
 #include "net.h"
 #include "pit.h"
+#include "../../../include/weaksym.h"   /* the weak ip6_poll below is an ELF idiom */
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -111,7 +112,8 @@ void reasm_release(struct reasm_dgram *g)
     g->slot = -1;
 }
 
-void ip6_poll(void) __attribute__((weak));
+void ip6_poll(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ip6_poll);
 
 void ip_poll(void)
 {
@@ -127,5 +129,5 @@ void ip_poll(void)
      * Detection, the neighbour cache's REACHABLE/STALE/DELAY/PROBE
      * transitions, Router Solicitation retransmission, address and router
      * lifetimes -- is behind this one call. */
-    if (ip6_poll) ip6_poll();
+    if (LOGIT_HAVE(ip6_poll)) ip6_poll();
 }

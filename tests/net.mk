@@ -165,17 +165,51 @@ test-dns-negctl:
 # load-bearing: -Itests/unit/unixstub comes FIRST so the stub wait.h wins over
 # c/kernel/core/wait.h, exactly the ordering trap CLAUDE.md's "Source layout"
 # section records about uonly/.
+#
+# THE STUB DIRECTORY THAT SENTENCE NAMES DID NOT EXIST UNTIL 2026-08-28, and
+# nothing said so. `UNIX_INC` has pointed at -Itests/unit/unixstub since this
+# section landed; `git ls-files tests/unit/ | grep -i unix` returned exactly one
+# file, unix_test.c. So `make test-unix` died at c/net/core/unix.c:6 --
+# `fatal error: 'kheap.h' file not found` -- and the "132 checks and THREE
+# controls" counted below had not been reproducible since. Both headers are
+# rebuilt now from what unix.c and unix_test.c require; every number in this
+# file was RE-MEASURED against them rather than carried over, and all four
+# (132/132, then 8/1/18) came back identical, which is what says the
+# reconstruction is the same instrument and not merely a working one.
 # ============================================================================
 
 .PHONY: test-unix test-unix-host test-unix-negctl
 
 UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi -Ic/fs
 
+# -D_FORTIFY_SOURCE=0 IS NOT TIDINESS AND IT IS NOT OPTIONAL ON THIS HOST.
+# unix_test.c includes the host <string.h> and then #includes unix.c, whose
+# line 10 is `void *memset(void *, int, size_t);` -- a bare extern, correct for
+# a freestanding kernel TU. On macOS <secure/_string.h> has by then made
+# `memset` a MACRO expanding to __builtin___memset_chk, so that declaration is
+# parsed as a redeclaration of the builtin with the wrong arity and the gate
+# does not compile at all:
+#
+#   c/net/core/unix.c:10:7: error: conflicting types for '__builtin___memset_chk'
+#
+# This is the fourth instance of the shape already fixed in c/apps/browser/
+# layout.c, c/net/core/sock.c and c/net/ip/ip.c with `#ifndef memset` guards.
+# The guard in the source is the better fix and belongs to whoever owns that
+# file; this flag is the half that can live in the test recipe, it is portable
+# (glibc honours _FORTIFY_SOURCE=0 identically), and it becomes redundant
+# rather than wrong the day the guard lands. What it costs, said plainly: the
+# host's compile-time object-size checking is off for this TU, so a
+# fixed-size overflow that clang would have caught is left to ASan. Every
+# assertion in the gate is unaffected -- 132/132 with the flag, and the three
+# controls redden by exactly the counts below.
+UNIX_HOSTDEF := -D_FORTIFY_SOURCE=0
+
 test-unix: test-unix-host test-unix-negctl
 
 test-unix-host:
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/unix_test tests/unit/unix_test.c $(UNIX_INC)
+	@$(CC) -O2 -Wall -Wextra $(UNIX_HOSTDEF) -o $(BUILD)/unix_test \
+		tests/unit/unix_test.c $(UNIX_INC)
 	@./$(BUILD)/unix_test
 
 # THREE CONTROLS, EACH WATCHED FAILING AND EACH ON ITS OWN EXACT COUNT.
@@ -199,6 +233,18 @@ test-unix-host:
 # fails intermittently while pointing at AF_UNIX. Verified stable at 18 over 8
 # consecutive runs after the fix.
 #
+#   RE-MEASURED 2026-08-28 against the rebuilt stub, and the alternation did
+#   NOT reproduce: 18 over 8 consecutive runs WITH the flush and 18 over 8
+#   WITHOUT it. The reason is worth more than the correction -- these recipes
+#   redirect to a file, so stdout is FULLY buffered and cannot split mid-line;
+#   every check line is emitted in one write at exit. What the flush changes
+#   here is WHERE the abort lands: without it the whole stdout buffer is
+#   written after the process's stderr, so the abort appears as the FIRST FAIL
+#   in the log and reads as the first thing that went wrong, when it is the
+#   last. With it, the log is in the order the failures happened. The 17/18
+#   alternation is what a TTY (line-buffered) or a `| tee` gives, which is how
+#   a person runs it by hand. Keep the flush for both reasons.
+#
 # WHY THE NAME AND NOT JUST THE COUNT: "8 checks fail" is satisfied by any
 # eight, including eight that have nothing to do with record boundaries. The
 # tag/name assertion is what ties the control to the property it claims.
@@ -209,7 +255,8 @@ test-unix-negctl:
 	            "UNIX_NEGCTL_NOWAKE 1 block: close wakes reader" \
 	            "UNIX_NEGCTL_ONEDIR 18 twoway: b reads a"; do \
 	  set -- $$spec; d=$$1; want=$$2; shift 2; name="$$*"; \
-	  $(CC) -O2 -w -D$$d -o $(BUILD)/unix_nc_$$d tests/unit/unix_test.c $(UNIX_INC); \
+	  $(CC) -O2 -w $(UNIX_HOSTDEF) -D$$d -o $(BUILD)/unix_nc_$$d \
+	      tests/unit/unix_test.c $(UNIX_INC); \
 	  if ./$(BUILD)/unix_nc_$$d >$(BUILD)/unix_nc_$$d.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the suite passes with -D$$d"; fail=1; \
 	  else \
@@ -377,3 +424,47 @@ test-tcp-timer: test-tcp-timer-wedge
 # audit named `test-tcp-timer` as NEW UNWIRED with the member wired, and named
 # neither once the parent was.
 ci-boot: test-tcp-timer
+
+# =============================================================================
+# STEP 4a OF THE BKL REMOVAL -- net_lock() IS A REAL LOCK, GATED ON THE MACHINE.
+#
+# WHY THIS BLOCK EXISTS AT ALL. c/net/link/eth.c already carried a negative
+# control -- `#ifdef NETLOCK_NEGCTL_NO_TX_LOCK`, the transmit path exactly as it
+# was before the step -- and its own comment ends "A control that cannot be
+# watched failing reads like a control and is not one, so this is the one that
+# must be run." Nothing ran it: the define appeared in no Makefile, no fragment
+# and no script. That is rule 5 of CLAUDE.md happening to the control written to
+# satisfy rule 5, and it is fixed here rather than noted.
+#
+# AND WHY IT HAS TO BE A BOOT. net.h degenerates net_lock() to a no-op under
+# -DLOGIT_NET_HOST and tests/unit/tcpstub/net.h has its own no-op copy, so every
+# host gate that touches the stack compiles the lock away and runs one thread.
+# `make test-net`, `test-tcp-host`, `test-route` and `test-ip6-*` are all still
+# the right regression checks for the PROTOCOL work -- 241 + 50 + 16 + 148 + 119
+# + 51 + 42 checks that did not move -- and not one of them can observe this
+# lock existing. Only a boot can.
+#
+# THE TWO ARMS DIFFER BY ONE -D AND BY NOTHING A PERSON CAN SEE: both boot, both
+# take a DHCP lease, both fetch. The only difference is the `violations` field.
+.PHONY: test-netlock test-netlock-negctl
+
+# The control is a PREREQUISITE of the positive gate, which is the one-line fix
+# CLAUDE.md names for the 61 stranded controls -- `test-X: test-X-negctl`. Naming
+# it on a ci-boot: line instead would satisfy tools/audit_tests.py and still run
+# it never, which is worse because it looks fixed. It is first so a broken
+# apparatus is reported before a green positive run can be believed.
+test-netlock: test-netlock-negctl $(ISO) $(DISK)
+	@bash tests/boot/run-netlock-test.sh $(ISO) $(DISK)
+
+# A SECOND ISO, into a sub-BUILD, because the control is a build-time define.
+# $(MAKE) with BUILD= overridden is how this tree already lets several agents
+# build at once (CLAUDE.md, "a sweep that manufactures bugs"); the disk image is
+# NOT rebuilt -- ring 3 is identical in both arms and the property is entirely
+# in the kernel, so the control shares $(DISK) and costs one kernel + one ISO.
+test-netlock-negctl:
+	@$(MAKE) --no-print-directory $(BUILD)/netlock-negctl/logit.iso \
+		BUILD=$(BUILD)/netlock-negctl NETNOTXLOCK=1
+	@NETLOCK=negctl bash tests/boot/run-netlock-test.sh \
+		$(BUILD)/netlock-negctl/logit.iso $(DISK)
+
+ci-boot: test-netlock

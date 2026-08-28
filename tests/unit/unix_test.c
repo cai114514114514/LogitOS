@@ -38,6 +38,18 @@ const char *ustub_where = 0;
 int   ustub_fail_alloc = 0;
 long  ustub_live_allocs = 0;
 
+/* THE TWO STUBS unix.c MUST NOT EMIT. Since 2026-08-28 a weak declaration in
+ * c/net is spelled through include/weaksym.h, whose Mach-O half is a weak
+ * DEFINITION of a trapping stub that a real provider overrides -- across
+ * objects. This file concatenates the provider (the ksig_* bodies in
+ * tests/unit/unixstub/kernel/core/wait.h, which count the SIGPIPEs the
+ * `write to a dead peer` checks read back) into the SAME translation unit as
+ * unix.c, so both would land in one assembly file: "symbol
+ * '_ksig_post_current' is already defined". Suppressing the stub is the right
+ * half to drop -- the stub traps, the stub header's body counts. */
+#define LOGIT_WEAK_LOCAL_ksig_post_current 1
+#define LOGIT_WEAK_LOCAL_ksig_interrupted  1
+
 #include "unix.c"           /* the unit under test, whole */
 
 /* --- the harness --------------------------------------------------------- */

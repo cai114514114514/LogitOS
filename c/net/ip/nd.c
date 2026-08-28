@@ -41,6 +41,7 @@
 #include "pit.h"
 #include "tcp.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak tcp_error_af below is an ELF idiom */
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -716,7 +717,8 @@ static void handle_echo(const ip6_addr *src, const ip6_addr *dst,
  * the v6 side does not have to guess at all. */
 #ifdef TCP_AF_INET6
 void tcp_error_af(const struct tcp_addr *remote, uint16_t lport, uint16_t rport,
-                  int type, int code, uint32_t mtu) __attribute__((weak));
+                  int type, int code, uint32_t mtu) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tcp_error_af);
 #endif
 
 static void handle_icmp6_error(const ip6_addr *src, const uint8_t *m, uint16_t len)
@@ -750,7 +752,7 @@ static void handle_icmp6_error(const ip6_addr *src, const uint8_t *m, uint16_t l
     (void)src;
 
 #ifdef TCP_AF_INET6
-    if (!tcp_error_af) return;                  /* not linked yet: see above */
+    if (!LOGIT_HAVE(tcp_error_af)) return;                  /* not linked yet: see above */
     uint32_t mtu = ((uint32_t)m[4] << 24) | ((uint32_t)m[5] << 16) |
                    ((uint32_t)m[6] << 8) | m[7];
     /* RFC 8200: no path may advertise less than the IPv6 minimum, and a router

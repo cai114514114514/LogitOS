@@ -77,6 +77,18 @@ void kernel_random_bytes(uint8_t *out, int len)
  * layer linked. */
 void kprintf(const char *fmt, ...) { (void)fmt; }
 
+/* THE STUBS THIS TU MUST NOT EMIT. Since 2026-08-28 a weak declaration in
+ * c/net is spelled through include/weaksym.h, which on Mach-O turns "an
+ * undefined weak reference" (an ELF-only property, a hard link error here)
+ * into a weak DEFINITION of a trapping stub that a real provider overrides.
+ * That override only happens ACROSS objects -- and this file concatenates the
+ * providers into ONE translation unit, so ip.c's stub for icmp_input and
+ * icmp.c's definition of it would be a redefinition ("symbol '_icmp_input' is
+ * already defined"). Named per SYMBOL, not per file, because the stubs for
+ * tcp_input and tcp_error are still needed: nothing here defines those. */
+#define LOGIT_WEAK_LOCAL_icmp_input 1
+#define LOGIT_WEAK_LOCAL_raw_icmp_deliver 1
+
 /* Avoid fortified memcpy macros conflicting with the kernel prototypes. */
 #undef memcpy
 #undef memset

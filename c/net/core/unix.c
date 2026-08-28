@@ -8,6 +8,7 @@
                                  * mini-libc ships a <wait.h> that sorts first */
 
 void *memset(void *, int, size_t);
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* SIGPIPE on a write to a peer that is gone, and EINTR on a signalled wait --
  * declared WEAK for exactly the reason c/kernel/exec/file.c declares the lsock
@@ -15,9 +16,11 @@ void *memset(void *, int, size_t);
  * delivery and no process to deliver to, and a hard reference would make the
  * gate fail to link over machinery it never exercises. NULL means "this build
  * has no signals", which the call sites already handle. */
-int  ksig_post_current(int signo) __attribute__((weak));
-int  ksig_interrupted(void)       __attribute__((weak));
-static int sig_interrupted(void) { return ksig_interrupted ? ksig_interrupted() : 0; }
+int  ksig_post_current(int signo) LOGIT_WEAK;
+int  ksig_interrupted(void)       LOGIT_WEAK;
+LOGIT_WEAK_STUB(ksig_post_current);
+LOGIT_WEAK_STUB(ksig_interrupted);
+static int sig_interrupted(void) { return LOGIT_HAVE(ksig_interrupted) ? ksig_interrupted() : 0; }
 
 /* ===========================================================================
  * THE NAMESPACE: WHERE A BOUND PATH LIVES, AND WHAT THE OTHER ANSWER COSTS
@@ -582,7 +585,7 @@ long unix_write(struct usock *s, const void *buf, long len, int nonblock)
                  * default action of SIGPIPE is terminate, which is what makes
                  * a writer stop; a server that has ignored it still gets the
                  * -1 here. */
-                if (ksig_post_current) ksig_post_current(LOGIT_SIGPIPE);
+                if (LOGIT_HAVE(ksig_post_current)) ksig_post_current(LOGIT_SIGPIPE);
                 return sent > 0 ? sent : -1;
             }
             long n = chan_write(out, (const char *)buf + sent, len - sent, c->records);
