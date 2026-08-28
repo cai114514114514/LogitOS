@@ -28,6 +28,7 @@
 #include "html_tree.h"
 #include "js_dom.h"
 #include "layout.h"
+#include "../../../include/weaksym.h"   /* the weak layout_* declarations below */
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -51,9 +52,11 @@
  * Spelt `__weak__` and not `weak`: the OS build force-includes
  * c/apps/libc/include/features.h, which defines a `weak` MACRO, so the plain
  * spelling expands to a nested __attribute__ and does not compile. */
-extern int layout_count(void) __attribute__((__weak__));
-extern const struct item *layout_items(void) __attribute__((__weak__));
-static int have_layout(void) { return &layout_count != 0 && &layout_items != 0; }
+extern int layout_count(void) LOGIT_WEAK;
+extern const struct item *layout_items(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_count);
+LOGIT_WEAK_STUB(layout_items);
+static int have_layout(void) { return LOGIT_HAVE(layout_count) && LOGIT_HAVE(layout_items); }
 
 static struct node *g_root;
 
@@ -3052,6 +3055,16 @@ int js_dom_dispatch(struct node *target, const char *type,
     }
     JSValue evobj = event_new(ctx, proto, ev);
     if (JS_IsException(evobj)) { JS_FreeValue(ctx, evobj); return 1; }
+    /* PageTransitionEvent's one extra member. There is no bfcache on this
+     * machine (a navigation always tears the old document down before the
+     * new one loads -- see load_once in browser.c), so every pageshow and
+     * pagehide this browser ever raises is a fresh transition. `false` here
+     * is the measured answer, not a placeholder standing in for one we did
+     * not compute -- the same distinction js_platform.c's IntersectionObserver
+     * comment draws between a real getBoundingClientRect and a fabricated
+     * isIntersecting:true. */
+    if (!strcmp(type, "pageshow") || !strcmp(type, "pagehide"))
+        JS_SetPropertyStr(ctx, evobj, "persisted", JS_FALSE);
     int ok = dispatch_event(ctx, target, evobj, ev);
     JS_FreeValue(ctx, evobj);
     js_dom_run_jobs(ctx);
@@ -3441,9 +3454,10 @@ static const JSCFunctionListEntry doc_funcs[] = {
  * c/apps/libc/src/pthread.c two hours before this hit, and its message is worth
  * reading: the host test builds do not use that -include, so this compiles
  * everywhere except the one target that ships. */
-__attribute__((__weak__)) void js_reflect_install(
+void js_reflect_install(
     JSContext *ctx, JSValueConst html_proto,
-    JSValueConst (*proto_for)(void *, const char *), void *ud);
+    JSValueConst (*proto_for)(void *, const char *), void *ud) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_reflect_install);
 
 /* The prototype an element name's reflected attributes belong on.
  *
@@ -3505,6 +3519,140 @@ JSValue js_dom_throw_dom(JSContext *ctx, const char *name, const char *msg)
         return JS_ThrowTypeError(ctx, "%s: %s", name, msg ? msg : "");
     }
     return JS_Throw(ctx, exc);
+}
+
+/* ===================== setAttributeNode / createAttribute ================
+ *
+ * js_dom_iface.inc already builds the READ half of Attr: attr_object() (its
+ * own comment at :596-600 names the deviation -- our Attr is a SNAPSHOT, not
+ * a live handle keyed on (element, interned name), because a live handle is a
+ * second class this file does not own) and el_get_attributes()/
+ * getAttributeNode() hand those snapshots out. What was missing is the WRITE
+ * half: nothing could ever hand a snapshot BACK in, and nothing could mint a
+ * detached one. These three close that, without pretending to close the
+ * bigger gap: the objects returned below are the exact same detached
+ * snapshots getAttributeNode() already returns, so identity and a later
+ * `.value =` on the RESULT still do not round-trip -- that limitation is
+ * el_dom_iface.inc's, inherited here, not introduced here. */
+
+/* Element.setAttributeNode(attr) -> Attr | null. `attr` need only be
+ * attr-shaped -- own `.name` and `.value`, which is what our attr_object()
+ * produces and what a hand-built {name,value} object also satisfies. Routes
+ * the write through attr_write(), the SAME primitive setAttribute() uses, so
+ * lower-casing, style invalidation and the named-access table cannot
+ * disagree between the two spellings of "set an attribute". Returns a fresh
+ * snapshot of the attribute node it REPLACED (its value from just before the
+ * overwrite), or null if the element had none by that name -- per spec, not
+ * the argument echoed back.
+ *
+ * NOT enforced: the spec's InUseAttributeError (attr already owned by a
+ * DIFFERENT element). Our Attr has no live ownership link to check --
+ * ownerElement is a value copied at snapshot time, not a back-reference --
+ * so there is nothing authoritative to compare against. Silently allowing it
+ * is the same "absent is safer than wrong" call as the rest of this block:
+ * inventing an ownership table to throw a more decorative error is a bigger
+ * change than this entry point is. */
+static JSValue el_setAttributeNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM) return JS_NULL;
+    if (argc < 1 || !JS_IsObject(argv[0]))
+        return JS_ThrowTypeError(ctx, "setAttributeNode: argument is not an Attr");
+    JSValue namev = JS_GetPropertyStr(ctx, argv[0], "name");
+    if (JS_IsException(namev)) return namev;
+    if (JS_IsUndefined(namev)) {
+        JS_FreeValue(ctx, namev);
+        return JS_ThrowTypeError(ctx, "setAttributeNode: argument is not an Attr");
+    }
+    const char *nm = JS_ToCString(ctx, namev);
+    JS_FreeValue(ctx, namev);
+    if (!nm) return JS_EXCEPTION;
+    JSValue valv = JS_GetPropertyStr(ctx, argv[0], "value");
+    if (JS_IsException(valv)) { JS_FreeCString(ctx, nm); return valv; }
+    size_t vlen = 0;
+    const char *vl = JS_ToCStringLen(ctx, &vlen, valv);
+    JS_FreeValue(ctx, valv);
+    if (!vl) { JS_FreeCString(ctx, nm); return JS_EXCEPTION; }
+
+    JSValue old = JS_NULL;
+    const char *ov = dom_attr(n, nm);       /* NUL-terminated, dom.h:103 */
+    if (ov) old = attr_object(ctx, n, nm, ov);   /* snapshot BEFORE the overwrite */
+    attr_write(ctx, n, nm, vl, (int)vlen);
+
+    JS_FreeCString(ctx, nm);
+    JS_FreeCString(ctx, vl);
+    return old;
+}
+
+/* Element.removeAttributeNode(attr) -> Attr. Spec: throws NotFoundError
+ * (a real DOMException, via js_dom_throw_dom -- see its own comment above)
+ * when the element has no attribute matching attr's name. Returns a snapshot
+ * of the removed attribute, its value from the instant before removal. */
+static JSValue el_removeAttributeNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM || argc < 1 || !JS_IsObject(argv[0]))
+        return JS_ThrowTypeError(ctx, "removeAttributeNode: argument is not an Attr");
+    JSValue namev = JS_GetPropertyStr(ctx, argv[0], "name");
+    if (JS_IsException(namev)) return namev;
+    const char *nm = JS_ToCString(ctx, namev);
+    JS_FreeValue(ctx, namev);
+    if (!nm) return JS_EXCEPTION;
+    const char *ov = dom_attr(n, nm);
+    if (!ov) {
+        JS_FreeCString(ctx, nm);
+        return js_dom_throw_dom(ctx, "NotFoundError",
+                                "removeAttributeNode: no such attribute");
+    }
+    JSValue old = attr_object(ctx, n, nm, ov);
+    if (attr_remove(n, nm)) mark_self(n, INVAL_STYLE);
+    JS_FreeCString(ctx, nm);
+    return old;
+}
+
+/* document.createAttribute(name) -> Attr. A DETACHED snapshot:
+ * attr_object(ctx, NULL, ...) hands back ownerElement === null through the
+ * same wrap(ctx, NULL) -> JS_NULL path every other null owner takes, value is
+ * the empty string, and the name is lower-cased the same way setAttribute()
+ * lower-cases every name it is given -- an HTML document has no
+ * case-sensitive attribute names to preserve. createAttributeNS is left
+ * genuinely absent: dom.c has no namespaced-attribute storage, so an NS
+ * variant here could only fake the namespace half, which is the getContext
+ * mistake this tree already learned from. */
+static JSValue doc_createAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "createAttribute: name required");
+    const char *raw = JS_ToCString(ctx, argv[0]);
+    if (!raw) return JS_EXCEPTION;
+    char *ln = lower_dup(raw, strlen(raw));
+    JS_FreeCString(ctx, raw);
+    if (!ln) return JS_EXCEPTION;
+    JSValue a = attr_object(ctx, 0, ln, "");
+    free(ln);
+    return a;
+}
+
+/* Hang the three above onto the prototypes iface_install() just built.
+ * Skipped in the negative-control build (g_iface_ready false): there is no
+ * shared Element/Document prototype to hang a method on in that
+ * configuration, only per-object own properties assembled elsewhere, and
+ * teaching this block that second path is not this change's job. */
+static void dom_attrnode_install(JSContext *ctx)
+{
+    if (!g_iface_ready) return;
+    if (JS_IsObject(g_iproto[IF_ELEMENT])) {
+        static const JSCFunctionListEntry attrnode_funcs[] = {
+            JS_CFUNC_DEF("setAttributeNode", 1, el_setAttributeNode),
+            JS_CFUNC_DEF("removeAttributeNode", 1, el_removeAttributeNode),
+        };
+        JS_SetPropertyFunctionList(ctx, g_iproto[IF_ELEMENT], attrnode_funcs,
+                                   countof(attrnode_funcs));
+    }
+    if (JS_IsObject(g_iproto[IF_DOCUMENT])) {
+        JS_SetPropertyStr(ctx, g_iproto[IF_DOCUMENT], "createAttribute",
+                          JS_NewCFunction(ctx, doc_createAttribute, "createAttribute", 1));
+    }
 }
 
 /* Register one event constructor and its prototype. `parent` chains the
@@ -3580,6 +3728,11 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * bridge needs to tell the two apart. Sealed again after reflection
      * installs, which adds <div>'s own `align`. */
     iface_seal_div(ctx);
+    /* setAttributeNode/removeAttributeNode/createAttribute need
+     * g_iproto[IF_ELEMENT] and [IF_DOCUMENT] to already be real prototypes --
+     * see dom_attrnode_install()'s own comment for why it is a no-op in the
+     * negative-control build. */
+    dom_attrnode_install(ctx);
 
     JS_NewClassID(&event_cid);
     if (JS_NewClass(rt, event_cid, &event_class) >= 0) {
@@ -3641,7 +3794,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * properties of their own and both refuse to clobber one that is already
      * there, so being first is what lets the typed implementation win where the
      * two overlap and lets theirs stand where they reach further. */
-    if (js_reflect_install) {
+    if (LOGIT_HAVE(js_reflect_install)) {
         js_reflect_install(ctx, g_iproto[IF_HTMLELEMENT], reflect_proto_for, 0);
         iface_seal_div(ctx);          /* <div>.align is now ours too */
     }

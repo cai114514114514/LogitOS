@@ -418,8 +418,18 @@ static char g_hash_old[WURL_MAX], g_hash_new[WURL_MAX];
 
 /* ---- the JS-side hooks the prelude hands back ------------------------- */
 
-static JSValue g_mk_response = JS_UNDEFINED;   /* (status,statusText,pairs,buf,url,redirected) */
+static JSValue g_mk_response = JS_UNDEFINED;   /* (status,statusText,pairs,url,redirected,type,nobody,handle) --
+                                                   `handle` (argv[7]) is the abort handle wf_handle(f) also uses;
+                                                   mkResponse wires it as the body stream's underlying-source
+                                                   cancel, so a page cancelling the body reaches C. See
+                                                   fetch_deliver_headers's own comment above the argv[] build. */
 static JSValue g_viewport_changed = JS_UNDEFINED;
+/* (name, message) -> an Error built through the REALM'S OWN constructor when
+ * `name` names one (TypeError, RangeError, ...), so `e instanceof TypeError`
+ * and `e.constructor === TypeError` both hold -- see mkError's own comment in
+ * the prelude for why JS_NewError() plus a hand-set `.name` property cannot
+ * produce that (it stays an Error whose constructor is Error). */
+static JSValue g_mk_error = JS_UNDEFINED;
 
 static int g_vw = 1180, g_vh = 572;            /* browser.c: WINW, WINH-BARH-18 */
 
@@ -857,6 +867,29 @@ static void fetch_release(JSContext *ctx, struct wfetch *f)
     if (g_fetch_live > 0) g_fetch_live--;
 }
 
+/* Build an Error through the realm's own constructor for `name` (mkError, in
+ * the prelude) so `e instanceof TypeError` holds for script that checks it --
+ * see g_mk_error's own comment for what JS_NewError() plus a hand-set `.name`
+ * gets wrong. Falls back to the old shape if the prelude has not installed
+ * the hook yet (should not happen in practice, but a fetch that fires before
+ * js_webapi_install finished should not crash over it). */
+static JSValue mk_error(JSContext *ctx, const char *name, const char *message)
+{
+    if (JS_IsFunction(ctx, g_mk_error)) {
+        JSValue a[2];
+        a[0] = JS_NewString(ctx, name);
+        a[1] = JS_NewString(ctx, message);
+        JSValue e = JS_Call(ctx, g_mk_error, JS_UNDEFINED, 2, (JSValueConst *)a);
+        JS_FreeValue(ctx, a[0]); JS_FreeValue(ctx, a[1]);
+        if (!JS_IsException(e)) return e;
+        JS_FreeValue(ctx, JS_GetException(ctx));
+    }
+    JSValue err = JS_NewError(ctx);
+    JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, name));
+    JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, message));
+    return err;
+}
+
 /* Fail the request.  Before the promise settled that is a rejection; after it
  * settled (streaming) the promise is long gone and the failure belongs to the
  * body stream, which is exactly what a browser does when a connection dies
@@ -883,9 +916,7 @@ static void fetch_fail(JSContext *ctx, struct wfetch *f, const char *msg, const 
         fetch_release(ctx, f);
         return;
     }
-    JSValue err = JS_NewError(ctx);
-    JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, name ? name : "TypeError"));
-    JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, full));
+    JSValue err = mk_error(ctx, name ? name : "TypeError", full);
     JSValue r = JS_Call(ctx, f->reject, JS_UNDEFINED, 1, (JSValueConst *)&err);
     JS_FreeValue(ctx, r);
     JS_FreeValue(ctx, err);
@@ -1146,6 +1177,11 @@ static int header_visible(struct wfetch *f, const char *name, const char *expose
 /* Headers are complete: settle the promise with a Response whose body is a
  * stream the network has not finished filling.  This is the point the fetch
  * spec resolves at, and the reason a token-by-token endpoint works at all. */
+/* Forward-declared: wf_handle's definition lives further down (with its own
+ * comment) but fetch_deliver_headers below needs it to hand mkResponse a
+ * cancel handle for the body stream it is about to build. */
+static int wf_handle(const struct wfetch *f);
+
 static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
 {
     struct h1_response *r = &f->conn.resp;
@@ -1173,7 +1209,19 @@ static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
     char href[WURL_MAX];
     wurl_href(&f->url, href, (int)sizeof href);
 
-    JSValue argv[7];
+    /* argv[7] is the abort handle for the body stream about to be built --
+     * the same handle __fetchAbort() takes, and the same slot/gen encoding
+     * (wf_handle's own comment explains why a handle cannot outlive the slot
+     * it names). mkResponse threads it onto the ReadableStream's underlying
+     * source as `cancel`, which was previously ABSENT: a page that called
+     * `response.body.getReader().cancel()` (or let a `for await` `break` out,
+     * which does the same thing) settled the JS-side stream and told C
+     * nothing, so fetch_step kept pumping the socket to completion and
+     * WF_HIGHWATER's queued-byte counter -- reset to 0 by the cancel it never
+     * heard about -- could never trip again, so an abandoned multi-megabyte
+     * transfer ran at full speed and held one of WF_MAX slots for its whole
+     * duration. */
+    JSValue argv[8];
     argv[0] = JS_NewInt32(ctx, opaque ? 0 : r->code);
     argv[1] = JS_NewString(ctx, opaque ? "" : r->reason);
     argv[2] = pairs;
@@ -1181,8 +1229,9 @@ static int fetch_deliver_headers(JSContext *ctx, struct wfetch *f)
     argv[4] = JS_NewBool(ctx, f->redirected);
     argv[5] = JS_NewString(ctx, opaque ? "opaque" : (f->cross ? "cors" : "basic"));
     argv[6] = JS_NewBool(ctx, opaque || r->no_body);
-    JSValue hooks = JS_Call(ctx, g_mk_response, JS_UNDEFINED, 7, (JSValueConst *)argv);
-    for (int i = 0; i < 7; i++) JS_FreeValue(ctx, argv[i]);
+    argv[7] = JS_NewInt32(ctx, wf_handle(f));
+    JSValue hooks = JS_Call(ctx, g_mk_response, JS_UNDEFINED, 8, (JSValueConst *)argv);
+    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, argv[i]);
     if (JS_IsException(hooks)) {
         JS_FreeValue(ctx, hooks);
         JS_FreeValue(ctx, JS_GetException(ctx));
@@ -1306,8 +1355,22 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
     if (now_ms() > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
 
     /* Backpressure: while the page is behind, stop reading.  The socket buffer
-     * fills, the window closes, and the producer slows down. */
-    if (f->resolved && f->queued > WF_HIGHWATER) return 0;
+     * fills, the window closes, and the producer slows down.
+     *
+     * Re-arm the idle timeout on the way out: the connection is healthy by
+     * construction here -- WE are the one declining to read, not a peer that
+     * went quiet -- so the WF_TIMEOUT clock above must not keep running while
+     * we are backpressured. Before this line existed, a page that held a
+     * Response with more than WF_HIGHWATER queued and did not drain its
+     * reader for 30s had its body stream errored with "fetch: timed out": a
+     * network-fault report for a condition the network caused none of,
+     * produced BY the mechanism that exists so the page is allowed to be
+     * slow. (The other honest fix is a SEPARATE stall clock that only
+     * advances while we are willing to read, for the case where the timeout
+     * is meant to catch a peer that dies while we are backpressured -- that
+     * needs a poll of the socket rather than the byte counter above, and
+     * nothing here does that yet.) */
+    if (f->resolved && f->queued > WF_HIGHWATER) { f->deadline = now_ms() + WF_TIMEOUT; return 0; }
 
     int bits = g_net->poll(f->fd);
     if (bits < 0 || (bits & SOCK_P_ERROR)) { fetch_fail(ctx, f, "connection failed", "TypeError"); return 1; }
@@ -1548,9 +1611,7 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
     JSValue out = JS_NewObject(ctx);
     if (msg) {
         /* A rejected promise, not a throw: fetch() rejects, it does not raise. */
-        JSValue err = JS_NewError(ctx);
-        JS_SetPropertyStr(ctx, err, "name", JS_NewString(ctx, "TypeError"));
-        JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, msg));
+        JSValue err = mk_error(ctx, "TypeError", msg);
         JSValue r = JS_Call(ctx, rf[1], JS_UNDEFINED, 1, (JSValueConst *)&err);
         JS_FreeValue(ctx, r); JS_FreeValue(ctx, err);
         JS_FreeValue(ctx, rf[0]); JS_FreeValue(ctx, rf[1]);
@@ -2328,35 +2389,217 @@ static const char *PRELUDE =
 "'use strict';\n"
 "var G = globalThis;\n"
 
-/* ---- Headers ---- */
+/* ---- Headers ----
+ * Used to be a bare [name,value] array with no guard, no validation and
+ * insertion-order iteration. Four spec mechanisms were simply absent -- see
+ * the cluster this closed for the corpus evidence -- and the fix is guard +
+ * validation + sorted/combined iteration + getSetCookie, in that order,
+ * because the guard is what stops a page from reading Host/Cookie/Origin back
+ * off a Request it built itself (fetch's kernel side already drops those
+ * before they reach the wire; this object used to just lie about it). */
+   /* mimesniff's HTTP-token helpers (isHTTPToken, stripHTTPWS, mimeParse) are
+      already installed by js_blob_prelude.inc, above. */
+"function hdrValidName(n) {\n"
+"  var s = String(n);\n"
+"  if (!isHTTPToken(s)) throw new TypeError(\"Invalid header name: '\" + s + \"'\");\n"
+"  return s;\n"
+"}\n"
+   /* Header values are ByteString in the IDL (a byte sequence, not text) --
+      any code unit above U+00FF must throw at the binding boundary, before
+      the value-specific rule even runs. That is checked on the RAW value,
+      before HTTP-whitespace stripping; the strip-then-check-for-NUL/CR/LF
+      that follows is the spec's own order for the rest of the rule, so a
+      bare \\n in the middle is still rejected even though leading/trailing
+      whitespace is not. */
+"function hdrValidValue(v) {\n"
+"  v = String(v);\n"
+"  for (var bi = 0; bi < v.length; bi++) if (v.charCodeAt(bi) > 255) throw new TypeError('Invalid header value');\n"
+"  var s = stripHTTPWS(v, true, true);\n"
+"  for (var i = 0; i < s.length; i++) {\n"
+"    var c = s.charCodeAt(i);\n"
+"    if (c === 0 || c === 10 || c === 13) throw new TypeError('Invalid header value');\n"
+"  }\n"
+"  return s;\n"
+"}\n"
+"var FORBIDDEN_REQ_HDR = ['accept-charset', 'accept-encoding', 'access-control-request-headers',\n"
+"  'access-control-request-method', 'connection', 'content-length', 'cookie', 'cookie2', 'date', 'dnt',\n"
+"  'expect', 'host', 'keep-alive', 'origin', 'referer', 'set-cookie', 'te', 'trailer', 'transfer-encoding',\n"
+"  'upgrade', 'via'];\n"
+"var FORBIDDEN_METHODS = ['connect', 'trace', 'track'];\n"
+   /* The override header's value can be a comma-separated list ("GET,track ");
+      ANY element naming a forbidden method makes the whole header forbidden,
+      not just an exact single-method match -- \"trace,\" (trailing comma, one
+      empty element) and \"GET,track \" (trailing space on the second element)
+      are both in the corpus specifically to catch a version that only
+      compares the trimmed WHOLE string. */
+"function isForbiddenMethod(v) {\n"
+"  var parts = String(v).split(',');\n"
+"  for (var i = 0; i < parts.length; i++)\n"
+"    if (FORBIDDEN_METHODS.indexOf(stripHTTPWS(parts[i], true, true).toLowerCase()) >= 0) return true;\n"
+"  return false;\n"
+"}\n"
+   /* The X-HTTP-Method(-Override) trio is forbidden only when its VALUE names
+      a forbidden method -- so this is a name+value check, not a name-only
+      one, and it is why delete() (which has no value) treats it as allowed. */
+"function isForbiddenReqHeaderName(n, v) {\n"
+"  var k = n.toLowerCase();\n"
+"  if (FORBIDDEN_REQ_HDR.indexOf(k) >= 0) return true;\n"
+"  if (k.slice(0, 6) === 'proxy-' || k.slice(0, 4) === 'sec-') return true;\n"
+"  if (k === 'x-http-method' || k === 'x-http-method-override' || k === 'x-method-override')\n"
+"    return v !== undefined && isForbiddenMethod(v);\n"
+"  return false;\n"
+"}\n"
+   /* CORS-unsafe-request-header-byte (fetch #cors-unsafe-request-header-byte):
+      a control byte other than TAB, or one of the punctuation bytes that make
+      a header value look like it is trying to smuggle syntax. */
+"function isCorsUnsafeByte(c) {\n"
+"  if (c < 0x20 && c !== 9) return true;\n"
+"  return c === 0x22 || c === 0x28 || c === 0x29 || c === 0x3A || c === 0x3C || c === 0x3E ||\n"
+"         c === 0x3F || c === 0x40 || c === 0x5B || c === 0x5C || c === 0x5D || c === 0x7B ||\n"
+"         c === 0x7D || c === 0x7F;\n"
+"}\n"
+"function hasCorsUnsafeByte(v) {\n"
+"  for (var i = 0; i < v.length; i++) if (isCorsUnsafeByte(v.charCodeAt(i))) return true;\n"
+"  return false;\n"
+"}\n"
+"function isCorsSafelistedLangValue(v) {\n"
+"  for (var i = 0; i < v.length; i++) {\n"
+"    var c = v.charCodeAt(i);\n"
+"    if (!((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||\n"
+"          c === 32 || c === 42 || c === 44 || c === 45 || c === 46 || c === 59 || c === 61)) return false;\n"
+"  }\n"
+"  return true;\n"
+"}\n"
+"function isCorsSafelistedReqHeader(n, v) {\n"
+"  var k = String(n).toLowerCase(); v = String(v);\n"
+"  if (v.length > 128) return false;\n"
+"  if (k === 'accept') return !hasCorsUnsafeByte(v);\n"
+"  if (k === 'accept-language' || k === 'content-language') return isCorsSafelistedLangValue(v);\n"
+"  if (k === 'content-type') {\n"
+"    if (hasCorsUnsafeByte(v)) return false;\n"
+"    var m = mimeParse(v);\n"
+"    if (!m) return false;\n"
+"    var ess = m.type + '/' + m.subtype;\n"
+"    return ess === 'application/x-www-form-urlencoded' || ess === 'multipart/form-data' || ess === 'text/plain';\n"
+"  }\n"
+"  return false;\n"
+"}\n"
+   /* Whether a `set` (or an `append`'s OWN value, before combining -- see
+      below) with this guard must be silently dropped. 'immutable' is handled
+      separately by the callers below -- it THROWS rather than drops, per
+      spec, so it is not folded in here. */
+"function hdrGuardDrops(guard, n, v) {\n"
+"  if (guard === 'request') return isForbiddenReqHeaderName(n, v);\n"
+"  if (guard === 'request-no-cors') return !isCorsSafelistedReqHeader(n, v);\n"
+"  if (guard === 'response') { var k = n.toLowerCase(); return k === 'set-cookie' || k === 'set-cookie2'; }\n"
+"  return false;\n"
+"}\n"
+   /* delete()'s guard rule is a STRICT SUBSET of set()'s: the spec's "delete a
+      header" algorithm has cases for 'request' and 'response' but NONE for
+      'request-no-cors' -- a no-cors Headers object still allows deleting a
+      header it would have refused to ADD. Folding this into hdrGuardDrops
+      would make delete() silently keep a header the spec says must go. */
+"function hdrGuardDropsDelete(guard, n) {\n"
+"  if (guard === 'request') return isForbiddenReqHeaderName(n, undefined);\n"
+"  if (guard === 'response') { var k = n.toLowerCase(); return k === 'set-cookie' || k === 'set-cookie2'; }\n"
+"  return false;\n"
+"}\n"
+   /* Sorted-and-combined view (fetch #concept-header-list-sort-and-combine):
+      every iteration surface goes through this, and it is why Set-Cookie is
+      the one name that yields ONE ENTRY PER OCCURRENCE instead of a single
+      ', '-joined string -- combining Set-Cookie values the way every other
+      header combines is not merely wrong formatting, it is unparsiable back
+      into separate cookies. */
+"function hdrSortedCombined(l) {\n"
+"  var names = [];\n"
+"  for (var i = 0; i < l.length; i++) { var k = l[i][0].toLowerCase(); if (names.indexOf(k) < 0) names.push(k); }\n"
+"  names.sort();\n"
+"  var out = [];\n"
+"  for (i = 0; i < names.length; i++) {\n"
+"    var k2 = names[i];\n"
+"    if (k2 === 'set-cookie') {\n"
+"      for (var j = 0; j < l.length; j++) if (l[j][0].toLowerCase() === 'set-cookie') out.push([k2, l[j][1]]);\n"
+"    } else {\n"
+"      var vs = [];\n"
+"      for (j = 0; j < l.length; j++) if (l[j][0].toLowerCase() === k2) vs.push(l[j][1]);\n"
+"      out.push([k2, vs.join(', ')]);\n"
+"    }\n"
+"  }\n"
+"  return out;\n"
+"}\n"
 "G.Headers = function Headers(init) {\n"
-"  this._l = [];\n"
-"  if (init) {\n"
-"    if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this.append(init[i][0], init[i][1]); }\n"
-"    else if (init instanceof G.Headers) { for (var j = 0; j < init._l.length; j++) this.append(init._l[j][0], init._l[j][1]); }\n"
-"    else if (typeof init.forEach === 'function') { var self = this; init.forEach(function (v, k) { self.append(k, v); }); }\n"
-"    else { for (var k in init) this.append(k, init[k]); }\n"
+"  this._l = []; this._guard = 'none';\n"
+"  if (init !== undefined && init !== null) {\n"
+"    if (Array.isArray(init)) {\n"
+"      for (var i = 0; i < init.length; i++) {\n"
+"        var pair = init[i];\n"
+"        if (pair === null || typeof pair !== 'object' || typeof pair.length !== 'number' || pair.length !== 2)\n"
+"          throw new TypeError('Headers: each init entry must be a name/value pair');\n"
+"        this.append(pair[0], pair[1]);\n"
+"      }\n"
+"    } else if (init instanceof G.Headers) {\n"
+"      for (var j = 0; j < init._l.length; j++) this.append(init._l[j][0], init._l[j][1]);\n"
+"    } else if (typeof init.forEach === 'function') {\n"
+"      var self = this; init.forEach(function (v, k) { self.append(k, v); });\n"
+       /* Own enumerable string keys only -- NOT for...in, which would also
+          walk the prototype chain and pick up keys the caller never wrote. */
+"    } else {\n"
+"      var keys = Object.keys(init);\n"
+"      for (var kk = 0; kk < keys.length; kk++) this.append(keys[kk], init[keys[kk]]);\n"
+"    }\n"
 "  }\n"
 "};\n"
 "G.Headers.prototype = {\n"
 "  constructor: G.Headers,\n"
-"  append: function (n, v) { this._l.push([String(n), String(v).trim()]); },\n"
-"  set: function (n, v) { var k = String(n).toLowerCase();\n"
+"  append: function (n, v) {\n"
+"    n = hdrValidName(n); v = hdrValidValue(v);\n"
+"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
+     /* request-no-cors checks the COMBINED value (existing + ', ' + new), not
+        the new value alone -- appending "" onto an already-127-byte-long
+        Accept value must be refused because the RESULT would be 129 bytes,
+        even though "" by itself passes every per-value rule trivially. Get
+        this wrong and two safelisted appends in a row silently smuggle a
+        combined value that was never checked as a whole. */
+"    if (this._guard === 'request-no-cors') {\n"
+"      var existing = this.get(n);\n"
+"      var combined = existing === null ? v : existing + ', ' + v;\n"
+"      if (!isCorsSafelistedReqHeader(n, combined)) return;\n"
+"    } else if (hdrGuardDrops(this._guard, n, v)) return;\n"
+"    this._l.push([n, v]);\n"
+"  },\n"
+"  set: function (n, v) {\n"
+"    n = hdrValidName(n); v = hdrValidValue(v);\n"
+"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
+"    if (hdrGuardDrops(this._guard, n, v)) return;\n"
+"    var k = n.toLowerCase();\n"
 "    this._l = this._l.filter(function (p) { return p[0].toLowerCase() !== k; });\n"
-"    this._l.push([String(n), String(v).trim()]); },\n"
-"  delete: function (n) { var k = String(n).toLowerCase();\n"
-"    this._l = this._l.filter(function (p) { return p[0].toLowerCase() !== k; }); },\n"
-"  has: function (n) { var k = String(n).toLowerCase();\n"
+"    this._l.push([n, v]);\n"
+"  },\n"
+"  delete: function (n) {\n"
+"    n = hdrValidName(n);\n"
+"    if (this._guard === 'immutable') throw new TypeError('Headers is immutable');\n"
+"    if (!this.has(n)) return;\n"
+"    if (hdrGuardDropsDelete(this._guard, n)) return;\n"
+"    var k = n.toLowerCase();\n"
+"    this._l = this._l.filter(function (p) { return p[0].toLowerCase() !== k; });\n"
+"  },\n"
+"  has: function (n) { n = hdrValidName(n); var k = n.toLowerCase();\n"
 "    return this._l.some(function (p) { return p[0].toLowerCase() === k; }); },\n"
    /* Several same-named headers join with ', ', which is what the spec says
-      and what makes Set-Cookie the one header you must not read this way. */
-"  get: function (n) { var k = String(n).toLowerCase();\n"
+      and what makes Set-Cookie the one header you must not read this way --
+      get('set-cookie') still joins (the spec requires it, for callers that
+      have not been updated to getSetCookie), but nothing else in this file
+      should read Set-Cookie through get(). */
+"  get: function (n) { n = hdrValidName(n); var k = n.toLowerCase();\n"
 "    var v = this._l.filter(function (p) { return p[0].toLowerCase() === k; }).map(function (p) { return p[1]; });\n"
 "    return v.length ? v.join(', ') : null; },\n"
-"  forEach: function (fn, t) { var s = this; this._l.slice().forEach(function (p) { fn.call(t, p[1], p[0].toLowerCase(), s); }); },\n"
-"  keys: function () { return this._l.map(function (p) { return p[0].toLowerCase(); })[Symbol.iterator](); },\n"
-"  values: function () { return this._l.map(function (p) { return p[1]; })[Symbol.iterator](); },\n"
-"  entries: function () { return this._l.map(function (p) { return [p[0].toLowerCase(), p[1]]; })[Symbol.iterator](); }\n"
+"  getSetCookie: function () {\n"
+"    return this._l.filter(function (p) { return p[0].toLowerCase() === 'set-cookie'; }).map(function (p) { return p[1]; });\n"
+"  },\n"
+"  forEach: function (fn, t) { var s = this; hdrSortedCombined(this._l).forEach(function (p) { fn.call(t, p[1], p[0], s); }); },\n"
+"  keys: function () { return hdrSortedCombined(this._l).map(function (p) { return p[0]; })[Symbol.iterator](); },\n"
+"  values: function () { return hdrSortedCombined(this._l).map(function (p) { return p[1]; })[Symbol.iterator](); },\n"
+"  entries: function () { return hdrSortedCombined(this._l)[Symbol.iterator](); }\n"
 "};\n"
 "G.Headers.prototype[Symbol.iterator] = G.Headers.prototype.entries;\n"
 
@@ -2366,22 +2609,47 @@ static const char *PRELUDE =
  * a byte count; the byte count is what C reads back from push() to decide
  * whether to keep reading the socket, so it is load-bearing rather than
  * decorative. */
+   /* Captured HERE, before any page script has had a chance to run, so it is
+      the REAL Promise.prototype.then and not whatever a page later assigns
+      to that name. getReader() below uses it to mark a reader's `closed`
+      promise as handled without going through the (patchable) exposed
+      `.then`/`.catch` -- calling those instead makes `rs.pipeTo(ws)` itself
+      throw synchronously on a page that has patched Promise.prototype.then
+      (streams/readable-streams/patched-global.any.js does exactly this),
+      because getReader() runs synchronously at the top of pipeTo(), outside
+      the `new Promise` executor that would otherwise swallow it. */
+"var __nativeThen = Promise.prototype.then;\n"
 "function chLen(c) { return c == null ? 0 : (c.byteLength !== undefined ? c.byteLength : (c.length || 0)); }\n"
 "function rsPut(s, ch) {\n"
 "  if (s._st !== 'readable') return;\n"
 "  if (s._w.length) { s._w.shift()[0]({ value: ch, done: false }); return; }\n"
 "  s._q.push(ch); s._qb += chLen(ch);\n"
 "}\n"
+   /* rsClosedSettle notifies every watcher of reader.closed that the stream
+      has finished -- fulfilled on a normal close, rejected with the same
+      error on an error. It is the piece that was entirely missing: before
+      this, `closed` was `new Promise(function () {})`, an executor that
+      captures neither resolve nor reject, so nothing anywhere could ever
+      settle it and a page awaiting it hung forever with no error and no log
+      line (see the header of this finding in the tree's own notes). */
+"function rsClosedSettle(s) {\n"
+"  var w = s._cw; s._cw = [];\n"
+"  for (var i = 0; i < w.length; i++) {\n"
+"    if (s._st === 'errored') w[i][1](s._e); else w[i][0](undefined);\n"
+"  }\n"
+"}\n"
 "function rsEnd(s) {\n"
 "  if (s._st !== 'readable') return;\n"
 "  s._st = 'closed';\n"
 "  while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
+"  rsClosedSettle(s);\n"
 "}\n"
 "function rsErr(s, e) {\n"
 "  if (s._st !== 'readable') { return; }\n"
 "  s._st = 'errored'; s._e = e;\n"
 "  while (s._w.length) s._w.shift()[1](e);\n"
 "  s._q = []; s._qb = 0;\n"
+"  rsClosedSettle(s);\n"
 "}\n"
 "function rsPull(s) { if (typeof s._src.pull === 'function') { try { s._src.pull(s._c); } catch (e) { rsErr(s, e); } } }\n"
 "function rsRead(s) {\n"
@@ -2393,7 +2661,8 @@ static const char *PRELUDE =
 "}\n"
 "function rsCancel(s, reason) {\n"
 "  if (s._st === 'readable') { s._st = 'closed';\n"
-"    while (s._w.length) s._w.shift()[0]({ value: undefined, done: true }); }\n"
+"    while (s._w.length) s._w.shift()[0]({ value: undefined, done: true });\n"
+"    rsClosedSettle(s); }\n"
 "  s._q = []; s._qb = 0;\n"
 "  if (typeof s._src.cancel === 'function') { try { s._src.cancel(reason); } catch (e) {} }\n"
 "  return Promise.resolve();\n"
@@ -2401,7 +2670,7 @@ static const char *PRELUDE =
 "G.ReadableStream = function ReadableStream(src) {\n"
 "  var s = this;\n"
 "  s._src = src || {}; s._q = []; s._qb = 0; s._st = 'readable'; s._e = undefined;\n"
-"  s._w = []; s._locked = false;\n"
+"  s._w = []; s._cw = []; s._locked = false;\n"
 "  s._c = {\n"
 "    enqueue: function (ch) { rsPut(s, ch); },\n"
 "    close: function () { rsEnd(s); },\n"
@@ -2414,14 +2683,73 @@ static const char *PRELUDE =
 "G.ReadableStream.prototype = {\n"
 "  constructor: G.ReadableStream,\n"
 "  get locked() { return this._locked; },\n"
+   /* getReader() gives the reader a real identity (`released`/`pair`) rather
+      than just flipping the stream's lock bit, because release() has to undo
+      exactly what THIS acquisition did: reject the reads THIS reader left
+      pending and settle THIS reader's `closed`, in a stream a second reader
+      may already be locking again by the time release() runs (spec:
+      ReadableStreamDefaultReaderRelease). `closedP` is built already-settled
+      when the stream finished before acquisition; otherwise its [res, rej]
+      pair is parked on s._cw for rsClosedSettle to find later.
+      `closedP` is a `var`, not a `const`, because the spec's release
+      algorithm has TWO cases and they are not the same case: if the stream
+      is still "readable" when release() runs, the EXISTING closedPromise is
+      rejected in place (same identity, now settled); otherwise (already
+      closed or errored) it is REPLACED with a brand-new rejected promise,
+      because the old one is already fulfilled/rejected and cannot be
+      un-settled. WPT tests this identity distinction directly
+      (default-reader.any.js "closed is replaced when stream closes and
+      reader releases its lock", templated.any.js "releasing the lock should
+      cause closed to reject and change identity") -- getting the branch
+      backwards is invisible to any test that only checks `.closed` rejects,
+      which is why it is called out here rather than left for the next
+      reader to rediscover. */
 "  getReader: function () {\n"
 "    if (this._locked) throw new TypeError('ReadableStream is locked');\n"
 "    var s = this; s._locked = true;\n"
+"    var released = false, pair = null;\n"
+"    var closedP = new Promise(function (res, rej) {\n"
+"      if (s._st === 'closed') { res(undefined); return; }\n"
+"      if (s._st === 'errored') { rej(s._e); return; }\n"
+"      pair = [res, rej]; s._cw.push(pair);\n"
+"    });\n"
+     /* Mark `closedP` handled through the CAPTURED native then, not the
+        exposed (patchable) one -- see __nativeThen's own comment above. */
+"    __nativeThen.call(closedP, undefined, function () {});\n"
+"    function release() {\n"
+"      if (released) return; released = true; s._locked = false;\n"
+"      var e = new TypeError('Reader was released');\n"
+"      while (s._w.length) s._w.shift()[1](e);\n"
+"      if (s._st === 'readable') {\n"
+"        if (pair) { var i = s._cw.indexOf(pair); if (i >= 0) s._cw.splice(i, 1); pair[1](e); }\n"
+"      } else {\n"
+"        closedP = Promise.reject(e);\n"
+"        __nativeThen.call(closedP, undefined, function () {});\n"
+"      }\n"
+"    }\n"
 "    return {\n"
-"      read: function () { return rsRead(s); },\n"
-"      cancel: function (r) { s._locked = false; return rsCancel(s, r); },\n"
-"      releaseLock: function () { s._locked = false; },\n"
-"      closed: new Promise(function () {})\n"
+"      read: function () {\n"
+"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
+"        return rsRead(s);\n"
+"      },\n"
+     /* reader.cancel() does NOT release the reader -- ReadableStreamDefaultReaderCancel
+        is a thin wrapper over ReadableStreamCancel and never touches the lock.
+        The stream stays locked to THIS reader until an explicit releaseLock(),
+        same as a real browser: `await reader.cancel(); stream.locked` is still
+        true. This used to unlock unconditionally and mark the reader released
+        right here, which made a later releaseLock() a no-op (release()'s
+        `if (released) return` guard) -- and that silently skipped the
+        identity-replace `closed` needs on release (see getReader's own
+        comment on `closedP`), which is exactly what
+        templated.any.js's "(closed via cancel after getting reader):
+        releasing the lock should cause closed to reject and change identity"
+        checks. */
+"      cancel: function (r) {\n"
+"        if (released) return Promise.reject(new TypeError('Reader was released'));\n"
+"        return rsCancel(s, r);\n"
+"      },\n"
+"      releaseLock: function () { release(); },\n"
+"      get closed() { return closedP; }\n"
 "    };\n"
 "  },\n"
 "  cancel: function (r) { return rsCancel(this, r); },\n"
@@ -2454,8 +2782,16 @@ static const char *PRELUDE =
 "if (typeof Symbol !== 'undefined' && Symbol.asyncIterator) {\n"
 "  G.ReadableStream.prototype[Symbol.asyncIterator] = function () {\n"
 "    var rd = this.getReader();\n"
+     /* return() cancels AND releases -- spec's CreateReadableStreamAsyncIterator
+        returnSteps do both (ReadableStreamReaderGenericCancel then
+        ReadableStreamReaderGenericRelease), synchronously one after the
+        other, not waiting for the cancel promise to settle. Before
+        reader.cancel() stopped auto-releasing (see cancel()'s own comment
+        above), this line got the release for free as cancel()'s side effect;
+        now that cancel() no longer does that, a `for await` loop that
+        `break`s would otherwise leave the stream locked forever. */
 "    return { next: function () { return rd.read(); },\n"
-"             'return': function () { rd.cancel(); return Promise.resolve({ done: true }); },\n"
+"             'return': function () { rd.cancel(); rd.releaseLock(); return Promise.resolve({ done: true }); },\n"
 "             '@@asyncIterator': function () { return this; } };\n"
 "  };\n"
 "}\n"
@@ -2514,7 +2850,21 @@ static const char *PRELUDE =
 /* ---- AbortController ----
  * A real cancellation now that the socket ABI has a close: abort() shuts the
  * connection, it does not merely stop looking at what arrives. */
-"function abortError() { var e = new Error('The operation was aborted.'); e.name = 'AbortError'; return e; }\n"
+   /* A real DOMException, not a plain Error wearing a `.name` property that
+      only LOOKS like one. `e instanceof DOMException` is the guard every
+      abort-aware fetch wrapper writes (`catch (e) { if (e instanceof
+      DOMException && e.name === 'AbortError') return; throw e; }`), and a
+      plain Error fails it, so a deliberate cancellation rethrows as an
+      uncaught error. `G.DOMException` is installed by js_platform.c, which
+      this file's OWN comment above js_webapi_install (search "Layering,
+      load-bearing") says runs AFTER js_webapi_install -- but that only
+      matters for code that runs at INSTALL time; abortError() is a function
+      body, not evaluated until a page actually calls .abort(), by which
+      point every install is long done. `|| TypeError` is the same
+      already-fallen-back-to-here shape as URL.createObjectURL's quota
+      errors above, for the pathological case of a fetch that aborts before
+      install finished. */
+"function abortError() { return new (G.DOMException || TypeError)('The operation was aborted.', 'AbortError'); }\n"
 "G.AbortSignal = function AbortSignal() { this.aborted = false; this.reason = undefined;\n"
 "  this.onabort = null; this._l = []; };\n"
 "G.AbortSignal.prototype = {\n"
@@ -2535,54 +2885,89 @@ static const char *PRELUDE =
 "  s._l.slice().forEach(function (f) { f.call(s, e); });\n"
 "};\n"
 
-/* ---- Response ----
- * The body is a ReadableStream in every case, including the one where C
- * already had all the bytes: one shape means text()/json() cannot accidentally
- * work only for buffered responses. */
+/* ---- the Body mixin, and extractBody ----
+ * Shared between Response and Request (N2): before this, Response had
+ * _drain/arrayBuffer/text/json/blob/clone and Request had NONE of it -- no
+ * prototype at all, so `new Request(u).blob` was inherited from
+ * Object.prototype and `new Request(u).blob()` threw "blob is not a
+ * function". The two were never going to agree by construction once they
+ * were two separately hand-maintained copies, so this is one copy installed
+ * onto both prototypes. bytes() is new here too -- neither side had it. */
 "function rsOf(chunk) { return new G.ReadableStream({ start: function (c) { c.enqueue(chunk); c.close(); } }); }\n"
-"G.Response = function Response(body, init) {\n"
-"  init = init || {};\n"
-"  this.status = init.status === undefined ? 200 : init.status | 0;\n"
-"  this.statusText = init.statusText === undefined ? '' : String(init.statusText);\n"
-"  this.headers = init.headers instanceof G.Headers ? init.headers : new G.Headers(init.headers);\n"
-"  this.url = init.url || '';\n"
-"  this.redirected = !!init.redirected;\n"
-"  this.type = init.type || 'basic';\n"
-"  this.ok = this.status >= 200 && this.status < 300;\n"
-"  this.bodyUsed = false;\n"
-"  if (body === undefined || body === null) this.body = null;\n"
-"  else if (body instanceof G.ReadableStream) this.body = body;\n"
-   /* Blob: the body IS the snapshot already taken at Blob-construction time,
-      so no re-copy is needed beyond the one .slice() that keeps the stream's
-      chunk independent of the Blob's own storage. A Blob's type becomes the
-      response's Content-Type when the caller did not set one -- extractBody
-      in the fetch spec does exactly this, and it is the only way
-      `new Response(someBlob)` ever produces a body with a type at all. */
-"  else if (body instanceof G.Blob) {\n"
-"    if (body.type && !this.headers.has('content-type')) this.headers.set('content-type', body.type);\n"
-"    this.body = rsOf(body._b.slice());\n"
+"function bytesIndexOf(hay, needle, from) {\n"
+"  outer: for (var i = from; i <= hay.length - needle.length; i++) {\n"
+"    for (var j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer;\n"
+"    return i;\n"
 "  }\n"
-   /* A bare string is the common case (Response.json below is one), and it
-      used to reach the same toU8()/encToBytes() as ArrayBuffer/TypedArray --
-      which throws on a string (it is not a BufferSource), so
-      `new Response('hi')` and every call to G.Response.json threw before this
-      branch existed. Nothing exercised it: no test in this tree constructs a
-      Response from a string. */
-"  else if (typeof body === 'string') this.body = rsOf(new G.TextEncoder().encode(body));\n"
-"  else if (G.URLSearchParams && body instanceof G.URLSearchParams) {\n"
-"    if (!this.headers.has('content-type'))\n"
-"      this.headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');\n"
-"    this.body = rsOf(new G.TextEncoder().encode(body.toString()));\n"
+"  return -1;\n"
+"}\n"
+   /* multipart/form-data (RFC 7578) at the byte level: each part is framed by
+      CRLF "--" boundary [CRLF | "--"], a CRLF-terminated header block, CRLF,
+      then the payload, ending 2 bytes before the next delimiter (the CRLF
+      that belongs to the delimiter, not the payload). Content-Disposition's
+      name/filename are read with a bare quoted-string regex -- no backslash-
+      unescaping -- which is the subset this draws the line at. */
+   /* No opening delimiter at all (an empty body, or one that never contained
+      the declared boundary) is a MALFORMED multipart body, not an empty-but-
+      valid one -- it throws, which formData() (a .then() callback) turns
+      into a rejected promise. An empty FormData is a legitimate RESULT of a
+      well-formed body with zero parts; it is not what a missing delimiter
+      means. */
+"function parseMultipart(bytes, boundary, fd) {\n"
+"  var db = new G.TextEncoder().encode('--' + boundary);\n"
+"  var pos = bytesIndexOf(bytes, db, 0);\n"
+"  if (pos < 0) throw new TypeError('formData: malformed multipart/form-data body');\n"
+"  pos += db.length;\n"
+"  for (;;) {\n"
+"    if (bytes[pos] === 45 && bytes[pos + 1] === 45) return;\n"
+"    if (bytes[pos] === 13 && bytes[pos + 1] === 10) pos += 2;\n"
+"    var hdrEnd = bytesIndexOf(bytes, [13, 10, 13, 10], pos);\n"
+"    if (hdrEnd < 0) return;\n"
+"    var hdrText = bytes.length ? __utf8(u8ab(bytes.slice(pos, hdrEnd))) : '';\n"
+"    pos = hdrEnd + 4;\n"
+"    var nextDelim = bytesIndexOf(bytes, db, pos);\n"
+"    if (nextDelim < 0) return;\n"
+"    var bodyEnd = nextDelim;\n"
+"    if (bytes[bodyEnd - 1] === 10 && bytes[bodyEnd - 2] === 13) bodyEnd -= 2;\n"
+"    var partBytes = bytes.slice(pos, bodyEnd);\n"
+"    var name = null, filename = null, partType = '';\n"
+"    hdrText.split('\\r\\n').forEach(function (line) {\n"
+"      var ci = line.indexOf(':');\n"
+"      if (ci < 0) return;\n"
+"      var hn = stripHTTPWS(line.slice(0, ci), true, true).toLowerCase();\n"
+"      var hv = stripHTTPWS(line.slice(ci + 1), true, true);\n"
+"      if (hn === 'content-disposition') {\n"
+"        var nm = /;\\s*name=\"([^\"]*)\"/i.exec(hv); if (nm) name = nm[1];\n"
+"        var fnm = /;\\s*filename=\"([^\"]*)\"/i.exec(hv); if (fnm) filename = fnm[1];\n"
+"      } else if (hn === 'content-type') { partType = hv; }\n"
+"    });\n"
+"    if (name !== null) {\n"
+"      if (filename !== null) fd.append(name, new G.File([partBytes], filename, { type: partType }), filename);\n"
+"      else fd.append(name, partBytes.length ? __utf8(u8ab(partBytes)) : '');\n"
+"    }\n"
+"    pos = nextDelim + db.length;\n"
 "  }\n"
-"  else this.body = rsOf(toU8(body));\n"
-"};\n"
-"G.Response.prototype = {\n"
-"  constructor: G.Response,\n"
-"  _drain: function () {\n"
-"    if (this.bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
-"    this.bodyUsed = true;\n"
+"}\n"
+   /* bodyUsed is a readonly IDL attribute on both interfaces -- a getter on
+      the shared prototype, backed by a private field internal code writes
+      directly (never through the public name, which has no setter). */
+"function installBody(proto) {\n"
+"  Object.defineProperty(proto, 'bodyUsed', {\n"
+"    get: function () { return !!this._bodyUsed; }, enumerable: true, configurable: true });\n"
+   /* bodyUsed's real definition (fetch #dom-body-bodyused) is "this's body is
+      non-null AND its stream is disturbed" -- NOT "a consuming method was
+      called". A bodyless Request/Response (no body: init member at all) can
+      have .text()/.blob()/etc called on it any number of times and bodyUsed
+      stays false throughout, because there was never a stream to disturb.
+      Setting the flag unconditionally at the top of drain (rather than only
+      once a real body exists) is exactly the bug the corpus's own
+      request-consume-empty.any.js is built to catch: repeated `assert_false
+      (request.bodyUsed)` after consuming a request that had no body. */
+"  proto._drain = function () {\n"
+"    if (this._bodyUsed) return Promise.reject(new TypeError('body already read'));\n"
 "    var b = this.body;\n"
 "    if (!b) return Promise.resolve([]);\n"
+"    this._bodyUsed = true;\n"
 "    var rd = b.getReader(), parts = [];\n"
 "    return new Promise(function (res, rej) {\n"
 "      (function loop() {\n"
@@ -2592,29 +2977,202 @@ static const char *PRELUDE =
 "        }, rej);\n"
 "      })();\n"
 "    });\n"
-"  },\n"
-"  arrayBuffer: function () { return this._drain().then(joinParts); },\n"
-"  text: function () { return this._drain().then(function (p) {\n"
-"    var ab = joinParts(p); return ab.byteLength ? __utf8(ab) : ''; }); },\n"
-"  json: function () { return this.text().then(function (t) { return JSON.parse(t); }); },\n"
-   /* A real Blob, not the ArrayBuffer this used to return -- .blob() on a
-      response with a Content-Type must hand back a Blob whose .type carries
-      it, and code that does `blob instanceof Blob` (or feeds it straight back
-      into `new Blob([...])` / a FormData field) needs the real class. */
-"  blob: function () { var self = this; return this._drain().then(function (p) {\n"
-"    return new G.Blob([joinParts(p)], { type: self.headers.get('content-type') || '' }); }); },\n"
+"  };\n"
+"  proto.arrayBuffer = function () { return this._drain().then(joinParts); };\n"
+"  proto.text = function () { return this._drain().then(function (p) {\n"
+"    var ab = joinParts(p); return ab.byteLength ? __utf8(ab) : ''; }); };\n"
+"  proto.json = function () { return this.text().then(function (t) { return JSON.parse(t); }); };\n"
+   /* A real Blob, not an ArrayBuffer wearing a promise -- .blob()'s type must
+      carry Content-Type, and code that does `blob instanceof Blob` (or feeds
+      it straight back into `new Blob([...])`) needs the real class. The type
+      goes through G.Blob's own constructor, which runs it through
+      blobNormType (mimeParse + mimeSerialize, N3) -- so this already gets the
+      spec's "parse the header, serialize the record" behaviour for free. */
+"  proto.blob = function () { var self = this; return this._drain().then(function (p) {\n"
+"    return new G.Blob([joinParts(p)], { type: self.headers.get('content-type') || '' }); }); };\n"
+"  proto.bytes = function () { return this._drain().then(function (p) { return new Uint8Array(joinParts(p)); }); };\n"
+   /* formData(): the two BodyInit encodings a form actually produces. Content-
+      Type decides which -- application/x-www-form-urlencoded is decoded as
+      text (it is one), multipart/form-data is decoded at the BYTE level (a
+      part's payload is arbitrary binary, e.g. an uploaded file, and running
+      it through a text decoder first would corrupt it before parseMultipart
+      ever saw it). Neither branch is a stub: both build a real G.FormData
+      with real entries, not an empty one that merely satisfies `in`. What is
+      NOT here: content-transfer-encoding (quoted-printable/base64 parts) and
+      backslash-escaped quotes inside a filename -- undescribed rather than
+      silently wrong, because no caller in this tree's corpus needed them. */
+"  proto.formData = function () {\n"
+"    var self = this;\n"
+"    return this._drain().then(function (parts) {\n"
+"      var ct = self.headers.get('content-type') || '';\n"
+"      var rec = mimeParse(ct);\n"
+"      if (!rec) throw new TypeError('formData: missing or invalid Content-Type');\n"
+"      var essence = rec.type + '/' + rec.subtype;\n"
+"      var fd = new G.FormData();\n"
+"      if (essence === 'application/x-www-form-urlencoded') {\n"
+"        var ab = joinParts(parts);\n"
+"        var text = ab.byteLength ? __utf8(ab) : '';\n"
+"        if (text.length) text.split('&').forEach(function (pair) {\n"
+"          if (!pair) return;\n"
+"          var eq = pair.indexOf('=');\n"
+"          var k = eq < 0 ? pair : pair.slice(0, eq), v = eq < 0 ? '' : pair.slice(eq + 1);\n"
+"          fd.append(decodeURIComponent(k.replace(/\\+/g, ' ')), decodeURIComponent(v.replace(/\\+/g, ' ')));\n"
+"        });\n"
+"        return fd;\n"
+"      }\n"
+"      if (essence === 'multipart/form-data') {\n"
+"        var boundary = null;\n"
+"        for (var pi = 0; pi < rec.params.length; pi++) if (rec.params[pi][0] === 'boundary') boundary = rec.params[pi][1];\n"
+"        if (!boundary) throw new TypeError('formData: multipart/form-data with no boundary');\n"
+"        parseMultipart(new Uint8Array(joinParts(parts)), boundary, fd);\n"
+"        return fd;\n"
+"      }\n"
+"      throw new TypeError('formData: unsupported Content-Type');\n"
+"    });\n"
+"  };\n"
+"}\n"
+   /* fetch #concept-bodyinit-extract, the subset this engine needs. Returns
+      {stream, contentType}; contentType is null when the BodyInit carries no
+      opinion (ReadableStream, ArrayBuffer/view) and the caller must set it
+      itself only when the caller has not already set one -- same rule for
+      Request and Response because it is the same spec step on both sides of
+      the connection, which is the whole reason this is one function instead
+      of two copies that could drift. */
+"function extractBody(v) {\n"
+"  if (v === undefined || v === null) return { stream: null, contentType: null };\n"
+"  if (v instanceof G.ReadableStream) return { stream: v, contentType: null };\n"
+   /* The body IS the snapshot already taken at Blob-construction time, so no
+      re-copy is needed beyond the one .slice() that keeps the stream's chunk
+      independent of the Blob's own storage. */
+"  if (v instanceof G.Blob) return { stream: rsOf(v._b.slice()), contentType: v.type || null };\n"
+"  if (typeof v === 'string')\n"
+"    return { stream: rsOf(new G.TextEncoder().encode(v)), contentType: 'text/plain;charset=UTF-8' };\n"
+"  if (G.URLSearchParams && v instanceof G.URLSearchParams)\n"
+"    return { stream: rsOf(new G.TextEncoder().encode(v.toString())), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };\n"
+   /* FormData -> multipart/form-data, the wire encoding formData() (installBody,
+      above) decodes back -- the two are meant to round-trip. The boundary is
+      random per call, as any implementation's must be: the whole reason a
+      boundary exists is that it cannot collide with anything a part's own
+      bytes could contain. */
+"  if (G.FormData && v instanceof G.FormData) {\n"
+"    var boundary = 'LogitFormBoundary' + Math.random().toString(36).slice(2) + Date.now().toString(36);\n"
+"    var enc = new G.TextEncoder(), chunks = [];\n"
+"    v.forEach(function (val, key) {\n"
+"      chunks.push(enc.encode('--' + boundary + '\\r\\n'));\n"
+"      if (val instanceof G.Blob) {\n"
+"        var filename = val.name !== undefined ? val.name : 'blob';\n"
+"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"; filename=\"' + filename + '\"\\r\\n'));\n"
+"        chunks.push(enc.encode('Content-Type: ' + (val.type || 'application/octet-stream') + '\\r\\n\\r\\n'));\n"
+"        chunks.push(val._b);\n"
+"      } else {\n"
+"        chunks.push(enc.encode('Content-Disposition: form-data; name=\"' + key + '\"\\r\\n\\r\\n'));\n"
+"        chunks.push(enc.encode(String(val)));\n"
+"      }\n"
+"      chunks.push(enc.encode('\\r\\n'));\n"
+"    });\n"
+"    chunks.push(enc.encode('--' + boundary + '--\\r\\n'));\n"
+"    var total = 0, ci;\n"
+"    for (ci = 0; ci < chunks.length; ci++) total += chunks[ci].length;\n"
+"    var all = new Uint8Array(total), o = 0;\n"
+"    for (ci = 0; ci < chunks.length; ci++) { all.set(chunks[ci], o); o += chunks[ci].length; }\n"
+"    return { stream: rsOf(all), contentType: 'multipart/form-data; boundary=' + boundary };\n"
+"  }\n"
+"  return { stream: rsOf(toU8(v)), contentType: null };\n"
+"}\n"
+
+"var NULL_BODY_STATUS = [204, 205, 304];\n"
+/* ---- Response ----
+ * The body is a ReadableStream in every case, including the one where C
+ * already had all the bytes: one shape means text()/json() cannot accidentally
+ * work only for buffered responses. */
+"G.Response = function Response(body, init) {\n"
+"  init = init || {};\n"
+"  this.status = init.status === undefined ? 200 : (init.status | 0);\n"
+   /* __allowStatus0 is not part of the public interface -- it exists so
+      Response.error() (status 0, per spec) and Response.prototype.clone()
+      (which may be cloning an error response) can reach this constructor
+      without going through the validation an ordinary `new Response(...)`
+      call must satisfy. */
+"  if (!init.__allowStatus0 && (this.status < 200 || this.status > 599))\n"
+"    throw new RangeError('Response: status must be in the range 200 to 599, inclusive');\n"
+"  this.statusText = init.statusText === undefined ? '' : String(init.statusText);\n"
+   /* A reason-phrase is HTAB / SP-~ / obs-text (RFC 7230) -- the exact set
+      isHTTPQSChar already enforces for header VALUES, reused here rather than
+      writing a second copy of the same byte-range check. "\\n" and "Ā"
+      (U+0100, outside 0x00..0xFF entirely) are the corpus's own two cases. */
+"  for (var __sti = 0; __sti < this.statusText.length; __sti++)\n"
+"    if (!isHTTPQSChar(this.statusText.charCodeAt(__sti)))\n"
+"      throw new TypeError('Response: statusText is not a valid reason phrase');\n"
+   /* Always a FRESH Headers, even when init.headers is already one -- cloning
+      a Response used to alias the same Headers object between clone and
+      original (a mutation to one's headers silently reached the other)
+      because this used to reuse init.headers when it was already a Headers
+      instance instead of copying it. new G.Headers(headers) copies. */
+"  this.headers = new G.Headers(init.headers);\n"
+"  this.headers._guard = 'response';\n"
+"  this.url = init.url || '';\n"
+"  this.redirected = !!init.redirected;\n"
+   /* A script-constructed Response is ALWAYS 'default' -- basic/cors/opaque/
+      opaqueredirect are properties of a response that came off the NETWORK
+      (set explicitly by mkResponse, below, from the real fetch machinery),
+      never a default a bare `new Response()` should invent for itself. */
+"  this.type = init.type || 'default';\n"
+"  this.ok = this.status >= 200 && this.status < 300;\n"
+"  this._bodyUsed = false;\n"
+"  if (body === undefined || body === null) { this.body = null; }\n"
+"  else {\n"
+     /* fetch #null-body-status: 204/205/304 may never carry a body, script-
+        constructed or not. */
+"    if (NULL_BODY_STATUS.indexOf(this.status) >= 0)\n"
+"      throw new TypeError('Response: a ' + this.status + ' response cannot have a body');\n"
+"    var eb = extractBody(body);\n"
+"    this.body = eb.stream;\n"
+"    if (eb.contentType && !this.headers.has('content-type')) this.headers.set('content-type', eb.contentType);\n"
+"  }\n"
+"};\n"
+"G.Response.prototype = {\n"
+"  constructor: G.Response,\n"
 "  clone: function () {\n"
 "    if (this.bodyUsed) throw new TypeError('body already read');\n"
 "    var t = this.body ? this.body.tee() : [null, null];\n"
 "    this.body = t[0];\n"
 "    return new G.Response(t[1], { status: this.status, statusText: this.statusText,\n"
-"      headers: this.headers, url: this.url, redirected: this.redirected, type: this.type });\n"
+"      headers: this.headers, url: this.url, redirected: this.redirected, type: this.type,\n"
+"      __allowStatus0: this.status === 0 });\n"
 "  }\n"
 "};\n"
-"G.Response.error = function () { var r = new G.Response(null, { status: 0 }); r.type = 'error'; return r; };\n"
-"G.Response.json = function (v, init) { init = init || {};\n"
-"  var h = new G.Headers(init.headers); if (!h.has('content-type')) h.set('content-type', 'application/json');\n"
-"  return new G.Response(JSON.stringify(v), { status: init.status, statusText: init.statusText, headers: h }); };\n"
+"installBody(G.Response.prototype);\n"
+   /* Response.error(): status 0, an IMMUTABLE Headers (append/set/delete all
+      throw) and type 'error' -- the immutability is the one thing that
+      cannot be reached any other way: response-static-error.any.js's only
+      subtest is that `.headers.append(...)` throws on the object this
+      returns. */
+"G.Response.error = function () {\n"
+"  var r = new G.Response(null, { status: 0, type: 'error', __allowStatus0: true });\n"
+"  r.headers._guard = 'immutable';\n"
+"  return r;\n"
+"};\n"
+"G.Response.redirect = function (url, status) {\n"
+"  var u;\n"
+"  try { u = new G.URL(String(url), (G.document && G.document.baseURI) || (G.location && G.location.href)); }\n"
+"  catch (e) { throw new TypeError(\"Response.redirect: '\" + url + \"' is not a valid URL\"); }\n"
+"  status = status === undefined ? 302 : (status | 0);\n"
+"  if ([301, 302, 303, 307, 308].indexOf(status) < 0)\n"
+"    throw new RangeError('Response.redirect: status must be one of 301, 302, 303, 307, 308');\n"
+"  var r = new G.Response(null, { status: status, type: 'default' });\n"
+"  r.headers.set('Location', u.href);\n"
+"  return r;\n"
+"};\n"
+"G.Response.json = function (v, init) {\n"
+"  init = init || {};\n"
+"  if (init.status !== undefined && ((init.status | 0) < 200 || (init.status | 0) > 599))\n"
+"    throw new RangeError('Response.json: status must be in the range 200 to 599, inclusive');\n"
+"  var body = JSON.stringify(v);\n"
+"  if (body === undefined) throw new TypeError('Response.json: value has no JSON representation');\n"
+"  var h = new G.Headers(init.headers);\n"
+"  if (!h.has('content-type')) h.set('content-type', 'application/json');\n"
+"  return new G.Response(body, { status: init.status, statusText: init.statusText, headers: h, type: 'default' });\n"
+"};\n"
 
 /* ---- fetch ---- */
 "function pairsOf(o) { var p = [], k; for (k in o) p.push([k, o[k]]); return p; }\n"
@@ -2632,33 +3190,119 @@ static const char *PRELUDE =
  * as a network one -- so `await (await fetch(u)).text()` behaves identically --
  * with status 200 and the declared Content-Type. RFC 2397: an omitted type is
  * text/plain;charset=US-ASCII, and ;base64 is the only supported encoding. */
-"function dataURL(url) {\n"
-"  var comma = url.indexOf(',');\n"
-"  if (comma < 0) return null;\n"
-"  var meta = url.slice(5, comma), payload = url.slice(comma + 1);\n"
-"  var b64 = false;\n"
-"  if (/;base64$/i.test(meta)) { b64 = true; meta = meta.slice(0, -7); }\n"
-"  var type = meta || 'text/plain;charset=US-ASCII';\n"
-"  var bytes;\n"
-"  if (b64) {\n"
-"    var tbl = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
-"    var clean = payload.replace(/[^A-Za-z0-9+/]/g, ''), out = [], i, n, k;\n"
-"    for (i = 0; i + 1 < clean.length; i += 4) {\n"
-"      n = 0; k = 0;\n"
-"      for (var j = 0; j < 4 && i + j < clean.length; j++) { n = (n << 6) | tbl.indexOf(clean[i + j]); k++; }\n"
-"      n <<= (4 - k) * 6;\n"
-"      out.push((n >> 16) & 255);\n"
-"      if (k > 2) out.push((n >> 8) & 255);\n"
-"      if (k > 3) out.push(n & 255);\n"
+   /* ASCII whitespace (Infra): TAB LF FF CR SPACE -- note this INCLUDES \\f,
+      unlike the HTTP whitespace used by mimeParse above. That difference is
+      not pedantry: the data: URL processor works on the raw path text, where
+      a literal \\f in the source has already been PERCENT-ENCODED to the
+      three bytes "%0c" by the URL parser before this function ever runs (a
+      C0 control cannot survive into an opaque path unescaped) -- so the type
+      string this function strips whitespace from never contains a raw \\f to
+      strip in the first place, and the surviving "%0c" text passes straight
+      through mimeParse as ordinary token bytes ('%' is a valid HTTP token
+      character -- see the note on isHTTPTokenChar). Get that backwards and
+      the "%0c" reads as needing decoding, which is exactly the trap this
+      comment exists to name before someone reaches for decodeURIComponent. */
+"function isASCIIWSc(c) { return c === 9 || c === 10 || c === 12 || c === 13 || c === 32; }\n"
+"function stripASCIIWS(s, lead, trail) {\n"
+"  var i = 0, j = s.length;\n"
+"  if (lead) while (i < j && isASCIIWSc(s.charCodeAt(i))) i++;\n"
+"  if (trail) while (j > i && isASCIIWSc(s.charCodeAt(j - 1))) j--;\n"
+"  return s.slice(i, j);\n"
+"}\n"
+   /* Percent-decode to BYTES, not to a JS string via decodeURIComponent --
+      decodeURIComponent throws on a %-triplet that is not valid UTF-8 (e.g.
+      "data:,%FF"), and the spec's answer for that input is the single byte
+      0xFF, not an exception and not the three literal characters "%FF". Runs
+      of plain (non-percent-triplet) characters are batched and handed to
+      TextEncoder together, which is what keeps a surrogate pair intact. */
+"function isHexDigit(c) { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }\n"
+"function percentDecodeBytes(s) {\n"
+"  var out = [], i = 0, n = s.length;\n"
+"  while (i < n) {\n"
+"    if (s.charCodeAt(i) === 37 && i + 2 < n && isHexDigit(s.charCodeAt(i + 1)) && isHexDigit(s.charCodeAt(i + 2))) {\n"
+"      out.push(parseInt(s.substr(i + 1, 2), 16));\n"
+"      i += 3;\n"
+"    } else {\n"
+"      var j = i;\n"
+"      while (j < n && !(s.charCodeAt(j) === 37 && j + 2 < n && isHexDigit(s.charCodeAt(j + 1)) && isHexDigit(s.charCodeAt(j + 2)))) j++;\n"
+"      var enc = new G.TextEncoder().encode(s.slice(i, j));\n"
+"      for (var k = 0; k < enc.length; k++) out.push(enc[k]);\n"
+"      i = j;\n"
 "    }\n"
-"    bytes = new Uint8Array(out);\n"
-"  } else {\n"
-     /* percent-decoding then UTF-8 encoding, so a %C3%A9 in the payload is one
-        character and two bytes, not two characters. */
-"    var s;\n"
-"    try { s = decodeURIComponent(payload); } catch (e) { s = payload; }\n"
-"    bytes = new G.TextEncoder().encode(s);\n"
 "  }\n"
+"  return out;\n"
+"}\n"
+   /* Forgiving-base64 decode (Infra #forgiving-base64-decode). Every failure
+      mode here is its own subtest in the corpus (a lone '=' pair when
+      length%4 isn't 0, a length%4===1 remainder, a non-alphabet byte) rather
+      than one blanket "invalid base64" check, which is what the old
+      `.replace(/[^A-Za-z0-9+/]/g, '')` version collapsed them all into --
+      deleting illegal characters instead of failing is why it silently
+      accepted "abcd ===" and every other case in this cluster's evidence. */
+"function forgivingBase64Decode(data) {\n"
+"  data = data.replace(/[\\t\\n\\f\\r ]/g, '');\n"
+"  var n = data.length;\n"
+"  if (n % 4 === 0 && n > 0 && data.charAt(n - 1) === '=') {\n"
+"    data = data.charAt(n - 2) === '=' ? data.slice(0, n - 2) : data.slice(0, n - 1);\n"
+"    n = data.length;\n"
+"  }\n"
+"  if (n % 4 === 1) return null;\n"
+"  var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n"
+"  for (var ci = 0; ci < n; ci++) if (B64.indexOf(data.charAt(ci)) < 0) return null;\n"
+"  var out = [];\n"
+"  for (var gi = 0; gi < n; gi += 4) {\n"
+"    var rem = n - gi;\n"
+"    var c0 = B64.indexOf(data.charAt(gi));\n"
+"    var c1 = rem > 1 ? B64.indexOf(data.charAt(gi + 1)) : 0;\n"
+"    var c2 = rem > 2 ? B64.indexOf(data.charAt(gi + 2)) : 0;\n"
+"    var c3 = rem > 3 ? B64.indexOf(data.charAt(gi + 3)) : 0;\n"
+"    out.push(((c0 << 2) | (c1 >> 4)) & 255);\n"
+"    if (rem >= 3) out.push(((c1 << 4) | (c2 >> 2)) & 255);\n"
+"    if (rem >= 4) out.push(((c2 << 6) | c3) & 255);\n"
+"  }\n"
+"  return out;\n"
+"}\n"
+   /* fetch #data-url-processor, transcribed step for step -- reusing the real
+      URL parser (rather than string-splitting on "data:") is what makes the
+      fragment get stripped correctly ("data:,X#X" is ONE byte, not three) and
+      what makes an opaque-path parse failure ("data://test:test/,X") reject
+      the same way the spec's step 1 assertion would. */
+"function dataURL(url) {\n"
+"  var u = parsedURLOrNull(url);\n"
+"  if (!u || u.protocol.toLowerCase() !== 'data:') return null;\n"
+"  var full = u.hash ? u.href.slice(0, u.href.length - u.hash.length) : u.href;\n"
+"  var input = full.slice(5);\n"
+"  var comma = input.indexOf(',');\n"
+"  if (comma < 0) return null;\n"
+"  var mimeType = stripASCIIWS(input.slice(0, comma), true, true);\n"
+"  var encodedBody = input.slice(comma + 1);\n"
+"  var bodyBytes = percentDecodeBytes(encodedBody);\n"
+"  var bytes;\n"
+   /* The ";base64" marker tolerates ASCII whitespace around the ';' and
+      after "base64", but NOT inside the word "base64" itself --
+      "data:; base64,WA" and "data:;  base64,WA" are still base64 (the
+      corpus's own cases), but "data:;base 64,WA" (a space INSIDE the word)
+      must stay literal. A blanket "strip every whitespace character, then
+      compare" pass (the first thing this looked like it should be) matches
+      "base 64" too, which is why it is a regex anchored on a literal,
+      unbroken "base64" instead. Only the base64-detection path folds the
+      surrounding whitespace away; the ordinary (non-base64) path keeps it
+      exactly as written, because a quoted parameter value is allowed to
+      contain it. */
+"  var b64m = /;[\\t\\n\\f\\r ]*base64[\\t\\n\\f\\r ]*$/i.exec(mimeType);\n"
+"  if (b64m) {\n"
+"    var s = '';\n"
+"    for (var bi = 0; bi < bodyBytes.length; bi++) s += String.fromCharCode(bodyBytes[bi]);\n"
+"    var decoded = forgivingBase64Decode(s);\n"
+"    if (decoded === null) return null;\n"
+"    bytes = new Uint8Array(decoded);\n"
+"    mimeType = stripASCIIWS(mimeType.slice(0, b64m.index), false, true);\n"
+"  } else {\n"
+"    bytes = new Uint8Array(bodyBytes);\n"
+"  }\n"
+"  if (mimeType.charAt(0) === ';') mimeType = 'text/plain' + mimeType;\n"
+"  var rec = mimeParse(mimeType);\n"
+"  var type = rec ? mimeSerialize(rec) : 'text/plain;charset=US-ASCII';\n"
 "  var ctrl = null;\n"
 "  var stream = new G.ReadableStream({ start: function (c) { ctrl = c; } });\n"
 "  var r = new G.Response(stream, { status: 200, statusText: 'OK',\n"
@@ -2773,6 +3417,100 @@ static const char *PRELUDE =
 "    fqRearm();\n"
 "  });\n"
 "}\n"
+/* fetch #port-blocking. Neither fetch nor Request looked at the URL's port at
+ * all -- a page could dial the local SMTP or IRC port and get a real
+ * connection, which is the one item in this whole area with a security shape
+ * rather than a merely-incomplete one. Port 0 is not on the spec's own table
+ * (it is blocked because it is not a valid connection target, not because
+ * the table names it) but the corpus's own test file puts it in the same
+ * blocked list it drives the assertions from, so it is folded in here rather
+ * than argued about. */
+"var BAD_PORTS = [0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,\n"
+"  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465,\n"
+"  512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995,\n"
+"  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679,\n"
+"  6697, 10080];\n"
+"function isBadPort(u) {\n"
+"  var scheme = u.protocol ? u.protocol.toLowerCase() : '';\n"
+"  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') return false;\n"
+"  if (u.port === '') return false;\n"
+"  return BAD_PORTS.indexOf(parseInt(u.port, 10)) >= 0;\n"
+"}\n"
+"function parsedURLOrNull(url) {\n"
+"  try { return new G.URL(url, (G.document && G.document.baseURI) || (G.location && G.location.href)); }\n"
+"  catch (e) { return null; }\n"
+"}\n"
+/* fetch of a blob: URL used to ignore Range entirely: always 200, a
+ * malformed Range never failed. There is no socket on this path at all --
+ * the whole thing is inside the browser -- so parsing the Range header and
+ * answering 206 (or rejecting on a bad one) is pure computation, same shape
+ * as the data: URL processor above. rangeParse returns null on ANY malformed
+ * input, which the caller turns into a TypeError rejection rather than
+ * silently falling back to a full 200 response -- the corpus enumerates each
+ * malformed shape (no "bytes=", no "-", non-digit bounds, both bounds empty,
+ * a trailing comma, more than one range) as its OWN subtest specifically to
+ * catch an implementation that folds them all into one check. */
+   /* Lenient about ASCII whitespace around "bytes", '=' and '-' -- the
+      corpus's OWN "supported" fixtures include "bytes= \\t9-21", "bytes=5 -
+      10", "bytes=-\\t 5" and "bytes \\t =\\t 6-" as cases that must still
+      succeed, which is stricter-than-real-browsers territory the fetch
+      spec's formal grammar does not actually require rejecting. What must
+      still fail: the wrong keyword ("byte="), no '=' at all, more than one
+      range (a literal ',' anywhere in the range-spec), and both bounds
+      empty. */
+"function rangeParse(h, size) {\n"
+"  var i = 0, n = h.length;\n"
+"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
+"  if (h.slice(i, i + 5) !== 'bytes') return null;\n"
+"  i += 5;\n"
+"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
+"  if (h.charAt(i) !== '=') return null;\n"
+"  i++;\n"
+"  while (i < n && isASCIIWSc(h.charCodeAt(i))) i++;\n"
+"  var spec = h.slice(i);\n"
+"  if (spec.indexOf(',') >= 0) return null;\n"
+"  var dash = spec.indexOf('-');\n"
+"  if (dash < 0) return null;\n"
+"  var a = stripASCIIWS(spec.slice(0, dash), true, true), b = stripASCIIWS(spec.slice(dash + 1), true, true);\n"
+"  if (a === '' && b === '') return null;\n"
+"  if (a !== '' && !/^[0-9]+$/.test(a)) return null;\n"
+"  if (b !== '' && !/^[0-9]+$/.test(b)) return null;\n"
+"  var start, end;\n"
+"  if (a === '') {\n"
+       /* suffix range: bytes=-N -- the last N bytes. */
+"    var suffix = parseInt(b, 10);\n"
+"    if (suffix === 0) return null;\n"
+"    start = Math.max(size - suffix, 0); end = size - 1;\n"
+"  } else {\n"
+"    start = parseInt(a, 10);\n"
+"    if (start >= size) return null;\n"
+"    end = b === '' ? size - 1 : Math.min(parseInt(b, 10), size - 1);\n"
+"    if (end < start) return null;\n"
+"  }\n"
+"  return { start: start, end: end };\n"
+"}\n"
+"function fetchBlobURL(url, init, input) {\n"
+"  var bo = Object.prototype.hasOwnProperty.call(__objURLs, url) ? __objURLs[url] : null;\n"
+"  if (!bo) return Promise.reject(new TypeError('Failed to fetch: unknown or revoked blob: URL'));\n"
+"  var reqHeaders = new G.Headers(init && init.headers !== undefined ? init.headers : (input && input.headers));\n"
+"  var range = reqHeaders.get('range');\n"
+   /* Content-Type is always PRESENT, even as '' for a typeless Blob -- the
+      corpus checks headers.get('Content-Type') against `type || ''`, which
+      only agrees with an implementation that sets the header unconditionally
+      rather than omitting it when the Blob's type is the empty string. */
+"  if (range === null) {\n"
+"    var bh = [['content-type', bo.type || ''], ['content-length', String(bo.size)]];\n"
+"    return Promise.resolve(new G.Response(rsOf(bo._b.slice()), { status: 200, statusText: 'OK',\n"
+"      headers: bh, url: url, redirected: false, type: 'basic' }));\n"
+"  }\n"
+"  var r = rangeParse(range, bo.size);\n"
+"  if (!r) return Promise.reject(new TypeError('fetch: malformed Range header'));\n"
+"  var slice = bo._b.slice(r.start, r.end + 1);\n"
+"  var rh = [['content-type', bo.type || ''], ['content-length', String(slice.length)],\n"
+"            ['content-range', 'bytes ' + r.start + '-' + r.end + '/' + bo.size]];\n"
+"  return Promise.resolve(new G.Response(rsOf(slice), { status: 206, statusText: 'Partial Content',\n"
+"    headers: rh, url: url, redirected: false, type: 'basic' }));\n"
+"}\n"
 "G.fetch = function fetch(input, init) {\n"
 "  init = init || {};\n"
 "  var url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
@@ -2782,13 +3520,10 @@ static const char *PRELUDE =
 "              : Promise.reject(new TypeError('Failed to fetch: malformed data: URL'));\n"
 "  }\n"
 "  if (url.slice(0, 5).toLowerCase() === 'blob:') {\n"
-"    var bo = Object.prototype.hasOwnProperty.call(__objURLs, url) ? __objURLs[url] : null;\n"
-"    if (!bo) return Promise.reject(new TypeError('Failed to fetch: unknown or revoked blob: URL'));\n"
-"    var bh = [['content-length', String(bo.size)]];\n"
-"    if (bo.type) bh.unshift(['content-type', bo.type]);\n"
-"    return Promise.resolve(new G.Response(rsOf(bo._b.slice()), { status: 200, statusText: 'OK',\n"
-"      headers: bh, url: url, redirected: false, type: 'basic' }));\n"
+"    return fetchBlobURL(url, init, input);\n"
 "  }\n"
+"  var __fpu = parsedURLOrNull(url);\n"
+"  if (__fpu && isBadPort(__fpu)) return Promise.reject(new TypeError('fetch: blocked port ' + __fpu.port));\n"
 "  var method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
 "  var hs = new G.Headers(init.headers || (input && input.headers));\n"
 "  var body = init.body;\n"
@@ -2818,15 +3553,109 @@ static const char *PRELUDE =
 "    return Promise.reject(sig.reason || abortError());\n"
 "  return fqEnqueue(url, method, pairs, body, opts, sig);\n"
 "};\n"
+/* ---- Request ----
+ * Used to be a five-line object literal with no prototype at all -- Request
+ * instances inherited straight from Object.prototype, so `.blob()`/`.text()`/
+ * `.clone()` were all "is not a function". This is what N2 in the cluster
+ * write-up closed: the shared Body mixin (installBody, above) plus the
+ * plain readonly members request-structure.any.js enumerates by name, plus
+ * the four throws the spec requires (forbidden method; a body on GET/HEAD; a
+ * ReadableStream body without duplex:'half'; a blocked port, N6). */
 "G.Request = function Request(input, init) {\n"
 "  init = init || {};\n"
-"  this.url = (input && typeof input === 'object' && input.url) ? input.url : String(input);\n"
-"  this.method = String(init.method || (input && input.method) || 'GET').toUpperCase();\n"
-"  this.headers = new G.Headers(init.headers || (input && input.headers));\n"
-"  this.body = init.body === undefined ? null : init.body;\n"
-"  this.mode = init.mode || 'cors'; this.credentials = init.credentials || 'same-origin';\n"
-"  this.signal = init.signal || null;\n"
+"  var src = (input && typeof input === 'object' && input instanceof G.Request) ? input : null;\n"
+"  if (src && src.bodyUsed) throw new TypeError('Request: input has already been used');\n"
+"  this._url = src ? src.url : String(input);\n"
+"  var __ru = parsedURLOrNull(this._url);\n"
+"  if (__ru && isBadPort(__ru)) throw new TypeError('Request: blocked port ' + __ru.port);\n"
+"  var method = String(init.method !== undefined ? init.method : (src ? src.method : 'GET')).toUpperCase();\n"
+"  if (isForbiddenMethod(method)) throw new TypeError(\"Request: method '\" + method + \"' is forbidden\");\n"
+"  this._method = method;\n"
+"  this._headers = new G.Headers(init.headers !== undefined ? init.headers : (src ? src.headers : (input && input.headers)));\n"
+"  this._headers._guard = (init.mode || (src && src.mode)) === 'no-cors' ? 'request-no-cors' : 'request';\n"
+"  this._mode = init.mode || (src ? src.mode : 'cors');\n"
+"  this._credentials = init.credentials || (src ? src.credentials : 'same-origin');\n"
+"  this._cache = init.cache || (src ? src.cache : 'default');\n"
+"  this._redirect = init.redirect || (src ? src.redirect : 'follow');\n"
+"  this._referrer = init.referrer !== undefined ? String(init.referrer) : (src ? src.referrer : 'about:client');\n"
+"  this._referrerPolicy = init.referrerPolicy !== undefined ? init.referrerPolicy : (src ? src.referrerPolicy : '');\n"
+"  this._integrity = init.integrity !== undefined ? String(init.integrity) : (src ? src.integrity : '');\n"
+"  this.keepalive = init.keepalive !== undefined ? !!init.keepalive : (src ? !!src.keepalive : false);\n"
+"  this._destination = '';\n"
+"  this._isReloadNavigation = false;\n"
+"  this._isHistoryNavigation = false;\n"
+"  this.signal = init.signal !== undefined ? init.signal : (src ? src.signal : ((input && input.signal) || null));\n"
+"  this._bodyUsed = false;\n"
+"  this._duplex = init.duplex !== undefined ? init.duplex : (src ? src._duplex : undefined);\n"
+"  if (init.body !== undefined) {\n"
+"    var bodySrc = init.body;\n"
+"    if (bodySrc !== null && (this._method === 'GET' || this._method === 'HEAD'))\n"
+"      throw new TypeError('Request: a ' + this._method + ' request cannot have a body');\n"
+"    if (bodySrc instanceof G.ReadableStream && init.duplex !== 'half')\n"
+"      throw new TypeError(\"Request: a ReadableStream body requires duplex: 'half'\");\n"
+"    if (bodySrc === null) { this.body = null; }\n"
+"    else {\n"
+"      var eb = extractBody(bodySrc);\n"
+"      this.body = eb.stream;\n"
+"      if (eb.contentType && !this._headers.has('content-type')) this._headers.set('content-type', eb.contentType);\n"
+"    }\n"
+   /* input was a Request and this Request is taking its body -- the source
+      cannot be read from again (fetch spec: "set this's body to input's
+      body", which moves ownership rather than copying). Both sides write the
+      PRIVATE field: bodyUsed is a readonly getter (below) precisely so that
+      script cannot forge it, which means internal code cannot go through the
+      public name either. */
+"  } else if (src) {\n"
+"    this.body = src.body;\n"
+"    if (src.body) { src._bodyUsed = true; src.body = null; }\n"
+"  } else { this.body = null; }\n"
 "};\n"
+"G.Request.prototype = {\n"
+"  constructor: G.Request,\n"
+"  clone: function () {\n"
+"    if (this.bodyUsed) throw new TypeError('body already read');\n"
+"    var r = Object.create(G.Request.prototype);\n"
+"    if (this.body) { var t = this.body.tee(); this.body = t[0]; r.body = t[1]; } else r.body = null;\n"
+"    r._url = this._url; r._method = this._method;\n"
+"    r._headers = new G.Headers(this._headers); r._headers._guard = this._headers._guard;\n"
+"    r._duplex = this._duplex; r._bodyUsed = false;\n"
+"    r._mode = this._mode; r._credentials = this._credentials; r._cache = this._cache; r._redirect = this._redirect;\n"
+"    r._referrer = this._referrer; r._referrerPolicy = this._referrerPolicy; r._integrity = this._integrity;\n"
+"    r.keepalive = this.keepalive; r._destination = this._destination;\n"
+"    r._isReloadNavigation = this._isReloadNavigation; r._isHistoryNavigation = this._isHistoryNavigation;\n"
+"    r.signal = this.signal;\n"
+"    return r;\n"
+"  }\n"
+"};\n"
+"installBody(G.Request.prototype);\n"
+   /* request-structure.any.js's whole point: these fourteen are IDL attributes
+      with a getter and NO setter, so `request.method = 'POST'` must be a
+      silent no-op (sloppy-mode [[Set]] on an inherited accessor with no
+      setter does not fall through to creating an own property). Getter-only
+      accessors on the PROTOTYPE achieve that; a plain `this.method = ...` own
+      data property, which is what this constructor used to write, does not --
+      an own data property is always writable regardless of what the
+      prototype says. */
+"function roGet(field) { return function () { return this[field]; }; }\n"
+"Object.defineProperties(G.Request.prototype, {\n"
+"  method:             { get: roGet('_method'), enumerable: true, configurable: true },\n"
+"  url:                { get: roGet('_url'), enumerable: true, configurable: true },\n"
+"  headers:            { get: roGet('_headers'), enumerable: true, configurable: true },\n"
+"  destination:        { get: roGet('_destination'), enumerable: true, configurable: true },\n"
+"  referrer:           { get: roGet('_referrer'), enumerable: true, configurable: true },\n"
+"  referrerPolicy:     { get: roGet('_referrerPolicy'), enumerable: true, configurable: true },\n"
+"  mode:               { get: roGet('_mode'), enumerable: true, configurable: true },\n"
+"  credentials:        { get: roGet('_credentials'), enumerable: true, configurable: true },\n"
+"  cache:              { get: roGet('_cache'), enumerable: true, configurable: true },\n"
+"  redirect:           { get: roGet('_redirect'), enumerable: true, configurable: true },\n"
+"  integrity:          { get: roGet('_integrity'), enumerable: true, configurable: true },\n"
+"  isReloadNavigation:  { get: roGet('_isReloadNavigation'), enumerable: true, configurable: true },\n"
+"  isHistoryNavigation: { get: roGet('_isHistoryNavigation'), enumerable: true, configurable: true },\n"
+   /* No init.duplex means 'half' is still the READ value even though nothing
+      was stored -- 'half' is the only value this engine's bodies ever need,
+      so there is no second mode to distinguish. */
+"  duplex:             { get: function () { return this._duplex || 'half'; }, enumerable: true, configurable: true }\n"
+"});\n"
 
 /* ---- EventSource + the text/event-stream framing ----
  * This is the reason the whole streaming path exists. The framing is small and
@@ -3179,14 +4008,51 @@ static const char *PRELUDE =
 "};\n"
 
 /* The hooks C calls back through. */
+   /* Used by fetch_fail (C) so a network failure rejects with a REAL
+      TypeError -- one whose `.constructor === TypeError` and `instanceof
+      TypeError` both hold -- rather than a plain Error wearing a `.name`
+      property that only LOOKS like one in a printed message.
+      AbortError/NetworkError/TimeoutError are the three DOMException names
+      the fetch spec rejects with (fetch_fail's `name` argument at every C
+      call site is one of these three or "TypeError"), and they go through
+      G.DOMException rather than G[name] -- there is no global constructor
+      named `AbortError`, so the old `G[name] || Error` fell back to a plain
+      Error wearing a `.name` for exactly these, same trap as
+      AbortController's own abortError() helper had (see its comment above).
+      Genuine TypeErrors (a real network failure, per the fetch spec) still
+      go through G.TypeError below -- turning THOSE into a DOMException
+      would be the opposite error. */
+"var DOM_ERROR_NAMES = { AbortError: 1, NetworkError: 1, TimeoutError: 1 };\n"
+"function mkError(name, message) {\n"
+"  if (DOM_ERROR_NAMES[name] === 1) return new (G.DOMException || TypeError)(message, name);\n"
+"  var C = G[name];\n"
+"  if (typeof C === 'function') return new C(message);\n"
+"  var e = new Error(message); e.name = name; return e;\n"
+"}\n"
 "return {\n"
+"  mkError: mkError,\n"
    /* Called when the HEADERS arrive, not when the body does. C keeps the
       three functions handed back and drives the body through them, which is
       what makes the response a stream the page can read from while the
-      network is still writing to it. */
-"  mkResponse: function (status, statusText, pairs, url, redirected, type, nobody) {\n"
+      network is still writing to it. `handle` is the SAME abort handle
+      __fetchAbort() already takes (fetch_deliver_headers passes wf_handle(f)
+      as argv[7]); wiring it as this stream's underlying-source `cancel` is
+      what makes `response.body.getReader().cancel()` (and a `for await`
+      loop's `break`, which calls the same thing) a REAL cancellation rather
+      than a no-op the C side never hears about. Before this, rsCancel would
+      settle the JS-side stream and stop there: fetch_step kept pumping the
+      abandoned transfer to completion off the wire, and the WF_HIGHWATER
+      byte counter it throttles on -- reset to 0 by the very cancel that was
+      supposed to stop it -- could never trip again, so a cancelled download
+      ran at full speed for the rest of its length and held one of WF_MAX
+      slots the whole time. __fetchAbort's own generation check (js_fetch_abort,
+      above) is what makes calling this safe on a handle whose slot the body
+      already finished and released: a stale handle is a no-op by
+      construction, not by a guard added here. */
+"  mkResponse: function (status, statusText, pairs, url, redirected, type, nobody, handle) {\n"
 "    var ctrl = null;\n"
-"    var stream = new G.ReadableStream({ start: function (c) { ctrl = c; } });\n"
+"    var stream = new G.ReadableStream({ start: function (c) { ctrl = c; },\n"
+"      cancel: function () { __fetchAbort(handle); } });\n"
 "    var r = new G.Response(nobody ? null : stream, { status: status, statusText: statusText,\n"
 "      headers: pairs, url: url, redirected: redirected, type: type });\n"
 "    return { r: r,\n"
@@ -3196,8 +4062,7 @@ static const char *PRELUDE =
       stream -- which is what a browser does when a connection dies (or is
       aborted) mid-download. The name is carried through so an abort reads as
       an AbortError to the page and not as a generic network failure. */
-"      error: function (m, n) { var e = new Error(m); e.name = n || 'TypeError';\n"
-"        ctrl.error(e); } };\n"
+"      error: function (m, n) { ctrl.error(mkError(n || 'TypeError', m)); } };\n"
 "  },\n"
 "  viewportChanged: function () {\n"
 "    mqls.forEach(function (m) {\n"
@@ -3464,6 +4329,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
     g_mk_response      = JS_GetPropertyStr(ctx, hooks, "mkResponse");
     g_viewport_changed = JS_GetPropertyStr(ctx, hooks, "viewportChanged");
     g_fire_fn          = JS_GetPropertyStr(ctx, hooks, "fire");
+    g_mk_error         = JS_GetPropertyStr(ctx, hooks, "mkError");
     JS_FreeValue(ctx, hooks);
     JS_FreeValue(ctx, g);
 }
@@ -3483,9 +4349,10 @@ void js_webapi_close(JSContext *ctx)
         JS_FreeValue(ctx, g_mk_response);
         JS_FreeValue(ctx, g_viewport_changed);
         JS_FreeValue(ctx, g_fire_fn);
+        JS_FreeValue(ctx, g_mk_error);
     }
     g_popstate_state = JS_NULL;
-    g_mk_response = g_viewport_changed = g_fire_fn = JS_UNDEFINED;
+    g_mk_response = g_viewport_changed = g_fire_fn = g_mk_error = JS_UNDEFINED;
     g_popstate_queued = g_hashchange_queued = 0;
     g_hist_n = 0; g_hist_i = 0;
 }

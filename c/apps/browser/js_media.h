@@ -231,8 +231,9 @@ void media_paint_key(int key, int x, int y, int w, int h,
 /* ---- the JS bindings (js_media.c) ----------------------------------------
  * Declared weak for js_page.c the same way js_webapi/js_platform are: a build
  * without js_media.c links and simply has no MediaSource. */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_MEDIA_OPTIONAL
-#  define MEDIA_FN __attribute__((__weak__))
+#  define MEDIA_FN LOGIT_WEAK
 #else
 #  define MEDIA_FN
 #endif
@@ -243,5 +244,16 @@ MEDIA_FN void js_media_close(struct JSContext *ctx);
  * number of observable things that happened (events fired + frames painted). */
 MEDIA_FN int  js_media_pump(struct JSContext *ctx);
 MEDIA_FN int  js_media_pending(void);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_MEDIA_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_MEDIA_OPTIONAL
+LOGIT_WEAK_STUB(js_media_install);
+LOGIT_WEAK_STUB(js_media_close);
+LOGIT_WEAK_STUB(js_media_pump);
+LOGIT_WEAK_STUB(js_media_pending);
+#endif
 
 #endif /* LOGIT_JS_MEDIA_H */

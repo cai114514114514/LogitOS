@@ -123,7 +123,8 @@ void  layout_free(void);
  * FOR THE CALLER THAT LINKS A SUBSET OF THE BROWSER: several host harnesses
  * build js_cssom.c WITHOUT layout.c (tests/cssom.mk's wpt-cssom variant is
  * one), and js_cssom.c already handles that by RE-DECLARING each layout entry
- * point `__attribute__((__weak__))` after including this header and gating on
+ * point LOGIT_WEAK + LOGIT_WEAK_STUB (include/weaksym.h -- the bare
+ * `__attribute__((__weak__))` is ELF-only) after including this header, gating on
  * `&layout_count != 0`. These two need the same two lines and the same gate;
  * the declarations here are ordinary externs and a plain call from a build
  * with no layout.c is a link error, exactly as it is for layout_count. */

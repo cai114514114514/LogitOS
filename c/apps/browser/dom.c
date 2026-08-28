@@ -473,6 +473,20 @@ static void recycle_tree(struct dom_doc *d, struct node *root)
             c->next = stack; stack = c;
             c = nx;
         }
+        /* A shadow host's shadow root is NOT a child in the first_child sense
+         * (dom_attach_shadow deliberately keeps it off that chain, which is
+         * what keeps every existing first_child walk blind to it) -- so the
+         * walk above never finds it, and without this it would leak: the
+         * chunk it lives in stays allocated and reachable only through a
+         * ->shadow field this very memset is about to zero. Push it onto the
+         * SAME work list; it is recycled by the same node_recycle() below,
+         * generically, whether or not it happens to itself be a shadow root
+         * (dom_is_shadow_root) or an ordinary host with its own nested one. */
+        if (n->type == N_ELEM && n->shadow) {
+            struct node *sr = n->shadow;
+            n->shadow = 0;
+            sr->next = stack; stack = sr;
+        }
         node_recycle(d, n);
     }
 }
@@ -667,11 +681,47 @@ static struct node *import_one(struct dom_doc *d, const struct node *s)
     }
 }
 
+/* Deep-copy `src_host`'s shadow root onto `dst_host`, but ONLY when the
+ * source root's SHADOW_CLONABLE flag is set -- an unset flag means "importing
+ * or cloning this element must not carry the shadow tree along", per spec,
+ * and silently copying it anyway is exactly the "plausible wrong answer"
+ * CLAUDE.md's rule 2 warns about: a page that explicitly did not opt in to
+ * clonable shadow content would get it anyway, with no error to notice by.
+ *
+ * A second, smaller instance of dom_import_node's own walk rather than a
+ * recursive call into it: a shadow root is not something import_one() can
+ * build (there is no ONE source node for it -- dom_attach_shadow constructs
+ * it fresh), so the walk needs its own root step. It calls itself for hosts
+ * found INSIDE the shadow tree, so nested shadow trees (a shadow tree whose
+ * own content contains another shadow host) still clone correctly. */
+static void import_shadow_if_clonable(struct dom_doc *d, struct node *dst_host,
+                                      const struct node *src_host)
+{
+    if (!src_host || src_host->type != N_ELEM) return;
+    struct node *ss = src_host->shadow;
+    if (!ss || !(ss->shadow_flags & SHADOW_CLONABLE)) return;
+    struct node *ds = dom_attach_shadow(dst_host, ss->shadow_mode,
+                                        (unsigned)ss->shadow_flags);
+    if (!ds) return;
+
+    const struct node *s = ss->first_child;
+    struct node *dst = ds;
+    while (s) {
+        struct node *c = import_one(d, s);
+        if (c) { dom_append_child(dst, c); import_shadow_if_clonable(d, c, s); }
+        if (c && s->first_child) { s = s->first_child; dst = c; continue; }
+        while (s != ss && !s->next) { s = s->parent; dst = dst->parent; }
+        if (s == ss) break;
+        s = s->next;
+    }
+}
+
 struct node *dom_import_node(struct dom_doc *d, const struct node *src)
 {
     if (!d || !src) return 0;
     struct node *root = import_one(d, src);
     if (!root) return 0;
+    import_shadow_if_clonable(d, root, src);
 
     /* Iterative, like every other walk here: an innerHTML= string can nest as
      * deep as the fragment parser allows (DOM_MAX_TREE_DEPTH). The invariant is
@@ -682,7 +732,7 @@ struct node *dom_import_node(struct dom_doc *d, const struct node *src)
     struct node *dst = root;
     while (s) {
         struct node *c = import_one(d, s);
-        if (c) dom_append_child(dst, c);
+        if (c) { dom_append_child(dst, c); import_shadow_if_clonable(d, c, s); }
         if (c && s->first_child) { s = s->first_child; dst = c; continue; }
         /* No copy (or nothing below): skip this subtree and take the next
          * sibling, climbing out of finished levels first. */
@@ -925,6 +975,63 @@ const char *dom_attr(const struct node *n, const char *name)
     }
     return 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* shadow trees                                                        */
+/* ------------------------------------------------------------------ */
+int dom_is_shadow_root(const struct node *n)
+{
+    if (!n || n->type != N_ELEM || !n->tag || n->tag[0] != '#') return 0;
+    static const char TAGSTR[] = DOM_SHADOW_TAG;
+    size_t l = zlen(n->tag);
+    return l == sizeof(TAGSTR) - 1 && nmatch(n->tag, TAGSTR, (int)l);
+}
+
+struct node *dom_attach_shadow(struct node *host, int mode, unsigned flags)
+{
+    if (!host || host->type != N_ELEM || !host->doc) return 0;
+    uint8_t m = (mode == SHADOW_MODE_CLOSED) ? SHADOW_MODE_CLOSED : SHADOW_MODE_OPEN;
+
+    struct node *existing = host->shadow;
+    if (existing) {
+        /* Only a DECLARATIVE root of the SAME mode may be adopted -- see the
+         * header comment in dom.h for why a mismatch is refused rather than
+         * silently switched (the caller cannot recover from either refusal
+         * differently, so collapsing them here costs nothing). */
+        if (!(existing->shadow_flags & SHADOW_DECLARATIVE) || existing->shadow_mode != m)
+            return 0;
+        dom_destroy_children(existing);
+        existing->shadow_flags = (uint8_t)(flags & 0xFFu);
+        return existing;
+    }
+
+    struct node *root = dom_create_element(host->doc, DOM_SHADOW_TAG,
+                                           (int)(sizeof(DOM_SHADOW_TAG) - 1));
+    if (!root) return 0;
+    root->shadow_mode = m;
+    root->shadow_flags = (uint8_t)(flags & 0xFFu);
+    /* root->parent = host, but root is NEVER linked into host->first_child /
+     * ->last_child -- that single decision is what keeps every existing
+     * first_child walk (layout.c, css_engine.c, dom_serialize.c's default
+     * path, forms.c, ...) blind to the shadow tree rather than half-rendering
+     * it. It also means ordinary connectivity checks that climb ->parent
+     * (dom_get_element_by_id, dom_import_node's ancestor test) correctly see
+     * shadow content as "connected" exactly when its host is -- climbing from
+     * inside the shadow tree reaches root, then host, then the document, the
+     * same as the spec's shadow-including tree order. */
+    root->parent = host;
+    host->shadow = root;
+    return root;
+}
+
+struct node *dom_flat_first_child(const struct node *n)
+{
+    if (!n) return 0;
+    if (n->type == N_ELEM && n->shadow) return n->shadow->first_child;
+    return n->first_child;
+}
+
+struct node *dom_flat_next_sibling(const struct node *n) { return n ? n->next : 0; }
 
 /* ------------------------------------------------------------------ */
 /* id lookup + JS wrapper slots                                        */

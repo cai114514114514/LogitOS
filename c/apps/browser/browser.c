@@ -4,6 +4,7 @@
 #include "layout.h"
 #include "browser_paint.h"
 #include "js_dom.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 #include "js_page.h"
 #include "js_module.h"           /* <script type="module"> + the module loader */
 /* js_webapi.o is absent from browser-nofetch.aex (the negative control for
@@ -30,7 +31,8 @@
  * dispatcher, and that context dies with the page. Weak because that
  * translation unit is absent from BROWSER_PIPE and from the host loader test,
  * where there is nothing to clean up. */
-void js_forms_cleanup(void) __attribute__((__weak__));
+void js_forms_cleanup(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_forms_cleanup);
 
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
@@ -70,6 +72,26 @@ static int win_w = WINW, win_h = WINH;
 
 #define VIEW_Y   (TABH + BARH)
 #define VIEW_H   (win_h - VIEW_Y - 18)   /* viewport (below the bars, above status) */
+
+/* ---- the two numbers the main loop's sleep is allowed to invent -----------
+ *
+ * Everything else the loop waits for has a real deadline (a JS timer) or a
+ * real wakeup (an event). These two cover the one thing that has neither: work
+ * inside js_webapi.c -- a fetch stepping its socket, an EventSource waiting to
+ * reconnect -- which is driven by js_page_run_due() and exposes no time.
+ *
+ * BROWSER_PUMP_MS is 10 because that is the kernel's tick: monotonic_ms()
+ * advances in steps of ten (see logit.h), so anything smaller asks for a
+ * shorter sleep than the clock can express and gets a tick anyway. It bounds
+ * the sleep ONLY while js_webapi_pending() is true, so an idle page with a
+ * five-second setInterval still sleeps five seconds.
+ *
+ * BROWSER_WAIT_MAX_MS is not a poll interval -- it is a ceiling on the int the
+ * syscall takes, so a page that schedules a timer an hour out cannot turn into
+ * an overflowed negative timeout (which wm.c reads as "no timeout"). One
+ * syscall a second when nothing at all is happening is not measurable. */
+#define BROWSER_PUMP_MS      10
+#define BROWSER_WAIT_MAX_MS  1000
 
 static char url[600] = "http://example.com/";
 static int  ulen = 19;
@@ -113,6 +135,16 @@ static void popup_close(void);
 
 int printf(const char *, ...);
 unsigned long strlen(const char *);
+
+#ifdef LOADERHOST_LOGIT_H
+/* THE HOST LOADER HARNESS HAS NO WINDOW TO SLEEP ON. tests/unit/loaderhost's
+ * logit.h replaces the window with five recorders and stubs sys_yield() to
+ * nothing; it has no wait_idle(), and there is nothing there for one to park
+ * on -- test-loader drives load() directly and never enters app_main's loop.
+ * Shimmed HERE rather than in the harness header so the whole change lives in
+ * one file, and it is a no-op for the same reason sys_yield() is one. */
+static inline void wait_idle(int ms) { (void)ms; }
+#endif
 
 /* js_page.c is written against an injected clock so the host tests can step
  * time by hand; in the OS it is the kernel's 100 Hz monotonic counter. */
@@ -481,6 +513,20 @@ static void sync_scroll(void)
     if (scroll == g_scroll_pushed) return;
     g_scroll_pushed = scroll;
     js_dom_set_scroll(0, scroll);
+    /* The `scroll` event: fired at the document, does not bubble (per spec it
+     * is dispatched from the "run the scroll steps" of the update-the-rendering
+     * task, once the position has settled -- never once per wheel notch or key
+     * repeat). The guard above already coalesces every caller in this file
+     * (wheel, PgUp/PgDn, drag, hydrate-restore, resize-induced clamping) down
+     * to one dispatch per actual change, which is the same guarantee under a
+     * different name: nothing here changes `scroll` and skips calling
+     * sync_scroll(), so "changed" and "about to be pushed" are the same event.
+     *
+     * This is also what makes below-the-fold IntersectionObserver content
+     * arrive: js_platform.c's shim listens for this and re-measures instead of
+     * stopping after a bounded number of timer rechecks. */
+    struct js_event_init si = { 0 };
+    js_dom_dispatch(js_dom_root(), "scroll", &si);
 }
 
 static void num_append(char *st, int *p, int v)
@@ -1129,7 +1175,7 @@ static int run_pending_inserted_scripts(const char *page_url)
  * build has no js_webapi.o at all (browser-nofetch). */
 static int take_script_nav(char *out, int max)
 {
-    if (!js_webapi_take_navigation) return 0;
+    if (!LOGIT_HAVE(js_webapi_take_navigation)) return 0;
     return js_webapi_take_navigation(out, max) ? 1 : 0;
 }
 
@@ -1296,6 +1342,14 @@ static int g_hydrating;
 static void load_once(const char *u)
 {
     set_status(g_hydrating ? "restoring tab..." : "loading...");
+    /* pagehide, on the document about to be torn down -- mirrors the pageshow
+     * dispatch near the bottom of this function. Must run BEFORE js_page_close:
+     * that call frees the runtime this event needs to run any listener at all.
+     * On the very first navigation there is no prior runtime, so js_dom.c's own
+     * g_ctx is still NULL and js_dom_dispatch's no-runtime guard makes this a
+     * no-op -- no `if (g_root)` needed here to say the same thing twice. */
+    struct js_event_init ph_out = { 0 };
+    js_dom_dispatch(js_dom_root(), "pagehide", &ph_out);
     /* ORDER: the runtime dies before the DOM does. Every JS wrapper holds a
      * {node, serial} handle and every node holds a weak pointer back to its
      * wrapper, so freeing the document first would leave the runtime's
@@ -1306,7 +1360,7 @@ static void load_once(const char *u)
      * just freed. Left installed, the next keystroke would call into it. Weak
      * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
      * links -- there is nothing to clean up there. */
-    if (js_forms_cleanup) js_forms_cleanup();
+    if (LOGIT_HAVE(js_forms_cleanup)) js_forms_cleanup();
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -1621,6 +1675,13 @@ static void load_once(const char *u)
     js_dom_dispatch(js_dom_root(), "DOMContentLoaded", &li);
     li.bubbles = 0;
     js_dom_dispatch(js_dom_root(), "load", &li);
+    /* HTML requires this at window on EVERY load, unconditionally -- it is not
+     * a bfcache-restore-only event, whatever its name suggests. A bootstrap
+     * written as `addEventListener('pageshow', init)` (a real, if uncommon,
+     * alternative to a `load` listener) sat inert forever without this: the
+     * property existed (js_cssom.c's SHIM_BODY_HANDLERS reflects onpageshow),
+     * assignment worked, and nothing ever called it. */
+    js_dom_dispatch(js_dom_root(), "pageshow", &li);
 
     /* settle_FRAME: a `load` handler that inserts images is the single most
      * common way a real page's pictures arrive after the first image pass, and
@@ -1682,7 +1743,7 @@ static void tab_dehydrate(void)
      * just freed. Left installed, the next keystroke would call into it. Weak
      * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
      * links -- there is nothing to clean up there. */
-    if (js_forms_cleanup) js_forms_cleanup();
+    if (LOGIT_HAVE(js_forms_cleanup)) js_forms_cleanup();
     /* Focus and every control's state point INTO the document that is about to
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
@@ -2087,6 +2148,17 @@ void browser_resize(int w, int h)
     int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
     if (scroll > maxs) scroll = maxs;
     sync_scroll();
+    /* The `resize` event, fired once per real EV_RESIZE, after the new
+     * viewport is installed and the page has been re-styled and re-laid-out
+     * against it -- so a listener's own getBoundingClientRect() calls see the
+     * new geometry, not the old one. The caller (the EV_RESIZE case in the
+     * main loop) sets `need = 1` and repaints on its next iteration, which is
+     * after this returns -- so this always runs before the frame that shows
+     * the new size, never during the initial layout of a fresh page (nothing
+     * calls browser_resize() from load_once/load, only EV_RESIZE does), which
+     * is the one case the spec says must NOT fire it. */
+    struct js_event_init ri = { 0 };
+    js_dom_dispatch(js_dom_root(), "resize", &ri);
 }
 
 /* The contenteditable caret + selection, drawn over the page. Defined with the
@@ -2362,8 +2434,18 @@ static int control_box(struct node *n, int *bx, int *by, int *bw, int *bh)
 /* browser_rt.c's cached measurer -- the same one layout.c measured the runs
  * with. Declared rather than included for the reason layout.c and forms.c both
  * give: measuring through logit.h's raw text_measure_px would issue a syscall
- * per word and, worse, could disagree with the widths layout already used. */
-int text_measure(const char *s, int len, int px, int mono);
+ * per word and, worse, could disagree with the widths layout already used.
+ *
+ * The last argument is a FACE MASK (LOGIT_FACE_MONO | LOGIT_FACE_BOLD), and
+ * every call below composes it from the display ITEM rather than passing
+ * it->mono alone. That is not tidiness: these four calls place the caret and
+ * the selection highlight by re-measuring a prefix of a run the painter has
+ * already drawn, so measuring a <strong> or an <h1> at regular weight while
+ * it is drawn at bold puts the caret progressively further left the further
+ * into the run it goes -- a drift, not an offset, which is the kind nobody
+ * reproduces. */
+int text_measure(const char *s, int len, int px, int face);
+#define ITEM_FACE(it) ((it)->mono | ((it)->bold ? LOGIT_FACE_BOLD : 0))
 
 static int ce_run_for(struct node *t, int off, const struct item **out, int *rel)
 {
@@ -2401,7 +2483,7 @@ static int ce_caret_box(int *cx, int *cy, int *ch)
         const struct item *r = 0;
         int rel = 0;
         if (ce_run_for(n, off, &r, &rel)) {
-            *cx = r->x + text_measure(r->text, rel, r->font_px, r->mono);
+            *cx = r->x + text_measure(r->text, rel, r->font_px, ITEM_FACE(r));
             *cy = r->y;
             *ch = r->h > 0 ? r->h : r->font_px;
             return 1;
@@ -2446,8 +2528,8 @@ static void draw_ce_overlay(void)
         if (r0 < 0) r0 = 0;
         if (r1 > it[i].len) r1 = it[i].len;
         if (r1 <= r0) continue;
-        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, it[i].mono);
-        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, it[i].mono);
+        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, ITEM_FACE(&it[i]));
+        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
         int sy = VIEW_Y + it[i].y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
         gui_glass(x0, sy, x1 - x0, it[i].h, 0, 90, 150, 240, 110);
@@ -2498,7 +2580,7 @@ static void ce_caret_from_click(struct node *host, int vx, int vy)
     int best = 0;
     long bd = -1;
     for (int i = 0; i <= hit->len; ) {
-        int w = text_measure(hit->text, i, hit->font_px, hit->mono);
+        int w = text_measure(hit->text, i, hit->font_px, ITEM_FACE(hit));
         long d = w > relx ? w - relx : relx - w;
         if (bd < 0 || d < bd) { bd = d; best = i; }
         if (i >= hit->len) break;
@@ -3597,6 +3679,58 @@ void app_main(void)
         }
 
         if (need) redraw(editing);    /* one repaint after the burst, not per keystroke */
-        sys_yield();
+
+        /* ---- THE SLEEP, and it is the entire cost of an idle browser -------
+         *
+         * This was `sys_yield()`, i.e. a spin: two syscalls per turn, each one
+         * taking the BKL to be told nothing had happened. kprof over a browser
+         * launch put `app_main` at 22.1% of ALL samples and 98% of user-mode
+         * ones -- and under TCG a spinning ring-3 thread is not merely wasting
+         * guest cycles, it is taking host CPU away from the compositor thread,
+         * which is the thing the user is actually waiting for.
+         *
+         * THE SHAPE IS "COMPUTE THE DEADLINE TO THE NEXT THING THAT IS DUE",
+         * never a fixed small timeout -- a 10 ms poll is a spin with extra
+         * steps, and it would put the rAF cadence on the timeout's clock
+         * instead of the page's. Three wake sources, in the order they matter:
+         *
+         *   an event      wait_idle() parks on THIS window's queue and the
+         *                 compositor wakes it on enqueue. No lost wakeup: the
+         *                 kernel evaluates `evq_empty` while still holding the
+         *                 BKL that the only writer needs to push (wm.c:2122),
+         *                 so nothing can arrive between the test and the park.
+         *                 ev == NULL means the wait does not CONSUME, so the
+         *                 poll_event() drain at the top of the loop is
+         *                 unchanged and no event can be eaten here.
+         *   a JS timer    js_page_next_due() is the earliest setTimeout /
+         *                 setInterval / rAF deadline in monotonic ms. Sleeping
+         *                 exactly to it is what keeps an animating page on its
+         *                 own 16 ms boundary rather than on ours.
+         *   the pump      a fetch in flight or an EventSource retry is stepped
+         *                 by js_page_run_due() and has no deadline visible
+         *                 here, so it -- and ONLY it -- caps the sleep.
+         *
+         * `dt <= 0` does NOT sleep. A callback that schedules for "now" is
+         * deferred to the next pass by js_page_run_due()'s seq snapshot, so a
+         * setTimeout(f, 0) chain has to be able to turn the loop at full speed
+         * or chunked work would drop from thousands of steps a second to 100.
+         * That case is the loop doing work, not polling for it.
+         *
+         * js_webapi_pending is WEAK here (JS_WEBAPI_OPTIONAL above):
+         * browser-nofetch.aex links without js_webapi.o. */
+        {
+            int wait_ms = 0;                     /* 0 = park until an event */
+            if (js_page_pending()) {
+                long long due = js_page_next_due();       /* -1: no timer armed */
+                long long now = (long long)monotonic_ms();
+                long long dt  = (due >= 0) ? due - now : (long long)BROWSER_PUMP_MS;
+                if (LOGIT_HAVE(js_webapi_pending) && js_webapi_pending() && dt > BROWSER_PUMP_MS)
+                    dt = BROWSER_PUMP_MS;
+                if (dt <= 0) continue;           /* already due: run it, do not sleep */
+                if (dt > BROWSER_WAIT_MAX_MS) dt = BROWSER_WAIT_MAX_MS;
+                wait_ms = (int)dt;
+            }
+            wait_idle(wait_ms);
+        }
     }
 }

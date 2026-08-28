@@ -286,16 +286,66 @@ static void ser_attr_name(struct sb *s, const char *name)
     sb_str(s, sp + 1);
 }
 
-static void ser_html(struct sb *s, const struct node *n, int self);
+static void ser_html(struct sb *s, const struct node *n, int self,
+                     const struct node *const *roots, int nroots, int all_serializable);
+static int shadow_in_roots(const struct node *sr, const struct node *const *roots, int nroots);
+static void ser_shadow_template(struct sb *s, const struct node *sr,
+                                const struct node *const *roots, int nroots, int all_serializable);
 
-static void ser_html_children(struct sb *s, const struct node *n)
+static void ser_html_children(struct sb *s, const struct node *n,
+                              const struct node *const *roots, int nroots, int all_serializable)
 {
-    for (const struct node *c = n->first_child; c; c = c->next) ser_html(s, c, 1);
+    /* getHTML's shadow-host branch belongs HERE, not in ser_html's "self"
+     * (start-tag) branch: the spec's fragment serialization steps say a
+     * node's OWN shadow template is emitted as the first thing when
+     * serializing that node's CHILDREN, before its light children -- so
+     * host.innerHTML (a children-only serialization of `host`, reached via
+     * ser_html(host, self=0) -> straight here without ever running the
+     * "self" branch at all) must ALSO see it. Putting the check in the
+     * "self" branch instead would only fire for a host being serialized as
+     * someone ELSE's descendant (outerHTML of an ancestor), and quietly miss
+     * it whenever the host is the serialization ROOT -- exactly the
+     * getHTML()/innerHTML case gethtml.html spends 6,528 subtests on. */
+    if (n->type == N_ELEM && n->shadow) {
+        const struct node *sr = n->shadow;
+        if (shadow_in_roots(sr, roots, nroots) ||
+            (all_serializable && (sr->shadow_flags & SHADOW_SERIALIZABLE)))
+            ser_shadow_template(s, sr, roots, nroots, all_serializable);
+    }
+    for (const struct node *c = n->first_child; c; c = c->next)
+        ser_html(s, c, 1, roots, nroots, all_serializable);
 }
 
-static void ser_html(struct sb *s, const struct node *n, int self)
+static int shadow_in_roots(const struct node *sr, const struct node *const *roots, int nroots)
 {
-    if (!self) { ser_html_children(s, n); return; }
+    for (int i = 0; i < nroots; i++) if (roots[i] == sr) return 1;
+    return 0;
+}
+
+/* Emits the "shadowroot template" gethtml.html compares against, byte for
+ * byte: `<template shadowrootmode="MODE"` then, in THIS ORDER (a contract,
+ * not a style choice -- the test is a plain string equality),
+ * shadowrootdelegatesfocus, shadowrootserializable, shadowrootclonable, each
+ * only when its flag is set, then the shadow root's own children serialized
+ * exactly like an ordinary subtree, then "</template>". */
+static void ser_shadow_template(struct sb *s, const struct node *sr,
+                                const struct node *const *roots, int nroots, int all_serializable)
+{
+    sb_str(s, "<template shadowrootmode=\"");
+    sb_str(s, (sr->shadow_mode == SHADOW_MODE_CLOSED) ? "closed" : "open");
+    sb_str(s, "\"");
+    if (sr->shadow_flags & SHADOW_DELEGATES_FOCUS) sb_str(s, " shadowrootdelegatesfocus=\"\"");
+    if (sr->shadow_flags & SHADOW_SERIALIZABLE)    sb_str(s, " shadowrootserializable=\"\"");
+    if (sr->shadow_flags & SHADOW_CLONABLE)        sb_str(s, " shadowrootclonable=\"\"");
+    sb_str(s, ">");
+    ser_html_children(s, sr, roots, nroots, all_serializable);
+    sb_str(s, "</template>");
+}
+
+static void ser_html(struct sb *s, const struct node *n, int self,
+                     const struct node *const *roots, int nroots, int all_serializable)
+{
+    if (!self) { ser_html_children(s, n, roots, nroots, all_serializable); return; }
 
     switch (n->type) {
     case N_TEXT: {
@@ -317,7 +367,7 @@ static void ser_html(struct sb *s, const struct node *n, int self)
         sb_str(s, ">");
         return;
     case N_DOCUMENT:
-        ser_html_children(s, n);
+        ser_html_children(s, n, roots, nroots, all_serializable);
         return;
     default: break;
     }
@@ -335,16 +385,30 @@ static void ser_html(struct sb *s, const struct node *n, int self)
 
     if (is_void_element(n)) return;               /* no children, no end tag */
 
-    ser_html_children(s, n);
+    /* ser_html_children(s, n, ...) is where n's OWN shadow template (if any)
+     * gets emitted, before n's light children -- see that function's comment
+     * for why it cannot live here instead. n->shadow is NULL for every
+     * element that was never attachShadow()'d -- i.e. everything today, since
+     * nothing yet calls dom_attach_shadow from script -- so that branch is
+     * unreachable dead code on the current tree and dom_serialize_html(n,x)
+     * stays BYTE IDENTICAL to before this change. */
+    ser_html_children(s, n, roots, nroots, all_serializable);
 
     sb_str(s, "</");
     sb_str(s, n->tag);
     sb_str(s, ">");
 }
 
-char *dom_serialize_html(const struct node *n, int include_self)
+char *dom_serialize_html_opt(const struct node *n, int include_self,
+                             const struct node *const *roots, int nroots,
+                             int all_serializable)
 {
     struct sb s = { 0, 0, 0, 0 };
-    if (n) ser_html(&s, n, include_self);
+    if (n) ser_html(&s, n, include_self, roots, nroots, all_serializable);
     return sb_finish(&s);
+}
+
+char *dom_serialize_html(const struct node *n, int include_self)
+{
+    return dom_serialize_html_opt(n, include_self, 0, 0, 0);
 }

@@ -56,6 +56,7 @@ SELECTORS_SRC := tests/unit/selectors_test.c \
                  c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                  c/apps/browser/js_webapi.c c/apps/browser/js_platform.c \
                  c/apps/browser/js_select.c c/apps/browser/js_tokenlist.c \
+                 c/apps/browser/js_characterdata.c \
                  c/apps/browser/js_intl.c c/apps/browser/js_module.c \
                  c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
                  tests/unit/rust_host_shim.c

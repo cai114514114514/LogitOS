@@ -5,6 +5,7 @@
 #include "css.h"
 #include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
 #include "css_interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB/LOGIT_HAVE */
 
 /* ...and the one function taken from it is WEAK, for the reason the block at
  * js_dom_dirty() below gives about that one. Re-measured 2026-08-20 with the
@@ -14,11 +15,15 @@
  * Makefile and 27 across nineteen fragments under tests/. A hard reference
  * would turn a CSS.supports improvement into fifty-one link failures in other
  * lines' files. Weak and guarded, so a build without the transform parser answers
- * exactly what it answered before. Spelled __attribute__((__weak__)) and not
- * the lowercase `weak`, which is a macro in the force-included features.h. */
+ * exactly what it answered before. Spelled through include/weaksym.h rather
+ * than __attribute__((__weak__)) directly: an UNDEFINED weak reference is an
+ * ELF property, and on the Mach-O dev host it was a hard link error -- which
+ * is what test-layout-box died of, on this symbol, in a file nobody had
+ * edited. The lowercase `weak` is still wrong here for the older reason: it is
+ * a macro in the force-included features.h. */
 extern int ci_transform_parse(const char *s, int len, double fs_px,
-                              double root_px, struct ci_xform *out)
-                              __attribute__((__weak__));
+                              double root_px, struct ci_xform *out) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ci_transform_parse);
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -2285,12 +2290,17 @@ void css_apply(struct node *root, const char *page_css, int page_len)
  * ====================================================================== */
 
 /* js_dom.c is not linked into the CSS host tests, so every one of these is
- * weak and guarded. Spelled __attribute__((__weak__)) rather than the lowercase
- * `weak` macro on purpose -- c/apps/libc/include/features.h defines that name,
- * and it has already cost this tree three bugs. */
-extern int          js_dom_dirty(void)                    __attribute__((__weak__));
-extern int          js_dom_inval_roots(void)              __attribute__((__weak__));
-extern struct node *js_dom_inval_root(int i, int *sibs)   __attribute__((__weak__));
+ * weak and guarded -- through include/weaksym.h, because the bare weak
+ * DECLARATION only resolves to NULL on ELF and was a link error on the Mach-O
+ * dev host. The lowercase `weak` macro remains wrong here for its own reason:
+ * c/apps/libc/include/features.h defines that name, and it has already cost
+ * this tree three bugs. */
+extern int          js_dom_dirty(void)                    LOGIT_WEAK;
+extern int          js_dom_inval_roots(void)              LOGIT_WEAK;
+extern struct node *js_dom_inval_root(int i, int *sibs)   LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_dom_dirty);
+LOGIT_WEAK_STUB(js_dom_inval_roots);
+LOGIT_WEAK_STUB(js_dom_inval_root);
 
 static int g_auto_flushes;      /* test seam: how many flushes actually ran */
 
@@ -2334,10 +2344,10 @@ static unsigned long inval_fingerprint(struct node *root)
     unsigned long h = 1469598103934665603UL;
 #define MIX(x) do { h ^= (unsigned long)(x); h *= 1099511628211UL; } while (0)
     MIX(root->doc ? dom_doc_bytes(root->doc) : 0);
-    int nroots = (&js_dom_inval_roots != 0) ? js_dom_inval_roots() : 0;
+    int nroots = LOGIT_HAVE(js_dom_inval_roots) ? js_dom_inval_roots() : 0;
     MIX(nroots);
     if (nroots <= 0) return 0;                 /* 0 = "unknown", never equal */
-    if (&js_dom_inval_root == 0) return 0;
+    if (!LOGIT_HAVE(js_dom_inval_root)) return 0;
     for (int i = 0; i < nroots; i++) {
         int sibs = 0;
         struct node *r = js_dom_inval_root(i, &sibs);
@@ -2420,7 +2430,7 @@ void css_ensure_styled(struct node *n)
     while (root->parent) root = root->parent;
 
     int fresh = (g_auto_ready && g_auto_root == root);
-    int dirty = (&js_dom_dirty != 0) ? js_dom_dirty() : 0;
+    int dirty = LOGIT_HAVE(js_dom_dirty) ? js_dom_dirty() : 0;
     if (fresh && !dirty) return;
 
     /* Dirty, but possibly dirty from a mutation we have already cascaded --
@@ -2449,8 +2459,8 @@ void css_ensure_styled(struct node *n)
      * them, and over the document when it could not. */
     g_auto_flushes++;
     g_auto_fp = fp;
-    int nroots = (&js_dom_inval_roots != 0) ? js_dom_inval_roots() : 0;
-    if (nroots > 0 && &js_dom_inval_root != 0) {
+    int nroots = LOGIT_HAVE(js_dom_inval_roots) ? js_dom_inval_roots() : 0;
+    if (nroots > 0 && LOGIT_HAVE(js_dom_inval_root)) {
         int all = 0;
         for (int i = 0; i < nroots; i++) {
             int sibs = 0;
@@ -2767,7 +2777,7 @@ static int sup_beside_libcss(const char *prop, int plen, const char *value, int 
      * properly (and is what computes it), so ask it. The em/rem bases are the
      * initial font-size: whether a value PARSES does not depend on them, and
      * CSS.supports has no element to take them from. */
-    if (ci_transform_parse && sup_ieq(prop, plen, "transform")) {
+    if (LOGIT_HAVE(ci_transform_parse) && sup_ieq(prop, plen, "transform")) {
         struct ci_xform t;
         if (ci_transform_parse(value, vlen, 16.0, 16.0, &t) == 0) return 1;
     }

@@ -374,6 +374,22 @@ static JSValue jf_selset(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     int32_t ao = 0, fo = 0;
     JS_ToInt32(ctx, &ao, argv[1]);
     JS_ToInt32(ctx, &fo, argv[3]);
+    /* forms.c's ce_root() -- the function fc_ce_set_paths resolves both paths
+     * against -- has exactly three sources: a live g_ce_f, a live g_ce_a, or
+     * the root hint fc_ce_set_root() stamps down when a control gets REAL
+     * focus. A page that builds a Range and calls Selection.addRange() on a
+     * contenteditable it never .focus()'d (which is legal -- selecting text
+     * does not require focus() first, and this is exactly what
+     * editing/include/tests.js does for every one of its generated cases) has
+     * none of the three: ce_root() returns 0, fc_ce_set_paths refuses, and
+     * every query of the selection this call was supposed to establish reads
+     * back empty forever. `__fc_selSet` is the one native that always carries
+     * a real node to seed the hint from (the path itself resolves against
+     * js_dom_root() one line below), so it is refreshed here on every call --
+     * cheap (a parent-chain walk to the document element, already paid for
+     * inside fc_ce_set_paths itself) and it costs nothing on the path where a
+     * hint already exists (fc_ce_set_root only overwrites it). */
+    fc_ce_set_root(js_dom_root());
     return JS_NewBool(ctx, fc_ce_set_paths(ap, ad, ao, fp, fd, fo));
 }
 
@@ -703,6 +719,13 @@ static const char SHIM[] =
 "  (function walk(n){ var c = n.children||[];\n"
 "     for (var i=0;i<c.length;i++){ if ((c[i].tagName||'').toLowerCase()==='form') out.push(c[i]); walk(c[i]); } })(doc.documentElement||doc);\n"
 "  return out; } }); } catch (e) {}\n"
+/* document.defaultView -- one property, the global object. Absent before this
+ * (grep for it returned nothing), which is why editor-test-utils.js's
+ * `this.window.test_driver` read `undefined.test_driver` and reported
+ * "cannot read property 'test_driver' of undefined": the message named
+ * testdriver but the first thing actually missing was ours. */
+"try { Object.defineProperty(doc, 'defaultView', { configurable: true,\n"
+"  get: function(){ return G; } }); } catch (e) {}\n"
 "})(globalThis);\n";
 
 
@@ -964,6 +987,174 @@ static const char SEL_SHIM[] =
 "}\n"
 "})(globalThis);\n";
 
+
+/* ================================ the execCommand shim ===================== *
+ *
+ * Its own string, evaluated after SEL_SHIM, following the same rule: a fault
+ * in here cannot take the forms or selection bindings down, because those
+ * shipped first.
+ *
+ * WHAT IS HERE. document.execCommand / queryCommandIndeterm / queryCommandState
+ * / queryCommandValue / queryCommandSupported / queryCommandEnabled, and a
+ * command table (`EDIT_CMDS`) with two groups:
+ *
+ *   1. The three flag commands (stylewithcss, usecss, defaultparagraphseparator)
+ *      -- two module-level variables, no DOM work at all.
+ *   2. Fourteen commands whose queried answer is the spec's CONSTANT
+ *      false/false/"" (no indeterm slot, no state slot, no value slot) because
+ *      none of them is implemented as a DOM mutation yet -- that absence is
+ *      what queryCommandIndeterm/State/Value read as "not on the list", which
+ *      IS the specified answer for an unsupported query, not a stand-in for one.
+ *
+ * bold/italic real-state reading (a third group) was BUILT and REVERTED --
+ * see the long comment lower in this file, right before "the entry points",
+ * for why: it is demonstrably wrong on the commonest shape in the corpus for
+ * a reason that belongs to css_engine.c, not to this file. formatblock /
+ * justify* / fontname / fontsize / forecolor / backcolor / hilitecolor /
+ * insert{un,}orderedlist / underline / strikethrough / subscript / superscript
+ * are the same shape (real value computation, no mutation) and were never
+ * attempted -- left for the next pass, not stubbed.
+ *
+ * NONE of the fourteen group-2 commands gets a real `action`: execCommand
+ * keeps returning false for all of them, because none of them mutates the
+ * DOM (that is the XL cluster, gated on this one landing first). Returning
+ * true without mutating is the exact lie a caller believing "I performed it"
+ * would be told -- see c/apps/libc's flock rule.
+ *
+ * document.execCommand and document.designMode were said, above in SEL_SHIM's
+ * own comment, to "grep to nothing across the corpus this browser is aimed
+ * at" and not worth building speculatively. That was true of that corpus and
+ * is false of WPT's editing/run suite, which is 96,800 of the corpus's
+ * subtests behind exactly this one absence -- so the correction belongs next
+ * to the claim it corrects, not in place of it. designMode remains absent:
+ * nothing in editing/ evidence calls for it. */
+static const char EDIT_SHIM[] =
+"(function(G){\n"
+"var doc = G.document; if (!doc) return;\n"
+"function lc(v){ return String(v).toLowerCase(); }\n"
+
+/* ---- cluster 1: the flag commands. Two module-level variables, no DOM. --- */
+"var g_cssStyling = false;\n"   /* false on page load, per spec */
+"var g_paraSep = 'div';\n"      /* the default single-line container name */
+
+"var EDIT_CMDS = Object.create(null);\n"
+
+/* stylewithcss HAS a state (the flag itself) and NO indeterm slot -- do not
+ * add one. usecss and defaultparagraphseparator have NEITHER a state NOR an
+ * indeterm slot. That asymmetry is what the corpus's expected arrays encode
+ * ([false,false,'',...] vs [false,<flag>,'',...]); collapsing it costs 2,427
+ * (case,command) pairs. */
+"EDIT_CMDS['stylewithcss'] = {\n"
+"  action: function(v){ g_cssStyling = (lc(v) !== 'false'); return true; },\n"
+"  state:  function(){ return g_cssStyling; },\n"
+"  value:  function(){ return ''; }\n"
+"};\n"
+/* usecss is the INVERSE of stylewithcss and has no state of its own. */
+"EDIT_CMDS['usecss'] = {\n"
+"  action: function(v){ g_cssStyling = (lc(v) === 'false'); return true; },\n"
+"  value:  function(){ return ''; }\n"
+"};\n"
+"EDIT_CMDS['defaultparagraphseparator'] = {\n"
+"  action: function(v){ var x = lc(v);\n"
+"    if (x === 'p' || x === 'div') g_paraSep = x;\n"   /* else: unchanged, still true */
+"    return true; },\n"
+"  value:  function(){ return g_paraSep; }\n"
+"};\n"
+
+/* ---- cluster 3: commands whose queried answer is the spec's constant ---- *
+ * false/false/"". Registered (so queryCommandSupported is true and no
+ * exception is thrown) with NO indeterm/state/value slot -- the absence IS
+ * the answer, not a stand-in for one. `action` returns false: none of these
+ * mutates the DOM yet. */
+"var NOOP_CMDS = ['createlink', 'delete', 'forwarddelete', 'indent',\n"
+"  'inserthorizontalrule', 'inserthtml', 'insertimage', 'insertlinebreak',\n"
+"  'insertparagraph', 'inserttext', 'outdent', 'removeformat', 'selectall',\n"
+"  'unlink'];\n"
+"NOOP_CMDS.forEach(function(name){\n"
+"  EDIT_CMDS[name] = { action: function(){ return false; } };\n"
+"});\n"
+
+/* ---- cluster 4 (bold/italic real state, read-only) was ATTEMPTED and
+ * REVERTED, and the reason is worth keeping here rather than in a commit
+ * message nobody reads before touching this file again.
+ *
+ * A real getAllEffectivelyContainedNodes / getEffectiveCommandValue reader
+ * (mirroring editing/include/implementation.js) was built and wired to
+ * bold/italic, on the theory that `getComputedStyle(el).fontWeight` /
+ * `.fontStyle` already carry the UA default (`b,strong{font-weight:bold}`,
+ * `i,em{font-style:italic}`, css_engine.c's UA_CSS) plus inheritance, so no
+ * tag-name special-casing would be needed. Two real bugs were found on the
+ * way, one fixed and one not:
+ *
+ *   FIXED (kept, see jf_selset above): document.getSelection().rangeCount
+ *   was 0 for EVERY editing/run test case, because forms.c's ce_root() --
+ *   what fc_ce_set_paths resolves an incoming Range against -- had exactly
+ *   three sources (a live g_ce_f, a live g_ce_a, or the root hint
+ *   fc_ce_set_root() stamps down on real focus()), and
+ *   editing/include/tests.js builds a Range and calls
+ *   `getSelection().addRange(range)` on a div it never focus()es -- which is
+ *   legal; selecting text does not require focus() first. `jf_selset` now
+ *   reseeds the hint from js_dom_root() on every call, and
+ *   doc.getSelection().rangeCount is 1 for the whole corpus as a result.
+ *
+ *   FOUND, NOT FIXED, OUT OF SCOPE: with the selection fix in, bold's state()
+ *   reader answered WRONG more often than the naive "always false" it
+ *   replaced (measured: 1232/1494 pass before the selection fix -- via
+ *   accident, since state() always took the `!r -> false` exit -- fell to
+ *   418/834 after it, once the reader actually ran). The cause is
+ *   `getComputedStyle(el).fontWeight` answering the EMPTY STRING for a `<b>`
+ *   element `setupDiv()` had just parsed into the test div moments earlier
+ *   in the SAME tick -- verified directly: a probe on `<b>foo[]bar</b>` with
+ *   a collapsed caret logged `scParent=B ev=` (empty), while the identical
+ *   probe on the DIV itself logged `ev=400`. This is the class of bug
+ *   css_engine.c's own comments name ("getComputedStyle() answered \"\" for
+ *   10,196 css/ subtests... the flush CSSOM requires") -- a computed-style
+ *   read racing a cascade that has not run for a just-inserted node -- and
+ *   the fix belongs in css_engine.c's css_ensure_styled()/cssd_prop_get(),
+ *   which this change does not own.
+ *
+ * Per "implement a correct SUBSET... leave the rest genuinely absent rather
+ * than present and lying": a reader that is demonstrably wrong on the
+ * commonest shape in the corpus (a freshly-parsed `<b>` around a collapsed
+ * caret) is worse than no reader, so bold/italic are NOT registered.
+ * queryCommandIndeterm/State/Value('bold') therefore answer the honest
+ * "not on my list" false/false/"" via the same path as every other
+ * unimplemented command, until the css_engine.c bug above is fixed by
+ * whoever owns that file. */
+
+/* ---- the entry points ---------------------------------------------------- */
+"function getActiveRangeOf(){\n"
+"  var s = doc.getSelection ? doc.getSelection() : null;\n"
+"  return (s && s.rangeCount) ? s.getRangeAt(0) : null; }\n"
+"function isEditableNode(n){ var e = (n && n.nodeType === 3) ? n.parentNode : n;\n"
+"  return !!(e && e.isContentEditable); }\n"
+"var ALWAYS_ENABLED = { copy: 1, defaultparagraphseparator: 1, selectall: 1,\n"
+"  stylewithcss: 1, usecss: 1 };\n"
+"function isEditableOrHost(n){ return isEditableNode(n); }\n"
+"doc.execCommand = function(command, showUi, value){\n"
+"  var c = lc(command); var cmd = EDIT_CMDS[c];\n"
+"  if (!cmd) return false;\n"
+"  if (!doc.queryCommandEnabled(c)) return false;\n"
+"  if (typeof cmd.action !== 'function') return false;\n"
+"  try { return !!cmd.action(value); } catch (e) { return false; } };\n"
+"doc.queryCommandIndeterm = function(command){\n"
+"  var cmd = EDIT_CMDS[lc(command)];\n"
+"  return (cmd && cmd.indeterm) ? !!cmd.indeterm() : false; };\n"
+"doc.queryCommandState = function(command){\n"
+"  var cmd = EDIT_CMDS[lc(command)];\n"
+"  return (cmd && cmd.state) ? !!cmd.state() : false; };\n"
+"doc.queryCommandValue = function(command){\n"
+"  var cmd = EDIT_CMDS[lc(command)];\n"
+"  return (cmd && cmd.value) ? String(cmd.value()) : ''; };\n"
+"doc.queryCommandSupported = function(command){ return lc(command) in EDIT_CMDS; };\n"
+"doc.queryCommandEnabled = function(command){\n"
+"  var c = lc(command);\n"
+"  if (!(c in EDIT_CMDS)) return false;\n"
+"  if (ALWAYS_ENABLED[c]) return true;\n"
+"  var r = getActiveRangeOf(); if (!r) return false;\n"
+"  return isEditableOrHost(r.startContainer) && isEditableOrHost(r.endContainer); };\n"
+"})(globalThis);\n";
+
 void js_forms_install(JSContext *ctx)
 {
     if (!ctx) return;
@@ -993,6 +1184,22 @@ void js_forms_install(JSContext *ctx)
         JS_FreeValue(ctx, e);
     }
     JS_FreeValue(ctx, r2);
+
+    /* execCommand and friends, in its own eval for the same reason as above --
+     * and AFTER SEL_SHIM, since it calls doc.getSelection(). `g_cssStyling` and
+     * `g_paraSep` live inside this eval's closure, so a fresh eval per page
+     * (js_page.c makes a new JSContext per navigation) is what resets them --
+     * there is no separate reset call to forget. */
+    JSValue r3 = JS_Eval(ctx, EDIT_SHIM, sizeof EDIT_SHIM - 1, "<editcmd>",
+                         JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(r3)) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        if (m) { int printf(const char *, ...); printf("[forms] edit shim failed: %s\n", m);
+                 JS_FreeCString(ctx, m); }
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, r3);
 
     /* Only NOW is the rich dispatcher installed: it calls __fcFireInput, which
      * the shim above just defined. Installing it earlier would mean an edit

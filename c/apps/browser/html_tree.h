@@ -38,4 +38,25 @@ struct node *html_parse(struct dom_doc **out_doc, const char *src, int len);
 struct node *html_parse_fragment(struct dom_doc **out_doc, const char *src, int len,
                                  const char *context, int ctxlen, int ctx_ns);
 
+/* Same two entry points, with Declarative Shadow DOM's opt-in made explicit
+ * instead of implied. html_parse()/html_parse_fragment() are
+ * html_parse_ex(...,0)/html_parse_fragment_ex(...,0): a <template
+ * shadowrootmode> anywhere in the source parses as an ORDINARY, inert
+ * <template> -- which is the spec-correct default for innerHTML= and
+ * DOMParser.parseFromString (they must NOT attach a declarative shadow root),
+ * and is also, today, the ONLY behaviour this tree has, because nothing yet
+ * calls the ",1" form.
+ *
+ * Per spec the opt-in should default ON for a whole document parse (the
+ * browser's real page load) and for setHTMLUnsafe()/parseHTMLUnsafe(). Wiring
+ * that call is deliberately NOT done here: it is browser.c's / js_dom.c's
+ * call to make (which document-parse call sites opt in), and js_dom.c is
+ * owned by another agent editing it concurrently -- see
+ * CLAUDE.md's shadow-dom triage, cluster C3, for the exact call this needs. */
+struct node *html_parse_ex(struct dom_doc **out_doc, const char *src, int len,
+                           int allow_declarative_shadow);
+struct node *html_parse_fragment_ex(struct dom_doc **out_doc, const char *src, int len,
+                                    const char *context, int ctxlen, int ctx_ns,
+                                    int allow_declarative_shadow);
+
 #endif /* HTML_TREE_H */

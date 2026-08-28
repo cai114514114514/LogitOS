@@ -324,19 +324,32 @@ static const char *SEMANTICS_PRELUDE =
 "  var wrapped = function (a) {\n"
 "    var an = arguments.length ? a : '';\n"
 "    if (typeof an !== 'string') an = String(an);\n"
-"    var hit = TRACKED_ATTR[an] === 1 || an === 'open';\n"
+"    var hit = TRACKED_ATTR[an] === 1 || an === 'open' || an === 'popover';\n"
 "    if (!hit) {\n"
 "      var l = lc(an);\n"
-"      if (l !== an) { an = l; hit = TRACKED_ATTR[an] === 1 || an === 'open'; }\n"
+"      if (l !== an) { an = l; hit = TRACKED_ATTR[an] === 1 || an === 'open' || an === 'popover'; }\n"
 "    }\n"
 "    if (!hit) return orig.apply(this, arguments);\n"
 "    if (TRACKED_ATTR[an] === 1) clearExplicit(this, an);\n"
+       /* The popover attribute change steps (HTML 4.13.3.1): the type has to
+        * be read BEFORE the write and compared with the type AFTER, because a
+        * beforetoggle handler run from inside hidePopoverInternal below may
+        * itself set a NEW type from in there -- and the value that must stick
+        * on exit is whatever is on the element then, not one this function
+        * invented. popoverType/popoverIsShowing/hidePopoverInternal are
+        * defined further down (section 5) but that is fine: they are function
+        * declarations in the same IIFE and are hoisted, and this closure is
+        * not CALLED until a page actually writes an attribute, long after the
+        * whole prelude has run once. */
+"    var wasPopoverShowing = (an === 'popover') && popoverIsShowing(this);\n"
+"    var oldPopoverType = (an === 'popover') ? popoverType(this) : null;\n"
 "    var r = orig.apply(this, arguments);\n"
        /* The exclusive-accordion rule. `<details name=x>` is the one attribute
         * change in HTML that reaches OTHER elements, so it has to be observed
         * where the attribute is written rather than where `open` is read --
         * and `details.open = true` is reflection, which lands right here. */
 "    if (an === 'open' && tagOf(this) === 'details') enforceDetailsName(this);\n"
+"    if (wasPopoverShowing && popoverType(this) !== oldPopoverType) hidePopoverInternal(this, true);\n"
 "    return r;\n"
 "  };\n"
 "  wrapped.__logit_sem = 1;\n"
@@ -389,6 +402,32 @@ static const char *SEMANTICS_PRELUDE =
 /* --- the popover attribute, on every HTML element ----------------------- */
 "var POPOVER_KW = { '': 'auto', 'auto': 'auto', 'manual': 'manual', 'hint': 'hint' };\n"
 "enumAttr(EP, 'popover', 'popover', POPOVER_KW, null, 'manual');\n"
+
+/* --- draggable, on every HTML element ------------------------------------
+ * NOT plain reflection and not in js_reflect.c's generated table for the
+ * same reason `popover` and `command` are not: the corpus's elements-*.js
+ * types it as a bespoke tri-state ("true"/"false"/missing-or-invalid) whose
+ * missing-or-invalid answer is not one constant but a per-ELEMENT-TYPE
+ * default -- true for <img>, true for <a>/<area> that carry an href content
+ * attribute, false for everything else, INCLUDING an element name this build
+ * has never heard of (the corpus enumerates unknown/custom tag names too).
+ * So the default is computed from the tag, never looked up in a table of
+ * known elements. The setter is a plain boolean-valued reflection: it always
+ * writes the string "true" or "false" and never removes the attribute. */
+"function draggableDefault(el) {\n"
+"  var t = tagOf(el);\n"
+"  if (t === 'img') return true;\n"
+"  if ((t === 'a' || t === 'area') && el.hasAttribute('href')) return true;\n"
+"  return false;\n"
+"}\n"
+"acc(EP, 'draggable', function () {\n"
+"  var v = this.getAttribute('draggable');\n"
+"  if (v === null) return draggableDefault(this);\n"
+"  var l = lc(v);\n"
+"  if (l === 'true') return true;\n"
+"  if (l === 'false') return false;\n"
+"  return draggableDefault(this);\n"
+"}, function (v) { this.setAttribute('draggable', v ? 'true' : 'false'); });\n"
 
 /* --- the invoker attributes, on <button> and <input> -------------------- */
 "var PTA_KW = { 'toggle': 'toggle', 'show': 'show', 'hide': 'hide' };\n"

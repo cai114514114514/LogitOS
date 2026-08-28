@@ -68,8 +68,10 @@
 #include "quickjs.h"
 #include "js_platform.h"
 #include "js_tokenlist.h"
+#include "js_characterdata.h"
 #include "js_dom.h"
 #include "dom.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 #include <string.h>
 
 int printf(const char *, ...);
@@ -80,8 +82,12 @@ int printf(const char *, ...);
  * breaks every one of them at the linker the moment it is added -- which is
  * exactly what happened to test-dom-iface. js_page.c already installs every
  * optional module this way; doing the same here means a link list that has not
- * heard of js_tokenlist.c still links, and simply has no DOMTokenList. */
-extern void js_tokenlist_install(JSContext *ctx) __attribute__((__weak__));
+ * heard of js_tokenlist.c still links, and simply has no DOMTokenList. Same
+ * reasoning for js_characterdata_install, added alongside it. */
+extern void js_tokenlist_install(JSContext *ctx) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_tokenlist_install);
+extern void js_characterdata_install(JSContext *ctx) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_characterdata_install);
 
 /* Quirks mode, from the document that actually parsed. It is not reachable
  * from JS -- nothing publishes document.compatMode -- and it decides whether
@@ -1184,5 +1190,8 @@ void js_select_install(JSContext *ctx)
      * exactly the same precondition this file does (js_dom_init has run, so
      * Element.prototype exists) and nothing more, and js_page.c is edited by
      * several lines at once. */
-    if (js_tokenlist_install) js_tokenlist_install(ctx);
+    if (LOGIT_HAVE(js_tokenlist_install)) js_tokenlist_install(ctx);
+    /* Same precondition again (js_dom_init has run, so CharacterData.prototype
+     * and Text.prototype exist), chained for the same reason. */
+    if (LOGIT_HAVE(js_characterdata_install)) js_characterdata_install(ctx);
 }

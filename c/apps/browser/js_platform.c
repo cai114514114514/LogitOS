@@ -508,9 +508,11 @@ static const char *PLATFORM_PRELUDE =
 /* ==== errors =============================================================
  * MEASURED: window.DOMException on deepseek. It is what every abort and every
  * refused API throws, and `e instanceof DOMException` is how a page tells "the
- * user cancelled" from "the code is broken". js_webapi.c's AbortController
- * throws a plain Error with .name = 'AbortError' for want of this class; it
- * keeps doing so, because changing it belongs to that file's own tests. */
+ * user cancelled" from "the code is broken". js_webapi.c's AbortController and
+ * its mkError() (the hook fetch_fail calls from C) both build AbortError /
+ * NetworkError / TimeoutError through G.DOMException now, not a plain Error
+ * wearing a `.name` property that only looked like one -- they used to fall
+ * back to Error for want of this class, and the fallback is gone. */
 "if (!G.DOMException) {\n"
 "  var DE = function DOMException(message, name) {\n"
 "    var e = Error.call(this, message);\n"
@@ -917,14 +919,25 @@ static const char *PLATFORM_PRELUDE =
  * a ReferenceError never shows its lazily-loaded content at all, and that is
  * most images on most modern pages.
  *
- * WHAT THEY HONESTLY DO. There are no scroll or resize events in this browser
- * (browser.c owns the scroll offset and dispatches neither), so an observer
- * cannot be continuous. Each one delivers its initial records -- which is a
- * real measurement, from getBoundingClientRect against the viewport, not a
- * fabricated isIntersecting:true -- and then re-evaluates a BOUNDED number of
- * times on a timer, so a page that lazy-loads on intersection loads the content
- * that is actually on screen and stops. It is not the real thing and the limit
- * is stated in RECHECKS below rather than left for someone to find.
+ * WHAT THEY HONESTLY DO, UPDATED TWICE NOW. First: browser.c grew real
+ * `scroll`/`resize` dispatch (sync_scroll / browser_resize), so IO_LIVE below
+ * re-measures every observer with a live target on both, which is what makes
+ * below-the-fold content that only reveals itself when the user scrolls arrive
+ * at all. The bounded RECHECKS timer stays as a fallback for content that
+ * never needs a scroll or resize to be seen. Second, found the same day: the
+ * events firing did not mean the ANSWER was right. `rootMargin` and
+ * `threshold` were accepted, stored, and read back correctly by their own
+ * getters, and never once consulted by the code computing an intersection --
+ * the single most dangerous shape in this file, because every property a page
+ * can read to check "did my options take" answered correctly while the
+ * geometry underneath was wrong. Both are applied now: rootMargin expands (or
+ * shrinks) the viewport rect before intersecting, and a threshold crossing is
+ * what triggers delivery, not a raw non-empty record set -- the old code
+ * pushed one record per target on every run whether or not anything had
+ * changed, which is not what a page that toggles state per callback without
+ * unobserving can survive. `root` as a scrolling ELEMENT stays genuinely
+ * unsupported -- there is exactly one root in this browser, the viewport --
+ * `opts.root` is stored only so `observer.root` reads back what was passed.
  *
  * MutationObserver is different in kind: it observes mutations, and mutations
  * are things script does, so it can be exact. The DOM's mutating methods are
@@ -938,72 +951,225 @@ static const char *PLATFORM_PRELUDE =
 "  var rect = function (el) {\n"
 "    try { return el.getBoundingClientRect(); } catch (e) { return null; }\n"
 "  };\n"
+   /* rootMargin is a 1-to-4-value CSS margin shorthand, each value px or a
+      percentage -- and the percentage is of the ROOT's own dimension on ITS
+      OWN axis (width for left/right, height for top/bottom), not one number
+      applied to both. A margin that fails to parse is not silently dropped:
+      observer-exceptions.html constructs `{rootMargin: 'auto'}` and asserts
+      the constructor throws, so this returns null on failure and the caller
+      turns that into a real SyntaxError rather than falling back to 0px. */
+"  var parseRootMargin = function (s, root) {\n"
+"    var trimmed = String(s).trim();\n"
+   /* An empty string is not "1 unparseable part" -- empty-root-margin.html
+      asserts it means a margin of size zero, and String.split on '' returns
+      [''] (one empty element), which the px/% regex below would otherwise
+      reject as a syntax error. */
+"    if (trimmed === '') return { top: 0, right: 0, bottom: 0, left: 0 };\n"
+"    var parts = trimmed.split(/\\s+/);\n"
+"    if (!parts.length || parts.length > 4) return null;\n"
+"    var vals = [];\n"
+"    for (var i = 0; i < parts.length; i++) {\n"
+"      var m = /^(-?[0-9]*\\.?[0-9]+)(px|%)$/.exec(parts[i]);\n"
+"      if (!m) return null;\n"
+"      vals.push({ n: parseFloat(m[1]), pct: m[2] === '%' });\n"
+"    }\n"
+"    if (vals.length === 1) vals = [vals[0], vals[0], vals[0], vals[0]];\n"
+"    else if (vals.length === 2) vals = [vals[0], vals[1], vals[0], vals[1]];\n"
+"    else if (vals.length === 3) vals = [vals[0], vals[1], vals[2], vals[1]];\n"
+"    var px = function (v, dim) { return v.pct ? v.n / 100 * dim : v.n; };\n"
+"    return { top: px(vals[0], root.h), right: px(vals[1], root.w),\n"
+"             bottom: px(vals[2], root.h), left: px(vals[3], root.w) };\n"
+"  };\n"
+"  var IOEntry = function IntersectionObserverEntry() {};\n"
+   /* Data properties, not accessors -- what this buys is
+      `'isIntersecting' in IntersectionObserverEntry.prototype`, which is the
+      guard the w3c/IntersectionObserver polyfill (and everything that bundles
+      it) uses to decide whether a real implementation is already present.
+      Before this the prototype was empty, the guard read false, and a page
+      installed a POLYFILL on top of a working shim -- one written against
+      real scroll events firing a synchronous callback, which is not this. */
+"  IOEntry.prototype = { constructor: IOEntry, target: null, time: 0, rootBounds: null,\n"
+"                        boundingClientRect: null, intersectionRect: null,\n"
+"                        intersectionRatio: 0, isIntersecting: false };\n"
+"  G.IntersectionObserverEntry = IOEntry;\n"
+"  var IO_LIVE = [];\n"      /* every IntersectionObserver with >=1 observed target */
 "  var IO = function IntersectionObserver(cb, opts) {\n"
-"    this._cb = cb; this._t = []; this._n = 0;\n"
+"    if (typeof cb !== 'function')\n"
+"      throw new TypeError('IntersectionObserver: callback is not a function');\n"
 "    opts = opts || {};\n"
+"    var margin = parseRootMargin(opts.rootMargin != null ? opts.rootMargin : '0px', vp());\n"
+"    if (!margin)\n"
+"      throw new SyntaxError('IntersectionObserver: rootMargin must be 1-4 px/% values');\n"
+"    var th = opts.threshold === undefined ? [0]\n"
+"           : Array.isArray(opts.threshold) ? opts.threshold.slice() : [opts.threshold];\n"
+"    for (var i = 0; i < th.length; i++)\n"
+"      if (!(th[i] >= 0 && th[i] <= 1))\n"
+"        throw new RangeError('IntersectionObserver: threshold must be within [0, 1]');\n"
+"    th.sort(function (a, b) { return a - b; });\n"
+"    this._cb = cb; this._t = []; this._n = 0; this._margin = margin; this._pending = [];\n"
 "    this.root = opts.root || null;\n"
-"    this.rootMargin = opts.rootMargin || '0px';\n"
-"    this.thresholds = Array.isArray(opts.threshold) ? opts.threshold.slice()\n"
-"                    : [typeof opts.threshold === 'number' ? opts.threshold : 0];\n"
+"    this.rootMargin = opts.rootMargin != null ? String(opts.rootMargin) : '0px';\n"
+"    this.thresholds = th;\n"
 "  };\n"
 "  IO.prototype = {\n"
 "    constructor: IO,\n"
-"    observe: function (el) { if (el && this._t.indexOf(el) < 0) { this._t.push(el); this._schedule(); } },\n"
-"    unobserve: function (el) { var i = this._t.indexOf(el); if (i >= 0) this._t.splice(i, 1); },\n"
-"    disconnect: function () { this._t = []; },\n"
-"    takeRecords: function () { return []; },\n"
+   /* `idx: -1` is a sentinel meaning "never evaluated", not "evaluated at
+      threshold 0" -- the spec requires an initial record for every newly
+      observed target regardless of whether it intersects, and 0 would collide
+      with a real threshold-0 non-intersecting state and suppress it. */
+"    observe: function (el) {\n"
+"      if (!el) return;\n"
+"      for (var i = 0; i < this._t.length; i++) if (this._t[i].el === el) return;\n"
+"      this._t.push({ el: el, idx: -1 });\n"
+"      if (IO_LIVE.indexOf(this) < 0) IO_LIVE.push(this);\n"
+"      this._schedule();\n"
+"    },\n"
+"    unobserve: function (el) {\n"
+"      for (var i = 0; i < this._t.length; i++)\n"
+"        if (this._t[i].el === el) { this._t.splice(i, 1); break; }\n"
+"      if (!this._t.length) { var j = IO_LIVE.indexOf(this); if (j >= 0) IO_LIVE.splice(j, 1); }\n"
+"    },\n"
+"    disconnect: function () {\n"
+"      this._t = [];\n"
+"      var j = IO_LIVE.indexOf(this); if (j >= 0) IO_LIVE.splice(j, 1);\n"
+"    },\n"
+"    takeRecords: function () { var r = this._pending; this._pending = []; return r; },\n"
 "    _schedule: function () {\n"
 "      if (this._armed) return;\n"
 "      this._armed = true;\n"
 "      var self = this;\n"
 "      setTimeout(function () { self._armed = false; self._run(); }, 0);\n"
 "    },\n"
+   /* Deliver only on a THRESHOLD CROSSING (or a target's first evaluation),
+      never unconditionally -- entries.forEach(e => if (e.isIntersecting)
+      load()) is the near-universal idiom and survives repeat delivery by
+      luck; the equally common idiom that toggles state on every callback
+      without unobserving does not, and would re-render on every scroll pixel
+      if this delivered every run regardless of whether anything crossed. */
 "    _run: function () {\n"
-"      var v = vp(), recs = [], self = this;\n"
-"      this._t.forEach(function (el) {\n"
-"        var r = rect(el);\n"
+"      var v = vp(), m = this._margin, self = this;\n"
+   /* `0 - m.top`, not `-m.top` -- unary negation of a literal +0 margin
+      produces IEEE754 negative zero, and empty-root-margin.html's
+      assert_equals distinguishes it from positive 0 and fails on the sign
+      alone, never mind the value. */
+"      var root = { top: 0 - m.top, left: 0 - m.left, right: v.w + m.right, bottom: v.h + m.bottom };\n"
+"      root.width = root.right - root.left; root.height = root.bottom - root.top;\n"
+"      var recs = [];\n"
+"      this._t.forEach(function (e) {\n"
+"        var r = rect(e.el);\n"
 "        if (!r) return;\n"
-"        var ix = Math.max(0, Math.min(r.right, v.w) - Math.max(r.left, 0));\n"
-"        var iy = Math.max(0, Math.min(r.bottom, v.h) - Math.max(r.top, 0));\n"
+   /* isIntersecting is an EDGE-INCLUSIVE rectangle overlap test, computed on
+      the UNCLAMPED overlap (ixRaw/iyRaw can go negative -- that is what "no
+      overlap" looks like), not "ratio > 0". A root shrunk by a negative
+      rootMargin to exactly zero height still touches a target that spans it,
+      and root-margin-rounding.html exists because that zero can come out
+      -0.0000001 by floating point, which the 0.01px slop absorbs without
+      ever letting two genuinely separate rects claim to touch. */
+"        var ixRaw = Math.min(r.right, root.right) - Math.max(r.left, root.left);\n"
+"        var iyRaw = Math.min(r.bottom, root.bottom) - Math.max(r.top, root.top);\n"
+"        var intersects = ixRaw >= -0.01 && iyRaw >= -0.01;\n"
+"        var ix = Math.max(0, ixRaw), iy = Math.max(0, iyRaw);\n"
 "        var area = (r.width || 0) * (r.height || 0);\n"
-"        var ratio = area > 0 ? (ix * iy) / area : 0;\n"
-"        recs.push({ target: el, isIntersecting: ix > 0 && iy > 0, intersectionRatio: ratio,\n"
-"                    boundingClientRect: r, rootBounds: { top: 0, left: 0, right: v.w, bottom: v.h,\n"
-"                                                         width: v.w, height: v.h, x: 0, y: 0 },\n"
-"                    intersectionRect: { top: Math.max(r.top, 0), left: Math.max(r.left, 0),\n"
-"                                        width: ix, height: iy },\n"
-"                    time: performance.now() });\n"
+"        var ratio = area > 0 ? (ix * iy) / area : (intersects ? 1 : 0);\n"
+"        var idx = 0;\n"
+"        for (var i = 0; i < self.thresholds.length; i++) if (ratio >= self.thresholds[i]) idx = i + 1;\n"
+"        if (idx === e.idx) return;\n"
+"        e.idx = idx;\n"
+"        var entry = Object.create(IOEntry.prototype);\n"
+"        entry.target = e.el; entry.time = performance.now();\n"
+"        entry.isIntersecting = intersects; entry.intersectionRatio = ratio;\n"
+"        entry.boundingClientRect = r;\n"
+"        entry.rootBounds = { top: root.top, left: root.left, right: root.right, bottom: root.bottom,\n"
+"                             width: root.width, height: root.height, x: root.left, y: root.top };\n"
+"        entry.intersectionRect = { top: Math.max(r.top, root.top), left: Math.max(r.left, root.left),\n"
+"                                   width: ix, height: iy };\n"
+"        recs.push(entry);\n"
 "      });\n"
-"      if (recs.length) { try { this._cb(recs, this); } catch (e) { G.reportError(e); } }\n"
+       /* Delivery is a microtask, as the spec says, and it is what makes
+          takeRecords() meaningful: called between a run and the microtask
+          draining _pending, it takes those records itself and the queued
+          microtask then finds nothing left to deliver. */
+"      if (recs.length) {\n"
+"        self._pending = self._pending.concat(recs);\n"
+"        if (!self._qd) {\n"
+"          self._qd = true;\n"
+"          Promise.resolve().then(function () {\n"
+"            self._qd = false;\n"
+"            var r = self._pending; self._pending = [];\n"
+"            if (r.length) { try { self._cb(r, self); } catch (e) { G.reportError(e); } }\n"
+"          });\n"
+"        }\n"
+"      }\n"
 "      if (++this._n < RECHECKS && this._t.length)\n"
 "        setTimeout(function () { self._run(); }, 100);\n"
 "    }\n"
 "  };\n"
+"  var reschedule_live = function () {\n"
+"    for (var i = 0; i < IO_LIVE.length; i++) IO_LIVE[i]._schedule();\n"
+"  };\n"
+"  G.addEventListener('scroll', reschedule_live);\n"
+"  G.addEventListener('resize', reschedule_live);\n"
 "  G.IntersectionObserver = IO;\n"
-"  G.IntersectionObserverEntry = function IntersectionObserverEntry() {};\n"
 "}\n"
 "if (!G.ResizeObserver) {\n"
-"  var RO = function ResizeObserver(cb) { this._cb = cb; this._t = []; this._n = 0; };\n"
+"  var ROEntry = function ResizeObserverEntry() {};\n"
+"  ROEntry.prototype = { constructor: ROEntry, target: null, contentRect: null,\n"
+"                        borderBoxSize: null, contentBoxSize: null, devicePixelContentBoxSize: null };\n"
+"  G.ResizeObserverEntry = ROEntry;\n"
+"  var RO = function ResizeObserver(cb) {\n"
+"    if (typeof cb !== 'function')\n"
+"      throw new TypeError('ResizeObserver: callback is not a function');\n"
+"    this._cb = cb; this._t = []; this._n = 0; this._pending = [];\n"
+"  };\n"
 "  RO.prototype = {\n"
 "    constructor: RO,\n"
-"    observe: function (el) { if (el && this._t.indexOf(el) < 0) { this._t.push(el); this._schedule(); } },\n"
-"    unobserve: function (el) { var i = this._t.indexOf(el); if (i >= 0) this._t.splice(i, 1); },\n"
+   /* `w: -1, h: -1` is the same never-evaluated sentinel as IO's `idx: -1` --
+      a real box can be exactly 0x0 (a collapsed element) and that must still
+      produce one initial record. */
+"    observe: function (el) {\n"
+"      if (!el) return;\n"
+"      for (var i = 0; i < this._t.length; i++) if (this._t[i].el === el) return;\n"
+"      this._t.push({ el: el, w: -1, h: -1 });\n"
+"      this._schedule();\n"
+"    },\n"
+"    unobserve: function (el) {\n"
+"      for (var i = 0; i < this._t.length; i++)\n"
+"        if (this._t[i].el === el) { this._t.splice(i, 1); return; }\n"
+"    },\n"
 "    disconnect: function () { this._t = []; },\n"
+"    takeRecords: function () { var r = this._pending; this._pending = []; return r; },\n"
 "    _schedule: function () {\n"
 "      if (this._armed) return;\n"
 "      this._armed = true;\n"
 "      var self = this;\n"
 "      setTimeout(function () { self._armed = false; self._run(); }, 0);\n"
 "    },\n"
+   /* Same crossing discipline as IO's, over box size instead of a ratio:\n"
+      deliver only when the measured box actually changed, or 60 identical\n"
+      callbacks a second replace the old bounded-death bug with a livelock. */
 "    _run: function () {\n"
 "      var recs = [], self = this;\n"
-"      this._t.forEach(function (el) {\n"
-"        var r; try { r = el.getBoundingClientRect(); } catch (e) { return; }\n"
+"      this._t.forEach(function (e) {\n"
+"        var r; try { r = e.el.getBoundingClientRect(); } catch (ex) { return; }\n"
+"        if (r.width === e.w && r.height === e.h) return;\n"
+"        e.w = r.width; e.h = r.height;\n"
 "        var box = [{ inlineSize: r.width, blockSize: r.height }];\n"
-"        recs.push({ target: el, contentRect: r, borderBoxSize: box, contentBoxSize: box,\n"
-"                    devicePixelContentBoxSize: box });\n"
+"        var entry = Object.create(ROEntry.prototype);\n"
+"        entry.target = e.el; entry.contentRect = r; entry.borderBoxSize = box;\n"
+"        entry.contentBoxSize = box; entry.devicePixelContentBoxSize = box;\n"
+"        recs.push(entry);\n"
 "      });\n"
-"      if (recs.length) { try { this._cb(recs, this); } catch (e) { G.reportError(e); } }\n"
+"      if (recs.length) {\n"
+"        self._pending = self._pending.concat(recs);\n"
+"        if (!self._qd) {\n"
+"          self._qd = true;\n"
+"          Promise.resolve().then(function () {\n"
+"            self._qd = false;\n"
+"            var r = self._pending; self._pending = [];\n"
+"            if (r.length) { try { self._cb(r, self); } catch (ex) { G.reportError(ex); } }\n"
+"          });\n"
+"        }\n"
+"      }\n"
 "      if (++this._n < RECHECKS && this._t.length)\n"
 "        setTimeout(function () { self._run(); }, 100);\n"
 "    }\n"

@@ -50,8 +50,9 @@
 /* `__weak__`, not `weak`: mini-libc's features.h is force-included into every
  * browser TU (`-include features.h`) and it #defines `weak`, so the plain
  * spelling expands inside the attribute and stops compiling. */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_WEBAPI_OPTIONAL
-#  define WEBAPI_FN __attribute__((__weak__))
+#  define WEBAPI_FN LOGIT_WEAK
 #else
 #  define WEBAPI_FN
 #endif
@@ -121,5 +122,19 @@ WEBAPI_FN void js_webapi_set_viewport(int w, int h);
  * the DOM the caller is standing on. This is the hook for doing it safely from
  * the top of the event loop. */
 WEBAPI_FN int  js_webapi_take_navigation(char *out, int max);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_WEBAPI_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_WEBAPI_OPTIONAL
+LOGIT_WEAK_STUB(js_webapi_set_net);
+LOGIT_WEAK_STUB(js_webapi_install);
+LOGIT_WEAK_STUB(js_webapi_pump);
+LOGIT_WEAK_STUB(js_webapi_pending);
+LOGIT_WEAK_STUB(js_webapi_close);
+LOGIT_WEAK_STUB(js_webapi_set_viewport);
+LOGIT_WEAK_STUB(js_webapi_take_navigation);
+#endif
 
 #endif /* LOGIT_JS_WEBAPI_H */

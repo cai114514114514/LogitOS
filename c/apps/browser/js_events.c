@@ -537,6 +537,50 @@ static const char EVENTS_JS[] =
 "  return fresh;\n"
 "}\n"
 "\n"
+/* ---- upgrading a bare Event to its named interface at dispatch time -----
+ *
+ * window.dispatchEvent(new Event('popstate')) and the 'hashchange' twin are
+ * how this engine's own navigation code fires both events (js_webapi.c's
+ * `fire` builds `new Event(type)` and pins `state`/`oldURL`/`newURL` on as
+ * plain own properties afterward, rather than going through the
+ * PopStateEvent/HashChangeEvent constructors this file installs above).
+ * That is legal JS and the object dispatches correctly -- listeners run,
+ * preventDefault works, e.state/e.oldURL/e.newURL all read back right --
+ * but it is an instance of Event, not of PopStateEvent or HashChangeEvent,
+ * because the C-backed constructor was never told which subclass to build.
+ * A page or a library that narrows the listener argument with `e instanceof
+ * PopStateEvent` (React Router and a minority of others do exactly this,
+ * and it is what idlharness checks with `e.constructor.name`) sees a plain
+ * Event and takes whatever branch is for "not this kind of event" -- no
+ * exception, the state is right there on the object, and the narrowing
+ * silently goes the wrong way.
+ *
+ * The general fix belongs in the constructor call, not here -- but the
+ * constructor call is a single line inside js_webapi.c's `fire`, a file
+ * this pass does not own. What this file DOES own is the one chokepoint
+ * every dispatch in the document passes through regardless of who built
+ * the event: patchTarget's wrapped dispatchEvent, a few lines below. So the
+ * fix lands there instead, and it is deliberately narrow: only an event
+ * whose CURRENT prototype is still the bare native Event.prototype gets
+ * retargeted, and only for the two names this file's own interface table
+ * already knows how to build. A page that constructs `new
+ * PopStateEvent(...)` itself already has the right prototype and this is a
+ * no-op for it; a page that constructs `new Event('popstate')` on purpose
+ * to assert it stays a plain Event is the one case this deliberately does
+ * NOT preserve -- traded away because the browser's own navigation firing
+ * the identical shape is the overwhelmingly more common path, and getting
+ * that one right is what unblocks a router's `instanceof` guard. */
+"var AUTO_RETYPE = { popstate: 'PopStateEvent', hashchange: 'HashChangeEvent' };\n"
+"function autoUpgrade(ev) {\n"
+"  var want = AUTO_RETYPE[ev.type];\n"
+"  if (!want) return ev;\n"
+"  var C = G[want];\n"
+"  if (typeof C !== 'function' || !C.prototype) return ev;\n"
+"  if (Object.getPrototypeOf(ev) !== EvProto) return ev;\n"
+"  try { Object.setPrototypeOf(ev, C.prototype); } catch (q) {}\n"
+"  return ev;\n"
+"}\n"
+"\n"
 /* ---- the dispatch depth bound -------------------------------------------
  *
  * dispatchEvent is a NATIVE TRAMPOLINE: JS calls it, it calls into C, and the
@@ -635,6 +679,7 @@ static const char EVENTS_JS[] =
 "  if (typeof nDisp === 'function') {\n"
 "    var disp = function (ev) {\n"
 "      checkDispatchable(ev);\n"
+"      autoUpgrade(ev);\n"
 "      var x = xof(ev);\n"
 /*     The propagation flag OUTLIVES the dispatch that did not set it. Calling
  *     stopPropagation() on an idle event suppresses the NEXT dispatch

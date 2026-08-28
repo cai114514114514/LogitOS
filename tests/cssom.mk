@@ -39,7 +39,8 @@ CSSOM_TEST_SRC := tests/unit/cssom_test.c \
                   c/apps/browser/css_extra.c \
                   c/apps/browser/layout.c c/apps/browser/layout_text.c \
                   c/apps/browser/js_select.c \
-                  c/apps/browser/js_tokenlist.c
+                  c/apps/browser/js_tokenlist.c \
+                  c/apps/browser/js_characterdata.c
 
 $(CSSOM_DIR)/cssom_test: $(CSSOM_TEST_SRC) $(HTML_PARSER_SRC) \
                          $(BUILD)/libcss_host.a

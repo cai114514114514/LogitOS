@@ -47,8 +47,9 @@
 #ifndef URL_CORE_ONLY
 #include "quickjs.h"
 
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_URLBIND_OPTIONAL
-#  define URLBIND_FN __attribute__((__weak__))
+#  define URLBIND_FN LOGIT_WEAK
 #else
 #  define URLBIND_FN
 #endif
@@ -60,6 +61,15 @@ URLBIND_FN void js_urlbind_install(JSContext *ctx);
  * it is the one answer several files need and none of them should compute
  * twice. */
 URLBIND_FN char *js_urlbind_base_href(JSContext *ctx);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_URLBIND_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_URLBIND_OPTIONAL
+LOGIT_WEAK_STUB(js_urlbind_install);
+LOGIT_WEAK_STUB(js_urlbind_base_href);
+#endif
 #endif
 
 #endif /* LOGIT_JS_URLBIND_H */

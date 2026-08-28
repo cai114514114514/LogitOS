@@ -292,6 +292,51 @@ int tab_hist_go(struct tab *t, int delta, char *out, int max)
     return 1;
 }
 
+/* How many FULL-LOAD entries sit behind this tab's current position: entries
+ * a Back would still be able to reach without ever touching js_webapi.c's
+ * same-document stack. 0 at the tab's very first entry, or when there is no
+ * history at all (hcur < 0, a tab that has never navigated).
+ *
+ * WHY THIS EXISTS, and why it is exactly one accessor and not a second copy
+ * of history.length's arithmetic: this file's hist[] and js_webapi.c's
+ * g_hist[] are two views of ONE joint session history for a tab -- hist[]
+ * moves only on a full document load (browser.c's navigation path calls
+ * tab_hist_push/tab_hist_replace), g_hist[] moves only on pushState/
+ * replaceState/traversal WITHIN the currently loaded document, and it is
+ * reset to a single entry every time hist[] gains a new one. Neither file
+ * can see the other's count, so `history.length` -- which the WHATWG spec
+ * defines over the JOINT list -- currently reports only g_hist_n: 1 on a
+ * freshly loaded page no matter how many real navigations a session has
+ * behind it, which is what makes the extremely common
+ * `history.length > 1 ? history.back() : router.push('/')` guard always
+ * take the fallback branch on first load.
+ *
+ * This is the one number tabs.c can hand across that seam: the caller adds
+ * it to g_hist_n to get a correct FLOOR for history.length. It is a floor
+ * and not the exact joint count on purpose -- entries AHEAD of hcur (see
+ * tab_hist_ahead() below) exist only in the narrow window between a Back
+ * and the next navigation, and a caller that wants the exact WHATWG number
+ * adds that too. Undercounting the length is the safe direction for the
+ * `length > 1` idiom above: it can only make the fallback branch fire when
+ * it need not, never the reverse. */
+int tab_hist_behind(const struct tab *t)
+{
+    if (!t || t->hcur < 0) return 0;
+    return t->hcur;
+}
+
+/* The mirror of tab_hist_behind(): FULL-LOAD entries still reachable with
+ * Forward. Non-zero only in the window between a Back and whatever
+ * navigation truncates it (tab_hist_push always sets htop = hcur, so a
+ * fresh load collapses this back to 0 -- see the comment there on why
+ * leaving those entries allocated would be a leak, which is the same reason
+ * they are also not part of the joint history once truncated). */
+int tab_hist_ahead(const struct tab *t)
+{
+    if (!t || t->hcur < 0 || t->htop < t->hcur) return 0;
+    return t->htop - t->hcur;
+}
+
 /* ============================== persistence ============================== */
 
 static const struct bstore_ops *g_store;

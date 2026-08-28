@@ -91,16 +91,21 @@
 #include "layout.h"
 #include "js_dom.h"
 #include "js_cssom.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* layout.c is linked into the browser and into the CSS audit, and is NOT
  * linked into the host WPT runner or the DOM unit tests. Weak, exactly as
  * js_dom.c declares the same two, so this file builds and behaves in both. */
-extern void  layout_page(struct node *root, int canvas_w) __attribute__((__weak__));
-extern int   layout_count(void) __attribute__((__weak__));
-extern const struct item *layout_items(void) __attribute__((__weak__));
+extern void  layout_page(struct node *root, int canvas_w) LOGIT_WEAK;
+extern int   layout_count(void) LOGIT_WEAK;
+extern const struct item *layout_items(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_page);
+LOGIT_WEAK_STUB(layout_count);
+LOGIT_WEAK_STUB(layout_items);
 /* The document's laid-out height. Weak for the same reason and read only
  * through doc_size(), which falls back to the display list's own extent. */
-extern int   layout_height(void) __attribute__((__weak__));
+extern int   layout_height(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_height);
 
 /* THE BOX TABLE -- a side table keyed by node, one record per element that
  * GENERATED a box, whether or not it painted. Everything below used to derive
@@ -118,9 +123,11 @@ extern int   layout_height(void) __attribute__((__weak__));
  * Weak like the four above, and gated the same way: without layout.c linked
  * (the DOM unit tests) the old paths still run. */
 extern int   layout_node_box(const struct node *n, int *x, int *y, int *w, int *h)
-             __attribute__((__weak__));
+             LOGIT_WEAK;
 extern int   layout_node_scroll(const struct node *n, int *w, int *h)
-             __attribute__((__weak__));
+             LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_node_box);
+LOGIT_WEAK_STUB(layout_node_scroll);
 
 /* ==========================================================================
  * From a JSValue back to a struct node
@@ -224,7 +231,7 @@ static int have_layout(void)
      * assertions are reading real boxes rather than agreeing 0 == 0. */
     return 0;
 #endif
-    return &layout_count != 0 && &layout_items != 0 && &layout_page != 0;
+    return LOGIT_HAVE(layout_count) && LOGIT_HAVE(layout_items) && LOGIT_HAVE(layout_page);
 }
 
 static void flush_layout(void)
@@ -321,7 +328,7 @@ static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
      * Under CSSOM_NEGCTL_INKUNION this is skipped so the control still measures
      * the ink-union answer it exists to reject. */
 #ifndef CSSOM_NEGCTL_INKUNION
-    if (&layout_node_box != 0 && layout_node_box(el, ox, oy, ow, oh)) {
+    if (LOGIT_HAVE(layout_node_box) && layout_node_box(el, ox, oy, ow, oh)) {
         boxstat("EXACT", el);
         return 1;
     }
@@ -380,7 +387,7 @@ static int overflow_box(struct node *el, int *ow, int *oh)
      * ARE. The ink union below cannot approximate it: a scroller whose children
      * paint nothing measures small rather than unknown, and on elementScroll.html
      * a container with a real range of 200 measured 6. */
-    if (&layout_node_scroll != 0 && el && layout_node_scroll(el, ow, oh)) return 1;
+    if (LOGIT_HAVE(layout_node_scroll) && el && layout_node_scroll(el, ow, oh)) return 1;
 
     int n = 0;
     const struct item *it = items(&n);
@@ -499,7 +506,7 @@ static void doc_size(int *dw, int *dh)
         if (bx > x1) x1 = bx;
         if (by > y1) y1 = by;
     }
-    if (have_layout() && &layout_height != 0) {
+    if (have_layout() && LOGIT_HAVE(layout_height)) {
         int lh = layout_height();
         if (lh > y1) y1 = lh;
     }
@@ -559,9 +566,33 @@ static void win_scroll_max(int *mx, int *my)
 static void win_scroll_set(double x, double y)
 {
     int mx, my; win_scroll_max(&mx, &my);
-    g_win_sx = (int)clampd(x, 0, mx);
-    g_win_sy = (int)clampd(y, 0, my);
+    int nx = (int)clampd(x, 0, mx);
+    int ny = (int)clampd(y, 0, my);
+    /* The `scroll` event, on the JS-driven half of scrolling.
+     *
+     * ONE JAR, TWO DOORS: browser.c's sync_scroll() dispatches `scroll` for
+     * the embedder-driven half (wheel, drag, PgUp/PgDn) against its OWN
+     * position variable (`scroll`) -- but window.scrollTo/scrollBy/scroll,
+     * scrollIntoView and `body.scrollTop = n` all land HERE, against g_win_sx/
+     * g_win_sy, a second independently-maintained position that exists (see
+     * the comment above it) precisely because the host test runner has no
+     * browser.c to own one. A page that does `window.scrollTo(0, 999)` and
+     * listens for `scroll` -- which is most of the WPT cssom-view scroll-event
+     * corpus, since a test harness cannot send a real wheel event either -- is
+     * on THIS door, not that one, and dispatching in only one of the two
+     * doors is the exact bug this tree has already paid for three times (see
+     * CLAUDE.md's "ONE JAR, TWO DOORS"). Guarded the same way sync_scroll
+     * guards itself: only on an actual change, so a script that polls
+     * scrollTo(x, y) with the same x/y in a loop does not get an event storm
+     * spec says should not exist. */
+    int changed = nx != g_win_sx || ny != g_win_sy;
+    g_win_sx = nx;
+    g_win_sy = ny;
     js_dom_set_scroll(g_win_sx, g_win_sy);
+    if (changed) {
+        struct js_event_init si = { 0 };
+        js_dom_dispatch(js_dom_root(), "scroll", &si);
+    }
 }
 
 /* The clamp bound for one axis of one element, or -1 for "unknown, do not

@@ -28,4 +28,25 @@ char *dom_serialize_test(const struct node *root);
  * 1 gives outerHTML (the node itself included). */
 char *dom_serialize_html(const struct node *n, int include_self);
 
+/* getHTML()'s three-way behaviour ("13.2.6.1 ... element serializing steps"
+ * with the shadow-serialising steps folded in). The default (no options) and
+ * the all-false form MUST equal dom_serialize_html(n,include_self) BYTE FOR
+ * BYTE -- shadow-dom/declarative/gethtml.html's own control asserts exactly
+ * that identity for every non-shadow element, so the shadow branch below must
+ * add NOTHING when both of the following are empty/false, and it does not:
+ * dom_serialize_html is defined as this function called with (0,0,0).
+ *
+ * `roots`/`nroots`: an explicit set of ShadowRoot nodes to serialize
+ * regardless of their SHADOW_SERIALIZABLE flag or mode -- Element.getHTML's
+ * `shadowRoots` dictionary member. May be NULL/0.
+ *
+ * `all_serializable`: additionally serialize every descendant shadow root
+ * whose OWN SHADOW_SERIALIZABLE flag is set -- the `serializableShadowRoots`
+ * option. The explicit list and this flag are independent: a root in `roots[]`
+ * is serialized even when this is false and even when the root is CLOSED --
+ * the explicit list overrides both, per spec. */
+char *dom_serialize_html_opt(const struct node *n, int include_self,
+                             const struct node *const *roots, int nroots,
+                             int all_serializable);
+
 #endif /* DOM_SERIALIZE_H */

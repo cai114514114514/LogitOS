@@ -59,11 +59,20 @@ enum {
     NF_WRAPLISTED = 1u << 1,   /* node is on doc's wrap_next chain (never cleared:
                                 * see dom_clear_wrappers) */
     NF_SELF_CLOSED = 1u << 2,  /* start tag ended in "/>" (informational) */
-    NF_SCRIPT_DONE = 1u << 3   /* a <script> already prepared+run: parser-run
+    NF_SCRIPT_DONE = 1u << 3,  /* a <script> already prepared+run: parser-run
                                 * scripts are stamped so DOM insertion of the
                                 * SAME node (or re-insertion) never re-runs it.
                                 * See dom_script_mark_done / dom_script_is_done
                                 * and 2026-08-16-inserted-script-execution. */
+    NF_SHADOW_TEMPLATE = 1u << 4  /* html_tree.c: this <template> carries a
+                                * RECOGNISED shadowrootmode and is a pending
+                                * declarative shadow attach, to be converted at
+                                * its end tag. shadow_mode/shadow_flags (below)
+                                * hold the pending values in the meantime -- see
+                                * "shadow trees" further down and html_tree.c's
+                                * in_head TEMPLATE handling. Never set for an
+                                * unrecognised shadowrootmode value: that
+                                * template stays perfectly ordinary. */
 };
 
 /* Well-known tag ids. 0 = unknown/other; the value is stable for switch().
@@ -169,6 +178,20 @@ struct node {
                                      * wrapper (see dom_clear_wrappers) */
 
     const char *pubid, *sysid;      /* N_DOCTYPE: PUBLIC/SYSTEM identifiers */
+
+    /* ---------------- shadow trees (see "shadow trees" below) ---------------- */
+    struct node *shadow;            /* the attached ShadowRoot, or NULL. Meaningful
+                                     * on an element that is a shadow HOST. A
+                                     * shadow root is deliberately NOT a child in
+                                     * the first_child/last_child sense -- see
+                                     * dom_attach_shadow -- so this is the only
+                                     * way to reach one. */
+    uint8_t  shadow_mode;           /* SHADOW_MODE_*: meaningful only ON a
+                                     * shadow-root node (dom_is_shadow_root), or,
+                                     * transiently, on a <template> node between
+                                     * its start and end tag (NF_SHADOW_TEMPLATE). */
+    uint8_t  shadow_flags;          /* SHADOW_* bits below: same scoping as
+                                     * shadow_mode. */
 };
 
 /* A <script> node's run-once flag (NF_SCRIPT_DONE). dom.c owns the field;
@@ -319,6 +342,101 @@ void dom_clear_wrappers(struct dom_doc *d);
 /* css_engine registers how to release node->computed, so dom.c stays free of
  * any LibCSS dependency beyond libwapcaplet. */
 void dom_set_computed_free(void (*fn)(void *));
+
+/* ---------------- shadow trees ---------------- */
+/*
+ * This is the one absent primitive shadow-dom/CLAUDE.md's triage names: a real
+ * shadow tree, structurally invisible to every existing first_child walk
+ * (layout.c, css_engine.c, dom_serialize.c's ordinary path, the 21 walks in
+ * forms.c, ...) until each is deliberately taught to look for it -- so
+ * attaching a shadow root today changes nothing about how a page renders,
+ * which is the correct intermediate state (see the flat-tree section below)
+ * rather than a silent half-render.
+ *
+ * There is no new node TYPE for a ShadowRoot. It is an ordinary N_ELEM whose
+ * tag is DOM_SHADOW_TAG -- the exact precedent js_dom.c's FRAG_TAG
+ * ("#document-fragment") already sets for DocumentFragment: the HTML
+ * tokenizer can never produce a tag name starting with '#', so the string is
+ * unambiguous and every existing "is this an element" check keeps working on
+ * it unmodified.
+ */
+
+/* ShadowRoot.mode. */
+enum { SHADOW_MODE_OPEN = 0, SHADOW_MODE_CLOSED = 1 };
+
+/* node->shadow_flags, meaningful only ON a shadow-root node (dom_is_shadow_root)
+ * -- or, transiently, on a <template> carrying NF_SHADOW_TEMPLATE, where these
+ * are the PENDING values html_tree.c will apply at the end tag.
+ *
+ * SHADOW_DECLARATIVE marks a root html_tree.c built from
+ * <template shadowrootmode>, as opposed to a script's attachShadow() call --
+ * see dom_attach_shadow's reuse rule just below. It is cleared the moment an
+ * imperative attachShadow() adopts the root, per spec: after that the root is
+ * indistinguishable from one that was never declarative. */
+enum {
+    SHADOW_DELEGATES_FOCUS = 1u << 0,
+    SHADOW_CLONABLE        = 1u << 1,
+    SHADOW_SERIALIZABLE    = 1u << 2,
+    SHADOW_MANUAL_SLOT     = 1u << 3,   /* slotAssignment === "manual" */
+    SHADOW_DECLARATIVE     = 1u << 4
+};
+
+#define DOM_SHADOW_TAG "#shadow-root"
+/* True for a node created by dom_attach_shadow (tag == DOM_SHADOW_TAG). The
+ * one place that spells the sentinel string; everything else asks this. */
+int dom_is_shadow_root(const struct node *n);
+
+/* Attach a shadow root to `host`, or -- the one exception -- REUSE an existing
+ * DECLARATIVE one of the same mode. Returns the ShadowRoot node, or NULL when
+ * the attach must be refused:
+ *
+ *   - host is not an N_ELEM,
+ *   - host already carries a shadow root that is NOT declarative (a second
+ *     attachShadow() call, or html_tree.c re-encountering a SECOND
+ *     <template shadowrootmode> under the same host -- both are spec parse
+ *     errors / NotSupportedError and must leave everything alone: the caller
+ *     gets NULL and must not touch `host` or its children on that path),
+ *   - host carries a declarative root of a DIFFERENT mode (treated the same
+ *     as "already has a shadow root" -- refused, not switched),
+ *   - the allocator is out of memory.
+ *
+ * The reuse case is what lets a real attachShadow() call on a host whose
+ * declarative shadow root came from <template shadowrootmode> take over that
+ * SAME root object (identity, not a replacement) rather than throwing:
+ * `dom_destroy_children` clears it, `flags` overwrites shadow_flags (with
+ * SHADOW_DECLARATIVE cleared -- callers that mean to keep it OR it back in),
+ * and the existing node is returned unchanged in identity. This is the only
+ * function that ever sets host->shadow; nothing else may write that field. */
+struct node *dom_attach_shadow(struct node *host, int mode, unsigned flags);
+
+/* ---------------- the flat (composed) tree ---------------- */
+/*
+ * NOT WIRED IN anywhere yet -- layout.c, css_engine.c and every other render
+ * walk still use first_child/next directly, so a page that calls
+ * attachShadow() renders its light-tree content exactly as if shadow DOM did
+ * not exist and the shadow tree itself is simply never drawn (see CLAUDE.md's
+ * shadow-dom C9 for the scoped, flag-gated conversion this is the primitive
+ * for -- that conversion touches layout.c/css_engine.c, which this change
+ * does not).
+ *
+ * dom_flat_first_child(n): for a shadow HOST (n->shadow set), the flat
+ * children are the shadow root's children -- the light children are skipped
+ * ENTIRELY, per spec. Otherwise, n's own first_child.
+ *
+ * dom_flat_next_sibling(n): always n->next. The flat tree's sibling order
+ * within any one parent (a shadow root's children, or an ordinary element's)
+ * is a real DOM sibling chain in every case this function currently knows
+ * about, so no separate bookkeeping is needed for it.
+ *
+ * KNOWN GAP, disclosed rather than hidden: slot assignment (a <slot>'s flat
+ * children being its ASSIGNED nodes rather than its own light children) is
+ * NOT implemented -- there is no assigned-node list anywhere in this file.
+ * dom_flat_first_child(slot) therefore returns the slot's own children, which
+ * is only the right answer for a slot with nothing assigned to it (fallback
+ * content). A page that assigns real content to a slot will not see it
+ * through these two functions until that machinery exists. */
+struct node *dom_flat_first_child(const struct node *n);
+struct node *dom_flat_next_sibling(const struct node *n);
 
 /* ---------------- interned atoms ---------------- */
 

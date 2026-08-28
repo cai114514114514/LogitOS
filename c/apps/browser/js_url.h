@@ -104,8 +104,9 @@ char *url_host_parse(const char *s, int len, int opaque);
 #include "quickjs.h"
 /* Weak under JS_URL_OPTIONAL, the convention js_webapi.h / js_events.h use:
  * js_page.c's own host tests link without this TU and must still link. */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_URL_OPTIONAL
-#  define URL_FN __attribute__((__weak__))
+#  define URL_FN LOGIT_WEAK
 #else
 #  define URL_FN
 #endif
@@ -113,6 +114,14 @@ char *url_host_parse(const char *s, int len, int opaque);
  * built on c/net/http/url.c; this replaces it outright, and replacing it means
  * running after it. */
 URL_FN void js_url_install(JSContext *ctx);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_URL_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_URL_OPTIONAL
+LOGIT_WEAK_STUB(js_url_install);
+#endif
 #endif
 
 #endif /* LOGIT_JS_URL_H */

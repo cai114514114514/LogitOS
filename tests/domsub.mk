@@ -50,6 +50,7 @@ URLELEM_SRC := tests/unit/urlelem_test.c \
                c/apps/browser/js_webapi.c c/apps/browser/js_platform.c \
                c/apps/browser/js_select.c c/apps/browser/js_intl.c \
                c/apps/browser/js_module.c c/apps/browser/js_tokenlist.c \
+               c/apps/browser/js_characterdata.c \
                c/apps/browser/js_reflect.c \
                c/apps/browser/js_url.c c/apps/browser/js_urlbind.c \
                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \

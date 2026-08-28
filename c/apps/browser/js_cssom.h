@@ -30,8 +30,9 @@
  * without this file. `__weak__` rather than `weak` because mini-libc's
  * features.h is force-included into every browser TU and #defines the plain
  * spelling (see the same note in js_webapi.h). */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_CSSOM_OPTIONAL
-#  define CSSOM_FN __attribute__((__weak__))
+#  define CSSOM_FN LOGIT_WEAK
 #else
 #  define CSSOM_FN
 #endif
@@ -104,6 +105,15 @@ CSSOM_FN void js_cssom_install(JSContext *ctx);
 /* Drop the node lookup cache and the per-page side tables. Call from the page
  * teardown path, before JS_FreeContext. Safe to call twice. */
 CSSOM_FN void js_cssom_close(JSContext *ctx);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_CSSOM_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_CSSOM_OPTIONAL
+LOGIT_WEAK_STUB(js_cssom_install);
+LOGIT_WEAK_STUB(js_cssom_close);
+#endif
 
 /* What a REFLOW means, registered by the embedder.
  *

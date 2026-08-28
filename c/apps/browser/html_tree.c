@@ -266,6 +266,8 @@ struct html_tb {
     struct node *form_elem;
     struct node *context;                       /* fragment: the context element */
     int fragment;
+    int allow_declarative_shadow;                /* <template shadowrootmode> opt-in;
+                                                  * see html_tree.h's *_ex entry points */
     int scripting;
     int frameset_ok;
     int foster;                                 /* foster parenting enabled */
@@ -653,13 +655,19 @@ static void generate_implied_end_tags_thoroughly(struct html_tb *tb)
     }
 }
 
-static void pop_until_html_tag(struct html_tb *tb, uint16_t h)
+/* Returns the popped node that matched `h` (the caller's stack_has_html_tag
+ * check guarantees one exists on every path that inspects the return value
+ * today), or NULL if the stack ran out first. Every pre-existing caller
+ * treats this as void, which stays correct in C: discarding a return value is
+ * never an error. */
+static struct node *pop_until_html_tag(struct html_tb *tb, uint16_t h)
 {
     while (tb->nopen) {
         struct node *n = CURNODE(tb);
         stack_pop(tb);
-        if (is_html_tag(n, h)) break;
+        if (is_html_tag(n, h)) return n;
     }
+    return 0;
 }
 
 static void pop_until_heading(struct html_tb *tb)
@@ -1399,8 +1407,8 @@ static void in_head(struct html_tb *tb, struct html_token *t)
              * exist.  browser.c runs the collected sources after the parse. */
             parse_text_element(tb, t, HTML_STATE_SCRIPT_DATA);
             return;
-        case HTAG_TEMPLATE:
-            insert_html_element(tb, t);
+        case HTAG_TEMPLATE: {
+            struct node *tmpl = insert_html_element(tb, t);
             afe_insert_marker(tb);
             tb->frameset_ok = 0;
             tb->mode = M_IN_TEMPLATE;
@@ -1410,7 +1418,33 @@ static void in_head(struct html_tb *tb, struct html_token *t)
                 if (p) { tb->tmpl = p; tb->tmplcap = c; }
             }
             if (tb->ntmpl < tb->tmplcap) tb->tmpl[tb->ntmpl++] = M_IN_TEMPLATE;
+
+            /* Declarative Shadow DOM opt-in: mark this template as a PENDING
+             * shadow-root attach when it carries a RECOGNISED shadowrootmode.
+             * "recognised" is load-bearing: shadowrootmode="invalid" (and any
+             * other value) must leave NF_SHADOW_TEMPLATE unset, so the end
+             * tag below sees an ordinary template and does nothing to it --
+             * attribute intact, node untouched. That is the cheap control
+             * that proves this reached the parser before any of the harder
+             * machinery works (declarative-shadow-dom-attachment.html's
+             * mode=invalid third, 218 subtests, goes green from this branch
+             * alone). Conversion itself happens at the END tag, not here --
+             * see the comment there for why DEVIATION 2 makes that the
+             * natural place. */
+            if (tb->allow_declarative_shadow && tmpl) {
+                const char *m = dom_attr(tmpl, "shadowrootmode");
+                if (m && (ci_eq_z(m, "open") || ci_eq_z(m, "closed"))) {
+                    unsigned sf = 0;
+                    if (dom_attr(tmpl, "shadowrootdelegatesfocus")) sf |= SHADOW_DELEGATES_FOCUS;
+                    if (dom_attr(tmpl, "shadowrootclonable"))       sf |= SHADOW_CLONABLE;
+                    if (dom_attr(tmpl, "shadowrootserializable"))   sf |= SHADOW_SERIALIZABLE;
+                    tmpl->shadow_mode  = ci_eq_z(m, "closed") ? SHADOW_MODE_CLOSED : SHADOW_MODE_OPEN;
+                    tmpl->shadow_flags = (uint8_t)sf;
+                    tmpl->flags |= NF_SHADOW_TEMPLATE;
+                }
+            }
             return;
+        }
         case HTAG_HEAD: return;                       /* parse error, ignore */
         default: break;
         }
@@ -1423,14 +1457,83 @@ static void in_head(struct html_tb *tb, struct html_token *t)
             return;
         case HTAG_BODY: case HTAG_HTML: case HTAG_BR:
             break;                                    /* -> anything else */
-        case HTAG_TEMPLATE:
+        case HTAG_TEMPLATE: {
             if (!stack_has_html_tag(tb, HTAG_TEMPLATE)) return;
             generate_implied_end_tags_thoroughly(tb);
-            pop_until_html_tag(tb, HTAG_TEMPLATE);
+            struct node *tmpl = pop_until_html_tag(tb, HTAG_TEMPLATE);
             afe_clear_to_marker(tb);
             if (tb->ntmpl) tb->ntmpl--;
             reset_insertion_mode(tb);
+
+            /* Declarative Shadow DOM: convert a MARKED template into a real
+             * attached shadow root HERE, at the end tag, rather than at
+             * insertion time the way the spec's own algorithm phrases it.
+             * DEVIATION 2 (this parser's <template> holds its children
+             * DIRECTLY, no DocumentFragment indirection) is what makes that
+             * equivalent rather than a shortcut: by the time we reach here,
+             * everything the template ever will hold is already sitting
+             * under it as ordinary DOM children, in order, so "convert" is
+             * just "move those children onto a fresh shadow root and discard
+             * the now-empty container" -- one iterative loop, not a second
+             * parse-time insertion-point scheme threaded through every other
+             * insertion mode.
+             *
+             * DISCLOSED GAP: this is reached only from the explicit end tag.
+             * mode_in_template's own EOF path (a few lines above, in
+             * mode_in_template) pops the template the same way but does NOT
+             * run this conversion, so a document that never closes its
+             * <template shadowrootmode> ends with an ordinary, unattached
+             * template -- exactly today's behaviour, not a crash and not a
+             * silent partial shadow tree. */
+            if (tmpl && (tmpl->flags & NF_SHADOW_TEMPLATE)) {
+                struct node *host = tmpl->parent;
+                static const char *const SAFE[] = {
+                    "article", "aside", "blockquote", "body", "div", "footer",
+                    "h1", "h2", "h3", "h4", "h5", "h6", "header", "main",
+                    "nav", "p", "section", "span", 0
+                };
+                int safelisted = 0;
+                if (host && host->type == N_ELEM && host->ns == NS_HTML) {
+                    for (int i = 0; SAFE[i]; i++)
+                        if (ci_eq_z(host->tag, SAFE[i])) { safelisted = 1; break; }
+                    /* A valid custom element name always contains a '-'; this
+                     * parser assigns tag_id/htag by lookup table, not by
+                     * validating the custom-element-name grammar, so "has a
+                     * hyphen" is the same approximation dom_create_element
+                     * itself relies on elsewhere for "is this a custom
+                     * element". */
+                    if (!safelisted)
+                        for (const char *p = host->tag; *p; p++)
+                            if (*p == '-') { safelisted = 1; break; }
+                }
+                /* Refuse -- leave the template as ordinary, inert markup --
+                 * exactly when a real attachShadow() would: host not
+                 * eligible, or host ALREADY has a shadow root, including one
+                 * from a PRIOR declarative template under the same host.
+                 * That second case is deliberately NOT routed through
+                 * dom_attach_shadow's reuse path (which exists for a
+                 * DIFFERENT caller -- an imperative attachShadow() adopting
+                 * its OWN prior declarative root): a second sibling
+                 * <template shadowrootmode> is a parse error whose markup
+                 * must survive untouched
+                 * (declarative-shadow-dom-repeats.html), not silently
+                 * absorbed into the first root. */
+                if (safelisted && host && !host->shadow) {
+                    unsigned flags = (unsigned)tmpl->shadow_flags | SHADOW_DECLARATIVE;
+                    struct node *sr = dom_attach_shadow(host, tmpl->shadow_mode, flags);
+                    if (sr) {
+                        struct node *c = tmpl->first_child;
+                        while (c) {
+                            struct node *nx = c->next;
+                            dom_append_child(sr, c);
+                            c = nx;
+                        }
+                        dom_destroy_subtree(tmpl);
+                    }
+                }
+            }
             return;
+        }
         default: return;                              /* parse error, ignore */
         }
         break;
@@ -2834,7 +2937,7 @@ static void tb_free(struct html_tb *tb)
     free(tb->tbuf);
 }
 
-static int tb_init(struct html_tb *tb, const char *src, int len)
+static int tb_init(struct html_tb *tb, const char *src, int len, int allow_declarative_shadow)
 {
     memset(tb, 0, sizeof *tb);
     tb->doc = dom_doc_new();
@@ -2845,14 +2948,16 @@ static int tb_init(struct html_tb *tb, const char *src, int len)
     tb->scripting = 1;              /* we run page scripts, so <noscript> is raw text */
     tb->frameset_ok = 1;
     tb->mode = M_INITIAL;
+    tb->allow_declarative_shadow = allow_declarative_shadow;
     html_tok_init(&tb->tok, src ? src : "", (size_t)(len > 0 ? len : 0), 1);
     return 1;
 }
 
-struct node *html_parse(struct dom_doc **out_doc, const char *src, int len)
+struct node *html_parse_ex(struct dom_doc **out_doc, const char *src, int len,
+                           int allow_declarative_shadow)
 {
     struct html_tb tb;
-    if (!tb_init(&tb, src, len)) { if (out_doc) *out_doc = 0; return 0; }
+    if (!tb_init(&tb, src, len, allow_declarative_shadow)) { if (out_doc) *out_doc = 0; return 0; }
     tb_run(&tb);
     struct node *root = tb.docroot;
     if (out_doc) *out_doc = tb.doc;
@@ -2860,16 +2965,22 @@ struct node *html_parse(struct dom_doc **out_doc, const char *src, int len)
     return root;
 }
 
+struct node *html_parse(struct dom_doc **out_doc, const char *src, int len)
+{
+    return html_parse_ex(out_doc, src, len, 0);
+}
+
 /* ------------------------------------------------------------------------ */
 /* fragment parsing                                                          */
 /* ------------------------------------------------------------------------ */
 
-struct node *html_parse_fragment(struct dom_doc **out_doc, const char *src, int len,
-                                 const char *context, int ctxlen, int ctx_ns)
+struct node *html_parse_fragment_ex(struct dom_doc **out_doc, const char *src, int len,
+                                    const char *context, int ctxlen, int ctx_ns,
+                                    int allow_declarative_shadow)
 {
     struct html_tb tb;
     if (out_doc) *out_doc = 0;
-    if (!tb_init(&tb, src, len)) return 0;
+    if (!tb_init(&tb, src, len, allow_declarative_shadow)) return 0;
     if (out_doc) *out_doc = tb.doc;
 
     if (!context || ctxlen <= 0) { context = "div"; ctxlen = 3; ctx_ns = NS_HTML; }
@@ -2936,4 +3047,10 @@ struct node *html_parse_fragment(struct dom_doc **out_doc, const char *src, int 
     tb_run(&tb);
     tb_free(&tb);
     return root;
+}
+
+struct node *html_parse_fragment(struct dom_doc **out_doc, const char *src, int len,
+                                 const char *context, int ctxlen, int ctx_ns)
+{
+    return html_parse_fragment_ex(out_doc, src, len, context, ctxlen, ctx_ns, 0);
 }

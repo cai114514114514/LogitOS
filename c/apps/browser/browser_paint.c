@@ -25,6 +25,7 @@
 #include "forms.h"
 #include "css.h"                   /* struct cstyle + the XR_* raw spans */
 #include "css_interp.h"            /* struct ci_xform, for `transform` */
+#include "../../../include/weaksym.h"   /* every weak extern below; read it first */
 
 /* The media engine, weakly: a <video> box is painted by whoever owns the
  * decoded frame (c/apps/browser/js_media.c), and this file must keep linking in
@@ -34,7 +35,7 @@
 struct node;
 extern void media_paint_box(struct node *node, int x, int y, int w, int h,
                             int clip_x, int clip_y, int clip_w, int clip_h)
-    __attribute__((__weak__));
+    LOGIT_WEAK;
 
 /* js_canvas.c, weakly, for exactly the same reason and with the same split:
  * layout reserves a <canvas>'s box and the PIXELS belong to whoever owns the
@@ -45,7 +46,7 @@ extern void media_paint_box(struct node *node, int x, int y, int w, int h,
  * than filling it: an undrawn canvas is TRANSPARENT, not black, and painting
  * it black would hide whatever the page put behind it. */
 extern const unsigned char *canvas_pixels(struct node *node, int *w, int *h)
-    __attribute__((__weak__));
+    LOGIT_WEAK;
 
 /* forms.c, weakly, for exactly the same reason. layout.c reserves a control's
  * box; what goes INSIDE it -- the value, the caret, the tick -- is state that
@@ -54,7 +55,7 @@ extern const unsigned char *canvas_pixels(struct node *node, int *w, int *h)
  * still draws its chrome, just empty, which is a visible and honest
  * degradation rather than a link error in someone else's test. */
 extern int fc_paint_state(struct node *n, int font_px, int mono, int content_w,
-                          struct fpaint *out) __attribute__((__weak__));
+                          struct fpaint *out) LOGIT_WEAK;
 
 /* ======================= the style layer, weakly ===========================
  *
@@ -86,23 +87,37 @@ extern int fc_paint_state(struct node *n, int font_px, int mono, int content_w,
  * call site so a build without the producer paints what it painted before
  * rather than crashing on a null call. */
 extern int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
-                              struct cgradient *out) __attribute__((__weak__));
+                              struct cgradient *out) LOGIT_WEAK;
 extern int css_shadow_parse(const char *v, int len, int fs_px, int root_px,
-                            struct cshadow *out, int max) __attribute__((__weak__));
+                            struct cshadow *out, int max) LOGIT_WEAK;
 extern int css_origin_parse(const char *v, int len, int fs_px, int root_px,
-                            struct corigin *out) __attribute__((__weak__));
-extern int css_root_px(void) __attribute__((__weak__));
+                            struct corigin *out) LOGIT_WEAK;
+extern int css_root_px(void) LOGIT_WEAK;
 extern int ci_transform_parse(const char *s, int len, double fs_px, double root_px,
-                              struct ci_xform *out) __attribute__((__weak__));
+                              struct ci_xform *out) LOGIT_WEAK;
 extern void ci_transform_matrix(const struct ci_xform *t, double refw, double refh,
-                                double m[16]) __attribute__((__weak__));
+                                double m[16]) LOGIT_WEAK;
 /* img_css_color is declared by img.h (via layout.h). Re-declared weak here for
  * the same reason: it lives in c/lib/image/svg.c, which paint_test does not
  * link. This is the tree's ONE CSS colour evaluator -- see the argument in
  * svg.c and in css.h's XR_* comment -- so a stop colour is resolved by calling
  * it and never by a second parser written here. */
 extern int img_css_color(const char *s, int len, unsigned char *rgba)
-    __attribute__((__weak__));
+    LOGIT_WEAK;
+
+/* The Mach-O half of every weak declaration above: see include/weaksym.h.
+ * An undefined weak reference is an ELF property, and this file is compiled
+ * for the host by seven of the source lists the paragraph above counted. */
+LOGIT_WEAK_STUB(media_paint_box);
+LOGIT_WEAK_STUB(canvas_pixels);
+LOGIT_WEAK_STUB(fc_paint_state);
+LOGIT_WEAK_STUB(css_gradient_parse);
+LOGIT_WEAK_STUB(css_shadow_parse);
+LOGIT_WEAK_STUB(css_origin_parse);
+LOGIT_WEAK_STUB(css_root_px);
+LOGIT_WEAK_STUB(ci_transform_parse);
+LOGIT_WEAK_STUB(ci_transform_matrix);
+LOGIT_WEAK_STUB(img_css_color);
 
 /* The computed style behind a display-list item, or NULL.
  *
@@ -120,7 +135,7 @@ static const struct cstyle *sty(const struct item *e)
  * property of the DOCUMENT -- so it comes from css_engine.c. 16 is both the
  * fallback when that TU is absent and what CSS says a rem means before a root
  * has been styled, so the two answers coincide and there is no second rule. */
-static int root_px(void) { return css_root_px ? css_root_px() : 16; }
+static int root_px(void) { return LOGIT_HAVE(css_root_px) ? css_root_px() : 16; }
 
 /* css_border_style_e, mirrored rather than included: layout stores LibCSS's raw
  * value in `border_style`, and pulling <libcss/properties.h> into the painter
@@ -603,7 +618,7 @@ static void shadow_one(int bx, int by, int bw, int bh, int br,
 static int paint_shadows(const struct item *e, int sx, int sy, int r, int op, int pre)
 {
     const struct cstyle *st = sty(e);
-    if (!st || !css_shadow_parse || !st->xraw[XR_BOX_SHADOW]) return 0;
+    if (!st || !LOGIT_HAVE(css_shadow_parse) || !st->xraw[XR_BOX_SHADOW]) return 0;
     struct cshadow sh[CS_MAXSHADOW];
     int n = css_shadow_parse(st->xraw[XR_BOX_SHADOW], st->xrawlen[XR_BOX_SHADOW],
                              st->font_px > 0 ? st->font_px : 16, root_px(),
@@ -621,7 +636,7 @@ static int paint_shadows(const struct item *e, int sx, int sy, int r, int op, in
          * is spelled out rather than folded into a default. */
         uint32_t col = st->color;
         int a = op;
-        if (sh[i].color && img_css_color) {
+        if (sh[i].color && LOGIT_HAVE(img_css_color)) {
             unsigned char rgba[4] = { 0, 0, 0, 255 };
             if (img_css_color(sh[i].color, sh[i].colorlen, rgba)) {
                 col = pack_rgb(rgba[0], rgba[1], rgba[2]);
@@ -713,7 +728,7 @@ static uint32_t grad_color(const char *s, int len, uint32_t cur, int *alpha)
         }
         if (i == 12) return cur;
     }
-    if (!img_css_color) return cur;
+    if (!LOGIT_HAVE(img_css_color)) return cur;
     unsigned char rgba[4] = { 0, 0, 0, 255 };
     if (!img_css_color(s, len, rgba)) return cur;
     *alpha = rgba[3];
@@ -925,7 +940,7 @@ static void grad_surface(int x, int y, int w, int h, int rpt,
 static int paint_gradient(const struct item *e, int sx, int sy, int r, int op)
 {
     const struct cstyle *st = sty(e);
-    if (!st || !css_gradient_parse || !st->xraw[XR_BG_IMAGE] || op <= 0) return 0;
+    if (!st || !LOGIT_HAVE(css_gradient_parse) || !st->xraw[XR_BG_IMAGE] || op <= 0) return 0;
     struct cgradient cg;
     if (!css_gradient_parse(st->xraw[XR_BG_IMAGE], st->xrawlen[XR_BG_IMAGE],
                             st->font_px > 0 ? st->font_px : 16, root_px(), &cg))
@@ -1374,7 +1389,7 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
 {
     struct node *n = e ? e->node : 0;
     while (n && n->type != N_ELEM) n = n->parent;
-    if (!n || !ci_transform_parse || !ci_transform_matrix) return 0;
+    if (!n || !LOGIT_HAVE(ci_transform_parse) || !LOGIT_HAVE(ci_transform_matrix)) return 0;
     if (n == g_xf_key) {
         if (g_xf_hit) *out = g_xf_val;
         return g_xf_hit;
@@ -1412,7 +1427,7 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
 
         struct corigin o;
         o.x = o.y = 5000; o.x_pct = o.y_pct = 1;       /* the CSS initial, 50% 50% */
-        if (css_origin_parse)
+        if (LOGIT_HAVE(css_origin_parse))
             css_origin_parse(s->xraw[XR_TRANSFORM_ORIGIN], s->xrawlen[XR_TRANSFORM_ORIGIN],
                              fs, root_px(), &o);
         int ox = o.x_pct ? (int)((long long)bw * o.x / 10000) : o.x;
@@ -1719,7 +1734,7 @@ static void paint_control(const struct item *e, int sx, int sy)
     if (font <= 0) font = 14;
     int content_w = fw - 2 * (FC_PAD_X + FC_BORDER);
 
-    if (fc_paint_state)
+    if (LOGIT_HAVE(fc_paint_state))
         have = fc_paint_state(e->node, font, e->ctl_mono, content_w, &fp);
     if (!have) {
         /* forms.c is not linked (the host paint test). Draw the chrome with no
@@ -2247,7 +2262,17 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
              * -- precisely group opacity. What IS estimated is the backdrop. */
             uint32_t col = e->color;
             if (op < 255) col = mix(backdrop_at(it, i), col, op);
-            gui_text_run(sx, sy, e->font_px, e->mono, col, e->text, e->len);
+            /* THE BOLD BIT FINALLY LEAVES RING 3.  css_engine.c has computed
+             * `bold` since the day it was written (font-weight:bold, and any
+             * numeric weight >= 700), layout.h's display item has carried it,
+             * and this line read it ZERO times -- so every <h1>, <th>, <b> and
+             * <strong> on the web painted at regular weight.  The ABI had
+             * nowhere to put it until struct logit_run grew the field.
+             *
+             * gui_text_run_w, not gui_text_run: the plain name keeps its old
+             * seven arguments for the ~30 c/apps/gui call sites that have no
+             * weight to pass. */
+            gui_text_run_w(sx, sy, e->font_px, e->mono, col, e->text, e->len, e->bold);
             ptx_note(sx, sy, e->text, e->len);
             /* text-decoration. `y` is the top of the em box -- text_draw_run
              * adds the ascent itself, and the ascent lives in the kernel's font
@@ -2269,14 +2294,14 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
              * lets it blit; with no engine linked, the box paints black, which
              * is what a <video> with no source looks like anyway. Weak, so the
              * host layout/paint tests link without any of it. */
-            if (media_paint_box)
+            if (LOGIT_HAVE(media_paint_box))
                 media_paint_box(e->node, sx, sy, e->w, e->h, cl_x0, cl_y0,
                                 cl_x1 - cl_x0, cl_y1 - cl_y0);
             else
                 fill(sx, sy, e->w, e->h, 0x000000, op);
         } else if (e->type == IT_CANVAS) {
             int cw = 0, ch = 0;
-            const unsigned char *cpx = canvas_pixels
+            const unsigned char *cpx = LOGIT_HAVE(canvas_pixels)
                                      ? canvas_pixels(e->node, &cw, &ch) : 0;
             /* Drawn at its OWN size into the box CSS gave it; when the two
              * differ the compositor's rescale applies, which is the spec's

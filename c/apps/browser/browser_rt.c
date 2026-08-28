@@ -27,15 +27,18 @@
  * header declares no symbol this file links, so the cookieless build below
  * still holds. */
 #include "cookies.h"
+#include "../../../include/weaksym.h"   /* the two weak doors below; read it first */
 
 /* The cookie jar's two transport-side doors, owned by js_webapi.c and WEAK
  * here: a build that links neither js_webapi.c nor cookies.c (the loader
  * host tests) resolves both to NULL and runs cookieless. Contract at their
  * definitions. */
 int  webapi_cookie_line(const char *host, const char *path, int secure,
-                        int nav, char *out, int cap) __attribute__((weak));
+                        int nav, char *out, int cap) LOGIT_WEAK;
 void webapi_cookie_store_line(const char *host, const char *path, int secure,
-                              const char *setcookie) __attribute__((weak));
+                              const char *setcookie) LOGIT_WEAK;
+LOGIT_WEAK_STUB(webapi_cookie_line);
+LOGIT_WEAK_STUB(webapi_cookie_store_line);
 
 void *malloc(size_t);
 void  free(void *);
@@ -383,7 +386,7 @@ static char *build_get(struct breq *r, int *outlen)
      * js_webapi.c and is reached through a weak symbol so builds without
      * that TU (the loader host tests) link and run cookieless. See the
      * export comment in js_webapi.c for the WAF loop this closes. */
-    if (webapi_cookie_line) {
+    if (LOGIT_HAVE(webapi_cookie_line)) {
         /* static, not automatic: CK_HEADER_MAX is 8 KiB and this file's own
          * history is a redirect chain that overflowed a stack into the page
          * tables. build_get() runs to completion synchronously and nothing
@@ -759,7 +762,7 @@ static void req_step_xfer(struct breq *r)
      * response itself, and following the hop without storing it is exactly
      * the loop this line exists to break. Multi-valued per RFC 6265, hence
      * nth, not get. */
-    if (webapi_cookie_store_line) {
+    if (LOGIT_HAVE(webapi_cookie_store_line)) {
         int nck = h1_headers_count(&resp->hdr, "set-cookie");
         for (int ci = 0; ci < nck; ci++) {
             const char *sc = h1_headers_nth(&resp->hdr, "set-cookie", ci);

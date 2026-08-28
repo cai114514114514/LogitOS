@@ -133,6 +133,12 @@ void  tab_hist_replace(struct tab *t, const char *u);
 /* -1 back / +1 forward. On success copies the entry into `out` and returns 1. */
 int   tab_hist_go(struct tab *t, int delta, char *out, int max);
 int   tab_hist_can(const struct tab *t, int delta);
+/* Full-load entries behind / ahead of the tab's current position -- the
+ * floor a caller adds to js_webapi.c's g_hist_n to get a correct
+ * history.length across the joint (tab-level + same-document) session
+ * history. See the comment above tab_hist_behind()'s definition. */
+int   tab_hist_behind(const struct tab *t);
+int   tab_hist_ahead(const struct tab *t);
 
 /* =========================== persistence ==================================
  *

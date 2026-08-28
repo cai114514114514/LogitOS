@@ -1853,6 +1853,7 @@ void usp_sort(usplist *l)
  * js_reflect.c installed, and a replacement runs after what it replaces. */
 #define JS_URLBIND_OPTIONAL
 #include "js_urlbind.h"
+#include "../../../include/weaksym.h"   /* LOGIT_HAVE, used on js_urlbind.h's weak entry points */
 
 static JSClassID g_url_class;
 static JSClassID g_usp_class;
@@ -2591,7 +2592,7 @@ void js_url_install(JSContext *ctx)
 
     /* LAST of the last: everything js_urlbind.c installs is built on the two
      * globals above, and its JS half calls `new URL(...)` directly. */
-    if (js_urlbind_install) js_urlbind_install(ctx);
+    if (LOGIT_HAVE(js_urlbind_install)) js_urlbind_install(ctx);
 }
 
 #endif /* URL_CORE_ONLY */

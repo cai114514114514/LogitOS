@@ -39,12 +39,62 @@ int printf(const char *, ...);
  * exactly that reason -- fifteen duplicated lines is the price of not making
  * every one of those Makefile rules grow a source. */
 #include "forms.h"
+/* UAX #14 line breaking (layout_text.c).  LINKED, NOT INCLUDED -- the opposite
+ * of layout_flex.c and layout_grid.c above, and for the reason those two give
+ * rather than against it.  Their argument is "a measured line must not be able
+ * to edit its own source list"; layout_text.c is measured by tests/csstext.mk
+ * against the Unicode Consortium's own LineBreakTest.txt with no font, no
+ * frame buffer and no browser in the link, and folding it into THIS
+ * translation unit would put the file under test into the same object as the
+ * 4,300-line engine it is being tested independently of.
+ *
+ * The cost is real and is paid once: every source list that names layout.c
+ * must also name layout_text.c.  `make test-csstext-wired` is the gate that
+ * proves they still agree -- CLAUDE.md's third failure shape ("hand-copied
+ * source lists") is exactly this, and the answer to it is a check, not care. */
+#include "layout_text.h"
+/* LOGIT_FACE_MONO / LOGIT_FACE_BOLD -- the two bits text_measure() below and
+ * gui_text_run() in browser_paint.c both take.  This is the ONE header both
+ * ends of that agreement read; see the note above text_measure(). */
+#include "logit_abi.h"
 
 void *kmalloc(unsigned long);
 void  kfree(void *);
+/* GUARDED, and this one line was the single largest cause of dead gates in the
+ * tree. layout.c is freestanding in browser.aex, but line 33 above textually
+ * includes layout_grid.c, whose first line is `#include <string.h>` -- so in
+ * every HOST build this bare prototype lands after the platform's fortified
+ * `#define memset(...) __builtin___memset_chk(...)` and expands into it:
+ * "expected parameter declarator", four errors, no measurement. NINE host gates
+ * that compile layout.c were red this way, including three CLAUDE.md quotes as
+ * green with exact counts (test-layout-box 51, test-paint-gfx 75, and
+ * test-forms-negctl's must-fail). See c/net/ip/ip.c for the same guard and the
+ * host probe that confirms mem* are macros here at -O0 as well as -O2. */
+#ifndef memset
 void *memset(void *, int, unsigned long);
-int   text_measure(const char *s, int len, int px, int mono);
+#endif
+/* THE LAST ARGUMENT IS A FACE MASK, NOT A BOOLEAN.  LOGIT_FACE_MONO (bit 0,
+ * which is exactly the `mono` flag this argument has always been) and
+ * LOGIT_FACE_BOLD (bit 1).  The header is included for those two names rather
+ * than either of them being respelled here, because a private `2` beside the
+ * ABI's LOGIT_FACE_BOLD fails SILENTLY: the wrong bit measures the wrong
+ * weight and the page just comes out wrong.
+ *
+ * WHY MEASUREMENT HAD TO LEARN ABOUT WEIGHT AT ALL, and this is the trap:
+ * css_engine.c has always computed `bold`, and layout.h's display item has
+ * always carried it, but browser_paint.c never read it -- so it cost nothing
+ * for measurement not to know either.  The moment paint starts honouring it,
+ * a heading MEASURED in regular and DRAWN in bold overflows its own box, and
+ * bold is wider, so the symptom is text past the right edge of every <h1> and
+ * every <strong> rather than a clean failure.  Measure and draw are handed the
+ * same mask, all the way down to c/kernel/gui/text.c's single layout(). */
+int   text_measure(const char *s, int len, int px, int face);
 int   res_fetch(const char *url, uint8_t **buf, int *len);   /* net/http.c */
+
+/* The face mask for a computed style.  ONE spelling, so a site that forgets
+ * the bold bit is a site that does not call this. */
+static inline int st_face(const struct cstyle *st)
+{ return st ? (st->mono | (st->bold ? LOGIT_FACE_BOLD : 0)) : 0; }
 
 #define MAXITEM 16384
 static struct item *items;
@@ -645,6 +695,62 @@ static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int 
 }
 
 static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
+
+/* ---------------------------------------------- UAX #14, where it is used --
+ *
+ * WHAT WAS WRONG.  This file's only break opportunity was U+0020.  For a word
+ * with no space in it and no room on the line it fell through to "the largest
+ * prefix that happens to fit, cut at a UTF-8 boundary".  On English that case
+ * is a URL and nobody looks.  On Chinese it is EVERY paragraph -- a CJK
+ * sentence contains no space at all, so the whole sentence arrives as one
+ * "word" and is chopped at an arbitrary column, including immediately before a
+ * closing bracket or a full stop, which is the one position a line may never
+ * end at in any writing system.
+ *
+ * WHERE IT IS ASKED.  Two places, and both are the places that were already
+ * making the decision by guessing: the over-long-word cut in flow_text(), and
+ * min_word_width(), which is the SAME question asked ahead of time ("how
+ * narrow can this text be squeezed").  Those two must agree or a flex item is
+ * sized against a break the breaker will not take -- one jar, two doors.
+ *
+ * WHAT IT COSTS.  Nothing on the path that works: a word that fits its line
+ * never reaches either caller, so ordinary Latin prose never computes a break
+ * table.  The span asked about is one whitespace-delimited word, which is
+ * enough context for the answer to be exact -- every UAX #14 rule with memory
+ * (LB9/LB10 combining marks, LB14-17's SP* rules, LB25's numbers, LB30a's
+ * regional-indicator pairs) is bounded by the space on either side of a word.
+ *
+ * WHAT IT RETURNS.  NULL if the table could not be built, and every caller
+ * then keeps the old behaviour on purpose: a page that breaks in an ugly place
+ * still reads, a page that fails to lay out does not.
+ *
+ * ONE BUFFER, so the result is valid until the NEXT call and no further.  Both
+ * callers hold it across a loop and neither loop calls back in -- flow_text's
+ * emergency cut reaches only emit_word/newline/flow_clear_for, and
+ * min_word_width finishes with the table before it advances to the next token.
+ * Anyone adding a third caller has to check that, or copy. */
+static unsigned char *g_lbbuf; static int g_lbcap;
+
+static const unsigned char *lb_opps(const char *s, int len)
+{
+#ifdef LAYOUT_NO_UAX14
+    (void)s; (void)len; return 0;              /* tests/csstext.mk's control */
+#else
+    struct ltx_lbopt o;
+    if (len <= 0) return 0;
+    if (len + 2 > g_lbcap) {
+        int cap = len + 2 < 1024 ? 1024 : len + 2;
+        unsigned char *nb = (unsigned char *)kmalloc((unsigned long)cap);
+        if (!nb) return 0;
+        if (g_lbbuf) kfree(g_lbbuf);
+        g_lbbuf = nb; g_lbcap = cap;
+    }
+    for (unsigned i = 0; i < sizeof o; i++) ((unsigned char *)&o)[i] = 0;
+    ltx_break_utf8(s, len, &o, g_lbbuf);
+    return g_lbbuf;
+#endif
+}
+
 static int tag_eq(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 static int atoi_(const char *s){ int n=0; while(*s>='0'&&*s<='9'){ if(n>100000) break; n=n*10+(*s++-'0'); } return n; }
 
@@ -876,7 +982,23 @@ static int svg_attr_w(struct node *n, const struct cstyle *st)
  * the line out twice, we probe with the block's own line height. It is exact
  * unless a line mixes font sizes right at a float's top or bottom edge. */
 struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start;
-               int bx0, bx1, probe; };
+               int bx0, bx1, probe;
+               /* CSS Text 3 §4.1, and it lives on the FLOW rather than in
+                * flow_text because a collapse crosses run boundaries: the
+                * space at the end of "<b>a </b>" belongs to whatever the next
+                * inline puts after it, and there may be three elements and two
+                * flow_text calls in between.
+                *
+                * What it replaces is `if (f->line_started) f->x += spacew`,
+                * which invented an inter-word space between any two runs
+                * whatever the source said. Measured before the change, at
+                * 20px: `<b>ab</b><i>cd</i>` put "cd" at x=30 instead of 20,
+                * and `<b>ab</b> <i>cd</i>` put it at 30 as well -- so the
+                * engine rendered two DIFFERENT documents identically and the
+                * one it got right it got right by accident. On Chinese it is
+                * every navigation bar, because <a>首页</a><a>视频</a> has no
+                * space in it and got one. */
+               int pending_sp; };
 
 /* An open inline element's fragment that has emitted nothing yet follows the
  * pen: dropping the line past a float must not leave its background starting
@@ -903,7 +1025,7 @@ static void iflow_init(struct iflow *f, int x, int w, int y, int align, int prob
 {
     f->bx0 = x; f->bx1 = x + w;
     f->y = y; f->lineh = 0; f->line_started = 0; f->align = align;
-    f->line_start = nitem;
+    f->line_start = nitem; f->pending_sp = 0;
     f->probe = probe > 0 ? probe : 20;
     flow_relayout_line(f);
 }
@@ -1085,6 +1207,10 @@ static void newline2(struct iflow *f, int last)
         f->y += f->lineh;
     }
     f->lineh = 0; f->line_started = 0;
+    /* A collapsible space at the end of a line is REMOVED (CSS Text 3
+     * §4.1.1), and the end of a line is exactly here. Without this a
+     * wrapped line would start one space in from the margin. */
+    f->pending_sp = 0;
     f->line_start = nitem;
     flow_relayout_line(f);              /* the new line sees a different band */
     ibox_reopen(f);                     /* continuation fragments start at the new pen */
@@ -1150,12 +1276,33 @@ static void flow_clear_for(struct iflow *f, int need)
  * to the next multiple of 8 space widths from the line's left edge, which is
  * what makes indented code in a <pre> line up. Measuring '\t' with the font
  * instead would draw a missing-glyph box. */
+/* The owed inter-word space, at its three READ sites.
+ *
+ * -DLAYOUT_NO_WS_COLLAPSE is tests/csstext.mk's second negative control and it
+ * is the behaviour this file shipped with: a space between any two runs on a
+ * started line, whatever the source said. It is not a straw man -- it is right
+ * about the overwhelmingly common case ("a <b>b</b>") and wrong about every
+ * document where two inlines touch, which is most of the markup a framework
+ * emits and every CJK navigation bar. `make test-cjkwrap-ws-negctl` requires
+ * that build to fail the suite. */
+#ifdef LAYOUT_NO_WS_COLLAPSE
+#define IFLOW_OWES(f) ((f)->line_started)
+#else
+#define IFLOW_OWES(f) ((f)->pending_sp)
+#endif
+
 static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
                       struct cstyle *st, const char *href)
 {
     int px = st->font_px, mono = st->mono;
+    /* `mono` still selects the face for the ITEM (it->mono, a plain 0/1 that
+     * browser_paint.c hands back to gui_text_run); `face` is what MEASUREMENT
+     * takes, and it is the one that carries the weight. Two names because they
+     * are two different things -- collapsing them would put the bold bit into
+     * it->mono, which browser.c's caret code compares against 0 and 1. */
+    int face = st_face(st);
     int lh = used_lineh(st);
-    int spacew = text_measure(" ", 1, px, mono);
+    int spacew = text_measure(" ", 1, px, face);
     int ws_mode = st->white_space;
     int collapse = (ws_mode == WS_NORMAL || ws_mode == WS_NOWRAP || ws_mode == WS_PRE_LINE);
     int keep_nl  = (ws_mode != WS_NORMAL && ws_mode != WS_NOWRAP);
@@ -1179,8 +1326,11 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
             int seg = i;
             while (i < len && s[i] != '\n' && s[i] != '\r' && s[i] != '\t') i++;
             int slen = i - seg;
+#ifndef LAYOUT_NO_WS_COLLAPSE
+            if (f->pending_sp) { f->x += spacew; f->pending_sp = 0; }
+#endif
             if (!can_wrap) {                       /* pre: one item, may overflow */
-                int w = text_measure(s + seg, slen, px, mono);
+                int w = text_measure(s + seg, slen, px, face);
                 emit_word(f, src, s + seg, slen, w, st, href, lh, px, mono);
                 continue;
             }
@@ -1196,13 +1346,13 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
                 while (p < i && s[p] == ' ') p++;
                 int nsp = p - t0;
                 while (p < i && s[p] != ' ') p++;
-                int tlen = p - t0, tw = text_measure(s + t0, tlen, px, mono);
+                int tlen = p - t0, tw = text_measure(s + t0, tlen, px, face);
                 if (f->line_started && f->x + tw > f->x1 &&
                     (tw <= f->x1 - f->x0 || tw <= f->bx1 - f->bx0)) {
                     newline(f);
                     t0 += nsp; tlen -= nsp;
                     if (tlen <= 0) continue;
-                    tw = text_measure(s + t0, tlen, px, mono);
+                    tw = text_measure(s + t0, tlen, px, face);
                 }
                 flow_clear_for(f, tw);          /* narrowed by a float, not by the measure */
                 emit_word(f, src, s + t0, tlen, tw, st, href, lh, px, mono);
@@ -1212,55 +1362,90 @@ static void flow_text(struct iflow *f, struct node *src, const char *s, int len,
     }
 
     while (i < len) {
+        /* THE OWED SPACE, not an assumed one. Whitespace consumed here does not
+         * become a pen advance now -- it becomes a debt paid at the next word,
+         * and only if there is one on this line. That is what makes
+         * "<b>a </b><i>b</i>" one space and "<b>a</b><i>b</i>" none. */
+        int had_ws = 0;
         if (keep_nl) {                                   /* pre-line */
-            while (i < len && sp(s[i]) && s[i] != '\n') i++;
+            while (i < len && sp(s[i]) && s[i] != '\n') { i++; had_ws = 1; }
             if (i < len && s[i] == '\n') { hard_break(f, lh); i++; continue; }
         } else {
-            while (i < len && sp(s[i])) i++;             /* collapse whitespace */
+            while (i < len && sp(s[i])) { i++; had_ws = 1; }   /* collapse */
         }
+        if (had_ws && f->line_started) f->pending_sp = 1;
         if (i >= len) break;
         int ws = i;
         while (i < len && !sp(s[i])) i++;                /* one word [ws,i) */
         int wlen = i - ws;
         if (!wlen) continue;
-        int ww = text_measure(s + ws, wlen, px, mono);
+        int ww = text_measure(s + ws, wlen, px, face);
         /* The second clause used to be `ww <= x1 - x0` alone: a word too wide
          * for a whole line is broken from where the pen stands rather than
          * pointlessly wrapped first. With floats the line can be narrower than
          * the block, so a word that the BLOCK could hold is still worth
          * wrapping -- and then dropping past the float. */
-        if (can_wrap && f->line_started && f->x + spacew + ww > f->x1 &&
+        int sw = IFLOW_OWES(f) ? spacew : 0;
+        if (can_wrap && f->line_started && f->x + sw + ww > f->x1 &&
             (ww <= f->x1 - f->x0 || ww <= f->bx1 - f->bx0)) {
             newline(f);                                   /* wrap */
+            sw = 0;                       /* newline2 cancelled the owed space */
         }
         if (can_wrap) flow_clear_for(f, ww);
         if (!can_wrap || ww <= f->x1 - f->x0) {
-            if (f->line_started) f->x += spacew;
+            f->x += sw; f->pending_sp = 0;
             emit_word(f, src, s + ws, wlen, ww, st, href, lh, px, mono);
             continue;
         }
         /* A word wider than the whole line (CJK titles have no spaces to wrap
-         * on): break it anywhere. This is also what makes flex items honor
-         * their allocated width -- min-width:auto is compressible for text,
-         * so an over-long word must shrink-wrap instead of overflowing. */
+         * on): break it at the last LEGAL opportunity that fits, and only at
+         * an arbitrary character boundary when the span offers none. This is
+         * also what makes flex items honor their allocated width --
+         * min-width:auto is compressible for text, so an over-long word must
+         * shrink-wrap instead of overflowing.
+         *
+         * The two candidates are tracked side by side rather than one being
+         * derived from the other, because they answer different questions and
+         * the fallback matters: "aaaaaaaaaaaa" has no legal break in it at all
+         * (UAX #14 puts none between two AL characters), so a rule that only
+         * broke at opportunities would refuse to break it and the flex item
+         * would overflow instead of shrinking. `bl` is what this code did
+         * before UAX #14 was wired in and it stays the floor. */
         int off = 0;
+        const unsigned char *brk = lb_opps(s + ws, wlen);
         while (off < wlen) {
-            int avail = f->x1 - (f->line_started ? f->x + spacew : f->x);
+            int avail = f->x1 - (IFLOW_OWES(f) ? f->x + spacew : f->x);
             if (avail <= 0) {
                 if (f->line_started) { newline(f); continue; }
                 avail = f->x1 - f->x0;              /* degenerate 0-width box: force progress */
             }
             /* largest prefix (UTF-8 char boundaries) that fits avail; >=1 char */
             int bl = 0, bw = 0;
+            int kl = 0, kw = 0;      /* ... that also ENDS at a break opportunity */
             for (int p = 0; p < wlen - off; ) {
                 int adv = 1;
                 while (p + adv < wlen - off && (s[ws + off + p + adv] & 0xC0) == 0x80) adv++;
-                int mw = text_measure(s + ws + off, p + adv, px, mono);
+                int mw = text_measure(s + ws + off, p + adv, px, face);
                 if (mw > avail && bl > 0) break;
                 p += adv; bl = p; bw = mw;
+                /* brk[] is indexed from the start of the WORD and states the
+                 * opportunity BEFORE that byte, so a prefix of `p` bytes may
+                 * end at off+p exactly when brk[off+p] is not prohibited. */
+                if (brk && off + p < wlen && brk[off + p] != LTX_BRK_PROHIBITED) {
+                    kl = p; kw = mw;
+                }
                 if (bw >= avail) break;
             }
-            if (f->line_started) f->x += spacew;
+            /* Only when a cut is actually being made. `off + bl == wlen` is
+             * the remainder fitting whole, and there is no break to choose --
+             * taking the last opportunity BEFORE the end there would push a
+             * trailing character or two onto a line of their own for no
+             * reason, which is how the first version of this read: a
+             * seven-ideograph tail that fitted in a ten-ideograph measure came
+             * out as five and then two. Caught by the same suite at a second
+             * measure, which is why there is more than one. */
+            if (kl > 0 && off + bl < wlen) { bl = kl; bw = kw; }
+            f->x += IFLOW_OWES(f) ? spacew : 0; f->pending_sp = 0;
             emit_word(f, src, s + ws + off, bl, bw, st, href, lh, px, mono);
             off += bl;
             if (off < wlen) newline(f);
@@ -1558,6 +1743,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
         box_close(bbi, bx, btop, bw, ch);
         f->y += ch;
         f->lineh = 0; f->line_started = 0; f->line_start = nitem;
+        f->pending_sp = 0;
         flow_relayout_line(f);
         return;
     }
@@ -1785,7 +1971,7 @@ static void emit_list_marker(struct node *li, struct cstyle *st, int bx, int top
     mk->hidden = st->hidden; mk->opacity = st->opacity;
     mk->font_px = st->font_px; mk->bold = st->bold; mk->mono = st->mono;
     mk->color = st->color; mk->h = used_lineh(st); mk->y = top;
-    int mw = text_measure(mk->text, mk->len, st->font_px, st->mono);
+    int mw = text_measure(mk->text, mk->len, st->font_px, st_face(st));
     (void)minx;                                /* deep nests may push the marker to x=0 */
     mk->x = bx - mw - 6; if (mk->x < 0) mk->x = 0;
     mk->w = mw;
@@ -2004,7 +2190,7 @@ static int float_box_width(struct node *c, struct cstyle *st, int avail)
 {
     if (st->has_w)
         return clamp_w(st, to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, avail)), avail);
-    int px = st->font_px, mono = st->mono;
+    int px = st->font_px, mono = st_face(st);
     int w = content_width(c, px, mono, 0);
     if (w > avail) w = avail;
     int minc = min_content_width(c, px, mono, 0);
@@ -2584,6 +2770,16 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
 }
 
 /* Word-wise width of one text node as a single unwrapped line. */
+/* THE `mono` PARAMETER OF THIS FAMILY (measure_words, flex_text_width,
+ * content_width, min_word_width, min_content_width, flex_run, tbl_widest_word)
+ * IS A FACE MASK, keeping its old name because every one of them threads it
+ * verbatim into text_measure(). content_width and min_content_width re-derive
+ * it from each element's OWN style with st_face(), so a bold heading inside a
+ * flex or grid item is measured bold even when the container passed a regular
+ * mask down -- which is what makes the entry points that still pass a bare
+ * `st->mono` (the flex/grid `fmono` sites) correct rather than merely
+ * harmless: they are only ever the value for a text node hanging directly off
+ * the container, and that node's weight IS the container's. */
 static int measure_words(const char *s, int len, int px, int mono)
 {
     int w = 0, i = 0;
@@ -2633,7 +2829,7 @@ static int content_width(struct node *n, int px, int mono, int depth)
      * width already includes them. */
     int extra = hextra(st);
     if (st && st->has_w && !st->w_pct) return to_border_w(st, st->width);
-    int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
+    int cpx = st ? st->font_px : px, cmono = st ? st_face(st) : mono;
     /* Only a ROW flex container sums its children; a column stacks them, so it
      * is as wide as its widest child like any block. */
     int row = st && st->display == DISP_FLEX &&
@@ -2653,12 +2849,23 @@ static int content_width(struct node *n, int px, int mono, int depth)
     return acc + extra;
 }
 
-/* Widest unbreakable token in one text run. A token is whitespace-delimited;
- * one containing a multi-byte UTF-8 sequence counts only as its widest single
- * CHARACTER, because CJK has a line-break opportunity between any two
- * ideographs and flow_text's break-anywhere path already takes it. An ASCII
- * word has no such opportunity and stays indivisible, which is exactly the
- * distinction real line breakers draw. */
+/* Widest unbreakable token in one text run. A token is whitespace-delimited,
+ * and the question is where flow_text WOULD cut it -- so this asks the same
+ * oracle flow_text asks, which is the whole point: min-width:auto sized
+ * against a break the line breaker will not take is a flex item that overflows
+ * with the layout still believing it fits.
+ *
+ * This used to answer "the widest single CHARACTER" for any token holding a
+ * multi-byte sequence, on the ground that CJK breaks between any two
+ * ideographs. That is right about Chinese and wrong about everything else that
+ * is not ASCII: `café` has no break opportunity in it at all, and the old rule
+ * let a flex item squeeze it to the width of one letter. It was also wrong
+ * about Chinese punctuation -- `文。` cannot be split, because no line may
+ * begin with a full stop.
+ *
+ * ASCII keeps the fast path: it needs no table (a run of AL characters offers
+ * no internal opportunity), and it is nearly all of the text on nearly every
+ * page. */
 static int min_word_width(const char *s, int len, int px, int mono)
 {
     int best = 0, i = 0;
@@ -2667,17 +2874,22 @@ static int min_word_width(const char *s, int len, int px, int mono)
         int ws = i, wide = 0;
         while (i < len && !sp(s[i])) { if ((unsigned char)s[i] & 0x80) wide = 1; i++; }
         if (i <= ws) continue;
-        if (!wide) {
-            int w = text_measure(s + ws, i - ws, px, mono);
+        int wlen = i - ws;
+        const unsigned char *brk = wide ? lb_opps(s + ws, wlen) : 0;
+        if (!brk) {
+            int w = text_measure(s + ws, wlen, px, mono);
             if (w > best) best = w;
-        } else {
-            for (int p = ws; p < i; ) {
-                int adv = 1;
-                while (p + adv < i && (s[p + adv] & 0xC0) == 0x80) adv++;
-                int w = text_measure(s + p, adv, px, mono);
-                if (w > best) best = w;
-                p += adv;
-            }
+            continue;
+        }
+        /* Widest span between two consecutive opportunities. Positions inside
+         * a multi-byte sequence are reported prohibited by ltx_break_utf8, so
+         * this cannot cut a character in half. */
+        int seg = 0;
+        for (int p = 1; p <= wlen; p++) {
+            if (p < wlen && brk[p] == LTX_BRK_PROHIBITED) continue;
+            int w = text_measure(s + ws + seg, p - seg, px, mono);
+            if (w > best) best = w;
+            seg = p;
         }
     }
     return best;
@@ -2698,7 +2910,7 @@ static int min_content_width(struct node *n, int px, int mono, int depth)
     /* Replaced content has no internal break opportunity at all. */
     if (tag_eq(n->tag, "img") || tag_eq(n->tag, "svg"))
         return content_width(n, px, mono, depth);
-    int cpx = st ? st->font_px : px, cmono = st ? st->mono : mono;
+    int cpx = st ? st->font_px : px, cmono = st ? st_face(st) : mono;
     int rowdir = st && st->display == DISP_FLEX &&
                  (st->flex_dir == FDIR_ROW || st->flex_dir == FDIR_ROW_REV);
     int acc = 0;
@@ -3784,7 +3996,7 @@ static int layout_table(struct node *t, int x, int y, int w)
             if (c->type != N_ELEM || (!tag_eq(c->tag, "td") && !tag_eq(c->tag, "th"))) continue;
             struct cstyle *cs = c->style;
             if (skipped(c)) continue;
-            int px = cs ? cs->font_px : 16, mono = cs ? cs->mono : 0;
+            int px = cs ? cs->font_px : 16, mono = st_face(cs);
             int dw = tbl_widest_word(c, px, mono) + (cs ? cs->pl + cs->pr : 0) + 12;
             if (dw > desired[ci]) desired[ci] = dw;
             ci++;

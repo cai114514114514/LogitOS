@@ -22,12 +22,21 @@
  * WPT runner, whose source list this line does not own -- link without this
  * TU and must still link. `if (js_events_install)` at the call site is what
  * makes that work. */
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB: see the header */
 #ifdef JS_EVENTS_OPTIONAL
-#  define EVENTS_FN __attribute__((__weak__))
+#  define EVENTS_FN LOGIT_WEAK
 #else
 #  define EVENTS_FN
 #endif
 
 EVENTS_FN void js_events_install(JSContext *ctx);
+
+/* The Mach-O half of the weak declarations above (include/weaksym.h): an
+ * undefined weak reference is an ELF property, so each optional entry point
+ * needs a weak definition in the TU that may not link the provider. Emitted
+ * only under JS_EVENTS_OPTIONAL, i.e. only in that TU. */
+#ifdef JS_EVENTS_OPTIONAL
+LOGIT_WEAK_STUB(js_events_install);
+#endif
 
 #endif /* LOGIT_JS_EVENTS_H */

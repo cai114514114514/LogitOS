@@ -34,31 +34,37 @@
 /* The form controls + focus model -- js_forms.c. Declared here rather than
  * through a header because it is one symbol; weak for the same reason as the
  * five above. */
-void js_forms_install(JSContext *ctx) __attribute__((__weak__));
+void js_forms_install(JSContext *ctx) LOGIT_WEAK;
 /* The HTML element interfaces -- js_semantics.c: <dialog>'s showModal/close,
  * <table>'s rows/insertRow, <select>'s options, the popover and
  * command/commandfor invokers, and HTMLElement.prototype.click. Weak for the
  * same reason as the others; a build without that TU keeps today's behaviour
  * exactly. */
-void js_semantics_install(JSContext *ctx) __attribute__((__weak__));
+void js_semantics_install(JSContext *ctx) LOGIT_WEAK;
 /* Element.prototype.animate and the computed-style overlay that makes it
  * observable -- js_anim.c. Weak like every install above, and here the
  * weakness is also the MEASUREMENT: with js_anim.c off the link line this call
  * is an exact no-op, so a control binary can be built from an identical tree
  * that differs only in whether the file is linked. That is what makes "2,202
  * subtests gained" attributable rather than asserted. */
-void js_anim_install(JSContext *ctx) __attribute__((__weak__));
+void js_anim_install(JSContext *ctx) LOGIT_WEAK;
 /* `new DOMParser().parseFromString(str, "text/html")` -- js_domparser.c, a
  * SEPARATE detached-document wrapper (see that file's header for why it is
  * not layered over js_dom.c's own, page-bound one). Weak like the rest: a
  * build without that TU links and `typeof DOMParser === 'undefined'`, which
  * is the correct feature-detect answer for a browser that doesn't have it. */
-void js_domparser_install(JSContext *ctx) __attribute__((__weak__));
+void js_domparser_install(JSContext *ctx) LOGIT_WEAK;
 /* CanvasRenderingContext2D over c/lib/gfx -- js_canvas.c. Weak like the rest;
  * a build without that TU has canvases with no context, which is what this
  * browser was until the callee-naming instrument ranked `getContext` first
  * among every failed call in the site corpus. */
-void js_canvas_install(JSContext *ctx) __attribute__((__weak__));
+void js_canvas_install(JSContext *ctx) LOGIT_WEAK;
+/* The Mach-O half of all five: see include/weaksym.h. */
+LOGIT_WEAK_STUB(js_forms_install);
+LOGIT_WEAK_STUB(js_semantics_install);
+LOGIT_WEAK_STUB(js_anim_install);
+LOGIT_WEAK_STUB(js_domparser_install);
+LOGIT_WEAK_STUB(js_canvas_install);
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -254,7 +260,7 @@ int js_page_pending(void)
     if (g_timers) return 1;
     /* A fetch in flight also needs the loop to call js_page_run_due(), which is
      * where its socket is stepped. */
-    return js_webapi_pending && js_webapi_pending();
+    return LOGIT_HAVE(js_webapi_pending) && js_webapi_pending();
 }
 
 long long js_page_next_due(void)
@@ -277,7 +283,7 @@ int js_page_run_due(void)
      * its reactions, so drain the microtask queue before returning -- the
      * embedder repaints on a non-zero return and the .then() that writes the
      * DOM has to have run by then. */
-    if (js_webapi_pump) {
+    if (LOGIT_HAVE(js_webapi_pump)) {
         int n = js_webapi_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
     }
@@ -625,7 +631,7 @@ int js_page_open(struct node *root)
      * components and writable. This href-only stand-in is what a build without
      * js_webapi.c gets -- the surface it had before -- so dropping that file
      * from a link takes away fetch, not the page's own address. */
-    if (!js_webapi_install) {
+    if (!LOGIT_HAVE(js_webapi_install)) {
         JSValue loc = JS_NewObject(g_ctx);
         JS_SetPropertyStr(g_ctx, loc, "href", JS_NewString(g_ctx, g_location));
         JS_SetPropertyStr(g_ctx, g, "location", loc);
@@ -659,36 +665,40 @@ int js_page_open(struct node *root)
      * installers together rather than scattered above it. See js_domparser.c's
      * header for the lifetime scheme -- no close hook is registered because
      * none is needed (ordinary QuickJS object teardown is sufficient). */
-    if (js_domparser_install) js_domparser_install(g_ctx);
+    if (LOGIT_HAVE(js_domparser_install)) js_domparser_install(g_ctx);
     js_dom_bind_event_target(g_ctx, g);  /* window.addEventListener + window.on* */
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */
-    if (js_webapi_install) js_webapi_install(g_ctx, g_location);
+    if (LOGIT_HAVE(js_webapi_install)) js_webapi_install(g_ctx, g_location);
     /* LAST. js_platform.c fills gaps in what the two above publish (document,
      * navigator, performance, localStorage) and every one of its installs is
      * conditional on the property being absent -- which only means anything
      * once everyone who owns one has had their turn. */
-    if (js_select_install) js_select_install(g_ctx);
-    if (js_intl_install) js_intl_install(g_ctx);
+    if (LOGIT_HAVE(js_select_install)) js_select_install(g_ctx);
+    if (LOGIT_HAVE(js_intl_install)) js_intl_install(g_ctx);
     /* AFTER js_dom_init (it takes the Element prototype) and after the platform
      * fills in `document`; MediaSource has no dependency on either, but the
      * HTMLMediaElement members are installed on the element prototype. */
-    if (js_media_install) js_media_install(g_ctx);
-    if (js_platform_install) js_platform_install(g_ctx);
+    if (LOGIT_HAVE(js_media_install)) js_media_install(g_ctx);
+    if (LOGIT_HAVE(js_platform_install)) js_platform_install(g_ctx);
+    /* AFTER js_platform_install: it is what creates `crypto` in the first
+     * place (getRandomValues, randomUUID). js_subtle_install only fills in
+     * `.subtle` on whatever `crypto` object already exists. */
+    if (LOGIT_HAVE(js_subtle_install)) js_subtle_install(g_ctx);
     /* LAST of the last. The event layer needs js_dom.c's native Event classes
      * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
      * deliberately REPLACES two placeholders js_platform.c installs when
      * nobody better has (EventTarget, PromiseRejectionEvent) -- so unlike
      * js_platform.c's "only if absent" rule, this one has to run after the
      * placeholder exists in order to take it over. */
-    if (js_events_install) js_events_install(g_ctx);
+    if (LOGIT_HAVE(js_events_install)) js_events_install(g_ctx);
     /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
      * takes the Element prototype js_dom.c published, and it deliberately
      * REPLACES two bindings older files install: getBoundingClientRect (its
      * version flushes a pending layout first) and matchMedia (its version is
      * the cascade's own media evaluator, which closes the divergence css.h
      * names). Installing it earlier means those two get overwritten again. */
-    if (js_cssom_install) js_cssom_install(g_ctx);
+    if (LOGIT_HAVE(js_cssom_install)) js_cssom_install(g_ctx);
     /* The form controls and the focus model -- js_forms.c: element.value,
      * .checked, .focus(), document.activeElement, form.submit(). LAST, and
      * "only if absent" like js_platform.c: every property it defines is one an
@@ -697,7 +707,7 @@ int js_page_open(struct node *root)
      * rather than only for controls. Weak, like every other install above, so a
      * build without that object (the focus negative control, and the host tests
      * of this file) links and simply has no form bindings. */
-    if (js_forms_install) js_forms_install(g_ctx);
+    if (LOGIT_HAVE(js_forms_install)) js_forms_install(g_ctx);
     /* AFTER js_webapi_install, and that ordering is the point. js_webapi.c
      * ships a URL / URLSearchParams built as a JS prelude over
      * c/net/http/url.c -- the four-field parser the fetch needs, which has no
@@ -705,19 +715,19 @@ int js_page_open(struct node *root)
      * REPLACES both globals with the standard's algorithm, and replacing
      * something means running after the thing that installed it. Weak, like
      * every install above, so a build without that TU keeps the old pair. */
-    if (js_url_install) js_url_install(g_ctx);
+    if (LOGIT_HAVE(js_url_install)) js_url_install(g_ctx);
     /* AFTER js_forms_install, and that ordering is load-bearing in one place:
      * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
      * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
      * element prototype before 7fc2bec), and js_semantics.c copies that
      * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
      * focused. It can only copy a descriptor that already exists. */
-    if (js_semantics_install) js_semantics_install(g_ctx);
+    if (LOGIT_HAVE(js_semantics_install)) js_semantics_install(g_ctx);
     /* After the interface objects exist, because it asks for
      * HTMLCanvasElement.prototype BY NAME and installs nothing if it is
      * absent -- saying so out loud rather than leaving the page to rediscover
      * it as `getContext is not a function`. */
-    if (js_canvas_install) js_canvas_install(g_ctx);
+    if (LOGIT_HAVE(js_canvas_install)) js_canvas_install(g_ctx);
     /* LAST, after everyone who owns a piece of what it composes with has had
      * their turn, and the ordering is load-bearing twice over. It takes
      * Element.prototype, which js_dom.c publishes. And it REPLACES
@@ -725,7 +735,7 @@ int js_page_open(struct node *root)
      * installed at the time -- so it has to run after js_cssom.c and
      * js_platform.c, or it wraps a placeholder and the real one overwrites the
      * wrapper afterwards, leaving animate() present and unobservable. */
-    if (js_anim_install) js_anim_install(g_ctx);
+    if (LOGIT_HAVE(js_anim_install)) js_anim_install(g_ctx);
     JS_FreeValue(g_ctx, g);
     return 1;
 }
@@ -738,10 +748,10 @@ void js_page_close(void)
      * also clears the DOM's weak wrapper slots, so no node is left pointing at
      * a JSObject in a runtime that is about to stop existing. */
     timers_clear(g_ctx);
-    if (js_platform_close) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
-    if (js_webapi_close) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
-    if (js_media_close) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
-    if (js_cssom_close) js_cssom_close(g_ctx);     /* drops the node lookup cache */
+    if (LOGIT_HAVE(js_platform_close)) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
+    if (LOGIT_HAVE(js_webapi_close)) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
+    if (LOGIT_HAVE(js_media_close)) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
+    if (LOGIT_HAVE(js_cssom_close)) js_cssom_close(g_ctx);     /* drops the node lookup cache */
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
     JS_FreeContext(g_ctx);
