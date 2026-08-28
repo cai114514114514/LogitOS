@@ -5,6 +5,7 @@
 #include "css.h"
 #include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
 #include "css_interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
+#include "css_report.h"    /* the ONE accounting of the stylesheet pipeline */
 #include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB/LOGIT_HAVE */
 
 /* ...and the one function taken from it is WEAK, for the reason the block at
@@ -521,7 +522,20 @@ static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_st
 
 static const char UA_CSS[] =
     "body{display:block;margin:8px}"
-    "div,p,h1,h2,h3,h4,h5,h6,ul,ol,li,pre,header,footer,section,article,nav,main,blockquote,figure,figcaption,table,form{display:block}"
+    "div,p,h1,h2,h3,h4,h5,h6,ul,ol,li,pre,header,footer,section,article,nav,main,blockquote,figure,figcaption,table,form,"
+    /* The gap this line closes, measured on the Bing search results page
+     * (tests/fixtures/webapi/bing/search: `curl -A "$LOGIT_UA" .../search?q=python`):
+     * `<aside>` -- a named sectioning element, CLAUDE.md's own "sectioning
+     * elements" bullet -- had NO rule in this sheet at all, so a page whose
+     * external CSS is dropped, missing, or has not arrived (which is common;
+     * see css_report.c) renders every sidebar/aside INLINE, smeared into the
+     * surrounding text run. `address`, `dl`/`dt`/`dd`, `fieldset`/`legend`,
+     * `details`/`summary` had the identical bug for the same reason: nobody
+     * had gone through the HTML Standard's rendering section element by
+     * element against this file. dt/dd/legend/hr get their own rules below
+     * (dd needs an indent, hr needs to be visible at all -- `display:block`
+     * alone is not enough for either). */
+    "address,aside,dl,fieldset,details,summary{display:block}"
     "tr,td,th,thead,tbody,tfoot{display:block}"
     "th{font-weight:bold}"
     "h1{font-size:32px;font-weight:bold;margin:14px 0}"
@@ -543,10 +557,59 @@ static const char UA_CSS[] =
     "ol{list-style-type:decimal}ul{list-style-type:disc}"
     "ul ul,ol ul{list-style-type:circle}ul ul ul,ol ol ul{list-style-type:square}"
     "pre{font-family:monospace;margin:8px 0}code{font-family:monospace}"
-    /* white-space: the whole point of <pre> and friends. */
+    /* white-space: the whole point of <pre> and friends. They already had
+     * that rule and NOT display:block -- xmp/plaintext/listing are obsolete
+     * but still real (legacy-content sniffers, some code-dump pages), and
+     * without a display rule the CSS initial `inline` applied: their
+     * preformatted text ran inline into whatever followed it instead of
+     * standing as its own block, on top of never wrapping (white-space:pre
+     * inside an inline box still measures its line the normal way). */
     "pre,xmp,plaintext,listing{white-space:pre}"
+    "xmp,plaintext,listing{display:block}"
     "textarea{white-space:pre-wrap}nobr{white-space:nowrap}"
     "svg{display:inline}"
+    /* dt/dd: same missing-rule bug as address/aside above, in the one place
+     * it also needs a NUMBER, not just a box type -- a definition list with
+     * no CSS at all (a common FAQ/glossary shape) must still read as
+     * term/answer, which means dd needs to be visually offset from dt. 28px
+     * matches this file's own convention (the same indent ul/ol already use
+     * for their markers, see padding-left above) rather than the spec's
+     * literal 40px, so a page mixing dl and ul without any CSS gets one
+     * consistent rhythm instead of two different indents that happen to both
+     * be "roughly a tab stop". */
+    "dt{display:block}dd{display:block;margin-left:28px}"
+    /* legend: block, same bug, no numeric embellishment -- fieldset's own
+     * border/padding is a real box-model feature this UA sheet does not
+     * attempt (this section is about display DEFAULTS, the ones the CLAUDE.md
+     * brief itself says matter most: "an element that should be block
+     * rendering inline collapses a whole page into a run-on line"). */
+    "legend{display:block}"
+    /* hr: NOT in this sheet at all before this line, and display:block alone
+     * would not have fixed it -- an hr with a block box, zero content, zero
+     * border and zero explicit height is a REAL box that is completely
+     * INVISIBLE, which is indistinguishable from "this element's CSS never
+     * arrived" (the exact ambiguity item 1's css_report.c exists to close,
+     * from the opposite direction: that instrument tells you whether author
+     * CSS reached the cascade, this rule is what the page looks like when it
+     * legitimately did not reach it, or never needed to for THIS element).
+     * height:0 + a single top border is the smallest declaration set that
+     * produces an actual line; margin:auto centers it if a width narrower
+     * than the container is ever set by an author rule (layout.c already
+     * supports margin:auto centering, see the comment at is_bfc_root's
+     * caller). */
+    "hr{display:block;height:0;margin:8px auto;border:none;border-top:1px solid #8a8a8a}"
+    /* iframe: before this rule it had no display in this sheet at all, which
+     * means the CSS default of `inline` applied and, being non-replaced by
+     * this engine's own is_block()/blockish() rules, it took NO BOX -- an
+     * <iframe> painted nothing and reserved nothing, indistinguishable from
+     * one that failed to parse. inline-block is what lets an element's
+     * width/height apply without content; 300x150 is the same generic
+     * replaced-element default this file already uses for <video>/<canvas>
+     * (layout.c, both comments say so) and is what HTML itself specifies for
+     * a sizeless iframe. The border is cosmetic and matches the historical
+     * UA default (an inset 2px groove) so an empty frame reads as a frame
+     * and not as a stray blank rectangle. */
+    "iframe{display:inline-block;width:300px;height:150px;border:2px inset #8a8a8a}"
     "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}";
 
 /* The quirks-mode UA sheet, appended ON TOP of UA_CSS (same UA origin, later
@@ -640,8 +703,13 @@ int css_sheet_parses(void) { return g_author_parses; }
 static css_stylesheet *author_sheet(const char *data, size_t len, bool quirks)
 {
     if (g_author_sheet && g_author_quirks == quirks && g_author_srclen == len &&
-        (len == 0 || memcmp(g_author_src, data, len) == 0))
+        (len == 0 || memcmp(g_author_src, data, len) == 0)) {
+        /* No parse happened, so no drop hook fired. Said out loud, because
+         * "parsed 0, dropped 0" otherwise reads exactly like "no stylesheet
+         * ever reached the cascade". */
+        css_report_parse_cached();
         return g_author_sheet;
+    }
 
     /* Content differs: drop the old parse before building the new one, so the
      * cache never holds two whole stylesheets at once. */
@@ -651,6 +719,10 @@ static css_stylesheet *author_sheet(const char *data, size_t len, bool quirks)
 
     g_author_parses++;
     css_stylesheet *s = make_sheet(data, len, false, quirks);
+    /* THE one site where a page's own stylesheet is handed to LibCSS. Reported
+     * here rather than at the caller so the count cannot disagree with what
+     * actually got parsed. */
+    css_report_parsed(s != NULL, (int)len);
     if (!s) return NULL;
     /* Without the source copy we cannot answer "is this the same sheet?" next
      * time, so a failed copy means: use this parse, but do not cache it. */

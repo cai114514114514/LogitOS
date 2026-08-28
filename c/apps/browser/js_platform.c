@@ -1178,7 +1178,19 @@ static const char *PLATFORM_PRELUDE =
 "}\n"
 "if (!G.MutationObserver) {\n"
 "  var mos = [];\n"
-"  var MO = function MutationObserver(cb) { this._cb = cb; this._recs = []; this._t = []; };\n"
+   /* IO and RO both throw TypeError on a non-function callback at
+      construction; MO did not -- it stored the bad value and would only fail
+      later, inside emit()'s own try/catch, reported through
+      G.reportError/console.error rather than at the caller's own line. Not a
+      hang (that catch still lets delivery continue for every OTHER observer),
+      but a page that does `new MutationObserver(cb)` where cb is undefined
+      because of a typo got a working-looking observer object instead of the
+      construction-time error every other observer constructor gives it. */
+"  var MO = function MutationObserver(cb) {\n"
+"    if (typeof cb !== 'function')\n"
+"      throw new TypeError('MutationObserver: callback is not a function');\n"
+"    this._cb = cb; this._recs = []; this._t = [];\n"
+"  };\n"
 "  MO.prototype = {\n"
 "    constructor: MO,\n"
 "    observe: function (el, opts) {\n"
@@ -1240,16 +1252,39 @@ static const char *PLATFORM_PRELUDE =
       the top of this file for what went wrong when they were all wrapped on
       "the element prototype", and for why setAttribute was the one that
       silently disappeared while appendChild survived. */
+   /* Every record carries all SEVEN spec fields now, not just the ones this
+      mutation touches. mutationobservers.js -- the shared helper the real
+      WPT MutationObserver suite is built on, not a page this tree invented --
+      compares a MISSING key as `null` (its own checkField: a `field ===
+      undefined` default is null) but assert_equals is `===`, and a key this
+      object never set reads back `undefined`, not `null`. Every record below
+      used to omit previousSibling/nextSibling/attributeNamespace entirely, so
+      `undefined !== null` failed attributes, characterData AND childList
+      records alike, on every WPT file built on that helper, independent of
+      whether the mutation itself was reported correctly -- the shape was
+      wrong even when the content was right. This is the general form of the
+      Node.isEqualNode trap: a record that arrives, on time, with the right
+      TYPE, still reads as "nothing happened" to code that walks its full
+      shape.
+      previousSibling/nextSibling ARE computed for childList, not left null:
+      for an insertion the node is in its final tree position by the time
+      orig.apply returns, so its own previousSibling/nextSibling are exactly
+      the spec's definition; for a plain removeChild the node is detached by
+      then, so those two are read BEFORE orig.apply runs instead. */
 "  ['appendChild', 'insertBefore', 'replaceChild', 'removeChild'].forEach(function (m) {\n"
 "    wrapMethod('mo', m, function (orig, name) {\n"
 "      return function () {\n"
-"        var r = orig.apply(this, arguments);\n"
-"        var added = [], removed = [];\n"
-"        if (name === 'removeChild') removed = [arguments[0]];\n"
-"        else if (name === 'replaceChild') { added = [arguments[0]]; removed = [arguments[1]]; }\n"
+"        var added = [], removed = [], prevSib = null, nextSib = null;\n"
+"        if (name === 'removeChild') {\n"
+"          removed = [arguments[0]];\n"
+"          if (arguments[0]) { prevSib = arguments[0].previousSibling; nextSib = arguments[0].nextSibling; }\n"
+"        } else if (name === 'replaceChild') { added = [arguments[0]]; removed = [arguments[1]]; }\n"
 "        else added = [arguments[0]];\n"
+"        var r = orig.apply(this, arguments);\n"
+"        if (added.length && added[0]) { prevSib = added[0].previousSibling; nextSib = added[0].nextSibling; }\n"
 "        if (mos.length) emit(this, { type: 'childList', addedNodes: added, removedNodes: removed,\n"
-"                                     attributeName: null, oldValue: null });\n"
+"                                     previousSibling: prevSib, nextSibling: nextSib,\n"
+"                                     attributeName: null, attributeNamespace: null, oldValue: null });\n"
 "        return r;\n"
 "      };\n"
 "    });\n"
@@ -1261,11 +1296,64 @@ static const char *PLATFORM_PRELUDE =
 "        try { old = this.getAttribute(name); } catch (e) {}\n"
 "        var r = orig.apply(this, arguments);\n"
 "        if (mos.length) emit(this, { type: 'attributes', attributeName: String(name),\n"
-"                                     oldValue: old, addedNodes: [], removedNodes: [] });\n"
+"                                     attributeNamespace: null, oldValue: old,\n"
+"                                     addedNodes: [], removedNodes: [],\n"
+"                                     previousSibling: null, nextSibling: null });\n"
 "        return r;\n"
 "      };\n"
 "    });\n"
 "  });\n"
+   /* characterData -- the branch js_characterdata.c's own header named as
+      missing ("MutationObserver's characterData branch lands in chardata_set
+      later"). `data`/`nodeValue` are ACCESSOR properties (JS_CGETSET_DEF), not
+      plain functions, so wrapMethod (which overwrites `P[name]` with a
+      function) cannot touch them -- overwriting an accessor with a function
+      would replace the getter too and break every read of `.data`. This wraps
+      the DESCRIPTOR instead: read it, keep its getter, replace only the
+      setter, put the whole descriptor back with defineProperty.
+      insertData/deleteData/replaceData/splitText/appendData/substringData all
+      end at this same setter (js_characterdata.c's header: "whatever
+      invalidation and observation el_set_nodeValue's chardata_set does for a
+      plain node.data = x assignment, insertData/deleteData/replaceData/
+      splitText get for free") -- so wrapping the one setter covers the whole
+      CharacterData method family with no separate wrapper for each.
+      `data` and `nodeValue` are TWO DIFFERENT own properties (CharacterData.
+      prototype and Node.prototype respectively) backed by the same native
+      function, exactly the setAttribute/className/classList shape above --
+      wrapping one does not wrap the other, so both are done here. A `<div>`
+      has neither in its chain (data is CharacterData-only), so the probe
+      element is a text node, not wrapMethod's `document.createElement('div')`. */
+"  (function () {\n"
+"    var sample = null;\n"
+"    try { sample = G.document.createTextNode('x'); } catch (e) {}\n"
+"    if (!sample) return;\n"
+"    ['data', 'nodeValue'].forEach(function (name) {\n"
+"      var p = Object.getPrototypeOf(sample), owner = null, desc = null;\n"
+"      while (p) {\n"
+"        var d = Object.getOwnPropertyDescriptor(p, name);\n"
+"        if (d && typeof d.set === 'function') { owner = p; desc = d; break; }\n"
+"        p = Object.getPrototypeOf(p);\n"
+"      }\n"
+"      if (!owner) return;\n"
+"      var key = '__w_mo_' + name;\n"
+"      if (owner[key]) return;\n"
+"      try {\n"
+"        Object.defineProperty(owner, key, { value: true, enumerable: false, configurable: true });\n"
+"        Object.defineProperty(owner, name, {\n"
+"          configurable: true, enumerable: desc.enumerable, get: desc.get,\n"
+"          set: function (v) {\n"
+"            var old = null;\n"
+"            if (mos.length) { try { old = desc.get.call(this); } catch (e) {} }\n"
+"            desc.set.call(this, v);\n"
+"            if (mos.length) emit(this, { type: 'characterData', attributeName: null,\n"
+"                                         attributeNamespace: null, oldValue: old,\n"
+"                                         addedNodes: [], removedNodes: [],\n"
+"                                         previousSibling: null, nextSibling: null });\n"
+"          }\n"
+"        });\n"
+"      } catch (e) {}\n"
+"    });\n"
+"  })();\n"
 "}\n"
 
 /* ==== HTMLElement.dataset ================================================
@@ -1723,6 +1811,78 @@ static const char *PLATFORM_PRELUDE =
 "    }\n"
 "  };\n"
 "  def(G, 'customElements', CE);\n"
+   /* ==== DIRECT CONSTRUCTION: `new MyElement()`, not just parser upgrade ====
+    *
+    * MEASURED, jsfb: `class Nt extends Tt {}` (solarite) where Tt is a Proxy
+    * whose construct trap does `Reflect.construct(t, e, i)` -- so `new Nt()`
+    * reaches the native HTMLElement constructor with NO node being upgraded,
+    * and js_dom_iface.inc's iface_ctor (correctly) throws 'Illegal
+    * constructor' for that case, because the ONLY legitimate direct call it
+    * knows about is the upgrade handoff via __ceUpgrading. That is one of the
+    * spec's TWO ways to get a custom element, and only one was built: the
+    * other -- `new MyElement()` constructing a BRAND NEW element, the same
+    * thing `document.createElement` + upgrade produces, just author-invoked
+    * -- had no path at all. Two independent jsfb implementations stopped on
+    * exactly this line.
+    *
+    * WHY THIS IS DONE WITH A JS PROXY RATHER THAN A THIRD C CASE. The
+    * information needed to answer it -- "is newTarget a registered custom
+    * element, and under what tag" -- lives entirely in `defs`, a JS closure
+    * with no C-visible form, and duplicating a registry across the JS/C
+    * boundary is the one-jar-two-doors mistake CLAUDE.md names. A `construct`
+    * trap on the global `HTMLElement` binding sees the same (target, args,
+    * newTarget) triple the native call would have received, and a trap with
+    * no other handler forwards every other property (`.prototype`, so
+    * `instanceof HTMLElement` and `HTMLDivElement.prototype instanceof
+    * HTMLElement` are unaffected) and every other call (`Reflect.construct`
+    * back to the ORIGINAL native constructor for the two cases that already
+    * work: __ceUpgrading in flight, and the genuinely illegal `new
+    * HTMLElement()` with no registration, which must keep throwing).
+    *
+    * ORDERING IS THE WHOLE CONTRACT. This runs inside the prelude, before any
+    * page <script> or module evaluates, so `class X extends HTMLElement`
+    * anywhere in page code reads the WRAPPED binding -- `extends` evaluates
+    * its operand at class-definition time, not at `new`-time. A page that
+    * captured the native constructor before this ran (impossible from page
+    * code, since nothing runs before the prelude) would fall outside it; nothing
+    * in this tree does. */
+"  (function () {\n"
+"    var Raw = G.HTMLElement;\n"
+"    if (typeof Raw !== 'function' || Raw.__ceWrapped) return;\n"
+"    var P = new Proxy(Raw, {\n"
+"      construct: function (target, args, newTarget) {\n"
+          /* The upgrade handoff (existing behaviour, moved up front so it
+             costs nothing extra: an upgrade in flight never needs the
+             registry lookup below). */
+"        if (G.__ceUpgrading) {\n"
+"          var up = G.__ceUpgrading; G.__ceUpgrading = null; return up;\n"
+"        }\n"
+"        var tag = null;\n"
+"        for (var k in defs) if (defs[k].ctor === newTarget) { tag = k; break; }\n"
+          /* Not a registered custom element -- fall through to the REAL
+             constructor so `new HTMLElement()` and every other caller of this
+             trap keeps throwing (or working) exactly as before this file. */
+"        if (tag === null) return Reflect.construct(target, args, newTarget);\n"
+"        if (!G.document || typeof G.document.createElement !== 'function')\n"
+"          throw new TypeError('HTMLElement: no document to construct into');\n"
+"        var el = G.document.createElement(tag);\n"
+          /* Same swap upgradeOne does for the parser-upgrade case: the
+             prototype makes the node instanceof the leaf class and reaches
+             its methods; __ceState makes it a no-op for a LATER upgrade pass
+             (define() or an insertion) that would otherwise try to construct
+             it a second time. connectedCallback is deliberately NOT fired
+             here -- the node is not in a document yet, and the insertion
+             wrappers below fire it the moment it actually is one, same as
+             any other already-upgraded custom element that moves. */
+"        try { Object.setPrototypeOf(el, newTarget.prototype); } catch (e) {}\n"
+"        el.__ceState = 'upgraded';\n"
+"        return el;\n"
+"      }\n"
+"    });\n"
+"    try { Object.defineProperty(P, '__ceWrapped', { value: 1 }); } catch (e) {}\n"
+"    try { Object.defineProperty(G, 'HTMLElement', { value: P, writable: true, configurable: true }); }\n"
+"    catch (e) { G.HTMLElement = P; }\n"
+"  })();\n"
    /* Insertion upgrades. The same three methods the MutationObserver support
       wraps, wrapped once more here -- order does not matter because each
       wrapper calls through, and doing it here rather than there keeps the two
@@ -1959,6 +2119,93 @@ static const char *PLATFORM_PRELUDE =
 "        writable: true, configurable: true, enumerable: false });\n"
 "  } catch (e) {}\n"
 "}\n"
+/* ==== Document.importNode / Document.adoptNode / document.implementation ==
+ * MEASURED: jsfb_matrix's work-order table over the 221-implementation
+ * js-framework-benchmark corpus groups these three under "Document interface
+ * members absent (importNode/adoptNode/createDocument)", 7 independent
+ * implementations stopped. The general shape behind the name, not a site
+ * quirk: a page builds a piece of tree off to the side -- a <template>'s
+ * .content, a fresh document.createDocumentFragment(), a detached tree built
+ * with document.createElement -- and wants it moved or copied INTO the live
+ * document. importNode/adoptNode are the standard's names for that, and every
+ * templating helper that predates or avoids innerHTML (most Web Component
+ * base classes, lit-html on <template> content) reaches for them.
+ *
+ * WHAT THIS DOES, FOR REAL: same-document import/adopt -- which is what the
+ * corpus actually exercises, since this engine has exactly one live document
+ * -- is implemented on the existing primitives, both already correct:
+ * cloneNode (installCloneNode, above: a lossless serialize/reparse round
+ * trip) for importNode, and removeChild (detach-only since 2026-08-28, see
+ * el_removeChild's comment in js_dom.c) for adoptNode's "take it out of
+ * wherever it was" step.
+ *
+ * WHAT THIS REFUSES, BY NAME, RATHER THAN GETTING SILENTLY WRONG: importing
+ * or adopting a node that belongs to a DIFFERENT document -- one produced by
+ * `new DOMParser().parseFromString()`, the one case in this engine where a
+ * node is genuinely NOT part of the live document's own tree (see the note
+ * below on why document.implementation.createHTMLDocument does NOT need this
+ * refusal). Those nodes are a SEPARATE wrapper class (js_domparser.c's
+ * dp_cid, not this file's/js_dom.c's elem_cid) with no attribute-enumeration
+ * primitive exposed to JS at all, so
+ * there is no way to serialize one faithfully from here the way cloneNode's
+ * markup round trip does for a same-document node -- attempting it would mean
+ * dropping every attribute silently, which is exactly the "the page looks
+ * alive and is lying" failure this whole tier exists to close. Per rule 3
+ * (never stub to success): every cross-document call throws a real, named
+ * DOMException instead, so a page relying on it gets a diagnosable failure
+ * -- caught by its own try/catch or reported to console -- rather than a
+ * blank subtree with no error anywhere. Closing this for real needs an
+ * outerHTML/attribute-list primitive on js_domparser.c's node wrapper; that
+ * file's line to change, not this one's.
+ *
+ * ONE JAR, NOT TWO: `document.implementation` (createHTMLDocument,
+ * createDocumentType, createDocument, hasFeature) is NOT built here. It is
+ * already real, at the C level, in js_dom_iface.inc's impl_funcs -- and its
+ * createHTMLDocument is a BETTER answer than a DOMParser-backed one would
+ * have been: it shares the live document's own arena on purpose (its own
+ * comment: "sharing the arena costs a synthetic node kind and buys the one
+ * behaviour the caller exists for"), so a node from it is NOT a foreign
+ * cross-document node at all -- `ownerDocument` resolves the same as any
+ * other node in this engine, and importNode/adoptNode on it Just Work through
+ * the ordinary cloneNode/removeChild path below, no special case needed. The
+ * first version of this file's comment assumed createHTMLDocument was
+ * DOMParser-backed and duplicated it in JS on that wrong assumption; caught
+ * by testing against the real thing (its ownerDocument came back === document,
+ * not a foreign object) before it shipped. The genuinely foreign case this
+ * file DOES still have to refuse is `new DOMParser().parseFromString()` --
+ * js_domparser.c's dp_cid nodes are a real separate `struct dom_doc`, and
+ * THAT is what CROSS_DOC below is for. */
+"function installImportAdopt() {\n"
+"  var D = G.document;\n"
+"  if (!D || typeof D.importNode === 'function') return;\n"
+"  var CROSS_DOC = 'importing or adopting a node from a document created by ' +\n"
+"                  'new DOMParser().parseFromString() is not supported in this build';\n"
+"  var checkNode = function (node, verb) {\n"
+"    if (!node || typeof node.nodeType !== 'number')\n"
+"      throw new TypeError(\"Failed to execute '\" + verb + \"Node' on 'Document': \" +\n"
+"                          'parameter 1 is not of type \\'Node\\'.');\n"
+"    if (node.nodeType === 9)\n"
+"      throw new G.DOMException('A Document node may not be ' + verb + 'ed', 'NotSupportedError');\n"
+"    if (node.ownerDocument !== undefined && node.ownerDocument !== null && node.ownerDocument !== D)\n"
+"      throw new G.DOMException(CROSS_DOC, 'NotSupportedError');\n"
+"  };\n"
+"  def(D, 'importNode', function (node, deep) {\n"
+"    checkNode(node, 'import');\n"
+   /* Same-document nodes always have cloneNode by this point (EP/FP both got
+      it above, in installCloneNode -- called before this function, see the
+      install sequence at the bottom of this file). A missing cloneNode here
+      only happens for a foreign wrapper checkNode's ownerDocument test failed
+      to catch; refuse the same way rather than let it read as `undefined`. */
+"    if (typeof node.cloneNode !== 'function')\n"
+"      throw new G.DOMException(CROSS_DOC, 'NotSupportedError');\n"
+"    return node.cloneNode(deep === true);\n"
+"  });\n"
+"  def(D, 'adoptNode', function (node) {\n"
+"    checkNode(node, 'adopt');\n"
+"    if (node.parentNode) { try { node.parentNode.removeChild(node); } catch (e) {} }\n"
+"    return node;\n"
+"  });\n"
+"}\n"
 /* document.currentScript. js_page.c knows WHICH script is running and cannot
  * hand out a node (js_dom.c's wrapper is static to that file), so it publishes
  * the index and document.scripts -- which js_select.c builds in document order
@@ -2031,13 +2278,724 @@ static const char *PLATFORM_PRELUDE =
 "  reflect('href', 'href', ['a','link','area','base']);\n"
 "  reflect('action', 'action', ['form']);\n"
 "}\n"
+
+/* ==== <iframe>: a nested browsing context =================================
+ * THE TERMINATION QUESTION FOR THIS FEATURE IS THE LOAD EVENT. A page that
+ * creates an iframe and waits for its onload must get exactly one, on every
+ * path -- success, failure, refusal -- or it waits forever. Every branch below
+ * ends in settle(), and settle() always schedules exactly one 'load'.
+ *
+ * WHAT THIS DELIBERATELY IS NOT: a second JSRuntime. There is exactly one
+ * JSContext for the whole page (js_page.h), so no script ever runs "as" a
+ * frame -- a frame's document is DATA, not a second program. That is also why
+ * contentDocument is built through `new DOMParser().parseFromString(...)`
+ * rather than through js_dom.c's own document: js_dom.c is hardwired to ONE
+ * live document via file statics (g_root/g_document and everything the
+ * mutation-invalidation record touches), and reaching into that for a second,
+ * navigable document is a real de-singleton project this pass does not take
+ * on. DOMParser's `dp_cid` wrapper already IS a second, independent document
+ * representation with its own recycle-safe {node,serial} handles -- reusing
+ * it here costs nothing new and, critically, cannot cross-contaminate
+ * js_dom.c's dirty-scope tracking: a frame document has none to leak into,
+ * because nothing here ever mutates the frame's own tree after it is parsed.
+ * The honest cost: contentDocument has DOMParser's surface (getElementById,
+ * querySelector(All), traversal, textContent) and not the full Document
+ * interface, and nothing inside a frame document ever runs a <script> of its
+ * own -- refused by construction, not refused by name, because this design
+ * never gives a frame's markup to anything that would execute it.
+ *
+ * SAME-ORIGIN IS THE GATE, NOT A COURTESY. A cross-origin src is refused
+ * before any fetch is attempted (checked against the parsed URL's origin, not
+ * against a substring of it), contentWindow/contentDocument throw
+ * SecurityError afterwards, and `load` still fires once on the element --
+ * the page's own handler must see the refusal, because a silent blank iframe
+ * is indistinguishable from a slow one and is exactly the shape that makes a
+ * page wait forever on a promise that was never listening to `load` at all.
+ *
+ * XML/XHTML/SVG/binary responses are answered THE SAME WAY js_domparser.c
+ * already answers them for DOMParser directly, not refused into a silent
+ * blank: this tree has no XML parser, so `parseDocAs()` hands the response's
+ * real MIME type to `new DOMParser().parseFromString(...)`, which returns the
+ * same HTML-shaped <parsererror> document js_domparser.c has always produced
+ * for identical bytes. contentDocument is that document, readable, same
+ * origin; `load` fires once. Before this pass the two doors disagreed: the
+ * iframe door refused into `contentDocument === null` with no throw, which is
+ * exactly the silent-blank-same-origin-looking shape this file's own header
+ * comment warns makes a page wait forever.
+ *
+ * `sandbox` is refused by name for the same reason js_domparser.c refuses
+ * XML by name: honouring the attribute's PRESENCE while ignoring its
+ * RESTRICTIONS is a security contract answered wrongly, in a process that
+ * runs adversary code with no ASLR and no stack canaries. Absent is safer
+ * than present-and-wrong, so an iframe carrying `sandbox` navigates nowhere
+ * -- and, unlike the XML case, contentWindow/contentDocument THROW a
+ * SecurityError naming sandbox rather than answering null: a silently-null
+ * same-origin-shaped document is indistinguishable from "not loaded yet",
+ * the one shape this whole feature is measured against.
+ *
+ * INSERTION USED TO BE CAUGHT FOUR WAYS AND THAT WAS NOT ENOUGH. The original
+ * shape here wrapped appendChild/insertBefore/replaceChild/setAttribute plus
+ * innerHTML and called that "every DOM-mutation path a real page uses to
+ * bring an iframe into being". It was refuted with a concrete hang:
+ * ParentNode.append/prepend, ChildNode.before/after/replaceWith,
+ * Element.insertAdjacentHTML and the outerHTML setter are SEPARATE C entry
+ * points in this engine (js_dom_iface.inc: el_insert_variadic /
+ * el_set_outerHTML / el_insertAdjacentHTML) that were never wrapped, so
+ * `new Promise(res => { f.onload = res; container.append(f); })` never
+ * settled -- parentNode was set, the element was really in the document, and
+ * __frameInit was never created, because nothing had ever called
+ * onInsert()/initFrame() for that path.
+ *
+ * THE CHOKE-POINT QUESTION, ANSWERED HONESTLY RATHER THAN ASSUMED: is there
+ * one C place to hook instead of seven more JS wraps? Almost.
+ * el_insert_variadic (js_dom_iface.inc) is ALREADY the single implementation
+ * behind append/prepend/before/after/replaceWith/replaceChildren, and it
+ * calls the SAME insert_run() that appendChild/insertBefore/replaceChild use
+ * (js_dom.c) -- eight of the ten JS-reachable insertion surfaces already
+ * share one C function. But insert_run() is deep in js_dom.c's tree-mutation
+ * core, mid-refactor by another line of work as this was written, and
+ * bridging a C-level "an iframe just became reachable" signal back into this
+ * file's JS closures (gen counters, fetch, srcdoc, the once-ever guard) means
+ * either a new C->JS callback registration (this file already reads that
+ * pattern is fragile: js_dom_set_script_sink has to be called from BOTH
+ * browser.c and js_page.c or the WPT runner sees no script sink at all) or
+ * moving JS-owned iframe state into C. Either is a real project, not a
+ * one-file fix, and outerHTML/insertAdjacentHTML don't even go through
+ * insert_run -- they share a SECOND C path (insert_markup) that inserts
+ * parsed markup directly via dom_insert_before(), so "the" choke point is
+ * really two, not one. So: wrap the seven doors, in THIS file only, using
+ * the exact wrapMethod('ifr', ...) mechanism already proven for the first
+ * four -- it operates on the JS-visible property regardless of whether the
+ * native implementation is one C function or three, so it needs no change to
+ * js_dom.c/js_dom_iface.inc and cannot collide with work in progress there.
+ *
+ * DOOR NUMBER EIGHT, NAMED RATHER THAN DISCOVERED LATER: grep for every
+ * JS-reachable call site of dom_insert_before() found exactly two --
+ * insert_run() (js_dom.c, magic-dispatched by both the old wraps and the new
+ * ones below) and insert_markup() (js_dom_iface.inc, behind outerHTML= and
+ * insertAdjacentHTML, both wrapped below). The remaining dom_insert_before()
+ * callers are html_tree.c's parser (the initial parse, already covered by
+ * the existing_iframes pass at the bottom of this function) and forms.c's
+ * native text-editing splices (contenteditable caret/line-break handling --
+ * not a script-reachable insertion primitive). Two APIs are deliberately
+ * ABSENT rather than half-built and would be door eight if either is ever
+ * added: Range.insertNode/surroundContents (js_forms.c names them as
+ * withheld) and document.write/writeln (not implemented at all, zero hits).
+ * The rule if either lands: it must call through insert_run/insert_markup or
+ * be added to this file's wrap list in the SAME commit, not after.
+ *
+ * wrapMethod('ifr', ...) (see its own comment above for why each method is
+ * wrapped where it is OWNED, not on a shared prototype the interface
+ * hierarchy since gave up) now covers every JS-reachable DOM-mutation path a
+ * real page uses to bring an iframe into being, synchronously -- which is
+ * what makes `frame.contentWindow.DOMException` readable on the very next
+ * statement after `body.appendChild(frame)`, the exact shape url/failure.html
+ * exercises. The contentWindow/contentDocument GETTERS ALSO call initFrame()
+ * before reading state, so even an iframe reached through some path this
+ * file still did not think to wrap would still answer correctly the instant
+ * something asks -- the getters are the backstop, the method wraps are what
+ * let `onload` alone (no property ever read) still fire without the page
+ * reaching in first. Every one of the wraps funnels through onInsert(),
+ * not initFrame() directly, so a RE-insertion of an element already
+ * navigated once (remove() then appendChild() of the same node -- probe A6)
+ * re-navigates instead of hitting initFrame's once-ever guard and going
+ * silent. And `iframe.src = url` / `iframe.srcdoc = html` (probes A3/A4) are
+ * not a fifth path at all: the property setters below are defined in terms
+ * of `this.setAttribute(...)`, so they run through the setAttribute wrap
+ * rather than deciding navigation a second way -- see the comment at that
+ * redefinition for why a second, independent setter would have been the
+ * wrong fix. */
+"function installIframes() {\n"
+"  var D = G.document;\n"
+"  if (!D || typeof D.createElement !== 'function') return;\n"
+"  var IFP = null;\n"
+"  try { IFP = Object.getPrototypeOf(D.createElement('iframe')); } catch (e) {}\n"
+"  if (!IFP || Object.prototype.hasOwnProperty.call(IFP, 'contentWindow')) return;\n"
+   /* One record per element, an own non-enumerable expando -- lives exactly as
+      long as the element does, needs no separate side table and no C-side
+      lifetime hook (js_page_close tears the whole context down, which frees
+      it with everything else, same as every other JS-only piece of state in
+      this file). `gen` is the in-flight-load fence: startLoad bumps it before
+      it does anything async, and every continuation checks its own captured
+      gen against the current one before touching anything -- a src changed or
+      an element removed mid-fetch is a stale continuation that settles into
+      a no-op, not a race. */
+"  var rec = function (el) {\n"
+"    if (!Object.prototype.hasOwnProperty.call(el, '__frame')) {\n"
+"      try {\n"
+"        Object.defineProperty(el, '__frame', { value: { doc: null, win: null, blocked: null, gen: 0 },\n"
+"                                                enumerable: false, configurable: false, writable: false });\n"
+"      } catch (e) { return null; }\n"
+"    }\n"
+"    return el.__frame;\n"
+"  };\n"
+   /* Connectedness by walking parentNode to the Document, not
+      Node.prototype.contains/isConnected -- neither is guaranteed present,
+      and parentNode is the one traversal every node answers. */
+"  var connected = function (el) {\n"
+"    for (var n = el; n; n = n.parentNode) if (n === D) return true;\n"
+"    return false;\n"
+"  };\n"
+"  var fireLoad = function (el) {\n"
+"    setTimeout(function () { try { el.dispatchEvent(new G.Event('load')); } catch (e) {} }, 0);\n"
+"  };\n"
+"  var parseDoc = function (html) {\n"
+"    try { return new G.DOMParser().parseFromString(html == null ? '' : String(html), 'text/html'); }\n"
+"    catch (e) { return null; }\n"
+"  };\n"
+   /* Same door as parseDoc, but told the real MIME type, so a non-HTML
+      response gets the SAME <parsererror> document js_domparser.c already
+      hands back to `new DOMParser().parseFromString(sameBytes, sameMime)` --
+      the two doors are made to agree rather than the iframe door refusing
+      into a silent-blank shape the DOMParser door has never produced. */
+"  var parseDocAs = function (text, mime) {\n"
+"    try { return new G.DOMParser().parseFromString(text == null ? '' : String(text), mime || 'text/html'); }\n"
+"    catch (e) { return null; }\n"
+"  };\n"
+   /* `blocked` names WHY contentWindow/contentDocument must throw, and is the
+      only thing the getters and makeWindow() need to build the right
+      SecurityError message -- 'cross-origin' for a real navigation refusal,
+      'sandbox' because this engine does not honour the attribute's
+      allowances and a silent same-origin-shaped blank would be the exact
+      hang shape the whole feature is measured against. */
+"  var blockedErr = function (r) {\n"
+"    if (r.blocked === 'sandbox')\n"
+"      return new G.DOMException('Blocked access to a sandboxed frame: this engine does not honour the sandbox attribute, so access is refused rather than silently granted.', 'SecurityError');\n"
+"    return new G.DOMException('Blocked a frame from accessing a cross-origin frame.', 'SecurityError');\n"
+"  };\n"
+   /* The one exit every load path funnels through. `doc` set + `blocked` null
+      is a real, readable document (about:blank, srcdoc, a same-origin fetch,
+      a failed fetch's empty stand-in, or a non-HTML response answered the
+      way DOMParser would answer it -- all spec-adjacent "this frame has a
+      document now", not five different answers); `blocked` non-null is the
+      one that makes contentWindow/contentDocument throw, doc is irrelevant
+      and left null. Whichever it is, exactly one load. */
+"  var settle = function (el, r, gen, doc, blocked) {\n"
+"    if (r.gen !== gen) return;\n"
+"    r.doc = doc; r.blocked = blocked || null;\n"
+       /* ONE JAR, TWO DOORS, closed: contentDocument.defaultView must be the
+          SAME object as contentWindow (probe B1 -- WPT's own idiom, e.g.
+          `doc.defaultView.DOMException`), not a second window built lazily
+          and differently by whichever door gets read first. Defining it as a
+          getter that shares makeWindow()'s r.win cache, rather than eagerly
+          building a window every settle(), keeps a document nobody ever
+          reads .contentWindow on exactly as cheap as before. */
+"      if (doc) {\n"
+"        try {\n"
+"          Object.defineProperty(doc, 'defaultView', { configurable: true, enumerable: true,\n"
+"            get: function () {\n"
+"              if (r.blocked) return null;\n"
+"              if (!r.win) r.win = makeWindow(el, r);\n"
+"              return r.win;\n"
+"            } });\n"
+"        } catch (e5) {}\n"
+"      }\n"
+       /* Named refusals, not silent absence. Neither is a termination
+          concern -- a frame document is DATA, nothing here ever asks a
+          <script> to run or a nested <iframe> to navigate, so there is no
+          pending anything to leave dangling -- but a page whose frame is a
+          script host, or that nests frames, should be diagnosable instead of
+          mysteriously and permanently inert. */
+"      if (doc && !blocked) {\n"
+"        try { if (doc.querySelector && doc.querySelector('script'))\n"
+"          console.log('[iframe] a <script> inside a frame document will never run: ' +\n"
+"                      'frame documents are parsed data (DOMParser-backed), not a second program'); } catch (e3) {}\n"
+"        try { if (doc.querySelector && doc.querySelector('iframe'))\n"
+"          console.log('[iframe] a nested <iframe> inside a frame document will not be navigated: ' +\n"
+"                      'frame documents are not re-scanned for nested browsing contexts'); } catch (e4) {}\n"
+"      }\n"
+"    fireLoad(el);\n"
+"  };\n"
+"  var startLoad = function (el, url) {\n"
+"    var r = rec(el);\n"
+"    if (!r) return;\n"
+"    var gen = ++r.gen;\n"
+"    var base = D.baseURI || (G.location && G.location.href) || '';\n"
+"    var u = null;\n"
+"    try { u = new G.URL(String(url), base); } catch (e) {}\n"
+       /* An unparseable src is not a navigation at all in real browsers --
+          treated here the same as no src: about:blank. */
+"    if (!u) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
+"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine, src=' + u.href);\n"
+"      settle(el, r, gen, null, 'sandbox');\n"
+"      return;\n"
+"    }\n"
+"    var top = (G.location && G.location.origin) || '';\n"
+"    if (u.origin !== top) {\n"
+"      console.log('[iframe] cross-origin navigation refused: ' + u.origin + ' (top is ' + top + ')');\n"
+"      settle(el, r, gen, null, 'cross-origin');\n"
+"      return;\n"
+"    }\n"
+"    if (typeof G.fetch !== 'function') { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"    var alive = function () { return r.gen === gen && connected(el); };\n"
+"    G.fetch(u.href).then(function (resp) {\n"
+"      if (!alive()) return;\n"
+"      if (!resp.ok) { settle(el, r, gen, parseDoc(''), null); return; }\n"
+"      var ct = '';\n"
+"      try { ct = (resp.headers && typeof resp.headers.get === 'function') ? (resp.headers.get('content-type') || '') : ''; } catch (e2) {}\n"
+"      var kind = ct.split(';')[0].replace(/^\\s+|\\s+$/g, '').toLowerCase();\n"
+"      var mime = kind || 'text/html';\n"
+"      if (kind && kind !== 'text/html')\n"
+"        console.log('[iframe] content-type \\'' + kind + '\\' is not text/html -- this engine has no parser for it, ' +\n"
+"                    'answering the same way DOMParser answers identical bytes');\n"
+"      return resp.text().then(function (t) { if (alive()) settle(el, r, gen, parseDocAs(t, mime), null); });\n"
+"    }).catch(function () { if (alive()) settle(el, r, gen, parseDoc(''), null); });\n"
+"  };\n"
+"  var loadSrcdoc = function (el, html) {\n"
+"    var r = rec(el);\n"
+"    if (!r) return;\n"
+"    var gen = ++r.gen;\n"
+"    if (el.hasAttribute && el.hasAttribute('sandbox')) {\n"
+"      console.log('[iframe] refused: sandbox attribute is not honoured by this engine (srcdoc)');\n"
+"      settle(el, r, gen, null, 'sandbox');\n"
+"      return;\n"
+"    }\n"
+"    settle(el, r, gen, parseDoc(html), null);\n"
+"  };\n"
+   /* The navigation DECISION, factored out of the once-ever guard below so it
+      can be run again on a RE-insertion (remove() then appendChild() of the
+      SAME element -- probe A6) without re-reading the guard. Real browsers
+      run the iframe/frame insertion steps on every insertion, not only the
+      first; the current content attributes are the source of truth each
+      time, exactly as they are the first time. */
+"  var navigate = function (el) {\n"
+"    var sd = el.getAttribute ? el.getAttribute('srcdoc') : null;\n"
+"    var sr = el.getAttribute ? el.getAttribute('src') : null;\n"
+"    if (sd !== null && sd !== '') { loadSrcdoc(el, sd); return; }\n"
+"    if (sr !== null && sr !== '') { startLoad(el, sr); return; }\n"
+"    var r = rec(el);\n"
+"    if (r) settle(el, r, r.gen, parseDoc(''), null);\n"
+"  };\n"
+   /* Runs once per element, ever -- the '__frameInit' expando is the guard,
+      same shape as '__frame' above. Both the mutation wraps and the
+      contentWindow/contentDocument getters call this before doing anything
+      else, so it is idempotent by construction rather than by convention. */
+"  var initFrame = function (el) {\n"
+"    if (!el || Object.prototype.hasOwnProperty.call(el, '__frameInit')) return;\n"
+"    try {\n"
+"      Object.defineProperty(el, '__frameInit', { value: true, enumerable: false, configurable: false, writable: false });\n"
+"    } catch (e) { return; }\n"
+"    navigate(el);\n"
+"  };\n"
+   /* Called from every INSERTION path (parser-built, appendChild family,
+      innerHTML). First insertion ever: same as initFrame. Re-insertion of an
+      element this file has already navigated once: initFrame's guard would
+      make that a no-op, which is probe A6's hang -- an iframe removed and put
+      back never fires load again. So a re-insertion re-runs navigate()
+      directly, using whatever src/srcdoc the element carries right now. */
+"  var onInsert = function (el) {\n"
+"    if (Object.prototype.hasOwnProperty.call(el, '__frameInit')) navigate(el);\n"
+"    else initFrame(el);\n"
+"  };\n"
+   /* Not a Window: a plain object in the ONE realm this page has. document/
+      location are accessors so the cross-origin throw happens at read time,
+      matching the termination bar's row 6 -- the throw is what a page's own
+      try/catch can observe, where a silently-null property cannot be told
+      apart from "not loaded yet". */
+"  var makeWindow = function (el, r) {\n"
+"    var win = {};\n"
+"    try {\n"
+"      Object.defineProperty(win, 'document', { enumerable: true,\n"
+"        get: function () { if (r.blocked) throw blockedErr(r); return r.doc || null; } });\n"
+"      Object.defineProperty(win, 'location', { enumerable: true,\n"
+"        get: function () { if (r.blocked) throw blockedErr(r); return G.location; },\n"
+"        set: function (v) {\n"
+"          var base = D.baseURI || (G.location && G.location.href) || '';\n"
+"          try { new G.URL(String(v), base); }\n"
+             /* This is the synchronous throw url/failure.html's 188 cases
+                assert: an unparseable assignment to contentWindow.location
+                never reaches startLoad at all. */
+"          catch (e) { throw new G.DOMException(\"'\" + v + \"' is not a valid URL.\", 'SyntaxError'); }\n"
+"          startLoad(el, String(v));\n"
+"        } });\n"
+"    } catch (e) {}\n"
+"    win.parent = G; win.top = G; win.self = win; win.frameElement = el;\n"
+"    win.DOMException = G.DOMException; win.Node = G.Node; win.Element = G.Element; win.Document = G.Document;\n"
+       /* No script ever runs as this window, so nothing can ever be
+          listening on the other end -- a real, terminating no-op rather than
+          a queue that fills forever. See the file comment on postMessage's
+          scope. */
+"    win.postMessage = function () {};\n"
+"    return win;\n"
+"  };\n"
+"  Object.defineProperty(IFP, 'contentWindow', { configurable: true, get: function () {\n"
+"    initFrame(this);\n"
+"    var r = rec(this);\n"
+"    if (!r) return null;\n"
+"    if (r.blocked) throw blockedErr(r);\n"
+"    if (!r.win) r.win = makeWindow(this, r);\n"
+"    return r.win;\n"
+"  } });\n"
+"  Object.defineProperty(IFP, 'contentDocument', { configurable: true, get: function () {\n"
+"    initFrame(this);\n"
+"    var r = rec(this);\n"
+"    if (!r) return null;\n"
+"    if (r.blocked) throw blockedErr(r);\n"
+"    return r.doc || null;\n"
+"  } });\n"
+   /* Shared by every insertion path below: the element itself (if it is an
+      iframe) plus every iframe descendant, each handed to onInsert() so a
+      first insertion navigates and a RE-insertion (probe A6) re-navigates. */
+"  var scan = function (node) {\n"
+"    if (!node || node.nodeType !== 1) return;\n"
+"    try {\n"
+"      if (String(node.tagName || '').toLowerCase() === 'iframe') onInsert(node);\n"
+"      if (typeof node.querySelectorAll === 'function') {\n"
+"        var list = node.querySelectorAll('iframe');\n"
+"        for (var i = 0; i < list.length; i++) onInsert(list[i]);\n"
+"      }\n"
+"    } catch (e) {}\n"
+"  };\n"
+"  ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {\n"
+"    wrapMethod('ifr', m, function (orig) {\n"
+"      return function () {\n"
+"        var r = orig.apply(this, arguments);\n"
+"        scan(arguments[0]);\n"
+"        return r;\n"
+"      };\n"
+"    });\n"
+"  });\n"
+   /* REFUTED 2026-08-28: these four methods, plus setAttribute/innerHTML
+      below, do NOT cover every insertion path. ParentNode.append/prepend/
+      replaceChildren and ChildNode.before/after/replaceWith are separate,
+      VARIADIC C entry points (el_insert_variadic in js_dom_iface.inc -- one
+      C function behind all six, magic-dispatched, but six distinct
+      JS-visible properties on two different prototypes, each needing its own
+      wrap). Unlike appendChild/insertBefore/replaceChild, the new node(s) are
+      not always arguments[0]: append/prepend take any number of (Node or
+      string) arguments and before/after/replaceWith take the SAME variadic
+      shape for the new siblings, so every argument is scanned, not just the
+      first -- a string argument is a text node and scan() no-ops on it
+      (nodeType check), so this costs nothing on the common one-node call. */
+"  ['append', 'prepend', 'replaceChildren', 'before', 'after', 'replaceWith'].forEach(function (m) {\n"
+"    wrapMethod('ifr', m, function (orig) {\n"
+"      return function () {\n"
+"        var r = orig.apply(this, arguments);\n"
+"        for (var i = 0; i < arguments.length; i++) scan(arguments[i]);\n"
+"        return r;\n"
+"      };\n"
+"    });\n"
+"  });\n"
+   /* innerHTML is not the only C-parser insertion door. innerHTML replaces
+      ALL of `this`'s children, so scan(this) after the call only ever sees
+      NEW content -- nothing pre-existing to accidentally re-navigate.
+      outerHTML= and insertAdjacentHTML() do not have that property: they
+      insert new markup ALONGSIDE nodes that are already there (siblings for
+      outerHTML/beforebegin/afterend, existing children for afterbegin/
+      beforeend), so a blind scan(parent) would find already-initialized
+      iframes elsewhere in that parent and onInsert() would RE-navigate them
+      -- a spurious reload of a frame this call never touched. snapshotScope
+      takes a before/after snapshot of the scope's iframes and onInsert()s
+      only the ones that are NEW, by object identity, so a sibling iframe
+      that was already loaded is left alone. */
+"  var listIframes = function (node) {\n"
+"    var out = [];\n"
+"    try {\n"
+"      if (String(node.tagName || '').toLowerCase() === 'iframe') out.push(node);\n"
+"      if (typeof node.querySelectorAll === 'function') {\n"
+"        var list = node.querySelectorAll('iframe');\n"
+"        for (var i = 0; i < list.length; i++) out.push(list[i]);\n"
+"      }\n"
+"    } catch (e) {}\n"
+"    return out;\n"
+"  };\n"
+"  var scanNew = function (scope, before) {\n"
+"    if (!scope) return;\n"
+"    var after = listIframes(scope);\n"
+"    for (var i = 0; i < after.length; i++)\n"
+"      if (before.indexOf(after[i]) === -1) onInsert(after[i]);\n"
+"  };\n"
+"  (function () {\n"
+"    var EP = ownerOf('innerHTML');\n"
+"    if (!EP) return;\n"
+"    var desc = Object.getOwnPropertyDescriptor(EP, 'innerHTML');\n"
+"    if (!desc || typeof desc.set !== 'function') return;\n"
+"    var key = '__w_ifr_innerHTML';\n"
+"    if (EP[key]) return;\n"
+"    try {\n"
+"      Object.defineProperty(EP, key, { value: true, enumerable: false, configurable: true });\n"
+"      var origSet = desc.set, origGet = desc.get;\n"
+"      Object.defineProperty(EP, 'innerHTML', { configurable: true, enumerable: desc.enumerable,\n"
+"        get: origGet,\n"
+"        set: function (v) { origSet.call(this, v); scan(this); } });\n"
+"    } catch (e) {}\n"
+"  })();\n"
+   /* insertAdjacentHTML(position, html): beforebegin/afterend land among
+      `this`'s SIBLINGS (scope = this.parentNode), afterbegin/beforeend land
+      inside `this` (scope = this). Either way the scope may already contain
+      other, already-navigated iframes this call did not touch, hence
+      scanNew's before/after diff rather than scan()'s blind sweep. */
+"  wrapMethod('ifr', 'insertAdjacentHTML', function (orig) {\n"
+"    return function (pos) {\n"
+"      var p = String(pos || '').toLowerCase();\n"
+"      var scope = (p === 'beforebegin' || p === 'afterend') ? this.parentNode : this;\n"
+"      var before = scope ? listIframes(scope) : [];\n"
+"      var r = orig.apply(this, arguments);\n"
+"      scanNew(scope, before);\n"
+"      return r;\n"
+"    };\n"
+"  });\n"
+   /* outerHTML= replaces `this` itself with parsed markup, so `this` (and any
+      __frameInit it already carries) is destroyed by the call -- the scope to
+      diff is `this.parentNode`, captured BEFORE the call since afterward
+      `this` no longer has a live parentNode to read. Same accessor-wrap shape
+      as innerHTML above (outerHTML is CGETSET_DEF, not a plain method, so
+      wrapMethod's plain-assignment form does not apply). */
+"  (function () {\n"
+"    var EP = ownerOf('outerHTML');\n"
+"    if (!EP) return;\n"
+"    var desc = Object.getOwnPropertyDescriptor(EP, 'outerHTML');\n"
+"    if (!desc || typeof desc.set !== 'function') return;\n"
+"    var key = '__w_ifr_outerHTML';\n"
+"    if (EP[key]) return;\n"
+"    try {\n"
+"      Object.defineProperty(EP, key, { value: true, enumerable: false, configurable: true });\n"
+"      var origSet = desc.set, origGet = desc.get;\n"
+"      Object.defineProperty(EP, 'outerHTML', { configurable: true, enumerable: desc.enumerable,\n"
+"        get: origGet,\n"
+"        set: function (v) {\n"
+"          var scope = this.parentNode;\n"
+"          var before = scope ? listIframes(scope) : [];\n"
+"          origSet.call(this, v);\n"
+"          scanNew(scope, before);\n"
+"        } });\n"
+"    } catch (e) {}\n"
+"  })();\n"
+"  wrapMethod('ifr', 'setAttribute', function (orig) {\n"
+"    return function (name) {\n"
+"      var r = orig.apply(this, arguments);\n"
+"      try {\n"
+"        if (String(this.tagName || '').toLowerCase() === 'iframe' &&\n"
+"            Object.prototype.hasOwnProperty.call(this, '__frameInit')) {\n"
+"          var lname = String(name).toLowerCase();\n"
+"          if (lname === 'src') startLoad(this, this.getAttribute('src') || '');\n"
+"          else if (lname === 'srcdoc') loadSrcdoc(this, this.getAttribute('srcdoc') || '');\n"
+"        }\n"
+"      } catch (e) {}\n"
+"      return r;\n"
+"    };\n"
+"  });\n"
+   /* THE SEAM: `iframe.src = url` and `iframe.srcdoc = html` are C-level IDL
+      accessors installed by js_reflect.c's refl_set(), which writes the
+      content attribute through js_dom_attr_write() directly -- a SECOND door
+      onto the same attribute that never passes through the setAttribute wrap
+      above (probes A3/A4: property assignment fired no load, ever). The
+      obvious fix -- give these two properties their OWN setter that calls
+      startLoad/loadSrcdoc -- would be a THIRD door: setAttribute('src', x),
+      removeAttribute('src') and a hypothetical direct-property path would
+      each decide independently whether a navigation happened, the exact
+      one-jar-two-doors shape this tree has paid for three times. Closing it
+      for real means making property assignment BE a setAttribute call, not a
+      second implementation of "did src change": the setter below is defined
+      in terms of `this.setAttribute(...)`, i.e. it runs through the SAME
+      wrapped method above, so there is exactly one place that ever decides a
+      navigation should start. The getter is untouched (keeps refl_get's
+      existing resolved-URL semantics for src). */
+"  ['src', 'srcdoc'].forEach(function (attr) {\n"
+"    var d = Object.getOwnPropertyDescriptor(IFP, attr);\n"
+"    if (!d || typeof d.get !== 'function' || !d.configurable) return;\n"
+"    var origGet = d.get;\n"
+"    try {\n"
+"      Object.defineProperty(IFP, attr, { configurable: true, enumerable: d.enumerable,\n"
+"        get: function () { return origGet.call(this); },\n"
+"        set: function (v) { this.setAttribute(attr, String(v)); } });\n"
+"    } catch (e) {}\n"
+"  });\n"
+   /* ONE JAR, TWO DOORS: window.length used to be a constant 0 no matter how
+      many <iframe>s the document held, which is the "frames" door disagreeing
+      with the document's own tree, the second door. It is derived now. (Not
+      done: window.frames[i] indexed access, which would need globalThis
+      itself wrapped in a Proxy -- too large a blast radius for what this pass
+      is worth; window.frames stays the pre-existing `=== window` alias.) */
+"  try {\n"
+"    Object.defineProperty(G, 'length', { configurable: true, get: function () {\n"
+"      try { return D.querySelectorAll('iframe').length; } catch (e) { return 0; }\n"
+"    } });\n"
+"  } catch (e) {}\n"
+   /* Parser-built iframes: already in the tree by the time this runs
+      (js_dom_init, which builds `document` from the parsed tree, runs before
+      js_platform_install -- see js_page.c's install sequence), so a page that
+      never calls appendChild at all (every <iframe src=...> in the source
+      HTML) still gets its load fired without the mutation wraps' help. */
+"  try {\n"
+"    var existing = D.querySelectorAll('iframe');\n"
+"    for (var i = 0; i < existing.length; i++) initFrame(existing[i]);\n"
+"  } catch (e) {}\n"
+"}\n"
+
+/* ==== ElementInternals: Element.attachInternals =============================
+ * MEASURED: jsfb_matrix, "throws: TypeError: attachInternals is not a
+ * function" -- keyed/plaited, keyed/ui5-webcomponents, non-keyed/
+ * ui5-webcomponents, all three dying inside their base custom-element class's
+ * CONSTRUCTOR (plaited: `this.#n = this.attachInternals()`; ui5-webcomponents:
+ * `this._internals = this.attachInternals()`), called UNCONDITIONALLY for
+ * EVERY element the framework defines -- not just form controls. A missing
+ * attachInternals fails every component on the page at construction, before
+ * a single row renders.
+ *
+ * REAL STATE, NOT A STUB THAT DOES NOTHING (rule 3): setValidity/
+ * checkValidity/validity/validationMessage form a closed loop over real
+ * per-element state -- set flags, read them back, dispatch a real 'invalid'
+ * Event the way the spec says. setFormValue/setFormState record what was
+ * set, readable by a component's own later code. shadowRoot is the SAME
+ * accessor Element.prototype.shadowRoot uses (js_dom.c's el_get_shadowRoot),
+ * not a second copy that could disagree with it -- one jar, one door. states
+ * is a real Set.
+ *
+ * WHAT THIS DOES NOT DO, named rather than hidden, per the same rule:
+ *   - no real <form> participation. setFormValue's value is stored, not
+ *     submitted: this engine's <form> has no FormData walk that visits a
+ *     form-associated custom element, so wiring submission would be building
+ *     a feature the rest of the browser does not have yet, not closing a gap
+ *     in this one.
+ *   - no closed-mode bypass. Real ElementInternals.shadowRoot differs from
+ *     the public property exactly once: a CLOSED shadow root is still
+ *     reachable through internals, which is the whole point of closed mode
+ *     for a component's own code. Reusing el_get_shadowRoot here means a
+ *     closed root reads null through internals too. Nothing in the measured
+ *     corpus attaches a closed shadow root (lit, plaited and ui5-webcomponents
+ *     all default to 'open'), so this is a disclosed gap, not a measured one.
+ *   - ARIA reflection (ariaLabel, role, ...) is a plain per-instance data
+ *     property, not wired to anything. There is no accessibility tree on this
+ *     engine for it to be right or wrong ABOUT -- a plain store that reads
+ *     back what was written is the honest answer, not a fabricated one.
+ *   - the ONE-attachInternals-per-element throw is real (NotSupportedError,
+ *     matching the spec). The spec's OTHER throw condition -- attachInternals
+ *     called on an element that is not a defined, non-built-in custom
+ *     element -- is deliberately NOT checked: every real caller in this
+ *     corpus calls it from inside a genuine custom-element constructor, and
+ *     guessing wrong here would throw on a legitimate call, which is worse
+ *     than the spec gap of not throwing on an illegitimate one (rule 3's
+ *     asymmetry: absent is safer than present-and-wrong, and here a false
+ *     throw IS the present-and-wrong case). */
+"function installElementInternals() {\n"
+"  var EP = null;\n"
+"  try { EP = Object.getPrototypeOf(G.document.createElement('div')); } catch (e) {}\n"
+"  if (!EP || typeof EP.attachInternals === 'function') return;\n"
+"  var attached = (typeof WeakSet === 'function') ? new WeakSet() : null;\n"
+"  var ARIA = ['ariaAtomic', 'ariaAutoComplete', 'ariaBusy', 'ariaChecked', 'ariaColCount',\n"
+"    'ariaColIndex', 'ariaColSpan', 'ariaCurrent', 'ariaDisabled', 'ariaExpanded',\n"
+"    'ariaHasPopup', 'ariaHidden', 'ariaKeyShortcuts', 'ariaLabel', 'ariaLevel', 'ariaLive',\n"
+"    'ariaModal', 'ariaMultiLine', 'ariaMultiSelectable', 'ariaOrientation', 'ariaPlaceholder',\n"
+"    'ariaPosInSet', 'ariaPressed', 'ariaReadOnly', 'ariaRequired', 'ariaRoleDescription',\n"
+"    'ariaRowCount', 'ariaRowIndex', 'ariaRowSpan', 'ariaSelected', 'ariaSetSize', 'ariaSort',\n"
+"    'ariaValueMax', 'ariaValueMin', 'ariaValueNow', 'ariaValueText', 'role'];\n"
+"  var VALIDITY_KEYS = ['valueMissing', 'typeMismatch', 'patternMismatch', 'tooLong',\n"
+"    'tooShort', 'rangeUnderflow', 'rangeOverflow', 'stepMismatch', 'badInput', 'customError'];\n"
+"  EP.attachInternals = function () {\n"
+"    var host = this;\n"
+"    if (attached) {\n"
+"      if (attached.has(host))\n"
+"        throw new G.DOMException(\n"
+"          \"Failed to execute 'attachInternals' on 'HTMLElement': ElementInternals for \" +\n"
+"          'the specified element was already attached.', 'NotSupportedError');\n"
+"      attached.add(host);\n"
+"    }\n"
+"    var validity = {}, k;\n"
+"    for (k = 0; k < VALIDITY_KEYS.length; k++) validity[VALIDITY_KEYS[k]] = false;\n"
+"    var message = '';\n"
+"    var valid = true;\n"
+"    var formValue = null, formState = null;\n"
+"    var states = (typeof Set === 'function') ? new Set()\n"
+"      : { add: function () {}, delete: function () { return false; }, has: function () { return false; } };\n"
+"    var it = {};\n"
+"    Object.defineProperty(it, 'shadowRoot', { enumerable: true,\n"
+"      get: function () { return host.shadowRoot || null; } });\n"
+"    Object.defineProperty(it, 'form', { enumerable: true, get: function () { return null; } });\n"
+"    Object.defineProperty(it, 'labels', { enumerable: true, get: function () { return []; } });\n"
+"    Object.defineProperty(it, 'willValidate', { enumerable: true, get: function () {\n"
+"      return !!(host.constructor && host.constructor.formAssociated);\n"
+"    } });\n"
+"    Object.defineProperty(it, 'validity', { enumerable: true, get: function () {\n"
+"      var v = {}, i;\n"
+"      for (i = 0; i < VALIDITY_KEYS.length; i++) v[VALIDITY_KEYS[i]] = validity[VALIDITY_KEYS[i]];\n"
+"      v.valid = valid;\n"
+"      return v;\n"
+"    } });\n"
+"    Object.defineProperty(it, 'validationMessage', { enumerable: true,\n"
+"      get: function () { return message; } });\n"
+"    Object.defineProperty(it, 'states', { enumerable: true, get: function () { return states; } });\n"
+"    it.setValidity = function (flags, msg, anchor) {\n"
+"      var i, any = false;\n"
+"      for (i = 0; i < VALIDITY_KEYS.length; i++) validity[VALIDITY_KEYS[i]] = false;\n"
+"      if (flags) {\n"
+"        for (i = 0; i < VALIDITY_KEYS.length; i++) {\n"
+"          if (flags[VALIDITY_KEYS[i]]) { validity[VALIDITY_KEYS[i]] = true; any = true; }\n"
+"        }\n"
+"      }\n"
+"      valid = !any;\n"
+"      message = any ? String(msg || '') : '';\n"
+"    };\n"
+"    it.checkValidity = function () {\n"
+"      if (valid) return true;\n"
+"      try { host.dispatchEvent(new G.Event('invalid', { cancelable: true })); } catch (e) {}\n"
+"      return false;\n"
+"    };\n"
+"    it.reportValidity = it.checkValidity;\n"
+"    it.setFormValue = function (value, state) {\n"
+"      formValue = value; formState = (state === undefined) ? value : state;\n"
+"    };\n"
+"    ARIA.forEach(function (name) {\n"
+"      var v = null;\n"
+"      Object.defineProperty(it, name, { enumerable: true,\n"
+"        get: function () { return v; }, set: function (x) { v = x; } });\n"
+"    });\n"
+"    return it;\n"
+"  };\n"
+"}\n"
+/* A minimal `ShadowRoot` global for `instanceof` -- MEASURED as load-bearing,
+ * not decorative: keyed/plaited's event-retargeting helper does
+ * `e.composedPath().find(n => n instanceof ShadowRoot) === t.getRootNode()`
+ * inside the delegated click handler EVERY row-level interaction (select,
+ * delete) goes through, and a bare `ShadowRoot` identifier with no global at
+ * all is a ReferenceError, not a false comparison -- it would take the whole
+ * handler down, not just this one check. Identity is decided by
+ * el_isShadowRootNode (js_dom.c's __ldom_isShadowRoot), the same primitive
+ * dom_is_shadow_root the DOM layer itself uses, so this cannot disagree with
+ * "is this actually the node dom_attach_shadow built". */
+"if (!('ShadowRoot' in G)) {\n"
+"  var SR = function ShadowRoot() { throw new TypeError('Illegal constructor'); };\n"
+"  try {\n"
+"    Object.defineProperty(SR, Symbol.hasInstance, { configurable: true, value: function (o) {\n"
+"      try { return !!(o && typeof o.__ldom_isShadowRoot === 'function' && o.__ldom_isShadowRoot()); }\n"
+"      catch (e) { return false; }\n"
+"    } });\n"
+"  } catch (e) {}\n"
+"  G.ShadowRoot = SR;\n"
+"}\n"
+
 "installTreeWalker();\n"
 "installInterfaces();\n"
+/* NamedNodeMap is spec'd `iterable<Attr>` (Symbol.iterator === values()), but
+ * js_dom_iface.inc builds its prototype as a plain object (JS_NewObject),
+ * not over Array.prototype the way NodeList/HTMLCollection are -- so it has
+ * `.length` and indexed access but no iterator. MEASURED: this is the SECOND
+ * failure behind importNode for uhtml/lit-html/cydon, reached only once
+ * importNode itself works -- `for (const {name, value} of el.attributes)`
+ * (uhtml's clone-and-patch path) threw 'value is not iterable' on the very
+ * next line. Array.prototype.values is generic over any array-like `this`
+ * (length + numeric indices), which NamedNodeMap already has, so borrowing
+ * it is exact, not an approximation -- the same technique js_tokenlist.c
+ * already uses for DOMTokenList's Symbol.iterator. */
+"if (G.NamedNodeMap && G.NamedNodeMap.prototype && G.Symbol && G.Symbol.iterator) {\n"
+"  try { def(G.NamedNodeMap.prototype, G.Symbol.iterator, Array.prototype.values); } catch (e) {}\n"
+"}\n"
 "installCloneNode();\n"
+"try { installImportAdopt(); } catch (e) {}\n"
 "installCurrentScript();\n"
 "installReflectedURLs();\n"
 "installCustomElements();\n"
+"try { installElementInternals(); } catch (e) {}\n"
 "try { installDataset(Object.getPrototypeOf(G.document.createElement('div'))); } catch (e) {}\n"
+/* JS_IFRAME_NO_INSTALL: test-iframe's negative control. Compiling the
+ * installer out entirely (rather than, say, disabling it with a runtime
+ * flag) is what test-iframe-negctl links against, so the control is proof
+ * that test-iframe is measuring THIS feature and not some other reason the
+ * probe's 'load' events happen to fire. */
+#ifndef JS_IFRAME_NO_INSTALL
+"try { installIframes(); } catch (e) {}\n"
+#endif
 
 /* The hook the C rejection tracker calls. It is returned rather than published
  * as a global, so a page cannot fake an unhandled rejection. */

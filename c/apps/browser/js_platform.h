@@ -30,23 +30,81 @@
  * WHAT IS DELIBERATELY ABSENT, AND MUST STAY ABSENT
  * The probe also records misses that are CORRECT. `window.ActiveXObject`
  * (bing), `document.documentMode` (deepseek) and `window.MSApp` are how a page
- * detects Internet Explorer; `window.indexedDB` and `__REACT_DEVTOOLS_GLOBAL_
- * HOOK__` are feature detection whose false branch is the one we want. Defining
- * any of them would make pages take a path we cannot follow. A missing global
- * is not automatically a bug, and the probe's job is to tell you which kind you
- * are looking at -- not to be emptied.
+ * detects Internet Explorer; `__REACT_DEVTOOLS_GLOBAL_HOOK__` is feature
+ * detection whose false branch is the one we want. Defining any of them would
+ * make pages take a path we cannot follow. A missing global is not
+ * automatically a bug, and the probe's job is to tell you which kind you are
+ * looking at -- not to be emptied. (`window.indexedDB` used to be named here
+ * too; it is real now -- see below, and see js_idb.c.)
  *
- * `window.indexedDB` earns its own paragraph because it is the one entry here
+ * `window.indexedDB` USED TO earn its own paragraph arguing it should stay
+ * absent -- kept below, not deleted, because the next reader should be able
+ * to see what the bar was and that it was taken seriously before being met.
+ * It no longer describes this tree: `c/apps/browser/js_idb.c` (2026-08-28)
+ * implements a coherent, session-scoped subset -- IDBFactory/IDBDatabase/
+ * IDBTransaction/IDBObjectStore/IDBIndex/IDBCursor/IDBKeyRange/IDBRequest,
+ * with put/get/getAll/delete/clear/count, indexes (unique + multiEntry),
+ * cursors in all four directions, key ranges, and transaction abort with a
+ * real undo log so an aborted write is actually rolled back, not just
+ * reported as aborted. `grep -rni indexeddb c/apps/browser` now finds a
+ * whole file, not a comment.
+ *
+ * THE BAR THE OLD PARAGRAPH SET, restated because it is still the right bar
+ * and js_idb.c is held to it, not to a method count: "every IDBRequest this
+ * build can produce, on every path including the ones left unimplemented,
+ * terminates in success or a thrown/fired error -- never silently pending."
+ * js_idb.c's own header states the structural argument for why that holds
+ * (every request is scheduled on the timer queue, with a default error
+ * payload, BEFORE the operation that fills it in ever runs), and
+ * tests/unit/webapi_idb_test.c is the check that argument gets held to a
+ * real, pumped event loop: `make test-idb` walks every IDBRequest and
+ * IDBTransaction the suite created and asserts each reached a terminal state
+ * within a bounded pump, and `make test-idb-negctl` links a build-time stub
+ * that hands back a real IDBRequest nobody ever schedules a settle-task for
+ * -- the EXACT shape this paragraph used to warn about -- and watches that
+ * quiescence check catch it (`STUCK: allReqs[N] never reached readyState
+ * 'done'`) rather than trusting the argument on its own.
+ *
+ * MEASURED, 2026-08-28, same command as the paragraph below used:
+ * `WEBAPI_FILE_ROOT=build/wpt-full ./wpt_test --root build/wpt-full --subset
+ * IndexedDB`: 747/1359 subtests passing (55.0%) over 226 harness files, up
+ * from the 5/1078 (0.5%, all five vacuous) recorded below. Read FILES
+ * REVIVED beside the rate, per tools/cssom_compare.py's warning that a file
+ * which previously died on statement 1 was contributing ~1 subtest to the
+ * old denominator and now contributes its whole suite, most of which still
+ * fails on its first run: all 226 files that used to die at `indexedDB is
+ * not defined` now execute to completion. `tests/unit/wpt_idb_fail.txt`
+ * (322 expected failures) is the ratchet against regression -- IndexedDB/
+ * was not one of the 6 directories the main WPT baseline covers, so before
+ * this file there was nothing that would go red on an IndexedDB regression
+ * at all; see tests/idb.mk.
+ *
+ * WHAT IS DELIBERATELY STILL NOT HERE, refused rather than half-built --
+ * js_idb.c's own header has the full list and the argument for each:
+ * durability across a page load (in-memory only, the same durability
+ * localStorage already has on this machine, because there is no positional
+ * write in the VFS to build real durability on); Blob/File as a stored value
+ * (put()/add() with one throws DataCloneError SYNCHRONOUSLY, refused by name
+ * rather than accepted and silently wrong); IDBIndex/IDBObjectStore
+ * .getAllRecords (left undefined); and Worker/iframe scope -- js_worker.c
+ * landed the same day and builds a SECOND JSRuntime with its own global, so
+ * `indexedDB` is deliberately NOT installed there (`typeof indexedDB ===
+ * 'undefined'` inside a Worker, the correct feature-detect answer), because a
+ * per-worker store that silently did not share the page's databases would be
+ * present-and-wrong -- see js_idb.c's header for the full argument.
+ *
+ * ---- what the paragraph below argued, before js_idb.c existed ----
+ * `window.indexedDB` earned its own paragraph because it is the one entry here
  * with a real, large spec behind it, which makes it the one a future patch is
- * most likely to "helpfully" half-build. Re-measured 2026-08-28,
- * WEBAPI_FILE_ROOT=build/wpt-full wbuild/wpt_test --root build/wpt-full
+ * most likely to "helpfully" half-build. Measured 2026-08-28 (before this
+ * file), WEBAPI_FILE_ROOT=build/wpt-full wbuild/wpt_test --root build/wpt-full
  * --subset IndexedDB: 5 PASS of 1078 IndexedDB/ subtests, and every one of the
  * five is vacuous -- `indexedDB is [SameObject]` comparing undefined to
  * undefined, three `"IDBFileHandle"/"IDBFileRequest"/"IDBMutableFile" should
  * not be supported` historical negatives, and one keyrange test whose expected
- * failure happens to be a ReferenceError. Absence is currently 100% correct on
- * this corpus. The other 1073 fail as `'indexedDB' is not defined`, which is
- * the right failure for a spec this engine does not implement -- not a defect
+ * failure happens to be a ReferenceError. Absence was 100% correct on that
+ * corpus. The other 1073 failed as `'indexedDB' is not defined`, which was
+ * the right failure for a spec this engine did not implement -- not a defect
  * to close by making the ReferenceError go away.
  *
  * The two real call sites in this repo's own fixture corpus are why "just
@@ -60,25 +118,21 @@
  * class `S` does NOT guard: its constructor unconditionally calls
  * `window.indexedDB.open(t.databaseName)` and only checks readiness on later
  * set()/get() calls via `this.db`, queuing work in `setQueue`/`getQueue` until
- * `onsuccess` fires. With indexedDB absent that constructor throws a
+ * `onsuccess` fires. With indexedDB absent that constructor threw a
  * TypeError immediately, `isSupport()` (`!!window.indexedDB`) already reported
- * false, and the caller's own fallback runs -- observed behaviour, and safe.
- * A PARTIAL indexedDB whose `.open()` returns a request that never calls
- * `onsuccess` or `onerror` (any unimplemented codepath that returns a request
- * object instead of throwing or firing an error event) would leave exactly
- * this class's two queues filling forever: no exception, no failed network
- * request, no log line, every future set()/get() silently swallowed. That is
- * the identical shape to the Node.isEqualNode/React-hydration and
+ * false, and the caller's own fallback ran -- observed behaviour, and safe.
+ * NOW that indexedDB is real, this is the page whose correctness became
+ * js_idb.c's problem the moment the global stopped being undefined -- and it
+ * is why the termination bar above is the acceptance criterion, not the WPT
+ * percentage: a PARTIAL indexedDB whose `.open()` returns a request that
+ * never calls `onsuccess` or `onerror` would have left exactly this class's
+ * two queues filling forever: no exception, no failed network request, no
+ * log line, every future set()/get() silently swallowed. That is the
+ * identical shape to the Node.isEqualNode/React-hydration and
  * getContext-returns-null traps recorded elsewhere in this tree -- a
  * capability present by name that answers wrongly is more dangerous than one
  * genuinely missing, because feature detection passes and the page walks into
- * a path that cannot work. So the bar for implementing indexedDB is not "cover
- * enough methods" but "every IDBRequest this build can produce, on every path
- * including the ones left unimplemented, terminates in success or a thrown/
- * fired error -- never silently pending." Until that bar is met for a real
- * subset, indexedDB stays undefined on purpose; see IDBFactory/IDBDatabase/
- * IDBObjectStore/etc. -- none of it exists anywhere in this tree
- * (`grep -rni indexeddb c/apps/browser include` finds only this comment).
+ * a path that cannot work.
  *
  * EVERYTHING INSTALLS ONLY IF ABSENT. Three lines are extending this runtime at
  * once (the DOM bindings, the module loader, this one). Whatever is already

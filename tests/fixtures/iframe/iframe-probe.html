@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<meta charset=utf-8>
+<title>LogitOS iframe termination probe (scratch, not a WPT file)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+function waitLoad(f, name) {
+  return new Promise(function (res, rej) {
+    var done = false;
+    f.addEventListener('load', function () { done = true; res('load'); });
+    setTimeout(function () { if (!done) rej(new Error('NO LOAD EVENT within budget: ' + name)); }, 2000);
+  });
+}
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'appendChild about:blank');
+}, 'A1 appendChild, no src -> load fires');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('srcdoc', '<p>hi</p>');
+  document.body.appendChild(f);
+  return waitLoad(f, 'setAttribute srcdoc');
+}, 'A2 setAttribute(srcdoc) before insert -> load fires');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'insert').then(function () {
+    var p = waitLoad(f, 'IDL srcdoc=');
+    f.srcdoc = '<p>second</p>';
+    return p;
+  });
+}, 'A3 IDL srcdoc= setter -> a SECOND load fires (the one-jar-two-doors probe)');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'insert').then(function () {
+    var p = waitLoad(f, 'IDL src=');
+    f.src = 'logit-iframe-child.html';
+    return p;
+  });
+}, 'A4 IDL src= setter -> a SECOND load fires');
+
+promise_test(function () {
+  var d = document.createElement('div');
+  d.innerHTML = '<iframe id="viaInner"></iframe>';
+  document.body.appendChild(d);
+  var f = document.getElementById('viaInner');
+  assert_true(!!f, 'the innerHTML-built iframe is in the tree');
+  return waitLoad(f, 'innerHTML-built');
+}, 'A5 iframe built by innerHTML, never property-read -> load fires');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'first insert').then(function () {
+    f.parentNode.removeChild(f);
+    var p = waitLoad(f, 're-insert');
+    document.body.appendChild(f);
+    return p;
+  });
+}, 'A6 remove then re-insert -> load fires again');
+
+test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  assert_not_equals(f.contentDocument, null, 'about:blank contentDocument is synchronously non-null');
+  assert_not_equals(f.contentWindow, null, 'contentWindow is non-null');
+  assert_equals(f.contentDocument.defaultView, f.contentWindow,
+                'contentDocument.defaultView === contentWindow');
+}, 'B1 about:blank is synchronously ready and the two doors agree');
+
+test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('sandbox', '');
+  f.setAttribute('srcdoc', '<p>x</p>');
+  document.body.appendChild(f);
+  assert_throws_dom('SecurityError', function () { return f.contentDocument; },
+                    'a sandboxed frame refuses access rather than reading null');
+}, 'B2 sandbox refuses by name with a real error, not a null document');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('src', 'logit-iframe-child.html');
+  document.body.appendChild(f);
+  return waitLoad(f, 'same-origin src').then(function () {
+    assert_not_equals(f.contentDocument, null);
+    assert_equals(f.contentDocument.documentElement.textContent.indexOf('CHILD') >= 0, true,
+                  'the child document actually parsed');
+  });
+}, 'B3 same-origin src loads and parses');
+
+test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  assert_equals(typeof window.length, 'number');
+  assert_greater_than(window.length, 0, 'window.length counts the frames');
+  assert_equals(window.frames.length, window.length, 'window.frames agrees with window.length');
+}, 'C1 window.length and window.frames agree (one jar, two doors)');
+
+test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  assert_equals(window[0], f.contentWindow, 'window[0] is the first frame');
+}, 'C2 indexed access window[0]');
+
+promise_test(function () {
+  var host = document.createElement('div');
+  host.id = 'inner2';
+  document.body.appendChild(host);
+  host.innerHTML = '<iframe id="viaInnerDirect"></iframe>';
+  var f = document.getElementById('viaInnerDirect');
+  assert_true(!!f, 'the iframe is in the tree');
+  return waitLoad(f, 'innerHTML on an ALREADY-INSERTED parent');
+}, 'A7 innerHTML= on an already-connected parent -> load fires');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('src', 'https://example.com/x.html');
+  document.body.appendChild(f);
+  return waitLoad(f, 'cross-origin').then(function () {
+    assert_throws_dom('SecurityError', function () { return f.contentDocument; },
+                      'contentDocument throws SecurityError');
+    assert_throws_dom('SecurityError', function () { return f.contentWindow; },
+                      'contentWindow throws SecurityError');
+  });
+}, 'B4 cross-origin: load still fires AND access throws SecurityError');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('src', 'this-file-does-not-exist-404.html');
+  document.body.appendChild(f);
+  return waitLoad(f, '404');
+}, 'B5 a failed fetch still fires exactly one load');
+
+/* D1-D7: the SEVEN doors that were open. Each brings a brand-new iframe into
+ * the document through a path other than appendChild/insertBefore/
+ * replaceChild/setAttribute/innerHTML, with `onload` assigned before
+ * insertion and NOTHING ever reading a contentWindow/contentDocument
+ * property -- the exact shape the backstop getters cannot save, and the
+ * shape a real page uses: `new Promise(res => { f.onload = res;
+ * container.append(f); })`. */
+promise_test(function () {
+  var f = document.createElement('iframe');
+  return new Promise(function (res, rej) {
+    f.onload = function () { res('load'); };
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: append()')); }, 2000);
+    document.body.append(f);
+  });
+}, 'D1 ParentNode.append() -> load fires');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  return new Promise(function (res, rej) {
+    f.onload = function () { res('load'); };
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: prepend()')); }, 2000);
+    document.body.prepend(f);
+  });
+}, 'D2 ParentNode.prepend() -> load fires');
+
+promise_test(function () {
+  var ref = document.createElement('div');
+  document.body.appendChild(ref);
+  var f = document.createElement('iframe');
+  return new Promise(function (res, rej) {
+    f.onload = function () { res('load'); };
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: before()')); }, 2000);
+    ref.before(f);
+  });
+}, 'D3 ChildNode.before() -> load fires');
+
+promise_test(function () {
+  var ref = document.createElement('div');
+  document.body.appendChild(ref);
+  var f = document.createElement('iframe');
+  return new Promise(function (res, rej) {
+    f.onload = function () { res('load'); };
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: after()')); }, 2000);
+    ref.after(f);
+  });
+}, 'D4 ChildNode.after() -> load fires');
+
+promise_test(function () {
+  var placeholder = document.createElement('div');
+  document.body.appendChild(placeholder);
+  var f = document.createElement('iframe');
+  return new Promise(function (res, rej) {
+    f.onload = function () { res('load'); };
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: replaceWith()')); }, 2000);
+    placeholder.replaceWith(f);
+  });
+}, 'D5 ChildNode.replaceWith() -> load fires');
+
+promise_test(function () {
+  var host = document.createElement('div');
+  host.id = 'iahHost';
+  document.body.appendChild(host);
+  return new Promise(function (res, rej) {
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: insertAdjacentHTML()')); }, 2000);
+    host.insertAdjacentHTML('beforeend', '<iframe id="viaIAH"></iframe>');
+    var f = document.getElementById('viaIAH');
+    if (!f) { rej(new Error('insertAdjacentHTML did not build the iframe')); return; }
+    f.onload = function () { res('load'); };
+  });
+}, 'D6 Element.insertAdjacentHTML() -> load fires, and a pre-existing sibling iframe is NOT re-navigated');
+
+promise_test(function () {
+  var placeholder = document.createElement('div');
+  placeholder.id = 'outerTarget';
+  document.body.appendChild(placeholder);
+  return new Promise(function (res, rej) {
+    setTimeout(function () { rej(new Error('NO LOAD EVENT within budget: outerHTML=')); }, 2000);
+    placeholder.outerHTML = '<iframe id="viaOuter"></iframe>';
+    var f = document.getElementById('viaOuter');
+    if (!f) { rej(new Error('outerHTML= did not build the iframe')); return; }
+    f.onload = function () { res('load'); };
+  });
+}, 'D7 outerHTML= setter -> load fires');
+
+/* D8: the negative half of D6/D7's "not re-navigated" claim, made positive
+ * and checkable rather than only asserted in D6's own name -- a sibling
+ * iframe that was already loaded must NOT see a second load fire just
+ * because insertAdjacentHTML/outerHTML touched a NEIGHBOURING position in
+ * the same parent (the over-scan bug scanNew's before/after diff exists to
+ * avoid). */
+promise_test(function () {
+  var host = document.createElement('div');
+  document.body.appendChild(host);
+  var settled = document.createElement('iframe');
+  host.appendChild(settled);
+  return waitLoad(settled, 'settled sibling, first load').then(function () {
+    var loadCount = 0;
+    settled.addEventListener('load', function () { loadCount++; });
+    host.insertAdjacentHTML('beforeend', '<iframe id="viaIAH2"></iframe>');
+    var f2 = document.getElementById('viaIAH2');
+    return waitLoad(f2, 'the new sibling').then(function () {
+      assert_equals(loadCount, 0, 'the already-settled sibling iframe was not re-navigated');
+    });
+  });
+}, 'D8 insertAdjacentHTML does not re-navigate an already-settled sibling iframe');
+</script>
