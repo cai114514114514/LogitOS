@@ -1,4 +1,6 @@
 #include "crypto.h"
+#include "chacha_core.h"        /* xchacha20poly1305.c reuses chacha_block/chacha20 --
+                                  * see that header for why. */
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -12,8 +14,8 @@ static uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 static uint32_t rd32(const uint8_t *p)
 { return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24); }
 
-static void chacha_block(const uint8_t key[32], uint32_t counter,
-                         const uint8_t nonce[12], uint8_t out[64])
+void chacha_block(const uint8_t key[32], uint32_t counter,
+                  const uint8_t nonce[12], uint8_t out[64])
 {
     uint32_t s[16], x[16];
     s[0]=0x61707865; s[1]=0x3320646e; s[2]=0x79622d32; s[3]=0x6b206574;
@@ -33,8 +35,8 @@ static void chacha_block(const uint8_t key[32], uint32_t counter,
     }
 }
 
-static void chacha20(const uint8_t key[32], uint32_t counter, const uint8_t nonce[12],
-                     const uint8_t *in, int len, uint8_t *out)
+void chacha20(const uint8_t key[32], uint32_t counter, const uint8_t nonce[12],
+              const uint8_t *in, int len, uint8_t *out)
 {
     uint8_t ks[64];
     for (int off = 0; off < len; off += 64) {

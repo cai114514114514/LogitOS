@@ -22,9 +22,22 @@
  *
  * WHAT IT MUST NEVER BE USED FOR: nothing else. There is no SHA-1 entry in the
  * x509.c signature-algorithm table, no sha1WithRSA, no ecdsa-with-SHA1, and
- * this file is not declared in crypto.h. It is declared in ocsp.c and reachable
- * from nowhere else. If a second caller ever appears, that is the moment to
- * re-read this comment rather than to add a prototype to crypto.h. */
+ * this file is not declared in crypto.h. If a caller ever appears that wants
+ * SHA-1 for anything with a security property riding on collision
+ * resistance, that is the moment to re-read this comment rather than to add
+ * a prototype to crypto.h.
+ *
+ * A SECOND CALLER DID APPEAR: c/net/http/ws.c, for RFC 6455's
+ * Sec-WebSocket-Accept (base64(SHA-1(Sec-WebSocket-Key + GUID))). Re-read the
+ * argument above before assuming that promotes this to a general-purpose
+ * hash -- it does not, because RFC 6455 1.3 makes the same "matching, not
+ * authenticating" argument OCSP does above: the Accept value proves the
+ * server understood the handshake (defeats a cache or proxy replaying a
+ * stale response), and the connection's actual security comes from the TLS
+ * session underneath `wss://`, exactly as OCSP's comes from the response's
+ * own signature. ws.c declares its own local extern, same shape as ocsp.c's
+ * below -- still no crypto.h entry, still no third caller without reading
+ * this again first. */
 
 struct sha1_ctx { uint32_t h[5]; uint64_t len; uint8_t buf[64]; int n; };
 
