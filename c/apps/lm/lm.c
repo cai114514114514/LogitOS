@@ -64,8 +64,23 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <signal.h>
 #include "model.h"
 #include "infer.h"
+
+/* RT_NO_SYS: only the LRT/1 wire format (magic, header layout, RT_T_* type
+ * numbers, the rt_enc encoder) -- not its syscall glue. That glue is written
+ * for a program with no libc underneath it (sh.c, terminal.c); this program
+ * has mini-libc underneath it (stdio, unistd's write(), getenv()), and asking
+ * for RT_NO_SYS's counterpart would pull in "logit.h", a raw-syscall header
+ * built for THAT environment, sitting on top of THIS libc's own syscall
+ * wrappers -- two ideas of what fd 3's write() means in one translation unit.
+ * The wire format is the one thing that must not be redefined per producer
+ * (logit_rich.h's own "one jar" argument); the eleven lines below that get a
+ * frame onto the pipe are not it, and are written the way the rest of this
+ * file already talks to the kernel (see lm_syscall's own comment). */
+#define RT_NO_SYS 1
+#include "logit_rich.h"
 
 /* ---------------------------------------------------------------- budget --
  *
@@ -347,6 +362,102 @@ static double now_s(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/* --------------------------------------------------------- LRT/1, streamed --
+ *
+ * WHAT A USER GETS TODAY WITHOUT THIS SECTION: the loop at the bottom of
+ * main() calls putchar(next_tok) once per generated token and relies on
+ * ordinary line buffering, so the terminal sees nothing until stdout flushes
+ * -- a wall of characters that appears all at once when generation finishes,
+ * on a machine where finishing can be tens of seconds away. That is not
+ * streaming; test-sse-page's negative control on the browser side names the
+ * exact shape ("every token arrived within 0.21s of the first, at the end")
+ * and this is the same failure, on the other app.
+ *
+ * THE FIX IS NARROW ON PURPOSE: three frames (RT_T_LM_BEGIN/TOKEN/END,
+ * logit_rich.h), sent only when rt_isrich() -- i.e. only when this process is
+ * the last stage of a foreground, non-redirected pipeline under the GUI
+ * Terminal (sh.c's start_pipeline decides that, unedited by this file). Every
+ * other caller of /bin/lm -- the boot harness, --ids/--print-ids scripting,
+ * `lm | wc`, `lm > out.txt` -- is untouched: LOGIT_RICH is absent, g_lm_rt
+ * stays -1, and putchar(next_tok) is exactly what runs, which is also what
+ * keeps tests/boot/run-lm-test.sh's byte-for-byte region honest (see that
+ * harness's own comment on why timing output is ordered after it -- this
+ * section changes nothing about stdout's bytes on the path that harness
+ * takes). */
+static int      g_lm_rt = -1;         /* the rich fd, or -1: rt_isrich()      */
+static unsigned g_lm_id = 1;
+static volatile sig_atomic_t g_lm_intr;   /* set by the SIGINT handler below   */
+
+static int lm_rt_write_all(int fd, const void *buf, int n)
+{
+    const char *p = (const char *)buf;
+    int done = 0;
+    while (done < n) {
+        ssize_t w = write(fd, p + done, (size_t)(n - done));
+        if (w <= 0) return -1;    /* EINTR included: a write racing ^C is not
+                                   * worth retrying -- see the header note on
+                                   * why a failed write just latches off */
+        done += (int)w;
+    }
+    return done;
+}
+
+/* Discover the terminal the way logit_rich.h's own rt_init() does (same three
+ * variables, same rules), through mini-libc's getenv() rather than a raw envp
+ * walk -- this program already has argv through main(), and getenv() is the
+ * ordinary way a libc program reads it. */
+static int lm_rt_init(void)
+{
+    const char *term = getenv("LOGIT_TERM");
+    const char *fd    = getenv("LOGIT_RICH");
+    if (!term || !fd) return 0;
+    if (strncmp(term, "logit-rich-", 11) != 0) return 0;
+    int ver = atoi(term + 11);
+    if (ver < 1) return 0;
+    int n = atoi(fd);
+    if (n < 3) return 0;
+    g_lm_rt = n;
+    return 1;
+}
+
+/* Emit one LRT/1 frame. `seq` is always 0: the ordering anchor (logit_rich.h's
+ * ORDERING note) exists to place a frame correctly relative to text the SAME
+ * process wrote through rt_out() on fd 1, and in rich mode this process writes
+ * NOTHING to fd 1 -- the whole point is that tokens travel as frames instead
+ * -- so seq=0 against a baseline of zero fd-1 bytes for this command is
+ * already satisfied the instant the frame arrives; there is nothing to wait
+ * for. A failed write latches g_lm_rt off, same rule as rt_send(). */
+static void lm_rt_emit(int type, struct rt_enc *e)
+{
+    if (g_lm_rt < 0) return;
+    if (e && e->ovf) { rt_reset(e); g_lm_rt = -1; return; }
+    unsigned char h[RT_HDR];
+    int len = e ? e->n : 0;
+    rt_hdr(h, type, 0, (unsigned)len);
+    if (lm_rt_write_all(g_lm_rt, h, RT_HDR) < 0 ||
+        (len && lm_rt_write_all(g_lm_rt, e->b, len) < 0)) {
+        g_lm_rt = -1;
+        return;
+    }
+    if (e) rt_reset(e);
+}
+
+/* CANCELLATION. The shell already forwards ^C to this process's pid with a
+ * real SIGINT (sh.c's job_signal -> sh_kill, unedited by this file) -- so
+ * without a handler at all, ^C already stops a run, by killing it outright.
+ * That satisfies "cancellable" but not "watchably": the process dies mid
+ * lm_forward() with no RT_T_LM_END, so the block never gets its footer and,
+ * worse, whatever partial frame lm_rt_emit was mid-write() on is now a
+ * half-frame the terminal's parser has to resync past (logit_rich.h's resync
+ * path handles that safely -- but "safely" is not "cleanly"). A handler turns
+ * that into a graceful stop: set a flag, let the CURRENT forward step finish
+ * (it is already committed), then close the block with RT_LM_INTERRUPTED and
+ * exit 0 rather than being torn down mid-syscall. Only installed in rich
+ * mode: the plain path's behaviour (die on ^C, same as any other coreutil
+ * here) is unchanged, which is also what keeps run-lm-test.sh -- which never
+ * sends SIGINT -- from seeing anything different. */
+static void lm_on_sigint(int s) { (void)s; g_lm_intr = 1; }
+
 /* The --ids buffer bound. 512 because it is the seq_len this model line is
  * built at, so a longer list could not be fed anyway; a fixed buffer rather
  * than a malloc because the list arrives on a command line, where the length
@@ -459,6 +570,16 @@ int main(int argc, char **argv)
         printf("lm: -n must be >= 0\n");
         return 2;
     }
+
+    /* Rich streaming: only the ordinary interactive shape (a byte prompt in, a
+     * byte stream out). --ids/--print-ids/--dump-logits are host-comparison
+     * tooling, not something a person is watching in the Terminal, and their
+     * ids/floats have no business travelling as RT_T_LM_TOKEN's `str text` --
+     * that frame carries exactly the bytes putchar(next_tok) would have
+     * written, so it stays meaningful only where that call would have been. */
+    int lm_stream = lm_rt_init() && !print_ids && !ids_arg && !dump_logits;
+    if (lm_stream)
+        signal(SIGINT, lm_on_sigint);
 
     /* --------------------------------------------------------- load --- */
     /* stat(), NOT open()+fstat(), AND THAT IS THE MOST EXPENSIVE LINE IN THIS
@@ -971,7 +1092,22 @@ int main(int argc, char **argv)
      * argv string instead would put a comma-separated integer list in the
      * middle of the generated output, where a reader would take it for text
      * the model produced. */
-    if (!ids_arg) fputs(prompt, stdout);
+    if (!ids_arg) {
+        if (lm_stream) {
+            /* RT_T_LM_BEGIN carries the prompt as its own field rather than
+             * relying on fd 1 -- this process writes NOTHING to fd 1 once
+             * streaming starts (see lm_rt_emit's comment on why seq=0 is
+             * always already satisfied), so the terminal has to be TOLD what
+             * the prompt was, not shown it arrive as text. */
+            struct rt_enc e; rt_reset(&e);
+            rt_u32(&e, g_lm_id);
+            rt_str(&e, desc);
+            rt_str(&e, prompt);
+            lm_rt_emit(RT_T_LM_BEGIN, &e);
+        } else {
+            fputs(prompt, stdout);
+        }
+    }
 
     /* --dump-logits: THE LOGIT ROW AFTER THE LAST PROMPT TOKEN, raw f32.
      *
@@ -1025,7 +1161,14 @@ int main(int argc, char **argv)
     }
 
     int produced = 0;
-    while (produced < n_predict && st.pos < seq_len) {
+    int lm_interrupted = 0;
+    /* The interrupt check is a LOOP CONDITION, not a check inside the body:
+     * that lets the forward step already in flight when ^C lands finish and
+     * emit its token -- "the current step is already committed", per the
+     * handler's own comment -- and stops the NEXT (expensive) lm_forward from
+     * starting rather than aborting one partway through. */
+    while (produced < n_predict && st.pos < seq_len &&
+           !(lm_stream && g_lm_intr)) {
         double c0 = now_s();
         logits = lm_forward(&m, &st, next_tok, st.pos);
         double c1 = now_s();
@@ -1037,18 +1180,50 @@ int main(int argc, char **argv)
         }
         logit_scan(logits, vocab, &lo_min, &lo_max, &lo_nonfinite, &lo_rows);
         steps_run++;
-        if (print_ids) printf("%d ", next_tok);
-        else           putchar(next_tok);
+        if (lm_stream) {
+            /* One frame per generated byte, sent as soon as it is sampled --
+             * that IS the streaming: a token that waited for a batch to fill
+             * before crossing the pipe would be exactly the "arrives all at
+             * once" failure this section exists to fix. rt_strn, not rt_str:
+             * the byte can legally BE 0x00, and rt_str's length comes from
+             * scanning for a NUL it would never find in a length of one. */
+            unsigned char b = (unsigned char)next_tok;
+            struct rt_enc e; rt_reset(&e);
+            rt_u32(&e, g_lm_id);
+            rt_strn(&e, (const char *)&b, 1);
+            lm_rt_emit(RT_T_LM_TOKEN, &e);
+        } else if (print_ids) {
+            printf("%d ", next_tok);
+        } else {
+            putchar(next_tok);
+        }
         produced++;
         next_tok = greedy ? lm_sample_greedy(logits, vocab)
                            : lm_sample_topp((float *)logits, vocab,
                                              (float)temperature, topp, &rng);
     }
-    putchar('\n');
+    if (lm_stream && g_lm_intr) lm_interrupted = 1;
+    if (!lm_stream) putchar('\n');
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double elapsed_s = (double)(t1.tv_sec - t0.tv_sec)
                       + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
+    if (lm_stream) {
+        /* RT_T_LM_END: integers only (n_tokens, elapsed_ms, nonfinite), so the
+         * terminal's tok/s and this process's own "%.2f tokens/s" below are
+         * two INDEPENDENT computations over the same two integers rather than
+         * one computed value trusted twice -- logit_rich.h's comment on why
+         * the frame has no float field. */
+        unsigned ms = (unsigned)(elapsed_s * 1000.0 + 0.5);
+        struct rt_enc e; rt_reset(&e);
+        rt_u32(&e, g_lm_id);
+        rt_u8(&e, lm_interrupted ? RT_LM_INTERRUPTED : 0);
+        rt_u32(&e, (unsigned)produced);
+        rt_u32(&e, ms);
+        rt_u32(&e, (unsigned)lo_nonfinite);
+        lm_rt_emit(RT_T_LM_END, &e);
+    }
     /* The clock's granularity is 10 ms (c/apps/libc/src/time.c); a run under
      * that is not a throughput measurement, it is noise, so say so rather
      * than print a tokens/s built on a near-zero denominator. */
@@ -1105,5 +1280,15 @@ int main(int argc, char **argv)
     lm_state_free(&st);
     lm_close(&m);
     release_blob(blob, (size_t)len, mapped, fd);
-    return 0;
+    /* 128 + SIGINT (130), not 0, when ^C landed -- sh.c's own comment on this
+     * exact number (start_pipeline's RT_T_CMD_END: "rt_u8(&enc, last_status
+     * == 130 ? RT_END_INTERRUPTED : 0)") is what makes the exit-status gutter
+     * agree with RT_T_LM_END's own [cancelled] footer. Measured, not assumed:
+     * the first version of this file `return 0`'d unconditionally, the SIGINT
+     * handler having already turned the kill into a graceful stop, and
+     * tests/qmp/qmp_lm_stream.py caught the two channels disagreeing --
+     * generation visibly stopped (the pixel count froze) while the gutter
+     * kept reporting success, because a caught signal followed by a normal
+     * return IS a normal exit as far as sh.c's wait_foreground can tell. */
+    return lm_stream && lm_interrupted ? 130 : 0;
 }

@@ -11,10 +11,13 @@
  * unknown file -- which is how a 2.2 MB font came to be printed onto a
  * character grid one glyph at a time.
  *
- * Four outcomes, one rule:
+ * Five outcomes, one rule:
  *
  *   image  -> an LRT image frame; the terminal decodes and draws it
  *   video  -> an LRT video frame; the terminal decodes and PLAYS it
+ *   audio  -> an LRT audio frame; the terminal decodes it and shows a Play
+ *             button -- it does NOT start sound on its own, see the long
+ *             comment above RT_T_AUDIO in logit_rich.h for why
  *   text   -> copied to stdout, but still watched byte by byte (a "text" file
  *             can turn binary halfway through, and the prefix cannot know)
  *   other  -> REFUSED, with the format named and its first bytes hexdumped
@@ -100,6 +103,19 @@ int main(int argc, char **argv)
             rt_u16(&E, RT_VID_LOOP);
             rt_str(&E, abs);
             if (rt_send(RT_T_VIDEO, &E) == 0) return 0;
+        }
+        rt_out(abs); rt_out(": "); rt_out(sniff_name(kind)); rt_out(", ");
+        put_num(size); rt_out(" bytes\n");
+        return 0;
+    }
+
+    if (cls == SNC_AUDIO) {
+        sys_close(fd);
+        if (rt_isrich()) {
+            rt_reset(&E);
+            rt_u8(&E, RT_AUD_PATH);
+            rt_str(&E, abs);
+            if (rt_send(RT_T_AUDIO, &E) == 0) return 0;
         }
         rt_out(abs); rt_out(": "); rt_out(sniff_name(kind)); rt_out(", ");
         put_num(size); rt_out(" bytes\n");

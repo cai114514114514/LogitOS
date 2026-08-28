@@ -109,11 +109,7 @@
 #define RT_T_CHART      8  /* u16 n, u16 kind, str title, n*(u32 value, str label)*/
 #define RT_T_VIDEO      9  /* u8 kind, u16 w_pt, u16 h_pt, u16 flags, str path   */
 #define RT_T_CLEAR     10  /* no payload: discard the scrollback                 */
-/* 11 is deliberately unassigned. An unknown type is ignored by the terminal (see
- * the default case in handle_frame), so the protocol grows without a version
- * bump -- but only types that EXIST are listed here.
- *
- * RT_T_CLEAR is what `clear` is, on this system. The Unix answer is two escape
+/* RT_T_CLEAR is what `clear` is, on this system. The Unix answer is two escape
  * bytes (ESC [ 2 J), and this terminal deliberately has no escape parser: a
  * character grid that interprets its own input is the in-band control language
  * this protocol exists to refuse, and the demand survey found exactly ONE
@@ -122,6 +118,70 @@
  * `clear` says what it means on the channel that carries meaning, and keeps the
  * escape bytes for fd 1 when there is no channel (the serial console, which
  * really is a VT). */
+
+/* RT_T_LM_* -- a STREAMED, CANCELLABLE model generation. /bin/lm is the one
+ * producer (c/apps/lm/lm.c). Three frames, not one, because a generation is not
+ * a value that arrives, it is a PROCESS that runs for seconds under TCG and the
+ * whole point of building this rather than leaving /bin/lm's plain stdout alone
+ * is that the terminal can show that process happening -- see test-sse-page's
+ * gate on the browser side for the shape being matched: token 1 must reach the
+ * consumer long before the response completes, and the arrival times must be
+ * SPREAD OVER the run, not bunched at the end.
+ *
+ * u32 id IS NOT REDUNDANT WITH ORDERING. Frames on this wire already arrive in
+ * order (one producer, one pipe), so id buys nothing for sequencing -- what it
+ * buys is a TOKEN/END frame's ability to say "I do not belong to the block you
+ * think is open" the same way RT_T_CMD_END's id already lets a stale status
+ * degrade instead of misattributing (terminal.c's cmd_slot ring). A generation
+ * killed mid-stream and immediately followed by another (two `lm` invocations
+ * in the same session, the second started before the terminal has drawn the
+ * first's cancellation) must not let the second's tokens append to the first's
+ * block. */
+#define RT_T_LM_BEGIN  11  /* u32 id, str model, str prompt                      */
+#define RT_T_LM_TOKEN  12  /* u32 id, str text                                   */
+#define RT_T_LM_END    13  /* u32 id, u8 flags, u32 n_tokens, u32 elapsed_ms,    */
+                           /*   u32 nonfinite                                    */
+/* RT_T_LM_END carries INTEGERS, not a computed tokens/s -- rt_enc has no float
+ * encoder, and adding one so this frame could carry a ratio would create a
+ * SECOND place tok/s is computed (the wire and lm.c's own printf, which prints
+ * the number one flag-decision later, over a byte-identical prompt+output
+ * region tests/boot/run-lm-test.sh holds fixed -- see lm.c's comment on why
+ * timing lines print AFTER that region). One jar: elapsed_ms and n_tokens are
+ * the only truth on the wire, and the terminal divides them itself, the same
+ * arithmetic lm.c's own summary line does, computed independently rather than
+ * quoted -- so a bug in one cannot look like agreement with the other. */
+#define RT_LM_INTERRUPTED 1  /* RT_T_LM_END flags: ^C landed mid-generation --
+                              * see lm.c's SIGINT handler. The block stays on
+                              * screen with whatever tokens arrived; this flag is
+                              * only what the closing line says about it. */
+/* RT_T_AUDIO -- the audio counterpart of RT_T_VIDEO, and deliberately the
+ * SAME shape for the same reason: this protocol has no RGBA/PCM-over-the-wire
+ * path, a 16 KiB payload cannot hold a useful clip, and streaming decoded
+ * samples down a side-band pipe a period at a time would copy every sample
+ * twice and serialize the decoder behind a pipe writer. So the frame says
+ * WHICH FILE, and the terminal decodes it -- c/lib/audio, linked into the
+ * terminal exactly as c/lib/video already is (see the Makefile's AUD_OBJ
+ * rule and its comment on terminal.aex's link line).
+ *
+ * NO w_pt/h_pt: an image and a video own a rectangle of the scrollback that
+ * has to be sized before it is laid out; a played clip has no width or height,
+ * only a duration, and the terminal learns THAT from the decoder's own header
+ * parse (adec_open + adec_duration_frames) once the frame names the file --
+ * the same way it learns a video's pixel dimensions from the first decoded
+ * picture rather than from the wire.
+ *
+ * NO AUTOPLAY FLAG: unlike a video (silent, contained inside its own window
+ * rectangle, plays the instant its frame arrives), an audio clip is heard
+ * outside the window and by everyone nearby it, so this frame never starts
+ * sound on its own -- the terminal attaches it PAUSED and a click starts it.
+ * That is a design decision belonging to the terminal, not a wire limitation,
+ * which is exactly why nothing above needs an RT_AUD_AUTOPLAY flag to say so:
+ * a flag whose value is always going to be "no" documents nothing. */
+#define RT_T_AUDIO     14  /* u8 kind, str path                                  */
+
+/* 15 is now the first unassigned type. An unknown type is ignored by the
+ * terminal (see the default case in handle_frame), so the protocol grows
+ * without a version bump -- but only types that EXIST are listed here. */
 
 /* ---- terminal -> shell (control channel) --------------------------------- */
 #define RT_C_INTR      64  /* ^C: abandon the foreground job                     */
@@ -152,6 +212,10 @@
 #define RT_VID_PATH  0     /* payload names an ABSOLUTE path the terminal decodes */
 #define RT_VID_LOOP  1     /* flags: restart at the end instead of holding the
                             * last frame                                        */
+
+/* RT_T_AUDIO kind. See the long comment above RT_T_AUDIO's definition for why
+ * there is no loop flag and no width/height here the way RT_VID_* has one. */
+#define RT_AUD_PATH  0     /* payload names an ABSOLUTE path the terminal decodes */
 
 /* RT_T_TABLE cell kinds */
 #define RT_CELL_TEXT 0

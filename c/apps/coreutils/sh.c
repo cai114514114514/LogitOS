@@ -129,6 +129,7 @@ static int  interactive;            /* the terminal is driving us */
 static int  ctl_fd = -1;
 static int  last_status;
 static unsigned cmdid_next = 1;
+static const char *g_arg0 = "sh";   /* $0 -- our own argv[0], or -c's name arg */
 
 static struct rt_parser cparse;
 static struct rt_enc    enc;
@@ -778,7 +779,7 @@ static int tokenize(const char *in, char *store, int storemax, struct tok *out, 
                 while (*p && ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
                               (*p >= '0' && *p <= '9') || *p == '_') && k < 63) name[k++] = *p++;
                 name[k] = 0;
-                const char *v = k ? env_get(name) : 0;
+                const char *v = (k == 1 && name[0] == '0') ? g_arg0 : (k ? env_get(name) : 0);
                 if (v) for (int i = 0; v[i]; i++) TOK_PUT(v[i]);
                 continue;
             }
@@ -1284,6 +1285,32 @@ int main(int argc, char **argv)
     }
     rt_parser_init(&cparse);
     rt_reset(&enc);
+
+    /* POSIX -c: `sh -c 'command string' [name]` runs the string as a single
+     * command line and exits with ITS status -- no prompt, no history, no
+     * RT_T_* framing, none of the interactive machinery above. This is the
+     * entry point mini-libc's system()/popen() already build
+     * (`(char*)"sh", (char*)"-c", (char*)cmd`, see popen.c and stdlib.c) and
+     * that sshd.c:642 builds for `ssh host 'cmd'` -- until now this shell
+     * ignored argv[1] entirely and fell into the interactive-or-not REPL
+     * below, reading commands from a stdin the caller never intended as a
+     * script, which is why system("echo hi") ran nothing and still reported
+     * success: it forked a shell that read EOF from a closed/empty stdin and
+     * exited 0, the worst of the three failure shapes because the caller
+     * believes it. `name`, if given, becomes $0 for the command string --
+     * exactly the argument POSIX defines and nothing past it (no $1.., no
+     * `-s`, no interactive fallback): this shell has no positional-parameter
+     * expansion anywhere else, so there is nothing further to wire up. */
+    if (argc > 1 && c_streq(argv[1], "-c")) {
+#ifndef SH_DASHC_NEGCTL
+        if (argc <= 2) { errs("sh: -c: option requires an argument\n"); app_exit(2); }
+        if (argc > 3) g_arg0 = argv[3];
+        exec_line(argv[2]);
+        app_exit(last_status);
+#endif
+        /* SH_DASHC_NEGCTL: fall through as if -c meant nothing -- the exact
+         * old behaviour, kept reachable so the gate has something to fail. */
+    }
 
     if (!interactive) {
         /* Unchanged from the pre-rich shell, deliberately -- except that a line

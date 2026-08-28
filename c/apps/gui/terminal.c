@@ -49,6 +49,7 @@
 #include "logit_sniff.h"
 #include "h264.h"
 #include "h265.h"
+#include "audio.h"
 
 /* c/lib/image allocates through the kernel heap's names, and c/lib/video's
  * mjpeg.c reaches for it too (it decodes each frame through img_decode). In
@@ -107,6 +108,8 @@ static void theme_load(void)
 #define S_ERR    1
 #define S_PROMPT 2
 #define S_SYS    3
+#define S_LM     4        /* streamed /bin/lm generation -- RT_T_LM_* below       */
+#define NSTREAM  5
 
 #define L_TEXT 0
 #define L_OBJ  1
@@ -140,6 +143,15 @@ static struct cmdrec cmds[MAXCMDS];
 static int      cur_cmd = -1;                   /* slot of the running command */
 static unsigned cur_cmdid;
 
+/* RT_T_LM_* state -- at most one streamed generation open at a time (one
+ * process = one /bin/lm invocation = one foreground command). Tracked by id
+ * so a stray TOKEN/END that arrives after the block has been superseded (a
+ * second `lm` started before this window drew the first's close) degrades
+ * instead of misattributing -- see logit_rich.h's comment on why the id
+ * exists at all. */
+static int      lm_open_;
+static unsigned lm_id_;
+
 /* Slots are a ring keyed on the id, so a long session recycles them; a line that
  * outlives its command therefore has to prove the slot still holds ITS command
  * before reading a status out of it. */
@@ -152,6 +164,7 @@ static int cmd_slot(unsigned id) { return (int)(id % MAXCMDS); }
 #define O_TABLE 3
 #define O_CHART 4
 #define O_VIDEO 5
+#define O_AUDIO 6
 
 #define MAXOBJ  96
 #define MAXIMG  6
@@ -262,8 +275,8 @@ static unsigned long long ms_paint_total, n_paint;
 /* One per text stream. Reset at every command boundary: the judgement is about
  * THIS command's output, so a font dumped by one command does not condemn the
  * next one's listing. */
-static struct sniff_guard sguard[4];
-static long  sg_line[4] = { -1, -1, -1, -1 };   /* absolute index of the summary */
+static struct sniff_guard sguard[NSTREAM];
+static long  sg_line[NSTREAM] = { -1, -1, -1, -1, -1 };   /* absolute index of the summary */
 
 struct robj { unsigned char type; short idx; short gen; short vrows; };
 static struct robj objs[MAXOBJ];
@@ -374,7 +387,7 @@ static struct tline *new_line(int stream)
  * filled the scrollback would silently start appending into the wrong line -- a
  * bug that only appears after 600 lines of output, which is exactly the kind
  * nothing notices. */
-static long open_line[4] = { -1, -1, -1, -1 };
+static long open_line[NSTREAM] = { -1, -1, -1, -1, -1 };
 
 static struct tline *cur_line(int stream)
 {
@@ -386,7 +399,7 @@ static struct tline *cur_line(int stream)
 }
 
 static void end_line(int stream) { open_line[stream] = -1; }
-static void end_all_lines(void) { for (int i = 0; i < 4; i++) open_line[i] = -1; }
+static void end_all_lines(void) { for (int i = 0; i < NSTREAM; i++) open_line[i] = -1; }
 
 static void put_char(int stream, char c)
 {
@@ -967,6 +980,278 @@ static void handle_video(struct rt_rd *r)
     l->len = (short)n;
 }
 
+/* ------------------------------------------------------ audio playback --- */
+
+/* RT_T_AUDIO's own long comment in logit_rich.h covers the wire shape and why
+ * there is no autoplay flag; this is the terminal-side half: an object that
+ * shows a filename, a format, a duration and a Play/Stop button, and does
+ * nothing to the speaker until it is clicked.
+ *
+ * SCOPE, STATED RATHER THAN DISCOVERED: this is play-and-stop, not a media
+ * player. There is no seek, no pause-and-resume-from-position, no progress
+ * scrubber. Stop always rewinds to the start (closing and reopening the
+ * decoder over the bytes already held in memory, which is cheap), so "Play"
+ * after a stop is never ambiguous about where it starts. A half-built
+ * scrubber that looks interactive and silently does nothing on drag would be
+ * worse than the plain button this is.
+ *
+ * THE DEVICE CHECK HAPPENS ONCE, AT ATTACH, NOT AT PLAY. snd_info() is asked
+ * when the RT_T_AUDIO frame arrives, exactly the way c/apps/logit.h's own
+ * canonical decoder-loop comment says to: "a program that checks it degrades
+ * to silence instead of treating SND_E_NODEV as an error worth dying over."
+ * The result is stored (`have_device`) and the object is drawn accordingly --
+ * a machine with no sound card still shows the filename, the format and the
+ * duration, with the button replaced by a plain "N/A" and a clicked object
+ * doing nothing, rather than the click silently failing against a device that
+ * was never there. That is the "clean, visible state" this was asked to be:
+ * not a hang, not a button that looks live and is not. */
+
+#define MAXAUD  2                    /* live decoders at once (mirrors MAXVID) */
+#define AUD_MAXBYTES (16 << 20)      /* same order as VID_MAXBYTES: a whole
+                                      * file loaded into a ring-3 heap that also
+                                      * holds the terminal's own scrollback     */
+#define AUD_CHUNK_FRAMES 2048        /* decoded per event-loop turn, per clip --
+                                      * the audio analogue of vid_step's "one
+                                      * picture per turn": bounded so a playing
+                                      * clip never stalls the keyboard          */
+
+struct audobj {
+    char path[128];
+    unsigned char *data;      /* the whole file, owned for the decoder's life  */
+    long len;
+    adec *dec;
+    audio_format fmt;
+    int  rate, channels;
+    long total_frames;        /* -1: the format states none (MP3 without a scan) */
+    int  have_device;         /* snd_info(), checked once at attach              */
+    int  snd_h;                /* open sound stream, or -1                       */
+    int  ok, playing, ended;
+    char err[64];
+    /* A short SYS_SND_WRITE is CARRIED to the next tick, never dropped: `pend`
+     * holds decoded-but-not-yet-accepted samples and `pend_off` says how many
+     * of its bytes the card has already taken. Silently discarding the
+     * remainder would be an audible click in the middle of a clip. */
+    short pend[AUD_CHUNK_FRAMES * AUDIO_MAX_CHANNELS];
+    int  pend_frames, pend_off;
+};
+static struct audobj auds[MAXAUD];
+static int naud;
+
+static const char *aud_errname(int e)
+{
+    switch (e) {
+    case AUDIO_ERR_CORRUPT:     return "corrupt audio file";
+    case AUDIO_ERR_UNSUPPORTED: return "unsupported audio format";
+    case AUDIO_ERR_OOM:         return "out of memory";
+    case AUDIO_ERR_RANGE:       return "audio header out of range";
+    default:                    return "could not decode audio";
+    }
+}
+
+/* Diagnostics on fd 2, the same instrument and the same reason perf_kv above
+ * exists for video: fd 2 is wired to the serial console for every GUI app, so
+ * "did the click do anything" becomes a line a harness can grep instead of a
+ * screenshot it has to interpret -- tests/qmp/qmp_audio_term.py reads these.
+ * audio_open fires once, when the frame arrives, and states the state that
+ * makes the "no audio device" behaviour ASSERTABLE rather than merely
+ * plausible: have_device is exactly what snd_info() returned, at the moment
+ * this object was attached, before anything could have raced with it. */
+static void aud_diag(const char *tag, const struct audobj *a)
+{
+    char b[192]; int n = 0;
+    sappend(b, &n, (int)sizeof b, "TERMPERF audio_");
+    sappend(b, &n, (int)sizeof b, tag);
+    sappend(b, &n, (int)sizeof b, " path=");
+    sappend(b, &n, (int)sizeof b, a->path);
+    sappend(b, &n, (int)sizeof b, "\n");
+    sys_write(2, b, n);
+}
+
+static void aud_diag_open(const struct audobj *a)
+{
+    char b[320]; int n = 0; char num[16];
+    sappend(b, &n, (int)sizeof b, "TERMPERF audio_open path=");
+    sappend(b, &n, (int)sizeof b, a->path);
+    sappend(b, &n, (int)sizeof b, " fmt=");
+    sappend(b, &n, (int)sizeof b, a->err[0] ? "-" : audio_format_name(a->fmt));
+    sappend(b, &n, (int)sizeof b, " rate=");
+    utoa((unsigned)(a->rate > 0 ? a->rate : 0), num); sappend(b, &n, (int)sizeof b, num);
+    sappend(b, &n, (int)sizeof b, " ch=");
+    utoa((unsigned)(a->channels > 0 ? a->channels : 0), num); sappend(b, &n, (int)sizeof b, num);
+    sappend(b, &n, (int)sizeof b, " have_device=");
+    sappend(b, &n, (int)sizeof b, a->have_device ? "1" : "0");
+    sappend(b, &n, (int)sizeof b, " err=");
+    sappend(b, &n, (int)sizeof b, a->err[0] ? a->err : "-");
+    sappend(b, &n, (int)sizeof b, "\n");
+    sys_write(2, b, n);
+}
+
+/* Stop, immediately: closes the stream WITHOUT draining (SYS_SND_CLOSE's
+ * `drain` argument is 0) because a click on "Stop" means stop now, not "let
+ * whatever is already queued finish". End-of-stream is the other closer,
+ * below in aud_step, and DOES drain -- the difference between the user
+ * asking it to stop and the clip simply running out. */
+static void aud_stop(struct audobj *a)
+{
+    if (a->playing) aud_diag("stop", a);
+    if (a->snd_h >= 0) { snd_close(a->snd_h, 0); a->snd_h = -1; }
+    a->playing = 0;
+    a->pend_frames = 0; a->pend_off = 0;
+}
+
+static void aud_free(struct audobj *a)
+{
+    aud_stop(a);
+    if (a->dec) { adec_close(a->dec); a->dec = 0; }
+    if (a->data) { free(a->data); a->data = 0; }
+    a->ok = 0; a->len = 0;
+}
+
+/* Play, from the start. Reopens the decoder every time (see the scope note
+ * above): the bytes are already in memory, so this is cheap, and it means
+ * "Play" never has to answer "resume from where, exactly". */
+static void aud_start(struct audobj *a)
+{
+    if (!a->ok || a->err[0] || !a->have_device || a->playing) return;
+    if (a->ended || !a->dec) {
+        if (a->dec) { adec_close(a->dec); a->dec = 0; }
+        int aerr = 0;
+        a->dec = adec_open(a->data, a->len, &aerr);
+        if (!a->dec) { scopy(a->err, aud_errname(aerr), sizeof a->err); a->ok = 0; return; }
+        a->ended = 0;
+    }
+    struct logit_sndfmt f;
+    f.rate = (unsigned)a->rate; f.channels = (unsigned short)a->channels;
+    f.format = SND_FMT_S16; f.buffer_ms = 0; f.flags = SND_F_NONBLOCK;
+    int h = snd_open(&f);
+    if (h < 0) { scopy(a->err, "audio device busy", sizeof a->err); return; }
+    a->snd_h = h;
+    a->playing = 1;
+    a->pend_frames = 0; a->pend_off = 0;
+    aud_diag("play", a);
+}
+
+/* Decode and write AT MOST one chunk, called once per event-loop turn for
+ * every playing clip -- never in a loop of its own, for the reason vid_step
+ * gives: a decoder that ran the whole clip inside one turn would be a window
+ * that stops answering the keyboard for the length of the track. */
+static void aud_step(struct audobj *a)
+{
+    if (!a->playing) return;
+
+    if (a->pend_frames > 0) {
+        int total = a->pend_frames * a->channels * 2;
+        int w = snd_write(a->snd_h, (unsigned char *)a->pend + a->pend_off, total - a->pend_off);
+        if (w < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+        a->pend_off += w;
+        if (a->pend_off < total) return;          /* still owed; try again next tick */
+        a->pend_frames = 0; a->pend_off = 0;
+    }
+
+    int avail = snd_avail(a->snd_h);
+    if (avail < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+    int room = avail / (a->channels * 2);
+    if (room <= 0) return;                        /* ring full this tick */
+    int cap = room < AUD_CHUNK_FRAMES ? room : AUD_CHUNK_FRAMES;
+
+    long got = adec_read(a->dec, a->pend, cap);
+    if (got < 0) {
+        scopy(a->err, "corrupt audio stream", sizeof a->err);
+        aud_stop(a); a->ended = 1;
+        return;
+    }
+    if (got == 0) {
+        snd_close(a->snd_h, 1);                   /* 1 = drain what is queued */
+        a->snd_h = -1;
+        a->playing = 0; a->ended = 1;
+        aud_diag("end", a);
+        return;
+    }
+    int bytes = (int)got * a->channels * 2;
+    int w = snd_write(a->snd_h, a->pend, bytes);
+    if (w < 0) { scopy(a->err, "audio device went away", sizeof a->err); aud_stop(a); return; }
+    if (w < bytes) { a->pend_frames = (int)got; a->pend_off = w; }
+}
+
+static void handle_audio(struct rt_rd *r)
+{
+    int kind = rt_rd_u8(r);
+    char path[128];
+    rt_rd_str(r, path, sizeof path);
+    if (r->bad || kind != RT_AUD_PATH || !path[0]) { put_text(S_ERR, "terminal: bad audio frame"); return; }
+
+    /* One decoder per slot, two slots -- same reasoning as MAXVID: a live
+     * decoder holds a malloc'd copy of the whole file plus its own parser
+     * state, and a scrollback with ten of them open would be a leak with a
+     * play button. */
+    int slot = naud < MAXAUD ? naud++ : (objgen_next % MAXAUD);
+    struct audobj *a = &auds[slot];
+    aud_free(a);
+    a->err[0] = 0;
+    scopy(a->path, path, sizeof a->path);
+    a->ended = 0; a->playing = 0; a->snd_h = -1;
+    a->pend_frames = 0; a->pend_off = 0;
+    a->total_frames = -1;
+
+    struct logit_sndinfo si;
+    a->have_device = snd_info(&si) != 0;
+
+    int fd = sys_open(path, O_RDONLY);
+    if (fd < 0) { scopy(a->err, "cannot open", sizeof a->err); }
+    else {
+        long n = sys_lseek(fd, 0, SEEK_END);
+        sys_lseek(fd, 0, SEEK_SET);
+        if (n <= 0 || n > AUD_MAXBYTES) scopy(a->err, "audio file too large", sizeof a->err);
+        else {
+            a->data = (unsigned char *)malloc((unsigned long)n);
+            if (!a->data) scopy(a->err, "out of memory", sizeof a->err);
+            else {
+                long got = 0;
+                while (got < n) {
+                    int k = sys_read(fd, a->data + got, (int)(n - got) > 16384 ? 16384 : (int)(n - got));
+                    if (k <= 0) break;
+                    got += k;
+                }
+                a->len = got;
+                if (got < n) scopy(a->err, "short read", sizeof a->err);
+            }
+        }
+        sys_close(fd);
+    }
+
+    if (!a->err[0]) {
+        int aerr = 0;
+        a->dec = adec_open(a->data, a->len, &aerr);
+        if (!a->dec) scopy(a->err, aud_errname(aerr), sizeof a->err);
+        else {
+            adec_info(a->dec, &a->rate, &a->channels);
+            a->fmt = adec_format(a->dec);
+            a->total_frames = adec_duration_frames(a->dec);
+            if (a->rate > 0 && a->channels > 0 && a->channels <= AUDIO_MAX_CHANNELS) a->ok = 1;
+            else scopy(a->err, "corrupt audio file", sizeof a->err);
+        }
+    }
+
+    aud_diag_open(a);
+
+    int o = obj_alloc(O_AUDIO, slot, 2);
+    struct tline *l = attach_obj(o);
+
+    /* The caption is the object's plain-text shadow, the same convention
+     * handle_video's l->t follows, so a selection over an audio object copies
+     * something meaningful instead of nothing. */
+    int n = 0;
+    l->t[0] = 0;
+    sappend(l->t, &n, MAXCOLS + 1, path);
+    sappend(l->t, &n, MAXCOLS + 1, "  ");
+    if (a->err[0]) sappend(l->t, &n, MAXCOLS + 1, a->err);
+    else {
+        sappend(l->t, &n, MAXCOLS + 1, audio_format_name(a->fmt));
+        if (!a->have_device) sappend(l->t, &n, MAXCOLS + 1, ", no audio device");
+    }
+    l->len = (short)n;
+}
+
 /* Empty the scrollback. ONE implementation, two callers that must not disagree:
  * ^L (typed here) and RT_T_CLEAR (the `clear` program, over the side band). A
  * second copy is how "clear" and "^L" end up leaving different things behind --
@@ -978,8 +1263,14 @@ static void clear_scrollback(void)
     lbase = 0; lcount = 0; line_abs = 0;
     end_all_lines();
     scroll = 0; follow = 1; redraw = 1;
-    for (int i = 0; i < 4; i++) sg_line[i] = -1;
+    for (int i = 0; i < NSTREAM; i++) sg_line[i] = -1;
     for (int i = 0; i < MAXVID; i++) { vids[i].paused = 1; vids[i].px = vids[i].py = -1; }
+    /* Same reasoning as the video loop above: a clip whose scrollback line is
+     * gone must not keep decoding into a card nobody can see the button for
+     * any more. Unlike video this STOPS rather than pauses -- silence is the
+     * correct behaviour for something that has left the screen, where a video
+     * merely freezes on its last frame because it is still visible. */
+    for (int i = 0; i < MAXAUD; i++) aud_stop(&auds[i]);
 }
 
 static void handle_frame(int type, const unsigned char *p, int len)
@@ -1004,7 +1295,7 @@ static void handle_frame(int type, const unsigned char *p, int len)
         end_all_lines();
         /* A new command gets a new judgement: the previous one dumping a font
          * must not condemn this one's listing. */
-        for (int k = 0; k < 4; k++) { sniff_guard_reset(&sguard[k]); sg_line[k] = -1; }
+        for (int k = 0; k < NSTREAM; k++) { sniff_guard_reset(&sguard[k]); sg_line[k] = -1; }
         /* the echoed command joins the scrollback as a prompt line */
         struct tline *l = new_line(S_PROMPT);
         scopy(l->t, text, MAXCOLS);
@@ -1039,10 +1330,90 @@ static void handle_frame(int type, const unsigned char *p, int len)
     case RT_T_TABLE:    handle_table(&r); break;
     case RT_T_CHART:    handle_chart(&r); break;
     case RT_T_VIDEO:    handle_video(&r); break;
+    case RT_T_AUDIO:    handle_audio(&r); break;
     /* `clear`, said on the channel that carries meaning. The prompt line of the
      * command that asked goes too -- it is scrollback like any other, and a
      * `clear` that leaves one line behind has not cleared the screen. */
     case RT_T_CLEAR:    clear_scrollback(); break;
+    /* RT_T_LM_* -- a streamed /bin/lm generation. The block is drawn on its own
+     * stream (S_LM, P.accent) so it reads as neither ordinary stdout nor an
+     * error, and it goes through put_bytes() exactly like stdout does, which
+     * buys the sniff-guard backstop for free: a forward pass that saturates
+     * into NaN and starts sampling a run of non-printable bytes collapses into
+     * the same one-line "[binary -- N bytes not printed]" summary a `cat` of a
+     * font file would, instead of spraying garbage across the grid. */
+    case RT_T_LM_BEGIN: {
+        unsigned id = rt_rd_u32(&r);
+        char model[96], prompt[256];
+        rt_rd_str(&r, model, sizeof model);
+        int pn = rt_rd_str(&r, prompt, sizeof prompt);
+        if (r.bad) { put_text(S_ERR, "terminal: bad lm frame"); break; }
+        lm_open_ = 1; lm_id_ = id;
+        sniff_guard_reset(&sguard[S_LM]); sg_line[S_LM] = -1;
+        end_all_lines();
+        {
+            struct tline *l = new_line(S_SYS);
+            int n = 0; l->t[0] = 0;
+            sappend(l->t, &n, MAXCOLS + 1, "lm  ");
+            sappend(l->t, &n, MAXCOLS + 1, model);
+            l->len = (short)n;
+            end_line(S_SYS);
+        }
+        if (pn > 0) put_bytes(S_LM, prompt, pn);
+        break;
+    }
+    case RT_T_LM_TOKEN: {
+        unsigned id = rt_rd_u32(&r);
+        char text[256];
+        int n = rt_rd_str(&r, text, sizeof text);
+        if (r.bad || !lm_open_ || id != lm_id_) break;   /* malformed, or a
+                                                          * stale block: drop
+                                                          * rather than splice
+                                                          * into the wrong one */
+        if (n > 0) put_bytes(S_LM, text, n);
+        break;
+    }
+    case RT_T_LM_END: {
+        unsigned id = rt_rd_u32(&r);
+        int fl = rt_rd_u8(&r);
+        unsigned ntok = rt_rd_u32(&r);
+        unsigned ms   = rt_rd_u32(&r);
+        unsigned nonfinite = rt_rd_u32(&r);
+        if (r.bad || !lm_open_ || id != lm_id_) break;
+        lm_open_ = 0;
+        end_line(S_LM);
+        struct tline *l = new_line(S_SYS);
+        int n = 0; l->t[0] = 0;
+        char num[16];
+        sappend(l->t, &n, MAXCOLS + 1, "lm  ");
+        utoa(ntok, num); sappend(l->t, &n, MAXCOLS + 1, num);
+        sappend(l->t, &n, MAXCOLS + 1, ntok == 1 ? " token in " : " tokens in ");
+        utoa(ms / 1000, num); sappend(l->t, &n, MAXCOLS + 1, num);
+        sappend(l->t, &n, MAXCOLS + 1, ".");
+        {
+            unsigned mmm = ms % 1000;
+            char m3[4];
+            m3[0] = (char)('0' + mmm / 100); m3[1] = (char)('0' + (mmm / 10) % 10);
+            m3[2] = (char)('0' + mmm % 10); m3[3] = 0;
+            sappend(l->t, &n, MAXCOLS + 1, m3);
+        }
+        sappend(l->t, &n, MAXCOLS + 1, "s = ");
+        if (ms > 0) {
+            /* integer tenths, not float -- rt_enc has no float encoder and this
+             * file has no printf; the wire carries ntok+ms (logit_rich.h's own
+             * argument for why), this is where the division actually happens. */
+            unsigned tx10 = (unsigned)(((unsigned long long)ntok * 10000ull) / ms);
+            utoa(tx10 / 10, num); sappend(l->t, &n, MAXCOLS + 1, num);
+            char d1[2]; d1[0] = (char)('0' + tx10 % 10); d1[1] = 0;
+            sappend(l->t, &n, MAXCOLS + 1, "."); sappend(l->t, &n, MAXCOLS + 1, d1);
+        } else sappend(l->t, &n, MAXCOLS + 1, "?");
+        sappend(l->t, &n, MAXCOLS + 1, " tok/s");
+        if (fl & RT_LM_INTERRUPTED) sappend(l->t, &n, MAXCOLS + 1, "  [cancelled]");
+        if (nonfinite) sappend(l->t, &n, MAXCOLS + 1, "  NaN in logits");
+        l->len = (short)n;
+        end_line(S_SYS);
+        break;
+    }
     default: break;                             /* unknown type: ignore, keep text */
     }
     redraw = 1;
@@ -1142,6 +1513,58 @@ static void draw_video_obj(int x, int y, int w, struct robj *o)
     gui_rect(x - 1, y - 1, v->dw + 2, v->dh + 2, v->paused ? P.dim : P.accent);
     gui_blit(x, y, v->dw, v->dh, v->rgba, v->dw, v->dh);
     v->px = x; v->py = y;
+}
+
+/* mm:ss. Deliberately not fabricated when the format did not state a total
+ * (MP3 without a scan reports -1, see adec_duration_frames's own comment) --
+ * "?:??" is the honest answer, and a wrong number here is worse than an
+ * admittedly-unknown one because nothing else on screen could ever catch it. */
+static void fmt_mmss(long frames, int rate, char *out, int max)
+{
+    if (frames < 0 || rate <= 0) { scopy(out, "?:??", max); return; }
+    long secs = frames / rate;
+    char mm[8], ss3[4];
+    itoa_s((int)(secs / 60), mm);
+    int s = (int)(secs % 60);
+    ss3[0] = (char)('0' + s / 10); ss3[1] = (char)('0' + s % 10); ss3[2] = 0;
+    int n = 0;
+    out[0] = 0;
+    sappend(out, &n, max, mm);
+    sappend(out, &n, max, ":");
+    sappend(out, &n, max, ss3);
+}
+
+static void draw_audio_obj(int x, int y, int w, struct robj *o)
+{
+    struct audobj *a = &auds[o->idx];
+    (void)w;
+
+    const char *label; unsigned btncol;
+    int usable = a->ok && !a->err[0] && a->have_device;
+    if (!usable)         { label = " N/A ";  btncol = P.panel; }
+    else if (a->playing) { label = " Stop "; btncol = P.accent; }
+    else                 { label = " Play "; btncol = P.ok; }
+
+    int bw = 6 * cell;
+    gui_rrect(x, y, bw, lh - 4, 5, btncol);
+    draw_text(x + cell / 2, y + 2, P.bg, label);
+
+    char meta[MAXCOLS + 1]; int n = 0;
+    meta[0] = 0;
+    if (a->err[0]) {
+        sappend(meta, &n, sizeof meta, a->err);
+    } else {
+        char dur[16];
+        fmt_mmss(a->total_frames, a->rate, dur, sizeof dur);
+        sappend(meta, &n, sizeof meta, audio_format_name(a->fmt));
+        sappend(meta, &n, sizeof meta, ", ");
+        sappend(meta, &n, sizeof meta, dur);
+        if (!a->have_device)  sappend(meta, &n, sizeof meta, "  -- no audio device");
+        else if (a->playing)  sappend(meta, &n, sizeof meta, "  -- playing");
+        else if (a->ended)    sappend(meta, &n, sizeof meta, "  -- finished");
+    }
+    draw_text(x + bw + cell, y + 2, usable ? P.fg : P.dim, meta);
+    draw_text(x, y + lh, P.dim, a->path);
 }
 
 static void draw_prog_obj(int x, int y, int w, struct robj *o)
@@ -1306,6 +1729,7 @@ static void paint(void)
                 draw_video_obj(x, y, ow, o);
                 draw_text(x, y + (vids[o->idx].have ? vids[o->idx].dh : 0) + 3, P.dim, l->t);
                 break;
+            case O_AUDIO: draw_audio_obj(x, y, ow, o); break;
             case O_PROG:  draw_prog_obj(x, y, ow, o); break;
             case O_TABLE: draw_table_obj(x, y, ow, o); break;
             case O_CHART: draw_chart_obj(x, y, ow, o); break;
@@ -1325,7 +1749,8 @@ static void paint(void)
 
         unsigned col = l->stream == S_ERR ? P.err
                      : l->stream == S_PROMPT ? P.prompt
-                     : l->stream == S_SYS ? P.dim : P.fg;
+                     : l->stream == S_SYS ? P.dim
+                     : l->stream == S_LM ? P.accent : P.fg;
         if (l->stream == S_PROMPT) {
             draw_text(x, y, P.dim, "$");
             draw_span(x + 2 * cell, y, col, l->t, 0, l->len);
@@ -1550,6 +1975,18 @@ static void on_click(int mx, int my, int right)
                 v->t0 = monotonic_ms(); v->ms_decode = v->ms_blit = 0;
             } else v->paused = !v->paused;
             redraw = 1;
+            return;
+        }
+        if (o->type == O_AUDIO) {
+            struct audobj *a = &auds[o->idx];
+            /* No device, a decode error, or the wire refusing the frame all
+             * collapse to `usable == 0` in draw_audio_obj, and the click does
+             * the same thing the button already shows: nothing. The message
+             * is already on screen; there is nothing a second one would add. */
+            if (a->ok && !a->err[0] && a->have_device) {
+                if (a->playing) aud_stop(a); else aud_start(a);
+                redraw = 1;
+            }
             return;
         }
         return;
@@ -1942,6 +2379,20 @@ void app_main(void)
             int was = v->ended;
             if (vid_step(v)) stepped = 1;
             if (v->ended != was) redraw = 1;      /* the border changes colour */
+        }
+
+        /* Audio has no `px >= 0` visibility gate the way video does: a video
+         * that has scrolled off screen stops costing CPU because nobody can
+         * see it decode, but a clip that has scrolled off screen is still
+         * being HEARD, and stopping it because the object scrolled out of
+         * view would be a player that goes silent when you scroll -- wrong
+         * for something the ear, not the eye, is the audience for. */
+        for (int i = 0; i < MAXAUD; i++) {
+            struct audobj *a = &auds[i];
+            if (!a->playing) continue;
+            int was = a->playing;
+            aud_step(a);
+            if (a->playing != was) redraw = 1;    /* the button label flips  */
         }
 
         if (redraw) {
