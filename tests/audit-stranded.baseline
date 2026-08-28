@@ -20,7 +20,6 @@ test-encoding-negctl
 test-events-negctl
 test-flash-negctl
 test-flex-negctl
-test-forms-ce-negctl
 test-forms-negctl
 test-gfx-clip-negctl
 test-gfx-negctl

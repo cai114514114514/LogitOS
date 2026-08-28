@@ -211,7 +211,7 @@ $(BUILD)/gallery_cost.aex: $(BUILD)/gallery_cost.elf tools/mkaex.py
 
 PAINTGFX_DIR := $(BUILD)/paintgfx
 PAINTGFX_SRC := tests/unit/paint_gfx_test.c \
-                c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+                c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c \
                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                 c/apps/browser/css_extra.c c/apps/browser/css_interp.c \
                 c/lib/image/svg.c

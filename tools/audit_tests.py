@@ -265,6 +265,13 @@ def find_mute(dead_files):
     # Shell harnesses that end in `exit $something` propagate a status too; the
     # literal `exit 1` search misses them for the same reason as above.
     SH_EXIT_VAR = re.compile(r"^\s*exit\s+\"?\$", re.M)
+    # `sys.exit("...")` / `raise SystemExit(f"...")` -- a STRING argument, with
+    # or without an f/r/b prefix. Deliberately NOT `sys.exit(` with anything
+    # inside it: `sys.exit(0)` and a bare `sys.exit()` are exactly the mute
+    # shape this category exists to catch, and widening the match to any
+    # argument would let them through. See the block that uses it below.
+    PY_EXIT_MSG = re.compile(r"(?:sys\.exit|raise\s+SystemExit)"
+                             r"\(\s*[rbuRBUfF]{0,2}['\"]")
     for h in harnesses():
         p = os.path.join(ROOT, h)
         if h.endswith(".c") or h in dead_files or h in ALLOW_MUTE:
@@ -281,11 +288,39 @@ def find_mute(dead_files):
             # An audit that cries wolf is an audit people stop reading, so the
             # test is now "does a status leave this program by ANY route",
             # which is the property that was meant.
+            # FOURTH BLIND SPOT, and it kept this category at 2 for nothing:
+            # `sys.exit("message")` is the OTHER normal shape here, and it
+            # matches none of the four searches above -- the argument is a
+            # STRING, so there is no digit and no named variable to find.
+            # CPython prints it to stderr and exits 1, so it is a failing exit
+            # by definition, and it is the ONLY way the two files reported mute
+            # on 2026-08-28 ever fail: tests/boot/lfs_setexec.py's
+            # `sys.exit("lfs_setexec: nothing changed -- refusing to report
+            # success")` is literally a refusal to pass, and all three of
+            # tests/boot/mk-tcc-disk.py's exits name a broken input. Both were
+            # the cry-wolf failure this block was already rewritten once to
+            # stop: MUTE is worth having only while it is EMPTY, and two
+            # permanent false entries are two too many to keep reading past.
+            # An f-string / bytes / raw prefix counts too -- same call, same
+            # status. The integer test takes a leading minus at the same time
+            # (`sys.exit(-1)` exits 255, nonzero); nothing in the tree writes
+            # it today, and a detector that would call it mute tomorrow is the
+            # same false positive one edit away.
+            #
+            # WATCHED BOTH WAYS BEFORE LANDING, because a detector loosened
+            # until it stops complaining is a detector that has stopped
+            # working: find_mute() was run over synthetic harnesses with
+            # harnesses()/read() replaced, and it still reports the two shapes
+            # that really are mute -- `print('FAIL'); sys.exit(0)` and a bare
+            # `sys.exit()` -- while the three string forms and `sys.exit(-1)`
+            # come back clean. Eight cases, all eight as predicted. Reproduce
+            # it the same way; it is six lines and needs nothing from the tree.
             exits_nonzero = (
-                re.search(r"sys\.exit\(\s*[1-9]", text) or
-                re.search(r"raise\s+SystemExit\(\s*[1-9]", text) or
+                re.search(r"sys\.exit\(\s*-?[1-9]", text) or
+                re.search(r"raise\s+SystemExit\(\s*-?[1-9]", text) or
                 re.search(r"sys\.exit\(\s*(main|run|rc|status|ret|code)\b", text) or
                 re.search(r"raise\s+SystemExit\(\s*(main|run|rc|status|ret|code)\b", text) or
+                PY_EXIT_MSG.search(text) or
                 re.search(r"^\s*assert\s", text, re.M))
             if not exits_nonzero:
                 mute.append((h, "prints FAIL, never sys.exit(nonzero)"))

@@ -35,7 +35,13 @@ test-license-audit-negctl:
 	esac; \
 	echo "-- (b) a row deleted from THIRD_PARTY.md --"; \
 	cp THIRD_PARTY.md $(BUILD)/license_negctl_b; \
-	sed -i '/^| QuickJS |/d' THIRD_PARTY.md; \
+	: 'sed reads the BACKUP and writes the file -- no -i. GNU sed takes' ; \
+	: '`-i SCRIPT`, BSD sed reads that SCRIPT as a backup SUFFIX and then' ; \
+	: 'treats the filename as the script: "sed: 1: \"THIRD_PARTY.md\":' ; \
+	: 'invalid command code T". The sabotage never happened, the audit' ; \
+	: 'passed on an intact tree, and the control reported BAD -- so on' ; \
+	: 'the documented dev host this control could not fire at all.' ; \
+	sed '/^| QuickJS |/d' $(BUILD)/license_negctl_b > THIRD_PARTY.md; \
 	out=`python3 tools/license_audit.py --check third_party 2>&1`; ec=$$?; \
 	cp $(BUILD)/license_negctl_b THIRD_PARTY.md; \
 	case "$$ec:$$out" in \
@@ -56,7 +62,7 @@ test-license-audit-negctl:
 	esac; \
 	echo "-- (d) a RELEASE_NOTICES line removed --"; \
 	cp Makefile $(BUILD)/license_negctl_d; \
-	sed -i 's/^RELEASE_NOTICES := LICENSE LICENSING\.md \\/RELEASE_NOTICES := LICENSE \\/' Makefile; \
+	sed 's/^RELEASE_NOTICES := LICENSE LICENSING\.md \\/RELEASE_NOTICES := LICENSE \\/' $(BUILD)/license_negctl_d > Makefile; \
 	out=`python3 tools/license_audit.py --check disk 2>&1`; ec=$$?; \
 	cp $(BUILD)/license_negctl_d Makefile; \
 	case "$$ec:$$out" in \

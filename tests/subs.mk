@@ -32,6 +32,16 @@ $(BUILD)/subs_test_strict: tests/unit/subs_test.c $(SUBS_SRC) c/lib/media/subs.h
 	@$(CC) -O2 -w -DSUBS_STRICT -o $@ tests/unit/subs_test.c $(SUBS_SRC) $(SUBS_INC)
 
 .PHONY: test-subs test-subs-negctl test-subs-fuzz
+
+# THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
+# tools/ci.sh runs, on the assumption that a control is "RUN BY its positive
+# counterpart" -- nothing checked that, and this one was invoked by nobody from
+# the day it landed until the audit's STRANDED CONTROLS category named it
+# (2026-08-28). It reuses the positive's own binary and fixtures, so the only
+# new cost is the -DSUBS_STRICT build beside it.
+test-subs: test-subs-negctl
+
 test-subs: $(BUILD)/subs_test
 	@$(BUILD)/subs_test units
 	@python3 tests/unit/subs_diff.py $(BUILD)/subs_test $(SUBS_FX)/wpt

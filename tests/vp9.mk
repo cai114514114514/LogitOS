@@ -1,5 +1,61 @@
 # VP9 -- the key-frame decoder, and an EMPTY exact list that says so.
 #
+# ===========================================================================
+# READ THIS FIRST: THE DECODER IS NOT IN THIS TREE, AND THIS FRAGMENT IS THE
+# ONLY SURVIVING RECORD THAT IT EVER RAN. Measured 2026-08-28.
+# ===========================================================================
+# `make test-vp9` answered "No rule to make target 'tests/unit/vp9_test.c'".
+# That is not a broken path -- every file this gate names is absent, and none
+# of them was ever committed:
+#
+#     find . -iname '*vp9*'                     -> tests/vp9.mk and one .webm
+#     git log --all -- 'c/lib/video/vp9*' \
+#                      tests/unit/vp9_test.c \
+#                      tools/genvp9.sh          -> NOTHING, no commit, ever
+#     git stash list                            -> empty
+#
+# The commit that landed this fragment (00a2aacfb, 2026-08-25) says so in as
+# many words -- "THE DECODER ITSELF IS NOT IN THIS COMMIT. It is still
+# uncommitted work from a line whose workflow died" -- so what shipped that day
+# was the INSTRUMENT, deliberately, and the 14,274 lines it measures never
+# followed it into git. The product agrees from the other end:
+# `c/apps/gui/preview.c:28` lists "video is vp9" among the refusals it prints
+# for a file with NO DECODER HERE. Two independent places in the tree say the
+# same thing, which is what makes this a fact rather than a missing file.
+#
+# WHY THE INCLUDE STAYS AND THE TARGETS GUARD THEMSELVES. The other option was
+# to drop `-include tests/vp9.mk` from the Makefile, and it is the worse one on
+# three counts:
+#
+#   - The measurement below is the record. It is the only trace of the one run
+#     that decoder ever had, and a fragment `make` no longer reads is a file
+#     nobody opens. Deleting the include deletes the ratchet, which is exactly
+#     the argument tests/wpt.mk:34-38 makes for its own absent corpus.
+#   - The guard is SELF-HEALING. Presence is a $(wildcard), so the day the
+#     sources land the real rules below are the ones defined -- with VP9_GATE
+#     still empty -- and nobody has to remember to re-add an include. Same
+#     principle tools/audit_tests.py states about asking the Makefile instead
+#     of keeping a hand-written list of what CI runs.
+#   - `make test-vp9` erroring on a missing prerequisite reads like a build
+#     breakage in the media line. It is not one. It is a decoder that is not
+#     here, and saying that costs one line.
+#
+# AND THE DIFFERENCE FROM WPT'S ABSENT CORPUS IS STATED, NOT GLOSSED: what is
+# missing there is DATA and what is missing here is THE CODE UNDER TEST. So the
+# message must not read as a skipped test. It names the absent files and says
+# no checkout brings them back, because "the corpus did not generate" and "the
+# decoder does not exist" are different findings and only one of them is true.
+#
+# tools/genvp9.sh IS IN THE PRESENCE CHECK ON PURPOSE. Without that, the
+# existing recipe's `bash tools/genvp9.sh || ...` fallback would catch a
+# missing GENERATOR and print "no ffmpeg with libvpx-vp9" -- blaming the host
+# for a file that is not in the repo. That is the shape CLAUDE.md names as the
+# expensive one: the measurement was right and the sentence around it sent the
+# reader somewhere else. The message below lists what is absent BY NAME, so it
+# cannot misattribute whichever half is missing.
+#
+# ---------------------------------------------------------------------------
+#
 # The shape is H.265's, deliberately: test-vp9 is the bit-exact list and
 # anything not exact is NOT in it and is claimed nowhere; test-vp9-diff is the
 # whole matrix including the failures, which is the honest picture and the
@@ -37,22 +93,31 @@ VP9_INC := -Ic/lib/video
 VP9_SRC := c/lib/video/vp9.c c/lib/video/vp9_bool.c c/lib/video/vp9_hdr.c \
            c/lib/video/vp9_idct.c c/lib/video/vp9_lf.c c/lib/video/vp9_pred.c \
            c/lib/video/vp9_token.c
+VP9_HDRS := c/lib/video/vp9.h c/lib/video/vp9_int.h c/lib/video/vp9_tables.h
+
+# Everything this gate cannot run without, and it is checked as a SET rather
+# than by probing one witness file: a half-restored decoder must report which
+# half, not "vp9.c is there so go ahead" followed by a link error.
+VP9_NEEDS   := tests/unit/vp9_test.c tools/genvp9.sh $(VP9_SRC) $(VP9_HDRS)
+VP9_MISSING := $(strip $(foreach f,$(VP9_NEEDS),$(if $(wildcard $(f)),,$(f))))
 
 # Nothing is bit-exact yet. When a case becomes exact it is added here, and
 # from that moment a regression in it fails the build.
 VP9_GATE :=
+
+.PHONY: test-vp9 test-vp9-diff
+
+ifeq ($(VP9_MISSING),)
 
 # NOTE the include path: -Ic/lib/video ONLY. Adding $(INCDIRS) or
 # -Ic/apps/libc/include breaks a HOST gcc build, because mini-libc's features.h
 # shadows glibc's and __GLIBC_USE(X) then parses as a call. That is the header
 # basename collision CLAUDE.md documents for the freestanding build, and it
 # bites host builds too -- it cost a compile here before it was recognised.
-$(BUILD)/vp9_test: tests/unit/vp9_test.c $(VP9_SRC) c/lib/video/vp9.h \
-                   c/lib/video/vp9_int.h c/lib/video/vp9_tables.h
+$(BUILD)/vp9_test: tests/unit/vp9_test.c $(VP9_SRC) $(VP9_HDRS)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(VP9_INC) -o $@ tests/unit/vp9_test.c $(VP9_SRC)
 
-.PHONY: test-vp9 test-vp9-diff
 test-vp9: $(BUILD)/vp9_test
 	@mkdir -p $(BUILD)/vp9corpus
 	@rc=0; bash tools/genvp9.sh $(BUILD)/vp9corpus >/dev/null 2>&1 || rc=$$?; \
@@ -83,3 +148,30 @@ test-vp9-diff: $(BUILD)/vp9_test
 	    printf '%-26s ' "$$b"; \
 	    $(BUILD)/vp9_test --diff $$f $(BUILD)/vp9corpus/$$b.ref.yuv 2>&1 | tail -1; \
 	 done
+
+else
+
+# THE ABSENT-DECODER BRANCH. Loud, specific, and exit 0 -- a decoder that was
+# never committed is not a regression in anything that WAS. Note what this does
+# NOT do: it defines no $(BUILD)/vp9_test rule, so no target depends on a file
+# that cannot be made, and it weakens no assertion, because VP9_GATE is empty
+# and this gate asserts nothing in either branch. The day the files land the
+# ifeq above takes the other arm and the real rules are back unchanged.
+define VP9_ABSENT_SAY
+@echo "VP9: the decoder is NOT IN THIS TREE. Nothing was built and nothing measured."
+@echo "     $(words $(VP9_MISSING)) of the $(words $(VP9_NEEDS)) files this gate names are absent:"
+@for f in $(VP9_MISSING); do echo "       $$f"; done
+@echo "     They were never committed -- git log --all over those paths returns"
+@echo "     nothing -- so no checkout, fetch or generator restores them. Only"
+@echo "     writing or recovering c/lib/video/vp9*.c changes this line."
+@echo "     tests/vp9.mk's header holds the 17-case matrix from the one run that"
+@echo "     decoder ever had (2026-08-25); it is the record, read it first."
+endef
+
+test-vp9:
+	$(VP9_ABSENT_SAY)
+
+test-vp9-diff:
+	$(VP9_ABSENT_SAY)
+
+endif

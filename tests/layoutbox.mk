@@ -24,7 +24,7 @@
 .PHONY: test-layout-box test-layout-box-negctl layout-box-survey
 
 LBOX_DIR := $(BUILD)/layoutbox
-LBOX_SRC := tests/unit/layout_box_test.c c/apps/browser/layout.c \
+LBOX_SRC := tests/unit/layout_box_test.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
             c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
             c/apps/browser/css_extra.c
 
@@ -86,7 +86,7 @@ LBOX_DIRS ?= css/css-align css/css-sizing css/css-flexbox css/css-grid css/cssom
 layout-box-survey: $(LBOX_DIR)/layout_box_survey
 	@$(LBOX_DIR)/layout_box_survey $(LBOX_WPT) $(LBOX_DIRS)
 
-LBOX_SURVEY_SRC := tests/unit/layout_box_survey.c c/apps/browser/layout.c \
+LBOX_SURVEY_SRC := tests/unit/layout_box_survey.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
                    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                    c/apps/browser/css_extra.c
 

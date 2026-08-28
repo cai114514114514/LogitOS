@@ -66,8 +66,18 @@ done
 TMP="$(mktemp -d)"
 PIDS=()
 FIFOS=()
+# INFDS holds fixed FD NUMBERS, not bash's `{fd}` auto-allocation -- macOS's
+# stock /bin/bash is 3.2.57 (CLAUDE.md's rule 1 shape) and does not understand
+# `exec {fd}<>file` at all: it parses `{fd}` as a literal command name and
+# fails with "exec: {fd}: not found" the first time this script actually
+# tries to open an arm's console FIFO, which is every run on this host (no
+# bash 4+ is installed here either). Every one of the three `{fd}` sites below
+# is now a plain `exec $n<>...` with $n counted up from 10 (leaving 3-9 free
+# for whatever a caller's shell already has open), which bash 3.2 has always
+# supported. FIFOS stays an array of those numbers for the same reason INFDS
+# does; the loop below is a no-op until cleanup actually has one to close.
 cleanup() {
-    for f in "${FIFOS[@]:-}"; do [ -n "$f" ] && exec {fd}>&- 2>/dev/null; done
+    for f in "${FIFOS[@]:-}"; do [ -n "$f" ] && eval "exec $f>&- 2>/dev/null"; done
     for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
     sleep 0.3
     for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done
@@ -106,6 +116,7 @@ echo
 
 # ------------------------------------------------------------------ boot arms
 NAMES=(); LOGS=(); REPORTS=(); INFDS=()
+nextfd=10
 for spec in "${ARMS[@]}"; do
     IFS=: read -r label iso dev drv <<<"$spec"
     [ -n "${drv:-}" ] || drv="$dev"
@@ -127,8 +138,9 @@ for spec in "${ARMS[@]}"; do
     # A fifo, not a pipeline: the harness has to write a command mid-run and
     # keep the console open, which `{ ...; } | qemu` cannot do.
     mkfifo "$TMP/$label.in"
-    exec {fd}<>"$TMP/$label.in"
-    INFDS+=("$fd")
+    fd=$nextfd; nextfd=$((nextfd + 1))
+    eval "exec $fd<>\"\$TMP/\$label.in\""
+    INFDS+=("$fd"); FIFOS+=("$fd")
     "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$iso" \
         -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
         -device virtio-blk-pci,drive=hd0 -boot d -snapshot -m 512M -smp 4 \

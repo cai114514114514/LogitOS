@@ -21,7 +21,18 @@
 # other people's targets in this tree before (see CLAUDE.md). Add
 #
 #     -include tests/mjpeg.mk
-#     ci-host: test-mjpeg test-mjpeg-negctl
+#     ci-host: test-mjpeg
+#
+# ci-host: test-mjpeg AND NOT `ci-host: test-mjpeg test-mjpeg-negctl`, which is
+# what this line said until 2026-08-28 and what shipped. audit_tests.py's NOT_CI
+# drops every `test-*-negctl` from the list tools/ci.sh actually runs, on the
+# stated assumption that a control is "RUN BY its positive counterpart" -- so
+# naming the control there excludes it from CI and invokes it from nowhere, and
+# it ran NEVER while looking wired. The control is a PREREQUISITE of test-mjpeg
+# below instead, which is what makes that assumption true here rather than
+# merely asserted (tests/license.mk and tests/logreporter.mk are the worked
+# examples). Found by the audit's STRANDED CONTROLS category, which named this
+# target the day it was written and five others beside it.
 #
 # (test-jpeg itself is NOT on any ci-host: line as of 2026-08-21 -- it is
 # invoked directly, e.g. by the `test-img:` aggregate at Makefile:3527 -- so
@@ -44,6 +55,9 @@
 # on PATH. See tools/genmjpeg.sh's own header for what it builds and why.
 
 .PHONY: test-mjpeg test-mjpeg-negctl
+
+# The one line that makes the control run at all. See the header.
+test-mjpeg: test-mjpeg-negctl
 
 MJPEG_DIR := $(BUILD)/mjpegtest
 MJPEG_SRC := tests/unit/mjpeg_test.c c/lib/video/mjpeg.c $(IMG_HOST_SRC)

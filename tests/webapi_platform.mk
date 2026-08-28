@@ -10,6 +10,64 @@
 .PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
 .PHONY: test-webapi-slots-negctl
 .PHONY: test-platform-timing-negctl
+.PHONY: webapi-link-check
+
+# ===========================================================================
+# THE TWO SOURCE LISTS IN THIS FILE WERE HAND COPIES OF THE BROWSER'S, AND
+# BOTH DRIFTED. Measured 2026-08-28.
+# ===========================================================================
+# Fourteen js_*.c translation units landed in c/apps/browser after PROBE_SRC
+# and PLATFORM_TEST_SRC were written; neither list followed. Both links died
+# with fifteen undefined symbols (js_anim_install, js_canvas_install,
+# js_cssom_install/_close, js_domparser_install, js_events_install,
+# js_forms_install, js_media_install/_close, js_reflect_install,
+# js_semantics_install, js_tokenlist_install, js_url_install, plus
+# ci_transform_parse from css_engine.c and layout_count/layout_items from
+# js_dom.c).
+#
+# EVERY ONE OF THOSE FIFTEEN IS AN __attribute__((__weak__)) DECLARATION, and
+# that is the finding, not the link error. On ELF the link SUCCEEDS: the
+# missing installers resolve to NULL, js_page.c's `if (js_events_install)`
+# guards step over them, and the harness runs a browser with seven of its
+# twenty js TUs missing while reporting itself green.
+#
+# For probe-webapi that is not a degraded test, it is a FALSE MEASUREMENT.
+# The probe exists to answer "which globals do real pages miss?" -- so a name
+# js_events.c or js_cssom.c or js_url.c publishes was reported MISSING, by the
+# one instrument the Web API surface is extended from. Measured after the fix,
+# against tests/fixtures/frameworks: SVGElement undefined -> ctor,
+# document.currentScript null -> the real script, template.content undefined
+# -> fragment, document.baseURI undefined -> the page URL. svelte, vue and
+# webpack go from `#app=0` to a mounted, interactive app -- exactly the three
+# rows CLAUDE.md already records as FIXED, which this probe had never seen.
+#
+# So both lists are now SUBTRACTIONS from the Makefile's own
+# $(BROWSER_JS_SRC) (Makefile:828 -- `browser.c` plus
+# `$(wildcard c/apps/browser/js_*.c)`, the variable $(BUILD)/browser.elf is
+# built from). A file added to the browser is on these link lines the same
+# minute; a file that must NOT be on one is named below with its reason.
+ifeq ($(strip $(BROWSER_JS_SRC)),)
+WEBAPI_LINK_ERR := tests/webapi_platform.mk: BROWSER_JS_SRC is empty -- this fragment must be -included from the Makefile, AFTER it. Refusing to build a probe or a platform test from a partial source list.
+endif
+
+# Out of BOTH lists, because neither test file can supply what these need:
+#   browser.c        the ring-3 app shell -- window management and a ring-3
+#                    `main`. It is what $(BROWSER_JS_SRC) adds on top of the
+#                    js_*.c wildcard.
+#   js_media.c       includes c/apps/logit.h; gui_blit/snd_write/monotonic_ns
+#                    are `int 0x80` syscalls.
+#   js_media_src.c   the engine half -- media.h/h264.h/h265.h/aac.h/mp3.h, so
+#                    c/lib/media + c/lib/video + c/lib/audio come with it.
+#                    tests/wpt.mk pays that price deliberately and says so.
+#   js_forms.c       calls forms.c's fc_*, and forms.c calls text_measure, a
+#                    ring-3 syscall each host harness defines for itself.
+#                    Neither tests/unit/webapi_probe.c nor
+#                    tests/unit/webapi_platform_test.c does (forms_test.c,
+#                    layout_test.c and wpt_test.c each do), so forms.c cannot
+#                    be linked and js_forms.c cannot be linked without it.
+WEBAPI_JS_OUT := c/apps/browser/browser.c \
+                 c/apps/browser/js_media.c c/apps/browser/js_media_src.c \
+                 c/apps/browser/js_forms.c
 
 # --- test-webapi-slots-negctl ----------------------------------------------
 # The negative control for admitting fetches against the REAL free-slot count.
@@ -66,15 +124,59 @@ test-webapi-url-negctl: $(RUST_LIB_HOST)
 #   make probe-webapi PROBE="--deep"         ... plus what a page would ask for next
 PROBE ?=
 WEBAPI_FIXTURES := $(sort $(dir $(wildcard tests/fixtures/webapi/*/index.html)))
-PROBE_SRC := tests/unit/webapi_probe.c c/apps/browser/js_page.c c/apps/browser/js_dom.c
-PROBE_SRC += c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
-# js_module.c is the REAL module loader, linked in rather than reimplemented:
-# the probe supplies only the bfetch under it (served from the committed
-# fixture), so the normalizer, the loader, the linker and the evaluator being
-# measured are the ones the browser ships. Until this line existed the probe
-# skipped every <script type=module>, which is most of the modern web.
-PROBE_SRC += c/apps/browser/js_module.c
+
+# --- webapi-link-check: the drift check, as a target rather than a habit ----
+# The subtraction makes the dangerous direction impossible -- a new js_*.c is
+# linked into both binaries without anyone remembering -- so only the other
+# direction is left: a name in an OUT list that the browser no longer links
+# excludes nothing and has quietly stopped being a decision. A RENAMED file is
+# the bad case, because its old name sits in the list reading like a live
+# exclusion while its new one is silently linked.
+#
+# It does NOT cover $(BROWSER_PIPE), and that is a stated limit. Excluding
+# layout.c / forms.c / browser_rt.c from a host harness is forced by
+# text_measure and bfetch, so those names would be constraints of the test
+# files rather than decisions about the browser. The wildcard is the list that
+# grows -- fourteen files in one stretch -- and it is the one covered.
+webapi-link-check:
+	@if [ -n "$(WEBAPI_LINK_ERR)" ]; then echo "$(WEBAPI_LINK_ERR)"; exit 1; fi
+	@stale=""; for f in $(sort $(WEBAPI_JS_OUT) $(PLATFORM_JS_OUT)); do \
+	    case " $(BROWSER_JS_SRC) " in *" $$f "*) ;; *) stale="$$stale $$f";; esac; \
+	  done; \
+	  if [ -n "$$stale" ]; then \
+	    echo "webapi-link-check: FAIL -- an OUT list names files the browser no"; \
+	    echo "  longer links, so the exclusion is a lie rather than a decision:"; \
+	    for f in $$stale; do echo "    $$f"; done; \
+	    echo "  If one was RENAMED, its new name is being linked silently."; exit 1; \
+	  fi
+
+# THE PROBE LINKS THE WHOLE js_*.c SET, MINUS $(WEBAPI_JS_OUT) AND NOTHING
+# ELSE. It is the instrument the Web API surface is ranked from, so any name
+# it cannot answer must be a name the BROWSER cannot answer -- a TU missing
+# here does not weaken the measurement, it inverts it.
+#
+# js_module.c is IN, and only here: it is the REAL module loader rather than a
+# reimplementation, and the probe supplies the bfetch under it itself
+# (webapi_probe.c:392 and :452, served from the committed fixture) so the
+# normalizer, the loader, the linker and the evaluator being measured are the
+# ones the browser ships. Until that line existed the probe skipped every
+# <script type=module>, which is most of the modern web. The canvas and
+# platform harnesses have no bfetch, which is why they name it OUT.
+PROBE_SRC := tests/unit/webapi_probe.c \
+             $(filter-out $(WEBAPI_JS_OUT),$(BROWSER_JS_SRC))
 PROBE_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
+# css_interp.c is the `ci_transform_parse` in the drift above: css_engine.c
+# grew a call to it (css_supports_decl, for `@supports (transform: ...)`) and
+# this list did not follow.
+PROBE_SRC += c/apps/browser/css_interp.c
+# js_canvas.c's cost, paid on purpose. It reaches gfx_fill/gfx_paint_* and
+# img_css_color(), so the engine and svg.c come with it -- and NOT img.c,
+# which would then want gif_register/jpeg_register/exif_apply for a probe that
+# decodes no image. Leaving js_canvas.c out would have been cheaper and would
+# have kept `getContext` at the top of this probe's own ranking forever: it
+# was 33 occurrences and the #1 finding, the context was written, and the
+# instrument that ordered the work could not see its own result land.
+PROBE_SRC += c/lib/image/svg.c $(GFX_SRC)
 PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c
 PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 # webapi_probe.c DEFINES printf so it can capture js_module.c's diagnostics.
@@ -82,11 +184,15 @@ PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -DCON
 # straight to libc and never reaches that definition -- so the tee would
 # silently drop exactly the module exceptions it exists to collect.
 PROBE_CF  += -fno-builtin-printf
+# webapi-link-check is NOT a prerequisite of this file target on purpose: a
+# .PHONY prerequisite makes a file rule unconditionally out of date, and this
+# is a two-minute link that probe-frameworks and test-frameworks both hang
+# off. It hangs off the phony entry points instead.
 $(BUILD)/webapi_probe: $(PROBE_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PROBE_CF) -o $@ $(PROBE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-probe-webapi: $(BUILD)/webapi_probe
+probe-webapi: webapi-link-check $(BUILD)/webapi_probe
 	@$(BUILD)/webapi_probe $(PROBE) $(WEBAPI_FIXTURES)
 
 # --- test-platform: js_platform.c + js_select.c, host-side -----------------
@@ -94,16 +200,55 @@ probe-webapi: $(BUILD)/webapi_probe
 # named properties, crypto, structuredClone, Blob/FormData, the observers, and
 # the selector queries. Runs against a REAL parsed document through
 # js_page_open, which is the same call the browser makes.
-PLATFORM_TEST_SRC := tests/unit/webapi_platform_test.c c/apps/browser/js_page.c
-PLATFORM_TEST_SRC += c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c
-# js_webapi.c comes along because half of what this file fills in is a GAP in
-# what that file publishes -- localStorage's named properties, URL.createObjectURL
-# -- and a test that stubbed those would be testing the stub.
-PLATFORM_TEST_SRC += c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
-PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
+
+# THIS LIST HAS SIX MORE EXCLUSIONS THAN THE PROBE. One (js_module.c) is
+# about what will link. THE OTHER FIVE ARE NOT -- all five compile and link
+# here fine, and were measured doing so. They are named because
+# tests/unit/webapi_platform_test.c ASSERTS THEIR ABSENCE, and that file
+# belongs to another line. Each is a work order for whoever owns it:
+#
+#   js_canvas.c     :186-194 -- "canvas.getContext is a REAL context now
+#                   (js_canvas.c), WHICH THIS BUILD DOES NOT LINK", and then
+#                   asserts `typeof ....getContext === 'undefined'`. The
+#                   composition is the assertion; linking it fails the gate.
+#                   The real surface is make test-canvas, 46 checks.
+#   js_semantics.c  :628 asserts `!('closedBy' in HTMLDialogElement.prototype)`
+#                   -- "answers a feature test (falsely, correctly)".
+#                   js_semantics.c:679 implements closedBy for real, so with
+#                   it linked the answer is true and the check fails.
+#   js_events.c     supplies PromiseRejectionEvent, and js_reflect.c /
+#   js_reflect.c    js_urlbind.c supply the four `script.src is ABSOLUTE`
+#   js_urlbind.c    checks (:809-815) and `anchor.href is absolute too`
+#                   (:816). test-platform-control links this file WITHOUT
+#                   js_platform.o/js_select.o and requires EVERY check to
+#                   fail; those six pass without either, so linking the three
+#                   takes the control from 1 failure to 7. The control's
+#                   premise -- every check in that file is about js_platform.c
+#                   or js_select.c -- is what has drifted, and repairing it is
+#                   an edit to the test source, not to this list.
+#
+# js_module.c is out for the reason the canvas fragment gives: only
+# webapi_probe.c supplies bfetch_resolve/bfetch_sync.
+PLATFORM_JS_OUT := $(WEBAPI_JS_OUT) c/apps/browser/js_module.c \
+                   c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
+                   c/apps/browser/js_events.c c/apps/browser/js_reflect.c \
+                   c/apps/browser/js_urlbind.c
+# PLATFORM_MOD is the three the control drops, so they are subtracted here and
+# re-added on the positive link line -- one file cannot be on both.
 PLATFORM_MOD := c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c
+PLATFORM_TEST_SRC := tests/unit/webapi_platform_test.c \
+                     $(filter-out $(PLATFORM_JS_OUT) $(PLATFORM_MOD),$(BROWSER_JS_SRC))
+PLATFORM_TEST_SRC += c/apps/browser/css_engine.c c/apps/browser/css_vars.c
+# css_interp.c: css_engine.c's ci_transform_parse, the one non-js drift.
+PLATFORM_TEST_SRC += c/apps/browser/css_interp.c
+# js_webapi.c comes along (through the subtraction now) because half of what
+# this file fills in is a GAP in what that file publishes -- localStorage's
+# named properties, URL.createObjectURL -- and a test that stubbed those would
+# be testing the stub.
+PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
+PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
-test-platform: test-platform-timing-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+test-platform: webapi-link-check test-platform-timing-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/platform_test

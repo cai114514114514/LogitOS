@@ -98,6 +98,15 @@ $(BUILD)/opus_vec: tests/unit/opus_vec.c $(OPUS_SRC) $(OPUS_HDR)
 
 .PHONY: test-opus-range test-opus-range-negctl test-opus
 
+# THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
+# tools/ci.sh runs, on the assumption that a control is "RUN BY its positive
+# counterpart" -- nothing checked that, and this one was invoked by nobody from
+# the day it landed until the audit's STRANDED CONTROLS category named it
+# (2026-08-28). It is two host binaries and no corpus, so running it beside the
+# positive is free.
+test-opus-range: test-opus-range-negctl
+
 test-opus-range: $(BUILD)/opus_range_test
 	@$(BUILD)/opus_range_test
 

@@ -120,6 +120,17 @@ MPEG12_GATE := field-16x8 field-dmv field-intra frame-dmv frame-field \
 .PHONY: test-mpeg12 test-mpeg12-diff test-mpeg12-idct test-mpeg12-negctl \
         test-mpeg12-census
 
+# THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from the list
+# tools/ci.sh runs, on the assumption that a control is "RUN BY its positive
+# counterpart" -- nothing checked that, and this one was invoked by nobody from
+# the day it landed until the audit's STRANDED CONTROLS category named it
+# (2026-08-28). Naming it on ci-host: instead satisfies the UNWIRED audit and
+# still runs it never, which is worse because it looks fixed. Both halves skip
+# identically when the corpus cannot be generated, so this costs nothing on a
+# machine with no ffmpeg.
+test-mpeg12: test-mpeg12-negctl
+
 # --- whole-stream gate -------------------------------------------------------
 # Bit-exact against ffmpeg's own decode with the transform pinned (see header).
 # genmpeg12.sh has no explicit missing-encoder exit code the way

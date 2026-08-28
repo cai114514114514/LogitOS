@@ -42,7 +42,7 @@ test-html5lib-negctl: $(BUILD)/libcss_host.a build/negctl/html_tree.c
 	@$(CC) -O2 -w -DHTML_AAA_NAIVE $(BTEST_INC) $(CSS_INC) \
 	    -o $(BUILD)/html5lib_negctl tests/unit/html5lib_test.c \
 	    $(H5NEG_SRC) $(BUILD)/libcss_host.a
-	@if $(BUILD)/html5lib_negctl third_party/html5lib-tests/tree-construction \
+	@if $(BUILD)/html5lib_negctl $(H5L_ROOT)/tree-construction \
 	       -b tests/unit/html5lib_expected_fail.txt --strict \
 	       > $(BUILD)/html5lib_negctl.log 2>&1; then \
 	    echo "test-html5lib-negctl: FAILED -- the corpus PASSED with the adoption"; \

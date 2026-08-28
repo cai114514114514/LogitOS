@@ -42,7 +42,7 @@ CSSTYLE_SRC := tests/unit/csstyle_test.c \
                c/apps/browser/js_cssom.c \
                c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                c/apps/browser/css_extra.c \
-               c/apps/browser/layout.c \
+               c/apps/browser/layout.c c/apps/browser/layout_text.c \
                c/apps/browser/js_select.c \
                c/apps/browser/js_tokenlist.c
 

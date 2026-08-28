@@ -251,18 +251,34 @@ ci-host: test-tlsx
 # matches the convention tests/canvas.mk uses for the same reason.
 CDIFF_SRC = tests/unit/crypto_diff_test.c $(CRYPTO_SRC)
 
+# `wc -l < f | tr -d ...` and not a bare `wc -l < f`: BSD wc PADS its count to
+# a fixed width, so on macOS this recipe read `     717` where GNU wc reads
+# `717`. Every count below is compared as a STRING against awk output, which is
+# never padded -- so `[ "717" != "     717" ]` was true, and on 2026-08-28 the
+# control failed while printing its own passing evidence:
+#
+#   CONTROL FAILED: -DCRYPTO_DIFF_BREAK_SHA224_IV did not fail every
+#     sha224 case (pass=0 fail=717 of      717 total)
+#
+# pass=0 and fail=717 of 717 is exactly what the control demands. Nothing was
+# wrong with the crypto, the generator or the break; the gate could not read
+# its own number. Strip it at the source rather than switching to `-ne`, so
+# the printed message is right too -- a padded count in the FAILURE text is
+# what made this one look like a real finding for as long as it did.
+CDIFF_WC = wc -l < $(1) | tr -d '[:space:]'
+
 test-crypto-diff-control: $(BUILD)
 	python3 tests/unit/crypto_diff_gen.py $(BUILD)/crypto_diff_vec.txt
 	@grep '^hash sha224 ' $(BUILD)/crypto_diff_vec.txt > $(BUILD)/cdiff_sha224.txt; \
 	 grep '^hash ' $(BUILD)/crypto_diff_vec.txt | grep -v '^hash sha224 ' > $(BUILD)/cdiff_hash_rest.txt; \
-	 n224=$$(wc -l < $(BUILD)/cdiff_sha224.txt); nrest=$$(wc -l < $(BUILD)/cdiff_hash_rest.txt); \
+	 n224=$$($(call CDIFF_WC,$(BUILD)/cdiff_sha224.txt)); nrest=$$($(call CDIFF_WC,$(BUILD)/cdiff_hash_rest.txt)); \
 	 if [ "$$n224" -eq 0 ]; then \
 	   echo "CONTROL FAILED: the generator produced zero sha224 vectors this run --"; \
 	   echo "                there is nothing here for the corrupted IV to break"; exit 1; \
 	 fi; \
 	 echo "generated: $$n224 sha224 case(s), $$nrest other-hash case(s)"
 	$(CC) -O2 -w -DCRYPTO_DIFF_BREAK_SHA224_IV -o $(BUILD)/crypto_diff_ctl $(CDIFF_SRC) $(CRYPTO_INC)
-	@n224=$$(wc -l < $(BUILD)/cdiff_sha224.txt); \
+	@n224=$$($(call CDIFF_WC,$(BUILD)/cdiff_sha224.txt)); \
 	 out224=$$($(BUILD)/crypto_diff_ctl $(BUILD)/cdiff_sha224.txt); \
 	 p224=$$(echo "$$out224" | awk '$$1=="hash"{print $$3}'); \
 	 f224=$$(echo "$$out224" | awk '$$1=="hash"{print $$5}'); \
@@ -273,7 +289,7 @@ test-crypto-diff-control: $(BUILD)
 	   exit 1; \
 	 fi; \
 	 echo "ok   sha224: $$f224/$$n224 cases failed under the corrupted IV, as required"
-	@nrest=$$(wc -l < $(BUILD)/cdiff_hash_rest.txt); \
+	@nrest=$$($(call CDIFF_WC,$(BUILD)/cdiff_hash_rest.txt)); \
 	 outrest=$$($(BUILD)/crypto_diff_ctl $(BUILD)/cdiff_hash_rest.txt); \
 	 frest=$$(echo "$$outrest" | awk '$$1=="hash"{print $$5}'); \
 	 if [ "$$frest" != "0" ]; then \

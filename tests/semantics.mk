@@ -67,7 +67,7 @@ SEM_JS_SRC := $(filter-out c/apps/browser/browser.c,$(sort $(wildcard c/apps/bro
               c/apps/browser/css_interp.c
 SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-           c/apps/browser/css_extra.c c/apps/browser/layout.c \
+           c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
            c/apps/browser/forms.c c/apps/browser/focus.c \
            c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
            c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \

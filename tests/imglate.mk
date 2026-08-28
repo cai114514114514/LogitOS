@@ -30,7 +30,7 @@
 .PHONY: test-img-late test-img-late-negctl
 
 IMGL_DIR := $(BUILD)/imglate
-IMGL_SRC := tests/unit/img_late_test.c c/apps/browser/layout.c \
+IMGL_SRC := tests/unit/img_late_test.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
             c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
             c/apps/browser/css_extra.c
 IMGL_DEF := -DIMGCACHE_BYTES=1048576L

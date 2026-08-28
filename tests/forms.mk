@@ -61,13 +61,40 @@
 #                       stays empty as far as its own state is concerned. The
 #                       host suite must FAIL against it, and this target passes
 #                       only when it does.
+#
+# THERE IS NO test-forms-ce, AND THE NAME WAS ON THE .PHONY LINE FOR NOTHING.
+# It went in with the contenteditable work (e0b3630, 2026-08-09) beside
+# test-forms-ce-negctl and test-forms-ce-device; those two got recipes and it
+# never did, so from that day `make test-forms-ce` printed "Nothing to be done
+# for `test-forms-ce'" and exited 0 -- a name that reads like a gate, in a
+# fragment whose header is about which target measures what, in a tree whose
+# audit reports MUTE as empty. It could not fail because there was nothing
+# there to fail: the twelve contenteditable sections are sections 16..27 of
+# tests/unit/forms_test.c, which has `int main(void)` and no way to select a
+# subset, so they are already RUN by test-forms -- 195 checks where there were
+# 119. The name is gone rather than given a recipe, because the recipe it would
+# have had is test-forms's, character for character, and a second name for one
+# measurement is how two targets come to disagree about which of them ran.
+#
+# Not found by the audit: tools/audit_tests.py's TARGET_RE skips .PHONY lines
+# outright, so a name that appears ONLY there is invisible to every category it
+# has -- DEAD, MUTE, UNWIRED and STRANDED alike.
 
 .PHONY: test-forms test-forms-asan test-forms-device test-forms-negctl \
-        test-forms-ce test-forms-ce-negctl test-forms-ce-device
+        test-forms-ce-negctl test-forms-ce-device
+
+# THE CONTROL IS A PREREQUISITE OF THE SUITE IT CONTROLS. Its positive
+# counterpart is test-forms -- the same FORMS_SRC, the same binary, one -D
+# different -- and with test-forms-ce gone there is no other target it could
+# hang off. tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
+# tools/ci.sh runs on the assumption that a control is "RUN BY its positive
+# counterpart"; this is the line that makes the assumption true here. It cost a
+# second host compile of FORMS_SRC and nothing else.
+test-forms: test-forms-ce-negctl
 
 FORMS_SRC := tests/unit/forms_test.c \
              c/apps/browser/forms.c c/apps/browser/focus.c \
-             c/apps/browser/layout.c c/apps/browser/css_engine.c \
+             c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/css_engine.c \
              c/apps/browser/css_vars.c $(HTML_PARSER_SRC)
 
 test-forms: $(BUILD)/libcss_host.a

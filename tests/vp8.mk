@@ -29,6 +29,19 @@
 # build used only by this gate can never be mistaken for, or clobber, the
 # default (feature-OFF) host library every other Rust-backed test links,
 # including under a concurrent `make`.
+#
+# $(abspath $(BUILD)), NOT `../$(BUILD)`, AND THE DIFFERENCE IS ONLY VISIBLE
+# WITH AN ABSOLUTE BUILD. Both recipes here `cd rust` first, so a relative
+# `../build/...` is right and an absolute one is not: with BUILD=/tmp/fixH,
+# `../$(BUILD)` expands to `..//tmp/fixH/...`, which from rust/ is
+# <repo>/tmp/fixH/... -- cargo says "Finished", writes the archive INSIDE THE
+# REPOSITORY, and the link two lines later dies on a .a that is not where
+# $(VP8_INTER_LIB) says it is. `$(abspath build)` is the same directory
+# `../build` already meant, so nothing moves for an ordinary `make`.
+# Found on 2026-08-28 the first time test-vp8-video-negctl ever ran (it had
+# been stranded since it landed) under a private BUILD= dir; the positive had
+# the identical bug and nobody had met it either. The same shape is still live
+# at Makefile:3477 for the rustctl target-dir -- not touched here, not mine.
 VP8_INTER_LIB := $(BUILD)/rust_vp8inter/release/liblogit_rust.a
 $(VP8_INTER_LIB): $(RUST_SRC)
 	@if [ -z "$(RUST_BIN)" ]; then \
@@ -37,7 +50,18 @@ $(VP8_INTER_LIB): $(RUST_SRC)
 	    exit 1; \
 	fi
 	cd rust && RUSTC="$(RUST_BIN)/rustc" "$(RUST_BIN)/cargo" build --release \
-	    --features vp8-interframe --target-dir ../$(BUILD)/rust_vp8inter
+	    --features vp8-interframe --target-dir $(abspath $(BUILD))/rust_vp8inter
+
+# THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
+# tools/ci.sh runs, on the assumption that a control is "RUN BY its positive
+# counterpart" -- nothing checked that, and this one was invoked by nobody from
+# the day it landed until the audit's STRANDED CONTROLS category named it
+# (2026-08-28). This is the most expensive of the six to attach (a second cargo
+# build of the crate with vp8-sixtap-swap on, into its own target-dir), and it
+# is still the right side of the trade: a pass-order swap that nothing ever
+# compiles is a claim about the interpolator, not a measurement of it.
+test-vp8-video: test-vp8-video-negctl
 
 test-vp8-video: $(VP8_INTER_LIB)
 	@mkdir -p $(BUILD)/vp8video
@@ -71,7 +95,7 @@ test-vp8-video-negctl: $(VP8_INTER_LIB)
 	@mkdir -p $(BUILD)/vp8video
 	@python3 tests/unit/vp8_video_gen.py $(BUILD)/vp8video >/dev/null
 	@(cd rust && "$(RUST_BIN)/cargo" build --release --features vp8-interframe,vp8-sixtap-swap \
-	    --target-dir ../$(BUILD)/rust_vp8interctl >/dev/null 2>&1) || exit 1
+	    --target-dir $(abspath $(BUILD))/rust_vp8interctl >/dev/null 2>&1) || exit 1
 	@$(CC) -O2 -w -o $(BUILD)/vp8_video_ctl tests/unit/vp8_video_test.c \
 	    $(IMG_HOST_SRC) $(BUILD)/rust_vp8interctl/release/liblogit_rust.a $(IMG_HOST_INC) -lm
 	@if $(BUILD)/vp8_video_ctl $(BUILD)/vp8video >$(BUILD)/vp8_video_negctl.log 2>&1; then \
