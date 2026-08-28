@@ -19,7 +19,7 @@
 # and for the same reason: the write has to reach the host, and it must not leak
 # into the image every other harness shares.
 #
-# THE NEGATIVE CONTROL (--negctl) IS THE SAME RUN WITHOUT Ctrl+Space, and it is
+# THE NEGATIVE CONTROL (--negctl) IS THE SAME RUN WITHOUT Shift+Space, and it is
 # the only thing that makes the positive mean anything. `nihao ` in the file
 # proves the keys arrived, the editor received them, the save worked and the
 # extractor can read what was written -- so when the positive run produces two

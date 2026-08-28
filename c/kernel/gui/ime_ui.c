@@ -13,6 +13,7 @@
 
 #include "logit_abi.h"     /* EV_MOD_*, and the KEY_* range this file must not collide with */
 #include "ime_ui.h"
+#include "ime_learn.h"     /* the user-weight store: the hook, the training signal, the flush */
 #include "pinyin.h"        /* c/lib/ime -- already in the kernel's C_SRC, no Makefile change */
 #include "fb.h"
 #include "text.h"
@@ -51,6 +52,8 @@
 static const struct ime_dict *g_dict;
 static uint8_t *g_dat;          /* the resident file; owned here, never freed (see below) */
 
+static void st_reset(void);     /* the one door on ime_reset() -- see below */
+
 /* Read the dictionary with vfs_pread in chunks rather than vfs_read whole.
  *
  * Not a micro-optimisation: logitfs's ->read is ALL OR NOTHING (c/fs/vfs.h
@@ -71,7 +74,7 @@ int ime_ui_init(void)
     int sz = vfs_size(IME_DICT_PATH);
     if (sz <= 0) {
         kprintf("[ime] %s: not found -- the input method is UNAVAILABLE;\n"
-                "[ime] Ctrl+Space will pass through and ASCII input is unchanged\n",
+                "[ime] " IME_TOGGLE_NAME " will pass through and ASCII input is unchanged\n",
                 IME_DICT_PATH);
         return 0;
     }
@@ -100,8 +103,25 @@ int ime_ui_init(void)
         return 0;
     }
     g_dat = buf;
-    kprintf("[ime] %s: %d bytes, %u pinyin keys -- Ctrl+Space toggles pinyin input\n",
+    kprintf("[ime] %s: %d bytes, %u pinyin keys -- " IME_TOGGLE_NAME
+            " toggles pinyin input\n",
             IME_DICT_PATH, sz, (unsigned)g_dict->key_count);
+
+    /* THE STORE, AND IT IS OPENED ONLY AFTER THE DICTIONARY IS. A store loaded
+     * beside a dictionary that failed to load would hold weights nothing can
+     * ever consult and would then rewrite /var/ime-learn.conf on a machine
+     * whose input method is off -- a file that changes for no reason a user
+     * could have caused. build_id is passed so the store records WHICH
+     * dictionary it learned against (pinyin.h: the field exists for exactly
+     * this) and reports a mismatch instead of enforcing one, because entries
+     * are keyed on text and survive a regeneration.
+     *
+     * A failure here is not checked and not fatal by design: ime_learn_init()
+     * degrades to an empty table, every ime_learn_weight() returns 0, and the
+     * ranking is the dictionary's own frequency order -- which is exactly the
+     * behaviour of the build before this store existed. */
+    ime_learn_init(g_dict->build_id);
+    st_reset();
     return 1;
 }
 
@@ -128,6 +148,68 @@ static struct parked g_park[IME_UI_MAXWIN];      /* cold */
 static struct ime_state g_st;
 static int g_owner = -1;                         /* window g_st belongs to, or -1 */
 
+/* ---- ONE DOOR ON ime_reset(), and it exists because of a two-door trap ----
+ *
+ * pinyin.h: ime_reset() "Clears raw/page/cand AND the user-weight hook -- a
+ * state is inert until something installs one", and ime_set_user_weight() must
+ * be called "after ime_reset(), before the first ime_feed()". There are five
+ * ime_reset() sites in this file (open, park/restore, drop, toggle-off, window
+ * teardown) and every one of them therefore has to re-install the hook.
+ *
+ * Four out of five would have been correct and the fifth would have been a bug
+ * with no symptom a test could name: learning would keep working, and would
+ * silently stop applying after -- say -- a focus switch, i.e. exactly the
+ * "one jar, TWO doors" shape CLAUDE.md records losing a day to three times. So
+ * there is one door. Nothing below calls ime_reset() directly.
+ *
+ * THE CEILING PASSED HERE IS THE STORE'S OWN, spelled from the store's own
+ * constants rather than a literal: pinyin.h prunes with
+ * `bound(base) = ((base * max_mul_q8) >> 8) + max_add`, and ime_learn_weight()
+ * returns at most IME_LEARN_COUNT_MAX * IME_LEARN_STEP and never scales `base`,
+ * so (256, that product) is exact -- not generous, not under-declared. An
+ * under-declared bound makes the engine clamp away the words the user chose
+ * most; an over-declared one costs ranking work on every keystroke.
+ *
+ * ---- AND THE HOOK IS NOT INSTALLED ON AN EMPTY STORE ----------------------
+ *
+ * MEASURED, with pinyin.h's own -DIME_STATS counters against the shipped
+ * dictionary (candidates the ranker had to score, per keystroke):
+ *
+ *     buffer   no hook   hook installed   ratio
+ *     "n"          266              717   2.7x
+ *     "nh"         298              749   2.5x
+ *     "nihao"      436              937   2.2x
+ *     "s"          483            3,189   6.6x
+ *
+ * That is not the hook's own cost -- ime_learn_weight() is one FNV-1a and one
+ * probe, and it returns on `if (!g_nent)` before either. It is the PRUNE
+ * getting weaker: pinyin.h skips a candidate (and the rest of its key) once its
+ * score cannot beat the slice minimum, and with a store declaring max_add =
+ * 16,384 every candidate might still gain that much, so far fewer can be
+ * skipped. The number is identical whether the store holds nothing or one
+ * entry, because the engine cannot see inside it -- it prunes with the declared
+ * bound, not with the table.
+ *
+ * So a machine that has never been taught anything must not declare one. This
+ * is exact rather than a heuristic: the store goes non-empty only inside
+ * ime_learn_note(), which is called from emit(), which calls drop() -> here on
+ * the very next statement. There is no window in which the table has an entry
+ * and the live composition is missing the hook.
+ *
+ * The cost of the check itself is one load and one branch, on a path that
+ * already recomputes the whole candidate list. And it stays observable: the
+ * toggle-off line prints the entry count, so "was the hook installed" is read
+ * off a serial log that is printed anyway rather than inferred. */
+static void st_reset(void)
+{
+	ime_reset(&g_st, g_dict);
+	uint32_t learned = 0;
+	ime_learn_stats(&learned, 0, 0);
+	if (learned)
+		ime_set_user_weight(&g_st, ime_learn_weight, 0,
+		                    256u, IME_LEARN_STEP * IME_LEARN_COUNT_MAX);
+}
+
 /* The bar's rectangle, in device pixels, latched when the composition opens.
  *
  * ANCHORED ONCE, NOT TRACKED. A bar that followed a window being dragged would
@@ -145,6 +227,7 @@ static int g_px, g_py, g_pw, g_ph;               /* what was on screen last, for
 
 int ime_ui_composing(void) { return g_owner >= 0 && g_st.raw_len > 0; }
 int ime_ui_enabled(int wi) { return (wi >= 0 && wi < IME_UI_MAXWIN) && g_on[wi]; }
+int ime_ui_available(void) { return g_dict != 0; }
 
 /* ============================ UTF-8 out ================================== */
 
@@ -304,7 +387,7 @@ static void park_current(void)
 static void restore_to(int wi)
 {
     park_current();
-    ime_reset(&g_st, g_dict);
+    st_reset();
     struct parked *p = &g_park[wi];
     for (int i = 0; i < p->raw_len; i++) ime_feed(&g_st, p->raw[i]);
     for (int i = 0; i < p->page; i++) ime_feed(&g_st, IME_KEY_PGDN);
@@ -313,7 +396,7 @@ static void restore_to(int wi)
 
 static void drop(int wi)
 {
-    ime_reset(&g_st, g_dict);
+    st_reset();
     g_park[wi].raw_len = 0;
     g_park[wi].page = 0;
     bar_changed();
@@ -325,13 +408,49 @@ void ime_ui_win_gone(int wi)
     g_on[wi] = 0;
     g_park[wi].raw_len = 0;
     g_park[wi].page = 0;
-    if (g_owner == wi) { ime_reset(&g_st, g_dict); g_owner = -1; bar_changed(); }
+    if (g_owner == wi) { st_reset(); g_owner = -1; bar_changed(); }
+    /* One of the two "the user may be about to walk away" moments. Still
+     * asynchronous -- ime_learn_flush_soon() re-arms the one-shot to 1 ms and
+     * returns, so closing a window never waits on the disk, and a no-op if
+     * nothing has been learned since the last write. */
+    ime_learn_flush_soon();
 }
 
 /* ============================ the key path =============================== */
 
 /* Deliver a candidate's codepoints, refusing any that would be read as a
- * KEY_* code (see the IME_CP_MIN/MAX block at the top). */
+ * KEY_* code (see the IME_CP_MIN/MAX block at the top).
+ *
+ * ---- AND THIS IS WHERE THE MACHINE LEARNS -------------------------------
+ *
+ * Every commit is a (what was typed, what was chosen) pair and it is free: the
+ * user has already told us. There are four commit paths in this file -- space,
+ * a digit 1-9, Enter, and the empty-candidate fallback -- and ALL FOUR go
+ * through here, which is the reason the training signal is one call in one
+ * function rather than four calls that have to be kept in step.
+ *
+ * THREE THINGS ARE DELIBERATELY NOT LEARNED, and each is a refusal rather than
+ * an omission:
+ *
+ *   1. A RAW-LETTER COMMIT (Enter, or space with no candidates). idx is
+ *      IME_COMMIT_RAW, ime_commit_source() returns 0, and there is nothing to
+ *      attribute: the user typed "xyzzy" and got "xyzzy" back. Learning it
+ *      would fill a bounded table with ASCII nobody will ever look up.
+ *   2. A TIER_SEG COMPOSITION. ime_commit_source() refuses it by contract --
+ *      a composed candidate is several keys' top candidates concatenated, so
+ *      there is no single entry a weight belongs to. Attributing it to the
+ *      whole buffer would teach the machine a word the dictionary does not
+ *      have, and the next lookup of that buffer would compose it again from
+ *      scratch and find the weight attached to nothing.
+ *   3. A COMMIT WHOSE CODEPOINTS WERE REFUSED ABOVE (k != n). The two doors
+ *      have to say the same thing: promoting a candidate this file will not
+ *      deliver would rank a character the user cannot type above one they can,
+ *      and the symptom would be a candidate bar whose first entry does nothing.
+ *
+ * ORDER MATTERS: ime_commit_source() reads g_st, and drop() resets it. The
+ * lookup is therefore before the drop, and the pointers it hands back point
+ * into the read-only dictionary rather than into g_st, so nothing here depends
+ * on the composition still being open when ime_learn_note() copies them. */
 static int emit(int idx, uint32_t *out, int max)
 {
     uint32_t tmp[IME_UI_MAXCP];
@@ -349,6 +468,14 @@ static int emit(int idx, uint32_t *out, int max)
         }
         out[k++] = cp;
     }
+
+    if (k == n) {
+        const char *key; int keylen;
+        const uint8_t *ctext; int clen;
+        if (ime_commit_source(&g_st, idx, &key, &keylen, &ctext, &clen))
+            ime_learn_note(key, keylen, ctext, clen);
+    }
+
     drop(g_owner);
     return k;
 }
@@ -366,27 +493,46 @@ static int emit(int idx, uint32_t *out, int max)
  * is 9 instructions, and this comment is here so the next person who
  * "simplifies" the two back together knows what it costs. */
 static __attribute__((noinline))
-int ime_key_slow(int wi, int c, int mods, int ctrl_space, uint32_t *out, int max)
+int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
 {
-    if (ctrl_space) {
+    if (toggle) {
         if (!g_dict) {
             /* REFUSED OUT LOUD, and the key is PASSED THROUGH rather than
              * swallowed: "ASCII input is untouched" has to mean the machine
              * behaves exactly as it did before this file existed, and a
              * swallowed chord is a behaviour change. */
-            kprintf("[ime] Ctrl+Space REFUSED: " IME_DICT_PATH " is not loaded\n");
+            kprintf("[ime] " IME_TOGGLE_NAME " REFUSED: " IME_DICT_PATH
+                    " is not loaded\n");
             return -1;
         }
         if (g_on[wi]) {
-            if (g_owner == wi) { ime_reset(&g_st, g_dict); g_owner = -1; }
+            if (g_owner == wi) { st_reset(); g_owner = -1; }
             g_park[wi].raw_len = 0; g_park[wi].page = 0;
             g_on[wi] = 0;
-            kprintf("[ime] window %d: pinyin OFF\n", wi);
+            /* The other walk-away moment. Turning the IME off is the closest
+             * thing this machine has to "I am done typing Chinese", and the
+             * debounce window (IME_LEARN_QUIET_MS) is exactly what a power cut
+             * would cost -- so it is spent here rather than waited out. */
+            ime_learn_flush_soon();
+            uint32_t le = 0, lc = 0;
+            ime_learn_stats(&le, &lc, 0);
+            kprintf("[ime] window %d: pinyin OFF (learned: %u entries, %u commits)\n",
+                    wi, (unsigned)le, (unsigned)lc);
         } else {
             g_on[wi] = 1;
             kprintf("[ime] window %d: pinyin ON\n", wi);
         }
         bar_changed();
+        /* THE ONLY THING THE USER CAN SEE. bar_changed() damages the candidate
+         * bar, which does not exist yet -- a toggle opens no composition, so
+         * bar_layout() returns 0x0 and nothing on screen moves. Measured
+         * 2026-08-28 by injecting the chord over QMP and screendumping either
+         * side: 175 changed pixels of 2,304,000, and all of them the clock. So
+         * the machine answered a deliberate keystroke with nothing, while the
+         * HOST's own switcher answers Ctrl+Space with an animation -- which is
+         * how the owner came to be certain Ctrl+Space was the binding. The
+         * menu-bar indicator is the reply; this is what asks for it. */
+        wm_damage_menubar();
         return 0;
     }
 
@@ -451,12 +597,18 @@ int ime_key_slow(int wi, int c, int mods, int ctrl_space, uint32_t *out, int max
 /* ---- THE NOT-COMPOSING PATH, and it is the whole of what this feature costs
  * a machine that is typing ASCII: an unsigned bounds check, one byte load from
  * a dedicated array (g_on[] is separate from g_park[] precisely so this is a
- * scaled byte load and not a 72-byte struct stride), and the Ctrl+Space
- * compare. Nothing above it, and nothing after it but a return. */
+ * scaled byte load and not a 72-byte struct stride), and the IME_TOGGLE_NAME
+ * compare. Nothing above it, and nothing after it but a return.
+ *
+ * THE TOGGLE IS TESTED BEFORE EVERYTHING, including the composition. So the
+ * chord turns the IME off mid-composition and drops what was typed, rather than
+ * committing it -- the same rule the unknown-key path takes, and for the reason
+ * argued there: the letters were on screen for the user to see disappear, and a
+ * candidate they never chose is worse in their document than three lost keys. */
 int ime_ui_key(int wi, int c, int mods, uint32_t *out, int max)
 {
     if ((unsigned)wi >= (unsigned)IME_UI_MAXWIN) return -1;
-    int ctrl_space = (c == ' ' && (mods & EV_MOD_CTRL));
-    if (!g_on[wi] && !ctrl_space) return -1;
-    return ime_key_slow(wi, c, mods, ctrl_space, out, max);
+    int toggle = (c == ' ' && (mods & IME_TOGGLE_MOD));
+    if (!g_on[wi] && !toggle) return -1;
+    return ime_key_slow(wi, c, mods, toggle, out, max);
 }

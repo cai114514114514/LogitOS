@@ -2,8 +2,8 @@
 """Drive the pinyin IME on a live machine over QMP: open TextEdit, type, save.
 
     ime_type.py <iso> <workdisk.img> <mode> <screenshot.ppm>
-        mode = "ime"   -- Ctrl+Space first, so the letters go to the IME
-               "ascii" -- the SAME keys with no Ctrl+Space (the negative control)
+        mode = "ime"   -- Shift+Space first, so the letters go to the IME
+               "ascii" -- the SAME keys with no Shift+Space (the negative control)
 
 Exits 0 if the machine got as far as saving; the BYTES are asserted by the
 caller (tests/boot/run-ime-test.sh) out of the disk image, because "what is on
@@ -20,8 +20,18 @@ what happens when that is ignored: qmp_site.py sent Ctrl+L as four scancodes in
 two bursts and the chord never arrived -- and it went unnoticed for weeks
 because the browser's address bar was already focused, so "the chord did not
 arrive" and "the chord worked" looked identical. This driver's chord has no
-such alibi: if Ctrl+Space does not arrive, the guest never prints
+such alibi: if Shift+Space does not arrive, the guest never prints
 `[ime] window N: pinyin ON` and this script says so and stops.
+
+WHAT THIS HARNESS STRUCTURALLY CANNOT SEE, and it cost the owner the feature.
+QMP injects scancodes BENEATH the host keyboard, so every link from the user's
+fingers to QEMU is bypassed here by construction. This gate passed green while
+the IME was unusable in practice, because the chord was Ctrl+Space and macOS --
+the host this machine is developed on -- consumes Ctrl+Space itself as "select
+the previous input source". A green run of this file means the guest works; it
+has never meant a person can type Chinese. The chord is Shift+Space now for
+that reason, and the reason is recorded here because the next chord change will
+be argued from this file.
 """
 import json
 import os
@@ -166,6 +176,17 @@ def ctrl_key(q):
     raw("ctrl", False)
 
 
+def shift_key(q):
+    """The IME toggle chord. Kept SEPARATE from ctrl_key rather than
+    parameterised, because the two are not interchangeable here: Ctrl+S below is
+    still Ctrl and always will be, and a single mod_key(mod, q) would let a
+    future edit to the toggle silently move the save."""
+    raw("shift", True)
+    raw(q, True)
+    raw(q, False)
+    raw("shift", False)
+
+
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
 
 # THE DICTIONARY LINE, checked before anything is typed. If the load failed, the
@@ -200,10 +221,10 @@ time.sleep(2.0)
 
 if mode == "ime":
     mark = len(log)
-    ctrl_key("spc")
+    shift_key("spc")
     time.sleep(0.8)
     on = b"pinyin ON" in bytes(log[mark:])
-    chk(on, "Ctrl+Space reached the guest and turned the IME on")
+    chk(on, "Shift+Space reached the guest and turned the IME on")
     if not on:
         cmd({"execute": "screendump", "arguments": {"filename": shot}})
         bail("the toggle never arrived -- see the pacing note")

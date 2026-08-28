@@ -49,9 +49,54 @@
  * And one thing in the other direction, declared in wm.h: wm_ime_anchor(),
  * which is how this file learns where the focused window is without reaching
  * into wm.c's statics.
+ *
+ * ---------------------------------------------------------------------------
+ * THE USER-WEIGHT STORE ASKS wm.c FOR NOTHING. Zero new hooks, and that is a
+ * property of where the store was put rather than a happy accident. Everything
+ * it needs is already passing through this file:
+ *
+ *   - the training signal is emit(), because all four commit paths (space, a
+ *     digit, Enter, the no-candidate fallback) go through it;
+ *   - the two flush points are the toggle-off branch and ime_ui_win_gone(),
+ *     both of which wm.c already calls for their own reasons;
+ *   - the ranking hook is installed in st_reset(), the single door this file
+ *     puts on ime_reset().
+ *
+ * See c/kernel/gui/ime_learn.h for the store itself: why a mutable table is
+ * safe beside a read-only dictionary shared unlocked across windows, why the
+ * keystroke never waits for the disk, and the two-boot device check that is
+ * the only thing that can prove a weight survived a reboot.
  * --------------------------------------------------------------------------- */
 
 #include <stdint.h>
+
+#include "logit_abi.h"      /* EV_MOD_* -- IME_TOGGLE_MOD is one of them */
+
+/* ---- THE TOGGLE CHORD, defined ONCE ----------------------------------------
+ *
+ * It used to be Ctrl+Space, spelled out in five strings, a comment, a header
+ * sentence and two harnesses -- eight literals that had to agree. This is the
+ * "one jar, TWO doors" shape CLAUDE.md records losing a day to, so the chord is
+ * a definition and every message interpolates IME_TOGGLE_NAME.
+ *
+ * WHY NOT Ctrl+Space, which is what every Chinese IME uses. Because on the host
+ * this machine is developed and used on -- macOS -- Ctrl+Space is the SYSTEM
+ * shortcut for "select the previous input source", and macOS consumes it before
+ * QEMU is offered it. The guest side was never broken: tests/boot/run-ime-test.sh
+ * drives the identical chord over QMP, which injects scancodes beneath the host
+ * keyboard entirely, and it PASSES -- `nihao ` typed into TextEdit puts
+ * E4 BD A0 E5 A5 BD on the disk. What failed was delivery, and no test in this
+ * tree can see that link, because every one of them bypasses it by construction.
+ * A chord the user cannot press is a feature that does not exist for the user.
+ *
+ * THE COST, stated rather than discovered: Shift+Space no longer types a space.
+ * Typing fast enough to still be holding Shift from a capital when the space
+ * arrives -- "Hello World" -- now toggles the IME instead. That is a real
+ * misfire and it is the price of a chord the host does not eat. It is visible
+ * (the candidate bar appears, or vanishes) and it is undone by pressing the same
+ * chord again, which is why it was accepted over a silent one. */
+#define IME_TOGGLE_MOD   EV_MOD_SHIFT
+#define IME_TOGGLE_NAME  "Shift+Space"
 
 /* The most codepoints one commit can produce. Equal to the engine's
  * IME_CAND_MAXCP (c/lib/ime/pinyin.h), which is measured against the shipped
@@ -69,8 +114,8 @@
 #define IME_UI_MAXWIN 16
 
 /* Load /ime/pinyin.dat and open it. 1 = the IME is available; 0 = it is not,
- * and ime_ui_key() will REFUSE the Ctrl+Space toggle out loud (a serial line
- * naming the file) rather than silently doing nothing. Safe to call twice. */
+ * and ime_ui_key() will REFUSE the IME_TOGGLE_NAME chord out loud (a serial
+ * line naming the file) rather than silently doing nothing. Safe to call twice. */
 int  ime_ui_init(void);
 
 /* WM-HOOK 3: one key from the focused window's stream, before the app sees it.
@@ -101,5 +146,12 @@ void ime_ui_win_gone(int wi);
  * composition is open, and the IME's on/off state for a window. */
 int  ime_ui_composing(void);
 int  ime_ui_enabled(int wi);
+
+/* Is the input method available at all -- i.e. did the dictionary load? The
+ * menu-bar indicator asks, because an indicator that reads "EN" forever on a
+ * machine with no /ime/pinyin.dat is a UI that reports a state the user cannot
+ * leave, without ever saying why. When this is 0 the WM draws nothing and the
+ * refusal stays where it already is: one named line on the serial console. */
+int  ime_ui_available(void);
 
 #endif /* LOGIT_IME_UI_H */
