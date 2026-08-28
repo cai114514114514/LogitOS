@@ -44,6 +44,30 @@ rust/target/
 # test) has to be found among them.
 build-*/
 
+# AND IT HAPPENED AGAIN, 2026-08-28, for a reason worth writing down because
+# the fix is a sentence in a prompt and not a line in this file.
+#
+# Four workflows ran at once. Each agent needs its own BUILD dir, because
+# several makes sharing one build/ make targets fail for reasons that have
+# nothing to do with the code under test -- CLAUDE.md calls that "a sweep that
+# manufactures bugs", which is worse than missing them. So the dispatch told
+# every agent: BUILD MUST BE A RELATIVE PATH. That much is true and load-bearing
+# (47 recipes prefix ./$(BUILD)/, so BUILD=/tmp/mine yields .//tmp/mine/bin).
+#
+# What it did not say was WHICH relative path, and `build-*/` above already was
+# the convention -- build-bkl4a/ is one. So the agents invented their own
+# prefixes, twenty-four scratch trees and 1.8 GB landed at the repository root,
+# and 342 untracked entries buried `git status`. One jar, two doors, and the
+# second door was opened by the instruction rather than by the code.
+#
+# THE RULE, so the next dispatch does not need this paragraph: a scratch build
+# tree is `build-<name>/`. IF YOU ARE ADDING A NAME TO THE LIST BELOW, THAT IS
+# THE SIGNAL YOU GOT IT WRONG -- the list rots by construction, which is exactly
+# what the paragraph above this one is about.
+wb-*/
+eb-*/
+[a-z]build/
+
 # The vendored conformance corpora are DATA, and the global *.png above
 # (a build-output rule) swallowed 2,235 of WPT's image fixtures -- the ones
 # Document-contentType, the <img> reflection tests and much of css/ load. A
@@ -69,3 +93,30 @@ tests/wpt-local/resources
 # not get committed by a broad `git add`.
 /nul
 /pl
+
+# Out-of-tree build dirs made by `make test-X BUILD=...`.
+# 47 recipes across the Makefile and six tests/*.mk fragments prefix
+# `./$(BUILD)/`, so an ABSOLUTE BUILD= is spliced into `.//tmp/x/bin` and the
+# run dies with "No such file or directory" -- which reads as a broken gate.
+# The workaround is a relative path, and a relative path lands INSIDE the repo:
+# 20 MB and 734 files of `vbuild/` were one such run. Ignored so a parallel
+# sweep cannot sweep itself into a commit.
+/vbuild/
+/tmp/
+
+# The HTML parser conformance corpus: fetched, not vendored (tools/h5l_fetch.sh).
+# It was 75 files carrying TWO upstreams and two licence files, and 61 of them
+# were a second copy of a WPT directory this tree already fetches at a pin.
+#
+# THE DATA GOES, THE LICENCE TEXTS STAY. THIRD_PARTY.md:290 says the two texts
+# are vendored BESIDE the data, and a licence is a compliance record, not a test
+# fixture -- `make test-license-audit` checks LICENSES/ and third_party/ against
+# the built image. Ignoring the directory wholesale would have deleted the only
+# copy of an MIT and a BSD-3 notice for data this tree still uses.
+/build/html5lib-tests/
+third_party/html5lib-tests/*
+!third_party/html5lib-tests/LICENSE.*
+
+# js-framework-benchmark: test DATA at a pin (tools/jsfb_revision.txt), not
+# vendored source. Same treatment as build/wpt and build/html5lib-tests.
+/build/jsfb/

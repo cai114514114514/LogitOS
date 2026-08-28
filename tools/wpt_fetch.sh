@@ -87,12 +87,23 @@ PRUNE=(
     CODEOWNERS
 )
 
-# css/ is deliberately NOT in SUBSETS this round. Its top level alone is 96
-# directories and the subtree is the largest thing in the WPT repository --
-# taking it would multiply the vendored size by roughly an order of magnitude
-# before this mechanism has a rate worth defending. It is a second evaluation,
-# not an omission: the CSS gaps that real pages actually reach (transform,
-# ::before/::after) are ranked separately and would be the reason to add it.
+# WPT_FULL=1 takes the WHOLE corpus instead of SUBSETS -- and still applies
+# PRUNE, which is the entire point of the flag existing rather than people
+# hand-rolling a full clone.
+#
+# It exists because somebody did hand-roll one (2026-08-28), measured 272
+# directories, and produced a ranking whose number one entry was `encoding` at
+# 11,676/229,687 = 5.1%, "the biggest gap in the browser by a factor of two".
+# On the corpus this project actually measures, encoding is 11,376/12,088 =
+# 94.1%. The whole difference is the 136 legacy-mb-* files PRUNE removes -- and
+# PRUNE removes them for a stated reason that has not changed: a legacy CJK
+# codec table cannot become a passing test by fixing a bug in the DOM. Those
+# 217,599 pre-decided-out subtests were 45% of the total miss in that ranking,
+# so the number one item on the work order was an artefact of the checkout.
+#
+# THE RULE: a corpus that skips PRUNE is not "more complete", it is a different
+# question being asked under the same name. If you want those directories
+# measured, argue with PRUNE -- do not clone around it.
 
 echo "wpt-fetch: $UPSTREAM -> $DEST"
 mkdir -p "$(dirname "$DEST")"
@@ -109,8 +120,12 @@ git -C "$DEST.tmp" remote add origin "$UPSTREAM"
 git -C "$DEST.tmp" fetch --quiet --filter=blob:none --depth=1 origin "$PIN"
 (
     cd "$DEST.tmp"
-    git sparse-checkout init --cone
-    git sparse-checkout set "${SUBSETS[@]}"
+    if [ "${WPT_FULL:-0}" = 1 ]; then
+        echo "wpt-fetch: WPT_FULL=1 -- whole corpus, PRUNE still applied"
+    else
+        git sparse-checkout init --cone
+        git sparse-checkout set "${SUBSETS[@]}"
+    fi
     git checkout --quiet FETCH_HEAD
     REV="$(git rev-parse HEAD)"
     if [ "$REV" != "$PIN" ]; then
