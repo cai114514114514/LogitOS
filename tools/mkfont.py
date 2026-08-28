@@ -2,11 +2,31 @@
 """Build Logit's redistributable UI and terminal font subsets.
 
 The checked-in sources are SIL-OFL Noto variable TrueType fonts.  This tool
-pins them to regular instances, subsets them to the character inventory used by
+pins them to fixed instances, subsets them to the character inventory used by
 Logit, and gives the modified fonts distinct internal names.  Output remains
 plain TrueType (glyf outlines) so c/kernel/gui/ttf.c can parse it.
 
-Usage: mkfont.py [--ui-src FONT] [--mono-src FONT] <ui.ttf> <mono.ttf>
+FOUR OUTPUTS, TWO WEIGHTS, AND WHY THERE IS NO ITALIC.  Both sources are
+variable fonts whose only axes are `wght` (and `wdth` on Mono).  Measured:
+
+    NotoSansSC-VF.ttf   wght 100..900 (default 100)
+    NotoSansMono-VF.ttf wght 100..900 (default 400), wdth 62.5..100
+
+So a Bold face is an INSTANCE of a source already vendored -- same file, same
+OFL licence, same pipeline -- and it is generated here at wght=700 rather than
+being a second download.  There is no `ital` and no `slnt` axis in either
+source, so an italic face is NOT derivable from what is vendored: it would need
+a separate upstream file (Noto Sans SC ships no italic at all; Noto Sans Mono
+ships none either).  Synthesising one by shearing the regular outlines is
+deliberately not done -- a shear is not what a designer draws, it breaks every
+vertical stem's contrast and, on this machine specifically, it would have to
+happen inside the glyph rasteriser (c/lib/text/glyphras.c) whose output is
+scored against an independent oracle by `make test-glyph-agree`; a sheared
+glyph is by construction a mismatch against that oracle, so the one instrument
+that says the rasteriser is correct would have to be turned off to ship it.
+
+Usage: mkfont.py [--ui-src FONT] [--mono-src FONT]
+                 <ui.ttf> <mono.ttf> <ui-bold.ttf> <mono-bold.ttf>
 """
 import argparse
 import os
@@ -55,19 +75,24 @@ def _name_values(font, name_id):
     return values
 
 
-def _set_names(font, family, description, copyright_text, license_text,
+def _set_names(font, family, style, description, copyright_text, license_text,
                license_url):
     if "name" not in font:
         font["name"] = newTable("name")
     names = font["name"]
     names.names = []
-    postscript = family.replace(" ", "") + "-Regular"
+    postscript = family.replace(" ", "") + "-" + style
     values = {
         0: copyright_text,
         1: family,
-        2: "Regular",
-        3: f"Logit OS:{family}:1.0",
-        4: f"{family} Regular",
+        2: style,
+        # The unique ID carries the style only when there is one to
+        # distinguish, so the Regular pair's bytes -- and therefore the hashes
+        # `make verify-fonts` checks and the 2.2 MB blob in git -- are exactly
+        # what they were before this file learned about weights.
+        3: f"Logit OS:{family}:1.0" if style == "Regular"
+           else f"Logit OS:{family} {style}:1.0",
+        4: f"{family} {style}",
         5: "Version 1.0; Logit OS subset",
         6: postscript,
         10: description,
@@ -81,7 +106,29 @@ def _set_names(font, family, description, copyright_text, license_text,
         names.setName(value, name_id, 0, 3, 0)
 
 
-def subset(src, face, unicodes, out, family, source_family, axes):
+def _set_weight(font, style, weight_class):
+    """Make the face's own tables agree with the name table about its weight.
+
+    The kernel reads neither OS/2 nor head.macStyle -- c/kernel/gui/text.c picks
+    a face by file path, and c/lib/text/ttf.c reads hhea for metrics and glyf
+    for outlines.  These are set anyway because every INSPECTION tool does read
+    them: `make test-font` scores our outlines against FreeType, and a file
+    whose name table says Bold while OS/2 says 400 is the kind of disagreement
+    that gets diagnosed as a bug in the parser rather than in the asset.
+    """
+    if "OS/2" in font:
+        os2 = font["OS/2"]
+        os2.usWeightClass = weight_class
+        # fsSelection bit 5 = BOLD, bit 6 = REGULAR; they are mutually exclusive.
+        os2.fsSelection = (os2.fsSelection & ~((1 << 5) | (1 << 6)))
+        os2.fsSelection |= (1 << 5) if style == "Bold" else (1 << 6)
+    if "head" in font:
+        # head.macStyle bit 0 = bold.
+        font["head"].macStyle = (font["head"].macStyle & ~1) | (1 if style == "Bold" else 0)
+
+
+def subset(src, face, unicodes, out, family, style, weight_class,
+           source_family, axes):
     if not os.path.exists(src):
         raise SystemExit(
             f"ERROR: source font not found: {src}\n"
@@ -124,11 +171,14 @@ def subset(src, face, unicodes, out, family, source_family, axes):
     _set_names(
         f,
         family,
-        f"Logit OS character subset derived from {source_family}.",
+        style,
+        f"Logit OS character subset derived from {source_family}." if style == "Regular"
+        else f"Logit OS character subset derived from {source_family} {style}.",
         copyright_text,
         license_text,
         license_url,
     )
+    _set_weight(f, style, weight_class)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     f.save(out)
     return out
@@ -150,17 +200,31 @@ def main():
     )
     parser.add_argument("out_ui")
     parser.add_argument("out_mono")
+    parser.add_argument("out_ui_bold")
+    parser.add_argument("out_mono_bold")
     args = parser.parse_args()
 
+    # BOTH WEIGHTS SUBSET TO THE SAME CODEPOINTS, on purpose. A bold face that
+    # covered less than the regular one would make <strong>中文</strong> fall
+    # back per character, so half a run would be bold and half would not -- a
+    # failure that looks like a shaping bug and is an asset bug.
     ui_set = gb2312_unicodes() | latin_punct()
-    subset(args.ui_src, args.ui_face, ui_set, args.out_ui,
-           "Logit UI", "Noto Sans SC", {"wght": 400})
-    subset(args.mono_src, args.mono_face,
-           set(range(0x20, 0x7F)) | {0x00A0}, args.out_mono,
-           "Logit Mono", "Noto Sans Mono", {"wght": 400, "wdth": 100})
-    print(f"ui:   {args.out_ui}  {os.path.getsize(args.out_ui)//1024} KiB  ({len(ui_set)} codepoints)",
-          file=sys.stderr)
-    print(f"mono: {args.out_mono}  {os.path.getsize(args.out_mono)//1024} KiB", file=sys.stderr)
+    mono_set = set(range(0x20, 0x7F)) | {0x00A0}
+    outs = [
+        (args.ui_src, args.ui_face, ui_set, args.out_ui, "Logit UI",
+         "Regular", 400, "Noto Sans SC", {"wght": 400}),
+        (args.mono_src, args.mono_face, mono_set, args.out_mono, "Logit Mono",
+         "Regular", 400, "Noto Sans Mono", {"wght": 400, "wdth": 100}),
+        (args.ui_src, args.ui_face, ui_set, args.out_ui_bold, "Logit UI",
+         "Bold", 700, "Noto Sans SC", {"wght": 700}),
+        (args.mono_src, args.mono_face, mono_set, args.out_mono_bold,
+         "Logit Mono", "Bold", 700, "Noto Sans Mono",
+         {"wght": 700, "wdth": 100}),
+    ]
+    for src, face, cps, out, family, style, wc, source, axes in outs:
+        subset(src, face, cps, out, family, style, wc, source, axes)
+        print(f"{family} {style}: {out}  {os.path.getsize(out)//1024} KiB"
+              f"  ({len(cps)} codepoints)", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

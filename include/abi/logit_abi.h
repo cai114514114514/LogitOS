@@ -34,8 +34,8 @@
 #define SYS_GUI_TEXT_MONO 30 /* ((x<<16)|y, (cell<<24)|color, str): monospace text */
 /* M17 L1: ring-3 render-pipeline primitives (DOM/CSS/layout/paint live in the app). */
 #define SYS_HTTP_BODY    36 /* (buf, max) -> copy the last http_get response body to the app; length */
-#define SYS_TEXT_MEASURE 37 /* (s, len, (px<<1)|mono) -> pixel width of a length-delimited run */
-#define SYS_GUI_TEXT_RUN 38 /* (struct logit_run*) draw a length-delimited text run (px/mono/color) */
+#define SYS_TEXT_MEASURE 37 /* (s, len, (px<<2)|face) -> pixel width of a length-delimited run */
+#define SYS_GUI_TEXT_RUN 38 /* (struct logit_run*) draw a length-delimited text run (px/mono/bold/color) */
 #define SYS_RES_FETCH    39 /* (src, buf, max) -> fetch a sub-resource's raw bytes; length, or <0 */
 #define SYS_GUI_BLIT     40 /* (struct logit_blit*) blit an RGBA bitmap into the window surface */
 #define SYS_GUI_CLIP     41 /* ((x<<16)|y, (w<<16)|h) set window clip rect; (0,0,0,0) clears it */
@@ -333,8 +333,35 @@ struct logit_netinfo {
     unsigned char mac[6];
 };
 
-/* M17 L1: payloads for the ring-3 render syscalls. */
-struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
+/* M17 L1: payloads for the ring-3 render syscalls.
+ *
+ * FACE SELECTION, SPELLED ONCE.  Two syscalls pick a font face and they must
+ * agree, because layout MEASURES through SYS_TEXT_MEASURE and then DRAWS
+ * through SYS_GUI_TEXT_RUN: a run measured in one weight and drawn in another
+ * overruns its own box, and bold is wider, so the failure is text running off
+ * the end of every heading rather than a clean error.
+ *
+ * SYS_TEXT_MEASURE has no struct to put a field in -- its third argument is a
+ * packed long -- so it carries the two-bit mask below, and SYS_GUI_TEXT_RUN
+ * carries the same two bits as the named `mono` and `bold` fields of the
+ * struct.  The kernel composes the mask from the struct in exactly one place
+ * (c/kernel/gui/wm.c, case SYS_GUI_TEXT_RUN); everything below it takes the
+ * mask.  Ring 3 never composes it by hand: c/apps/logit.h does that.
+ *
+ * `bold` is a FLAG, not a CSS weight.  This machine ships two weights per
+ * family (fsroot/fonts/{ui,mono}{,-bold}.ttf) and nothing else, so an `int
+ * weight` here would advertise a resolution the font inventory cannot honour.
+ * c/apps/browser/css_engine.c already collapses `font-weight` to a bit
+ * (`>= 700` is bold) and c/apps/browser/layout.h's display item has carried
+ * that bit all along; this is the field that finally lets it leave ring 3.
+ *
+ * `bold` sits AFTER `len` deliberately: it lands in the four bytes of tail
+ * padding the struct already had, so sizeof(struct logit_run) is still 40 and
+ * no existing field moved -- see the offsets asserted in
+ * c/apps/as/abi_layout.inc. */
+#define LOGIT_FACE_MONO 0x1   /* fixed-pitch face rather than the proportional UI face */
+#define LOGIT_FACE_BOLD 0x2   /* the bold instance of whichever face bit 0 chose */
+struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; int bold; };
 struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 /* SYS_IMG_DECODE: the app provides `path` + an `rgba` buffer of `max` bytes; the

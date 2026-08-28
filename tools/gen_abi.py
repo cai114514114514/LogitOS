@@ -68,13 +68,102 @@ def norm_type(t):
     return " ".join(t.split())
 
 
+def strip_comments(src):
+    """Drop C comments, keeping line count so a line-anchored scan stays honest.
+
+    Needed for read_defines(): without it a `#define` written INSIDE one of this
+    header's long argued-in-place block comments (there are many, and several
+    quote code) would be read as a real definition."""
+    src = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), src, flags=re.S)
+    return re.sub(r"//[^\n]*", "", src)
+
+
+# A definition this tool will use as an array bound: a name whose expansion is a
+# plain integer literal and nothing else. Deliberately NOT a macro evaluator --
+# `#define X (Y + 1)` and every function-like macro fail this pattern and fall
+# through to the refusal below, which is the same trade every other guess in
+# this file makes.
+DEFINE_RE = re.compile(
+    r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+"
+    r"([0-9][0-9A-Fa-fxX]*)[uUlL]*[ \t]*$", re.M)
+
+
+def c_int(text):
+    """A C integer literal -> int, or None if it is not one.
+
+    C's OCTAL is why this is not `int(text, 0)`. Measured: the first version of
+    read_defines() used int(text, 0) and died on `#define LST_IFMT 0170000`
+    (logit_abi.h:1309) with a bare ValueError traceback -- Python refuses a
+    leading-zero decimal outright. Papering over that with int(text, 10) would
+    have been WORSE than the crash: 0170000 is 61440, and a base-10 reading
+    gives 170,000. Nothing downstream would have questioned either number."""
+    if re.match(r"^0[xX][0-9A-Fa-f]+$", text):
+        return int(text, 16)
+    if re.match(r"^0[0-7]*$", text):
+        return int(text, 8)
+    if re.match(r"^[1-9][0-9]*$", text):
+        return int(text, 10)
+    return None
+
+
+def read_defines(src):
+    """-> {NAME: int} for the integer object-like macros in the header.
+
+    A name defined TWICE with different values is dropped rather than resolved
+    to whichever came last: this tool does not evaluate #if, so it cannot know
+    which arm the compiler took, and picking one would put an unchecked number
+    in the layout -- exactly what the asserts exist to prevent."""
+    seen = {}
+    for m in DEFINE_RE.finditer(strip_comments(src)):
+        name, val = m.group(1), c_int(m.group(2))
+        if val is None:                 # not a literal we can read: not a define
+            seen[name] = None
+        elif name in seen and seen[name] != val:
+            seen[name] = None           # ambiguous: treat as undefined
+        elif name not in seen:
+            seen[name] = val
+    return {k: v for k, v in seen.items() if v is not None}
+
+
+def array_bound(struct_name, field, text, defines):
+    """An array's element count: a literal, or a macro the header itself defines.
+
+    WHY THE MACRO CASE IS HERE. `struct logit_sockaddr_un` writes its length as
+    `char path[LOGIT_UNIX_PATH_MAX]`, because 108 is a number every ported
+    program already assumes and the header says so at the #define rather than at
+    the field. This tool took only `[\\d+]`, so it REFUSED the whole header at
+    that struct -- and the refusal is a SystemExit, so nothing was generated at
+    all: `make check-abi` exited 1, and check-abi is a prerequisite of 17
+    targets (test-as, test-as-os, test-as-bcstable, test-selfhost*, ...), every
+    one of which was red before it reached a single check. Four more structs
+    added after it (ptrace_word, modinfo, pollfd, itimer) were missing from
+    fsroot/as/lib/abi.as for the same reason and nobody could see it, because
+    the only tool that would have said so was the one refusing.
+
+    Resolving a macro is not a guess in the sense this file refuses: the number
+    is emitted straight back out as
+    `_Static_assert(sizeof(((struct logit_sockaddr_un *)0)->path) == 108)`, so
+    the compiler building /bin/as checks it against the real array. A macro read
+    wrongly is a build failure, not a wild read -- which is the same argument
+    that lets the offsets be computed here at all."""
+    n = c_int(text) if text[:1].isdigit() else None
+    if n is None and text in defines:
+        n = defines[text]
+    if n is None:
+        raise Unsupported("%s.%s: array bound %r is not a literal and not an "
+                          "integer #define in this header" % (struct_name, field, text))
+    if n <= 0:
+        raise Unsupported("%s.%s: array bound %r resolves to %d" % (struct_name, field, text, n))
+    return n
+
+
 # The only type words this tool recognises. A member built from anything else --
 # a typedef, a nested struct -- has no base type here and is refused rather than
 # guessed at.
 TYPE_WORDS = ("char", "signed", "unsigned", "short", "int", "long")
 
 
-def parse_members(struct_name, body):
+def parse_members(struct_name, body, defines):
     """-> [(field, size, align, kind)] in declaration order."""
     out = []
     for decl in body.split(";"):
@@ -99,9 +188,10 @@ def parse_members(struct_name, body):
                 continue
             stars = d.count("*")
             d = d.replace("*", "").strip()
-            am = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(\d+)\s*\]$", d)
+            am = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*([A-Za-z0-9_]+)\s*\]$", d)
             if am:
-                name, n = am.group(1), int(am.group(2))
+                name = am.group(1)
+                n = array_bound(struct_name, name, am.group(2), defines)
                 if stars:
                     raise Unsupported("%s.%s: pointer arrays are not supported" % (struct_name, name))
                 if base not in ("char", "signed char", "unsigned char"):
@@ -142,12 +232,13 @@ def as_name(cname):
 
 def read_structs():
     src = open(HEADER, encoding="utf-8").read()
+    defines = read_defines(src)
     out = []
     for m in re.finditer(r"\bstruct\s+(logit_[A-Za-z0-9_]+)\s*\{([^{}]*)\}\s*;", src, re.S):
         name, body = m.group(1), m.group(2)
         body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
         body = re.sub(r"//[^\n]*", " ", body)
-        fields, size = lay_out(parse_members(name, body))
+        fields, size = lay_out(parse_members(name, body, defines))
         out.append((name, fields, size))
     if not out:
         raise SystemExit("gen_abi.py: no structs found in %s" % HEADER)

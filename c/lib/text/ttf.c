@@ -77,8 +77,16 @@ static uint32_t pick_cmap(const uint8_t *d, int len, uint32_t cmap_off)
     return best;
 }
 
+static void ttf_memo_newgen(void);
+
 int ttf_parse(const uint8_t *data, int len, struct ttf_font *f)
 {
+    /* Retire every memoised (code point -> glyph id) answer. Unconditional and
+     * first, so a REFUSED parse invalidates too: the caller is free to reuse
+     * that buffer for the next candidate, and the memo is keyed on its address.
+     * See the memo's comment for why a pointer alone is not an identity. */
+    ttf_memo_newgen();
+
     if (len < 12) return -1;
     uint32_t ver = rd32(data);
     if (ver != 0x00010000 && ver != tag4("true") && ver != tag4("OTTO"))
@@ -172,7 +180,26 @@ int ttf_advance(const struct ttf_font *f, int gid)
 
 /* cmap format 4 lookup (segment mapping). All reads are bounded to the subtable
  * (its `length` field) and the font buffer, so a crafted idRangeOffset/segCount
- * cannot read out of bounds. */
+ * cannot read out of bounds.
+ *
+ * THE SEARCH IS BINARY, AND THAT IS NOT A FREE CHOICE -- it is only correct
+ * because the format REQUIRES endCode[] to be sorted ascending (OpenType 1.9
+ * cmap format 4: "the segments are sorted in order of increasing endCode", and
+ * the mandatory final segment ends at 0xFFFF). The linear scan found the FIRST
+ * i with cp <= endCode[i]; on a sorted array that is exactly the lower bound,
+ * so the two return the same segment for every code point of every well-formed
+ * font. A font whose endCode[] is NOT sorted is malformed and the two disagree
+ * -- both answers are garbage from a garbage table, and every bounds check
+ * below is unchanged, so a crafted table still cannot read out of range.
+ * -DTTF_LINEAR_CMAP restores the scan, which is what makes that equivalence
+ * checkable rather than asserted.
+ *
+ * WHY IT MATTERS AND WHERE IT DOES NOT. Measured on the shipped
+ * fsroot/fonts/ui.ttf (3,640 segments): segment 0 is [0x20..0x7E], so EVERY
+ * ASCII code point already terminated the scan on its first iteration and the
+ * desktop's Latin chrome never paid for the other 3,639. The cost is entirely
+ * CJK's -- U+4F60 sat at segment 166 and U+9xxx past 3,000 -- which is a
+ * browser rendering Chinese, not a menu bar. */
 static int cmap4(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
 {
     if (cp > 0xFFFF) return 0;
@@ -187,23 +214,50 @@ static int cmap4(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
     const uint8_t *idDelta = startC + segX2;
     const uint8_t *idRange = idDelta + segX2;
     if (idRange + segX2 > t_end) return 0;              /* the four parallel arrays must fit */
-    for (int i = 0; i < seg; i++) {
-        if (cp <= rd16(endC + i * 2)) {
-            int start = rd16(startC + i * 2);
-            if (cp < (uint32_t)start) return 0;
-            int ro = rd16(idRange + i * 2);
-            if (ro == 0) return (uint16_t)(cp + rs16(idDelta + i * 2));
-            const uint8_t *gp = idRange + i * 2 + ro + (cp - start) * 2;
-            if (gp < t || gp + 2 > t_end) return 0;     /* font-controlled ro/cp -> guard the read */
-            int g = rd16(gp);
-            return g ? (uint16_t)(g + rs16(idDelta + i * 2)) : 0;
-        }
+#ifdef TTF_LINEAR_CMAP
+    int i = 0;
+    while (i < seg && cp > rd16(endC + i * 2)) i++;
+#else
+    /* lower bound: the least i with cp <= endCode[i]. seg <= 32767 (segX2 is a
+     * uint16), so lo+hi cannot overflow int.
+     *
+     * SEGMENT 0 IS PROBED FIRST, and that one compare is the difference between
+     * this being a speedup and a REGRESSION. A binary search's first probe is
+     * the midpoint, which is the worst possible guess for the distribution this
+     * machine actually draws: ui.ttf's segment 0 is [0x20..0x7E], so all of
+     * Latin resolved in ONE iteration of the scan this replaces. Measured on
+     * the host over a frame of desktop chrome, 439 code points x 2 lookups:
+     * scan 1.48 us, plain binary search 16.20 us -- 11x SLOWER on the only text
+     * the desktop draws. With this probe it is 1.5 compares, and a deep CJK
+     * code point pays 13 instead of 12. */
+    int lo = 0, hi = seg;
+    if (seg > 0 && cp <= rd16(endC)) hi = 0;            /* Latin: done in one */
+    else lo = 1;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        if (cp <= rd16(endC + mid * 2)) hi = mid; else lo = mid + 1;
     }
-    return 0;
+    int i = lo;
+#endif
+    if (i >= seg) return 0;
+    int start = rd16(startC + i * 2);
+    if (cp < (uint32_t)start) return 0;
+    int ro = rd16(idRange + i * 2);
+    if (ro == 0) return (uint16_t)(cp + rs16(idDelta + i * 2));
+    const uint8_t *gp = idRange + i * 2 + ro + (cp - start) * 2;
+    if (gp < t || gp + 2 > t_end) return 0;             /* font-controlled ro/cp -> guard the read */
+    int g = rd16(gp);
+    return g ? (uint16_t)(g + rs16(idDelta + i * 2)) : 0;
 }
 
 /* cmap format 12 lookup (segmented coverage, full Unicode). ngroups is clamped
- * to what fits the font so a crafted count cannot loop off the end. */
+ * to what fits the font so a crafted count cannot loop off the end.
+ *
+ * Binary search on the same argument as format 4: the format requires the
+ * groups to be sorted by startCharCode and to not overlap, so "the last group
+ * whose start is <= cp, then test its end" selects the same group the scan
+ * would have found. Format 12 is what a full CJK or emoji font uses, where
+ * ngroups runs to tens of thousands. */
 static int cmap12(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
 {
     const uint8_t *f_end = f->data + f->len;
@@ -212,20 +266,126 @@ static int cmap12(const struct ttf_font *f, const uint8_t *t, uint32_t cp)
     const uint8_t *g = t + 16;
     uint32_t rem = (uint32_t)((f_end - g) / 12);
     if (ngroups > rem) ngroups = rem;
+#ifdef TTF_LINEAR_CMAP
     for (uint32_t i = 0; i < ngroups; i++, g += 12) {
         uint32_t s = rd32(g), e = rd32(g + 4);
         if (cp >= s && cp <= e) return rd32(g + 8) + (cp - s);
     }
     return 0;
+#else
+    uint32_t lo = 0, hi = ngroups;                      /* first group with start > cp */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (rd32(g + (uint64_t)mid * 12) <= cp) lo = mid + 1; else hi = mid;
+    }
+    if (lo == 0) return 0;
+    const uint8_t *gg = g + (uint64_t)(lo - 1) * 12;
+    uint32_t s = rd32(gg), e = rd32(gg + 4);
+    if (cp >= s && cp <= e) return rd32(gg + 8) + (cp - s);
+    return 0;
+#endif
 }
 
-int ttf_glyph_id(const struct ttf_font *f, uint32_t codepoint)
+/* --- code point -> glyph id memo ------------------------------------------
+ *
+ * WHY: the cmap is consulted TWICE for every code point of every laid-out run,
+ * and the glyph cache one layer up cannot absorb either one -- it is keyed on
+ * the glyph id, which is what the cmap produces. shape.c asks once through
+ * font_for() to decide WHICH font in the fallback set covers the code point,
+ * and again through glyph_of()/shape_line() to get the id from that font; and
+ * text.c runs the whole of shape_line a second time to MEASURE what it is about
+ * to draw, because measuring and drawing deliberately share one function. So a
+ * drawn character costs four lookups, and one that a fallback font has to
+ * resolve costs more.
+ *
+ * A direct-mapped memo of the last TTF_GIDCACHE_N (code point -> id) answers is
+ * enough: a UI frame's working set is the ~95 printable ASCII code points plus
+ * whatever the document adds, and it is the same set every frame.
+ *
+ * INVALIDATION IS A GENERATION, NOT A POINTER COMPARISON, and this is the part
+ * that would have gone wrong quietly. An entry is keyed on the font's `data`
+ * pointer, but a pointer is only unique while the buffer is live: font_fuzz.c
+ * parses a mutated copy of a font, queries it, frees it and mallocs the next
+ * one -- straight back into the same address with the same cmap_sub. Keyed on
+ * the pointer alone the fuzzer would have started reading the PREVIOUS font's
+ * answers out of the memo and stopped exercising the cmap at all: not a crash,
+ * not a wrong pixel, just an instrument that quietly stops measuring. Every
+ * ttf_parse bumps a generation and an entry matches only within its own, so a
+ * reparse -- a fuzz iteration, or a page installing @font-face -- flushes the
+ * whole table for free. The desktop parses three fonts at boot and then never
+ * again.
+ *
+ * NOT LOCKED, on purpose and by the same rule as everything else on this path:
+ * text.c's `text_lock` already serialises the 45 KiB of shaping scratch and the
+ * 2048-entry glyph cache that this sits underneath, and ring 3 links its own
+ * copy per process. A torn entry would be a wrong glyph, not a wrong pointer,
+ * so this must move with that lock and not before it.
+ *
+ * Ids above 0xFFFF are not cached (they cannot occur in a well-formed font --
+ * a glyph id is 16-bit -- so only a crafted format 12 group produces one, and
+ * refusing to store it is cheaper than widening every entry for it).
+ *
+ * SIZE: this compiles into the kernel, so the entry is packed to exactly 16
+ * bytes and the table costs 8,192 B of .bss, measured with a section dump and
+ * not counted by hand. The generation is 16-bit for that reason and it costs
+ * nothing: the wrap is handled by retiring every entry, so a narrow counter is
+ * a more frequent flush and never a wrong answer. */
+#ifndef TTF_GIDCACHE_N
+#define TTF_GIDCACHE_N 512                              /* power of two; 8 KiB of .bss */
+#endif
+
+struct ttf_gidmemo { const uint8_t *data; uint32_t cp; uint16_t gen; uint16_t gid; };
+static struct ttf_gidmemo g_gidmemo[TTF_GIDCACHE_N];
+static uint16_t g_ttf_gen = 1;                          /* 0 is "never written" */
+
+/* -DTTF_MEMO_NO_INVALIDATE is the NEGATIVE CONTROL: keep the memo, drop the
+ * generation. It is the plausible wrong implementation -- keying on the font's
+ * data pointer alone looks sufficient and is not, because a freed buffer's
+ * address is handed straight back to the next font. Every gate in this tree
+ * still passes under it (each parses its fonts into distinct live buffers);
+ * what fails is a reparse into a reused address, which is what font_fuzz.c
+ * does thousands of times per run. */
+static void ttf_memo_newgen(void)
+{
+#ifndef TTF_MEMO_NO_INVALIDATE
+    if (++g_ttf_gen == 0) {                             /* wrap: retire every entry */
+        for (int i = 0; i < TTF_GIDCACHE_N; i++) g_gidmemo[i].gen = 0;
+        g_ttf_gen = 1;
+    }
+#endif
+}
+
+static unsigned memo_slot(const uint8_t *data, uint32_t cp)
+{
+    unsigned long p = (unsigned long)(const void *)data;
+    unsigned h = (unsigned)(cp * 2654435761u) ^ (unsigned)((p >> 4) * 40503u);
+    return h & (TTF_GIDCACHE_N - 1);
+}
+
+static int cmap_lookup(const struct ttf_font *f, uint32_t codepoint)
 {
     const uint8_t *t = f->data + f->cmap_sub;
     int fmt = rd16(t);
     if (fmt == 4)  return cmap4(f, t, codepoint);
     if (fmt == 12) return cmap12(f, t, codepoint);
     return 0;
+}
+
+int ttf_glyph_id(const struct ttf_font *f, uint32_t codepoint)
+{
+#ifdef TTF_NO_GIDCACHE
+    return cmap_lookup(f, codepoint);
+#else
+    unsigned s = memo_slot(f->data, codepoint);
+    struct ttf_gidmemo *m = &g_gidmemo[s];
+    if (m->gen == g_ttf_gen && m->data == f->data && m->cp == codepoint)
+        return (int)m->gid;
+    int g = cmap_lookup(f, codepoint);
+    if (g >= 0 && g <= 0xFFFF) {
+        m->data = f->data; m->gen = g_ttf_gen; m->cp = codepoint; m->gid = (uint16_t)g;
+    }
+    return g;
+#endif
 }
 
 /* --- glyph outlines --- */

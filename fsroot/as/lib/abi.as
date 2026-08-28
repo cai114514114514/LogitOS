@@ -53,7 +53,8 @@ Run = layout("logit_run", 40, [
     ["mono", 12, 4, "i"],
     ["color", 16, 4, "u"],
     ["s", 24, 8, "p"],
-    ["len", 32, 4, "i"]
+    ["len", 32, 4, "i"],
+    ["bold", 36, 4, "i"]
 ])
 
 Blit = layout("logit_blit", 32, [
@@ -250,6 +251,11 @@ Sigctx = layout("logit_sigctx", 192, [
     ["fpstate", 184, 8, "u"]
 ])
 
+Sockaddr_un = layout("logit_sockaddr_un", 110, [
+    ["family", 0, 2, "u"],
+    ["path", 2, 108, "s"]
+])
+
 Sockaddr = layout("logit_sockaddr", 8, [
     ["family", 0, 2, "u"],
     ["port", 2, 2, "u"],
@@ -268,6 +274,30 @@ Dgram = layout("logit_dgram", 24, [
 Capreq = layout("logit_capreq", 72, [
     ["caps", 0, 8, "u"],
     ["prefix", 8, 64, "s"]
+])
+
+Ptrace_word = layout("logit_ptrace_word", 16, [
+    ["addr", 0, 8, "u"],
+    ["data", 8, 8, "u"]
+])
+
+Modinfo = layout("logit_modinfo", 48, [
+    ["id", 0, 4, "i"],
+    ["name", 4, 32, "s"],
+    ["size", 36, 4, "u"],
+    ["ndrivers", 40, 4, "i"],
+    ["nbound", 44, 4, "i"]
+])
+
+Pollfd = layout("logit_pollfd", 8, [
+    ["fd", 0, 4, "i"],
+    ["events", 4, 2, "i"],
+    ["revents", 6, 2, "i"]
+])
+
+Itimer = layout("logit_itimer", 16, [
+    ["value_ms", 0, 8, "i"],
+    ["interval_ms", 8, 8, "i"]
 ])
 
 # ---- calls (include/abi/logit_calls.abi) ----
