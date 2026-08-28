@@ -8,12 +8,14 @@
 #include "swap.h"
 #include "mmhost.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak tlb_flush_all below */
 
 /* WEAK, and not an #include: vmm.c is compiled host-side by make test-mm with
  * no kernel cpu headers on its include path -- the same reason kheap.c reaches
  * its core index through a weak hook. Absent, the call is skipped, which is
  * right: a host test has no other core to shoot down. */
-void tlb_flush_all(void) __attribute__((weak));
+void tlb_flush_all(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tlb_flush_all);
 
 #define PRESENT  0x1
 #define WRITABLE 0x2
@@ -529,9 +531,96 @@ void vmm_clone_stats(uint64_t *shared, uint64_t *copied)
     if (copied) *copied = g_clone_copied;
 }
 
+/* How many frames this call may hold, with their PTEs already cleared, before it
+ * has to stop and let the other cores catch up. See the header below: it is a
+ * correctness unit rather than a tuning knob, and 64 costs 512 bytes of the
+ * 32 KiB kernel stack.
+ *
+ * Overridable so that claim is CHECKABLE rather than asserted: the result of an
+ * unmap -- frames returned, refcounts, reverse map, swap slots -- must not
+ * depend on where the batch boundaries fall. Measured at 1, 3, 64 and 4096 over
+ * a 256-page unmap: identical, byte for byte, in every count. A batch of 1 is
+ * one shootdown per page, which is the SLOW correct answer, not a wrong one. */
+#ifndef UNMAP_HOLD
+#define UNMAP_HOLD 64
+#endif
+/* 0 would be a zero-length array and a store past it on the first frame -- the
+ * one value of this knob that is not merely slow. */
+_Static_assert(UNMAP_HOLD >= 1, "UNMAP_HOLD must hold at least one frame");
+
+/* Hand back the frames this pass has unmapped -- but not before every core that
+ * could still translate them has dropped the entry. This is the ordering the
+ * whole fix is: a flush AFTER pmm_free closes nothing, because the window is
+ * between the two.
+ *
+ * The shootdown is skipped entirely unless a sibling thread is running this
+ * same CR3 on another core right now, which is every single-threaded program on
+ * this machine: one read of g_cpu_cur[] per drain and no IPI. */
+static void unmap_drain(uint64_t cr3, const uint64_t *hold, unsigned *nh)
+{
+    if (!*nh) return;
+    if (LOGIT_HAVE(tlb_flush_all) && vmm_space_busy_elsewhere(cr3)) tlb_flush_all();
+    for (unsigned i = 0; i < *nh; i++) pmm_free(hold[i]);
+    *nh = 0;
+}
+
 /* Drop one reference per present PTE in [virt, virt+len) and clear the entries.
  * The page tables themselves are left in place (they are per-space and are
- * reclaimed wholesale by vmm_free_user). */
+ * reclaimed wholesale by vmm_free_user).
+ *
+ * THE FRAME IS NOT HANDED BACK UNTIL EVERY CORE HAS DROPPED ITS TRANSLATION,
+ * and until 2026-08-28 it was handed back first. This loop read `*pte = 0;
+ * pmm_free(frame); if (active) invlpg(a);` and then returned -- no cross-core
+ * shootdown, no generation bump, and even on THIS core the frame was back in
+ * the allocator two instructions before the TLB entry naming it was gone.
+ *
+ * That was harmless while an address space had exactly one thread. It stopped
+ * being harmless at M30: SYS_THREAD_CREATE gives siblings ONE CR3, so a sibling
+ * can be in ring 3 on another core holding a cached WRITABLE translation to a
+ * page this call is unmapping. pmm_free() then hands that frame to whoever asks
+ * next -- a page table, a kheap arena, a DMA ring -- and the sibling keeps
+ * writing to it. Ring 3 writing ring 0's memory, with every counter on the
+ * machine reading correct. c/kernel/sched/uthread.c:197 reported it from the
+ * outside, declined to patch it from there, and named both the site and the
+ * ordering: flush inside this function, BEFORE the frames are released.
+ *
+ * WHY tlb_flush_all() IS CALLABLE HERE, when the thread-exit path took it out
+ * again. Both of uthread.c's objections were about the mechanism as it stood
+ * then, and both have since been answered in c/kernel/cpu/:
+ *
+ *   - "it cannot be called holding the BKL, because a core spinning for the BKL
+ *     does so with IF=0 and can never acknowledge the IPI." True until tlb.c
+ *     started RECORDING the request in a per-core flag before sending the IPI
+ *     and spin_lock()'s wait loop started polling that flag (spinlock.c:54). A
+ *     core that cannot take an interrupt can still read a byte.
+ *     vmm_protect_range_in() forty lines below and vmm_free_space() both
+ *     already call it from under the BKL, for exactly this reason.
+ *   - "it gives up SILENTLY after fifty million pauses, and that spin was the
+ *     dominant cost of ending a thread." The silence is gone (tlb_late_count()
+ *     counts what was never acked), and the cost went with the first objection:
+ *     the spin only ran to its bound when the un-acked core was one that could
+ *     never answer. What is left is charged only when a sibling is ACTUALLY in
+ *     this space -- `vmm_space_busy_elsewhere` is the same gate mprotect uses.
+ *
+ * The generation counter in sched.c is NOT replaced by this and stays where it
+ * is: it is the backstop for a core that never acks at all. What this closes is
+ * the window the counter cannot -- the one tick between the frames going back to
+ * the PMM and that core reaching schedule().
+ *
+ * ONCE PER 64 FRAMES, not once per page and not once for the whole range. Once
+ * per page is an IPI broadcast per 4 KiB; once for the range needs a list as
+ * long as the range, and this path allocates nothing -- it is reached from
+ * munmap, which is reached from thread exit, and an unmap that can fail to
+ * allocate is an unmap that can fail. A fixed 512 bytes of stack bounds it
+ * instead. The batch is a CORRECTNESS unit: every frame in `hold` has had its
+ * PTE cleared and has not been given away, so the one flush that precedes the
+ * drain covers all of them, whatever the batch size is.
+ *
+ * A held frame is briefly rmap_count < pmm_refcount -- rmap_remove has run and
+ * pmm_free has not. That is the safe direction: reclaim evicts only when the two
+ * are EQUAL, so a held frame is temporarily unreclaimable rather than wrongly
+ * reclaimable. (Nothing else runs anyway; every caller of this holds the BKL,
+ * SYS_KHEAP_STRESS being the one entry on syscall_is_bkl_free's allow-list.) */
 uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
 {
     uint64_t start = virt & ~(uint64_t)0xFFF;
@@ -539,17 +628,22 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
     uint64_t end = (virt + len + 0xFFF) & ~(uint64_t)0xFFF;
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
     uint64_t n = 0;
+    uint64_t hold[UNMAP_HOLD];
+    unsigned nh = 0;
+
     for (uint64_t a = start; a < end; a += 4096) {
         uint64_t *pte = vmm_pte(cr3, a);
         if (!pte) continue;
         uint64_t e = *pte;
         /* A swapped-out page still occupies something -- a slot rather than a
          * frame -- so munmap has to release that too, or every unmap of
-         * swapped-out memory leaks swap capacity invisibly. */
+         * swapped-out memory leaks swap capacity invisibly. Nothing is held: a
+         * swap entry has P=0, so no core can have a TLB entry for it, and a
+         * swap slot is not a frame the PMM can hand to anyone. */
         if (vmm_pte_is_swap(e)) {
             *pte = 0;
-            swap_slot_put(vmm_pte_swap_slot(e));
             if (active) invlpg(a);
+            swap_slot_put(vmm_pte_swap_slot(e));
             n++;
             continue;
         }
@@ -557,22 +651,31 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
          * frame is STILL REFERENCED (vmm.h). It has to be released here for the
          * same reason the swap slot above does: the reference is invisible to
          * every other path, so an unmap that skipped it would leak a frame per
-         * guard page with nothing on the machine able to see it. */
+         * guard page with nothing on the machine able to see it.
+         *
+         * It goes through `hold` like any other frame even though P=0 means no
+         * core should still be caching it -- that "should" is an inference from
+         * vmm_protect_range_in having shot the page down when it made it
+         * PROT_NONE, and an inference is not what a frame handed back to the
+         * allocator should rest on when the uniform path is free. */
         if (vmm_pte_is_noaccess(e)) {
             *pte = 0;
-            pmm_free(e & MM_PTE_ADDR);
             if (active) invlpg(a);
+            hold[nh++] = e & MM_PTE_ADDR;
+            if (nh == UNMAP_HOLD) unmap_drain(cr3, hold, &nh);
             n++;
             continue;
         }
         if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
         if (e & VMM_PTE_COW) g_mm_cow_pages--;
         *pte = 0;
+        if (active) invlpg(a);           /* our own TLB first: the frame is still ours */
         rmap_remove(e & MM_PTE_ADDR, cr3, a);
-        pmm_free(e & MM_PTE_ADDR);
-        if (active) invlpg(a);
+        hold[nh++] = e & MM_PTE_ADDR;
+        if (nh == UNMAP_HOLD) unmap_drain(cr3, hold, &nh);
         n++;
     }
+    unmap_drain(cr3, hold, &nh);
     return n;
 }
 
@@ -722,7 +825,7 @@ uint64_t vmm_protect_range_in(uint64_t cr3, uint64_t virt, uint64_t len, uint32_
      * vmm_free_space(): tlb_flush_all() records the request in a per-core flag
      * BEFORE it sends the IPI and spin_lock()'s wait loop polls that flag, so a
      * core spinning with IF=0 still answers. */
-    if (n && tlb_flush_all && vmm_space_busy_elsewhere(cr3)) tlb_flush_all();
+    if (n && LOGIT_HAVE(tlb_flush_all) && vmm_space_busy_elsewhere(cr3)) tlb_flush_all();
     return n;
 }
 
@@ -815,7 +918,7 @@ void vmm_free_space(uint64_t cr3)
      * rested on every thread of the dying space having CR3-switched away
      * first, which is true today and is exactly the kind of invariant that
      * stops being true quietly. */
-    if (tlb_flush_all) tlb_flush_all();
+    if (LOGIT_HAVE(tlb_flush_all)) tlb_flush_all();
 }
 
 static int user_page_ok(uint64_t cr3, uint64_t virt, int write)

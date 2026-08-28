@@ -9,6 +9,7 @@
 #include "reclaim.h"
 #include "oom.h"       /* MMCTL_OOM: the killer's counters, readable from ring 3 */
 #include "sched.h"
+#include "tlb.h"       /* SYS_MUNMAP: tlb_late_count() -- did the shootdown reach every core? */
 #include "usercopy.h"
 #include "kprintf.h"
 #include "logit_abi.h"
@@ -226,7 +227,34 @@ long mm_syscall(long num, long a, long b, long c)
          * ordering should not depend on that) would re-fill a page that is
          * about to be thrown away. */
         if (vma_release(cr3, start, end - start) < 0) return -1;
+
+        /* THE BACKSTOP FOR THE CORE THAT NEVER ANSWERED.
+         *
+         * vmm_unmap_range_in() now shoots the other cores down before it hands
+         * a frame back (see the header above it -- until 2026-08-28 it did
+         * neither, and a sibling thread could keep writing through a stale
+         * WRITABLE entry into a frame the PMM had already reissued). That flush
+         * is BOUNDED and can give up: a core sitting in some IF=0 region that
+         * is not spin_lock()'s poll loop never acks, tlb_late_count() records
+         * it, and that core keeps the stale entry until its next CR3 switch.
+         *
+         * c/kernel/sched/uthread.c pairs its unmap with sched_tlb_gen_bump()
+         * for exactly that residue -- every core reloads CR3 at its next pass
+         * through schedule(), which the timer guarantees within one tick. A
+         * plain ring-3 munmap() had no such pairing, so it was the one caller
+         * whose stale entry had no bound at all. Same fix, at the same layer
+         * (uthread.c also bumps at its mm_syscall call site), and it is CHEAP
+         * because it is CONDITIONAL: a bump on every munmap would force a CR3
+         * reload on every core for a shootdown that already succeeded, which is
+         * the overwhelmingly common case.
+         *
+         * The two samples are exact rather than merely close: every initiator
+         * of a shootdown in this kernel holds the BKL, so no other core can
+         * advance the counter between them. Were that to change, the failure is
+         * one spurious CR3 reload per core, not a missed one. */
+        unsigned long late0 = tlb_late_count();
         vmm_unmap_range_in(cr3, start, end - start);
+        if (tlb_late_count() != late0) sched_tlb_gen_bump();
         return 0;
     }
 
