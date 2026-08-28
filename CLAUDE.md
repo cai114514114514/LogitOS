@@ -1,2435 +1,1618 @@
-# LogitOS OS — notes for Claude
+# LogitOS — notes for Claude
 
-A from-scratch x86_64 OS kernel (C + nasm), booted via GRUB/Multiboot2, aiming
-toward a macOS-style desktop. Real kernel, not a simulation.
+A from-scratch x86_64 OS kernel (C + nasm + a little Rust), booted two ways —
+GRUB/Multiboot2 and its **own UEFI loader** (`c/boot/efi/`) — aiming toward a
+macOS-style desktop that runs software not written for it. Real kernel, not a
+simulation.
+
+**This file was rewritten on 2026-08-28** after every falsifiable claim in the
+previous version was checked against the tree: **482 claims, 173 of them stale or
+false** (79 load-bearing, 53 outright false), and **108 components the document
+never mentioned at all**. Numbers below carry the date they were measured. The
+previous version's most expensive habit was a present-tense sentence about a
+world that had moved; where that happened the correction is kept beside the old
+claim rather than quietly overwritten, because somebody is going to arrive
+holding the old sentence.
+
+---
+
+## READ THIS FIRST: this tree does not fully build on its own documented host
+
+The Toolchain section below names **macOS / Apple Silicon** as the development
+host. A large share of this tree's host gates **cannot compile or link there** —
+not fail, not flake: not build. That was true for months and nothing noticed,
+because `tools/ci.sh` does not run on Darwin either.
+
+**`make test` — the first command in this file — is RED on this host.** It is
+`test: test-crypto test-net $(ISO) $(DISK)`, and `test-crypto` shells out to
+`test-cpufeat`, which runs CPUID **on the host** and so reports `0/56 present`,
+`1622 checks, 12 failed` on arm64. It FAILS rather than SKIPS, and has since
+`a37597829` (2026-08-07).
+
+The causes are few and each takes down many gates at once. **Learn these five
+shapes; they will be the reason your gate is red, and none of them is about the
+code under test:**
+
+| shape | what happens | what it took down |
+|---|---|---|
+| **Fortified `mem*` macros** | Apple's `<string.h>` makes `memset`/`memcpy` MACROS at *every* -O level (verified: `#ifdef memset` fires at -O0 and -O2). A file that declares them as bare externs *after* a host `<string.h>` expands the prototype into `__builtin___memset_chk` → "expected parameter declarator" | ~12 host gates via `layout.c`, `sock.c`, `ip.c`. **Fixed 2026-08-28** with `#ifndef memset` guards |
+| **`__attribute__((weak))` on a DECLARATION is an ELF idiom** | `settings.c:9-22` states the idiom: "weak makes them resolve to NULL instead of failing the link". That is an ELF property. On Mach-O an undefined weak symbol is a **hard link error**, so the protection the comment promises does not exist here | `test-layout-box`, `test-ip-route`, `test-raw-host`, `test-h2mux*`, `test-vfs-mount`, `test-mm`, `test-oom`, `test-procfs` |
+| **Hand-copied source lists** | `CANVAS_SRC`, `PROBE_SRC`, `H2MUX_SRC`, `MSE_INC` are copies of a TU list the tree kept growing. A source file grew a dependency and the link line did not follow | `test-canvas` (quoted here as "46 checks" and unobservable since), `test-frameworks`, `test-platform-*`, `test-mse*`, `test-demux-expect`, `test-tcp-host` |
+| **Shell and coreutil differences** | stock macOS `bash` is 3.2.57, where `"${arr[@]}"` on an empty array is fatal under `set -u`; BSD `wc -l` pads to `     717` so a string compare against `717` fails | `test-tls-interop` (exits 2 having run **zero** cases), `test-tls-server`, `test-crypto-diff-control` |
+| **Host capability absent, gate FAILS instead of SKIPPING** | darwin/arm64 ASan has no leak detector; there is no x86 CPUID; `emmintrin.h` refuses to compile | `test-cpufeat` → `test-crypto` → **`make test`**; `test-demux-fuzz`, and worse its **control passes for the wrong reason** — the ASan abort satisfies it without ever reaching the injected bug; `test-nn`, `test-lm-*` |
+
+**The rule that follows, and it is the one to apply to any gate you write:** a
+gate that cannot run on this host must **skip loudly** — one line naming the
+missing capability and the command that would settle it — and never pass
+silently. A gate that fails for a reason unrelated to the code under test is
+noise that trains people to ignore red.
+
+**And check the apparatus before believing any of the above is fixed.** These
+were measured on 2026-08-28; a fix pass was in flight the same day.
+
+---
 
 ## Build / run / test
 
 ```sh
 make        # -> build/logit.iso        (the KERNEL only -- see below)
-make run    # QEMU: VGA window + serial on terminal
-make test   # headless; asserts kernel prints LOGIT_BOOT_OK on serial
-make debug  # QEMU frozen with gdb stub on :1234
+make run    # QEMU: a virtio-gpu window at 1920x1200 + serial on the terminal
+make shot   # boots headless, screendumps over QMP, writes a PNG
+make test   # headless boot; asserts LOGIT_BOOT_OK -- and see the caveats
+make debug  # QEMU frozen with a gdb stub on :1234
 ```
 
-**`make` alone does NOT rebuild a ring-3 program.** `all: $(ISO)` and
-`$(ISO): $(KERNEL) grub.cfg` -- every app is an `.aex` on `$(DISK)`, which is a
-separate target that only `run` and the boot harnesses depend on. So editing
-`c/apps/browser/*.c` and running `make` prints "Nothing to be done for 'all'"
-and leaves a disk image with the old binary on it, which reads as "it still
-builds" and is not that. `make build/disk.img` (or any `make test-*` that needs
-the disk) is the check. Nothing is broken here -- the ISO genuinely does not
-contain the apps -- but "I ran make and it was fine" is not evidence about
-anything above the kernel.
+- **`make run` opens a virtio-gpu window, not a VGA one.** `QEMU_GPU := -vga none
+  -device virtio-gpu-pci,xres=1920,yres=1200` (Makefile:1278). VGA survives only
+  as `fb.c`'s multiboot-LFB fallback. The resolution is the single largest lever
+  on how the desktop feels — see the performance section.
+- **`make shot` is the cheapest instrument in the tree** and was absent from this
+  block for months. Its own comment: *"the check that separates 'the OS is
+  broken' from 'the window is not painting' — it reads the scanout the guest
+  produced, with no host window involved."*
+- **`make test` asserts more than LOGIT_BOOT_OK.** It runs `test-crypto` and
+  `test-net` first, and `tests/boot/run-test.sh` additionally requires the trust
+  banner to read exactly `EXPECT_ROOTS=130`, `EXPECT_SKIPPED=0`, and to name
+  `isrg_x1` — so changing `tools/roots/` is *supposed* to redden it until
+  somebody updates the number and says why.
+
+**`make` alone does NOT rebuild a ring-3 program.** `all: $(ISO)` and `$(ISO):
+$(KERNEL) grub.cfg` — every app is an `.aex` on `$(DISK)`, a separate target that
+only `run` and the boot harnesses depend on. Editing `c/apps/browser/*.c` and
+running `make` prints "Nothing to be done for 'all'" and leaves the old binary on
+the disk image. `make build/disk.img` is the check. Nothing is broken here — the
+ISO genuinely does not contain the apps — but "I ran make and it was fine" is not
+evidence about anything above the kernel.
+
+**`BUILD` is overridable and it reaches the recipes** (`make test-X
+BUILD=/tmp/mine`). That is how several agents can build this tree at once without
+manufacturing each other's failures — see "a sweep that manufactures bugs" below.
 
 ## Toolchain (macOS / Apple Silicon host, x86_64 target)
 
 - Compile: `clang --target=x86_64-elf -ffreestanding` (clang cross-compiles natively)
 - Link: **`ld.lld`** — Apple `ld` only emits Mach-O, so the LLVM linker is required (`brew install lld`)
 - Assemble: `nasm -f elf64` (32-bit boot code lives in elf64 objects via `bits 32`)
-- ISO: `i686-elf-grub-mkrescue` + `xorriso`
-- Run: `qemu-system-x86_64` (full emulation on arm64)
+- ISO: `i686-elf-grub-mkrescue` + `xorriso`; ESP: `tools/mkesp.py` (+ OVMF for `test-uefi`)
+- Run: `qemu-system-x86_64` — **TCG only.** An x86_64 guest on an arm64 host has
+  no hardware acceleration; `QEMU_SMP ?= -smp 4 -accel tcg,thread=multi`. Every
+  timing in this file is under emulation and says so.
+- The kernel is built **`-msse -msse2`** (Makefile:96) and has been since M15.
+  `-mno-sse` appears nowhere. Anything in this file that explains a design by
+  "the kernel cannot do floating point" is wrong; it can.
+- IDE diagnostics about inline-asm constraints or missing headers are **false
+  positives** unless `.clangd` is being honoured — the real build passes `-I` for
+  every source dir (`INCDIRS`) and the x86_64 target. `kprintf`/`kmalloc`/`vfs_*`
+  reported as undeclared is the signature.
 
-## Conventions
+---
 
-- Kernel loads at **1 MiB**; `linker.ld` forces the Multiboot2 header first.
-- Boot path: `boot/boot.asm` (32-bit: checks → identity page tables → long mode) → `boot/long.asm` (64-bit) → `kernel_main`.
-- `kprintf` fans output to **both** VGA and serial; serial is also the test channel.
-- IDE diagnostics about inline-asm constraints / missing headers are false
-  positives unless `.clangd` is being honored — the real build passes `-I` for
-  every source dir (`INCDIRS` in the Makefile) and the x86_64 target.
+## The five rules this tree has paid for
 
-## When a test fails, suspect the apparatus first — measured, 2026-08-17
+Each of these was learned by losing a day. They are not style.
 
-A sweep of all 522 targets produced 45 failures. **Most were the test, not the
-system**, and the expensive ones shared a shape worth naming:
+### 1. Suspect the apparatus first
+
+A sweep of every target once produced 45 failures; **most were the test, not the
+system**, and the expensive ones shared a shape:
 
 > **The measurement was right and the sentence around it sent the reader
 > somewhere else.**
 
-Eight instances in one day, and they did not look alike from the outside:
-
 | it said | it was |
 |---|---|
-| "isolated forms are about half again as wide as joined ones", 8 failures about Arabic | a screenshot of Preview playing an audio file — every row read `444 px` regardless of input length |
+| "isolated forms are half again as wide as joined ones", 8 Arabic failures | a screenshot of Preview playing an *audio* file — every row read `444 px` regardless of input |
 | `fresnel s=0: got 190, double says 255`, 26 failures | the oracle did not model a clamp the implementation argues for over twenty lines |
-| "something is still polling instead of blocking" | ~50 passes per core against a budget of 200 that does not mention cores |
+| "something is still polling instead of blocking" | ~50 passes *per core* against a budget of 200 that does not mention cores |
 | a `TypeError` traceback in the harness | the harness had found a real bug one line earlier and then walked off the end of it |
-| `undefined reference to gfx_path_ellipse` in three controls | the sentence explaining it was already a comment seven lines above one of them |
 | `0 px wrong` and failing | `rel=mismatch` — zero is the WORST outcome, printed in the words of the best |
 | `test-swap` green | the workload completes without swap; an optimisation shrank the desktop and the calibration went hollow |
-| "there is no reftest harness here, so LAYOUT is UNMEASURED" | `test-reftest` judged 24,300 reftests that day |
 
-**And the same thing happened to the tools used to investigate them**, which is
-the part worth internalising. An `md5sum` "matched" and let a real breakage ship,
-because `grep -m1` picked a different rule's first line. A shell check reported a
-variable missing that was on the continuation line. Two Makefile parsers dropped
-rules whose prerequisites wrap. A patch-anchor checker reported false failures
-because it regex-scraped `\n` instead of evaluating the string. A syntax checker
-reported an undeclared symbol because it put the unpatched header first on the
-include path.
+**And it kept happening on 2026-08-28**, four times in one afternoon, to the
+instruments used to investigate a performance complaint:
 
-Nobody was careless in any of these. The lesson is narrower and more useful:
-**before believing a failure, check that the thing reporting it is looking at
-what you think it is.** Cheap tests for that: does the number change when the
-input changes? Does the control fire? Does the same gate at another size or core
-count agree? Is the file it read the file you edited?
+- `settle_pointer` was constructed without a serial log, so it fell back to
+  finding the arrow in a screendump — and this machine puts the pointer on the
+  display's **hardware cursor plane**, so the arrow is not in the composite. The
+  drag never grabbed anything and the profile that came back was four halted
+  cores.
+- A kprof parser's regex did not match kprof's actual row format and printed
+  "0 samples over 0 sites" **directly under a header saying 8,471 samples were
+  taken**.
+- A QEMU boot died with "qemu exited early" because a stale `qmp.sock` sat in the
+  working directory; QEMU will not bind a unix socket path that exists. It read
+  as a broken guest.
+- `test-ime-os` — the on-device gate for the whole input method — passes green
+  while the feature is unusable, **by construction**: QMP injects scancodes
+  beneath the host keyboard, so every link from a person's fingers to QEMU is
+  bypassed.
 
-## If you write anything that reads the Makefile, join the continuations first
+Cheap checks: does the number change when the input changes? Does the control
+fire? Does the same gate at another size or core count agree? Is the file it read
+the file you edited? **Is the harness looking at the machine, or at itself?**
 
-There are five tools in this tree that parse make: `tools/audit_tests.py`,
-`tools/negctl_drift.py`, `tests/boot/sweep-classify.py`, and two throwaway shell
-checks that turned into decisions. **Four of the five read one PHYSICAL line at
-a time, and all four were wrong**, found in a single day (2026-08-17):
+### 2. If you read the Makefile, join the continuations first
+
+Six tools in this tree parse make. **All six are correct now** and each carries
+the reason above it — `tools/audit_tests.py:147`, `tools/negctl_drift.py:153`,
+`tools/mk_wired.py:41,76`, `tools/license_audit.py:260`,
+`tests/boot/mk-tcc-disk.py:30` all do `re.sub(r"\\\r?\n[ \t]*", " ", text)` first,
+and `tests/boot/sweep-classify.py` reads `make -pRrq`, whose output make has
+already joined. **Do not go re-fix them.** What survives is the rule, and the
+history of why:
 
 - an `md5sum` of `make -n build/disk.img | grep -m1 mkfs.py` matched before and
-  after a change, which is what convinced me the change was safe. It was
+  after a change, which is what convinced somebody the change was safe. It was
   comparing the first of several `mkfs` invocations, on a line the change never
   touched — and the change had made every app's host path empty. It shipped.
-- a shell check reported `browser-nofocus.elf` as missing `$(GFX_OBJ)`. It has
-  it, on the continuation line.
-- `negctl_drift.py`'s parser lost any rule whose prerequisites wrap, because the
-  second line starts with spaces, matches no target pattern and clears the
-  current target — so the rule's recipe was dropped and the target never entered
-  the table. It reported three browser variants where there are four, and the
-  missing one was the variant that started the investigation.
+- `negctl_drift.py` lost any rule whose prerequisites wrap, and reported three
+  browser variants where there were four. (There are **five** now: `browser.elf`,
+  `browser-nofetch`, `browser-nostream`, `browser-nofocus`, `browser-noplat`.)
 - `audit_tests.py` took `line.split(":", 1)[1]` as the prerequisite list, so
-  `test-fs-boot: a b c \` lost everything after the backslash. `test-fs-boot` is
-  one of that file's own suite roots, so its wrapped members were reported as
-  reachable by nothing. **The count the audit exists to produce was inflated by
-  its own parser: 22 wired became 31, and 359 unwired became 354.**
+  `test-fs-boot: a b c \` lost everything after the backslash. **The count the
+  audit exists to produce was inflated by its own parser.**
 
-`re.sub(r"\\\n[ \t]*", " ", text)` before anything else. Or read `make -pRrq`
-instead, whose output make has already joined — verified, not assumed, which is
-why `sweep-classify.py` is the one that was fine.
+### 3. One jar, TWO doors
+
+A constant that must agree between two places, spelled twice, agrees on the wrong
+value about as often as the right one. This tree has paid for it three times:
+
+- `/dev/log` vs `LOGIT_PATH_LOG` — mini-libc's `syslog()` and `/bin/syslogd` both
+  said `/dev/log`, as every Unix has since 4.2BSD. On this machine `/dev` is
+  **synthesised** and holds exactly eight control files, so nothing can be
+  created in it by anyone. Both doors agreed, on a value that could not work.
+- `LOGIT_ARG_MAX` — `sh.c` said 32 and `exec.c` said 48, and **each end silently
+  truncated at its own number**: sh dropped the 33rd word of a line, exec dropped
+  every argument from the 49th. One header now (`include/abi/logit_exec.h`).
+- The IME toggle chord was spelled in **eight** literals — five kernel strings, a
+  comment, a header sentence, and two harnesses. It is `IME_TOGGLE_NAME` now.
+
+### 4. A gate nobody runs is a gate that rots, silently
+
+Five host targets were once found to have stopped **building** — not failing:
+not compiling — each because a source file grew a dependency and a link line did
+not follow. That list has only grown; see the host-reality table at the top.
+
+The mirror-image trap lives in `tests/libc.mk` and is worth internalising: the
+"ours" build still **links** glibc, so a missing implementation TU is a runtime
+**fallback**, not a link error. And the other half — a missing entry in
+`libc_rename.h` does not merely fail to test our version, **it silently replaces
+the reference**: our `setrlimit` overrode glibc's for the whole process, and ASan
+calls it during its own init, producing a segfault inside `__asan_init` with no
+output at all.
+
+### 5. A control that cannot be watched failing is worse than no control
+
+Because it reads like one. Live examples in the tree right now:
+
+- `test-bidi-negctl` prints "negative control ok" on a machine where the Unicode
+  corpus does not exist. The negctl binary exits non-zero — but because it cannot
+  open `BidiTest.txt`, not because bidi resolution is absent.
+- `test-demux-fuzz-negctl` claims ASan catches an injected NAL-length over-read.
+  On darwin/arm64 ASan aborts at startup (no leak detector), and **that abort
+  satisfies the control** without ever reaching the injected bug.
+- `test-url` reports `32/32 (100.0%)` while printing that both WPT corpora are
+  absent.
+- **61 controls are "stranded"**: `NOT_CI` drops every `test-*-negctl` from the
+  suite listing on the ground that a control is "run by its positive
+  counterpart". Nothing checked that. 55 are recorded as debt in
+  `tests/audit-stranded.baseline` and **6 are new**. The fix for one is a single
+  line — `test-X: test-X-negctl` — and naming it on a `ci-host:` line instead
+  satisfies the audit and still runs it never, which is worse because it looks
+  fixed. `tests/license.mk` and `tests/logreporter.mk` are the worked examples.
+
+---
 
 ## Source layout
 
-All source lives under `c/`, headers **colocated** with their `.c`. The
-Makefile's `INCDIRS` is one flat list built from `find c include -type d`, so
-every `#include "foo.h"` resolves without a path qualifier. `include/` keeps
-only the cross-cutting kernel↔user ABI (`include/abi/logit_abi.h`).
+All **C** source lives under `c/`, headers **colocated** with their `.c`. PNG,
+BMP, ICO, WebP and inflate are **Rust** (`rust/src/*.rs`, linked as
+`$(RUST_LIB)`); QuickJS, musl libm, NetSurf LibCSS and TinyCC are under
+`third_party/`.
 
-**That flat list assumes header basenames are unique, and they are not.** The
-assumption has been broken twice, both times by mini-libc growing a POSIX header
-whose name the kernel already used, and both times the symptom was the same and
-badly misleading: the list is sorted, `c/apps/libc/include` sorts before
-`c/kernel/...`, so **kernel** files including `"foo.h"` silently got the
-**userland** one and failed on undeclared kernel functions in files nobody had
-edited. A clean clone was immune while the header stayed untracked, which is how
-both survived a while.
+`INCDIRS` is one flat list built from `find c include -type d`, so every
+`#include "foo.h"` resolves without a path qualifier:
 
-- `sys/wait.h` — fixed by excluding one directory:
-  `INCDIRS := $(addprefix -I,$(filter-out %/include/sys,$(sort $(shell find ...))))`
-- `sched.h` — fixed by moving it to `c/apps/libc/include/uonly/`, excluding that
-  directory from the shared scan, and adding `-Ic/apps/libc/include/uonly` to
-  **`UCFLAGS` only**. Note the ordering trap: it must come **before**
-  `$(INCDIRS)`, or the kernel's header wins anyway.
+```make
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(shell find c include -type d))))
+```
 
-`uonly/` is the place for a userland header whose basename the kernel also uses.
+**That flat list assumes header basenames are unique, and they are not.** Twice a
+mini-libc POSIX header took a name the kernel already used; the list is sorted,
+`c/apps/libc/include` sorts before `c/kernel/...`, so **kernel** files including
+`"foo.h"` silently got the **userland** one and failed on undeclared kernel
+functions in files nobody had edited. A clean clone was immune while the header
+stayed untracked, which is how both survived a while. `sys/wait.h` was fixed by
+excluding one directory; `sched.h` by moving it to
+`c/apps/libc/include/uonly/` — note the ordering trap, `-Ic/apps/libc/include/uonly`
+must come **before** `$(INCDIRS)` in `UCFLAGS` or the kernel's header wins anyway.
 Before adding a header to `c/apps/libc/include`, check its basename against
-`c/kernel`, `c/drivers`, `c/net`, `c/fs` and `c/lib` — a collision does not fail
-at the collision, it fails somewhere else entirely.
-
-Tests live under **`tests/`** (moved out of `tools/` in the 2026-06-09 declutter):
-`tests/unit/` = host unit/fuzz tests (`make test-tcp-host`/`test-as`/`test-png`/…)
-+ `tcpstub/` + generators; `tests/boot/` = QEMU boot harnesses (`run-*.sh`, driven by
-`make test`/`test-nvme`/`test-shell`/`test-libc`/`test-smp`); `tests/qmp/` = QMP
-mouse/keyboard/screenshot drivers. `tools/` is now **build tools only** (mkaex,
-mkfs, mkfont, genroots, gen_compile_commands, gen_libcss, mkwallpaper).
+`c/kernel`, `c/drivers`, `c/net`, `c/fs` and `c/lib`.
 
 ```
-c/boot/                                        multiboot + long-mode entry (asm)
-c/kernel/{core,cpu,mm,sched,exec,gui,pci,audio}/  kernel by subsystem
-c/drivers/{char,timer,block,net,usb,virtio,audio,core}/  device drivers
-c/fs/                                          vfs + logitfs
-c/net/{link,ip,transport,core,dns,http,tls}/   network stack
-c/crypto/{hash,aead,kdf,pubkey,trust}/         from-scratch crypto
-c/lib/{image,text,gfx,audio,video,media}/ + string.c   shared libs, ring 3
-c/apps/                                        shared: logit.h clib.h crt0.asm crt0_cli.asm
-c/apps/gui/                                     windowed apps: clock textedit monitor terminal
-                                                 files preview studio gallery settings widgets greeter
-                                                 + aui.{h,c} = immediate-mode widget toolkit (linked into each)
-c/apps/coreutils/                              sh + coreutils (ls cat echo wc head login httpd …)
-c/apps/as/                                     AetherScript language (M20): /bin/as
-c/apps/browser/                                browser + render engine (dom, layout,
-                                                 css_engine, browser_paint, js_dom) — also links QuickJS
-c/apps/libc/                                   mini-libc (string/stdio/malloc/setjmp…)
+c/boot/            multiboot + long-mode entry (asm)  +  efi/ = a from-scratch UEFI loader
+c/kernel/{core,cpu,mm,sched,exec,gui,pci,audio,module}/   kernel by subsystem (nine, not eight)
+c/drivers/{char,timer,block,net,usb,virtio,audio,core}/   device drivers
+c/fs/              vfs + logitfs + procfs + ramfs + lfsro + fsck
+c/net/{link,ip,transport,core,dns,http,tls,ssh}/          network stack (eight, not seven)
+c/crypto/{hash,aead,kdf,pubkey,trust,pq}/ + cpu_report.c  from-scratch crypto (pq = ML-KEM)
+c/lib/{image,text,gfx,audio,video,media,ime,nn}/ + string.c
+c/apps/            shared: logit.h clib.h logit_stat.h hidden.h crt0.asm crt0_cli.asm
+c/apps/gui/          clock textedit monitor terminal files preview studio gallery
+                     settings widgets greeter ch  (TWELVE) + aui.{h,c} = the widget toolkit
+c/apps/coreutils/    sh + coreutils + login sshd syslogd httpd ping ps clip …
+c/apps/as/           AetherScript: /bin/as
+c/apps/browser/      browser + render engine + QuickJS bindings (the largest app)
+c/apps/libc/         mini-libc — 44 files, 12.9k lines of src + 3.8k of headers
+c/apps/lm/           /bin/lm — transformer inference on the device
+rust/src/            png bmp ico webp vp8* inflate imgbuf
+include/abi/         FIVE files: logit_abi.h logit_exec.h logit_pack.h sockerr.h logit_calls.abi
 ```
 
-**Two things in that tree are misplaced, and they are named here rather than
-moved because moving them touches a dozen build rules across the Makefile and
-five `tests/*.mk` fragments — a bigger edit than the mess is worth while other
-lines are live. Do not add to either.**
+**`include/abi/logit_pack.h` and `fsroot/as/lib/abi.as` are GENERATED** by
+`tools/gen_abi.py` from `include/abi/logit_calls.abi` and open with "DO NOT EDIT".
 
-- **`c/apps/{audio,media,net,video}/` are not applications.** Each holds one or
-  two `*check.c` programs — `audiocheck`, `demuxcheck`, `msecheck`, `h2check`,
-  `vidcheck`, `vidcheck265` — whose only callers are `tests/*.mk`. They are
-  **on-device test harnesses that happen to be built as `.aex`**, and they live
-  in `c/apps/` for the mechanical reason that `.aex` rules did. A new one
-  belongs beside them only until somebody moves the four directories under
-  `tests/`; a new *application* does not belong there at all.
-- **`c/lib/` is ring 3, not shared-with-the-kernel.** `c/lib/video` is filtered
-  out of `C_SRC` on purpose (see the H.264 note below), `c/lib/gfx` likewise.
-  The name suggests a kernel library and it is not one.
+**`c/lib/` is SHARED, not ring-3-only.** 21 of its translation units compile into
+the kernel: `text` (9), `gfx` (6), `image` (4), `ime` (1) and `string.c`. `C_SRC`
+filters out only `c/lib/{video,audio,media,nn}` and three files of `image`. The
+kernel is `c/lib/gfx`'s busiest caller and `c/lib/ime` runs in ring 0.
 
-`c/apps/libc/` is `src/` + `include/` and reports as empty to anything that
-looks only at `c/apps/libc/*.c`; it is 11.8k lines one level down (2026-08-17).
+**There is a LICENSE BOUNDARY running through `c/lib/`** and nothing in a layout
+listing suggests it. `LICENSING.md`: GPL-3.0-or-later covers `c/boot c/kernel
+c/drivers c/fs c/net c/crypto c/lib` **except** `c/lib/image/**`; MIT covers
+`c/lib/image/**`, `include/`, `rust/`, `tools/`, `tests/`, `docs/`, `fsroot/`. So
+`c/lib/gfx/foo.c` is GPL and `c/lib/image/foo.c` is MIT. `make test-license-audit`
+gates it and is green. `CONTRIBUTING.md` requires SPDX lines on new first-party
+files; **adoption is zero** (`grep -rl SPDX-License-Identifier c/ rust/` = 0) and
+nothing checks it.
 
-**File paths quoted in the Notes below are pre-reorg names** (e.g. `net/tcp.c` is
-now `c/net/transport/tcp.c`, `kernel/wm.c` → `c/kernel/gui/wm.c`); basename +
-subsystem are unchanged, so they're easy to find under `c/`.
+**`tools/` is NOT build tools only** — 67 entries. Besides the generators it holds
+the CI driver, three make-parsing gates, bisection and clean-clone verification,
+scoreboard/WPT ranking, the language-model oracles, and `perf/`, `mmtrace/`,
+`roots/`, `pkgroots/`.
 
-## Roadmap
+**Two things in `c/apps/` are misplaced** and are named rather than moved because
+moving them touches the root Makefile *and* six `tests/*.mk` fragments. Do not add
+to either. `c/apps/{audio,media,net,video}/` are **not applications** — they hold
+`audiocheck`, `demuxcheck`, `msecheck`, `h2check`, `vidcheck`, `vidcheck265` and
+`vidbench`, on-device harnesses that happen to be built as `.aex`. Three of the
+seven are built by the **root Makefile**, not by a fragment. The newest real
+application, `c/apps/lm/`, correctly went into its own directory.
 
-M1 Boot & Hello ✅ · M2 interrupts + keyboard ✅ · M3 memory (PMM + heap) ✅ ·
-M4 multitasking (preemptive scheduler) ✅ · M5 storage (ATA + LogitFS + VFS) ✅ ·
-M6 userland (GDT/TSS + ring3 + int 0x80 + ELF loader) ✅ · M7 graphics
-(framebuffer + VMM + LogitOS desktop) ✅ · M8 window system (font + double-buffer +
-PS/2 mouse + draggable windows) ✅ · M9 networking (PCI + e1000 + ARP/IPv4/
-ICMP/UDP + DNS + Network app) ✅.
+Tests live under `tests/`: `tests/unit/` = host unit/fuzz gates + stubs +
+generators; `tests/boot/` = QEMU harnesses; `tests/qmp/` = QMP mouse/keyboard/
+screenshot drivers. **105 `tests/*.mk` fragments**, each owned by a line of work;
+`make test-mk-wired` proves every one of them is reachable from the root Makefile
+(the failure it exists for is invisible from both ends — the fragment builds, its
+gates run by hand, and `make test-X` answers "No rule to make target", which reads
+as a typo in the docs).
 
-Browser arc: M10 TCP ✅ (`net/tcp.c`, client byte stream) · M11 HTTP + Browser
-app ✅ (`net/http.c` fetch + `net/html.c` de-tag render + `user/browser.c`) ·
-M12 TLS 1.3 ✅ (`crypto/*` + `net/tls.c` + `net/x509.c`; https with strict cert
-verification) · M13 HTML/CSS layout ✅ (`net/dom.c` + `net/css.c` + `net/layout.c`
-+ `net/paint.c` + `lib/{inflate,png,gif,img}.c`: DOM + CSS cascade → flat display
-list → painted viewport with clickable links + images; `user/browser.c` renders
-real pages incl. https://en.wikipedia.org).
+---
 
-M14 Unicode + from-scratch TrueType anti-aliased text ✅ (`lib/utf8.c` +
-`lib/ttf.c` + `kernel/raster.c` — **since deleted, see Open Logit below: glyphs
-are rasterized by the engine now, through `c/lib/text/glyphras.c`** — +
-`kernel/text.c`): UTF-8 decode, a from-scratch
-TTF parser (cmap fmt4/12, glyf simple+composite, hmtx) and an integer-only AA
-rasterizer (4× vertical oversample + fractional horizontal coverage → 0–255
-alpha), with a glyph cache + font fallback. `fb_text` routes through it, so the
-whole UI is anti-aliased; the Terminal uses `text_draw_mono` (SYS_GUI_TEXT_MONO).
-Fonts live on the LogitFS disk (`/fonts/{ui,mono}.ttf`, subset by
-`tools/mkfont.py` from vendored OFL Noto Sans SC + Noto Sans Mono sources,
-glyf), loaded by `text_init()` after fs mount; QEMU `-m 512M`. The CJK font is
-about 2.2 MB, and LogitFS supports **double-
-indirect** inodes (`fs/logitfs.c` + `tools/mkfs.py`; files >4 MB). The 8×16
-bitmap font (`font8x16.h`, `genfont.py`) was removed. Chinese web pages render
-(`zh.wikipedia.org`). Notes: no hinting (macOS-style), grayscale (no subpixel),
-no bidi/shaping; the rasterizer is integer-only because the kernel is `-mno-sse`.
+## What this machine is, subsystem by subsystem
 
-Post-roadmap: per-process address spaces (each app its own PML4; `vmm_new_space`,
-`schedule()` switches CR3) and ring-3 fault containment (an app fault kills only
-that app; the kernel/desktop survive — `kernel/interrupts.c`).
+The previous version of this file described about a third of the tree. The rest
+is below, one line each plus **the one thing its own source argues that you would
+otherwise get wrong**. An absent claim is worse than a stale one: a reader of a
+thin section concludes the subsystem does not exist.
 
-Key notes:
-- `vmm_map_page` does a real 4-level walk; maps the high-MMIO framebuffer and
-  user pages. Intermediate table entries carry USER; leaf PTE flags protect
-  kernel pages. User images link at 1 GiB (above the identity huge-page region).
-- Disk / filesystem: see the **Storage** section below. (This bullet used to
-  describe an ATA-only, v3, no-journal LogitFS; all three are out of date.)
-- Userland: `kernel/gdt.c` (TSS rsp0), `boot/enter_user.asm`, syscalls via
-  int 0x80 in `kernel/syscall.c`; `user/` builds the ring-3 ELF.
-- M8 window system: `tools/genfont.py` -> `include/font8x16.h` (committed, no PIL
-  at build). `kernel/fb.c` draws into surfaces (`fb_target`/`fb_blit_surface`)
-  with a screen back buffer + `fb_present()`. `drivers/mouse.c` = PS/2 mouse
-  (IRQ12); `drivers/rtc.c` = CMOS wall clock (menu bar + Clock app).
-- M9 networking: `kernel/pci.c` (0xCF8/0xCFC config) + `drivers/e1000.c` (QEMU
-  e1000 8086:100E, MMIO BAR, RX/TX descriptor rings). **THE "polled -- no NIC
-  IRQ" THAT USED TO END THIS LINE IS FALSE**, and it was load-bearing: on
-  2026-08-17 it produced a whole diagnosis of the network's throughput as
-  "gated on the compositor's frame rate", because the only steady-state caller
-  of `net_poll()` is `wm.c:5411` inside the WM loop. `c/drivers/net/e1000.c:12`
-  says the opposite in as many words -- *"IRQ-driven receive on RXT0 with
-  net_poll() as the backstop"* -- so the WM loop is the backstop, not the pump,
-  and the theory built on this sentence was dead on arrival.
+### Boot and CPU
 
-  The arithmetic that went with it is worth recording as a warning too:
-  `RX_DESC (64) x TIMER_HZ (100)` = 74.8 Mbit/s was offered as the cap against a
-  MEASURED 269.9 Mbit/s -- 3.6x above a supposed ceiling, which should have
-  killed the theory by itself. Nothing in this tree ties `e1000_rx_drain` to the
-  timer tick; the two numbers never meet.
-  `net/` = eth/arp/ip/icmp/udp/dns; `net_poll()` is pumped from the WM loop.
-  Static IP (QEMU SLIRP: 10.0.2.15/24, gw 10.0.2.2, DNS 10.0.2.3) in
-  `net_cfg`. **"(DHCP hook later)" USED TO END THAT SENTENCE AND IS STALE**:
-  `c/net/core/dhcp.c` exists, `make test-dhcp-host` is 16 checks, and a boot
-  on 2026-08-20 printed `[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3`
-  before any traffic. The static values above are the fallback, not the path.
-  Run/test attach `-netdev user -device e1000`
-  (+ `filter-dump` pcap for `make run`). e1000 gotcha: QEMU's `set_rx_control`
-  defers the RX-queue flush ~1s, so RX needs a real time base to observe.
-- **M9.5 the four things `c/net/core` could not do, landed 2026-08-20.** Each
-  had the same shape going in: a number in a header the kernel had never heard
-  of, or a decision hard-coded where a table belonged. All numbers below are
-  HOST unless the line says DEVICE.
-  - **An interface TABLE, not `g_nic`.** `netdev.c:51` was one global pointer,
-    so with four drivers in the tree (e1000, rtl8139, rtl8169, virtio-net)
-    whichever registered last won and the rest were invisible. `struct netif`
-    + `netif_register/by_index/by_name/addr_add/src_for` replaces it;
-    **loopback registers FIRST** so `RT_OIF_LO == 1` holds by construction
-    (`_Static_assert`). DEVICE: a boot prints `[net] if 1 lo ... 127.0.0.1/8`
-    and `[net] if 2 eth0 ... [primary]`. `test-netif` 43, negctl reddens 7.
-  - **A routing table, not a ternary.** `ip.c:56` was
-    `((dst & mask) == (ip & mask)) ? dst : gw` -- one gateway, and no way to
-    say "no route": an unroutable datagram went to the gateway, which is a
-    leak, not a fallback. `c/net/core/route.c` is longest-prefix-then-metric
-    with the default route as **plen 0** (same loop, no branch).
-    `nm -u route.o` is **EMPTY** -- it knows only integers, which is why its
-    gate stubs nothing. DEVICE: `[route] 127.0.0.0/8 onlink dev 1 ... local` /
-    `10.0.2.0/24 onlink dev 2` / `0.0.0.0/0 via 10.0.2.2 dev 2`, printed
-    during a passing `test-net-os`. `test-route` 64, `test-ip-route` 25,
-    negctls redden 9 and 11. **The negctl for the inset is the OLD TERNARY on
-    a `-D` switch, not a broken version** -- the version that shipped until
-    that day, which is the only control worth having, because everything it
-    does still looks right.
-  - **`SOCK_RAW` was a number in a header the kernel had never heard of.**
-    `c/apps/libc/include/sys/socket.h:42` defined it; grepping the whole
-    kernel for it returned nothing, and `ping` was a bespoke syscall
-    (`SYS_NET_PING`), so ICMP was unreachable by any general mechanism.
-    `c/net/core/raw.c` + an `S_RAW` kind in `lsock.c`, root-only, with
-    **IP_HDRINCL refused outright** (a caller-built IP header is the mechanism
-    for forging a source address). DEVICE, same boot, same target: the old
-    `net ping` printed `reply: 10 ms` and the new `/bin/ping 10.0.2.2` printed
-    **4 packets transmitted, 4 received, 0% packet loss** -- two independent
-    paths to one gateway, which is what says the raw socket carried real ICMP
-    rather than a plausible number. `test-raw-host` 21.
-  - **AF_UNIX existed nowhere in the tree** -- zero occurrences of
-    `AF_UNIX`/`sockaddr_un`. `c/net/core/unix.c` is stream + datagram +
-    **seqpacket** (which fell out: datagram already needs a record-length
-    ring, so seqpacket is the stream path with that ring on -- one
-    comparison). Bindings live in `unix.c`, **not as VFS nodes**, and the cost
-    is stated rather than hidden: no `ls`, no `stat`, unlink does not release.
-    Abstract namespace (leading-NUL `sun_path`) is **refused, not stubbed**.
-    `test-unix` 132 checks, and THREE controls because three properties fail
-    independently -- record boundaries (8), the wake (1), one buffer for both
-    directions i.e. a socket built on `struct pipe` (18).
+- **UEFI loader** — `c/boot/efi/loader.c` (1,238 lines), `trampoline.S`, its own
+  `build.sh`, `tools/mkesp.py`. **Its thesis is that it impersonates GRUB**: it
+  forges a Multiboot2 info block so *the kernel does not change*. One kernel, two
+  loaders. `make test-uefi` boots it under OVMF; `test-uefi-negctl` is a loader
+  built with `-DEFI_BAD_MAGIC` whose one wrong bit must make `LOGIT_BOOT_OK`
+  never appear. The ESP is a **superfloppy, not GPT** — decided by experiment,
+  because it was not obvious which this repo's OVMF honours.
+- **ACPI / LAPIC / IOAPIC / MSI / SMP / per-CPU** — `c/kernel/cpu/`. `pci_msi.c`'s
+  `dev_irq_request()` tries MSI-X, then MSI, then INTx. **The IRQ stubs live in
+  `c/drivers/core/irq.c`, not `boot/isr.asm`**, because `isr_common` is a
+  file-local nasm label — and they must mirror it *including the FXSAVE/FXRSTOR
+  pair*, because the kernel is `-msse2`. The IDT gates are installed via `sidt`,
+  not through `idt.c` (whose setter is static).
+- **W^X / NX / SMEP / SMAP** — `c/kernel/cpu/prot.c`. `elf.c` maps each `PT_LOAD`
+  with the permissions the ELF asks for. **Before this, every executable page in
+  every process was also writable and a program could rewrite its own code.**
+- **`cpu_report.c`** records why **AVX is deliberately OFF**, and it is a trap
+  that would otherwise be rediscovered as data corruption: `isr.asm` wraps every
+  C handler in FXSAVE/FXRSTOR, which saves x87 and XMM0-15 and **nothing else** —
+  enable AVX without migrating to XSAVE and every interrupt silently truncates
+  the top 128 bits of every YMM register.
+- **`cpufeat.c`** — the leaf-availability rule is a silent-wrong-answer trap:
+  querying past the highest supported CPUID leaf returns *that leaf's* result,
+  not zero, so a naive "read leaf 7" on an old CPU invents features.
 
-  **THE PATH BOTH SIDES AGREED ON WAS WRONG, and agreeing is why it survived.**
-  `/bin/syslogd` is AF_UNIX's consumer and mini-libc's `syslog()` is the
-  writer; both said `/dev/log`, as every Unix has since 4.2BSD. On DEVICE that
-  is `[vfs] create refused in /dev: mode 0644` / `syslogd: bind failed: -7`,
-  because **`/dev` here is not a directory** -- `c/fs/vfsctl.c` synthesises it
-  and it holds exactly eight control files, so nothing can be created in it by
-  anyone. The name is one `LOGIT_PATH_LOG` in `include/abi/logit_abi.h` now
-  (`/var/log/sock`), which is the only header a mini-libc TU and a `clib.h`
-  binary both see; two literals that must agree is the "one jar, TWO doors"
-  shape, and they agreed on the wrong value. DEVICE after: `syslogd:
-  listening on /var/log/sock`, and a second instance is refused BY NAME
-  (`already bound`), which is what says the namespace is real and exclusive
-  rather than merely accepting.
+### Memory
 
-  **What is NOT true yet: nothing has crossed that socket on device.** No
-  shipped program calls `syslog()` -- the writer half's only coverage is
-  host-side. The daemon binds, listens, and has no clients.
-- **DNS grew owner-name matching, EDNS0 + a real TCP fallback, and per-record
-  TTLs** (`c/net/dns/dns.c`). Worth knowing: the legacy `dns_start()`/
-  `dns_result()` API and the async pool used to be TWO independent
-  implementations of the same parsing, so fixing one would have reproduced the
-  cookie-jar bug exactly; they are one `dq_advance()` now. `test-dns` 29,
-  negctl reddens **exactly 1** (the unrelated-name case) -- a control that
-  reddens the whole suite is not measuring the one thing it claims.
-- M10 TCP (`net/tcp.c`): client byte stream over IP proto 6 (IP_PROTO_TCP via
-  ip_input's weak hook); tcp_connect/send/recv/close; single outstanding seg +
-  timeout retransmit. **M26 robustness:** receive now does **out-of-order
-  reassembly** (a sorted interval set over a seq-indexed 64 KiB ring, NOOO=16),
-  so a reordered/lost segment mid-flight no longer discards the rest -- large TLS
-  handshake flights arrive reliably (the old strict-in-order drop was the
-  "sectigo fails" cause). `tcp_send` segments payloads > MSS instead of
-  truncating. Still no window-scaling/congestion-control/SACK (perf, deferred).
-  Reassembly is unit-tested host-side (`make test-tcp-host`, 26 checks incl. a
-  32 KiB flight delivered in reverse + seq wraparound). NCONN=8; a closed
-  connection's slot is freed promptly (FIN_WAIT -> CLOSED on the peer's FIN, plus
-  a `tcp_poll` backstop) -- the old code leaked slots in FIN_WAIT/TIME_WAIT,
-  which a multi-connection page (e.g. a redirect) exhausted.
-- M11 HTTP (`net/http.c` + `net/url.c` + `net/html.c`): http_get(url) does
-  DNS+TCP+GET synchronously and html_render strips tags/decodes entities/extracts
-  `<a>` links; `user/browser.c` is the GUI. **Gotcha:** blocking net calls
-  (http_get, dns_resolve) pump net_poll and need IF=1, but int 0x80 is an
-  interrupt gate (clears IF) — so SYS_HTTP_GET re-enables interrupts around the
-  fetch (see `wm_gui_syscall`), else the PIT-based timeout loop spins forever.
-  http_get now branches on https (see M12), and **follows 3xx redirects** (up to
-  5 hops, `Location:` via `url_resolve`) -- so https://google.com lands on
-  https://www.google.com like a real browser. **Stack note:** the TLS path is
-  stack-heavy (handshake + cert/RSA verify + `aead_seal`); that 16 KiB plain
-  buffer is now `static`, and the boot stack + thread kstack are 32 KiB. With the
-  old 16 KiB stack the deeper redirect path overflowed *into the page tables*
-  (`stack_bottom` sits just above `pd_table` in boot.asm) -> silent hang.
-- M12 TLS 1.3 (`crypto/*` + `net/tls.c` + `net/x509.c`): from-scratch crypto --
-  SHA-256/384, HMAC/HKDF (`hmac_hkdf.c`), ChaCha20-Poly1305 + AES-128-GCM,
-  X25519, EC P-256/P-384 + ECDSA-verify (`ecdsa.c`, Jacobian coords). `net/tls.c`
-  is a TLS 1.3 client (X25519 KX, both AEADs, SHA-256 transcript, HKDF schedule);
-  `net/x509.c` does DER/X.509 parse + **strict** chain verification to built-in
-  roots (`crypto/roots.c`). http_get's https branch layers tls_connect over the
-  TCP socket. Each primitive is verified against published/openssl vectors. Like
-  all blocking net ops, tls_connect needs IF=1 (SYS_HTTP_GET re-enables it).
-  **The sentence that used to end this bullet -- "Only TLS 1.3 + the two suites
-  above; no resumption/0-RTT/client-certs" -- was wrong on two of its four
-  clauses and cost a day: on 2026-08-20 it was read as the current state and a
-  work order was written against it. TLS 1.2 and resumption both exist. See the
-  TLS section below, which is the live one.**
-- M12.5 RSA + real CA bundle (the "open most of the web" follow-up): `crypto/rsa.c`
-  adds from-scratch RSA verify -- bignum modexp (double-and-add modmul, no wide
-  product; 4096-bit modulus, e=65537) + **PKCS#1 v1.5** (cert-chain sigs) and
-  **RSA-PSS** (TLS 1.3 CertificateVerify for RSA leaves; MGF1 + EMSA-PSS).
-  `net/x509.c` now parses RSA SPKI + rsaWithSHA256/384 and dispatches EC/RSA in
-  both `x509_verify_signed_by` and the new `signed_by_root` (top cert trusted if
-  its issuer is a held root, not only if the root is sent in-band). Trust store
-  is a **130-root bundle** (`tools/roots/*.pem` -> `tools/genroots.py` ->
-  `c/crypto/trust/roots_bundle.inc`) -- a near-full mirror of the host
-  Mozilla/NSS store (`/etc/ssl/cert.pem`), so the browser trusts essentially the
-  whole public web. `genroots.py` globs `tools/roots/*.pem`, extracts just each
-  root's SPKI (RSA n,e or EC P-256/P-384 point), and **skips** any key type the
-  kernel can't verify (P-521/Ed25519); `rsa.c` modexp is exponent-generic so
-  roots with e=3 / e=43147 (old GoDaddy/Starfield/NetLock) verify too. To add
-  roots: drop authentic PEMs in `tools/roots/` and re-run `genroots.py`. (Each
-  added pubkey is cross-checked vs `openssl` modulus / SPKI point.) `now` for validity
-  comes from the **RTC** (`net/http.c now_unix`), not a hardcoded constant.
-  Verified on host against 5 real chains (example/google/github/wikipedia/kernel.org,
-  EC+RSA, in-band & signed-by-root, tamper/wrong-host rejected) and end-to-end in
-  QEMU (Browser opens https://google.com). **Gotcha:** roots.c #includes the
-  generated bundle, so the Makefile gives roots.o an explicit dep on
-  roots_bundle.inc -- regenerating the bundle without that dep silently keeps the
-  old roots in the kernel. No RSA *key exchange* (TLS 1.3 has none); RSA leaves
-  use ECDHE so only their CertVerify is PSS.
-- Algorithm coverage completed: `crypto/rsa.c` `rsa_pss_verify` recovers the salt
-  length from the structure (works for any salt, not just =hLen), and full
-  **SHA-512** (`crypto/sha384.c sha512*`) is wired through. `net/x509.c` now also
-  parses **rsassaPss** cert signatures (hash read from the params) and
-  **sha512/ecdsa-with-SHA512**, with SIG_RSA_PSS_SHA256/384/512, SIG_RSA_SHA512,
-  SIG_ECDSA_SHA512. ClientHello advertises rsa_pss_rsae_sha256/384/512. D-TRUST
-  Root Class 3 CA 2 2009 (a SHA-512 chain anchor) is one of the 130 roots. Verified host-side
-  against 8 real chains (incl. bsi.bund.de SHA-512, sectigo SHA-384) + synthetic
-  PSS/SHA-512 certs vs openssl; in QEMU bsi.bund.de (SHA-512 + RSA-PSS
-  CertVerify) opens. **Former limitation, now fixed (M26):** sites with large
-  multi-cert RSA flights (e.g. sectigo, 4 certs incl. a 4096-bit CA) used to fail
-  with TLS_E_PROTO because the M10 TCP dropped any out-of-order segment; the M26
-  TCP reassembly (see M10 note above) receives the bigger handshake flight
-  reliably. (A separate cap remains: the whole flight must fit the 64 KiB window
-  -- true for all real chains.)
+`c/kernel/mm/`: pmm, vmm, vma, fault, kheap, rmap, reclaim, swap, pcache, shm,
+oom, mmsys, tlb.
 
-**The AES and SHA-2 families, completed** (`c/crypto/aead/aes_modes.c` is new;
-`aesgcm.c`, `sha256.c`, `sha384.c`, `hmac_hkdf.c`, `pbkdf2.c` grew). TLS needs
-AES-128/256-GCM with a 96-bit IV and SHA-256/384, and that is all this tree had
--- so every family had a hole in the middle, and a hole is where a caller
-discovers the primitive is missing at the moment it needs it. Now: **AES-192-GCM**
-(the FIPS-197 middle key size), **GCM with any IV length 1..1024** (SP 800-38D
-5.2.1.1's J0 = GHASH construction; a 96-bit IV through these is byte-identical
-to the fixed path, pinned by test), **AES-CTR** and **AES-CBC/PKCS#7**,
-**SHA-512/224**, **SHA-512/256**, **SHA-224**, and HMAC/HKDF/PBKDF2 at every one
-of those widths (28/32/48/64). `tls12_prf` and `hkdf_expand_label` deliberately
-stay at 32/48 -- TLS names no other width, and widening them would invent a
-protocol.
+- **The reclaim invariant is THREE terms, not two.** This file said twice that a
+  frame is evictable only if `rmap_count(f) == pmm_refcount(f)`, "the same number
+  from two independently maintained structures". The live form is
+  `rmap_count(f) + pcache_holds(f) == pmm_refcount(f)` — **three** structures
+  (`reclaim.h:154`, `pcache.c:642`).
+- **`pmm_alloc_reserve()`'s reserve is 128 frames, not 32** (`pmm.c:98`).
+- **Swap gives the BKL back mid-transfer** (`swap.c:61-181`, landed `331651bc3`).
+  This file used to close that bullet with "closing it needs submit/poll on
+  `struct blk_ops` — an ask for the block line". The ask was granted
+  (`blkdev.h:125-126`) and the edit made.
+- **The page cache HAS a real workload.** This file said "that machinery has
+  never had a real workload; the only caller of `SYS_MMAP_FILE` is a script
+  written to exercise it". False in both halves: **every execve** maps program
+  text through pcache (`exec.c:455,549,715`), `mman.c:158` routes every
+  non-anonymous `mmap()` through it, and `/bin/lm` maps a model file for real
+  work. Two places in the source still quote the retired sentence
+  (`c/lib/nn/model.h:26`, `c/apps/coreutils/syslogd.c:6`).
+- **Readahead** (`pcache.c`, 2026-08-25): the trigger is **two consecutive pages
+  and nothing else**, and the trail is kept by HITS as well as misses — if only
+  misses advanced it, the window would collapse on every batch. 1,000 pages cost
+  **34 device reads**, not 1,000.
+- **Shared memory** (`shm.c`) is a third structural consumer of the reclaim
+  invariant, and the failure it prevents is silent: two processes sharing a page
+  that happens to be all zeroes — what a segment looks like the instant before
+  the first write — would come back holding **two different frames**. No crash,
+  no log line: A writes 42, B reads 0, forever.
+- **The OOM killer** (`oom.c`) does *not* kill the biggest. It prefers the largest
+  **headless** process if that alone frees enough, and "enough" is `reclaim_high()`
+  rather than a constant "so the two mechanisms cannot drift apart". The metric is
+  resident set from the rmap sweep, explicitly not reserved bytes — "an mmap of
+  4 GiB that was never touched costs nothing and freeing it frees nothing". Its
+  negative control, `OOM_KILL_NEWEST`, is a policy somebody could genuinely
+  propose.
+- **`mm_protect_test.c` is a 474-line suite nothing runs.** Its own header says
+  "every interesting bug in it is SILENT", and it names two: `mm_fault_classify()`
+  answers `MM_FAULT_COW` on the PTE's COW bit alone and never consults the VMA,
+  so a COW page that keeps its marker across an `mprotect` **serves the very
+  write the caller just forbade**; and a resident page made `PROT_NONE` is not
+  present, frame retained, still referenced — invisible to every loop that walks
+  present PTEs.
 
-Three things about it are worth knowing before touching it:
+**OPEN BUG, verified 2026-08-28: `munmap` does no cross-core TLB shootdown.**
+`vmm_unmap_range_in()` clears the PTE, calls `pmm_free()`, does
+`if (active) invlpg(a)` — the current core only — and returns. Forty lines below,
+`vmm_protect_range_in()` ends with `if (n && tlb_flush_all &&
+vmm_space_busy_elsewhere(cr3)) tlb_flush_all();`. Threads share one CR3, so a
+multithreaded process calling `munmap()` leaves a sibling on another core holding
+a cached **writable** translation to a frame the PMM has already handed out —
+ring 3 writing ring 0's memory, silently. **The tree already knows**, at
+`uthread.c:197-201`: *"WHAT IS STILL OPEN, and it belongs to munmap rather than to
+this file … Closing it means flushing inside vmm_unmap_range_in BEFORE the frames
+are released. Reported, not patched from the outside."* Note the asymmetry: the
+thread-exit path bumps a generation counter and is bounded by one timer tick; a
+plain ring-3 `munmap()` (`mmsys.c:229`) does neither and is **unbounded**.
+
+### Processes, exec, and the things a program can ask for
+
+`c/kernel/exec/`: proc, file, exec, elf, aex, ksignal, ksigframe, coredump,
+ptrace, kpoll, syscall. **165 syscalls** in `include/abi/logit_abi.h`.
+
+- **The loader REFUSES dynamic linking, by name and with an argument.**
+  `elf.c:485`: `PT_DYNAMIC` — "this loader applies no relocations"; `PT_INTERP` —
+  "this system has no dynamic loader"; `ET_DYN` — "a PIE is *defined* by needing
+  `R_X86_64_RELATIVE` applied at its load base. Refusing is what makes the fixed
+  link bases honest rather than accidental." Everything is static at a fixed base.
+  **ASLR is therefore not absent, it is unrepresentable.**
+- **The loader streams.** `exec.c` used to `kmalloc(whole file)`, which fell
+  through kheap's `grow()` and asked `pmm_alloc_contig()` for the next power of
+  two **in one piece**: 128 MiB of file took a 256 MiB arena, and a 256 MiB file
+  was refused with 456 MiB free. Now the ELF header, the program headers and each
+  segment come through a 512 KiB static bounce, and read-only whole pages are
+  mapped from the page cache. Peak kernel heap arena went **249,856 KiB → 16,384
+  KiB**. `make test-bigexec` loads 16/32/64 MiB twice per boot — once fresh, once
+  after 112 MiB of page cache has been churned, because `pmm_alloc_contig` is a
+  linear first-fit with no fallback and a load that works on a just-booted machine
+  says nothing.
+- **`wm_run` spawns `/bin/login`, not `/bin/sh`.** On an image with no accounts
+  (every freshly built one) login prints a line and execs `/bin/sh` as root — the
+  old behaviour, one exec later. The consequence: the shell is never root on a
+  machine that *has* an account.
+- **A read-only fd holds NO bytes.** `file.h:8`. `backing` is NULL and every read
+  is a `vfs_pread()` at `off`. The buffer survives only for **writable**
+  descriptions, because the VFS write op is whole-file (`write(path, buf, size)`,
+  **no `->pwrite`**) — a property of the op table, not a policy. There are **six**
+  fd kinds: F_VFS, F_PIPE, F_TTY, F_SOCK, F_EVENT, plus a `live` flag for
+  generated `/proc` files.
+- **Core dumps** (`coredump.c`) are ELF64 `ET_CORE` files **real gdb can read**,
+  written to **four fixed slot names** (`/core.1` …), not one per pid — so a
+  crash loop overwrites, and the kernel's `[core]` serial line names the slot.
+  `/bin/readcore` reads them on the machine, because "a dump nothing on the
+  machine can read is a file, not a dump".
+- **ptrace** (`ptrace.c`) — its scope is its safety argument: "nothing here
+  schedules, blocks a thread, or touches the signal state machine beyond posting
+  SIGSTOP/SIGCONT through the ordinary `ksig_post()` — which is the reason the
+  feature is small enough to be trusted." Explicit lock order, one direction.
+- **poll/eventfd/timerfd** (`kpoll.c` + `kpollsys.c`) — the core/file split exists
+  **for the gate**: `file.c` cannot be compiled for the host, and a poll core
+  reachable only through it could be tested only by booting QEMU, i.e. the one
+  property that matters (an event arriving between the readiness check and the
+  sleep is not lost) would be tested by hoping the race happens.
+- **Loadable kernel modules** (`c/kernel/module/`) — an ET_REL x86-64 loader with
+  relocation, a credential check and an explicit export table. `modelf.c` is
+  deliberately pure — "it calls nothing: no kmalloc, no kprintf, no VFS, no
+  locks" — so the relocation arithmetic is host-testable. Its bounds checks are
+  written `if (off > imglen || size > imglen - off)` rather than `off + size >
+  imglen`, "which is the same expression until `off + size` overflows and then is
+  the opposite of it". **No userland consumer exists** — there is no `insmod`.
+- **User threads and the futex** (`uthread.c`) — `NUT 128` bounds the *machine*;
+  `LOGIT_THREADS_MAX (64)` bounds one process. And the real ceiling on this
+  machine is neither: `VMA_MAXAREA` is **16**, because a normal `pthread_create()`
+  stack is its own mmap'd VMA — which is why `/bin/sshd` allocates thread stacks
+  out of its own `.bss`.
+
+### Storage
+
+**Status, verified twice: this machine keeps a file across a reboot.** The old
+"corrupts after repeated non-snapshot boots; use `-snapshot`" note was true of v3
+and is not true now.
+
+**Block layer** (`c/drivers/block/`): `blkdev.c` is a multi-device table —
+virtio-blk (preferred), AHCI/SATA, NVMe, ATA PIO as fallback — plus `part.c` for
+MBR/GPT. `blk_flush()` is a real write barrier on every backend that can reorder,
+and `blk_flush_count()` exposes barriers-since-boot so a test can *count* them.
+There is now a real **async engine**: `blk_submit`/`blk_poll`/`blk_wait` on
+`struct blk_ops`, a per-medium in-flight interlock, and a DMA bounce path.
+
+- **AHCI refuses NCQ, with arithmetic**: "not here because the arithmetic says it
+  would move nothing on this machine and could only make it slower" — both
+  sources of queue depth eliminated by measurement, one by `blkdev.h`'s
+  one-in-flight interlock and one by a full-boot census.
+- **NVMe** has a PRP list now (`g_prp_list`, one page per queue) — the file's own
+  top comment still says it does not, which will mislead the next reader.
+
+**LogitFS on-disk v4** — `c/fs/logitfs_fmt.h` is the single definition site and
+`tools/mkfs.py` mirrors it. **4 KiB blocks, 512 MiB image (131,072 blocks), 8,192
+inodes.** It went 16,384/256 → 131,072/8,192 on 2026-08-20 because *one file of a
+C toolchain* — `cc1plus`, 39,797,952 B — did not fit in the whole filesystem.
+`LFS_VERSION` stays **4**: every changed quantity was already a superblock field,
+so a pre-2026-08-20 image mounts unchanged. Inodes are 128 B with `direct[12]` +
+single-indirect + **double-indirect**. **Block 0 is never rewritten at runtime**,
+which is why the superblock needs no checksum.
+
+**The journal is metadata-only + ordered data (ext4 `data=ordered`)** — say that
+out loud, because "it has a journal" is not the same claim. Bitmaps, the inode
+table, indirect blocks and **directory data blocks** are staged into the log and
+installed only after the commit record is on media; ordinary file data blocks go
+straight to their final location, always before the metadata pointing at them
+commits. That is sound only because of `bfree()`: frees are **deferred to
+commit**, so the allocator cannot hand a block back to the very operation that
+released it. (That was a real bug, found by the crash sweep, fixed in `d9dccbf`.)
+
+**The commit record self-verifies**: `hcrc` over the header block rejects a torn
+header; `bcrc` over exactly the *n* body blocks rejects a **stale** header
+standing over a newer transaction's bodies — which was corruption *caused by
+recovery* on a filesystem that never crashed. Three barriers, each with a distinct
+failure mode if removed, are documented above `log_commit()`. **Read that comment
+before touching `logitfs.c`.**
+
+- **`test-barrier` requires *at least* 3 barriers per file write, not exactly 3**
+  (`barriers.as:58`). A change that issued five would pass unnoticed.
+- **`alloc_hint`** (`logitfs.c:364-424`) exists because the 512 MiB geometry would
+  otherwise have shipped a **64× write slowdown**: `balloc()` is O(n²) bit tests
+  to fill an image — 64 MiB took 133 M iterations (0.068 s), 512 MiB would take
+  8.5 G (4.46 s), and those are *native* numbers on a machine that runs under TCG.
+  The invariant is an equivalence, not an optimisation: every block in
+  `[data_start, alloc_hint)` is USED, so `bit_clear()` must LOWER the hint. **The
+  gate its own source names — `test-fs-allochint` — does not exist.**
+- **fsck** both detects and repairs, and its rule is "fix only what has ONE
+  correct answer": a block claimed by two inodes is **refused, whole**, because
+  both fixes destroy a file and nothing on the disk says which. A **read-only**
+  fsck runs at **every mount**, so every boot harness in the tree asserts the
+  bitmap agrees with the inodes. A mount-time finding never fails the mount.
+- **Modes and owners survive a reboot.** `logitfs_getattr`/`setattr` are at
+  `logitfs.c:1375`/`:1434`, installed at `:1531`, both under `#ifndef
+  LOGITFS_NO_ATTR` — **both or neither**, because vfs.c treats half an
+  implementation as none. `xmode` has a presence bit (`LFS_MODE_SET`) because
+  **mode 0 is a legal mode**, and that distinction reaches ring 3 as
+  `LSTA_MODE_STORED`: a stat that cannot tell a chosen 0644 from a defaulted one
+  is a stat that lies quietly.
+- **`/proc`** (`procfs.c`) is a real mounted `struct filesystem`. Its design is
+  lifetime, not format: **procfs holds no pointer to a process, ever** — that is
+  what makes use-after-free structurally impossible rather than carefully avoided.
+  A read of a dead pid returns `ENOENT`, chosen over a stale snapshot ("the answer
+  that looks like it works") and over 0 ("indistinguishable from an empty file"),
+  and that is sound only because `next_pid` is monotone. `/bin/ps` makes **no
+  syscall a `cat` does not also make** — `SYS_PROCS` still exists and is not
+  called.
+- Around it: `vfs.c` + `vfs_path.c` (resolution as its own host-testable TU),
+  `vfs_meta.c`, `vfs_cred.c`, `vfsctl.c` (control as synthetic files), `ramfs.c`,
+  `lfsro.c` (instance-aware read-only reader — `logitfs.c` is a singleton and
+  cannot be two), `fsbench.c`.
+- **`/dev` holds exactly eight synthetic files and nothing can be created there.**
+  Four from `vfsctl.c` (`vfsctl`, `vfsmounts`, `vfsmeta`, `fsbench`) and four from
+  `kdiag.c` (`kmsg`, `kstat`, `ktrigger`, `kprof`). `2>/dev/null` is `ENOENT`.
+
+**Tests** — host: `test-fs-cache` 29 · `test-fs-journal` 48 · **`test-fs-crash`
+1744** · `test-fsck` 167 · `test-fs-format` 25 · `test-bulkread` 34 + control.
+`test-fs-crash` cuts power at **every device write** of write/mkdir/delete/
+rename/overwrite × 3 loss patterns, and after every cut demands mountable,
+fsck-clean, bystanders byte-for-byte, victim whole-or-absent, no block twice.
+Boot (minutes each, **no `-snapshot`** — that is the point for five of the six):
+`test-fsmount`, `test-durability` (5 boots, 3 files byte-for-byte),
+`test-fscrash` (4 SIGKILLs), `test-fsreplay`, `test-hugefile`. **`test-barrier` is
+the exception and legitimately passes `-snapshot`** — it counts barriers and never
+asserts survival. **Byte-for-byte, never a length check**: a filesystem that hands
+one block to two files produces a file of exactly the right length holding
+someone else's data.
+
+### Networking
+
+`c/net` is **eleven directories, 38 `.c` files**: core (dhcp, lsock, net, raw,
+route, sock, unix), dns, http (cookies, hpack, hpool, http, http1, http2, url),
+ip (icmp, ip, ip6, ip6_addr, nd, reasm), link (arp, eth), **ssh** (7 files), tls
+(ocsp, tls, tls12, tls_psk, tls_server, x509), transport (tcp, udp).
+
+**THE WM LOOP NO LONGER PUMPS THE NETWORK.** This file said `net_poll()` is
+pumped from the compositor, and a whole diagnosis of throughput as "gated on the
+frame rate" was built on it. Receive runs on **SOFTIRQ_NET raised by the NIC
+ISR**; TCP's timers run on a **10 ms ktimer** raising the same softirq
+(`net.c:125-160`). `net.c:249` records that the surviving `wm.c` call "is now
+harmless and its owner may delete it whenever they like". Note also `net.c:249-252`
+on quoting line numbers at all: *"Its line NUMBER is deliberately not quoted here
+— it was 5483 when this was written and 5550 four hours later. The text is the
+anchor."*
+
+- **TCP is not the M10 stack.** It has **congestion control (RFC 5681), window
+  scaling (RFC 7323), SACK (NSACK 8), RFC 6298 RTO estimation, fast retransmit,
+  TCP_NODELAY, timestamps, and a passive-open server path.** `NCONN` is **32**,
+  not 8; the receive ring is **128 KiB**, not 64 (doubled when window scaling
+  arrived — "a 64 KiB ring made the option decorative"); out-of-order reassembly
+  is a sorted interval set, NOOO=16.
+- **An interface TABLE, not `g_nic`** — but `g_nic` is still there and still means
+  "the primary NIC", now *derived* from the table rather than being it. Loopback
+  registers FIRST so `RT_OIF_LO == 1` holds by construction (`_Static_assert`).
+- **A routing table, not a ternary.** The old form was `((dst & mask) == (ip &
+  mask)) ? dst : gw` — one gateway, and no way to say "no route": an unroutable
+  datagram went to the gateway, which is a leak, not a fallback. `route.c` is
+  longest-prefix-then-metric with the default route as plen 0. `nm -u route.o` is
+  **empty** — it knows only integers.
+- **IPv6 is real and is not ARP-shaped.** `ip6.c` (477), `nd.c` (882),
+  `ip6_addr.c`. **There is no `net_cfg.ip`**: an interface holds several addresses
+  at once, each with an RFC 4862 state and two lifetimes, and which one sources a
+  packet is decided **per destination** by RFC 6724. Neighbour Discovery is
+  ICMPv6 — it runs over IP, over multicast, with a five-state per-neighbour
+  machine, and carries the host's whole address configuration as a side effect.
+  `test-ip6-fallback` asks the question that matters: does a v4-only answer behave
+  **exactly** as it did before IPv6 existed?
+- **Fragment reassembly** (`reasm.c`) tracks coverage with a **per-byte bitmap**,
+  not a running count, and the comment says why that is necessary: summing
+  fragment lengths is the teardrop bug — two overlapping fragments make the sum
+  reach `total` with a hole still in the buffer.
+- **HTTP/2** (`http2.c` + `hpack.c`, 2,600 lines) — "a header block is decoded
+  even when nobody wants it", because skipping it would leave our dynamic table a
+  different size from the peer's and from that moment every indexed header
+  decodes to the wrong field, silently. HPACK's Huffman decoder is **canonical,
+  not a trie**, verified by Kraft equality. `hpool.c` keys connections on
+  **(host, port, tls) and all three must match** — reusing example.com's
+  connection for evil.com because they resolved to the same address sends the
+  Cookie to the wrong peer; origin identity is never inferred from the socket.
+- **`http1.c`** (1,401 lines) is the ring-3 replacement for the kernel's
+  `http.c`: bounded, non-blocking, host-testable, with a transport vtable, header
+  lists, chunked decoding and gzip. The kernel version "builds its request by
+  concatenating string literals, so it can carry no header list at all: no
+  Cookie, no POST body, no conditional GET."
+- **SSH-2 server** — `c/net/ssh/` (7 files) + `/bin/sshd`. curve25519-sha256,
+  ssh-ed25519, aes128-ctr, hmac-sha2-256, argued against a **captured
+  OpenSSH_10.2p1 KEXINIT**, and a real OpenSSH client logs in. Two
+  pseudo-algorithms are **refused by name**, and the reason is that naming one is
+  an opt-in: `kex-strict-s-v00@openssh.com` (Terrapin) — "half-implementing it is
+  worse than not offering it, because the client believes the stricter contract is
+  in force". **`sshd` has never run on the product image** — nothing spawns it.
+- **AF_UNIX** — stream + datagram + **seqpacket** (which fell out: datagram
+  already needs a record-length ring, so seqpacket is the stream path with that
+  ring on). Bindings live in `unix.c`, **not as VFS nodes**, and the cost is
+  stated rather than hidden: no `ls`, no `stat`, unlink does not release. The
+  abstract namespace is **refused, not stubbed**.
+- **Raw sockets** with **IP_HDRINCL refused outright** (a caller-built IP header
+  is the mechanism for forging a source address). `/bin/ping` is an ordinary
+  program over `SOCK_RAW`, not a bespoke syscall.
+- **Cookies** (`cookies.c`) — one jar, two doors, and the gate knew only one. The
+  request kind is **three-valued** (`SAME_SITE` / `CROSS_SITE` /
+  `CROSS_SITE_NAV`) and `SAME_SITE` is **0**, so an uninitialised int is the
+  dangerous value. `CK_HEADER_MAX` is one number because it used to be three,
+  disagreeing by 8×. HttpOnly used to make a cookie the **preferred eviction
+  victim of the script it hides from** — three individually correct lines. That
+  gap is now closed on both doors and `test-cookie-cors` drives the transport
+  path directly.
+
+### Crypto and TLS
+
+`c/crypto/{hash,aead,kdf,pubkey,trust,pq}` — SHA-2 (224/256/384/512, 512/224,
+512/256), SHA-3/SHAKE (`pq/keccak.c`), HMAC/HKDF/PBKDF2 at every width,
+ChaCha20-Poly1305, AES-128/192/256 in GCM/CTR/CBC, X25519, P-256/384/**521**,
+**Ed25519 (sign, verify, keygen)**, RSA PKCS#1 v1.5 + PSS, **ML-KEM**.
+
+- **`genroots.py` no longer skips P-521 or Ed25519** — both verify. What it
+  refuses is Ed448 and unrecognised curves, recorded by name in
+  `logit_roots_skipped[]`, **currently empty**: all 130 PEMs compile in.
+- **The trust store is generated and CAN silently become empty.** `genroots.py`
+  takes the roots directory as `argv[1]`, and a stale path globs zero PEMs. An
+  empty C array is legal, both root loops are bounded by `logit_nroots`, so the
+  machine fails **closed** and every https fetch dies naming no cause. The
+  generator refuses an empty result now; a caller that *means* zero anchors passes
+  `--allow-empty`.
+- **`check_provenance.py`** defines what "authentic PEM" means: the SHA-256 of the
+  certificate's **DER bytes** must appear in Mozilla's certdata snapshot or a
+  closed legacy list. Not "is this well-formed" — "did anyone account for how it
+  got here".
 - **The mode never lives in a backend.** `struct aes_backend` grew a fourth
-  primitive (block *decrypt*, CBC's only customer) rather than letting
-  `aes_modes.c` hide an inverse cipher: "the backend does the primitive, the
-  mode is written once" is the invariant the differential rests on, and an
-  implementation outside the table would sit exactly where the differential
-  cannot see it. `crypto_simd_selftest` now checks all four primitives at all
-  three key lengths, and checks decrypt as a round-trip against *each* backend
-  independently -- two backends that made the same equivalent-inverse-schedule
-  mistake (the AESIMC trap) would otherwise agree while decrypting garbage.
-- **CTR's counter is not GCM's.** SP 800-38A increments the whole 128-bit block
-  with carry; GCM's inc32 wraps only the low four bytes. The two agree until a
-  counter block ends in ffffffff, at which point GCM's rule replays a keystream
-  block. The ffffffff-edge vectors exist for that one difference.
-- **CBC's padding check is a constant-time accumulate over all 16 candidates**,
-  not the byte-by-byte early exit, which leaks the pad length and therefore the
-  plaintext length -- a real oracle when one key encrypts many records.
+  primitive (block decrypt) rather than letting `aes_modes.c` hide an inverse
+  cipher. Two backends that made the same equivalent-inverse-schedule mistake
+  would otherwise agree while decrypting garbage.
+- **CTR's counter is not GCM's**: SP 800-38A increments the whole 128-bit block;
+  GCM's inc32 wraps only the low four bytes. They agree until a counter block ends
+  in `ffffffff`, at which point GCM replays a keystream block.
+- **CBC's padding check is a constant-time accumulate over all 16 candidates** —
+  the byte-by-byte early exit leaks the pad length and therefore the plaintext
+  length.
+- **AES-NI is about constant time, not speed.** The portable backend indexes a
+  256-byte S-box with secret state and branches on secret bits inside the GF
+  multiply. "Any speedup is a side effect, and cannot be measured under TCG."
+  **On this host only ONE backend is exercised** (`aes-gcm backends exercised: 1`)
+  — the differential is an x86-only property of the gate.
 
-The gate is 140,214 differential cases against hashlib/OpenSSL
-(`make test-crypto-diff`), every AES vector replayed through **both** backends,
-plus 291 known answers in the fast gate (`make test-crypto`, which `make test`
-runs). SHA-224 alone is 1,815 of the differential cases, and corrupting one word
-of its IV fails exactly those 1,815 and no others -- which is the control, run.
-One booby trap was defused on the way in: the "unsupported width is a silent
-no-op" assertion used **28** as its witness, so making SHA-224 legal turned a
-test that proved a refusal into a test that proved nothing. It is 20 now
-(SHA-1's length -- `sha1.c` is in the tree and HMAC still does not dispatch to
-it, which is the property actually being pinned).
-
-## TLS: what it speaks, and the four things it does not
-
-Written 2026-08-20 because the M12 bullet's closing parenthesis ("no
-resumption/0-RTT/client-certs") was stale in both directions and was quoted as
-a work order that day. `c/net/tls` is 4,476 lines and `c/crypto` 4,721 --
-against OpenSSL's ~500,000, which is the honest frame for everything below:
-the primitives are strong and differentially tested, and the PROTOCOL SURFACE
-is narrow.
-
-**WHAT EXISTS**, all of it measured against `openssl s_server`/`s_client`
-3.5.5 in one run (`bash tests/unit/run-tls-interop.sh`, **73 passed 0 failed**):
+**TLS: what it speaks, and what it does not.** `c/net/tls` is 5,229 lines and
+`c/crypto` 5,221 — against OpenSSL's ~500,000, which is the honest frame.
 
 | | |
 |---|---|
-| versions | TLS **1.3** (`tls.c`) and TLS **1.2** (`tls12.c`) -- both CLIENT |
+| versions | TLS **1.3** and **1.2**, both CLIENT; `tls_server.c` is 1.3-only |
 | 1.3 suites | AES-128-GCM-SHA256, CHACHA20-POLY1305-SHA256, AES-256-GCM-SHA384 |
-| 1.2 suites | ECDHE×{ECDSA,RSA}×{AES-128-GCM, AES-256-GCM, ChaCha20} = 6 |
-| groups | x25519, secp256r1, secp384r1, **X25519MLKEM768** (1.3 only) |
-| certs | RSA PKCS#1 v1.5 + PSS, ECDSA P-256/384/**521**, Ed25519 anchors, 130 roots |
-| resumption | PSK / session tickets (`tls_psk.c`) -- **exists**, 23 checks |
+| 1.2 suites | ECDHE×{ECDSA,RSA}×{AES-128-GCM, AES-256-GCM, ChaCha20} |
+| groups | x25519, secp256r1, secp384r1, **X25519MLKEM768** (1.3 client only) |
+| certs | RSA v1.5 + PSS, ECDSA P-256/384/521, Ed25519 anchors, 130 roots |
+| resumption | PSK / session tickets — exists |
 | ocsp | stapling, checked, REVOKED refused; no online fetch |
-| **server** | `tls_server.c`, TLS 1.3 only, 3 suites, 3 groups, **no hybrid** |
 
-The **hybrid is client-only and asymmetric on purpose**: the ClientHello
-carries the hybrid share AND a bare x25519 share, because leading with the
-hybrid alone made every classical server answer HelloRetryRequest (measured:
-29 interop failures, all "HRR: X25519MLKEM768 -> x25519"). 36 bytes buys that
-back. `tls_group_supported()` deliberately EXCLUDES the hybrid so a TLS 1.2
-server cannot name a KEM as its ECDHE curve.
+The **hybrid is client-only and asymmetric on purpose**: the ClientHello carries
+the hybrid share *and* a bare x25519 share, because leading with the hybrid alone
+made every classical server answer HelloRetryRequest (measured: 29 interop
+failures, all `X25519MLKEM768 -> x25519`). 36 bytes buys that back.
 
-**THE ONE THAT WAS NOT A GAP BUT A HOLE, found and closed 2026-08-20.**
-`verify_flight()` is a dispatch over whatever messages the server chose to
-send, not a state machine, so every check is conditional on the message that
-carries it arriving. The CertificateVerify signature check lives inside
-`if (mt == HS_CERT_VERIFY)`; **omit the message and the branch never runs**,
-and nothing afterwards noticed -- `tls_check_chain` proves the certificate is
-AUTHENTIC and says nothing about whether the peer holds its private key.
-Certificates are public. An on-path attacker could replay any site's real
-chain, skip the signature, and this client printed "chain of 2 verified for
-localhost" and proceeded. Closed with a presence flag set only after the
-signature verifies, plus a post-loop refusal on the non-resumed path.
-`bash tests/unit/run-tls13-certverify-bypass-probe.sh` is the gate and its
-control is the honest-but-garbage-signature case, which must still be refused.
+**THE HOLE THAT WAS NOT A GAP.** `verify_flight()` is a dispatch over whatever
+messages the server chose to send, not a state machine, so every check is
+conditional on the message that carries it arriving. The CertificateVerify
+signature check lived inside `if (mt == HS_CERT_VERIFY)`; **omit the message and
+the branch never runs**, and nothing afterwards noticed — `tls_check_chain` proves
+the certificate is authentic and says nothing about whether the peer holds its
+private key. Certificates are public. An on-path attacker could replay any site's
+real chain, skip the signature, and this client printed "chain of 2 verified".
+Closed with a presence flag plus a post-loop refusal.
 
-**WHAT IS NOT THERE.** Named individually because an absent claim is worse
-than a stale one -- a reader of the green tick after M12 sees none of this:
+**What is still not there**, named because an absent claim is worse than a stale
+one: **no client certificates** (the 1.2 client *does* answer a CertificateRequest
+at `tls12.c:411` with an empty Certificate message, as RFC 5246 requires — but
+neither side ever offers one); **no 0-RTT**; **no Certificate Transparency** —
+nothing parses an SCT, so a certificate no log ever saw verifies exactly like one
+that was logged; no DTLS; **no protocol state machine** — FREAK, Logjam, SMACK and
+CCS-injection are all state-machine bugs in which the primitives are perfect, and
+**there is still no test that sends handshake messages out of order or repeats
+one**; and constant-time discipline is **per-site, not global**.
 
-- **No client certificates**, either side. The client never answers a
-  CertificateRequest (no handler; `tls12.c:16` names it only in a comment
-  diagram) and the server never sends one. `1.2 declines client cert` is a
-  real interop case and declining is all it does.
-- **No 0-RTT / early data.** Resumption exists; `psk_ke` without a fresh
-  ECDHE and the whole early-data path do not.
-- **No Certificate Transparency.** Chrome REQUIRES SCTs for publicly trusted
-  certificates. Nothing here parses an SCT, reads the `1.3.6.1.4.1.11129.2.4.2`
-  extension, or holds a log list. A certificate issued by a CA that no log
-  ever saw verifies here exactly like one that was logged.
-- **No DTLS**, no renegotiation beyond sending `renegotiation_info`, no
-  compression, no session-ticket issuance from our server.
-- **NO PROTOCOL STATE MACHINE, and this is the structural one.** FREAK,
-  Logjam, SMACK and CCS-injection are all state-machine bugs in which the
-  primitives are perfect and the handshake "succeeds". The CertificateVerify
-  hole above was exactly that shape. What exists now is one presence flag; a
-  message arriving TWICE, or in the wrong ORDER, is still only bounded by
-  whether the transcript hash then matches. **There is no test that sends
-  handshake messages out of order or repeats one** -- the tamper proxy
-  corrupts CONTENT, not sequence.
-- **Constant-time discipline is per-site, not global.** `aes_modes.c`'s CBC
-  pad check is a deliberate constant-time accumulate and says so; `ocsp.c`
-  compares hashes with plain `memcmp`, which is safe there only because both
-  operands are public values in a signed response an attacker cannot vary
-  adaptively. That is a per-call argument, and no rule or gate enforces one.
+### Text, and the claim that was wrong for months
 
-  `make test-tls-interop` (73) · `test-tls-server` (26) · `test-tls-psk` (23) ·
-  `test-mlkem-openssl` · `test-ecdsa-sign` · `test-crypto-diff` (140,214) ·
-  `test-x509-fuzz` · `bash tests/unit/run-tls13-certverify-bypass-probe.sh`
+**This file said "no bidi/shaping" in the M14 bullet. There are 4,529 lines of it
+and it is in ring 0 on the main draw path.** `c/lib/text/` holds `bidi.c` +
+`bidi_data.inc`, `shape.c`, `otlayout.c` (GSUB/GPOS), `script.c` +
+`script_data.inc`, `cff.c` (CFF/CFF2 Type 2 charstrings), `fontcolor.c`,
+`glyphras.c`, `ttf.c`, `utf8.c`. `c/kernel/gui/text.c:82` — *"Everything below
+goes through `shape_line()` — ONE function"* — and `nm build/kernel.elf` carries
+`T bidi_reorder`, `T shape_run`, `T script_arabic_joining`, `T cff_glyph_path`.
+Two differential gates, **neither containing a case we invented**: `test-bidi`
+against the UCD's own BidiTest.txt, `test-shape` against HarfBuzz.
 
-**The trust store is generated and CAN silently become empty.**
-`tools/genroots.py` takes the roots directory as `argv[1]`, so any stale or
-mistyped path globs zero PEMs -- on 2026-08-20 the working tree was found with
-`logit_roots[] = {}`, 25 lines down from 4,519, with all 130 PEMs still in
-`tools/roots/`. It COMPILES: an empty C array is legal, and x509.c's two root
-loops are both bounded by `logit_nroots`, so the machine fails CLOSED and
-every https fetch dies with a chain error naming no cause. The generator now
-refuses an empty result and exits non-zero; a caller that MEANS zero anchors
-(run-tls-interop.sh's fail-closed block) passes `--allow-empty`.
+**Both need external inputs this host does not have** (`/usr/share/unicode/`, a
+HarfBuzz venv) and `test-bidi` fails hard rather than skipping — see rule 5.
 
-## Application platform (on top of M8)
-- Apps are `.aex` files on the LogitFS disk = real **ring-3 processes** scheduled
-  by M4. `kernel/wm.c` is the window manager AND the GUI/app backend.
-- Executable format: `include/aex.h` (header wrapping an ELF), built by
-  `tools/mkaex.py`; loaded by `kernel/aex.c` (reuses `elf_load`). Each app links
-  at a distinct base (Makefile APP_RULE: clock 0x40000000, textedit 0x41000000,
-  monitor 0x42000000, terminal 0x43000000). Single instance per app.
-- Process model: `thread_create_user` (sched.c) spawns a ring-3 thread with its
-  own kernel stack; `schedule()` sets TSS rsp0; `thread_exit()` reaps it.
-  `sched_current_data()` maps the running thread to its `struct app`.
-- ABI: `include/logit_abi.h` (shared with userland `user/logit.h`). Syscalls via
-  int 0x80: GUI create/clear/rect/text/flush, poll_event (key/mouse/close),
-  get_arg, get_time, read_file, write_file/delete_file, mkdir,
-  dir_count/dir_name (path-scoped listing), net_info/net_ping/net_dns (+ result
-  pollers), http_get/http_status/http_read/http_link, yield, sysinfo,
-  file_count/file_name (root), exit. read/write/delete/mkdir take paths.
-  `syscall.c` routes GUI calls to `wm_gui_syscall()` in the app's context.
-  Finder is a directory browser (cwd, folders, `..`); Terminal has
-  cd/pwd/mkdir/ls + cat/touch/rm/echo>; TextEdit saves with Ctrl+S; Network app
-  pings the gateway + resolves a host (DNS); Browser loads http:// pages
-  (address bar, de-tagged text, clickable links). PS/2 keyboard supports
-  Ctrl + Shift.
-- WM: dynamic windows + per-window surfaces composited each frame; app registry
-  scanned from *.aex; Dock launches apps; Finder opens a file with the app whose
-  `ext` matches (file association); red close button -> EV_CLOSE -> app exits.
-- Adding an app: write `user/<name>.c` (include "logit.h", define `app_main`),
-  add an `APP_RULE` line + the name to `APPS` in the Makefile.
-- `tests/qmp/qmp_*.py` drive mouse/keyboard over QEMU QMP for screenshots/CI.
-M15 SSE2/FPU ✅ (JS-engine prerequisite): the kernel was integer-only because
-x86-64 SysV passes `double` in XMM, so `-mno-sse` made FP unusable. Now
-`boot/long.asm` enables SSE at boot (clear CR0.EM, set CR0.MP/NE + CR4.OSFXSR/
-OSXMMEXCPT, `fninit` + default MXCSR), the Makefile builds kernel **and** userland
-with `-msse -msse2` (kept `-mno-red-zone`), and `boot/isr.asm`'s `isr_common`
-does FXSAVE/FXRSTOR around every C handler so FP survives preemption + syscalls
-(context_switch needs nothing: SysV XMM are all caller-saved). No lazy-FP
-(CR0.TS). Verified: kernel + ring-3 double math exact under heavy timer
-preemption (0 corruptions).
+- **TTF parses two outline formats**: `glyf` (quadratic, simple + composite) and
+  `CFF ` (Type 2, in `cff.c`), with `CFF2` accepted. cmap format 12 preferred,
+  format 4 second. **No hinting**, argued in `cff.h:18-20`: hint masks are parsed
+  "exactly far enough to know how many mask bytes follow — and then discarded,
+  because we do not hint".
+- **Glyphs rasterize at 16 sub-scanlines, not 4.** `glyphras.c` converts an
+  outline to a `gfx_path` and calls `gfx_fill_mask_subs(..., 16)`; 4 is what a
+  button passes.
+- **`fontcolor.c` (COLR/CPAL, CBDT/CBLC, sbix) is gated, green and DEAD** —
+  nothing outside its own test calls it, and there is no colour or emoji face on
+  the disk for it to act on.
+- **The fonts, and why there are three.** `fsroot/fonts/` ships `ui.ttf`
+  (Noto Sans SC subset: GB2312 + ASCII + CJK punctuation) and `mono.ttf` (Noto
+  Sans Mono: **printable ASCII plus NBSP — no CJK at all**, so Han typed into the
+  Terminal has no glyph). `third_party/fonts/` additionally ships **DejaVuSans
+  whole** as `/fonts/text.ttf`, and the reason is a measurement: **subsetting
+  broke shaping** — "the two Noto subsets carry no Arabic and no Hebrew, and
+  subsetting stripped their GSUB/GPOS/GDEF tables, so with only those two the
+  shaper has nothing to apply and Arabic still renders as disconnected isolated
+  letters."
+- **There is no bold and no italic face on the disk**, and `gui_text_run()` has no
+  weight or slant parameter. Every `<h1>` and `<strong>` on the web renders at
+  regular weight. `css_engine.c` computes `o->bold`; the painter reads it **zero
+  times**. Closing this is a font asset + an ABI parameter + kernel face
+  selection, in that order.
 
-M16 JavaScript (QuickJS) ✅: ported QuickJS 2024-01-13 as a **ring-3 app**
-(`user/js.c`). Needed a from-scratch freestanding userland C runtime:
-**mini-libc** (`user/libc/`: 24 MiB-arena malloc, string/mem, a from-scratch
-`vsnprintf` incl. correct `%e/%f/%g`, stdlib `qsort`/`strtod`/`strtoll`,
-`fenv`→MXCSR rounding, `time`→RTC syscall, 128-bit `__udivti3` compiler-rt) +
-**musl libm** (`third_party/libm/`, double-only subset, 83 files) + the engine
-(`third_party/quickjs/`: quickjs+cutils+libregexp+libunicode+libbf). Atomics are
-off (`-DLOGIT_OS` guards `CONFIG_ATOMICS`; single-threaded). Builds via the
-Makefile `js` rule into a ~1 MiB `.aex`; JS output goes to a window + serial
-through `SYS_WRITE`. Runs fib, Array.map/arrow fns, JSON, Math.* (libm), etc.
-**Gotchas:** QuickJS returns `double` so M15's SSE is mandatory (`-msse2`);
-`js_dtoa` formats numbers via `snprintf("%+.*e")` so a correct `%e` is required;
-`scan_apps` read each `.aex` into a 32 KiB buffer — fixed to size-to-file so the
-1 MiB app registers in the Dock. (**And size-to-file is gone too, 2026-08-21**:
-it reads the 64-byte header with `vfs_pread` and allocates nothing. Both of the
-earlier shapes existed only because this VFS had no partial read; the size-to-
-file one was reading 7.9 MB at every boot to look at 704 bytes.) **`user/browser.c` now links the engine too**
-(Makefile shares `ENGINE_OBJ` between js.aex and browser.aex) and runs a page's
-inline `<script>`: the kernel `collect_scripts` walks the DOM, `SYS_PAGE_SCRIPTS`
-hands the concatenated source to the app, which `JS_Eval`s it; `console.log`
-output shows in the status bar + serial. **No DOM bindings yet** (DOM lives in the
-kernel, JS in ring-3 -- different address spaces). `dns_resolve` now accepts IP
-literals ("10.0.2.2") so a `http://<ip>:port/` page works (tested via a host
-http.server over SLIRP). Next: DOM bindings; CSS (`net/css.c`) may eventually move
-to a third-party engine (HTML stays hand-rolled).
+### The 2D engine (`c/lib/gfx`) — Open Logit
 
-M17 LibCSS + render pipeline moved to ring-3 ✅: the whole HTML→DOM→CSS→layout→
-paint pipeline now runs inside `browser.aex`; the kernel is just a primitive
-provider (network fetch, font metrics, drawing). Four sub-steps (L1–L4):
-- **L1** pipeline下放: new syscalls `SYS_HTTP_BODY` / `SYS_TEXT_MEASURE` /
-  `SYS_GUI_TEXT_RUN` / `SYS_RES_FETCH` / `SYS_GUI_BLIT` / `SYS_GUI_CLIP` (36–41);
-  `net/{dom,css,layout}.c` + image codecs compiled into the app, paint rewritten
-  over `gui_*` (`user/browser_paint.c`), `<style>`/`<script>` collection + hit-test
-  moved into the app. `SYS_HTTP_GET` is fetch-only; `SYS_PAGE_*` retired.
-- **L2** NetSurf **LibCSS** replaces `net/css.c`: `third_party/css` (libwapcaplet +
-  libparserutils + libcss, 319 .c) compiled into the browser; `user/css_engine.c`
-  drives LibCSS off our DOM via a ~40-callback `css_select_handler` +
-  `css_computed_style_compose`, reads `css_computed_*` into `struct cstyle` (so
-  `net/layout.c` is unchanged). mini-libc gained `ctype.h`/`strings.h`; built with
-  `-DWITHOUT_ICONV_FILTER -D_ALIGNED= -fcommon`. LibCSS codegen is **vendored**
-  (autogen property parsers + `aliases.inc`; regenerate via `tools/gen_libcss.sh`).
-- **L3** deeper HTML in `net/dom.c`: ~60 named entities, implied `<tbody>`, HTML5
-  optional-end-tag auto-closing (li/td/th/tr/dd/dt/option/p).
-- **L4** JS↔DOM bindings (`user/js_dom.c`): `document.getElementById`/`querySelector`/
-  `body`, `Element.textContent`(get/set)/`innerHTML`/`tagName`/`id`/`getAttribute`/
-  `setAttribute`; a mutation dirty-flag triggers re-style + re-layout + repaint.
-  Works because L1 put the DOM and QuickJS in the same ring-3 address space.
-  Verified host (`css_engine`/`dom`/`js_dom`/`layout`/`page` tests) + QEMU
-  (example.com via LibCSS; a page's `<script>` rewriting textContent end-to-end).
-  Gotchas: `<html>`'s synthetic `#document` parent must be reported as NULL to the
-  select handler (else LibCSS won't treat `<html>` as root → font-size unresolved);
-  host LibCSS unit tests need `-DCONFIG_BIGNUM` for libbf's decimal symbols.
+It exists because there were **three** coverage/paint paths and every new app
+started from `gui_rect`: the kernel's M14 glyph rasterizer, a second rasterizer in
+the widget toolkit, and a third hand-rolled path in the browser. **All three are
+deleted.** An engine that coexists with what it replaced is a fourth path.
 
-**TWO UNITS BUGS IN THE STYLE PATH, and both had the same shape: a plausible
-small number where there should have been none.** That shape is why they
-lasted -- nothing is zero, nothing overflows, every box still has a size and
-the page still paints. Found by instrumenting what the browser PAINTED
-(`[dl]` lines, see the scoreboard section) rather than by reading the code.
+`raster.c` was the last and largest to go. `c/lib/text/glyphras.c` is what
+replaced it: a **converter** from font outline to `gfx_path` in device 24.8, plus
+one `gfx_fill_mask_subs(..., 16)`. It rasterizes nothing. The number, from
+`make test-glyph-agree` against an oracle that is neither rasterizer (a 32×32
+supersampled point sample of the true outline, in double, over 572 bitmaps and
+363,650 pixels): the bridge scores **mean 0.310/255, worst pixel 16**; raster.c
+scored **0.490/61**. The replacement is closer to the true geometry than the thing
+it replaced — 1.6× in the mean, 3.8× in the worst pixel.
 
-- **A percentage padding was stored as a pixel count.** `len_px()` reports
-  through an out-parameter whether the value it converted was a percentage,
-  and all four padding edges passed NULL -- so `padding-top: 56.25%` became
-  fifty-six pixels. That declaration with `height:0` is the ASPECT-RATIO BOX,
-  which is how essentially every card grid on the web reserves space for a
-  picture. `struct cstyle` carries the specification in `pt0..pl0` (hundredths
-  of a percent -- 56.25% of 400 is 225 and 56% of it is 224) and `resolve_pad`
-  rewrites the pixel fields at the seven layout sites where a containing-block
-  width is in scope, so layout.c's forty readers are unchanged.
+**The migration found a real defect in the engine, and only this way could it
+have been found.** `span_add` accumulated straight into the 0..255 byte row,
+converting each sub-scanline's covered length on the spot with an integer divide —
+so truncation was paid **once per sub-scanline** and the error GREW with `subs`,
+backwards for the one knob that exists to buy accuracy. At the default 4 it cost
+up to 3/255 and nobody noticed; at 16 it cost up to 15/255 on every antialiased
+pixel of every glyph, always the same direction, and the first measurement of the
+port showed the whole typeface coming out lighter. `g_acc` sums lengths exactly
+and converts once per pixel through a 16.16 reciprocal that is **exact for every
+`subs` dividing 65280**.
 
-  Placement matters and the test caught the first attempt: `layout_block(n, x,
-  y, w)`'s `w` is NOT the containing block width -- every caller passes
-  `bw - hextra(st)`, the box's own CONTENT width.
+**Phase 1** is paths, nonzero + evenodd, a scanline coverage rasterizer, four
+paints (solid / linear / radial / image), Porter-Duff src-over, an affine
+transform applied to **paths**, and a rectangle clip. **Phase 2 landed**
+(`8e85be37b`) — `gfx_stroke.c` exists and `test-gfx` is raster + paint + **stroke**
++ **clip**. `svg.c`'s own scanline filler and Newton `dsqrt`/`dsin` are **gone**;
+it is a consumer of the engine like everything else, and it is **not in `C_SRC`**.
 
-- **`calc()` worked on `width` and on no other length property.** One tuple in
-  `third_party/css/libcss/src/select/select_config.py`; the generated parser
-  accepts `height: calc(...)` and the hand-written `css__cascade_height` then
-  drops it at CASCADE time, before a computed style exists. Fixed for
-  `height`; the config marks it, `select_generator.py` regenerates the three
-  vendored headers, and three hand-written sites plus a new
-  `css_computed_height_px()` follow. **The generator is idempotent -- check
-  that first: run against an unmodified config it reproduces all three headers
-  byte for byte, which is what makes the diff readable.**
+Each half arrived with its own independent oracle: the stroker's is the distance
+from a pixel to the **flattened** source polyline (to the polyline and never to
+the ideal curve — measuring against the curve charges the path's flattening error
+to the stroker and fails a correct one) plus the miter wedge and square-cap
+half-square in closed form; path clipping's is the AND of two analytic predicates
+that already existed, supersampled the same way. The clip tests use deliberately
+**asymmetric** extents and origins — a centred clip hides a transposed axis.
 
-  **The other nineteen are still in this state.** WPT `css/` usage, measured,
-  as the work order: width 332 (works), left 168, height 154 (fixed), top 89,
-  min-width 45, max-width 33, max-height 28, bottom 28, min-height 27,
-  text-indent 20, right 17, margin-left 16, then the paddings and margins in
-  single digits. Note before starting on the insets: `css_engine.c` already
-  SKIPS a percentage on top/left/right/bottom on purpose (it has nowhere to
-  defer it to), so only pure-length calcs there are usable -- 229 of the 338
-  inset calcs in the corpus, and 96 of those are `calc(var(--x))` from two
-  generated animation files.
+**Three techniques carry the cost.** Masks are generated at DEVICE resolution and
+blitted into a POINT rect of the same device size, so the compositor's
+nearest-neighbour rescale is the identity and antialiasing survives 150%/200%.
+Only what CURVES is rasterized — a rounded rect is a 9-slice, so **O(r²), not
+O(w·h)**: 0.144 µs against 6.96 µs for the same 200×40 r=8 shape, and zero on the
+second card. Masks are cached by exact device geometry.
 
-  Gotcha carried from width: `css_computed_height()` reports an unresolved
-  calc as AUTO deliberately, so the resolution happens in the ELSE branch,
-  through two probes of the `_px` accessor. A calc is linear in the available
-  length, so slope recovers the percentage and intercept the addend.
+**The bar is a number against an INDEPENDENT reference.** Worst pixel error:
+circles r=3..48 **0.095**, ellipses 0.091, rounded rects 0.047, triangles 0.119,
+corner tiles 0.078; src-over over 175 alpha/coverage combinations **1/255**. A real
+bug found by building the reference first: `gfx_over` truncated `da*(255-a)/255`,
+which at a=1, da=1 floors the destination's surviving alpha to **zero** — 17/255
+off the definition. Everything faint over something faint was wrong that way.
 
-M18 Real processes ✅ (the "toward a real OS" step: run software not written for
-LogitOS). A POSIX-ish process model independent of the window manager:
-`c/kernel/exec/{proc,file,exec}.c`. **proc.c** = a PCB table (pid/ppid/state/
-cr3/fd[]/cwd); `thread->data` is a `struct proc*` (a GUI app is a proc whose
-`->gui` owns a window). **fork** = `vmm_clone_user` (eager copy of the private
-user subtree) + `thread_fork` building a child kstack that returns through
-`fork_ret` (enter_user.asm) into ring 3 with rax=0; exit→zombie, waitpid/proc_reap
-free the space (`vmm_free_space` -- also fixes a latent app-space leak). **fds**
-(`file.c`): F_VFS (whole file in a kmalloc buffer + offset, flush on last close),
-F_PIPE (ring buffer, EOF/EAGAIN via reader/writer refcounts, `O_NONBLOCK`), F_TTY
-(serial console). **execve** (`exec.c`) replaces the user space in place + builds
-a SysV argc/argv/envp stack. Userland: `crt0_cli.asm` (argc/argv→main), `clib.h`,
-`/bin/sh` (pipes `|`, `< >` redirect, `&`, builtins, /bin PATH) + coreutils
-(ls cat echo pwd wc head true false sleep mkdir rm touch clear uname). init:
-`wm_run` proc_spawns `/bin/sh` on the serial console (fd 0/1/2 = tty); the GUI
-**Terminal is now a terminal emulator** that fork+execve's the same `/bin/sh` over
-two pipes. CI: `make test-shell` (`tests/boot/run-shell-test.sh`). **Gotchas:** CLI
-programs link at a *common* base **0x50000000** -- it must be inside the private
-user region PML4[0]/PDPT[1] (0x40000000-0x7FFFFFFF); 0x10000000 would be shared
-kernel low memory. `wm_launch` gives every GUI app fd 0/1/2 = tty so an app's
-`pipe()`s get fds >=3 (else they collide with dup2 targets 0/1/2). **ATA made
-robust**: under `-smp` TCG the AP framebuffer-present contends the device lock and
-intermittently delayed IDE PIO past the old bounded poll -> nondeterministic
-"file not found"; `drivers/block/ata.c` now retries the command 8x.
-**The two logitfs issues this paragraph used to list as open are both CLOSED**
-(the "corrupts after repeated non-snapshot boots; use `-snapshot`" line was
-still here on 2026-08-08 and was wrong by then -- see Storage below for what
-fixed it and what now proves it). `tests/qmp/qmp_term.py` drives the GUI
-terminal; QMP key injection must be slow (PS/2 1-byte buffer).
+**`fb.c` and `wm.c` are NOT untouched by the engine** — this file claimed they
+were, one paragraph after saying `fb.c` calls `gfx_mask_corner`. `fb.c` makes five
+engine calls; `wm.c` carries 34 `gfx_` references and builds a path of its own.
+`SYS_GUI_BLIT` is how **ring 3** reaches the screen; the kernel compositor calls
+the engine directly.
 
-M19 virtio ✅ (the "VGA is too primitive" follow-up): a modern (virtio 1.0)
-paravirtual device stack in `c/drivers/virtio/` replacing the legacy devices.
-`virtio.c` is the virtio-pci transport (parses the vendor-0x09 PCI caps to find
-the modern cfg structures in BAR4, negotiates VIRTIO_F_VERSION_1, sets up split
-virtqueues, synchronous request/poll). **virtio-blk** (`virtio_blk.c` +
-`drivers/block/blkdev.c`) replaces ATA PIO as the disk (logitfs bread/bwrite go
-through blkdev; ATA is the fallback). **virtio-gpu** (`virtio_gpu.c`) replaces the
-uncached-VGA-MMIO framebuffer: a RAM-backed 2D scanout resource, present =
-TRANSFER_TO_HOST_2D + RESOURCE_FLUSH (a DMA, not a per-pixel CPU copy -- the old
-lag root); `fb.c` prefers it, falls back to the multiboot LFB. Both poll with
-interrupts ON but non-preemptible (`g_virtio_busy`/`ata_busy`, see interrupts.c)
-since completions run on QEMU's IO thread. The multiboot2 framebuffer tag is now
-optional so GRUB boots with `-vga none`; QEMU uses `-vga none -device
-virtio-gpu-pci` + `virtio-blk-pci`. (Post-M18 fixes also landed: Finder list
-clipping, runtime-mkdir clean dirs, the ATA IF-on/non-preempt fix, inode_trunc
-double-indirect free.)
+**Still dead, measured**: `gfx_fill_clipped` (the surface-writing half of path
+clipping) has **zero** callers outside its own gate; so do `gfx_fill_subs` and
+`gfx_m_invert`. `gfx_gradient_strip_paint` is dead **deliberately** and the
+argument is at `browser_paint.c:654`.
 
-**Two more devices ride the same transport now, and neither needed a Makefile
-change to build** -- `C_SRC` globs `c/drivers`, and a driver registers itself
-through the device model's linker section (`DRIVER_DECLARE`), so there is no
-call in `kmain` either:
+### The browser and the web platform
 
-- **virtio-rng** (`virtio_rng.c`, dev 4 / PCI 1af4:1005). It closes a gap this
-  tree already worked around in writing: `rng_strong()` is defined as "RDSEED
-  or RDRAND available" and gates whether TLS will attempt a handshake at all,
-  so `Makefile:1182` passes `-cpu max` for the stated reason that the default
-  qemu64 has neither and the TLS client refuses the weak rdtsc fallback. Any
-  machine whose CPU model lacks them -- an explicit `-cpu qemu64`, an older
-  model, a real hypervisor masking them -- has no hardware entropy at all.
-  **It is NOT wired into `rng.c`** (deliberately; that file is not this
-  change), and its boot self-test prints 32 bytes of the entropy stream to a
-  serial log every `tests/boot` harness captures to a file -- harmless while
-  nothing consumes the driver, a leaked seed the moment the requested hook
-  exists. Whoever writes the hook deletes the self-test.
-- **virtio-balloon** (`virtio_balloon.c`, dev 5 / PCI 1af4:1002). The pressure
-  source the reclaim/swap line was written for and never had: `-m` at boot and
-  `mempress.as` can only squeeze a machine that has not started yet or a
-  process that asks. A balloon squeezes a RUNNING one, from the host, live. It
-  lands on the right side of the reclaim invariant for free -- a balloon frame
-  is `pmm_alloc()`'d, so `pmm_refcount` is 1 while `rmap_count` is 0, and
-  "evict only if they are equal" makes it structurally un-evictable with no
-  `pmm_pin()` and no exception list.
+`c/apps/browser/` is the largest application in the tree. The whole
+HTML→DOM→CSS→layout→paint pipeline runs in ring 3; the kernel is a primitive
+provider (network fetch, font metrics, drawing).
 
-  `make test-virtio-rng` (4) `test-virtio-rng-negctl` ·
-  `test-virtio-balloon` (12, cross-checked from BOTH sides -- the guest's
-  `pmm_free_frames()` and the host's `query-balloon` must agree; one side
-  alone is a driver agreeing with itself) `test-virtio-balloon-negctl`
+**The HTML parser is a real WHATWG parser, not a tag stripper.** This file
+described it as "`net/dom.c`: ~60 named entities, implied `<tbody>`, optional
+end-tag auto-closing". That scanner is **deleted**. What is there is
+`html_tokenizer.c` (1,548 lines, every tokenizer state including the eleven
+script-data escaped ones) + `html_tree.c` (2,939 lines: the stack of open
+elements, the list of active formatting elements) + `dom.c` + `dom_serialize.c`,
+with **2,231** named entities. `make test-html5lib` is **green**: 1,723/1,818
+tree-construction (94.8%) against a **baseline ratchet**, not a pass rate.
 
-Pre-M20 prerequisite — **mini-libc 大补**: `c/apps/libc` grew into a real
-freestanding C lib. `io.c` is the single errno/syscall TU (POSIX wrappers over
-int 0x80); `stdio.c` is now **fd-backed buffered FILE I/O** (fopen/fread/fgets/
-fseek/…); added `fcntl.h`/`unistd.h`/`setjmp.h` (+`setjmp.asm`), `strtok`/`memmem`.
-Also fixed stdio bugs (short-write loss, `%g` trailing zeros, `%*`/`.*` neg width,
-round-half-to-even). Only browser/JS + `/bin/as` link mini-libc; CLI coreutils use
-`logit.h` inline syscalls. IDE: `tools/gen_compile_commands.py` + a self-sufficient
-`.clangd` (full INCDIRS) kill the host-SDK false-positive squiggles.
+**CSS is NetSurf LibCSS** (`third_party/css`, 321 `.c`) driven from
+`css_engine.c` + `css_extra.c` + `css_vars.c` + `css_interp.c`. `net/css.c` and
+`net/paint.c` **do not exist**.
 
-**It has kept growing well past that paragraph** — `dirent`/`stat`/`time` with a
-full `strftime`+`strptime`/`signal` (real kernel delivery)/`regex`/`fnmatch`/`glob`/
-`pthread`/BSD sockets/`wchar`, a real `system()` (fork+execv `/bin/sh -c`), a
-segregated-free-list malloc, and as of 2026-08-14 the headers a ported program
-includes on its first line: `<libgen.h>`, `<err.h>`, `<sysexits.h>`, `<paths.h>`,
-`<search.h>`, `<ftw.h>`, `<iconv.h>`, `<langinfo.h>`, `<nl_types.h>`, `<getopt.h>`,
-`<utime.h>`, `<sys/{uio,file,ioctl,statvfs}.h>`.
+- **Flexbox** (`layout_flex.c`, 950 lines) and **Grid** (`layout_grid.c`, 2,250)
+  both exist and are green — `test-flex` 176 checks, grid 318 across four gates.
+  **Neither is a separate translation unit**: `layout.c` textually `#include`s
+  them, deliberately — *"Fourteen Makefile rules across five fragments list
+  layout.c in a source list, and two of them are the harnesses that MEASURE this
+  file. A source list is exactly the thing a measured line must not be able to
+  edit."* Adding a TU would have let the engine edit its own scoreboard.
+- **The flex trap, and it is the negative control**: growing distributes free
+  space in proportion to `flex-grow`; **shrinking does not** distribute in
+  proportion to `flex-shrink` — it uses `flex-shrink × the item's inner flex base
+  size` (§ 9.7 4b). The raw factor produces plausible layouts with correct totals
+  and wrong individual sizes.
+- **`css_vars.c` records its own first version as the wrong one.** A flat
+  last-wins text scan for `--name: value` ignores **media context**, so on a light
+  machine it takes the value from `@media (prefers-color-scheme: dark)`. Anyone
+  who assumes "var() is a text substitution" reimplements exactly that.
+- **`js_url.c` is a SECOND URL parser on purpose**, not a binding over
+  `c/net/http/url.c`: "the corpus is exhaustive precisely because every browser
+  tried to write this as a splitter first, and the only way to answer 'why does
+  this case do that' in a hurry is for the code and the prose to have the same
+  joints."
+- **`js_anim.c` is scope chosen by subtraction, and the arithmetic is the
+  design**: 10,714 WPT subtests fail on one line, `'animate' in Element.prototype`.
+  Of those, 8,513 have twins that fail for a CSS reason and belong to another
+  line; 2,202 do not. That is what was built.
+- **The rule `js_platform.c` states, and it is worth more than its inventory**:
+  *"every entry below is either a name a page in `tests/fixtures/webapi/` actually
+  reached for (with the page named in the comment) or is marked as
+  requested-but-unmeasured. Nothing in this file is here because a browser is
+  'supposed to' have it."*
+- **Canvas 2D** (`js_canvas.c`) is the consumer `c/lib/gfx` never had, and it
+  makes gfx calls while owning no scanline loop. Two engine contracts shaped it:
+  `gfx_path_matrix` **refuses a mid-build call**, so canvas keeps the path matrix
+  at identity and transforms every point itself (the opposite of the CSS painter,
+  which knows its matrix before the first point); and a `gfx_surface` is
+  **straight RGBA8, byte for byte what ImageData is**, so `getImageData` is a copy
+  and the gate can assert BYTES. `toDataURL`/`toBlob` **throw** rather than
+  fabricate — this tree decodes PNG and does not encode it.
+- **The one-line "safe" answer is the wrong one**, and the corpus says so rather
+  than an argument: `baidu-async-search.js` writes `var o = a.getContext === i ?
+  !1 : a.getContext("2d"); if (o === !1) return !1;` — with the method absent the
+  page takes its fallback cleanly; with a null-returning method the guard does not
+  fire and the page walks on holding null.
+- **When a page reports its own error, read it.** A modern bundle catches its own
+  exceptions, so what reached the log was six byte-identical
+  `[error] TypeError: not a function` lines from a minified bundle. Two
+  instruments closed it: `console.error(err)` now prints the **stack** (in *both*
+  consoles — they share no TU), and the TypeError **names the callee** (the
+  property atom is in the bytecode at `OP_get_field2`). Cost is zero on the path
+  that works: the check runs only after `JS_CallInternal` has already returned an
+  exception. Two traps, both found by writing the control first: a plain call must
+  not inherit the previous method call's atom, and `o.a?.()` on a nullish `o.a`
+  **skips** the call so its atom is never consumed.
+- What that found immediately: **`Node.isEqualNode`**. React's Float compares
+  hoisted `<title>`/`<meta>`/`<link>` with it; absent, it threw six times, React
+  declared hydration lost (#418), switched to client rendering (#423), and the
+  client render died. stripe went 69 painted text runs → 38 → **0** and scored
+  BLANK **with no failed request and no missing subresource**.
 
-**`AS_LIBC := $(wildcard c/apps/libc/src/*.c)` (Makefile:718) feeds `LIBC_OBJS`, so
-a new `.c` here needs NO build-system change.** That is why this area parallelises
-and most of the tree does not.
+**WPT.** The headline is `149318/246542 subtests (60.6%) over 9,181 harness
+files`, and the suite is built to distrust it: **the gate is a ratchet against an
+expected-failure list, not the percentage.** The corpus is OPTIONAL and the
+capability is not — `WPT_ROOT` points anywhere, an absent directory makes the
+runner say so and exit 0. **`third_party/wpt` does not exist and has not since
+2026-08-21** (`4179053ef`, "the corpus is fetched at a pinned revision, not
+vendored — 59,422 files leave the tree"); `WPT_ROOT ?= build/wpt`, populated by
+`make wpt-fetch` at the revision in `tools/wpt_revision.txt`.
+
+**THE RUNNER MUST BE `browser.aex`, or every number is of a browser that does not
+exist**, and the second half of that is the most instructive failure in this
+repository: *linking a translation unit is not running it.* The runner linked
+`css_extra.c` and `layout.c` and then never called `css_apply()`,
+`css_extra_apply()` or `layout_page()`. `make test-wpt ONLY=css/css-grid` read
+**531/11152 with and without the grid implementation** — 11,152 subtests
+structurally unreachable, and the line shipping grid unable to tell its own work
+from a no-op. The source list is expressed as a **subtraction** from the
+Makefile's own variables so it cannot drift silently.
+
+Reftests are judged by pixels against a reference render out of the same corpus
+against a 17,452-entry baseline — the runner's own output said "there is no
+reftest harness here" until somebody checked.
+
+**Ranking, not rates.** `tools/wpt_rank.py`, `cssom_rank.py` and
+`cssom_compare.py` turn the rate into a work order, and `cssom_compare.py` names
+the trap the ratchet cannot see: *"A file that never completed contributes NO
+subtests to the denominator; revive it and it contributes its subtests, most of
+which fail at first. So the raw pass count can FALL while the result is strictly
+better."* Its headline number is **files revived**.
+
+**The site scoreboard** boots one QEMU per live site and writes a dated snapshot;
+the delta between two snapshots is the product. Its header states its own blind
+spot: *"`changed px` cannot tell a rendered page from a flat dark block."*
+`text run/B` is the cheap middle — not WHERE the pixels are but **WHICH WORDS** are
+among them, with the coordinate of every run, collected at the one site that
+paints document text so it cannot drift from what was drawn. It found its own
+reason to exist on the first run: bilibili scored PAINTED with ~255,000 changed
+pixels and its titles were painted *inside* the thumbnail's box, i.e. underneath
+the image drawn after them. *"Missing" and "painted underneath" look identical in
+a list of strings and completely different in a list of coordinates.*
+**`HARNESS` is a verdict now** (`dc02b9801`) — a row that measured nothing no
+longer publishes as a browser finding — and `make test-sites-merge` gates the
+merge rule.
+
+### Media
+
+- **H.264** (`c/lib/video/`) is **no longer baseline-only**: `h264_cabac.c` exists
+  and the matrix covers Baseline (CAVLC, I/P), **Main (CABAC, B slices)** and
+  **High (8×8 transform, scaling matrices, B pyramids)** — *"a High-profile stream
+  is what every real web video is, so the Baseline half of this list is now the
+  regression half."* `make test-h264` gates **27** named x264-generated cases plus
+  a committed fixture, byte-exact. Bit-exactness is the bar, not a tolerance:
+  H.264 reconstruction is exactly specified integer arithmetic.
+  Gotchas worth keeping: `mbinfo` uses raster order for `mv[]` but **Z order for
+  `nz[]`**; mvp's A/B/C all come from the partition's top-left corner and only C
+  steps right; an INTRA neighbour is *available* with refIdx −1; `ref_idx` is
+  coded per partition but read back per 8×8 quadrant; deblocking compares
+  reference **pictures**, not indices; and a weight of 128 is inferrable though not
+  codable, so clamping to 127 silently darkens every frame.
+- **H.265/HEVC** — nal, cabac, pred, mc, deblock; nine gates. `test-h265` is the
+  bit-exact list, `test-h265-diff` "the honest picture", `test-h265-m10` is
+  **Main 10** gated at the same bar. **`test-h265-b` is red**: B slices,
+  declared incomplete, `got 79 want 80`. And a size-dependent failure sits outside
+  all nine: `test-vidbench-guest` returns `decode error -3` for h265 at 1280x720
+  while 640x360 works.
+- **MPEG-1/MPEG-2** (`mpeg12*.c`) — 31 of 31 bit-exact. **The IDCT is pinned to
+  ffmpeg's `-idct simple` on purpose**, and that is what makes the gate mean
+  anything: Annex A specifies the inverse DCT only by an *accuracy requirement*,
+  so two conforming decoders may differ by ±1 — and because P and B pictures
+  predict from the reconstruction, that ±1 accumulates for the rest of the GOP.
+- **MJPEG** decodes each frame through `c/lib/image`'s `img_decode()`. **That is
+  why the video library now depends on the image library**, and why `vidcheck`
+  and `terminal` grew `$(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB)` — 459,728 →
+  1,766,096 bytes for vidcheck. Still the right trade: a second baseline JPEG
+  decoder in `c/lib/video` is the fourth-rasterizer mistake in another subsystem.
+- **Audio codecs**: wav, mp3, flac, vorbis, aac, **opus**. Opus implements the
+  **CELT half only** and **refuses SILK and hybrid frames by name** with distinct
+  error codes, "because a player that gets silence cannot tell 'this codec does
+  not do speech yet' from 'this file is quiet'". `vorbis.c` has **its own bit
+  reader** because Vorbis packs LSB-first, the opposite of every other codec here
+  — getting it backwards reads a plausible number of bits and then desynchronises
+  in the middle of a stream.
+- **Kernel audio** (`c/kernel/audio/` + `c/drivers/audio/hda.c`, 1,143 lines) —
+  CORB/RIRB verb rings, codec-graph walk, BDL scatter-list DMA. The driver
+  reports the codec graph it found rather than just "ok", because *"the DAC must
+  be told which stream number to listen to, or the DMA engine runs happily, LPIB
+  advances, every register reads back correct — and there is silence. That
+  failure looks exactly like success from the controller's side."* The mixer is a
+  **thread, not a poll loop**: "a refill is due every 21 ms forever, and a poll
+  loop either burns a core or misses the deadline". The ISR does a counter bump
+  and a `sem_post` and nothing else.
+- **Containers** (`c/lib/media/`): `demux.c` + `mp4.c` + `mkv.c` + `avclock.c`.
+  **Sniffing is by CONTENT, not by name** — a `.mp4` that is really Matroska opens
+  as Matroska. `avclock.c` is a **policy, not a conversion**: a container hands out
+  two streams of timestamps written by an encoder on another machine, and they
+  mean nothing until something decides what "now" is; on this machine a
+  from-scratch H.264 decoder under TCG is not guaranteed to keep up, so the
+  falling-behind policy is the design, not an error path.
+- **`subs.c` (WebVTT + SRT, 1,030 lines) is parsed and unreachable.**
+  `media.h:99` says it in one line: `MEDIA_TRACK_OTHER 3 /* subtitles, timecode,
+  data: indexed, never read */`. Zero files outside tests include it.
+- **Video has no player.** The whole h264/h265/mpeg12 stack cannot be reached from
+  `<video src>`; Preview picks image-or-video by sniffing the Annex-B start code.
+  `test-mse-os` is red — playback stalls with `decoded=60 shown=59` and the audio
+  master clock not advancing.
+- **VP8 inter frames exist and are OFF.** `rust/src/vp8_inter.rs` (1,292 lines) is
+  a full inter-frame decoder, bit-exact against ffmpeg on 4 IVF cases including a
+  stream with **4 hidden alt-ref frames** — behind a Cargo feature, **default
+  off**, and `$(RUST_LIB)` passes no `--features`, so a WebP decode still hits
+  `return None; // interframe`. It exists, it is gated, and **it has no consumer**.
+- **VP9 is a committed gate whose decoder was never committed.** `tests/vp9.mk`
+  defines `test-vp9` against `tests/unit/vp9_test.c` and `c/lib/video/vp9*.c`,
+  none of which exist. The fragment's header is honest about what it *would*
+  measure ("VP9_GATE IS EMPTY, AND THAT IS THE MEASUREMENT … 17 of 17 cases decode
+  every frame and every one of them is WRONG"), but it is describing a decoder
+  that is not in the tree.
+
+### Image decoders
+
+Not derivable from the file list: **PNG, BMP, ICO, WebP and inflate are RUST**;
+JPEG, GIF, SVG and EXIF are C in `c/lib/image/`.
+
+| format | state |
+|---|---|
+| PNG | complete — every bit depth (1/2/4/8/16), all five filters, Adam7, tRNS |
+| GIF | complete — animation, per-frame sub-rects, all disposal modes |
+| BMP / ICO | complete, including RLE4 and 32bpp with a real alpha mask |
+| JPEG | baseline **and progressive**; **maxd=0** against `djpeg -nosmooth -dct int` on all 13 cases |
+| WebP | VP8L **and VP8 key frames** with the ALPH plane; byte-exact vs `dwebp -nofancy` |
+| SVG | on the shared engine — fill AND stroke; its own filler is gone |
+
+Four things to know before touching VP8:
+
+- **The tables are GENERATED, not typed** (`tools/gen_vp8_tables.py` from RFC
+  6386's own reference source). 3,164 probabilities and tree indices. This is not
+  tidiness: a wrong probability does not shade a pixel, it **desynchronises the
+  arithmetic decoder into noise**, and one wrong byte in three thousand is not
+  findable by looking. The generator refuses rather than guesses — and it did not
+  strip the RFC's page furniture at first, which is how "Bankoski" came to be
+  parsed as an enumerator.
+- **A B_PRED subblock on the macroblock's right edge takes its above-right samples
+  from the row above the MACROBLOCK**, for all four subblock rows. This is the
+  format's most-reimplemented bug; `--features vp8-tr-from-subblock` is it on a
+  switch and reddens 19 of 31 — the twelve that survive are the smooth cases the
+  encoder never coded as B_PRED, which is the control showing *which* cases carry
+  the property.
+- **The loop filter is a second pass over the finished frame.** Intra prediction
+  reads its neighbours' UNFILTERED samples; filtering per macroblock feeds
+  filtered pixels into the next row's predictor and drifts.
+- **A third control was written and DELETED**: clearing the Y2 non-zero context on
+  every skipped macroblock is a real rule and no case in the corpus reaches it, so
+  the control passed. A control that cannot be watched failing is worse than none.
+
+**Progressive JPEG is a SECOND path inside `jpeg.c`, not a generalisation** —
+baseline never holds more than one block of coefficients while progressive must
+hold the whole image until EOI, so merging them would charge every ordinary JPEG
+progressive's memory. **A scan naming ONE component walks that component's OWN
+block grid**, not the padded MCU grid — the two differ whenever the image is not a
+whole number of MCUs, which is most images, and getting it wrong shears the
+picture. `-DJPEG_PROG_MCU_GRID` fails **only** at 23×17 and hides completely at
+64×48, which is why both sizes are in the corpus.
+
+### The desktop: window manager, IME, and what it costs
+
+`c/kernel/gui/`: `wm.c` (5,594 lines — the largest file in the tree), `fb.c`,
+`text.c`, `notify.c`, `clipboard.c`, `ime_ui.c`.
+
+- **Damage tracking is real and it works.** The compositor recomposites only
+  rectangles something reported as damaged, and that is a **correctness** change
+  underneath: `dirty_rect` used to throw all four arguments away, and now every
+  caller is held to reporting the true extent. A caller that under-reports leaves
+  pixels on screen that no longer belong there and **nothing repaints them** —
+  there is no periodic full repaint left to cover for it. The menu bar repaints a
+  24-point strip twice a second instead of the whole screen.
+- **Two primitives read a NEIGHBOURHOOD and therefore cannot be clipped**:
+  `fb_blur_rect` and `fb_liquid_glass`. The backdrop they would sample outside the
+  clip is *last frame's output — already frosted*. So `dmg_expand` grows any
+  damage rectangle that touches a glass panel until it contains the **whole
+  panel**. That is a deliberate, argued design, and it is also where the frame
+  time goes (below).
+- **`SYS_GUI_FLUSH` carries no rectangle**, and `wm.c:2113` states the cost:
+  *"the flush carries no rectangle, so the smallest honest extent an app can be
+  held to is its whole canvas. That is the floor on an app repaint, and it is an
+  ABI limit, not a compositor one."*
+- **The pointer is on the display's hardware cursor plane** (`virtio_gpu.c`), so
+  pure motion costs nothing — *"at 1920×1200 that is 2.3 M pixels of work to move
+  an arrow eight of them"* if it were composited. **Consequence for harnesses: the
+  arrow is not in a screendump**, so any driver that locates the cursor in the
+  picture will silently fail.
+- **Notifications** (`notify.c`) — "before this the machine had exactly two ways
+  to say anything: open a window in the user's face, or say nothing".
+- **The clipboard** (`clipboard.c`) holds a UTF-8 well-formedness invariant, and
+  both halves are argued as jointly necessary: validating on the way in without
+  truncating safely on the way out still produces a broken character; truncating
+  safely without validating walks a byte sequence whose structure was never
+  checked. `/bin/clip` is its instrument and a **test harness first** — the claim
+  is that the clipboard survives the death of the process that filled it, and the
+  only way to test that is two real processes.
+- **The settings store** (`settings.c`, 1,520 lines) is kernel-resident, and
+  reason 4 in its header is the one a newcomer gets wrong: *"LogitFS rewrites a
+  WHOLE FILE per write. Two apps holding two copies of the settings and each
+  writing the whole file back would silently destroy each other's keys — not a
+  race on one key, a total loss. There has to be exactly one writer."*
+
+**The Chinese input method.** `c/lib/ime/pinyin.c` (freestanding, no libc, no
+allocator, **compiled into the kernel**) + `c/kernel/gui/ime_ui.c` (the
+composition state machine and candidate bar). Dictionary `/ime/pinyin.dat`,
+**572,983 bytes / 25,945 keys**, indexed in place at load and never copied.
+
+- **The toggle is `Shift+Space`** — `IME_TOGGLE_MOD` / `IME_TOGGLE_NAME` in
+  `ime_ui.h`, defined **once**. It was `Ctrl+Space` until 2026-08-28, spelled in
+  eight literals, and it had to change for a reason no test in this tree can see:
+  **macOS consumes Ctrl+Space itself** as "select the previous input source", so
+  the chord never reached the guest. The guest side was never broken —
+  `run-ime-test.sh` drives the identical chord over QMP, beneath the host
+  keyboard, and passes.
+- **`Shift+Space` is not free**: it no longer types a space, so typing fast enough
+  to still hold Shift from a capital when the space arrives toggles the IME. That
+  is stated in `ime_ui.h` rather than discovered.
+- Composing: `a-z` appends, `'` separates syllables, **Space commits candidate 1**,
+  **1-9** commit from the current page (9 per page), **Enter** commits the raw
+  letters, **←/→ or PgUp/PgDn** page, **Esc** cancels. An unknown key **drops**
+  the composition rather than committing it — "a candidate they never chose is
+  worse in their document than three lost keys" — and Ctrl/Alt/Cmd + anything
+  cancels, so Ctrl+S saves without a half-typed romanisation.
+- **Shift+letter while not composing types a capital straight through**, so names
+  and acronyms need no toggle.
+- **The IME is PER WINDOW** (`g_on[wi]`), not a machine mode.
+- **It commits a full code point, and `(char)k` truncates it** — `aui.c:1459`
+  records the trap. Any widget or app that stores a key as a `char` silently
+  corrupts every Chinese character while looking correct for ASCII.
+- **Until 2026-08-28 the toggle changed NOTHING a user could see.** Measured by
+  injecting the chord over QMP and screendumping either side: **175 changed pixels
+  of 2,304,000, all of them the clock.** The state line goes to serial; the
+  candidate bar does not exist until a composition is open. So the machine
+  answered a deliberate keystroke with silence while the *host* answered
+  Ctrl+Space with an animation — **the only key that replied was the wrong one**,
+  which is exactly how the binding came to feel like Ctrl+Space. There is a
+  menu-bar 中/EN indicator now (`draw_menubar`, damaged through
+  `wm_damage_menubar()`), and the toggle moves 521 pixels instead of 175.
+
+---
+
+## The desktop is slow, and this is where the time goes — measured 2026-08-28
+
+The complaint was "very laggy, and I don't know why", at the shipped default
+(`make run`, 1920×1200, 4-core TCG on an Apple M4 Max). `tests/qmp/qmp_repaint.py`
+is the instrument built for exactly this question — *"'It still feels laggy' is
+not a number. This driver turns the sentence into one table, per EVENT CLASS"* —
+and **no make target had ever run it**; three other drivers import it as a
+library.
+
+| interaction | ms/composite | fps | composited px/frame | present (copy+DMA) | full-screen frames |
+|---|---|---|---|---|---|
+| drag a small window | 26.2 | 38 | 890k (38.7%) | 1.68 ms (6.4%) | **0** |
+| **drag a large window** | **94.0** | **10.6** | 1.54M (66.9%) | 2.67 ms (2.8%) | **0** |
+| dock hover | 46.2 | 21.6 | 223k (9.7%) | 0.44 ms (0.9%) | **0** |
+| **one keystroke into TextEdit** | **93.9** | **10.6** | 1.57M (68.0%) | 2.67 ms (2.8%) | **0** |
+| dark-mode switch | 51.3 | 19.5 | 942k (40.9%) | 1.55 ms (3.0%) | 17 |
+| **scroll the Terminal** | **103.8** | **9.6** | 1.55M (67.3%) | 2.68 ms (2.6%) | **0** |
+
+**Two obvious hypotheses die on these numbers.** It is **not** full-screen
+repainting — `full-screen frames = 0` everywhere except the theme switch, which
+genuinely repaints everything. It is **not** the GPU — present is **0.9%–6.4%** of
+a frame.
+
+**Cost is linear in composited pixels, with a large per-pixel constant on glass.**
+Re-run at 1280×800 (2.25× fewer pixels): every workload came back **2.11–2.45×**
+faster, and the per-pixel cost was identical at both resolutions — 29/30 ns/px for
+an ordinary drag, **207/201 ns/px for the dock**, which is almost all glass.
+Fitting those two rates says the menu bar + dock account for roughly half of a
+large-window drag frame.
+
+**kprof confirms it independently.** Sampling a real, pointer-confirmed drag:
+after removing the 114 user-mode samples, **`fb_liquid_glass_cut` is 76 of 178
+kernel-busy samples and `gl_isqrt` another 14 — 50.6%.** Arithmetic said ~57%;
+two methods that share no code agree.
+
+**But the most important number in that profile is 94.95% idle.** Three of four
+cores are halted while the machine feels slow. The lag is not a capacity problem:
+it is a **single-core, BKL-held, 94 ms critical section**, during which nothing
+else advances, with everything halted between frames. Adding cores does nothing —
+which is why it is slow and the fan does not spin.
+
+**What to do, in leverage order:**
+
+1. **Change the resolution.** `make run QEMU_GPU="-vga none -device
+   virtio-gpu-pci,xres=1280,yres=800"` is **2.2×** for free, and the *logical*
+   desktop is identical — 1920×1200 runs at 150% scale with a 1280×800 pt desktop,
+   so you lose HiDPI crispness and nothing else. Large-window drag 10.6 → 22.7 fps.
+2. **Cache the glass field.** Reading `fb.c:1053-1164`, the only backdrop-dependent
+   work in the per-pixel loop is three `unpack(g[...])` samples and the
+   partial-coverage destination read. Everything else — two `gl_isqrt` calls, the
+   SDF, coverage, the normal, the displacement, band/facing/tilt/env/fresnel/
+   spec/shadow — is a **pure function of (i, j, w, h, radius, cut)**, recomputed
+   every frame for a panel whose geometry has not changed. `glass_build_lut(E,
+   REFRACT)` already caches part of it; the per-pixel field is what is missing.
+   Roughly 1.8 MB for the menu bar and dock.
+3. **Give `gui_flush` a rectangle.** A keystroke recompositing 1.57 M pixels is the
+   typing/scrolling/browser row, and it is an ABI gap, not a compositor one.
+4. **Release the BKL inside the composite.** A project, not a patch: a full-screen
+   frame is one damage rectangle, so releasing between rectangles does nothing for
+   the worst case.
+
+**Do not quote `bench-gfx-frame` at this.** It builds the gallery through `aui.c`
+and `nm` finds **zero** `browser_paint` symbols in it, so it measures the engine as
+the toolkit uses it and never as the browser does — and on a loaded host it is not
+repeatable: two runs of the same binary read **19,871 µs and 12,707 µs**.
+
+---
+
+## The BKL: what it costs, measured
+
+**The concurrency model is one lock taken on kernel entry** — but there are **TWO
+acquisition sites now**, and the second is not in `interrupts.c`: the device
+model's `irq_isr_entry()` (`c/drivers/core/irq.c:186`) takes `g_bkl` itself under
+the same nested-entry rule, with **no allow-list check of any kind**. Anyone
+widening `syscall_is_bkl_free()` or counting acquisitions has to read both.
+
+**First measurement, and it was not about the lock:** 98% of every kernel entry
+was an application taking the global lock to be told nothing had happened —
+`SYS_POLL_EVENT` 49%, `SYS_YIELD` 49%. `SYS_WAIT_EVENT` deleted it: syscalls
+3,283,157 → 1,234 (**2,660×**), BKL acquisitions 3,390,115 → 18,571 (183×). **The
+waiting barely moved** (6,685 ms → 6,549 ms), and that is the finding: what went
+away was 3.4 million cheap acquisitions, and the wait that remains was always real
+work.
+
+**Second measurement, which refuted the obvious next step.** The plan was to widen
+the allow-list. Sampling holders from inside the timer tick — which runs *before*
+the interrupt entry takes the lock, so the observer is not itself a holder —
+**no syscall appears at all**. The lock is free ~80% of the time; it is a
+bottleneck because of *who* holds it and *for how long at a stretch*: the
+compositor, which re-takes it on waking and holds it through the whole frame.
+
+**Do not quote a precise share.** Three runs on four cores reported the
+compositor's share as 55%, 63% and 80% — that is n≈100, not the machine. The
+robust version is one core, where it is **99% of held time**: not the largest of
+several holders, *the* holder.
+
+**Third: the desktop idles at zero.** 49,283 samples over 12 s of live desktop —
+`sched_become_idle` 49.1%, `file_read` 24.9%, `wm_run` 24.5%. All three are the
+instruction after a `hlt`. **98.5% of samples are halted cores.** Read `file.c`'s
+comment above `tty_read` before quoting this at anyone: a sampling interrupt on a
+halted core records the RIP *following* the halt, which is exactly how these three
+addresses were once read as two busy-waits eating half the machine.
+
+**AND THE LOCK THAT ACTUALLY SERIALISED THIS MACHINE WAS NOT THE BKL.** `make
+test-smp` had been failing with "no wall-clock speedup (kmalloc still serialized
+by the BKL?)". Sampling every lock's ticket counter on a *running* machine showed
+the guess wrong by 834×: `kheap_lock` +30.7 **million** against `g_bkl` +36,836.
+Per-core magazines took it to about 112 acquisitions, and `test-smp` from
+**T1=5s TN=41s to T1=5s TN=6s**.
+
+Four things about that layer, each load-bearing: **exact size classes only** (a
+pop is always a perfect fit, so there is no search and no "close enough" that
+would make the magazines a second, worse free list); **a lock per core, not
+lock-free** (the win was never that the atomic disappeared — it is that four cores
+no longer queue for one); **a block in a magazine is still ALLOCATED**, so the
+double-free refusal still fires; and **drain before OOM**, because returning NULL
+with blocks parked in magazines is an out-of-memory that is not true.
+
+`tools/bkl_shared.py` enumerates every shared mutable static the BKL still covers,
+and it is a tool rather than a paragraph for a measured reason: *"c/fs/logitfs.c
+carries the most honest comment in the tree about this, and it names four of the
+ten statics declared immediately above it. Five of the six it omits are the
+journal TRANSACTION itself. If the careful comment lists less than half, prose is
+the wrong medium."*
+
+---
+
+## AetherScript — and the self-hosting tax
+
+`c/apps/as/` — a from-scratch language, shipped as `/bin/as`, ~7.9 kLOC. Do not
+plan against the M20 feature list: dict, closures, classes (`class`/`super`,
+copy-down inheritance), exceptions with unwinding, bitwise/shift/`**`, a
+16-byte tagged `Value` (deliberately **not** NaN-boxed — an AetherScript int is a
+full int64, so there are no spare bits in 8; the cost worth removing was the
+memory round-trip, not the footprint), shapes with property inline caches, a
+global-lookup cache with generation invalidation, mark-sweep GC over a
+**contiguous object registry**, and computed-goto dispatch all exist.
+
+**M27 ports** made OS endpoints first-class values — `O_PORT`/`O_PROC`, the `|>`
+pipeline operator, `-> path` / `<- path` redirection, `with` scopes with
+deterministic release, and iteration that reuses `OP_LEN` + `OP_INDEX_GET` rather
+than inventing an iterator protocol. Its payoff is
+`fsroot/as/examples/ash.as`: **the system shell, written in AetherScript**, with
+no `fork`, no `dup2`, no `waitpid` and no file-descriptor arithmetic anywhere —
+against 982 lines of C in `sh.c` doing the same job.
+
+**M28 capabilities is IMPLEMENTED**, not a locked design waiting to be built:
+`tests/as-m28.mk` gates attenuation across the whole 64×64 (held, requested)
+lattice, and both negative controls were watched failing at their predicted counts.
+`as_caps_set()` and `as_cap_attenuate()` have no script-visible entry point on
+purpose. **The next unbuilt pillar is M29 tasks** — no target, no source, no spec.
+
+**THE SELF-HOSTING TAX.** `fsroot/as/lib/asc.as` is a second compiler for
+AetherScript, written in AetherScript, and it compiles itself to a **byte-identical
+fixpoint**. The gate for that is **`test-selfhost-fixpoint`** (with `-lex` and
+`-compile`); `test-as-bcstable` is a different and coarser gate that hashes every
+compiled stdlib module against a checked-in baseline, existing to catch a codegen
+perturbation "long before the fixpoint test would notice a 37 KB binary moved".
+
+**The opcode block in `asc.as` is GENERATED, not hand-copied** — this file said
+the opposite and called it "the single most important thing to know before
+touching this language". `tools/gen_as_opcodes.py --write` **exists**; the
+`OP_*`/`AS_BC_VERSION`/`K_*`/`T_*` constants live in a marker-delimited region
+emitted from the C authority, and `--check` re-emits and compares **byte for
+byte**, so a hand edit inside the markers is rejected as a whole-region diff and a
+renumber is one command. What is **still hand-maintained and only checked** is
+`aslex.as`'s `T_*`/`KEYWORDS`, `complete.c`'s IDE tables, `vm.c`'s `dispatch[]`
+and `as_bc.c`'s `OPNAMES` — the tool names `aslex.as` as the remaining
+silent-miscompile hazard.
+
+**`make run` DOES run `check-asops`** (via `$(AS_LA)`'s order-only prerequisite),
+which this file also had backwards. What genuinely does not reach it is `all` /
+`$(ISO)` and `test-ash`.
+
+---
+
+## Porting real software: mini-libc, TCC, and the sysroot
+
+`c/apps/libc/` is a real freestanding C library — **44 files, 12,863 lines of
+`src/` plus 3,761 of headers**. `AS_LIBC := $(wildcard c/apps/libc/src/*.c)` feeds
+`LIBC_OBJS`, so **a new `.c` here needs no build-system change**; that is why this
+area parallelises and most of the tree does not.
 
 **The gate is a diff against glibc, and that is the point**: this code is either
 pure computation or a thin wrapper over a call the host also has, so "correct"
 means "agrees with glibc" — which gives every function a *reference* instead of a
 hand-written expectation that only records what its author already believed. Each
 test source compiles twice (once against our headers with `-nostdinc`, once as an
-ordinary host program) and the two stdouts are diffed byte for byte:
-`make test-libc-host`, 11 gates, 2,356 lines. **Two traps live in that strategy and
-are documented at the top of `tests/libc.mk`** — (1) the "ours" build still *links*
-glibc, so a missing implementation TU is a **runtime fallback, not a link error**
-(omitting `langinfo.c` links fine and then segfaults inside `nl_langinfo`); and (2)
-`diff <(a) <(b)` starts both binaries **concurrently**, so any gate touching a fixed
-scratch path races itself — the rule always writes to files and diffs the files.
-
-**Nothing here is stubbed to success**, and that is a rule, not a coincidence:
-`flock` returns `ENOSYS` because a caller that gets 0 believes it holds a lock;
-`ioctl`'s tty requests return `ENOTTY`, matching `termios.c` rather than inventing a
-second answer; `statvfs`/`utime` return `ENOSYS` because a fabricated `f_bsize` is
-worse for a caller sizing a buffer than an error is. Each is argued in its file.
-
-M20 AetherScript ✅: a **from-scratch language**, `as`/`.as`, in `c/apps/as/`
-(clox-lineage: single-pass compiler → flat bytecode → stack VM; Python-ish
-indentation). **A1** lexer (INDENT/DEDENT) + Pratt compiler + VM: nil/bool/int(i64)/
-float(double), arithmetic/cmp/logic (short-circuit), if/elif/else, while, def/
-return/recursion, globals + lexically-scoped locals. **A2** strings (concat/index/
-len), lists (`[...]`, index get/set, `.append()` via OP_INVOKE, len), `for x in
-range()/list`, builtins (print/len/range); real block scoping. **A3 indirection**
-(the point — systems programming, not a sandbox): `as_ll.c` raw mem peek/poke +
-inline-asm `int 0x80` syscall (portable: real on x86_64-elf, stubbed on the arm64
-host) + `as_native.c` addr/peek8-64/poke8-64/i8-64ptr/syscall + `SYS_*` globals;
-typed pointer `ObjPtr{addr,width,signed}` via `p[i]`. Shipped as **`/bin/as`** (own
-Makefile rule: as core + mini-libc + crt0_cli @0x50000000; reads scripts via
-mini-libc `fopen`) + `/usr/as/*.as`. **Modules/import**: `import NAME` / `from NAME import …`,
-`mod.attr` + `mod.fn()` via the `.` operator; each ObjFn carries `->module` so
-globals resolve per-module with a shared builtins fallback; loader caches +
-`fopen`s `/usr/as/NAME.as` (or an in-memory registry for tests). Tests: `make
-test-as` (host, 55 checks incl. fib + import) + `make test-as-os` (boots LogitOS,
-runs the examples incl. an import demo over serial). Perf: fib(32) ~126ms host
-(≈CPython).
-
-**That paragraph is the record of M20 and stops there. The language is now at M27
-and about 7.9 kLOC (2026-08-17)**, and the four things M20 listed as deferred — dict, closures,
-GC, computed-goto — all exist. Do not plan against the M20 feature list.
-
-- **M21 dict · M22 closures · M22.3 classes** (`class`/`super`, copy-down
-  inheritance) **· M22.4 exceptions** (`try`/`except`/`raise`, with unwinding that
-  release paths hook) **· M23** bitwise/shift/`**`.
-- **Performance work that shapes the code**: a 16-byte tagged `Value` that is
-  deliberately **not** NaN-boxed (an AetherScript int is a full int64, so there are
-  no spare bits in 8 — the cost worth removing was the memory round-trip, not the
-  footprint); **shapes** (hidden classes) with **property inline caches**; a
-  **global-lookup cache** with generation invalidation; mark-sweep GC over a
-  **contiguous object registry** rather than an intrusive `next` list; and
-  **computed-goto** dispatch.
-- **M27 ports** — OS endpoints as first-class values: `O_PORT`/`O_PROC`, the `|>`
-  pipeline operator, `-> path` / `<- path` redirection, `with` scopes with
-  deterministic release, and iteration reusing `OP_LEN` + `OP_INDEX_GET` rather
-  than a new iterator protocol. Its payoff is **`fsroot/as/examples/ash.as`: the
-  system shell, written in AetherScript**, with no `fork`, no `dup2`, no `waitpid`
-  and no file-descriptor arithmetic anywhere in the file — against 982 lines of C
-  in `c/apps/coreutils/sh.c` doing the same job.
-
-**THE SELF-HOSTING TAX, and it is the single most important thing to know before
-touching this language.** `fsroot/as/lib/asc.as` is a **second compiler for
-AetherScript, written in AetherScript**, and it compiles itself to a
-**byte-identical fixpoint** (`test-as-bcstable`). Opcode numbers are **hand-copied**
-into it. A drift is a **SILENT MISCOMPILE** — the self-hosted compiler emits an
-instruction the C VM decodes as a different one — and *nothing else catches it*:
-setting `OP_RET` to 99 in `asc.as` leaves `test-as` and `test-as-gcstress` fully
-green. Only `make check-asops` (`tools/gen_as_opcodes.py --check`) sees it, and it
-is a prerequisite of the `test-as*` targets but **not** of `test-ash`, `all` or
-`$(ISO)` — so a plain `make run` boots happily with a badly drifted `asc.as`.
-Consequences: **batch opcode changes one milestone at a time**, bump
-`AS_BC_VERSION` once, re-prove the fixpoint at the end, and never add an opcode
-opportunistically. `gen_as_opcodes.py --write` is a stub that exits; the sync is by
-hand.
-
-**Where it is going:** `docs/superpowers/specs/2026-08-05-aetherscript-2-language-design.md`
-fixes the originality criterion (*a construct earns its place only if it falls out
-of a constraint specific to this OS*) and names four pillars — ports (M27, done),
-**capabilities (M28)**, tasks (M29), an own IR + native `.aex` (M30).
-`docs/superpowers/specs/2026-08-14-m28-capabilities.md` is M28's locked design and
-supersedes the older document's M28 row; read §1 first, because the older
-document's grant model does not work on this machine (every `.as` program execs the
-same binary, `/bin/as`, so a grant keyed on the executed binary cannot tell two
-scripts apart — and fails silently).
-
-H.264 video ✅ (`c/lib/video/`): a from-scratch baseline-profile decoder --
-Annex-B/NAL, CAVLC, I+P slices, multiple references, weighted P prediction, the
-deblocking filter, cropping. Bit-exactness is the bar, not a tolerance: H.264
-reconstruction is exactly specified integer arithmetic, so any mismatch with
-ffmpeg is our bug. `make test-h264` decodes ten x264-generated streams plus a
-committed fixture and compares every byte (11 streams x 60 frames);
-`make test-h264-units` covers prediction/MC/deblocking as modules;
-`make test-h264-diff` prints per-case wrong-byte totals, which is the metric to
-bisect with -- "the first mismatch moved" says nothing.
-**The decoder is RING-3, not kernel.** `c/lib/video` is filtered out of `C_SRC`
-on purpose: it allocates with malloc/free, and unlike an image (decoded once,
-hence `SYS_IMG_DECODE`) a video is decoded 30x/second with megabytes of live
-reference frames -- in the kernel that holds the BKL per frame and puts a media
-parser in ring 0. Consumers link `VID_OBJ` + mini-libc: `/bin/vidcheck` (prints
-the decoded CRC32; `make test-video` boots LogitOS and requires it to equal the
-host's) and **Preview**, which now shows both images and video and picks the
-path by sniffing the Annex-B start code rather than the file name.
-Gotchas worth keeping: `mbinfo` uses raster order for `mv[]` but **Z order for
-`nz[]`**; mvp's A/B/C all come from the partition's TOP-LEFT corner and only C
-steps right by the partition width; an INTRA neighbour is *available* with
-refIdx -1 (not unavailable), and "available" additionally excludes anything not
-yet decoded, including sub-partitions of the current macroblock; `ref_idx` is
-coded per partition but read back per 8x8 quadrant; deblocking compares
-reference **pictures**, not indices (weighted prediction puts one picture at
-several indices on purpose); and a weight of 128 is inferrable though not
-codable, so clamping weights to 127 silently darkens every frame.
-
-Memory reclaim + swap ✅ (`c/kernel/mm/{rmap,reclaim,swap}.c`): the kernel can now
-take a physical frame back from whoever has it, so running out of RAM stops being
-fatal. **Reclaim is the mechanism; swap is only a place to put things.** Nothing
-here is firefighting -- the full desktop peaks at 229 MiB of 511 and `pmm_audit()`
-is clean -- so the pressure has to be MANUFACTURED to test any of it, and the
-harness was built first.
-- **Who maps this frame** (`rmap.c`, the hard part). pmm's refcount says how many
-  leaf PTEs point at a frame, never which, and you cannot unmap a PTE you cannot
-  find. So: a chain per frame (head[] + a pre-allocated node pool, 12 bytes a
-  node, ~0.5% of RAM), maintained at the ONE place a leaf PTE changes
-  (`vmm.c set_leaf`, which `vmm_map_page`/`vmm_map_page_in`/`vmm_map_raw_in` all
-  funnel through) plus the copy-on-write copy in `fault.c`. The rule everything
-  rests on: **evict only if `rmap_count(f) == pmm_refcount(f)`**, nonzero and not
-  truncated -- the same number from two independently maintained structures, so a
-  bug in either costs reclaimability, never correctness. `rmap_audit()` checks it.
-- **That is also the pin discipline.** Page tables, kheap arenas, DMA rings and
-  the rmap's own tables have refcounts but no user PTE, so their rmap count is 0
-  and they fail the test structurally -- no list of exceptions to forget to
-  update. `pmm_pin/unpin` (a saturating count, nesting) covers the other case: a
-  real user page the kernel is touching right now.
-- **Two tiers, cheapest first.** TIER 1 drops a page and re-derives it on the next
-  fault, no device involved; TIER 2 writes it to a swap slot. NOTE, said plainly:
-  **THIS PARAGRAPH WAS TRUE ON 2026-08-08 AND IS NOT TRUE NOW.** It said "this
-  kernel has no file-backed user mapping at all -- mmap takes no fd", and
-  therefore that tier 1's classic producer, a clean page-cache page, did not
-  exist here. `c/kernel/mm/pcache.c` (26 KB), `pcache_vfs.c`, `MM_FAULT_FILE`
-  and a SEPARATE `SYS_MMAP_FILE` syscall all landed between 08-12 and 08-15,
-  and `reclaim.c:43` now opens with "TIER 1's two producers". The stale
-  sentence cost real time on 2026-08-20: it was quoted, in good faith, as the
-  justification for a whole line of work that was going to build what already
-  existed.
-
-  What IS true, and is the more useful fact: **that machinery has never had a
-  real workload.** The only caller of `SYS_MMAP_FILE` in the tree is
-  `fsroot/as/examples/pcachecheck.as`, a script written to exercise it. A
-  mechanism whose sole consumer is its own check is in exactly the state this
-  paragraph was warning against, one level up.
-
-  The other tier-1 producer, which was already here, is the **zero page** -- an anonymous page (`VMM_PTE_ANON`, bit
-  10) currently all zero, re-derivable by `do_anon`. Tier 1 tests the CONTENTS,
-  not the dirty bit, so a page the process zeroed also qualifies. (It used to be
-  dominated by browser.elf's ~105 MiB `.bss`; the libc line has since moved that
-  96 MiB arena to `SYS_MMAP` with a commit bound and the `.bss` is now <10 MiB --
-  not allocating a page beats reclaiming it. Tier 1 is smaller now and still
-  real; `run-swap-test.sh` asserts BOTH tiers fire and prints the split.)
-- **Clock over physical frames**, not an active/inactive LRU: with no hardware
-  reference notification, a "recently used" list could only be built by the same
-  accessed-bit sampling the clock's sweep already is, so lists would add
-  bookkeeping without adding information. Sweeping physically (possible only
-  because the rmap exists) is right because the thing reclaimed is a frame.
-- **Swap PTE**: P=0, bit 1 = marker, bits 2-4 = saved W/COW/ANON, bits 12+ = slot,
-  bit 63 (NX) left in place. Slot numbers start at 1 so a zeroed PTE can never
-  read as a swap entry. `mm_fault_classify` checks it FIRST and independently of
-  the VMA -- an ELF text page has no VMA, and a swap entry falling through to the
-  anonymous case would be silently refilled with zeroes. Slots are refcounted
-  (a shared page evicts once); fork inherits swap entries; munmap/exit release
-  slots. Known cost: a shared page that round-trips comes back private.
-- **No allocation in the write-out path**, which is where naive swap deadlocks
-  under exactly the pressure it was built for: rmap nodes and the slot table are
-  taken from the PMM at init, `rmap_remove` returns nodes rather than taking
-  them, and the page is written straight out of its identity-mapped frame with no
-  bounce buffer. Asserted, not argued -- the host test fills memory completely and
-  requires reclaim to still make progress. Swap-IN does need one frame, hence
-  `pmm_alloc_reserve()` over a 32-frame reserve ordinary allocations cannot touch.
-- **The swap device** is chosen through blkdev.h only (no edits to `c/fs` or
-  `c/drivers/block`, both live): not the root, not a partition sharing its medium,
-  no LogitFS superblock, and **sector 0 blank or already ours**. Anything else is
-  refused out loud. Swap is never carried across a boot.
-- **Waiting**: the queue for the device uses `bkl_hlt_wait()`, which DROPS the BKL.
-  The single in-flight transfer still holds it, because every block driver here is
-  submit-and-poll inside one call; that cost is measured and printed
-  (`swap_bkl_worst()`) rather than assumed. Closing it needs
-  `submit`/`poll` on `struct blk_ops` -- an ask for the block line, not an edit.
-- Tests: `make test-mm` (host, adds `mm_rmap_test` + `mm_reclaim_test`; distinct
-  per-page patterns that catch wrong-slot AND wrong-offset, plus TWO negative
-  controls required to FAIL: `-DRECLAIM_NO_PIN_CHECK` evicts a pinned page,
-  `-DRECLAIM_NO_ZERO_CHECK` drops a page with data and it comes back zeroed).
-  On device: `make test-swap` boots the same kernel on a deliberately small
-  machine with a blank AHCI disk as swap and runs
-  `/usr/as/examples/mempress.as`, which mmaps more than exists, writes a per-page
-  pattern and reads it all back; `make test-swap-negctl` is the same with no swap
-  device and MUST fail. Kernel counters are readable from ring 3 via
-  `SYS_MEMINFO` with a NULL buffer (`c/kernel/mm/mmsys.c`, MMCTL_*) -- which is
-  how the harness asserts reclaim actually ran rather than asserting it did not
-  crash.
-
-## Storage: the block layer and LogitFS
-
-**Status (verified 2026-08-08 and RE-VERIFIED 2026-08-17, all 12 targets
-below green both times): this machine
-keeps a file across a reboot.** The old "corrupts after repeated non-snapshot
-boots; use `-snapshot`" note was true of v3 and is not true now. Do not design
-around it, and do not add `-snapshot` to a harness to work around a write.
-
-**Block layer** (`c/drivers/block/`). `blkdev.c` is a multi-device table, not a
-single disk: **virtio-blk** (preferred), **AHCI/SATA**, **NVMe**, and ATA PIO as
-the fallback, plus `part.c` for MBR/GPT. `blk_flush()` is a real **write
-barrier** on every backend that can reorder (virtio-blk `VIRTIO_BLK_T_FLUSH`,
-NVMe opcode 0x00; ATA is a no-op because `ata_write` already flushes per write).
-`blk_flush_count()` exposes barriers-issued-since-boot so a test can *count*
-them instead of reading the source. QEMU line: `-device virtio-blk-pci`.
-
-**LogitFS on-disk v4** (`c/fs/logitfs_fmt.h` is the single definition site;
-`tools/mkfs.py` mirrors it in Python and `test-fs-format` asserts every offset
-against a real image). 4 KiB blocks, 64 MiB image (16384 blocks): superblock,
-free-block bitmap, inode table, **write-ahead log**, data. Inodes are 128 B with
-`direct[12]` + single-indirect + **double-indirect** (so files well past the
-~4.1 MiB single-indirect ceiling; `test-hugefile` drives 4.4 MB / 1075 blocks).
-atime/mtime/ctime live in what used to be `reserved`, so it is a compatible
-extension, not a format bump. **Block 0 is never rewritten at runtime** — which
-is why the superblock needs no checksum.
-
-**The journal is metadata-only + ordered data (ext4 `data=ordered`)** — say this
-out loud, because "it has a journal" is not the same claim. Bitmap blocks, the
-inode table, indirect/double-indirect pointer blocks, and **directory data
-blocks** (a dirent can name an inode created in the same op) are staged into the
-log and installed only after the commit record is on media. Ordinary **file data
-blocks are written straight to their final location**, always before the metadata
-pointing at them commits. That is sound here only because of `bfree()`: frees are
-**deferred to commit**, so the allocator cannot hand a block back to the very
-operation that released it and overwrite live data in place before the metadata
-that would roll back. (That was a real bug, found by the crash sweep, fixed in
-`d9dccbf`.) Consequence to know: an *overwrite* interrupted mid-flight can leave
-that file's old content, not a mixture — but LogitFS rewrites a whole file per
-write, so there is no partial-append case.
-
-**The commit record self-verifies.** The log header carries `hcrc` (CRC-32 over
-the header block — rejects a torn header, the classic truncated-final-record)
-and `bcrc` (CRC-32 over exactly the *n* body blocks it describes — rejects a
-**stale** header standing over a newer transaction's bodies, which was corruption
-*caused by recovery* on a filesystem that never crashed). Three barriers, each
-with a distinct failure mode if removed, are documented in full above
-`log_commit()` in `c/fs/logitfs.c` — **read that comment before touching this
-file**. B1 bodies+data before the record, B2 record before checkpoint, B3
-checkpoint before the header clear. `test-barrier` observes exactly 3 per file
-write, from `blk_flush_count()`.
-
-**Buffer cache** (`bcache.c`): reads are served without a device round trip,
-writes are deferred and dirty-tracked, an evicted dirty buffer is *written*, and
-`bcache_sync()` (write everything dirty, then barrier) is the filesystem's only
-ordering point. Correctness never comes from a write being withheld — early
-writeback only ever moves a block onto media *sooner*, which every case in the
-invariant already covers. Reads coalesce: a 900-block cold read costs **10**
-device commands, not 902 (`f8d2ca4`; `test-bulkread` bounds it at 14 and
-`test-bulkread-negctl` proves the old path cannot meet it).
-
-**fsck** (`fsck.c`) both detects *and* repairs, but its rule is "fix only what
-has ONE correct answer": a block claimed by two inodes is **refused**, whole,
-because both fixes destroy a file and nothing on the disk says which. A
-**read-only** fsck runs at **every mount** — so every boot harness in the tree,
-including ones written for something else entirely, now asserts the bitmap agrees
-with the inodes and the directory tree is a tree. A mount-time finding never
-fails the mount (a damaged filesystem is still the best one available; refusing
-to boot over a leaked block is a worse trade). Replay lives in `fsck.c` and is
-called by both fsck and `logitfs_mount`, so there is exactly one copy of the
-replay rules.
-
-**Around it**: `vfs.c` + `vfs_path.c` (resolution as its own host-testable TU),
-`vfs_meta.c` (mode/owner/links/symlink targets), `vfs_cred.c` (process
-credentials, keyed by pid until `proc.c`'s owner takes them), `vfsctl.c`
-(`/dev/vfsctl`, `/dev/vfsmounts`, `/dev/vfsmeta` — control as synthetic files so
-an unprivileged shell can be refused for real), `ramfs.c` (second mount, no
-device), `lfsro.c` (instance-aware read-only v4 reader — `logitfs.c` is a
-singleton and cannot be two), `fsbench.c` (`/dev/fsbench`, the storage
-stopwatch).
-
-**THAT CAVEAT IS GONE, and this paragraph carried it four commits too long.** It
-used to read "vfs_meta's records are in RAM and do NOT survive a reboot... until
-logitfs implements getattr/setattr (two function pointers, no other change)".
-Both pointers are implemented — `logitfs.c:1224` and `:1283`, installed in the
-ops table at `:1402`. The on-disk inode carries `xmode`, `uid` and `gid`, and
-`xmode` has a presence bit of its own (`LFS_MODE_SET`) for a reason worth
-keeping: **mode 0 is a legal mode**, so "0 means unset" would make a file nobody
-may touch unrepresentable. That distinction is carried out to ring 3 as
-`LSTA_MODE_STORED` — a stat that cannot tell a chosen 0644 from a defaulted one
-is a stat that lies quietly.
-
-Gated by `test-statmeta`, `test-statmeta-negctl` (both green) and
-`test-statmeta-os`.
-
-Why this mattered enough to correct in place: modes and owners not surviving a
-reboot is not a footnote, it is the premise several other things need. A trust
-store on disk is only a trust store if an unprivileged process cannot rewrite
-it; a read-only `/bin` is only read-only if it is still read-only after the next
-boot. Reading the stale sentence, the answer to "can this machine hold a
-permission?" was no. It is yes.
-
-**Tests — and these are not decorative; all 12 ran green on 2026-08-08 and all
-12 ran green again on 2026-08-17**, the second time as part of a sweep of every
-target in the tree rather than as a deliberate check of this subsystem. That
-distinction is the point: nine days and a good deal of unrelated work later,
-including four boot targets that cost minutes each (test-durability is five
-boots, test-fscrash is four SIGKILLs), nothing here had quietly rotted.
-Host (`make test-fs-host`, seconds, uses a simulated device whose defining
-feature is a *volatile write cache* so barriers are not no-ops):
-`test-fs-cache` 29 · `test-fs-journal` 48 · `test-fs-crash` **1744** ·
-`test-fsck` 167 · `test-fs-format` 25 · `test-bulkread` 34 + its negative
-control. `test-fs-crash` is the one to know about: it cuts power at **every
-device write** of write/mkdir/delete/rename/overwrite × 3 loss patterns, and
-after every cut demands mountable, fsck-clean, bystanders byte-for-byte, victim
-whole-or-absent, no block handed out twice.
-Boot (minutes each, real QEMU, **no `-snapshot`** — that is the point):
-`test-fsmount` (2 boots, kernel's own fsck clean both) · `test-durability`
-(**5 boots, 3 files byte-for-byte, 2 rounds of churn**) · `test-fscrash`
-(4 SIGKILLs; log replay witnessed in 2/4) · `test-fsreplay` (a hand-sealed
-uninstalled transaction, replayed deterministically) · `test-hugefile` ·
-`test-barrier`. **Byte-for-byte, never a length check** — a filesystem that
-hands one block to two files produces a file of exactly the right length holding
-someone else's data, which a length check cannot see.
-
-## Open Logit: the 2D rendering engine (`c/lib/gfx`)
-
-**It exists because there were three coverage/paint paths and every new app
-started from `gui_rect`.** The kernel's M14 glyph rasterizer (`c/kernel/gui/
-raster.c`, 285 lines) did glyphs; a SECOND coverage rasterizer lived
-in the widget toolkit (`c/apps/gui/aui.c`); a THIRD hand-rolled paint path lived
-in the browser (`c/apps/browser/browser_paint.c` -- an integer square root and a
-per-row band loop). Open Logit is the one engine all three are now built on, and
-**all three are deleted**, which was the point: an engine that coexists with
-what it replaced is a fourth path.
-
-**`raster.c` was the last and the largest, and it went with the glyph
-migration.** `c/lib/text/glyphras.c` is what replaced it: a CONVERTER from a
-font outline (`fp_path`, font units) to a `gfx_path` in device 24.8, plus one
-`gfx_fill_mask_subs(..., 16)`. It rasterizes nothing. The per-point scaling is
-raster.c's exact `(v*px*256)/upem` with the CTM left at identity -- a 16.16
-scale matrix loses ~0.03 px at CJK upem/px combinations -- but the curve
-flattening is the engine's adaptive tolerance instead of raster.c's fixed
-segment count, which is where the accuracy came from. Glyphs pass `subs=16`
-where a button passes 4, and `icons.c`'s eleven hand-authored vector icons went
-over at the same time (`vg.h`/`vg_render_path` deleted with the file).
-- **The number**, from `make test-glyph-agree`, against an oracle that is
-  neither rasterizer (a 32x32 supersampled point sample of the true outline, in
-  double, over 572 bitmaps and 363,650 pixels): the bridge scores **mean 0.310 /
-  255, worst pixel 16**; raster.c scored **0.490 / 61** on the same set. The
-  replacement is closer to the true geometry than the thing it replaced, 1.6x in
-  the mean and 3.8x in the worst pixel. `tests/unit/glyph_agree_legacy.sh` is
-  the build in which both existed; it cannot run from this tree because one of
-  them is gone, and it says so.
-- **The migration found a real defect in the engine, and it could only have been
-  found this way.** `gfx_raster.c`'s `span_add` accumulated straight into the
-  0..255 byte row, converting each sub-scanline's covered length on the spot
-  with an integer divide -- so the truncation was paid ONCE PER SUB-SCANLINE and
-  the error GREW with `subs`, backwards for the one knob that exists to buy
-  accuracy. At the default 4 it cost up to 3/255 and nobody noticed; at 16 it
-  cost up to 15/255 on every antialiased pixel of every glyph, always in the
-  same direction, and the first measurement of the port showed the whole
-  typeface coming out lighter (mean error against FreeType 0.74 -> 2.02 on
-  ui.ttf). `g_acc` sums lengths exactly and converts once per pixel, through a
-  16.16 reciprocal that is EXACT for every `subs` dividing 65280 (4 and 16 among
-  them). Cost: 8,192 B of .bss, +3% on a whole-path fill.
-- **And a latent UB**: `make test-font-fuzz` is the first ASan/UBSan build in
-  the tree that reaches `c/lib/gfx` at all, and it caught `(x1-x0) << 16` --
-  left-shifting a negative signed value, which every leftward edge in every
-  shape produces. Fixed at all four sites (`add_edge`, `gfx_m_invert`,
-  `arc_mid`); `* 65536` compiles to the same instruction.
-- **Net kernel `.bss`: -29,356 B** (raster.c's 515,076 out, glyphras.c's 444,416
-  + icons' own path storage 33,112 + `g_acc` 8,192 in), measured with `nm`.
-- Proof the face of the machine did not change: `test-desktop-look` 16/16 with
-  every recorded value identical (including the three KNOWN-BUG rows and their
-  exact extents), and a before/after boot screendump differing by **mean 0.021 /
-  255 over the whole screen**, 4,640 of 1,024,000 pixels touched at all, and
-  mean luma identical to three decimals in every text region.
-
-**It sits beside `c/lib/text` and `c/lib/image` and CONSUMES them** -- it
-rasterizes no glyph and decodes no image; the outline comes from `c/lib/text`
-and only the coverage is this engine's. (This paragraph used to open "Ring 3,
-and filtered out of `C_SRC` on purpose", which was already wrong when `fb.c`
-started calling `gfx_mask_corner` for the window corners: `c/lib/gfx` is NOT
-filtered out of `C_SRC`, it compiles into the kernel as well as into every
-ring-3 GUI binary, and since the glyph migration the kernel is its busiest
-caller. The ring-3-only claim survives for `c/lib/video`, `c/lib/audio` and
-`c/lib/media`, which really are filtered.)
-
-**Phase 1** is paths (move/line/quad/cubic/close), nonzero + evenodd, a scanline
-coverage rasterizer, four paints (solid / linear gradient / radial gradient /
-image), Porter-Duff src-over, an **affine transform applied to PATHS** (which is
-what CSS `transform` needs -- `translate(-50%,-50%)` centring is reached by 14 of
-15 real pages), and a rectangle clip.
-
-**PHASE 2 HAS LANDED** (`8e85be37b`), and this paragraph went on saying "stroke
-and path clipping do not exist" for four commits after they did. That is not a
-bookkeeping slip: it is why three negative controls stopped linking on
-`gfx_path_ellipse` with no explanation available from the document every session
-reads first. `c/lib/gfx/gfx_stroke.c` exists, and `test-gfx` is now
-`test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-clip`.
-
-Each half arrived with its own independent oracle, which is the bar this engine
-is held to:
-- **the stroker's** is a THIRD reference: the distance from a pixel to the
-  FLATTENED source polyline, plus the miter wedge and the square-cap half-square
-  in closed form. To the polyline and never to the ideal curve -- measuring
-  against the curve charges the path's flattening error to the stroker and fails
-  a correct one.
-- **path clipping's** is the AND of two analytic predicates that already
-  existed, supersampled the same 16x16 way; composition costs an oracle almost
-  nothing, which is exactly why `in_sq_annulus` was worth copying. The clip mask
-  is materialised by the CALLER because `raster()` is not reentrant, and the
-  tests use deliberately ASYMMETRIC clip extents and origins -- a centred clip
-  hides a transposed axis or a sign error, and an off-by-one in either axis is
-  the single most likely defect in the feature.
-
-The trap recorded before the work still holds and is worth keeping in view: a
-stroked corner's inner ellipse shares the outer's CENTRE and differs only in
-radii, and insetting the centre pinches the arc to nothing before it meets the
-straight edges.
-
-**Construction** (deliberately the glyph rasterizer's, so a shape and the type
-on it are antialiased by the same rule at the same size -- and since the glyph
-migration that is literally true, not merely by construction): 4 sub-scanlines
-per pixel row for shapes, 16 for type, with EXACT fractional horizontal coverage
-along each and the lengths summed exactly before one conversion. Horizontal
-coverage is analytic and free, vertical costs a pass -- so buy accuracy where it
-is cheap. Integer only, 24.8 coordinates and 16.16 matrices. **No libc and no
-allocator**: six GUI apps link crt0 + aui + this and nothing else, path storage
-is the caller's, and every bulk clear goes through `gfx_zero()`, whose volatile
-pointer is what forbids `-O2` rewriting it into a call to `memset`.
-
-**Three techniques carried over from the toolkit, because they are why it is
-cheap enough to run a desktop on.** Masks are generated at DEVICE resolution and
-blitted into a POINT rect of the same device size, so the compositor's
-nearest-neighbour rescale is the identity and antialiasing survives 150%/200%.
-Only what CURVES is rasterized -- a rounded rect is a 9-slice (three bands +
-four `r x r` corner tiles), so **O(r^2), not O(w*h)**: 0.144 us against 6.96 us
-to rasterize the same 200x40 r=8 shape whole, and zero on the second card. Masks
-are cached by exact device geometry.
-
-**The bar is a number against an INDEPENDENT reference**, because 2D coverage
-has no ffmpeg to diff against but is exactly computable, so the oracle is built:
-every filled shape against a 16x16 supersampled evaluation of its own analytic
-predicate, every blend against Porter-Duff recomputed in double. Worst pixel
-error: circles r=3..48 **0.095**, ellipses 0.091, rounded rects 0.047, triangles
-0.119, corner tiles 0.078, ring tiles 0.078; src-over over 175 alpha/coverage
-combinations **1/255**. (Circles and ellipses read 0.091 and 0.087 until the
-glyph migration replaced the per-sub-scanline divide with `g_acc`'s exact length
-sum -- see that fix above. Both are worst-SINGLE-PIXEL figures at subs=4, where
-the old truncation was worth up to 3/255 in one direction, so a 0.004 move
-either way is inside what that change can do; what the same change did to the
-number that was actually wrong is 0.911 -> 0.310 against the glyph oracle. The
-assertions in tests/unit/gfx_raster_test.c were NOT touched -- these two values
-moved under unchanged bounds. Re-recorded rather than left stale, because a
-number in this file is a claim somebody will diff against.) `make test-aui-mask` still passes unchanged -- it has its
-own, independently written reference, so the engine is checked against TWO
-oracles sharing no code.
-
-**A real bug found by building the reference first**: `gfx_over` truncated
-`da*(255-a)/255`, which at a=1, da=1 floors the destination's surviving alpha to
-ZERO -- the destination colour leaves the average and the result is the source at
-full strength, 17/255 off the definition. Rounding both divisions takes it to
-1/255. Everything faint over something faint was wrong that way.
-
-**Cost, measured on the machine and SPLIT**, because a frame total credits the
-engine with work it does not do. `-DAUI_COST` brackets every drawing syscall and
-reports the residual (`make bench-gfx-frame`, us/frame, TCG):
-
-```
-mode          clear    text  rect+blit  ENGINE   wall   engine%   tiles/frame
-1280x800        153    1124       2146     677   4128     16.4%       8.0
-1920x1200       391    1702       3882     755   6781     11.1%       8.2
-2560x1600       715    2230       5580     585   9136      6.4%       7.6
-```
-
-The engine's share FALLS as the display grows: the compositor's fill and the
-kernel's glyph work scale with pixels, the corner tiles do not. Uninstrumented
-(`make bench-aui`, 1920x1200): 6.3 ms for a normal page, 10.4 ms for the
-pathological all-geometry one.
-
-**Negative control**: `-DGFX_NO_AA` drops the rasterizer to one centre sample
-per row with binary horizontal coverage. Every shape still draws and still looks
-broadly right -- what breaks is the agreement with the reference, 67 assertions
-fail, and `make test-gfx-negctl` succeeds when the test fails. On device
-`test-aui-negctl` is the same shape one layer up.
-
-**Nothing was asked of the kernel and nothing taken** (as of phase 1 -- the
-glyph migration since then deleted `raster.c` and rewrote `icons.c`).
-`fb.c` and `wm.c` are untouched; the engine reaches the screen through `SYS_GUI_BLIT`, the
-one existing entry point with per-pixel alpha. Consequence worth knowing:
-`browser_paint.c`'s opaque rounded boxes no longer call `SYS_GUI_RRECT`, whose
-corner test is the boolean `dx*dx + dy*dy <= r*r`, so **a page's `border-radius`
-stopped being a staircase**.
-
-  `make test-gfx` `test-gfx-negctl` `test-aui-mask` `bench-gfx` `bench-gfx-frame`
-
-**Phase 2 was scheduled** in `docs/superpowers/specs/2026-08-14-open-logit-2-design.md`
-(seams → stroke → path clipping → SVG onto the engine → text as paths →
-groups/blend/blur). **The first four are done, and this paragraph described the
-world before them for four commits** — all four of its claims were false when
-measured on 2026-08-17, and each is the kind that sends somebody the wrong way,
-so they are recorded here rather than quietly overwritten:
-
-| it said | measured |
-|---|---|
-| stroke and path clipping "do not exist" | `c/lib/gfx/gfx_stroke.c`; `test-gfx` = raster + paint + **stroke** + **clip** |
-| "a FOURTH rasterizer is still live, and it is in ring 0" | `svg.c`'s own sorted-crossing filler and its Newton `dsqrt`/`dsin` are **gone** (`e282d0f57`) |
-| "`C_SRC` ... **and not `svg.c`** — so it compiles into the kernel" | `svg.c` is **not in `C_SRC`**; it no longer compiles into the kernel |
-| "`grep -c stroke` on it returns **0**" | returns **30**, and svg.c makes 76 `gfx_*` calls |
-
-So the founding argument IS finished: one rasterizer, and `svg.c` is a consumer
-of it like everything else. Somebody reading the old text would have gone
-looking for a fourth rasterizer that is not there, or assumed a page's stroked
-icons are still missing when they render.
-
-The way it went stale is worth more than the correction. Nothing here was
-careless — the work landed, the commit message said so plainly ("gfx: G3 — the
-other rasterizers are deleted, and the screen cannot tell"), and this file was
-simply not the thing being edited. It is the first document every session reads,
-so its staleness is not inert: three negative controls stopped linking on
-`gfx_path_ellipse` this week, and nothing here explained why a symbol that
-"does not exist" was being referenced.
-
-### G4 — the consumers, and the four symbols that are still dead
-
-**Phase 2 built the capability; G4 is the browser's painter finally ASKING for
-it.** The reconnaissance that opened this line is the number worth keeping:
-of 41 exported `gfx_` functions, SIX had zero callers outside the engine, and
-`browser_paint.c` contained the string `transform` 0 times, `bold`/`italic` 0
-times and `box-shadow` once against `aui.c`'s 45. **The engine was ahead of its
-consumers, not behind** — only 4 of the browser's 12 largest visual gaps were
-the engine's fault.
-
-What now reaches the screen, all of it through calls that already existed:
-
-- **box-shadow** on the 9-slice — four blurred `GFX_MASK_SHADOW` corner tiles,
-  four `gfx_shadow_falloff` edge strips, three interior bands. Three exactness
-  tiers chosen from the corpus rather than from taste (102 sheets of
-  `tests/fixtures/cssweb`: 1,045 individual shadows, 320 literal).
-  **Blurred inset is REFUSED and counted** (22 of 320): inverting
-  `GFX_MASK_SHADOW` gives `255*(2t-t²)` where the inward ramp needs `255*t²`,
-  and writing that tile in the painter would put a second shadow-profile
-  generator beside `gfx_corner_shadow`.
-- **linear-gradient** backgrounds — `gfx_paint_linear` + `gfx_paint_sample`.
-  The direction census is the design: of the corpus's **385** unprefixed
-  `linear-gradient(` calls, 203 implicit `to bottom` + 146 axis-aligned = **349
-  (91%)** are a 1×n ramp the compositor replicates for free; the diagonal tenth
-  goes through a bounded 128-device-px surface. Refused values fall back to the
-  background COLOUR, never to an approximation.
-- **transform** — `css_interp.c`'s parser wired to the affine layer, which
-  had existed with nothing connecting them. `b==0 && c==0` is exact and
-  unbounded; rotate/skew is one rasterized path bounded at 128 device px.
-  **Note the engine contract runs the OPPOSITE way from `js_canvas.c`**: canvas
-  must leave the path matrix at identity because its CTM changes mid-build,
-  while CSS knows its matrix before the first point, so `gfx_path_matrix()` is
-  set and the arcs flatten in DEVICE space — shorter and more accurate under a
-  scale.
-- **border-radius with no background — the `has_bg` guard was a real bug.**
-  `if (r > 0 && e->has_bg)` answered "is there a fill to draw" for a question
-  that asked "is the border rounded", so `border:1px solid; border-radius:8px`
-  drew SQUARE. Restricted to a uniform solid border on purpose: the rounded
-  path collapses four edges into one ring, so a single-edge border would go
-  from one line to a ring all the way round.
-
-**Path clipping has its FIRST consumer** — `gfx_fill_mask_clipped()` from
-`fill_rclip()`, for `overflow:hidden` on a rounded box, bounded by the RADIUS
-rather than the box. The measurement that made it fire at all is the most
-useful number in the work: the first rule was "the clipper's border box equals
-the stamped clip rect", which matched **3 of 682** candidate items and would
-have shipped as a feature the web appears not to use. Layout's clip is the
-PADDING box, intersected with every ancestor, with `0x3FFFFFFF` for an auto
-height; testing each EDGE against the padding box gives **682 clipped items →
-78 rounded clippers → 179 matching edges → 100 real corners on 74 items**, and
-the radius must be reduced by the border width PER CORNER (using the widest of
-the four threw away 52 of the 74).
-
-**THE ONE EDIT OUTSIDE THE PAINTER, and it was mandatory.** `layout.c`'s
-"does this element generate a box" predicate — `st->has_bg || any_border(st)`,
-spelled out at nine sites — became `st_inked()`, which also accepts
-`xraw[XR_BG_IMAGE]` and `xraw[XR_BOX_SHADOW]`. Neither declaration reaches
-`has_bg` or `border_w` (both are absent from the vendored LibCSS property
-table), so an element whose only decoration is `background: linear-gradient(…)`
-— every hero section — or `box-shadow` on a transparent input — every focus
-ring — generated NO display-list item and the painter never saw it. `has_bg`
-stays false on the emitted item, so every existing background-colour path is
-untouched. `test-layout-box` 51 checks and `test-cssom-abi` green after it.
-
-**A latent buffer overflow found on the way in** (pre-existing):
-`static int ctl_pt[128]` passed to `gfx_path_init(&p, ctl_pt, 128, …)`.
-The capacity is in POINTS and the buffer is x,y INTERLEAVED — `push_pt` writes
-`pt[npt*2]` and `pt[npt*2+1]` while the bound check is on `npt` — so this
-described a buffer twice the size of the one that exists, and `overflow`, the
-flag that exists to catch exactly this, could never fire because the count it
-checks was the one that was right. Never reached (the widest shape through it
-is ~50 points), one bigger control away from 512 bytes past a file static.
-`gfx_mask.c` has the convention written correctly (`cpt[512 * 2]`).
-
-  `make test-paint-gfx` — **75 checks, 0 failures**, every row naming a pixel
-  or a count computed from the CSS. FOUR controls, each watched failing at its
-  predicted count: `ROUND_HASBG` **4**, `XF_NO_ORIGIN` **3**,
-  `SHADOW_NO_CLIP` **2**, `NO_RCLIP` **4**. Each is the PLAUSIBLE wrong
-  implementation, not the absent one — all four draw a perfectly good picture,
-  and `XF_NO_ORIGIN` leaves every `translate()` on the page correct.
-
-**WHAT IS STILL DEAD, measured the same way as the opening census (2026-08-20).
-Two of the six were revived, not three, and the headline one was not:**
-
-| symbol | callers outside `c/lib/gfx` |
-|---|---|
-| `gfx_fill_mask_clipped` | **1** — `browser_paint.c:1238`. Path clipping is consumed |
-| `gfx_paint_sample` | **2** — `browser_paint.c:845,873` |
-| `gfx_fill_clipped` | **still 0.** Only its own gate |
-| `gfx_fill_subs` | **still 0** (called once inside the engine) |
-| `gfx_m_invert` | **still 0** (called once inside the engine) |
-| `gfx_gradient_strip_paint` | **still 0, deliberately** — argued at `browser_paint.c:654`: its contract is `t` running 0→65536 across the strip, which is only the right ramp when the strip IS the whole extent; `to top` runs UP the box and a rounded box's three bands each index a SUB-RANGE |
-
-So `gfx_fill_clipped` — the SURFACE-writing half of path clipping — is still a
-correct, gated, dead feature. The browser reaches the screen through
-`gui_blit`, so it needs the MASK half; nothing in the tree composites into a
-`gfx_surface` and clips at the same time.
-
-**Still shallow, and the layer that owns each:**
-
-- **bold and italic are still 0 occurrences, and NOT the painter's to fix.**
-  `gui_text_run(x, y, px, mono, colour, s, len)` has no weight or slant
-  parameter, and `fsroot/fonts/` ships exactly `ui.ttf` and `mono.ttf` — there
-  is no bold face on the disk. Every `<h1>` and `<strong>` on the web renders
-  at regular weight, and closing it is a font asset + an ABI parameter +
-  kernel face selection, in that order.
-- **SVG** is still decoded at intrinsic size and nearest-neighbour stretched,
-  which loses the point of SVG. `svg.c` is already a full consumer of the
-  engine; what is missing is the painter asking it to rasterize at DEVICE size.
-- **radial-gradient** is refused, and the gate pins the refusal: the engine has
-  `gfx_paint_radial`, the parser does not yet produce it, and the background
-  COLOUR paints exactly as before.
-- **Rotated text and rotated images** are refused and counted
-  (`browser_paint_xform_stats`) — the ABI has no rotated text or blit call.
-- **G5 (groups and layers) is not started**, and it is the prerequisite for
-  `mix-blend-mode` and `filter`. Group opacity needs an offscreen
-  `gfx_surface` and a group concept the display list does not have; all three
-  ways of faking it double-darken overlapping children at the seams.
-
-**TWO INSTRUMENTS COULD NOT ANSWER FOR THIS WORK, and saying so is the point:**
-
-- **`bench-gfx-frame` cannot see G4 at all.** It builds `gallery_cost.aex` —
-  the gallery through `aui.c` — and `nm build/gallery_cost.elf` returns **0**
-  `browser_paint` symbols. It measures the engine as `aui.c` uses it and never
-  as the browser does. Worse, under a loaded machine it is not repeatable:
-  two runs of the SAME binary on 2026-08-20 read 2560x1600 wall
-  **19,871 µs and 12,707 µs** (1.57x), engine share 15.6% and 15.8%. Any
-  comparison against the recorded 16.4 / 11.1 / 6.4 needs an idle machine.
-- **The scoreboard's VERDICT counts were not comparable that day.** A first
-  full run was VOID — both control rows came back FLAKY, and the cause was
-  another workflow's `pkill` SIGTERMing four of the boots mid-run (the serial
-  logs show the pages had painted). The re-run's controls are PAINTED and
-  identical to 0818-c (example 19/109, wikipedia 198/1132 vs 199/1142), but
-  six sites still went FLAKY on live-web and harness volatility, so
-  PAINTED 5 → 2 is an artifact of that and not a result.
-
-  **`text run/B` is what survived, and it is the delta worth having**: taking
-  each site's better run against 0818-c, **+60 painted text runs and +441
-  bytes** across the corpus (357 → 417 runs, 3,018 → 3,459 bytes). It is
-  carried by **jd 0/0 → 63/429** — a page that scored BLANK with no painted
-  text at all now paints 63 runs — with bilibili 56/471 → 61/524, baidu
-  29/346 → 32/393, stripe 38/164 → 40/171 and douyin 1/9 → 2/13. One row went
-  the other way and is unresolved: **github 17/99 → 3/14**, whose load time
-  also went 103.9 s → 153.4 s under the same contention, so it is not yet
-  known whether that is a regression or a budget.
-
-## How big a program can this machine load? 12 MiB, measured
-
-Asked because a Python port turns on it, and answered without CPython, without a
-download and without touching the repo -- so the number stands whatever happens
-to that question.
-
-A 12 MiB `.aex` (`text 12,583,024 / bss 16` -- a REAL `PT_LOAD` of const rodata,
-because `.bss` would measure nothing about the load path: `elf.c` commits
-`p_memsz` and the pages would never be read) was packed at **`/bin`, not the
-root**. Never the root: `wm.c:4994` `scan_apps()` kmallocs every root `.aex`
-WHOLE at boot merely to read 64 header bytes, which would put a contiguous-arena
-gamble on the critical boot path.
-
-```
-cold boot        [kheap] grow #5: +16384 KiB -> arena 36864 KiB, live 6059 KiB, over-allocated 0 KiB
-after browser    [kheap] grow #5: +16384 KiB -> arena 36864 KiB, live 6085 KiB, over-allocated 1 KiB
-                 [execve] pid 3: /bin/padbin loading
-                 padbin ok
-```
-
-**The second run is the control, and it is the only one that proves anything.**
-`pmm_alloc_contig` (`pmm.c:470-490`) is a linear first-fit over the frame bitmap
-with NO fallback, so the question was never "does it work on a fresh machine" --
-it was "does it still work once the desktop and the browser have fragmented
-memory". It does, identically: same growth sequence, 26 KiB apart in `live`.
-
-`padbin ok` prints only after touching `pad_blob[12582911]`, the LAST byte, so
-this is the whole image arriving rather than a header that parsed.
-
-**THE LIMIT IS NOT SPACE, AND IT IS NOT THE HEAP -- IT IS INODES.** The image
-went 7,136 -> 10,217 of 16,384 blocks, using **19% of the free space** for 12
-MiB. But `tools/mkfs.py`'s `INODE_COUNT` is **256**, and 223 are already in use.
-A runtime shipping a stdlib as thousands of `.py` files exhausts the inode table
-long before the disk, which is why a frozen single binary is the only shape this
-filesystem permits.
-
-### 12 MiB was the measurement, not the limit -- it is 64 MiB and more (2026-08-21)
-
-**Everything above is a true record of that day and two of its conclusions have
-since been overtaken, both deliberately.** `tools/mkfs.py` is 131,072 blocks and
-8,192 inodes now (512 MiB, ~240 used), so the inode wall is gone; and the load
-path no longer materialises the file at all.
-
-**What the ceiling actually was.** `exec.c` did `kmalloc(whole file)`, which
-falls through to kheap's `grow()` -- it DOUBLES an arena until it covers the
-request and then asks `pmm_alloc_contig()` for that many CONTIGUOUS frames.
-So the cost was never the file, it was the next power of two above it, in one
-piece. Measured before the change: 128 MiB of file took a 256 MiB arena, and a
-256 MiB file was refused with **456 MiB free**, because the doubling asked for
-512 MiB on a 511 MiB machine.
-
-**The loader streams now** (`struct elf_reader` in `c/kernel/exec/elf.h`): the
-ELF header, the program-header table and each segment are read through
-`vfs_pread` into a single 512 KiB static bounce, and read-only whole pages never
-come through it at all -- they are mapped from the page cache as before. Same
-boot, same three programs, `make test-bigexec`:
-
-| | before | after |
-|---|---|---|
-| peak kernel heap arena | **249,856 KiB** | **16,384 KiB** |
-| heap growths | 7 (+32/+64/+128 MiB among them) | 4, all +4 MiB |
-| 64 MiB program | one 128 MiB contiguous run | 3 pages copied, 16,385 file-backed |
-
-`[exec] load /bin/pad64: 16385 pages file-backed in 1 areas, 3 copied`.
-
-**And the second phase is the one that proves it.** `pmm_alloc_contig` is a
-linear first-fit with NO fallback, so a load that works on a machine that has
-just booted says nothing. The gate runs the same three programs again after
-112 MiB of page cache has been taken and dropped and five other programs have
-run: 24,295 Mcyc for the 64 MiB load fresh, **24,016 after the churn** -- within
-1%, because nothing on this path wants a contiguous run to begin with.
-
-**And `scan_apps()` no longer kmallocs anything**, so the "never the root" advice
-above is retired: it read all 11 root `.aex` files WHOLE at boot -- 7,911,576
-bytes, peaking at 4,721,200 for `browser.aex` -- to look at 704 bytes of header.
-`vfs_pread` exists now; it is 64 bytes on the stack, eleven times.
-
-**Where the time in a big exec now is, measured, and it is not the loader:** the
-container's CRC-32 covers the whole ELF, so it is the only thing left that reads
-every byte. 64 MiB pad, TCG: **container+CRC 24,244 Mcyc, the entire ELF load
-643 Mcyc.** The bounce size is 32x of that number -- at 16 KiB the same phase
-cost 789,736 Mcyc, so the cost is per-CALL and hardly any of it is the CRC
-arithmetic. 128 x 4096 is `READ_RUN * BS`, the most blocks logitfs puts in one
-device command.
-
-  `make test-bigexec` (2 phases, fresh + churned) · `test-bigexec-negctl`
-  (`-DEXEC_NEGCTL_SLURP` restores the whole-file kmalloc; **both** kernels boot
-  at `-m 192M` so the difference cannot be read as "you gave one less memory",
-  and the control must FAIL at 64 MiB and PASS at 16)
+ordinary host program) and the two stdouts are diffed byte for byte.
+
+**Nothing here is stubbed to success**, and that is a rule: `flock` returns
+`ENOSYS` because a caller that gets 0 believes it holds a lock; `ioctl`'s tty
+requests return `ENOTTY`, matching `termios.c` rather than inventing a second
+answer; `statvfs`/`utime` return `ENOSYS` because a fabricated `f_bsize` is worse
+for a caller sizing a buffer than an error is.
+
+**TinyCC is vendored, patched, and runs on the device.** `third_party/tcc/` (398
+files, 91k lines) is **not a pristine upstream copy** — it is patched in place
+under `TCC_LOGIT`, and the load-bearing patch is the link base: `ELF_START_ADDR`
+0x400000 → 0x50000000, because *"tcc's default 0x400000 is shared kernel low
+memory on this machine; a default that needs `-Wl,-Ttext` to be safe is a default
+every user gets wrong once."*
+
+**The bar that cannot be talked around** is `test-tcc-identity`: the same
+`hello_id.c` and the same `tccpp.c` (3,903 lines of tcc's own source, 11 mini-libc
+headers) are compiled to objects **by `/bin/tcc` on the device** and by the host
+tcc, and the `.o` files must be **byte-identical** — retrieved off the (non
+`-snapshot`) image by the harness's own embedded LogitFS reader, with a negative
+control (one `-D` on one side must change the bytes).
+
+`tools/mksysroot.py` lays out `/usr/include`, `/usr/lib/libc.a`, `crt1.o/crti.o/
+crtn.o` and `/usr/lib/tcc/{include,libtcc1.a}` so `tcc hello.c -o hello` needs no
+flags. Two facts: the names are **read out of the port**, not assumed
+(`libtcc.c:974` adds `crt1.o` and `crti.o` before the user's files); and a sysroot
+built by the compiler it serves would be circular, so `libtcc1`'s objects come
+from clang. **The header trap**: mini-libc's headers were written for clang, and
+tcc 0.9.27 has no `__int128`, no vector types, a subset of `__builtin_*` — every
+header is parsed by the host tcc before it ships.
+
+**Why TCC and not GCC, measured rather than chosen**: `cc1` is 35.7 MB with 515
+undefined symbols, **334 of them from four from-scratch bignum/polyhedral
+libraries** (isl 222, mpfr 71, mpc 21, gmp 20); tcc 0.9.27 is 36,151 lines with
+an **empty libc gap list, proven by linking**, and emits ELF directly — no
+assembler, no linker. GCC is blocked by binutils plus four libraries, not by the
+kernel and not any longer by the filesystem.
+
+**All six `test-sysroot*` targets are UNWIRED** — they exist and resolve and no
+suite reaches them.
+
+---
 
 ## Six subsystems this file did not describe, found by counting
 
-Not noticed -- MEASURED, on 2026-08-17, by comparing each subsystem's target
-count against how often this file mentions it. Four came back with substantial
-coverage and no documentation at all:
+Not noticed — **measured**, by comparing each subsystem's make-target count
+against how often this file mentions it. The method is repeatable:
 
-    ip6     8 targets   0 mentions        webapi  6 targets   0 mentions
-    forms   7 targets   0 mentions        usb     9 targets   1 mention
-    demux  10 targets   2 mentions        wpt     9 targets   1 mention
+```sh
+make -pRrq | grep -oE '^test-[a-z0-9]+' | sed 's/^test-//' | sort | uniq -c | sort -rn
+# then grep -c each prefix in this file
+```
+
+Re-run on 2026-08-28 against the *previous* version of this document, it returned
+**63 subsystem prefixes with ≥2 make targets and ≤1 mention** — including `uefi`,
+`procfs`, `coredump`, `ptrace`, `oom`, `klog`, `panic`, `signal`, `devmodel`,
+`ime`, `hda`, `nn`/`qwen`/`gguf`, `opus`/`aac`/`vorbis`, `mpeg12`/`vp9`, `ssh`,
+`tcc`/`sysroot`/`selfhost`, `pkg`, `license`, `flex`, and the whole
+`cssom`/`cssparse`/`selectors`/`csstyle` family. Eleven of them scored **zero**.
 
 **An absent claim is worse than a stale one and much harder to see.** A wrong
-sentence misdirects and can be corrected; a missing one lets a reader conclude
-the subsystem does not exist or is untested, and there is nothing for a
-correction to attach to. IPv6 was the sharpest case: the networking sections
-above run M9 to M12 and say "net" thirty-seven times, so nobody reading them
-concludes the documentation is thin -- they conclude the stack is IPv4-only.
+sentence misdirects and can be corrected; a missing one lets a reader conclude the
+subsystem does not exist, and there is nothing for a correction to attach to. IPv6
+was the sharpest case: the networking sections ran M9→M12 and said "net"
+thirty-seven times, so nobody concluded the documentation was thin — they
+concluded the stack was IPv4-only.
 
-Each section below records what that subsystem's OWN source or tests argue,
-rather than a summary written from the outside. The measurement is repeatable:
-compare `make -pRrq | grep -oE '^test-[a-z0-9]+'` counts against `grep -c` here.
+That is why this rewrite names things it cannot describe in full. **If a
+subsystem has make targets and no paragraph here, that is a bug in this file.**
 
-### WPT — the headline number, and the two ways it lied
+Two more that deserve naming and had none:
 
-```
-WPT: 149318/246542 subtests passed (60.6%) over 9181 harness files
-     0 CRASHED · 554 DIED · 363 NEVER STARTED
-```
+- **`c/lib/nn` + `/bin/lm`** — 4,175 lines: tensors, f32/int8/int4 matvec, a
+  LOGITLM single-file loader, a q8 KV cache, a forward pass, **real Qwen3-0.6B
+  weights**, and 13 make targets in the tree's largest fragment
+  (`tests/nn.mk`, 674 lines). The format was designed around **a filesystem limit
+  that no longer exists** — "256 inodes, 223 already used; a model is therefore
+  ONE FILE" — and `nn.h` still argues from it. `/bin/lm` says outright why it is
+  not like its neighbours: *"vidcheck, audiocheck, h2check exist to print one
+  number a harness can diff. This one is different: there is no independent oracle
+  for 'how fast is this machine's own arithmetic', because the number IS the
+  measurement."* **`matmul.c` includes `<emmintrin.h>` unguarded**, so `make
+  test-nn` cannot compile on the documented host.
+- **`tools/mmtrace/`** — a QEMU TCG plugin that records this machine's exact
+  user-page reference string from outside the guest, plus a simulator that
+  computes Belady's MIN on it. It answers the question the reclaim section
+  explicitly does not: *"reclaim.h defends the clock against an active/inactive
+  LRU and the defence is sound, but it is an argument about mechanism, not a
+  measurement of quality: nothing in this tree says how many of the page faults
+  this machine takes were AVOIDABLE."* `make test-mmsim` is declared **the
+  control** — "run this before believing any number below" — and is green.
 
-This is the most quotable number in the tree, which is exactly why the suite is
-built to distrust it. **The gate is a ratchet against an expected-failure list,
-not the percentage**: green on a tree that changes nothing, red only when
-something that worked stops working. The corpus is OPTIONAL and the capability
-is not — `WPT_ROOT` points anywhere, an absent directory makes the runner say so
-and exit 0, because a missing corpus is not a regression in the code under test.
+---
 
-**THE RUNNER MUST BE `browser.aex`, or every number is of a browser that does
-not exist.** Two halves, which fail independently, and the second one is the
-most instructive failure in this repository:
-
-- **The source list** — expressed as a SUBTRACTION from the Makefile's own
-  variables, so it cannot drift silently. (Three `*-negctl` link failures and
-  three `browser-*.elf` variants missing `$(GFX_OBJ)` on 2026-08-17 are what
-  happens where that discipline is not applied; `make test-negctl-drift` now
-  gates it.)
-- **The call sequence.** *LINKING A TRANSLATION UNIT IS NOT RUNNING IT.* The
-  runner linked `css_extra.c` and `layout.c` and then never called
-  `css_apply()`, `css_extra_apply()` or `layout_page()`. `make test-wpt
-  ONLY=css/css-grid` read **531/11152 with AND without the grid
-  implementation** — 11,152 subtests structurally unreachable, and the line
-  shipping grid unable to tell its own work from a no-op.
-
-And one thing the rate does NOT cover: reftests, judged by pixels against a
-reference render, which this runner does not do. They are not unmeasured —
-`make test-reftest` runs them out of the same `third_party/wpt` against a
-17,452-entry baseline and judged 24,300 of them on 2026-08-17. The runner's
-own output said "there is no reftest harness here" until that day; it now names
-the gate.
-
-### Containers, the A/V clock and MSE
-
-`c/lib/media/`: `demux.c` (sniffing, the demuxer object, sample ordering,
-seeking, the Annex B rewrite), `mp4.c`, `mkv.c`, `avclock.c`. Fifteen targets
-across `test-demux*`, `test-avsync` and `test-mse*` — **fourteen green**, with
-`test-mse-os` the one red (playback stalls on device; see the sweep triage).
-
-Three things the source argues that are worth knowing before touching it:
-
-- **Sniffing is by CONTENT, not by name.** A file called `.mp4` that is really
-  Matroska opens as Matroska, and a `.bin` that is really an MP4 opens too —
-  the same rule `audio_sniff()` uses. Preview already relies on this: it picks
-  the image-or-video path from the Annex-B start code rather than the
-  extension.
-- **`demux.c` is what mp4 and mkv have in common**, and it is what a player
-  talks to. Format-specific code stays in the two format files; a third
-  container is a third file, not a third path through the player.
-- **`avclock.c` is a POLICY, not a conversion.** A container hands out two
-  streams of timestamps written by an encoder on another machine, and they mean
-  nothing until something decides what "now" is. On this machine that is not
-  academic — a from-scratch H.264 decoder under QEMU's TCG is not guaranteed to
-  keep up, so the falling-behind policy is the design, not an error path.
-
-The fuzz gates are worth naming because the shapes differ: `test-demux-fuzz`,
-`-fuzz-deep` and `-fuzz-negctl`. A container parser reads attacker-controlled
-offsets and lengths for a living, which is the same argument the image decoders'
-`test-img-fuzz` makes.
-
-### USB/xHCI — and the third producer on the input ring
-
-`c/drivers/usb/`: `xhci.c` + `xhci_ring.c` (the controller and its rings),
-`usb_core.c` (enumeration and driver binding), `usb_desc.c`, `usb_hid.c`,
-`hid_report.c` — 2,317 lines, nine targets, **all nine green**.
-
-Two things in it are load-bearing beyond USB:
-
-- **Binding is on the INTERFACE class/subclass/protocol triple**, which is why
-  `usb_core.c` is worth more than the HID driver it currently serves: a second
-  device class is a `probe`/`poll` pair, not a rewrite.
-- **`usb_isr` posts keys and pointer motion into the WM's input ring** through
-  the same `wm_key()` / `wm_mouse_event()` the PS/2 drivers call. That makes
-  USB a THIRD producer on `inq_push`, which matters to the BKL removal (see
-  `docs/superpowers/specs/2026-08-17-bkl-removal.md`) and is invisible from
-  either end — from the interrupt table it is "the USB vector", from `wm.c` it
-  is the same two functions.
-
-**And the tree already gates the property that fact creates.** `test-usb-both`:
-
-> Coexistence: both stacks live at once. The requirement is not "input works"
-> but "exactly once" — two producers on one queue is only safe if neither
-> duplicates the other's events, and no "does input work?" test catches that.
-
-It COUNTS rather than detects, so double delivery fails it. `test-usb-none` is
-its control: the same machine with the devices unplugged, where nothing can
-deliver input, so the positive assertions must not be satisfiable — *"a test
-that passes with the thing under test taken away is measuring something else."*
-
-### The interactive web platform — forms, focus, and the platform APIs
-
-`c/apps/browser/`: `js_platform.c` (1,910), `forms.c` (2,199), `js_select.c`
-(1,188), `js_forms.c` (1,015), `focus.c` (342). Thirteen targets — the
-`test-webapi*` six and the `test-forms*` seven — twelve green.
-
-**The rule this area is built on is worth more than the inventory**, and
-`js_platform.c` states it:
-
-> every entry below is either a name a page in `tests/fixtures/webapi/` actually
-> reached for (with the page named in the comment) or is marked as
-> requested-but-unmeasured. **Nothing in this file is here because a browser is
-> "supposed to" have it.**
-
-So the coverage is demand-driven and the evidence is per-name. That is also why
-`test-frameworks` is a CHANGE DETECTOR rather than a wish list, and what makes
-its acceptance criterion checkable: *when a name from channel 1 is implemented,
-the channel-2 error for that page must change, and if it does not, the
-implementation did not matter.*
-
-**It has just been met, which is the concrete payoff of the whole arrangement.**
-`SVGElement` (global constructor) and `document.currentScript` landed, and on
-2026-08-17 **vue and webpack went from a blank page to a rendered, interactive
-one** — `#app` 0 -> 106 and 0 -> 148 characters, both buttons reading
-"count is 0", both frameworks' missing-cause counts falling to zero. svelte is
-still blank, and its cause is named: `HTMLTemplateElement.content`.
-
-**WHEN A PAGE REPORTS ITS OWN ERROR, READ IT -- and until 2026-08-18 there was
-nothing to read.** A modern bundle catches its own exceptions and logs them, so
-the browser's uncaught-exception printer never sees the interesting ones. What
-reached the serial log was:
+## The test suite — re-measured 2026-08-28
 
 ```
-[error] TypeError: not a function
-[error] TypeError: not a function
-[error] TypeError: not a function
-[error] TypeError: not a function
+744 make targets (660 of them test-)      205 harnesses
+118 wired into a suite                    395 unwired  (346 baselined, 49 NEW)
+21 DEAD  (no target names them)            2 MUTE      61 stranded controls (55 baselined, 6 NEW)
+CI would run 433 (282 host + 151 boot)    audit: 76 findings
 ```
 
-Six of these on stripe.com, byte-identical, from a minified bundle whose source
-reads `oS(a,b)`. Six different bugs and one function called six times are the
-same line. Two instruments closed it, and together they named the cause on the
-first run:
-
-- **`console.error(err)` prints the stack.** Chrome does; we printed the
-  message. QuickJS's `.stack` is the frames WITHOUT the message header, which
-  is why the uncaught printer already emits message-then-stack and why this is
-  an append. In BOTH consoles (`js_page.c`'s and `js_dom.c`'s fallback) --
-  they share no TU, and a host harness reading only one would be the blind
-  half. Serial only: `note()` feeds the one-line status bar.
-- **The message names the callee** (`third_party/quickjs/quickjs.c`, marker
-  `LOGIT-NAME-CALLEE`). For `x.foo()` the property atom is IN THE BYTECODE, in
-  the `OP_get_field2` that pushed the callee; and for any call, WHAT the callee
-  was separates a missing API (`undefined`) from a shape mismatch (an object).
-
-```
-TypeError: isEqualNode is not a function (it is undefined)
-    at <anonymous> (.../68654-0ccff603146a8ff7.js)
-    at useSyncExternalStore (.../framework-bfbcaa5a2903bc7d.js)
-```
-
-**Cost is zero on the path that works**: the check runs only after
-`JS_CallInternal` has already returned an exception, and replaces it only when
-the callee provably could not be called -- in which case no user code ran, so
-the pending exception is necessarily the generic one. A pre-call
-`JS_IsFunction()` would have charged every call that succeeds, which is all of
-them.
-
-Two traps in it, both found by writing the control first and both able to name
-the WRONG thing, which is worse than the bare message: a plain call must not
-inherit the previous method call's atom, and `o.a?.()` on a nullish `o.a`
-SKIPS the call so its atom is never consumed. Cleared at `OP_call` and
-`OP_get_array_el2`.
-
-  `make test-js-stack` 32 checks · `test-js-callee-control` reverts the naming
-  and requires **exactly 6** to redden -- two of the eight must keep PASSING
-  (a call that works, an error thrown from INSIDE a real function), or "rewrite
-  every failed call's message" would satisfy the rest.
-
-**What it found, immediately: `Node.isEqualNode`.** React's Float -- the part
-that hoists `<title>`/`<meta>`/`<link rel=stylesheet>` into `<head>` and
-de-duplicates them during hydration -- compares candidates with it. Absent, it
-threw six times, React declared the hydration lost (#418), switched the root to
-client rendering (#423), and the client render died. stripe went 69 painted
-text runs -> 38 -> **0** and scored BLANK with **no failed request and no
-missing subresource**. Nothing else in the record said why.
-
-Measured after, same harness, same day: **37 runs / 172 bytes** instead of 0,
-changed px 2,452 -> 9,352, BLANK -> GAP, and zero `isEqualNode` throws. The
-hydration MISMATCH (#418) is still there -- our DOM is still not what React
-expects -- but the client render now survives it instead of dying on the next
-call. 37 runs is not a rendered stripe.com and is not claimed to be one; it is
-the difference between a page that lost its whole document and one that did
-not.
-
-**`canvas.getContext` was the other name in that log, and it is now a REAL 2D
-context** (`c/apps/browser/js_canvas.c`). It was ranked, not chosen: pointed at
-a full scoreboard, the instrument returned **33 `getContext`** (qq 25, stripe 8,
-anthropic 2) against 1 of anything else.
-
-The one-line answer -- `getContext() { return null }` -- is the wrong one, and
-the corpus says so rather than an argument.
-`tests/fixtures/jsperf/baidu-async-search.js` writes
-`var o = a.getContext === i ? !1 : a.getContext("2d"); if (o === !1) return !1;`
--- `i` is undefined and the guard compares STRICTLY against false, so with the
-method absent the probe returns false and the page takes its fallback cleanly,
-and with a null-returning method the guard does not fire and the page walks on
-holding null. The "safe" one-liner converts a clean fallback into a crash
-further from its cause.
-
-**It is the consumer `c/lib/gfx` never had.** `gfx_fill`, `gfx_paint_linear`,
-`gfx_paint_radial`, `gfx_surface_init` and the whole `gfx_m_*` affine layer
-were reachable only from two unit tests and a bench -- the engine's own
-reconnaissance recorded exactly that -- and canvas 2D is their shape. No new
-rasterizer: the file makes gfx calls and owns no scanline loop.
-
-Two engine contracts shaped the code rather than the reverse, and both are
-worth knowing before touching it:
-
-- **`gfx_path_matrix` REFUSES a mid-build call** (latching `overflow`), because
-  points already recorded were flattened under the old matrix. Canvas requires
-  the opposite -- the CTM in force when a point is added transforms it. So the
-  path's matrix stays IDENTITY and `js_canvas.c` transforms every point with
-  `gfx_m_apply`. Not a workaround; the only reading true to both contracts.
-- **A `gfx_surface` is STRAIGHT RGBA8, byte for byte what ImageData is.** So
-  `getImageData` is a copy, not a conversion, and the gate can assert BYTES:
-  what a check reads is literally what the engine composited. Every assertion
-  in `tests/unit/canvas_test.c` names a pixel.
-
-It installs onto `HTMLCanvasElement.prototype` BY NAME, which settles what the
-old note here worried about at length: `getContext` lands on canvases and on
-NOTHING else, so `div.getContext` stays undefined. `toDataURL`/`toBlob` THROW
-rather than fabricate -- this tree decodes PNG and does not encode it, and a
-fabricated data URL is believed rather than detected. `drawImage`, `fillText`
-and `clip()` are absent on purpose, so the same instrument picks what is next.
-
-  `make test-canvas` 46 checks · `test-canvas-negctl` = `-DCANVAS_IGNORE_CTM`,
-  exactly the 5 transform checks. The control is the PLAUSIBLE wrong
-  implementation, not the absent one -- gfx's path carries a matrix, so "the
-  path will handle it" is what a reader assumes. It draws a perfectly good
-  picture in the wrong place, so colours, edges and ImageData all still pass.
-
-Three real bugs the gate found, none of which a does-it-throw test sees:
-`fillRect` re-initialised the context's path over the SAME point buffers and
-restored the struct after, so the counts came back and the geometry did not; the
-element<->context reference is a CYCLE and without a `gc_mark` the pair was
-unreachable and uncollectable at once (the suite passed and then aborted inside
-`JS_FreeRuntime` -- a leak only visible at teardown, which a browser never
-reaches); and **`svg.c`'s alpha was TRUNCATED**, `(a*255)/256`, putting every
-alpha one step low and losing another per round trip (0.5 -> 127 -> "0.498" ->
-126). Rounded now. That error was always there on an SVG `fill-opacity`; canvas
-is simply the first caller with a round trip to observe it through.
-
-**Also fixed there: `performance.measure(x, 'navigationStart')` threw.** User
-Timing L2's "convert a name to a timestamp" is TWO lookups -- a name that is
-not a user mark is looked up in the `PerformanceTiming` interface before it is
-rejected. `markTime()` only did the first, and `js_platform.c` was already
-building a full `performance.timing` thirty lines below its own definition.
-`test-platform-timing-negctl` reverts it and requires exactly 2 of the 3 new
-checks to redden; the third (a non-numeric member is still a `SyntaxError`) is
-what stops "make markTime never throw" from satisfying them.
-
-The focus model is the other half. `-DBROWSER_NO_FOCUS` compiles the routing out
-— no element takes focus from a click, Tab does not move it, a keystroke goes to
-`<body>` as it did before — and `test-forms-negctl` must FAIL against that
-build, or the suite is not measuring the focus model.
-
-### The site scoreboard — and the column that says WHICH words
-
-`make scoreboard` boots one QEMU per live site and writes a dated snapshot;
-the delta between two snapshots is the whole product. Its header states its
-own blind spot: *"`changed px` ... cannot tell a rendered page from a flat
-dark block. Nothing here checks whether the RIGHT pixels changed -- that is
-what reftests are for, and none of WPT's 17,155 of them run on this machine."*
-
-**THE DELTA IT WAS BUILT FOR, measured 2026-08-18** — two full runs of the
-same 17 sites, an hour apart, differing only in the browser:
-
-|                | 0818-b | 0818-c |
-|----------------|--------|--------|
-| PAINTED        | 3      | **5**  |
-| BLANK          | 4      | 4      |
-| ERRORS         | 8      | 8      |
-| FLAKY          | 2      | **0**  |
-
-`0818-b` already had `Node.isEqualNode`; `0818-c` adds the canvas 2D context.
-**stripe FLAKY -> PAINTED** (and its `asked/got` gap closed to 80/80),
-**openai BLANK -> PAINTED**, nothing moved down. And the callee census the
-first run produced -- 33 `getContext`, 1 `write`, 1 `appendChild` -- reads
-**0 `getContext`** in the second, with `write` and `appendChild` the only
-names left in the whole corpus.
-
-Read the two control rows before believing any of that: `control-example` and
-`control-wikipedia` are PAINTED in both, which is what says the harness, the
-network and the build were working during each pass.
-
-Reftests are the right answer to "is the layout correct" and they are a long
-way off. **`text run/B` is the cheap middle**: not WHERE the pixels are, but
-WHICH WORDS are among them, with the coordinate of every run. It judges no
-layout and does not try; it answers the question every BLANK and ERRORS row
-is really asking, which was previously answered by a person squinting at a
-PNG.
-
-It found its own reason to exist on the first run. bilibili scores PAINTED
-with ~255,000 changed pixels and no exceptions, and its video cards were
-thumbnails above an EMPTY grey rectangle. The column said **59 runs / 583
-bytes against a document carrying 40,365 bytes of text**, and the positions
-put the titles INSIDE the thumbnail's own box -- so the image was blitted over
-them. *"Missing" and "painted underneath the thing drawn after it" look
-identical in a list of strings and completely different in a list of
-coordinates*, which is why the position is recorded. Both units bugs above
-were found down that thread.
-
-Three things about it worth knowing before touching it:
-
-- **It is collected at the ONE site that paints document text**, so it cannot
-  drift from what was drawn. A record built from the layout tree instead would
-  report text that a clip, an opacity or a viewport cull threw away.
-- **It needs no trigger, and that is the second lesson.** A Ctrl+Alt+D chord
-  was tried first, then `about:text` through the address bar, then the chord
-  paced one scancode at a time -- four boots, no output, and nothing in the
-  kernel explains it. An instrument whose trigger cannot be observed is not an
-  instrument, so the browser prints it itself whenever the painted text
-  CHANGES, bounded at PTX_LOG_MAX. Both triggers stay wired for a person.
-- **It is OFF unless `browser_paint_text_log(1)` is called**, which only
-  browser.c does. Five host harnesses link that TU without being a browser,
-  and the first version put a `[dl]` line between every reftest verdict.
-
-**`about:boxes` is the same instrument one question further down.** The text
-dump says WHICH WORDS reached the screen; the screenshot then shows them in
-the wrong place, and the next question is always *how wide does layout think
-that box is* -- answered until now by a person counting pixels in a PNG. It
-prints the display list, one line per item: kind, x, y, w x h, tag, `#id` and
-a class list truncated at 48. Same channel as `about:text` and for the same
-reason (the address bar is the trigger that is proven), bounded the same way,
-and it does not navigate -- the question is about the page already loaded.
-
-The case it was built for, and the state of it: with canvas landed stripe
-renders its real content, and its hero headline wraps ONE CHARACTER PER LINE
-in two narrow columns. The markup says why there are two columns -- stripe
-stacks `--background` and `--foreground` copies of the same `<h1>`, which a
-real browser positions on top of each other -- and says nothing at all about
-the WIDTH, which is the number that would name the bug. The screenshot says
-"about 40 px" to a person with a ruler; the dump is what would say it without
-one.
-
-**It has not yet produced that number, and the reason is worth more than the
-number would be.** The address-bar trigger stopped arriving the moment canvas
-made stripe a heavy page: `about:text` reached the guest on every run through
-0818-b and on none after, three retries each, and the `text run/B` column kept
-working only because the painted-text dump needs no trigger and prints itself.
-`about:boxes` has no such fallback and would simply have been missing, in
-silence. `qmp_site.py` now CONFIRMS the trigger against the `[browser] load:`
-line the browser prints for every load, retries, and records
-`about_text_arrived` / `about_boxes_arrived` either way -- because "the dump
-did not happen" and "the page painted nothing" are different findings and only
-the first one is the harness's.
-
-**Two harness bugs fell out of chasing that trigger, and both had hidden for
-the same reason -- nothing had ever needed a SECOND navigation in one boot.**
-`qmp_site.py`'s `ctrl()` put four scancodes in two bursts into a PS/2
-controller with a one-byte buffer, so Ctrl+L never arrived; it went unnoticed
-because browser.c starts with `editing = 1`, so the bar is already focused
-when the harness types its first URL and "Ctrl+L did not arrive" is
-indistinguishable from "Ctrl+L worked". And browser.c's Ctrl+L only set
-`editing` without clearing, so typing APPENDED -- same coincidence, and the
-second navigation in a boot silently produced `https://site/what-was-typed`.
-
-### Cookies — one jar, TWO doors, and the gate only knew one
-
-`c/net/http/cookies.c` (RFC 6265 + 6265bis) is one jar reached from two places
-that must classify a request the same way, and for a while did not:
-
-- **fetch()/XHR** — `js_webapi.c`, computes cross-site from `g_loc` and passes
-  it. Correct since the day it was written.
-- **the transport** — `webapi_cookie_line()`, called by `browser_rt.c` for the
-  navigation and for **every subresource**. It went in wired to
-  `cookie_header()`, which is `cookie_header_ex(..., CK_REQ_SAME_SITE, ...)`
-  with the argument fixed. Every request the browser made was declared
-  same-site, so a cross-origin `<script src>` carried the target's
-  Secure+HttpOnly+SameSite=Strict session and the reply was evaluated in the
-  requesting page's realm.
-
-**`test-cookie-cors` is titled "which requests carry the session, and which"
-and could not see it**, because every case in it drives `fetch()`. That is the
-lesson worth carrying out of this subsystem: *a gate aimed at a rule has to be
-aimed at every caller of the rule, or it certifies the caller it happens to
-know.* Same shape as the WPT runner that linked `layout.c` and never called
-`layout_page()` — linking a TU is not running it; testing one caller is not
-testing the rule.
-
-Three things to know before touching it:
-
-- **The request kind is three-valued** (`CK_REQ_SAME_SITE` /
-  `CK_REQ_CROSS_SITE` / `CK_REQ_CROSS_SITE_NAV`) and it used to be two,
-  because the two were argued from the only caller at the time: *"a fetch is
-  never a top-level navigation, which is the only thing Lax relaxes for."*
-  Then the transport arrived, which carries navigations. **SAME_SITE is 0 and
-  permits everything**, so an uninitialised int is the DANGEROUS value here —
-  which is why it is a parameter and every caller computes it.
-- **`CK_HEADER_MAX` is one number because it used to be three**, disagreeing
-  by 8x: 4096 for `document.cookie`, 2048 for fetch, **1024 for the navigation
-  and every subresource**. A 1100-byte token (JWT / OIDC / cf_clearance) was
-  readable from script while the page load sent no `Cookie` header at all, and
-  a realistic bilibili-shaped set of 1039 bytes lost exactly one cookie on the
-  wire — the NEWEST, because 5.4 orders by longest-path-then-earliest-created,
-  i.e. the anti-bot token a WAF had just set. 8192 is what *servers* accept
-  (nginx/Apache default), not what the jar could hold.
-- **HttpOnly used to make a cookie the PREFERRED eviction victim** of the
-  script it hides from. Three correct lines: a script read never matches an
-  HttpOnly cookie; only cookies actually sent get `accessed = now`; the victim
-  is the smallest `accessed`. So every `document.cookie` read renewed exactly
-  what the page could see. 49 writes evicted the session, before the page's
-  own cookie. `evict_lru` is two passes now — preference, not prohibition.
-
-`cookie_header_ex` returns `CK_E_NOFIT` rather than 0 when cookies apply and
-none fit; 0 now means only "the user has none". The old fold was **pinned as
-correct** by `cookie_test.c`'s own buffer case.
-
-  `make test-cookie-jar` · `test-cookie-jar-negctl` (four collapses, each
-  reddening exactly its own count: 1/1/1/2) · `test-cookie-cors` ·
-  `test-cookie-cors-negctl` (the shipped wiring on a `-D` switch)
-
-### IPv6 — no `net_cfg.ip`, and ND is not ARP
-
-Measured the same way the H.265 gap was, and it is the worse of the two: the
-networking sections above run from M9 to M12 and say "net" thirty-seven times,
-so a reader does not conclude the documentation is thin here — they conclude the
-stack is **IPv4-only**. It is not.
-
-`c/net/ip/`: `ip6.c` (477 lines), `nd.c` (882), `ip6_addr.c`. Eight targets,
-**all eight green** in the full sweep: `test-ip6-host`, `test-nd-host`,
-`test-ip6-dns`, `test-ip6-fallback`, and a negative control for each.
-
-The two shape differences the source argues, worth knowing before touching it:
-
-- **There is no `net_cfg.ip`.** An interface holds SEVERAL addresses at once —
-  always a link-local one, usually one or more routable — each with an RFC 4862
-  state and two lifetimes. Which one sources a packet is decided **per
-  destination** by RFC 6724, in `ip6_addr.c`. Every "the machine's IP address"
-  assumption from the IPv4 side is wrong here.
-- **Neighbour Discovery is not ARP.** ARP is its own ethertype with a flat
-  cache and no state; ND is ICMPv6 — it runs OVER IP, over multicast, with a
-  five-state per-neighbour machine, and it carries the host's whole address
-  configuration as a side effect. `nd.c` implements one protocol that does the
-  job of ARP, ICMP redirects, router discovery and DHCP (RFC 4443, 4861, 4862).
-
-`test-ip6-fallback` is the one to know by name, and its own comment says why:
-it drives the dual-stack socket state machine (`c/net/core/sock.c`) against a
-model TCP and asks two things -- does a preferred-but-BLACK-HOLED IPv6
-destination actually end up fetching over IPv4, and does a v4-only answer behave
-EXACTLY as it did before IPv6 existed (one connection, no race, same order)?
-The second question is the one that matters most: it is what stops an
-IPv6-capable build from making every IPv4 network slower.
-
-### H.265/HEVC
-
-Written down because the omission is the mirror image of a stale claim: there is
-no sentence here to correct, so a reader concludes the decoder does not exist or
-is not tested. Before 2026-08-17 the string "H.265" appeared in this file
-exactly once, as an example of a target that fails when a sweep runs it in
-parallel.
-
-`c/lib/video/h265*.c` — nal, cabac, pred, mc, deblock — and **nine gates, eight
-green** in the full sweep:
-
-| | |
-|---|---|
-| `test-h265` | the bit-exact list. Anything not exact is NOT in it and is claimed nowhere |
-| `test-h265-diff` | the whole matrix including the failures — "the honest picture", per its own header |
-| `test-h265-m10` | **Main 10.** Not a lower bar: the 10-bit cases are gated by `test-h265` exactly like the 8-bit ones, because 10 bits is a claimed feature rather than an experiment. `H265-OK 15 pictures bit-exact (10-bit)` |
-| `test-h265-scaling` | scaling lists |
-| `test-h265-units`, `-asan`, `-units-control` | modules, sanitised, with a control |
-| `test-h265-b` | **the one red.** B slices, declared incomplete; `got 79 want 80`, one level |
-
-The bar is H.264's: bit-exactness against a reference, not a tolerance.
-
-**And one thing the gates do not cover, found by the sweep**: `test-vidbench-guest`
-decodes h265 at 320x240 and 640x360 and h264 at 1280x720, then returns
-`decode error -3` for **h265 at 1280x720**. The gate corpus is small frames, so
-a size-dependent failure in one codec sits outside every one of the nine.
-
-## Image decoders: what decodes, and what does not
-
-Written down because the answer is not derivable from the file list -- **PNG,
-BMP, ICO, WebP and inflate are RUST** (`rust/src/*.rs`, target
-`x86_64-unknown-none`, linked as `$(RUST_LIB)`), while JPEG, GIF, SVG and EXIF
-are C in `c/lib/image/`. The M13 line above still says
-`lib/{inflate,png,gif,img}.c`; that has not been true since the Rust port.
-
-| format | state |
-|---|---|
-| PNG | complete -- every bit depth (1/2/4/8/16), all five filters, Adam7, tRNS |
-| GIF | complete -- animation, per-frame sub-rects, all disposal modes |
-| BMP / ICO | complete, including RLE4 and 32bpp with a real alpha mask |
-| JPEG | baseline **and progressive**; byte-exact against `djpeg -nosmooth` |
-| WebP | VP8L (lossless) **and VP8 (lossy) key frames, with the ALPH alpha plane**; byte-exact vs `dwebp -nofancy` |
-| SVG | on the shared engine -- its own filler is gone; fill AND stroke |
-
-**Lossy WebP was the last hole and it is closed** (2026-08-16,
-`rust/src/vp8*.rs`). It was the common one: essentially every WebP a website
-serves is `VP8 `, not `VP8L`, and every one of them used to be a broken-image
-box. The whole key-frame path is here -- boolean entropy decoder, frame header
-(segmentation, filter deltas, multiple token partitions, probability updates),
-macroblock modes, coefficient tokens, dequantisation, inverse WHT and DCT, all
-sixteen intra predictors, and both loop filters -- plus the ALPH chunk, because
-VP8 has no alpha channel of its own and a transparent WebP is a VP8 frame with
-a separately-coded 8-bit plane beside it. Inter frames are refused by name; a
-WebP still image is always a key frame, so this is the complete decoder for
-what WebP is, not a subset of it.
-
-  `make test-webp-vp8`  31 cases, **every one byte-exact** against
-  `dwebp -nofancy` on the identical bytes -- 700k samples, zero differences.
-  `make test-webp-vp8-negctl` · the VP8 corpus is in `test-img-fuzz` too.
-
-Four things worth knowing before touching it:
-
-- **THE TABLES ARE GENERATED, NOT TYPED** (`tools/gen_vp8_tables.py` ->
-  `rust/src/vp8_tables.rs`). 3,164 probabilities and tree indices, lifted
-  mechanically out of RFC 6386's own reference-decoder C source, with the
-  enum names resolved from the RFC's own typedefs and every table's shape and
-  checksum printed. This is not tidiness: a wrong probability does not shade a
-  pixel, it desynchronises the arithmetic decoder into noise, and one wrong
-  byte in three thousand is not findable by looking. The generator refuses
-  rather than guesses -- it takes only real declarations (five of the tables
-  also appear as *arguments* elsewhere in the document), it requires every
-  occurrence of the right shape to agree, and it strips the RFC's page
-  furniture first, which it did not at first and which is how "Bankoski" came
-  to be parsed as an enumerator.
-- **A B_PRED subblock on the macroblock's right edge takes its above-right
-  samples from the row above the MACROBLOCK**, for all four subblock rows --
-  not from the reconstructed subblock diagonally above it. This is the
-  format's most-reimplemented bug. `--features vp8-tr-from-subblock` is it on
-  a switch, and it reddens 19 of 31 cases: the twelve that survive are the
-  smooth and low-quality ones the encoder never coded as B_PRED, which is the
-  control showing which cases carry the property rather than merely that the
-  suite runs.
-- **The loop filter is a second pass over the finished frame**, not per
-  macroblock. Intra prediction reads its neighbours' UNFILTERED samples; a
-  decoder that filters each macroblock as it completes feeds filtered pixels
-  into the next row's predictor and drifts further with every row.
-- **`-nofancy` is doing real work in the oracle.** libwebp's default is a
-  4-tap chroma upsample; ours is box, as jpeg.c's is. Matching the fancy
-  upsampler too is a separate job, and folding it in would make one number
-  answer two questions. What this gate proves is that the DECODER is exact.
-
-The second negative control, `vp8-dc-always-avail`, removes the rule that
-DC_PRED is the only mode which asks whether its neighbours exist (20 of 31).
-A third was written and **deleted**: clearing the Y2 non-zero context on every
-skipped macroblock is a real rule, and no case in this corpus reaches it, so
-the control passed. A control that cannot be watched failing is worse than no
-control, because it reads like one.
-
-**Progressive JPEG** (2026-08-16) is a SECOND path inside `jpeg.c`, not a
-generalisation of the baseline one, and the file comment argues why: baseline
-never holds more than one block of coefficients, while progressive must hold
-the whole image until EOI (~3 bytes/pixel at 4:2:0), so merging them would
-charge every ordinary JPEG progressive's memory. Three things to know before
-touching it:
-
-- **A scan naming ONE component is non-interleaved and walks that component's
-  OWN block grid**, `ceil(ceil(W*h/hmax)/8)` wide -- *not* the padded MCU grid.
-  The two differ whenever the image is not a whole number of MCUs, which is
-  most images, and getting it wrong shears the picture rather than blanking
-  it. `-DJPEG_PROG_MCU_GRID` is that bug on a switch, and it fails **only**
-  `prog_422`/`prog_420` at 23x17 -- at 64x48 the image IS whole-MCU, the two
-  grids coincide, and the bug hides completely. That asymmetry is why both
-  sizes are in the corpus.
-- **Inside an EOB run, already-nonzero coefficients still each take a
-  correction bit**, in band order. Skipping them leaves those bits in the
-  stream for the next block to misread; `-DJPEG_NO_EOBRUN_CORRECTION` reddens
-  all seven progressive cases and not one baseline case.
-- Coefficients are `short`, as in libjpeg, and every shift a crafted file could
-  push out of range is **checked and refused** rather than wrapped: a DC
-  category of 11 with `Al=13` is representable in a file and not in the buffer.
-
-The oracle is `djpeg -nosmooth -dct int` over the identical bytes, and the
-result is **maxd=0 on all 13 decode cases**, baseline and progressive alike --
-exact, not within tolerance. `jpeg_gen.py` additionally asserts that libjpeg
-decodes the baseline and progressive encodings of one source to identical
-pixels, because that is what makes the two reference files comparable at all;
-if it ever stops holding the generator stops rather than quietly weakening.
-
-  `make test-jpeg` `test-jpeg-negctl` `test-img-fuzz` -- the progressive corpus
-  is in the fuzz corpus now, and was not before, so SOF2 had never been handed
-  a malformed byte. 200,871 mutated decodes under ASan+UBSan+leak-check, clean.
-
-## The BKL: what it actually costs, measured
-
-**The concurrency model is one lock taken on every kernel entry**
-(`c/kernel/cpu/interrupts.c`, one acquisition site, `syscall_is_bkl_free()` as
-the allow-list). Everything below is a number off this machine, because
-"the big kernel lock is the bottleneck" is a design statement and the numbers
-disagreed with the obvious next move twice.
-
-**FIRST MEASUREMENT (`make test-kbench`), and it was not about the lock:**
-
-```
-BKL: 3,299,718 acquisitions, 13,712 contended (0%)
-syscall: 3,283,157 calls
-  SYS_POLL_EVENT (8):  1,640,961 (49%)
-  SYS_YIELD     (12):  1,640,961 (49%)
-```
-
-98% of every kernel entry was an application taking the global lock to be told
-nothing had happened. That is not lock contention, it is traffic --
-`SYS_WAIT_EVENT` (165) deleted it:
-
-```
-                      before        after
-syscalls            3,283,157       1,234       2,660x
-BKL acquisitions    3,390,115      18,571         183x
-BKL time holding      4,211 ms    2,500 ms
-BKL time waiting      6,685 ms    6,549 ms       <-- read this row
-```
-
-**The waiting barely moved**, and that is the finding, not a disappointment:
-what went away was 3.4 million cheap acquisitions, and the wait that remains
-was always real work -- it was merely diluted. Contention "rising" 0% -> 15%
-is the same arithmetic: the denominator collapsed.
-
-**SECOND MEASUREMENT, which refuted the obvious next step.** The plan was to
-widen `syscall_is_bkl_free()`. `spinlock_t` now records the acquiring caller's
-return address, and `kb_bkl_sample()` counts holders from inside the timer
-tick -- which runs BEFORE the interrupt entry takes the lock, so the observer
-is not itself a holder:
-
-```
-[kbench] BKL holders: 603 samples, held in 129 (21%)
-  wm_run+0x2de              55% of held      <- the compositor
-  interrupt_handler+0xc2    32%
-  schedule / block_self / sched_become_idle   3-4% each
-```
-
-**No syscall appears at all**, so widening the allow-list would have moved
-nothing. The lock is FREE ~80% of the time; it is a bottleneck because of who
-holds it and for how long at a stretch.
-
-**DO NOT QUOTE THE 55% AS A PRECISE NUMBER.** Three runs of this profile on four
-cores have reported the compositor's share as 55%, 63% and 80%. That is the
-sample size, not the machine: ~600 samples of which only ~100-130 catch the lock
-held, so one percentage point is about one sample and a 25-point spread over
-three runs is exactly what n~100 looks like.
-
-The robust version is the same gate on ONE core, which `make test-kbench-1core`
-already runs:
-
-```
-1 core   605 samples, held in 126 (20%),  top holder 99% of held
-4 cores  603 samples, held in 101 (16%),  top holder 63%, second 27%
-```
-
-At one core the compositor is **99%** of held time. It is not the largest of
-several holders, it IS the holder -- and the interrupt entry's share at four
-cores is four times as many interrupts arriving, not a second bottleneck
-emerging under load. `wm_run+0x2de` is the
-`spin_lock(&g_bkl)` after the idle `hlt`: the compositor re-takes the global
-lock on waking and holds it through the whole frame. The frame's own
-accounting says where that goes -- **16.1 ms composite, 0.81 ms present**, so
-releasing the lock around `fb_present()` would recover 5% of it and is not the
-answer either. Splitting the composite is a project, not a patch: a full-screen
-frame is ONE damage rectangle, so releasing between rectangles does nothing for
-the worst case (34.6 ms).
-
-**THIRD MEASUREMENT: the desktop now idles at zero.** `echo start >
-/dev/kprof` over 12 s of live desktop, 49,283 samples:
-
-```
-sched_become_idle+0x2c   49.1%
-file_read+0x21c          24.9%
-wm_run+0x2d3             24.5%
-```
-
-All three are the instruction after a `hlt`. **98.5% of the machine's samples
-are halted cores.** Read `file.c`'s comment above `tty_read` before quoting
-this at anyone: a sampling interrupt on a halted core records the RIP
-*following* the halt, so a core doing nothing is indistinguishable from a core
-in a tight loop -- which is exactly how these three addresses were once read as
-two busy-waits eating half the machine.
-
-**AND THE LOCK THAT ACTUALLY SERIALISED THIS MACHINE WAS NOT THE BKL.**
-`make test-smp` had been failing with "no wall-clock speedup (kmalloc still
-serialized by the BKL?)". `tests/boot/run-smp-lockprobe.sh` samples every
-lock's ticket counter across that workload -- on a RUNNING machine, no freeze
-required -- and the guess in that message was wrong by 834x:
-
-```
-kheap_lock   267 -> 30,720,350     (+30.7 MILLION)
-g_bkl      6,473 ->     43,309     (+36,836)
-pmm_lock   2,740 ->      3,044     (+304)
-```
-
-`SYS_KHEAP_STRESS` is the ONE entry on `syscall_is_bkl_free()`'s allow-list, so
-the BKL was never in it. **Per-core magazines** in front of the allocator
-(`c/kernel/mm/kheap.c`) took that workload from 30.7 M acquisitions of
-`kheap_lock` to about 112, and `make test-smp` from **T1=5s TN=41s to T1=5s
-TN=6s** -- four cores doing four times the work in 1.2x the wall clock, where
-it used to take eight times longer than serial.
-
-Four things about that layer, each load-bearing, argued at the magazine block
-in `kheap.c`:
-- **Exact size classes only** (16/32/.../512). A pop is always a perfect fit,
-  so there is no search, no split, and no "close enough" that would turn the
-  magazines into a second and worse free list.
-- **A lock per core, not lock-free.** The fast path takes its OWN core's lock,
-  so a kmalloc from an interrupt cannot corrupt the magazine of the thread it
-  interrupted. The win was never that the atomic disappeared -- it is that four
-  cores no longer queue for the same one.
-- **A block in a magazine is still ALLOCATED**: `kfree` there does not clear
-  `F_FREE` or decrement `st_live`, so the double-free refusal still fires and
-  `kheap_audit`'s arena walk still sees only two states.
-- **Drain before OOM.** Returning NULL with blocks parked in magazines would be
-  an out-of-memory that is not true.
-
-**Instruments, all reusable:**
-  `make test-kbench` · `tests/boot/run-smp-freeze-probe.sh` (every core's RIP,
-  the lock each waits on, and every lock's ticket/serving/holder at a freeze) ·
-  `tests/boot/qmp_lockdump.py` · `/dev/kprof` · `make bench-gfx-frame`
-
-## Two binaries that could not be linked, and `make` said ok -- 2026-08-24
-
-Found by DELETING `build/vidcheck.elf` and `build/terminal.elf` and asking
-for them back. They did not come back:
-
-```
-ld.lld: error: undefined symbol: img_decode
-ld.lld: error: undefined symbol: img_free
-ld.lld: error: undefined symbol: kmalloc
-ld.lld: error: undefined symbol: kfree
-```
-
-`c/lib/video/mjpeg.c` decodes each frame through `c/lib/image`'s
-`img_decode()` -- that is its design and its own header says so -- so **the
-video library now depends on the image library**, and every `$(VID_OBJ)`
-consumer must satisfy it. Two of the four did not: `preview` and `browser`
-already link `$(IMGCHK_OBJ)` and already carry the ring-3 allocator shim;
-`vidcheck` and `terminal` carried neither. Exactly the shape this file
-already records five instances of -- *a source file grew a dependency and a
-link line did not follow* -- except this time it is not a test target, it is
-the product, and `/bin/vidcheck` is the binary `make test-video` runs to turn
-"it also works on LogitOS" into a comparison.
-
-**IT SURVIVED BECAUSE make WAS RIGHT.** The stale `.elf` files were NEWER
-than the new `.o` files, so `make` correctly reported them up to date and
-relinked nothing. A full `make build/disk.img` exits 0, packs both binaries,
-and boots. Nothing is wrong until someone deletes a file or touches a video
-header -- and then it is not a subtle failure, it is four undefined symbols
-in a link line nobody edited.
-
-**`kmalloc` IN RING 3 IS A PER-APPLICATION SHIM, and it is not written down
-anywhere else.** `c/lib/image`'s five files and a dozen more in
-`c/apps/browser` declare `void *kmalloc(unsigned long);` as a bare extern and
-rely on the APPLICATION to define it; `preview.c:64` and `browser_rt.c:44`
-each carry `{ return malloc((size_t)n); }`. A new ring-3 program that links
-any of those libraries needs those two lines, and gets no diagnostic until
-the link.
-
-Cost of the fix, and it is not nothing: `$(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB)`
-pulls the whole image stack (jpeg, gif, svg, and Rust's png/webp) into both.
-
-| | before | after |
-|---|---|---|
-| `vidcheck.elf` | 459,728 | **1,766,096** |
-| `terminal.elf` | 591,760 | **1,867,904** |
-
-That is the real price of MJPEG reusing the JPEG decoder rather than carrying
-its own, and it is still the right trade -- a second baseline JPEG decoder in
-`c/lib/video` is the fourth-rasterizer mistake in another subsystem.
-
-**How to find the next one**: a link line is only proven by a link that
-actually runs. `rm` the binary and ask for it back; the timestamps cannot
-answer this question.
-
-## The test suite: 610 targets, and a suite reaches 53
-
-**AND "UNWIRED" DOES NOT MEAN "CI DOES NOT RUN IT" -- 328 of the 350 are run.**
-This paragraph called the unwired count "the single most load-bearing fact
-about testing in this tree" and had everything below follow from it, and the
-number is real but it is not that fact. Measured 2026-08-17:
-
-    CI runs (audit_tests.py --suites=host + =boot)   358
-    audit says UNWIRED                                350
-    UNWIRED **and yet run by CI**                     328
-
-`tools/ci.sh` does not use the aggregates at all. It asks
-`audit_tests.py --suites=host|boot`, and that path calls `classify()`, which
-derives host-vs-boot **from the recipe** and skips only `NOT_CI` -- it never
-consults `wired`. That is deliberate and the function says so: *"A hand-written
-list of 'the suites CI runs' is the thing that rotted here ... so the CI asks
-the Makefile instead, and a target added tomorrow is picked up without anyone
+Every one of those numbers moved from the previous version's (610/53/350/14/0),
+in eleven days and ~145 commits. **Re-measure before quoting.**
+
+**"UNWIRED" does not mean "CI does not run it"** — 372 of the 395 are run.
+`tools/ci.sh` does not use the aggregates at all: it asks
+`audit_tests.py --suites=host|boot`, which derives host-vs-boot **from the recipe**
+and never consults `wired`. That is deliberate and the function says so: *"A
+hand-written list of 'the suites CI runs' is the thing that rotted here, so the CI
+asks the Makefile instead, and a target added tomorrow is picked up without anyone
 remembering."* So UNWIRED measures reachability from `ci-host:`/`ci-boot:`
-declarations -- a mechanism CI stopped depending on -- while reading like
-coverage. Both numbers are worth having; only one of them is about what runs.
+declarations — a mechanism CI stopped depending on — while reading like coverage.
+Only **27** unwired targets are genuinely never run.
 
-**The half that IS a coverage hole is the negative controls, and it is 55 of
-them.** `NOT_CI` drops every `test-*-negctl` from the suite listing, on the
-stated ground that a control is "RUN BY its positive counterpart". Nothing
-checked that. A control that is a separate target and is named by nobody is
-excluded by the regex AND invoked from nowhere -- run never, while looking
-exactly like a control that is covered. Counted 2026-08-17 by the new
-STRANDED CONTROLS category: **55**, recorded by name in
-`tests/audit-stranded.baseline` and gated on growth, the same shape UNWIRED
-uses and for the same reason -- 55 findings would bury DEAD and MUTE, whose
-whole value is being zero.
+**The half that IS a coverage hole is the controls** (rule 5 above) and the DEAD
+harnesses. **7 of the 21 DEAD are boot harnesses for shipped features**:
+`run-sysroot-device.sh`, `run-pcachefill.sh`, `run-pcachepeak.sh`,
+`run-elfshare.sh`, `run-execshare-test.sh` — and three kernel source files *cite*
+two of those as the gates for live properties (`shm.h:21`, `fault.c:375`,
+`mmsys.c:369`). The property the whole shm design rests on is gated by a script
+nothing runs.
 
-**The fix for one entry is a single line: `test-X: test-X-negctl`.** Naming it
-beside the positive on a `ci-host:` line instead satisfies UNWIRED and still
-runs it never, which is the worse of the two failures because it looks fixed.
-That distinction is why the category reports the fix in its own output.
-
-**Every number in this section is a measurement with a date, and they move.**
-As of 2026-08-17 (second measurement that day, after a wiring pass): 610
-`test-` targets, 53 wired into a suite, 350 unwired (all recorded by name in
-`tests/audit-unwired.baseline`, and the gate is that the set does not GROW),
-14 DEAD harnesses and **0 MUTE**.
-
-**31 -> 53 wired is not 22 new tests; it is 22 that already existed being
-named.** `ci-host:` and `ci-boot:` accept prerequisites from any fragment, so
-membership is one line in the file that owns the target, and the audit's
-"UNWIRED (NEW)" list is what says which line is missing -- it named seven the
-day they landed, and four of those were `test-cells`'s siblings under a parent
-(`test-term-host`) that no suite reached either. **Wire the parent, not the
-member**: wiring `test-cells` alone would have left the other six in the same
-state one level up. `--bless-unwired` REGENERATES the baseline rather than
-appending to it, so a wiring pass must re-run it -- otherwise the file keeps
-recording as debt things that are no longer debt, and the next person to
-un-wire one of them is not flagged.
-
-`test-audit` still exits non-zero, and it is worth knowing why before reading
-it as a regression: all 14 remaining findings are the DEAD category -- QMP
-drivers under `tests/qmp/` that no Makefile target names. Unlike UNWIRED,
-DEAD has no baseline, so the gate has no way to record a deliberate decision
-about a manual tool. The sweep classifies 530 of
-them: 337 host, 156 device, 3 that need an argument, and 34 aggregates it skips
-because it already runs every one of their members individually.
-
-Re-measure before quoting: this paragraph was 522/352 for long enough that the
-gap became the finding.
-
-**A gate nobody runs is a gate that rots, and it rots silently.** One sweep of
-all 522 found five host targets that had stopped BUILDING -- not failing, not
-flaky: not compiling -- each because a source file grew a dependency and a link
-line did not follow:
-
-```
-test-fb-clip        fb.c -> gfx_mask_corner, glass_build_lut, gl_isqrt
-test-wpt-* (4)      svg.c -> gfx_path/gfx_fill (phase-2 stroke)
-test-semantics      the same
-test-css-web-negctl canon.c -> floor()  (missing -lm)
-test-leak           fault.c, vma.c -> pcache_* (the file-backed page cache)
-test-libc-diff      three separate breaks, one of them a trap: see below
-```
+**MUTE is 2, and both are a fourth blind spot in the DETECTOR** rather than two
+muted gates: `lfs_setexec.py` and `mk-tcc-disk.py` fail through
+`sys.exit("message")`, which exits 1, and `find_mute`'s `exits_nonzero` list
+matches a digit, a named variable, `raise SystemExit` and a bare assert — a
+**string** argument matches none of them. An empty category is the point of the
+category: a list of 28 with 24 false entries is a list nobody reads, and the 29th
+— a real gate that swallowed its verdict — joins it unnoticed.
 
 **Run everything with `make test-sweep`.** Host targets in parallel, device
-targets one at a time, then EVERY failure re-run alone before it is believed --
-because six makes share one `build/` and two racing to produce the same object
+targets one at a time, then **every failure re-run alone before it is believed** —
+because several makes share one `build/` and two racing to produce the same object
 make a target fail for reasons that have nothing to do with it. Measured, not
 feared: `test-audio-codec-fuzz-deep`, `test-h265`, `test-demux` and
-`test-csstext-all` all failed in the parallel phase and pass by themselves. A
-sweep that reports those is MANUFACTURING bugs, which is worse than missing
-them. `make test-sweep-host` is the half worth running after an ordinary change
-(minutes); the full one boots QEMU about 156 times and takes an afternoon, which is
-why it is not wired into `test` or `ci`.
+`test-csstext-all` all failed in the parallel phase and pass by themselves. **A
+sweep that reports those is MANUFACTURING bugs**, which is worse than missing them.
+`make test-sweep-host` is the half worth running after an ordinary change; the full
+one boots QEMU ~156 times.
 
-**THE MIRROR-IMAGE TRAPS IN `test-libc-diff`.** The header of `tests/libc.mk`
-already documents one: the "ours" build still LINKS glibc, so a missing
-implementation TU is a runtime FALLBACK, not a link error. The sweep found the
-other half. `setrlimit` was absent from `tests/unit/libc_rename.h`, so OUR
-`setrlimit` overrode glibc's for the whole process -- and ASan calls it from
-`DisableCoreDumperIfNecessary()` during its own init, before `main`. The result
-was a segfault inside `__asan_init` with no output whatsoever, which reads like
-a broken test binary rather than a missing `#define`. **A missing rename does
-not merely fail to test our version; it silently replaces the reference.**
+**Other gates worth knowing by name.** `tools/check-test-liveness.py` finds tests
+that **cannot fail** (rule 1 fails the build; rules 2-4 warn) and is more specific
+than prose: *"five drivers 'click the address bar' at a coordinate that has been
+inside the window-manager titlebar for some time; they pass because the browser
+happens to start with that field focused, so the click is decoration."* It is
+currently RED on 7 scripts. `tools/break-build.sh` produces deliberately broken
+disk images so `run-fullsystem-test.sh` can be **watched going red** for each
+claim it makes — *"a green test that has never been shown to fail is not
+evidence."* `tools/verify-commit.sh` builds from a clean clone because *"three
+commits landed in one day whose own clean clone did not compile, twice from the
+same mistake: a file was committed and the header it includes was not."*
+`tools/perf/` measures every duration **inside the guest**, because "the host is
+contended — other agents run QEMU concurrently — so host wall clock is worthless
+here".
 
-**`test-audit` is the meta-gate and its MUTE category is the one to watch**:
-"computes a verdict and exits 0 anyway", i.e. a test that cannot fail. It is
-EMPTY now, and getting there meant fixing the detector rather than the tree --
-24 of its 28 entries were false, including `qmp_desktop_look.py`, which half of
-one day's commits cite as evidence. Three blind spots, each a shape this tree
-actually uses: `sys.exit(main())` propagates a status the literal-integer
-search cannot see; a shell script's exit status is its LAST COMMAND'S (`exec
-python3 ...`, a bare `[ "$ok" -gt 0 ]`, `set -e`); and a harness no target runs
-cannot make a gate pass wrongly, so listing the dead ones twice buries the few
-that can. The ones that remain are declared in `ALLOW_MUTE` with a reason each
--- a library, two scoreboard REPORTERS whose per-site FAIL is the measurement
-they exist to produce, and a fixture builder. **An empty category is the point:
-a list of 28 with 24 false entries is a list nobody reads, and the 29th -- a
-real gate that swallowed its verdict -- joins it unnoticed.**
+---
+
+## Two binaries that could not be linked, and `make` said ok
+
+Found by **deleting** `build/vidcheck.elf` and `build/terminal.elf` and asking for
+them back. They did not come back: `undefined symbol: img_decode / img_free /
+kmalloc / kfree`.
+
+**It survived because make was RIGHT.** The stale `.elf` files were newer than the
+new `.o` files, so make correctly reported them up to date and relinked nothing. A
+full `make build/disk.img` exits 0, packs both binaries, and boots. Nothing is
+wrong until someone deletes a file — and then it is four undefined symbols in a
+link line nobody edited.
+
+**`kmalloc` in ring 3 is a per-application shim**, and it is written down nowhere
+else: `c/lib/image`'s five files and a dozen more in `c/apps/browser` declare
+`void *kmalloc(unsigned long);` as a bare extern and rely on the **application** to
+define it (`preview.c:64`, `browser_rt.c:44` each carry `{ return malloc(n); }`).
+A new ring-3 program that links any of those libraries needs those two lines and
+gets no diagnostic until the link.
+
+**How to find the next one:** a link line is only proven by a link that actually
+runs. `rm` the binary and ask for it back; timestamps cannot answer this question.
+
+---
+
+## What this machine is still missing
+
+Measured 2026-08-28 by twelve parallel dimension audits, each finding subjected to
+two independent adversarial refutation passes. **82 gaps survived**; the ones below
+are the structural ones, in the sense that most of the rest are their projections.
+Measured against this tree's own stated goal — *a macOS-style desktop that runs
+software not written for LogitOS* — not against a generic OS checklist.
+
+**1. There is no execution contract for a foreign program.** No pty, no termios,
+no sessions, no process groups (`ptmx|openpty|setsid|tcsetpgrp` = 0 hits in
+`c/kernel` and `c/fs`); `tty_read` echoes in the kernel one byte at a time and
+cannot be turned off; **`/bin/sh` does not accept `-c`** (`"-c"` appears zero times
+in `sh.c`) while `system()`, `popen()` and `sshd:642` all pass it; `execve` does
+not honour `#!`. The consequence is not "a few missing programs": every `isatty`
+branch, readline/ncurses/vi/less/top, `configure`/`install-sh`, `ssh host 'cmd'`,
+and the 55 `.as` scripts that would like to live in `/bin` all hit the same wall —
+which is why `ash.as`, the shell written in AetherScript, cannot be a login shell.
+
+**2. There is no loading contract for a foreign binary.** `PT_INTERP`,
+`PT_DYNAMIC` and `ET_DYN` are refused by name; zero relocations; no `dlopen`. The
+user address space is one PDPT entry, `[0x40000000, 0x80000000)`, with a 496 MiB
+mmap window, and every GUI app's link base is assigned by hand in the Makefile. A
+runtime that reserves a large address space first — V8, a JVM, Go, ASan — dies on
+the first reservation. That is **not** a RAM limit (a 64 MiB program loads fine);
+it is an address-space limit. ASLR is unrepresentable as a consequence.
+
+**3. There is no write-at-an-offset contract.** The VFS op table has
+`write(path, buf, size)`, create-or-overwrite, and **no `->pwrite`**; no writable
+file mapping; no `msync`; `ftruncate` can only grow. Changing one byte means
+reading the whole file into the kernel heap and writing it all back. Stacked on
+top: `file_close()` discards the whole-file flush's return value, `SYS_CLOSE`
+returns 0 unconditionally, and nothing on the machine can report free space
+(`statvfs` → `ENOSYS`, no `df`). **The only symptom of a failed write is that the
+file quietly is not there.** sqlite, git, an editor and a package manager all need
+this.
+
+**4. There is no contract between an application and the desktop.** One process,
+one window — a second `SYS_GUI_CREATE` returns 0 (success) and does nothing. The
+menu bar is three string constants in the kernel and there is no syscall to publish
+a menu. The input path has no key-release event and no focus event. The clipboard's
+four flavours are all UTF-8 text; there is no drag-and-drop. Any ported toolkit
+needs a second top-level surface and key-up on its first screen, and the ABI has
+nowhere to put them.
+
+**5. There is no clock running the gates.** See the top of this file.
+
+Ranked below those, with the same evidence standard: the **munmap TLB hole**
+(small change, XL consequence, documented in-tree as open); the browser being a
+single process holding every capability while it is the only thing that runs
+adversary code, with no ASLR and no stack canaries; **no bold and no italic**;
+**no iframe, Worker, ServiceWorker, WebSocket or IndexedDB**, and `localStorage`
+that does not survive a reboot; **no text coreutils and no on-machine editor** —
+no `grep sed awk find sort diff tar less vi make df du kill ln chmod`; **the
+machine has never booted on real hardware** (128 boot harnesses, all
+`qemu-system-x86_64`), so every UEFI/NVMe/xHCI/HDA/MSI claim is a claim about a
+machine nobody has seen; no modesetting, EDID or multi-monitor (one global
+`fb_w`/`fb_h`, scanout 0, resolution frozen at firmware hand-off); no power
+management at all (`struct driver` has no suspend/resume hook); `/dev` holds eight
+synthetic names and no `mknod`; no init or service supervision (the only
+`proc_spawn` is `/bin/login`, so **`sshd` has never run on the product image**);
+no FAT, ISO9660 or USB mass storage — **this machine can boot from a FAT ESP and
+cannot read one byte of it**; and no delivery loop: `all:` produces only the
+kernel, there is no on-device `mkfs`, `pkgverify` deliberately does not install,
+there are zero tags, and the build embeds absolute host paths.
+
+**Three kinds, and they need different work:**
+
+- **(a) Absent** — everything above. New code.
+- **(b) Built with no real consumer** — the failure mode this tree already names.
+  `fs_prefix` (grant, ceiling check, inheritance and `/proc` printing all exist;
+  **zero enforcement points**) · `.lpk` signatures (root key compiled into the
+  kernel; `aex.c` checks only CRC32) · panic/KASSERT/kdiag (921 lines; all four
+  kernel call sites are inside `kdiag.c`'s own self-test, and
+  `panic_from_exception` has zero callers) · **`layout_text.c`'s 1,352 lines of
+  UAX #14 are not in `BROWSER_PIPE`**, so pages still break lines anywhere and
+  bidi/shaping have never been called by a page · `fontcolor.c` · `gfx_fill_clipped`
+  / `gfx_fill_subs` / `gfx_m_invert` · `syslogd` (never started; zero programs call
+  `syslog()`) · ptrace (one `.as` example) · kernel modules (no `insmod`) · shm
+  (only the libc wrapper) · the whole h264/h265 stack (unreachable from
+  `<video src>`) · `subs.c` · VP8 inter frames · `virtio-rng` (not wired into
+  `rng.c`, and its boot self-test prints 32 bytes of the entropy stream to a serial
+  log every harness captures — harmless while nothing consumes it, a leaked seed
+  the moment something does).
+- **(c) Red gates** — the host-reality table at the top, plus `test-h265-b` (79/80),
+  `test-mse-os` (playback stalls), `test-vidbench-guest` (h265 @ 720p), `test-vp9`
+  (no decoder), `check-abi` (one generator refusal holding **17** targets down),
+  and `test-audit`'s own 76 findings.
+
+**What to do first, by leverage:** get (c) green, close the munmap hole, then write
+the pty. While the gates are red nothing downstream can be *proved*, and this batch
+of red covers the two largest investments in the tree (the browser and reclaim);
+most of them are two-line wiring. munmap is the only item in the tree where a few
+lines removes a silent ring-3-writes-ring-0. And pty is the single thing that
+unlocks the whole "run other people's software" line at once — `sh -c`, `#!`, text
+tools, an on-machine editor, usable ssh, and the daily work of the tcc self-hosting
+line all hang off it. Address space and `pwrite` are the next two XLs; each is its
+own project and neither should start while the gates are red.
+
+---
 
 Each milestone: spec → plan → implement. Specs in `docs/superpowers/specs/`.
-
-language=chinese
+`docs/CODE_AUDIT.md` is a 776-line security audit with 8 severe and 23 high
+findings, all re-verified to file+line, that nothing in this tree pointed at until
+now. `SECURITY.md` states the frame every section above should be read inside:
+*"Do not treat its browser, TLS implementation, process isolation, filesystem, or
+device drivers as a security boundary for hostile workloads."*
