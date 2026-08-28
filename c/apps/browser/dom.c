@@ -498,6 +498,7 @@ static void unlink_from_parent(struct node *c)
     if (c->prev) c->prev->next = c->next; else p->first_child = c->next;
     if (c->next) c->next->prev = c->prev; else p->last_child  = c->prev;
     c->parent = 0; c->prev = 0; c->next = 0;
+    p->child_gen++;   /* p's child LIST changed -- see dom.h's child_gen */
 }
 
 void dom_destroy_subtree(struct node *n)
@@ -512,6 +513,7 @@ void dom_destroy_children(struct node *n)
     if (!n || !n->doc) return;
     struct node *c = n->first_child;
     n->first_child = n->last_child = 0;
+    n->child_gen++;   /* whole child list dropped at once -- see dom.h */
     while (c) {
         struct node *nx = c->next;
         c->parent = 0; c->prev = 0; c->next = 0;
@@ -539,6 +541,7 @@ void dom_append_child(struct node *p, struct node *c)
     c->next = 0;
     if (p->last_child) p->last_child->next = c; else p->first_child = c;
     p->last_child = c;
+    p->child_gen++;   /* p's child LIST changed -- see dom.h's child_gen */
 }
 
 void dom_remove_child(struct node *p, struct node *c)
@@ -558,6 +561,7 @@ void dom_insert_before(struct node *p, struct node *c, struct node *ref)
     c->prev = ref->prev;
     if (ref->prev) ref->prev->next = c; else p->first_child = c;
     ref->prev = c;
+    p->child_gen++;   /* p's child LIST changed -- see dom.h's child_gen */
 }
 
 /* ------------------------------------------------------------------ */
@@ -807,8 +811,11 @@ struct node *dom_create_comment(struct dom_doc *d, const char *data, int len)
     return n;
 }
 
-struct node *dom_create_doctype(struct dom_doc *d, const char *name,
-                                const char *pubid, const char *sysid)
+/* Shared body for dom_create_doctype / dom_create_doctype_raw. `lower`
+ * distinguishes the two callers -- see the comment above each public entry
+ * point for WHY they must differ rather than share one answer. */
+static struct node *doctype_new(struct dom_doc *d, const char *name,
+                                const char *pubid, const char *sysid, int lower)
 {
     if (!d) return 0;
     struct node *n = node_alloc(d);
@@ -816,14 +823,42 @@ struct node *dom_create_doctype(struct dom_doc *d, const char *name,
     n->type = N_DOCTYPE;
     n->tag = "#doctype";
     if (name && *name) {
-        char sb[64];
         size_t l = zlen(name);
-        char *low = lower_tmp(d, name, l, sb, sizeof sb);
-        if (low) n->name = doc_intern(d, low, l);
+        if (lower) {
+            char sb[64];
+            char *low = lower_tmp(d, name, l, sb, sizeof sb);
+            if (low) n->name = doc_intern(d, low, l);
+        } else {
+            n->name = doc_intern(d, name, l);
+        }
     }
     if (pubid) n->pubid = arena_dup(d, pubid, zlen(pubid));
     if (sysid) n->sysid = arena_dup(d, sysid, zlen(sysid));
     return n;
+}
+
+/* The HTML tokenizer path (html_tree.c's DOCTYPE token). The tokenizer's own
+ * DOCTYPE name state already lowercases per the HTML spec, so this is a second
+ * pass that costs nothing on the path that matters -- but it is also what a
+ * caller that skipped the tokenizer (a hand-built token, a future parser bug)
+ * gets protected against, so the lowering stays here rather than being trusted
+ * to have already happened upstream. */
+struct node *dom_create_doctype(struct dom_doc *d, const char *name,
+                                const char *pubid, const char *sysid)
+{
+    return doctype_new(d, name, pubid, sysid, 1);
+}
+
+/* document.implementation.createDocumentType() (DOM Standard #dom-domimplementation-createdocumenttype).
+ * The spec validates `qualifiedName` and stores it VERBATIM as the resulting
+ * DocumentType's name -- there is no lowercasing step, unlike the HTML parser's
+ * DOCTYPE token. Do not route this through dom_create_doctype: that silently
+ * folds `document.implementation.createDocumentType("Foo", ...)`.name back to
+ * "foo", which is exactly the bug this function exists to not have. */
+struct node *dom_create_doctype_raw(struct dom_doc *d, const char *name,
+                                    const char *pubid, const char *sysid)
+{
+    return doctype_new(d, name, pubid, sysid, 0);
 }
 
 const char *dom_doctype_name(const struct node *n)

@@ -9,7 +9,7 @@
 .PHONY: probe-webapi test-platform test-platform-control test-platform-asan
 .PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
 .PHONY: test-webapi-slots-negctl
-.PHONY: test-platform-timing-negctl
+.PHONY: test-platform-timing-negctl test-platform-livecollection-negctl
 .PHONY: webapi-link-check
 
 # ===========================================================================
@@ -177,8 +177,15 @@ PROBE_SRC += c/apps/browser/css_interp.c
 # was 33 occurrences and the #1 finding, the context was written, and the
 # instrument that ordered the work could not see its own result land.
 PROBE_SRC += c/lib/image/svg.c $(GFX_SRC)
-PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c
-PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+# c/net/http/ws.c: js_websocket.c (in BROWSER_JS_SRC, landed 2026-08-28 21:18,
+# after this list was last touched 14:39) calls ws_accept_matches/
+# ws_frame_write/ws_make_key/ws_parser_*/ws_utf8_valid, all defined only in
+# ws.c -- the exact hand-copied-source-list drift CLAUDE.md rule 4 names.
+# Measured: without this line, build-*/webapi_probe fails 8 undefined symbols.
+# ws.c itself calls ocsp_sha1 (c/crypto/hash/sha1.c) and includes base64.h
+# (c/net/ssh) -- same two riders tests/wpt.mk already carries for this file.
+PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c tests/unit/rust_host_shim.c
+PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 # webapi_probe.c DEFINES printf so it can capture js_module.c's diagnostics.
 # gcc rewrites printf("%s\n", x) into puts/fputs, and a rewritten call goes
 # straight to libc and never reaches that definition -- so the tee would
@@ -228,8 +235,14 @@ probe-webapi: webapi-link-check $(BUILD)/webapi_probe
 #                   an edit to the test source, not to this list.
 #
 # js_module.c is out for the reason the canvas fragment gives: only
-# webapi_probe.c supplies bfetch_resolve/bfetch_sync.
+# webapi_probe.c supplies bfetch_resolve/bfetch_sync. js_worker.c (landed
+# 2026-08-28, after this list was last touched) calls the same two functions
+# from _js__workerCreate/_js__wImportScripts/js_worker_run_due, so it is out
+# for the identical reason -- webapi_platform_test.c has no bfetch either.
+# js_websocket.c stays IN: it needs only c/net/http/ws.c, which
+# PLATFORM_TEST_SRC now supplies below, same as PROBE_SRC does.
 PLATFORM_JS_OUT := $(WEBAPI_JS_OUT) c/apps/browser/js_module.c \
+                   c/apps/browser/js_worker.c \
                    c/apps/browser/js_canvas.c c/apps/browser/js_semantics.c \
                    c/apps/browser/js_events.c c/apps/browser/js_reflect.c \
                    c/apps/browser/js_urlbind.c
@@ -245,9 +258,10 @@ PLATFORM_TEST_SRC += c/apps/browser/css_interp.c
 # this file fills in is a GAP in what that file publishes -- localStorage's
 # named properties, URL.createObjectURL -- and a test that stubbed those would
 # be testing the stub.
-PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c
+# ws.c riders (base64.h, ocsp_sha1) -- same reasoning as PROBE_SRC above.
+PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
-PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 test-platform: webapi-link-check test-platform-timing-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -348,4 +362,53 @@ test-platform-timing-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	 else \
 	   echo "test-platform-timing-negctl: ok -- the suite fails without the fix:"; \
 	   grep '^FAIL: ' $(BUILD)/platform_tmneg.log; \
+	 fi
+
+# --- test-platform-livecollection-negctl ------------------------------------
+# js_dom.c's comment above live_list_cid promises this target exists ("See
+# ll_own_prop below and CLAUDE.md rule 5: test-live-collection-negctl is the
+# control that stays able to fail") -- it did not, until now. Per rule 5, a
+# control that is claimed in a comment but not wired is worse than admitting
+# there is none: the comment reads as evidence the fix is guarded when nothing
+# runs it.
+#
+# -DPLATFORM_NO_LIVE_COLLECTIONS (js_dom.c's child_array) restores the exact
+# Array-snapshot behaviour this file shipped before 2026-08-28. The six
+# "children / childNodes are LIVE" checks in webapi_platform_test.c must
+# answer differently there: five depend on the collection observing a mutation
+# made AFTER it was captured, which a snapshot cannot do by construction; the
+# sixth ("keep their real interface identity") does NOT -- child_array's
+# negative-control branch still calls iface_tag_list(), the same call the live
+# branch makes, so `instanceof HTMLCollection/NodeList` holds either way. A
+# target that asserted all six would be asserting something the code was never
+# meant to break, and the day it silently stopped breaking five-of-six instead
+# of six-of-six nobody would notice which one.
+#
+# Matched by DESCRIPTION rather than a blind total-FAIL count on purpose: this
+# file's other negctl (test-platform-timing-negctl, immediately above) counts
+# every FAIL line, and while this target was being written that count read 4
+# instead of its asserted 2 -- two unrelated checks (indexedDB, crypto.subtle)
+# were failing because PLATFORM_MOD/PLATFORM_TEST_SRC do not yet carry every
+# js_*.c TU another workflow is mid-landing (see the file header on why this
+# fragment's source lists drift). A blind count here would go red for the same
+# reason and blame the wrong fix. Matching the five checks' own text is immune
+# to that collateral noise: it goes red only when ITS OWN five checks stop
+# failing, which is the one thing this target exists to watch.
+test-platform-livecollection-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_LIVE_COLLECTIONS \
+	    -o $(BUILD)/platform_llneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_llneg > $(BUILD)/platform_llneg.log 2>&1; \
+	 n=`grep -cE '^FAIL: (children\.length reflects|children\[i\] sees|children re-indexes|childNodes\.length is live|children supports Array-generic)' $(BUILD)/platform_llneg.log`; \
+	 idok=`grep -c '^ok  : children/childNodes keep their real interface identity' $(BUILD)/platform_llneg.log`; \
+	 if [ "$$n" != "5" ]; then \
+	   echo "test-platform-livecollection-negctl: FAILED -- expected exactly 5 of the live-collection checks to FAIL, got $$n:"; \
+	   grep -E '^(FAIL|ok  ): (children|childNodes)' $(BUILD)/platform_llneg.log; exit 1; \
+	 elif [ "$$idok" != "1" ]; then \
+	   echo "test-platform-livecollection-negctl: FAILED -- the interface-identity check must still PASS (it does not depend on liveness) but did not"; \
+	   grep -E '^(FAIL|ok  ): children/childNodes keep' $(BUILD)/platform_llneg.log; exit 1; \
+	 else \
+	   echo "test-platform-livecollection-negctl: ok -- the five liveness checks fail without the fix, identity still passes:"; \
+	   grep -E '^(FAIL|ok  ): (children|childNodes)' $(BUILD)/platform_llneg.log; \
 	 fi

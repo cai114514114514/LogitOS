@@ -19,9 +19,18 @@
  * are exercised over the same bindings a page gets, not over a mock.
  *
  * WHAT IS NOT ASSERTED, ON PURPOSE. Nothing here checks that a missing global
- * is missing... except the four that MUST stay missing (ActiveXObject,
- * documentMode, indexedDB, crypto.subtle). Those have their own checks,
- * because they are the ones a well-meaning future change would add. */
+ * is missing... except the three that MUST stay missing (ActiveXObject,
+ * documentMode, crypto.subtle). Those have their own checks, because they are
+ * the ones a well-meaning future change would add. `window.indexedDB` used to
+ * be a fourth; it is real now (c/apps/browser/js_idb.c). This build still
+ * links js_idb.c (PLATFORM_TEST_SRC does not exclude it) but not js_events.c
+ * -- and js_idb.c's own install guard checks `typeof G.EventTarget ===
+ * 'function'` before doing anything, so `window.indexedDB` stays absent HERE
+ * for that reason, not because the file is missing. That is checked below
+ * too, so a change that links js_events.c into this build without meaning to
+ * (which would silently turn indexedDB on here) fails a test instead of
+ * going unnoticed. The real positive suite, with js_events.c linked, is
+ * tests/unit/webapi_idb_test.c / `make test-idb`. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -743,6 +752,83 @@ int main(int argc, char **argv)
          " return __a.parentNode === par && __a.nextSibling === nx"
          "        && __ch.childNodes.length === n; })()",
          "cloneNode: an attached node is restored to its exact position");
+    /* ==== children / childNodes are LIVE ===============================
+     * Measured 2026-08-28 against 221 independent js-framework-benchmark
+     * implementations (jsfb_matrix.py --include-built): SEVEN failed the
+     * "update every 10th row" / "swap two rows" operations SILENTLY -- no
+     * exception anywhere -- because `children`/`childNodes` used to be Array
+     * SNAPSHOTS taken at property-access time. Every one of the seven
+     * captures the collection ONCE ("const ROWS = tbody.children") before
+     * `run()` has inserted any rows, so the captured snapshot is length 0
+     * forever; every later `ROWS[i]` is `undefined`, and neither a `for`
+     * loop's `r = ROWS[i]` condition nor a falsy-guarded `if (ROWS[998])`
+     * throws on that. Driven case: keyed/vanillajs-lite,
+     * webapi_probe --drive tests/unit/jsfb_drive.js.
+     *
+     * -DPLATFORM_NO_LIVE_COLLECTIONS (js_dom.c's child_array) restores the
+     * snapshot exactly, and every check below must FAIL there --
+     * test-platform-livecollection-negctl asserts the exact count. */
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " d.appendChild(document.createElement('span'));"
+         " var kids = d.children;"                     /* captured ONCE, like ROWS */
+         " d.appendChild(document.createElement('span'));"
+         " return kids.length === 2; })()",
+         "children.length reflects a later appendChild without re-reading the property");
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " var kids = d.children;"                      /* captured before ANY child exists */
+         " var s = document.createElement('span'); s.id = 'late'; d.appendChild(s);"
+         " return kids[0] === s; })()",
+         "children[i] sees an element inserted after the collection was captured");
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " d.appendChild(document.createElement('a'));"
+         " d.appendChild(document.createElement('a'));"
+         " d.appendChild(document.createElement('a'));"
+         " var kids = d.children;"
+         " kids[0].remove();"                            /* the exact swaprows/update shape: */
+         " return kids.length === 2 && kids[0] === d.firstElementChild; })()",
+         "children re-indexes after a sibling captured earlier is removed");
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " d.appendChild(document.createElement('b'));"
+         " var nodes = d.childNodes;"
+         " d.appendChild(document.createTextNode('x'));"
+         " return nodes.length === 2; })()",
+         "childNodes.length is live too, not just children (Element vs Node)");
+    /* The destructuring shape vanillajs-lite's swaprows actually uses --
+     * `const [, r1, r2] = ROWS` reads the collection's OWN Symbol.iterator,
+     * not indexed Gets one at a time, so this exercises a different code
+     * path than the checks above. */
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " var kids = d.children;"
+         " d.appendChild(document.createElement('em'));"
+         " d.appendChild(document.createElement('em'));"
+         " var a = [].slice.call(kids);"                 /* forces the iterator/length path */
+         " return a.length === 2 && a[0] === kids[0]; })()",
+         "children supports Array-generic iteration (slice.call) while live");
+    ckjs_dom("document.createElement('div').children instanceof HTMLCollection"
+         " && document.createElement('div').childNodes instanceof NodeList",
+         "children/childNodes keep their real interface identity as live objects");
+    /* Cost control for the fix above: live_list_handle caches its backing
+     * array against dom.h's child_gen (js_dom.c, child_array's file comment),
+     * so a full sequential pass over a collection that has not been mutated
+     * since the last read is O(1) per index, not O(index). Measured
+     * host-native, one full `for (i=0;i<kids.length;i++)` pass over a
+     * 10,000-child parent: 253.0 ms naive (re-walking `first_child` on every
+     * index/length read) -> 0.0 ms cached, against 1.0 ms for the Array
+     * snapshot this collection replaced -- the cache does not just avoid
+     * being SLOWER than the snapshot it replaced, it matches it. A `-D` that
+     * disabled only the cache (kept the walk, dropped the memo) would show
+     * this check passing while the O(n^2) cost above came back; nothing here
+     * exercises that path in isolation because the cache is not a separate
+     * feature a page can observe going missing -- see the file comment for
+     * why a THIRD variant was not built for it. */
+    ckjs_dom("(function(){ var d = document.createElement('div');"
+         " for (var i = 0; i < 10000; i++) d.appendChild(document.createElement('span'));"
+         " var kids = d.children;"
+         " var t0 = Date.now(); var sum = 0;"
+         " for (var i = 0; i < kids.length; i++) sum += 1;"
+         " return (Date.now() - t0) < 200 && sum === 10000; })()",
+         "children stays O(1)-per-index on repeat reads (cached against child_gen, not re-walked)");
+
     ckjs("(function(){ var seen = 0;"
          " var mo = new MutationObserver(function(r){ seen += r.length; });"
          " mo.observe(__ch, { childList: true, subtree: true });"
@@ -837,8 +923,19 @@ int main(int argc, char **argv)
     inverted = 0;
     ckjs("typeof window.ActiveXObject === 'undefined'", "window.ActiveXObject stays absent (IE detection)");
     ckjs("typeof document.documentMode === 'undefined'", "document.documentMode stays absent (IE detection)");
-    ckjs("typeof window.indexedDB === 'undefined'", "window.indexedDB stays absent (we have no store)");
     ckjs("typeof window.MSApp === 'undefined'", "window.MSApp stays absent");
+    /* NOT a "must stay absent" check -- indexedDB is real in this tree now
+     * (c/apps/browser/js_idb.c). This assertion is the OTHER door of the
+     * "one jar, two doors" pair for js_idb.c's own install guard: this build
+     * links js_idb.c (PLATFORM_TEST_SRC does not exclude it, unlike
+     * js_events.c/js_canvas.c/js_semantics.c) but not js_events.c, so
+     * js_idb_install's `typeof G.EventTarget === 'function'` check should
+     * fail and indexedDB should stay undefined HERE for that reason. If this
+     * ever flips true without js_events.c being linked, js_idb.c's install
+     * guard has stopped checking what it claims to. */
+    ckjs("typeof window.indexedDB === 'undefined'",
+         "window.indexedDB stays absent in a build that links js_idb.c but not js_events.c "
+         "(its install guard requires a real EventTarget) -- see make test-idb for the real thing");
     ckjs("!(typeof crypto === 'object' && crypto && crypto.subtle)",
          "crypto.subtle stays absent (a stub would get something encrypted with it)");
     /* Element.attachShadow, added to this list after the Chrome differential

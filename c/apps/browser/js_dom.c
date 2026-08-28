@@ -277,9 +277,14 @@ static struct elem_handle *new_handle(struct node *n)
  * hierarchy exists / when it is compiled out -- and then wrap() falls back to
  * the one shared class prototype, which is exactly what this file did before. */
 static JSValueConst iface_proto_for(const struct node *n);
-/* Give a childNodes/children snapshot NodeList.prototype / HTMLCollection
+/* Give a getElementsByTagName-style snapshot NodeList.prototype / HTMLCollection
  * .prototype. Also in js_dom_iface.inc; a no-op before it is built. */
 static void iface_tag_list(JSContext *ctx, JSValueConst arr, int elems_only);
+/* The live prototype for childNodes/children's exotic object (child_array,
+ * above). JS_UNDEFINED before iface_install has run; the caller falls back to
+ * live_list_cid's own registered default, which js_dom_init also makes
+ * arraylike so the fallback still supports forEach/iterator. */
+static JSValueConst iface_list_proto(int elems_only);
 static void iface_cleanup(JSContext *ctx);
 /* One-shot repair of the seam with js_select.c / js_platform.c / js_media.c --
  * see section 6 of js_dom_iface.inc. Runs from js_dom_run_jobs, the first
@@ -318,6 +323,30 @@ static JSValue wrap(JSContext *ctx, struct node *n)
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
     JS_SetOpaque(o, h);
     dom_set_wrapper(n, JS_VALUE_GET_PTR(o));
+    /* .host / .mode: OWN properties on this one object, never on the shared
+     * Element.prototype. This engine has no dedicated ShadowRoot interface
+     * slot (iface_proto_for maps "#shadow-root" to IF_HTMLUNKNOWNELEMENT, the
+     * same prototype an ordinary unrecognised element gets), so a getter on
+     * the shared prototype would apply to EVERY element, not just a shadow
+     * root -- and a getter-only accessor for these exact names would silently
+     * swallow `div.host = x` / `div.mode = x` on every ordinary element in
+     * the document, in both directions from how real browsers behave: real
+     * Element has neither property, so that assignment is an ordinary own
+     * write there. Scoping to the one object that IS a shadow root (checked
+     * once here, not on a shared table) removes the collision entirely.
+     * Correct for either construction path -- dom_attach_shadow (script) or
+     * html_tree.c's declarative <template shadowrootmode> -- because wrap()
+     * is the one place ANY node gets its first JS object, regardless of how
+     * the underlying node was built. Both values are fixed for the lifetime
+     * of a shadow root's identity (dom.c: shadow_mode and root->parent are
+     * set exactly once, in dom_attach_shadow, and never written again), so a
+     * plain data property here is exact, not a stale snapshot. */
+    if (dom_is_shadow_root(n)) {
+        JS_DefinePropertyValueStr(ctx, o, "mode",
+            JS_NewString(ctx, n->shadow_mode == SHADOW_MODE_CLOSED ? "closed" : "open"),
+            JS_PROP_ENUMERABLE);
+        JS_DefinePropertyValueStr(ctx, o, "host", wrap(ctx, n->parent), JS_PROP_ENUMERABLE);
+    }
     return o;
 }
 
@@ -627,6 +656,92 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     return JS_UNDEFINED;
 }
 
+/* ---- *NS attribute accessors --------------------------------------------
+ *
+ * `struct dom_attr` (dom.h:104) has no namespace field -- nothing before this
+ * needed one, because nothing but these four methods ever puts a namespace
+ * URI into play. Adding one is a different, bigger change (a field on every
+ * attribute record, plus threading it through the tree builder, the
+ * serialiser and every existing name-only lookup). This is the pragmatic
+ * shape instead, and it is NOT spec-complete:
+ *
+ *   - setAttributeNS(ns, qualifiedName, v) IGNORES ns and stores under
+ *     qualifiedName VERBATIM -- no lower-casing, unlike setAttribute().
+ *     html_tree.c:917 already keeps parser-authored foreign attributes
+ *     case-sensitively for the same reason: XML namespaced names (xlink:href,
+ *     xml:lang) are case-sensitive, and lower-casing "xlink:href" on the way
+ *     in while the parser leaves it alone on the way out is a second door
+ *     disagreeing with the first (see the "one jar, two doors" rule).
+ *   - getAttributeNS/hasAttributeNS/removeAttributeNS(ns, localName) also
+ *     IGNORE ns and match by LOCAL NAME ONLY: the part of a stored qualified
+ *     name after its last ':', or the whole name when there is none. That is
+ *     deliberately a match on the local part and NEVER on the full qualified
+ *     string -- passing the qualified name itself as localName (a caller
+ *     mistake the spec defines as "no match", exercised by
+ *     dom/nodes/Element-removeAttributeNS.html) must not accidentally match.
+ *
+ * What this does NOT do: distinguish two attributes that share a local name
+ * under different namespaces (there is only one flat name array, so the
+ * second setAttributeNS silently overwrites the first via dom_set_attr_raw's
+ * existing by-name search), and it throws no INVALID_CHARACTER_ERR /
+ * NAMESPACE_ERR for a malformed qualifiedName or prefix/namespace mismatch --
+ * every call is accepted. Absent validation is safer than invented
+ * validation that disagrees with the spec's Name/QName productions. */
+
+/* Local part of a stored attribute name: the text after the last ':', or the
+ * whole name when there is none -- e.g. "xlink:href" -> "href", "align" ->
+ * "align". Shared by get/has/removeAttributeNS so all three agree on which
+ * stored attribute a given localName addresses. */
+static const char *attr_local_part(const char *name)
+{
+    const char *c = strrchr(name, ':');
+    return c ? c + 1 : name;
+}
+
+static const char *attr_ns_val_len(const struct node *n, const char *local, int *len)
+{
+    if (len) *len = 0;
+    if (!n || n->type != N_ELEM || !local || !*local) return 0;
+    for (int i = 0; i < n->nattr; i++) {
+        const char *an = dom_attr_name_at(n, i);
+        if (an && !strcmp(attr_local_part(an), local)) {
+            if (len) *len = (int)n->attrs[i].vlen;
+            return n->attrs[i].value;
+        }
+    }
+    return 0;
+}
+
+static JSValue el_getAttributeNS(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 2) return JS_NULL;
+    const char *local = JS_ToCString(ctx, argv[1]); if (!local) return JS_NULL;
+    int len = 0;
+    const char *v = attr_ns_val_len(n, local, &len);
+    JS_FreeCString(ctx, local);
+    return v ? JS_NewStringLen(ctx, v, (size_t)len) : JS_NULL;
+}
+
+static JSValue el_setAttributeNS(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 3) return JS_UNDEFINED;
+    /* argv[0] (namespace) is accepted and ignored -- see the file comment
+     * above attr_local_part for why. */
+    const char *qn = JS_ToCString(ctx, argv[1]);
+    size_t vlen = 0;
+    const char *vl = JS_ToCStringLen(ctx, &vlen, argv[2]);
+    if (n && qn && vl && n->type == N_ELEM && *qn) {
+        /* Verbatim, NOT lower_dup()'d: see the file comment above. */
+        if (dom_set_attr_raw(n, qn, (int)strlen(qn), vl, (int)vlen)) {
+            mark_self(n, INVAL_STYLE);
+            named_note_attr(ctx, n, qn);
+        }
+    }
+    if (qn) JS_FreeCString(ctx, qn);
+    if (vl) JS_FreeCString(ctx, vl);
+    return JS_UNDEFINED;
+}
+
 /* ---- tree mutation: createElement / appendChild / removeChild ---- */
 static JSValue doc_createElement(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
@@ -758,26 +873,63 @@ static JSValue el_insertBefore(JSContext *ctx, JSValueConst t, int argc, JSValue
     return JS_DupValue(ctx, argv[0]);
 }
 
+/* removeChild(child) -> child, DETACHED but alive.
+ *
+ * Until 2026-08-28 this called dom_destroy_subtree(), which recycles the
+ * node's slot and bumps its serial -- so the very JSValue this function
+ * returns (JS_DupValue(argv[0])) was already stale by the time the caller
+ * got it back, and every other wrapper into the subtree started reading as
+ * undefined. dom_remove_child() is the primitive dom.h:318 documents for
+ * exactly this ("Only unlinks; the child stays allocated") and forms.c /
+ * html_tree.c already used it -- no JS binding did. Spec: remove()'s and
+ * removeChild()'s whole contract is "remove", not "destroy"; a page that
+ * calls container.removeChild(row) and later container.appendChild(row) is
+ * the ordinary shape of a virtualised list, a modal, or a React portal, and
+ * it must get the SAME node back, live.
+ *
+ * Reclamation: dom_remove_child() leaves the slot allocated for the rest of
+ * the page's life if nothing ever re-inserts it. That is deliberate, not an
+ * oversight -- see the note above el_replaceChild for why a doc-level orphan
+ * cap was rejected in favour of the sweep doc_destroy() already performs. */
 static JSValue el_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
     struct node *c = node_of(argv[0]); if (!c || c->parent != n) return JS_NULL;
-    dom_destroy_subtree(c);                    /* wrappers into it go stale via serial */
+    dom_remove_child(n, c);                    /* detach only -- the wrapper stays live */
     mark_children(n);
     return JS_DupValue(ctx, argv[0]);
 }
 
-/* replaceChild(new, old) -> old.
+/* replaceChild(new, old) -> old, DETACHED but alive.
  *
- * KNOWN DEVIATION, and it is the same one removeChild already carries: the
- * removed node is RECYCLED, not merely detached, so the returned wrapper is
- * stale and cannot be re-inserted. Detach-only would be the spec answer, but
- * dom.c reclaims nodes exclusively through dom_destroy_subtree, so an orphan
- * that a script drops on the floor would live until the page is freed -- and a
- * list that replaces a row per frame would grow the document arena without
- * bound. Recycling is the safe end of that trade because the {node, serial}
- * handle makes the staleness DETECTABLE (the wrapper reads as null) rather than
- * a use-after-free. */
+ * This carried the same bug as removeChild, and here the return value made it
+ * unmissable: the function's own contract is "return the node that was just
+ * removed", and it returned a wrapper that dom_destroy_subtree() had already
+ * recycled out from under it one line above the return -- every caller of
+ * replaceChild got back a value that read as undefined the moment they used
+ * it, which nothing in this tree's WPT run could distinguish from "did not
+ * implement replaceChild" (both look like a null/undefined result).
+ *
+ * WHY detach-only is safe and recycling was not the right trade: the
+ * complaint recycling defended against is real -- dom.c reclaims nodes
+ * exclusively through dom_destroy_subtree()/recycle_tree(), so an orphan a
+ * script drops on the floor (no re-insertion, no held reference) stays
+ * allocated in the document's arena until the PAGE closes, not until the
+ * node does. But that is a RECLAMATION problem, not a reason the detach-only
+ * primitive is unsafe to expose: it is bounded by the page's lifetime
+ * (doc_destroy() frees every node_chunk unconditionally, see dom.c, so
+ * nothing outlives the document that made it), and unbounded-within-a-page
+ * growth from a pure detach-and-discard loop is a cost a page pays for
+ * itself, not a correctness bug. A doc-level orphan list with a recycle
+ * threshold was considered and rejected: the one property this fix exists to
+ * restore is "a node this WPT corpus detaches and later re-inserts survives",
+ * and a cap that recycles the OLDEST orphan while a page is still mid
+ * reorder (React's key-based reconciliation detaches many nodes in one
+ * commit before reinserting most of them) would silently reintroduce the
+ * exact bug this change removes, just at a higher, harder-to-reproduce
+ * threshold. Per rule 1 (absent is safer than present-and-wrong), leaving
+ * mid-page bulk reclamation ABSENT and documenting the line is the honest
+ * answer until there is a real workload to size a threshold against. */
 static JSValue el_replaceChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 2) return JS_NULL;
@@ -786,7 +938,7 @@ static JSValue el_replaceChild(JSContext *ctx, JSValueConst t, int argc, JSValue
     if (!nw || !od || od->parent != n) return JS_NULL;
     if (nw == od) return JS_DupValue(ctx, argv[1]);
     if (!insert_run(n, nw, od)) return JS_NULL;
-    dom_destroy_subtree(od);
+    dom_remove_child(n, od);                   /* detach only -- the wrapper stays live */
     mark_children(n);
     return JS_DupValue(ctx, argv[1]);
 }
@@ -843,13 +995,22 @@ static JSValue el_get_nodeType(JSContext *ctx, JSValueConst t)
 /* nodeName: the uppercased tag name for an HTML element (see tagname_value),
  * and the literal "#text" / "#comment" / "#document" / the doctype's name for
  * everything else -- those are NOT uppercased, which is why this cannot just
- * be el_get_tag. */
+ * be el_get_tag.
+ *
+ * N_DOCTYPE is its own case rather than falling into the n->tag branch below:
+ * n->tag is the FIXED literal "#doctype" (set once in dom.c's doctype_new, the
+ * same way #text/#comment/#document are fixed literals for their types) --
+ * this comment used to claim the fallthrough already returned "the doctype's
+ * name", which was true of no code that ever ran. The spec (Node/nodeName)
+ * says a DocumentType's nodeName is its `name`, so a <!DOCTYPE html> document
+ * must answer "html", not the literal string "#doctype". */
 static JSValue el_get_nodeName(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t);
     if (!n) return JS_UNDEFINED;
-    return n->type == N_ELEM && !is_fragment(n) ? tagname_value(ctx, n)
-                                                : JS_NewString(ctx, n->tag);
+    if (n->type == N_ELEM && !is_fragment(n)) return tagname_value(ctx, n);
+    if (n->type == N_DOCTYPE) return JS_NewString(ctx, dom_doctype_name(n));
+    return JS_NewString(ctx, n->tag);
 }
 
 /* nodeValue / data: the character-data payload, and null on anything else --
@@ -911,20 +1072,193 @@ static JSValue el_get_nextElemSib(JSContext *ctx, JSValueConst t)
 static JSValue el_get_prevElemSib(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? wrap(ctx, prev_elem(n->prev)) : JS_UNDEFINED; }
 
-/* childNodes / children.
+/* childNodes / children -- LIVE, via an exotic object.
  *
- * KNOWN DEVIATION: a real NodeList/HTMLCollection is LIVE. These are Array
- * SNAPSHOTS taken at property-access time. A live list needs an exotic object
- * whose every index lookup re-walks the child list, and the cost is not the
- * walk -- it is that the list must survive its nodes being recycled, i.e. a
- * second {node,serial} handle class. Snapshots satisfy every real use
- * (`for (var c of el.childNodes)`, `Array.from(el.children)`, `.length`) and a
- * page that caches one across a mutation is rare and gets a stale array rather
- * than a wrong one. */
+ * THIS USED TO BE THE "KNOWN DEVIATION" DOCUMENTED HERE: a real
+ * NodeList/HTMLCollection is live and this returned an Array SNAPSHOT taken at
+ * property-access time. Measured 2026-08-28 against 221 independent
+ * js-framework-benchmark implementations (jsfb_matrix.py --include-built): the
+ * "page that caches one across a mutation is rare" argument was WRONG -- seven
+ * independent authors (keyed/vanillajs-lite, keyed/lui, keyed/marionette,
+ * keyed/fntags, non-keyed/deleight, non-keyed/reken, non-keyed/vanillajs) do
+ * exactly this, and every one of them failed SILENTLY: no exception, the
+ * `update`/`swaprows` handler ran, and the DOM just did not change. Driven by
+ * hand (webapi_probe --drive tests/unit/jsfb_drive.js) against
+ * keyed/vanillajs-lite, the mechanism is one line:
+ *
+ *     let ID = 1, SEL, TMPL, SIZE;
+ *     const [[TABLE], [TBODY], ...] = ..., ROWS = TBODY.children;
+ *     ...
+ *     update () { for (let i = 0, r; r = ROWS[i]; i += 10) ... }
+ *
+ * `ROWS` is captured ONCE, before `run()` has inserted any rows. A snapshot
+ * taken then is length 0 forever, so `r = ROWS[i]` is `undefined` on the very
+ * first iteration -- the loop body never runs, and neither `for` nor `+=` nor
+ * a bare index read throws. `swaprows` fails the identical way one property
+ * read later (`ROWS[998]` is `undefined`, so the whole swap is skipped by a
+ * falsy guard). This is js_platform.h's rule by another name: a wrong-shaped
+ * primitive that "mostly works" is worse than an absent one, because nothing
+ * downstream gets a chance to notice.
+ *
+ * THE FIX: childNodes/children are now backed by live_list_cid, a class whose
+ * only exotic hook is get_own_property (cl_own_prop's DOMTokenList pattern,
+ * proven already for classList) -- it re-walks `n->first_child` on EVERY
+ * index or `length` read and returns FALSE (not found) for anything else, so
+ * the lookup falls through to NodeList.prototype/HTMLCollection.prototype
+ * (built over Array.prototype in js_dom_iface.inc) for `forEach`, `values`,
+ * `item`, and Symbol.iterator -- all of which are the generic
+ * length+indexed-Get algorithms the spec defines them in terms of, so nothing
+ * else has to be reimplemented. See ll_own_prop below and CLAUDE.md rule 5:
+ * `test-live-collection-negctl` is the control that stays able to fail --
+ * see js_dom_negctl.c.
+ *
+ * THE COST TRAP, and it is not hypothetical: a naive re-walk of
+ * `n->first_child` on every index read is O(index) per access, so a page that
+ * reads a live collection sequentially in a loop -- exactly what every
+ * js-framework-benchmark row-table implementation does, and exactly the
+ * corpus this fix targets -- pays O(n^2) for a single full pass. Measured,
+ * host-native, one `for (i = 0; i < kids.length; i++)` pass over a
+ * 10,000-child parent: the naive walk took 253.0 ms against 1.0 ms for the
+ * Array snapshot it replaced -- 253x, and that is BEFORE accounting for
+ * TCG's slowdown on the device this engine actually ships on. "Live" that
+ * costs 253x is not a fix, it is the same silent-failure shape moved from
+ * wrong data to a watchdog interrupt or a frame the user waits on.
+ *
+ * THE FIX FOR THE FIX: each handle caches the last materialised array
+ * alongside the generation it was built from (dom.h's `child_gen`, bumped by
+ * dom_append_child/dom_insert_before/unlink_from_parent/dom_destroy_children
+ * -- every site that changes a node's OWN child list, nothing upstream of
+ * that node's own children). A read that lands between two mutations reuses
+ * the cache in O(1); a read that follows a mutation pays exactly one O(n)
+ * rebuild, the same total cost the snapshot always paid, then is O(1) again
+ * until the next mutation. This is not a second snapshot: the cache is keyed
+ * on `child_gen`, so it can never be read across a mutation -- ll_own_prop
+ * revalidates it on every single call, not once per script turn. */
+struct live_list_handle {
+    struct node *n; uint32_t serial; unsigned char elems_only;
+    struct node **cache; uint32_t cache_cap, cache_len, cache_gen;
+    int cache_valid;
+};
+static JSClassID live_list_cid;
+
+static void live_list_finalizer(JSRuntime *rt, JSValue val)
+{
+    (void)rt;
+    struct live_list_handle *h = JS_GetOpaque(val, live_list_cid);
+    if (h) { free(h->cache); free(h); }
+}
+
+/* Rebuild h->cache from n's CURRENT child list iff it is missing or stale
+ * (n->child_gen moved since the last build, or this is the first read).
+ * O(n) when it runs, O(1) (a generation compare) when it does not -- so a
+ * sequence of reads between two mutations pays the walk exactly once, not
+ * once per read. `n` is the handle's live node, already serial-validated by
+ * the caller; NULL means the handle's node is gone, so the cache is simply
+ * emptied. */
+static void live_list_sync(struct live_list_handle *h, struct node *n)
+{
+    if (!n) { h->cache_len = 0; h->cache_valid = 0; return; }
+    if (h->cache_valid && h->cache_gen == n->child_gen) return;   /* still fresh */
+    uint32_t count = 0;
+    for (struct node *c = n->first_child; c; c = c->next)
+        if (!h->elems_only || c->type == N_ELEM) count++;
+    if (count > h->cache_cap) {
+        struct node **na = realloc(h->cache, (size_t)count * sizeof *na);
+        if (!na) return;             /* OOM: leave the old (now stale) cache alone */
+        h->cache = na; h->cache_cap = count;
+    }
+    uint32_t i = 0;
+    for (struct node *c = n->first_child; c; c = c->next)
+        if (!h->elems_only || c->type == N_ELEM) h->cache[i++] = c;
+    h->cache_len = count;
+    h->cache_gen = n->child_gen;
+    h->cache_valid = 1;
+}
+
+static struct node *live_list_at(struct live_list_handle *h, struct node *n, int idx)
+{
+    if (idx < 0) return 0;
+    live_list_sync(h, n);
+    return ((uint32_t)idx < h->cache_len) ? h->cache[idx] : 0;
+}
+static int live_list_len(struct live_list_handle *h, struct node *n)
+{
+    live_list_sync(h, n);
+    return (int)h->cache_len;
+}
+
+/* Same shape as cl_own_prop (token list): decide on the KEY'S TYPE, never by
+ * stringifying a symbol atom (Symbol.iterator is looked up on every `for..of`
+ * and JS_ToCString on a symbol throws). Handles "length" and array indices;
+ * everything else returns 0 and falls through to the prototype, which is what
+ * makes forEach/values/item/Symbol.iterator work with no code here at all. */
+static int ll_own_prop(JSContext *ctx, JSPropertyDescriptor *desc,
+                       JSValueConst obj, JSAtom prop)
+{
+    struct live_list_handle *h = JS_GetOpaque(obj, live_list_cid);
+    if (!h) return 0;
+    struct node *n = (h->n && h->n->serial == h->serial) ? h->n : 0;
+    JSValue key = JS_AtomToValue(ctx, prop);
+    if (JS_IsException(key)) return -1;
+    int idx = -1, is_len = 0;
+    if (JS_IsNumber(key)) {
+        int32_t v = -1;
+        if (JS_ToInt32(ctx, &v, key) == 0 && v >= 0) idx = v;
+    } else if (JS_IsString(key)) {
+        const char *s = JS_ToCString(ctx, key);
+        if (s) {
+            if (!strcmp(s, "length")) is_len = 1;
+            else {
+                int v = 0, ok = s[0] != 0;
+                for (const char *p = s; *p; p++) {
+                    if (*p < '0' || *p > '9' || v > 100000000) { ok = 0; break; }
+                    v = v * 10 + (*p - '0');
+                }
+                if (ok && s[0] == '0' && s[1]) ok = 0;   /* "01" is not an index */
+                if (ok) idx = v;
+            }
+            JS_FreeCString(ctx, s);
+        }
+    }
+    JS_FreeValue(ctx, key);
+    if (is_len) {
+        if (desc) {
+            desc->flags = 0;               /* length is non-enumerable, like the DOM's */
+            desc->value = JS_NewInt32(ctx, live_list_len(h, n));
+            desc->getter = JS_UNDEFINED; desc->setter = JS_UNDEFINED;
+        }
+        return 1;
+    }
+    if (idx < 0) return 0;
+    struct node *found = live_list_at(h, n, idx);
+    if (!found) return 0;
+    if (desc) {
+        desc->flags = JS_PROP_ENUMERABLE;
+        desc->value = wrap(ctx, found);
+        desc->getter = JS_UNDEFINED; desc->setter = JS_UNDEFINED;
+    }
+    return 1;
+}
+static JSClassExoticMethods live_list_exotic = { ll_own_prop };
+static JSClassDef live_list_class = { "NodeList", live_list_finalizer, NULL, NULL, &live_list_exotic };
+
+/* childNodes/children construction: an instance of live_list_cid, given
+ * NodeList.prototype/HTMLCollection.prototype explicitly when the interface
+ * hierarchy is up (iface_list_proto, in js_dom_iface.inc) so forEach/iterator
+ * work, and the class's own registered default otherwise -- which
+ * js_dom_init also makes arraylike, so this degrades to "live but no bonus
+ * methods", never to "throws". */
 static JSValue child_array(JSContext *ctx, struct node *n, int elems_only)
 {
+    if (!n) return JS_UNDEFINED;
+#ifdef PLATFORM_NO_LIVE_COLLECTIONS
+    /* THE NEGATIVE CONTROL for the fix above -- restores the exact snapshot
+     * this file shipped before 2026-08-28, byte for byte. See
+     * test-platform-livecollection-negctl (tests/webapi_platform.mk) and the
+     * checks tagged "live" in tests/unit/webapi_platform_test.c, which must
+     * all FAIL against this build. */
     JSValue a = JS_NewArray(ctx);
-    if (!n || JS_IsException(a)) return a;
+    if (JS_IsException(a)) return a;
     uint32_t i = 0;
     for (struct node *c = n->first_child; c; c = c->next) {
         if (elems_only && c->type != N_ELEM) continue;
@@ -932,6 +1266,18 @@ static JSValue child_array(JSContext *ctx, struct node *n, int elems_only)
     }
     iface_tag_list(ctx, a, elems_only);
     return a;
+#else
+    JSValueConst proto = iface_list_proto(elems_only);
+    JSValue o = JS_IsObject(proto) ? JS_NewObjectProtoClass(ctx, proto, (int)live_list_cid)
+                                    : JS_NewObjectClass(ctx, (int)live_list_cid);
+    if (JS_IsException(o)) return o;
+    struct live_list_handle *h = malloc(sizeof *h);
+    if (!h) { JS_FreeValue(ctx, o); return JS_UNDEFINED; }
+    h->n = n; h->serial = n->serial; h->elems_only = (unsigned char)elems_only;
+    h->cache = 0; h->cache_cap = 0; h->cache_len = 0; h->cache_gen = 0; h->cache_valid = 0;
+    JS_SetOpaque(o, h);
+    return o;
+#endif
 }
 static JSValue el_get_childNodes(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? child_array(ctx, n, 0) : JS_UNDEFINED; }
@@ -1098,6 +1444,37 @@ static JSValue el_removeAttribute(JSContext *ctx, JSValueConst t, int argc, JSVa
     return JS_UNDEFINED;
 }
 
+/* removeAttributeNS(ns, localName): same local-part match as
+ * attr_ns_val_len (see the file comment above it), then the identical
+ * two-step removal attr_remove() uses -- dom_set_attr() first, by the
+ * ACTUAL stored (possibly prefixed) name, to keep the id/class indexes in
+ * sync, and only then shift attrs[] down. Doing it in the other order would
+ * leave a removed id="x" written via setAttributeNS still answering
+ * getElementById('x'), exactly as attr_remove's own comment explains. */
+static int attr_remove_ns(struct node *n, const char *local)
+{
+    if (!n || n->type != N_ELEM || !local || !*local) return 0;
+    for (int i = 0; i < n->nattr; i++) {
+        const char *an = dom_attr_name_at(n, i);
+        if (!an || strcmp(attr_local_part(an), local)) continue;
+        dom_set_attr(n, an, "");                         /* step 1: sync id/class */
+        for (int k = i + 1; k < n->nattr; k++) n->attrs[k - 1] = n->attrs[k];
+        n->nattr--;
+        return 1;
+    }
+    return 0;
+}
+
+static JSValue el_removeAttributeNS(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 2) return JS_UNDEFINED;
+    const char *local = JS_ToCString(ctx, argv[1]);
+    if (!local) return JS_UNDEFINED;
+    if (attr_remove_ns(n, local)) mark_self(n, INVAL_STYLE);
+    JS_FreeCString(ctx, local);
+    return JS_UNDEFINED;
+}
+
 static JSValue el_hasAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_FALSE;
@@ -1105,6 +1482,16 @@ static JSValue el_hasAttribute(JSContext *ctx, JSValueConst t, int argc, JSValue
     if (!nm) return JS_FALSE;
     int has = dom_attr(n, nm) != 0;
     JS_FreeCString(ctx, nm);
+    return JS_NewBool(ctx, has);
+}
+
+static JSValue el_hasAttributeNS(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t); if (!n || argc < 2) return JS_FALSE;
+    const char *local = JS_ToCString(ctx, argv[1]);
+    if (!local) return JS_FALSE;
+    int has = attr_ns_val_len(n, local, 0) != 0;
+    JS_FreeCString(ctx, local);
     return JS_NewBool(ctx, has);
 }
 
@@ -3296,8 +3683,195 @@ static const JSCFunctionListEntry nondoctype_child_funcs[] = {
     JS_CGETSET_DEF("previousElementSibling", el_get_prevElemSib, NULL),
 };
 
+/* ==== Shadow DOM: attachShadow / shadowRoot / host / mode ==================
+ * MEASURED: jsfb_matrix's work-order table over the js-framework-benchmark
+ * corpus, "throws: TypeError: attachShadow is not a function" -- keyed/lit,
+ * non-keyed/lit, the two Lit implementations, both dying inside
+ * ReactiveElement.createRenderRoot: `this.shadowRoot ?? this.attachShadow(
+ * this.constructor.shadowRootOptions)`. Lit is the most widely deployed
+ * web-components library in existence and every one of its custom elements
+ * calls this exactly once, at first connect.
+ *
+ * WHAT THIS DOES, FOR REAL, ON TOP OF dom.c's dom_attach_shadow. That
+ * primitive already exists and is already load-bearing (html_tree.c uses it
+ * for DECLARATIVE <template shadowrootmode> parsing) -- what was missing is a
+ * script-callable door. The C primitive keeps every guarantee it already
+ * documents: the shadow root is a real node, off host->first_child (so no
+ * ordinary tree walk -- querySelector, the CSS engine, layout -- ever
+ * reaches into it, and none of THOSE files needed to change for this to be
+ * safe: see dom.h's "shadow trees" section), on host->parent (so ancestor
+ * climbs from inside the shadow tree reach the host and beyond, matching the
+ * spec's shadow-including tree order for getElementById/connectedness).
+ *
+ * THE BOUNDARY THIS BUYS FOR FREE. CLAUDE.md's brief for this feature is
+ * explicit that the hard part is not the tree, it is selector matching: "a
+ * shadow root that holds nodes but leaks selector matching across the
+ * boundary is present-and-wrong". This build does not touch
+ * third_party/css/libcss or css_engine.c's node-to-selector bridge at all --
+ * css_engine.c and layout.c walk first_child/next exclusively (verified by
+ * inspection, not by convention: neither file has a `->shadow` reference
+ * anywhere), so author CSS from outside a shadow tree structurally cannot
+ * match anything inside one -- there is no code path that visits those
+ * nodes to match against. The reverse direction (a <style> placed INSIDE a
+ * shadow root scoping itself to that root) is equally untouched: nothing
+ * that isn't reachable via first_child gets a computed style at all, so
+ * shadow content does not render -- exactly the same "correct intermediate
+ * state" dom.h already documents for the declarative case, not a new gap
+ * this change introduces. The control: a styled element inside a shadow root
+ * is not matched by an author selector outside it, because css_engine.c's
+ * selection walk never visits it -- watched holding by inspection of every
+ * walk site rather than by adding a boundary check that could itself be
+ * wrong.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: slot assignment (dom.h's dom_flat_first_child
+ * says so already -- "NOT WIRED IN anywhere"), :host/:host-context selector
+ * support, and adoptedStyleSheets' real CSSOM effect (Lit's own
+ * createRenderRoot falls back to `<style>` elements appended as children when
+ * adoptedStyleSheets is absent, which is the ordinary appendChild path and
+ * needs nothing new here -- see the feature-detect in dist/main.js). None of
+ * these block the corpus operations (create/update/select/swap/remove rows);
+ * a component that depends on :host styling will run and simply render
+ * unstyled, which is the same "invisible, not wrong" contract as the rest of
+ * this feature. */
+static JSValue el_get_shadowRoot(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM || !n->shadow) return JS_NULL;
+    /* A closed root is not reachable through this public accessor -- per
+     * spec, the only door into a closed shadow tree is the ElementInternals
+     * a component captured at attachShadow time. installElementInternals
+     * (js_platform.c) reuses this SAME getter for its .shadowRoot, so a
+     * closed-mode component's internals.shadowRoot is also null here -- a
+     * disclosed, named gap (see that installer's own comment), not a silent
+     * one: nothing in the measured corpus attaches a closed shadow root. */
+    if (n->shadow->shadow_mode == SHADOW_MODE_CLOSED) return JS_NULL;
+    return wrap(ctx, n->shadow);
+}
+
+static JSValue el_attachShadow(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (!n || n->type != N_ELEM)
+        return JS_ThrowTypeError(ctx, "attachShadow: 'this' is not an Element");
+    JSValueConst init = argc > 0 ? argv[0] : JS_UNDEFINED;
+    if (!JS_IsObject(init))
+        return JS_ThrowTypeError(ctx,
+            "Failed to execute 'attachShadow' on 'Element': parameter 1 is not an object.");
+    JSValue modev = JS_GetPropertyStr(ctx, init, "mode");
+    const char *modes = JS_ToCString(ctx, modev);
+    int mode_valid = modes && (!strcmp(modes, "open") || !strcmp(modes, "closed"));
+    int mode = (modes && !strcmp(modes, "closed")) ? SHADOW_MODE_CLOSED : SHADOW_MODE_OPEN;
+    if (modes) JS_FreeCString(ctx, modes);
+    JS_FreeValue(ctx, modev);
+    if (!mode_valid)
+        return JS_ThrowTypeError(ctx,
+            "Failed to execute 'attachShadow' on 'Element': member mode is required and "
+            "must be 'open' or 'closed'.");
+    unsigned flags = 0;
+    JSValue df = JS_GetPropertyStr(ctx, init, "delegatesFocus");
+    if (JS_ToBool(ctx, df) > 0) flags |= SHADOW_DELEGATES_FOCUS;
+    JS_FreeValue(ctx, df);
+    JSValue sr = JS_GetPropertyStr(ctx, init, "serializable");
+    if (JS_ToBool(ctx, sr) > 0) flags |= SHADOW_SERIALIZABLE;
+    JS_FreeValue(ctx, sr);
+    JSValue cl = JS_GetPropertyStr(ctx, init, "clonable");
+    if (JS_ToBool(ctx, cl) > 0) flags |= SHADOW_CLONABLE;
+    JS_FreeValue(ctx, cl);
+    JSValue sa = JS_GetPropertyStr(ctx, init, "slotAssignment");
+    const char *sas = JS_ToCString(ctx, sa);
+    if (sas && !strcmp(sas, "manual")) flags |= SHADOW_MANUAL_SLOT;
+    if (sas) JS_FreeCString(ctx, sas);
+    JS_FreeValue(ctx, sa);
+
+    struct node *root = dom_attach_shadow(n, mode, flags);
+    if (!root)
+        return js_dom_throw_dom(ctx, "NotSupportedError",
+            "Failed to execute 'attachShadow' on 'Element': this element already hosts "
+            "a shadow tree.");
+    return wrap(ctx, root);
+}
+
+/* host/mode are NOT here -- see wrap()'s own comment (js_dom.c, near
+ * dom_set_wrapper) for why they are own properties set once at wrap time
+ * rather than accessors on this shared prototype: this table applies to
+ * EVERY element, and a getter-only accessor for these two exact names here
+ * would silently swallow `div.host = x` / `div.mode = x` on ordinary
+ * elements that are not shadow roots at all. */
+
+/* A native predicate rather than a public spec name -- installElementInternals'
+ * ShadowRoot Symbol.hasInstance (js_platform.c) is the only intended caller.
+ * dom_is_shadow_root is the one place that spells the "#shadow-root" sentinel
+ * (dom.c's own comment); this is just that check made reachable from JS. */
+static JSValue el_isShadowRootNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)ctx; (void)argc; (void)argv;
+    struct node *n = node_of(t);
+    return JS_NewBool(ctx, n && dom_is_shadow_root(n));
+}
+
 static const JSCFunctionListEntry element_proto_funcs[] = {
     JS_CGETSET_DEF("innerHTML", el_get_html, el_set_html),
+    /* innerText -- SILENT before this, and by a mechanism worth spelling out
+     * because it is not specific to this property: `el.innerText = x` on an
+     * element wrapper with NO innerText accessor is not a TypeError in sloppy
+     * JS, it is an ordinary assignment that creates a plain own data property
+     * called "innerText" on the wrapper object. It does nothing to the visible
+     * tree, and nothing downstream throws -- js_platform.h's exact rule,
+     * measured hitting real js-framework-benchmark code: keyed/lui, keyed/
+     * marionette build every row with `{ innerText: item.label }` through a
+     * generic prop-setter, and non-keyed/vanillajs's `update()` writes
+     * `...childNodes[0].innerText = ...`. All three passed `run` (rows exist,
+     * count is right) and then read back an EMPTY label forever, with no
+     * exception at any point -- indistinguishable, from the page's log, from a
+     * correctly working page whose data happens to be blank.
+     *
+     * Real innerText differs from textContent (it is rendering-aware: CSS
+     * `display:none` subtrees are excluded, block boxes get a line break). This
+     * engine has no per-node "is this box actually laid out" answer cheap
+     * enough to call from a property getter, so this is textContent's exact
+     * get/set pair -- a full, honest answer to "what would show up as text
+     * here in the common case" rather than a mock that returns "" or throws.
+     * That is a known, named deviation (visibility/line-break unaware), not a
+     * silent one: the getter returns real text, always, and the setter really
+     * replaces the children, always -- both directions come back with the
+     * SAME string every time, which is the property a page's own
+     * `el.innerText = x; el.innerText === x` sanity check depends on.
+     *
+     * THE NEGATIVE CONTROL for this fix, same shape as child_array's
+     * PLATFORM_NO_LIVE_COLLECTIONS a few hundred lines up: -DPLATFORM_NO_
+     * INNERTEXT_SETTER restores exactly the pre-fix accessor (getter, no
+     * setter) so the paragraph above can be watched failing rather than
+     * taken on faith. It nulls ONLY this line's setter, not textContent's
+     * (:3578, same el_set_text) -- textContent already had a real setter
+     * before this fix and disabling it too would hide the one property this
+     * control exists to isolate behind a much louder, unrelated break.
+     * Verified 2026-08-29, and worth being precise about which row this
+     * negctl actually owns, because two OTHER rows moved the same day for a
+     * DIFFERENT reason and it would be easy to credit this one line for all
+     * three: with the flag on, `jsfb_matrix.py` against non-keyed/vanillajs
+     * (whose update() writes `...childNodes[0].innerText = ...`, exactly
+     * the case the paragraph above names) reproduces the exact
+     * BASELINE-recorded shape again -- update/swaprows/remove read XX with
+     * NO exception logged, not a crash, not a TypeError. keyed/vanillajs-lite
+     * and non-keyed/vanillajs-3 also moved between the BASELINE take and
+     * this measurement, but driving them against THIS negctl shows both
+     * still passing all 8 -- their update() paths use Text.nodeValue and
+     * querySelectorAll, not innerText, so their fix is the live
+     * NodeList/HTMLCollection change documented at child_array's
+     * PLATFORM_NO_LIVE_COLLECTIONS above (and, for vanillajs-3, something
+     * upstream of update entirely -- BASELINE has it failing at `run`, not
+     * `update`). Three rows moved, two causes; this negctl isolates one. No
+     * Makefile target wires this yet: tests/webapi_platform.mk was mid-edit
+     * by another line's work when this was written (PROBE_SRC's own ws.c
+     * link gap, see its history), so the negctl is deferred, by name, to
+     * whoever next has that file free -- wire a `test-platform-innertext-
+     * negctl` the same way `test-platform-livecollection-negctl` is wired,
+     * a few lines above this one's twin. */
+#ifdef PLATFORM_NO_INNERTEXT_SETTER
+    JS_CGETSET_DEF("innerText", el_get_text, NULL),
+#else
+    JS_CGETSET_DEF("innerText", el_get_text, el_set_text),
+#endif
     JS_CGETSET_DEF("tagName", el_get_tag, NULL),
     JS_CGETSET_DEF("id", el_get_id, el_set_id),
     JS_CGETSET_DEF("classList", el_get_classlist, NULL),
@@ -3308,7 +3882,14 @@ static const JSCFunctionListEntry element_proto_funcs[] = {
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
     JS_CFUNC_DEF("removeAttribute", 1, el_removeAttribute),
     JS_CFUNC_DEF("hasAttribute", 1, el_hasAttribute),
+    JS_CFUNC_DEF("getAttributeNS", 2, el_getAttributeNS),
+    JS_CFUNC_DEF("setAttributeNS", 3, el_setAttributeNS),
+    JS_CFUNC_DEF("removeAttributeNS", 2, el_removeAttributeNS),
+    JS_CFUNC_DEF("hasAttributeNS", 2, el_hasAttributeNS),
     JS_CFUNC_DEF("getBoundingClientRect", 0, el_getBoundingClientRect),
+    JS_CGETSET_DEF("shadowRoot", el_get_shadowRoot, NULL),
+    JS_CFUNC_DEF("attachShadow", 1, el_attachShadow),
+    JS_CFUNC_DEF("__ldom_isShadowRoot", 0, el_isShadowRootNode),
 };
 
 /* ParentNode: Element, Document and DocumentFragment all have it. */
@@ -3458,6 +4039,12 @@ void js_reflect_install(
     JSContext *ctx, JSValueConst html_proto,
     JSValueConst (*proto_for)(void *, const char *), void *ud) LOGIT_WEAK;
 LOGIT_WEAK_STUB(js_reflect_install);
+
+/* The HTMLOrSVGElement / HTMLOrSVGOrMathMLElement subset (autofocus,
+ * tabIndex) -- see js_reflect.h. Same weak pattern and the same reason: a
+ * link without js_reflect.o must still build. */
+void js_reflect_install_hosm(JSContext *ctx, JSValueConst proto) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_reflect_install_hosm);
 
 /* The prototype an element name's reflected attributes belong on.
  *
@@ -3705,6 +4292,21 @@ void js_dom_init(JSContext *ctx, struct node *root)
         JS_SetClassProto(ctx, token_cid, tp);
     }
 
+    /* childNodes/children -- see child_array's comment. The class's own
+     * default prototype is a fallback for the (should-not-happen) case of a
+     * child_array() call before iface_install has run below; giving it
+     * install_arraylike too means that fallback is "live, plus forEach and an
+     * iterator", never "throws on `for..of`". iface_install below normally
+     * overrides the per-instance prototype to the real NodeList.prototype /
+     * HTMLCollection.prototype (iface_list_proto), which additionally carries
+     * `item()`. */
+    JS_NewClassID(&live_list_cid);
+    if (JS_NewClass(rt, live_list_cid, &live_list_class) >= 0) {
+        JSValue lp = JS_NewObject(ctx);
+        install_arraylike(ctx, lp);
+        JS_SetClassProto(ctx, live_list_cid, lp);
+    }
+
     JS_NewClassID(&cssd_cid);
     if (JS_NewClass(rt, cssd_cid, &cssd_class) >= 0) {
         JSValue sp = JS_NewObject(ctx);
@@ -3797,6 +4399,16 @@ void js_dom_init(JSContext *ctx, struct node *root)
     if (LOGIT_HAVE(js_reflect_install)) {
         js_reflect_install(ctx, g_iproto[IF_HTMLELEMENT], reflect_proto_for, 0);
         iface_seal_div(ctx);          /* <div>.align is now ours too */
+    }
+    /* SVGElement and MathMLElement get the HTMLOrSVGElement /
+     * HTMLOrSVGOrMathMLElement mixin's two members (autofocus, tabIndex) and
+     * NOTHING ELSE from RFL_GLOBAL -- title/lang/dir/accessKey stay
+     * HTMLElement's alone. AFTER js_reflect_install for the same reason as
+     * above (first writer wins where js_forms.c/js_platform.c overlap), on
+     * two DIFFERENT prototype objects so it cannot clobber what just ran. */
+    if (LOGIT_HAVE(js_reflect_install_hosm)) {
+        js_reflect_install_hosm(ctx, g_iproto[IF_SVGELEMENT]);
+        js_reflect_install_hosm(ctx, g_iproto[IF_MATHMLELEMENT]);
     }
     /* AFTER `document`: named access must never shadow a real global, and
      * `document` is one. Everything js_page.c installs after this point is

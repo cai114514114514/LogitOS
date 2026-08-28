@@ -135,6 +135,24 @@ struct node {
                                      * {node,serial} and compares, so a slot
                                      * recycled from the free list can never be
                                      * addressed through a stale handle. */
+    uint32_t child_gen;              /* bumped every time THIS node's own child
+                                     * LIST (not subtree) is appended to,
+                                     * inserted into, had a child removed, or
+                                     * cleared -- dom_append_child,
+                                     * dom_insert_before, unlink_from_parent
+                                     * (covers dom_remove_child and every move),
+                                     * dom_destroy_children. A live NodeList/
+                                     * HTMLCollection view (js_dom.c's
+                                     * live_list_cid) caches its backing array
+                                     * against this value so repeated index
+                                     * reads between mutations are O(1) instead
+                                     * of O(index); a naive live walk turned a
+                                     * 10,000-row full read from 1ms to 253ms
+                                     * (measured, host-native, one full pass) --
+                                     * this is what keeps it O(1) amortized
+                                     * instead. Never consulted for identity
+                                     * (serial is), so it needs no dead-slot
+                                     * sentinel value. */
     uint16_t tag_id;                /* TAG_* (0 = unknown) */
     uint16_t flags;                 /* NF_* */
     uint8_t  ns;                    /* NS_* */
@@ -274,6 +292,12 @@ struct node *dom_create_text(struct dom_doc *d, const char *text, int len);
 struct node *dom_create_comment(struct dom_doc *d, const char *data, int len);
 struct node *dom_create_doctype(struct dom_doc *d, const char *name,
                                 const char *pubid, const char *sysid);
+
+/* Same as dom_create_doctype but preserves the name's case -- see dom.c for
+ * why document.implementation.createDocumentType() must NOT go through the
+ * lowercasing entry point the HTML tokenizer uses. */
+struct node *dom_create_doctype_raw(struct dom_doc *d, const char *name,
+                                    const char *pubid, const char *sysid);
 
 /* Create an element in an explicit namespace with the name taken VERBATIM --
  * no ASCII-lowercasing. Foreign content needs both halves of that: SVG's
