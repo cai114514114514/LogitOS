@@ -40,6 +40,49 @@ trap cleanup EXIT
 command -v "$OPENSSL" >/dev/null || { echo "SKIP: no openssl"; exit 0; }
 "$OPENSSL" s_client -help 2>&1 | grep -q -- '-groups' || { echo "SKIP: openssl s_client lacks -groups"; exit 0; }
 
+# The `-groups` probe above is NOT selective enough, and here the consequence
+# is worse than a wrong verdict -- it is a HANG. Measured 2026-08-28: macOS
+# ships LibreSSL as /usr/bin/openssl (3.3.6), which has -groups and no
+# -ciphersuites. It got past the probe, the first suite case ran an s_client
+# that died on the unknown option without connecting, and our server sat in
+# accept() while `wait "$SRVPID"` (line ~156) waited for it -- `make
+# test-tls-server` never returned. A gate that hangs is worse than one that
+# fails, because nothing downstream of it ever gets a verdict at all.
+#
+# Note what this skip must NOT do. test-tls-server-negctl-hash32 and
+# -cvprefix run this script with TLS_SERVER_BREAK set and INVERT the verdict
+# against an exact count (1 and 14); for those, "exit 0" ordinarily means "the
+# break reddened exactly the rows that carry the property". A skip that
+# borrowed that exit code silently would report a control satisfied by a host
+# that never compiled the break. It still exits 0 -- LibreSSL is not a
+# regression in c/net/tls/tls_server.c -- but it says CONTROL NOT FIRED in as
+# many words and prints no line containing NEGCTL OK.
+if ! "$OPENSSL" s_client -help 2>&1 | grep -q -- '-ciphersuites'; then
+    if [ -n "${TLS_SERVER_BREAK:-}" ]; then
+        echo "FAIL (CONTROL NOT FIRED): the negative control ${TLS_SERVER_BREAK}"
+        echo "      was NOT exercised, so its expected count of"
+        echo "      ${TLS_SERVER_BREAK_EXPECT:-'(any)'} reddened cases is unmeasured here."
+        echo "      Exiting NON-ZERO: for a control run this script's exit 0 MEANS"
+        echo "      'NEGCTL OK', and nothing in the build reads the text above --"
+        echo "      make, tools/ci.sh and test-sweep all classify by exit status."
+        echo "      A control that could not be run is not a control that passed."
+    else
+        echo "SKIP: 0 of 26 server-interop cases ran."
+    fi
+    echo "      $($OPENSSL version 2>&1) has no -ciphersuites in s_client, so no"
+    echo "      case here can pin a TLS 1.3 suite. This suite is written against"
+    echo "      OpenSSL 3.x; LibreSSL (what macOS ships as /usr/bin/openssl) is"
+    echo "      not a substitute."
+    echo "      NOT CHECKED: the three suites, the three groups,"
+    echo "      HelloRetryRequest, ALPN, the trust-anchor refusals, and"
+    echo "      openssl's judgement of the certificate our DER writer produced."
+    echo "      Settle it with an OpenSSL 3 binary, e.g. on macOS:"
+    echo "          brew install openssl@3"
+    echo "          OPENSSL=\$(brew --prefix openssl@3)/bin/openssl make test-tls-server"
+    [ -n "${TLS_SERVER_BREAK:-}" ] && exit 1
+    exit 0
+fi
+
 # TLS_SERVER_BREAK compiles a deliberate defect in and INVERTS the verdict, so
 # the run passes only if the suite notices. See tests/tlsx.mk.
 BREAK="${TLS_SERVER_BREAK:-}"
@@ -84,7 +127,12 @@ with open(sys.argv[1], 'w') as f:
     for i in range(220):
         f.write('%06d %s\n' % (i, 'abcdefghijklmnopqrstuvwxyz0123456789' * 1))
 PY
-NBYTES=$(wc -c < "$BUILD/payload.txt")
+# `| tr -d` because BSD wc PADS its count to a fixed width and every number
+# here lands in a human-read diagnostic ("echo differs: $echoed of $NBYTES
+# bytes came back"). A padded count in a FAILURE message is what made
+# tests/tlsx.mk's crypto-diff control unreadable for as long as it was --
+# `fail=717 of      717 total` printed under the word FAILED.
+NBYTES=$(wc -c < "$BUILD/payload.txt" | tr -d '[:space:]')
 echo "== TLS server interop against $($OPENSSL version) =="
 echo "-- payload: $NBYTES bytes --"
 
@@ -143,21 +191,27 @@ case_run() {
     [ $# -gt 0 ] && shift
     while [ $# -gt 0 ]; do sargs+=("$1"); shift; done
 
-    if ! start_server "${sargs[@]}"; then
+    # ${a[@]+"${a[@]}"} and not a bare "${a[@]}": in bash < 4.4 an EMPTY array
+    # counts as unset for ${a[@]}, so `set -u` (line 26) kills the shell with
+    # `sargs[@]: unbound variable` before a single case runs. The stock macOS
+    # bash is 3.2.57 and macOS is the documented dev host; `sargs` is empty for
+    # every case that does not override the server's defaults, which is most of
+    # them. Same defect and same fix as run-tls-interop.sh's case_run.
+    if ! start_server ${sargs[@]+"${sargs[@]}"}; then
         echo "FAIL $label (server did not start)"; cat "$BUILD/srv.err" 2>/dev/null | tail -5
         fail=$((fail+1)); SRVPID=""; return
     fi
     "$OPENSSL" x509 -inform DER -in "$BUILD/srv.der" -out "$BUILD/srv.pem" 2>/dev/null
 
     "$OPENSSL" s_client -connect "127.0.0.1:$PORT" -servername localhost \
-        -quiet "${oargs[@]}" < "$BUILD/payload.txt" \
+        -quiet ${oargs[@]+"${oargs[@]}"} < "$BUILD/payload.txt" \
         > "$BUILD/cli.out" 2>"$BUILD/cli.err"
     local orc=$?
     wait "$SRVPID" 2>/dev/null; local src=$?
     SRVPID=""
 
     local echoed=0
-    [ -f "$BUILD/cli.out" ] && echoed=$(wc -c < "$BUILD/cli.out")
+    [ -f "$BUILD/cli.out" ] && echoed=$(wc -c < "$BUILD/cli.out" | tr -d '[:space:]')
 
     if [ "$want" = 0 ]; then
         # A refusal case: the handshake must NOT complete. Either end saying no
@@ -200,7 +254,7 @@ echo
 echo "-- the generated certificate, judged by openssl --"
 "$BUILD/tls_server_test" gencert --cert-out "$BUILD/gen.der" --quiet >/dev/null 2>&1
 if "$OPENSSL" x509 -inform DER -in "$BUILD/gen.der" -out "$BUILD/gen.pem" 2>"$BUILD/x509.err"; then
-    echo "ok   openssl parses it ($(wc -c < "$BUILD/gen.der") bytes DER)"
+    echo "ok   openssl parses it ($(wc -c < "$BUILD/gen.der" | tr -d '[:space:]') bytes DER)"
     pass=$((pass+1))
 else
     echo "FAIL openssl cannot parse the certificate we wrote"

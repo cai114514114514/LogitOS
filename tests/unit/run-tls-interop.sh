@@ -32,6 +32,73 @@ trap cleanup EXIT
 command -v "$OPENSSL" >/dev/null || { echo "SKIP: no openssl"; exit 0; }
 "$OPENSSL" s_server -help 2>&1 | grep -q -- '-groups' || { echo "SKIP: openssl s_server lacks -groups"; exit 0; }
 
+# The `-groups` probe above is NOT selective enough, measured 2026-08-28:
+# macOS ships LibreSSL as /usr/bin/openssl (3.3.6 here), which HAS -groups and
+# has neither -ciphersuites nor -cert_chain -- and those two are what the whole
+# design of this file rests on ("Each case pins openssl to ... a single cipher
+# suite"). It got past the probe and then ran every case against an s_server
+# that had exited on an unknown option: 6 passed, 59 failed, and not one of
+# those 59 was about c/net/tls. Probe the flags the cases actually drive.
+#
+# Note what this skip must NOT do. Six targets run this script with
+# TLS_INTEROP_BREAK set and INVERT the verdict (test-tls-resume-control,
+# test-p521-control, test-ocsp-control, test-ed25519-x509-control,
+# test-gcm256-control, and the fail-closed block below): for those, "exit 0"
+# ordinarily means "the control fired and the suite caught the break". A skip
+# that borrowed that exit code silently would report a control satisfied by a
+# host that never compiled the break. It still exits 0 -- an absent OpenSSL is
+# not a regression in c/net/tls -- but it says CONTROL NOT FIRED in as many
+# words, and prints no line containing PASS or OK. The tree's own rule, five
+# lines from the bottom of this file: a run that executed no cases at all must
+# not report success.
+#
+# AND THE EXIT CODE HAS TO CARRY THAT, because nothing in this tree reads the
+# text. `make`, `tools/ci.sh` and `make test-sweep` all classify a target by its
+# EXIT STATUS; the words "CONTROL NOT FIRED" are read by a person, and only if
+# one happens to be looking. The first version of this skip exited 0 in every
+# mode, which on the documented dev host turned test-tls-interop, test-p521-
+# control, test-ocsp-control, test-ed25519-x509-control, test-gcm256-control and
+# every test-tls-server-negctl-* from RED into GREEN while running 0 of 73 and
+# 0 of 26 cases -- a strict red-to-green conversion on targets whose entire
+# claim is "the break is detectable", with nothing measured. That is CLAUDE.md
+# rule 5 in one commit: a control that cannot be watched failing, that now reads
+# like one, which is worse than the red it replaced.
+#
+# So the POSITIVE run still exits 0 -- an absent OpenSSL is genuinely not a
+# regression in c/net/tls -- and a CONTROL run exits 1. Both control variables
+# count: TLS_INTEROP_BREAK compiles a break into the client, and
+# TLS_INTEROP_NOROOTS_CONTROL drives the fail-closed block at the bottom, whose
+# `exit 0` likewise MEANS "the control fired". The first version tested only the
+# former, so the fail-closed control kept reporting a pass it had not earned.
+_tls_control_mode=""
+[ -n "${TLS_INTEROP_BREAK:-}" ] && _tls_control_mode="${TLS_INTEROP_BREAK}"
+[ -n "${TLS_INTEROP_NOROOTS_CONTROL:-}" ] && _tls_control_mode="no-roots (fail-closed)"
+
+if ! "$OPENSSL" s_server -help 2>&1 | grep -q -- '-ciphersuites' ||
+   ! "$OPENSSL" s_server -help 2>&1 | grep -q -- '-cert_chain'; then
+    if [ -n "$_tls_control_mode" ]; then
+        echo "FAIL (CONTROL NOT FIRED): the negative control ${_tls_control_mode}"
+        echo "      was NOT exercised. Nothing below certifies that the break is"
+        echo "      detectable, and this run is not evidence about it. Exiting"
+        echo "      NON-ZERO on purpose: a control that could not be run is not a"
+        echo "      control that passed, and the exit code is the only thing the"
+        echo "      build reads."
+    else
+        echo "SKIP: 0 of 73 interop cases ran."
+    fi
+    echo "      $($OPENSSL version 2>&1) has no -ciphersuites and no -cert_chain"
+    echo "      in s_server, so no case here can pin a suite or send a chain."
+    echo "      This suite is written against OpenSSL 3.5.5; LibreSSL (what"
+    echo "      macOS ships as /usr/bin/openssl) is not a substitute."
+    echo "      NOT CHECKED: versions, the nine suites, the four groups, ALPN,"
+    echo "      certificate key types, OCSP stapling, resumption."
+    echo "      Settle it with an OpenSSL 3 binary, e.g. on macOS:"
+    echo "          brew install openssl@3"
+    echo "          OPENSSL=\$(brew --prefix openssl@3)/bin/openssl make test-tls-interop"
+    [ -n "$_tls_control_mode" ] && exit 1
+    exit 0
+fi
+
 mkdir -p "$BUILD" "$TMP/roots"
 
 # ---------------------------------------------------------------- test PKI ---
@@ -217,10 +284,19 @@ case_run() {
     [ $# -gt 0 ] && shift
     while [ $# -gt 0 ]; do cargs+=("$1"); shift; done
 
-    if ! start_server "$chain" "$key" "${sargs[@]}"; then
+    # ${a[@]+"${a[@]}"} and not a bare "${a[@]}": in bash < 4.4 an EMPTY array
+    # counts as unset for ${a[@]}, so `set -u` (line 15) kills the shell with
+    # `cargs[@]: unbound variable`. The stock macOS bash is 3.2.57 and the
+    # documented dev host is macOS, so on 2026-08-28 `make test-tls-interop`
+    # exited 2 having run ZERO of its 73 cases -- and it exited at the FIRST
+    # case, so the failure named a variable rather than a handshake and read
+    # like a broken script. Both arrays are legitimately empty in the common
+    # case (a case with no extra server or client flags), so this is not a
+    # rare path: it is every plain case.
+    if ! start_server "$chain" "$key" ${sargs[@]+"${sargs[@]}"}; then
         echo "FAIL $label (server did not start)"; cat "$TMP/server.log"; fail=$((fail+1)); return
     fi
-    "$BUILD/tls_interop_test" 127.0.0.1 "$CLI_PORT" localhost "${cargs[@]}" >"$TMP/client.log" 2>&1
+    "$BUILD/tls_interop_test" 127.0.0.1 "$CLI_PORT" localhost ${cargs[@]+"${cargs[@]}"} >"$TMP/client.log" 2>&1
     local rc=$?
     stop_server
 

@@ -1119,6 +1119,52 @@ int tls_check_staple(struct tls_sess *s, const struct cert *chain, int ncert,
         kprintf("[tls] OCSP staple: good (%s)\n", s->host);
         return 0;
     }
+
+    /* STALE IS THE ONE VERDICT THAT IS NOT A REASON TO REFUSE, and it is the
+     * only one exempted here. Everything else keeps the old behaviour.
+     *
+     * The line that forces the question is fourteen above:
+     *
+     *     if (!staple || staplelen <= 0) return 0;   / * no staple: proceed * /
+     *
+     * so revocation information is already OPTIONAL on this stack. Against
+     * that, a response that is correctly signed by the entitled responder and
+     * has merely aged past its nextUpdate is a VALID STATEMENT that has gone
+     * out of date -- the CA's responder was late. It is not the certificate
+     * being revoked, and refusing it means a server is punished for stapling
+     * while the server next door that staples nothing is admitted.
+     *
+     * IT IS NOT THEORETICAL. Typing `python.org` into the browser produced
+     *     [tls] chain of 2 verified for python.org
+     *     [tls] OCSP staple REFUSED for python.org: response is stale ... (-7)
+     *     [browser] page fetch failed: TLS refused
+     * -- the site was simply unreachable. It was not the clock: nodejs.org's
+     * staple was accepted twice in the same boot seconds later, and the real
+     * response carried thisUpdate 01:02:29 / nextUpdate 13:02:29 against a
+     * 09:02 clock, four hours of margin at both ends.
+     *
+     * WHY THE LINE IS HERE AND NOT WIDER. The first version of this change
+     * exempted every non-REVOKED code on the argument that an attacker who can
+     * tamper with a staple can also strip it. run-tls-interop.sh caught it
+     * immediately -- "OCSP staple: tampered is refused" went green-to-red --
+     * and the case's own comment states the position this tree had already
+     * taken, deliberately: "a response we cannot verify must be fatal rather
+     * than treated as absent". That is a different claim from the one above
+     * and it survives: a response whose SIGNATURE does not check out is not a
+     * statement at all, and admitting it would make the check decorative.
+     * So the split is cryptographic validity, not evidence-vs-absence:
+     *
+     *   PARSE STATUS TYPE CERTID REVOKED UNKNOWN SIG SIGNER -> refuse (as before)
+     *   STALE                                              -> proceed, logged
+     *
+     * Nothing the interop suite asserts changes: good connects, REVOKED is
+     * refused, tampered is refused, no-staple connects. No case covers STALE,
+     * which is exactly how it came to be fatal without anyone deciding it. */
+    if (rc == OCSP_E_STALE) {
+        kprintf("[tls] OCSP staple for %s is signed but out of date -- proceeding,"
+                " as with no staple at all\n", s->host);
+        return 0;
+    }
     kprintf("[tls] OCSP staple REFUSED for %s: %s (%d)\n", s->host, ocsp_strerror(rc), rc);
     return TLS_E_CERT;
 }
