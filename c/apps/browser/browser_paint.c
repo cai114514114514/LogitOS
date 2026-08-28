@@ -1974,6 +1974,37 @@ static void ptx_note(int x, int y, const char *s, int len)
 
 void browser_paint_text_log(int on) { g_ptx_log = on ? 1 : 0; }
 
+int browser_paint_text_find(const char *needle)
+{
+    int nlen = 0; while (needle[nlen]) nlen++;
+    if (nlen <= 0) return 0;
+    int runs = 0;
+    int i = 0;
+    while (i < g_ptx_n) {
+        int j = i;
+        while (j < g_ptx_n && g_ptx[j] != '\n') j++;
+        /* skip the "x,y " coordinate prefix ptx_pos wrote */
+        int m = i;
+        while (m < j && g_ptx[m] != ' ') m++;
+        if (m < j) m++;
+        int textlen = j - m;
+        int found = 0;
+        for (int p = 0; p + nlen <= textlen && !found; p++) {
+            int q = 0;
+            for (; q < nlen; q++) {
+                int a = (unsigned char)g_ptx[m + p + q], b = (unsigned char)needle[q];
+                if (a >= 'A' && a <= 'Z') a += 32;
+                if (b >= 'A' && b <= 'Z') b += 32;
+                if (a != b) break;
+            }
+            if (q == nlen) found = 1;
+        }
+        if (found) runs++;
+        i = j + 1;
+    }
+    return runs;
+}
+
 void browser_paint_text_dump(void)
 {
     printf("[dl] painted text: %d run(s), %d byte(s)%s\n", g_ptx_runs, g_ptx_chars,
@@ -1993,6 +2024,16 @@ void browser_paint_text_dump(void)
         i = j + 1;
     }
     printf("[dl] ---8<--- end painted text\n");
+}
+
+/* The DevTools chain panel's last link, "text painted" -- reads the SAME two
+ * counters browser_paint_text_dump() prints, so the panel's number and the
+ * serial console's number are the same jar, not two that could drift apart.
+ * Either pointer may be NULL. */
+void browser_paint_text_counts(int *runs, int *chars)
+{
+    if (runs)  *runs  = g_ptx_runs;
+    if (chars) *chars = g_ptx_chars;
 }
 
 void browser_paint(int vx, int vy, int vw, int vh, int scroll)

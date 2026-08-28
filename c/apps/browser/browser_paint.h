@@ -39,6 +39,37 @@ void browser_paint_text_dump(void);
  * replaced it. browser.c arms it; nothing else should. */
 void browser_paint_text_log(int on);
 
+/* Find-in-page, over the SAME record browser_paint_text_dump() prints -- not a
+ * second DOM walk. One traversal answers about:text, about:boxes-adjacent
+ * diagnostics and this; a second walk here is exactly the one-jar-two-doors
+ * trap this tree has paid for three times (CLAUDE.md), and the two walks
+ * would disagree about which words are on screen -- the one fact the whole
+ * diagnostic apparatus rests on.
+ *
+ * SCOPE, STATED RATHER THAN DISCOVERED: the record is PAINTED text, i.e. only
+ * what the last paint actually put on screen -- browser_paint's own culling
+ * skips a run whose box is entirely outside the viewport, so a match that is
+ * scrolled out of view is not in the record and this cannot find it. This is
+ * therefore "does the needle appear anywhere CURRENTLY VISIBLE", not
+ * whole-document find; the caller must say so in the status line rather than
+ * imply a full-document search that was not done (rule 5: a control that
+ * cannot be watched failing is worse than no control).
+ *
+ * Case-insensitive substring match. Returns the number of RUNS containing at
+ * least one occurrence (not the occurrence count -- a run is a paragraph's
+ * worth of text in one style, and "3 runs" is what a person reading the
+ * status line means by "3 matches" more often than "3 occurrences" does). */
+int browser_paint_text_find(const char *needle);
+
+/* The DevTools chain panel's "text painted" link -- the same g_ptx_runs /
+ * g_ptx_chars browser_paint_text_dump() prints, so the panel cannot report a
+ * different number than the serial console does for the one question that
+ * separates a page that RENDERED from a page that just did not error:
+ * stripe.com went 69 painted text runs -> 38 -> 0 with no failed request and
+ * no missing subresource, and this is the counter that showed it. Either
+ * pointer may be NULL. */
+void browser_paint_text_counts(int *runs, int *chars);
+
 /* ---- WHAT THE PAINTER REFUSED, counted ----------------------------------
  *
  * Three visual features landed with a named, measured limit rather than an

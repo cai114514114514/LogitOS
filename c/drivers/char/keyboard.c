@@ -124,6 +124,22 @@ void keyboard_handle(void)
             case 0x49: k = KEY_PGUP; break;  case 0x51: k = KEY_PGDN;  break;
             case 0x47: k = KEY_HOME; break;  case 0x4F: k = KEY_END;   break;
             case 0x4B: k = KEY_LEFT; break;  case 0x4D: k = KEY_RIGHT; break;
+            /* Forward Delete -- set-1 extended make code 0x53. Delivered as
+             * the literal ASCII DEL codepoint (0x7F), not a KEY_* constant,
+             * because that is ALREADY the convention two callers depend on:
+             * browser.c's fc_ce_delete() (`case 0x7f`, contenteditable
+             * forward-delete) and addr_delete_fwd() (the address bar's) both
+             * switch on a raw `k == 0x7f`. Before this line neither could
+             * ever fire from a real keyboard or a QMP "delete" qcode: this
+             * scancode fell through every case above, k stayed 0, and
+             * `if (k) wm_key(k);` below silently dropped it -- a forward-
+             * delete key that compiled, was wired end to end in two editors,
+             * and had never once been reachable from a keystroke. Found by
+             * driving tests/qmp/qmp_addrbar_probe.py's CJK case on the
+             * device: Delete was pressed, "你" stayed in the address bar,
+             * and the percent-encoded load: line said so in ASCII hex
+             * without needing a second decoder to notice. */
+            case 0x53: k = 0x7F; break;
         }
         if (k) wm_key(k);
         return;
@@ -141,6 +157,20 @@ void keyboard_handle(void)
     }
     if (sc & 0x80)
         return;                      /* other key releases */
+
+    /* F1..F12 -- set-1 make codes 0x3B..0x44 (F1-F10), 0x57 (F11), 0x58
+     * (F12), all UNPREFIXED (no 0xE0). They fall through scancode_map
+     * unmapped (its highest populated index is 0x39, space) and are not
+     * modifiers, so without this they hit `!base` above and vanish before
+     * wm_key() is ever called -- the whole reason DevTools' F12 accelerator
+     * needs a kernel change at all. Placed AFTER the release filter so
+     * releases are already gone and this is exactly one wm_key() per
+     * physical press; typematic auto-repeat still resends the make code
+     * ~30x/s while held, so a debounce belongs in whatever reads this event,
+     * not here (there is no release to debounce against). */
+    if (sc >= 0x3B && sc <= 0x44) { wm_key(KEY_F1 + (sc - 0x3B)); return; }
+    if (sc == 0x57) { wm_key(KEY_F11); return; }
+    if (sc == 0x58) { wm_key(KEY_F12); return; }
 
     char base = scancode_map[sc & 0x7F];
     if (!base)

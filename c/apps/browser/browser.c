@@ -37,6 +37,7 @@ LOGIT_WEAK_STUB(js_forms_cleanup);
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
+#include "css_report.h"          /* the ONE accounting of the stylesheet pipeline */
 #include <stdlib.h>              /* malloc/realloc/free -- resources are sized to fit */
 #include <string.h>
 
@@ -93,8 +94,70 @@ static int win_w = WINW, win_h = WINH;
 #define BROWSER_PUMP_MS      10
 #define BROWSER_WAIT_MAX_MS  1000
 
-static char url[600] = "http://example.com/";
-static int  ulen = 19;
+/* THE START PAGE. This used to be "http://example.com/" -- plain http, on a
+ * machine with a real TLS 1.3 stack, and typed-over rather than edited (see
+ * ucaret/usel below). Both were the owner's complaints verbatim: "it opens on
+ * example" and "you have to type http/https by hand".
+ *
+ * Empty, not a homepage: the browser boots exactly like Ctrl+T / a new tab
+ * does elsewhere in this file (url[0]=0, ulen=0, editing=1, a status line
+ * inviting a URL) rather than inventing a second "first tab" behaviour next
+ * to the one that already exists for every tab after it. That also sidesteps
+ * fabricating a local homepage page with its own fetch/render path.
+ *
+ * example.com is UNCHANGED as a URL a person or a harness can navigate to --
+ * this only changes what greets a fresh boot. It stays the site scoreboard's
+ * control row: tests/qmp/qmp_site.py and every scoreboard driver reach it by
+ * pressing Ctrl+L and typing the full URL, never by reading this default, so
+ * the control keeps measuring the same page it always has. */
+static char url[600] = "";
+static int  ulen = 0;
+/* The address bar's caret and selection, both BYTE offsets into url[] (UTF-8
+ * stepped, like every other caret in this file -- see ce_step/fc_edit's own
+ * comments on why "the last character" cannot mean "the last byte"). usel is
+ * the selection anchor; usel == ucaret means no selection, exactly like the
+ * contenteditable and form-control caret models this mirrors. Before this,
+ * the address bar had NO caret at all and its own comment said so ("append-
+ * at-end only... no caret to move") -- KEY_LEFT/RIGHT navigated history
+ * instead of moving it, and Backspace could only ever delete the last
+ * character, which is the owner's fourth complaint: clearing a Google search
+ * URL's tracking suffix took on the order of 60 backspaces. */
+static int  ucaret = 0;
+static int  usel = 0;
+
+/* THIS MIRRORS forms.c's fc_edit_* / fc_ce_* (same UTF-8-by-character
+ * stepping, same anchor/focus shape for a shift-extended selection) rather
+ * than CALLING it: forms.c's caret lives inside a struct fctl hung off a DOM
+ * text node, and this bar is a flat char[600] with no DOM node at all, torn
+ * down and refilled by session restore, tab switching, Ctrl+L, the
+ * history/bookmark panel and script navigation -- none of which forms.c's
+ * lifetime rules have any business governing. There is no INVARIANT shared
+ * between the two to make this a "one jar, two doors" risk, only a
+ * stateless ALGORITHM (skip UTF-8 continuation bytes), safe to have twice
+ * for the same reason step_left/step_right themselves are five lines: a
+ * second copy of five lines does not rot the way a second copy of a NUMBER
+ * does.
+ *
+ * EVERY call site that replaces the WHOLE address -- a navigation
+ * completing, a tab switch, Ctrl+T/Ctrl+W opening an empty bar, a picked
+ * history/bookmark row, a same-document pushState/hash move -- assigns
+ * url[]/ulen directly and then MUST call addr_sync(), below, to put the
+ * caret back in bounds. Forgetting it is not silent: the caret would sit
+ * where the OLD text ended, which is either inside the new text (harmless
+ * looking, wrong) or past its end (an out-of-bounds draw the moment editing
+ * resumes) -- so a call site that forgets is left for the next reader to
+ * find by the caret landing somewhere that is visibly not the end of the
+ * new address. */
+
+/* Caret to the end, selection collapsed. Call after any direct url[]/ulen
+ * assignment -- see the block comment above. (The rest of this bar's
+ * editing primitives -- addr_step/addr_insert/addr_backspace/addr_move/
+ * addr_home/addr_end/addr_select_all -- live further down, next to
+ * hist_go/set_status, where a SECOND concurrent pass at this same file also
+ * landed one; this one function stayed here because hist_go, right below,
+ * already depends on it and hist_go is defined before that block.) */
+static void addr_sync(void) { ucaret = ulen; usel = ulen; }
+
 static int  scroll;                      /* pixel scroll offset */
 static int  ph;                          /* laid-out page height */
 static char status[96] = "ready -- Enter loads; Cmd+T new tab, Ctrl+Tab switches";
@@ -115,17 +178,170 @@ static struct node *g_root;              /* current page DOM (owns display-list 
 static void hist_push(const char *u)    { tab_hist_push(tab_cur(), u); }
 static void hist_replace(const char *u) { tab_hist_replace(tab_cur(), u); }
 
-static int hist_go(int delta)              /* -1 back, +1 forward; 1 if moved */
+/* -1 back, +1 forward. Returns 0 (nothing to do), 1 (a real navigation
+ * happened -- url[] holds the target and the caller MUST call load()), or 2
+ * (a same-document move happened -- url[] holds the new address, a popstate
+ * is already queued for the next pump, and the caller must NOT call load():
+ * the DOM, the JS heap and every running timer are exactly as they were).
+ *
+ * The joint session history this button walks is split across two modules
+ * that cannot see each other's counter (tabs.c's per-tab hist[] for full
+ * document loads, js_webapi.c's g_hist[] for pushState/replaceState/fragment
+ * entries within whatever document is CURRENTLY loaded -- see tabs.c's
+ * comment above tab_hist_behind for the whole shape). A page using
+ * history.pushState expects the physical Back button to undo its OWN last
+ * route change first -- firing popstate, no reload -- before it ever reaches
+ * the previous full document, so the same-document half is tried FIRST and
+ * the full-document stack is the fallback, not the other way around. */
+static int hist_go(int delta)
 {
+    if (LOGIT_HAVE(js_webapi_hist_step)) {
+        char u[600];
+        if (js_webapi_hist_step(js_page_ctx(), delta, u, (int)sizeof u)) {
+            int i = 0; while (u[i] && i < (int)sizeof url - 1) { url[i] = u[i]; i++; }
+            url[i] = 0; ulen = i; addr_sync();
+            return 2;
+        }
+    }
     if (!tab_hist_go(tab_cur(), delta, url, (int)sizeof url)) return 0;
     ulen = 0; while (url[ulen]) ulen++;
+    addr_sync();
     return 1;
 }
 
 static void set_status(const char *s)
 { int i = 0; while (s[i] && i < (int)sizeof status - 1) { status[i] = s[i]; i++; } status[i] = 0; }
 
+/* ---- the address bar's caret + selection, over the flat url[]/ulen buffer -
+ *
+ * Mirrors control_key()/fc_edit_* (a form field's caret) and ce_key()/fc_ce_*
+ * (a contenteditable's caret) -- same model, byte offset + UTF-8 stepping,
+ * anchor-and-caret selection -- but over url[]/ulen rather than a form
+ * control, because there is no <input> node behind the chrome's own address
+ * bar for forms.c to own. One caret MODEL, three owners of a buffer each;
+ * not a fourth model invented for this one field. */
+
+/* Step one UTF-8 character in url[], the same continuation-byte walk the old
+ * backspace-only code used ("delete a whole character, not one byte" -- a
+ * mid-string edit needs the same care the end-only one already had). */
+static void addr_step(int *p, int dir)
+{
+    int q = *p;
+    if (dir < 0) { if (q > 0) { q--; while (q > 0 && ((unsigned char)url[q] & 0xC0) == 0x80) q--; } }
+    else         { if (q < ulen) { q++; while (q < ulen && ((unsigned char)url[q] & 0xC0) == 0x80) q++; } }
+    *p = q;
+}
+
+static int addr_word_char(unsigned char c)
+{ return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); }
+
+static void addr_select_all(void) { usel = 0; ucaret = ulen; }
+
+/* Remove bytes [a,b) from url[], a<=b, both clamped. Selection-agnostic --
+ * callers collapse ucaret/usel themselves, same split as fc_edit_insert. */
+static void addr_delete_range(int a, int b)
+{
+    if (a < 0) a = 0; if (b > ulen) b = ulen; if (a >= b) return;
+    int i = a, j = b;
+    while (j < ulen) url[i++] = url[j++];
+    ulen = i; url[ulen] = 0;
+}
+
+/* Insert `s` (sl bytes) at the caret, REPLACING the selection first if there
+ * is one -- typing over a selection is what every text field does, and it is
+ * also the fast path for "delete this whole tracking suffix": select it,
+ * type the replacement (or nothing). */
+static void addr_insert(const char *s, int sl)
+{
+    int a = ucaret < usel ? ucaret : usel;
+    int b = ucaret < usel ? usel : ucaret;
+    if (b > a) { addr_delete_range(a, b); ucaret = usel = a; }
+    if (sl <= 0) return;
+    if (ulen + sl > (int)sizeof url - 1) sl = (int)sizeof url - 1 - ulen;
+    if (sl <= 0) return;
+    for (int i = ulen - 1; i >= ucaret; i--) url[i + sl] = url[i];
+    for (int i = 0; i < sl; i++) url[ucaret + i] = s[i];
+    ulen += sl; url[ulen] = 0;
+    ucaret += sl; usel = ucaret;
+}
+
+/* Backspace: the selection if there is one, else one UTF-8 character to the
+ * left of the caret -- which, now that the caret can be anywhere, is no
+ * longer necessarily "the last character of url[]". */
+static void addr_backspace(void)
+{
+    int a = ucaret < usel ? ucaret : usel;
+    int b = ucaret < usel ? usel : ucaret;
+    if (b > a) { addr_delete_range(a, b); ucaret = usel = a; return; }
+    if (ucaret <= 0) return;
+    int p = ucaret; addr_step(&p, -1);
+    addr_delete_range(p, ucaret);
+    ucaret = usel = p;
+}
+
+/* Left/Right. `ctrl` jumps a word (delimiter run then word run, same shape as
+ * fc_edit_move's ctrl case); `shift` extends the selection instead of moving
+ * it. Collapsing an existing selection without shift goes to its near/far
+ * edge, not one character past the caret -- what every real text field does,
+ * and what a person expects after Ctrl+A then Right. */
+static void addr_move(int dir, int ctrl, int shift)
+{
+    if (!shift && ucaret != usel) {
+        int p = dir < 0 ? (ucaret < usel ? ucaret : usel) : (ucaret > usel ? ucaret : usel);
+        ucaret = usel = p;
+        return;
+    }
+    int p = ucaret;
+    if (ctrl) {
+        if (dir < 0) {
+            while (p > 0 && !addr_word_char((unsigned char)url[p - 1])) p--;
+            while (p > 0 && addr_word_char((unsigned char)url[p - 1])) p--;
+        } else {
+            while (p < ulen && !addr_word_char((unsigned char)url[p])) p++;
+            while (p < ulen && addr_word_char((unsigned char)url[p])) p++;
+        }
+    } else {
+        addr_step(&p, dir);
+    }
+    ucaret = p;
+    if (!shift) usel = p;
+}
+
+static void addr_home(int shift) { ucaret = 0;    if (!shift) usel = ucaret; }
+static void addr_end(int shift)  { ucaret = ulen;  if (!shift) usel = ucaret; }
+
+/* Forward-delete (the Delete key, delivered as 0x7f -- see ce_key()'s
+ * `case 0x7f` for the same convention on a contenteditable). A selection is
+ * deleted whole, same as addr_backspace(); otherwise the character AT the
+ * caret goes, not before it. */
+static void addr_delete_fwd(void)
+{
+    int a = ucaret < usel ? ucaret : usel;
+    int b = ucaret < usel ? usel : ucaret;
+    if (b > a) { addr_delete_range(a, b); ucaret = usel = a; return; }
+    if (ucaret >= ulen) return;
+    int p = ucaret; addr_step(&p, +1);
+    addr_delete_range(ucaret, p);
+    usel = ucaret;
+}
+
+/* Copy the selected bytes out for Ctrl+C/Ctrl+X, for clip_set() -- 0 for an
+ * empty (collapsed) selection, same as forms.c's fc_ce_selection_text(). */
+static int addr_selection_text(char *buf, int max)
+{
+    int a = ucaret < usel ? ucaret : usel;
+    int b = ucaret < usel ? usel : ucaret;
+    int n = b - a; if (n > max) n = max; if (n < 0) n = 0;
+    for (int i = 0; i < n; i++) buf[i] = url[a + i];
+    return n;
+}
+
 static void redraw(int editing);
+/* The page-text selection's anchor/focus reset -- defined with the rest of
+ * that machinery further down (it needs the display-list helpers), declared
+ * here because the navigation teardown above load_once()'s two dom_free()
+ * call sites is the earliest caller in the file. */
+static void psel_clear(void);
 /* The open <select>'s list. Drawn last, over everything, because the display
  * list has no z-order above itself -- see the popup section further down. */
 static void draw_select_popup(void);
@@ -153,13 +369,84 @@ static unsigned long long clock_ms(void) { return monotonic_ms(); }
 /* ---- DOM helpers: collect <style>/<script> text (moved from the kernel) ---- */
 static int tag_is(const char *t, const char *lit){ int i=0; for(;lit[i];i++) if(t[i]!=lit[i]) return 0; return t[i]==0; }
 
+/* THE MEDIA ATTRIBUTE, ON EITHER DOOR. Neither collect_style's <style media=""> nor
+ * collect_css_links' <link media=""> ever read this attribute -- verified by grep:
+ * zero occurrences of dom_attr(*, "media") anywhere in this file before this change.
+ * The result is not "some CSS is missing", it is worse: a stylesheet meant for
+ * print, speech, or a narrow viewport was concatenated into author_css and applied
+ * UNCONDITIONALLY, so a page that ships one screen sheet and one narrow/mobile
+ * override sheet (a very ordinary responsive-CSS pattern, not specific to any one
+ * site) has the override win regardless of the real window width -- indistinguishable
+ * from "the CSS never arrived" from outside, because css_report.c's counters all
+ * read exactly as if every declaration were kept: no request failed, nothing was
+ * dropped by the parser, the rule matched and applied -- to the wrong medium.
+ *
+ * The fix routes the attribute through LibCSS's OWN @media matching (already used
+ * for <style>/<link> content that embeds an @media block, and already exercised by
+ * css_select_ctx_media_matches at the media-query test above) rather than inventing
+ * a second evaluator here: wrap the linked/inline text in `@media <value> { ... }`
+ * before it reaches author_css, and the cascade's existing spec-correct media
+ * matching decides whether it counts -- ONE evaluator, not two that could disagree. */
+static int str_eq_ci(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+/* Empty and "all" are the two spellings of "unconditional" (HTML's default
+ * attribute value is the empty string, meaning "all"); wrapping those adds bytes
+ * for zero behavioural change, so they are the two cases that skip it.
+ *
+ * MEDIA_ATTR_IGNORE is the negative control (tests/loader.mk's test-media-negctl):
+ * built with it defined, this reverts to exactly what shipped before this
+ * change -- every <style>/<link>'s media attribute read and then thrown away,
+ * both doors unconditional again. */
+static int media_needs_wrap(const char *m)
+{
+#ifdef MEDIA_ATTR_IGNORE
+    (void)m; return 0;
+#else
+    return m && *m && !str_eq_ci(m, "all");
+#endif
+}
+
+static int append_media_open(char *out, int o, int max, const char *media)
+{
+    const char *pre = "@media ";
+    while (*pre && o < max - 1) out[o++] = *pre++;
+    for (const char *p = media; *p && o < max - 1; p++) out[o++] = *p;
+    const char *mid = " {\n";
+    while (*mid && o < max - 1) out[o++] = *mid++;
+    return o;
+}
+static int append_media_close(char *out, int o, int max)
+{
+    const char *post = "\n}\n";
+    while (*post && o < max - 1) out[o++] = *post++;
+    return o;
+}
+
 static int collect_style(struct node *n, char *out, int o, int max)
 {
     if (!n) return o;
-    if (n->type == N_ELEM && tag_is(n->tag, "style"))
+    if (n->type == N_ELEM && tag_is(n->tag, "style")) {
+        const char *media = dom_attr(n, "media");
+        int wrap = media_needs_wrap(media);
+        if (wrap) o = append_media_open(out, o, max, media);
+        int had = 0;
         for (struct node *c = n->first_child; c; c = c->next)
-            if (c->type == N_TEXT && c->text)
+            if (c->type == N_TEXT && c->text) {
+                had += c->textlen;
                 for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+            }
+        if (wrap) o = append_media_close(out, o, max);
+        css_report_style(had);
+    }
     for (struct node *c = n->first_child; c; c = c->next)
         o = collect_style(c, out, o, max);
     return o;
@@ -197,6 +484,92 @@ static int starts_ci(const char *h, const char *pre)
         if (ca != cb) return 0;
     }
     return 1;
+}
+
+/* ---- scheme inference, for what a PERSON TYPES into the address bar -----
+ *
+ * Never applied to an internal navigation -- follow_link(), the redirect
+ * chain, hist_go(), a picked history/bookmark row and a script nav all
+ * already carry a complete URL and go straight to load(). This runs from
+ * exactly one place: Enter while `editing` is true, below.
+ *
+ * RFC 3986's own scheme grammar: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+ * ":". Returns the index of the ':' if `s` starts with one, 0 if not --
+ * which doubles as "no scheme" since a scheme can never be zero bytes long. */
+static int url_scheme_len(const char *s)
+{
+    if (!((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z'))) return 0;
+    for (int i = 1; s[i]; i++) {
+        char c = s[i];
+        if (c == ':') return i;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '+' || c == '-' || c == '.')) return 0;
+    }
+    return 0;
+}
+
+/* "8080" or "8080/path" -- digits, then end-of-string or '/'. The one real
+ * ambiguity in url_scheme_len(): "localhost:8080" and "myserver:8080" both
+ * satisfy the scheme grammar above (an all-ALPHA "scheme" up to a ':'), and
+ * without this check they would be read as a URI with scheme "localhost"/
+ * "myserver" and path "8080" -- which is not what typing a host:port means. */
+static int addr_looks_like_port(const char *s)
+{
+    int i = 0;
+    if (s[0] < '0' || s[0] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') i++;
+    return s[i] == 0 || s[i] == '/';
+}
+
+/* The decision, written down rather than felt (this is the owner's third
+ * complaint: "you have to type http/https by hand", plus the case CLAUDE.md
+ * calls out by name -- a bare word with no dot and no scheme):
+ *
+ *   - already has a scheme (about:, file:, javascript:, http(s):, an
+ *     unrecognised one -- ANY of them) -- left untouched. An explicit
+ *     `http://` URL is NOT upgraded behind the user's back either: they
+ *     typed a scheme, and overriding a scheme a person typed on purpose is a
+ *     different kind of surprise than adding one they never typed.
+ *   - looks like a HOST -- contains a dot (a domain or a bare IPv4
+ *     literal), a bracketed [IPv6] literal, "localhost" bare or with a
+ *     :port/path, or a bare "host:port" shape -- gets `https://` prepended,
+ *     never `http://`: this machine negotiates TLS 1.3 with a real
+ *     X25519MLKEM768 hybrid, and defaulting to plaintext would be a
+ *     downgrade, not a convenience.
+ *   - anything else -- a bare word with NO dot and NO scheme, e.g. "python"
+ *     -- is REFUSED. THERE IS NO SEARCH ENGINE CONFIGURED ON THIS MACHINE:
+ *     silently mailing the user's keystrokes to one would be worse than
+ *     doing nothing, and doing nothing VISIBLE is worse than both, so this
+ *     sets the status line to say so and does not navigate.
+ *
+ * Returns 1 if `url` is ready to load (unchanged, or a scheme was just
+ * prepended), 0 if the caller must not navigate -- the status line already
+ * says why. */
+static int addr_infer_scheme(void)
+{
+    if (ulen <= 0) return 0;
+    int sl = url_scheme_len(url);
+    int port_after_scheme = sl > 0 && addr_looks_like_port(url + sl + 1);
+    if (sl > 0 && !port_after_scheme) return 1;         /* a real scheme: untouched */
+
+    int dot = 0, bracket = (url[0] == '[');
+    for (int i = 0; i < ulen; i++) if (url[i] == '.') dot = 1;
+    int is_localhost = ulen >= 9 && starts_ci(url, "localhost") &&
+                        (ulen == 9 || url[9] == ':' || url[9] == '/');
+    int host_like = dot || bracket || port_after_scheme || is_localhost;
+    if (host_like) {
+        char tmp[600]; int n = 0;
+        const char *pre = "https://";
+        while (pre[n]) { tmp[n] = pre[n]; n++; }
+        for (int j = 0; j < ulen && n < (int)sizeof tmp - 1; j++) tmp[n++] = url[j];
+        tmp[n] = 0;
+        int k = 0; while (tmp[k] && k < (int)sizeof url - 1) { url[k] = tmp[k]; k++; }
+        url[k] = 0; ulen = k;
+        addr_sync();
+        return 1;
+    }
+    set_status("not a URL -- no search engine is configured here; type a full address");
+    return 0;
 }
 
 /* =========================== the persistent store ==========================
@@ -747,16 +1120,28 @@ static void collect_css_links(struct node *n)
     if (!n) return;
     if (n->type == N_ELEM && tag_is(n->tag, "link")) {
         const char *rel = dom_attr(n, "rel"), *href = dom_attr(n, "href");
-        /* a11y override themes are inactive unless the user selected them;
-         * skipping saves ~1 MiB of CSS on github.com. This is a CORRECTNESS
-         * filter (the sheets do not apply), not a budget. */
-        if (href && (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
-                     has_ci(href, "tritanopia"))) href = 0;
-        if (href && has_ci(rel, "stylesheet") && !starts_ci(href, "data:")) {
-            int dup = 0;                       /* github links the same module CSS 3x */
-            for (int i = 0; i < g_nres; i++)
-                if (g_res[i].ref && str_eq(g_res[i].ref, href)) { dup = 1; break; }
-            if (!dup) res_add(n, href, 0);
+        /* Every branch below reports itself. A stylesheet the document asks for
+         * and this browser chooses not to fetch is indistinguishable, from the
+         * outside, from one that 404'd and from one that was never linked --
+         * three different bugs, one unstyled page. The counts go to
+         * css_report.c and nowhere else. */
+        if (href && has_ci(rel, "stylesheet")) {
+            /* a11y override themes are inactive unless the user selected them;
+             * skipping saves ~1 MiB of CSS on github.com. This is a CORRECTNESS
+             * filter (the sheets do not apply), not a budget. */
+            if (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
+                has_ci(href, "tritanopia")) {
+                css_report_link(href, 1, "a11y theme (inactive)");
+            } else if (starts_ci(href, "data:")) {
+                css_report_link(href, 1, "data: URI (not fetched)");
+            } else {
+                int dup = 0;                   /* github links the same module CSS 3x */
+                for (int i = 0; i < g_nres; i++)
+                    if (g_res[i].ref && str_eq(g_res[i].ref, href)) { dup = 1; break; }
+                if (dup) css_report_link(href, 1, "duplicate href");
+                else if (!res_add(n, href, 0)) css_report_link(href, 1, "resource table full");
+                else css_report_link(href, 0, 0);
+            }
         }
     }
     for (struct node *c = n->first_child; c; c = c->next) collect_css_links(c);
@@ -833,7 +1218,7 @@ static void follow_link(const char *href)
     if (url_parse(url, &base) == 0 && url_resolve(&base, href, abs, sizeof abs) == 0)
         target = abs;
     int i = 0; while (target[i] && i < (int)sizeof url - 1) { url[i] = target[i]; i++; }
-    url[i] = 0; ulen = i;
+    url[i] = 0; ulen = i; addr_sync();
     hist_push(url);
     load(url);
 }
@@ -952,9 +1337,27 @@ static int body_is_html_not_js(const unsigned char *p, int len)
     return 1;
 }
 
-static int run_collected_scripts(const char *page_url)
+/* out_lost / out_refused / out_exc: the SAME conditions the printf lines
+ * right beside them already narrate to the serial log, counted rather than
+ * only printed -- so the DevTools chain panel (the "library panel" section,
+ * below) reads exactly what this loop already decided about each script
+ * instead of re-deriving it a second way that could disagree. Either
+ * pointer may be NULL (the host loader test does not care). Local to this
+ * function on purpose: no shared struct field to collide with whatever else
+ * touches `struct resent` this week.
+ *
+ * out_exc IS THE FIX FOR THE FAILURE THIS ORDER NAMED. js_page_eval() and
+ * js_module_eval() already RETURN "ran without an uncaught exception" --
+ * this loop used to throw that answer away, so "executed" meant only
+ * "invoked", and a script that ran and threw on its very first line looked
+ * identical to one that ran cleanly: both counted as "executed 1 of 1".
+ * Measured on this order's own test fixture (a page whose one script calls
+ * an undefined function): before this, the panel said "scripts executed:
+ * OK, executed 1 of 1" on a page whose script never got past its first
+ * statement. */
+static int run_collected_scripts(const char *page_url, int *out_lost, int *out_refused, int *out_exc)
 {
-    int ran = 0, inline_n = 0, classic_n = 0;
+    int ran = 0, inline_n = 0, classic_n = 0, lost_n = 0, refused_n = 0, exc_n = 0;
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < g_nres; i++) {
             struct resent *e = &g_res[i];
@@ -966,15 +1369,18 @@ static int run_collected_scripts(const char *page_url)
                  * other files. Say it once, plainly, with the reason the fetch
                  * recorded. (An inline entry with no bytes is just an empty
                  * <script></script>; nothing was lost.) */
-                if (e->ref)
+                if (e->ref) {
                     printf("[browser] script LOST: %s: %s (status %d)\n",
                            e->url ? e->url : e->ref,
                            e->err ? e->err : "no body", e->status);
+                    lost_n++;
+                }
                 continue;
             }
             if (e->ref && body_is_html_not_js(e->data, e->len)) {
                 printf("[browser] script REFUSED (HTML, not JS): %s (status %d, %d bytes)\n",
                        e->url ? e->url : e->ref, e->status, e->len);
+                refused_n++;
                 continue;
             }
             if (!e->module) {
@@ -997,7 +1403,7 @@ static int run_collected_scripts(const char *page_url)
                     cname[p] = 0;
                     cnm = cname;
                 }
-                js_page_eval((const char *)e->data, e->len, cnm);
+                if (!js_page_eval((const char *)e->data, e->len, cnm)) exc_n++;
                 dom_script_mark_done(e->node);   /* never re-run via DOM insertion */
                 ran++;
                 continue;
@@ -1019,11 +1425,14 @@ static int run_collected_scripts(const char *page_url)
                 name[p] = 0;
                 nm = name;
             }
-            js_module_eval((const char *)e->data, e->len, nm);
+            if (!js_module_eval((const char *)e->data, e->len, nm)) exc_n++;
             dom_script_mark_done(e->node);
             ran++;
         }
     }
+    if (out_lost)    *out_lost    = lost_n;
+    if (out_refused) *out_refused = refused_n;
+    if (out_exc)     *out_exc     = exc_n;
     return ran;
 }
 
@@ -1220,6 +1629,17 @@ static void load(const char *u)
       }
     }
 
+    /* Scheme inference (the owner's third complaint: "you have to type
+     * http/https by hand") lives at addr_infer_scheme(), called once, at the
+     * address bar's Enter key -- not here. An earlier version of this patch
+     * put a second, cruder version at this exact spot: same idea, no
+     * bare-word refusal, and reachable from every OTHER caller of load() too
+     * (follow_link, panel picks, script navigation) where the string is
+     * already an absolute URL and there is nothing to infer. Two schemes for
+     * "does this need a scheme" is the one-jar-two-doors trap this file's own
+     * comments warn about elsewhere -- addr_infer_scheme() is the one door,
+     * and it runs before `url` is ever handed to load(). */
+
     /* about:text -- print the words the LAST paint put on the screen, and stay
      * where we are. Not a navigation and not a page: it answers a question
      * about the page already loaded, so navigating away to answer it would
@@ -1304,7 +1724,7 @@ static void load(const char *u)
      * and tab_dehydrate() -- which records `url` as the tab's address -- then
      * stamped a stale URL onto the tab it was putting away. */
     { int i = 0; while (cur[i] && i < (int)sizeof url - 1) { url[i] = cur[i]; i++; }
-      url[i] = 0; ulen = i; }
+      url[i] = 0; ulen = i; addr_sync(); }
 
     /* Discard anything the PREVIOUS page left pending. js_webapi_install does
      * not clear the record, so a navigation requested by a page the user then
@@ -1323,7 +1743,7 @@ static void load(const char *u)
          * current entry. See hist_replace: a redirect that pushes is a Back
          * button that cannot escape. */
         { int i = 0; while (next[i] && i < (int)sizeof url - 1) { url[i] = next[i]; i++; }
-          url[i] = 0; ulen = i; }
+          url[i] = 0; ulen = i; addr_sync(); }
         hist_replace(url);
         { int i = 0; while (url[i] && i < (int)sizeof cur - 1) { cur[i] = url[i]; i++; } cur[i] = 0; }
     }
@@ -1338,6 +1758,31 @@ void browser_load(const char *u) { load(u); }
 /* 1 while a tab is being replayed from its own retained bytes rather than
  * loaded from the network. Everything it changes is marked `hydrating` below. */
 static int g_hydrating;
+
+/* ====================== DevTools: the chain panel's data ===================
+ * A page rendering is a PRODUCT over dependent stages, not a sum -- zero at
+ * any one stage means a blank page no matter how well every other stage did.
+ * This is that chain's dataset, snapshotted ONCE per load_once(), from the
+ * exact counters load_once was already computing to print to the serial log
+ * (see the "scripts collected" / "load done" / "pool" lines below). NOTHING
+ * here is a second accounting: every field is the value already printed,
+ * read a second time rather than derived a second way -- so the panel can
+ * never disagree with the log a person would otherwise have to go find.
+ * `have` is 0 until the first load_once() completes, which is how the panel
+ * says "no page has loaded yet" instead of showing every count as a
+ * (indistinguishable) zero. */
+struct dt_chain {
+    int have;
+    int bytes;                   /* document arrived: bytes fetched */
+    int xc, xm, in;               /* scripts collected: ext classic, ext module, inline */
+    int ran, lost, refused;       /* scripts: executed / LOST (no body) / REFUSED (HTML) */
+    int exc;                      /* of `ran`, how many THREW (uncaught) -- js_page_eval()/
+                                    * js_module_eval()'s own return value, not a guess */
+    int dyn_ran;                  /* + scripts run later via DOM insertion */
+    int reqs, dials, reuses;      /* network (bfetch_stats) */
+    int mods, modfail;            /* ES module graph (js_module_stats) */
+};
+static struct dt_chain g_dt;
 
 static void load_once(const char *u)
 {
@@ -1365,10 +1810,21 @@ static void load_once(const char *u)
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
      * the next document, which is the worse failure. Dropped BEFORE dom_free,
-     * on this path and on the tab-switch one, because both free the tree. */
+     * on this path and on the tab-switch one, because both free the tree.
+     * The page-text selection (g_psel_an/g_psel_fo) is guarded by a serial
+     * check like hover_node/press_node/lastclick_node below, which is enough
+     * to survive a slot RECYCLED within the SAME document -- but dom.c's
+     * per-node serial counter is scoped to the document (dom.c: `next_serial`
+     * lives on `struct doc`), so a freed slot reused by the NEXT document's
+     * parse can legally mint the very same serial number again. Cleared here
+     * explicitly rather than trusted to the same guard everything else uses,
+     * because unlike those three -- which only misroute a synthetic DOM
+     * event -- a wrong psel match would highlight and let Ctrl+C copy text
+     * from a page the user never selected anything on. */
     popup_close();
     focus_reset();
     fc_reset();
+    psel_clear();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     /* The decoded-image cache goes with the document. Its key is the raw
@@ -1494,7 +1950,7 @@ static void load_once(const char *u)
         /* Stay on the page that linked it, exactly as a real browser does. */
         { struct tab *t = tab_cur(); if (t && t->url[0]) {
             int i = 0; while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
-            url[i] = 0; ulen = i; } }
+            url[i] = 0; ulen = i; addr_sync(); } }
         return;
     }
     }
@@ -1515,6 +1971,11 @@ static void load_once(const char *u)
      * that matters: a page placing the caret itself before the user has
      * clicked anything. */
     fc_ce_set_root(g_root);
+    /* Before the first byte of CSS is looked at: this both clears the previous
+     * page's numbers and INSTALLS the parser drop hooks. Both halves matter --
+     * see css_report.h on why a missing reset must read as a dead instrument
+     * rather than as a plausible report. */
+    css_report_reset();
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
     /* HYDRATING: the tab kept the FULL author stylesheet (inline + every
      * external sheet, concatenated exactly as assembled below), so the whole
@@ -1540,14 +2001,45 @@ static void load_once(const char *u)
     collect_css_links(g_root);
     nsheets = g_nres;
     res_fetch_all("stylesheets", 0);
+    int css_offered = 0;         /* bytes the sheets contained */
     for (int i = 0; i < g_nres; i++) {
         struct resent *e = &g_res[i];
-        if (!e->data || e->len <= 0) continue;
+        const char *u = e->url ? e->url : e->ref;
+        if (!e->data || e->len <= 0) {
+            /* THE SILENT HALF, until now. A sheet that did not arrive left no
+             * line anywhere: res_fetch_all prints only on a hard failure, and
+             * an empty 200 printed nothing at all. */
+            css_report_fetched(u, e->status,
+                               e->len > 0 ? e->len : 0,
+                               e->err ? CSSSH_ERROR :
+                               (e->status && e->status / 100 != 2) ? CSSSH_HTTP
+                                                                   : CSSSH_EMPTY,
+                               e->err);
+            continue;
+        }
         got_sheets++;
+        css_offered += e->len;
+        css_report_fetched(u, e->status, e->len, CSSSH_OK, 0);
+        /* e->node is the <link> element itself (res_add(n, href, 0) above),
+         * so this is the same attribute, the same wrap, as collect_style's
+         * <style media>. See the comment above collect_style. */
+        const char *media = dom_attr(e->node, "media");
+        int wrap = media_needs_wrap(media);
+        if (wrap) css2 = append_media_open(author_css, css2, (int)sizeof author_css, media);
         for (int k = 0; k < e->len && css2 < (int)sizeof author_css - 1; k++)
             author_css[css2++] = (char)e->data[k];
-        if (css2 < (int)sizeof author_css - 1) author_css[css2++] = '\n';
+        if (wrap) css2 = append_media_close(author_css, css2, (int)sizeof author_css);
+        else if (css2 < (int)sizeof author_css - 1) author_css[css2++] = '\n';
     }
+    /* offered vs kept. They differ when author_css filled up -- the 216 KB-
+     * stylesheet failure this file already carries a comment about, and which,
+     * before this line, cut the tail off a page's CSS and said nothing -- OR
+     * when a media-scoped sheet was wrapped in `@media ... { }` above, which
+     * legitimately makes kept > offered. Only the first direction (offered >
+     * kept) is truncation; css_report_concat only flags that direction. css2
+     * counts the '\n' separators too, so subtract them. */
+    css_report_concat(css_len, css_offered,
+                      css2 - css_len - (got_sheets ? got_sheets : 0));
     res_reset();
     /* Retain ONE copy of the finished stylesheet, not one per sheet: this is
      * the byte count a background tab actually costs for its CSS. */
@@ -1566,6 +2058,7 @@ static void load_once(const char *u)
     if (css2 > css_len) {
         css_len = css2;
         css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
+        css_report_expand(css_len, css_exlen, (int)sizeof css_expanded);
         css_apply(g_root, css_expanded, css_exlen);
     css_extra_apply(g_root, css_expanded, css_exlen);
         layout_page(g_root, win_w);
@@ -1573,6 +2066,12 @@ static void load_once(const char *u)
         { extern size_t malloc_peak; printf("[browser] heap peak %uK\n", (unsigned)(malloc_peak / 1024)); }
         redraw(0);                   /* re-paint with the page's real stylesheets */
     }
+    /* The stylesheet half of "load done". Printed unconditionally, INCLUDING
+     * on the hydrating path where every count is legitimately zero, because a
+     * page that reports nothing about its CSS is the state this whole record
+     * exists to end. The parser drop counts are already in it by now: the
+     * hooks fed them during css_apply above. */
+    css_report_print();
     /* Images ride the same pooled connections, so eight of them from one host
      * is one handshake rather than eight. That is why IMG_LOAD_MAX can go up
      * without the load time going with it. The queue-everything-then-decode
@@ -1632,15 +2131,22 @@ static void load_once(const char *u)
           else xc++;
       }
       printf("[browser] scripts collected: %d external classic, %d external module, %d inline\n",
-             xc, xm, in); }
+             xc, xm, in);
+      g_dt.xc = xc; g_dt.xm = xm; g_dt.in = in; }
     res_fetch_all("scripts", 1);
     g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
-    int had_script = run_collected_scripts(base) > 0;
+    int dt_lost = 0, dt_refused = 0, dt_exc = 0;
+    int dt_ran = run_collected_scripts(base, &dt_lost, &dt_refused, &dt_exc);
+    int had_script = dt_ran > 0;
     /* A parse-time script may have inserted more <script>s (an AMD/loader
      * shim is the common case). Drain them here, on this stack, before the
      * page is declared loaded -- run_pending_inserted_scripts is itself
      * re-entrant, so a chain of loaders resolves fully. */
-    if (run_pending_inserted_scripts(base) > 0) had_script = 1;
+    int dt_dyn_ran = run_pending_inserted_scripts(base);
+    if (dt_dyn_ran > 0) had_script = 1;
+    g_dt.ran = dt_ran; g_dt.lost = dt_lost; g_dt.refused = dt_refused;
+    g_dt.exc = dt_exc;
+    g_dt.dyn_ran = dt_dyn_ran;
     { int dials = 0, reuses = 0, reqs = 0, mods = 0, modfail = 0;
       int hits = 0, evicted = 0, closed = 0;
       bfetch_stats(&dials, &reuses, &reqs);
@@ -1655,7 +2161,10 @@ static void load_once(const char *u)
        * halves of it, and they are printed on every load so a regression shows
        * up in the serial log of any test that loads a page twice. */
       printf("[browser] resources: %d from tab, %d from network (tab %d of %d)\n",
-             g_res_from_tab, g_res_from_net, tabs_active(), tabs_count()); }
+             g_res_from_tab, g_res_from_net, tabs_active(), tabs_count());
+      g_dt.reqs = reqs; g_dt.dials = dials; g_dt.reuses = reuses;
+      g_dt.mods = mods; g_dt.modfail = modfail;
+      g_dt.bytes = blen; g_dt.have = 1; }
     res_reset();
 
     /* The tab keeps the DOCUMENT bytes. Handing over ownership rather than
@@ -1748,10 +2257,21 @@ static void tab_dehydrate(void)
      * be freed. dom.c recycles node slots, so a pointer kept across this line
      * would not merely dangle -- it would silently name a DIFFERENT element in
      * the next document, which is the worse failure. Dropped BEFORE dom_free,
-     * on this path and on the tab-switch one, because both free the tree. */
+     * on this path and on the tab-switch one, because both free the tree.
+     * The page-text selection (g_psel_an/g_psel_fo) is guarded by a serial
+     * check like hover_node/press_node/lastclick_node below, which is enough
+     * to survive a slot RECYCLED within the SAME document -- but dom.c's
+     * per-node serial counter is scoped to the document (dom.c: `next_serial`
+     * lives on `struct doc`), so a freed slot reused by the NEXT document's
+     * parse can legally mint the very same serial number again. Cleared here
+     * explicitly rather than trusted to the same guard everything else uses,
+     * because unlike those three -- which only misroute a synthetic DOM
+     * event -- a wrong psel match would highlight and let Ctrl+C copy text
+     * from a page the user never selected anything on. */
     popup_close();
     focus_reset();
     fc_reset();
+    psel_clear();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     /* The decoded-image cache goes with the document. Its key is the raw
@@ -1774,7 +2294,7 @@ static int tab_hydrate(void)
     struct tab *t = tab_cur();
     if (!t) return 0;
     int i = 0; while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
-    url[i] = 0; ulen = i;
+    url[i] = 0; ulen = i; addr_sync();
     if (!t->src || t->srclen <= 0) return 0;
     scroll = t->scroll;
     g_hydrating = 1;
@@ -2036,10 +2556,18 @@ static int tab_strip_hit(int mx, int my, int *close)
  * One overlay serves all three because they are the same shape (a title, a URL,
  * a row you can activate) and three panels would be three sets of scrolling and
  * selection bugs. */
-enum { PANEL_NONE = 0, PANEL_HISTORY, PANEL_BOOKMARKS, PANEL_DOWNLOADS };
+enum { PANEL_NONE = 0, PANEL_HISTORY, PANEL_BOOKMARKS, PANEL_DOWNLOADS, PANEL_DEVTOOLS };
 static int  g_panel, g_panel_sel, g_panel_top;
 static char g_find[64];
 static int  g_findlen;
+
+/* ---- Ctrl+F: find-in-page ---- a SEPARATE query buffer from g_find above,
+ * which belongs to the history panel's own inline filter -- reusing it would
+ * make opening the history panel silently clobber whatever a person was
+ * searching for on the page, and vice versa. */
+static int  g_finding;
+static char g_pfq[64];
+static int  g_pfqlen;
 
 #define PANEL_ROW 22
 
@@ -2079,8 +2607,195 @@ static void panel_row_text(int which, int idx, char *url_out, char *title_out)
     url_out[i] = 0;
 }
 
+/* ============================ DevTools: the chain panel ====================
+ *
+ * A page rendering is a PRODUCT over dependent stages, not a sum: one zero
+ * factor blanks the page no matter how many other stages succeeded. Every
+ * failure this order was written against was exactly that shape --
+ * isEqualNode missing (0) lost React hydration and 69 painted text runs went
+ * to 0 with no failed request and no missing subresource; a Worker missing
+ * (0) blanked deepseek outright. WPT's 39.3% is a SUM and cannot see any of
+ * that; this panel names the first ZERO link instead.
+ *
+ * THE RULE THAT MAKES THIS TRUSTWORTHY: every link is either OBSERVED from a
+ * counter load_once() already computes (see `struct dt_chain` above, and
+ * browser_paint_text_counts()) or it is UNKNOWN. A link reported "ok" because
+ * nothing said otherwise is exactly the lie that let a blank page score
+ * healthy before -- so a link this build cannot instrument (hydration; there
+ * is no framework-hydration signal anywhere in this tree) says UNKNOWN,
+ * drawn in a visibly different colour and word, rather than a guessed OK. */
+enum { CH_OK = 0, CH_PARTIAL, CH_ZERO, CH_UNKNOWN };
+
+static uint32_t ch_color(int state)
+{
+    switch (state) {
+    case CH_OK:      return rgb(70, 175, 100);   /* green  -- observed, non-zero */
+    case CH_PARTIAL: return rgb(220, 160, 50);    /* amber  -- observed, some loss */
+    case CH_ZERO:    return rgb(215, 70, 70);     /* red    -- observed, the zero factor */
+    default:         return rgb(150, 150, 160);   /* gray   -- UNKNOWN, not observed */
+    }
+}
+static const char *ch_word(int state)
+{
+    switch (state) {
+    case CH_OK:      return "OK";
+    case CH_PARTIAL: return "PARTIAL";
+    case CH_ZERO:    return "ZERO";
+    default:         return "UNKNOWN";
+    }
+}
+
+/* One link's name + state + a plain-English detail sentence, built into a
+ * caller-owned buffer with num_append (this file's convention for building a
+ * status string without pulling in sprintf). */
+struct ch_link { const char *name; int state; char detail[100]; };
+
+static void ch_put(char *b, int *p, int cap, const char *s)
+{ while (*s && *p < cap - 1) b[(*p)++] = *s++; }
+
+static int devtools_chain(struct ch_link *out, int max)
+{
+    int n = 0;
+    if (n >= max) return n;
+    /* 1. document arrived */
+    { struct ch_link *l = &out[n++]; l->name = "document arrived";
+      int p = 0;
+      if (!g_dt.have) { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      else if (g_dt.bytes <= 0) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "0 bytes -- the fetch produced nothing"); }
+      else { l->state = CH_OK; num_append(l->detail, &p, g_dt.bytes); ch_put(l->detail, &p, 100, " bytes fetched"); }
+      l->detail[p] = 0; }
+    /* 2. parsed -- read LIVE (g_root persists across a paint, freed only on
+     * the next navigation/dehydrate), so this always reflects the document
+     * on screen right now, not a stale snapshot from the last load. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "parsed";
+      int p = 0;
+      if (g_root) { l->state = CH_OK; ch_put(l->detail, &p, 100, "DOM tree built"); }
+      else if (g_dt.have) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "no DOM root -- the HTML parser produced no tree"); }
+      else { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      l->detail[p] = 0; }
+    /* 3. scripts executed -- g_dt.{xc,xm,in,ran,dyn_ran,lost,refused,exc}, the
+     * SAME counters "[browser] scripts collected" / "load done" print, PLUS
+     * js_page_eval()/js_module_eval()'s own return value (g_dt.exc): a
+     * script that was INVOKED but threw on its first statement used to
+     * count as "executed" indistinguishably from one that ran clean --
+     * verified on this order's own control fixture (a page whose one script
+     * calls an undefined function), which said "executed 1 of 1, OK" before
+     * this and "1 of 1 invoked, but it threw" after. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "scripts executed";
+      int p = 0;
+      int collected = g_dt.xc + g_dt.xm + g_dt.in;
+      int invoked = g_dt.ran + g_dt.dyn_ran;
+      int clean = invoked - g_dt.exc; if (clean < 0) clean = 0;
+      if (!g_dt.have) { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      else if (collected == 0) { l->state = CH_OK; ch_put(l->detail, &p, 100, "no <script> on this page"); }
+      else if (invoked == 0) {
+          l->state = CH_ZERO; ch_put(l->detail, &p, 100, "collected ");
+          num_append(l->detail, &p, collected); ch_put(l->detail, &p, 100, ", executed 0 (");
+          num_append(l->detail, &p, g_dt.lost); ch_put(l->detail, &p, 100, " lost, ");
+          num_append(l->detail, &p, g_dt.refused); ch_put(l->detail, &p, 100, " refused)");
+      } else if (clean == 0) {
+          l->state = CH_ZERO; num_append(l->detail, &p, invoked);
+          ch_put(l->detail, &p, 100, " of "); num_append(l->detail, &p, collected);
+          ch_put(l->detail, &p, 100, " invoked, but every one threw uncaught");
+      } else if (g_dt.lost > 0 || g_dt.refused > 0 || g_dt.exc > 0) {
+          l->state = CH_PARTIAL; ch_put(l->detail, &p, 100, "executed ");
+          num_append(l->detail, &p, invoked); ch_put(l->detail, &p, 100, " of ");
+          num_append(l->detail, &p, collected); ch_put(l->detail, &p, 100, " (");
+          num_append(l->detail, &p, g_dt.lost); ch_put(l->detail, &p, 100, " lost, ");
+          num_append(l->detail, &p, g_dt.refused); ch_put(l->detail, &p, 100, " refused, ");
+          num_append(l->detail, &p, g_dt.exc); ch_put(l->detail, &p, 100, " threw)");
+      } else {
+          l->state = CH_OK; ch_put(l->detail, &p, 100, "executed ");
+          num_append(l->detail, &p, invoked); ch_put(l->detail, &p, 100, " of ");
+          num_append(l->detail, &p, collected);
+      }
+      l->detail[p] = 0; }
+    /* 4. module graph resolved -- js_module_stats() is a live cumulative
+     * counter (the same one "load done" prints), read fresh here. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "module graph resolved";
+      int p = 0; int mods = 0, modfail = 0; js_module_stats(&mods, &modfail);
+      if (!g_dt.have) { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      else if (mods == 0 && modfail == 0) { l->state = CH_OK; ch_put(l->detail, &p, 100, "no ES modules on this page"); }
+      else if (mods == 0 && modfail > 0) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "0 loaded, "); num_append(l->detail, &p, modfail); ch_put(l->detail, &p, 100, " failed"); }
+      else if (modfail > 0) { l->state = CH_PARTIAL; num_append(l->detail, &p, mods); ch_put(l->detail, &p, 100, " loaded, "); num_append(l->detail, &p, modfail); ch_put(l->detail, &p, 100, " failed"); }
+      else { l->state = CH_OK; num_append(l->detail, &p, mods); ch_put(l->detail, &p, 100, " module(s) loaded"); }
+      l->detail[p] = 0; }
+    /* 5. CSS applied -- css_exlen is this file's own static (set by
+     * load_once/browser_resize after css_expand_vars), read live. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "CSS applied";
+      int p = 0;
+      if (css_exlen > 0) { l->state = CH_OK; num_append(l->detail, &p, css_exlen); ch_put(l->detail, &p, 100, " bytes in the cascade"); }
+      else if (g_dt.have) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "0 bytes -- no stylesheet reached the cascade"); }
+      else { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      l->detail[p] = 0; }
+    /* 6. layout ran -- `ph` is this file's own static page height, read live. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "layout ran";
+      int p = 0;
+      if (ph > 0) { l->state = CH_OK; num_append(l->detail, &p, ph); ch_put(l->detail, &p, 100, " px tall"); }
+      else if (g_dt.have) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "page height is 0 -- layout produced no boxes"); }
+      else { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      l->detail[p] = 0; }
+    /* 7. hydration held -- ALWAYS UNKNOWN. Said out loud rather than guessed:
+     * nothing in this tree counts a framework's own hydration pass (React,
+     * Vue, ...) succeeding or failing; the nearest proxy, an uncaught
+     * exception during the load/DOMContentLoaded dispatch, is not currently
+     * exposed by js_page.c as a counter this file can read. Rule 5: a link
+     * that cannot be watched failing is worse than no link. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "hydration held";
+      int p = 0; l->state = CH_UNKNOWN;
+      ch_put(l->detail, &p, 100, "not instrumented -- no framework-hydration signal exists in this build");
+      l->detail[p] = 0; }
+    /* 8. text painted -- browser_paint_text_counts(), the SAME g_ptx_runs /
+     * g_ptx_chars browser_paint_text_dump() prints to the serial console.
+     * This is the headline: stripe.com went 69 -> 38 -> 0 painted text runs
+     * with no failed request and no missing subresource anywhere else in
+     * this chain, which is exactly why this link exists. */
+    if (n < max) { struct ch_link *l = &out[n++]; l->name = "text painted";
+      int p = 0; int runs = 0, chars = 0; browser_paint_text_counts(&runs, &chars);
+      if (!g_dt.have) { l->state = CH_UNKNOWN; ch_put(l->detail, &p, 100, "no page loaded in this tab yet"); }
+      else if (runs == 0) { l->state = CH_ZERO; ch_put(l->detail, &p, 100, "0 runs painted -- the page is visually blank"); }
+      else { l->state = CH_OK; num_append(l->detail, &p, runs); ch_put(l->detail, &p, 100, " run(s), "); num_append(l->detail, &p, chars); ch_put(l->detail, &p, 100, " char(s) painted"); }
+      l->detail[p] = 0; }
+    return n;
+}
+
+#define DT_ROW 24
+#define DT_MAXROWS 8
+
+static void draw_devtools_panel(void)
+{
+    int dh = DT_ROW * DT_MAXROWS + 44;
+    if (dh > win_h - VIEW_Y - 18) dh = win_h - VIEW_Y - 18;
+    int px = 0, pw = win_w, py = win_h - 18 - dh, phh = dh;
+    gui_glass(px, py, pw, phh, 0, 20, 22, 28, 245);
+    gui_text(px + 14, py + 8, rgb(230, 230, 235), "DevTools -- the rendering chain");
+    gui_text(px + pw - 210, py + 8, rgb(150, 150, 160), "F12 / Cmd+Alt+I closes");
+    struct ch_link links[DT_MAXROWS];
+    int n = devtools_chain(links, DT_MAXROWS);
+    int y = py + 32;
+    int first_zero = -1;
+    for (int i = 0; i < n; i++) if (links[i].state == CH_ZERO) { first_zero = i; break; }
+    for (int i = 0; i < n; i++) {
+        struct ch_link *l = &links[i];
+        if (i == first_zero) gui_glass(px + 6, y - 3, pw - 12, DT_ROW - 2, 5, 220, 70, 70, 40);
+        gui_rect(px + 14, y + 3, 10, 10, ch_color(l->state));
+        gui_text(px + 32, y, rgb(225, 225, 230), l->name);
+        gui_text(px + 240, y, ch_color(l->state), ch_word(l->state));
+        gui_text(px + 340, y, rgb(170, 170, 180), l->detail);
+        y += DT_ROW;
+    }
+    if (first_zero >= 0) {
+        char msg[140]; int p = 0;
+        ch_put(msg, &p, 140, "first zero factor: ");
+        ch_put(msg, &p, 140, links[first_zero].name);
+        msg[p] = 0;
+        gui_text(px + 14, py + phh - 16, rgb(255, 150, 150), msg);
+    }
+}
+
 static void draw_panel(void)
 {
+    if (g_panel == PANEL_DEVTOOLS) { draw_devtools_panel(); return; }
     int px = 40, pw = win_w - 80;
     if (pw < 240) { px = 4; pw = win_w - 8; }
     int py = VIEW_Y + 8, phh = VIEW_H - 16;
@@ -2165,20 +2880,48 @@ void browser_resize(int w, int h)
  * rest of the editing wiring further down (it needs the display list and the
  * geometry helpers); declared here because redraw() is the only caller. */
 static void draw_ce_overlay(void);
+/* The ordinary page-text selection highlight -- see its own header, next to
+ * doc_pos_from_click, for why this is a separate overlay from draw_ce_overlay
+ * rather than a case inside it. */
+static void draw_doc_selection(void);
+
+/* THE ADDRESS BAR, alone -- pulled out of redraw() so there is exactly one
+ * place that draws it, called both by a full redraw() and by redraw_chrome()
+ * below. Two copies of this block would have been the address bar's "one jar,
+ * two doors": the day one of them gained a control the other did not, a
+ * chrome-only repaint would show a caret in the wrong place, or not show one
+ * at all, and nothing would say why. */
+static void draw_address_bar(int editing)
+{
+    /* Liquid Glass address bar + a glass URL field */
+    gui_glass(0, TABH, win_w, BARH, 1, 255, 255, 255, 70);
+    gui_glass(10, TABH + 5, win_w - 20, 20, 8, 255, 255, 255, 95);
+    /* The selection highlight goes UNDER the text, exactly like every real
+     * text field -- drawn first so gui_text's glyphs paint over it. usel ==
+     * ucaret is "no selection" by construction (addr_move/addr_home/addr_end
+     * collapse it there), so this is a no-op then. */
+    if (editing && usel != ucaret) {
+        int a = ucaret < usel ? ucaret : usel;
+        int b = ucaret < usel ? usel : ucaret;
+        gui_rect(14 + a * 8, TABH + 6, (b - a) * 8, 18, rgb(140, 180, 250));
+    }
+    gui_text(14, TABH + 7, rgb(40, 40, 48), url);
+    /* The caret: a thin bar AT ucaret, not at ulen -- this is the whole fix
+     * for "append-at-end only". Before this the address bar had no caret to
+     * draw, only a block glued to the end of whatever had been typed. */
+    if (editing) gui_rect(14 + ucaret * 8, TABH + 7, 2, 16, rgb(90, 150, 240));
+    /* a star for "this page is bookmarked", right-aligned in the field */
+    if (bookmark_find(url) >= 0) gui_text(win_w - 26, TABH + 7, rgb(240, 180, 60), "*");
+}
 
 static void redraw(int editing)
 {
     gui_clear(rgb(252, 252, 253));
     draw_tab_strip();
-    /* Liquid Glass address bar + a glass URL field */
-    gui_glass(0, TABH, win_w, BARH, 1, 255, 255, 255, 70);
-    gui_glass(10, TABH + 5, win_w - 20, 20, 8, 255, 255, 255, 95);
-    gui_text(14, TABH + 7, rgb(40, 40, 48), url);
-    if (editing) gui_rect(14 + ulen * 8, TABH + 7, 8, 16, rgb(90, 150, 240));
-    /* a star for "this page is bookmarked", right-aligned in the field */
-    if (bookmark_find(url) >= 0) gui_text(win_w - 26, TABH + 7, rgb(240, 180, 60), "*");
+    draw_address_bar(editing);
     /* the page */
     browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    draw_doc_selection();
     draw_ce_overlay();
     draw_select_popup();
     if (g_panel) draw_panel();
@@ -2186,6 +2929,30 @@ static void redraw(int editing)
     gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
     gui_text(10, win_h - 16, rgb(110, 110, 120), status);
     gui_flush();
+}
+
+/* THE NARROW CASE gui_flush_rect exists for: the caller (the EV_KEY handling
+ * below) has already proven that the ONLY thing this frame changed is the
+ * address bar's text and caret -- not scroll, not the DOM, not the tab strip,
+ * not the panel, not the window size. Every OTHER pixel on the canvas is
+ * already exactly what a full redraw() would draw again, because nothing that
+ * feeds it changed, so re-drawing just this band and telling the compositor
+ * only THIS band moved is the honest report, not an approximation of one.
+ *
+ * gui_clear() is NOT called here, deliberately: redraw()'s whole-canvas clear
+ * is what makes drawing on top of stale pixels safe there, and this function
+ * has no such clear to lean on -- gui_rect() over exactly the address bar's
+ * band stands in for it, so draw_address_bar() starts from the same solid
+ * background it always does and this band ends up BYTE-IDENTICAL to what a
+ * full redraw would have put there. Skipping that reset (on the theory that
+ * "we are only adding a character, the glass is already right") would double
+ * the address bar's own glass tint on every single keystroke -- gui_glass()
+ * frosts whatever is already in the surface, and it is not its own inverse. */
+static void redraw_chrome(int editing)
+{
+    gui_rect(0, TABH, win_w, BARH, rgb(252, 252, 253));
+    draw_address_bar(editing);
+    gui_flush_rect(0, TABH, win_w, BARH);
 }
 
 /* ---- input -> DOM events ----
@@ -2207,6 +2974,93 @@ static int mods_of(const struct logit_event *e, struct js_event_init *ji)
  * with right == 2, so it is a remap, not a subtraction. */
 static int dom_button(int btn)
 { return btn == EV_BTN_RIGHT ? 2 : btn == EV_BTN_MIDDLE ? 1 : 0; }
+
+/* Is `anc` `n` itself, or one of its ancestors? Walks up from `n`, which is
+ * the only direction a `struct node` can be walked -- there is no downward
+ * "is descendant" test available cheaply, so every caller below is written
+ * to ask the question this way around. */
+static int node_is_self_or_ancestor(struct node *anc, struct node *n)
+{
+    if (!anc) return 0;
+    for (; n; n = n->parent) if (n == anc) return 1;
+    return 0;
+}
+
+/* mouseover/mouseout/mouseenter/mouseleave, synthesised from consecutive
+ * EV_MOUSE_MOVE hit-test results -- the ABI has no "entered element" event
+ * of its own (logit_abi.h:249 is coalesced motion, nothing else), so this is
+ * the browser reconstructing it the way every real one does.
+ *
+ * `from`/`to` are already-validated element nodes (or NULL); the caller owns
+ * the serial check, because only the caller holds the generation this
+ * pointer was tracked under across the frames in between.
+ *
+ * THE SPEC DISTINCTION THAT MATTERS: over/out bubble and fire once each, at
+ * the old/new target; enter/leave do NOT bubble, and instead fire
+ * individually at every node between the target and the nearest common
+ * ancestor of `from` and `to` (exclusive) -- because that is the only way a
+ * non-bubbling event can tell an ancestor "the pointer is now inside you"
+ * without also telling it about a transition between two of ITS children.
+ * Getting the two pairs' semantics swapped produces events that look
+ * plausible and break every hover menu that nests a submenu.
+ *
+ * ORDER, per spec and reproduced here: out, then leave (innermost target
+ * first, walking outward to the common ancestor), then over, then enter
+ * (outermost newly-entered ancestor first, walking inward to the target).
+ * leave and enter walk in opposite directions on purpose -- leave is
+ * "tell each node it is no longer inside", starting at the leaf; enter is
+ * "tell each node it is now inside", which has to start at the top or an
+ * inner ancestor would learn about the pointer before its own parent did.
+ *
+ * relatedTarget is NOT set -- this Event implementation has no property for
+ * it (grep confirms zero existing EG_* getters or MouseEvent-constructor
+ * support for it) and rule 1 says absent beats present-and-wrong: a
+ * fabricated relatedTarget that always reads null would pass a page's
+ * `typeof e.relatedTarget` check and then make every
+ * `if (this.contains(e.relatedTarget)) return;` boundary guard useless,
+ * which is worse than the property not existing at all. */
+static void fire_hover_transition(struct node *from, struct node *to,
+                                   const struct js_event_init *base)
+{
+    if (from == to) return;
+    struct js_event_init ji = *base;
+    ji.detail = 0;
+
+    if (from) {
+        ji.bubbles = 1; ji.cancelable = 1;
+        js_dom_dispatch(from, "mouseout", &ji);
+    }
+    if (from) {
+        ji.bubbles = 0; ji.cancelable = 0;
+        for (struct node *p = from; p; p = p->parent) {
+            if (node_is_self_or_ancestor(p, to)) break;
+            js_dom_dispatch(p, "mouseleave", &ji);
+        }
+    }
+    if (to) {
+        ji.bubbles = 1; ji.cancelable = 1;
+        js_dom_dispatch(to, "mouseover", &ji);
+    }
+    if (to) {
+        /* Collect innermost-to-outermost (same walk as the leave loop above),
+         * then fire in the reverse order -- see the ORDER note above for why
+         * enter must reach the target last, not first. A fixed-depth stack is
+         * fine: this only holds one page's worth of ancestors between the
+         * pointer target and the deepest shared one, and a page nested deeper
+         * than this just stops synthesising `enter` for the outermost few,
+         * which is a truncation, not a wrong answer, for a case nothing in
+         * this corpus reaches. */
+        struct node *stack[64];
+        int n2 = 0;
+        for (struct node *p = to; p; p = p->parent) {
+            if (node_is_self_or_ancestor(p, from)) break;
+            if (n2 < (int)(sizeof stack / sizeof stack[0])) stack[n2++] = p;
+        }
+        ji.bubbles = 0; ji.cancelable = 0;
+        for (int i = n2 - 1; i >= 0; i--)
+            js_dom_dispatch(stack[i], "mouseenter", &ji);
+    }
+}
 
 /* Is `k` one of the eight enumerated KEY_* navigation codes (logit_abi.h),
  * rather than a character -- ASCII or a Unicode code point above it (the
@@ -2532,7 +3386,16 @@ static void draw_ce_overlay(void)
         int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
         int sy = VIEW_Y + it[i].y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
-        gui_glass(x0, sy, x1 - x0, it[i].h, 0, 90, 150, 240, 110);
+        /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb.c) reads
+         * "radius < 1" as "nothing to draw" and returns before touching a
+         * single pixel -- a guard written for a genuinely empty w<=0/h<=0
+         * call that also silently swallows a caller asking for a SQUARE
+         * panel. Measured on the device: a radius-0 call here produced 0
+         * changed pixels across a whole selected word, confirmed by
+         * comparing before/after screendumps byte-for-byte. 1px of corner
+         * rounding on a text-height band is not visible; a highlight nobody
+         * can see is not a highlight. */
+        gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);
     }
     int cx, cy, chh;
     if (!ce_caret_box(&cx, &cy, &chh)) return;
@@ -2589,6 +3452,251 @@ static void ce_caret_from_click(struct node *host, int vx, int vy)
     }
     long base = hit->text - hit->node->text;
     fc_ce_set_caret(hit->node, (int)base + best);
+}
+
+/* ====================== PAGE TEXT SELECTION ================================
+ *
+ * "no copy and paste" was the owner's complaint in its most literal form:
+ * there was no way to select the PAGE's own text at all -- inside a form
+ * field or a contenteditable it already worked (forms.c, and ce_* just
+ * above), but the words of an ordinary paragraph could not be touched. This
+ * is that gap, built as the SAME KIND of overlay ce_caret_from_click and
+ * draw_ce_overlay already are: a click/drag hit test against layout_items()
+ * (the exact array browser_paint() drew from -- see its own header on why
+ * that is the one true source of "what is on screen"), a highlight drawn as
+ * a translucent overlay after the page, and Ctrl+C into the real kernel
+ * clipboard (SYS_CLIP_SET, c/kernel/gui/clipboard.c).
+ *
+ * NOT layered on fc_ce_*: that model's selection lives inside a `struct
+ * fctl` keyed to ONE editing host and is walked/committed by forms.c's own
+ * lifetime rules (see the comment above ce_caret_from_click). Ordinary page
+ * text has no host and no fctl -- it is two bare (node, byte offset) points,
+ * ANCHOR (where the drag/shift-click started) and FOCUS (where the pointer
+ * is now), each re-validated by the node's serial before every use exactly
+ * the way press_node/hover_node/lastclick_node already are in app_main --
+ * so a selection spanning a subtree a script deletes mid-drag collapses to
+ * "no selection" instead of reading freed memory.
+ *
+ * ce_run_for() above is reused AS-IS for turning a (node, offset) back into
+ * the display-list run that covers it -- it was already host-agnostic (it
+ * takes a text node and an offset, nothing about `host`), so this is the
+ * SAME lookup ce_caret_box uses, not a second one. */
+
+static struct node *g_psel_an, *g_psel_fo;   /* anchor / focus TEXT nodes */
+static int          g_psel_ano, g_psel_foo;  /* their byte offsets */
+static uint32_t     g_psel_anser, g_psel_foser;
+static int          g_psel_active;           /* focus has actually moved from anchor */
+static int          g_psel_dragging;         /* left button down, tracking a drag */
+
+static int psel_live(void)
+{
+    return g_psel_active && g_psel_an && g_psel_fo &&
+           g_psel_an->serial == g_psel_anser && g_psel_fo->serial == g_psel_foser;
+}
+
+static void psel_clear(void)
+{ g_psel_active = 0; g_psel_dragging = 0; g_psel_an = g_psel_fo = 0; }
+
+static void psel_begin(struct node *n, int off)
+{
+    if (!n) { psel_clear(); return; }
+    g_psel_an = g_psel_fo = n;
+    g_psel_ano = g_psel_foo = off;
+    g_psel_anser = g_psel_foser = n->serial;
+    g_psel_active = 0;      /* a bare click: no highlight until FOCUS moves */
+}
+
+static void psel_extend_to(struct node *n, int off)
+{
+    if (!n || !g_psel_an) return;
+    g_psel_fo = n; g_psel_foo = off; g_psel_foser = n->serial;
+    g_psel_active = !(g_psel_fo == g_psel_an && g_psel_foo == g_psel_ano);
+}
+
+/* Byte classification for double-click word selection. >=0x80 (any UTF-8
+ * continuation or lead byte) counts as a word character too, so a
+ * double-click inside a run of Chinese/Japanese text -- which this bar's own
+ * IME can commit -- selects the whole run instead of one byte of it. */
+static int psel_is_wordch(unsigned char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c >= 0x80;
+}
+
+/* Expand (node, off) to the word boundaries around it, over the WHOLE text
+ * node's buffer rather than just the one wrapped run under the pointer --
+ * layout only ever wraps BETWEEN words, so a word never straddles two runs,
+ * and scanning the run alone would silently stop at its edge for the first
+ * or last word on a wrapped line. Landing on a boundary BETWEEN two words
+ * (whitespace/punctuation) collapses to a zero-width selection there rather
+ * than guessing which side was meant. */
+static void psel_word_at(struct node *t, int off, int *a, int *b)
+{
+    int len = t->textlen; const char *s = t->text;
+    int i = off; if (i < 0) i = 0; if (i > len) i = len;
+    int want;
+    if (i < len && psel_is_wordch((unsigned char)s[i])) want = 1;
+    else if (i > 0 && psel_is_wordch((unsigned char)s[i - 1])) { want = 1; i--; }
+    else { *a = off; *b = off; return; }
+    int lo = i, hi = i + 1;
+    while (lo > 0 && psel_is_wordch((unsigned char)s[lo - 1])) lo--;
+    while (hi < len && psel_is_wordch((unsigned char)s[hi])) hi++;
+    *a = lo; *b = hi;
+}
+
+/* The nearest (text node, byte offset) to a viewport click point -- the same
+ * hit test as ce_caret_from_click just above, generalised to the WHOLE
+ * document instead of one editing host's runs (dropping the
+ * `fc_ce_host(...) != host` filter is the entire difference). Returns 0 if
+ * the click did not land on any line of text at all. */
+static int doc_pos_from_click(int vx, int vy, struct node **out_n, int *out_off)
+{
+    int dy = vy + scroll;
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    const struct item *hit = 0;
+    long bestd = -1;
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_TEXT || it[i].hidden) continue;
+        if (!it[i].node || it[i].node->type != N_TEXT) continue;
+        if (dy < it[i].y || dy >= it[i].y + it[i].h) continue;
+        long d = 0;
+        if (vx < it[i].x) d = it[i].x - vx;
+        else if (vx > it[i].x + it[i].w) d = vx - (it[i].x + it[i].w);
+        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; }
+    }
+    if (!hit) return 0;
+    int relx = vx - hit->x;
+    if (relx < 0) relx = 0;
+    int best = 0;
+    long bd = -1;
+    for (int i = 0; i <= hit->len; ) {
+        int w = text_measure(hit->text, i, hit->font_px, ITEM_FACE(hit));
+        long d = w > relx ? w - relx : relx - w;
+        if (bd < 0 || d < bd) { bd = d; best = i; }
+        if (i >= hit->len) break;
+        i++;
+        while (i < hit->len && ((unsigned char)hit->text[i] & 0xC0) == 0x80) i++;
+    }
+    long base = hit->text - hit->node->text;
+    if (out_n)   *out_n = hit->node;
+    if (out_off) *out_off = (int)base + best;
+    return 1;
+}
+
+/* Anchor and focus in VISUAL order, as (layout_items() index, byte-within-run)
+ * pairs -- item index is a fair stand-in for reading order because layout
+ * emits IT_TEXT runs in the order it laid them out, top to bottom, left to
+ * right within a line, which is paint order for every document this engine
+ * lays out (no bidi reordering of the display list itself -- see the text
+ * section of this tree's own notes on where bidi analysis does and does not
+ * reach). Returns 0 if either end no longer resolves to a run (a re-layout
+ * moved the node's text, or DOM edits shrank it under the stored offset). */
+static int psel_bounds(int *lo_idx, int *lo_rel, int *hi_idx, int *hi_rel)
+{
+    if (!psel_live() || !g_psel_active) return 0;
+    const struct item *ra = 0, *rb = 0; int rela = 0, relb = 0;
+    if (!ce_run_for(g_psel_an, g_psel_ano, &ra, &rela)) return 0;
+    if (!ce_run_for(g_psel_fo, g_psel_foo, &rb, &relb)) return 0;
+    const struct item *base = layout_items();
+    int ia = (int)(ra - base), ib = (int)(rb - base);
+    if (ia < ib || (ia == ib && rela <= relb)) { *lo_idx = ia; *lo_rel = rela; *hi_idx = ib; *hi_rel = relb; }
+    else                                       { *lo_idx = ib; *lo_rel = relb; *hi_idx = ia; *hi_rel = rela; }
+    return 1;
+}
+
+/* Select the whole document: anchor at byte 0 of the first painted text run,
+ * focus at the end of the last -- what Ctrl+A means for a page (as opposed
+ * to a focused field, which forms.c's own Ctrl+A already owns and claims
+ * first; see control_key/ce_key above). */
+static int psel_select_all(void)
+{
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    const struct item *first = 0, *last = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (it[i].type != IT_TEXT || it[i].hidden) continue;
+        if (!it[i].node || it[i].node->type != N_TEXT) continue;
+        if (!first) first = &it[i];
+        last = &it[i];
+    }
+    if (!first) return 0;
+    long lb = last->text - last->node->text;
+    g_psel_an = first->node; g_psel_ano = 0;                     g_psel_anser = first->node->serial;
+    g_psel_fo = last->node;  g_psel_foo = (int)lb + last->len;   g_psel_foser = last->node->serial;
+    g_psel_active = 1;
+    return 1;
+}
+
+/* The selection highlight, drawn as a translucent overlay AFTER the page --
+ * same reasoning as draw_ce_overlay's own comment: this runs once the text
+ * is already on screen, so an opaque fill would hide the very words it is
+ * meant to show as selected. Called from redraw() beside draw_ce_overlay(). */
+static void draw_doc_selection(void)
+{
+    int lo_idx, lo_rel, hi_idx, hi_rel;
+    if (!psel_bounds(&lo_idx, &lo_rel, &hi_idx, &hi_rel)) return;
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    if (hi_idx >= cnt) hi_idx = cnt - 1;
+    for (int i = lo_idx; i <= hi_idx; i++) {
+        if (it[i].type != IT_TEXT || it[i].hidden) continue;
+        int r0 = (i == lo_idx) ? lo_rel : 0;
+        int r1 = (i == hi_idx) ? hi_rel : it[i].len;
+        if (r0 < 0) r0 = 0;
+        if (r1 > it[i].len) r1 = it[i].len;
+        if (r1 <= r0) continue;
+        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, ITEM_FACE(&it[i]));
+        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
+        int sy = VIEW_Y + it[i].y - scroll;
+        if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
+        /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb.c) has
+         * `if (w <= 0 || h <= 0 || radius < 1) return` -- a radius of 0 is
+         * silently a NO-OP, not a square-cornered glass panel. Measured: the
+         * selection bookkeeping (psel_bounds/psel_copy) was already correct
+         * -- Ctrl+A + Ctrl+C round-tripped the right text through the real
+         * clipboard on device -- but this call passed radius 0 and painted
+         * NOTHING, so the highlight silently never appeared. 1px is not
+         * visually distinguishable from 0 at this box size; it just crosses
+         * fb.c's own floor. */
+        gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);
+    }
+}
+
+/* Ctrl+C: the selected text, concatenated in visual order, out to the real
+ * kernel clipboard. A single space is inserted between two runs that are
+ * not each other's immediate continuation in the SAME text node (a run
+ * boundary crossing into a different element, or a wrapped line) -- without
+ * it, "<span>New</span><span>York</span>" and a line-wrapped "New York"
+ * would both paste as "NewYork", silently gluing two words into one. Exact
+ * whitespace fidelity is not the goal; not corrupting a word boundary is.
+ * Returns 1 if anything was copied. */
+static int psel_copy(void)
+{
+    int lo_idx, lo_rel, hi_idx, hi_rel;
+    if (!psel_bounds(&lo_idx, &lo_rel, &hi_idx, &hi_rel)) return 0;
+    const struct item *it = layout_items();
+    int cnt = layout_count();
+    if (hi_idx >= cnt) hi_idx = cnt - 1;
+    static char buf[8192];
+    int o = 0;
+    const char *prev_end = 0;
+    for (int i = lo_idx; i <= hi_idx; i++) {
+        if (it[i].type != IT_TEXT || it[i].hidden) continue;
+        int r0 = (i == lo_idx) ? lo_rel : 0;
+        int r1 = (i == hi_idx) ? hi_rel : it[i].len;
+        if (r0 < 0) r0 = 0;
+        if (r1 > it[i].len) r1 = it[i].len;
+        if (r1 <= r0) continue;
+        if (o > 0 && it[i].text != prev_end && o < (int)sizeof buf &&
+            buf[o - 1] != ' ' && buf[o - 1] != '\n')
+            buf[o++] = ' ';
+        for (int k = r0; k < r1 && o < (int)sizeof buf - 1; k++) buf[o++] = it[i].text[k];
+        prev_end = it[i].text + r1;
+    }
+    if (o <= 0) return 0;
+    clip_set(CLIP_F_TEXT, buf, o);
+    return 1;
 }
 
 /* Re-style and re-lay-out after an EDIT changed the DOM.
@@ -3057,7 +4165,7 @@ void app_main(void)
     { struct tab *t = tab_cur();
       if (t && t->url[0]) { int i = 0;
           while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
-          url[i] = 0; ulen = i; } }
+          url[i] = 0; ulen = i; addr_sync(); } }
     if (restored > 0) {
         char st[96]; int p = 0; const char *pre = "restored ";
         while (*pre) st[p++] = *pre++;
@@ -3072,12 +4180,39 @@ void app_main(void)
     int editing = 1;
     struct node *press_node = 0;      /* the element the last mousedown landed on */
     uint32_t press_serial = 0;
+    struct node *hover_node = 0;      /* the element the pointer is currently over,
+                                        * for synthesising mouseover/out/enter/leave
+                                        * -- see fire_hover_transition(). */
+    uint32_t hover_serial = 0;
+    struct node *lastclick_node = 0;  /* dblclick: same-target, close-in-time,
+                                        * close-in-space state, one slot -- a
+                                        * third click clears it rather than
+                                        * chaining, matching titlebar_double_click()
+                                        * in wm.c (the platform's other double-click
+                                        * detector, same 400ms window). */
+    uint32_t lastclick_serial = 0;
+    unsigned long long lastclick_ms = 0;
+    int lastclick_x = 0, lastclick_y = 0;
 
     for (;;) {
         struct logit_event e;
         int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
         int navigated = 0;
+        /* CHROME-ONLY REPAINT TRACKING. `nev` counts events actually
+         * processed this burst; `chrome_edit_only` is reset at the top of
+         * EVERY iteration and set true by exactly two branches below (typing
+         * or backspacing in the address bar) -- so after the loop it holds
+         * the LAST event's classification, which is the ONLY event's
+         * classification whenever nev == 1. That combination -- a burst of
+         * exactly one event, and that event provably touched nothing but
+         * url/ulen/the caret -- is the only condition redraw_chrome() is
+         * trusted under; a multi-event burst always falls back to redraw(),
+         * because proving every event in it was chrome-only would mean
+         * auditing this whole loop instead of two branches in it. */
+        int nev = 0, chrome_edit_only = 0;
         while (!navigated && poll_event(&e)) {
+            nev++;
+            chrome_edit_only = 0;
             sync_scroll();
             if (e.type == EV_CLOSE) {
                 /* Record where the user was BEFORE tearing anything down: the
@@ -3106,7 +4241,32 @@ void app_main(void)
                  * form exist. Handled here rather than after the page's keydown
                  * because Cmd+T must open a tab whatever the page thinks. */
                 int handled = 0;
-                if (is_cmd(&e) || (e.mods & EV_MOD_CTRL)) {
+                /* F12: DevTools, unmodified (arrives via keyboard.c's F-key
+                 * block, see KEY_F12 in logit_abi.h). Handled OUTSIDE the
+                 * Cmd/Ctrl gate below because it carries no modifier at all.
+                 *
+                 * DEBOUNCED, not merely edge-triggered: this ABI has no
+                 * key-release event, but the real hazard is not the missing
+                 * release -- keyboard.c already forwards exactly one EV_KEY
+                 * per physical press. It is the PS/2 controller's own
+                 * typematic auto-repeat, which resends the make code ~30x/s
+                 * after a ~250ms delay while the key is held; without this,
+                 * a held F12 would toggle the panel thirty times a second.
+                 * One transition per 200ms, against the same monotonic_ms()
+                 * clock the load loop already uses elsewhere in this file --
+                 * not a QMP `sendkey` gate, which sends one make+break and
+                 * cannot reproduce typematic (the test-ime-os shape). */
+                if (k == KEY_F12) {
+                    static unsigned long long last_f12;
+                    unsigned long long now = monotonic_ms();
+                    if (now - last_f12 >= 200) {
+                        last_f12 = now;
+                        g_panel = g_panel == PANEL_DEVTOOLS ? PANEL_NONE : PANEL_DEVTOOLS;
+                        g_panel_sel = g_panel_top = 0;
+                    }
+                    handled = 1;
+                }
+                if (!handled && (is_cmd(&e) || (e.mods & EV_MOD_CTRL))) {
                     int c = k;
                     if (c >= 1 && c <= 26) c = c + 'a' - 1;      /* the folded form */
                     if (c >= 'A' && c <= 'Z') c += 32;
@@ -3122,10 +4282,24 @@ void app_main(void)
                         browser_paint_text_dump();
                         set_status("painted text dumped to the serial console");
                         handled = 1;
+                    } else if (c == 'i' && (e.mods & EV_MOD_ALT)) {
+                        /* Cmd+Alt+I: DevTools. A SECOND accelerator next to
+                         * F12 on purpose, not decoration -- see keyboard.c
+                         * for why F12 needs a kernel-side change to arrive at
+                         * all, and CLAUDE.md's IME-toggle story for why a
+                         * single host-keyboard-dependent chord is not enough
+                         * (F12 is a media key on this machine's actual
+                         * keyboard by default). This chord needs no kernel
+                         * change and is also the control for the key path
+                         * itself: if this opens DevTools and F12 does not,
+                         * the fault is in the key path, not in this panel. */
+                        g_panel = g_panel == PANEL_DEVTOOLS ? PANEL_NONE : PANEL_DEVTOOLS;
+                        g_panel_sel = g_panel_top = 0;
+                        handled = 1;
                     } else if (c == 't') {                       /* new tab */
                         int n = tabs_new("");
                         if (n >= 0) { tab_dehydrate(); tabs_select(n);
-                            url[0] = 0; ulen = 0; editing = 1;
+                            url[0] = 0; ulen = 0; editing = 1; addr_sync();
                             set_status("new tab -- type a URL and press Enter");
                             session_save(); }
                         else set_status("too many tabs");
@@ -3138,7 +4312,7 @@ void app_main(void)
                         if (!tab_hydrate()) {
                             struct tab *t = tab_cur();
                             if (t && t->url[0]) { load(url); navigated = 1; }
-                            else { url[0] = 0; ulen = 0; editing = 1;
+                            else { url[0] = 0; ulen = 0; editing = 1; addr_sync();
                                    set_status("new tab -- type a URL and press Enter"); }
                         }
                         session_save();
@@ -3190,10 +4364,20 @@ void app_main(void)
                     } else if (c == 'l') {                       /* focus the bar */
                         /* FOCUS AND *SELECT*, which is what Ctrl+L does in
                          * every browser: the next keystroke REPLACES the
-                         * address, it does not append to it. There is no
+                         * address, it does not append to it. This USED to
+                         * mean "clear it outright" -- ulen=0, url[0]=0 --
+                         * with a comment admitting why: "There is no
                          * selection model in this bar, and clearing is what
-                         * "type over the selection" looks like from the
-                         * outside for the only thing anyone does after Ctrl+L.
+                         * 'type over the selection' looks like from the
+                         * outside." Now there is one (addr_select_all,
+                         * addr_insert), so this does what the comment always
+                         * said it wanted: the OLD address stays visible and
+                         * selected -- see draw_address_bar's highlight band
+                         * -- and the first keystroke replaces it via
+                         * addr_insert's "delete the selection, then insert"
+                         * path below, same as it always did. A person can
+                         * also now press End (or Right) first to edit the
+                         * existing address instead of retyping it whole.
                          *
                          * It used to only set `editing`, and the bug that hid
                          * behind that is worth naming because it hid well:
@@ -3202,8 +4386,11 @@ void app_main(void)
                          * of an empty tab -- so appending and replacing are
                          * the same thing and it worked for a year. The second
                          * navigation in a boot silently produced
-                         * `https://site/what-was-typed`. */
-                        editing = 1; ulen = 0; url[0] = 0;
+                         * `https://site/what-was-typed`. Select-all-then-type
+                         * preserves that: the harness's second navigation
+                         * still ends with exactly what it typed, because the
+                         * old address is the thing typing REPLACES. */
+                        editing = 1; addr_select_all();
                         /* ONE LINE, because "the keystroke never arrived" and
                          * "it arrived and the bar did not take it" are
                          * different failures and the log could not tell them
@@ -3215,6 +4402,36 @@ void app_main(void)
                          * whose trigger cannot be observed is not an
                          * instrument; this makes the trigger observable. */
                         printf("[browser] ctrl+L: address bar focused\n");
+                        handled = 1;
+                    } else if (c == 'r') {                       /* reload */
+                        /* Re-fetch the CURRENT address. No hist_push: a
+                         * reload replaces what is on screen, it does not add
+                         * a stop to Back/Forward -- the same distinction
+                         * load()'s own redirect chain draws with
+                         * hist_replace vs hist_push. Refused while the bar is
+                         * being edited (a half-typed address is not "the
+                         * current page") and on an empty bar (nothing has
+                         * loaded yet, freshly booted or a bare new tab). */
+                        if (!editing && url[0]) { load(url); navigated = 1; }
+                        handled = 1;
+                    } else if (c == 'f') {                       /* find in page */
+                        /* browser_paint_text_find()'s own comment says the
+                         * scope this can answer: the SAME record
+                         * about:text prints, i.e. PAINTED text -- only what
+                         * the last paint put on screen, not the whole
+                         * document. One traversal answers both, on purpose
+                         * (CLAUDE.md: a second walk here is the one-jar-
+                         * two-doors trap this tree has paid for three
+                         * times). The status line says so rather than
+                         * implying a full-document search that was not
+                         * done. Toggled by the same chord a second time. */
+                        g_finding = !g_finding;
+                        if (g_finding) {
+                            g_pfqlen = 0; g_pfq[0] = 0; editing = 0;
+                            set_status("find (on screen): type, Enter = count, Esc = close");
+                        } else {
+                            set_status("ready");
+                        }
                         handled = 1;
                     }
                 }
@@ -3236,7 +4453,7 @@ void app_main(void)
                             if (u[0]) {
                                 g_panel = PANEL_NONE; editing = 0;
                                 int i = 0; while (u[i] && i < (int)sizeof url - 1) { url[i] = u[i]; i++; }
-                                url[i] = 0; ulen = i;
+                                url[i] = 0; ulen = i; addr_sync();
                                 hist_push(url); load(url); navigated = 1;
                             }
                         }
@@ -3248,6 +4465,41 @@ void app_main(void)
                         g_panel_sel = g_panel_top = 0;
                     }
                     if (g_panel_sel < 0) g_panel_sel = 0;
+                    need = 1;
+                    continue;
+                }
+                /* ---- find-in-page owns the keyboard while it is open ----
+                 *
+                 * A minimal bar: type, Enter reports how many of the runs
+                 * about:text would print contain the query (case-
+                 * insensitive substring), Esc closes. There is no on-screen
+                 * highlight yet -- browser_paint.h's own comment says why
+                 * this cannot become "jump to the Nth occurrence" without
+                 * either scrolling first (the record only covers what is
+                 * already visible) or a second walk of the layout tree,
+                 * which is exactly the duplicate traversal this was built to
+                 * avoid. */
+                if (g_finding) {
+                    if (k == 0x1b) { g_finding = 0; set_status("ready"); }
+                    else if (k == '\b') { if (g_pfqlen > 0) g_pfq[--g_pfqlen] = 0; }
+                    else if (k == '\n') {
+                        if (g_pfqlen > 0) {
+                            int runs = browser_paint_text_find(g_pfq);
+                            char st[96]; int p = 0;
+                            const char *pre = "find: "; while (*pre) st[p++] = *pre++;
+                            for (int i = 0; i < g_pfqlen && p < 60; i++) st[p++] = g_pfq[i];
+                            const char *mid = runs > 0 ? " -- " : " -- no matches on screen";
+                            while (*mid) st[p++] = *mid++;
+                            if (runs > 0) { num_append(st, &p, runs);
+                                const char *suf = runs == 1 ? " match on screen" : " matches on screen";
+                                while (*suf) st[p++] = *suf++; }
+                            st[p] = 0;
+                            set_status(st);
+                        }
+                    }
+                    else if (k >= ' ' && k < 0x7f && g_pfqlen < (int)sizeof g_pfq - 1) {
+                        g_pfq[g_pfqlen++] = (char)k; g_pfq[g_pfqlen] = 0;
+                    }
                     need = 1;
                     continue;
                 }
@@ -3390,41 +4642,136 @@ void app_main(void)
                     else if (k == KEY_UP)   scroll -= 40;
                     else if (k == KEY_PGDN) scroll += VIEW_H - 40;
                     else if (k == KEY_PGUP) scroll -= VIEW_H - 40;
-                    else if (k == KEY_HOME) scroll = 0;
-                    else if (k == KEY_END)  scroll = maxs;
-                    else if (k == KEY_LEFT)  { if (hist_go(-1)) { editing = 0; load(url); navigated = 1; } }
-                    else if (k == KEY_RIGHT) { if (hist_go(+1)) { editing = 0; load(url); navigated = 1; } }
-                    else if (editing && k == '\n') { editing = 0; hist_push(url); load(url); navigated = 1; }
+                    /* KEY_HOME/KEY_END/KEY_LEFT/KEY_RIGHT are the ADDRESS
+                     * BAR'S caret keys while `editing` is true, and the page-
+                     * scroll / session-history keys they always were
+                     * otherwise. The SAME key meaning two things is safe here
+                     * only because which one is live is never a guess:
+                     * draw_address_bar() paints a caret AND, when there is a
+                     * selection, a highlighted band ONLY while editing, and
+                     * paints neither the instant editing goes false -- so a
+                     * person reads the mode off the bar itself, not off
+                     * memory. Before this, KEY_LEFT/KEY_RIGHT ran hist_go()
+                     * UNCONDITIONALLY, even while typing: pressing Left to
+                     * move a caret that did not exist silently navigated the
+                     * page away from under the half-typed address. */
+                    else if (editing && k == KEY_HOME) { addr_home((e.mods & EV_MOD_SHIFT) != 0); chrome_edit_only = 1; }
+                    else if (editing && k == KEY_END)  { addr_end((e.mods & EV_MOD_SHIFT) != 0);  chrome_edit_only = 1; }
+                    else if (!editing && k == KEY_HOME) scroll = 0;
+                    else if (!editing && k == KEY_END)  scroll = maxs;
+                    else if (editing && k == KEY_LEFT)  { addr_move(-1, (e.mods & EV_MOD_CTRL) != 0, (e.mods & EV_MOD_SHIFT) != 0); chrome_edit_only = 1; }
+                    else if (editing && k == KEY_RIGHT) { addr_move(+1, (e.mods & EV_MOD_CTRL) != 0, (e.mods & EV_MOD_SHIFT) != 0); chrome_edit_only = 1; }
+                    /* hist_go's three outcomes: 0 nothing, 1 a real navigation
+                     * (load() the new url, tear the document down), 2 a
+                     * same-document pushState/hash move (address bar only --
+                     * the popstate it queued fires from js_page_pending()
+                     * further down THIS SAME iteration; navigated must stay 0
+                     * or that never runs). Reached only when !editing now --
+                     * see the caret-key block just above. */
+                    else if (!editing && k == KEY_LEFT)  { int hg = hist_go(-1); if (hg == 1) { load(url); navigated = 1; } else if (hg == 2) { need = 1; } }
+                    else if (!editing && k == KEY_RIGHT) { int hg = hist_go(+1); if (hg == 1) { load(url); navigated = 1; } else if (hg == 2) { need = 1; } }
+                    /* addr_infer_scheme() -- see its own comment -- either
+                     * leaves a real URL alone, prepends https:// to
+                     * something host-shaped, or refuses a bare word and sets
+                     * the status line. Refusing must NOT navigate and must
+                     * NOT set chrome_edit_only (the status line is outside
+                     * the address-bar band redraw_chrome() repaints), so the
+                     * bar stays in edit mode and the ordinary full redraw()
+                     * this iteration already asks for shows why. */
+                    else if (editing && k == '\n') {
+                        if (addr_infer_scheme()) { editing = 0; hist_push(url); load(url); navigated = 1; }
+                    }
+                    /* Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V, folded to a control
+                     * byte by the keyboard driver exactly as forms.c's
+                     * control_key()/ce_key() already read them (0x01/0x03/
+                     * 0x16/0x18) -- no need to also check EV_MOD_CTRL here,
+                     * same as those two. clip_set/clip_get are the real
+                     * kernel clipboard (SYS_CLIP_SET/GET); CLIP_F_TEXT
+                     * validates UTF-8 on the way in and clip_get never hands
+                     * back a torn character, so pasting a byte range straight
+                     * into url[] cannot corrupt it. */
+                    else if (editing && k == 0x01) { addr_select_all(); chrome_edit_only = 1; }              /* Ctrl+A */
+                    else if (editing && (k == 0x03 || k == 0x18)) {                                          /* copy / cut */
+                        char cb[600];
+                        int got = addr_selection_text(cb, (int)sizeof cb);
+                        if (got > 0) clip_set(CLIP_F_TEXT, cb, got);
+                        if (k == 0x18 && got > 0) addr_backspace();   /* cut: also remove the selection */
+                        chrome_edit_only = 1;
+                    }
+                    else if (editing && k == 0x16) {                                                          /* Ctrl+V */
+                        char pb[600];
+                        int got = clip_get(CLIP_F_TEXT, pb, (int)sizeof pb);
+                        if (got > 0) addr_insert(pb, got);
+                        chrome_edit_only = 1;
+                    }
+                    /* The PAGE's own Ctrl+A / Ctrl+C -- reached only when the
+                     * address bar is not editing AND no focused form control
+                     * or contenteditable claimed the key above (control_key/
+                     * ce_key's own 0x01/0x03 cases return 1 and set allow=0
+                     * first, exactly like their Ctrl+V does) -- so this is
+                     * genuinely "nothing more specific wanted this keystroke,
+                     * treat it as a page-level shortcut", the same standing
+                     * every other unclaimed key in this block already has.
+                     * No Ctrl+X/Ctrl+V here: the page's own text cannot be
+                     * cut (it is not editable) and there is nothing on a
+                     * page for a paste to go into. */
+                    else if (!editing && k == 0x01) { psel_select_all(); need = 1; }                          /* Ctrl+A */
+                    else if (!editing && k == 0x03) { psel_copy(); }                                          /* Ctrl+C */
                     else if (k == '\b') {
                         if (editing) {
-                            /* Delete a whole UTF-8 character, not one byte --
-                             * one byte off a CJK address (typed via the pinyin
-                             * IME) used to leave a dangling lead byte that
-                             * every character after it, and every subsequent
-                             * backspace, would then decode wrong. The address
-                             * bar is append-at-end only (see KEY_LEFT/RIGHT
-                             * above: no caret to move), so "the last
-                             * character" is always the one ending at ulen. */
-                            if (ulen > 0) {
-                                int p = ulen - 1;
-                                while (p > 0 && ((unsigned char)url[p] & 0xC0) == 0x80) p--;
-                                ulen = p; url[ulen] = 0;
-                            }
+                            /* addr_backspace(): the selection if there is
+                             * one, else one UTF-8 character LEFT OF THE
+                             * CARET -- which, now that the caret can be
+                             * anywhere, is no longer necessarily "the last
+                             * character of url[]". Before this, Backspace
+                             * always deleted off the END regardless of where
+                             * (nowhere) the caret was, because there was no
+                             * caret: clearing a 69-byte Google search URL's
+                             * tracking suffix took on the order of 60
+                             * presses, one per character, all from the end. */
+                            addr_backspace();
+                            /* CHROME-ONLY: touches url/ulen/ucaret/usel and
+                             * nothing else this iteration reached (editing
+                             * was already true, so none of the scroll/
+                             * hist_go/navigation branches above or below this
+                             * one ran). See the comment on `chrome_edit_only`
+                             * above the burst loop. */
+                            chrome_edit_only = 1;
                         }
-                        else if (hist_go(-1)) { load(url); navigated = 1; }   /* Backspace = back */
+                        else {
+                            int hg = hist_go(-1);   /* Backspace = back */
+                            if (hg == 1) { load(url); navigated = 1; }
+                            else if (hg == 2) { need = 1; }
+                        }
                     }
-                    else if (editing && k >= ' ' && k < 0x7f && ulen < (int)sizeof url - 1) { url[ulen++] = (char)k; url[ulen] = 0; }
+                    /* Forward-delete (the Delete key -- 0x7f, the same code
+                     * ce_key()'s `case 0x7f` reads for a contenteditable).
+                     * Excluded from is_nav_key() and from the printable-ASCII
+                     * range test below on purpose, so it cannot double-fire
+                     * as either. */
+                    else if (editing && k == 0x7f) { addr_delete_fwd(); chrome_edit_only = 1; }
+                    else if (editing && k >= ' ' && k < 0x7f) {
+                        /* addr_insert(): replaces the selection first, when
+                         * there is one -- typing over a selected address
+                         * deletes the old one and types the new one in the
+                         * SAME keystroke, which is the concrete fix for "the
+                         * enormous Google URL suffix cannot be deleted":
+                         * Ctrl+A (or Ctrl+L), then just start typing. */
+                        char c = (char)k;
+                        addr_insert(&c, 1);
+                        chrome_edit_only = 1;   /* see the comment above the burst loop */
+                    }
                     /* A code point above ASCII -- e.g. a pinyin candidate --
-                     * UTF-8 encoded and appended whole. load() percent-encodes
-                     * any non-ASCII byte in `url` before it reaches the wire
-                     * (RFC 3986); this is only about not corrupting what the
-                     * user sees typed in the bar before that happens. */
+                     * UTF-8 encoded and inserted whole (replacing a
+                     * selection first, exactly like the ASCII branch above).
+                     * load() percent-encodes any non-ASCII byte in `url`
+                     * before it reaches the wire (RFC 3986); this is only
+                     * about not corrupting what the user sees typed in the
+                     * bar before that happens. */
                     else if (editing && k > 0x7F && !is_nav_key(k)) {
                         char enc[4]; int el = key_utf8_encode((unsigned)k, enc);
-                        if (ulen + el < (int)sizeof url - 1) {
-                            for (int i = 0; i < el; i++) url[ulen++] = enc[i];
-                            url[ulen] = 0;
-                        }
+                        addr_insert(enc, el);
+                        chrome_edit_only = 1;
                     }
                 }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
@@ -3439,7 +4786,7 @@ void app_main(void)
                     if (hit == -2) {                             /* the + button */
                         int n = tabs_new("");
                         if (n >= 0) { tab_dehydrate(); tabs_select(n);
-                            url[0] = 0; ulen = 0; editing = 1;
+                            url[0] = 0; ulen = 0; editing = 1; addr_sync();
                             set_status("new tab -- type a URL and press Enter");
                             session_save(); }
                     } else if (hit >= 0 && close) {
@@ -3449,7 +4796,7 @@ void app_main(void)
                         if (!tab_hydrate()) {
                             struct tab *t = tab_cur();
                             if (t && t->url[0]) { load(url); navigated = 1; }
-                            else { url[0] = 0; ulen = 0; editing = 1;
+                            else { url[0] = 0; ulen = 0; editing = 1; addr_sync();
                                    set_status("new tab -- type a URL and press Enter"); }
                         }
                         session_save();
@@ -3481,7 +4828,7 @@ void app_main(void)
                             if (u[0] && g_panel != PANEL_DOWNLOADS) {
                                 g_panel = PANEL_NONE; editing = 0;
                                 int i = 0; while (u[i] && i < (int)sizeof url - 1) { url[i] = u[i]; i++; }
-                                url[i] = 0; ulen = i;
+                                url[i] = 0; ulen = i; addr_sync();
                                 hist_push(url); load(url); navigated = 1;
                             }
                         }
@@ -3563,11 +4910,47 @@ void app_main(void)
                          * pointer, which is a fact about the TEXT NODE the hit
                          * landed in, several levels down. */
                         if (fc_ce_host(tgt)) ce_caret_from_click(tgt, mx, my - VIEW_Y);
+                        /* PAGE TEXT SELECTION begins here, and only here: a
+                         * plain mousedown that neither of the two branches
+                         * above claimed (a textual control takes its OWN
+                         * drag-to-select via fc_set_selection above; a
+                         * contenteditable likewise via ce_caret_from_click).
+                         * Shift+click EXTENDS whatever selection already
+                         * exists instead of restarting it -- the same rule
+                         * every other shift-extend in this file uses
+                         * (addr_move, fc_edit_move, fc_ce_move). A plain
+                         * click that lands on no text at all clears any
+                         * existing selection, which is "click elsewhere
+                         * deselects" built out of psel_clear() rather than a
+                         * separate deselect path. */
+                        if (!(tgt && (FC_IS_TEXTUAL(fc_kind(tgt)) || fc_ce_host(tgt)))) {
+                            struct node *pn = 0; int poff = 0;
+                            int dpfc_ok = doc_pos_from_click(mx, my - VIEW_Y, &pn, &poff);
+                            if (dpfc_ok) {
+                                if (e.mods & EV_MOD_SHIFT) {
+                                    if (!g_psel_an) psel_begin(pn, poff);
+                                    psel_extend_to(pn, poff);
+                                } else {
+                                    psel_begin(pn, poff);
+                                }
+                                g_psel_dragging = 1;
+                                need = 1;
+                            } else if (!(e.mods & EV_MOD_SHIFT)) {
+                                psel_clear();
+                            }
+                        }
                     }
                     need = 1;
                 }
             } else if (e.type == EV_MOUSE_UP) {
                 int mx = e.a, my = e.b;
+                /* A drag ends wherever the button comes up, including off the
+                 * viewport (over the address bar, a panel, the tab strip) --
+                 * gating this on `my` the way the click-target logic below
+                 * does would leave g_psel_dragging stuck at 1 until the next
+                 * click, extending a selection from a mouse MOVE that never
+                 * had a release. */
+                g_psel_dragging = 0;
                 if (my >= VIEW_Y && my < VIEW_Y + VIEW_H) {
                     struct node *n = 0;
                     char href[512]; href[0] = 0;
@@ -3589,6 +4972,52 @@ void app_main(void)
                          * when the click event survives the page's handlers. */
                         int go = js_dom_dispatch(n, "click", &ji);
                         if (settle_frame()) need = 1;
+                        /* dblclick: two clicks on the SAME target, close in time
+                         * and space. 400ms + 6px slop -- the same numbers
+                         * titlebar_double_click() in wm.c uses for the window
+                         * manager's own double-click. Not shared code (a DOM
+                         * event and a titlebar hit-test answer different
+                         * questions and have no common header to hold a
+                         * constant), but a human's second click has to land
+                         * inside the same platform timing either way, so
+                         * picking a different number here would just be a
+                         * second, competing answer to "how fast is a double
+                         * click on this machine" -- the one jar, two doors
+                         * trap, avoided by copying the value instead of a
+                         * pointer to it. A third click does not chain into a
+                         * second dblclick: state is cleared on every hit,
+                         * exactly like the titlebar's. */
+                        unsigned long long nowms = monotonic_ms();
+                        int dbl = lastclick_node && n == lastclick_node &&
+                                  n->serial == lastclick_serial &&
+                                  nowms - lastclick_ms <= 400 &&
+                                  mx - lastclick_x <= 6 && lastclick_x - mx <= 6 &&
+                                  my - lastclick_y <= 6 && lastclick_y - my <= 6;
+                        if (dbl) {
+                            struct js_event_init ji2 = ji;
+                            ji2.detail = 2;
+                            js_dom_dispatch(n, "dblclick", &ji2);
+                            lastclick_node = 0; lastclick_serial = 0;
+                            /* Double-click selects the WORD under the second
+                             * click -- the page-text counterpart of the DOM
+                             * dblclick event just dispatched above, reusing
+                             * its own same-target/close-in-time/close-in-
+                             * space determination rather than a second timer.
+                             * A double-click inside a form field or a
+                             * contenteditable does not reach here at all:
+                             * FOCUS_ROUTING's mousedown handling above only
+                             * begins a psel_* selection when neither claimed
+                             * the click, so `n` having landed there matches
+                             * the same page-text-only scope. */
+                            struct node *pn = 0; int poff = 0;
+                            if (doc_pos_from_click(mx, my - VIEW_Y, &pn, &poff)) {
+                                int wa, wb; psel_word_at(pn, poff, &wa, &wb);
+                                if (wb > wa) { psel_begin(pn, wa); psel_extend_to(pn, wb); need = 1; }
+                            }
+                        } else {
+                            lastclick_node = n; lastclick_serial = n->serial;
+                            lastclick_ms = nowms; lastclick_x = mx; lastclick_y = my;
+                        }
                         /* THE CONTROL'S DEFAULT ACTION. A checkbox toggles, a
                          * submit button submits, a <select> opens -- and every
                          * one of them is suppressed by preventDefault(), which
@@ -3612,15 +5041,56 @@ void app_main(void)
                  * the one worth not paying for: with no listeners registered
                  * anywhere, building an Event per sample is pure waste. Inline
                  * on-attributes are compiled lazily and so are invisible to this
-                 * count -- onmousemove= in markup is the accepted casualty. */
-                if (js_dom_listener_count() > 0 && e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H) {
+                 * count -- onmousemove= in markup is the accepted casualty. The
+                 * same guard covers the hover transitions below: a page with
+                 * zero listeners of ANY kind cannot observe a mouseover
+                 * either, and the hit test they'd need is exactly as
+                 * expensive as the one mousemove was already paying for. */
+                if (js_dom_listener_count() > 0) {
+                    int in_view = e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H;
+                    struct node *n = 0;
+                    if (in_view) browser_hittest_node(e.a, e.b - VIEW_Y, scroll, &n, 0, 0);
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1;
                     ji.client_x = e.a; ji.client_y = e.b - VIEW_Y;
                     mods_of(&e, &ji);
-                    struct node *n = 0;
-                    browser_hittest_node(e.a, e.b - VIEW_Y, scroll, &n, 0, 0);
-                    js_dom_dispatch(n, "mousemove", &ji);
+                    if (in_view) js_dom_dispatch(n, "mousemove", &ji);
+                    /* over/out/enter/leave, synthesised from this hit test
+                     * against the LAST one. Deliberately not gated on
+                     * `in_view`: leaving the viewport for the URL bar or a
+                     * panel is the "pointer is now over nothing" case, and
+                     * whatever it was over a moment ago must still hear
+                     * mouseout/mouseleave, or a hover menu opened over the
+                     * page stays open forever once the pointer leaves
+                     * through the chrome instead of back over the page. */
+                    struct node *from = (hover_node && hover_node->serial == hover_serial)
+                                         ? hover_node : 0;
+                    if (from != n) {
+                        fire_hover_transition(from, n, &ji);
+                        hover_node = n;
+                        hover_serial = n ? n->serial : 0;
+                    }
+                }
+                /* Extending a page-text selection is chrome behaviour, not a
+                 * DOM event -- unlike mousemove/hover just above, it must run
+                 * whether or not the page registered any listener at all, so
+                 * it sits OUTSIDE that gate rather than as another case
+                 * inside it. Repainting only when the FOCUS end actually
+                 * moved to a different (node, offset) matters here more than
+                 * anywhere else in this file: this is coalesced motion
+                 * (logit_abi.h), so a slow drag can still deliver several
+                 * samples that land in the same word, and the compositor is
+                 * already the bottleneck this machine is slowest at -- see
+                 * CLAUDE.md's own measurement of where a frame's time goes.
+                 * Re-painting on a sample that changed nothing on screen
+                 * would be exactly the mistake it warns against. */
+                if (g_psel_dragging && e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H) {
+                    struct node *pn = 0; int poff = 0;
+                    if (doc_pos_from_click(e.a, e.b - VIEW_Y, &pn, &poff)) {
+                        struct node *ofo = g_psel_fo; int ofoo = g_psel_foo; int oact = g_psel_active;
+                        psel_extend_to(pn, poff);
+                        if (g_psel_fo != ofo || g_psel_foo != ofoo || g_psel_active != oact) need = 1;
+                    }
                 }
             } else if (e.type == EV_WHEEL) {
                 int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
@@ -3671,14 +5141,28 @@ void app_main(void)
                 editing = 0;
                 int i = 0;
                 while (want[i] && i < (int)sizeof url - 1) { url[i] = want[i]; i++; }
-                url[i] = 0; ulen = i;
+                url[i] = 0; ulen = i; addr_sync();
                 hist_push(url);
                 load(url);
                 navigated = 1; need = 1;
             }
         }
 
-        if (need) redraw(editing);    /* one repaint after the burst, not per keystroke */
+        /* CHROME-ONLY DISPATCH. nev == 1 && chrome_edit_only means the single
+         * event this burst processed was proven (by the two branches above)
+         * to have touched nothing but the address bar's text and caret; the
+         * take_script_nav() check just above this line is the only other
+         * thing that can set `need` or `navigated` between the burst and
+         * here, so `!navigated` covers it too. Anything else -- a multi-event
+         * burst, a scroll, a click, a resize, a DOM mutation, a navigation --
+         * takes the full redraw() it always has, unchanged. This is a
+         * PERFORMANCE choice, never a correctness one: when the classification
+         * is not airtight, the fallback is the whole canvas, exactly as
+         * before this change existed. */
+        if (need) {
+            if (nev == 1 && chrome_edit_only && !navigated) redraw_chrome(editing);
+            else redraw(editing);
+        }
 
         /* ---- THE SLEEP, and it is the entire cost of an idle browser -------
          *
