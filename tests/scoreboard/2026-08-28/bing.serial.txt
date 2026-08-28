@@ -1,0 +1,160 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +8/s worstgap=65719us missed=56 of 1998 expected (2.802% of the clock); uptime 20s
+[wm] perf t=20733 composites=219 ns=2717147343 max=50866745 motions=18 curmoves=11 curns=237997 full=17 rects=220 cpx=74519416 fpx=74519416 presns=133770325 torn=0 defer=77 late=0 drawmax=25 evdrop=0
+[time] tickloss +10/s worstgap=65719us missed=66 of 2097 expected (3.147% of the clock); uptime 21s
+[browser] load: https://www.bing.com/
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.57
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[sock] connected cn.bing.com via ipv4 ::ffff:198.18.0.58
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=21733 composites=243 ns=2983985997 max=50866745 motions=18 curmoves=11 curns=237997 full=17 rects=244 cpx=83005056 fpx=83005056 presns=149253248 torn=0 defer=89 late=0 drawmax=25 evdrop=0
+[net] rx path: frames 67 irq 46 softirq 19 inline 3 poll 2 idle 0/0 halt/skip
+[mm] low: 113471 frames free (443 MiB), 17566 used, 524 shared, 0 bugs
+[mm] low: 113215 frames free (442 MiB), 17822 used, 526 shared, 0 bugs
+[dl] painted text: 6 run(s), 32 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 120,70 图片
+[dl] 120,109 视频
+[dl] 120,148 翻译
+[dl] 120,187 地图
+[dl] 120,226 学术
+[dl] 184,70  
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[browser] heap peak 6732K
+[wm] perf t=22734 composites=253 ns=3070534563 max=50866745 motions=18 curmoves=11 curns=237997 full=17 rects=254 cpx=85593756 fpx=85593756 presns=153991226 torn=0 defer=94 late=0 drawmax=49 evdrop=0
+[mm] low: 112959 frames free (441 MiB), 18078 used, 555 shared, 0 bugs
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] scripts collected: 4 external classic, 0 external module, 8 inline
+[time] tickloss +6/s worstgap=65719us missed=72 of 2297 expected (3.134% of the clock); uptime 23s
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[browser] JS exception: ReferenceError: '_w' is not defined
+ReferenceError: '_w' is not defined
+    at <eval> (https://cn.bing.com/#inline-script-2:3)
+[mm] low: 112703 frames free (440 MiB), 18334 used, 556 shared, 0 bugs
+[browser] load done: 6 requests, 4 connections dialled, 3 reused, 0 modules loaded (0 failed)
+[browser] pool: 3 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[time] tickloss +12/s worstgap=65719us missed=84 of 2394 expected (3.508% of the clock); uptime 24s
+[mm] low: 112447 frames free (439 MiB), 18590 used, 597 shared, 0 bugs
+[mm] low: 112191 frames free (438 MiB), 18846 used, 598 shared, 0 bugs
+[error] Uncaught (in promise) Error: IndexedDB not supported
+    at e (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at IOTDinit (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <eval> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js:1)
+
+[error] Uncaught (in promise) Error: IndexedDB not supported
+    at e (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at IOTDinit (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at call (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at Promise (native)
+    at <anonymous> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js)
+    at <eval> (https://www.bing.com/rp/2oj1ghqIss6hVFHavfOBXoLDKpE.gz.js:1)
+
+[mm] low: 111935 frames free (437 MiB), 19102 used, 608 shared, 0 bugs
+[mm] low: 111679 frames free (436 MiB), 19358 used, 608 shared, 0 bugs
+[mm] low: 111423 frames free (435 MiB), 19614 used, 608 shared, 0 bugs
+[mm] low: 111167 frames free (434 MiB), 19870 used, 608 shared, 0 bugs
+[mm] low: 110911 frames free (433 MiB), 20126 used, 608 shared, 0 bugs
+[netlock] acq 112493 recursive 503 maxdepth 3 violations 0
+[mm] low: 110655 frames free (432 MiB), 20382 used, 608 shared, 0 bugs
+[mm] low: 110399 frames free (431 MiB), 20638 used, 608 shared, 0 bugs
+[mm] low: 110143 frames free (430 MiB), 20894 used, 608 shared, 0 bugs
+[mm] low: 109887 frames free (429 MiB), 21150 used, 608 shared, 0 bugs
+[mm] low: 109631 frames free (428 MiB), 21406 used, 608 shared, 0 bugs
+[mm] low: 109375 frames free (427 MiB), 21662 used, 608 shared, 0 bugs
+[mm] low: 109119 frames free (426 MiB), 21918 used, 608 shared, 0 bugs
+[mm] low: 108863 frames free (425 MiB), 22174 used, 608 shared, 0 bugs
+[mm] low: 108607 frames free (424 MiB), 22430 used, 608 shared, 0 bugs
+[mm] low: 108351 frames free (423 MiB), 22686 used, 608 shared, 0 bugs
+[mm] low: 108095 frames free (422 MiB), 22942 used, 608 shared, 0 bugs
+[mm] low: 107839 frames free (421 MiB), 23198 used, 608 shared, 0 bugs
+[mm] low: 107583 frames free (420 MiB), 23454 used, 608 shared, 0 bugs
+[mm] low: 107327 frames free (419 MiB), 23710 used, 608 shared, 0 bugs
+[e1000] stats: rx 390 pkt / 467481 B, tx 262 pkt / 41685 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 176 (+176)
+[mm] low: 107071 frames free (418 MiB), 23966 used, 608 shared, 0 bugs
+[mm] low: 106815 frames free (417 MiB), 24222 used, 608 shared, 0 bugs
+[mm] low: 106559 frames free (416 MiB), 24478 used, 608 shared, 0 bugs
+[mm] low: 106303 frames free (415 MiB), 24734 used, 608 shared, 0 bugs
+[mm] low: 106047 frames free (414 MiB), 24990 used, 608 shared, 0 bugs
+[mm] low: 105791 frames free (413 MiB), 25246 used, 608 shared, 0 bugs
+[mm] low: 105535 frames free (412 MiB), 25502 used, 608 shared, 0 bugs
+[mm] low: 105279 frames free (411 MiB), 25758 used, 608 shared, 0 bugs
+[mm] low: 105023 frames free (410 MiB), 26014 used, 608 shared, 0 bugs
+[mm] low: 104767 frames free (409 MiB), 26270 used, 608 shared, 0 bugs
+[mm] low: 104511 frames free (408 MiB), 26526 used, 608 shared, 0 bugs
+[mm] low: 104255 frames free (407 MiB), 26782 used, 608 shared, 0 bugs
+[mm] low: 103999 frames free (406 MiB), 27038 used, 608 shared, 0 bugs
+[mm] low: 103743 frames free (405 MiB), 27294 used, 608 shared, 0 bugs
+[mm] low: 103487 frames free (404 MiB), 27550 used, 608 shared, 0 bugs
+[mm] low: 103231 frames free (403 MiB), 27806 used, 608 shared, 0 bugs
+[mm] low: 102975 frames free (402 MiB), 28062 used, 608 shared, 0 bugs
+[mm] low: 102719 frames free (401 MiB), 28318 used, 608 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=538
+[bxfer] h2 cn.bing.com:443 closed: streams=29 peak=6 frames=109/57 hpack_in=298891
+[time] tickloss +5/s worstgap=65719us missed=89 of 2993 expected (2.973% of the clock); uptime 30s
+[browser] ctrl+L: address bar focused
+[wm] perf t=40757 composites=322 ns=3680410499 max=50866745 motions=18 curmoves=11 curns=237997 full=18 rects=323 cpx=102014096 fpx=102014096 presns=185735066 torn=0 defer=110 late=0 drawmax=91 evdrop=0
+[time] tickloss +7/s worstgap=65719us missed=96 of 4091 expected (2.346% of the clock); uptime 41s
+[browser] load: about:text
+[dl] painted text: 6 run(s), 32 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 120,70 图片
+[dl] 120,109 视频
+[dl] 120,148 翻译
+[dl] 120,187 地图
+[dl] 120,226 学术
+[dl] 184,70  
+[dl] ---8<--- end painted text
+[wm] perf t=41757 composites=361 ns=3819450803 max=50866745 motions=18 curmoves=11 curns=237997 full=19 rects=362 cpx=106438496 fpx=106438496 presns=193365028 torn=0 defer=143 late=0 drawmax=91 evdrop=0

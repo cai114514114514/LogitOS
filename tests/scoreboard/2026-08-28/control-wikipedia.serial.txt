@@ -1,0 +1,776 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +6/s worstgap=65646us missed=31 of 1997 expected (1.552% of the clock); uptime 20s
+[wm] perf t=20639 composites=179 ns=2269210589 max=43056783 motions=18 curmoves=12 curns=209999 full=16 rects=181 cpx=75000988 fpx=75000988 presns=135192313 torn=0 defer=33 late=0 drawmax=21 evdrop=0
+[wm] perf t=21647 composites=217 ns=2862807589 max=43056783 motions=18 curmoves=12 curns=209999 full=17 rects=219 cpx=97958628 fpx=97958628 presns=175425106 torn=0 defer=43 late=0 drawmax=21 evdrop=0
+[wm] perf t=22655 composites=241 ns=3280678478 max=43056783 motions=18 curmoves=12 curns=209999 full=17 rects=243 cpx=114026048 fpx=114026048 presns=203639962 torn=0 defer=46 late=0 drawmax=21 evdrop=0
+[browser] load: https://en.wikipedia.org/wiki/Operating_system
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.68
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for en.wikipedia.org, alpn=http/1.1
+[wm] perf t=23673 composites=255 ns=3495611394 max=43056783 motions=18 curmoves=12 curns=209999 full=18 rects=257 cpx=122662548 fpx=122662548 presns=219110883 torn=0 defer=49 late=0 drawmax=21 evdrop=0
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 1 cached)
+[tls] ticket stored for en.wikipedia.org (224 bytes, lifetime 86400s, 2 cached)
+[net] rx path: frames 77 irq 45 softirq 18 inline 3 poll 3 idle 0/0 halt/skip
+[mm] low: 113471 frames free (443 MiB), 17566 used, 512 shared, 0 bugs
+[mm] low: 113215 frames free (442 MiB), 17822 used, 518 shared, 0 bugs
+[mm] low: 112959 frames free (441 MiB), 18078 used, 521 shared, 0 bugs
+[mm] low: 112703 frames free (440 MiB), 18334 used, 521 shared, 0 bugs
+[mm] low: 112447 frames free (439 MiB), 18590 used, 523 shared, 0 bugs
+[mm] low: 112191 frames free (438 MiB), 18846 used, 523 shared, 0 bugs
+[mm] low: 111935 frames free (437 MiB), 19102 used, 523 shared, 0 bugs
+[mm] low: 111679 frames free (436 MiB), 19358 used, 525 shared, 0 bugs
+[mm] low: 111423 frames free (435 MiB), 19614 used, 526 shared, 0 bugs
+[mm] low: 111167 frames free (434 MiB), 19870 used, 526 shared, 0 bugs
+[dl] painted text: 51 run(s), 254 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Jump
+[dl] 51,68 to
+[dl] 69,68 content
+[dl] 24,88 Main
+[dl] 61,88 menu
+[dl] 8,108 Main
+[dl] 45,108 menu
+[dl] 14,132 move
+[dl] 56,132 to
+[dl] 74,132 sidebar
+[dl] 148,132 hide
+[dl] 8,156 Navigation
+[dl] 14,192 •
+[dl] 36,192 Main
+[dl] 73,192 page
+[dl] 14,212 •
+[dl] 36,212 Contents
+[dl] 14,232 •
+[dl] 36,232 Current
+[dl] 93,232 events
+[dl] 14,252 •
+[dl] 36,252 Random
+[dl] 99,252 article
+[dl] 14,272 •
+[dl] 36,272 About
+[dl] 81,272 Wikipedia
+[dl] 14,292 •
+[dl] 36,292 Contact
+[dl] 96,292 us
+[dl] 8,328 Contribute
+[dl] 14,364 •
+[dl] 36,364 Help
+[dl] 14,384 •
+[dl] 36,384 Learn
+[dl] 79,384 to
+[dl] 97,384 edit
+[dl] 14,404 •
+[dl] 36,404 Community
+[dl] 122,404 portal
+[dl] 14,424 •
+[dl] 36,424 Recent
+[dl] 88,424 changes
+[dl] 14,444 •
+[dl] 36,444 Upload
+[dl] 90,444 file
+[dl] 14,464 •
+[dl] 36,464 Special
+[dl] 90,464 pages
+[dl] 8,550 Search
+[dl] 14,602 Search
+[dl] 24,658 Appearance
+[dl] ---8<--- end painted text
+[sock] connected en.wikipedia.org via ipv4 ::ffff:198.18.0.68
+[netlock] acq 113441 recursive 155 maxdepth 3 violations 0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] resumed session for en.wikipedia.org (no chain, no signature), alpn=http/1.1
+[mm] low: 110911 frames free (433 MiB), 20126 used, 542 shared, 0 bugs
+[mm] low: 110655 frames free (432 MiB), 20382 used, 542 shared, 0 bugs
+[mm] low: 110399 frames free (431 MiB), 20638 used, 565 shared, 0 bugs
+[mm] low: 110143 frames free (430 MiB), 20894 used, 565 shared, 0 bugs
+[mm] low: 109887 frames free (429 MiB), 21150 used, 565 shared, 0 bugs
+[browser] heap peak 17922K
+[dl] painted text: 191 run(s), 1074 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 72,220 Contents
+[dl] 72,261 (Top)
+[dl] 72,290 Definition
+[dl] 133,290 and
+[dl] 159,290 purpose
+[dl] 72,319 Types
+[dl] 111,319 of
+[dl] 126,319 operating
+[dl] 72,336 systems
+[dl] 84,365 Multicomputer
+[dl] 84,382 operating
+[dl] 145,382 systems
+[dl] 84,411 Distributed
+[dl] 154,411 systems
+[dl] 84,440 Embedded
+[dl] 84,469 Real-time
+[dl] 84,498 Hypervisor
+[dl] 84,527 Library
+[dl] 72,556 History
+[dl] 84,585 Microcomputers
+[dl] 72,614 Components
+[dl] 84,643 Kernel
+[dl] 264,150 Operating
+[dl] 401,150 system
+[dl] 761,160 164
+[dl] 788,160 languages
+[dl] 264,196 Article
+[dl] 321,196 Talk
+[dl] 624,197 Read
+[dl] 673,197 View
+[dl] 705,197 source
+[dl] 765,197 View
+[dl] 797,197 history
+[dl] 264,232 From
+[dl] 299,232 Wikipedia,
+[dl] 363,232 the
+[dl] 386,232 free
+[dl] 412,232 encyclopedia
+[dl] 609,290 Operating
+[dl] 697,290 systems
+[dl] 601,568 Common
+[dl] 663,568 features
+[dl] 601,589 Process
+[dl] 643,589 management
+[dl] 715,589 Interrupts
+[dl] 768,589 Memory
+[dl] 813,589 management
+[dl] 885,589 File
+[dl] 905,589 system
+[dl] 944,589 Device
+[dl] 981,589 drivers
+[dl] 1018,589 Networking
+[dl] 1080,589 Security
+[dl] 1125,589 Input/output
+[dl] 601,611 v
+[dl] 607,611 t
+[dl] 611,611 e
+[dl] 264,284 An
+[dl] 283,284 operating
+[dl] 350,284 system
+[dl] 399,284 (
+[dl] 403,284 OS
+[dl] 421,284 )
+[dl] 428,284 is
+[dl] 440,284 system
+[dl] 486,284 software
+[dl] 542,284 that
+[dl] 264,305 manages
+[dl] 321,305 computer
+[dl] 384,305 hardware
+[dl] 445,305 and
+[dl] 471,305 software
+[dl] 264,326 resources,
+[dl] 329,326 and
+[dl] 355,326 provides
+[dl] 410,326 common
+[dl] 468,326 services
+[dl] 519,326 for
+[dl] 264,347 computer
+[dl] 327,347 programs
+[dl] 385,347 .
+[dl] 388,347 [
+[dl] 391,347 1
+[dl] 397,347 ]
+[dl] 264,389 Time-sharing
+[dl] 345,389 operating
+[dl] 406,389 systems
+[dl] 458,389 schedule
+[dl] 515,389 tasks
+[dl] 549,389 for
+[dl] 264,410 efficient
+[dl] 315,410 use
+[dl] 339,410 of
+[dl] 354,410 the
+[dl] 377,410 system
+[dl] 423,410 and
+[dl] 449,410 may
+[dl] 478,410 also
+[dl] 505,410 include
+[dl] 264,431 accounting
+[dl] 335,431 software
+[dl] 391,431 for
+[dl] 411,431 cost
+[dl] 440,431 allocation
+[dl] 502,431 of
+[dl] 517,431 processor
+[dl] 264,452 time
+[dl] 291,452 ,
+[dl] 297,452 mass
+[dl] 331,452 storage
+[dl] 376,452 ,
+[dl] 382,452 peripherals,
+[dl] 455,452 and
+[dl] 481,452 other
+[dl] 517,452 resources.
+[dl] 264,494 For
+[dl] 287,494 hardware
+[dl] 348,494 functions
+[dl] 408,494 such
+[dl] 440,494 as
+[dl] 456,494 input
+[dl] 491,494 and
+[dl] 517,494 output
+[dl] 264,515 and
+[dl] 290,515 memory
+[dl] 344,515 allocation
+[dl] 403,515 ,
+[dl] 409,515 the
+[dl] 432,515 operating
+[dl] 493,515 system
+[dl] 539,515 acts
+[dl] 567,515 as
+[dl] 264,536 an
+[dl] 282,536 intermediary
+[dl] 362,536 between
+[dl] 418,536 programs
+[dl] 479,536 and
+[dl] 505,536 the
+[dl] 264,557 computer
+[dl] 327,557 hardware,
+[dl] 388,557 [
+[dl] 391,557 2
+[dl] 397,557 ]
+[dl] 400,557 [
+[dl] 403,557 3
+[dl] 409,557 ]
+[dl] 415,557 although
+[dl] 472,557 the
+[dl] 495,557 application
+[dl] 264,578 code
+[dl] 297,578 is
+[dl] 309,578 usually
+[dl] 354,578 executed
+[dl] 412,578 directly
+[dl] 460,578 by
+[dl] 478,578 the
+[dl] 501,578 hardware
+[dl] 264,599 and
+[dl] 290,599 frequently
+[dl] 355,599 makes
+[dl] 397,599 system
+[dl] 443,599 calls
+[dl] 472,599 to
+[dl] 488,599 an
+[dl] 506,599 OS
+[dl] 527,599 function
+[dl] 264,620 or
+[dl] 280,620 is
+[dl] 292,620 interrupted
+[dl] 364,620 by
+[dl] 382,620 it.
+[dl] 396,620 Operating
+[dl] 459,620 systems
+[dl] 511,620 are
+[dl] 533,620 found
+[dl] 264,641 on
+[dl] 283,641 many
+[dl] 320,641 devices
+[dl] 368,641 that
+[dl] 396,641 contain
+[dl] 445,641 a
+[dl] 455,641 computer
+[dl] 515,641  
+[dl] 518,641 –
+[dl] 528,641 from
+[dl] 660,84 Search
+[dl] 881,84 Donate
+[dl] 936,84 Create
+[dl] 978,84 account
+[dl] 1039,84 Log
+[dl] 1064,84 in
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[tls] chain of 4 verified for upload.wikimedia.org, alpn=http/1.1
+[time] tickloss +24/s worstgap=124922us missed[tls] ti=55 ocket stf 2801ored f expeor upload.wikimedia.org (22cted (1.963% of4 byt tes, he lifetclock); ime up86400s, 2 cached)time 28
+s
+[tls] ticket st[time] tickloss   worst gapored: bkl  for uplheld boad.wikimediy cpu a.org (224 bytes, lifetime 86400s, 3 cached)
+3 ra=0x11afe7 via=bare; tick on cpu 0, pid 2, not in kernel
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 4 cached)
+[tls] ticket stored for upload.wikimedia.org (224 bytes, lifetime 86400s, 5 cached)
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/8/8a/OOjs_UI_icon_edit-ltr-progressive.svg/20px-OOjs_UI_icon_edit-ltr-progressive.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[e1000] stats: rx 317 pkt / 358252 B, tx 237 pkt / 30715 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0 tx 0; irq 203 (+203)
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[wm] perf t=30685 composites=300 ns=4029972706 max=43056783 motions=18 curmoves=12 curns=209999 full=18 rects=302 cpx=142437568 fpx=142437568 presns=254953699 torn=0 defer=58 late=0 drawmax=45 evdrop=0
+[browser] fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error
+[time] tickloss +7/s worstgap=124922us missed=62 of 3096 expected (2.002% of the clock); uptime 31s
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.
+[img] fetch failed: //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/8/8a/OOjs_UI_icon_edit-ltr-progressive.svg/20px-OOjs_UI_icon_edit-ltr-progressive.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnai
+[img] fetch failed: //upload.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail
+[img] 12/20 decoded (0 failed, cap 128) [+2 from cache, 8 unfetchable, 0 deferred, 0 refused; cache 20/256 ents 1779K]
+[mm] low: 109631 frames free (428 MiB), 21406 used, 580 shared, 0 bugs
+[mm] low: 109375 frames free (427 MiB), 21662 used, 580 shared, 0 bugs
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] scripts collected: 1 external classic, 0 external module, 3 inline
+[mm] low: 109119 frames free (426 MiB), 21918 used, 580 shared, 0 bugs
+[mm] low: 108863 frames free (425 MiB), 22174 used, 581 shared, 0 bugs
+[netlock] acq 907718 recursive 599 maxdepth 3 violations 0
+[browser] inserted script LOST: https://en.wikipedia.org/w/load.php?lang=en&modules=ext.centralNotice.bannerHistoryLogger%2CchoiceData%2Cdisplay%2CgeoIP%2CimpressionDiet%2CkvStore%2ClargeBannerLimit%2ClegacySupport%2CstartUp%7Cext.centralauth.ForeignApi%2Ccentralautologin%7Cext.checkUser.clientHints%7Cext.cite.ux-enhancements%7Cext.cx.eventlogging.campaigns%7Cext.cx.model%7Cext.cx.uls.quick.actions%7Cext.echo.centralauth%7Cext.eventLogging%2Cimagemap%2CnavigationTiming%2Cpopups%2CtestKitchen%2CwikimediaEvents%7Cext.eventLogging.metricsPlatform%7Cext.quicksurveys.init%2Clib%7Cext.scribunto.logs%7Cext.uls.interface%2Cpreferen: no error (status 429)
+[browser] load done: 36 requests, 4 connections dialled, 32 reused, 0 modules loaded (0 failed)
+[browser] pool: 32 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[mm] low: 108607 frames free (424 MiB), 22430 used, 589 shared, 0 bugs
+[mm] low: 108351 frames free (423 MiB), 22686 used, 589 shared, 0 bugs
+[mm] low: 108095 frames free (422 MiB), 22942 used, 589 shared, 0 bugs
+[mm] low: 107839 frames free (421 MiB), 23198 used, 589 shared, 0 bugs
+[dl] painted text: 219 run(s), 1238 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 72,220 Contents
+[dl] 78,246 hide
+[dl] 72,284 (Top)
+[dl] 72,313 Definition
+[dl] 133,313 and
+[dl] 159,313 purpose
+[dl] 72,342 Types
+[dl] 111,342 of
+[dl] 126,342 operating
+[dl] 72,359 systems
+[dl] 133,267 Toggle
+[dl] 133,302 Types
+[dl] 133,334 of
+[dl] 133,346 operating
+[dl] 133,397 systems
+[dl] 133,440 subsection
+[dl] 72,388 History
+[dl] 133,313 Toggle
+[dl] 133,348 History
+[dl] 133,386 subsection
+[dl] 72,417 Components
+[dl] 133,342 Toggle
+[dl] 133,377 Components
+[dl] 133,444 subsection
+[dl] 72,446 Operating
+[dl] 135,446 system
+[dl] 72,463 development
+[dl] 155,463 as
+[dl] 171,463 a
+[dl] 181,463 hobby
+[dl] 72,492 Diversity
+[dl] 127,492 of
+[dl] 142,492 operating
+[dl] 72,509 systems
+[dl] 124,509 and
+[dl] 150,509 portability
+[dl] 72,538 Popular
+[dl] 122,538 operating
+[dl] 72,555 systems
+[dl] 133,463 Toggle
+[dl] 133,498 Popular
+[dl] 133,540 operating
+[dl] 133,591 systems
+[dl] 133,634 subsection
+[dl] 72,584 See
+[dl] 97,584 also
+[dl] 72,613 Notes
+[dl] 72,642 References
+[dl] 264,150 Operating
+[dl] 401,150 system
+[dl] 761,160 164
+[dl] 788,160 languages
+[dl] 264,196 Article
+[dl] 321,196 Talk
+[dl] 624,197 Read
+[dl] 673,197 View
+[dl] 705,197 source
+[dl] 765,197 View
+[dl] 797,197 history
+[dl] 902,220 Appearance
+[dl] 908,246 hide
+[dl] 264,232 From
+[dl] 299,232 Wikipedia,
+[dl] 363,232 the
+[dl] 386,232 free
+[dl] 412,232 encyclopedia
+[dl] 609,290 Operating
+[dl] 697,290 systems
+[dl] 601,568 Common
+[dl] 663,568 features
+[dl] 601,589 Process
+[dl] 643,589 management
+[dl] 715,589 Interrupts
+[dl] 768,589 Memory
+[dl] 813,589 management
+[dl] 885,589 File
+[dl] 905,589 system
+[dl] 944,589 Device
+[dl] 981,589 drivers
+[dl] 1018,589 Networking
+[dl] 1080,589 Security
+[dl] 1125,589 Input/output
+[dl] 601,611 v
+[dl] 607,611 t
+[dl] 611,611 e
+[dl] 264,284 An
+[dl] 283,284 operating
+[dl] 350,284 system
+[dl] 399,284 (
+[dl] 403,284 OS
+[dl] 421,284 )
+[dl] 428,284 is
+[dl] 440,284 system
+[dl] 486,284 software
+[dl] 542,284 that
+[dl] 264,305 manages
+[dl] 321,305 computer
+[dl] 384,305 hardware
+[dl] 445,305 and
+[dl] 471,305 software
+[dl] 264,326 resources,
+[dl] 329,326 and
+[dl] 355,326 provides
+[dl] 410,326 common
+[dl] 468,326 services
+[dl] 519,326 for
+[dl] 264,347 computer
+[dl] 327,347 programs
+[dl] 385,347 .
+[dl] 388,347 [
+[dl] 391,347 1
+[dl] 397,347 ]
+[dl] 264,389 Time-sharing
+[dl] 345,389 operating
+[dl] 406,389 systems
+[dl] 458,389 schedule
+[dl] 515,389 tasks
+[dl] 549,389 for
+[dl] 264,410 efficient
+[dl] 315,410 use
+[dl] 339,410 of
+[dl] 354,410 the
+[dl] 377,410 system
+[dl] 423,410 and
+[dl] 449,410 may
+[dl] 478,410 also
+[dl] 505,410 include
+[dl] 264,431 accounting
+[dl] 335,431 software
+[dl] 391,431 for
+[dl] 411,431 cost
+[dl] 440,431 allocation
+[dl] 502,431 of
+[dl] 517,431 processor
+[dl] 264,452 time
+[dl] 291,452 ,
+[dl] 297,452 mass
+[dl] 331,452 storage
+[dl] 376,452 ,
+[dl] 382,452 peripherals,
+[dl] 455,452 and
+[dl] 481,452 other
+[dl] 517,452 resources.
+[dl] 264,494 For
+[dl] 287,494 hardware
+[dl] 348,494 functions
+[dl] 408,494 such
+[dl] 440,494 as
+[dl] 456,494 input
+[dl] 491,494 and
+[dl] 517,494 output
+[dl] 264,515 and
+[dl] 290,515 memory
+[dl] 344,515 allocation
+[dl] 403,515 ,
+[dl] 409,515 the
+[dl] 432,515 operating
+[dl] 493,515 system
+[dl] 539,515 acts
+[dl] 567,515 as
+[dl] 264,536 an
+[dl] 282,536 intermediary
+[dl] 362,536 between
+[dl] 418,536 programs
+[dl] 479,536 and
+[dl] 505,536 the
+[dl] 264,557 computer
+[dl] 327,557 hardware,
+[dl] 388,557 [
+[dl] 391,557 2
+[dl] 397,557 ]
+[dl] 400,557 [
+[dl] 403,557 3
+[dl] 409,557 ]
+[dl] 415,557 although
+[dl] 472,557 the
+[dl] 495,557 application
+[dl] 264,578 code
+[dl] 297,578 is
+[dl] 309,578 usually
+[dl] 354,578 executed
+[dl] 412,578 directly
+[dl] 460,578 by
+[dl] 478,578 the
+[dl] 501,578 hardware
+[dl] 264,599 and
+[dl] 290,599 frequently
+[dl] 355,599 makes
+[dl] 397,599 system
+[dl] 443,599 calls
+[dl] 472,599 to
+[dl] 488,599 an
+[dl] 506,599 OS
+[dl] 527,599 function
+[dl] 264,620 or
+[dl] 280,620 is
+[dl] 292,620 interrupted
+[dl] 364,620 by
+[dl] 382,620 it.
+[dl] 396,620 Operating
+[dl] 459,620 systems
+[dl] 511,620 are
+[dl] 533,620 found
+[dl] 264,641 on
+[dl] 283,641 many
+[dl] 320,641 devices
+[dl] 368,641 that
+[dl] 396,641 contain
+[dl] 445,641 a
+[dl] 455,641 computer
+[dl] 515,641  
+[dl] 518,641 –
+[dl] 528,641 from
+[dl] 660,84 Search
+[dl] 881,84 Donate
+[dl] 936,84 Create
+[dl] 978,84 account
+[dl] 1039,84 Log
+[dl] 1064,84 in
+[dl] ---8<--- end painted text
+[wm] perf t=36688 composites=320 ns=4177345964 max=43056783 motions=18 curmoves=12 curns=209999 full=18 rects=322 cpx=147018308 fpx=147018308 presns=263830652 torn=0 defer=61 late=0 drawmax=50 evdrop=0
+[browser] ctrl+L: address bar focused
+[wm] perf t=52725 composites=372 ns=4579704944 max=43056783 motions=18 curmoves=12 curns=209999 full=18 rects=374 cpx=159795228 fpx=159795228 presns=288509532 torn=0 defer=67 late=0 drawmax=50 evdrop=0
+[browser] load: about:text
+[dl] painted text: 219 run(s), 1238 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 72,220 Contents
+[dl] 78,246 hide
+[dl] 72,284 (Top)
+[dl] 72,313 Definition
+[dl] 133,313 and
+[dl] 159,313 purpose
+[dl] 72,342 Types
+[dl] 111,342 of
+[dl] 126,342 operating
+[dl] 72,359 systems
+[dl] 133,267 Toggle
+[dl] 133,302 Types
+[dl] 133,334 of
+[dl] 133,346 operating
+[dl] 133,397 systems
+[dl] 133,440 subsection
+[dl] 72,388 History
+[dl] 133,313 Toggle
+[dl] 133,348 History
+[dl] 133,386 subsection
+[dl] 72,417 Components
+[dl] 133,342 Toggle
+[dl] 133,377 Components
+[dl] 133,444 subsection
+[dl] 72,446 Operating
+[dl] 135,446 system
+[dl] 72,463 development
+[dl] 155,463 as
+[dl] 171,463 a
+[dl] 181,463 hobby
+[dl] 72,492 Diversity
+[dl] 127,492 of
+[dl] 142,492 operating
+[dl] 72,509 systems
+[dl] 124,509 and
+[dl] 150,509 portability
+[dl] 72,538 Popular
+[dl] 122,538 operating
+[dl] 72,555 systems
+[dl] 133,463 Toggle
+[dl] 133,498 Popular
+[dl] 133,540 operating
+[dl] 133,591 systems
+[dl] 133,634 subsection
+[dl] 72,584 See
+[dl] 97,584 also
+[dl] 72,613 Notes
+[dl] 72,642 References
+[dl] 264,150 Operating
+[dl] 401,150 system
+[dl] 761,160 164
+[dl] 788,160 languages
+[dl] 264,196 Article
+[dl] 321,196 Talk
+[dl] 624,197 Read
+[dl] 673,197 View
+[dl] 705,197 source
+[dl] 765,197 View
+[dl] 797,197 history
+[dl] 902,220 Appearance
+[dl] 908,246 hide
+[dl] 264,232 From
+[dl] 299,232 Wikipedia,
+[dl] 363,232 the
+[dl] 386,232 free
+[dl] 412,232 encyclopedia
+[dl] 609,290 Operating
+[dl] 697,290 systems
+[dl] 601,568 Common
+[dl] 663,568 features
+[dl] 601,589 Process
+[dl] 643,589 management
+[dl] 715,589 Interrupts
+[dl] 768,589 Memory
+[dl] 813,589 management
+[dl] 885,589 File
+[dl] 905,589 system
+[dl] 944,589 Device
+[dl] 981,589 drivers
+[dl] 1018,589 Networking
+[dl] 1080,589 Security
+[dl] 1125,589 Input/output
+[dl] 601,611 v
+[dl] 607,611 t
+[dl] 611,611 e
+[dl] 264,284 An
+[dl] 283,284 operating
+[dl] 350,284 system
+[dl] 399,284 (
+[dl] 403,284 OS
+[dl] 421,284 )
+[dl] 428,284 is
+[dl] 440,284 system
+[dl] 486,284 software
+[dl] 542,284 that
+[dl] 264,305 manages
+[dl] 321,305 computer
+[dl] 384,305 hardware
+[dl] 445,305 and
+[dl] 471,305 software
+[dl] 264,326 resources,
+[dl] 329,326 and
+[dl] 355,326 provides
+[dl] 410,326 common
+[dl] 468,326 services
+[dl] 519,326 for
+[dl] 264,347 computer
+[dl] 327,347 programs
+[dl] 385,347 .
+[dl] 388,347 [
+[dl] 391,347 1
+[dl] 397,347 ]
+[dl] 264,389 Time-sharing
+[dl] 345,389 operating
+[dl] 406,389 systems
+[dl] 458,389 schedule
+[dl] 515,389 tasks
+[dl] 549,389 for
+[dl] 264,410 efficient
+[dl] 315,410 use
+[dl] 339,410 of
+[dl] 354,410 the
+[dl] 377,410 system
+[dl] 423,410 and
+[dl] 449,410 may
+[dl] 478,410 also
+[dl] 505,410 include
+[dl] 264,431 accounting
+[dl] 335,431 software
+[dl] 391,431 for
+[dl] 411,431 cost
+[dl] 440,431 allocation
+[dl] 502,431 of
+[dl] 517,431 processor
+[dl] 264,452 time
+[dl] 291,452 ,
+[dl] 297,452 mass
+[dl] 331,452 storage
+[dl] 376,452 ,
+[dl] 382,452 peripherals,
+[dl] 455,452 and
+[dl] 481,452 other
+[dl] 517,452 resources.
+[dl] 264,494 For
+[dl] 287,494 hardware
+[dl] 348,494 functions
+[dl] 408,494 such
+[dl] 440,494 as
+[dl] 456,494 input
+[dl] 491,494 and
+[dl] 517,494 output
+[dl] 264,515 and
+[dl] 290,515 memory
+[dl] 344,515 allocation
+[dl] 403,515 ,
+[dl] 409,515 the
+[dl] 432,515 operating
+[dl] 493,515 system
+[dl] 539,515 acts
+[dl] 567,515 as
+[dl] 264,536 an
+[dl] 282,536 intermediary
+[dl] 362,536 between
+[dl] 418,536 programs
+[dl] 479,536 and
+[dl] 505,536 the
+[dl] 264,557 computer
+[dl] 327,557 hardware,
+[dl] 388,557 [
+[dl] 391,557 2
+[dl] 397,557 ]
+[dl] 400,557 [
+[dl] 403,557 3
+[dl] 409,557 ]
+[dl] 415,557 although
+[dl] 472,557 the
+[dl] 495,557 application
+[dl] 264,578 code
+[dl] 297,578 is
+[dl] 309,578 usually
+[dl] 354,578 executed
+[dl] 412,578 directly
+[dl] 460,578 by
+[dl] 478,578 the
+[dl] 501,578 hardware
+[dl] 264,599 and
+[dl] 290,599 frequently
+[dl] 355,599 makes
+[dl] 397,599 system
+[dl] 443,599 calls
+[dl] 472,599 to
+[dl] 488,599 an
+[dl] 506,599 OS
+[dl] 527,599 function
+[dl] 264,620 or
+[dl] 280,620 is
+[dl] 292,620 interrupted
+[dl] 364,620 by
+[dl] 382,620 it.
+[dl] 396,620 Operating
+[dl] 459,620 systems
+[dl] 511,620 are
+[dl] 533,620 found
+[dl] 264,641 on
+[dl] 283,641 many
+[dl] 320,641 devices
+[dl] 368,641 that
+[dl] 396,641 contain
+[dl] 445,641 a
+[dl] 455,641 computer
+[dl] 515,641  
+[dl] 518,641 –
+[dl] 528,641 from
+[dl] 660,84 Search
+[dl] 881,84 Donate
+[dl] 936,84 Create
+[dl] 978,84 account
+[dl] 1039,84 Log
+[dl] 1064,84 in
+[dl] ---8<--- end painted text
+[wm] perf t=53726 composites=383 ns=4649675590 max=43056783 motions=18 curmoves=12 curns=209999 full=18 rects=385 cpx=162383928 fpx=162383928 presns=293227508 torn=0 defer=73 late=0 drawmax=50 evdrop=0

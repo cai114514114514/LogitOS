@@ -1,0 +1,91 @@
+{
+ "name": "python",
+ "url": "https://www.python.org/",
+ "started": "2026-08-28T16:48:22",
+ "verdict": "ERRORS",
+ "why": "painted 651840 changed px in 8.5s but 1 JS exception(s) -- and the document asked for 15 subresources (4 stylesheets, 10 script srcs) against 14 requests issued, short by 1",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.python.org/",
+  "bytes": 52532,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 10,
+  "img_tags": 1,
+  "inventory": {
+   "stylesheets": 4,
+   "script_src": 10,
+   "inline_scripts": 2,
+   "images": 1,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "elapsed": 0.9
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: cannot read property 'document' of undefined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 14,
+  "dials": 6,
+  "reused": 8,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9600,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 8.5,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 651840,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   792
+  ],
+  "ink_px": 501973,
+  "ink_px_blank": 4256,
+  "colours": 983,
+  "rich_tiles_proxy": 22
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-08-28/python.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-08-28/python.serial.txt",
+ "url_confirmed": "https://www.python.org/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-08-28/python.host.html",
+ "text_runs": 29,
+ "text_bytes": 114,
+ "text": "8,92 Notice:\n64,92 This\n96,92 page\n134,92 displays\n194,92 a\n206,92 fallback\n265,92 because\n326,92 interactive\n405,92 scripts\n455,92 did\n480,92 not\n507,92 run.\n538,92 Possible\n599,92 causes\n650,92 include\n704,92 disabled\n766,92 JavaScript\n845,92 or\n863,92 failure\n911,92 to\n929,92 load\n963,92 scripts\n1013,92 or\n1031,92 stylesheets.\n8,128 Skip\n41,128 to\n59,128 content\n8,148 ▼\n23,148 Close\n14,176 •\n36,176 Python\n14,196 •\n36,196 PSF\n14,216 •\n36,216 Docs\n14,236 •\n36,236 PyPI\n14,256 •\n36,256 Jobs\n14,276 •\n36,276 Community\n8,304 ▲\n27,304 The\n56,304 Python\n110,304 Network\n8,348 Donate\n8,368 ≡\n27,368 Menu\n8,388 Search\n60,388 This\n92,388 Site\n297,392 GO\n14,432 •\n36,432 A\n49,432 A\n49,460 ◦\n64,460 Smaller\n49,480 ◦\n64,480 Larger\n49,500 ◦\n64,500 Reset\n14,544 •\n36,544 Socialize\n49,572 ◦\n64,572 LinkedIn\n49,592 ◦\n64,592 Mastodon\n49,612 ◦\n64,612 Chat\n101,612 on\n122,612 IRC\n49,632 ◦\n64,632 Twitter",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 4,
+   "script_src": 10,
+   "inline_scripts": 2,
+   "images": 1,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 15
+  },
+  "gap": {
+   "mandatory": 15,
+   "requested": 14,
+   "short_by": 1,
+   "stylesheets": 4,
+   "script_src": 10
+  }
+ },
+ "finished": "2026-08-28T16:49:13"
+}

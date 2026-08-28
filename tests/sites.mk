@@ -63,7 +63,15 @@ scoreboard-diff:
 # kept the WORST verdict of N runs, so a HARNESS record (guest {}, pixels {})
 # evicted a complete measurement sitting in the same pass. Three sites
 # published a row of dashes that way in tests/scoreboard/0820-g4b.
-test-sites-merge:
+#
+# THE CONTROL IS A PREREQUISITE, NOT A SECOND NAME ON A ci-host: LINE.
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what
+# tools/ci.sh runs, on the assumption that a control is "RUN BY its positive
+# counterpart" -- nothing checked that, and this one was invoked by nobody from
+# the day it landed until the audit's STRANDED CONTROLS category named it
+# (2026-08-28). Both halves are one python3 run over records with no QEMU in
+# either, so the pair costs what the positive alone used to.
+test-sites-merge: test-sites-merge-negctl
 	@python3 tests/unit/sites_merge_test.py
 
 # NEGATIVE CONTROL: the shipped-until-2026-08-25 rule, restored on a switch so
