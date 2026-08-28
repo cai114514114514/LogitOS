@@ -673,7 +673,30 @@ static void collect(struct node *n, const char *dir)
 }
 
 static unsigned long long g_now;
-static unsigned long long clock_fn(void) { return g_now += 4; }
+/* A GETTER, NOT A TICKER -- every other host harness that calls
+ * js_page_set_clock (webapi_platform_test.c, worker_test.c, webapi_idb_test.c,
+ * js_dom_test.c, wpt_test.c...) makes clock_fn return g_now unchanged and
+ * advances g_now by hand from a `tick()` called BETWEEN synchronous evals.
+ * This file used to be the one exception: `return g_now += 4` advanced the
+ * clock as a side effect of being READ, and js_page.c's slice watchdog reads
+ * the clock from INSIDE the QuickJS interrupt handler -- which fires every
+ * JS_INTERRUPT_COUNTER_INIT=10,000 bytecodes, including in the middle of one
+ * synchronous script/handler that never returns to this file's own loop.
+ * js_page.c documents the invariant this broke, in its own words: "the clock
+ * ... is frozen for the whole of a synchronous eval, and a time-only watchdog
+ * provably never fires there." Under the old clock_fn it was NOT frozen: a
+ * single click handler that ran 11,250+ interrupt checks (=112.5M bytecodes,
+ * not the documented 45,000 REAL ms or 2e10-bytecode fuel backstop) tripped
+ * the wall-time rail purely because it kept asking the fake clock what time it
+ * was. That is what made js-framework-benchmark's `runlots` (10,000 rows, one
+ * synchronous commit) throw `InternalError: interrupted` on 22 independent
+ * implementations -- see tests/jsfb/BASELINE and CLAUDE.md's 2026-08-29 entry.
+ * A profile of one of them (`keyed/laminar`, via `sample` on this host binary)
+ * showed no single hot function and no quadratic: total handler-visible work
+ * for 10,000 rows was a few hundred thousand DOM calls, nowhere near what
+ * either rail is supposed to require. The apparatus was the bug (CLAUDE.md
+ * rule 1), not the DOM or the interpreter. */
+static unsigned long long clock_fn(void) { return g_now; }
 
 /* THE PROBE'S OWN BLIND SPOT, FIXED AFTER THE MACHINE FOUND IT.
  *
@@ -685,10 +708,11 @@ static unsigned long long clock_fn(void) { return g_now += 4; }
  * `uncaught in timer: ReferenceError`, because the machine has an event loop
  * and this did not.
  *
- * So the probe now turns the loop. The clock is the fake one above, which
- * jumps 4 ms per read, so a couple of hundred passes cover several seconds of
- * page time without anything sleeping -- and a setInterval cannot spin
- * forever, because the pass budget is fixed. */
+ * So the probe now turns the loop. run_event_loop() below ticks the fake
+ * clock 4 ms per PASS (not per read -- see clock_fn's comment), so a couple
+ * of hundred passes cover most of a second of page time without anything
+ * sleeping -- and a setInterval cannot spin forever, because the pass budget
+ * is fixed. */
 #define LOOP_PASSES 200
 
 /* ---- the exception ledger ----------------------------------------------
@@ -831,6 +855,7 @@ static void stall_dump(const char *site)
 static void run_event_loop(int show_errors, const char *tag, int record)
 {
     for (int i = 0; i < LOOP_PASSES; i++) {
+        g_now += 4;                    /* the only place the fake clock moves */
         int ran = js_page_run_due();
         ran += js_page_pump();
         if (!ran && !js_page_pending()) break;
