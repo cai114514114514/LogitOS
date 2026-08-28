@@ -62,6 +62,25 @@ make test   # headless boot; asserts LOGIT_BOOT_OK -- and see the caveats
 make debug  # QEMU frozen with a gdb stub on :1234
 ```
 
+- **`make run` gives the guest 1 GiB, and THAT NUMBER IS A CEILING RATHER THAN
+  A PREFERENCE** (raised from 512 MiB on 2026-08-29 because the browser peaks
+  near 600 MB). `c/boot/boot.asm:80` identity-maps EXACTLY the first 1 GiB — one
+  PD of 512 2 MiB pages — and `mmhost.h:43` makes that an assumption the whole
+  kernel rests on, in its own words: "the kernel identity-maps the low 1 GiB, so
+  phys == virt". **Nothing clamps the allocator to it**: `pmm.c:251` takes
+  `total_frames` from the multiboot map and `pmm_init` frees every AVAILABLE
+  region firmware reports, so above 1 GiB the PMM hands out frames it cannot
+  address and `next_table()`'s `memset(mm_p2v(frame), 0, 4096)` writes to a
+  VIRTUAL address in PDPT[1] — **the USER region, where every GUI app is linked
+  (0x49000000, 0x50000000)**. And the failure shape is the bad one: `pmm_alloc`
+  scans from low, so a 2 GiB machine boots fine, runs fine, and starts
+  corrupting only when demand pushes past the first gigabyte — exactly under the
+  load that made someone want more memory. Going higher is the same wall as
+  structural gap #2 and needs a physmap at a high virtual base (the seam exists:
+  `mmhost.h`'s `MM_HOSTTEST` branch is already `mm_host_base + phys`) or user
+  space moved out of PDPT[1]. The ~100 boot harnesses that spell `-m 512M` are
+  deliberately untouched — `test-oom` and `test-swap` are calibrated against a
+  memory size.
 - **`make run` opens a virtio-gpu window, not a VGA one.** `QEMU_GPU := -vga none
   -device virtio-gpu-pci,xres=1920,yres=1200` (Makefile:1278). VGA survives only
   as `fb.c`'s multiboot-LFB fallback. The resolution is the single largest lever
@@ -738,8 +757,23 @@ HarfBuzz venv) and `test-bidi` fails hard rather than skipping — see rule 5.
   the disk for it to act on.
 - **The fonts, and why there are three.** `fsroot/fonts/` ships `ui.ttf`
   (Noto Sans SC subset: GB2312 + ASCII + CJK punctuation) and `mono.ttf` (Noto
-  Sans Mono: **printable ASCII plus NBSP — no CJK at all**, so Han typed into the
-  Terminal has no glyph). `third_party/fonts/` additionally ships **DejaVuSans
+  Sans Mono: **printable ASCII plus NBSP — no CJK at all**, ~~so Han typed into
+  the Terminal has no glyph~~ — **AND THAT CLAUSE IS FALSE, MEASURED 2026-08-29
+  OFF THE SCANOUT.** The bolded half is true and the guest prints it
+  (`/fonts/mono.ttf: 97 glyphs`); the conclusion does not follow, because a
+  mono request does not use one font. `text.c`'s `tl_fonts()` builds
+  `{requested, F_UI, F_TEXT, F_MONO}` and `shape.c`'s `font_for()` returns the
+  first face with a glyph — F_UI, the 7,655-glyph Noto Sans SC. Ink columns on
+  a mixed `ab<IME>cd` line: a=183, b=192 (+9), 你=201 (+9), 好=219 (+18),
+  c=237 (+18), d=246 (+9) — ASCII advances 9 px, Han 18 = **exactly two cells**
+  (`shape.c:1215`, `w = (adv > cell*3/2) ? cell*2 : cell`), and a/b/c/d all
+  advance identically, which is what rules out a silent fall to a proportional
+  face. The sentence is also datably stale: `26d5cb2fd` (2026-08-17) fixed a
+  signed-char bug that dropped every byte ≥ 0x80, eleven days before this file
+  was rewritten. **What IS broken is next door**: `terminal.c:412` wraps on
+  BYTES while `cols` counts display CELLS, so Chinese wraps after ~cols/3
+  characters leaving a third of every row blank, and the wrap can land inside a
+  UTF-8 sequence. `third_party/fonts/` additionally ships **DejaVuSans
   whole** as `/fonts/text.ttf`, and the reason is a measurement: **subsetting
   broke shaping** — "the two Noto subsets carry no Arabic and no Hebrew, and
   subsetting stripped their GSUB/GPOS/GDEF tables, so with only those two the
@@ -1169,10 +1203,42 @@ an ordinary drag, **207/201 ns/px for the dock**, which is almost all glass.
 Fitting those two rates says the menu bar + dock account for roughly half of a
 large-window drag frame.
 
-**kprof confirms it independently.** Sampling a real, pointer-confirmed drag:
-after removing the 114 user-mode samples, **`fb_liquid_glass_cut` is 76 of 178
-kernel-busy samples and `gl_isqrt` another 14 — 50.6%.** Arithmetic said ~57%;
-two methods that share no code agree.
+**~~kprof confirms it independently.~~ DO NOT QUOTE THE kprof NUMBER — THE
+INSTRUMENT WAS BROKEN AND THE CONTROL THAT PROVED IT IS THE INTERESTING PART.**
+The old sentence read: "after removing the 114 user-mode samples,
+`fb_liquid_glass_cut` is 76 of 178 kernel-busy samples and `gl_isqrt` another
+14 — 50.6%." Re-measured 2026-08-29 with an experiment whose answer is known
+from a third source: an IDLE desktop composites exactly one thing, the menu bar,
+1920×36 = 69,120 px twice a second — and over 44 s the counters read 88
+composites at **cpx/composite = 69120.0 with no rounding**. At kprof's sampling
+rate, 615 samples were DUE in `fb_liquid_glass_cut`. It reported **107 (17%)**
+and put **1,322 on `spin_unlock_irqrestore`** — the `sti` at a non-nested kernel
+exit, because `interrupts.c:156` takes `g_bkl` with `spin_lock_irqsave` so every
+kernel entry runs IF=0 and its samples land on the unlock that re-enables them.
+kprof under-attributes the compositor by ~6× here. **The conclusion survives by
+another method — 43–61% of a browser repaint frame, from the compositor's own
+counters, which self-verify (every one-second interval decomposes into an
+INTEGER number of 69,120 px and 1,895,445 px frames, residual exactly 0) — but
+the 50.6% and the "two methods that share no code agree" are withdrawn.**
+
+**AND THE GLASS RATE HAS ALREADY HALVED.** This file and `wm.c:426-448` both
+quote ~205 ns/px. Measured 2026-08-29: **102 ns/px on the menu bar, 107 on the
+dock hover**, two shapes sharing no arithmetic. `fb.c:1168-1260` is why —
+band/tilt are E-entry tables, the cut folding and horizontal half-distance are
+a per-column `colq[]`, and a **row-dominant run** evaluates the SDF, both
+`gl_isqrt` calls, the normal and the displacement ONCE PER ROW for ~90% of the
+dock. So "cache the per-pixel field" below is **largely already done, by
+hoisting rather than caching** (`4aa5f5cd7`), and what remains inside the glass
+is the BLUR — two moving-sum passes over the live backdrop, which can never be
+cached. `GLASS_FIELD_SLOW` existed in `fb.c` and nothing in the tree ever
+defined it — a control that could not be exercised; `make GLASSSLOW=1` now
+exercises it.
+
+**THE LARGER LEVER IS THE FLUSH RECTANGLE, NOT THE GLASS.** A browser scroll
+damages 1731×1095 = **1,895,445 px = 82.3% of the screen**, and **two thirds of
+the glass in that frame is not the browser's** — 196,533 of 297,873 glass pixels
+are the dock and the Finder's titlebar, in the frame only because `dmg_expand`
+grew the browser's rectangle into panels the browser never touched.
 
 **But the most important number in that profile is 94.95% idle.** Three of four
 cores are halted while the machine feels slow. The lag is not a capacity problem:
