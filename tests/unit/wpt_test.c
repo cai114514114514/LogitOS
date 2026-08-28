@@ -157,8 +157,16 @@ int bfetch_sync(const char *ref, unsigned char **out, int *outlen);
 /* ------------------------------------------------------------ options -- */
 static const char *g_root;          /* WPT checkout root */
 static int   g_verbose, g_vmax = 10, g_writebl, g_strict, g_listonly, g_dump, g_progress, g_no_lifecycle;
-static const char *g_blpath = "tests/unit/wpt_expected_fail.txt";
+/* One jar, one door: the committed baseline path is spelled once and the
+ * refusal below compares against this, not against a second string literal. */
+#define WPT_COMMITTED_BASELINE "tests/unit/wpt_expected_fail.txt"
+static const char *g_blpath = WPT_COMMITTED_BASELINE;
 static const char *g_only;          /* substring filter on the test path */
+/* Did the CALLER restrict the run? Not the same as "subsets is non-empty":
+ * main() fills subsets with default_subsets() when the caller gave none, so by
+ * the time the baseline is written a full run and a --subset run look alike.
+ * This is set at parse time and is the only thing that can tell them apart. */
+static int   g_restricted;
 /* The ranked-cause report needs the MESSAGE, which the baseline deliberately
  * does not carry (a baseline entry has to be stable across a message reword).
  * --report writes a TSV of every result with its message for tools/wpt_rank.py. */
@@ -1751,12 +1759,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--jobs") && i + 1 < argc) g_jobs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--file-timeout") && i + 1 < argc) g_file_timeout = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--shuffle") && i + 1 < argc) g_shuffle = strtoul(argv[++i], 0, 10);
-        else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
+        else if (!strcmp(argv[i], "--only") && i + 1 < argc) { g_only = argv[++i]; g_restricted = 1; }
         else if (!strcmp(argv[i], "--report") && i + 1 < argc) g_report = argv[++i];
         else if (!strcmp(argv[i], "--root") && i + 1 < argc) g_root = argv[++i];
-        else if (!strcmp(argv[i], "--subset") && i + 1 < argc) l_add(&subsets, argv[++i]);
+        else if (!strcmp(argv[i], "--subset") && i + 1 < argc) { l_add(&subsets, argv[++i]); g_restricted = 1; }
         else if (argv[i][0] != '-' && !g_root) g_root = argv[i];
-        else if (argv[i][0] != '-') l_add(&subsets, argv[i]);
+        else if (argv[i][0] != '-') { l_add(&subsets, argv[i]); g_restricted = 1; }
     }
 
     if (!g_root) g_root = "third_party/wpt";
@@ -2040,6 +2048,39 @@ int main(int argc, char **argv)
                g_blpath, expected.n, newfail, newpass);
     else
         printf("baseline %s: not found (run with --write-baseline to create it)\n", g_blpath);
+
+    /* A RESTRICTED RUN MAY NOT OVERWRITE THE COMMITTED WHOLE-CORPUS BASELINE.
+     *
+     * THIS HAPPENED, on 2026-08-29, and it is why the check exists rather than
+     * the convention. A line working on Workers ran with --subset workers and
+     * --write-baseline, and this file went from 34,220 entries covering 468
+     * directories to 267 entries covering 25, all of them under workers/. The
+     * ratchet did not get tighter; it went BLIND to 34,203 known failures in
+     * every other directory, and the next `make test-wpt` would have reported
+     * green while css/, dom/ and html/ regressed freely. Nothing failed. It
+     * was found by reading a `git diff --numstat` line.
+     *
+     * The convention was already right and only the enforcement was missing:
+     * every restricted run in tests/wpt.mk already redirects with
+     * `-b $(BUILD)/...`. So the rule is not new, it is now checked -- and it
+     * follows this tree's own generator idiom, where genroots.py refuses an
+     * empty result rather than writing a trust store with no anchors in it.
+     *
+     * The escape hatch is the same one those make targets already use: name
+     * another path with -b. Writing a subset baseline is legitimate; writing
+     * it OVER the whole-corpus one is not. */
+    if (g_writebl && g_restricted && !strcmp(g_blpath, WPT_COMMITTED_BASELINE)) {
+        fprintf(stderr,
+            "wpt: REFUSING to write %s from a RESTRICTED run.\n"
+            "     This run was limited by --subset/--only, so its failures cover\n"
+            "     only part of the corpus. Writing them over the committed\n"
+            "     baseline would DELETE every expectation outside that part and\n"
+            "     leave the ratchet blind there, silently.\n"
+            "     Write a subset baseline somewhere else:  -b <path>\n"
+            "     Or regenerate the real one from a full run: make wpt-baseline\n",
+            g_blpath);
+        return 2;
+    }
 
     if (g_writebl) {
         FILE *f = fopen(g_blpath, "wb");

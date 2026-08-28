@@ -24,7 +24,7 @@ SCOREBOARD_DATE ?= $(shell date +%F)
 SCOREBOARD_JOBS ?= 5
 SCOREBOARD_REPEAT ?= 2
 
-.PHONY: scoreboard scoreboard-1 scoreboard-diff scoreboard-quick test-sites-merge test-sites-merge-negctl
+.PHONY: scoreboard scoreboard-1 scoreboard-diff scoreboard-regress scoreboard-quick test-sites-merge test-sites-merge-negctl
 
 # The full corpus, every site twice (a site whose two runs disagree is recorded
 # FLAKY and is not scored -- the live web earns that).
@@ -57,6 +57,30 @@ scoreboard-1: $(ISO) $(DISK)
 scoreboard-diff:
 	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make scoreboard-diff FROM=<a.json> TO=<b.json>"; exit 2; }
 	python3 tests/qmp/sites_run.py --diff $(FROM) $(TO)
+
+# THE JUDGE. scoreboard-diff reports and always exits 0; this one decides and
+# exits non-zero when a site got worse (1), or when a control failed so the
+# comparison is inconclusive (2).
+#   make scoreboard-regress FROM=tests/scoreboard/2026-08-28.json TO=tests/scoreboard/2026-08-29.json
+#
+# IT IS DELIBERATELY NOT ON ci-host: AND MUST NOT BE PUT THERE. Every row is a
+# LIVE site over the real internet -- sites redesign, A/B test, serve different
+# markup to different exit IPs, and go down. A gate red for those reasons is
+# rule 1 in its purest form, "noise that trains people to ignore red", and the
+# people it would train are the ones who most need to read this. Run it by
+# hand, across a change.
+#
+# WHY IT EXISTS AT ALL. Until 2026-08-29 this fragment had exactly one test
+# target and it gated the MERGE RULE -- bookkeeping over records. NOTHING in
+# this tree failed when a page got worse. The measured consequence, the same
+# day: a browser change added 186 dom/nodes WPT subtests with zero regressions
+# and the owner reported "still zero difference", because WPT is a SUM over
+# independent subtests while a page rendering is a PRODUCT over dependent
+# capabilities -- and a product stays zero while one factor is zero. This
+# target is the only thing in the tree that measures the product.
+scoreboard-regress:
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make scoreboard-regress FROM=<a.json> TO=<b.json>"; exit 2; }
+	@python3 tests/qmp/sites_run.py --regress $(FROM) $(TO)
 
 # The merge rule, gated. A HOST test with no QEMU in it: merge_repeats is pure
 # bookkeeping over records, and the bug it had was pure bookkeeping too -- it

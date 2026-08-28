@@ -447,6 +447,108 @@ def do_diff(a_path, b_path):
         if bad:
             print("  WARNING (%s): control(s) did not pass: %s -- no row in that "
                   "snapshot means anything" % (lbl, ", ".join(bad)))
+
+    # WHICH WORDS WENT AWAY. The verdict, the exception list and the
+    # subresource gap all missed the most expensive regression this tree has
+    # ever had, and it is worth stating exactly because it is the reason this
+    # block exists: stripe went from 69 painted text runs to 38 to ZERO --
+    # scoring BLANK with no failed request, no missing subresource and no new
+    # exception -- because Node.isEqualNode was absent, React declared
+    # hydration lost and fell back to a client render that died. Every column
+    # above this one reported that page as healthy.
+    #
+    # `changed px` cannot see it either, and this file's own header says why:
+    # it "cannot tell a rendered page from a flat dark block". TEXT RUNS is the
+    # cheap middle -- not where the pixels are but WHICH WORDS are among them.
+    print("  painted text runs:")
+    tquiet = True
+    for name in sorted(set(av) | set(bv)):
+        if name.startswith("control-"):
+            continue
+        ta = av.get(name, {}).get("text_runs")
+        tb = bv.get(name, {}).get("text_runs")
+        if ta is None or tb is None or ta == tb:
+            continue
+        tquiet = False
+        print("    %-18s %5s -> %-5s   %s" % (name, ta, tb,
+              "GONE TO ZERO" if tb == 0 and ta else
+              ("fewer" if tb < ta else "more")))
+    if tquiet:
+        print("    unchanged everywhere both snapshots measured")
+    return 0
+
+
+# THE JUDGE. do_diff() reports; this decides, and the split is deliberate.
+#
+# WHY THIS IS NOT A ci-host: LINE, AND MUST NOT BECOME ONE. Every row here is
+# a LIVE site fetched over the real internet. Sites redesign, A/B test, serve
+# different markup to different exit IPs and go down. A gate that fails for
+# those reasons is CLAUDE.md's rule 1 in its purest form -- "a gate that fails
+# for a reason unrelated to the code under test is noise that trains people to
+# ignore red" -- and the people it would train are the ones who most need to
+# read this output. So this is run deliberately, by a person, across a change;
+# it is a judge, not a watchdog.
+#
+# WHAT IT REFUSES TO CALL A REGRESSION, and each exclusion is a claim:
+#   - a text-run count that merely MOVED. A site that redesigns its front page
+#     legitimately paints a different number of words, and charging that to the
+#     engine would make every run red within a week.
+#   - a site absent from one of the two snapshots. Nothing can be concluded
+#     from a comparison with a measurement that was never taken.
+#   - the control rows. They are harness health, and they are handled first
+#     and separately, below.
+#
+# WHAT IT DOES CALL A REGRESSION:
+#   - a verdict that got WORSE. PAINTED is the top; anything below it, after
+#     having been PAINTED, is a page that used to render and now does not.
+#   - TEXT RUNS FALLING TO ZERO from a non-zero count. That is the isEqualNode
+#     shape exactly, and it is unambiguous in a way a percentage is not: a
+#     redesign changes how many words a page paints, it does not stop the page
+#     painting words.
+#
+# AND A FAILED CONTROL EXITS 2, LOUDER THAN A REGRESSION. If the harness, the
+# network or the build was broken during a pass, then "no regression" is not a
+# result -- it is the absence of a measurement wearing the costume of one. That
+# is the worst outcome this file can produce, so it is the loudest.
+def do_regress(a_path, b_path):
+    rc = do_diff(a_path, b_path)
+    a = json.load(open(a_path, encoding="utf-8"))
+    b = json.load(open(b_path, encoding="utf-8"))
+    av = {r["name"]: r for r in a["sites"]}
+    bv = {r["name"]: r for r in b["sites"]}
+
+    for s, lbl, path in ((a, "before", a_path), (b, "after", b_path)):
+        bad = [r["name"] for r in s["sites"]
+               if r["name"].startswith("control-")
+               and ALIAS.get(r["verdict"], r["verdict"]) != "PAINTED"]
+        if bad:
+            print("\nREGRESS: INCONCLUSIVE -- control(s) failed in %s (%s): %s"
+                  % (lbl, path, ", ".join(bad)))
+            print("         No row in that snapshot means anything, so neither "
+                  "does a comparison against it.")
+            return 2
+
+    rank = {"PAINTED": 3, "ERRORS": 2, "BLANK": 1, "HARNESS": 0}
+    worse = []
+    for name in sorted(set(av) & set(bv)):
+        if name.startswith("control-"):
+            continue
+        x = ALIAS.get(av[name].get("verdict", ""), av[name].get("verdict", ""))
+        y = ALIAS.get(bv[name].get("verdict", ""), bv[name].get("verdict", ""))
+        if x in rank and y in rank and rank[y] < rank[x]:
+            worse.append("%s: verdict %s -> %s" % (name, x, y))
+        ta, tb = av[name].get("text_runs"), bv[name].get("text_runs")
+        if ta and tb == 0:
+            worse.append("%s: painted text runs %d -> 0 (the page stopped "
+                         "painting words)" % (name, ta))
+
+    if worse:
+        print("\nREGRESS: FAIL -- %d site(s) got worse:" % len(worse))
+        for w in worse:
+            print("  %s" % w)
+        return 1
+    print("\nREGRESS: ok -- no site lost its verdict and none stopped painting "
+          "words. (A moved text-run count is not counted; see do_regress.)")
     return 0
 
 
@@ -467,6 +569,10 @@ def main():
     # the wrong one makes tomorrow's diff meaningless.
     ap.add_argument("--commit", default=None)
     ap.add_argument("--diff", nargs=2, default=None)
+    ap.add_argument("--regress", nargs=2, default=None,
+                    help="like --diff, but EXITS NON-ZERO when a site got worse "
+                         "(1) or when a control failed so the comparison is "
+                         "inconclusive (2)")
     # Passed straight through to the driver; see its --boxes help for why it
     # is off by default.
     ap.add_argument("--boxes", action="store_true",
@@ -475,6 +581,8 @@ def main():
 
     if args.diff:
         sys.exit(do_diff(*args.diff))
+    if args.regress:
+        sys.exit(do_regress(*args.regress))
 
     only = set(x for x in args.only.split(",") if x) or None
     rows = load_corpus(args.corpus, only)
