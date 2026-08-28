@@ -24,6 +24,18 @@
 #include "utils/parserutilserror.h"
 #include "utils/utils.h"
 
+/* LogitOS: LOGIT_WEAK/_STUB/_HAVE -- see the block comment above
+ * supports_decl() for why this vendored parser needs to ask the browser two
+ * questions it cannot answer from its own property table. Bare filename, not
+ * a relative "../../.." path: test-css-web-negctl (tests/cssweb.mk) sed-
+ * copies this file to a SHALLOWER directory than its real home, and a
+ * relative path with the "right" number of ".." components for one location
+ * resolves to the wrong place for the other. CSS_INC (Makefile) carries
+ * -Iinclude for exactly this include, and `weaksym.h` is a unique basename
+ * under include/ so it cannot be shadowed the way CLAUDE.md's flat-
+ * include-list trap shadows c/ vs c/apps/libc/include basenames. */
+#include "weaksym.h"
+
 typedef struct context_entry {
 	css_parser_event type;		/**< Type of entry */
 	void *data;			/**< Data for context */
@@ -74,6 +86,21 @@ static css_error parseNth(css_language *c,
 static css_error parsePseudo(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		bool in_not, css_selector_detail *specific);
+/* LogitOS: :is()/:where() argument -- see css_selector_altlist in
+ * stylesheet.h and the call site inside parsePseudo(). */
+static css_error parseIsWhereList(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		bool is_where, css_selector_altlist **result);
+static css_error parseIsWhereCompound(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_selector **result);
+/* LogitOS: :has()/:host()/::part()/::slotted() -- these take a functional
+ * argument this engine does not build a matcher for (:has() needs a
+ * descendant/relative search per candidate; :host()/::part()/::slotted()
+ * need Shadow DOM, which does not exist here). Parsing the argument and
+ * discarding it -- rather than refusing the whole rule -- is what saves the
+ * REST of a selector list containing one of these; see parsePseudo(). */
+static void skipParenArgument(const parserutils_vector *vector, int32_t *ctx);
 static css_error parseSpecific(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		bool in_not, css_selector_detail *specific);
@@ -422,15 +449,52 @@ static void skip_to_close(const parserutils_vector *vector, int32_t *ctx)
 	}
 }
 
+/* LogitOS: two browser-owned answers this file must consult rather than
+ * decide on its own, because supports_decl() answering alone is exactly the
+ * bug it used to have -- "can LibCSS's own table and value handler parse
+ * this" is a question about THIS parser, not about whether css_engine.c's
+ * cascade (c/apps/browser/css_engine.c, convert() at :927) will act on the
+ * result. Declared WEAK (include/weaksym.h) so a build that links this
+ * vendored LibCSS on its own -- several host unit tests do -- still compiles
+ * and gets exactly the old, LibCSS-only answer.
+ *
+ *   logit_css_extra_supports_name  -- TURNS A "NO" INTO "YES". css_extra.c
+ *       (c/apps/browser/css_extra.c) is a second, independent producer that
+ *       reaches used values for properties this vendored LibCSS's table does
+ *       not have AT ALL: border-radius, the grid track family, the logical
+ *       box family (margin-inline-start and its 15 siblings), gap/inset, the
+ *       animation/transition end-state patch. Without this hook the FIRST_PROP
+ *       loop below never finds the name and answers `false` for a property
+ *       that measurably changes the page -- the opposite-direction lie named
+ *       in the audit that added this hook.
+ *
+ *   logit_css_engine_ignores_name -- TURNS A "YES" INTO "NO". The 25
+ *       properties measured (2026-08-29) to move not one byte of struct
+ *       cstyle whether present or absent -- background-image and 24 others,
+ *       see css_extra.c for the exact list and how it was measured. LibCSS's
+ *       table has every one of these names and its value handler genuinely
+ *       parses ordinary values for them, so without this hook the `ok` path
+ *       below answers `true` for a property the cascade silently drops --
+ *       which is the lie that breaks progressive-enhancement fallbacks,
+ *       because the page believed the engine and took the branch that
+ *       assumes the declaration rendered. */
+extern int logit_css_extra_supports_name(const char *name, int len) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_extra_supports_name);
+extern int logit_css_engine_ignores_name(const char *name, int len) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_engine_ignores_name);
+
 /**
  * Is `( <property> : <value> )` something this engine can actually do?
  *
- * Answered by the only authority that can answer it: the property table and
- * the value handler that the cascade itself uses. A property name we do not
- * have is unsupported; a value our handler refuses is unsupported. That makes
- * `@supports (display:grid)` true and `@supports (backdrop-filter:blur(4px))`
- * false without a hand-maintained feature list that would drift the moment
- * anyone touched a parser.
+ * NOT answered by this parser alone -- see the two weak hooks just above.
+ * The base question is still put to the only authority that can answer it:
+ * the property table and the value handler the cascade itself uses. A
+ * property name neither LibCSS nor css_extra.c has is unsupported; a value
+ * our handler refuses is unsupported; a property LibCSS parses but
+ * css_engine.c's cascade never reads is ALSO unsupported, because "will this
+ * render" is the question a page is actually asking. Wherever the two sides
+ * cannot be made to agree exactly, this errs toward NO: a false no costs a
+ * page an enhancement, a false yes costs it the whole fallback branch.
  *
  * `ctx` is positioned just after the opening '(' and is left just past the
  * matching ')'.
@@ -447,6 +511,45 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 
 	consumeWhitespace(vector, ctx);
 	prop = parserutils_vector_iterate(vector, ctx);
+
+	/* A custom-property name never lexes as ONE CSS_TOKEN_IDENT starting
+	 * with "--". lex.c's CDCOrIdentOrFunctionOrNPD() (the first '-' is
+	 * already consumed by its caller) peeks the SECOND character: a digit
+	 * means a negative number, a third-character '>' means CDC ("-->"),
+	 * and otherwise -- crucially, INCLUDING a second '-' -- it is willing
+	 * to start an identifier AT THE SECOND CHARACTER. So "--anything"
+	 * lexes as exactly TWO tokens, CHAR('-') then IDENT("-anything"): the
+	 * first dash is rejected as CDC (third char is neither '-' nor '>'),
+	 * emitted alone as CHAR, and the SECOND dash becomes the leading dash
+	 * of an ordinary single-dash identifier (the same shape as a
+	 * vendor-prefixed property like "-webkit-foo") -- never a third,
+	 * separate CHAR('-') token. Verified with the tokens on-screen: the
+	 * token after CHAR('-') has type IDENT, not CHAR, its data already
+	 * "-anything". The single-CSS_TOKEN_IDENT check that used to sit here
+	 * assumed lwc_string_data(prop->idata) itself started with "--", which
+	 * can only be true of a token lex.c never emits, so that arm could
+	 * never run and `@supports (--x: y)` measurably answered NO. Custom
+	 * properties genuinely reach used values on this engine (css_vars.c
+	 * runs their cascade), so the answer is yes: a custom property accepts
+	 * any value at all, which is exactly what `@supports (--x: y)` is used
+	 * to test for. */
+	if (prop != NULL && tokenIsChar(prop, '-')) {
+		const css_token *name = parserutils_vector_peek(vector, *ctx);
+		if (name != NULL && name->type == CSS_TOKEN_IDENT &&
+				lwc_string_length(name->idata) > 0 &&
+				lwc_string_data(name->idata)[0] == '-') {
+			parserutils_vector_iterate(vector, ctx);   /* consume the IDENT */
+			consumeWhitespace(vector, ctx);
+			if (tokenIsChar(parserutils_vector_iterate(
+					vector, ctx), ':') == false) {
+				skip_to_close(vector, ctx);
+				return false;
+			}
+			skip_to_close(vector, ctx);
+			return true;
+		}
+	}
+
 	if (prop == NULL || prop->type != CSS_TOKEN_IDENT) {
 		skip_to_close(vector, ctx);
 		return false;
@@ -459,15 +562,6 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 	}
 	consumeWhitespace(vector, ctx);
 
-	/* A custom property accepts any value at all, which is exactly what
-	 * `@supports (--x: y)` is used to test for. */
-	if (lwc_string_length(prop->idata) > 2 &&
-			lwc_string_data(prop->idata)[0] == '-' &&
-			lwc_string_data(prop->idata)[1] == '-') {
-		skip_to_close(vector, ctx);
-		return true;
-	}
-
 	for (i = FIRST_PROP; i <= LAST_PROP; i++) {
 		if (lwc_string_caseless_isequal(prop->idata, c->strings[i],
 				&match) == lwc_error_ok && match)
@@ -475,6 +569,11 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 	}
 	if (i == LAST_PROP + 1) {
 		skip_to_close(vector, ctx);
+		if (LOGIT_HAVE(logit_css_extra_supports_name) &&
+				logit_css_extra_supports_name(
+					lwc_string_data(prop->idata),
+					(int)lwc_string_length(prop->idata)))
+			return true;
 		return false;
 	}
 
@@ -486,6 +585,13 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 	}
 
 	skip_to_close(vector, ctx);
+
+	if (ok && LOGIT_HAVE(logit_css_engine_ignores_name) &&
+			logit_css_engine_ignores_name(
+				lwc_string_data(prop->idata),
+				(int)lwc_string_length(prop->idata)))
+		return false;
+
 	return ok;
 }
 
@@ -1608,11 +1714,46 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 		{ DISABLED, CSS_SELECTOR_PSEUDO_CLASS },
 		{ CHECKED, CSS_SELECTOR_PSEUDO_CLASS },
 		{ NOT, CSS_SELECTOR_PSEUDO_CLASS },
+		{ IS, CSS_SELECTOR_PSEUDO_CLASS },
+		{ WHERE, CSS_SELECTOR_PSEUDO_CLASS },
+		/* LogitOS: state pseudo-classes this engine does not evaluate --
+		 * parsed so the RULE (and any sibling selector in the same
+		 * comma list, e.g. `.btn:hover, .btn:focus-visible`) survives;
+		 * matched nowhere in select.c, which is what makes them
+		 * default to *match = false rather than "matches everything".
+		 * See propstrings.h's comment above these same names for the
+		 * collateral-damage argument. */
+		{ FOCUS_WITHIN, CSS_SELECTOR_PSEUDO_CLASS },
+		{ FOCUS_VISIBLE, CSS_SELECTOR_PSEUDO_CLASS },
+		{ ANY_LINK, CSS_SELECTOR_PSEUDO_CLASS },
+		{ DEFINED, CSS_SELECTOR_PSEUDO_CLASS },
+		{ PLACEHOLDER_SHOWN, CSS_SELECTOR_PSEUDO_CLASS },
+		{ MODAL, CSS_SELECTOR_PSEUDO_CLASS },
+		{ USER_INVALID, CSS_SELECTOR_PSEUDO_CLASS },
+		/* Functional, argument skipped -- see skipParenArgument()'s
+		 * call sites below and its header comment. */
+		{ HAS, CSS_SELECTOR_PSEUDO_CLASS },
+		{ HOST, CSS_SELECTOR_PSEUDO_CLASS },
+		/* :dir() -- functional, takes one IDENT (ltr/rtl/auto), parsed
+		 * like :lang() below. Matching it honestly needs directionality
+		 * RESOLVED per element (this tree's bidi.c does that, but
+		 * nothing wires a resolved direction back through the DOM to
+		 * the selector matcher), so -- same rule as the state
+		 * pseudo-classes above -- parsed, and left unmatched. */
+		{ DIR, CSS_SELECTOR_PSEUDO_CLASS },
 
 		{ FIRST_LINE, CSS_SELECTOR_PSEUDO_ELEMENT },
 		{ FIRST_LETTER, CSS_SELECTOR_PSEUDO_ELEMENT },
 		{ BEFORE, CSS_SELECTOR_PSEUDO_ELEMENT },
-		{ AFTER, CSS_SELECTOR_PSEUDO_ELEMENT }
+		{ AFTER, CSS_SELECTOR_PSEUDO_ELEMENT },
+		/* LogitOS: same story, pseudo-ELEMENTS -- see the trailing
+		 * `else *match = false;` in select.c's PSEUDO_ELEMENT case. */
+		{ MARKER, CSS_SELECTOR_PSEUDO_ELEMENT },
+		{ PLACEHOLDER, CSS_SELECTOR_PSEUDO_ELEMENT },
+		{ BACKDROP, CSS_SELECTOR_PSEUDO_ELEMENT },
+		{ PART, CSS_SELECTOR_PSEUDO_ELEMENT },
+		{ SLOTTED, CSS_SELECTOR_PSEUDO_ELEMENT },
+		{ SELECTION, CSS_SELECTOR_PSEUDO_ELEMENT }
 	};
 	css_selector_detail_value detail_value;
 	css_selector_detail_value_type value_type =
@@ -1699,47 +1840,113 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 
 			value_type = CSS_SELECTOR_DETAIL_VALUE_NTH;
 		} else if (fun_type == NOT) {
-			/* type_selector | specific */
-			token = parserutils_vector_peek(vector, *ctx);
-			if (token == NULL)
-				return CSS_INVALID;
+			/* LogitOS: :not() generalised from "exactly one type
+			 * selector or one specific" to a full COMMA-SEPARATED
+			 * LIST of COMPOUND selectors, by reusing the same
+			 * parseIsWhereList()/parseIsWhereCompound() machinery
+			 * :is()/:where() use -- `:not(a, b)` and `:not(.a.b)`
+			 * (a compound the old single-specific parse could
+			 * never reach: it read one specific and then demanded
+			 * ')') both parse now. is_where=false: like :is(), the
+			 * negated form still contributes the specificity of
+			 * its most specific alternative (CSS Selectors L4
+			 * 16.2), computed once at parse time exactly as
+			 * :is()'s comment in stylesheet.c explains.
+			 *
+			 * `qname` is deliberately left as this detail's OWN
+			 * name ("not") rather than repointed at the argument,
+			 * matching :is()/:where() immediately below --
+			 * match_detail()'s SELECTOR_LIST branch in select.c
+			 * never reads the outer qname, only each alternative's
+			 * own.
+			 *
+			 * Scope note, not a correctness gap: nested
+			 * pseudo-elements inside the argument (`:not(::before)`,
+			 * meaningless CSS no real stylesheet writes) now parse
+			 * instead of being refused, because
+			 * parseIsWhereCompound()'s specifics loop does not
+			 * special-case them -- they still cannot MATCH anything
+			 * true (::before/::after only report *match=true when
+			 * a real pseudo-element name is asked for by name, and
+			 * this call site never propagates one out), so the
+			 * worst case is an inert, always-false alternative in
+			 * the OR, never a wrong answer. */
+			css_selector_altlist *altlist = NULL;
 
-			if (token->type == CSS_TOKEN_IDENT ||
-					tokenIsChar(token, '*') ||
-					tokenIsChar(token, '|')) {
-				/* Have type selector */
-				error = parseTypeSelector(c, vector, ctx,
-						&qname);
-				if (error != CSS_OK)
-					return error;
+			error = parseIsWhereList(c, vector, ctx, false,
+					&altlist);
+			if (error != CSS_OK)
+				return error;
 
-				type = CSS_SELECTOR_ELEMENT;
-
-				/* Ensure lwc insensitive string is available
-				 * for element names */
-				if (qname.name->insensitive == NULL &&
-						lwc__intern_caseless_string(
-						qname.name) != lwc_error_ok)
-					return CSS_NOMEM;
-
-				detail_value.string = NULL;
-				value_type = CSS_SELECTOR_DETAIL_VALUE_STRING;
-			} else {
-				/* specific */
-				css_selector_detail det;
-
-				error = parseSpecific(c, vector, ctx, true,
-						&det);
-				if (error != CSS_OK)
-					return error;
-
-				qname = det.qname;
-				type = det.type;
-				detail_value = det.value;
-				value_type = det.value_type;
-			}
-
+			detail_value.altlist = altlist;
+			value_type = CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST;
 			negate = true;
+
+			consumeWhitespace(vector, ctx);
+		} else if (fun_type == HAS || fun_type == HOST ||
+				fun_type == DIR) {
+			/* LogitOS: :has()/:host() -- parsed, matched nowhere.
+			 *
+			 * :has() needs a relative selector search over this
+			 * node's descendants/siblings, which is real work this
+			 * pass does not take on (see the item's own "cost
+			 * argument, not a shrug" instruction); its argument can
+			 * also OPEN with a combinator (`:has(> .a)`), which
+			 * parseIsWhereList()/parseIsWhereCompound() explicitly
+			 * refuse, so that machinery is not reusable here even
+			 * as a stub.
+			 *
+			 * :host() needs a shadow root, which this engine does
+			 * not have -- every node is host-less, so "match
+			 * nothing" is not an approximation, it is the correct
+			 * answer for as long as that stays true.
+			 *
+			 * Either way the type/qname set above the FUNCTION
+			 * check already reads "has"/"host" as an ordinary
+			 * CSS_SELECTOR_PSEUDO_CLASS with no altlist, which
+			 * select.c's match_detail() does not recognise --
+			 * falling to its trailing `else *match = false;`
+			 * automatically. So all that is left to do here is
+			 * consume the argument without judging its grammar, so
+			 * the rule (and the rest of its selector list) parses
+			 * instead of being discarded whole. */
+			skipParenArgument(vector, ctx);
+			consumeWhitespace(vector, ctx);
+		} else if (fun_type == PART || fun_type == SLOTTED) {
+			/* LogitOS: ::part()/::slotted() -- Shadow DOM does not
+			 * exist on this engine, so, as with :host() above,
+			 * "matches nothing" is correct rather than approximate.
+			 * See select.c's PSEUDO_ELEMENT case: an unrecognised
+			 * name already falls through to *match = false. */
+			skipParenArgument(vector, ctx);
+			consumeWhitespace(vector, ctx);
+		} else if (fun_type == IS || fun_type == WHERE) {
+			/* :is()/:where() -- see css_selector_altlist in
+			 * stylesheet.h. UPDATE: the paragraph this replaced said
+			 * :is()/:where() were "not permitted inside :not()" and
+			 * explained why the restriction was harmless. That
+			 * restriction is GONE -- :not()'s own branch above now
+			 * calls this same parseIsWhereList()/parseIsWhereCompound()
+			 * machinery (generalised from one type-selector-or-specific
+			 * to a full list, so `:not(a, b)` and `:not(.a.b)` parse
+			 * too), and its compounds are built through
+			 * parseAppendSpecific() -> parseSpecific(..., false, ...),
+			 * which always threads in_not=false regardless of the OUTER
+			 * call's in_not -- so `:not(:is(...))` now parses too. Left
+			 * AS a relaxation, not tightened back up: Selectors L4's
+			 * grammar for :not()'s argument does not forbid nesting
+			 * :is()/:where() (or another :not()) inside it, so this
+			 * engine matching more of the spec is not a regression to
+			 * guard against. */
+			css_selector_altlist *altlist = NULL;
+
+			error = parseIsWhereList(c, vector, ctx,
+					fun_type == WHERE, &altlist);
+			if (error != CSS_OK)
+				return error;
+
+			detail_value.altlist = altlist;
+			value_type = CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST;
 
 			consumeWhitespace(vector, ctx);
 		}
@@ -1752,6 +1959,269 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 	return css__stylesheet_selector_detail_init(c->sheet,
 			type, &qname, detail_value, value_type,
 			negate, specific);
+}
+
+/**
+ * Consume a functional pseudo-class/element's argument WITHOUT understanding
+ * its grammar, leaving *ctx positioned at the ')' that closes it (unconsumed
+ * -- the shared code in parsePseudo() right after every fun_type branch
+ * consumes that ')' itself, identically for every branch).
+ *
+ * For :has()/:host()/::part()/::slotted(): see their call sites in
+ * parsePseudo() for why each is parsed-and-matched-nowhere rather than given
+ * a real matcher. This function's only job is bracket balance, so a nested
+ * function call inside the argument -- ':has(:not(.x))', 'part(foo bar)'
+ * (an ident list, not a selector, but still just tokens to this function) --
+ * does not make it stop at the WRONG ')'.
+ *
+ * Depth starts at 1: the caller has already consumed the opening FUNCTION
+ * token itself (e.g. 'has(', as one token, per this tokenizer -- see
+ * report_selector_drop()'s comment in parse.c for the same fact stated the
+ * other direction), so the first unmatched ')' this function sees is the one
+ * that closes THIS function, not a nested one.
+ */
+static void skipParenArgument(const parserutils_vector *vector, int32_t *ctx)
+{
+	int depth = 1;
+	const css_token *token;
+
+	while ((token = parserutils_vector_peek(vector, *ctx)) != NULL) {
+		if (tokenIsChar(token, ')')) {
+			depth--;
+			if (depth == 0)
+				return; /* leave the closing ')' for the caller */
+		} else if (token->type == CSS_TOKEN_FUNCTION ||
+				tokenIsChar(token, '(')) {
+			depth++;
+		}
+
+		parserutils_vector_iterate(vector, ctx);
+	}
+	/* Ran off the end of the token vector -- caller's post-branch check
+	 * for a literal ')' will see NULL and correctly return CSS_INVALID;
+	 * this function itself has nothing further to signal. */
+}
+
+/**
+ * Parse ONE compound selector (type selector + specifics, no combinator)
+ * for the :is()/:where() argument list.
+ *
+ * This is NOT parseSimpleSelector() reused, on purpose, even though the two
+ * look nearly identical: parseSimpleSelector()'s specifics loop
+ * (parseSelectorSpecifics()) stops at whitespace/'+'/'>'/'~'/',' and NEVER
+ * at ')', because in the ordinary top-level selector grammar a selector is
+ * never inside parentheses -- ')' simply cannot occur there, so nobody
+ * needed to teach that loop about it. Call parseSimpleSelector() directly
+ * on ":is(.ctx)"'s argument and it walks straight past the closing ')'
+ * looking for one more specific, finds a token that is not '.'/'#'/'['/':'
+ * and returns CSS_INVALID -- silently turning EVERY :is()/:where() rule
+ * into "the selector is unknown", which is exactly the failure this whole
+ * feature exists to fix. (Found by building tests/unit/css_drop_probe.c's
+ * `:is(.ctx) #t{display:flex}` case and tracing why it still failed after
+ * the parser and matcher above were both written and believed correct.)
+ *
+ * \param c	 Parsing context
+ * \param vector Vector of tokens to process
+ * \param ctx	 Pointer to current vector iteration context
+ * \param result Pointer to location to receive the new selector
+ * \return CSS_OK on success, CSS_INVALID | CSS_NOMEM otherwise
+ */
+css_error parseIsWhereCompound(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_selector **result)
+{
+	css_error error;
+	const css_token *token;
+	css_selector *selector;
+	css_qname qname;
+
+	token = parserutils_vector_peek(vector, *ctx);
+	if (token == NULL)
+		return CSS_INVALID;
+
+	if (token->type == CSS_TOKEN_IDENT || tokenIsChar(token, '*') ||
+			tokenIsChar(token, '|')) {
+		error = parseTypeSelector(c, vector, ctx, &qname);
+		if (error != CSS_OK)
+			return error;
+
+		error = css__stylesheet_selector_create(c->sheet,
+				&qname, &selector);
+		if (error != CSS_OK)
+			return error;
+	} else {
+		/* Universal selector -- at least one specific is required,
+		 * exactly as parseSimpleSelector()'s own universal branch
+		 * requires (a bare `*` is spelled with an explicit '*', not
+		 * by falling in here with nothing after it). */
+		if (c->default_namespace == NULL)
+			qname.ns = c->strings[UNIVERSAL];
+		else
+			qname.ns = c->default_namespace;
+		qname.name = c->strings[UNIVERSAL];
+
+		error = css__stylesheet_selector_create(c->sheet,
+				&qname, &selector);
+		if (error != CSS_OK)
+			return error;
+
+		error = parseAppendSpecific(c, vector, ctx, &selector);
+		if (error != CSS_OK) {
+			css__stylesheet_selector_destroy(c->sheet, selector);
+			return error;
+		}
+	}
+
+	/* specifics*, stopping at whitespace, a combinator, ',' -- OR ')',
+	 * the one difference from parseSelectorSpecifics() that this whole
+	 * function exists for. */
+	while ((token = parserutils_vector_peek(vector, *ctx)) != NULL &&
+			token->type != CSS_TOKEN_S &&
+			tokenIsChar(token, '+') == false &&
+			tokenIsChar(token, '>') == false &&
+			tokenIsChar(token, '~') == false &&
+			tokenIsChar(token, ',') == false &&
+			tokenIsChar(token, ')') == false) {
+		error = parseAppendSpecific(c, vector, ctx, &selector);
+		if (error != CSS_OK) {
+			css__stylesheet_selector_destroy(c->sheet, selector);
+			return error;
+		}
+	}
+
+	*result = selector;
+
+	return CSS_OK;
+}
+
+/**
+ * Parse the argument of :is()/:where() -- a comma-separated list of
+ * COMPOUND selectors (type selector plus specifics, no combinator: this
+ * engine does not support `:is(a b)` and refuses it, rather than silently
+ * treating the space as nothing or as an error somewhere less legible).
+ *
+ * \param c	   Parsing context
+ * \param vector   Vector of tokens to process, positioned after the '('
+ * \param ctx	   Pointer to current vector iteration context
+ * \param is_where True for :where() (contributes zero specificity), false
+ *		   for :is() (contributes the max specificity of `alts`)
+ * \param result   Pointer to location to receive the new altlist
+ * \return CSS_OK on success, CSS_INVALID | CSS_NOMEM otherwise. On error,
+ *	   nothing is left allocated and *result is untouched.
+ *
+ * \note Leaves *ctx positioned at the ')' that closes the argument list;
+ *	 the caller (parsePseudo) consumes it exactly as it does for every
+ *	 other function pseudo-class.
+ */
+css_error parseIsWhereList(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		bool is_where, css_selector_altlist **result)
+{
+	css_selector_altlist *altlist;
+	css_selector **alts = NULL;
+	uint32_t n = 0, alloc = 0;
+	uint32_t max_specificity = 0;
+	css_error error;
+
+	altlist = malloc(sizeof(*altlist));
+	if (altlist == NULL)
+		return CSS_NOMEM;
+
+	for (;;) {
+		css_selector *sel = NULL;
+		const css_token *token;
+
+		consumeWhitespace(vector, ctx);
+
+		error = parseIsWhereCompound(c, vector, ctx, &sel);
+		if (error != CSS_OK)
+			goto error_cleanup;
+
+		if (sel->specificity > max_specificity)
+			max_specificity = sel->specificity;
+
+		if (n == alloc) {
+			css_selector **grown;
+			uint32_t new_alloc = alloc ? alloc * 2 : 4;
+
+			grown = realloc(alts, new_alloc * sizeof(*alts));
+			if (grown == NULL) {
+				css__stylesheet_selector_destroy(c->sheet, sel);
+				error = CSS_NOMEM;
+				goto error_cleanup;
+			}
+
+			alts = grown;
+			alloc = new_alloc;
+		}
+		alts[n++] = sel;
+
+		/* parseIsWhereCompound() stops at the first token it does not
+		 * understand as part of a compound selector, WITHOUT
+		 * consuming leading whitespace before it -- so a combinator
+		 * (descendant, '>', '+', '~') is still sitting right here,
+		 * unconsumed, and is exactly what distinguishes "another
+		 * alternative" or "end of the argument" from "a combinator
+		 * we refuse to support inside :is()/:where()". */
+		token = parserutils_vector_peek(vector, *ctx);
+		if (token != NULL && token->type == CSS_TOKEN_S) {
+			/* Whitespace here is either trailing (before ',' or
+			 * ')') or a descendant combinator -- tell them apart
+			 * by peeking past it. */
+			int32_t peek_ctx = *ctx;
+			const css_token *next;
+
+			parserutils_vector_iterate(vector, &peek_ctx);
+			next = parserutils_vector_peek(vector, peek_ctx);
+
+			if (next != NULL && tokenIsChar(next, ',') == false &&
+					tokenIsChar(next, ')') == false) {
+				/* A real combinator: out of scope. */
+				error = CSS_INVALID;
+				goto error_cleanup;
+			}
+
+			*ctx = peek_ctx;
+			token = next;
+		}
+
+		if (token != NULL && tokenIsChar(token, ',')) {
+			parserutils_vector_iterate(vector, ctx);
+			continue;
+		} else if (token != NULL && tokenIsChar(token, ')')) {
+			break;
+		} else if (token != NULL && (tokenIsChar(token, '>') ||
+				tokenIsChar(token, '+') ||
+				tokenIsChar(token, '~'))) {
+			/* Combinator with no preceding whitespace
+			 * (":is(a>b)"): also out of scope. */
+			error = CSS_INVALID;
+			goto error_cleanup;
+		} else {
+			error = CSS_INVALID;
+			goto error_cleanup;
+		}
+	}
+
+	altlist->alts = alts;
+	altlist->n = n;
+	altlist->specificity = is_where ? 0 : max_specificity;
+
+	*result = altlist;
+
+	return CSS_OK;
+
+error_cleanup:
+	{
+		uint32_t i;
+
+		for (i = 0; i < n; i++)
+			css__stylesheet_selector_destroy(c->sheet, alts[i]);
+	}
+	free(alts);
+	free(altlist);
+
+	return error;
 }
 
 css_error parseSpecific(css_language *c,

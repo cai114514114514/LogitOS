@@ -149,6 +149,126 @@ static css_error parseMediaQuery(css_parser *parser);
 
 static void discard_tokens(css_parser *parser);
 
+/******************************************************************************
+ * SELECTOR DROP REPORTING                                                    *
+ ******************************************************************************
+ *
+ * LogitOS patch. READ THIS BEFORE ADDING ANOTHER DROP HOOK, because there are
+ * already two and a third would be one too many.
+ *
+ * parse/language.h carries `css__parse_drop_report`, which sees every
+ * DECLARATION (unknown property / bad value / trailing junk / accepted) and
+ * every unknown AT-RULE. It cannot see the third way a rule dies, because that
+ * one is decided before parseProperty is ever reached: when a selector list
+ * does not parse, handleStartRuleset returns CSS_INVALID and THE WHOLE RULESET
+ * IS DISCARDED -- correctly, silently, and per the CSS specification. That is
+ * the shape a page whose layout lives in :has() or in nesting takes, and until
+ * this hook it left no trace anywhere in the tree.
+ *
+ * So: declarations and at-rules go out through language.c's hook, selectors go
+ * out through this one, and NEITHER of them counts the other's population.
+ * c/apps/browser/css_report.c is the single place both are collected. If you
+ * need a new drop reported, add it to whichever of the two funnels already
+ * owns that decision -- do not add a third pointer.
+ *
+ * NULL unless an embedder installs it, so libcss still links and behaves
+ * identically on its own; nothing here changes what is parsed or kept, only
+ * whether anyone is told.
+ */
+void (*css__parse_selector_drop_report)(const char *text, size_t len) = NULL;
+
+/* Parser RECOVERY entries -- how many times the machine had to skip forward to
+ * resynchronise. A separate question from "what was dropped", and a separate
+ * population for declarations: a declaration REJECTED by language.c is
+ * swallowed gracefully and never reaches sMalformedDecl, so this counts only
+ * the ones that were malformed as SYNTAX. Reported without arithmetic against
+ * the drop counts, because subtracting two different populations would produce
+ * a confident wrong number. */
+void (*css__parse_recover_report)(int kind) = NULL;
+
+#define CSS_RECOVER_SELECTOR 0
+#define CSS_RECOVER_ATRULE   1
+#define CSS_RECOVER_DECL     2
+
+/**
+ * Flatten a selector's token vector back to source-ish text for the report.
+ *
+ * Only ever called when the hook is installed AND the ruleset is already being
+ * discarded, so the cost is paid once per dropped rule and never on the path
+ * that works. Runs of whitespace collapse to one space; the buffer is small
+ * and deliberately so -- this produces a label, not a serialisation.
+ */
+static void report_selector_drop(const parserutils_vector *tokens)
+{
+	char buf[192];
+	size_t o = 0;
+	int32_t ctx = 0;
+	const css_token *t;
+
+	if (css__parse_selector_drop_report == NULL)
+		return;
+
+	while (tokens != NULL && (t = parserutils_vector_iterate(
+			tokens, &ctx)) != NULL) {
+		const char *s;
+		const char *pre = NULL, *post = NULL;
+		size_t n, i;
+
+		if (t->type == CSS_TOKEN_S || t->type == CSS_TOKEN_COMMENT) {
+			if (o > 0 && o < sizeof(buf) - 1 && buf[o - 1] != ' ')
+				buf[o++] = ' ';
+			continue;
+		}
+
+		/* emitToken() STRIPS the sigil from data.data -- '#' off a
+		 * HASH, '@' off an ATKEYWORD, the trailing '(' off a FUNCTION.
+		 * Putting them back is not cosmetic: without it `#b_results
+		 * h2:not(.x)` reads back as `b_results h2:not.x)`, which is
+		 * indistinguishable from genuinely corrupt CSS and sends the
+		 * next reader looking for a fetch bug that is not there. This
+		 * cost an hour on 2026-08-29, in a report about silent drops. */
+		switch (t->type) {
+		case CSS_TOKEN_HASH:      pre = "#";    break;
+		case CSS_TOKEN_ATKEYWORD: pre = "@";    break;
+		case CSS_TOKEN_FUNCTION:  post = "(";   break;
+		case CSS_TOKEN_PERCENTAGE: post = "%";  break;
+		case CSS_TOKEN_STRING:    pre = "\""; post = "\""; break;
+		case CSS_TOKEN_URI:       pre = "url("; post = ")"; break;
+		default: break;
+		}
+
+		if (t->data.data != NULL) {
+			s = (const char *) t->data.data;
+			n = t->data.len;
+		} else if (t->idata != NULL) {
+			s = lwc_string_data(t->idata);
+			n = lwc_string_length(t->idata);
+		} else {
+			continue;
+		}
+
+		for (i = 0; pre != NULL && pre[i] != '\0' &&
+				o < sizeof(buf) - 1; i++)
+			buf[o++] = pre[i];
+		for (i = 0; i < n && o < sizeof(buf) - 1; i++)
+			buf[o++] = s[i];
+		for (i = 0; post != NULL && post[i] != '\0' &&
+				o < sizeof(buf) - 1; i++)
+			buf[o++] = post[i];
+		if (o >= sizeof(buf) - 1)
+			break;
+	}
+
+	buf[o] = '\0';
+	css__parse_selector_drop_report(buf, o);
+}
+
+static inline void report_recovered(int kind)
+{
+	if (css__parse_recover_report != NULL)
+		css__parse_recover_report(kind);
+}
+
 /**
  * Dispatch table for parsing, indexed by major state number
  */
@@ -731,6 +851,14 @@ static css_error emit(css_parser *parser, css_parser_event type,
 	if (parser->event != NULL) {
 		error = parser->event(type, tokens, parser->event_pw);
 	}
+
+	/* A ruleset whose selector list did not parse dies HERE and is visible
+	 * nowhere else -- language.c's drop hook reports declarations and
+	 * at-rules, and neither of them is reached once the selector is
+	 * refused. `tokens` is the selector text; it is discarded a few states
+	 * later, so this is the last moment it can be named. */
+	if (error == CSS_INVALID && type == CSS_PARSER_START_RULESET)
+		report_selector_drop(tokens);
 
 	if (graceful && error == CSS_INVALID) {
 		error = CSS_OK;
@@ -2192,6 +2320,16 @@ css_error parseMalformedDeclaration(css_parser *parser)
 	/* Malformed declaration: read everything up to the next ; or }
 	 * We must ensure that pairs of {}, (), [], are balanced */
 
+	/* A DIFFERENT POPULATION from language.c's declaration drops, and the
+	 * two must never be subtracted: a declaration the language layer
+	 * REJECTS is swallowed gracefully by emit() and never arrives here.
+	 * What arrives here is a declaration that was malformed as syntax --
+	 * unbalanced brackets, EOF mid-value -- which carries no property name
+	 * and so can never be reported by name. Counting it is the only way to
+	 * know it happened at all. */
+	if (state->substate == Initial)
+		report_recovered(CSS_RECOVER_DECL);
+
 	switch (state->substate) {
 	case Initial:
 	{
@@ -2292,6 +2430,9 @@ css_error parseMalformedSelector(css_parser *parser)
 	/* Malformed selector: discard the entirety of the next block,
 	 * ensuring we correctly match pairs of {}, [], and (). */
 
+	if (state->substate == Initial)
+		report_recovered(CSS_RECOVER_SELECTOR);
+
 	switch (state->substate) {
 	case Initial:
 		/* Clear the stack of open items */
@@ -2387,6 +2528,9 @@ css_error parseMalformedAtRule(css_parser *parser)
 	/* Malformed at-rule: read everything up to the next ; or the next
 	 * block, whichever is first.
 	 * We must ensure that pairs of {}, (), [], are balanced */
+
+	if (state->substate == Initial)
+		report_recovered(CSS_RECOVER_ATRULE);
 
 	switch (state->substate) {
 	case Initial:

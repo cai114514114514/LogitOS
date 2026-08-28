@@ -31,9 +31,34 @@ enum {
 	ROOT, NTH_CHILD, NTH_LAST_CHILD, NTH_OF_TYPE, NTH_LAST_OF_TYPE,
 	LAST_CHILD, FIRST_OF_TYPE, LAST_OF_TYPE, ONLY_CHILD,
 	ONLY_OF_TYPE, EMPTY, TARGET, ENABLED, DISABLED, CHECKED, NOT,
+	/* LogitOS: :is()/:where() -- see css_selector_altlist in stylesheet.h */
+	IS, WHERE,
+	/* LogitOS: the CSS2 pseudo-class table stopped growing while the web
+	 * kept writing selectors -- see the pseudo_lut comment in language.c's
+	 * parsePseudo() for the collateral-damage argument (one unknown
+	 * pseudo invalidates the WHOLE selector list, not just itself) and
+	 * for which of these PARSE-AND-MATCH-HONESTLY vs PARSE-AND-MATCH-
+	 * NOTHING. :has() and :host() also live here (functional, argument
+	 * skipped) rather than beside IS/WHERE, because neither builds an
+	 * altlist -- they fall through parsePseudo's default
+	 * "not specifically handled" path in select.c's match_detail,
+	 * which already answers false for any CSS_SELECTOR_PSEUDO_CLASS this
+	 * table names but select.c does not recognise. */
+	FOCUS_WITHIN, FOCUS_VISIBLE, ANY_LINK, DEFINED, PLACEHOLDER_SHOWN,
+	MODAL, USER_INVALID, HAS, HOST, DIR,
 
 	/* Pseudo elements */
 	FIRST_LINE, FIRST_LETTER, BEFORE, AFTER,
+	/* LogitOS: same story, pseudo-ELEMENTS this time. select.c's
+	 * PSEUDO_ELEMENT switch already defaults to *match = false for any
+	 * name it does not specifically recognise (see the trailing `else`
+	 * after FIRST_LINE/FIRST_LETTER/BEFORE/AFTER) -- so naming these here
+	 * is what lets the RULE parse and the REST of a selector list survive;
+	 * none of the three actually paints anything yet. PART and SLOTTED
+	 * are functional (Shadow DOM parts/slots do not exist on this engine
+	 * either) and have their argument skipped the same way :has()/:host()
+	 * do. */
+	MARKER, PLACEHOLDER, BACKDROP, PART, SLOTTED, SELECTION,
 
 	/* Properties */
 	FIRST_PROP,

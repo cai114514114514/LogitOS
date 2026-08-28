@@ -139,7 +139,53 @@ test-css-web-negctl: $(BUILD)/libcss_host.a
 	    grep FAIL $(NEGDIR)/modern.txt | sed 's/^/       /'; \
 	 fi
 
-.PHONY: audit-css audit-css-before test-css-modern test-css-web-negctl
+# --- css-drop-probe: what does the engine SILENTLY drop? -------------------
+# A MEASUREMENT, not a gate, and named without a `test-` prefix on purpose:
+# tools/audit_tests.py classifies any `test-*` with a recipe as a suite CI
+# runs, and a target that reports rather than asserts must not be counted as a
+# test (that is exactly what test-audit looks for).
+#
+# It answers the question audit-css cannot. audit-css ranks what a corpus of
+# real pages loses; this asks, construct by construct, WHICH OF THE FOUR WAYS
+# it was lost -- unknown at-rule (takes its block), unparseable selector (takes
+# its rule, and every other selector in the same list), dropped declaration, or
+# parsed-and-never-read -- because those need four different repairs and look
+# identical from the outside. It also diffs @supports's answer against what the
+# engine can really do, in both directions.
+#
+#   make css-drop-probe
+# See the header of tests/unit/css_drop_probe.c.
+CSSDROP_SRC := tests/unit/css_drop_probe.c tests/unit/css_hostmm.c \
+               c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+               c/apps/browser/css_extra.c
+css-drop-probe: $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_drop_probe \
+	    $(CSSDROP_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	@$(BUILD)/css_drop_probe
+
+# --- css-selector-recovery-probe: how much of the pseudo_lut gap got closed?
+# A MEASUREMENT, not a gate (see css-drop-probe's comment above for why
+# `test-` is deliberately not this target's prefix). Answers, on the real
+# tests/fixtures/cssweb corpus rather than a fixture this session wrote: of
+# the rules THIS build's selector parser refuses outright (parsePseudo()'s
+# pseudo_lut in third_party/css/libcss/src/parse/language.c -- one unknown
+# pseudo-class/element takes the WHOLE rule, and every sibling selector in
+# the same comma list, with it), how many rules and how many declarations?
+#
+# Two independent instruments cross-checked against each other -- see the
+# header of tests/unit/css_selector_recovery_probe.c for why an isolated
+# per-selector re-parse was tried first and produces false positives (it
+# loses any @namespace earlier in the same real sheet). If the printed
+# self-check count is non-zero, the printed loss numbers are a floor, not an
+# exact count -- said so by the tool itself, not left for the reader to
+# notice.
+#   make css-selector-recovery-probe
+css-selector-recovery-probe: $(BUILD)/libcss_host.a
+	@$(CC) -O2 -w $(CSS_INC) -o $(BUILD)/css_sel_recovery \
+	    tests/unit/css_selector_recovery_probe.c $(BUILD)/libcss_host.a -lm
+	@$(BUILD)/css_sel_recovery tests/fixtures/cssweb
+
+.PHONY: audit-css audit-css-before test-css-modern test-css-web-negctl css-drop-probe css-selector-recovery-probe
 
 # --- test-css-modern-os: the same constructs, ON THE MACHINE ---------------
 # test-css-modern asserts on `struct cstyle` and audit-css on the display list.

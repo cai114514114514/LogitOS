@@ -4699,6 +4699,277 @@ static const char *const single_props[] = {
 	"anchor-name", "position-anchor", "position-area", "font-family", NULL
 };
 
+/* ====================================================================
+ * NAMES ONLY (mostly) -- properties neither LibCSS's stringmap nor any
+ * table above has ever heard of.
+ *
+ * css_supports_decl() (c/apps/browser/css_engine.c) asks two questions of a
+ * property name: is it in LibCSS's stringmap (FIRST_PROP..LAST_PROP), or is
+ * it in css_canon_knows_property()'s answer. A name in NEITHER fails even
+ * the one value that is legal for every property that exists -- a bare
+ * `inherit`/`initial`/`unset`/`revert`/`revert-layer` -- because
+ * sup_beside_libcss()'s css-wide-keyword check is gated on
+ * css_canon_knows_property() first. That is not a value-grammar gap; it is
+ * this property never having been named anywhere on this side of the
+ * vendored line. 98 such names were found by diffing every property WPT's
+ * interpolation corpus exercises against LibCSS's stringmap and this file's
+ * own tables; the handful with their own real grammar now (contain_intrinsic
+ * _props, fvs_props, counter_set_props, below) have been taken back out of
+ * this one.
+ *
+ * WHY THE FALLBACK BELOW IS "css-wide keyword, else INVALID" AND NOT PASS,
+ * AND IT WAS MEASURED WRONG ONCE ALREADY. The first version of this table
+ * left css_canon_decl() falling through to the generic `rc = CSS_CANON_PASS`
+ * for every value that was not a bare css-wide keyword, on the reasoning
+ * that PASS means "unchanged, LibCSS's to accept or refuse" everywhere else
+ * in this function. It does NOT mean that here, and c/apps/browser/js_dom.c
+ * says so above cssd_refuses(): CSS_SPEC_PASS is read as "not canon.c's
+ * property at all, behave exactly as before" -- and for a name LibCSS has
+ * NEVER claimed, "before" (before this table existed) was "no accessor
+ * published at all", which is a silent no-op, not an accept. Once a name is
+ * in css_canon_knows_property(), js_dom.c publishes a real accessor for it,
+ * and a real accessor with a PASS answer for every value falls into the
+ * OTHER half of that same comment: "the declaration is spliced into the
+ * style attribute unconditionally" -- `e.style.borderImageWidth = "nonsense"`
+ * SETS the property, and every `*-invalid.html` subtest for these 98 names
+ * that used to pass (vacuously, because the accessor did not exist to be
+ * assigned) started failing for real. Measured, not guessed: building the
+ * first version and running it over css/css-borders + css/css-masking +
+ * css/motion + css/css-backgrounds + css/css-sizing + css/css-fonts +
+ * css/css-gaps + css/css-shapes + css/css-lists + css/css-text-decor +
+ * css/css-transforms + css/css-shadow + css/css-contain (13 subsets,
+ * 51,243 subtests) turned 742 subtests from FAIL to PASS and 685 OTHER
+ * subtests from PASS to FAIL in the same run -- a real regression, not a
+ * theoretical one, in files like css-borders/corner-shape/
+ * corner-shape-invalid.html. So the fallback for a name in THIS table is
+ * bare css-wide keyword -> CSS_CANON_OK, anything else -> CSS_CANON_INVALID.
+ * That is still honest: "not yet supported" is the true answer for a value
+ * this file has no grammar for, and INVALID is what makes js_dom.c refuse to
+ * store it, which is what every `*-invalid.html` subtest asserts. It costs
+ * nothing on `*-valid.html`: those subtests were already failing before this
+ * table existed (no accessor, so nothing to assert on) and staying INVALID
+ * for now-unimplemented values leaves them exactly as failing as they were,
+ * never worse.
+ *
+ * Every name below was verified against the actual WPT corpus
+ * (build/wpt-full) as a real property this engine's grammar does not yet
+ * cover -- not guessed from a spec title -- because a name that looks
+ * plausible and is not spelled the way the corpus spells it recovers
+ * nothing and looks fixed.
+ */
+static const char *const unclaimed_props[] = {
+	/* css-borders-4: border-image */
+	"border-image", "border-image-outset", "border-image-repeat",
+	"border-image-slice", "border-image-source", "border-image-width",
+	/* css-masking-1: mask and its border sub-family */
+	"mask", "mask-clip", "mask-composite", "mask-image", "mask-mode",
+	"mask-origin", "mask-position", "mask-position-x", "mask-position-y",
+	"mask-repeat", "mask-size", "mask-type",
+	"mask-border", "mask-border-mode", "mask-border-outset",
+	"mask-border-repeat", "mask-border-slice", "mask-border-source",
+	"mask-border-width",
+	/* motion-1: offset-path is already shape_props's */
+	"offset", "offset-anchor", "offset-distance", "offset-position",
+	"offset-rotate",
+	/* css-backgrounds-3 / css-shadow-parts: shadows are their own spec */
+	"box-shadow", "text-shadow",
+	/* css-backgrounds-4: LibCSS's background predates these entirely */
+	"background-size", "background-position-x", "background-position-y",
+	"background-clip", "background-origin",
+	/* css-contain-3: intrinsic size fallback -- contain_intrinsic_props
+	 * below has these five and a real grammar; not repeated here. */
+	/* css-fonts-4 / css-fonts-5. font-variation-settings has a real
+	 * grammar (fvs_props below); the font-variant-* and font-synthesis-*
+	 * longhands do not yet and stay in this table. */
+	"font-variant-alternates", "font-variant-caps",
+	"font-variant-east-asian", "font-variant-emoji",
+	"font-variant-ligatures", "font-variant-numeric",
+	"font-variant-position",
+	"font-synthesis", "font-synthesis-weight", "font-synthesis-style",
+	"font-synthesis-small-caps", "font-synthesis-position",
+	/* css-borders-4: the "squircle" corner-shape family */
+	"corner-shape",
+	"corner-top-left-shape", "corner-top-right-shape",
+	"corner-bottom-right-shape", "corner-bottom-left-shape",
+	"corner-start-start-shape", "corner-start-end-shape",
+	"corner-end-start-shape", "corner-end-end-shape",
+	"corner-top-shape", "corner-right-shape",
+	"corner-bottom-shape", "corner-left-shape",
+	"corner-block-start-shape", "corner-block-end-shape",
+	"corner-inline-start-shape", "corner-inline-end-shape",
+	/* css-lists-3: counter-reset is already LibCSS's; counter-set has a
+	 * real grammar (counter_set_props below) and is not repeated here. */
+	/* css-text-decor-4: the sub-longhands of the TEXT_DECORATION shorthand */
+	"text-decoration-line", "text-decoration-style",
+	"text-decoration-color", "text-decoration-thickness",
+	"text-underline-offset",
+	/* css-transforms-2: LibCSS has translate/scale/rotate, not the origins */
+	"transform-origin", "perspective-origin",
+	/* css-gaps-1: row/column rule decorations and their cross-axis shorthand.
+	 * column-rule/-color/-style/-width are already LibCSS's; row has no
+	 * such history so every row-rule-* name is new. */
+	"row-rule", "row-rule-break", "row-rule-color", "row-rule-style",
+	"row-rule-width", "row-rule-segment", "row-rule-visibility-items",
+	"row-rule-inset",
+	"row-rule-inset-cap", "row-rule-inset-cap-start", "row-rule-inset-cap-end",
+	"row-rule-inset-junction", "row-rule-inset-junction-start",
+	"row-rule-inset-junction-end",
+	"column-rule-break", "column-rule-visibility-items",
+	"column-rule-inset",
+	"column-rule-inset-cap", "column-rule-inset-cap-start",
+	"column-rule-inset-cap-end",
+	"column-rule-inset-junction", "column-rule-inset-junction-start",
+	"column-rule-inset-junction-end",
+	/* the bidirectional shorthand covering both axes at once */
+	"rule", "rule-break", "rule-color", "rule-style", "rule-width",
+	"rule-overlap", "rule-visibility-items", "rule-inset",
+	"rule-inset-cap", "rule-inset-cap-start", "rule-inset-cap-end",
+	"rule-inset-junction", "rule-inset-junction-start",
+	"rule-inset-junction-end",
+	NULL
+};
+
+/* css-contain-3 4.2: the "how big is this before I've measured it" fallback
+ * for content under `contain: size`. Four longhands and a shorthand that
+ * sets width then height. Each longhand is `auto? [ none | <length> ]` --
+ * `auto` is a prefix, not a `&&`-permutation partner, so "10px auto" is
+ * invalid even though "auto 10px" is not; MDN and the spec grammar both
+ * fix the order. Percentages are not allowed (a used-value fallback cannot
+ * itself depend on layout), which is the one way this differs from an
+ * ordinary <length-percentage> property. */
+static const char *const contain_intrinsic_props[] = {
+	"contain-intrinsic-width", "contain-intrinsic-height",
+	"contain-intrinsic-block-size", "contain-intrinsic-inline-size",
+	"contain-intrinsic-size", NULL
+};
+
+/* One `auto? [ none | <length> ]` unit, consuming from `lx` and writing to
+ * `b`. Shared between the four longhands (called once, then `at_end` is
+ * required) and the shorthand (called once or twice). */
+static int canon_intrinsic_size_value(lexed *lx, buf *b)
+{
+	if (tok_is_ident(cur(lx), "auto")) {
+		adv(lx);
+		if (at_end(lx)) return -1;	/* `auto` alone is not a value */
+		bput(b, "auto", 4);
+		bputc(b, ' ');
+	}
+	if (tok_is_ident(cur(lx), "none")) {
+		adv(lx);
+		bput(b, "none", 4);
+		return 0;
+	}
+	/* <length>, not <length-percentage>: pct_ok = 0. */
+	return lp_value(lx, b, 1, 0);
+}
+
+/* css-fonts-4 6.13: font-variation-settings = normal | [ <string> <number> ]#
+ * The string is a 4-byte OpenType variation-axis tag (`"wght"`, `"slnt"`);
+ * this file checks the LENGTH, not that the bytes are a real registered axis
+ * -- an unregistered tag is still valid CSS and it is the font engine's job
+ * to ignore it, the same latitude LibCSS gives an unknown font-feature-
+ * settings tag today. */
+static const char *const fvs_props[] = { "font-variation-settings", NULL };
+
+static int canon_font_variation_settings(lexed *lx, buf *b)
+{
+	int first = 1;
+
+	if (lx->n == 1 && tok_is_ident(cur(lx), "normal")) {
+		bput(b, "normal", 6);
+		adv(lx);
+		return 0;
+	}
+	for (;;) {
+		const tok *t = cur(lx);
+		if (t->kind != T_STR || t->len != 4) return -1;
+		if (!first) bcomma(b);
+		bstring(b, t->s, t->len);
+		bputc(b, ' ');
+		adv(lx);
+		if (at_end(lx) || cur(lx)->kind != T_NUM) return -1;
+		if (emit_token(lx, b, 1) != 0) return -1;
+		first = 0;
+		if (at_end(lx)) return 0;
+		if (cur(lx)->kind != T_COMMA) return -1;
+		adv(lx);
+		if (at_end(lx)) return -1;
+	}
+}
+
+/* css-lists-3 3.2: counter-set = [ <counter-name> <integer>? ]+ | none
+ * Space separated, like counter-reset and counter-increment (which this
+ * shares no code with only because they are LibCSS's already and this
+ * isn't) -- NOT comma separated, and that is the one thing worth getting
+ * wrong here: `counter-set: a 1, b 2` is invalid CSS, full stop, not two
+ * counters with a stray comma.
+ *
+ * THE <integer> HALF IS A CALC SITE TOO, and it was missed the first time:
+ * WPT's own valid corpus has `section calc(1)`, `section calc(-2.5)` and a
+ * sign()/container-query expression, all required to round-trip BYTE FOR
+ * BYTE ("the same asymmetry as everywhere else in this file" -- a literal
+ * is checked (isint), a calc() is not, because <integer> as a calc() type
+ * is resolved at computed-value time, not here). A literal number that is
+ * not an integer (`section 3.14`) is still invalid; that is what the isint
+ * check on the T_NUM branch alone continues to guard.
+ *
+ * THE MISSING <integer> IS NOT MISSING IN THE OUTPUT -- IT IS 0. Also
+ * measured against WPT: `chapter` alone canonicalizes to `chapter 0`, not
+ * to `chapter`. That is not this file omitting the author's shorthand for
+ * "keep it terse" -- CSSOM's specified-value serialization for
+ * counter-set always spells the integer, and 0 is what the property's own
+ * grammar names as its value when none is written. Getting this backwards
+ * (staying silent) is invisible on every value an author actually
+ * supplies and wrong on every one they omit, which is most of them --
+ * `counter-set: chapter` is the common case, not the rare one. */
+static const char *const counter_set_props[] = { "counter-set", NULL };
+
+static int canon_counter_set(lexed *lx, buf *b)
+{
+	int first = 1;
+
+	if (lx->n == 1 && tok_is_ident(cur(lx), "none")) {
+		bput(b, "none", 4);
+		adv(lx);
+		return 0;
+	}
+	while (!at_end(lx)) {
+		const tok *t = cur(lx);
+		if (t->kind != T_IDENT || ff_reserved(t) ||
+		    tok_is_ident(t, "none"))
+			return -1;
+		if (!first) bputc(b, ' ');
+		bident(b, t->s, t->len);
+		adv(lx);
+		first = 0;
+		if (!at_end(lx) && cur(lx)->kind == T_NUM && cur(lx)->isint) {
+			bputc(b, ' ');
+			if (emit_token(lx, b, 1) != 0) return -1;
+		} else if (!at_end(lx) && cur(lx)->kind == T_FUNC) {
+			bputc(b, ' ');
+			if (calc_channel(lx, b, 0, 0, NULL, 0, NULL) != 0) return -1;
+		} else {
+			bput(b, " 0", 2);
+		}
+	}
+	return first ? -1 : 0;		/* at least one counter is required */
+}
+
+/* The canonical spelling of one of the five css-wide keywords -- reused by
+ * the unclaimed_props fallback in css_canon_decl(), which never sees
+ * anything else accepted. `ieq` inside tok_is_ident is case-insensitive, so
+ * this normalises `INHERIT` and `inherit` to the same output the way every
+ * other keyword in this file does. */
+static void emit_css_wide_kw(const tok *t, buf *b)
+{
+	const char *s = tok_is_ident(t, "initial")      ? "initial" :
+			tok_is_ident(t, "inherit")      ? "inherit" :
+			tok_is_ident(t, "unset")        ? "unset"   :
+			tok_is_ident(t, "revert-layer") ? "revert-layer" :
+							   "revert";
+	bput(b, s, -1);
+}
+
 /* EVERY property this file claims, as one list of lists.
  *
  * The predicate and the ENUMERATION are now the same table, which is the
@@ -4716,7 +4987,8 @@ static const char *const single_props[] = {
 static const char *const *const canon_prop_tables[] = {
 	inset_props, size_props, margin_props, single_props,
 	color_props, grid_props, shape_props, filter_props,
-	transform_props, fsa_props, NULL
+	transform_props, fsa_props, unclaimed_props,
+	contain_intrinsic_props, fvs_props, counter_set_props, NULL
 };
 
 int css_canon_knows_property(const char *prop, int plen)
@@ -5065,6 +5337,58 @@ int css_canon_decl(const char *prop, int plen,
 				? CSS_CANON_OK : CSS_CANON_INVALID;
 		} else {
 			rc = CSS_CANON_PASS;
+		}
+	} else if (in_tab(prop, plen, contain_intrinsic_props)) {
+		/* The SHORTHAND collapses to one value when both longhands
+		 * serialize identically -- WPT's own valid corpus requires
+		 * "5px 5px" -> "5px", "none none" -> "none" and
+		 * "auto 1px auto 1px" -> "auto 1px" byte for byte, so each
+		 * half is built into its OWN scratch buffer first and only
+		 * compared -- never written straight into `b` -- because by
+		 * the time the second half is parsed it is too late to erase
+		 * the first half's bytes if they turn out to match. */
+		int shorthand = ieq(prop, plen, "contain-intrinsic-size");
+		char txt1[128], txt2[128];
+		buf b1;
+
+		b1.p = txt1; b1.len = 0; b1.cap = (int)sizeof txt1; b1.ovf = 0;
+		if (canon_intrinsic_size_value(&lx, &b1) != 0 || b1.ovf) {
+			rc = CSS_CANON_INVALID;
+		} else if (!shorthand) {
+			rc = at_end(&lx) ? CSS_CANON_OK : CSS_CANON_INVALID;
+			if (rc == CSS_CANON_OK) bput(&b, txt1, -1);
+		} else if (at_end(&lx)) {
+			rc = CSS_CANON_OK;
+			bput(&b, txt1, -1);
+		} else {
+			buf b2;
+			b2.p = txt2; b2.len = 0; b2.cap = (int)sizeof txt2; b2.ovf = 0;
+			rc = (canon_intrinsic_size_value(&lx, &b2) == 0 &&
+			      !b2.ovf && at_end(&lx))
+				? CSS_CANON_OK : CSS_CANON_INVALID;
+			if (rc == CSS_CANON_OK) {
+				bput(&b, txt1, -1);
+				if (strcmp(txt1, txt2) != 0) {
+					bputc(&b, ' ');
+					bput(&b, txt2, -1);
+				}
+			}
+		}
+	} else if (in_tab(prop, plen, fvs_props)) {
+		rc = canon_font_variation_settings(&lx, &b) == 0
+			? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, counter_set_props)) {
+		rc = canon_counter_set(&lx, &b) == 0
+			? CSS_CANON_OK : CSS_CANON_INVALID;
+	} else if (in_tab(prop, plen, unclaimed_props)) {
+		/* No grammar of our own yet -- see the block comment above
+		 * unclaimed_props[] for why this is "css-wide keyword or
+		 * INVALID" and not PASS. */
+		if (lx.n == 1 && ff_css_wide(&lx.t[0])) {
+			emit_css_wide_kw(&lx.t[0], &b);
+			rc = CSS_CANON_OK;
+		} else {
+			rc = CSS_CANON_INVALID;
 		}
 	} else if (mentions_anchor(&lx)) {
 		int anchor_ok = in_tab(prop, plen, inset_props);

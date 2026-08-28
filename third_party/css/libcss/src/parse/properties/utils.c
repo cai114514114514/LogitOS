@@ -1478,6 +1478,47 @@ css_error css__parse_unit_keyword(const char *ptr, size_t len, uint32_t *unit)
 			*unit = UNIT_REM;
 		else if (strncasecmp(ptr, "dpi", 3) == 0)
 			*unit = UNIT_DPI;
+		/* CSS Values 4 3.5: the small/large/dynamic viewport units --
+		 * `dvh`/`svh`/`lvh` etc, one letter prefixed onto each of the
+		 * four viewport units below. This engine has exactly ONE
+		 * viewport size and no on-screen browser chrome that can grow
+		 * or shrink it (no URL bar, no soft keyboard), so the three
+		 * variants and the bare unit are the SAME NUMBER by
+		 * definition, not an approximation of one: the spec's own
+		 * definition of the small/large viewport is "the viewport
+		 * sized assuming any UA interface that dynamically expands or
+		 * shrinks is in its ... state", and there is no such UI here.
+		 * Mapping straight onto the existing UNIT_V{H,W,I,B} is
+		 * therefore the CORRECT value, not a stub. */
+		else if (strncasecmp(ptr, "dvh", 3) == 0 ||
+				strncasecmp(ptr, "svh", 3) == 0 ||
+				strncasecmp(ptr, "lvh", 3) == 0)
+			*unit = UNIT_VH;
+		else if (strncasecmp(ptr, "dvw", 3) == 0 ||
+				strncasecmp(ptr, "svw", 3) == 0 ||
+				strncasecmp(ptr, "lvw", 3) == 0)
+			*unit = UNIT_VW;
+		else if (strncasecmp(ptr, "dvi", 3) == 0 ||
+				strncasecmp(ptr, "svi", 3) == 0 ||
+				strncasecmp(ptr, "lvi", 3) == 0)
+			*unit = UNIT_VI;
+		else if (strncasecmp(ptr, "dvb", 3) == 0 ||
+				strncasecmp(ptr, "svb", 3) == 0 ||
+				strncasecmp(ptr, "lvb", 3) == 0)
+			*unit = UNIT_VB;
+		else
+			return CSS_INVALID;
+	} else if (len == 5) {
+		/* dvmin/svmin/lvmin/dvmax/svmax/lvmax -- same equivalence as
+		 * the len==3 block above, for the min()/max() viewport pair. */
+		if (strncasecmp(ptr, "dvmin", 5) == 0 ||
+				strncasecmp(ptr, "svmin", 5) == 0 ||
+				strncasecmp(ptr, "lvmin", 5) == 0)
+			*unit = UNIT_VMIN;
+		else if (strncasecmp(ptr, "dvmax", 5) == 0 ||
+				strncasecmp(ptr, "svmax", 5) == 0 ||
+				strncasecmp(ptr, "lvmax", 5) == 0)
+			*unit = UNIT_VMAX;
 		else
 			return CSS_INVALID;
 	} else if (len == 2) {
