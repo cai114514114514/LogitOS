@@ -120,3 +120,18 @@ third_party/html5lib-tests/*
 # js-framework-benchmark: test DATA at a pin (tools/jsfb_revision.txt), not
 # vendored source. Same treatment as build/wpt and build/html5lib-tests.
 /build/jsfb/
+
+# AND A THIRD TIME, 2026-08-29, which settles the argument the paragraph above
+# started. That one concluded "the fix is a sentence in a prompt and not a line
+# in this file". This time EVERY dispatch carried the sentence -- eight
+# workflows, each told BUILD MUST BE A RELATIVE PATH of the form
+# BUILD=build-yourname -- and an agent still left `refute-probe/` (33 MB, a
+# whole kernel and ISO) and `refute-sw/` outside the pattern.
+#
+# A prompt binds the agents that read it. A pattern binds the ones that did
+# not, the ones that read it and improvised, and every future line that has
+# never seen the sentence. Both, then -- the prompt keeps the trees separate so
+# concurrent makes do not manufacture each other's failures, and these lines
+# keep `git status` readable when the prompt is not enough.
+refute-*/
+*-refute/

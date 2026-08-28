@@ -58,8 +58,28 @@ typedef enum css_combinator {
 
 typedef enum css_selector_detail_value_type {
 	CSS_SELECTOR_DETAIL_VALUE_STRING,
-	CSS_SELECTOR_DETAIL_VALUE_NTH
+	CSS_SELECTOR_DETAIL_VALUE_NTH,
+	/* LogitOS: :is()/:where() -- a detail whose "value" is not one string
+	 * or one (a,b) pair but a LIST OF ALTERNATIVE COMPOUND SELECTORS, any
+	 * one of which satisfies the detail. See css_selector_altlist below
+	 * and match_detail()'s CSS_SELECTOR_PSEUDO_CLASS case in select.c. */
+	CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST
 } css_selector_detail_value_type;
+
+/* LogitOS: the argument list of :is()/:where(), each alternative a full
+ * css_selector (built by the ordinary parseSimpleSelector -- type selector
+ * plus specifics, NO combinator: `:is(a b)` is out of this engine's scope
+ * and is refused at parse time, not silently mismatched). `specificity` is
+ * the contribution the OWNING detail should add to its selector: 0 for
+ * :where() (that is the entire point of :where()), and the max over `alts`
+ * for :is() -- both computed once, at parse time, per the spec's own
+ * definition (specificity does not depend on which alternative ends up
+ * matching at select time). */
+typedef struct css_selector_altlist {
+	css_selector **alts;
+	uint32_t n;
+	uint32_t specificity;
+} css_selector_altlist;
 
 typedef union css_selector_detail_value {
 	lwc_string *string;		/**< Interned string, or NULL */
@@ -67,6 +87,7 @@ typedef union css_selector_detail_value {
 		int32_t a;
 		int32_t b;
 	} nth;				/**< Data for x = an + b */
+	css_selector_altlist *altlist;	/**< Data for :is()/:where() */
 } css_selector_detail_value;
 
 typedef struct css_selector_detail {
@@ -77,7 +98,7 @@ typedef struct css_selector_detail {
 		     comb       : 3,		/**< Type of combinator */
 		     next       : 1,		/**< Another selector detail
 						 * follows */
-		     value_type : 1,		/**< Type of value field */
+		     value_type : 2,		/**< Type of value field */
 		     negate     : 1;		/**< Detail match is inverted */
 } css_selector_detail;
 
@@ -293,6 +314,10 @@ css_error css__stylesheet_selector_detail_init(css_stylesheet *sheet,
 
 css_error css__stylesheet_selector_append_specific(css_stylesheet *sheet,
 		css_selector **parent, const css_selector_detail *specific);
+
+/* LogitOS: :is()/:where() support -- see css_selector_altlist above. */
+void css__stylesheet_selector_altlist_destroy(css_stylesheet *sheet,
+		css_selector_altlist *altlist);
 
 css_error css__stylesheet_selector_combine(css_stylesheet *sheet,
 		css_combinator type, css_selector *a, css_selector *b);

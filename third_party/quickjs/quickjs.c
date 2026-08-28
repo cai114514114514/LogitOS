@@ -22532,7 +22532,29 @@ static int __exception js_parse_property_name(JSParseState *s,
             name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
             if (next_token(s))
                 goto fail1;
-            if (s->token.val == ':' || s->token.val == ',' ||
+            /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) --------------
+             * '=' and ';' were missing from this disambiguation list, so a
+             * class field or destructuring binding literally NAMED "get" or
+             * "set" -- `class C { get = () => {} }`, `let { get = dflt } = o`
+             * -- fell through to js_parse_function_decl2 expecting `get(...)`
+             * and the source ran out before `(` ever appeared, surfacing as
+             * "invalid property name" at end-of-file with no useful position.
+             * Found via lldb on js-framework-benchmark's ember/preact-kr-
+             * observable/react-kr-observable bundles: all three define a
+             * signal-like object as `{ get=()=>this.value; set=v=>... }`,
+             * legal since ES2022 class fields (get/set are only reserved as
+             * property names inside a MethodDefinition, i.e. when '(' really
+             * does follow). ';' matters only in the class-body caller
+             * (allow_var=FALSE there); an object literal can never contain a
+             * bare ';', so adding it cannot change any valid object-literal
+             * parse -- see the identical ':'/','/'}'/'(' 'static' -- '=' or
+             * ';' -- pattern already used four lines below the class-element
+             * dispatch (js_parse_class_expr's `is_static` handling of a field
+             * literally named "static"), which is this same shape fixed
+             * already for one contextual keyword and not for these two. */
+            if (
+                s->token.val == '=' || s->token.val == ';' ||  /* LOGIT-PROP-EQ-FIX */
+                s->token.val == ':' || s->token.val == ',' ||
                 s->token.val == '}' || s->token.val == '(') {
                 is_non_reserved_ident = TRUE;
                 goto ident_found;
@@ -22548,7 +22570,11 @@ static int __exception js_parse_property_name(JSParseState *s,
             name = JS_DupAtom(s->ctx, s->token.u.ident.atom);
             if (next_token(s))
                 goto fail1;
-            if (s->token.val == ':' || s->token.val == ',' ||
+            /* ---- LOGIT PATCH: same fix as the get/set block above, for a
+             * field/binding literally named "async" (`class C { async = 1 }`). */
+            if (
+                s->token.val == '=' || s->token.val == ';' ||  /* LOGIT-PROP-EQ-FIX */
+                s->token.val == ':' || s->token.val == ',' ||
                 s->token.val == '}' || s->token.val == '(') {
                 is_non_reserved_ident = TRUE;
                 goto ident_found;

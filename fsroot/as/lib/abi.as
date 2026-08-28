@@ -332,6 +332,9 @@ def gui_clip(x, y, w, h):
 def gui_flush():
     return syscall(SYS_GUI_FLUSH)
 
+def gui_flush_rect(x, y, w, h):
+    return syscall(SYS_GUI_FLUSH_RECT, ((x & 0xFFFF) << 16) | ((y & 0xFFFF)), ((w & 0xFFFF) << 16) | ((h & 0xFFFF)))
+
 def gui_win_min(w, h):
     return syscall(SYS_GUI_WIN_MIN, ((w & 0xFFFF) << 16) | ((h & 0xFFFF)))
 

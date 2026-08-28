@@ -861,6 +861,11 @@ css_error css__stylesheet_selector_destroy(css_stylesheet *sheet,
 					CSS_SELECTOR_DETAIL_VALUE_STRING &&
 					detail->value.string != NULL) {
 				lwc_string_unref(detail->value.string);
+			} else if (detail->value_type ==
+					CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST &&
+					detail->value.altlist != NULL) {
+				css__stylesheet_selector_altlist_destroy(
+						sheet, detail->value.altlist);
 			}
 
 			if (detail->next)
@@ -879,6 +884,11 @@ css_error css__stylesheet_selector_destroy(css_stylesheet *sheet,
 		if (detail->value_type == CSS_SELECTOR_DETAIL_VALUE_STRING &&
 				detail->value.string != NULL) {
 			lwc_string_unref(detail->value.string);
+		} else if (detail->value_type ==
+				CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST &&
+				detail->value.altlist != NULL) {
+			css__stylesheet_selector_altlist_destroy(
+					sheet, detail->value.altlist);
 		}
 
 		if (detail->next)
@@ -892,6 +902,38 @@ css_error css__stylesheet_selector_destroy(css_stylesheet *sheet,
 	free(selector);
 
 	return CSS_OK;
+}
+
+/**
+ * Destroy the alternative-selector-list of an :is()/:where() detail
+ *
+ * \param sheet	   The stylesheet context
+ * \param altlist  The list to destroy (may be NULL)
+ *
+ * Each alternative is a full css_selector built the ordinary way (by
+ * parseSimpleSelector), so it is torn down the ordinary way too --
+ * css__stylesheet_selector_destroy() requires the selector be detached from
+ * any rule, which every alternative always is (it never itself becomes a
+ * rule's selector; only the detail that WRAPS the list does).
+ */
+void css__stylesheet_selector_altlist_destroy(css_stylesheet *sheet,
+		css_selector_altlist *altlist)
+{
+	uint32_t i;
+
+	if (altlist == NULL)
+		return;
+
+	for (i = 0; i < altlist->n; i++) {
+		if (altlist->alts[i] != NULL) {
+			altlist->alts[i]->rule = NULL;
+			css__stylesheet_selector_destroy(sheet,
+					altlist->alts[i]);
+		}
+	}
+
+	free(altlist->alts);
+	free(altlist);
 }
 
 /**
@@ -981,8 +1023,26 @@ css_error css__stylesheet_selector_append_specific(css_stylesheet *sheet,
 
 	/* Update parent's specificity */
 	switch (detail->type) {
-	case CSS_SELECTOR_CLASS:
 	case CSS_SELECTOR_PSEUDO_CLASS:
+		/* :is()/:where() do not contribute a flat "one pseudo-class"
+		 * specificity like every other pseudo-class here -- :where()
+		 * contributes NOTHING (that is the feature) and :is()
+		 * contributes the specificity of whichever of its
+		 * alternatives is most specific, computed once at parse
+		 * time (css__stylesheet_selector_altlist_destroy's sibling
+		 * comment explains why that is sound: the spec defines it
+		 * that way, independent of which alternative later matches).
+		 * An ordinary pseudo-class (:hover, :nth-child(), ...) has
+		 * no altlist and falls through to the shared CSS_SPECIFICITY_C
+		 * case below exactly as before this detail existed. */
+		if (detail->value_type ==
+				CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST &&
+				detail->value.altlist != NULL) {
+			(*parent)->specificity += detail->value.altlist->specificity;
+			break;
+		}
+		/* Fall through */
+	case CSS_SELECTOR_CLASS:
 	case CSS_SELECTOR_ATTRIBUTE:
 	case CSS_SELECTOR_ATTRIBUTE_EQUAL:
 	case CSS_SELECTOR_ATTRIBUTE_DASHMATCH:

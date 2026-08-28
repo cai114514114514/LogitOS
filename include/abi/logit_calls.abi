@@ -42,6 +42,10 @@ call gui_rrect      SYS_GUI_RRECT      pack(x:16:16, y:0:16) pack(w:16:16, h:0:1
 call gui_glass      SYS_GUI_GLASS      pack(x:16:16, y:0:16) pack(w:16:16, h:0:16) pack(radius:32:8, tr:24:8, tg:16:8, tb:8:8, ta:0:8)
 call gui_clip       SYS_GUI_CLIP       pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
 call gui_flush      SYS_GUI_FLUSH
+# Sub-rectangle flush. x,y,w,h are CONTENT-LOCAL POINTS, same origin as
+# gui_rect's. w<=0 or h<=0 (including the all-zero call) means "the whole
+# canvas" -- see the contract comment on SYS_GUI_FLUSH_RECT in logit_abi.h.
+call gui_flush_rect SYS_GUI_FLUSH_RECT pack(x:16:16, y:0:16) pack(w:16:16, h:0:16)
 # The window's minimum CONTENT size, in points -- same packing as gui_create's,
 # because it is the same pair of numbers and a second convention for the same
 # fields is how the two drift.

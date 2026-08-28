@@ -67,6 +67,54 @@ int gfx_sin(int deg256)
 
 int gfx_cos(int deg256) { return gfx_sin(deg256 + 90 * GFX_ONE); }
 
+/* ------------------------------------------------------------- easing -----
+ * THE DESKTOP'S TWO MOTION CURVES, AND THEY LIVE HERE FOR ONE REASON: this is
+ * the only file both rings can reach. The window manager animates in ring 0
+ * (c/kernel/gui/wm.c: Expose, the dock fly, the open pop); the widget toolkit
+ * animates in ring 3 (c/apps/gui/aui.c). A curve spelled once in each is one
+ * jar with two doors on the two numbers a person can literally see side by
+ * side -- a segmented pill sliding at one speed while the window behind it
+ * minimises at another. c/lib/gfx is SHARED (21 of its TUs compile into the
+ * kernel; wm.c already includes gfx.h for build_arrow) so there is exactly one
+ * definition and both callers link it.
+ *
+ * THE DOMAIN IS 0..256, NOT 0..255, and that is not a typo to be tidied. It is
+ * what makes `inv * inv / 256` exact: a power of two divides without a rounding
+ * table and the endpoints land on 0 and 256 dead on. The toolkit's colour lerp
+ * (aui_mix) is on 0..255, one narrower -- that seam is real, and it is resolved
+ * in exactly ONE place, aui_anim()'s return, rather than by widening this.
+ *
+ * NO FLOATS. Same argument wm.c has made since these curves were written: they
+ * are evaluated per window (or per widget) per frame, and a fixed-point
+ * quadratic is exact, reproducible, and diffable in a screenshot test. */
+
+/* Quadratic ease-out: fast out of the gate, settling into the end. Verbatim
+ * from wm.c's ease_out(), which now calls this. Deceleration is what makes a
+ * moving rectangle look like it has mass instead of being teleported in equal
+ * steps -- the same family as gfx_shadow_falloff, and the same reason. */
+int gfx_ease_out(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= 256) return 256;
+    int inv = 256 - t;
+    return 256 - inv * inv / 256;
+}
+
+/* Smoothstep, 3t^2 - 2t^3, scaled to 0..256: starts at rest AND ends at rest.
+ * Earned by exactly one category -- an indicator that travels across open space
+ * and whose midpoint the eye tracks (a segmented pill, a tab underline). Using
+ * it on a hover fade would make the fade start slowly, which reads as lag.
+ *
+ * The integer form is (t*t*(768 - 2*t)) / 65536 and it is exact at both ends
+ * and at the midpoint: t=128 -> 128, t=256 -> 256. The widest intermediate
+ * product is 256*256*256 = 16,777,216, comfortably inside int. */
+int gfx_ease_inout(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= 256) return 256;
+    return (t * t * (768 - 2 * t)) / 65536;
+}
+
 /* ------------------------------------------------------------- matrices -- */
 
 void gfx_m_identity(struct gfx_matrix *m)

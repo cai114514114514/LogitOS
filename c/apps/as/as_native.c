@@ -297,6 +297,7 @@ void as_install_indirection(void)
     as_define_int("SYS_GUI_TEXT",    SYS_GUI_TEXT);
     as_define_int("SYS_GUI_TEXT_MONO", SYS_GUI_TEXT_MONO);
     as_define_int("SYS_GUI_FLUSH",   SYS_GUI_FLUSH);
+    as_define_int("SYS_GUI_FLUSH_RECT", SYS_GUI_FLUSH_RECT);
     as_define_int("SYS_GUI_ICON",    SYS_GUI_ICON);
     as_define_int("SYS_GUI_GLASS",   SYS_GUI_GLASS);
     as_define_int("SYS_POLL_EVENT",  SYS_POLL_EVENT);

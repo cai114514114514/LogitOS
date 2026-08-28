@@ -76,6 +76,14 @@
 #define LOGIT_GUI_CLIP_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_CLIP_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
 
+/* SYS_GUI_FLUSH_RECT arg a: x<<16 | y */
+#define LOGIT_GUI_FLUSH_RECT_A_X(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_FLUSH_RECT_A_Y(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
+/* SYS_GUI_FLUSH_RECT arg b: w<<16 | h */
+#define LOGIT_GUI_FLUSH_RECT_B_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
+#define LOGIT_GUI_FLUSH_RECT_B_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))
+
 /* SYS_GUI_WIN_MIN arg a: w<<16 | h */
 #define LOGIT_GUI_WIN_MIN_A_W(v) ((int)(((unsigned long long)(v) >> 16) & 0xFFFFULL))
 #define LOGIT_GUI_WIN_MIN_A_H(v) ((int)(((unsigned long long)(v) >> 0) & 0xFFFFULL))

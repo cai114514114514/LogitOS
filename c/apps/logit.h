@@ -68,6 +68,16 @@ static inline void gui_text_mono(int x, int y, unsigned color, int cell, const c
        ((long)(cell & 0xFF) << 24) | (color & 0xFFFFFF), (long)s); }
 
 static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
+/* Present the window, but report only the sub-rectangle that actually
+ * changed -- CONTENT-LOCAL POINTS, same origin as gui_rect's. See the
+ * contract comment on SYS_GUI_FLUSH_RECT in logit_abi.h: w<=0 or h<=0 (which
+ * includes gui_flush_rect(0,0,0,0)) means "the whole canvas", i.e. exactly
+ * gui_flush(). Reporting a rectangle SMALLER than what was actually drawn
+ * leaves stale pixels on screen that nothing repaints afterward -- there is
+ * no periodic full repaint on this machine. When in doubt, call gui_flush(). */
+static inline void gui_flush_rect(int x, int y, int w, int h)
+{ _sys(SYS_GUI_FLUSH_RECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
+       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
 static inline int  poll_event(struct logit_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
 /* Block until an event arrives (or `ms` elapses; 0 = no timeout). Prefer this
  * to poll_event+yield: the spin costs two syscalls per iteration and the BKL

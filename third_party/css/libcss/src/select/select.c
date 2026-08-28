@@ -2578,7 +2578,58 @@ css_error match_detail(css_select_ctx *ctx, void *node,
 		if (error != CSS_OK)
 			return error;
 
-		if (is_root == false &&
+		if (detail->value_type == CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST) {
+			/* :is()/:where() -- LogitOS addition. Each alternative
+			 * is a full css_selector (built by parseSimpleSelector
+			 * in language.c's parseIsWhereList), matched
+			 * independently and OR'd together.
+			 *
+			 * Everywhere else in this file, a plain (non-negated)
+			 * CSS_SELECTOR_ELEMENT detail is never checked here at
+			 * all -- match_selectors_in_sheet() finds candidate
+			 * selectors via a hash keyed on tag/class/id, so by
+			 * the time match_details() runs, the subject's type
+			 * selector has ALREADY been confirmed by dispatch, not
+			 * by this function (see match_detail's own
+			 * CSS_SELECTOR_ELEMENT case: node_has_name is called
+			 * only when negate!=0, i.e. only for :not(tag), for
+			 * exactly this reason). These alternatives never went
+			 * through that dispatch -- nothing upstream of this
+			 * point has looked at their type selector -- so it has
+			 * to be checked explicitly, right here, or `:is(span)`
+			 * would match every element, not just <span>s. */
+			css_selector_altlist *altlist = detail->value.altlist;
+			uint32_t i;
+
+			*match = false;
+			for (i = 0; altlist != NULL && i < altlist->n; i++) {
+				const css_selector *alt = altlist->alts[i];
+				bool name_ok = true;
+				bool sub_match = false;
+
+				if (alt->data.qname.name != ctx->str.universal) {
+					error = state->handler->node_has_name(
+							state->pw, node,
+							&alt->data.qname,
+							&name_ok);
+					if (error != CSS_OK)
+						return error;
+				}
+
+				if (name_ok) {
+					error = match_details(ctx, node,
+							&alt->data, state,
+							&sub_match, NULL);
+					if (error != CSS_OK)
+						return error;
+				}
+
+				if (name_ok && sub_match) {
+					*match = true;
+					break;
+				}
+			}
+		} else if (is_root == false &&
 				detail->qname.name == ctx->str.first_child) {
 			int32_t num_before = 0;
 

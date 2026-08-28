@@ -161,6 +161,15 @@ unsigned long gfx_isqrt(unsigned long long v);
 int gfx_sin(int deg256);                /* 16.16 sine of an angle in 24.8 degrees */
 int gfx_cos(int deg256);
 
+/* ------------------------------------------------------------- easing -----
+ * The desktop's motion curves, on 0..256 in and 0..256 out. Here, in the one
+ * library BOTH RINGS link, because the window manager (ring 0) and the widget
+ * toolkit (ring 3) animate side by side on the same screen and a curve spelled
+ * twice agrees on the wrong shape about as often as the right one. See the
+ * definitions in gfx_math.c for why the domain is 0..256 and not 0..255. */
+int gfx_ease_out(int t);                /* quadratic decel: the default        */
+int gfx_ease_inout(int t);              /* smoothstep: rest at both ends       */
+
 /* ---------------------------------------------------------------- matrix --
  *   | a c e |    x' = (a*x + c*y) / 65536 + e
  *   | b d f |    y' = (b*x + d*y) / 65536 + f      x, y, e, f in 24.8
