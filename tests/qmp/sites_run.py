@@ -528,7 +528,15 @@ def do_regress(a_path, b_path):
                   "does a comparison against it.")
             return 2
 
-    rank = {"PAINTED": 3, "ERRORS": 2, "BLANK": 1, "HARNESS": 0}
+    # RANK FROM ORDER, NOT FROM A SECOND LIST. The first version of this
+    # function carried its own {"PAINTED":3,"ERRORS":2,"BLANK":1,"HARNESS":0},
+    # which is four of the TEN verdicts this file defines -- so a site falling
+    # from PAINTED to GAP, FLAKY, NETWORK, TIMEOUT, FETCH-FAIL or CRASH was not
+    # a regression, because those words were not in the dictionary. It was
+    # found within the hour by looking at a real snapshot in which a live site
+    # scored GAP. ORDER is already a total ordering, worst-first, maintained
+    # beside the verdicts themselves; its index IS the rank.
+    rank = {v: i for i, v in enumerate(ORDER)}
     worse = []
     for name in sorted(set(av) & set(bv)):
         if name.startswith("control-"):
@@ -541,6 +549,35 @@ def do_regress(a_path, b_path):
         if ta and tb == 0:
             worse.append("%s: painted text runs %d -> 0 (the page stopped "
                          "painting words)" % (name, ta))
+
+    # A PAGE THAT PAINTS NO WORDS AT ALL, WHATEVER ITS VERDICT SAYS.
+    #
+    # Measured 2026-08-29, on the first snapshot this judge ever read: a live
+    # site scored the TOP verdict, PAINTED, with 17,144 changed pixels and
+    # ZERO text runs. That is this file's own header warning coming true --
+    # "`changed px` cannot tell a rendered page from a flat dark block" -- and
+    # the verdict scale cannot express it, because PAINTED means pixels
+    # changed, no script threw and every mandatory subresource arrived. All
+    # three were true. No word was on the screen.
+    #
+    # This does NOT reclassify the verdict, and that restraint is the point: a
+    # page may legitimately paint no text (a canvas application, an image
+    # viewer), and a scoreboard that called those broken would be wrong in a
+    # way its own header spends a paragraph warning against. It is reported as
+    # a STANDING condition rather than a change, so it shows up on the very
+    # first comparison instead of waiting for a regression that already
+    # happened before anyone was watching.
+    silent = [r["name"] for r in b["sites"]
+              if not r["name"].startswith("control-")
+              and r.get("text_runs") == 0
+              and ALIAS.get(r.get("verdict", ""), r.get("verdict", "")) == "PAINTED"]
+    if silent:
+        print("\n  NOTE: %d site(s) scored PAINTED with ZERO painted text runs: %s"
+              % (len(silent), ", ".join(silent)))
+        print("        Pixels changed and no word reached the screen. Not "
+              "counted as a regression -- a page may legitimately paint no "
+              "text -- but PAINTED is the top verdict and it is not describing "
+              "a page a person can read.")
 
     if worse:
         print("\nREGRESS: FAIL -- %d site(s) got worse:" % len(worse))
