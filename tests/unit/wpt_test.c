@@ -1677,12 +1677,59 @@ static int selfcheck(void)
 }
 
 /* --------------------------------------------------------------- main --- */
-/* The default subsets: the same list tools/wpt_fetch.sh vendors, in the order
- * the report reads best. Absent ones are reported as absent rather than
- * skipped silently -- a subset that quietly disappears is a rate that quietly
- * changes meaning. */
-static const char *SUBSETS[] = { "dom", "html/dom", "html/semantics",
-                                 "encoding", "url", "console", "css", 0 };
+/* The default subsets are DISCOVERED from the corpus, not listed here.
+ *
+ * They used to be listed here, and the comment above them said so out loud:
+ * "the same list tools/wpt_fetch.sh vendors". That is one constant spelled in
+ * two languages -- the shape this tree has paid for three times -- and it had
+ * already drifted: the fetcher's SUBSETS grew `css` and this array's twin
+ * paragraph in wpt_fetch.sh still explained why css was excluded. Worse, the
+ * failure is invisible from both ends. Point --root at a full checkout and the
+ * runner measures seven directories of it without saying that is what it did.
+ *
+ * TOP_SKIP IS NOT skip_dir() AND MUST NOT BE MERGED INTO IT. The two answer
+ * different questions and the difference was measured, not assumed:
+ * skip_dir() means "a directory of this name holds no tests at ANY depth";
+ * TOP_SKIP means "this TOP-LEVEL entry of the corpus is not a test area".
+ * Adding these names to skip_dir() silently drops 338 real test files --
+ * html/infrastructure (84), websockets/interfaces (74), workers/interfaces
+ * (69), web-animations/interfaces (44), html/editing/dnd/images (17),
+ * css/CSS2/fonts (15), svg/path/interfaces (15), and more. They are test
+ * directories that happen to be named like support directories. */
+static const char *TOP_SKIP[] = {
+    "resources",            /* testharness.js and friends: the harness itself */
+    "common",               /* get-host-info.sub.js and other shared helpers  */
+    "tools", "docs",        /* upstream's own tooling and its prose           */
+    "infrastructure",       /* tests the WPT harness itself, not a browser    */
+    "conformance-checkers", /* fixtures for HTML validators                   */
+    "interfaces",           /* IDL data, consumed by idlharness               */
+    "fonts", "images",      /* assets                                         */
+    "_mozilla",             /* vendor-private tests                           */
+    0
+};
+
+/* Every top-level directory of the corpus that is not in TOP_SKIP, sorted.
+ * Sorted because --shuffle's acceptance test is "the same corpus in two orders
+ * gives identical numbers", and that only means something against a canonical
+ * order rather than whatever readdir() returned. */
+static void default_subsets(struct list *out)
+{
+    DIR *d = opendir(g_root);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        char p[1200];
+        snprintf(p, sizeof p, "%s/%s", g_root, de->d_name);
+        if (!is_dir(p)) continue;
+        int skip = 0;
+        for (int i = 0; TOP_SKIP[i]; i++)
+            if (!strcmp(de->d_name, TOP_SKIP[i])) { skip = 1; break; }
+        if (!skip) l_add(out, de->d_name);
+    }
+    closedir(d);
+    if (out->n) qsort(out->p, (size_t)out->n, sizeof *out->p, cmpstr);
+}
 
 int main(int argc, char **argv)
 {
@@ -1732,7 +1779,18 @@ int main(int argc, char **argv)
         if (!g_repf) { fprintf(stderr, "cannot write %s\n", g_report); return 2; }
         fprintf(g_repf, "#status\tpath\tsubtest\tmessage\tstack\n");
     }
-    if (!subsets.n) for (int i = 0; SUBSETS[i]; i++) l_add(&subsets, SUBSETS[i]);
+    if (!subsets.n) {
+        default_subsets(&subsets);
+        /* Say how wide the run is. The bug this prints away is a run that
+         * measured seven directories of a 270-directory checkout and reported
+         * a percentage with no hint that it had done so. */
+        printf("wpt: %d subsets discovered under %s\n", subsets.n, g_root);
+        if (!subsets.n) {
+            printf("wpt: no test directories there -- every top-level entry is"
+                   " in TOP_SKIP, or the corpus is empty.\n");
+            return 2;
+        }
+    }
 
     struct baseline expected = { 0, 0, 0 };
     bl_load(&expected, g_blpath);

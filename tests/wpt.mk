@@ -37,6 +37,19 @@
 # what lets the vendored data be deleted later without deleting the ratchet --
 # `make wpt-fetch WPT_ROOT=/somewhere` brings it back.
 #
+# HOW WIDE A RUN IS, IS A PROPERTY OF THE CORPUS -- not of a list in the
+# runner. With no --subset, wpt_test enumerates the top-level directories of
+# WPT_ROOT (minus TOP_SKIP: resources, common, tools, docs, ...) and prints
+# how many it found. `make wpt-fetch` gives 6; `WPT_FULL=1 make wpt-fetch`
+# gives 270; the same command measures both without an edit here.
+#
+# It was a hardcoded seven-entry array until 2026-08-28, described in its own
+# comment as "the same list tools/wpt_fetch.sh vendors" -- one constant spelled
+# in two languages, and it had already drifted. The failure it produced is the
+# one worth remembering: point the old runner at a full checkout and it
+# measures seven directories of 270 and reports a percentage that says nothing
+# about having done so.
+#
 # Own fragment rather than lines in the Makefile, for the reason the other
 # fragments give: concurrent agents overwrite that file wholesale.
 
@@ -461,3 +474,14 @@ wpt-rank: $(BUILD)/wpt_test
 # list and the reason for each). Data only: no runner, no wptserve.
 wpt-fetch:
 	@bash tools/wpt_fetch.sh $(WPT_ROOT)
+
+# The HTML parser corpus, beside the one it half comes from. Its
+# tree-construction half is READ OUT OF $(WPT_ROOT) rather than downloaded --
+# the 61 files are wpt html/syntax/parsing/resources, verified byte for byte
+# against what used to be vendored -- so wpt-fetch is its prerequisite in
+# practice even though make cannot express "or an upstream checkout you already
+# had". When WPT is absent the script says which half it could not build and
+# exits 0; the tokenizer gates still run.
+.PHONY: h5l-fetch
+h5l-fetch:
+	@WPT_ROOT=$(abspath $(WPT_ROOT)) bash tools/h5l_fetch.sh $(H5L_ROOT)

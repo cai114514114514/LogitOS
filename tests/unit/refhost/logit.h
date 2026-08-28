@@ -72,6 +72,13 @@
 #define REFHOST_LOGIT_H
 
 #include <stdint.h>
+#include "logit_abi.h"           /* LOGIT_FACE_MONO / LOGIT_FACE_BOLD, used below.
+                                  * Added 2026-08-28: the face bits arrived with
+                                  * the bold work and this file started using them
+                                  * while including only logit_pack.h, so
+                                  * `make test-reftest` stopped compiling on two
+                                  * undeclared identifiers -- in a harness the
+                                  * change was not otherwise touching. */
 #include "logit_pack.h"          /* the kernel's own generated unpack macros */
 
 /* The real primitives, forward-declared rather than via fb.h/text.h so that
@@ -154,14 +161,28 @@ static inline void gui_clip(int x, int y, int w, int h)
  * USER_TEXT_MAX is the kernel's bounce-buffer size; a longer run is TRUNCATED
  * on the machine, so it is truncated here. */
 #define REFHOST_USER_TEXT_MAX 4096
-static inline void gui_text_run(int x, int y, int px, int mono, unsigned color,
-                                const char *s, int len)
+static inline void gui_text_run_w(int x, int y, int px, int mono, unsigned color,
+                                  const char *s, int len, int bold)
 {
     if (px < 1 || px > 512) return;
     if (len < 0) len = 0;
     if (len > REFHOST_USER_TEXT_MAX - 1) len = REFHOST_USER_TEXT_MAX - 1;
-    text_draw_run(REFHOST_S(x), REFHOST_S(y), s, len, REFHOST_S(px), mono, color);
+    /* The face-mask composition is transcribed from wm.c's SYS_GUI_TEXT_RUN
+     * case, like everything else in this file -- same masking of each field to
+     * its own bit, so `mono` cannot smuggle bold in.
+     *
+     * WHAT THIS HARNESS CANNOT SEE, stated rather than discovered: refhost_font_map
+     * binds only /fonts/ui.ttf and /fonts/mono.ttf, so text.c's F_UI_B/F_MONO_B
+     * never load here and a bold run falls back to the regular face. That is
+     * deliberate -- the reftest corpus is judged against baselines recorded
+     * with the Ahem substitution and a bold face would move every one of them
+     * -- but it means this suite proves bold PLUMBING, not bold PIXELS. */
+    int face = (mono ? LOGIT_FACE_MONO : 0) | (bold ? LOGIT_FACE_BOLD : 0);
+    text_draw_run(REFHOST_S(x), REFHOST_S(y), s, len, REFHOST_S(px), face, color);
 }
+static inline void gui_text_run(int x, int y, int px, int mono, unsigned color,
+                                const char *s, int len)
+{ gui_text_run_w(x, y, px, mono, color, s, len, 0); }
 
 /* --- wm.c case SYS_GUI_BLIT --- */
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba,
@@ -177,7 +198,20 @@ static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgb
  * points and device pixels the same thing, which is what a reftest compares. */
 static inline int ui_scale(void) { return 100; }
 
-struct logit_run  { int x, y, px, mono; unsigned color; const char *s; int len; };
-struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
+/* struct logit_run / struct logit_blit ARE NOT RE-DECLARED HERE ANY MORE.
+ *
+ * They used to be, character for character, and the copy went stale the moment
+ * the ABI grew `int bold` -- so this file was updated to match and then started
+ * using LOGIT_FACE_MONO/LOGIT_FACE_BOLD, which live beside the struct in
+ * include/abi/logit_abi.h and were not in scope here. `make test-reftest`
+ * stopped compiling on two undeclared identifiers, in a harness the bold change
+ * was not otherwise touching. Adding the include then collided with the copy.
+ *
+ * One definition instead of two: logit_abi.h above supplies both structs and
+ * both face bits. This file keeps its own gui_* INLINES -- that is the whole
+ * point of a host stub, and they are behaviour, not layout -- but it no longer
+ * keeps its own opinion about what the ABI's structs contain. That opinion is
+ * exactly the "one jar, TWO doors" shape, and the second door was silently
+ * wrong for as long as it took somebody to add a field. */
 
 #endif /* REFHOST_LOGIT_H */

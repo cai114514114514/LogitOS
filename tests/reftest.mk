@@ -76,6 +76,16 @@
         test-reftest-negctl test-reftest-css-negctl reftest-ahem-fetch \
         test-reftest-perturb-negctl
 
+# PASSED TO THE BINARY ON EVERY INVOCATION BELOW, which it was not until
+# 2026-08-28. reftest's own default is `third_party/wpt` -- a directory deleted
+# on 2026-08-21 when the corpus stopped being vendored ("59,422 files leave the
+# tree") -- and this variable was DEFINED here and used nowhere, so the runner
+# walked a path that has not existed for a week. It reported `walked: 0
+# candidate files`, wrote an empty manifest, judged 0 of 24,319 available
+# reftests, and then printed `ratchet: 0 regressions` against a 17,456-entry
+# baseline and exited 0. A gate that measures nothing and passes is worse than
+# one that fails: this one had been certifying the reftest corpus since the day
+# the corpus moved.
 WPT_ROOT      ?= build/wpt
 REFT_BIN      := $(BUILD)/reftest/reftest
 REFT_MANIFEST := $(BUILD)/reftest/manifest.txt
@@ -103,7 +113,7 @@ REFT_CTLN     ?= 200
 # What is NOT shared is stated in full at the top of tests/unit/refhost/logit.h:
 # wm.c's six-line syscall cases (transcribed, each quoted above the function
 # that mirrors it), the window chrome, and which font file the loader opens.
-REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/browser_paint.c \
+REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c \
                  c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
                  c/apps/browser/css_extra.c $(HTML_PARSER_SRC)
 # c/lib/text/glyphras.c is where c/kernel/gui/raster.c used to be in this list:
@@ -184,7 +194,7 @@ $(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c 
 	@mkdir -p $(BUILD)/reftest
 	$(CC) -O2 -w -Itests/unit/refhost -Ic/kernel/gui -Ic/lib/text -Ic/kernel/mm \
 	    -Ic/kernel/core -Ic/kernel/cpu -Ic/fs -Ic/drivers/virtio -Ic/lib/gfx \
-	    -Ic/lib/image \
+	    -Ic/lib/image -Iinclude/abi \
 	    -o $@ tests/unit/ahem_test.c tests/unit/refhost/refhost.c \
 	    $(sort $(REFT_KERNEL) $(GFX_SRC)) -lm
 # -Ic/kernel/cpu was added 2026-08-25: c/kernel/gui/text.c includes
@@ -192,7 +202,10 @@ $(BUILD)/reftest/ahem_test: tests/unit/ahem_test.c tests/unit/refhost/refhost.c 
 # test-reftest-ahem -- the seconds-long prerequisite that every other reftest
 # number depends on -- did not compile at all. That is the second time this
 # one rule has broken for the same structural reason, and the paragraph above
-# records the first (raster.c's deletion). The root cause both times is that
+# records the first (raster.c's deletion). -Iinclude/abi is the THIRD, added
+# 2026-08-28: text.c grew `#include "logit_abi.h"` for LOGIT_FACE_MONO /
+# LOGIT_FACE_BOLD -- the two bits its text_measure()/text_draw_run() now take
+# -- and this list did not follow it either. Same rule, same shape, third time. The root cause both times is that
 # this list is maintained by hand while the real build derives INCDIRS from
 # `find`. It is kept by hand on purpose -- the flat INCDIRS makes mini-libc's
 # headers shadow glibc's in a HOST build, which is the collision CLAUDE.md
@@ -217,7 +230,7 @@ reftest-ahem-fetch:
 reftest-manifest: $(REFT_BIN)
 	@mkdir -p $(BUILD)/reftest
 	@rm -f $(REFT_MANIFEST)
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' --limit 1 >/dev/null
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' --limit 1 >/dev/null
 	@echo "manifest: $$(wc -l < $(REFT_MANIFEST)) candidate files -> $(REFT_MANIFEST)"
 
 $(REFT_MANIFEST): $(REFT_BIN)
@@ -237,7 +250,7 @@ $(REFT_MANIFEST): $(REFT_BIN)
 # is capable of saying no.
 test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- control: with the comparator stubbed to equality, no rel=match test may fail ---"
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
 	    --always-equal > $(BUILD)/reftest/ctl.log \
 	    2> $(BUILD)/reftest/ctl.progress || true
 	@n=$$(sed -n 's/^ALWAYS-EQUAL CONTROL: \([0-9]*\) match-type.*/\1/p' $(BUILD)/reftest/ctl.log); \
@@ -255,7 +268,7 @@ test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 	 : "-- the first full-corpus run reported 17 regressions and only 15 of the" ; \
 	 : "paths could be read back, which is a gate whose failure output is not" ; \
 	 : "actionable. Progress still reaches the terminal via the tail below." ; \
-	 $(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	 $(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --baseline $(REFT_BASELINE) --ahem $(REFT_AHEM) \
 	    > $(BUILD)/reftest/gate.log 2> $(BUILD)/reftest/gate.progress || rc=$$?; \
 	 cat $(BUILD)/reftest/gate.log; \
@@ -268,29 +281,29 @@ test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
 
 # The same measurement with no gate, for a tree that is already broken.
 reftest: $(REFT_BIN) $(REFT_MANIFEST)
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --ahem $(REFT_AHEM) || true
 
 # --- bisecting -------------------------------------------------------------
 reftest-one: $(REFT_BIN)
 	@if [ -z "$(TEST)" ]; then echo "usage: make reftest-one TEST=css/CSS2/....xht"; exit 2; fi
-	@$(REFT_BIN) --one '$(TEST)' --ahem $(REFT_AHEM)
+	@$(REFT_BIN) --root $(WPT_ROOT) --one '$(TEST)' --ahem $(REFT_AHEM)
 
 reftest-diff: $(REFT_BIN)
 	@if [ -z "$(TEST)" ]; then echo "usage: make reftest-diff TEST=css/CSS2/....xht"; exit 2; fi
 	@mkdir -p $(BUILD)/reftest/diff
-	@$(REFT_BIN) --one '$(TEST)' --ahem $(REFT_AHEM) --diffdir $(BUILD)/reftest/diff
+	@$(REFT_BIN) --root $(WPT_ROOT) --one '$(TEST)' --ahem $(REFT_AHEM) --diffdir $(BUILD)/reftest/diff
 	@echo "  test / reference / amplified difference written to $(BUILD)/reftest/diff/"
 
 # --- the work order --------------------------------------------------------
 # Worth more than the pass rate, and said plainly in the brief this was built
 # from: this table decides the order of the layout work.
 reftest-rank: $(REFT_BIN) $(REFT_MANIFEST)
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --ahem $(REFT_AHEM) 2>/dev/null | sed -n '/ranked failure causes/,$$p'
 
 reftest-baseline: $(REFT_BIN) $(REFT_MANIFEST)
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --ahem $(REFT_AHEM) --write-baseline $(REFT_BASELINE) >/dev/null || true
 	@echo "baseline rewritten: $$(grep -vc '^#' $(REFT_BASELINE)) expected failures -> $(REFT_BASELINE)"
 
@@ -300,7 +313,7 @@ reftest-baseline: $(REFT_BIN) $(REFT_MANIFEST)
 # rising pass rate forever while layout got worse. The suite MUST go green when
 # the comparator is stubbed to equality, and this target FAILS if it does not.
 test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --always-equal > $(BUILD)/reftest/negctl.log \
 	    2> $(BUILD)/reftest/negctl.progress || true
 	@grep -E 'PASS RATE|ALWAYS-EQUAL CONTROL' $(BUILD)/reftest/negctl.log || true
@@ -324,10 +337,10 @@ test-reftest-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 # every EXACT pass must turn into a failure. Asserted, not printed.
 test-reftest-perturb-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- control 3: one pixel, one channel, one step -- every exact pass must fail ---"
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
 	    --ahem $(REFT_AHEM) > $(BUILD)/reftest/pert_base.log \
 	    2> $(BUILD)/reftest/pert_base.progress || true
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) --perturb \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) --perturb \
 	    --ahem $(REFT_AHEM) > $(BUILD)/reftest/pert.log \
 	    2> $(BUILD)/reftest/pert.progress || true
 	@b=$$(sed -n 's/^  exact match *\([0-9]*\).*/\1/p' $(BUILD)/reftest/pert_base.log); \
@@ -354,8 +367,8 @@ test-reftest-perturb-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 # corpus-wide figure for both.
 test-reftest-css-negctl: $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- CSS withheld from the TEST only ---"
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --no-css-test 2>/dev/null | grep -E 'PASS RATE|DISCRIMINATING' || true
 	@echo "--- CSS withheld from BOTH sides (diagnostic, expected to be HIGH) ---"
-	@$(REFT_BIN) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
+	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --filter '$(REFT_FILTER)' \
 	    --no-css 2>/dev/null | grep -E 'PASS RATE|DISCRIMINATING' || true
