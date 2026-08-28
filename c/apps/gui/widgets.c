@@ -69,7 +69,12 @@ void app_main(void)
     frame();                                  /* initial paint */
     struct logit_event e;
     for (;;) {
-        if (!poll_event(&e)) { sys_yield(); continue; }
+        /* Nothing here is on a clock -- every pixel this window shows is a
+         * function of the last event -- so the wait has no timeout at all.
+         * This was sys_yield(), which is two syscalls and a BKL acquisition per
+         * turn to be told nothing happened; an idle demo window now costs
+         * exactly zero. */
+        if (!poll_event(&e)) { wait_idle(0); continue; }
         if (e.type == EV_CLOSE) app_exit(0);
         /* Every event here ends in a full repaint, and the WM now delivers
          * EV_MOUSE_MOVE at pointer rate. aui has no hover state to update, so

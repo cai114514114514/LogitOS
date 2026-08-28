@@ -667,22 +667,33 @@ void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color)
 }
 
 /* Blit an 8-bit coverage bitmap as anti-aliased text: each cov[i] is the alpha
- * of `color` over the existing pixel. */
+ * of `color` over the existing pixel.
+ *
+ * THE ROW POINTER IS THE POINT. clip_ij has already proved every (i,j) in the
+ * ranges it returned is inside the surface AND inside the clip, so the three
+ * fb_get/fb_put calls per pixel were re-deriving the target, re-checking two
+ * bounds and re-checking the scissor for a pixel already known to be writable
+ * -- the same shape fb_blit_surface's header describes, one layer down, on the
+ * busiest per-pixel loop the kernel still has. Output is unchanged: fb_get
+ * inside the clip returns the pixel, fb_put inside the clip stores it. */
 void fb_blit_glyph(int x, int y, const uint8_t *cov, int w, int h, uint32_t color)
 {
     int cr, cg, cb; unpack(color, &cr, &cg, &cb);
     int i0, j0, i1, j1;
     if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct surface *s = T ? T : &screen;
     for (int j = j0; j < j1; j++) {
+        const uint8_t *crow = cov + (long)j * w;
+        uint32_t *drow = s->px + (long)(y + j) * s->w + x;
         for (int i = i0; i < i1; i++) {
-            int a = cov[j * w + i];
+            int a = crow[i];
             if (!a) continue;
-            if (a >= 255) { fb_put(x + i, y + j, color); continue; }
-            int br, bg, bb; unpack(fb_get(x + i, y + j), &br, &bg, &bb);
+            if (a >= 255) { drow[i] = color; continue; }
+            int br, bg, bb; unpack(drow[i], &br, &bg, &bb);
             int nr = (cr * a + br * (255 - a)) / 255;
             int ng = (cg * a + bg * (255 - a)) / 255;
             int nb = (cb * a + bb * (255 - a)) / 255;
-            fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+            drow[i] = fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb);
         }
     }
 }
@@ -691,14 +702,16 @@ void fb_blend_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b, 
 {
     int i0, j0, i1, j1;
     if (!clip_ij(x, y, w, h, &i0, &j0, &i1, &j1)) return;
+    struct surface *s = T ? T : &screen;      /* clip_ij already proved every (i,j) writable */
     for (int j = j0; j < j1; j++) {
+        uint32_t *drow = s->px + (long)(y + j) * s->w + x;
         for (int i = i0; i < i1; i++) {
             int br, bg, bb;
-            unpack(fb_get(x + i, y + j), &br, &bg, &bb);
+            unpack(drow[i], &br, &bg, &bb);
             int nr = (r * a + br * (255 - a)) / 255;
             int ng = (g * a + bg * (255 - a)) / 255;
             int nb = (b * a + bb * (255 - a)) / 255;
-            fb_put(x + i, y + j, fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
+            drow[i] = fb_rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb);
         }
     }
 }
@@ -998,6 +1011,61 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
     fb_liquid_glass_cut(x, y, w, h, radius, tr, tg, tb, ta, 0);
 }
 
+/* EXACT integer reciprocals for the box blur's window count.
+ *
+ * The moving sum's divisor is the number of samples currently in the window --
+ * 2*RB+1 in the middle of a row and fewer at the two ends -- so it is a RUNTIME
+ * divisor, and clang cannot turn it into a multiply the way it already does for
+ * every /255 and /256 in this file. On x86_64 that leaves an `idivl`, and under
+ * TCG an idivl is a HELPER CALL rather than an instruction. There are six of
+ * them per pixel over the WHOLE panel (three channels x two passes) and they
+ * ran before any clip was consulted, which made them the single largest item in
+ * the glass.
+ *
+ * (s * blur_rcp[c]) >> 16 == s / c for every c in 1..2*RB+1 and every s that is
+ * a sum of at most c bytes. That is VERIFIED, not argued: all 3,315 reachable
+ * (c, s) pairs were checked against the division. The largest product is
+ * 16,714,230, so the multiply cannot overflow an int. Same family as g_acc's
+ * 16.16 reciprocal in c/lib/gfx -- and the same reason for existing: a divide
+ * in the innermost loop of a coverage pass. */
+#define GLASS_RB 6
+static const int blur_rcp[2 * GLASS_RB + 2] = {
+    0, 65536, 32768, 21846, 16384, 13108, 10923, 9363,
+    8192, 7282, 6554, 5958, 5462, 5042
+};
+#define BDIV(s, c) (((s) * blur_rcp[(c)]) >> 16)
+
+/* The per-pixel tail of the glass, shared by the general path and by the
+ * row-constant fast path below so the two cannot drift. Order is load-bearing:
+ * tint, then the environment reflection, then the specular wash, then the
+ * contact shadow -- each blend is against the RESULT of the previous one. */
+static inline void glass_shade(int *pr, int *pg, int *pb,
+                               int tr, int tg, int tb, int ta,
+                               int env, int fr, int hi, int sh)
+{
+    int r = *pr, gg = *pg, b = *pb;
+    r += (tr - r) * ta / 255; gg += (tg - gg) * ta / 255; b += (tb - b) * ta / 255;
+    r += (env - r) * fr / 255; gg += (env - gg) * fr / 255; b += (env - b) * fr / 255;
+    r += (255 - r) * hi / 256; gg += (255 - gg) * hi / 256; b += (255 - b) * hi / 256;
+    r -= r * sh / 256; gg -= gg * sh / 256; b -= b * sh / 256;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (gg < 0) gg = 0; if (gg > 255) gg = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    *pr = r; *pg = gg; *pb = b;
+}
+
+/* The edge pixel is part panel, part whatever was behind it -- and `behind it`
+ * is still in the target, because the loop reads from the saved copy and writes
+ * here. */
+static inline void glass_store(uint32_t *dstp, int r, int gg, int b, int gcov)
+{
+    if (gcov >= 255) { *dstp = fb_rgb((uint8_t)r, (uint8_t)gg, (uint8_t)b); return; }
+    int orr, og, ob; unpack(*dstp, &orr, &og, &ob);
+    *dstp = fb_rgb((uint8_t)((r  * gcov + orr * (255 - gcov)) / 255),
+                   (uint8_t)((gg * gcov + og  * (255 - gcov)) / 255),
+                   (uint8_t)((b  * gcov + ob  * (255 - gcov)) / 255));
+}
+
 void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
                          uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
                          unsigned cut)
@@ -1009,37 +1077,82 @@ void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
     if (x + w > s->w) w = s->w - x;
     if (y + h > s->h) h = s->h - y;
     if (w <= 0 || h <= 0 || radius < 1) return;
+    /* THE WRITE RANGE, UP FRONT.
+     *
+     * Everything below -- the backdrop copy, both blur passes, the SDF, the two
+     * isqrts, the coverage -- used to run over the whole panel unconditionally,
+     * and the clip was consulted per pixel just before the store. So a frame
+     * whose damage rectangle is over the dock still re-frosted the browser's
+     * entire 101,340-pixel titlebar and then threw every pixel of it away.
+     *
+     * A PARTIAL intersection still cannot be narrowed: the blur reads a
+     * neighbourhood, so the pixels it samples outside the clip are needed
+     * (that is the note in fb_blur_rect, and why wm.c grows a damage rectangle
+     * to contain a whole glass panel). A ZERO intersection can -- there is no
+     * pixel this call is allowed to write, and it has no other effect, so
+     * returning here is exactly what the old code computed.
+     *
+     * The surviving range also REPLACES the per-pixel clip_px() in the field
+     * loop: x/y/w/h are already clamped to the surface above, so for i in
+     * [ci0,ci1) and j in [cj0,cj1) the test clip_px() performed is true by
+     * construction. Same pixels, and the rows and columns it would have
+     * rejected are never visited. */
+    int ci0 = 0, cj0 = 0, ci1 = w, cj1 = h;
+    if (s->clip_on) {
+        if (s->clx0 - x > ci0) ci0 = s->clx0 - x;
+        if (s->cly0 - y > cj0) cj0 = s->cly0 - y;
+        if (s->clx1 - x < ci1) ci1 = s->clx1 - x;
+        if (s->cly1 - y < cj1) cj1 = s->cly1 - y;
+        if (ci0 >= ci1 || cj0 >= cj1) return;
+    }
     if (w * h > glass_buf_n) { if (glass_buf) kfree(glass_buf); glass_buf = (uint32_t *)kmalloc((unsigned long)w * h * 4); glass_buf_n = glass_buf ? w * h : 0; }
     int lmax = w > h ? w : h;
-    if (lmax * 3 > glass_line_n) { if (glass_line) kfree(glass_line); glass_line = (int *)kmalloc((unsigned long)lmax * 3 * sizeof(int)); glass_line_n = glass_line ? lmax * 3 : 0; }
+    /* One lane, for the per-column geometry. This used to be THREE, holding a
+     * blurred row/column as separate R, G and B ints between each moving-sum
+     * pass and the pack that wrote it back; both passes now pack as they go
+     * (see below), so the transposed line is gone and with it 24 KiB at
+     * 1920 wide. */
+    if (lmax > glass_line_n) { if (glass_line) kfree(glass_line); glass_line = (int *)kmalloc((unsigned long)lmax * sizeof(int)); glass_line_n = glass_line ? lmax : 0; }
     if (!glass_buf || !glass_line) { fb_blur_rect(x, y, w, h, 6, radius); return; }   /* frost-only fallback */
     uint32_t *g = glass_buf;
 
-    for (int j = 0; j < h; j++) {            /* copy live backdrop -> scratch */
+    /* FOUR PASSES OVER THE PANEL BECAME TWO. The backdrop copy existed only so
+     * the horizontal pass had somewhere to read from -- but the horizontal pass
+     * WRITES somewhere else (the scratch), so it can read the live backdrop
+     * directly and the copy is the same loads a second time. The write-back
+     * pass existed because the moving sum's subtract re-reads a pixel the pack
+     * would have overwritten; along a row that pixel is `i - RB`, six columns
+     * BEHIND, so reading the untouched source keeps it. Down a column the
+     * source IS the destination, so the vertical pass keeps the last RB+1
+     * originals in a ring instead of a whole line.
+     * Bit-identical: the value stored is fb_rgb() of exactly the three sums the
+     * line buffer used to carry. */
+    const int RB = GLASS_RB;                 /* window count <= 2*RB+1 -- blur_rcp's domain */
+    for (int j = 0; j < h; j++) {            /* blur: horizontal moving sum, backdrop -> scratch */
         const uint32_t *srow = s->px + (long)(y + j) * s->w + x;
         uint32_t *drow = g + (long)j * w;
-        for (int i = 0; i < w; i++) drow[i] = srow[i];
-    }
-    const int RB = 6;
-    for (int j = 0; j < h; j++) {            /* blur: horizontal moving sum */
-        uint32_t *row = g + (long)j * w; int sr = 0, sg = 0, sb = 0, cnt = 0, r, gg, b;
-        for (int k = 0; k <= RB && k < w; k++) { unpack(row[k], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
-        for (int i = 0; i < w; i++) {
-            glass_line[i * 3] = sr / cnt; glass_line[i * 3 + 1] = sg / cnt; glass_line[i * 3 + 2] = sb / cnt;
-            int a = i + RB + 1; if (a < w)  { unpack(row[a], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
-            int d = i - RB;     if (d >= 0) { unpack(row[d], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
-        }
-        for (int i = 0; i < w; i++) row[i] = fb_rgb((uint8_t)glass_line[i * 3], (uint8_t)glass_line[i * 3 + 1], (uint8_t)glass_line[i * 3 + 2]);
-    }
-    for (int i = 0; i < w; i++) {            /* blur: vertical moving sum */
         int sr = 0, sg = 0, sb = 0, cnt = 0, r, gg, b;
+        for (int k = 0; k <= RB && k < w; k++) { unpack(srow[k], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+        for (int i = 0; i < w; i++) {
+            drow[i] = fb_rgb((uint8_t)BDIV(sr, cnt), (uint8_t)BDIV(sg, cnt), (uint8_t)BDIV(sb, cnt));
+            int a = i + RB + 1; if (a < w)  { unpack(srow[a], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
+            int d = i - RB;     if (d >= 0) { unpack(srow[d], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
+        }
+    }
+    for (int i = 0; i < w; i++) {            /* blur: vertical moving sum, in place */
+        int sr = 0, sg = 0, sb = 0, cnt = 0, r, gg, b;
+        uint32_t ring[GLASS_RB + 1];         /* the last RB+1 pre-blur values */
+        int rp = 0;                          /* == j % (RB+1) */
         for (int k = 0; k <= RB && k < h; k++) { unpack(g[(long)k * w + i], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
         for (int j = 0; j < h; j++) {
-            glass_line[j * 3] = sr / cnt; glass_line[j * 3 + 1] = sg / cnt; glass_line[j * 3 + 2] = sb / cnt;
+            uint32_t *cell = &g[(long)j * w + i];
+            ring[rp] = *cell;
+            *cell = fb_rgb((uint8_t)BDIV(sr, cnt), (uint8_t)BDIV(sg, cnt), (uint8_t)BDIV(sb, cnt));
             int a = j + RB + 1; if (a < h)  { unpack(g[(long)a * w + i], &r, &gg, &b); sr += r; sg += gg; sb += b; cnt++; }
-            int d = j - RB;     if (d >= 0) { unpack(g[(long)d * w + i], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
+            /* (j - RB) % (RB+1) == (rp + 1) % (RB+1) */
+            int d = j - RB;     if (d >= 0) { unpack(ring[rp == RB ? 0 : rp + 1], &r, &gg, &b); sr -= r; sg -= gg; sb -= b; cnt--; }
+            rp = rp == RB ? 0 : rp + 1;
         }
-        for (int j = 0; j < h; j++) g[(long)j * w + i] = fb_rgb((uint8_t)glass_line[j * 3], (uint8_t)glass_line[j * 3 + 1], (uint8_t)glass_line[j * 3 + 2]);
     }
 
     int cx = w / 2, cy = h / 2, ix = cx - radius, iy = cy - radius;
@@ -1050,26 +1163,148 @@ void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
     int ELUT = E > GLASS_E_MAX ? GLASS_E_MAX : E;
     const int SPEC = 64;                   /* was 150, before the rim existed */
     int eband = E * 7 / 10; if (eband < 1) eband = 1;
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            int px = i - cx, py = j - cy, ax = px < 0 ? -px : px, ay = py < 0 ? -py : py;
-            /* A CUT edge is not an edge (see fb.h): folding its half-axis to 0
-             * puts every pixel on that side "deep inside" as far as the SDF,
-             * the rim band and the Fresnel term are concerned, so the bevel
-             * machinery below never fires there. The frost and tint above are
-             * untouched -- a cut panel is still glass, it just has no rim. */
-            if ((cut & GLASS_CUT_LEFT)   && px < 0) ax = 0;
-            if ((cut & GLASS_CUT_RIGHT)  && px > 0) ax = 0;
-            if ((cut & GLASS_CUT_TOP)    && py < 0) ay = 0;
-            if ((cut & GLASS_CUT_BOTTOM) && py > 0) ay = 0;
-            int qx = ax - ix, qy = ay - iy, qxc = qx > 0 ? qx : 0, qyc = qy > 0 ? qy : 0;
+
+    /* THE FIELD BELOW IS PURE GEOMETRY, and the panel's geometry does not change
+     * between frames. glass_build_lut() already caches the part that depends only
+     * on (E, REFRACT); these are the three parts that depend on the pixel, and
+     * each is hoisted to the axis it actually belongs to rather than cached per
+     * pixel -- so there is no field to invalidate and no stale picture to draw.
+     *
+     *  1. `band` and `tilt` divide by eband and E. Both divisors are constant
+     *     for the whole panel but neither is a compile-time constant, so clang
+     *     leaves an idivl -- a helper call under TCG -- in the innermost loop.
+     *     Both terms are ZERO past their band (band past eband, tilt past E, and
+     *     eband = E*7/10 <= E), so E entries cover every value either can take.
+     *  2. The cut folding and the horizontal half-distance depend on the COLUMN
+     *     only. colq[] is that, computed once per panel.
+     *  3. The vertical half-distance depends on the ROW only, hoisted out of the
+     *     i loop. */
+    int bandt[GLASS_E_MAX + 1], tiltt[GLASS_E_MAX + 1];
+    for (int d = 0; d < E; d++) {
+        int bd = 256 - d * 256 / eband; if (bd < 0) bd = 0;
+        bandt[d] = bd;
+        tiltt[d] = (E - d) * 256 / E;
+    }
+    int *colq = glass_line;                /* w ints; the blur no longer uses it */
+    for (int i = 0; i < w; i++) {
+        int pxv = i - cx, axv = pxv < 0 ? -pxv : pxv;
+        /* A CUT edge is not an edge (see fb.h): folding its half-axis to 0
+         * puts every pixel on that side "deep inside" as far as the SDF, the
+         * rim band and the Fresnel term are concerned, so the bevel machinery
+         * below never fires there. The frost and tint above are untouched -- a
+         * cut panel is still glass, it just has no rim. */
+        if ((cut & GLASS_CUT_LEFT)  && pxv < 0) axv = 0;
+        if ((cut & GLASS_CUT_RIGHT) && pxv > 0) axv = 0;
+        colq[i] = axv - ix;
+    }
+    /* colq is non-increasing on [0,cx] and non-decreasing on [cx,w) -- an
+     * absolute value, and a cut only flattens one arm of it -- so for any
+     * threshold the set { i : colq[i] <= t } is a contiguous run. That is what
+     * makes the fast path below a range rather than a per-pixel test. */
+
+    for (int j = cj0; j < cj1; j++) {
+        int py = j - cy, ay = py < 0 ? -py : py;
+        if ((cut & GLASS_CUT_TOP)    && py < 0) ay = 0;
+        if ((cut & GLASS_CUT_BOTTOM) && py > 0) ay = 0;
+        int qy = ay - iy, qyc = qy > 0 ? qy : 0;
+        int sy = py < 0 ? -1 : 1;
+
+        /* THE ROW-DOMINANT RUN. Where the column contributes nothing to the
+         * distance field -- qxc == 0 AND the row is at least as close to its
+         * edge as the column is to its own -- every term below is a function of
+         * j alone: outd is qyc*256, ins is qy, the normal is (0, +-256), and so
+         * gcov, depth, the three displacements, env, fr, hi and sh are all
+         * constant across the run. Only the three backdrop samples vary, and
+         * because nx is 0 they vary only in i, along three fixed rows of the
+         * blurred copy. On the dock that is ~90% of the panel.
+         *
+         * The threshold is one expression for both cases: with qyc > 0 the row
+         * is already inside the rim band and any column with qx <= 0 qualifies;
+         * with qyc == 0 (so qy <= 0) the column must additionally not be nearer
+         * its edge than the row, i.e. qx <= qy -- which subsumes qx <= 0.
+         * `qx > qy` is the branch the general path takes, so <= keeps the
+         * boundary column on the same side it was always on. */
+        int run0 = ci1, run1 = ci1;            /* empty unless the search finds a run */
+#ifndef GLASS_FIELD_SLOW
+        {
+            int thr = qyc > 0 ? 0 : qy;
+            if (colq[cx] <= thr) {
+                int lo, hi2;
+                int a2 = 0, b2 = cx;               /* non-increasing: first <= thr */
+                while (a2 < b2) { int m = (a2 + b2) / 2; if (colq[m] <= thr) b2 = m; else a2 = m + 1; }
+                lo = a2;
+                a2 = cx; b2 = w - 1;               /* non-decreasing: last <= thr */
+                while (a2 < b2) { int m = (a2 + b2 + 1) / 2; if (colq[m] <= thr) a2 = m; else b2 = m - 1; }
+                hi2 = a2;
+                run0 = lo > ci0 ? lo : ci0;
+                run1 = hi2 + 1 < ci1 ? hi2 + 1 : ci1;
+                if (run1 < run0) run1 = run0;
+            }
+        }
+#endif
+        if (run1 > run0) {
+            /* One evaluation of the field for the whole run. */
+            int outd = qyc ? (int)gl_isqrt((unsigned long)qyc * qyc << 16) : 0;
+            int ins = qy > 0 ? 0 : qy;             /* qx <= qy here, and clamped */
+            int sdf = outd + (ins - radius) * 256;
+            int gcov = 128 - sdf;
+            if (gcov <= 0) { run1 = run0; }            /* outside: the run draws nothing */
+            else {
+                if (gcov > 255) gcov = 255;
+                int depth = -sdf / 256; if (depth < 0) depth = 0;
+                int ny = sy * 256;                 /* nx is 0: the normal is vertical */
+                int di = depth < ELUT ? depth : ELUT;
+                int yr = j - sy * glass_disp[0][di];
+                int yg = j - sy * glass_disp[1][di];
+                int yb = j - sy * glass_disp[2][di];
+                if (yr < 0) yr = 0; if (yr >= h) yr = h - 1;
+                if (yg < 0) yg = 0; if (yg >= h) yg = h - 1;
+                if (yb < 0) yb = 0; if (yb >= h) yb = h - 1;
+                int band = depth < E ? bandt[depth] : 0;
+                int tilt = depth < E ? tiltt[depth] : 0;
+                int facing = (ny * (-205)) / 256; if (facing < 0) facing = 0; if (facing > 256) facing = 256;
+                int env = 176 + (facing - 128) * tilt / 256;
+                if (env < 96)  env = 96;
+                if (env > 250) env = 250;
+                int fr = glass_fres[di];
+                int hi = facing * band / 256; hi = hi * hi / 256; hi = hi * SPEC / 256;
+                int op = (ny * 205) / 256; if (op < 0) op = 0;
+                int sh = op * band / 256; sh = sh * sh / 256; sh = sh * 46 / 256;
+                const uint32_t *rr = g + (long)yr * w, *rg = g + (long)yg * w, *rb = g + (long)yb * w;
+                uint32_t *drow = &s->px[(long)(y + j) * s->w + x];
+                if (rr == rg && rg == rb) {        /* no dispersion here: one fetch */
+                    for (int i = run0; i < run1; i++) {
+                        int r, gg, b; unpack(rr[i], &r, &gg, &b);
+                        glass_shade(&r, &gg, &b, tr, tg, tb, ta, env, fr, hi, sh);
+                        glass_store(&drow[i], r, gg, b, gcov);
+                    }
+                } else {
+                    for (int i = run0; i < run1; i++) {
+                        int r, gg, b, t1, t2;
+                        unpack(rr[i], &r,  &t1, &t2);
+                        unpack(rg[i], &t1, &gg, &t2);
+                        unpack(rb[i], &t1, &t2, &b);
+                        glass_shade(&r, &gg, &b, tr, tg, tb, ta, env, fr, hi, sh);
+                        glass_store(&drow[i], r, gg, b, gcov);
+                    }
+                }
+            }
+        }
+
+        /* Everything the run did not cover: the two ends of the row, which is
+         * where the corner arcs and the vertical rim live. This is the general
+         * path and it is what GLASS_FIELD_SLOW runs over the whole panel. */
+        for (int i = ci0; i < ci1; i++) {
+            if (i >= run0 && i < run1) { i = run1 - 1; continue; }
+            int px = i - cx;
+            int qx = colq[i], qxc = qx > 0 ? qx : 0;
+            int sx = px < 0 ? -1 : 1;
             /* The distance is carried in 8.8 -- the square sum is shifted by 16
              * before the root, so isqrt returns 256*d. A whole-pixel SDF cannot
              * describe an edge that falls between two pixels, and this panel's
              * edge is the most looked-at curve on the machine. */
-            int outd = (qxc || qyc)
-                     ? (int)gl_isqrt(((unsigned long)qxc * qxc + (unsigned long)qyc * qyc) << 16)
-                     : 0;
+            unsigned long vv = (unsigned long)qxc * qxc + (unsigned long)qyc * qyc;
+            int outd = vv ? (int)gl_isqrt(vv << 16) : 0;
             int ins = qx > qy ? qx : qy; if (ins > 0) ins = 0;
             int sdf = outd + (ins - radius) * 256;               /* 8.8, <0 inside */
             /* COVERAGE, not a yes/no. A pixel whose centre sits exactly on the
@@ -1081,13 +1316,21 @@ void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
             if (gcov <= 0) continue;                             /* outside */
             if (gcov > 255) gcov = 255;
             int depth = -sdf / 256; if (depth < 0) depth = 0;
-            if (!clip_px(s, x + i, y + j)) continue;             /* see the note in fb_blur_rect */
-            int gx, gy;
-            if (qxc > 0 || qyc > 0) { gx = (px < 0 ? -1 : 1) * qxc; gy = (py < 0 ? -1 : 1) * qyc; }
-            else if (qx > qy)       { gx = (px < 0 ? -1 : 1); gy = 0; }
-            else                    { gx = 0; gy = (py < 0 ? -1 : 1); }
-            int nlen = (int)gl_isqrt((unsigned long)gx * gx + (unsigned long)gy * gy); if (!nlen) nlen = 1;
-            int nx = gx * 256 / nlen, ny = gy * 256 / nlen;       /* outward unit x256 */
+            int gx, gy, nlen;
+            if (qxc > 0 || qyc > 0) {
+                gx = sx * qxc; gy = sy * qyc;
+                /* isqrt(v) is floor(sqrt(v)) exactly, so floor(256*sqrt(v))>>8 is
+                 * floor(sqrt(v)) -- the same number outd already paid for. The
+                 * shift is only valid while v<<16 fits gl_isqrt's 32-bit domain
+                 * (b starts at 1<<30); past that outd is already saturated, so
+                 * the second call is kept for a panel nobody draws. */
+                nlen = vv < 65536UL ? (outd >> 8) : (int)gl_isqrt(vv);
+                if (!nlen) nlen = 1;
+            } else if (qx > qy) { gx = sx; gy = 0;  nlen = 1; }
+            else                { gx = 0;  gy = sy; nlen = 1; }
+            int nx, ny;                                          /* outward unit x256 */
+            if (nlen == 1) { nx = gx * 256; ny = gy * 256; }
+            else           { nx = gx * 256 / nlen; ny = gy * 256 / nlen; }
             /* One index instead of the old squared ramp, and three of them
              * because R, G and B leave the rim at different angles. Outside the
              * edge band all three are zero and the three samples collapse onto
@@ -1110,8 +1353,7 @@ void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
                 unpack(g[(long)yg * w + xg], &t1, &gg, &t2);
                 unpack(g[(long)yb * w + xb], &t1, &t2, &b);
             }
-            r += (tr - r) * ta / 255; gg += (tg - gg) * ta / 255; b += (tb - b) * ta / 255;
-            int band = 256 - depth * 256 / eband; if (band < 0) band = 0;
+            int band = depth < E ? bandt[depth] : 0;
             int facing = (nx * (-154) + ny * (-205)) / 256; if (facing < 0) facing = 0; if (facing > 256) facing = 256;
             /* THE EDGE. Reflectance goes to 1 at grazing incidence, so the
              * outermost pixel of the bevel is a mirror and the one after it
@@ -1132,35 +1374,19 @@ void fb_liquid_glass_cut(int x, int y, int w, int h, int radius,
              * every pixel, and the first version of this line put a visible
              * diagonal seam down the middle of Finder's sidebar: 4% of an 87
              * level swing is 3 levels, and 3 levels on flat white is a line. */
-            int tilt = depth < E ? (E - depth) * 256 / E : 0;
+            int tilt = depth < E ? tiltt[depth] : 0;
             int env = 176 + (facing - 128) * tilt / 256;
             if (env < 96)  env = 96;
             if (env > 250) env = 250;
             int fr = glass_fres[di];
-            r += (env - r) * fr / 255; gg += (env - gg) * fr / 255; b += (env - b) * fr / 255;
             /* The wide wash stays, at less than half its old strength: it is
              * the body sheen, not the edge. Turning it up was the thing that
              * could not work -- a 15-pixel gradient is not a 1-pixel line. */
             int hi = facing * band / 256; hi = hi * hi / 256; hi = hi * SPEC / 256;
-            r += (255 - r) * hi / 256; gg += (255 - gg) * hi / 256; b += (255 - b) * hi / 256;
             int op = (nx * 154 + ny * 205) / 256; if (op < 0) op = 0;
             int sh = op * band / 256; sh = sh * sh / 256; sh = sh * 46 / 256;
-            r -= r * sh / 256; gg -= gg * sh / 256; b -= b * sh / 256;
-            if (r < 0) r = 0; if (r > 255) r = 255;
-            if (gg < 0) gg = 0; if (gg > 255) gg = 255;
-            if (b < 0) b = 0; if (b > 255) b = 255;
-            uint32_t *dstp = &s->px[(long)(y + j) * s->w + (x + i)];
-            if (gcov >= 255) {
-                *dstp = fb_rgb((uint8_t)r, (uint8_t)gg, (uint8_t)b);
-            } else {
-                /* The edge pixel is part panel, part whatever was behind it --
-                 * and `behind it` is still in the target, because this loop
-                 * reads from the saved copy `g` and writes here. */
-                int orr, og, ob; unpack(*dstp, &orr, &og, &ob);
-                *dstp = fb_rgb((uint8_t)((r  * gcov + orr * (255 - gcov)) / 255),
-                               (uint8_t)((gg * gcov + og  * (255 - gcov)) / 255),
-                               (uint8_t)((b  * gcov + ob  * (255 - gcov)) / 255));
-            }
+            glass_shade(&r, &gg, &b, tr, tg, tb, ta, env, fr, hi, sh);
+            glass_store(&s->px[(long)(y + j) * s->w + (x + i)], r, gg, b, gcov);
         }
     }
 }

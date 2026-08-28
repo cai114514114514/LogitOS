@@ -24,6 +24,7 @@
 #include "logit_sniff.h"
 #include "logit_abi.h"
 #include "prot.h"       /* cpu_prot_nx_usable() + PTE_NX for the app stack below */
+#include "vma.h"        /* vma_reserve_fixed(): a GUI app's stack is a reservation */
 /* Generated from include/abi/logit_calls.abi, which is where the packed syscall
  * arguments are described. Unpacking them by hand here meant the convention was
  * stated once in a logit_abi.h comment, once in the caller's packing, and once
@@ -430,10 +431,30 @@ static void dmg_add(struct drect n)
     dmg[ndmg++] = n;
     /* Past three quarters of the screen the rectangles are no longer telling
      * the truth about being small, and the per-region bookkeeping costs more
-     * than it saves. Say so, rather than pretending. */
+     * than it saves. Say so, rather than pretending.
+     *
+     * EXCEPT WHEN THERE IS ONLY ONE, and this exception is provable rather
+     * than tuned. The merge loop above leaves the list PAIRWISE DISJOINT (two
+     * rectangles that touch are unioned), so `total` is an exact area and is
+     * never more than W*H. What escalation buys is the per-region bookkeeping
+     * of the OTHER rectangles -- a second pass over the window list, a second
+     * fb_present_rect. With ndmg == 1 there is no other rectangle, so it buys
+     * nothing at all and costs, strictly:
+     *
+     *   + the pixels between the rectangle and the screen  (up to 25% here)
+     *   + the menu bar re-frosted, and the DOCK re-frosted -- 223k px of
+     *     glass at ~205 ns/px against ~30 ns/px for an ordinary composited
+     *     pixel, i.e. about 46 ms on this machine, for a rectangle that
+     *     dmg_expand had already decided did not touch either panel.
+     *
+     * The whole screen is a superset of any clamped rectangle, so the pixels
+     * are identical either way; this only ever removes work. It matters
+     * because it is what makes the shadow-margin fix above hold for a MAXIMISED
+     * window: 1920 x (1200-MBH-dock) is 83% of the screen on its own, over the
+     * threshold with no shadow margin anywhere near it. */
     long total = 0;
     for (int i = 0; i < ndmg; i++) total += rect_area(&dmg[i]);
-    if (total * 4 > (long)W * (long)H * 3) dirty_full();
+    if (ndmg > 1 && total * 4 > (long)W * (long)H * 3) dirty_full();
 }
 
 static void dirty_rect(int x, int y, int w, int h)
@@ -565,6 +586,10 @@ static int ex_corner_armed = 1;        /* leave the corner to re-arm the trigger
  * itself because somebody asked where a window was would be a timer nobody can
  * reason about. wm_anim_tick() is the one place a timer ends.) */
 static int win_draw_rect(const struct win *w, int *ox, int *oy, int *ow, int *oh, int *oa);
+/* "Is this window stationary, full size and opaque this frame" -- the one
+ * predicate dmg_expand and the renderer already share. dirty_win_content()
+ * below is the third asker and needs it 500 lines before its definition. */
+static int win_drawn_direct(const struct win *w, int x, int y, int ww, int wh, int a);
 
 /* THE DROP SHADOW'S GEOMETRY, defined once.
  *
@@ -647,6 +672,86 @@ static void dirty_win(const struct win *w)
     r.y1 = r.y0 + (r.y1 - r.y0) / 2;
 #endif
     dirty_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+}
+
+/* THE SAME WINDOW, WITHOUT ITS SHADOW -- for the case where only its CONTENT
+ * changed.
+ *
+ * win_box() inflates by WSH_BLUR(1)+1 on every side and WSH_DY(1) more at the
+ * bottom, and that inflation is REQUIRED whenever the window MOVES, RESIZES or
+ * changes FOCUS: the shadow travels with the frame (or changes depth), so the
+ * pixels it used to occupy have to be re-laid. It is required for NONE of that
+ * when an app merely repainted inside a stationary frame -- the shadow has not
+ * moved, nothing redrew over it, and its pixels are already correct.
+ *
+ * MEASURED, 1920x1200, the browser at 1689x1005 (which is what provoked this):
+ *
+ *     dmg_add's escalation threshold  W*H*3/4     1,728,000 px
+ *     the frame box                   1689x1005   1,697,445   73.7%  PARTIAL
+ *     win_box's shadow box            1787x1124   2,008,588   87.2%  -> FULL
+ *     the shadow margin alone                       311,143   13.5% of the screen
+ *
+ * So the browser sat 1.8% UNDER the threshold and win_box put it 12.2% OVER,
+ * and every keystroke, scroll and page repaint in it escalated to a whole-
+ * screen recomposite -- which is not merely 2.30 M pixels instead of 1.70 M,
+ * because a full frame necessarily re-frosts the menu bar AND the dock, and
+ * dock glass is ~205 ns/px against ~30 ns/px for an ordinary composited pixel.
+ * The shadow box also STARTS ABOVE THE MENU BAR for any window near the top of
+ * the screen (y - 49), so dmg_expand grew it into the menu-bar panel even when
+ * it did not escalate. The frame box touches neither: rect_hit is a strict
+ * comparison, and a window's y is >= MBH by construction (win_set_geom).
+ *
+ * THE PRECONDITION IS win_drawn_direct(), NOT a comment. It is the predicate
+ * that already means "at its own frame, full size, fully opaque, not in the
+ * picker" -- i.e. stationary, with a shadow that is where it was last drawn.
+ * Anything else (a dock fly, an Expose cell, the open pop) is a window whose
+ * shadow IS moving this frame, and those fall through to dirty_win() rather
+ * than being reasoned about a second time here. It is the same predicate
+ * dmg_expand asks about the glass titlebar, so the panel it protects is
+ * guaranteed to be INSIDE this rectangle and the expansion has nothing to do.
+ *
+ * WM_DAMAGE_LIE IS APPLIED HERE TOO, deliberately: qmp_damage.py's negative
+ * control drives four interactions and two of them (scroll, keystrokes) reach
+ * the compositor through THIS function now. Leaving the lie out would have let
+ * those two pass under the lying kernel -- a control that covers less than it
+ * did before the change, which is the failure this whole file is built to
+ * avoid. */
+static void dirty_win_content(const struct win *w)
+{
+    /* THE LOCKED SCREEN IS THE ONE PLACE WHERE "the window's drawn box" IS NOT
+     * WHERE THE WINDOW IS DRAWN, and this function's whole premise is that box.
+     * render_region's g_locked branch blits the greeter at (0, 0, W, H)
+     * unconditionally and never consults win_draw_rect -- while the greeter's
+     * FRAME sits at y = MBH, because SYS_GUI_CREATE clamps it there and
+     * greeter.c asks for a window as tall as the screen so the clamp always
+     * fires.
+     *
+     * win_box hid that: MBH - (WSH_BLUR(1) + 1) is negative at every UI scale,
+     * dirty_rect clamped it to 0, and the top strip was re-laid on every flush
+     * by accident. Reporting the frame box honestly -- which is the whole point
+     * of this function -- stops re-laying rows 0..MBH, and NOTHING repaints
+     * them afterwards: there is no periodic full repaint left. What lives up
+     * there is greeter.c's 6x6 probe swatch at canvas (0,0), which
+     * tests/qmp/qmp_greeter.py looks for to decide the greeter is on screen at
+     * all, so the symptom is a login screen that is intermittently missing its
+     * top 24 points -- intermittent because the open animation forces a full
+     * frame for the first ~160 ms and hides it whenever the first paint lands
+     * inside that window.
+     *
+     * Found by review, not by a gate: the greeter is composited by a branch no
+     * damage test drives. Until the locked branch draws at win_draw_rect's box
+     * -- which is the real fix and belongs to whoever owns that branch -- the
+     * honest answer here is the whole screen. It costs one full frame per
+     * greeter flush on a screen that has exactly one window and no dock. */
+    if (g_locked) { dirty_rect(0, 0, W, H); return; }
+
+    int x, y, ww, wh, a;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;   /* not on screen */
+    if (!win_drawn_direct(w, x, y, ww, wh, a)) { dirty_win(w); return; }
+#if WM_DAMAGE_LIE
+    ww /= 2; wh /= 2;
+#endif
+    dirty_rect(x, y, ww, wh);
 }
 
 /* THE RESIZE NEGATIVE CONTROL, and it is a DIFFERENT mistake from the one
@@ -1610,7 +1715,39 @@ void wm_launch(const char *aex_file, const char *arg)
          * a reserved-bit fault, not a no-op. */
         uint64_t stk_flags = VMM_WRITABLE | VMM_USER |
                              (cpu_prot_nx_usable() ? PTE_NX : 0);
-        for (int i = 1; i <= stk_pages; i++) {
+        /* RESERVED, NOT MAPPED -- the half of exec.c's stack work that never
+         * reached this file. c/kernel/exec/exec.c:setup_cli_stack() says so in
+         * as many words ("it used to be decided here, and independently again
+         * in c/kernel/gui/wm.c") and measured the change it made: 708 kcycles
+         * per execve of which 522 -- 74% -- was allocating, poison-checking and
+         * mapping a megabyte of stack a program touches a few kilobytes of.
+         *
+         * The GUI side was worse, because the GUI side is where the big program
+         * is: the browser's .aex asks for 2048 stack pages via the header hint,
+         * so wm_launch committed EIGHT MEBIBYTES of zeroed anonymous memory --
+         * 2048 pmm_alloc + vmm_map_page pairs -- inside the cli/vmm_switch
+         * window, with the BKL held, before the window appears. A stack is a
+         * RESERVATION; a VMA is what says so, and do_anon() has materialised
+         * one on first touch since the fault hook was wired. It even derives
+         * the same NX from the reservation carrying no VMA_EXEC.
+         *
+         * The reservation is not optional and the fallback is exec.c's, for
+         * exec.c's reason: without an area covering it, mm_fault_classify()
+         * returns MM_FAULT_NONE and the app dies on its first deep call. So a
+         * refused reservation maps eagerly exactly as before rather than
+         * handing out a stack that faults. */
+        uint64_t stk_bottom = ustack_top - (uint64_t)stk_pages * 0x1000;
+        int reserved = (vma_reserve_fixed(space, stk_bottom,
+                                          (uint64_t)stk_pages * 0x1000,
+                                          VMA_READ | VMA_WRITE) == 0);
+        /* Two eager pages, matching exec.c's CLI_STACK_EAGER_MIN. A GUI app has
+         * no SysV head to write -- enter_user.asm sets rsp = ustack_top and
+         * jumps -- so one would do; two is the same floor the other stack
+         * builder in this kernel uses, and a second answer to "how many pages
+         * does an empty stack need" is a number that would drift. */
+        int eager = reserved ? 2 : stk_pages;
+        if (eager > stk_pages) eager = stk_pages;   /* a header hint of 1 page */
+        for (int i = 1; i <= eager; i++) {
             uint64_t frame = pmm_alloc();
             if (!frame) { entry = 0; break; }    /* OOM: fail the launch, don't run on a partial stack */
             vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, stk_flags);
@@ -2110,13 +2247,21 @@ long wm_gui_syscall(long num, long a, long b, long c)
         return 0;
     }
     case SYS_GUI_FLUSH: {
-        /* Repaint just this app's window -- its rectangle plus its drop shadow.
-         * There is no sub-window damage on this call and deliberately no plan
-         * for one: the flush carries no rectangle, so the smallest honest
-         * extent an app can be held to is its whole canvas. That is the floor
-         * on an app repaint, and it is an ABI limit, not a compositor one. */
+        /* Repaint just this app's window -- its rectangle, and NOT its drop
+         * shadow. There is no sub-window damage on this call and deliberately
+         * no plan for one: the flush carries no rectangle, so the smallest
+         * honest extent an app can be held to is its whole canvas. That is the
+         * floor on an app repaint, and it is an ABI limit, not a compositor
+         * one.
+         *
+         * THE SHADOW IS NOT PART OF THAT FLOOR, and this line used to include
+         * it -- 311,143 px of margin for the browser, which is what took every
+         * keystroke in it over dmg_add's escalation threshold and made it a
+         * full-screen frame. A flush says "I repainted my canvas"; it cannot
+         * move the window, resize it or change its focus, so it cannot have
+         * changed one pixel of the shadow. See dirty_win_content(). */
         struct win *w = app_window(ap);
-        if (w) dirty_win(w); else dirty_full();
+        if (w) dirty_win_content(w); else dirty_full();
         return 0;
     }
     case SYS_WAIT_EVENT: {
@@ -2295,7 +2440,12 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_TEXT_MEASURE: {
         const char *s = (const char *)a; int len = (int)b;
-        int px = (int)((c >> 1) & 0x7FFFFFFF), mono = (int)(c & 1);
+        /* (px << 2) | face, where face is LOGIT_FACE_MONO|LOGIT_FACE_BOLD.
+         * It was (px << 1) | mono; bit 0 is unchanged and bit 1 is new, which
+         * is why c/apps/logit.h's text_measure_px kept its signature and only
+         * widened its mask. Both halves of that encoding live in exactly two
+         * places -- there and here. */
+        int px = (int)((c >> 2) & 0x3FFFFFFF), face = (int)(c & 3);
         if (len < 0 || len > USER_TEXT_MAX) return 0;
         if (px < 1 || px > 512) return 0;    /* unbounded px overflows the rasterizer's w*h math */
         char tmp[USER_TEXT_MAX];
@@ -2305,7 +2455,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * arithmetic and still wrong: hinting-free advances do not scale exactly
          * linearly, so a caller that word-wraps on the 1x width would overflow
          * its own box once the 1.5x glyphs landed. */
-        return PT(text_measure(tmp, len, S(px), mono));
+        return PT(text_measure(tmp, len, S(px), face));
     }
     case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
@@ -2318,7 +2468,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (len > 0) { if (!user_range_ok(r.s, (uint64_t)len, 0)) return -1; memcpy(tmp, r.s, (size_t)len); }
         tmp[len] = 0;
         fb_target(&w->surf);
-        text_draw_run(S(r.x), S(r.y), tmp, len, S(r.px), r.mono, r.color);
+        /* THE ONE PLACE THE STRUCT BECOMES A MASK. `mono` and `bold` are two
+         * named ints in struct logit_run and two bits everywhere below here;
+         * this line is the whole conversion. Both are masked to their own bit
+         * rather than trusted: `mono` is not the face mask, so a ring-3 caller
+         * that packed a 2 into it must not smuggle bold in through the field
+         * that does not mean bold. */
+        int face = (r.mono ? LOGIT_FACE_MONO : 0) | (r.bold ? LOGIT_FACE_BOLD : 0);
+        text_draw_run(S(r.x), S(r.y), tmp, len, S(r.px), face, r.color);
         fb_target(NULL);
         return 0;
     }
@@ -2696,6 +2853,9 @@ static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y
 /* The clock is the only thing on an idle desktop that changes, and it changes
  * twice a second. That used to be a full-screen recomposite; it is now this. */
 static void dirty_menubar(void) { dirty_rect(0, 0, W, MBH); }
+/* WM-HOOK (out): see wm.h. The IME's indicator lives in the bar and ime_ui.c
+ * must be able to say "it changed" without knowing MBH. */
+void wm_damage_menubar(void) { dirty_menubar(); }
 static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
 /* menu_tog_* are DEVICE pixels: they are written here and read by the click
  * handler, which sees device mouse coordinates. Keeping the stored rect in the
@@ -2788,6 +2948,30 @@ static void draw_menubar(void)
     int kr = menu_tog_h / 2 - S(2);
     int kx = g_ui_dark ? menu_tog_x + menu_tog_w - kr - S(3) : menu_tog_x + kr + S(3);
     fb_fill_circle(kx, menu_tog_y + menu_tog_h / 2, kr, rgb(255, 255, 255));
+    /* THE IME INDICATOR, and it exists because of a measurement rather than a
+     * taste. Before it, the toggle changed NOTHING a user could see: the state
+     * line goes to the serial console, and the candidate bar does not exist
+     * until a composition is open (bar_layout returns 0x0 otherwise). Measured
+     * 2026-08-28 by injecting the chord over QMP and screendumping either side
+     * -- 175 changed pixels of 2,304,000, every one of them the clock.
+     *
+     * That silence is what made the binding unknowable from inside the machine.
+     * The owner reported being certain the toggle was Ctrl+Space; the guest is
+     * inert to Ctrl+Space in BOTH states (probed, 0 serial lines and 0 pixels),
+     * and what answered was the HOST's own input-source switcher, with an
+     * animation. The only key that replied was the wrong one.
+     *
+     * Drawn from top_visible() because the IME is PER WINDOW (g_on[wi]), so the
+     * indicator has to name the window that would receive the next keystroke,
+     * not a machine-wide mode this kernel does not have. */
+    if (ime_ui_available()) {
+        int on = ime_ui_enabled(top_visible());
+        const char *tag = on ? "\xe4\xb8\xad" : "EN";   /* U+4E2D; ui.ttf is GB2312 */
+        int tw = fb_text_width(tag);
+        fb_text(menu_tog_x - S(18) - tw, S(4), tag,
+                on ? (g_ui_dark ? rgb(150, 195, 255) : rgb(24,  86, 200))
+                   : (g_ui_dark ? rgb(146, 148, 158) : rgb(122, 124, 134)));
+    }
     draw_clock();
 }
 
@@ -3912,6 +4096,44 @@ static struct surface *win_chrome_strip(struct win *w, int focused)
  * The re-merge afterwards is not tidiness either: two rectangles that both grew
  * to contain the dock would each draw the dock, and the second would do it over
  * pixels the first had already presented. */
+/* Grow r to contain p, ON SCREEN. Every caller below hands a panel box that
+ * may reach past an edge, and dirty_rect's clamp is the ONLY thing that keeps
+ * a damage rectangle inside the buffers -- dmg_expand runs after it and
+ * rect_or does not clamp.
+ *
+ * THE OVERFLOW THIS CLOSES IS REAL AND WAS ALREADY REACHABLE. dock_panel_box
+ * is the slab PLUS its drop shadow (DOCKSH_BLUR+1 out, DOCKSH_DY down) while
+ * dock_geom leaves only S(12) between the slab and the bottom of the screen,
+ * so its y1 is BELOW H by construction at every scale:
+ *
+ *    1280x800  100%   panel y1 = 811   H =  800   over by 11
+ *    1920x1200 150%   panel y1 = 1216  H = 1200   over by 16
+ *    2560x1600 200%   panel y1 = 1621  H = 1600   over by 21
+ *
+ * Any damage rectangle that touched the dock -- a dock hover, a window whose
+ * bottom edge reaches into it -- was grown to that y1, and render_region's
+ * wallpaper loop is a raw `for (y = R->y0; y < R->y1; y++) blit(back + y*W ...)`
+ * with no clamp of its own. That is 11-21 whole rows written past the end of
+ * `back` and read past the end of `bg`, both of which are exactly W*H*4 from
+ * pmm_alloc_contig with no slack. It never showed on screen because
+ * fb_present_rect clamps, and the frame's own pixel counter (perf_cpx) was
+ * quietly reporting the off-screen rows as composited.
+ *
+ * Clamping the PANEL rather than the result is the load-bearing detail: clamp
+ * r[i] afterwards and rect_in(p, r[i]) can never be satisfied for the dock,
+ * `grew` stays 1 for all eight passes, and the function returns -1 -- a
+ * full-screen repaint on every frame that touches the dock. Clamping p leaves
+ * the convergence exactly as it was and only makes the rectangle smaller. */
+static void rect_or_onscreen(struct drect *r, struct drect p, int *grew)
+{
+    if (p.x0 < 0) p.x0 = 0;
+    if (p.y0 < 0) p.y0 = 0;
+    if (p.x1 > W) p.x1 = W;
+    if (p.y1 > H) p.y1 = H;
+    if (p.x0 >= p.x1 || p.y0 >= p.y1) return;      /* entirely off screen */
+    if (rect_hit(r, &p) && !rect_in(&p, r)) { rect_or(r, &p); *grew = 1; }
+}
+
 static int dmg_expand(struct drect *r, int n)
 {
     int grew = 1;
@@ -3920,16 +4142,16 @@ static int dmg_expand(struct drect *r, int n)
         for (int i = 0; i < n; i++) {
             struct drect p;
             menubar_box(&p);
-            if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            rect_or_onscreen(&r[i], p, &grew);
             dock_panel_box(&p);          /* the SLAB, not the whole footprint */
-            if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+            rect_or_onscreen(&r[i], p, &grew);
             if (g_menu_open >= 0) {                       /* the open dropdown -- also glass */
                 menu_dropdown_box(&p);
-                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+                rect_or_onscreen(&r[i], p, &grew);
             }
             if (g_overlay != OV_NONE) {                   /* About / Shut Down / Restart panel */
                 overlay_box(&p);
-                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+                rect_or_onscreen(&r[i], p, &grew);
             }
             for (int k = 0; k < norder; k++) {           /* each window's glass titlebar */
                 /* Asked of win_glass_box, not of w->x/w->w: a window being
@@ -3938,7 +4160,7 @@ static int dmg_expand(struct drect *r, int n)
                  * not being drawn would grow this rectangle to a frame the
                  * window is not occupying. See win_drawn_direct. */
                 if (!win_glass_box(&wins[order[k]], &p)) continue;
-                if (rect_hit(&r[i], &p) && !rect_in(&p, &r[i])) { rect_or(&r[i], &p); grew = 1; }
+                rect_or_onscreen(&r[i], p, &grew);
             }
         }
         for (int i = 0; i < n; i++)
@@ -4571,14 +4793,18 @@ static void wm_process_key(int c, int mods)
         if (nc >= 0) {
             for (int i = 0; i < nc; i++)
                 enqueue_input(w, EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
-            if (nc > 0) dirty_win(w);
+            /* Content, not geometry: a committed character neither moves the
+             * window nor changes its focus, so the shadow is untouched. (The
+             * candidate BAR damages itself, in ime_ui.c's bar_changed -- it is
+             * not inside this rectangle and never was.) */
+            if (nc > 0) dirty_win_content(w);
             return;
         }
         /* `a` is unchanged -- Ctrl+S still arrives as 0x13, because a decade of
          * terminal habit lives on that mapping and TextEdit reads it. `mods` is
          * additional information, not a replacement encoding. */
         enqueue_input(w, EV_KEY, c, 0, mods, EV_BTN_NONE, 0);
-        dirty_win(w);
+        dirty_win_content(w);          /* the app repaints; the frame does not move */
     }
 }
 
@@ -5185,7 +5411,8 @@ void wm_init(void)
      * dictionary is needed only by the window manager's key path -- so it
      * belongs to the subsystem that owns that path. A failure is NOT fatal and
      * is not silent: ime_ui_init() names the file on serial and the toggle
-     * then passes Ctrl+Space through, leaving ASCII input exactly as it was. */
+     * then passes IME_TOGGLE_NAME through, leaving ASCII input exactly as it
+     * was. */
     ime_ui_init();
 
     /* Ask the display for a pointer plane. Everything downstream branches on

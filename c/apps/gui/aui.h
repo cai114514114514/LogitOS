@@ -16,12 +16,23 @@
  *         frame();                            // initial paint
  *         struct logit_event e;
  *         for (;;) {
- *             if (!poll_event(&e)) { sys_yield(); continue; }
+ *             if (!poll_event(&e)) { wait_idle(0); continue; }
  *             if (e.type == EV_CLOSE) app_exit(0);
  *             aui_feed(&e); frame(); aui_feed_done();
  *         }
  *     }
  *     // frame(): aui_begin(AUI_BG); ...widgets...; aui_end();
+ *
+ * IT IS wait_idle(0) AND NOT sys_yield(), AND THAT LINE IS THE WHOLE POINT.
+ * This example said sys_yield() for two years and every app in c/apps/gui/
+ * copied it, which is how the machine came to spend 98% of its kernel entries
+ * -- 3.3 MILLION syscalls in one 8.8-second boot -- on apps taking the BKL to
+ * be told nothing had happened. wait_idle(ms) parks on this window's event
+ * queue instead (SYS_WAIT_EVENT; 0 = no timeout, wake only on an event) and
+ * does NOT consume the event, so the poll_event() drain above is unchanged.
+ * Pass a timeout ONLY for something with a real deadline -- an animation
+ * frame, a socket that must be stepped. A fixed small timeout is a spin with
+ * extra steps.
  *
  * HOVER COSTS A REPAINT. The window manager delivers EV_MOUSE_MOVE at pointer
  * rate, and an app that drops those events gets a toolkit with no hover states

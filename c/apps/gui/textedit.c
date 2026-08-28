@@ -56,9 +56,18 @@ static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v
  * so they never collide with a character". Above ASCII, `a` is either one of
  * the eight enumerated navigation codes or a Unicode code point -- the pinyin
  * IME commits CJK this way. `(char)a` truncates a code point to its low byte;
- * te_apply_key and te_utf8_encode are the fix, factored out so
- * tests/unit/textedit_test.c can drive them without a window (no gui_create,
- * no poll_event -- text/tlen/saved are the same file statics app_main uses).
+ * te_apply_key and te_utf8_encode are the fix, factored out so a host harness
+ * can drive them without a window (no gui_create, no poll_event --
+ * text/tlen/saved are the same file statics app_main uses).
+ *
+ * THAT HARNESS DOES NOT EXIST. This comment named `tests/unit/textedit_test.c`
+ * in the present tense; `ls` says no such file, and neither the root Makefile
+ * nor any of the 105 fragments under tests/ mentions the word. The factoring is
+ * real and still the right shape -- te_apply_key, te_utf8_encode, and now
+ * te_cp_len/te_fit/te_walk are all pure functions over the file statics, which
+ * is exactly what a host gate needs -- but a cited gate that is not in the tree
+ * reads as coverage and is not, so it is named as absent here rather than left
+ * to be believed. The same harness would cover the wrap and the caret below.
  *
  * -DAUI_BYTE_BACKSPACE is the negative control: it reverts backspace to
  * removing one BYTE, the original bug -- a CJK character deleted this way
@@ -190,18 +199,188 @@ static void load_geometry(int *w, int *h)
     *h = sh > 0 ? clampi(gh, TE_H_MIN, sh) : gh;
 }
 
-/* Where the caret sits, and how many lines the text occupies, under the current
- * wrap width. Both come from one walk because they are the same walk -- and the
- * caret's line is what the scroll has to chase. */
-static void measure(int cols, int *nlines, int *cl, int *cc)
+/* ---- Wrapping and the caret: ONE walk, in CODE POINTS and REAL ADVANCES ----
+ *
+ * What stood here counted BYTES and multiplied by the width of "M":
+ *
+ *     for (int i = 0; i < tlen; i++)
+ *         if (text[i] == '\n')      { line++; col = 0; }
+ *         else if (col + 1 >= cols) { line++; col = 1; }
+ *         else                      { col++; }
+ *     ...  caret x = col * text_measure_px("M", 1, px, 1)
+ *
+ * and that is ONE bug with two symptoms, which is why both are fixed here and
+ * not in two places: `col` is the caret AND it is the wrap. 你好 is six UTF-8
+ * bytes and two glyphs, so the caret advanced six cells for two characters and
+ * the wrap budget was spent three times too fast -- and because the break was
+ * taken at a byte index it could land between a lead byte and its continuations
+ * and split one character across two display lines.
+ *
+ * The three were watched failing together before anything was changed, against
+ * a host stub of SYS_TEXT_MEASURE with an 8 px 'M' and a 15 px Han glyph:
+ *
+ *   你好                     caret x = 48, the glyphs end at 30   -> an 18 px gap
+ *   20 Han, 150 px column    wrapped into 4 lines; 10 per line fit -> 2
+ *   the same buffer          2 breaks landed inside a UTF-8 sequence
+ *
+ * The exact pixel numbers belong to that stub -- the real ones are whatever
+ * ui.ttf and mono.ttf give and only the device can say -- but the shape does
+ * not depend on the ratio, and neither does the third row.
+ *
+ * This is the third instance of the trap aui.c:1459 records: the pinyin IME
+ * commits CJK, and every piece of arithmetic in a toolkit that predates it
+ * still counts in bytes.
+ *
+ * THE CELL WAS NEVER RIGHT EITHER, not even for the font it named. The run is
+ * drawn with mono=1, which selects mono.ttf -- "printable ASCII plus NBSP, no
+ * CJK at all" -- so every CJK code point falls through tl_fonts()' preference
+ * order in c/kernel/gui/text.c to ui.ttf and is drawn at THAT font's advance.
+ * text_measure_px("M", ...) cannot see that; nothing that measures one
+ * character and multiplies can. The file header above already records the same
+ * mistake in its first form ("the monospace advance was assumed to be 8 pixels
+ * regardless of the font or the backing scale"), so this file has been bitten
+ * here before and the lesson to keep is the general one: no cell arithmetic.
+ *
+ * So every width below is text_measure_px() over the ACTUAL prefix, with
+ * mono=1 -- the same length-delimited run, the same font-preference order and
+ * the same shaping the draw will use. That is the invariant text.c states for
+ * itself: "text_measure and text_draw_run must agree at the same px ... a
+ * separate measuring path would drift a few pixels per line in a way nobody
+ * could reproduce, so there is not one." te_walk() is that single path on this
+ * side: it measures and draws in one function behind a `draw` flag, exactly
+ * like layout()'s, so the wrap the caret is placed against cannot be a
+ * different wrap from the one on screen.
+ *
+ * COST, measured rather than estimated, and it is not flat. te_fit() is ONE
+ * text_measure_px for a line that fits and a bisection for one that does not,
+ * and draw() runs the walk TWICE -- the scroll depends on the caret's line, the
+ * caret is at the end of the buffer, so the whole text is walked before the
+ * first glyph can be placed. Counted on the host against a stub of
+ * SYS_TEXT_MEASURE, at the full MAXT buffer and a 500 px text column:
+ *
+ *   7,900 B, a newline every 60 chars   131 lines    130 calls/walk    260/repaint
+ *   7,900 B, no newlines at all         128 lines  1,612 calls/walk  3,224/repaint
+ *
+ * The first row is the ordinary case and is one call per line. The second is
+ * 12.6 per line because te_fit's upper bound is the whole LOGICAL line, so
+ * every break bisects 7,900 bytes rather than the ~60 it will land in. Both are
+ * O(text), not O(visible), which is inherent to a caret that lives at the end.
+ * If either ever shows up in a profile, the fix is a line-start cache keyed on
+ * (tlen, avail, px) -- not a second, cheaper wrap, which is the mistake this
+ * whole comment is about. */
+
+/* Bytes in the UTF-8 sequence starting at `i`: at least 1, never past `limit`,
+ * never more than the 4 a legal sequence can occupy.
+ *
+ * Counted from CONTINUATION bytes rather than decoded out of the lead byte on
+ * purpose -- a truncated or malformed sequence still advances by one, so no
+ * input can stall the walk and no break can be taken inside a sequence. The
+ * cap at 4 is not decoration: this is te_fit's floor, the one place a line is
+ * allowed to be wider than the window, and without it a file of 2,000 bare
+ * continuation bytes glues into a single 2,000-byte "code point" that te_fits
+ * never gets to refuse -- straight into gui_text_run's silent clamp at 1023.
+ * Four is the largest a real sequence can be, so the cap can only ever bind on
+ * input that was already malformed. */
+static int te_cp_len(int i, int limit)
 {
-    int line = 0, col = 0;
-    for (int i = 0; i < tlen; i++) {
-        if (text[i] == '\n')      { line++; col = 0; }
-        else if (col + 1 >= cols) { line++; col = 1; }
-        else                      { col++; }
+    int n = 1;
+    while (n < 4 && i + n < limit && te_is_cont(text[i + n])) n++;
+    return n;
+}
+
+/* Largest UTF-8 boundary at or below `n` bytes past `off`. */
+static int te_bound(int off, int n)
+{
+    while (n > 0 && te_is_cont(text[off + n])) n--;
+    return n;
+}
+
+/* Do the first `n` bytes at `off` fit in `avail` device px?
+ *
+ * A width of 0 for a NON-EMPTY run is a REFUSAL, not a measurement of zero, and
+ * reading it as "fits" is how this fix would have shipped its own silent
+ * truncation. wm.c's SYS_TEXT_MEASURE answers 0 when len exceeds USER_TEXT_MAX
+ * (1024) and when px is out of range, and SYS_GUI_TEXT_RUN then clamps the draw
+ * to 1023 bytes without telling anyone -- so a 2,000-byte line with no newline
+ * in it would have "fitted", drawn its first 1023 bytes, and dropped the rest
+ * with no symptom at all. Refusing here keeps that limit spelled ONCE, in the
+ * kernel that owns it, instead of a 1024 copied into this file to disagree with
+ * it later (one jar, two doors); and if the kernel's limit ever moves, this
+ * side answers with a short line rather than a lost one. */
+static int te_fits(int off, int n, int avail, int px)
+{
+    if (n <= 0) return 1;
+    int w = text_measure_px(text + off, n, px, 1);
+    return w > 0 && w <= avail;
+}
+
+/* Bytes of [start, limit) that fit in `avail`: the whole run when it fits, else
+ * the largest prefix that does -- always on a code point boundary, and never 0,
+ * so a single code point wider than the entire line takes a line to itself
+ * instead of looping forever. Bisection is sound because glyph advances are
+ * non-negative, so a longer prefix is never narrower. */
+static int te_fit(int start, int limit, int avail, int px)
+{
+    int n = limit - start;
+    if (n <= 0) return 0;
+    if (te_fits(start, n, avail, px)) return n;
+
+    int lo = 0, hi = n;              /* lo fits and is aligned; hi is known not to */
+    for (;;) {
+        int mid = te_bound(start, lo + (hi - lo) / 2);
+        if (mid <= lo) mid = lo + te_cp_len(start + lo, limit);  /* next boundary up */
+        if (mid >= hi) break;                                    /* none strictly between */
+        if (te_fits(start, mid, avail, px)) lo = mid; else hi = mid;
     }
-    *nlines = line + 1; *cl = line; *cc = col;
+    return lo > 0 ? lo : te_cp_len(start, limit);
+}
+
+/* One display line beginning at `start`. *drawlen is the byte range to draw (a
+ * terminating '\n' is consumed, not drawn); *next is where the following
+ * display line begins. Returns 1 if there IS a following line -- a '\n' was
+ * consumed or the line was wrapped -- and 0 at the end of the buffer.
+ *
+ * Progress is guaranteed on the `more` path (te_fit's floor is one code point,
+ * and the newline branch steps past the newline), which is what makes the caller
+ * a `for(;;)` that cannot spin. */
+static int te_line_break(int start, int avail, int px, int *drawlen, int *next)
+{
+    int e = start;
+    while (e < tlen && text[e] != '\n') e++;
+
+    int fit = te_fit(start, e, avail, px);
+    if (fit < e - start) { *drawlen = fit; *next = start + fit; return 1; }
+
+    *drawlen = e - start;
+    if (e < tlen) { *next = e + 1; return 1; }
+    *next = e; return 0;
+}
+
+/* The walk. Always measures; draws the visible lines when `draw` is set.
+ * Reports the display-line count, the caret's line, and the caret's x offset
+ * from the left edge of the text in px -- from the real advances of the prefix
+ * it follows, not from a column index.
+ *
+ * The caret is at the END of the buffer: this app appends and backspaces and
+ * te_apply_key drops every navigation key, so there is no caret to move. That
+ * is what makes the last line the walk produces the caret's line, and its whole
+ * drawn extent the caret's prefix -- one measurement of exactly the run that
+ * was handed to gui_text_run, so the two cannot disagree by a kerning pair. */
+static void te_walk(int avail, int px, int x0, int y0, int lh,
+                    int scroll_, int rows, int draw,
+                    int *nlines, int *cl, int *cx)
+{
+    int start = 0, line = 0, dl = 0;
+    for (;;) {
+        int nx, more = te_line_break(start, avail, px, &dl, &nx);
+        if (draw && dl > 0 && line >= scroll_ && line < scroll_ + rows)
+            gui_text_run(x0, y0 + (line - scroll_) * lh, px, 1, AUI_TEXT, text + start, dl);
+        if (!more) break;
+        start = nx; line++;
+    }
+    *nlines = line + 1;
+    *cl = line;
+    *cx = dl > 0 ? text_measure_px(text + start, dl, px, 1) : 0;
 }
 
 static void draw(void)
@@ -210,18 +389,26 @@ static void draw(void)
     aui_begin(AUI_BG);
 
     int px = AUI_FS_BODY;
-    int adv = text_measure_px("M", 1, px, 1);
-    if (adv < 1) adv = 1;
     int lh = px + AUI_SP(1);
     int pad = AUI_SP(3);
     int bar = AUI_H_CTL;
 
     int viewh = H - bar - 2 * pad;
     int rows  = viewh / lh; if (rows < 1) rows = 1;
-    int cols  = (W - 2 * pad) / adv; if (cols < 4) cols = 4;
+    /* The wrap width is a PIXEL budget now, not a column count. The floor is one
+     * em rather than four columns: at that point te_fit degenerates to one code
+     * point per line, which is ugly and still correct -- no split sequences, no
+     * spin. The caret may sit at exactly pad + avail on a line that fills the
+     * budget; that is W - pad, still AUI_SP(1) inside the page surface below,
+     * so no column is reserved for it the way the old `col + 1 >= cols` did. */
+    int avail = W - 2 * pad; if (avail < px) avail = px;
 
-    int nlines, cl, cc;
-    measure(cols, &nlines, &cl, &cc);
+    /* Pass one measures. The scroll has to chase the caret's line and the caret
+     * is at the end of the buffer, so the whole text is walked before anything
+     * can be placed. Pass two draws at the scroll this produced -- the SAME
+     * function, so there is no second wrap to disagree with the first. */
+    int nlines, cl, cx;
+    te_walk(avail, px, 0, 0, lh, 0, 0, 0, &nlines, &cl, &cx);
     if (cl < scroll)            scroll = cl;
     if (cl >= scroll + rows)    scroll = cl - rows + 1;
     if (scroll > nlines - 1)    scroll = nlines - 1;
@@ -233,24 +420,10 @@ static void draw(void)
     aui_round(pad - AUI_SP(1), pad - AUI_SP(1),
               W - 2 * (pad - AUI_SP(1)), viewh + AUI_SP(2), AUI_R_MD, AUI_SURFACE);
 
-    int line = 0, col = 0, start = 0, y = pad;
-    for (int i = 0; i <= tlen; i++) {
-        int brk = (i == tlen) || text[i] == '\n' || col + 1 >= cols;
-        if (brk) {
-            int len = i - start;
-            if (i < tlen && text[i] != '\n') len++;      /* the wrapped char stays on this line */
-            if (line >= scroll && line < scroll + rows && len > 0)
-                gui_text_run(pad, y, px, 1, AUI_TEXT, text + start, len);
-            if (line >= scroll) y += lh;
-            line++;
-            start = i + ((i < tlen && text[i] == '\n') ? 1 : 0);
-            if (i < tlen && text[i] != '\n') { start = i + 1; col = 1; } else col = 0;
-            if (line >= scroll + rows) break;
-        } else col++;
-    }
+    te_walk(avail, px, pad, pad, lh, scroll, rows, 1, &nlines, &cl, &cx);
 
     if (cl >= scroll && cl < scroll + rows)
-        aui_fill(pad + cc * adv, pad + (cl - scroll) * lh, 2, px, AUI_ACCENT);
+        aui_fill(pad + cx, pad + (cl - scroll) * lh, 2, px, AUI_ACCENT);
 
     /* Status bar, in the toolkit's colours, so it is a strip of chrome in both
      * themes instead of a light-mode rectangle. */

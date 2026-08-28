@@ -39,6 +39,13 @@ void wm_app_exit(void);
  * nothing will ever repaint -- there is deliberately no periodic full repaint
  * left to cover for it. Over-reporting is only slow. */
 void wm_damage(int x, int y, int w, int h);
+
+/* The whole menu bar, for kernel chrome OUTSIDE this file whose INDICATOR lives
+ * in the bar (today: the IME's 中/EN state). Deliberately not "call wm_damage(0,
+ * 0, W, MBH) yourself": W and MBH are wm.c's, and a caller that hard-codes the
+ * menu bar's height is a second definition of it -- the shape this tree has
+ * already paid for twice (LOGIT_PATH_LOG, LOGIT_ARG_MAX). */
+void wm_damage_menubar(void);
 int  wm_dark(void);                /* 1 if the system theme is dark */
 
 /* The third one, for the input method's candidate bar (c/kernel/gui/ime_ui.c).

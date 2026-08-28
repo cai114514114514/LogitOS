@@ -120,6 +120,9 @@ int inflate_raw(const uint8_t *in, int inlen, uint8_t *out, int outcap, int *out
 #define CH_BODY_MAX       24576      /* the JSON request body                  */
 #define CH_ERRBODY_MAX    2048       /* a non-200 response, kept for its message */
 #define CH_REPAINT_MS     40         /* >= 40 ms between stream-driven repaints */
+#define CH_PUMP_MS        10         /* the sleep while a socket is live: one
+                                      * kernel tick, which is monotonic_ms()'s
+                                      * whole resolution -- see THE SLEEP below */
 #define CH_IDLE_MS        30000      /* no progress for this long -> give up   */
 #define CH_STATUS_MAX     256
 
@@ -1079,6 +1082,33 @@ void app_main(void)
             else
                 g_frames_skipped++;
         }
-        sys_yield();
+
+        /* ---- THE SLEEP -----------------------------------------------------
+         * Was sys_yield(): two syscalls a turn, each taking the BKL to be told
+         * nothing had happened, and under TCG that is host CPU taken away from
+         * the compositor. There are exactly two things here that a window event
+         * does not wake:
+         *
+         *   the socket   ST_DIAL/ST_STREAM must call pump() to step it, and it
+         *                has no wakeup on this window's queue. CH_PUMP_MS is
+         *                the kernel tick -- monotonic_ms() moves in tens, so a
+         *                smaller number buys nothing and only looks smaller.
+         *   the budget   a delta that was rate-limited above leaves g_dirty
+         *                set; the frame it is owed is due at
+         *                g_last_paint + CH_REPAINT_MS.
+         *
+         * Idle -- no stream, nothing dirty -- is a real block, so a chat window
+         * nobody is typing into costs zero syscalls instead of tens of
+         * thousands a second. */
+        {
+            int wait_ms = 0;                     /* 0 = park until an event */
+            if (g_state == ST_DIAL || g_state == ST_STREAM) wait_ms = CH_PUMP_MS;
+            else if (g_dirty) {
+                long long left = (long long)(g_last_paint + CH_REPAINT_MS)
+                               - (long long)monotonic_ms();
+                wait_ms = left > 0 ? (int)left : 1;
+            }
+            wait_idle(wait_ms);
+        }
     }
 }
