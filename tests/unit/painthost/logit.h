@@ -38,6 +38,11 @@ struct paintop {
     int alpha;             /* BLIT: the source alpha. 255 elsewhere. */
     int radius;            /* RRECT */
     int px, mono;          /* TEXT */
+    int bold;              /* TEXT: the weight the display item asked for.
+                            * Recorded so a gate can assert that <h1> and
+                            * <strong> reach the syscall BOLD -- the whole
+                            * failure being fixed was a bit that existed at
+                            * every layer and was dropped at this one. */
     const char *text; int len;
     int solid;             /* BLIT: 1 when the source was a single pixel, i.e.
                             * an alpha FILL rather than an image */
@@ -60,12 +65,12 @@ static inline struct paintop *paint_push(int kind)
     struct paintop *o = &paint_ops[paint_nops++];
     o->kind = kind; o->x = o->y = o->w = o->h = 0;
     o->color = 0; o->alpha = 255; o->radius = 0;
-    o->px = 0; o->mono = 0; o->text = 0; o->len = 0; o->solid = 0;
+    o->px = 0; o->mono = 0; o->bold = 0; o->text = 0; o->len = 0; o->solid = 0;
     o->sw = o->sh = 0; o->nsamp = 0;
     return o;
 }
 
-struct logit_run { int x, y, px, mono; unsigned color; const char *s; int len; };
+struct logit_run { int x, y, px, mono; unsigned color; const char *s; int len; int bold; };
 struct logit_blit { int x, y, w, h; const unsigned char *rgba; int sw, sh; };
 
 static inline void gui_rect(int x, int y, int w, int h, unsigned color)
@@ -78,10 +83,13 @@ static inline void gui_rrect(int x, int y, int w, int h, int radius, unsigned co
 static inline void gui_clip(int x, int y, int w, int h)
 { struct paintop *o = paint_push(OP_CLIP); o->x=x; o->y=y; o->w=w; o->h=h; }
 
+static inline void gui_text_run_w(int x, int y, int px, int mono, unsigned color,
+                                  const char *s, int len, int bold)
+{ struct paintop *o = paint_push(OP_TEXT); o->x=x; o->y=y; o->px=px; o->mono=mono;
+  o->color=color; o->text=s; o->len=len; o->bold=bold; }
 static inline void gui_text_run(int x, int y, int px, int mono, unsigned color,
                                 const char *s, int len)
-{ struct paintop *o = paint_push(OP_TEXT); o->x=x; o->y=y; o->px=px; o->mono=mono;
-  o->color=color; o->text=s; o->len=len; }
+{ gui_text_run_w(x, y, px, mono, color, s, len, 0); }
 
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba,
                             int sw, int sh)

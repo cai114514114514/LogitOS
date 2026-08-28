@@ -7,8 +7,23 @@
 #include "reasm.h"
 #include "route.h"
 #include "kprintf.h"
+/* LOGIT_WEAK/LOGIT_WEAK_STUB/LOGIT_HAVE. The weak DECLARATIONS below are an
+ * ELF idiom; read the header before touching any of them. */
+#include "../../../include/weaksym.h"
 
+/* DECLARED ONLY IF NOBODY ELSE HAS. This file is freestanding in the kernel and
+ * has no <string.h>, but three host gates #include it (ip_route_test.c,
+ * ip_arp_test.c, net_proto_test.c) after including <string.h> -- and on the host
+ * this tree documents as its toolchain, Apple's <string.h> defines memcpy as a
+ * FORTIFIED MACRO at every optimisation level (verified: `#ifdef memcpy` fires at
+ * -O0 and -O2). A bare prototype then expands into the macro body and the
+ * compiler reports "conflicting types for '__builtin___memcpy_chk'", four errors,
+ * before a byte is measured. `make test-ip-route` had been dead that way.
+ * The guard costs the freestanding build nothing: with no <string.h> in scope
+ * memcpy is not a macro, and the declaration is emitted exactly as before. */
+#ifndef memcpy
 void *memcpy(void *, const void *, size_t);
+#endif
 
 /* The interface indices the routing table refers to.
  *
@@ -21,9 +36,17 @@ void *memcpy(void *, const void *, size_t);
  *
  * When they are absent the constants from route.h stand in; netdev_init()
  * registers loopback first precisely so those constants are true by
- * construction, and netdev.c carries the _Static_assert that says so. */
-int netdev_primary_ifindex(void) __attribute__((weak));
-int netdev_loopback_ifindex(void) __attribute__((weak));
+ * construction, and netdev.c carries the _Static_assert that says so.
+ *
+ * Through include/weaksym.h since 2026-08-28: an undefined weak reference is
+ * an ELF property, and on the Mach-O dev host it is a hard link error -- both
+ * of the host gates named above died at link on these two and on the three
+ * upper-layer hooks below, in a file the change that broke them never
+ * touched. */
+int netdev_primary_ifindex(void) LOGIT_WEAK;
+int netdev_loopback_ifindex(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(netdev_primary_ifindex);
+LOGIT_WEAK_STUB(netdev_loopback_ifindex);
 
 /* ---- net_cfg -> the routing table --------------------------------------- */
 
@@ -53,12 +76,12 @@ static void route_sync(void)
      * s3.2.1.3), and a /32 would leave 127.0.0.2 falling through to the
      * default route and onto the wire, which is the original bug moved one
      * address to the left rather than fixed. */
-    int lo = netdev_loopback_ifindex ? netdev_loopback_ifindex() : RT_OIF_LO;
+    int lo = LOGIT_HAVE(netdev_loopback_ifindex) ? netdev_loopback_ifindex() : RT_OIF_LO;
     if (lo > 0)
         route_v4_iface(lo, 0x7F000001u, 0xFF000000u, 0, RT_F_LOCAL);
 
     if (net_cfg.ip || net_cfg.mask) {           /* configured at all */
-        int oif = netdev_primary_ifindex ? netdev_primary_ifindex() : RT_OIF_NIC0;
+        int oif = LOGIT_HAVE(netdev_primary_ifindex) ? netdev_primary_ifindex() : RT_OIF_NIC0;
         if (oif > 0)
             route_v4_iface(oif, net_cfg.ip, net_cfg.mask, net_cfg.gw, 0);
     }
@@ -108,10 +131,13 @@ struct ip_hdr {
 } __attribute__((packed));
 
 /* Upper-layer hooks are optional until their layers are linked in. */
-void icmp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+void icmp_input(uint32_t, const uint8_t *, uint16_t) LOGIT_WEAK;
 void udp_input(uint32_t, const uint8_t *, uint16_t,
-               const uint8_t *) __attribute__((weak));
-void tcp_input(uint32_t, const uint8_t *, uint16_t) __attribute__((weak));
+               const uint8_t *) LOGIT_WEAK;
+void tcp_input(uint32_t, const uint8_t *, uint16_t) LOGIT_WEAK;
+LOGIT_WEAK_STUB(icmp_input);
+LOGIT_WEAK_STUB(udp_input);
+LOGIT_WEAK_STUB(tcp_input);
 
 uint16_t ip_checksum(const void *data, int len)
 {
@@ -300,11 +326,11 @@ void ip_input(const uint8_t *frame, uint16_t len)
         l4len = g.l4len;
     }
 
-    if (h->proto == IP_PROTO_ICMP && icmp_input)
+    if (h->proto == IP_PROTO_ICMP && LOGIT_HAVE(icmp_input))
         icmp_input(src, l4, l4len);
-    else if (h->proto == IP_PROTO_UDP && udp_input)
+    else if (h->proto == IP_PROTO_UDP && LOGIT_HAVE(udp_input))
         udp_input(src, l4, l4len, iph);
-    else if (h->proto == IP_PROTO_TCP && tcp_input)
+    else if (h->proto == IP_PROTO_TCP && LOGIT_HAVE(tcp_input))
         tcp_input(src, l4, l4len);
 
     if (frag & 0x3FFFu)

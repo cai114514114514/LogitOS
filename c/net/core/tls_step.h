@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "tls.h"
 #include "logit_abi.h"      /* SOCK_F_ALPN_* */
+#include "../../../include/weaksym.h"   /* the weak re-declarations below */
 
 /* WHAT THE SOCKET LAYER ASSUMES ABOUT TLS, AND THE ONE ADAPTER IT NEEDS.
  *
@@ -47,16 +48,20 @@
  * blocked on someone else's edit and not. sock.c checks the pointers before
  * calling. Once the TLS side is settled these three lines can go and the
  * declarations in tls.h become the only ones. */
-int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now) __attribute__((weak));
-int tls_step(int id) __attribute__((weak));
-int tls_alpn(int id, char *out, int max) __attribute__((weak));
+int tls_start(int tcp_id, const char *host, const char *alpn, int64_t now) LOGIT_WEAK;
+int tls_step(int id) LOGIT_WEAK;
+int tls_alpn(int id, char *out, int max) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tls_start);
+LOGIT_WEAK_STUB(tls_step);
+LOGIT_WEAK_STUB(tls_alpn);
 
 /* Decrypted bytes buffered and ready, without consuming them. OPTIONAL -- it
  * does not exist yet, so the declaration is weak and resolves to 0. Where it is
  * absent, sock_poll() reports readability from the TCP layer instead, which is
  * right except in the single case where a whole record has been decrypted into
  * the TLS buffer while the socket's wire buffer went empty. */
-int tls_pending(int sess) __attribute__((weak));
+int tls_pending(int sess) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tls_pending);
 
 /* SOCK_F_ALPN_* bits -> the comma-separated list tls_start() wants.
  *

@@ -166,10 +166,35 @@ void driver_register(struct driver *drv);
 
 /* Declarative registration: emits a pointer into the `logit_drivers` linker
  * section, which linker.ld brackets with __start_/__stop_logit_drivers. This is
- * what makes a driver a self-contained file -- there is no central list. */
+ * what makes a driver a self-contained file -- there is no central list.
+ *
+ * THE SECTION NAME IS AN ELF NAME AND THE HOST GATE IS NOT ELF. Mach-O sections
+ * are two-part (`__SEG,__sect`) and clang refuses a bare name outright:
+ * "mach-o section specifier requires a segment and section separated by a
+ * comma" -- four errors, one per DRIVER_DECLARE, in a file the test never
+ * touches. That is what has kept `make test-netif` and `test-netif-negctl` from
+ * BUILDING on the documented dev host since the commit that shipped them
+ * (1ed57814b already carries all four declarations), so the "43 checks" this
+ * gate is quoted for was never reproducible here. It is the same shape as
+ * include/weaksym.h's: an idiom that is correct on the target and has no
+ * meaning on the host the tests run on.
+ *
+ * The Mach-O spelling is a real section in a real segment, so `used` still
+ * keeps the pointer and the object still assembles. What it does NOT give is
+ * `__start_`/`__stop_` -- those are an ELF linker's doing, and device.c's walk
+ * is compiled out of host builds anyway (it needs the kernel). The point here
+ * is only that the DECLARATION assembles, so a host gate can link the drivers
+ * it wants to test; the section walk stays an ELF-target property, tested on
+ * the device by test-devmodel-*. */
+#if defined(__MACH__)
+#  define LOGIT_DRV_SECTION "__DATA,__lgtdrv"
+#else
+#  define LOGIT_DRV_SECTION "logit_drivers"
+#endif
+
 #define DRIVER_DECLARE(sym)                                                   \
     static struct driver *const __drvref_##sym                                \
-        __attribute__((used, section("logit_drivers"))) = &(sym)
+        __attribute__((used, section(LOGIT_DRV_SECTION))) = &(sym)
 
 /* ------------------------------------------------------------ the model -- */
 

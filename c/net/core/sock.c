@@ -4,6 +4,7 @@
 #include "tls.h"            /* tls_send/tls_recv/tls_close: unchanged, already
                              * non-blocking-shaped (see tls_step.h for the rest) */
 #include "tls_step.h"
+#include "../../../include/weaksym.h"   /* LOGIT_HAVE, used on tls_step.h's weak entry points */
 #include "net.h"
 #include "tcp.h"
 #include "dns.h"
@@ -14,8 +15,18 @@
 #include "rtc.h"
 #include "kprintf.h"
 
+/* See the same guard in c/net/ip/ip.c for the full argument. Short form: this
+ * file is freestanding in the kernel, and tests/unit/ip6_fallback_test.c
+ * #includes it after <string.h>, where the host's fortified mem* MACROS turn a
+ * bare prototype into a redeclaration of __builtin___mem*_chk. These two lines
+ * are what took `test-ip6-fallback` and its control down -- both in the host CI
+ * suite, so ci.sh had been red on them rather than skipping them. */
+#ifndef memcpy
 void *memcpy(void *, const void *, size_t);
+#endif
+#ifndef memset
 void *memset(void *, int, size_t);
+#endif
 
 /* 16 sockets against 32 TCP slots. Deliberately fewer than NCONN: a socket that
  * has been closed hands its TCP slot to FIN_WAIT/TIME_WAIT for a while after the
@@ -451,7 +462,7 @@ static void pump_one(struct sock *s)
         if (!(s->flags & SOCK_F_TLS)) { s->state = S_READY; s->t0 = now; return; }
         /* Weak (see tls_step.h): if the stepped TLS side is not linked, fail the
          * socket rather than send plaintext to port 443. */
-        if (!tls_start || !tls_step || !tls_alpn) { fail(s, SOCK_E_TLS); return; }
+        if (!LOGIT_HAVE(tls_start) || !LOGIT_HAVE(tls_step) || !LOGIT_HAVE(tls_alpn)) { fail(s, SOCK_E_TLS); return; }
         s->tls = tls_start(s->tcp, s->host, tls_alpn_list(s->flags), now_unix());
         if (s->tls < 0) { s->tls = -1; fail(s, SOCK_E_TLS); return; }
         s->state = S_TLS;
@@ -557,7 +568,7 @@ int sock_poll_bits(int fd, int pid)
         /* Plaintext already decrypted counts even when the wire buffer is empty;
          * without tls_pending we can only see the wire, which is right except in
          * that one case (documented in tls_step.h). */
-        int pend = tls_pending ? tls_pending(s->tls) : 0;
+        int pend = LOGIT_HAVE(tls_pending) ? tls_pending(s->tls) : 0;
         if (pend > 0) bits |= SOCK_P_READABLE;
         else if (avail > 0) bits |= SOCK_P_READABLE;
         else if (avail < 0) bits |= SOCK_P_EOF;

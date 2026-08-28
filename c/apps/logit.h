@@ -3,12 +3,43 @@
 
 #include "logit_abi.h"     /* shared with the kernel (-Iinclude) */
 
+/* THE SYSCALL, AND WHY IT IS GUARDED.
+ *
+ * `int $0x80` with "=a"/"D"/"S"/"d" is x86-64 register-constraint syntax. On the
+ * host this tree documents as its toolchain -- macOS / Apple Silicon -- clang
+ * refuses it outright: "invalid output constraint '=a' in asm", one error, in
+ * whatever host gate happened to pull this header in. That is what has kept
+ * `make test-wpt` from BUILDING here, so the 149,318/246,542 (60.6%) this tree
+ * quotes for WPT is a number from a different machine and has never been
+ * reproducible on this one.
+ *
+ * THE GUARD IS HERE RATHER THAN IN A FIFTH STUB. There are already FOUR host
+ * copies of this header (tests/unit/{refhost,painthost,h2stub,loaderhost}/logit.h),
+ * each shadowing this one through an earlier -I, and each a place the real
+ * header can drift away from. Four doors on one jar is the shape this tree has
+ * paid for three times; a fifth would be the wrong answer to "the fifth gate
+ * cannot compile".
+ *
+ * NOTHING IS LOST. No host build calls `_sys` -- verified, the four stubs above
+ * define their own gui_* inlines and none of them reaches this function -- so
+ * on a non-x86 host it becomes a definition that exists to be linkable and
+ * TRAPS if anybody ever does call it. A stub that quietly returned 0 would be
+ * worse: a host test would then believe a syscall had succeeded. */
+#if defined(__x86_64__) || defined(__i386__)
 static inline long _sys(long n, long a, long b, long c)
 {
     long r;
     __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory");
     return r;
 }
+#else
+static inline long _sys(long n, long a, long b, long c)
+{
+    (void)n; (void)a; (void)b; (void)c;
+    __builtin_trap();          /* loud, not 0 -- see the comment above */
+    return -1;
+}
+#endif
 
 static inline unsigned rgb(int r, int g, int b)
 {
@@ -167,11 +198,31 @@ static inline int http_status(void) { return (int)_sys(SYS_HTTP_STATUS, 0, 0, 0)
 /* Copy the last http_get response body into buf (<= max); returns length. */
 static inline int http_body(char *buf, int max) { return (int)_sys(SYS_HTTP_BODY, (long)buf, max, 0); }
 
-/* Render primitives used by the app-side paint (kernel owns fonts + framebuffer). */
+/* Render primitives used by the app-side paint (kernel owns fonts + framebuffer).
+ *
+ * WEIGHT ARRIVES AS A TRAILING ARGUMENT, and the plain names keep their exact
+ * old signatures.  ~30 call sites across c/apps/gui (and a 7-argument
+ * gui_text_run() MACRO in aui.c that wraps it for the paint counters) pass no
+ * weight and never will; forcing an argument on them would be churn in files
+ * that have nothing to say about bold.  The `_w` forms are the real calls and
+ * the plain ones are two-line wrappers over them, in this file, so there is
+ * one implementation and not two.
+ *
+ * `mono` in text_measure_px IS the face mask (LOGIT_FACE_*), not a boolean --
+ * bit 0 still means exactly what it meant, so every existing caller passing
+ * 0 or 1 is unchanged, and bit 1 is bold.  It is a mask here rather than a
+ * separate argument for a reason that is not aesthetic: 23 host test files
+ * define their own `int text_measure(const char *, int, int, int)` stub for
+ * the browser to link against (tests/unit/{layout,paint,wpt,css_*}_test.c and
+ * friends), every one of them ignoring the 4th argument.  A 5th argument would
+ * have meant editing all 23 to say nothing new. */
 static inline int text_measure_px(const char *s, int len, int px, int mono)
-{ return (int)_sys(SYS_TEXT_MEASURE, (long)s, len, ((long)px << 1) | (mono & 1)); }
+{ return (int)_sys(SYS_TEXT_MEASURE, (long)s, len, ((long)px << 2) | (mono & 3)); }
+static inline void gui_text_run_w(int x, int y, int px, int mono, unsigned color,
+                                  const char *s, int len, int bold)
+{ struct logit_run r = { x, y, px, mono, color, s, len, bold }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
 static inline void gui_text_run(int x, int y, int px, int mono, unsigned color, const char *s, int len)
-{ struct logit_run r = { x, y, px, mono, color, s, len }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
+{ gui_text_run_w(x, y, px, mono, color, s, len, 0); }
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
 { struct logit_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
 /* Decode an image file into `rgba` (>= w*h*4 bytes); returns 0 + sets *w,*h, or -1. */

@@ -12,6 +12,31 @@
  * directions. On a host without /proc/cpuinfo the structural checks still run
  * and the cross-check reports itself skipped rather than passing quietly.
  *
+ * THIS BINARY RUNS ON THE HOST, NOT ON THE TARGET, and until 2026-08-28 it
+ * did not say so. On the host CLAUDE.md documents -- macOS / Apple Silicon --
+ * cpufeat.c compiles its CPUID path away entirely (CPUFEAT_X86 in
+ * c/kernel/cpu/cpufeat.c) because there is no CPUID instruction to execute,
+ * so `cpu_features()` correctly reports is_x86 = 0 and 0/56 features. This
+ * test then asserted `c->is_x86 == 1` and eight architectural baselines
+ * against it and printed:
+ *
+ *     0/56 present:
+ *     1622 checks, 12 failed
+ *     CPUFEAT TEST FAILED
+ *
+ * Not one of those twelve was about the decode. `make test` reaches this
+ * through `test: test-crypto` -> `test-cpufeat`, so the FIRST command in
+ * CLAUDE.md has been red on its own documented host since 2026-08-07 for a
+ * reason that has nothing to do with the code under test -- which is worse
+ * than an absent gate, because it teaches a reader to walk past the word
+ * FAIL. It skips loudly now, naming every property it did not check.
+ *
+ * The split is by what the property depends on, not by convenience: the name
+ * table and the out-of-range refusals are pure data and run everywhere; the
+ * bit tuples, the leaf gating, the XSAVE geometry, the truncation canary (an
+ * empty feature list has nothing to truncate) and the /proc/cpuinfo oracle
+ * all need a real x86 and are reported as NOT CHECKED.
+ *
  * Build: see the `test-cpufeat` target in the Makefile. */
 
 #include <stdio.h>
@@ -108,7 +133,7 @@ static void test_basics(void)
     }
 }
 
-static void test_string(void)
+static void test_string(int x86)
 {
     char buf[1024];
     int n = cpu_features_str(buf, (int)sizeof buf);
@@ -119,18 +144,30 @@ static void test_string(void)
 
     /* Truncation must not overrun and must not lie about the count. The
      * canary catches a one-past-the-end NUL, which a bounds check that
-     * forgets the terminator writes every time. */
-    char small[24];
-    char guard[8];
-    memset(guard, 0x5A, sizeof guard);
-    char *heap = malloc(sizeof small + sizeof guard);
-    memset(heap, 0x5A, sizeof small + sizeof guard);
-    int m = cpu_features_str(heap, (int)sizeof small);
-    ok(strlen(heap) < sizeof small, "truncated string stays inside the buffer");
-    ok(memcmp(heap + sizeof small, guard, sizeof guard) == 0,
-       "cpu_features_str does not write past the buffer");
-    ok(m <= n, "truncated string reports fewer features, not more");
-    free(heap);
+     * forgets the terminator writes every time.
+     *
+     * Only meaningful where features are actually present: off x86 the list
+     * is empty, cpu_features_str writes one NUL into a 24-byte buffer, and
+     * all three assertions below pass without the truncation path having been
+     * entered at all. Running them there would be a control that cannot fail
+     * -- three green lines that say nothing, which is exactly the shape
+     * tests/audit_tests.py's MUTE category exists to find. */
+    if (x86) {
+        char small[24];
+        char guard[8];
+        memset(guard, 0x5A, sizeof guard);
+        char *heap = malloc(sizeof small + sizeof guard);
+        memset(heap, 0x5A, sizeof small + sizeof guard);
+        int m = cpu_features_str(heap, (int)sizeof small);
+        ok(strlen(heap) < sizeof small, "truncated string stays inside the buffer");
+        ok(memcmp(heap + sizeof small, guard, sizeof guard) == 0,
+           "cpu_features_str does not write past the buffer");
+        ok(m <= n, "truncated string reports fewer features, not more");
+        free(heap);
+    } else {
+        printf("SKIP truncation canary: 0 features present, so a 24-byte buffer\n"
+               "     never truncates and the three assertions cannot fail\n");
+    }
 
     ok(cpu_features_str(NULL, 100) == 0, "NULL buffer is refused");
     ok(cpu_features_str(buf, 0) == 0, "zero-length buffer is refused");
@@ -222,14 +259,65 @@ static void test_against_proc_cpuinfo(void)
     printf("     /proc/cpuinfo cross-check: %d agree, %d disagree\n", agree, disagree);
 }
 
+/* --- the host-capability gate -------------------------------------------- */
+
+/* Named by the module itself rather than by a #ifdef here: cpufeat.c decides
+ * whether it has a CPUID path (CPUFEAT_X86) and reports the answer in is_x86,
+ * so this asks the code under test instead of re-deriving the predicate beside
+ * it. Two copies of "is this x86" is how one of them ends up wrong. */
+static int host_is_x86(void)
+{
+    const struct cpu_features *c = cpu_features();
+    return c && c->is_x86;
+}
+
+static void skip_loudly(void)
+{
+    printf("SKIP cpufeat: this host is not x86, so there is no CPUID to decode.\n");
+    printf("     c/kernel/cpu/cpufeat.c compiles its whole detection path out off\n");
+    printf("     x86 (CPUFEAT_X86), and correctly reports is_x86=0, 0/%d features.\n",
+           CPU_FEAT_COUNT);
+    printf("     NOT CHECKED, and nothing below should be read as covering them:\n");
+    printf("       - every feature's (leaf, subleaf, register, bit) tuple\n");
+    printf("       - the leaf-availability gating on max_leaf / max_ext_leaf\n");
+    printf("       - the vendor and brand strings\n");
+    printf("       - the XSAVE area geometry and xcr0 bits\n");
+    printf("       - the x86-64 baseline set and the feature implications\n");
+    printf("       - the /proc/cpuinfo cross-check (its independent oracle)\n");
+    printf("     STILL CHECKED below: the name table (every id named, no two\n");
+    printf("     ids sharing a name) and the out-of-range refusals -- pure data,\n");
+    printf("     host-independent, and where a copy-pasted table row shows up.\n");
+    printf("     Settle the rest on an x86-64 host (a Linux box is what supplies\n");
+    printf("     the oracle) with: make test-cpufeat\n");
+    printf("     NOT with `clang -arch x86_64` under Rosetta 2: measured\n");
+    printf("     2026-08-28, that build runs and reports vendor=GenuineIntel,\n");
+    printf("     max_leaf=13, 20/%d features -- and fails `x86-64 baseline: msr`,\n",
+           CPU_FEAT_COUNT);
+    printf("     because Rosetta's synthetic CPUID clears the MSR bit it has no\n");
+    printf("     MSRs to back. An emulator's CPUID is not an independent oracle.\n");
+}
+
 int main(void)
 {
     printf("cpufeat_test: CPUID decode\n");
-    test_basics();
+
+    int x86 = host_is_x86();
+    if (x86) {
+        test_basics();
+    } else {
+        skip_loudly();
+    }
     test_table();
-    test_string();
-    test_against_proc_cpuinfo();
+    test_string(x86);
+    if (x86) test_against_proc_cpuinfo();
+
     printf("\n%d checks, %d failed\n", checks, failures);
-    printf("%s\n", failures ? "CPUFEAT TEST FAILED" : "CPUFEAT TEST PASSED");
+    if (failures)
+        printf("CPUFEAT TEST FAILED\n");
+    else if (x86)
+        printf("CPUFEAT TEST PASSED\n");
+    else
+        printf("CPUFEAT TEST SKIPPED (non-x86 host): table checks only, "
+               "the CPUID decode is UNMEASURED here\n");
     return failures ? 1 : 0;
 }
