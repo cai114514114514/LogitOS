@@ -123,6 +123,31 @@ WEBAPI_FN void js_webapi_set_viewport(int w, int h);
  * the top of the event loop. */
 WEBAPI_FN int  js_webapi_take_navigation(char *out, int max);
 
+/* Attempt `delta` (-1 back, +1 forward; any nonzero value is honoured) within
+ * the CURRENT document's own same-document history -- the pushState/
+ * replaceState/fragment-navigation entries that live in this file's g_hist[],
+ * which is the "same-document" half of the joint session history (see
+ * tabs.c's comment above tab_hist_behind for what "joint" means and why it
+ * is split across two files that cannot see each other's counter).
+ *
+ * On success, copies the resulting href into `out`, updates `location`,
+ * queues a popstate (and a hashchange too, if the fragment differs) for the
+ * next js_webapi_pump(), and returns 1 -- the caller MUST NOT reload the
+ * document; the DOM, the JS heap and every running timer are untouched.
+ *
+ * Returns 0 and does nothing at all when the step would leave this
+ * document's own history (delta walks off either end of g_hist[]). The
+ * caller then owns the fallback: a real tab-level navigation.
+ *
+ * THIS IS THE BROWSER-CHROME DIRECTION of the seam tab_hist_joint_extra()
+ * serves for history.length. Without it, the physical Back/Forward buttons
+ * (and any keyboard equivalent) always did a full-document reload -- so a
+ * page that never left its own document, which is every client-side router
+ * (React Router, Vue Router, Next's app router, SvelteKit, Angular's
+ * router), never responded to the button real users press. Call this FIRST;
+ * fall back to a real navigation only when it returns 0. */
+WEBAPI_FN int  js_webapi_hist_step(JSContext *ctx, int delta, char *out, int max);
+
 /* The Mach-O half of the weak declarations above (include/weaksym.h): an
  * undefined weak reference is an ELF property, so each optional entry point
  * needs a weak definition in the TU that may not link the provider. Emitted
@@ -135,6 +160,7 @@ LOGIT_WEAK_STUB(js_webapi_pending);
 LOGIT_WEAK_STUB(js_webapi_close);
 LOGIT_WEAK_STUB(js_webapi_set_viewport);
 LOGIT_WEAK_STUB(js_webapi_take_navigation);
+LOGIT_WEAK_STUB(js_webapi_hist_step);
 #endif
 
 #endif /* LOGIT_JS_WEBAPI_H */

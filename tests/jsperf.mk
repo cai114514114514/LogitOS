@@ -121,6 +121,56 @@ test-js-syntax-control: $(BUILD)/negctl/quickjs.c
 	    grep -c '^FAIL:' $(BUILD)/js_syntax_control.log | sed 's/^/  /;s/$$/ checks fail without the patch, including the real baidu polyfill/'; \
 	 fi
 
+# --- test-js-propeq-control --------------------------------------------------
+# A THIRD control over the same file, over a DIFFERENT patch: LOGIT-PROP-EQ-FIX
+# (js_parse_property_name's '='/';' disambiguation for a field/binding literally
+# named "get"/"set"/"async" -- see the comment at that marker in quickjs.c and
+# the block comment above the checks in js_syntax_test.c). Deleting both marker
+# lines (one sed, both occurrences -- get/set and async share the same shape)
+# restores exactly the upstream condition and MUST fail exactly 4 checks that
+# name a field "get"/"set"/"async" or reduce the real bundles, while the baidu
+# polyfill and every other check in the file keep passing -- a control that
+# reverted the whole file would not say which patch these four checks are
+# measuring.
+#
+# EXACTLY 4 is asserted: the three "field literally named get/set/async"
+# checks plus the get/set-shape value check (the exact ember/preact-kr-
+# observable/react-kr-observable reduction). The destructuring-default check
+# (`var {get=1,set=2}={}`) is deliberately NOT one of the four and must keep
+# PASSING here -- binding-pattern property names are parsed with
+# allow_method=FALSE, so they never reach the get/set special case this patch
+# touches at all, and a control that counted it would be measuring a second,
+# unrelated code path as if it were this one. The sixth new check (`get x
+# y(){}` still rejected) must also keep PASSING -- it is what stops "accept
+# the token after get/set unconditionally" from satisfying the other four.
+$(BUILD)/negctl/quickjs_propeq.c: third_party/quickjs/quickjs.c
+	@mkdir -p $(dir $@)
+	@sed '/LOGIT-PROP-EQ-FIX/d' $< > $@
+	@[ "$$(grep -c 'LOGIT-PROP-EQ-FIX' $<)" = "2" ] || \
+	    { echo "FAIL: expected exactly 2 LOGIT-PROP-EQ-FIX markers in quickjs.c (get/set + async) -- the patch it reverts has moved"; exit 1; }
+	@grep -q 'LOGIT-PROP-EQ-FIX' $@ && \
+	    { echo "FAIL: the negative-control sed left a marker behind"; exit 1; } || true
+
+test-js-propeq-control: $(BUILD)/negctl/quickjs_propeq.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_propeq_control \
+	    tests/unit/js_syntax_test.c $(BUILD)/negctl/quickjs_propeq.c \
+	    third_party/quickjs/cutils.c third_party/quickjs/libregexp.c \
+	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
+	@$(BUILD)/js_propeq_control $(JSPERF_DIR)/baidu-polyfill.js > $(BUILD)/js_propeq_control.log 2>&1; \
+	 n=`grep -c '^FAIL:' $(BUILD)/js_propeq_control.log`; \
+	 if [ "$$n" != "4" ]; then \
+	   echo "FAIL (control): expected exactly 4 checks to fail without the get/set/async '='/';' fix, got $$n"; \
+	   grep '^FAIL:' $(BUILD)/js_propeq_control.log; exit 1; \
+	 else \
+	   echo "PASS (control): reverting LOGIT-PROP-EQ-FIX fails exactly 4 checks --"; \
+	   echo "  (the ember/preact-kr-observable/react-kr-observable shape, get with no"; \
+	   echo "   initializer, the async field, and the Signal value check) --"; \
+	   echo "  everything else, including the real baidu polyfill, the destructuring"; \
+	   echo "  default (a different code path), and the still-rejected 'get x y(){}',"; \
+	   echo "  keeps passing"; \
+	 fi
+
 # --- test-js-dynimport: the half of ES modules a code-split app actually uses -
 # kimi.com is 12.77 MB of JavaScript in 134 files; its entry module makes 98
 # `import("./chunk.js")` calls and the page carries no import map. Static
@@ -201,4 +251,4 @@ test-js-callee-control: $(BUILD)/negctl/quickjs_nocallee.c
 	 else \
 	   echo "PASS (control): a bare 'not a function' fails 6 checks as it must"; \
 	 fi
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-propeq-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control

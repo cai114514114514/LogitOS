@@ -61,6 +61,27 @@ $(MOD_KO): $(BUILD)/edu_mod.o
 	@cp $< $@
 
 # --- host gate ----------------------------------------------------------------
+# ON macOS/arm64 (the documented host, CLAUDE.md's Toolchain section) TESTS 11
+# THROUGH 14 SKIP LOUDLY -- for TWO independent reasons, and neither is fixed by
+# a flag:
+#   1. this host's mmap refuses MAP_FIXED at ANY caller-chosen address (measured:
+#      EPERM/ENOMEM at 0x30000000, 4/8/16 GiB, with and without PROT_EXEC, with
+#      and without the allow-unsigned-executable-memory / allow-jit entitlements
+#      and MAP_JIT). tests/unit/modreloc_test.c probes this ONCE before tests
+#      11-14 and skips the whole unit with one message naming this if the probe
+#      fails, rather than four separate call sites each reporting their own
+#      "could not map".
+#   2. even where the mapping succeeds (any Linux host, any real x86_64
+#      machine), tests 11's four execute-only checks call THROUGH pointers into
+#      the freshly relocated x86-64 machine code -- calling that on an arm64
+#      CPU is not a portability bug, it is asking a CPU to decode an
+#      instruction set it does not implement. That block is additionally
+#      guarded by `#if defined(__x86_64__) ...` in the test source.
+# Tests 1-10 and 15-20 (the arithmetic in mod_reloc_apply, the census, and the
+# malformed-image refusals) touch no address space at all and run and are
+# asserted on every host. `ci-host: test-modreloc` is therefore still green on
+# macOS/arm64 -- narrower coverage, loudly stated, never a silent pass.
+#
 # -no-pie is REQUIRED and is not a tidiness flag. The test mmaps the module at
 # a fixed LOW address (0x30000000) because that is where the kernel's kmalloc'd
 # block is -- identity-mapped physical memory below 512 MiB. The module's

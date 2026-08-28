@@ -25,12 +25,21 @@ BREAK="${LOGIT_ECDSA_SIGN_BREAK:-}"
 BREAKDEF=""
 [ -n "$BREAK" ] && BREAKDEF="-D$BREAK"
 
+# THE SECOND DOOR ON THE SAME JAR. c/crypto/hash/*.c below is a GLOB, and the
+# root Makefile's CRYPTO_SRC is a different glob over the same directory. When
+# SP 800-185 landed (2026-08-28) both of them silently acquired cshake.c and
+# kmac.c, which include keccak.h from c/crypto/pq -- a directory NEITHER glob
+# walks. CRYPTO_SRC was fixed in the Makefile; this line is the other door, and
+# it failed with "keccak.h file not found" in a build line nobody had edited,
+# for a file nobody had added to a list. Hence c/crypto/pq/keccak.c and its -I
+# here too. If a third glob over c/crypto/hash appears, it needs the same pair.
 # shellcheck disable=SC2086
 $CC -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
     $BREAKDEF -o "$BUILD/ecdsa_sign_test" \
     "$ROOT/tests/unit/ecdsa_sign_test.c" "$ROOT/c/crypto/pubkey/ecdsa.c" \
-    "$ROOT"/c/crypto/hash/*.c "$ROOT"/c/crypto/kdf/*.c \
-    -I"$ROOT/c/crypto" -I"$ROOT/c/crypto/aead" -I"$ROOT/c/crypto/hash" || {
+    "$ROOT"/c/crypto/hash/*.c "$ROOT"/c/crypto/kdf/*.c "$ROOT/c/crypto/pq/keccak.c" \
+    -I"$ROOT/c/crypto" -I"$ROOT/c/crypto/aead" -I"$ROOT/c/crypto/hash" \
+    -I"$ROOT/c/crypto/pq" || {
         echo "FAIL: could not build ecdsa_sign_test"; exit 1; }
 
 python3 "$ROOT/tests/unit/ecdsa6979_ref.py" > "$BUILD/ecdsa_ref.txt" || {

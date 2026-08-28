@@ -112,6 +112,24 @@ static void itoa_(int v, char *b)
     b[p] = 0;
 }
 
+/* One serial line naming, in window-local points, the centre of the toggle the
+ * animation gate drives. Emitted once, from the call site that draws the
+ * toggle, so the harness's aim and the widget's position are one number rather
+ * than two. See the call in page_desktop() for why it is this toggle. */
+static int anim_aim_said;
+static void anim_aim(int x, int y)
+{
+    if (anim_aim_said) return;
+    anim_aim_said = 1;
+    char b[64], n[16];
+    s_cpy(b, "[settings] anim-toggle ", (int)sizeof b);
+    itoa_(x, n); s_cpy(b + s_len(b), n, (int)sizeof b - s_len(b));
+    s_cpy(b + s_len(b), " ", (int)sizeof b - s_len(b));
+    itoa_(y, n); s_cpy(b + s_len(b), n, (int)sizeof b - s_len(b));
+    s_cpy(b + s_len(b), "\n", (int)sizeof b - s_len(b));
+    sys_write(1, b, s_len(b));
+}
+
 static void hex6(unsigned v, char *b)
 {
     static const char *H = "0123456789ABCDEF";
@@ -375,6 +393,22 @@ static void page_desktop(struct aui_rect body)
 
     r = aui_cut_top(&c, AUI_H_LG);
     aui_label(r.x, r.y + 8, "Reopen windows on login", AUI_TEXT);
+    /* THE AIMING POINT for tests/qmp/qmp_repaint.py's `anim` class, emitted from
+     * the SAME rect the toggle is drawn from and therefore unable to drift from
+     * what was painted. It is a serial line and not a constant in the harness
+     * for the reason the page probe at the top of this file exists: a
+     * coordinate copied into a driver is a second door on this file's layout,
+     * and tools/check-test-liveness.py already names five drivers that "click
+     * the address bar" at a point which has quietly become part of the
+     * titlebar and pass because the field happened to be focused anyway.
+     *
+     * THIS TOGGLE and not the dark-appearance one on the default tab: flipping
+     * the theme repaints every window on the desktop, which is the only
+     * workload in the measured table that produces full-screen frames. Its
+     * cost would swamp the eight ~21 ms frames the animation is there to
+     * produce, and the class would be measuring the compositor rather than the
+     * toolkit. Window-local points; the driver maps them through the probe. */
+    anim_aim(r.x + r.w - 48 + 22, r.y + 4 + 12);
     if (aui_toggle(r.x + r.w - 48, r.y + 4, &v_restore, 1)) dirty = 1;
     aui_text_sz(c.x, c.y, "Saved window frames are kept either way; this only says whether to use them",
                 AUI_MUTED, AUI_FS_CAPTION);
@@ -569,6 +603,26 @@ void app_main(void)
             if (g != last_gen && !dirty) { load_all(); load_kv(); frame(); drew = 1; }
             else if (saved_flash && (int)now - saved_flash < 2800) { frame(); drew = 1; }
         }
-        if (!drew) wait_idle(100);   /* was sys_yield(): a spin. input-driven */
+        /* Animation frames, and the reason this is not just wait_idle(100).
+         *
+         * This window has TWO deadlines now and the sooner one wins. The 250 ms
+         * settings-generation poll above is a real deadline with an argument.
+         * `wait_idle(100)` was not: aui.h:34 calls a fixed small timeout "a spin
+         * with extra steps", and it was ALSO quietly supplying this window's
+         * animation frames at 10 Hz -- so the toggle would have appeared to
+         * animate while aui's clock did nothing, and the gate in
+         * tests/repaint.mk would have been measuring this line rather than the
+         * motion core. That is the shape of apparatus error CLAUDE.md's rule 1
+         * is about, and it was found by reading the composite count.
+         *
+         * aui_anim_wait() returns 0 when nothing is in flight, so on every
+         * frame where nothing moves this reduces to the poll deadline alone. */
+        if (!drew && aui_anim_due()) { frame(); drew = 1; }
+        if (!drew) {
+            int poll_ms = 250 - (int)(aui_ms() - last_poll);
+            if (poll_ms < 1) poll_ms = 1;
+            int anim_ms = aui_anim_wait();
+            wait_idle(anim_ms > 0 && anim_ms < poll_ms ? anim_ms : poll_ms);
+        }
     }
 }

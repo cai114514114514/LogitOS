@@ -1,8 +1,8 @@
-/* js_anim.c -- Element.prototype.animate, and only as much of Web Animations
- * as 2,202 subtests actually ask for.
+/* js_anim.c -- Element.prototype.animate, and now a real KeyframeEffect /
+ * AnimationEffect / DocumentTimeline underneath it.
  *
- * THE MEASUREMENT THAT SIZED THIS, because "implement Web Animations" is a
- * month and this is not that.
+ * THE MEASUREMENT THAT SIZED THE ORIGINAL VERSION OF THIS FILE, because
+ * "implement Web Animations" is a month and that first cut was not that.
  *
  * WPT's interpolation-testcommon.js drives 337 files in css/ and produces
  * 47,140 of the 106,130 subtest failures there. Its Web Animations method
@@ -11,14 +11,27 @@
  *     assert_true(interpolationMethod.isSupported(), ...)
  *
  * and for that method isSupported() is, in full, `'animate' in Element.prototype`.
- * 10,714 subtests fail on that one line. They are not all reachable: take each
- * failing `Web Animations: ...` subtest name, substitute `CSS Animations`, and
- * ask whether that twin passes. 8,513 twins ALSO fail -- those need
- * CSS.supports and belong to the LibCSS line. 2,202 twins PASS, and those are
- * gated on nothing but the property existing.
+ * 10,714 subtests failed on that one line. They were not all reachable: take
+ * each failing `Web Animations: ...` subtest name, substitute `CSS
+ * Animations`, and ask whether that twin passes. 8,513 twins ALSO failed --
+ * those need CSS.supports and belong to the LibCSS line. 2,202 twins PASSED,
+ * and those are what the first version of this file was sized against; that
+ * pool has since collapsed to zero (see js_anim.c's own header before this
+ * rewrite, and the M-item that closed it).
  *
- * WHAT THE HARNESS ACTUALLY TOUCHES, which is the whole specification of this
- * file:
+ * THIS REWRITE is a second, separate measurement: 599 subtests across
+ * KeyframeEffect/constructor.html, setKeyframes.html,
+ * processing-a-keyframes-argument-001.html, AnimationEffect's
+ * getTiming/updateTiming/getComputedTiming, DocumentTimeline, and the
+ * ComputedKeyframe shape Animatable/animate.html checks -- none of them
+ * reachable from a plain-object `this.effect` with three methods, which is
+ * what `animate()` built before. `KeyframeEffect` and `AnimationEffect` are
+ * now real constructors with real prototypes; `document.timeline` is a real
+ * `DocumentTimeline`; `Animation` takes `(effect, timeline)` per spec instead
+ * of `(target, keyframes, options)`.
+ *
+ * WHAT THE HARNESS ACTUALLY TOUCHES, downstream of the constructor work,
+ * which is still the whole specification of the VALUE side of this file:
  *
  *     var animation = target.animate(keyframes, {fill, duration, easing});
  *     animation.pause();
@@ -26,10 +39,11 @@
  *     ... later ...
  *     getComputedStyle(target).getPropertyValue(prop)
  *
- * It never reads the animation back. The object is a HANDLE; the observable is
- * the target's computed style. So the work is not the API surface, it is
- * making a computed read reflect the interpolated value at a given time --
- * which is what css_interp.c already computes.
+ * interpolation-testcommon.js never reads the animation back. The object is
+ * a HANDLE; the observable is the target's computed style. So that half of
+ * the work is not the API surface, it is making a computed read reflect the
+ * interpolated value at a given time -- which is what css_interp.c already
+ * computes, unchanged by this rewrite.
  *
  * WHY A JS PRELUDE OVER ONE NATIVE, and not a C implementation. The house
  * style, for the reason js_events.c states: nothing here is hot (constructing
@@ -53,28 +67,53 @@
  *           shape it cannot bridge, `initial`/`inherit`/`unset` keyframes
  *           among them -- the overlay is silent. Today's answer stands.
  *
+ * A THIRD RULE arrives with this rewrite, for the keyframe-PROCESSING half
+ * rather than the value half:
+ *
+ *   RULE 3  Never invent CSS value validity. There is no general
+ *           "is this a legal <length>" oracle in this tree (that is
+ *           LibCSS's job). An invalid property value in a keyframe is
+ *           therefore NOT dropped the way a conformant UA drops it -- it is
+ *           carried through like any other string. Structural validity
+ *           (offset range/order, easing grammar, composite enum) IS
+ *           enforced, because all three are closed, fully-specified
+ *           grammars this file can parse honestly without guessing at a
+ *           property's syntax.
+ *
  * Together: the overlay changes an answer only where it has a real
- * interpolation of a property the engine really reports. Everywhere else the
- * browser behaves exactly as it did before this file existed, which is also
- * what makes the A/B measurement in the report meaningful.
+ * interpolation of a property the engine really reports, and the constructor
+ * throws only where the spec's own closed grammars say it must. Everywhere
+ * else the browser behaves exactly as it did before, which is also what makes
+ * the A/B measurement in the report meaningful.
  *
- * COMPOSITE OPERATIONS ARE NOW HERE (`add`, `accumulate`, and
- * `iterationComposite`), and what the measurement found on the way in is worth
- * more than the feature. 2,122 `Compositing ...` subtests fail in css/;
- * 1,928 of them never reach a value, failing on
- * `assert_true(CSS.supports(property, value))` three lines earlier over values
- * LibCSS still rejects. The 194 that do reach a value were each wrong by
- * EXACTLY the underlying value -- and were only reachable at all after the
+ * COMPOSITE OPERATIONS (`add`, `accumulate`, and `iterationComposite`) are
+ * unchanged in mechanism from the version before this rewrite -- only their
+ * home moved, from the plain `this.effect` object to a real
+ * `KeyframeEffect.prototype.composite` / `.iterationComposite` accessor
+ * pair, each validated against its OWN vocabulary (a per-keyframe composite
+ * accepts 'auto'; the effect-level one does not; iterationComposite accepts
+ * neither 'auto' nor 'add'). What the measurement found on the way in the
+ * first time is still worth more than the feature: 2,122 `Compositing ...`
+ * subtests fail in css/; 1,928 of them never reach a value, failing on
+ * `assert_true(CSS.supports(property, value))` three lines earlier over
+ * values LibCSS still rejects. The 194 that do reach a value were each wrong
+ * by EXACTLY the underlying value -- and were only reachable at all after the
  * keyframe resolution below stopped returning the same string for both
- * endpoints. See __resolve.
+ * endpoints. See __resolveValues.
  *
- * STILL DELIBERATELY NOT HERE, and named rather than omitted: no timeline that
- * advances on its own (nothing drives currentTime but the setter), no
- * animation events (animationstart/finish/cancel), no @keyframes/CSS-animation
- * integration -- which is why the `Compositing CSS Animations` half of every
- * composition file, exactly 1,061 subtests, is out of this file's reach no
- * matter how right the composition is -- no ScrollTimeline, no commitStyles,
- * no pseudo-element targets.
+ * STILL DELIBERATELY NOT HERE, and named rather than omitted: no timeline
+ * that drives an Animation's OWN currentTime (document.timeline.currentTime
+ * is now a real moving clock -- see the DocumentTimeline section below --
+ * but nothing ticks a playing Animation from it; currentTime is exactly what
+ * play()/pause()/the setter last left it at), no animation events
+ * (animationstart/finish/cancel), no @keyframes/CSS-animation integration --
+ * which is why the `Compositing CSS Animations` half of every composition
+ * file, exactly 1,061 subtests, is out of this file's reach no matter how
+ * right the composition is -- no ScrollTimeline, no commitStyles, no
+ * pseudo-element TARGETING of the getComputedStyle overlay (KeyframeEffect's
+ * `pseudoElement` property is real and validated, but `patched()` below
+ * still answers only for the no-pseudo call, exactly as before), and no CSS
+ * value validity checking (RULE 3 above).
  */
 #include "css_interp.h"
 
@@ -208,45 +247,117 @@ static const char ANIM_JS[] =
 "var II = __anim_interp;\n"
 "var CC = __anim_composite;\n"
 "\n"
-/* ---- property-name spellings ------------------------------------------
- * The harness hands animate() CAMEL-CASE names (it converts them itself,
- * with `offset` -> `cssOffset` and `float` -> `cssFloat`) and then reads the
- * result back with the DASHED name. One canonical form, and both spellings
- * fold into it, or the value is computed for a key nothing ever looks up. */
-"function dash(p){\n"
-"  p = String(p);\n"
-"  if (p.slice(0,2) === '--') return p;\n"
-"  if (p === 'cssFloat') return 'float';\n"
-"  if (p === 'cssOffset') return 'offset';\n"
-"  return p.replace(/[A-Z]/g, function(c){ return '-' + c.toLowerCase(); });\n"
+"/* A real DOMException when one exists, the same fallback idiom js_events.c\n"
+" * uses for domErr(): assert_throws_dom checks e.name and e instanceof\n"
+" * DOMException, and a plain Error with a matching .name satisfies neither,\n"
+" * but is still better than crashing the install. */\n"
+"function animDomErr(msg, name) {\n"
+"  if (typeof DOMException === 'function') { try { return new DOMException(msg, name); } catch (q) {} }\n"
+"  var e = new Error(msg); e.name = name; return e;\n"
 "}\n"
 "\n"
-/* ---- easing ------------------------------------------------------------
- * THE PART THE HARNESS DEPENDS ON MOST, and it is easy to miss why. The
- * timeline is never advanced: duration is 100s, currentTime is set to 50s, so
- * the input progress is ALWAYS exactly 0.5. Every distinct `at` the suite
- * tests -- -0.3, 0, 0.3, 0.5, 0.6, 1, 1.5 -- is produced entirely by the
- * easing function, which interpolation-testcommon.js builds as
- *
- *     y == 0   -> 'steps(1, end)'
- *     y == 1   -> 'steps(1, start)'
- *     y == 0.5 -> 'linear'
- *     else     -> 'cubic-bezier(0, b, 1, b)' with b = (8y - 1) / 6
- *
- * So a cubic-bezier solver that is merely close, or one that clamps its
- * output to [0,1], collapses the whole suite onto two or three values and
- * every `at` outside [0,1] silently becomes an endpoint. The control points
- * here are deliberately outside the unit square and the OUTPUT must be too. */
-"function bez(x1,y1,x2,y2){\n"
-"  function cx(t,a){ return ((1-3*a[1]+3*a[0])*t + (3*a[1]-6*a[0]))*t*t + 3*a[0]*t; }\n"
-"  function C(t,p1,p2){ return (((1-3*p2+3*p1)*t + (3*p2-6*p1))*t + 3*p1)*t; }\n"
-"  function dC(t,p1,p2){ return 3*(1-3*p2+3*p1)*t*t + 2*(3*p2-6*p1)*t + 3*p1; }\n"
-"  return function(x){\n"
+"/* ---- property-name spellings -------------------------------------------\n"
+" * dash() is the CSS-property-to-IDL-attribute algorithm run BACKWARDS: it is\n"
+" * what a page hands animate() (camelCase, `offset` -> `cssOffset` because the\n"
+" * plain name collides with the keyframe timing member, `float` -> `cssFloat`\n"
+" * because `float` is a reserved word). idlName() is the SAME algorithm\n"
+" * forwards, and getKeyframes() is specified to report property names through\n"
+" * it -- a keyframe built from `marginTop` must read back `marginTop`, not\n"
+" * `margin-top`, which is why the internal keyframe records below store the\n"
+" * CANONICAL DASHED name (what css_interp.c and the resolver want) and\n"
+" * getKeyframes() converts back to IDL form on the way out, once, at the\n"
+" * boundary. */\n"
+"function dash(p) {\n"
+"  p = String(p);\n"
+"  if (p.slice(0, 2) === '--') return p;\n"
+"  if (p === 'cssFloat') return 'float';\n"
+"  if (p === 'cssOffset') return 'offset';\n"
+"  return p.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); });\n"
+"}\n"
+"function idlName(p) {\n"
+"  if (p.slice(0, 2) === '--') return p;\n"
+"  if (p === 'float') return 'cssFloat';\n"
+"  if (p === 'offset') return 'cssOffset';\n"
+"  return p.replace(/-([a-zA-Z])/g, function (_, c) { return c.toUpperCase(); });\n"
+"}\n"
+"\n"
+"/* ---- easing: parse, validate, canonicalize -----------------------------\n"
+" * ONE function answers three questions an implementation usually answers\n"
+" * three different ways and lets drift: is this string a legal\n"
+" * <easing-function>, what is its canonical serialization, and does it equal\n"
+" * some other legal spelling of the same function. parseEasing returns the\n"
+" * canonical form or null; isValidEasing is parseEasing(...) !== null, so the\n"
+" * validity rule and the parse can never disagree with each other. */\n"
+"function stripEasingToken(raw) {\n"
+"  var s = String(raw);\n"
+"  /* CSS comments are whitespace, wherever they fall. */\n"
+"  s = s.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');\n"
+"  /* CSS escapes: a backslash followed by 1-6 hex digits (and one optional\n"
+"   * trailing whitespace character that is PART OF the escape, not a\n"
+"   * separator) denotes a code point; a backslash followed by anything else\n"
+"   * denotes that character literally. 'Ease\\2d in-out' is 'ease-in-out'\n"
+"   * this way -- it is not a made-up case, WPT's own easing-parsing corpus\n"
+"   * depends on it. */\n"
+"  s = s.replace(/\\\\([0-9a-fA-F]{1,6})[ \\t\\n\\r\\f]?|\\\\([^\\r\\n\\f0-9a-fA-F])/g,\n"
+"    function (m, hex, ch) {\n"
+"      if (hex !== undefined) {\n"
+"        try { return String.fromCodePoint(parseInt(hex, 16)); } catch (e) { return ''; }\n"
+"      }\n"
+"      return ch;\n"
+"    });\n"
+"  return s.trim();\n"
+"}\n"
+"var EASING_KEYWORDS = {\n"
+"  linear: 1, ease: 1, 'ease-in': 1, 'ease-out': 1, 'ease-in-out': 1,\n"
+"  'step-start': 1, 'step-end': 1\n"
+"};\n"
+"function parseEasing(raw) {\n"
+"  var s = stripEasingToken(raw);\n"
+"  var low = s.toLowerCase();\n"
+/* step-start/step-end are ALIASES, not their own serialization -- their
+ * canonical form is the steps() call they name (verified against
+ * easing-tests.js's own `serialization` field: 'step-start' ->
+ * 'steps(1, start)', 'step-end' -> 'steps(1)'). Every other keyword
+ * ('ease', 'linear', ...) serializes as itself; only these two expand. */
+"  if (low === 'step-start') return 'steps(1, start)';\n"
+"  if (low === 'step-end') return 'steps(1)';\n"
+"  if (Object.prototype.hasOwnProperty.call(EASING_KEYWORDS, low)) return low;\n"
+"  /* cubic-bezier: only x1/x2 are constrained to [0,1] -- they are the\n"
+"   * horizontal axis and the curve must stay a function of it; y1/y2 are\n"
+"   * unconstrained on purpose (a bounce or an overshoot needs y outside\n"
+"   * [0,1], and interpolation-testcommon.js's own createEasing() constructs\n"
+"   * exactly that: cubic-bezier(0, b, 1, b) with b as large as 1.83 to reach\n"
+"   * `at = 1.5`). Clamping y here would silently cap every extrapolation test\n"
+"   * in the whole css/ corpus at its endpoint. */\n"
+"  var m = /^cubic-bezier\\(\\s*([^,]+),\\s*([^,]+),\\s*([^,]+),\\s*([^,]+)\\)$/i.exec(s);\n"
+"  if (m) {\n"
+"    var x1 = parseFloat(m[1]), y1 = parseFloat(m[2]), x2 = parseFloat(m[3]), y2 = parseFloat(m[4]);\n"
+"    if (![x1, y1, x2, y2].every(function (v) { return v === v; })) return null;\n"
+"    if (x1 < 0 || x1 > 1 || x2 < 0 || x2 > 1) return null;\n"
+"    return 'cubic-bezier(' + x1 + ', ' + y1 + ', ' + x2 + ', ' + y2 + ')';\n"
+"  }\n"
+"  m = /^steps\\(\\s*(-?\\d+)\\s*(?:,\\s*(jump-start|jump-end|jump-none|jump-both|start|end)\\s*)?\\)$/i.exec(s);\n"
+"  if (m) {\n"
+"    var n = parseInt(m[1], 10);\n"
+"    var pos = m[2] ? m[2].toLowerCase() : null;\n"
+"    var effPos = pos || 'end';\n"
+"    if (effPos === 'jump-none') { if (!(n >= 2)) return null; }\n"
+"    else if (!(n >= 1)) return null;\n"
+"    return 'steps(' + n + (pos ? ', ' + pos : '') + ')';\n"
+"  }\n"
+"  return null;\n"
+"}\n"
+"function isValidEasing(raw) { return parseEasing(raw) !== null; }\n"
+"\n"
+"/* Turn an ALREADY-VALIDATED canonical easing string into a pacing function.\n"
+" * Never called on an unvalidated string -- every caller below has gone\n"
+" * through parseEasing() first, which is what lets this stay a dumb\n"
+" * dispatch with a linear fallback instead of a second copy of the grammar. */\n"
+"function bez(x1, y1, x2, y2) {\n"
+"  function C(t, p1, p2) { return (((1 - 3 * p2 + 3 * p1) * t + (3 * p2 - 6 * p1)) * t + 3 * p1) * t; }\n"
+"  function dC(t, p1, p2) { return 3 * (1 - 3 * p2 + 3 * p1) * t * t + 2 * (3 * p2 - 6 * p1) * t + 3 * p1; }\n"
+"  return function (x) {\n"
 "    if (x1 === y1 && x2 === y2) return x;\n"
-/*     Outside [0,1] the INPUT extends linearly along the tangent at the
- *     nearest endpoint. Note this is about x, not y: the corpus always feeds
- *     x = 0.5, so this branch is not what carries it -- see the note on the
- *     OUTPUT range below, which is the one that does. */
 "    if (x <= 0 || x >= 1) {\n"
 "      var s0 = (x1 > 0) ? y1 / x1 : ((y2 > 0 || x2 > 0) ? y2 / x2 : 0);\n"
 "      var s1 = (x2 < 1) ? (y2 - 1) / (x2 - 1) : ((y1 !== 1 || x1 !== 1) ? (y1 - 1) / (x1 - 1) : 0);\n"
@@ -254,23 +365,23 @@ static const char ANIM_JS[] =
 "    }\n"
 "    var t = x, i, d, xe;\n"
 "    for (i = 0; i < 12; i++) {\n"
-"      xe = C(t,x1,x2) - x;\n"
-"      if (xe < 1e-10 && xe > -1e-10) return C(t,y1,y2);\n"
-"      d = dC(t,x1,x2);\n"
+"      xe = C(t, x1, x2) - x;\n"
+"      if (xe < 1e-10 && xe > -1e-10) return C(t, y1, y2);\n"
+"      d = dC(t, x1, x2);\n"
 "      if (d < 1e-10 && d > -1e-10) break;\n"
 "      t = t - xe / d;\n"
 "    }\n"
 "    var lo = 0, hi = 1; t = x;\n"
 "    for (i = 0; i < 60; i++) {\n"
-"      xe = C(t,x1,x2);\n"
+"      xe = C(t, x1, x2);\n"
 "      if (xe > x) hi = t; else lo = t;\n"
 "      t = (lo + hi) / 2;\n"
 "    }\n"
-"    return C(t,y1,y2);\n"
+"    return C(t, y1, y2);\n"
 "  };\n"
 "}\n"
-"function steps(n, pos){\n"
-"  return function(x){\n"
+"function stepsFn(n, pos) {\n"
+"  return function (x) {\n"
 "    var jumpStart = (pos === 'start' || pos === 'jump-start' || pos === 'jump-both');\n"
 "    var jumpNone = (pos === 'jump-none');\n"
 "    var d = jumpNone ? (n - 1) : n;\n"
@@ -280,144 +391,570 @@ static const char ANIM_JS[] =
 "    return step / d;\n"
 "  };\n"
 "}\n"
-"function easingOf(s){\n"
-"  s = String(s == null ? 'linear' : s).trim();\n"
-"  if (s === 'linear' || s === '') return function(x){ return x; };\n"
-"  if (s === 'ease') return bez(0.25,0.1,0.25,1);\n"
-"  if (s === 'ease-in') return bez(0.42,0,1,1);\n"
-"  if (s === 'ease-out') return bez(0,0,0.58,1);\n"
-"  if (s === 'ease-in-out') return bez(0.42,0,0.58,1);\n"
-"  if (s === 'step-start') return steps(1,'start');\n"
-"  if (s === 'step-end') return steps(1,'end');\n"
+"function easingFn(s) {\n"
+"  if (s === 'linear' || s === '') return function (x) { return x; };\n"
+"  if (s === 'ease') return bez(0.25, 0.1, 0.25, 1);\n"
+"  if (s === 'ease-in') return bez(0.42, 0, 1, 1);\n"
+"  if (s === 'ease-out') return bez(0, 0, 0.58, 1);\n"
+"  if (s === 'ease-in-out') return bez(0.42, 0, 0.58, 1);\n"
+"  if (s === 'step-start') return stepsFn(1, 'start');\n"
+"  if (s === 'step-end') return stepsFn(1, 'end');\n"
 "  var m = /^cubic-bezier\\(([^)]*)\\)$/.exec(s);\n"
 "  if (m) {\n"
-"    var a = m[1].split(',').map(function(v){ return parseFloat(v); });\n"
-"    if (a.length === 4 && a.every(function(v){ return v === v; })) return bez(a[0],a[1],a[2],a[3]);\n"
+"    var a = m[1].split(',').map(function (v) { return parseFloat(v); });\n"
+"    return bez(a[0], a[1], a[2], a[3]);\n"
 "  }\n"
 "  m = /^steps\\(([^)]*)\\)$/.exec(s);\n"
 "  if (m) {\n"
 "    var b = m[1].split(',');\n"
 "    var n = parseInt(b[0], 10);\n"
-"    if (n === n && n > 0) return steps(n, b.length > 1 ? b[1].trim() : 'end');\n"
+"    return stepsFn(n, b.length > 1 ? b[1].trim() : 'end');\n"
 "  }\n"
-"  return function(x){ return x; };\n"
+"  return function (x) { return x; };\n"
 "}\n"
 "\n"
-/* ---- keyframes ---------------------------------------------------------
- * Both spellings the API accepts: the array form the harness uses, and the
- * object form ({opacity: [0, 1]}) a real page uses. Offsets that are null are
- * spread evenly, which is the spec's rule and also what makes a two-element
- * array mean "from" and "to". */
-"function normalize(kf){\n"
-"  var out = [];\n"
-"  if (kf == null) return out;\n"
-"  if (Array.isArray(kf)) {\n"
-"    for (var i = 0; i < kf.length; i++) {\n"
-"      var k = kf[i], e = { offset: null, easing: k.easing, composite: k.composite, props: {} };\n"
-"      if (k.offset !== undefined && k.offset !== null) e.offset = Number(k.offset);\n"
-"      for (var p in k) {\n"
-"        if (p === 'offset' || p === 'easing' || p === 'composite') continue;\n"
-"        e.props[dash(p)] = String(k[p]);\n"
+"/* ---- composite operations: three vocabularies, not one -----------------\n"
+" * A per-KEYFRAME composite accepts 'auto' (meaning \"use the effect's\"); the\n"
+" * effect-level `composite` (constructor option and the `.composite`\n"
+" * accessor) does not, because 'auto' deferring to itself is not an\n"
+" * operation; `iterationComposite` is a different axis entirely (time, not\n"
+" * value) and only 'replace'/'accumulate' are defined for it. Collapsing\n"
+" * these to one set accepts values the spec refuses and refuses values the\n"
+" * spec accepts, in each direction at once. */\n"
+"function isValidKeyframeComposite(s) { return s === 'replace' || s === 'add' || s === 'accumulate' || s === 'auto'; }\n"
+"function isValidEffectComposite(s) { return s === 'replace' || s === 'add' || s === 'accumulate'; }\n"
+"function isValidIterationComposite(s) { return s === 'replace' || s === 'accumulate'; }\n"
+"\n"
+"/* ---- pseudo-element selectors -------------------------------------------\n"
+" * Only the double-colon FORM and only a KNOWN NAME -- 'before', ':abc' and\n"
+" * '::abc' all throw SyntaxError, which is the corpus's own way of saying\n"
+" * this is not a general selector parser, it is a fixed enumeration. */\n"
+"var PSEUDO_NAMES = {\n"
+"  before: 1, after: 1, marker: 1, placeholder: 1, 'first-line': 1,\n"
+"  'first-letter': 1, selection: 1, backdrop: 1, 'file-selector-button': 1\n"
+"};\n"
+"function validatePseudo(v) {\n"
+"  if (v === null || v === undefined) return null;\n"
+"  var s = String(v);\n"
+"  var m = /^::([A-Za-z-]+)$/.exec(s);\n"
+"  var name = m ? m[1].toLowerCase() : '';\n"
+"  if (!m || !Object.prototype.hasOwnProperty.call(PSEUDO_NAMES, name)) {\n"
+"    throw animDomErr(\"Failed to set the 'pseudoElement' property: '\" + s +\n"
+"      \"' is not a valid pseudo-element selector.\", 'SyntaxError');\n"
+"  }\n"
+"  return '::' + name;\n"
+"}\n"
+"\n"
+"/* ---- timing: duration/iterations are the trap ---------------------------\n"
+" * Both accept +Infinity and reject everything else non-finite-or-negative\n"
+" * with the SAME coercion path, which is what makes '-Infinity', 'NaN' and\n"
+" * '-1' all throw without three separate checks: Number(x) !== Number(x) is\n"
+" * the NaN test, and Number(x) < 0 is false for +Infinity and true for\n"
+" * -Infinity, so one guard clears all three plus every ordinary negative\n"
+" * number and every non-numeric string ('merrychristmas' -> NaN) at once. */\n"
+"function toFiniteNonNegative(v) {\n"
+"  var n = Number(v);\n"
+"  if (n !== n || n < 0) throw new TypeError('value must be a non-negative number (or +Infinity)');\n"
+"  return n;\n"
+"}\n"
+/* iterationStart is the one non-negative quantity that does NOT accept
+ * +Infinity (gBadIterationStartValues lists it as invalid, unlike duration
+ * and iterations) -- a distinct check rather than a shared one, because
+ * silently reusing toFiniteNonNegative here would accept it. */
+"function toStrictNonNegative(v) {\n"
+"  var n = Number(v);\n"
+"  if (n !== n || n < 0 || n === Infinity) throw new TypeError('value must be a non-negative finite number');\n"
+"  return n;\n"
+"}\n"
+/* delay/endDelay: finite in BOTH directions (negative is fine -- a negative
+ * delay is how an animation starts partway through -- but NaN and either
+ * infinity are not, per gBadDelayValues). */
+"function toFiniteNumber(v) {\n"
+"  var n = Number(v);\n"
+"  if (n !== n || n === Infinity || n === -Infinity) throw new TypeError('value must be a finite number');\n"
+"  return n;\n"
+"}\n"
+/* duration's own (UnrestrictedDouble or DOMString) union: a STRING is only
+ * ever meaningful as the literal 'auto' -- '100' and 'abc' are both
+ * REJECTED as strings, not coerced through Number(), which is what
+ * Animatable/animate.html's 'invalid duration value: \"100\" using a
+ * dictionary object' case depends on (100 alone would be a perfectly good
+ * duration; '100' is not, because the DOMString branch of the union does
+ * not fall back to numeric parsing). A non-string goes through the shared
+ * non-negative-or-Infinity check. */
+"function toDurationValue(v) {\n"
+"  if (typeof v === 'string') {\n"
+"    if (v === 'auto') return 'auto';\n"
+"    throw new TypeError(\"invalid duration: '\" + v + \"'\");\n"
+"  }\n"
+"  return toFiniteNonNegative(v);\n"
+"}\n"
+"function parseTiming(opt) {\n"
+"  /* duration defaults to 'auto', NOT 0 -- KeyframeEffect/constructor.html's\n"
+"   * own default-value test checks this literally, and 'auto' is also what\n"
+"   * lets getComputedTiming() distinguish \"no duration was ever given\" from\n"
+"   * \"duration: 0\" (both currently resolve to 0 internally, since neither\n"
+"   * this engine nor the corpus it is measured against has a use for the\n"
+"   * distinction beyond that one readback). */\n"
+"  var t = {\n"
+"    duration: 'auto', delay: 0, endDelay: 0, iterations: 1, iterationStart: 0,\n"
+"    direction: 'normal', fill: 'auto', easing: 'linear'\n"
+"  };\n"
+"  if (opt === undefined || opt === null) return t;\n"
+/* A non-object options argument is the (double or KeyframeAnimationOptions)
+ * union's OTHER member: WebIDL tries the dictionary conversion first, but a
+ * number/string/boolean is never a valid dictionary source, so it falls to
+ * ToNumber -- 'abc' becomes NaN and is rejected the same way a literal NaN
+ * duration is, which is animate.html's own reasoning for skipping the
+ * numeric-looking string cases in that position (parseFloat succeeds, so
+ * the browser-observable outcome is ambiguous and the corpus does not test
+ * it here). This is NOT the same rule as the duration MEMBER's own
+ * DOMString-means-only-'auto' rule above -- two different union types. */
+"  if (typeof opt !== 'object') { t.duration = toFiniteNonNegative(opt); return t; }\n"
+"  if (opt.duration !== undefined) t.duration = toDurationValue(opt.duration);\n"
+"  if (opt.delay !== undefined) t.delay = toFiniteNumber(opt.delay);\n"
+"  if (opt.endDelay !== undefined) t.endDelay = toFiniteNumber(opt.endDelay);\n"
+"  if (opt.iterations !== undefined) t.iterations = toFiniteNonNegative(opt.iterations);\n"
+"  if (opt.iterationStart !== undefined) t.iterationStart = toStrictNonNegative(opt.iterationStart);\n"
+"  if (opt.direction !== undefined) t.direction = String(opt.direction);\n"
+"  if (opt.fill !== undefined) t.fill = String(opt.fill);\n"
+"  if (opt.easing !== undefined) {\n"
+"    var es = String(opt.easing);\n"
+"    if (!isValidEasing(es)) throw new TypeError(\"invalid easing: '\" + es + \"'\");\n"
+"    t.easing = parseEasing(es);\n"
+"  }\n"
+"  return t;\n"
+"}\n"
+"\n"
+"/* ---- keyframes: the process-a-keyframes-argument algorithm -------------\n"
+" *\n"
+" * THE ONE THING THAT IS NOT IN THIS FILE, named rather than faked: no value\n"
+" * validity checking. There is no general \"is this a legal <length> for\n"
+" * `top`\" oracle in this tree (that is LibCSS's job, and calling into it from\n"
+" * here for one keyframe value at a time is a different, much larger change).\n"
+" * So an invalid property value -- `left: 'invalid'` -- is NOT dropped the\n"
+" * way a real UA drops it; it is carried through as a string like any other.\n"
+" * Rule 1 applies: better to be silently wrong on the handful of subtests\n"
+" * that specifically probe invalid-value handling than to invent a validator\n"
+" * that is wrong in a way nobody has measured.\n"
+" *\n"
+" * Two lists behave differently on purpose, and it is not an oversight if\n"
+" * they look inconsistent: OFFSETS are index-bound (offsets[i] only applies\n"
+" * when i < offsets.length; anything past the end of a short offsets array is\n"
+" * never even looked at, which is why 'not strictly ascending in the UNUSED\n"
+" * part of the array' is valid). EASINGS and COMPOSITES are modulo-bound\n"
+" * (easings[i % easings.length] applies to every keyframe, which is why a\n"
+" * SINGLE easing value with no properties still has to be a legal easing --\n"
+" * 'empty property-indexed keyframe with an invalid easing' throws even\n"
+" * though there is nothing else in the object) and are validated over their\n"
+" * WHOLE list up front, including entries a short keyframe count will never\n"
+" * index into ('an invalid easing in the unused part of the array' throws\n"
+" * too). Both behaviours are measured against keyframe-tests.js, not\n"
+" * invented; they happen to be the actual specification. */\n"
+"function normalizeMemberList(raw, dflt) {\n"
+"  if (raw === undefined) return dflt.slice();\n"
+"  if (Array.isArray(raw)) return raw.length ? raw.slice() : dflt.slice();\n"
+"  return [raw];\n"
+"}\n"
+"function offsetMemberList(raw) {\n"
+"  if (raw === undefined) return [];\n"
+"  if (Array.isArray(raw)) return raw.slice();\n"
+"  return [raw];\n"
+"}\n"
+"/* Reserved member names, on EITHER form of keyframes input -- plus\n"
+" * `computedOffset`, which is not a CSS property and is not a spec-reserved\n"
+" * member either, but IS a key getKeyframes() puts on every object it\n"
+" * returns. Without excluding it here, `new KeyframeEffect(t,\n"
+" * effect.getKeyframes())` -- the roundtrip every gKeyframesTests entry is\n"
+" * also tested as -- would read its own output back as a bogus\n"
+" * `computed-offset` style property and corrupt the very shape it was\n"
+" * supposed to reproduce. A real engine would reach the same place by a\n"
+" * different road: `computed-offset` is not a property IT knows either, so\n"
+" * a supported-property filter would drop it just the same. */\n"
+"var KF_RESERVED = { offset: 1, easing: 1, composite: 1, computedOffset: 1 };\n"
+"\n"
+/* Only names SHAPED like a CSS-property-to-IDL-attribute result are read at
+ * all -- checked before the property is ever ACCESSED (getter and all), not
+ * after, because processing-a-keyframes-argument-001.html's whole method is
+ * a property with a counting getter that asserts it was never called for a
+ * name that should be skipped. Two rules, both general spec facts and
+ * neither invented for this corpus: a literal hyphen outside a leading `--`
+ * can never be the result of the CSS-property-to-IDL-attribute algorithm
+ * (dash() always removes them), so a key like `font-size` is not a
+ * property THIS algorithm would ever produce and is not read; and bare
+ * `float` is specifically excluded because the IDL name for the `float`
+ * property is `cssFloat` -- `float` is a reserved word in older bindings,
+ * which is the entire reason that rename exists, so the bare spelling maps
+ * to nothing. What this does NOT do, named rather than faked: it does not
+ * know which recognized-shaped names are actually ANIMATABLE CSS
+ * properties (`direction`, `unicodeBidi`, `willChange` and the rest of
+ * processing-a-keyframes-argument-001.html's `gNonAnimatableProps` are
+ * syntactically fine IDL names and are still read here) -- that needs a
+ * real animatable-property registry this tree does not have, and RULE 1
+ * applies: absent rather than an invented, possibly-wrong list. */
+"function isRecognizedPropName(pn) {\n"
+"  if (pn.slice(0, 2) === '--') return true;\n"
+"  if (pn === 'float') return false;\n"
+"  return /^[a-zA-Z][a-zA-Z0-9]*$/.test(pn);\n"
+"}\n"
+"\n"
+"function buildFrames(kfInput) {\n"
+"  if (kfInput === null || kfInput === undefined) return [];\n"
+"  var isSeq = Array.isArray(kfInput);\n"
+"  var n, offsetRaw, easingRaw, compositeRaw, perFrame;\n"
+"\n"
+"  if (isSeq) {\n"
+"    n = kfInput.length;\n"
+"    if (n === 0) return [];\n"
+"    offsetRaw = []; easingRaw = []; compositeRaw = []; perFrame = [];\n"
+"    for (var idx = 0; idx < n; idx++) {\n"
+"      var k = kfInput[idx];\n"
+"      var off = null, eas = 'linear', comp = 'auto';\n"
+"      if (k !== null && k !== undefined) {\n"
+"        if (k.offset !== undefined && k.offset !== null) off = k.offset;\n"
+"        if (k.easing !== undefined) eas = k.easing;\n"
+"        if (k.composite !== undefined) comp = k.composite;\n"
 "      }\n"
-"      out.push(e);\n"
+"      offsetRaw.push(off);\n"
+"      easingRaw.push(eas);\n"
+"      compositeRaw.push(comp);\n"
+"      var props = {};\n"
+"      if (k !== null && typeof k === 'object') {\n"
+"        for (var pn in k) {\n"
+"          if (Object.prototype.hasOwnProperty.call(KF_RESERVED, pn)) continue;\n"
+"          if (!isRecognizedPropName(pn)) continue;\n"
+"          var pv = k[pn];\n"
+"          if (pv === undefined || pv === null) continue;\n"
+"          props[dash(pn)] = String(pv);\n"
+"        }\n"
+"      }\n"
+"      perFrame.push(props);\n"
 "    }\n"
 "  } else {\n"
-"    var names = [], n;\n"
-"    for (n in kf) if (n !== 'offset' && n !== 'easing' && n !== 'composite') names.push(n);\n"
-"    var len = 0;\n"
-"    for (var q = 0; q < names.length; q++) {\n"
-"      var v = kf[names[q]];\n"
-"      if (Array.isArray(v) && v.length > len) len = v.length;\n"
+"    if (typeof kfInput !== 'object') return [];\n"
+"    var offsetMember = kfInput.offset;\n"
+"    var easingMember = kfInput.easing;\n"
+"    var compositeMember = kfInput.composite;\n"
+"    var propNames = [];\n"
+"    for (var pn2 in kfInput) {\n"
+"      if (Object.prototype.hasOwnProperty.call(KF_RESERVED, pn2)) continue;\n"
+"      if (!isRecognizedPropName(pn2)) continue;\n"
+"      propNames.push(pn2);\n"
 "    }\n"
-"    if (!len) len = 1;\n"
-"    for (var j = 0; j < len; j++) {\n"
-"      var ee = { offset: null, easing: undefined, composite: kf.composite, props: {} };\n"
-"      for (var r = 0; r < names.length; r++) {\n"
-"        var vv = kf[names[r]];\n"
-"        var val = Array.isArray(vv) ? vv[Math.min(j, vv.length - 1)] : vv;\n"
-"        if (val !== undefined && val !== null) ee.props[dash(names[r])] = String(val);\n"
+"    var propVals = {};\n"
+"    n = 0;\n"
+"    for (var q = 0; q < propNames.length; q++) {\n"
+"      var raw = kfInput[propNames[q]];\n"
+"      var arr = Array.isArray(raw) ? raw : [raw];\n"
+"      propVals[propNames[q]] = arr;\n"
+"      if (arr.length > n) n = arr.length;\n"
+"    }\n"
+"    if (n === 0) n = 1;\n"
+"    offsetRaw = offsetMemberList(offsetMember);\n"
+"    easingRaw = normalizeMemberList(easingMember, ['linear']);\n"
+"    compositeRaw = normalizeMemberList(compositeMember, ['auto']);\n"
+"    perFrame = [];\n"
+"    for (var i2 = 0; i2 < n; i2++) perFrame.push({});\n"
+"    /* Each property's own value list is spread across the FULL 0..n-1 grid\n"
+"     * independently of every other property -- a value at list-index j of\n"
+"     * L goes to keyframe slot round(j * (n-1) / (L-1)), so a two-value list\n"
+"     * against a five-keyframe grid lands on slots 0 and 4, never on 1/2/3.\n"
+"     * That is why a shorter property is ABSENT from the frames in between,\n"
+"     * not repeated into them -- confirmed against keyframe-tests.js's\n"
+"     * \"different numbers of values\" case, which is exactly this shape. */\n"
+"    for (var q2 = 0; q2 < propNames.length; q2++) {\n"
+"      var vals = propVals[propNames[q2]];\n"
+"      var L = vals.length;\n"
+"      for (var j = 0; j < L; j++) {\n"
+"        var v2 = vals[j];\n"
+"        if (v2 === undefined || v2 === null) continue;\n"
+"        var slot = (L <= 1) ? 0 : Math.round(j * (n - 1) / (L - 1));\n"
+"        perFrame[slot][dash(propNames[q2])] = String(v2);\n"
 "      }\n"
-"      out.push(ee);\n"
 "    }\n"
 "  }\n"
-"  if (out.length === 1 && out[0].offset === null) out[0].offset = 1;\n"
-"  if (out.length) {\n"
-"    if (out[0].offset === null) out[0].offset = 0;\n"
-"    if (out[out.length-1].offset === null) out[out.length-1].offset = 1;\n"
+"\n"
+"  var easingParsed = [];\n"
+"  for (var e = 0; e < easingRaw.length; e++) {\n"
+"    var es = String(easingRaw[e]);\n"
+"    if (!isValidEasing(es)) throw new TypeError(\"invalid keyframe easing: '\" + es + \"'\");\n"
+"    easingParsed.push(parseEasing(es));\n"
 "  }\n"
-"  var last = 0;\n"
+"  if (!easingParsed.length) easingParsed = ['linear'];\n"
+"\n"
+"  var compParsed = [];\n"
+"  for (var c = 0; c < compositeRaw.length; c++) {\n"
+"    var cs = compositeRaw[c];\n"
+"    if (cs === null || cs === undefined || !isValidKeyframeComposite(String(cs)))\n"
+"      throw new TypeError(\"invalid keyframe composite: '\" + cs + \"'\");\n"
+"    compParsed.push(String(cs));\n"
+"  }\n"
+"  if (!compParsed.length) compParsed = ['auto'];\n"
+"\n"
+"  /* Offsets: range-checked and LOOSELY sorted (non-decreasing; duplicates at\n"
+"   * the same offset are fine, a later smaller one is not) -- but only over\n"
+"   * the index-bound portion, and only comparing SPECIFIED (non-null)\n"
+"   * entries to each other. computedOffset starts equal to offset and is\n"
+"   * filled in for the nulls by the spacing pass below. */\n"
+"  var out = [];\n"
+"  var lastSpecified = null;\n"
+"  for (var ii = 0; ii < n; ii++) {\n"
+"    var offVal = null;\n"
+"    if (ii < offsetRaw.length) {\n"
+"      var ov = offsetRaw[ii];\n"
+"      if (ov !== null && ov !== undefined) {\n"
+"        var num = Number(ov);\n"
+"        if (num !== num || num < 0 || num > 1)\n"
+"          throw new TypeError('keyframe offset out of range: ' + ov);\n"
+"        if (lastSpecified !== null && num < lastSpecified)\n"
+"          throw new TypeError('keyframe offsets not loosely sorted by offset');\n"
+"        lastSpecified = num;\n"
+"        offVal = num;\n"
+"      }\n"
+"    }\n"
+"    out.push({\n"
+"      offset: offVal,\n"
+"      computedOffset: offVal,\n"
+"      easing: easingParsed[ii % easingParsed.length],\n"
+"      composite: compParsed[ii % compParsed.length],\n"
+/* `props` is the SPECIFIED value the caller wrote -- getKeyframes() reads
+ * this and only this, forever. `resolved` starts absent and is filled in
+ * by __resolveValues() with a SEPARATE dict; nothing here ever overwrites
+ * `props` in place, which is the bug this comment is standing in for: a
+ * first cut resolved values into `props` directly, and
+ * `Animatable/animate.html`'s own `left: ['10px', '20px']` case caught it
+ * immediately -- `left` on a statically positioned div computes to `auto`,
+ * so getKeyframes() started reporting `auto` for a keyframe the page wrote
+ * as `10px`, which is correct for the INTERPOLATION math and wrong for the
+ * one thing getKeyframes() is specified to report: what was written. */
+"      props: perFrame[ii] || {},\n"
+"      resolved: null\n"
+"    });\n"
+"  }\n"
+"\n"
+"  /* A SOLE keyframe with no offset lands at 1, not 0 -- both\n"
+"   * '{left:['10px']}' and '{left:'10px'}' (array-of-one vs bare value, which\n"
+"   * collapse to the same n=1 case above) resolve this way, and it is the\n"
+"   * one case the general \"first null -> 0, last null -> 1\" rule below must\n"
+"   * NOT be allowed to touch first, because for a single frame first and\n"
+"   * last are the same frame and the general rule would set it to 0. */\n"
+"  if (out.length === 1 && out[0].computedOffset === null) out[0].computedOffset = 1;\n"
+"  if (out.length) {\n"
+"    if (out[0].computedOffset === null) out[0].computedOffset = 0;\n"
+"    if (out[out.length - 1].computedOffset === null) out[out.length - 1].computedOffset = 1;\n"
+"  }\n"
 "  for (var s = 0; s < out.length; s++) {\n"
-"    if (out[s].offset === null) {\n"
-"      var e2 = s; while (e2 < out.length && out[e2].offset === null) e2++;\n"
-"      var lo = (s > 0) ? out[s-1].offset : 0;\n"
-"      var hi = (e2 < out.length) ? out[e2].offset : 1;\n"
-"      for (var u = s; u < e2; u++) out[u].offset = lo + (hi - lo) * (u - s + 1) / (e2 - s + 1);\n"
+"    if (out[s].computedOffset === null) {\n"
+"      var e2 = s;\n"
+"      while (e2 < out.length && out[e2].computedOffset === null) e2++;\n"
+"      var lo = (s > 0) ? out[s - 1].computedOffset : 0;\n"
+"      var hi = (e2 < out.length) ? out[e2].computedOffset : 1;\n"
+"      for (var u = s; u < e2; u++) out[u].computedOffset = lo + (hi - lo) * (u - s + 1) / (e2 - s + 1);\n"
 "      s = e2 - 1;\n"
-"    } else last = out[s].offset;\n"
+"    }\n"
 "  }\n"
 "  return out;\n"
 "}\n"
 "\n"
-"function timingOf(opt){\n"
-"  var t = { duration: 0, delay: 0, endDelay: 0, iterations: 1, iterationStart: 0,\n"
-"            direction: 'normal', fill: 'auto', easing: 'linear', id: undefined,\n"
-"            composite: 'replace', iterationComposite: 'replace' };\n"
-"  if (typeof opt === 'number') { t.duration = opt; return t; }\n"
-"  if (!opt || typeof opt !== 'object') return t;\n"
-"  if (opt.duration !== undefined && opt.duration !== 'auto') t.duration = Number(opt.duration) || 0;\n"
-"  if (opt.delay !== undefined) t.delay = Number(opt.delay) || 0;\n"
-"  if (opt.endDelay !== undefined) t.endDelay = Number(opt.endDelay) || 0;\n"
-"  if (opt.iterations !== undefined) t.iterations = Number(opt.iterations);\n"
-"  if (opt.iterationStart !== undefined) t.iterationStart = Number(opt.iterationStart) || 0;\n"
-"  if (opt.direction) t.direction = String(opt.direction);\n"
-"  if (opt.fill) t.fill = String(opt.fill);\n"
-"  if (opt.easing !== undefined) t.easing = String(opt.easing);\n"
-"  if (opt.id !== undefined) t.id = String(opt.id);\n"
-"  if (opt.composite) t.composite = String(opt.composite);\n"
-"  if (opt.iterationComposite) t.iterationComposite = String(opt.iterationComposite);\n"
-"  return t;\n"
-"}\n"
-"\n"
-"var REG = new WeakMap();\n"
-"function listFor(el, make){\n"
-"  var l = REG.get(el);\n"
-"  if (!l && make) { l = []; REG.set(el, l); }\n"
-"  return l;\n"
-"}\n"
-"\n"
-"function Animation(target, kf, opt){\n"
-"  this.__target = target;\n"
-"  this.__kf = normalize(kf);\n"
-"  this.__t = timingOf(opt);\n"
-"  this.__ease = easingOf(this.__t.easing);\n"
-"  this.__hold = 0;\n"
-"  this.__state = 'running';\n"
-"  this.id = this.__t.id === undefined ? '' : this.__t.id;\n"
-"  this.playbackRate = 1;\n"
-"  this.startTime = null;\n"
-"  this.timeline = null;\n"
-"  this.effect = {\n"
-"    target: target,\n"
-"    getTiming: (function(t){ return function(){ return t; }; })(this.__t),\n"
-"    getComputedTiming: (function(a){ return function(){\n"
-"      var t = a.__t;\n"
-"      return { delay: t.delay, endDelay: t.endDelay, fill: t.fill === 'auto' ? 'none' : t.fill,\n"
-"               iterations: t.iterations, iterationStart: t.iterationStart,\n"
-"               duration: t.duration, direction: t.direction, easing: t.easing,\n"
-"               activeDuration: t.duration * t.iterations,\n"
-"               localTime: a.__hold, progress: a.__progress(), currentIteration: 0 };\n"
-"    }; })(this),\n"
-"    getKeyframes: (function(k){ return function(){ return k.slice(); }; })(this.__kf)\n"
+"/* ======================================================================\n"
+" * AnimationEffect / KeyframeEffect / DocumentTimeline\n"
+" * ====================================================================== */\n"
+"function AnimationEffect() {}\n"
+"AnimationEffect.prototype.getTiming = function () {\n"
+"  var t = this.__timing;\n"
+"  return {\n"
+"    delay: t.delay, endDelay: t.endDelay, fill: t.fill, iterations: t.iterations,\n"
+"    iterationStart: t.iterationStart, duration: t.duration, direction: t.direction,\n"
+"    easing: t.easing\n"
 "  };\n"
-"}\n"
+"};\n"
+"AnimationEffect.prototype.updateTiming = function (opt) {\n"
+"  if (opt === undefined || opt === null) return;\n"
+"  if (typeof opt !== 'object') return;\n"
+"  var t = this.__timing;\n"
+"  if (opt.duration !== undefined) t.duration = toDurationValue(opt.duration);\n"
+"  if (opt.delay !== undefined) t.delay = toFiniteNumber(opt.delay);\n"
+"  if (opt.endDelay !== undefined) t.endDelay = toFiniteNumber(opt.endDelay);\n"
+"  if (opt.iterations !== undefined) t.iterations = toFiniteNonNegative(opt.iterations);\n"
+"  if (opt.iterationStart !== undefined) t.iterationStart = toStrictNonNegative(opt.iterationStart);\n"
+"  if (opt.direction !== undefined) t.direction = String(opt.direction);\n"
+"  if (opt.fill !== undefined) t.fill = String(opt.fill);\n"
+"  if (opt.easing !== undefined) {\n"
+"    var es = String(opt.easing);\n"
+"    if (!isValidEasing(es)) throw new TypeError(\"invalid easing: '\" + es + \"'\");\n"
+"    t.easing = parseEasing(es);\n"
+"  }\n"
+"};\n"
+"AnimationEffect.prototype.getComputedTiming = function () {\n"
+"  var t = this.__timing;\n"
+"  var owner = this.__owner;\n"
+"  var ct = owner ? owner.__hold : null;\n"
+"  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
+"  var it = t.iterations;\n"
+"  var effIt = (it > 0) ? it : ((it === 0) ? 0 : 1);\n"
+/* duration here is the RESOLVED number (0 for 'auto'), unlike getTiming()'s
+ * duration which stays the literal 'auto' -- Animatable/animate.html checks
+ * both readbacks of the same effect and expects them to differ exactly this
+ * way. */
+"  return {\n"
+"    delay: t.delay, endDelay: t.endDelay, fill: t.fill === 'auto' ? 'none' : t.fill,\n"
+"    iterations: t.iterations, iterationStart: t.iterationStart,\n"
+"    duration: d, direction: t.direction, easing: t.easing,\n"
+"    activeDuration: d * effIt,\n"
+"    localTime: ct, progress: this.__progress(), currentIteration: 0\n"
+"  };\n"
+"};\n"
 "\n"
-/* The proportion through THIS iteration, eased -- or null when the animation
- * is not in effect (before/after its active interval with no matching fill),
- * which is how the overlay knows to stay silent. */
-"Animation.prototype.__progress = function(){\n"
-"  var t = this.__t, ct = this.__hold;\n"
-"  if (ct === null || this.__state === 'idle') return null;\n"
-"  var d = t.duration, it = t.iterations;\n"
+"function KeyframeEffect(target, keyframes, options) {\n"
+/* The COPY constructor is a distinct overload, not this one with a shape
+ * nobody built for it: `new KeyframeEffect(sourceEffect)` -- one argument,
+ * and the first one is itself a KeyframeEffect. Distinguishing on argument
+ * COUNT (arguments.length, not `keyframes === undefined`) matters because
+ * `new KeyframeEffect(existingEffect, null)` -- an existing effect handed
+ * in as a TARGET, which is legal (a KeyframeEffect is not an Element, so it
+ * is a strange target, but nothing here forbids it) -- must NOT be treated
+ * as a copy. copy-constructor.html's own corpus depends on the copy being a
+ * true clone: mutating the copy's keyframes or timing must not be visible
+ * through the source, which is why every field below is a fresh object,
+ * not a shared reference. */
+"  if (arguments.length === 1 && target instanceof KeyframeEffect) {\n"
+"    var src = target;\n"
+"    this.__target = src.__target;\n"
+"    this.__pseudo = src.__pseudo;\n"
+"    this.__owner = null;\n"
+"    this.__composite = src.__composite;\n"
+"    this.__iterationComposite = src.__iterationComposite;\n"
+"    var st = src.__timing;\n"
+"    this.__timing = {\n"
+"      duration: st.duration, delay: st.delay, endDelay: st.endDelay,\n"
+"      iterations: st.iterations, iterationStart: st.iterationStart,\n"
+"      direction: st.direction, fill: st.fill, easing: st.easing\n"
+"    };\n"
+"    this.__kf = src.__kf.map(function (k) {\n"
+"      var props = {};\n"
+"      for (var p in k.props) props[p] = k.props[p];\n"
+"      return { offset: k.offset, computedOffset: k.computedOffset, easing: k.easing,\n"
+"               composite: k.composite, props: props };\n"
+"    });\n"
+"    return;\n"
+"  }\n"
+"  this.__target = (target === undefined || target === null) ? null : target;\n"
+"  this.__pseudo = null;\n"
+"  this.__owner = null;\n"
+"  this.__composite = 'replace';\n"
+"  this.__iterationComposite = 'replace';\n"
+"  this.__timing = parseTiming(options);\n"
+"  if (options !== undefined && options !== null && typeof options === 'object') {\n"
+"    if (options.composite !== undefined) {\n"
+"      var oc = String(options.composite);\n"
+"      if (!isValidEffectComposite(oc)) throw new TypeError(\"invalid composite: '\" + oc + \"'\");\n"
+"      this.__composite = oc;\n"
+"    }\n"
+"    if (options.iterationComposite !== undefined) {\n"
+"      var oic = String(options.iterationComposite);\n"
+"      if (!isValidIterationComposite(oic)) throw new TypeError(\"invalid iterationComposite: '\" + oic + \"'\");\n"
+"      this.__iterationComposite = oic;\n"
+"    }\n"
+"    if (options.pseudoElement !== undefined) this.__pseudo = validatePseudo(options.pseudoElement);\n"
+"  }\n"
+"  /* Keyframes are processed AFTER options, so a throwing keyframes getter\n"
+"   * (constructor.html's `{ get left(){ throw test_error } }` case) still\n"
+"   * propagates the exact object the page threw -- nothing here catches it. */\n"
+"  this.__kf = buildFrames(keyframes);\n"
+"  try { this.__resolveValues(); } catch (e) {}\n"
+"}\n"
+"KeyframeEffect.prototype = Object.create(AnimationEffect.prototype);\n"
+"KeyframeEffect.prototype.constructor = KeyframeEffect;\n"
+/* Symbol.toStringTag on all four prototypes -- assert_class_string() checks
+ * {}.toString.call(x) === '[object ClassName]', which is spec-derived from
+ * every WebIDL interface getting one automatically; a plain constructor
+ * function does not, and without this every one of those checks reports
+ * '[object Object]' regardless of how correct the object underneath is. */
+"AnimationEffect.prototype[Symbol.toStringTag] = 'AnimationEffect';\n"
+"KeyframeEffect.prototype[Symbol.toStringTag] = 'KeyframeEffect';\n"
+"\n"
+"/* target is re-assignable, and re-assigning it has to (a) move this\n"
+" * effect's owning Animation from the old target's registration to the\n"
+" * new one's, so getComputedStyle keeps answering for the right element,\n"
+" * and (b) re-resolve keyframe values against the new target, because\n"
+" * `border-style: none` collapsing `border-top-width` to 0px is a property\n"
+" * of the ELEMENT, and the old target's collapse says nothing about the\n"
+" * new one's. */\n"
+"Object.defineProperty(KeyframeEffect.prototype, 'target', {\n"
+"  get: function () { return this.__target; },\n"
+"  set: function (v) {\n"
+"    var nv = (v === undefined || v === null) ? null : v;\n"
+"    var old = this.__target;\n"
+"    if (old === nv) return;\n"
+"    var owner = this.__owner;\n"
+"    this.__target = nv;\n"
+"    if (owner) {\n"
+"      if (old) {\n"
+"        var l = listFor(old, false);\n"
+"        if (l) { var i = l.indexOf(owner); if (i >= 0) l.splice(i, 1); }\n"
+"      }\n"
+"      if (nv) listFor(nv, true).push(owner);\n"
+"    }\n"
+"    try { this.__resolveValues(); } catch (e) {}\n"
+"  },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"Object.defineProperty(KeyframeEffect.prototype, 'pseudoElement', {\n"
+"  get: function () { return this.__pseudo; },\n"
+"  set: function (v) { this.__pseudo = validatePseudo(v); },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"Object.defineProperty(KeyframeEffect.prototype, 'composite', {\n"
+"  get: function () { return this.__composite; },\n"
+"  set: function (v) {\n"
+"    var s = String(v);\n"
+"    if (!isValidEffectComposite(s)) throw new TypeError(\"invalid composite: '\" + s + \"'\");\n"
+"    this.__composite = s;\n"
+"  },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"Object.defineProperty(KeyframeEffect.prototype, 'iterationComposite', {\n"
+"  get: function () { return this.__iterationComposite; },\n"
+"  set: function (v) {\n"
+"    var s = String(v);\n"
+"    if (!isValidIterationComposite(s)) throw new TypeError(\"invalid iterationComposite: '\" + s + \"'\");\n"
+"    this.__iterationComposite = s;\n"
+"  },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"\n"
+"/* getKeyframes() reports COMPUTED keyframes: offset (the specified value,\n"
+" * possibly null), computedOffset (always a number), easing, composite, and\n"
+" * one entry per animated property under its IDL (camelCase) name -- in that\n"
+" * key set exactly, because keyframe-utils.js's assert_frames_equal compares\n"
+" * Object.keys(...).sort(), so an extra or missing key fails the comparison\n"
+" * even when every value that IS present is correct. */\n"
+"KeyframeEffect.prototype.getKeyframes = function () {\n"
+"  var out = [];\n"
+"  for (var i = 0; i < this.__kf.length; i++) {\n"
+"    var k = this.__kf[i];\n"
+"    var o = { offset: k.offset, computedOffset: k.computedOffset, easing: k.easing, composite: k.composite };\n"
+"    for (var p in k.props) o[idlName(p)] = k.props[p];\n"
+"    out.push(o);\n"
+"  }\n"
+"  return out;\n"
+"};\n"
+"KeyframeEffect.prototype.setKeyframes = function (keyframes) {\n"
+"  this.__kf = buildFrames(keyframes);\n"
+"  try { this.__resolveValues(); } catch (e) {}\n"
+"};\n"
+"\n"
+"/* The proportion through THIS iteration, eased -- or null when the effect\n"
+" * is not in effect (before/after its active interval with no matching\n"
+" * fill, or there is no owning Animation, or that Animation has no\n"
+" * currentTime), which is how the overlay knows to stay silent. */\n"
+"KeyframeEffect.prototype.__progress = function () {\n"
+"  var t = this.__timing;\n"
+"  var owner = this.__owner;\n"
+"  var ct = owner ? owner.__hold : null;\n"
+"  if (ct === null || (owner && owner.__state === 'idle')) return null;\n"
+"  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
+"  var it = t.iterations;\n"
 "  if (!(it > 0)) it = (it === 0) ? 0 : 1;\n"
 "  var active = d * it;\n"
 "  var local = ct - t.delay;\n"
@@ -445,31 +982,30 @@ static const char ANIM_JS[] =
 "    if (iter % 2) f = 1 - f;\n"
 "  }\n"
 #ifdef JS_ANIM_NEGCTL_CLAMP
-/* THE NEGATIVE CONTROL, and it is not "delete animate()" -- any test catches
- * that. This is the sentence an implementation writes without thinking:
- * progress is a fraction, so clamp it to [0, 1].
- *
- * The eased progress is NOT a fraction. A cubic-bezier whose control points
- * lie outside the unit square returns values outside it, and that is the
- * entire mechanism interpolation-testcommon.js uses to test extrapolation:
- * the input is always exactly 0.5 and the OUTPUT is the `at` being asked for,
- * which is -0.3 and 1.5 in two of every seven subtests across all 337 files.
- * Clamping leaves every ordinary animation correct and every page looking
- * right, and quietly reports the endpoint value for those two.
- *
- * Note it clamps the OUTPUT. Clamping the input, which was the first attempt
- * at this control, changes nothing at all and the suite stayed green -- the
- * input is 0.5 and never leaves the interval. A control that does not fail is
- * not a control, and that near-miss is why this comment is this long. */
-"  var __p = this.__ease(f);\n"
+"/* THE NEGATIVE CONTROL, and it is not \"delete animate()\" -- any test catches\n"
+" * that. This is the sentence an implementation writes without thinking:\n"
+" * progress is a fraction, so clamp it to [0, 1]. See the long-form version\n"
+" * of this comment in git history / the file this replaced; the mechanism\n"
+" * (createEasing() feeding cubic-bezier control points outside the unit\n"
+" * square so a 0.5 input produces the OUTPUT `at` being tested) is\n"
+" * unchanged by this rewrite. */\n"
+"  var __p = easingFn(t.easing)(f);\n"
 "  return __p < 0 ? 0 : (__p > 1 ? 1 : __p);\n"
 "};\n"
 #else
-"  return this.__ease(f);\n"
+"  return easingFn(t.easing)(f);\n"
 "};\n"
 #endif
 "\n"
-"Animation.prototype.__valueAt = function(prop){\n"
+/* Reads the RESOLVED value when __resolveValues() has computed one, else
+ * falls back to the specified value untouched -- membership (`prop in
+ * kf[i].props`) is still decided by the specified set, because a property
+ * that failed to resolve (target is null, or the read came back "") stays
+ * a real keyframe property with its original string, not a missing one. */
+"function kfval(k, prop) {\n"
+"  return (k.resolved && (prop in k.resolved)) ? k.resolved[prop] : k.props[prop];\n"
+"}\n"
+"KeyframeEffect.prototype.__valueAt = function (prop) {\n"
 "  var kf = this.__kf;\n"
 "  if (!kf.length) return null;\n"
 "  var p = this.__progress();\n"
@@ -477,49 +1013,40 @@ static const char ANIM_JS[] =
 "  var lo = -1, hi = -1, i;\n"
 "  for (i = 0; i < kf.length; i++) if (prop in kf[i].props) { if (lo < 0) lo = i; hi = i; }\n"
 "  if (lo < 0) return null;\n"
-"  if (lo === hi) return kf[lo].props[prop];\n"
+"  if (lo === hi) return kfval(kf[lo], prop);\n"
 "  var a = lo, b = hi;\n"
 "  for (i = lo; i <= hi; i++) {\n"
 "    if (!(prop in kf[i].props)) continue;\n"
-"    if (kf[i].offset <= p) a = i;\n"
+"    if (kf[i].computedOffset <= p) a = i;\n"
 "  }\n"
 "  b = a;\n"
 "  for (i = a + 1; i <= hi; i++) if (prop in kf[i].props) { b = i; break; }\n"
 "  if (b === a) { a = lo; for (i = lo + 1; i <= hi; i++) if (prop in kf[i].props) { b = i; break; } }\n"
-"  if (b === a) return kf[a].props[prop];\n"
-"  var span = kf[b].offset - kf[a].offset;\n"
-/*  A local progress that runs OUTSIDE [0,1] is not an error here: the eased
- *  progress itself can be -0.3 or 1.5, and the value is extrapolated. */
-"  var lp = span > 0 ? (p - kf[a].offset) / span : (p < kf[a].offset ? 0 : 1);\n"
-"  var v = II(prop, kf[a].props[prop], kf[b].props[prop], lp);\n"
+"  if (b === a) return kfval(kf[a], prop);\n"
+"  var span = kf[b].computedOffset - kf[a].computedOffset;\n"
+"  var lp = span > 0 ? (p - kf[a].computedOffset) / span : (p < kf[a].computedOffset ? 0 : 1);\n"
+"  var v = II(prop, kfval(kf[a], prop), kfval(kf[b], prop), lp);\n"
 "  if (v === null || v === undefined) return v;\n"
-"  return this.__iterAccum(prop, v, kf[hi].props[prop]);\n"
+"  return this.__iterAccum(prop, v, kfval(kf[hi], prop));\n"
 "};\n"
 "\n"
-/* iterationComposite: 'accumulate'.
- *
- * The one composite knob that is about TIME rather than about the underlying
- * value: with it, iteration n starts from where iteration n-1 finished instead
- * of from the first keyframe again, so a 10px slide repeated three times ends
- * at 30px rather than sliding back and doing 10px again.
- *
- * INERT IN THIS CORPUS, and said out loud rather than left implied:
- * interpolation-testcommon.js runs one iteration of a 100s effect and never
- * advances the timeline, so this branch is never taken by a WPT subtest here.
- * It is implemented because leaving `iterationComposite` accepted-and-ignored
- * is worse than not accepting it -- a page that sets it would animate wrongly
- * with no way to tell.
- *
- * The accumulation base is the LAST keyframe's value, accumulated once per
- * completed iteration, which is the spec's rule for the ordinary case of a
- * keyframe list whose final offset is 1. */
-"Animation.prototype.__iterAccum = function(prop, v, lastv){\n"
-"  var t = this.__t;\n"
-"  if (t.iterationComposite !== 'accumulate') return v;\n"
+"/* iterationComposite: 'accumulate' -- a property of the EFFECT now, not of\n"
+" * the timing dict, matching where the constructor and the accessor both put\n"
+" * it. Still inert against this corpus for the reason the original comment\n"
+" * gave: interpolation-testcommon.js runs one 100s iteration and never\n"
+" * advances past it, so this branch has no case here that exercises it --\n"
+" * implemented anyway, because an accepted-and-ignored iterationComposite is\n"
+" * worse than a rejected one. */\n"
+"KeyframeEffect.prototype.__iterAccum = function (prop, v, lastv) {\n"
+"  if (this.__iterationComposite !== 'accumulate') return v;\n"
 "  if (lastv === undefined || lastv === null) return v;\n"
-"  var d = t.duration;\n"
+"  var t = this.__timing;\n"
+"  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
 "  if (!(d > 0)) return v;\n"
-"  var local = this.__hold - t.delay;\n"
+"  var owner = this.__owner;\n"
+"  var ct = owner ? owner.__hold : null;\n"
+"  if (ct === null) return v;\n"
+"  var local = ct - t.delay;\n"
 "  var it = Math.floor(local / d + t.iterationStart);\n"
 "  if (!(it > 0)) return v;\n"
 "  if (it > 1000) it = 1000;\n"
@@ -532,85 +1059,26 @@ static const char ANIM_JS[] =
 "  return v;\n"
 "};\n"
 "\n"
-"Animation.prototype.__props = function(){\n"
-"  var s = {}, i, p;\n"
-"  for (i = 0; i < this.__kf.length; i++) for (p in this.__kf[i].props) s[p] = 1;\n"
-"  return s;\n"
+"/* The composite operation in force for keyframe `i`: the keyframe's own if\n"
+" * it declares one other than 'auto', otherwise the effect's `.composite`,\n"
+" * otherwise 'replace'. */\n"
+"KeyframeEffect.prototype.__opOf = function (i) {\n"
+"  var k = this.__kf[i];\n"
+"  var c = k ? k.composite : 'auto';\n"
+"  if (c === 'replace' || c === 'add' || c === 'accumulate') return c;\n"
+"  var e = this.__composite;\n"
+"  return (e === 'add' || e === 'accumulate') ? e : 'replace';\n"
 "};\n"
 "\n"
-"Object.defineProperty(Animation.prototype, 'currentTime', {\n"
-"  get: function(){ return this.__hold; },\n"
-"  set: function(v){ this.__hold = (v === null) ? null : Number(v); },\n"
-"  configurable: true, enumerable: true\n"
-"});\n"
-"Object.defineProperty(Animation.prototype, 'playState', {\n"
-"  get: function(){ return this.__state; }, configurable: true, enumerable: true\n"
-"});\n"
-"Animation.prototype.pause = function(){ this.__state = 'paused'; };\n"
-"Animation.prototype.play = function(){ this.__state = 'running'; if (this.__hold === null) this.__hold = 0; };\n"
-"Animation.prototype.finish = function(){\n"
-"  var t = this.__t;\n"
-"  this.__hold = t.delay + t.duration * (t.iterations > 0 ? t.iterations : 1);\n"
-"  this.__state = 'finished';\n"
-"};\n"
-"Animation.prototype.cancel = function(){\n"
-"  this.__state = 'idle'; this.__hold = null;\n"
-"  var l = listFor(this.__target, false);\n"
-"  if (l) { var i = l.indexOf(this); if (i >= 0) l.splice(i, 1); }\n"
-"};\n"
-"Animation.prototype.reverse = function(){ this.playbackRate = -this.playbackRate; };\n"
-"Animation.prototype.updatePlaybackRate = function(r){ this.playbackRate = Number(r); };\n"
-"Animation.prototype.commitStyles = function(){};\n"
-"Animation.prototype.persist = function(){};\n"
-"Animation.prototype.addEventListener = function(){};\n"
-"Animation.prototype.removeEventListener = function(){};\n"
-"Object.defineProperty(Animation.prototype, 'finished', {\n"
-"  get: function(){ return Promise.resolve(this); }, configurable: true\n"
-"});\n"
-"Object.defineProperty(Animation.prototype, 'ready', {\n"
-"  get: function(){ return Promise.resolve(this); }, configurable: true\n"
-"});\n"
-"if (typeof globalThis !== 'undefined' && !globalThis.Animation) globalThis.Animation = Animation;\n"
-"\n"
-/* ---- keyframe values are COMPUTED values, not the strings handed in -------
- *
- * THE BUG THIS EXISTS TO NOT HAVE, found by measuring rather than by reading
- * the spec, and it is the one that turns a gain into a regression.
- *
- * A first cut interpolated the strings from the keyframes and reported the
- * result. That is right for margin-left and wrong wherever the engine's
- * computed value does not follow the specified one:
- *
- *   border-bottom-width: 100px  computes to 0px when border-style is none
- *   top: 100px                  computes to auto on a statically positioned box
- *
- * WPT compares the target against an element with the EXPECTED value set on
- * it, and that element's computed value goes through the same rule -- so both
- * sides read 0px, or both read auto, and the subtest passes. Reporting an
- * interpolated 150px against an expected 0px broke 275 subtests across 17
- * files that had been passing, which is exactly the shape of regression the
- * two silence rules were meant to prevent and did not: the base read is
- * "0px", not "", so RULE 1 let it through.
- *
- * So each endpoint is resolved to a computed value first, by the engine, on
- * the TARGET ELEMENT ITSELF -- same cascade, same inheritance, same
- * border-style and position that made the value collapse. Not a scratch
- * element in some other part of the tree, which would get a different answer
- * for precisely the properties this is about.
- *
- * Doing it here, once per animate(), rather than per computed read: the
- * keyframe values are resolved when the animation is created, which is also
- * what the spec says happens, and it bounds the cost at two extra cascades
- * per animation instead of one per property read.
- *
- * It pays for itself twice over: em, colour keywords and `initial` endpoints
- * all arrive already resolved, so pairs whose SPECIFIED forms have different
- * token shapes ("initial" against "20px") now have matching computed ones and
- * interpolate instead of declining.
- *
- * gcs, the ORIGINAL captured at install, never the patched one -- resolving through the wrapper would ask
- * the animation being constructed what it thinks the value is. */
-"function resolveOn(el, prop, value){\n"
+"/* ---- keyframe values are COMPUTED values, not the strings handed in ----\n"
+" * Unchanged in substance from the version this replaces (see git history\n"
+" * for the full derivation, including the 275-subtest regression this\n"
+" * exists to prevent and the 205-subtest regression restricting it to\n"
+" * kf.length >= 2 exists to prevent) -- only the home changed, from\n"
+" * Animation.prototype to KeyframeEffect.prototype, because the values\n"
+" * being resolved belong to the effect and must survive a target\n"
+" * re-assignment that leaves the owning Animation untouched. */\n"
+"function resolveOn(el, prop, value) {\n"
 "  var st = el.style;\n"
 "  if (!st || typeof st.setProperty !== 'function') return value;\n"
 "  var had, pri = '';\n"
@@ -631,74 +1099,18 @@ static const char ANIM_JS[] =
 "  return out;\n"
 "}\n"
 "\n"
-/* WHY THE ENDPOINTS ARE RESOLVED ON SCRATCH TWINS AND ALL AT ONCE, and this
- * is not an optimisation -- it is the difference between two endpoints and
- * one.
- *
- * The obvious shape is a loop: write endpoint 1 onto the target, read it back,
- * restore; write endpoint 2, read it back, restore. That is what this was, and
- * it silently returns THE SAME STRING for both, because a computed read does
- * not see the write above it.
- *
- * css_engine.c's css_ensure_styled() -- "update style before a computed read"
- * -- is guarded by inval_fingerprint(), which mixes the DOM arena's high-water
- * mark and, for each MARKED SCOPE ROOT, that root's own node/serial/attributes.
- * A scope root covers a subtree and js_dom.c's mark() coalesces into the
- * nearest one already held, so a style write on a DESCENDANT of a marked root
- * changes no term of the fingerprint, the flush is skipped, and the read
- * answers out of the previous cascade. Measured on a div inside a div inside
- * <body>, with css_style_flushes() alongside:
- *
- *     style.margin-left = 100px -> getComputedStyle = 100px   (flushes: 1)
- *     style.margin-left = 200px -> getComputedStyle = 100px   (flushes: 1)
- *     style.margin-left = 300px -> getComputedStyle = 100px   (flushes: 1)
- *
- * One cascade per document, ever. So `from` resolved correctly, `to` came back
- * as `from`, and every interpolation was a constant -- invisible, because the
- * constant is a real and plausible computed value.
- *
- * Forcing extra flushes is NOT the answer, and that was measured too rather
- * than assumed: an attribute write on documentElement between the write and
- * the read does re-arm the fingerprint and does make every read fresh, and it
- * costs 3,533 subtests in css/, because 2,867 of them are `CSS Transitions`
- * subtests that pass today only because BOTH the target and the expected
- * element read the same stale value. Un-sticking the cascade for everybody
- * exposes a feature this file does not implement. That belongs to whoever owns
- * css_engine.c, with the transitions work alongside it; it is not a change an
- * animation overlay gets to make on its way past.
- *
- * What IS available is the ordering. The single flush happens at the first
- * computed read after a mutation, and it styles EVERY element in the document
- * as it stands at that moment. So: create one scratch twin per keyframe,
- * carrying that keyframe's values, insert them all, and only then start
- * reading. Every endpoint is resolved by the one cascade instead of the first
- * one taking it and the rest reading its answer.
- *
- * A twin and not the target: cloneNode(false) keeps the tag, the classes and
- * the inline style, so `border-style: none` and `position: static` -- the two
- * cases this resolution exists for -- collapse the value exactly as they do on
- * the target, and the target itself is never mutated. The `id` goes, so a
- * duplicate never wins a getElementById.
- *
- * When the read still comes back "" (the flush already happened earlier in
- * this document, so the twins were never styled) the fallback is the target's
- * own computed value for that property -- which is byte-for-byte what the
- * write-and-read-back loop returned in that case, so the stale path behaves
- * exactly as it did before this change and only the fresh path improves. */
-"Animation.prototype.__resolve = function(){\n"
+"function ensureResolved(k) { if (!k.resolved) k.resolved = {}; return k.resolved; }\n"
+"KeyframeEffect.prototype.__resolveValues = function () {\n"
 "  var el = this.__target, i, p;\n"
+/* Every call starts from a clean slate: target re-assignment and
+ * setKeyframes() both re-run this, and a `resolved` entry left over from
+ * the PREVIOUS target/keyframes would silently outlive the state it was
+ * computed from. */
+"  var kf0 = this.__kf;\n"
+"  for (i = 0; i < kf0.length; i++) kf0[i].resolved = null;\n"
 "  if (!el || !el.style) return;\n"
 "  var par = el.parentNode;\n"
 "  var kf = this.__kf, jobs = [];\n"
-/*   ONLY WHEN THERE IS MORE THAN ONE ENDPOINT TO RESOLVE, and this bound was
- *   measured, not assumed. The twins exist to get two endpoints out of one
- *   cascade; with a single keyframe there is only one endpoint, the ordinary
- *   write-and-read-back already resolves it, and a twin changes the answer for
- *   a reason that has nothing to do with resolution -- it is a different
- *   element, and the document is left slightly stirred by the insert and the
- *   remove. Unrestricted, that stirring cost 205 subtests in css/ (most of
- *   them `from neutral` cases and `CSS Transitions` bystanders) against 85
- *   gained. Restricted to the case it is for, it only pays. */
 "  if (kf.length >= 2 && par && typeof el.cloneNode === 'function') {\n"
 "    for (i = 0; i < kf.length; i++) {\n"
 "      var any = false; for (p in kf[i].props) { any = true; break; }\n"
@@ -714,12 +1126,6 @@ static const char ANIM_JS[] =
 "      jobs.push({ i: i, s: s });\n"
 "    }\n"
 "  }\n"
-/*   THE UNDERLYING VALUES, read here and not later, and the ordering is
- *   load-bearing in both directions. It has to be AFTER the twins are in the
- *   document (this is the read that triggers the document's one style flush,
- *   and the flush is what styles them) and BEFORE the fallback path below
- *   writes anything onto the target, or the "underlying" value would be an
- *   endpoint of the very animation being composed onto it. */
 "  var base = {}, needBase = false;\n"
 "  for (i = 0; i < kf.length; i++)\n"
 "    for (p in kf[i].props) { base[p] = ''; needBase = true; }\n"
@@ -730,57 +1136,24 @@ static const char ANIM_JS[] =
 "    } catch (eb2) {}\n"
 "  }\n"
 "\n"
-/*   The read pass, strictly after every insertion above. */
 "  for (var j = 0; j < jobs.length; j++) {\n"
 "    var cs = null;\n"
 "    try { cs = gcs.call(globalThis, jobs[j].s); } catch (e4) { cs = null; }\n"
 "    if (!cs) continue;\n"
 "    var props = kf[jobs[j].i].props;\n"
+"    var res = ensureResolved(kf[jobs[j].i]);\n"
 "    jobs[j].done = {};\n"
-/*     PER PROPERTY, not per keyframe. A twin that was inserted but never
- *     styled -- the document's one flush had already happened -- answers ""
- *     for every property, and marking the whole keyframe done on the strength
- *     of having obtained a declaration object left those properties holding
- *     their SPECIFIED strings with no resolution at all. That is the 275-
- *     subtest regression the resolution exists to prevent, reintroduced
- *     through the back door: `border-top-width: 100px` stayed "100px" instead
- *     of collapsing to the "0px" a border-style-less box computes. */
 "    for (p in props) {\n"
 "      var c = '';\n"
 "      try { c = cs.getPropertyValue(p); } catch (e5) { c = ''; }\n"
 "      if (c === '' || c === null || c === undefined) continue;\n"
-"      props[p] = c;\n"
+"      res[p] = c;\n"
 "      jobs[j].done[p] = 1;\n"
 "    }\n"
 "  }\n"
 "  for (j = 0; j < jobs.length; j++) {\n"
 "    try { jobs[j].s.parentNode.removeChild(jobs[j].s); } catch (e6) {}\n"
 "  }\n"
-/*   THE FALLBACK, for anything the twins could not answer -- and it is two
- *   different answers, because "the read is stale" and "the value collapses on
- *   this element" look identical from here and must not be treated alike.
- *
- *   The write-and-read-back loop returns the target's LAST-CASCADED value for
- *   the property, whatever was written. That is exactly right when the cascade
- *   really does transform the property on this element -- `border-top-width`
- *   on a box with no border-style computes to 0px whatever number you give it,
- *   `top` on a statically positioned box computes to auto -- and exactly wrong
- *   when it does not, because then it throws the endpoint away and reports the
- *   underlying value in its place, which is how `from` and `to` became the
- *   same string in the first place.
- *
- *   The two are told apart by asking the ELEMENT rather than the value: if the
- *   target's own inline declaration for this property survives into its
- *   computed value unchanged, the cascade is not transforming it here and the
- *   keyframe's specified value can stand. If the inline value and the computed
- *   value disagree -- or there is no inline value to compare, which is the
- *   interpolation harness's shape -- the collapse is real (or unknown, and
- *   unknown must be conservative) and the last-cascaded value is the answer.
- *
- *   Measured, per direction: preferring the specified value everywhere gains
- *   89 composition subtests and loses 32 (the border-width and top families,
- *   which need the collapse); preferring the cascaded value everywhere loses
- *   nothing and gains only 18. This test keeps both. */
 "  var inlineWins = {};\n"
 "  for (p in base) {\n"
 "    var iv = '';\n"
@@ -793,16 +1166,10 @@ static const char ANIM_JS[] =
 "    for (p in kf[i].props) {\n"
 "      if (got && got[p]) continue;\n"
 "      if (inlineWins[p]) continue;\n"
-"      kf[i].props[p] = resolveOn(el, p, kf[i].props[p]);\n"
+"      ensureResolved(kf[i])[p] = resolveOn(el, p, kf[i].props[p]);\n"
 "    }\n"
 "  }\n"
 "\n"
-/*   COMPOSITION, last: it consumes computed values on both sides, so it can
- *   only run once every endpoint has been through the resolution above. A
- *   keyframe whose composite operation is `replace` is untouched, and one the
- *   native declines (a shape it cannot combine, a discrete type, or no
- *   underlying value at all) keeps its resolved value -- which is what a type
- *   with no addition defined is specified to do with `add`. */
 "  for (i = 0; i < kf.length; i++) {\n"
 "    var op = this.__opOf(i);\n"
 "    if (op === 'replace') continue;\n"
@@ -810,48 +1177,138 @@ static const char ANIM_JS[] =
 "      var u = base[p];\n"
 "      if (u === '' || u === null || u === undefined) continue;\n"
 "      var cv = null;\n"
-"      try { cv = CC(p, u, kf[i].props[p], op); } catch (ec) { cv = null; }\n"
-"      if (cv !== null && cv !== undefined) kf[i].props[p] = cv;\n"
+"      try { cv = CC(p, u, kfval(kf[i], p), op); } catch (ec) { cv = null; }\n"
+"      if (cv !== null && cv !== undefined) ensureResolved(kf[i])[p] = cv;\n"
 "    }\n"
 "  }\n"
 "};\n"
 "\n"
-/* The composite operation in force for keyframe `i`: the keyframe's own if it
- * declares one, otherwise the effect-level default from the options bag,
- * otherwise `replace`. That is the spec's order and also the order the corpus
- * exercises -- interpolation-testcommon.js puts `composite` on each keyframe
- * and never on the options. */
-"Animation.prototype.__opOf = function(i){\n"
-"  var k = this.__kf[i];\n"
-"  var c = (k && k.composite) ? String(k.composite) : '';\n"
-"  if (c === 'add' || c === 'accumulate' || c === 'replace') return c;\n"
-"  var e = this.__t.composite;\n"
-"  if (e === 'add' || e === 'accumulate') return e;\n"
-"  return 'replace';\n"
-"};\n"
+"if (typeof globalThis !== 'undefined') {\n"
+"  if (!globalThis.AnimationEffect) globalThis.AnimationEffect = AnimationEffect;\n"
+"  if (!globalThis.KeyframeEffect) globalThis.KeyframeEffect = KeyframeEffect;\n"
+"}\n"
 "\n"
-"EP.animate = function(keyframes, options){\n"
-"  var a = new Animation(this, keyframes, options);\n"
-"  try { a.__resolve(); } catch (e) {}\n"
-"  listFor(this, true).push(a);\n"
+"/* ---- DocumentTimeline ----------------------------------------------------\n"
+" * A REAL clock (performance.now(), falling back to Date.now()), not a\n"
+" * frozen 0 -- constructor.html builds a second DocumentTimeline with a\n"
+" * non-zero originTime and checks it lags/leads document.timeline by exactly\n"
+" * that amount, which only holds if both read the same moving clock. What is\n"
+" * still true, and was true of the file this replaces: nothing here ADVANCES\n"
+" * an Animation's own currentTime from this clock -- an Animation's\n"
+" * currentTime stays exactly what play()/pause()/the setter leave it at,\n"
+" * because nothing in this engine drives a frame loop that would tick it,\n"
+" * and inventing that tick is a materially different (and untested) feature\n"
+" * from exposing the clock a real timeline reads. */\n"
+"function __clockNow() {\n"
+"  return (typeof performance !== 'undefined' && typeof performance.now === 'function')\n"
+"    ? performance.now() : Date.now();\n"
+"}\n"
+"function DocumentTimeline(options) {\n"
+"  var origin = 0;\n"
+"  if (options && options.originTime !== undefined) origin = Number(options.originTime) || 0;\n"
+"  this.__origin = origin;\n"
+"}\n"
+"Object.defineProperty(DocumentTimeline.prototype, 'currentTime', {\n"
+"  get: function () { return __clockNow() - this.__origin; },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"DocumentTimeline.prototype[Symbol.toStringTag] = 'DocumentTimeline';\n"
+"if (typeof globalThis !== 'undefined' && !globalThis.DocumentTimeline) globalThis.DocumentTimeline = DocumentTimeline;\n"
+"var __DEFAULT_TIMELINE = new DocumentTimeline();\n"
+"if (typeof document !== 'undefined' && document && !document.timeline) document.timeline = __DEFAULT_TIMELINE;\n"
+"\n"
+"/* ======================================================================\n"
+" * Animation\n"
+" * ====================================================================== */\n"
+"function Animation(effect, timeline) {\n"
+"  this.effect = (effect === undefined) ? null : effect;\n"
+"  if (this.effect) this.effect.__owner = this;\n"
+"  this.timeline = (timeline === undefined) ? __DEFAULT_TIMELINE : timeline;\n"
+"  this.__hold = 0;\n"
+"  this.__state = 'running';\n"
+"  this.id = '';\n"
+"  this.playbackRate = 1;\n"
+"  this.startTime = null;\n"
+"  if (this.effect && this.effect.__target) listFor(this.effect.__target, true).push(this);\n"
+"}\n"
+"var REG = new WeakMap();\n"
+"function listFor(el, make) {\n"
+"  var l = REG.get(el);\n"
+"  if (!l && make) { l = []; REG.set(el, l); }\n"
+"  return l;\n"
+"}\n"
+"Object.defineProperty(Animation.prototype, 'currentTime', {\n"
+"  get: function () { return this.__hold; },\n"
+"  set: function (v) { this.__hold = (v === null || v === undefined) ? null : Number(v); },\n"
+"  configurable: true, enumerable: true\n"
+"});\n"
+"Object.defineProperty(Animation.prototype, 'playState', {\n"
+"  get: function () { return this.__state; }, configurable: true, enumerable: true\n"
+"});\n"
+"Animation.prototype.pause = function () { this.__state = 'paused'; };\n"
+"Animation.prototype.play = function () { this.__state = 'running'; if (this.__hold === null) this.__hold = 0; };\n"
+"Animation.prototype.finish = function () {\n"
+"  var t = this.effect ? this.effect.__timing : null;\n"
+"  if (!t) { this.__state = 'finished'; return; }\n"
+"  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
+"  this.__hold = t.delay + d * (t.iterations > 0 ? t.iterations : 1);\n"
+"  this.__state = 'finished';\n"
+"};\n"
+"Animation.prototype.cancel = function () {\n"
+"  this.__state = 'idle'; this.__hold = null;\n"
+"  var el = this.effect ? this.effect.__target : null;\n"
+"  var l = el ? listFor(el, false) : null;\n"
+"  if (l) { var i = l.indexOf(this); if (i >= 0) l.splice(i, 1); }\n"
+"};\n"
+"Animation.prototype.reverse = function () { this.playbackRate = -this.playbackRate; };\n"
+"Animation.prototype.updatePlaybackRate = function (r) { this.playbackRate = Number(r); };\n"
+"Animation.prototype.commitStyles = function () {};\n"
+"Animation.prototype.persist = function () {};\n"
+"Animation.prototype.addEventListener = function () {};\n"
+"Animation.prototype.removeEventListener = function () {};\n"
+"Object.defineProperty(Animation.prototype, 'finished', {\n"
+"  get: function () { return Promise.resolve(this); }, configurable: true\n"
+"});\n"
+"Object.defineProperty(Animation.prototype, 'ready', {\n"
+"  get: function () { return Promise.resolve(this); }, configurable: true\n"
+"});\n"
+"Animation.prototype[Symbol.toStringTag] = 'Animation';\n"
+"if (typeof globalThis !== 'undefined' && !globalThis.Animation) globalThis.Animation = Animation;\n"
+"\n"
+/* KeyframeAnimationOptions extends KeyframeEffectOptions with exactly two
+ * fields THIS method reads and the KeyframeEffect constructor above never
+ * sees: `id` and `timeline`. Both are read off the SAME options object
+ * passed to `new KeyframeEffect(...)` -- harmless, because the effect
+ * constructor only ever looks at the members it knows about and ignores
+ * the rest. `timeline` is checked with `in`, not `!== undefined`, so that
+ * an explicit `{ timeline: null }` (animate.html's own case) is
+ * distinguished from an absent one: the former means "no timeline", the
+ * latter means "the default document timeline". */
+"EP.animate = function (keyframes, options) {\n"
+"  var effect = new KeyframeEffect(this, keyframes, options);\n"
+"  var timeline = __DEFAULT_TIMELINE;\n"
+"  var id = '';\n"
+"  if (options !== undefined && options !== null && typeof options === 'object') {\n"
+"    if ('timeline' in options) timeline = options.timeline;\n"
+"    if (options.id !== undefined) id = String(options.id);\n"
+"  }\n"
+"  var a = new Animation(effect, timeline);\n"
+"  a.id = id;\n"
 "  return a;\n"
 "};\n"
-"EP.getAnimations = function(){ var l = listFor(this, false); return l ? l.slice() : []; };\n"
+"EP.getAnimations = function () { var l = listFor(this, false); return l ? l.slice() : []; };\n"
 "\n"
-/* ---- the computed-style overlay ----------------------------------------
- * A Proxy rather than a copied object: a computed CSSStyleDeclaration carries
- * length, item(), indexed access and ~63 named accessors, and rebuilding that
- * to add two overrides would be a second, diverging implementation of
- * js_dom.c's object. The trap answers for an animated property and delegates
- * everything else, so the only observable difference is the value of a
- * property that is actually being animated.
- *
- * Methods are bound to the TARGET, not the proxy: they are js_dom.c natives
- * that read an opaque pointer off `this`, and a proxy is not that object. */
-"function wrap(base, el){\n"
+"/* ---- the computed-style overlay ----------------------------------------\n"
+" * Unchanged from the version this replaces except that a list entry is now\n"
+" * an Animation whose VALUE comes from `.effect`, not from the animation\n"
+" * object itself -- see the long-form comment this section carried before\n"
+" * (Proxy over copying the ~63-accessor CSSStyleDeclaration; methods bound to\n"
+" * the target, not the proxy, because they are natives that read an opaque\n"
+" * pointer off `this`). */\n"
+"function wrap(base, el) {\n"
 "  return new Proxy(base, {\n"
-"    get: function(t, k, r){\n"
-"      if (k === 'getPropertyValue') return function(p){\n"
+"    get: function (t, k, r) {\n"
+"      if (k === 'getPropertyValue') return function (p) {\n"
 "        var d = dash(p);\n"
 "        var v = animVal(el, d, t);\n"
 "        return (v !== null) ? v : t.getPropertyValue(p);\n"
@@ -865,26 +1322,21 @@ static const char ANIM_JS[] =
 "    }\n"
 "  });\n"
 "}\n"
-"\n"
-"function animVal(el, prop, base){\n"
+"function animVal(el, prop, base) {\n"
 "  var l = listFor(el, false);\n"
 "  if (!l || !l.length) return null;\n"
 "  for (var i = l.length - 1; i >= 0; i--) {\n"
-"    var v = l[i].__valueAt(prop);\n"
-/*   RULE 2: the interpolation declined -- an `initial` keyframe, a keyword
- *   against a length, a shape css_interp cannot bridge. Say nothing. */
+"    var anim = l[i];\n"
+"    if (!anim.effect) continue;\n"
+"    var v = anim.effect.__valueAt(prop);\n"
 "    if (v === null || v === undefined) continue;\n"
-/*   RULE 1: the engine does not report this property at all (a shorthand, or
- *   a property LibCSS does not know). Answering here would break the many
- *   subtests that pass today because BOTH sides read "". */
 "    if (base.getPropertyValue(prop) === '') return null;\n"
 "    return v;\n"
 "  }\n"
 "  return null;\n"
 "}\n"
-"\n"
 "var origGCS = gcs;\n"
-"function patched(el, pseudo){\n"
+"function patched(el, pseudo) {\n"
 "  var base = origGCS.call(this === undefined ? globalThis : this, el, pseudo);\n"
 "  if (pseudo) return base;\n"
 "  var l = (el && typeof el === 'object') ? listFor(el, false) : null;\n"
@@ -895,8 +1347,9 @@ static const char ANIM_JS[] =
 "if (typeof window !== 'undefined') window.getComputedStyle = patched;\n"
 "\n"
 "if (typeof document !== 'undefined' && document && !document.getAnimations) {\n"
-"  document.getAnimations = function(){ return []; };\n"
+"  document.getAnimations = function () { return []; };\n"
 "}\n"
+"\n"
 "})();\n";
 
 void js_anim_install(JSContext *ctx)

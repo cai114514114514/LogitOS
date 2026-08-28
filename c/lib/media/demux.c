@@ -93,6 +93,8 @@ const char *media_strerror(int e)
     case MEDIA_ERR_UNSUPPORTED:  return "unsupported";
     case MEDIA_ERR_OOM:          return "out of memory";
     case MEDIA_ERR_RANGE:        return "out of range";
+    case MEDIA_ERR_NO_INIT:      return "a media fragment with no init segment -- "
+                                         "it needs its ftyp+moov segment appended first";
     default:                     return "error";
     }
 }

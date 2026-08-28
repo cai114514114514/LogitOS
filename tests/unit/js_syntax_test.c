@@ -179,6 +179,58 @@ int main(int argc, char **argv)
     expect_value(ctx, "non-octal decimal", "String(089)", "89");
     expect_syntax_error(ctx, "10instanceof still rejected", "0x10instanceof Number");
 
+    /* ---- a property/field literally named "get"/"set"/"async" -----------
+     * THE regression this block exists for: js-framework-benchmark's ember,
+     * preact-kr-observable and react-kr-observable bundles all define a
+     * signal-like object as `{ get=()=>this.value; set=v=>this.value=v }` --
+     * a class field NAMED "get", initialized with an arrow function, legal
+     * since class fields shipped (get/set are only reserved as property
+     * names inside an actual MethodDefinition, i.e. when '(' really follows).
+     * Before the fix this did not surface as a clean error naming the
+     * syntax -- js_parse_property_name treated "get" as the start of a
+     * getter, next_token() landed on '=', found none of ':'/','/'}'/'('
+     * (the object-literal disambiguation set) and fell into
+     * js_parse_function_decl2 expecting `get(...)`, which read to the
+     * literal end of the source looking for '(' and reported "invalid
+     * property name" at end-of-file -- a position holding no useful bytes,
+     * for a class two megabytes upstream of it. See the LOGIT-PROP-EQ-FIX
+     * comment in quickjs.c.
+     *
+     * NEGATIVE CONTROL: `make test-js-propeq-control` deletes both
+     * LOGIT-PROP-EQ-FIX lines (one sed, restoring exactly the upstream
+     * condition) and REQUIRES exactly 4 of the checks below to fail -- the
+     * three that name a field "get"/"set"/"async", plus the Signal shape
+     * that reduces the real bundles -- while every other check in this file,
+     * INCLUDING the destructuring-default check three lines down (a
+     * different code path: binding patterns parse with allow_method=FALSE
+     * and never reach the get/set special case this patch touches), keeps
+     * passing. A control that reverted the whole file would not say which
+     * patch these four checks are measuring. */
+    expect_compiles(ctx, "class field named get with arrow initializer",
+                    "class C{get=()=>this.v; set=x=>this.v=x; v=1}");
+    expect_compiles(ctx, "class field named set, no initializer",
+                    "class C{set;get}");
+    expect_compiles(ctx, "class field named async with initializer",
+                    "class C{async=1}");
+    expect_compiles(ctx, "destructuring default named get",
+                    "var {get=1,set=2}={};");
+    /* the real reduction: the exact shape the three bundles use, run and
+     * checked for the right VALUE -- confirming the field parses as data,
+     * not merely that SOMETHING compiles. */
+    expect_value(ctx, "get/set field shape evaluates correctly",
+                 "class Signal{"
+                 "  #v; constructor(v){this.#v=v}"
+                 "  get value(){return this.#v} set value(x){this.#v=x}"
+                 "  get=()=>this.value; set=x=>this.value=x;"
+                 "}"
+                 "var s=new Signal(41); s.set(s.get()+1); String(s.get())",
+                 "42");
+    /* the patch must not have widened the grammar: `get`/`set` followed by a
+     * token that is genuinely neither a method start nor a var/field
+     * terminator is still a SyntaxError. */
+    expect_syntax_error(ctx, "get followed by another identifier still rejected",
+                        "var o={get x y(){}};");
+
     /* ---- the ES features the real corpus actually uses ------------------
      * Not a compatibility table: every one of these appears in the bundles in
      * tests/fixtures/jsperf. */

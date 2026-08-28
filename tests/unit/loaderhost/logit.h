@@ -51,6 +51,11 @@ static inline void gui_text(int x, int y, unsigned color, const char *s)
   struct paintop *o = paint_push(OP_TEXT); o->x=x; o->y=y; o->px=16; o->mono=0;
   o->color=color; o->text=s; o->len=n; }
 static inline void gui_flush(void) { host_flushes++; }
+/* Counts exactly like gui_flush() -- this test cares whether a frame landed,
+ * not which rectangle it claimed, and every OTHER host recorder above already
+ * recorded the real drawing ops that ran before it. */
+static inline void gui_flush_rect(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; host_flushes++; }
 
 /* ---- the event queue ---- */
 #define HOST_EVQ 64

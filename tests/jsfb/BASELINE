@@ -1,0 +1,133 @@
+# tests/jsfb/BASELINE -- the measured state of the js-framework-benchmark
+# conformance matrix, written by tests/unit/jsfb_matrix.py.
+#
+# ONE LINE PER IMPLEMENTATION: name, operations passed, then one cell per
+# operation in the order run,runlots,add,update,select,swaprows,remove,clear.
+#   ok  the specified assertion held      XX  it did not
+#   --  NOPRE: a previous operation left the precondition unmet (a cascade)
+#   TMO the run did not finish (see TIMEOUT in jsfb_matrix.py -- the only
+#       verdict here that depends on the clock, and the only one that can flap)
+#
+# THE FIRST TWO LINES ARE THE CONTROLS AND THEY ARE NOT ROWS.
+#   control 0                the null control -- the reference implementation's
+#                            own index.html with its <script> elements deleted.
+#                            jsfb_matrix.py refuses to print a matrix if it is
+#                            not 0, so a baseline saying otherwise could not
+#                            have been produced by that program.
+#   control-static-run FAIL  the SECOND control, added 2026-08-28 because the
+#                            first cannot see the hole it covers: `rows==1000
+#                            afterwards` is also true of a page BORN with 1,000
+#                            rows that ignored the click. That page is built
+#                            here, binds no handler, and `run` must FAIL on it.
+#                            Watched in both directions -- with the pre-fix
+#                            count-only assertion it reports PASS and the
+#                            matrix refuses.
+#
+# NOTE THAT `keyed/no-js` IS NOT A CONTROL, despite its name and despite what
+# any dispatch may say. It is No.JS v1.20.0, a 136 KB HTML-first reactive
+# framework (src/no.js, MIT, no-js.dev) whose src/main.js registers three
+# globals with it. Its score is a finding about this browser, not a control
+# firing, and reading it as a control would retire a real defect silently.
+#
+# THIS IS A CHANGE DETECTOR, NOT A WISH LIST. Every line is what the browser did
+# on the date below. It goes red when a DOM or event gap closes, which is the
+# point; update it in the same commit and say WHICH CAUSE moved.
+#
+# PROVENANCE, and it matters because only half of this is pinned:
+#   corpus      krausest/js-framework-benchmark @ afe7c118dd217ccae4c10813613ac0d7566b1ef1
+#               (tools/jsfb_revision.txt -- pinned, cannot move by itself)
+#   browser     NOT pinned. Taken 2026-08-28 19:52 CST. The working tree was
+#               still being edited, so this was taken THREE TIMES against THREE
+#               INDEPENDENTLY BUILT probe binaries spanning 12 minutes of source
+#               drift, and all three produced this table byte for byte:
+#                   ba3555b3d714a580c9fc9837f9e04157  (19:30, js_dom.c @ 19:28)
+#                   091c5ba5219a26762b92b3d96eb5bdf3  (19:42, js_anim.c @ 19:40)
+#                   6723e24f2d239e68779a60e2ce51e40c  (19:49, js_anim.c @ 19:45)
+#               That is a stronger claim than one binary twice: the rows are
+#               insensitive to the churn that was in flight. It is NOT a claim
+#               that the tree has settled -- js_anim.c moved again during the
+#               last run. Re-take on a settled tree; see tests/jsfb.mk.
+#
+# WHAT MOVED SINCE THE PREVIOUS BASELINE, AND THE CAUSE, WHICH IS ONE CAUSE:
+#   removeChild/replaceChild became DETACH-ONLY instead of calling
+#   dom_destroy_subtree() (c/apps/browser/js_dom.c, another line's change:
+#   "Until 2026-08-28 this called dom_destroy_subtree(), which recycles the
+#   ... wrapper"). A removed node now survives as a detached, usable node.
+#   SIX independent implementations moved on that one change and nothing else
+#   did -- which is the entire argument for this corpus over any set of
+#   captured sites, since no single site could have produced that evidence:
+#     keyed/vanillajs           0 -> 8   (the specification's OWN reference
+#                                        implementation, which detaches the
+#                                        <tbody> and re-inserts it)
+#     keyed/wildflowerjs-pool   6 -> 8   (a node-POOLING implementation: its
+#                                        whole thesis is recycling removed rows)
+#     keyed/laminar             0 -> 7   (Scala.js -- compiler-generated)
+#     non-keyed/binding.scala TMO -> 8   (Scala.js; it did not merely get
+#                                        faster, it now completes)
+#     keyed/vanillajs-lite      0 -> 6
+#     keyed/no-js               0 -> 6
+#   Full-pass implementations went 8 of 30 to 11 of 30.
+#
+# WHAT MOVED THIS TIME, AND THE CAUSE:
+#   children/childNodes became LIVE (an exotic object over live_list_cid,
+#   c/apps/browser/js_dom.c) instead of an Array snapshot taken at
+#   property-access time, PLUS a per-parent generation counter (dom.h's
+#   child_gen) so a live collection's repeated index reads between mutations
+#   are O(1), not O(index) -- the naive live walk was measured at 253x the
+#   snapshot's cost for one full pass over a 10,000-child parent (host-native;
+#   see js_dom.c's child_array comment and the new "children stays O(1)"
+#   check in tests/unit/webapi_platform_test.c) before the cache was added.
+#   FOUR implementations moved on exactly this, all of them capturing
+#   `X.children`/`X.childNodes` ONCE before any rows exist and reading it
+#   every operation thereafter -- the live_collection-negctl in
+#   tests/webapi_platform.mk isolates the same five checks these four rows'
+#   real code exercises:
+#     keyed/laminar          7 -> 8
+#     keyed/vanillajs-lite   6 -> 8
+#     non-keyed/vanillajs    5 -> 8
+#     non-keyed/vanillajs-3  0 -> 8
+#   Full-pass implementations: 11 of 30 -> 15 of 30.
+#
+#   NOT UPDATED, AND DELIBERATELY: non-keyed/reken moved 5 -> 0 in this same
+#   run (now fails at `run` itself: "TypeError: cannot read property
+#   'classList' of undefined"), and it is NOT attributable to this change --
+#   verified by re-running reken alone against a probe built
+#   -DPLATFORM_NO_LIVE_COLLECTIONS (snapshot semantics restored): identical
+#   failure, identical message, at the same operation. Something else in this
+#   session's uncommitted tree broke it between the previous baseline take and
+#   now. Left at its old value (5) on purpose so test-jsfb keeps reporting
+#   this row as MOVED -- and therefore keeps failing -- until whoever owns
+#   that change finds it; updating it here would launder a real regression
+#   into a clean baseline.
+control 0
+control-static-run FAIL
+keyed/bobril 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/doohtml 0 XX,XX,XX,--,--,--,--,XX
+keyed/doohtml-dom 0 XX,XX,XX,--,--,--,--,XX
+keyed/doohtml-lite 0 XX,XX,XX,--,--,--,--,XX
+keyed/laminar 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/micra 0 XX,XX,XX,--,--,--,--,--
+keyed/miso-js 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/no-js 6 ok,XX,ok,ok,ok,ok,ok,XX
+keyed/quel 0 XX,XX,XX,--,--,--,--,--
+keyed/s2 0 XX,XX,XX,--,--,--,--,XX
+keyed/solarite 0 XX,XX,XX,--,--,--,--,--
+keyed/vanillajs 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/vanillajs-3 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/vanillajs-lite 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/vanillajs-wc 0 XX,XX,XX,--,--,--,--,--
+keyed/wildflowerjs 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/wildflowerjs-pool 8 ok,ok,ok,ok,ok,ok,ok,ok
+keyed/zune 0 XX,XX,XX,--,--,--,--,--
+non-keyed/binding.scala 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/halogen 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/incr_dom 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/plastron-dom 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/quel 0 XX,XX,XX,--,--,--,--,--
+non-keyed/reflex-dom 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/reken 5 ok,ok,ok,XX,ok,XX,ok,XX
+non-keyed/slim-js 0 XX,XX,XX,--,--,--,--,--
+non-keyed/solarite 0 XX,XX,XX,--,--,--,--,--
+non-keyed/vanillajs 8 ok,ok,ok,ok,ok,ok,ok,ok
+non-keyed/vanillajs-1 6 ok,ok,ok,ok,XX,ok,XX,ok
+non-keyed/vanillajs-3 8 ok,ok,ok,ok,ok,ok,ok,ok

@@ -290,6 +290,13 @@ int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n);
  * of the image, and this is how it sees them on the streaming path. */
 int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32_t *crc);
 
+/* The SHA-256 of `n` bytes at `off`, computed without holding them. 0 on
+ * success. aex.c's OPTIONAL signature record needs the image's digest to
+ * check against, and this is how it gets it on the streaming path without a
+ * second bounce buffer. Unlike elf_read_crc32, this runs only when a
+ * signature record is present -- see aex.c. */
+int elf_read_sha256(const struct elf_reader *rd, uint64_t off, uint64_t n, uint8_t out[32]);
+
 /* The loader, over a source. elf_load_image_ex() is this with a `mem` reader,
  * so there is ONE loader and not a streaming copy of it that can drift. */
 int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,

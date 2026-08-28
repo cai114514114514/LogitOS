@@ -1087,6 +1087,37 @@ static const char *SELECT_PRELUDE =
 "  return null;\n"
 "});\n"
 
+/* DocumentFragment gets the query half of ParentNode too -- the DOM Standard
+ * defines ParentNode.querySelector/querySelectorAll on Element, Document AND
+ * DocumentFragment (https://dom.spec.whatwg.org/#parentnode), and this file's
+ * own rootOf() already treats any non-document scope as "walk this node's own
+ * descendants" -- qsa/qs1/byTag/byTagNS/byClass work on a fragment with zero
+ * changes, they were just never REACHED from one, because this whole block
+ * only ever installs onto `doc` and `EP` (Element.prototype).
+ *
+ * MEASURED: jsfb_matrix's work-order table has "querySelectorAll is not a
+ * function" stopping 2 independent implementations, and a DocumentFragment
+ * built with document.createDocumentFragment() and queried before insertion
+ * is the ordinary "build off-tree, splice in once" pattern real virtual-DOM
+ * libraries use specifically to avoid layout thrash from N separate inserts
+ * -- it is not a quirk of any one framework's source, it is what the
+ * ParentNode mixin is FOR. Element and Document already had it; only the
+ * third member of that mixin was missing it, which is exactly the shape of a
+ * platform gap rather than a site fit: nothing here reads a hostname, a URL,
+ * or a bundle/framework name -- it reaches for the DocumentFragment
+ * constructor iface_install already publishes and installs the same six
+ * functions this file already trusts for Element and Document. */
+"var FP = null;\n"
+"if (typeof G.DocumentFragment === 'function' && G.DocumentFragment.prototype)\n"
+"  FP = G.DocumentFragment.prototype;\n"
+"if (FP) {\n"
+"  own(FP, 'querySelectorAll', function (s) { return qsa(this, s); });\n"
+"  own(FP, 'querySelector', function (s) { return qs1(this, s); });\n"
+"  own(FP, 'getElementsByTagName', function (n) { return byTag(this, n); });\n"
+"  own(FP, 'getElementsByTagNameNS', function (ns, n) { return byTagNS(this, ns, n); });\n"
+"  own(FP, 'getElementsByClassName', function (n) { return byClass(this, n); });\n"
+"}\n"
+
 /* NodeList and HTMLCollection only. THE ELEMENT INTERFACES MOVED to
  * js_platform.c's installInterfaces, and the move fixed two things that this
  * block got wrong -- both of which it got wrong invisibly, which is why they

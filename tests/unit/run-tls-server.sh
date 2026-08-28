@@ -287,6 +287,77 @@ for want in "CA:TRUE" "DNS:localhost" "TLS Web Server Authentication" "Digital S
 done
 echo "ok   extensions read back: CA:TRUE, SAN dNSName, serverAuth EKU, digitalSignature"
 
+# trace_case <label> <want-ClientHellos> <want-group-substring> -- <openssl args...>
+#
+# case_run above answers "did the handshake complete and echo correctly" --
+# which is exactly the question a downgrade cannot fail. A server that quietly
+# stopped preferring X25519MLKEM768 (e.g. one array position wrong in
+# srv_groups) still completes every case_run row, still echoes the payload
+# byte-for-byte, and case_run would print "ok" throughout. openssl's OWN
+# -trace parser is the assertion source instead: it shares no code, no
+# reading of the RFC and no log format with this tree, so it cannot be
+# satisfied by a server that merely prints the right kprintf line. The
+# ClientHello COUNT is the round-trip count (1 = no HelloRetryRequest, 2 =
+# one was sent), and NamedGroup is openssl's own name for whatever the
+# ServerHello actually negotiated.
+#
+# --echo 0 (appended after start_server's default --echo "$NBYTES"), because
+# these cases send no application payload -- the echo loop's job is not what
+# this function checks -- and the server's own 2-second stall timeout would
+# otherwise fire waiting for bytes nobody is sending.
+trace_case() {
+    local label="$1" want_ch="$2" want_grp="$3"; shift 3
+    [ "$1" = "--" ] && shift
+    local oargs=()
+    while [ $# -gt 0 ]; do oargs+=("$1"); shift; done
+
+    if ! start_server --echo 0; then
+        echo "FAIL $label (server did not start)"; cat "$BUILD/srv.err" 2>/dev/null | tail -5
+        fail=$((fail+1)); SRVPID=""; return
+    fi
+    "$OPENSSL" x509 -inform DER -in "$BUILD/srv.der" -out "$BUILD/srv.pem" 2>/dev/null
+
+    echo | "$OPENSSL" s_client -connect "127.0.0.1:$PORT" -servername localhost \
+        -trace ${oargs[@]+"${oargs[@]}"} \
+        > "$BUILD/trace.out" 2>&1
+    local orc=$?
+    wait "$SRVPID" 2>/dev/null; local src=$?
+    SRVPID=""
+
+    local ch grp
+    ch=$(grep -a -c 'ClientHello, Length=' "$BUILD/trace.out")
+    grp=$(awk '/ServerHello, Length=/{f=1} f&&/NamedGroup:/{x=$0} END{print x}' "$BUILD/trace.out")
+
+    # BOTH exit codes, not "grp is non-empty": the ServerHello (and its
+    # NamedGroup) is sent, and lands in the trace, BEFORE either side has
+    # verified anything downstream of it -- CertificateVerify, Finished. A
+    # server whose CertificateVerify signature is broken (see
+    # LOGIT_TLSS_BREAK_CV_PREFIX below) still fills in a real ServerHello and
+    # a real NamedGroup; the client rejects the connection afterwards, and
+    # only the exit codes see that. Checking "grp is empty" here would have
+    # been the exact rule-5 shape this tree keeps paying for: a control that
+    # reads like it fires and does not -- caught in this file's own report by
+    # re-running LOGIT_TLSS_BREAK_CV_PREFIX and finding all six trace_case
+    # rows printed "ok" while openssl was, in the same run, logging a bad
+    # signature.
+    if [ "$src" -ne 0 ] || [ "$orc" -ne 0 ]; then
+        echo "FAIL $label (handshake did not complete: openssl=$orc server=$src)"
+        sed 's/^/    srv| /' "$BUILD/srv.err" | tail -8
+        sed 's/^/    cli| /' "$BUILD/trace.out" | tail -8
+        fail=$((fail+1)); return
+    fi
+    if [ "$ch" != "$want_ch" ]; then
+        echo "FAIL $label (ClientHellos=$ch, want $want_ch -- the round-trip count is wrong)"
+        fail=$((fail+1)); return
+    fi
+    if ! printf '%s' "$grp" | grep -q "$want_grp"; then
+        echo "FAIL $label (negotiated group '$grp', want one containing '$want_grp')"
+        fail=$((fail+1)); return
+    fi
+    echo "ok   $label  ClientHellos=$ch  ${grp# }"
+    pass=$((pass+1))
+}
+
 CA="-CAfile $BUILD/srv.pem -verify_return_error"
 
 echo
@@ -315,6 +386,41 @@ case_run "secp384r1 (no retry)"  1 -- $CA -groups P-384
 case_run "HelloRetryRequest to x25519" 1 -- $CA -groups P-521:X25519
 # shellcheck disable=SC2086
 case_run "HelloRetryRequest to P-256"  1 -- $CA -groups P-521:P-256
+
+echo
+echo "-- post-quantum hybrid (X25519MLKEM768), asserted by openssl's own -trace --"
+# Four rows, each carrying ONE assertion the others do not (see the report):
+#   (1) a client offering ONLY the hybrid, which the server used to refuse
+#       outright (no HRR to give -- "no key exchange group in common").
+#   (2) a client offering the hybrid as its ONE key_share alongside x25519 in
+#       supported_groups -- before this change this cost a whole extra round
+#       trip (a HelloRetryRequest down to x25519); this is THE round-trip row.
+#   (3) no -groups at all: openssl 3.6.3's default ClientHello is measured
+#       (build-sec4/chrome_shape.py et al. in the report) to be the same
+#       shape a 2026 Chrome/Firefox sends -- TWO key_shares, hybrid first --
+#       and this is THE group row: a server that silently stopped preferring
+#       the hybrid over the classical share still completes this handshake
+#       and still echoes correctly, so only asserting the NEGOTIATED GROUP
+#       (not just "completed") catches that regression.
+#   (4) the hybrid's 64-byte shared secret through a SHA-384-width (not the
+#       usual 32-byte) key schedule -- mirrors run-tls-interop.sh's
+#       "hybrid + AES-256-GCM-SHA384" case on the client side.
+# shellcheck disable=SC2086
+trace_case "hybrid only, was refused"        1 X25519MLKEM768 -- $CA -groups X25519MLKEM768
+# shellcheck disable=SC2086
+trace_case "hybrid, no HelloRetryRequest"    1 X25519MLKEM768 -- $CA -groups X25519MLKEM768:X25519
+# shellcheck disable=SC2086
+trace_case "a browser-shaped hello gets PQ"  1 X25519MLKEM768 -- $CA
+# shellcheck disable=SC2086
+trace_case "hybrid + AES-256-GCM-SHA384"     1 X25519MLKEM768 -- $CA -groups X25519MLKEM768 -ciphersuites TLS_AES_256_GCM_SHA384
+# GUARDS: unchanged verdicts, same instrument. A hybrid that quietly
+# introduced a retry for a classical-only client, or broke the existing
+# non-hybrid HelloRetryRequest path, would be invisible to case_run above
+# (which never checks the round trip) but not to these.
+# shellcheck disable=SC2086
+trace_case "x25519 (no retry) [trace]"       1 ecdh_x25519 -- $CA -groups X25519
+# shellcheck disable=SC2086
+trace_case "HelloRetryRequest to P-256 [trace]" 2 secp256r1 -- $CA -groups P-521:P-256
 
 echo
 echo "-- ALPN --"

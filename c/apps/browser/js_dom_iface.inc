@@ -37,6 +37,7 @@
  *         Attr.prototype
  *         Element.prototype
  *           SVGElement.prototype -> SVGSVGElement.prototype
+ *           MathMLElement.prototype
  *           HTMLElement.prototype
  *             HTMLDivElement.prototype, HTMLBodyElement.prototype, ... (68)
  *               HTMLVideoElement/HTMLAudioElement under HTMLMediaElement
@@ -88,6 +89,7 @@ enum {
     IF_ELEMENT,
     IF_SVGELEMENT,
     IF_SVGSVGELEMENT,
+    IF_MATHMLELEMENT,
     IF_HTMLELEMENT,
     IF_HTMLUNKNOWNELEMENT,
     IF_HTMLMEDIAELEMENT,
@@ -136,6 +138,12 @@ static const struct iface_def IFACES[IF__COUNT] = {
  [IF_ELEMENT]           = { "Element",           IF_NODE,            0 },
  [IF_SVGELEMENT]        = { "SVGElement",        IF_ELEMENT,         0 },
  [IF_SVGSVGELEMENT]     = { "SVGSVGElement",     IF_SVGELEMENT,      0 },
+ /* No `tags` list: unlike the HTML per-tag interfaces below, MathML gives
+  * every element (<mi>, <math>, <mfrac>, ...) the SAME interface -- there is
+  * no MathMLMathElement or MathMLIdentifierElement in the spec, just this one
+  * -- so iface_proto_for() assigns it directly off the namespace rather than
+  * a name lookup, the same way it does for the two SVG rows above it. */
+ [IF_MATHMLELEMENT]     = { "MathMLElement",     IF_ELEMENT,         0 },
 
  /* Every HTML element the spec does NOT give a dedicated interface hangs
   * directly off HTMLElement. The list is the spec's, not a guess: getting it
@@ -316,7 +324,8 @@ static JSValueConst iface_proto_for(const struct node *n)
             idx = (n->tag && !strcmp(n->tag, "svg")) ? IF_SVGSVGELEMENT : IF_SVGELEMENT;
             break;
         }
-        if (n->ns != NS_HTML) { idx = IF_ELEMENT; break; }   /* MathML: no MathMLElement yet */
+        if (n->ns == NS_MATHML) { idx = IF_MATHMLELEMENT; break; }
+        if (n->ns != NS_HTML) { idx = IF_ELEMENT; break; }   /* an unknown foreign namespace, not one of the three dom.h names */
         idx = itag_get(n->tag);
         /* An element name the HTML spec does not define is an
          * HTMLUnknownElement -- and one it DOES define but gives no dedicated
@@ -344,6 +353,24 @@ static void iface_tag_list(JSContext *ctx, JSValueConst arr, int elems_only)
     if (g_iface_ready && JS_IsObject(g_iproto[idx]) && JS_IsObject(arr))
         JS_SetPrototype(ctx, arr, g_iproto[idx]);
 #endif
+}
+
+/* The live childNodes/children prototype -- see child_array in js_dom.c.
+ * Deliberately NOT gated behind JSDOM_NO_INTERFACE_HIERARCHY the way
+ * iface_proto_for is: that control is about whether an ELEMENT gets its real
+ * interface prototype (Node/Element/HTMLDivElement/...), not about whether a
+ * live collection stays iterable. g_iproto[IF_NODELIST]/[IF_HTMLCOLLECTION]
+ * are built unconditionally a few lines above (the `i == IF_NODELIST ||
+ * i == IF_HTMLCOLLECTION` branch sits outside that #ifdef), so this is safe to
+ * use even when g_iface_ready reads 0 for the negative-control build -- and
+ * doing so keeps `for (const x of el.children)` working there exactly as it
+ * did when children was a plain Array, instead of silently losing
+ * Array.prototype's iterator along with the interface hierarchy the control
+ * is about. */
+static JSValueConst iface_list_proto(int elems_only)
+{
+    int idx = elems_only ? IF_HTMLCOLLECTION : IF_NODELIST;
+    return JS_IsObject(g_iproto[idx]) ? g_iproto[idx] : JS_UNDEFINED;
 }
 
 /* ---------------------------------------------------------------------------
@@ -701,7 +728,21 @@ static struct node *coerce_node(JSContext *ctx, JSValueConst v)
     return tn;
 }
 
-/* magic: 0 append, 1 prepend, 2 before, 3 after, 4 replaceWith, 5 replaceChildren */
+/* magic: 0 append, 1 prepend, 2 before, 3 after, 4 replaceWith, 5 replaceChildren
+ *
+ * replaceWith's own old node (magic 4) used to go through dom_destroy_subtree(),
+ * the same bug removeChild/replaceChild carried -- see the comment above
+ * el_removeChild in js_dom.c for the full argument (spec says detach, a
+ * wrapper into a recycled slot reads as stale, and reclamation is a bounded,
+ * page-lifetime cost this tree already pays via doc_destroy(), not a reason
+ * to make the detach itself destructive). dom_remove_child() detaches only.
+ *
+ * replaceChildren (magic 5) is NOT changed here and is a known remaining
+ * case: it still recycles every old child via dom_destroy_children(). That is
+ * out of the scope this fix measured (removeChild / replaceChild / remove /
+ * replaceWith, the four call sites with a counted WPT regression) and is left
+ * absent rather than guessed at -- per rule 1, an unmeasured change is not
+ * safer than no change. */
 static JSValue el_insert_variadic(JSContext *ctx, JSValueConst t, int argc,
                                   JSValueConst *argv, int magic)
 {
@@ -721,17 +762,22 @@ static JSValue el_insert_variadic(JSContext *ctx, JSValueConst t, int argc,
         if (!c) continue;
         insert_run(parent, c, ref);
     }
-    if (magic == 4) dom_destroy_subtree(self);             /* replaceWith drops the old */
+    if (magic == 4) dom_remove_child(parent, self);        /* replaceWith: detach, don't destroy */
     return JS_UNDEFINED;
 }
 
+/* remove() -- DETACH ONLY. Was dom_destroy_subtree(); see el_removeChild in
+ * js_dom.c. Element-remove.html is the case that named the bug verbatim:
+ * "Removed node should not have a parent expected (object) null but got
+ * (undefined) undefined" -- a recycled node's wrapper reads as undefined, not
+ * null, and the spec requires the removed node's .parentNode to be null. */
 static JSValue el_remove(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)ctx; (void)argc; (void)argv;
     struct node *n = node_of(t);
     if (!n || !n->parent) return JS_UNDEFINED;
     struct node *p = n->parent;
-    dom_destroy_subtree(n);
+    dom_remove_child(p, n);
     mark_children(p);
     return JS_UNDEFINED;
 }
@@ -891,7 +937,9 @@ static JSValue impl_createDocumentType(JSContext *ctx, JSValueConst t,
     const char *nm = JS_ToCString(ctx, argv[0]);
     const char *pu = argc > 1 ? JS_ToCString(ctx, argv[1]) : 0;
     const char *sy = argc > 2 ? JS_ToCString(ctx, argv[2]) : 0;
-    struct node *n = dom_create_doctype(g_root->doc, nm ? nm : "", pu ? pu : "", sy ? sy : "");
+    /* _raw, not the plain entry point: the spec stores qualifiedName VERBATIM,
+     * and dom_create_doctype lowercases for the HTML tokenizer's benefit. */
+    struct node *n = dom_create_doctype_raw(g_root->doc, nm ? nm : "", pu ? pu : "", sy ? sy : "");
     if (nm) JS_FreeCString(ctx, nm);
     if (pu) JS_FreeCString(ctx, pu);
     if (sy) JS_FreeCString(ctx, sy);
@@ -901,9 +949,32 @@ static JSValue impl_createDocumentType(JSContext *ctx, JSValueConst t,
 static JSValue impl_hasFeature(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { (void)ctx; (void)t; (void)argc; (void)argv; return JS_TRUE; }   /* the spec says: always true */
 
+/* document.implementation.createDocument(namespace, qualifiedName, doctype) --
+ * the XML sibling of createHTMLDocument above. Named in the jsfb work order
+ * beside importNode/adoptNode ("Document interface members absent"), and
+ * left OUT rather than approximated: this tree has no XML parser anywhere
+ * (js_domparser.c's parseFromString refuses every XML mimeType the same way,
+ * LibCSS needs none, nothing else has ever needed one), and createDocument's
+ * whole job is to hand back a document a caller can then populate with real
+ * XML semantics (namespaces that mean something, an XML serialiser) that
+ * do not exist here. A document-shaped stub with none of that would be the
+ * present-and-wrong failure rule 3 exists to rule out -- a page that got one
+ * back would believe XML document construction worked and find out only when
+ * something downstream silently misbehaves. The spec's own NotSupportedError
+ * is exactly the right, nameable refusal: real, thrown, immediately, every
+ * time -- never a hang, never an empty tree that looks like success. */
+static JSValue impl_createDocument(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    return js_dom_throw_dom(ctx, "NotSupportedError",
+        "createDocument: this engine has no XML parser -- see DOMParser's own "
+        "text/xml refusal for the same reason");
+}
+
 static const JSCFunctionListEntry impl_funcs[] = {
     JS_CFUNC_DEF("createHTMLDocument", 1, impl_createHTMLDocument),
     JS_CFUNC_DEF("createDocumentType", 3, impl_createDocumentType),
+    JS_CFUNC_DEF("createDocument", 3, impl_createDocument),
     JS_CFUNC_DEF("hasFeature", 0, impl_hasFeature),
 };
 
@@ -950,6 +1021,20 @@ static JSValue docx_get_docel(JSContext *ctx, JSValueConst t)
                 if (c->type == N_ELEM) h = c;
     return wrap(ctx, h);
 }
+/* document.doctype -- unlike body/head/documentElement above, this is NOT a
+ * find_desc() search: a DOCTYPE, when it exists, is always a DIRECT child of
+ * the document (html_tree.c's mode_initial appends it straight to tb->docroot,
+ * and createDocumentType-built ones are only ever inserted where a caller
+ * explicitly put them). Walking descendants would be both wrong -- a <!DOCTYPE>
+ * cannot appear nested -- and wasted work on every page. */
+static JSValue docx_get_doctype(JSContext *ctx, JSValueConst t)
+{
+    struct node *b = doc_base(t);
+    if (!b) return JS_NULL;
+    for (struct node *c = b->first_child; c; c = c->next)
+        if (c->type == N_DOCTYPE) return wrap(ctx, c);
+    return JS_NULL;
+}
 
 /* document.URL / document.documentURI -- the document's ADDRESS.
  *
@@ -977,13 +1062,42 @@ static JSValue docx_get_url(JSContext *ctx, JSValueConst t)
     return JS_NewString(ctx, "about:blank");
 }
 
+/* document.defaultView -- the window for the page's OWN document, NULL for
+ * every other Document object this file can produce (createHTMLDocument's
+ * detached tree; DOMParser's documents live on a wholly separate prototype in
+ * js_domparser.c and never reach this getter at all).
+ *
+ * window IS the global object here (js_page.c: `window` is JS_DupValue of the
+ * global, not a separate object with a document back-pointer) -- so
+ * "is this document live" cannot be answered by walking a pointer document
+ * stores; it has to be answered by asking whether `this` IS g_root, the one
+ * node js_dom_init() was handed. doc_base() already resolves `this` to that
+ * comparison for body/head/documentElement above; defaultView reuses it and
+ * adds the one thing those three don't need: the NULL case.
+ *
+ * THE NULL CASE IS LOAD-BEARING, not a nicety -- both WPT
+ * (assert_throws_dom reads the DOMException constructor off it) and jQuery
+ * use defaultView to tell a live document from a detached one. Answering
+ * `window` unconditionally makes a createHTMLDocument() scratch tree look
+ * exactly as alive as the page, which is the wrong direction to be wrong in:
+ * code that branches on defaultView being null to skip work on a detached
+ * document would instead run that work against the real page. */
+static JSValue docx_get_defaultView(JSContext *ctx, JSValueConst t)
+{
+    struct node *b = doc_base(t);
+    if (!b || b != g_root) return JS_NULL;
+    return JS_GetGlobalObject(ctx);
+}
+
 static const JSCFunctionListEntry document_extra_funcs[] = {
     JS_CGETSET_DEF("URL", docx_get_url, NULL),
     JS_CGETSET_DEF("documentURI", docx_get_url, NULL),
+    JS_CGETSET_DEF("defaultView", docx_get_defaultView, NULL),
     JS_CGETSET_DEF("implementation", doc_get_implementation, NULL),
     JS_CGETSET_DEF("body", docx_get_body, NULL),
     JS_CGETSET_DEF("head", docx_get_head, NULL),
     JS_CGETSET_DEF("documentElement", docx_get_docel, NULL),
+    JS_CGETSET_DEF("doctype", docx_get_doctype, NULL),
     JS_CFUNC_DEF("createProcessingInstruction", 2, doc_createProcessingInstruction),
     JS_CFUNC_DEF("getElementsByTagNameNS", 2, el_getElementsByTagNameNS),
 };
@@ -991,6 +1105,36 @@ static const JSCFunctionListEntry document_extra_funcs[] = {
 static const JSCFunctionListEntry pi_proto_funcs[] = {
     JS_CGETSET_DEF("target", pi_get_target, NULL),
     JS_CGETSET_DEF("data", pi_get_data, pi_set_data),
+};
+
+/* DocumentType's own surface: name/publicId/systemId. dom_doctype_name()
+ * already existed (dom_serialize.c has called it for a long time) but had
+ * zero callers outside the serialiser -- struct node stores the name and
+ * pubid/sysid either way, this is just finally reading them from JS. publicId
+ * and systemId answer "" rather than null for an absent identifier, per the
+ * DOM Standard's DocumentType interface (both are declared `DOMString`, never
+ * nullable) -- and dom_create_doctype/_raw already store "" rather than NULL
+ * for a pubid/sysid argument of "" or NULL, so no extra empty-vs-null mapping
+ * is needed here. */
+static JSValue dt_get_name(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    return JS_NewString(ctx, dom_doctype_name(n));
+}
+static JSValue dt_get_publicId(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    return JS_NewString(ctx, (n && n->type == N_DOCTYPE && n->pubid) ? n->pubid : "");
+}
+static JSValue dt_get_systemId(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    return JS_NewString(ctx, (n && n->type == N_DOCTYPE && n->sysid) ? n->sysid : "");
+}
+static const JSCFunctionListEntry doctype_funcs[] = {
+    JS_CGETSET_DEF("name", dt_get_name, NULL),
+    JS_CGETSET_DEF("publicId", dt_get_publicId, NULL),
+    JS_CGETSET_DEF("systemId", dt_get_systemId, NULL),
 };
 
 /* ---------------------------------------------------------------------------
@@ -1343,6 +1487,8 @@ static void iface_install(JSContext *ctx, JSValueConst g, JSValueConst token_pro
     }
     JS_SetPropertyFunctionList(ctx, g_iproto[IF_DOCUMENTTYPE],
                                childnode_funcs, countof(childnode_funcs));
+    JS_SetPropertyFunctionList(ctx, g_iproto[IF_DOCUMENTTYPE],
+                               doctype_funcs, countof(doctype_funcs));
 
     /* Document's own surface. `document` is an instance of this, so everything
      * that used to be an own property of one object is now inherited by it --

@@ -319,7 +319,21 @@ void app_main(void)
     frame();
 
     struct logit_event e;
-    unsigned last_anim = 0;
+    /* THE ANIMATION LOOP, and the two lines it replaces are worth naming
+     * because this file was the tree's only worked example of both mistakes.
+     *
+     * It used to keep its own `last_anim` and repaint unconditionally at 20 Hz
+     * so the spinner and the indeterminate bar would advance -- 20 frames a
+     * second of a 955,800-device-px canvas, about 800 ms of BKL-held compositor
+     * per second of wall clock, forever, whether or not anything on this tab
+     * was animating. And it ended on wait_idle(100), a fixed small timeout,
+     * which aui.h:34 calls "a spin with extra steps" in the same paragraph that
+     * explains why this window exists.
+     *
+     * Both are now questions for the toolkit, which is the only thing that
+     * knows whether anything is in flight. aui_anim_wait() returns 0 -- sleep
+     * until an event -- on every tab where nothing moves, so the showcase app
+     * costs what widgets.c costs when it is idle, which is nothing. */
     for (;;) {
         int drew = 0;
         while (poll_event(&e)) {
@@ -332,11 +346,7 @@ void app_main(void)
             if (aui_want_repaint()) { frame(); drew = 1; }
             aui_feed_done();
         }
-        /* Animation tick: the spinner and the indeterminate bar have to advance
-         * without input. 20 Hz is enough to look continuous and cheap enough not
-         * to fight the compositor for the frame. */
-        unsigned now = (unsigned)monotonic_ms();
-        if (!drew && now - last_anim >= 50) { last_anim = now; frame(); }
-        wait_idle(100);   /* was sys_yield(): a spin. input-driven */
+        if (!drew && aui_anim_due()) frame();
+        wait_idle(aui_anim_wait());
     }
 }

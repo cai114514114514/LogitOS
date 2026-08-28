@@ -139,6 +139,16 @@ int   tab_hist_can(const struct tab *t, int delta);
  * history. See the comment above tab_hist_behind()'s definition. */
 int   tab_hist_behind(const struct tab *t);
 int   tab_hist_ahead(const struct tab *t);
+/* tab_hist_behind(tab_cur()) + tab_hist_ahead(tab_cur()) -- the exact WHATWG
+ * history.length is that sum plus js_webapi.c's own g_hist_n, and this is the
+ * half of the addition this file can perform (see the comment above
+ * tab_hist_behind for why the two counters live in different files and why
+ * neither file duplicates the other's arithmetic). js_webapi.c consumes this
+ * as a WEAK symbol -- its host test (tests/unit/webapi_test.c) links
+ * js_webapi.c without tabs.c and must see 0, not fail to link -- so this
+ * declaration is a plain strong prototype: every real browser build links
+ * tabs.c and the weak side of the seam lives in the consumer. */
+int   tab_hist_joint_extra(void);
 
 /* =========================== persistence ==================================
  *

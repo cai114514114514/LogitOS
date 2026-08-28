@@ -31,6 +31,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include "module.h"
 #include "driver.h"     /* struct driver / struct dev_match, for the real driver */
@@ -149,11 +150,43 @@ static void census(const uint8_t *img, uint32_t len, struct census *c)
 
 /* ------------------------------------------------------------ mmap helper --
  * MAP_FIXED_NOREPLACE so a collision is a visible error rather than this test
- * silently unmapping something of its own. */
+ * silently unmapping something of its own.
+ *
+ * MAP_FIXED_NOREPLACE is Linux-only (added in 4.17) and does not exist on
+ * Darwin's <sys/mman.h>. That much is an ordinary portability gap and is
+ * closed below with mincore()-then-MAP_FIXED. But there is a SECOND, deeper
+ * property of this host that no flag closes, measured directly rather than
+ * assumed: on this machine (macOS 26.5.1 / Apple Silicon, hardened runtime,
+ * ad-hoc-signed clang output) mmap(MAP_FIXED) at an arbitrary address --
+ * 0x30000000, 4 GiB, 8 GiB, 16 GiB, 1 TiB, WITH OR WITHOUT PROT_EXEC -- comes
+ * back EPERM or ENOMEM every time, entitlements and MAP_JIT included (see
+ * tests/module.mk for the exact probes and their output). That is not this
+ * test's ASLR getting in the way; it is this host refusing to place ANY
+ * anonymous mapping at a caller-chosen fixed address at all. `map_at`
+ * returning NULL here is therefore not evidence of a bug -- it is the
+ * expected result of running an x86-64-fixed-address JIT loader test on this
+ * host, and the caller (main, around tests 11-14) treats it that way: it
+ * probes once and SKIPS LOUDLY rather than reporting four separate
+ * "could not map" failures that would read as this test being broken. */
 static void *map_at(uintptr_t want, size_t len)
 {
+#if defined(__linux__)
     void *p = mmap((void *)want, len, PROT_READ | PROT_WRITE | PROT_EXEC,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+#else
+    {
+        long pgsz = sysconf(_SC_PAGESIZE);
+        size_t npages = (len + (size_t)pgsz - 1) / (size_t)pgsz;
+        char *vec = malloc(npages ? npages : 1);
+        if (vec) {
+            int mc = mincore((void *)want, len, vec);
+            free(vec);
+            if (mc == 0) return NULL; /* something is already mapped there */
+        }
+    }
+    void *p = mmap((void *)want, len, PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+#endif
     if (p == MAP_FAILED) return NULL;
     if ((uintptr_t)p != want) { munmap(p, len); return NULL; }
     return p;
@@ -247,6 +280,42 @@ int main(int argc, char **argv)
     /* ================================ 11: size agrees with load, and EXECUTE */
     long need = mod_elf_size(mimg, mlen);
     check(need > 0, "mod_elf_size accepts the module");
+
+    /* PREFLIGHT, once, for tests 11 through 14 as a UNIT: every one of them
+     * needs map_at() to place an anonymous mapping at a fixed address this
+     * test chooses (LOW_ADDR for a realistic displacement, HIGH_ADDR to prove
+     * the range check), and per the comment above map_at(), that is refused
+     * outright on this host -- independent of PROT_EXEC, independent of the
+     * address, independent of entitlements. Probing once and skipping the
+     * whole unit with ONE clear message is the CLAUDE.md-required shape;
+     * probing nowhere and letting four unrelated call sites each print their
+     * own "could not map" is the shape that reads as this test being broken
+     * on every non-Linux host, which it is not. */
+    {
+        void *probe = map_at(LOW_ADDR, 4096);
+        int have_fixed_mmap = probe != NULL;
+        if (probe) munmap(probe, 4096);
+
+        if (!have_fixed_mmap) {
+            printf("SKIP: this host refuses mmap(MAP_FIXED) at an arbitrary "
+                   "address (verified: EPERM/ENOMEM at 0x30000000, 4/8/16 "
+                   "GiB, with and without PROT_EXEC, with-or-without the "
+                   "allow-unsigned-executable-memory/allow-jit entitlements "
+                   "-- see the comment above map_at()).\n");
+            printf("      settle by running this host gate on Linux/x86-64, "
+                   "where MAP_FIXED_NOREPLACE and a fixed low PROT_EXEC "
+                   "mapping both just work: `make test-modreloc` on an "
+                   "x86_64 Linux box or CI runner.\n");
+            printf("      even where the mapping succeeds, tests 11's four "
+                   "execute-only checks additionally need an x86-64 CPU "
+                   "(see the guard around mt_entry/mt_msg below) -- an "
+                   "arm64 host fails this unit for TWO independent reasons, "
+                   "not one.\n");
+            printf("      tests 11 (mapped-load half) through 14 (17 checks "
+                   "total) did not run and are not counted as pass.\n");
+            goto tests_15_20;
+        }
+    }
     if (need > 0) {
         size_t maplen = ((size_t)need + 4095) & ~(size_t)4095;
         void *blk = map_at(LOW_ADDR, maplen);
@@ -284,7 +353,25 @@ int main(int argc, char **argv)
                        "and dereferences to the right object", marker ? *marker : -1,
                        0xC0FFEE);
 
-                /* --- EXECUTE. Everything above is inspection; this is proof. */
+                /* --- EXECUTE. Everything above is inspection; this is proof.
+                 *
+                 * ONLY THIS BLOCK needs an x86-64 CPU under it -- everything
+                 * else in this file (the arithmetic in mod_reloc_apply, the
+                 * census, the layout/size/undefined-symbol checks, and part
+                 * 14's read of the real edu driver's struct fields) reads
+                 * relocated DATA, never jumps into relocated CODE. Calling
+                 * through mt_entry/mt_msg below executes x86-64 machine code
+                 * mmap'd into this process, which is well-defined on an
+                 * x86-64 host and is NOT a portability bug anywhere else: an
+                 * arm64 CPU cannot decode x86-64 instructions, full stop --
+                 * there is no header to include or flag to pass that fixes
+                 * it, the way there was for MAP_FIXED_NOREPLACE above. Per
+                 * CLAUDE.md's rule, that means SKIP LOUDLY here rather than
+                 * let it SIGILL (which would read as a crash in THIS test,
+                 * not as "the host cannot do this"), and never silently drop
+                 * the 4 execute-only checks from the count as if they had
+                 * run and passed. */
+#if defined(__x86_64__) || defined(__amd64__) || defined(_M_X64)
                 typedef int (*entry_fn)(int, int);
                 typedef const char *(*msg_fn)(void);
                 entry_fn mt_entry = NULL; msg_fn mt_msg = NULL;
@@ -364,6 +451,28 @@ int main(int argc, char **argv)
                     check(m && strcmp(m, "hello-from-module") == 0,
                           "R_X86_64_64: .data pointer into .rodata resolves");
                 }
+#else
+                (void)lay;
+                printf("SKIP: this host's CPU cannot execute the x86-64 code "
+                       "this loader just relocated (compiled for "
+                       "%s, not x86-64/amd64).\n",
+#if defined(__aarch64__) || defined(__arm64__)
+                       "arm64"
+#else
+                       "a non-x86-64 host architecture"
+#endif
+                      );
+                printf("      settle by running this host gate ON x86-64: an "
+                       "x86_64 CI runner, an Intel Mac, or an x86_64 Linux VM "
+                       "-- there is no flag or header fix for a different "
+                       "CPU's instruction set, unlike MAP_FIXED_NOREPLACE "
+                       "above.\n");
+                printf("      4 execute-only checks below did not run and are "
+                       "not counted as pass: CALLED the relocated module / "
+                       "PLT32 reached the host / R_X86_64_32 string literal / "
+                       "second call sees .bss / indexed table read / "
+                       "R_X86_64_64 .data pointer resolves.\n");
+#endif /* x86-64 EXECUTE */
             }
             munmap(blk, maplen);
         }
@@ -470,6 +579,7 @@ int main(int argc, char **argv)
         }
     }
 
+tests_15_20:
     /* ================================= 15..20: malformed images are REFUSED
      * The security model says root put the file there, which bounds who can
      * attack the parser and does nothing at all about a half-written file. */

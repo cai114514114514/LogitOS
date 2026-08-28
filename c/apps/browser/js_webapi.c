@@ -2122,6 +2122,11 @@ static int same_document(const struct wurl *a, const struct wurl *b)
     return strcmp(sa, sb) == 0;
 }
 
+/* Forward-declared: defined with the rest of the history machinery below,
+ * but loc_set (a fragment-only location write is itself a same-document
+ * history entry -- see the call below) runs before that section textually. */
+static void hist_commit(JSContext *ctx, const char *href, JSValueConst state, int replace);
+
 static JSValue loc_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic)
 {
     (void)t;
@@ -2151,6 +2156,14 @@ static JSValue loc_set(JSContext *ctx, JSValueConst t, JSValueConst v, int magic
             wurl_href(&g_loc, g_hash_old, WURL_MAX);
             scopy(g_hash_new, want, WURL_MAX);
             g_hashchange_queued = 1;
+            /* A fragment navigation is a same-document navigation like any
+             * other and creates its own joint-session-history entry -- browsers
+             * do not special-case this to a replace. Without this, history.go()
+             * /back() had nothing to land on for a hash change: g_hist_n never
+             * grew, so a page using only location.hash (the pre-pushState way
+             * of doing exactly this) could never be traversed. State is always
+             * null here -- only pushState attaches one. */
+            hist_commit(ctx, want, JS_NULL, 0);
         }
         g_loc = u;
         scopy(g_loc_raw, want, WURL_MAX);
@@ -2280,6 +2293,14 @@ static const JSCFunctionListEntry storage_proto[] = {
 
 /* ---- history (JS side) ------------------------------------------------ */
 
+/* tab_hist_joint_extra(): the full-load half of history.length's joint count
+ * (see tabs.h's comment on it and tabs.c's on tab_hist_behind). Weak because
+ * tests/unit/webapi_test.c links this file WITHOUT tabs.c -- see
+ * include/weaksym.h and js_dom.c's layout_count/layout_items for the same
+ * idiom in the other direction. */
+extern int tab_hist_joint_extra(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tab_hist_joint_extra);
+
 static void hist_reset(JSContext *ctx, const char *url)
 {
     for (int i = 0; i < g_hist_n; i++) {
@@ -2289,6 +2310,33 @@ static void hist_reset(JSContext *ctx, const char *url)
     g_hist_n = 1; g_hist_i = 0;
     scopy(g_hist[0].url, url ? url : "", WURL_MAX);
     g_hist[0].state = JS_NULL;
+}
+
+/* Push (replace == 0) or overwrite (replace == 1) the joint session history's
+ * CURRENT same-document entry with `href`/`state`. The one place that touches
+ * g_hist_n/g_hist_i/g_hist[g_hist_i], so pushState/replaceState (state comes
+ * from script) and a plain fragment navigation (location.hash= and friends,
+ * where the spec gives the new entry a null state -- only pushState attaches
+ * one) cannot drift apart the way the same arithmetic spelled twice in two
+ * places always eventually does in this tree (see CLAUDE.md, ONE JAR, TWO
+ * DOORS). `state` may be JS_NULL; `ctx` may be NULL only when there is
+ * nothing to duplicate (JS_NULL needs no runtime). */
+static void hist_commit(JSContext *ctx, const char *href, JSValueConst state, int replace)
+{
+    if (!replace) {
+        for (int i = g_hist_i + 1; i < g_hist_n; i++) JS_FreeValue(ctx, g_hist[i].state);
+        g_hist_n = g_hist_i + 1;
+        if (g_hist_n >= HIST_MAX) {              /* drop the oldest entry */
+            JS_FreeValue(ctx, g_hist[0].state);
+            for (int i = 0; i + 1 < g_hist_n; i++) g_hist[i] = g_hist[i + 1];
+            g_hist_n--; g_hist_i--;
+        }
+        g_hist_i = g_hist_n++;
+        g_hist[g_hist_i].state = JS_NULL;
+    }
+    JS_FreeValue(ctx, g_hist[g_hist_i].state);
+    g_hist[g_hist_i].state = ctx ? JS_DupValue(ctx, state) : JS_NULL;
+    scopy(g_hist[g_hist_i].url, href, WURL_MAX);
 }
 
 static JSValue hist_push(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int replace)
@@ -2315,20 +2363,7 @@ static JSValue hist_push(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
         scopy(href, g_loc_raw, WURL_MAX);
     }
 
-    if (!replace) {
-        for (int i = g_hist_i + 1; i < g_hist_n; i++) JS_FreeValue(ctx, g_hist[i].state);
-        g_hist_n = g_hist_i + 1;
-        if (g_hist_n >= HIST_MAX) {              /* drop the oldest entry */
-            JS_FreeValue(ctx, g_hist[0].state);
-            for (int i = 0; i + 1 < g_hist_n; i++) g_hist[i] = g_hist[i + 1];
-            g_hist_n--; g_hist_i--;
-        }
-        g_hist_i = g_hist_n++;
-        g_hist[g_hist_i].state = JS_NULL;
-    }
-    JS_FreeValue(ctx, g_hist[g_hist_i].state);
-    g_hist[g_hist_i].state = argc > 0 ? JS_DupValue(ctx, argv[0]) : JS_NULL;
-    scopy(g_hist[g_hist_i].url, href, WURL_MAX);
+    hist_commit(ctx, href, argc > 0 ? argv[0] : JS_NULL, replace);
     return JS_UNDEFINED;
 }
 
@@ -2339,16 +2374,50 @@ static JSValue js_replaceState(JSContext *ctx, JSValueConst t, int argc, JSValue
 
 /* Move within the same-document history. popstate is queued rather than fired
  * inline: the spec makes it a task, and firing it inside history.back() would
- * re-enter the page's own call stack. */
+ * re-enter the page's own call stack.
+ *
+ * A traversal that lands on an entry differing from where it started ONLY by
+ * fragment fires hashchange TOO, alongside popstate -- WHATWG 7.2.4's
+ * "traverse the history" always updates the document (popstate) for a
+ * same-document entry, and separately runs the fragment-navigation steps
+ * (hashchange) when the non-fragment parts of the two URLs match. Parsed
+ * rather than string-compared: '#' inside an already-encoded path or query is
+ * data, not the fragment delimiter, and same_document() (used by loc_set for
+ * the same question) already does this correctly. */
 static void hist_move(JSContext *ctx, int delta)
 {
     int want = g_hist_i + delta;
     if (want < 0 || want >= g_hist_n || delta == 0) return;
+    char oldurl[WURL_MAX];
+    scopy(oldurl, g_hist[g_hist_i].url, WURL_MAX);
     g_hist_i = want;
-    set_location(g_hist[g_hist_i].url);
+    const char *newurl = g_hist[g_hist_i].url;
+
+    struct wurl ou, nu;
+    if (wurl_parse(oldurl, 0, &ou) == 0 && wurl_parse(newurl, 0, &nu) == 0 &&
+        same_document(&ou, &nu) && strcmp(ou.hash, nu.hash) != 0) {
+        scopy(g_hash_old, oldurl, WURL_MAX);
+        scopy(g_hash_new, newurl, WURL_MAX);
+        g_hashchange_queued = 1;
+    }
+
+    set_location(newurl);
     JS_FreeValue(ctx, g_popstate_state);
     g_popstate_state = JS_DupValue(ctx, g_hist[g_hist_i].state);
     g_popstate_queued = 1;
+}
+
+/* The browser-chrome direction of this seam -- see js_webapi_hist_step's
+ * comment in js_webapi.h for the full argument. `delta` is usually the ±1 a
+ * physical Back/Forward press means; any nonzero value is honoured the same
+ * way history.go() honours one. */
+int js_webapi_hist_step(JSContext *ctx, int delta, char *out, int max)
+{
+    int want = g_hist_i + delta;
+    if (delta == 0 || want < 0 || want >= g_hist_n) return 0;
+    hist_move(ctx, delta);
+    if (out) scopy(out, g_hist[g_hist_i].url, max);
+    return 1;
 }
 
 static JSValue js_hist_go(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -2363,8 +2432,18 @@ static JSValue js_hist_back(JSContext *ctx, JSValueConst t, int argc, JSValueCon
 { (void)t; (void)argc; (void)argv; hist_move(ctx, -1); return JS_UNDEFINED; }
 static JSValue js_hist_fwd(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { (void)t; (void)argc; (void)argv; hist_move(ctx, +1); return JS_UNDEFINED; }
+/* g_hist_n alone undercounts: it is the CURRENT document's own same-document
+ * entries only, reset to 1 on every real navigation. The exact WHATWG number
+ * is g_hist_n plus tab_hist_joint_extra() -- the full-load entries behind and
+ * (in the narrow Back-then-not-yet-navigated window) ahead of this tab's
+ * position, which live in tabs.c and cannot be duplicated here without the
+ * two counters eventually disagreeing (see hist_commit's comment). */
 static JSValue hist_get_len(JSContext *ctx, JSValueConst t)
-{ (void)t; return JS_NewInt32(ctx, g_hist_n); }
+{
+    (void)t;
+    int extra = LOGIT_HAVE(tab_hist_joint_extra) ? tab_hist_joint_extra() : 0;
+    return JS_NewInt32(ctx, g_hist_n + extra);
+}
 static JSValue hist_get_state(JSContext *ctx, JSValueConst t)
 { (void)t; return JS_DupValue(ctx, g_hist[g_hist_i].state); }
 

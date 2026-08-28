@@ -454,3 +454,82 @@ static void t_atexit(void)
         remove("/libctest_ax.tmp");
     }
 }
+
+/* system()/popen(): mini-libc has ALWAYS built the right argv --
+ * {"sh","-c",cmd,NULL} execv'd against /bin/sh (stdlib.c's system(),
+ * popen.c) -- what was missing was the OTHER end of the fork: /bin/sh
+ * ignored argv[1] entirely and fell into its own interactive-or-not REPL,
+ * reading the child's stdin (empty/closed under system()/popen()) as if it
+ * were a script. That is the worst of three possible failure shapes: not an
+ * error, not a hang -- a SILENT SUCCESS. The child read EOF, printed
+ * nothing, and exited 0, which is indistinguishable from "the command ran
+ * and succeeded" if you only look at the wait status. So every check below
+ * asserts a SIDE EFFECT the command was supposed to produce, not just the
+ * exit status -- a passing status with an absent file/line is exactly the
+ * bug this gate exists to catch. */
+static void t_system(void)
+{
+    remove("/libctest_sys.tmp");
+    int status = system("echo system-ran > /libctest_sys.tmp");
+    CHK(WIFEXITED(status), "system() child exited normally");
+    CHK_INT(WEXITSTATUS(status), 0, "system() propagated exit 0");
+    FILE *f = fopen("/libctest_sys.tmp", "r");
+    CHK(f != 0, "system()'s command actually ran (file exists)");
+    if (f) {
+        char b[32] = {0};
+        size_t n = fread(b, 1, sizeof(b) - 1, f);
+        b[n] = 0;
+        CHK_STR(b, "system-ran\n", "system()'s command wrote the right bytes");
+        fclose(f);
+    }
+    remove("/libctest_sys.tmp");
+
+    /* The exit status of the STRING is what the caller sees, not the
+     * shell's own -- `exit 7` inside -c must propagate through wait(), the
+     * same "exit" builtin the interactive shell already had. */
+    status = system("exit 7");
+    CHK(WIFEXITED(status), "system(\"exit 7\") exited normally");
+    CHK_INT(WEXITSTATUS(status), 7, "system() propagates the command's own exit status");
+
+    /* popen(): a real pipe to a real -c child, read back byte for byte. */
+    FILE *p = popen("echo popen-hi", "r");
+    CHK(p != 0, "popen() opened a stream");
+    if (p) {
+        char b[32] = {0};
+        char *got = fgets(b, sizeof b, p);
+        CHK(got != 0, "popen() stream produced a line");
+        CHK_STR(b, "popen-hi\n", "popen() read back what -c echoed");
+        int st = pclose(p);
+        CHK(WIFEXITED(st), "pclose() exited normally");
+        CHK_INT(WEXITSTATUS(st), 0, "pclose() exit status");
+    }
+
+    /* $0: POSIX's `sh -c command_string [command_name]` -- system()/popen()
+     * never pass a name (matching glibc), so this drives execve directly the
+     * way sshd.c and a script's own `sh -c "..." myname` would, to prove the
+     * name argument really becomes $0 and not just that -c ran at all. */
+    remove("/libctest_sys0.tmp");
+    int pid = fork();
+    if (pid == 0) {
+        char *argv[] = { (char *)"sh", (char *)"-c",
+                          (char *)"echo $0 > /libctest_sys0.tmp", (char *)"myname", 0 };
+        execv("/bin/sh", argv);
+        _exit(127);
+    }
+    CHK(pid > 0, "fork for the $0 test");
+    if (pid > 0) {
+        int st = 0;
+        CHK(waitpid(pid, &st, 0) == pid, "waitpid reaped the $0 child");
+        CHK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "sh -c ... myname exited 0");
+        FILE *f2 = fopen("/libctest_sys0.tmp", "r");
+        CHK(f2 != 0, "$0 test wrote its file");
+        if (f2) {
+            char b[32] = {0};
+            size_t n = fread(b, 1, sizeof(b) - 1, f2);
+            b[n] = 0;
+            CHK_STR(b, "myname\n", "sh -c '...' myname -- $0 expands to the name argument");
+            fclose(f2);
+        }
+        remove("/libctest_sys0.tmp");
+    }
+}

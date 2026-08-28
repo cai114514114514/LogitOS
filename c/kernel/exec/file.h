@@ -92,7 +92,16 @@ struct file {
 void          file_init(void);
 struct file  *file_alloc(void);     /* a fresh F_NONE file, refcount = 1 */
 void          file_dup(struct file *f);    /* refcount++ */
-void          file_close(struct file *f);  /* refcount--; release backend at 0 */
+int           file_close(struct file *f);  /* refcount--; release backend at 0.
+                                             * Returns 0 on success, -1 if the
+                                             * last close's flush to the
+                                             * backend failed (dirty F_VFS
+                                             * data that did not make it to
+                                             * disk -- ENOSPC and friends).
+                                             * Same 0/-1 convention as
+                                             * file_fsync(). 0 while refcount
+                                             * stays above 0: there was
+                                             * nothing to flush yet. */
 
 /* Backends (P2/P3/P5). */
 struct file  *file_open_vfs(const char *path, int flags);   /* P2 */

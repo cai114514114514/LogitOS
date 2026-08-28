@@ -165,14 +165,43 @@ static void fill_gregs(uint64_t *g, const struct registers *r)
  * checks that must redden.
  *
  * Written with a memory clobber and read into locals first so the compiler
- * cannot hoist the reads past the call this function was reached through. */
+ * cannot hoist the reads past the call this function was reached through.
+ *
+ * TWO REGISTER-READ BODIES, NOT ONE, and the reason is CLAUDE.md's host-
+ * reality table: this whole function is HOST-test scaffolding (COREDUMP_SIGCTX
+ * is defined nowhere but tests/coredump.mk's negctl recipe -- the real kernel
+ * never sees it), and the documented development host is Apple Silicon, whose
+ * clang targets aarch64 by default when this file is compiled as a host
+ * program. The `movq %%r12, ...` GAS mnemonics below are x86-64-only assembly
+ * and simply do not assemble on aarch64 -- not a wrong answer, a build error,
+ * one of the "Host capability absent" shapes. The property under test does
+ * not require x86-64 registers specifically: it requires SIX REAL, LIVE,
+ * NON-SYNTHETIC values the compiler did not choose for this test (so a
+ * register can legitimately coincide with the expected constant, which is
+ * the documented rbx trap on x86-64 -- and the aarch64 body preserves the
+ * same shape by reading real callee-saved registers x19/x20 for rbx/rbp's
+ * slots). Confirmed by running BOTH bodies' host gate to green independently;
+ * see tests/coredump.mk for what varies and what may not. */
 static void sigctx_frame(struct registers *out, const struct registers *r)
 {
     uint64_t r12, r13, r14, r15, rbx, rbp;
+#if defined(__x86_64__) || defined(__amd64__)
     __asm__ volatile ("movq %%r12, %0\n\tmovq %%r13, %1\n\tmovq %%r14, %2\n\t"
                       "movq %%r15, %3\n\tmovq %%rbx, %4\n\tmovq %%rbp, %5"
                       : "=r"(r12), "=r"(r13), "=r"(r14), "=r"(r15),
                         "=r"(rbx), "=r"(rbp) :: "memory");
+#elif defined(__aarch64__)
+    /* x9..x12 are ordinary caller-saved temporaries (r12..r15's role here);
+     * x19/x20 are callee-saved, the same role rbx/rbp play on x86-64 -- the
+     * pairing that makes the "a callee-saved register may legitimately
+     * survive" property in the comment above meaningful on this arch too. */
+    __asm__ volatile ("mov %0, x9\n\tmov %1, x10\n\tmov %2, x11\n\t"
+                      "mov %3, x12\n\tmov %4, x19\n\tmov %5, x20"
+                      : "=r"(r12), "=r"(r13), "=r"(r14), "=r"(r15),
+                        "=r"(rbx), "=r"(rbp) :: "memory");
+#else
+#error "sigctx_frame (COREDUMP_SIGCTX host gate only) needs a register-read body for this host architecture"
+#endif
     zero(out, sizeof *out);
     out->r12 = r12; out->r13 = r13; out->r14 = r14; out->r15 = r15;
     out->rbx = rbx; out->rbp = rbp;

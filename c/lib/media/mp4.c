@@ -717,6 +717,11 @@ int mp4_parse(mdemux *m)
             }
         }
     }
-    if (!saw_moov) return MEDIA_ERR_CORRUPT;
+    /* A bare fragment (moof/mdat, no moov) is not malformed -- it is correctly
+     * one half of a DASH/CMAF pair, and it has no codec configuration of its
+     * own to report. Naming that distinctly from CORRUPT is what lets a
+     * caller (preview.c) say something a user can act on instead of "corrupt",
+     * which this file is not. */
+    if (!saw_moov) return m->fragmented ? MEDIA_ERR_NO_INIT : MEDIA_ERR_CORRUPT;
     return MEDIA_OK;
 }

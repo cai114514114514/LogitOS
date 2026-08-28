@@ -224,6 +224,91 @@ int main(void)
         printf("  noise: %d accidental frames over 51200 random bytes\n", frames);
     }
 
+    /* ---- 11. RT_T_LM_* round trip -- the streamed-model-output frames ----
+     *
+     * This is the control test-lm-os cannot be: it needs no model, no QEMU,
+     * runs in milliseconds, and its failure mode is exactly the "one jar, two
+     * doors" trap CLAUDE.md names -- lm.c (the producer) and terminal.c (the
+     * consumer) each spell the wire layout independently in a comment, and
+     * nothing before this test made sure the two comments agreed with each
+     * other or with logit_rich.h's own #defines. */
+    {
+        wire_n = 0;
+        rt_reset(&e); rt_u32(&e, 7); rt_str(&e, "toy 4L d64"); rt_str(&e, "why is the sky");
+        emit(RT_T_LM_BEGIN, 0, &e);
+        rt_reset(&e); rt_u32(&e, 7); rt_strn(&e, "\x00", 1);   /* a real NUL token byte */
+        emit(RT_T_LM_TOKEN, 0, &e);
+        rt_reset(&e); rt_u32(&e, 7); rt_str(&e, " blue");
+        emit(RT_T_LM_TOKEN, 0, &e);
+        rt_reset(&e); rt_u32(&e, 7); rt_u8(&e, RT_LM_INTERRUPTED);
+        rt_u32(&e, 2); rt_u32(&e, 1500); rt_u32(&e, 0);
+        emit(RT_T_LM_END, 0, &e);
+        rt_parser_init(&p);
+        rt_parser_feed(&p, wire, wire_n);
+
+        struct rt_frame f;
+        CHK(rt_parser_next(&p, &f) && f.type == RT_T_LM_BEGIN, "LM_BEGIN not parsed");
+        struct rt_rd r; rt_rd_init(&r, &f);
+        unsigned id = rt_rd_u32(&r);
+        char model[32], prompt[32];
+        rt_rd_str(&r, model, sizeof model);
+        rt_rd_str(&r, prompt, sizeof prompt);
+        CHK(!r.bad && id == 7, "LM_BEGIN id = %u bad=%d", id, r.bad);
+        CHK(strcmp(model, "toy 4L d64") == 0, "LM_BEGIN model '%s'", model);
+        CHK(strcmp(prompt, "why is the sky") == 0, "LM_BEGIN prompt '%s'", prompt);
+        rt_parser_done(&p, &f);
+
+        CHK(rt_parser_next(&p, &f) && f.type == RT_T_LM_TOKEN, "1st LM_TOKEN not parsed");
+        rt_rd_init(&r, &f);
+        (void)rt_rd_u32(&r);
+        char tok[4]; int tn = rt_rd_str(&r, tok, sizeof tok);
+        CHK(!r.bad && tn == 1 && tok[0] == 0, "NUL token mishandled (n=%d byte=%d)", tn, tok[0]);
+        rt_parser_done(&p, &f);
+
+        CHK(rt_parser_next(&p, &f) && f.type == RT_T_LM_TOKEN, "2nd LM_TOKEN not parsed");
+        rt_rd_init(&r, &f);
+        (void)rt_rd_u32(&r);
+        rt_rd_str(&r, tok, sizeof tok);
+        CHK(!r.bad && strcmp(tok, " bl") == 0, "2nd token truncated to '%s'", tok); /* dst is 4 bytes */
+        rt_parser_done(&p, &f);
+
+        CHK(rt_parser_next(&p, &f) && f.type == RT_T_LM_END, "LM_END not parsed");
+        rt_rd_init(&r, &f);
+        (void)rt_rd_u32(&r);
+        int fl = rt_rd_u8(&r);
+        unsigned ntok = rt_rd_u32(&r), ms = rt_rd_u32(&r), nf = rt_rd_u32(&r);
+        CHK(!r.bad, "LM_END underflowed");
+        CHK(fl == RT_LM_INTERRUPTED, "LM_END flags = %d", fl);
+        CHK(ntok == 2 && ms == 1500 && nf == 0, "LM_END fields %u %u %u", ntok, ms, nf);
+        rt_parser_done(&p, &f);
+    }
+
+    /* ---- 12. LM_TOKEN/LM_END for a SUPERSEDED id must be REJECTED by the
+     * consumer, not just parsed -- this is terminal.c's own guard
+     * (lm_open_ / lm_id_ in handle_frame), and it cannot be exercised by the
+     * wire-level parser above: the parser has no notion of "which block is
+     * open", that state lives in terminal.c. What this test CAN prove at this
+     * layer is the wire-level half of the property the guard depends on: an
+     * id is just an opaque u32 on the wire, so two frames claiming different
+     * ids decode to different ids rather than being coalesced or confused --
+     * if that were false, terminal.c's id check would have nothing to check
+     * against. */
+    {
+        wire_n = 0;
+        rt_reset(&e); rt_u32(&e, 1); rt_str(&e, "first");  emit(RT_T_LM_TOKEN, 0, &e);
+        rt_reset(&e); rt_u32(&e, 2); rt_str(&e, "second"); emit(RT_T_LM_TOKEN, 0, &e);
+        rt_parser_init(&p);
+        rt_parser_feed(&p, wire, wire_n);
+        struct rt_frame f; struct rt_rd r;
+        rt_parser_next(&p, &f); rt_rd_init(&r, &f);
+        unsigned id1 = rt_rd_u32(&r);
+        rt_parser_done(&p, &f);
+        rt_parser_next(&p, &f); rt_rd_init(&r, &f);
+        unsigned id2 = rt_rd_u32(&r);
+        rt_parser_done(&p, &f);
+        CHK(id1 == 1 && id2 == 2 && id1 != id2, "LM_TOKEN ids collapsed: %u %u", id1, id2);
+    }
+
     printf(fails ? "SOME FAILED (%d)\n" : "ALL PASS\n", fails);
     return fails != 0;
 }

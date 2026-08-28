@@ -107,6 +107,7 @@ ci-host: test-mlkem test-mlkem-openssl test-tls-pq
 .PHONY: test-ecdsa-sign test-ecdsa-sign-negctl \
         test-tls-server test-tls-server-negctl \
         test-tls-server-negctl-hash32 test-tls-server-negctl-cvprefix \
+        test-tls-server-negctl-hybrid \
         bench-tls-selfcert test-tlsx
 
 # --------------------------------------------------------------- ecdsa_sign --
@@ -126,15 +127,20 @@ test-ecdsa-sign-negctl:
 test-tls-server: test-tls-server-negctl
 	@bash tests/unit/run-tls-server.sh
 
-test-tls-server-negctl: test-tls-server-negctl-hash32 test-tls-server-negctl-cvprefix
+test-tls-server-negctl: test-tls-server-negctl-hash32 test-tls-server-negctl-cvprefix \
+                        test-tls-server-negctl-hybrid
 
 # Pin the key schedule at SHA-256 width regardless of the suite. Invisible to
 # every AES-128 and ChaCha20 case -- for those, 32 IS the answer -- so it must
-# redden EXACTLY ONE of the 26 cases, the TLS_AES_256_GCM_SHA384 row. A count
-# of 0 means that row is not running; a count above 1 means the break is
-# broader than the comment in tls_server.c claims. Measured 2026-08-20: 1.
+# redden the cases whose key schedule genuinely runs at 48 bytes (TLS_AES_256_
+# GCM_SHA384): the classical suite row AND, since the hybrid work landed, the
+# "hybrid + AES-256-GCM-SHA384" trace_case row -- same defect, same width,
+# reached through two different key-exchange groups. A count of 0 means
+# neither row is running; a count above 2 means the break is broader than the
+# comment in tls_server.c claims. Measured 2026-08-20: 1 (before the hybrid
+# rows existed). RE-MEASURED after the X25519MLKEM768 server work landed: 2.
 test-tls-server-negctl-hash32:
-	@TLS_SERVER_BREAK=LOGIT_TLSS_BREAK_HASH32 TLS_SERVER_BREAK_EXPECT=1 \
+	@TLS_SERVER_BREAK=LOGIT_TLSS_BREAK_HASH32 TLS_SERVER_BREAK_EXPECT=2 \
 	  bash tests/unit/run-tls-server.sh
 
 # Drop the 64 leading 0x20 octets from the CertificateVerify signature input.
@@ -143,9 +149,41 @@ test-tls-server-negctl-hash32:
 # case whose handshake is expected to COMPLETE and no others: the three
 # certificate/refusal cases and the certificate-inspection block must stay
 # green, or "reddens everything" would satisfy this control too. Measured
-# 2026-08-20: 14 of 26 (3 pair + 11 openssl).
+# 2026-08-20: 14 of 26 (3 pair + 11 openssl). RE-MEASURED after the
+# X25519MLKEM768 server work added six trace_case rows to run-tls-server.sh,
+# four of which are hybrid handshakes expected to complete and two of which
+# are pre-existing classical cases re-driven through the SAME assertion
+# (openssl's own -trace, not our srv.err) -- all six are equally caught by a
+# broken CertificateVerify: 20 of 32 (3 pair + 11 openssl + 6 trace_case).
+#
+# This count is also what caught a real bug in the GATE, not the server:
+# trace_case originally judged completion by "did openssl's trace log already
+# contain a NamedGroup", which is filled in by the ServerHello -- sent BEFORE
+# CertificateVerify is ever checked. Every trace_case row read "ok" under this
+# very break the first time it was run, which is CLAUDE.md rule 5's shape
+# exactly: a control that reads like it fires and does not. Fixed by checking
+# BOTH sides' exit codes, matching case_run; see trace_case's own comment.
 test-tls-server-negctl-cvprefix:
-	@TLS_SERVER_BREAK=LOGIT_TLSS_BREAK_CV_PREFIX TLS_SERVER_BREAK_EXPECT=14 \
+	@TLS_SERVER_BREAK=LOGIT_TLSS_BREAK_CV_PREFIX TLS_SERVER_BREAK_EXPECT=20 \
+	  bash tests/unit/run-tls-server.sh
+
+# LOGIT_TLSS_NO_HYBRID compiles X25519MLKEM768 OUT of srv_groups entirely --
+# an absence, not a corrupted defect -- reproducing exactly what this server
+# did before the hybrid was wired in. It must redden the four hybrid
+# trace_case rows in run-tls-server.sh and NOTHING else, each through a
+# DIFFERENT assertion (this is the point of the control: it proves each row
+# is carrying its own weight, not riding on the others):
+#   "hybrid only, was refused"       -> refused outright (no group in common)
+#   "hybrid, no HelloRetryRequest"   -> completes, but costs the round trip
+#                                       this change exists to remove
+#   "a browser-shaped hello gets PQ" -> completes, but on x25519 -- the
+#                                       silent downgrade this whole gate
+#                                       exists to catch, since case_run's
+#                                       echo-only assertion cannot see it
+#   "hybrid + AES-256-GCM-SHA384"    -> refused outright (no group in common)
+# Measured 2026-08-28: 4 of 32.
+test-tls-server-negctl-hybrid:
+	@TLS_SERVER_BREAK=LOGIT_TLSS_NO_HYBRID TLS_SERVER_BREAK_EXPECT=4 \
 	  bash tests/unit/run-tls-server.sh
 
 bench-tls-selfcert:

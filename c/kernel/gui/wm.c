@@ -536,14 +536,16 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
 /* Quadratic ease-out over 0..256: fast out of the gate, settling into the end.
  * Same curve family as gfx_shadow_falloff, and the same reason -- deceleration
  * is what makes a moving rectangle look like it has mass instead of being
- * teleported in equal steps. */
-static int ease_out(int t)
-{
-    if (t <= 0) return 0;
-    if (t >= 256) return 256;
-    int inv = 256 - t;
-    return 256 - inv * inv / 256;
-}
+ * teleported in equal steps.
+ *
+ * THE BODY MOVED TO c/lib/gfx (gfx_ease_out), and this is now a call, because
+ * the widget toolkit needed the identical curve in ring 3. Two copies would
+ * have been one jar with two doors on the two numbers a person sees side by
+ * side: a control sliding inside a window while the window itself minimises.
+ * c/lib/gfx is the only library both rings link, and wm.c already includes
+ * gfx.h. Do not re-inline this; the duration constants above are the other
+ * half of the same contract and are mirrored by AUI_T_BASE in aui.h. */
+static int ease_out(int t) { return gfx_ease_out(t); }
 
 /* ---- Expose ---------------------------------------------------------------
  *
@@ -754,6 +756,40 @@ static void dirty_win_content(const struct win *w)
     dirty_rect(x, y, ww, wh);
 }
 
+/* THE SAME WINDOW, WITH ONLY THE CALLER'S SUB-RECTANGLE -- SYS_GUI_FLUSH_RECT's
+ * kernel side, and dirty_win_content()'s sibling rather than its replacement:
+ * it shares BOTH of that function's safety preconditions rather than
+ * reasoning about them a second time.
+ *
+ * g_locked's box is not where the window is drawn (see the comment on
+ * dirty_win_content() above) -- same answer, same reason. And a window that
+ * is not stationary/full-size/opaque THIS FRAME has a shadow that moved (or a
+ * scratch-surface titlebar that samples nothing), which a content-only
+ * rectangle cannot account for any more than dirty_win_content()'s whole-
+ * canvas report could -- both fall back to dirty_win()'s full footprint.
+ *
+ * (rx,ry,rw,rh) are CONTENT-LOCAL DEVICE PIXELS, already validated and
+ * clamped to the surface by the caller (the SYS_GUI_FLUSH_RECT case below) --
+ * this function's only job is placing that rectangle on screen, at the
+ * content origin win_drawn_direct() just proved is (x, y+TBH). rw/rh<=0 is
+ * handled by the caller (it means "the whole canvas", SYS_GUI_FLUSH_RECT's
+ * contract), not repeated here. */
+static void dirty_win_content_rect(const struct win *w, int rx, int ry, int rw, int rh)
+{
+    if (g_locked) { dirty_rect(0, 0, W, H); return; }
+    int x, y, ww, wh, a;
+    if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;   /* not on screen */
+    if (!win_drawn_direct(w, x, y, ww, wh, a)) { dirty_win(w); return; }
+#if WM_DAMAGE_LIE
+    /* SAME NEGATIVE CONTROL AS dirty_win_content(), applied here too: a
+     * partial-rect flush that under-reports must be exactly as catchable as
+     * a whole-canvas one, or this path is a hole the existing control cannot
+     * see through. */
+    rw /= 2; rh /= 2;
+#endif
+    dirty_rect(x + rx, y + TBH + ry, rw, rh);
+}
+
 /* THE RESIZE NEGATIVE CONTROL, and it is a DIFFERENT mistake from the one
  * above. WM_DAMAGE_LIE shrinks a window's reported box; this one reports the
  * new box honestly and forgets the OLD one -- the specific error a resize
@@ -842,8 +878,22 @@ int wm_ime_anchor(int *wi, int *x, int *y, int *w, int *h)
 }
 static int cascade;
 
-/* app registry built by scanning the disk for *.aex */
-struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; };
+/* app registry built by scanning the disk for *.aex
+ *
+ * `hidden` is AEX_CAT_TEST, and only that -- "built for a harness, not for a
+ * person" (aex.h). It still gets a slot (scan_apps still counts it into
+ * nreg) and it is still PAINTED (draw_dock does not consult `hidden` at all):
+ * dock_geom() centres the whole strip on nreg and every other icon's x is
+ * `slot * (isz + gap)` from that centre, so dropping the slot -- or leaving a
+ * blank gap where it was -- would shift BROWSER_SLOT/GALLERY_SLOT/
+ * SETTINGS_SLOT and read as a structural defect to the pixel-precision dock
+ * gates (qmp_desktop_look.py's dock_pitch/rim checks expect ELEVEN evenly
+ * spaced, filled tiles), on a disk that never changed which apps are ON it.
+ * What `hidden` removes is INTERACTION: dock_hover_at() will never return
+ * this slot (no magnify, no tooltip) and the click test below will never
+ * launch it. A tile nothing can hover or click is exactly as unlaunchable as
+ * a missing one, without moving a pixel anything else measures. */
+struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; int hidden; };
 static struct regent reg[MAXWIN];
 static int nreg;
 static uint64_t reg_bounce[MAXWIN];    /* tick a dock icon's launch bounce started (0 = none) */
@@ -2085,7 +2135,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
     {
         struct win *dw = app_window(ap);
         if (dw) {
-            if (num == SYS_GUI_FLUSH) {
+            if (num == SYS_GUI_FLUSH || num == SYS_GUI_FLUSH_RECT) {
                 if (dw->drawing) {
                     uint64_t d = time_mono_ms() - dw->draw_t0;
                     if (d > perf_drawmax) perf_drawmax = d;
@@ -2248,11 +2298,12 @@ long wm_gui_syscall(long num, long a, long b, long c)
     }
     case SYS_GUI_FLUSH: {
         /* Repaint just this app's window -- its rectangle, and NOT its drop
-         * shadow. There is no sub-window damage on this call and deliberately
-         * no plan for one: the flush carries no rectangle, so the smallest
-         * honest extent an app can be held to is its whole canvas. That is the
-         * floor on an app repaint, and it is an ABI limit, not a compositor
-         * one.
+         * shadow. This call carries no rectangle, so the smallest honest
+         * extent an app can be held to here is its whole canvas -- that used
+         * to be the floor on EVERY app repaint; SYS_GUI_FLUSH_RECT below is
+         * the escape from it for a caller that can name a tighter one. This
+         * number's own contract has not moved: an app that never adopts the
+         * new call keeps getting exactly this, unconditionally.
          *
          * THE SHADOW IS NOT PART OF THAT FLOOR, and this line used to include
          * it -- 311,143 px of margin for the browser, which is what took every
@@ -2263,6 +2314,43 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap);
         if (w) dirty_win_content(w); else dirty_full();
         return 0;
+    }
+    case SYS_GUI_FLUSH_RECT: {
+        /* SYS_GUI_FLUSH's sibling, not its replacement -- see the contract
+         * comment on SYS_GUI_FLUSH_RECT in logit_abi.h and
+         * dirty_win_content_rect() just above this switch's function. */
+        struct win *w = app_window(ap);
+        if (!w) return -1;
+#ifdef GUI_FLUSHRECT_DISABLE
+        /* THE CONTROL. Built with -DGUI_FLUSHRECT_DISABLE, this number keeps
+         * its ABI contract (still returns 0, still a valid call) but performs
+         * exactly SYS_GUI_FLUSH's whole-canvas report -- so a caller that has
+         * switched to gui_flush_rect() sees the SAME pixels either way and
+         * ONLY the compositor's cost should move. That is what makes a
+         * before/after frame-time comparison against this knob evidence that
+         * the RECTANGLE is what changed the number, rather than the host
+         * being quieter between two unrelated boots. */
+        dirty_win_content(w);
+        return 0;
+#else
+        int rx = S(LOGIT_GUI_FLUSH_RECT_A_X(a)), ry = S(LOGIT_GUI_FLUSH_RECT_A_Y(a));
+        int rw = S(LOGIT_GUI_FLUSH_RECT_A_X(a) + LOGIT_GUI_FLUSH_RECT_B_W(b)) - rx;
+        int rh = S(LOGIT_GUI_FLUSH_RECT_A_Y(a) + LOGIT_GUI_FLUSH_RECT_B_H(b)) - ry;
+        /* Clamp to the canvas -- same idiom as SYS_GUI_RECT just above, and
+         * required for the same reason: a user-controlled rectangle must not
+         * become an out-of-range damage rectangle. Negative rx/ry clip from
+         * the low side first so a rect that starts off-canvas still damages
+         * the part of it that is on-canvas, rather than being thrown out. */
+        if (rx < 0) { rw += rx; rx = 0; }
+        if (ry < 0) { rh += ry; ry = 0; }
+        if (rw > w->surf.w - rx) rw = w->surf.w - rx;
+        if (rh > w->surf.h - ry) rh = w->surf.h - ry;
+        /* A degenerate rectangle IS "the whole canvas" -- SYS_GUI_FLUSH_RECT's
+         * documented contract, not a special case bolted on here. */
+        if (rw <= 0 || rh <= 0) dirty_win_content(w);
+        else dirty_win_content_rect(w, rx, ry, rw, rh);
+        return 0;
+#endif
     }
     case SYS_WAIT_EVENT: {
         /* SYS_POLL_EVENT without the spin. See the note in logit_abi.h for the
@@ -3132,6 +3220,7 @@ static int dock_hover_at(int x, int y)
     int dh = dock_isz + 2 * S(DOCK_PAD_PT);
     if (y < dock_y0 || y >= dock_y0 + dh) return -1;
     for (int i = 0; i < nreg; i++) {
+        if (reg[i].hidden) continue;   /* no hover, no tooltip, no magnify -- see struct regent */
         int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap);
         if (x >= ix && x < ix + dock_isz) return i;
     }
@@ -3161,6 +3250,14 @@ static void draw_dock(void)
     int hov = dock_hover_at(mx, my);
     for (int i = 0; i < nreg; i++) {
         if (i == hov) continue;                            /* hovered tile drawn last, on top */
+        /* Hidden (AEX_CAT_TEST) tiles are still PAINTED, deliberately -- only
+         * dock_hover_at() and the click test below treat them differently.
+         * Blanking the tile would have been the more literal "not launchable",
+         * but tests/qmp/qmp_desktop_look.py's dock_pitch()/rim checks measure
+         * the row as eleven filled, evenly-pitched icons and would read a
+         * blank slot as a structural asymmetry that has nothing to do with
+         * glass. A tile nothing can hover, tooltip or click is exactly as
+         * unlaunchable as a missing one, at zero risk to that gate. */
         int b = dock_bounce_off(i); if (b) animating = 1;  /* launch bounce lifts the icon */
         int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
         dock_tile(i, ccx, ccy - b, dock_isz);
@@ -3185,7 +3282,7 @@ static void draw_dock(void)
      * every icon size, and matches what the eye expects: the icon in front,
      * the indicator behind it. */
     for (int i = 0; i < nreg; i++) {
-        if (!find_live_app(reg[i].name)) continue;
+        if (!find_live_app(reg[i].name)) continue;   /* a hidden app is never running, by construction */
         int ccx = dock_x0 + dock_gap + i * (dock_isz + dock_gap) + dock_isz / 2;
         fb_fill_circle(ccx, dock_y0 + dh - S(8), S(2), g_ui_dark ? rgb(235, 236, 240) : rgb(58, 58, 64));
     }
@@ -5085,6 +5182,7 @@ static void wm_process_mouse(const struct inev *in)
              * S(DOCK_PAD_PT) is the same padding draw_dock() actually placed
              * the icon with, so a click and the pixel it lands on agree at
              * every backing scale, not just this one. */
+            if (reg[i].hidden) continue;   /* AEX_CAT_TEST: painted, but no hit box and no launch */
             int ix = dock_x0 + dock_gap + i * (dock_isz + dock_gap), iy = dock_y0 + S(DOCK_PAD_PT);
             if (in_rect(x, y, ix, iy, dock_isz, dock_isz)) {
                 wm_launch(reg[i].file, "");
@@ -5366,6 +5464,12 @@ static void scan_apps(void)
             reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
                 ? rgb(h->icon_r, h->icon_g, h->icon_b)
                 : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
+            /* AEX_CAT_TEST apps (Gallery on the shipped disk) keep their slot
+             * and their tile's ink but lose the ability to be hovered or
+             * clicked -- see the comment on `struct regent`. h->category is
+             * read straight off the raw header already sitting in `hb`;
+             * aex_info() does not surface it. */
+            reg[nreg].hidden = (h->category == AEX_CAT_TEST);
             nreg++;
         }
     }

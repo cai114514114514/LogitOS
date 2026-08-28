@@ -933,6 +933,75 @@ static void part3_tabs(void)
             "and they are the bytes that arrived"); }
 }
 
+/* ================================================================== *
+ * Part 4 -- <link media> / <style media>: THE ATTRIBUTE NOBODY READ   *
+ * ================================================================== *
+ *
+ * GENERAL, not fit to any one site: a page that ships one unconditional
+ * (screen) stylesheet plus a media-scoped one whose rule should NOT apply on
+ * an ordinary desktop viewport. Before this fix, neither collect_style()
+ * (<style media>) nor collect_css_links() (<link media>) ever read the
+ * attribute -- verified before the fix by grep, zero hits for
+ * `dom_attr(*, "media")` in browser.c -- so every sheet was concatenated into
+ * author_css UNCONDITIONALLY and the LAST one in source order won, regardless
+ * of what its media attribute said. A screen sheet followed by a
+ * print/narrow override (an ordinary responsive-CSS pattern, found on a very
+ * large fraction of real pages, not invented for this test) would silently
+ * have the override win on every viewport, including a normal desktop one --
+ * one shape of exactly the "CSS arrived, parsed, and still laid out wrong"
+ * class the owner reported.
+ *
+ * Three colors, three sources, one signal: which color survives to the box
+ * says which stylesheet's rule the cascade actually kept, with no ambiguity
+ * about selection-vs-layout -- .it never changes selector or specificity
+ * across the three sheets, only which one is reachable. */
+static const char MEDIA_HTML[] =
+    "<html><head>"
+    "<link rel=stylesheet href=/screen-a.css>"
+    "<link rel=stylesheet href=/print-a.css media=print>"
+    "<style media=\"(max-width: 1px)\">.it{background:#333333}</style>"
+    "</head><body>"
+    "<ul><li class=it id=i1>one</li><li class=it id=i2>two</li></ul>"
+    "</body></html>";
+static const char MEDIA_SCREEN_CSS[] = ".it{background:#111111}";
+static const char MEDIA_PRINT_CSS[]  = ".it{background:#222222}";
+
+static void part4_media_attr(void)
+{
+    printf("\n-- part 4: <link media>/<style media> gate what they attach --\n");
+    fake_site_add("http://fixture.test/media.html", MEDIA_HTML);
+    fake_site_add("http://fixture.test/screen-a.css", MEDIA_SCREEN_CSS);
+    fake_site_add("http://fixture.test/print-a.css", MEDIA_PRINT_CSS);
+
+    browser_load("http://fixture.test/media.html");
+
+    int ni = layout_count();
+    const struct item *it = layout_items();
+    int found = 0, screen_won = 0, print_won = 0, narrow_won = 0;
+    for (int i = 0; i < ni; i++) {
+        const struct item *b = &it[i];
+        if (!b->node || !b->has_bg) continue;
+        const char *cls = dom_attr(b->node, "class");
+        if (!cls || strcmp(cls, "it")) continue;
+        found++;
+        if (b->bg == 0x111111) screen_won++;
+        if (b->bg == 0x222222) print_won++;
+        if (b->bg == 0x333333) narrow_won++;
+    }
+    printf("   %d '.it' boxes: %d carry the screen sheet's color, %d the "
+           "media=print <link>'s, %d the (max-width:1px) inline <style>'s\n",
+           found, screen_won, print_won, narrow_won);
+    CHECK(found == 2, "both list items produced boxes");
+    CHECK(screen_won == 2,
+          "the UNCONDITIONAL screen sheet's rule is the one that applied");
+    CHECK(print_won == 0,
+          "the media=print <link> did NOT win on a screen viewport, even "
+          "though it is LATER in source order than the screen sheet");
+    CHECK(narrow_won == 0,
+          "the (max-width: 1px) inline <style> did NOT win at 1180px wide, "
+          "even though it is LAST in source order");
+}
+
 int main(void)
 {
     css_init();
@@ -971,6 +1040,11 @@ int main(void)
         part3_tabs();
     else
         { printf("FAIL: the tab test called app_exit(%d)\n", host_exit_code); fail = 1; }
+
+    if (setjmp(host_exit_jmp) == 0)
+        part4_media_attr();
+    else
+        { printf("FAIL: the media-attribute test called app_exit(%d)\n", host_exit_code); fail = 1; }
 
     printf(fail ? "\nloader_test: FAIL\n" : "\nloader_test: PASS\n");
     return fail;

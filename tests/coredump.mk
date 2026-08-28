@@ -26,6 +26,22 @@
 #     is why test-coredump-os compares rip/rsp between the two channels the
 #     kernel itself prints instead.
 
+# ON macOS (the documented host): this gate used to be a flat compile FAILURE
+# there -- <sys/procfs.h> and <sys/user.h> are glibc/Linux-only headers, and
+# `ci-host: test-coredump` (via tools/audit_tests.py --suites=host, which is
+# what tools/ci.sh actually asks, NOT the wired/unwired aggregates) ran it
+# anyway. That is CLOSED, not skipped: every struct those headers provided is
+# hand-transcribed from glibc's own definitions into tests/unit/coredump_test.c
+# under `#if !defined(__linux__)`, because the Linux/x86_64 ELF core ABI is a
+# fixed specification independent of what host compiles the test -- see the
+# comment block at the top of that file for the transcription and its caveat.
+# Separately, and for a DIFFERENT reason, the readelf/gdb-dependent half of
+# part 4 SKIPS LOUDLY when those binaries are absent (gdb, always, on this
+# host; readelf resolves to i686-elf-readelf or llvm-readelf, both of which
+# this tree's own toolchain already provides, so that half still runs).
+# `command -v gdb` in this fragment's negctl recipe gates which of the
+# control's "must redden"/"must stay green" lines it requires, so the control
+# is never silently satisfied by a skip it didn't check for.
 .PHONY: test-coredump test-coredump-negctl test-coredump-os
 
 CORE_SRC  := tests/unit/coredump_test.c c/kernel/exec/coredump.c
@@ -155,22 +171,55 @@ test-coredump-negctl:
 	    grep '^FAIL' $(BUILD)/coredump_negctl.log; exit 1; fi; \
 	 echo "     ($$n of the 19 REGFILE checks reddened; see the note above on why"; \
 	 echo "      that is a range and rbx may survive)"
-	@for k in "FAIL: REGFILE rip" "FAIL: REGFILE rsp" \
+	@# HAVE_GDB decides which "cannot coincide" and "must stay green" lines to
+	@# require. gdb is not part of this tree's documented toolchain and is not
+	@# installed on the reference host -- see the SKIP the test itself prints,
+	@# named tests/unit/coredump_test.c:pick_readelf's sibling gdb check. When
+	@# gdb is absent the test SKIPS its 9 gdb-dependent checks rather than
+	@# running them, so neither "FAIL: REGFILE gdb: *" nor "ok : gdb: *" can
+	@# appear in the log -- requiring them unconditionally would make this
+	@# control fail for a reason that has nothing to do with coredump.c, on
+	@# every host that lacks gdb, which is the exact noise CLAUDE.md's rule 5
+	@# warns against. The 5 non-gdb REGFILE "cannot coincide" checks and the 3
+	@# non-gdb "must stay green" checks are required unconditionally either way.
+	@if command -v gdb >/dev/null 2>&1; then HAVE_GDB=1; else HAVE_GDB=0; \
+	    echo "note: gdb absent from this host -- the gdb-specific halves of"; \
+	    echo "      this control's required-redden and required-green lists"; \
+	    echo "      are skipped, not silently satisfied. settle with:"; \
+	    echo "      brew install gdb"; fi; \
+	 for k in "FAIL: REGFILE rip" "FAIL: REGFILE rsp" \
 	          "FAIL: REGFILE rax" "FAIL: REGFILE rdi" \
 	          "FAIL: REGFILE coredump_read_gregs" \
-	          "FAIL: REGFILE gdb: rip" "FAIL: REGFILE gdb: rsp" \
 	          "FAIL: REGFILE a truncated dump"; do \
 	    grep -q "$$k" $(BUILD)/coredump_negctl.log || \
 	      { echo "FAIL: the control did not redden '$$k', which cannot coincide"; \
 	        exit 1; }; \
-	 done
-	@for k in "ok  : readelf: Type is CORE" "ok  : gdb: terminated with SIGSEGV" \
+	 done; \
+	 if [ "$$HAVE_GDB" = 1 ]; then \
+	    for k in "FAIL: REGFILE gdb: rip" "FAIL: REGFILE gdb: rsp"; do \
+	       grep -q "$$k" $(BUILD)/coredump_negctl.log || \
+	         { echo "FAIL: the control did not redden '$$k', which cannot coincide"; \
+	           exit 1; }; \
+	    done; \
+	 else \
+	    grep -q "SKIP: gdb is not on PATH" $(BUILD)/coredump_negctl.log || \
+	      { echo "FAIL: gdb is absent but the test did not print its SKIP line --"; \
+	        echo "      that is a silent skip, which rule 5 treats as worse than"; \
+	        echo "      no control at all"; exit 1; }; \
+	 fi
+	@for k in "ok  : readelf: Type is CORE" \
 	          "ok  : LOGIT cr2" "ok  : every dumped page holds the bytes"; do \
 	    grep -q "$$k" $(BUILD)/coredump_negctl.log || \
 	      { echo "FAIL: the control broke '$$k', which it must not touch"; exit 1; }; \
-	 done
+	 done; \
+	 if command -v gdb >/dev/null 2>&1; then \
+	    grep -q "ok  : gdb: terminated with SIGSEGV" $(BUILD)/coredump_negctl.log || \
+	      { echo "FAIL: the control broke 'ok  : gdb: terminated with SIGSEGV', which it must not touch"; \
+	        exit 1; }; \
+	 fi
 	@echo "ok: the sig-context control reddens only register-file checks, including"
-	@echo "    all eight that cannot coincide, and leaves the format intact"
+	@echo "    every one of them that cannot coincide on this host, and leaves the"
+	@echo "    format intact"
 
 # --- test-coredump-os ------------------------------------------------------
 # ON THE MACHINE. See tests/boot/run-core-test.sh for what the two channels

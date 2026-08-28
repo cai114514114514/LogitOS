@@ -1751,3 +1751,105 @@ int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
     out->nstop = n;
     return 1;
 }
+
+/* ======================================================================
+ * @supports's TWO WEAK HOOKS -- called from third_party/css/libcss/src/
+ * parse/language.c's supports_decl(). Read that function's block comment
+ * first; this is the browser-side half of the same fix.
+ *
+ * MEASURED, 2026-08-29, by styling a document twice -- with and without
+ * each declaration -- and diffing struct cstyle (css_engine.c) BYTE FOR
+ * BYTE. Neither list below is a guess; both are what that diff found.
+ * ====================================================================== */
+
+/* logit_css_engine_ignores_name() -- properties LibCSS's OWN table parses
+ * (its value handler genuinely accepts ordinary values) that css_engine.c's
+ * convert() (css_engine.c:927) never reads. Not one byte of struct cstyle
+ * moves whether the declaration is present or absent, so `@supports` saying
+ * yes here is a lie in the direction that breaks pages: a progressive-
+ * enhancement fallback sees "supported" and takes the branch that assumes
+ * the declaration rendered.
+ *
+ * Two related things are DELIBERATELY NOT in this list:
+ *   - position:sticky -- convert() DOES read it, and it DOES move cstyle;
+ *     the bug there is that layout.c:2736 and :3107 then lump POS_STICKY in
+ *     with POS_RELATIVE. That is a wrong answer, not an absent one, so
+ *     @supports keeps answering yes about it -- the wrongness belongs to
+ *     layout.c, not to this table.
+ *   - the `--x` custom-property arm -- handled at the token level inside
+ *     supports_decl() itself, because it was never reachable through the
+ *     property-name path this table serves.
+ *
+ * Kept as a flat, hand-maintained list -- like aslex.as's T_ constants and
+ * KEYWORDS table, or vm.c's dispatch[] (CLAUDE.md's AetherScript section) --
+ * rather than a
+ * second sweep of convert(), because convert() is exactly what this mirrors
+ * and a generated table would still need this file's list of property NAMES
+ * to generate from. If convert() ever starts reading one of these
+ * accessors, this list is what goes stale, and it must be re-diffed with it,
+ * not assumed correct by construction. */
+int logit_css_engine_ignores_name(const char *name, int len)
+{
+    static const char *const ignored[] = {
+        "background-image", "background-position", "background-repeat",
+        "background-attachment",
+        "vertical-align", "content", "cursor",
+        "outline", "outline-width",
+        "border-collapse", "border-spacing", "table-layout",
+        "counter-increment", "counter-reset", "quotes",
+        "unicode-bidi",
+        "column-count", "column-width", "column-rule",
+        "orphans", "widows", "page-break-after",
+        "font-variant", "empty-cells", "caption-side",
+    };
+    size_t i;
+    if (!name || len <= 0) return 0;
+    for (i = 0; i < sizeof(ignored) / sizeof(ignored[0]); i++) {
+        size_t n = strlen(ignored[i]);
+        if ((int)n == len && memcmp(ignored[i], name, (size_t)len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* logit_css_extra_supports_name() -- the opposite-direction lie: properties
+ * this vendored LibCSS's table does not have AT ALL, so supports_decl()'s
+ * FIRST_PROP..LAST_PROP loop never finds the name and answers no by
+ * construction -- while THIS file is those properties' ONLY producer and
+ * measurably moves used values for them (grid via gr_names[] above,
+ * border-radius via decl_border_radius(), the logical box family via
+ * logical_one()/logical_pair(), gap/inset, the animation/transition
+ * end-state patch). One list, matched against the exact literal keys the
+ * scans elsewhere in this file already use, so a property added to one of
+ * those producers is invisible to @supports until it is added here too --
+ * the same one-jar-two-doors risk CLAUDE.md names, made as small as this
+ * file can make it by keeping the spellings textually next to each other. */
+int logit_css_extra_supports_name(const char *name, int len)
+{
+    static const char *const extra[] = {
+        "border-radius",
+        "gap", "column-gap", "row-gap",
+        "grid-gap", "grid-column-gap", "grid-row-gap",
+        "grid-template",
+        "grid-template-columns", "grid-template-rows", "grid-template-areas",
+        "grid-auto-columns", "grid-auto-rows", "grid-auto-flow",
+        "grid-column", "grid-row", "grid-area",
+        "justify-items", "justify-self",
+        "animation", "animation-name", "transition", "transition-property",
+        "inset", "inset-inline", "inset-block",
+        "inset-inline-start", "inset-inline-end",
+        "inset-block-start", "inset-block-end",
+        "margin-inline", "margin-inline-start", "margin-inline-end",
+        "margin-block", "margin-block-start", "margin-block-end",
+        "padding-inline", "padding-inline-start", "padding-inline-end",
+        "padding-block", "padding-block-start", "padding-block-end",
+    };
+    size_t i;
+    if (!name || len <= 0) return 0;
+    for (i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
+        size_t n = strlen(extra[i]);
+        if ((int)n == len && memcmp(extra[i], name, (size_t)len) == 0)
+            return 1;
+    }
+    return 0;
+}

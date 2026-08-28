@@ -31,9 +31,19 @@
 .PHONY: test-exec test-exec-fuzz test-exec-negctl test-exec-asan test-exec-os \
         test-exec-bases
 
+# c/crypto/{trust/aexsig.c,trust/pkgsig.c,pubkey/ed25519.c,hash/sha256.c} are
+# here because aex.c calls aex_sig_verify() unconditionally now (the OPTIONAL
+# AEX_T_SIG record -- see aex.c's comment above the CRC check) -- not weak,
+# because unlike vfs_pread this is not "absent on a host with no filesystem",
+# it is a real dependency the loader has on every host it runs on. Leaving it
+# out does not skip a feature, it fails the link, which is the point: a
+# EXEC_SRC that silently dropped the signature verifier would be testing a
+# smaller aex.c than the one the kernel ships.
 EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/elf.c c/kernel/exec/aex.c \
-             c/drivers/block/crc32.c
-EXEC_INC  := -Itests/unit/exechost -Ic/kernel/exec -Ic/drivers/block -DLOGIT_HOSTTEST
+             c/drivers/block/crc32.c c/crypto/trust/aexsig.c c/crypto/trust/pkgsig.c \
+             c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c
+EXEC_INC  := -Itests/unit/exechost -Ic/kernel/exec -Ic/drivers/block -Ic/crypto \
+             -Ic/crypto/trust -DLOGIT_HOSTTEST
 EXEC_WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 # Every .aex the build produces, including the deliberately crippled variants a
 # test packs instead of the real app -- those are built by the same rules and
@@ -73,6 +83,11 @@ EXEC_FIXTURES := $(BUILD)/exec_v1.aex $(BUILD)/asnative.aex
 # `ls` away from testing the wrong file.
 EXEC_ENV = EXEC_V1=$(BUILD)/exec_v1.aex EXEC_V2=$(BUILD)/echo.aex \
            EXEC_EMIT=$(BUILD)/asnative.aex
+
+# Same gotcha as roots_bundle.inc / pkgroots.inc everywhere else it is linked:
+# without this, regenerating the signer keys leaves the OLD ones compiled into
+# these two host binaries and nothing says so.
+$(BUILD)/exec_test $(BUILD)/exec_fuzz: c/crypto/trust/pkgroots.inc
 
 $(BUILD)/exec_test: tests/unit/exec_test.c $(EXEC_SRC) tests/unit/exechost/space.h \
                     c/kernel/exec/elf.h c/kernel/exec/aex.h

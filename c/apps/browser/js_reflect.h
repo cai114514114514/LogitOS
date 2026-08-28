@@ -24,6 +24,14 @@ typedef JSValueConst (*js_reflect_proto_fn)(void *ud, const char *tag);
 void js_reflect_install(JSContext *ctx, JSValueConst html_proto,
                         js_reflect_proto_fn proto_for, void *ud);
 
+/* The HTMLOrSVGElement / HTMLOrSVGOrMathMLElement mixin's two RFL_GLOBAL rows
+ * (autofocus, tabIndex) -- NOT the other four (title/lang/dir/accessKey),
+ * which are HTMLElement's alone. Call once per prototype, after
+ * js_reflect_install, for every non-HTML interface that mixin applies to:
+ * today that is SVGElement.prototype and MathMLElement.prototype. See the
+ * comment above RFL_GLOBAL in js_reflect.c for why the split matters. */
+void js_reflect_install_hosm(JSContext *ctx, JSValueConst proto);
+
 /* How many accessor pairs the last install defined. For the self-test and for
  * anyone asking whether the table reached the prototypes at all. */
 int js_reflect_installed(void);

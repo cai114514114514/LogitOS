@@ -31,6 +31,42 @@
  * dispatcher js_dom.c owns. Weak for the same reason as the three above. */
 #define JS_EVENTS_OPTIONAL
 #include "js_events.h"
+/* Dedicated Worker -- js_worker.c: a second JSRuntime per worker, run to
+ * completion on THIS thread and folded into the three functions right below
+ * (js_page_pending / js_page_next_due / js_page_run_due), per its own header:
+ * "ONE JAR, ONE DOOR on scheduling." Weak for the same reason as the four
+ * above -- the host tests of THIS file link without it and simply have no
+ * Worker constructor. */
+#define JS_WORKER_OPTIONAL
+#include "js_worker.h"
+/* `WebSocket` -- js_websocket.c, layered over G.EventTarget/CloseEvent/
+ * MessageEvent from js_events.c above and G.TextEncoder/TextDecoder from
+ * js_webapi.c's prelude. Weak for the same reason as the four above: the
+ * host tests of THIS file link without it and simply have no WebSocket. */
+#define JS_WEBSOCKET_OPTIONAL
+#include "js_websocket.h"
+/* `indexedDB` -- js_idb.c, layered over G.EventTarget from js_events.c above
+ * and G.DOMException/G.structuredClone from js_platform.c. Weak for the same
+ * reason as the five above: the host tests of THIS file link without it and
+ * simply have no indexedDB, which is the correct feature-detect answer for a
+ * build that does not link the store. See js_idb.h and js_idb.c's own header
+ * for why "weak" here is safe rather than a corner cut -- js_idb.c's own
+ * install guard additionally checks for EventTarget/DOMException/
+ * structuredClone before doing anything, so a build with this TU linked but
+ * missing one of those three dependencies also comes up with no indexedDB
+ * instead of a half-built one. */
+#define JS_IDB_OPTIONAL
+#include "js_idb.h"
+/* CacheStorage (`caches`/`Cache`) -- js_cache.c. Weak for the same reason as
+ * every install above: a build without this TU keeps `typeof caches ===
+ * 'undefined'`, the correct feature-detect answer. */
+#define JS_CACHE_OPTIONAL
+#include "js_cache.h"
+/* navigator.serviceWorker -- js_swreg.c. register() always settles (see its
+ * own header for why it always rejects rather than half-executing). Weak
+ * for the same reason as every install above. */
+#define JS_SWREG_OPTIONAL
+#include "js_swreg.h"
 /* The form controls + focus model -- js_forms.c. Declared here rather than
  * through a header because it is one symbol; weak for the same reason as the
  * five above. */
@@ -121,6 +157,7 @@ void        js_page_output_clear(void) { g_outlen = 0; g_out[0] = 0; }
 static unsigned long long (*g_clock)(void);
 void js_page_set_clock(unsigned long long (*fn)(void)) { g_clock = fn; }
 static unsigned long long now_ms(void) { return g_clock ? g_clock() : 0; }
+unsigned long long js_page_now_ms(void) { return now_ms(); }
 
 /* ---- the CPU-slice watchdog --------------------------------------------
  * One synchronous entry into JS -- a script eval, a timer callback, a module
@@ -201,6 +238,7 @@ void js_page_set_location(const char *url)
     if (url) while (url[i] && i < (int)sizeof g_location - 1) { g_location[i] = url[i]; i++; }
     g_location[i] = 0;
 }
+const char *js_page_location(void) { return g_location; }
 
 /* ---- timers ----
  *
@@ -260,7 +298,17 @@ int js_page_pending(void)
     if (g_timers) return 1;
     /* A fetch in flight also needs the loop to call js_page_run_due(), which is
      * where its socket is stepped. */
-    return LOGIT_HAVE(js_webapi_pending) && js_webapi_pending();
+    if (LOGIT_HAVE(js_webapi_pending) && js_webapi_pending()) return 1;
+    /* Same for a WebSocket that is CONNECTING, OPEN, or CLOSING -- see the long
+     * comment on js_websocket_pump below. Missing this line is failure #5 of
+     * this repository under a new name: the connection links, installs,
+     * answers feature detection, and never progresses because nothing ever
+     * calls js_websocket_pump again after the first frame. */
+    if (LOGIT_HAVE(js_websocket_pending) && js_websocket_pending()) return 1;
+    /* A live Worker with no timer of its own -- a dedicated worker sitting
+     * idle after its startup fetch, waiting on a postMessage that has not
+     * arrived yet -- must not read as an idle page either. See js_worker.h. */
+    return LOGIT_HAVE(js_worker_pending) && js_worker_pending();
 }
 
 long long js_page_next_due(void)
@@ -268,6 +316,10 @@ long long js_page_next_due(void)
     long long best = -1;
     for (struct jstimer *t = g_timers; t; t = t->next)
         if (best < 0 || (long long)t->due < best) best = (long long)t->due;
+    if (LOGIT_HAVE(js_worker_next_due)) {
+        long long wbest = js_worker_next_due();
+        if (wbest >= 0 && (best < 0 || wbest < best)) best = wbest;
+    }
     return best;
 }
 
@@ -287,6 +339,20 @@ int js_page_run_due(void)
         int n = js_webapi_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
     }
+    /* WebSocket connections next, same reasoning: a socket that only makes
+     * progress when a timer happens to be pending is a socket that hangs on
+     * a page with none -- which describes most of the WPT websockets/ corpus,
+     * whose async_test()s have no timer at all. */
+    if (LOGIT_HAVE(js_websocket_pump)) {
+        int n = js_websocket_pump(g_ctx);
+        if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
+    }
+    /* Every worker task due on this pass: a queued startup, a delivered
+     * message in either direction, a worker's own timer. Unconditional, like
+     * the two pumps above -- a page with zero timers of its own but a live
+     * worker must still be driven every pass, which is why this runs before
+     * the `!g_timers` early return below. */
+    if (LOGIT_HAVE(js_worker_run_due)) ran += js_worker_run_due();
     if (!g_timers) return ran;
 
     unsigned long long now = now_ms();
@@ -692,6 +758,29 @@ int js_page_open(struct node *root)
      * js_platform.c's "only if absent" rule, this one has to run after the
      * placeholder exists in order to take it over. */
     if (LOGIT_HAVE(js_events_install)) js_events_install(g_ctx);
+    /* AFTER js_events_install (needs the real, constructible G.EventTarget --
+     * IDBRequest/IDBTransaction/IDBDatabase all extend it) and after
+     * js_platform_install above (needs G.DOMException and G.structuredClone).
+     * js_idb.c's own install guard re-checks all three and is a silent no-op
+     * if any is missing, so this ordering is a courtesy, not a requirement --
+     * see js_idb.c's header for the termination invariant every path here is
+     * built around. Weak, like every install above: a build without that TU
+     * keeps `typeof indexedDB === 'undefined'`, the correct feature-detect
+     * answer for a browser that does not have it. */
+    if (LOGIT_HAVE(js_idb_install)) js_idb_install(g_ctx);
+    /* AFTER js_webapi_install (needs the real, singleton-bound G.fetch/
+     * Request/Response/Headers -- js_cache.c is deliberately NOT a second
+     * implementation of any of the four) and after js_platform_install
+     * (needs G.DOMException). Weak like every install above: a build
+     * without js_cache.c keeps `typeof caches === 'undefined'`. */
+    if (LOGIT_HAVE(js_cache_install)) js_cache_install(g_ctx);
+    /* AFTER js_platform_install (needs G.DOMException) and after `navigator`
+     * already exists -- js_page.c creates that object directly, well before
+     * this line, so the ordering requirement is trivially satisfied. Weak
+     * like every install above: a build without js_swreg.c keeps
+     * `'serviceWorker' in navigator === false`. See js_swreg.c's header for
+     * why register() always rejects rather than half-executing. */
+    if (LOGIT_HAVE(js_swreg_install)) js_swreg_install(g_ctx);
     /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
      * takes the Element prototype js_dom.c published, and it deliberately
      * REPLACES two bindings older files install: getBoundingClientRect (its
@@ -716,6 +805,22 @@ int js_page_open(struct node *root)
      * something means running after the thing that installed it. Weak, like
      * every install above, so a build without that TU keeps the old pair. */
     if (LOGIT_HAVE(js_url_install)) js_url_install(g_ctx);
+    /* AFTER js_events_install (needs G.EventTarget/CloseEvent/MessageEvent)
+     * and js_webapi_install (needs G.TextEncoder/TextDecoder); AFTER
+     * js_url_install so a `new WebSocket(url)` validates its argument with
+     * the real WHATWG URL parser rather than js_webapi.c's four-field one.
+     * Weak, like every install above: a build without js_websocket.c keeps
+     * `typeof WebSocket === 'undefined'`, the correct feature-detect answer
+     * for a browser that does not have it. */
+    if (LOGIT_HAVE(js_websocket_install)) js_websocket_install(g_ctx);
+    /* AFTER js_platform_install and js_events_install: the parent-side event
+     * delivery a Worker fires (`onerror`/`onmessage`) reaches for
+     * G.DOMException / G.MessageEvent / G.ErrorEvent when they exist and
+     * falls back to a plain object shape when they do not, so running after
+     * them is strictly better and not a hard requirement -- see js_worker.h.
+     * Weak like every install above: a build without js_worker.c keeps
+     * `typeof Worker === 'undefined'`. */
+    if (LOGIT_HAVE(js_worker_install)) js_worker_install(g_ctx);
     /* AFTER js_forms_install, and that ordering is load-bearing in one place:
      * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
      * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
@@ -746,10 +851,20 @@ void js_page_close(void)
     /* Order is load-bearing. Everything holding a JSValue must let go before
      * JS_FreeRuntime, which asserts on live GC objects -- and js_dom_cleanup
      * also clears the DOM's weak wrapper slots, so no node is left pointing at
-     * a JSObject in a runtime that is about to stop existing. */
+     * a JSObject in a runtime that is about to stop existing.
+     *
+     * js_worker_close_all() FIRST, before anything else: every live worker
+     * holds a JSValue reference INTO g_ctx (the Worker instance's own
+     * __deliverMessage/__deliverError calls resolve back into this page's
+     * global), so those references have to be released before this context
+     * is torn down, not after. It also frees each worker's own JSRuntime --
+     * a second live runtime outliving the page it belongs to is exactly the
+     * kind of thing nothing downstream would notice until it crashed. */
+    if (LOGIT_HAVE(js_worker_close_all)) js_worker_close_all();
     timers_clear(g_ctx);
     if (LOGIT_HAVE(js_platform_close)) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
     if (LOGIT_HAVE(js_webapi_close)) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
+    if (LOGIT_HAVE(js_websocket_close)) js_websocket_close(g_ctx); /* closes sockets, drops self refs */
     if (LOGIT_HAVE(js_media_close)) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
     if (LOGIT_HAVE(js_cssom_close)) js_cssom_close(g_ctx);     /* drops the node lookup cache */
     js_dom_cleanup(g_ctx);

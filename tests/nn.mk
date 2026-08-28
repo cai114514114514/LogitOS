@@ -18,7 +18,13 @@
 # cost. It is in the shared variable rather than repeated three times so the
 # next dependency has one place to be added and cannot be added to two of three.
 NN_SRC = c/lib/nn/tensor.c c/lib/nn/matmul.c c/lib/nn/ops.c c/lib/nn/quant4.c
-NN_CF  = -Ic/lib/nn -O2 -w
+# -Ic/apps/coreutils joined NN_CF when c/apps/lm/lm.c grew a dependency on
+# logit_rich.h (LRT/1 streamed generation, RT_T_LM_*) -- exactly the "a source
+# file grew a dependency and a link line did not follow" shape this fragment's
+# own header names, except this time it is an include path rather than a link
+# line, and NN_CF is the one variable every lm_host/lm_format/lm_infer/lmshape
+# recipe below already shares, so it is the one place to add it.
+NN_CF  = -Ic/lib/nn -Ic/apps/coreutils -O2 -w
 
 test-nn: test-nn-negctl
 	@mkdir -p $(BUILD)

@@ -17,6 +17,16 @@ table, per EVENT CLASS, at three display modes:
     type    keystrokes into TextEdit (the app repaints and flushes)
     theme   the menu-bar dark-mode switch (every window must repaint)
     scroll  wheel notches over the Terminal's scrollback
+    anim    a widget animation: the Settings toggle, flipped six times
+
+The last one is a different question from the other five and arrived later. They
+measure a repaint somebody else provoked; `anim` measures the toolkit's own
+motion core (c/apps/gui/aui.c section 5c) and asks not "what does a frame cost"
+but "how many frames did an interaction ask for, and DID THE ASKING STOP". It
+runs twice -- with the window clear of the dock and overlapping it -- because
+the compositor grows any damage touching a glass panel to the whole panel, so
+the same widget costs ~1.8x depending only on where the user left the window,
+and that is invisible from inside the toolkit.
 
 For each it reports, from the compositor's OWN counters (wm.c wm_perf_report):
 
@@ -37,6 +47,12 @@ neighbour's build.
 Usage:
     tests/qmp/qmp_repaint.py [--xres W] [--yres H] [--iso PATH]
                              [--reps N] [--only NAME[,NAME...]] [--json PATH]
+                             [--assert] [--expect-off N]
+
+--assert turns the `anim` class into a gate (see assert_anim at the bottom).
+--expect-off carries the composite count from a -DAUI_ANIM_OFF build; without
+it the positive assertion is a thermometer rather than a control, and the gate
+says so out loud rather than passing quietly. `make test-anim` runs both sides.
 """
 
 import json as _json
@@ -47,12 +63,31 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure, dock_icon, pt   # noqa: E402
+from qmp_ui import (PPM, Session, SETTINGS_SLOT, configure,   # noqa: E402
+                    dock_icon, pt)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 TEXTEDIT_SLOT = 1
 TERMINAL_SLOT = 3
+
+# settings.c's page probe: a 6x6 pt swatch at window-local (4,4), one colour per
+# tab, painted for exactly this purpose. It answers two questions no amount of
+# coordinate arithmetic in this file could: where the Settings window's content
+# origin actually is, and which page is on screen. SETTINGS_SLOT comes from
+# qmp_ui rather than being spelled again here, so a change to what is packed on
+# the disk moves one number in one file.
+SETTINGS_PROBE = {(0xFF, 0x00, 0x80): 0,    # Appearance  (the default tab)
+                  (0x00, 0xFF, 0x80): 1,    # Desktop     (the animated toggle)
+                  (0xFF, 0xC8, 0x00): 2,    # Network
+                  (0x00, 0xA0, 0xFF): 3}    # All settings
+PROBE_PT = (4, 4)
+SETTINGS_TAB_Y_PT = 52 + 17          # aui_tabs strip: cut at AUI_SP(13), h=34
+SETTINGS_WINH_PT = 480               # settings.c:37 WINH -- see anim_push_to_dock
+# How many times the `anim` class flips the toggle. ONE number: w_anim's
+# default and the floor assert_anim() multiplies. Spelled twice it would be a
+# gate whose expectation and whose workload disagree, which passes.
+ANIM_FLIPS = 6
 
 # The focused window's close button, from draw_frame() in c/kernel/gui/wm.c.
 # Only the FOCUSED window paints it; every other window's lights are grey. So
@@ -268,6 +303,176 @@ def w_scroll(ui, geo, steps=48):
     time.sleep(0.3)
 
 
+# ---------------------------------------------------------------------------
+# the `anim` class: what a WIDGET animation costs, and whether it stops.
+#
+# The five classes above all measure a repaint somebody else provoked. This one
+# measures the toolkit's own motion core (c/apps/gui/aui.c section 5c), and it
+# is a different shape of question: not "what does a frame cost" -- the classes
+# above already answer that -- but "how many frames did an interaction ask for,
+# and did the asking stop".
+#
+# NOTHING HERE IS DEAD-RECKONED, and that is the whole reason it is this long.
+# tools/check-test-liveness.py names five drivers in this tree that click a
+# coordinate which has quietly become part of the window-manager titlebar and
+# pass anyway, because the thing they wanted was focused already. Both hops
+# below are confirmed against the guest's own output: the window origin and the
+# page come from settings.c's page probe, and the toggle's position comes from
+# a serial line settings.c emits from the same rect it draws the toggle at.
+
+def settings_probe(ui, tmp, name="probe.ppm"):
+    """(origin_x, origin_y, tab_index) from the page probe, or None."""
+    p = ui.screendump(os.path.join(tmp, name), settle=0.5)
+    img = PPM(p)
+    for rgb, tab in SETTINGS_PROBE.items():
+        box = img.find_color(rgb)
+        if box is not None:
+            x0, y0, _, _ = box
+            # The swatch's top-left IS window-local PROBE_PT.
+            return (x0 - pt(PROBE_PT[0]), y0 - pt(PROBE_PT[1]), tab)
+    return None
+
+
+def anim_setup(ui, tmp, serial):
+    """Open Settings, land on the Desktop tab, and return the geometry the
+    `anim` workload needs. Returns None (loudly) if any hop is unconfirmed --
+    a row that could not aim is not a row that measured zero."""
+    ui.click_at(*dock_icon(SETTINGS_SLOT))
+    # POLL FOR THE PROBE, do not sleep a guess at it. The first version waited a
+    # flat 6 s, which was enough when five other workloads had already warmed
+    # the machine and NOT enough on a cold `--only anim` run -- so the class
+    # reported "the window never opened" about a window that opened two seconds
+    # later. A fixed settle is a guess whose failure looks like a result.
+    got = None
+    deadline = time.time() + 40
+    while time.time() < deadline:
+        got = settings_probe(ui, tmp)
+        if got is not None:
+            break
+        time.sleep(1.0)
+    if got is None:
+        print("     anim: no Settings page probe on screen -- the window never "
+              "opened, or its probe moved. NOT a measurement.")
+        return None
+    ox, oy, tab = got
+
+    # Hop 1: the Desktop tab. aui_tabs sizes each tab by its MEASURED TEXT
+    # WIDTH, so there is no arithmetic that gives its centre without
+    # reimplementing text measurement in Python. Walk the strip instead and let
+    # the probe say when we have arrived -- eight bounded clicks, and the exit
+    # condition is the guest's own report rather than our model of it.
+    for wx in range(20, 600, 40):
+        if tab == 1:
+            break
+        ui.click_at(ox + pt(wx), oy + pt(SETTINGS_TAB_Y_PT))
+        time.sleep(0.4)
+        got = settings_probe(ui, tmp)
+        if got is None:
+            continue
+        ox, oy, tab = got
+    if tab != 1:
+        print("     anim: could not reach the Settings Desktop tab (probe says "
+              "tab %d). NOT a measurement." % tab)
+        return None
+
+    # Hop 2: the toggle. settings.c prints its centre in window-local points
+    # from the call site that draws it -- see the anim_aim() note there for why
+    # this is a serial line and not a constant in this file.
+    aim = None
+    with open(serial, errors="replace") as fh:
+        for line in fh:
+            i = line.find("[settings] anim-toggle ")
+            if i >= 0:
+                try:
+                    a, b = line[i + 23:].split()[:2]
+                    aim = (int(a), int(b))
+                except ValueError:
+                    pass
+    if aim is None:
+        print("     anim: settings.aex never printed its anim-toggle aim. "
+              "Either the build is old or page_desktop never drew. NOT a "
+              "measurement.")
+        return None
+    return {"toggle": (ox + pt(aim[0]), oy + pt(aim[1])), "aim": aim,
+            "origin": (ox, oy), "ppm": os.path.join(tmp, "aim.ppm")}
+
+
+def w_anim(ui, geo, steps=ANIM_FLIPS):
+    """Flip the Settings toggle and let each animation run to completion.
+
+    The gap is deliberately longer than AUI_T_BASE (180 ms): overlapping the
+    flips would measure one continuous animation rather than `steps` of them,
+    and the STOP assertion below would have nothing to be true about."""
+    x, y = geo["toggle"]
+    got = ui.settle_pointer(geo["ppm"], x, y)
+    if got != (x, y):
+        print("     warning: pointer would not settle on the toggle (%r, wanted "
+              "%r) -- this row is not a measurement" % (got, (x, y)))
+    for _ in range(steps):
+        ui.click(hold=0.05)
+        time.sleep(0.55)
+
+
+def anim_push_to_dock(ui, tmp, geo, aim_pt):
+    """Drag the focused Settings window down until it overlaps the dock slab,
+    and re-derive the toggle's screen position from the probe afterwards.
+
+    THIS IS THE MEASUREMENT ONLY THE HARNESS CAN MAKE. The compositor grows any
+    damage rectangle that touches a glass panel until it contains the WHOLE
+    panel, because blur reads a neighbourhood and cannot be clipped
+    (c/kernel/gui/wm.c, dmg_expand). So the identical widget, running the
+    identical code, costs ~16 ms more PER FRAME when the user has left the
+    window low on the screen -- roughly 1.8x for a Settings toggle. Nothing
+    inside aui can see that, and no amount of reading the source will produce
+    the number. Both placements are published; the delta is the finding."""
+    t = focused_titlebar(ui, tmp)
+    if t is None:
+        return None
+    tx, ty = t
+    got = ui.settle_pointer(geo["ppm"], tx, ty)
+    if got != (tx, ty):
+        return None
+    # HOW FAR DOWN, and the first version of this got it wrong in a way worth
+    # keeping: it dragged a fixed 14 x 20 pt and the window went PAST the dock
+    # and off the bottom of the screen. Composited pixels then FELL (493,879
+    # against 768,405 clear of the dock) and the row read as "overlapping the
+    # dock is cheaper", which is the opposite of the property being measured.
+    # Aim instead: put the window's bottom edge on the dock's icon row, which is
+    # inside the panel by construction and leaves the whole window on screen.
+    _, row = dock_icon(0)
+    dy_total = row - (geo["origin"][1] + pt(SETTINGS_WINH_PT))
+    ui._input([{"type": "btn", "data": {"button": "left", "down": True}}])
+    time.sleep(0.05)
+    step = pt(6)
+    moved = 0
+    while moved < dy_total:
+        d = min(step, dy_total - moved)
+        ui._input([{"type": "rel", "data": {"axis": "y", "value": d}}])
+        ui.cur[1] += d
+        moved += d
+        time.sleep(0.01)
+    ui._input([{"type": "btn", "data": {"button": "left", "down": False}}])
+    time.sleep(0.6)
+    got = settings_probe(ui, tmp, "probe2.ppm")
+    if got is None or got[2] != 1:
+        return None
+    ox, oy, _ = got
+    return {"toggle": (ox + pt(aim_pt[0]), oy + pt(aim_pt[1])),
+            "origin": (ox, oy), "ppm": geo["ppm"]}
+
+
+def w_idle(ui, geo, steps=0):
+    """Do nothing for a second, well after the last animation must have ended.
+
+    THIS IS THE STOP ASSERTION and it is the one that catches the failure this
+    whole design is built to avoid: an animation that never marks itself
+    arrived keeps registering deadlines forever, which is a poll loop with
+    extra steps. It is invisible to the positive assertion -- more composites
+    look like more animation -- and it is exactly what the machine deleted 3.3
+    million syscalls to be rid of."""
+    time.sleep(1.2)
+
+
 WORKLOADS = [
     ("drag",   w_drag,   "a LARGE window (the 900pt Terminal) dragged by its titlebar"),
     ("dock",   w_dock,   "the pointer swept across the dock (hover magnifies)"),
@@ -307,6 +512,7 @@ def boot(iso, xres, yres, tmp):
 def main(argv):
     xres, yres, reps = 1920, 1200, 3
     iso, only, jpath = None, None, None
+    do_assert, expect_off = False, None
     i = 1
     while i < len(argv):
         if argv[i] == "--xres":    xres = int(argv[i + 1]); i += 2
@@ -315,6 +521,8 @@ def main(argv):
         elif argv[i] == "--iso":   iso = argv[i + 1]; i += 2
         elif argv[i] == "--only":  only = argv[i + 1].split(","); i += 2
         elif argv[i] == "--json":  jpath = argv[i + 1]; i += 2
+        elif argv[i] == "--assert":     do_assert = True; i += 1
+        elif argv[i] == "--expect-off": expect_off = int(argv[i + 1]); i += 2
         else:
             print("unknown arg %r" % argv[i]); return 2
     if iso is None:
@@ -408,6 +616,44 @@ def main(argv):
             if only and name not in only:
                 continue
             measure(name, fn, what, geo)
+
+        # PHASE 3: the toolkit's own motion. Last, because it opens another
+        # window and drags it, which would change every row above it.
+        if not only or "anim" in only:
+            ageo = anim_setup(ui, tmp, serial)
+            if ageo is not None:
+                print("     anim toggle at %r (window-local %r)"
+                      % (ageo["toggle"], ageo["aim"]))
+                measure("anim", w_anim,
+                        "6 flips of a Settings toggle, window CLEAR of the dock",
+                        ageo)
+                measure("anim-idle", w_idle,
+                        "1.2 s of nothing, 650 ms after the last flip landed",
+                        ageo)
+                dgeo = anim_push_to_dock(ui, tmp, ageo, ageo["aim"])
+                if dgeo is not None:
+                    measure("anim-dock", w_anim,
+                            "the same 6 flips, window OVERLAPPING the dock slab",
+                            dgeo)
+                    a, d = result.get("anim"), result.get("anim-dock")
+                    if a and d and d["cpx"][0] <= a["cpx"][0]:
+                        print("     anim-dock: composited px did NOT go up "
+                              "(%.0f vs %.0f clear of the dock), so the window "
+                              "is not overlapping the slab and this row is NOT "
+                              "the glass penalty -- it is a differently-placed "
+                              "window. Do not quote it."
+                              % (d["cpx"][0], a["cpx"][0]))
+                    elif a and d:
+                        print("     anim-dock: +%.0f px and %+.2f ms per frame "
+                              "over the same widget clear of the dock -- that "
+                              "is dmg_expand growing every animated frame to "
+                              "contain the whole dock panel."
+                              % (d["cpx"][0] - a["cpx"][0],
+                                 d["ms"][0] - a["ms"][0]))
+                else:
+                    print("     anim-dock: could not reposition the window over "
+                          "the dock -- the glass penalty is UNMEASURED here, "
+                          "not zero.")
     finally:
         qemu.kill()
         qemu.wait()
@@ -417,7 +663,111 @@ def main(argv):
             _json.dump({"xres": xres, "yres": yres, "scale": scale,
                         "iso": iso, "workloads": result}, fh, indent=1)
         print("     wrote %s" % jpath)
+    if do_assert:
+        return assert_anim(result, ANIM_FLIPS, expect_off)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# THE GATE. Three assertions, and the second and third are what make this a
+# control rather than a thermometer.
+
+def assert_anim(result, flips, expect_off):
+    """0 if the `anim` class says what it must, 1 otherwise."""
+    if "anim" not in result:
+        print("FAIL anim: the class never produced a measurement (see the "
+              "reason printed above). A gate that cannot aim must say so, not "
+              "report zero.")
+        return 1
+    comp = result["anim"]["composites"][0]
+    idle = result.get("anim-idle", {}).get("composites", (99,))[0]
+    ok = True
+
+    # (1) POSITIVE. AUI_T_BASE is 180 ms and a 640x480 pt canvas at 150% is
+    # ~691,200 device px at ~30 ns each, so the toolkit asks for a frame every
+    # ~21 ms: about 9 per flip. Four is the floor at which motion is still
+    # motion rather than a jump cut, and it is what the vocabulary is designed
+    # around -- so it is what is asserted.
+    lo = 4 * flips
+    if comp < lo:
+        print("FAIL anim positive: %d composites over %d flips, wanted >= %d. "
+              "One per flip means the animation did nothing." % (comp, flips, lo))
+        ok = False
+    else:
+        print("ok   anim positive: %d composites over %d flips (>= %d)"
+              % (comp, flips, lo))
+
+    # (2) NEGATIVE. Handed in by the caller from a -DAUI_ANIM_OFF run of this
+    # same script. Without it the row above is not evidence: a compositor that
+    # repainted several times after any click would satisfy it whether or not a
+    # single animation ran.
+    if expect_off is not None:
+        # THE THRESHOLD HERE WAS WRONG IN ITS FIRST VERSION, and running the
+        # control is what found that -- which is the entire argument for
+        # running controls rather than reasoning about them. It asserted the
+        # OFF build produce at most 2 composites per flip. The OFF build
+        # produced FIVE, and correctly: a click is a press event AND a release
+        # event, both of which change what aui would draw, so the interaction
+        # repaints several times whether or not anything animates. An absolute
+        # ceiling would have failed a correct harness and been "fixed" by
+        # loosening it until it passed, which is how a control becomes decor.
+        #
+        # What the control actually has to establish is SEPARATION: that the
+        # animated build asks for materially more frames than the same
+        # interaction asks for on its own. Two conditions, because either alone
+        # is gameable -- a ratio alone passes on tiny numbers, a delta alone
+        # passes when the baseline is already huge.
+        ratio_ok = comp >= expect_off * 3 // 2
+        delta_ok = (comp - expect_off) >= 2 * flips
+        if not ratio_ok or not delta_ok:
+            print("FAIL anim CONTROL: animated %d composites vs %d with "
+                  "-DAUI_ANIM_OFF (%.2fx, +%d over %d flips). Wanted >= 1.5x "
+                  "AND at least 2 extra frames per flip. The two builds are "
+                  "not distinguishable, so the positive row above is measuring "
+                  "the interaction's own repaints, not the motion core."
+                  % (comp, expect_off, float(comp) / max(1, expect_off),
+                     comp - expect_off, flips))
+            ok = False
+        else:
+            print("ok   anim control: OFF %d vs animated %d (%.2fx, +%.1f frames "
+                  "per flip that exist only because aui_anim() scheduled them)"
+                  % (expect_off, comp, float(comp) / max(1, expect_off),
+                     (comp - expect_off) / float(flips)))
+    else:
+        print("     anim control: NOT RUN. Pass --expect-off N from a "
+              "-DAUI_ANIM_OFF build; without it the positive row is a "
+              "thermometer, not a control.")
+
+    # (3) STOP. The one that catches the failure the whole design is built to
+    # avoid, and the only place it is visible: a slot that never latches keeps
+    # registering deadlines forever. MORE COMPOSITES LOOK LIKE MORE ANIMATION,
+    # so assertion (1) would pass while the machine burned a core.
+    #
+    # THE FIRST VERSION OF THIS ASSERTION WAS A COUNT, AND IT WAS WRONG. An
+    # idle desktop is not at zero composites: the menu-bar clock repaints its
+    # 24-point strip twice a second forever, so 1.2 s of "nothing" legitimately
+    # produced 4 frames and a threshold of 3 would have failed a correct build
+    # -- and, far worse, a threshold of 6 would have PASSED a build whose
+    # animation was still running, because six app frames and six clock frames
+    # are the same number.
+    #
+    # The pixels tell them apart and the count cannot. A clock frame composites
+    # 69,120 px (the menu bar, 1920x36 at this mode); an animated Settings frame
+    # composites ~768,000. So the assertion is on WHAT WAS PAINTED: if anything
+    # is still animating, idle frames are the size of the app's canvas.
+    idle_px = result.get("anim-idle", {}).get("cpx", (0,))[0]
+    anim_px = result["anim"]["cpx"][0]
+    if anim_px > 0 and idle_px > anim_px / 4.0:
+        print("FAIL anim STOP: idle frames composite %.0f px, a quarter or more "
+              "of the %.0f px an ANIMATED frame costs. Something is still asking "
+              "for app repaints 650 ms after the last flip landed -- that is a "
+              "poll loop with extra steps." % (idle_px, anim_px))
+        ok = False
+    else:
+        print("ok   anim stop: %d idle composites of %.0f px each (an animated "
+              "frame is %.0f px; the menu-bar clock alone is 69,120)"
+              % (idle, idle_px, anim_px))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

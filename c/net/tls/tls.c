@@ -338,6 +338,39 @@ int tls_gen_share(struct tls_sess *s)
     return rc;
 }
 
+/* Combine the two halves of a GRP_X25519MLKEM768 exchange into the 64-byte
+ * TLS shared secret: ML-KEM ss FIRST, then the X25519 output (see tls_int.h
+ * for why that order and not the reverse). This is the ONE place that
+ * ordering and the contributory-check asymmetry are spelled, on purpose --
+ * CLAUDE.md's rule for c/crypto/aead's mode/backend split applies just as
+ * hard to a hybrid combiner: two call sites that each hand-wrote "kem || x"
+ * could each get it right, or could each get it wrong THE SAME WAY, and
+ * either the client-decaps path or a server-encaps path duplicating this by
+ * hand is exactly that risk. Both directions call this function instead.
+ *
+ * kem_ss: the 32-byte ML-KEM shared secret (decaps output on the client,
+ *   encaps output on the server -- ML-KEM has no failure mode to report here;
+ *   see the callers for why each side's ML-KEM half has already been
+ *   accepted by the time this runs).
+ * x_ss:   the 32-byte raw X25519 output, not yet contributory-checked.
+ * out:    HYB_SS_LEN (64) bytes, written only on success.
+ * Returns 0 and writes `out`, or -1 if x_ss is all-zero (RFC 7748 low-order
+ * point -- the peer sent a point that forces a known shared secret). The
+ * asymmetry is deliberate: ML-KEM's implicit rejection means there is no
+ * "the ML-KEM half failed" to report on the decaps side (turning one into an
+ * early return would be a decryption oracle, see mlkem.h), while X25519 has
+ * no implicit-rejection story at all, so a zero output is the only signal
+ * that half has and it is acted on here, once, for both directions. */
+static int tls_hybrid_combine(const uint8_t kem_ss[32], const uint8_t x_ss[32],
+                              uint8_t out[HYB_SS_LEN])
+{
+    uint8_t z = 0; for (int i = 0; i < 32; i++) z |= x_ss[i];
+    if (!z) return -1;
+    for (int i = 0; i < 32; i++) out[i] = kem_ss[i];
+    for (int i = 0; i < 32; i++) out[32 + i] = x_ss[i];
+    return 0;
+}
+
 /* Derive the ECDHE shared secret from the server's key share. */
 int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
                        uint8_t *out, int *outlen)
@@ -346,8 +379,9 @@ int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
     int rc = -1;
     if (s->group == GRP_X25519MLKEM768) {
         /* The server's share is ct || x25519_pub. Decapsulate, then do the
-         * X25519, and concatenate the two secrets ML-KEM FIRST -- the same
-         * order as the key shares.
+         * X25519, and hand both to tls_hybrid_combine -- which is also what
+         * the SERVER's tls_srv_kem_reply() calls, so the wire order and the
+         * failure semantics are spelled exactly once for both directions.
          *
          * THERE IS NO ERROR PATH OUT OF THE DECAPSULATION AND THERE MUST NOT
          * BE. ML-KEM rejects implicitly: a ct that does not re-encrypt to
@@ -357,25 +391,15 @@ int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
          * early return here would hand an on-path attacker a decryption
          * oracle -- they could tell a mauled ciphertext that decrypted from
          * one that did not, which is exactly what the FO transform exists to
-         * deny. See mlkem.h.
-         *
-         * The X25519 half keeps its contributory check, and that is the half
-         * where a zero result IS a refusal: an all-zero X25519 output means
-         * the peer sent a low-order point. The asymmetry is deliberate -- the
-         * two halves have different failure semantics and combining them into
-         * one "did the key exchange work" flag would flatten that. Security
-         * holds if EITHER half is sound, which is the whole point of hybrid. */
+         * deny. See mlkem.h. */
         if (splen == HYB_SHARE_SRV) {
-            mlkem768_decaps(s->priv + HYB_DK_OFF, spub, out);
+            uint8_t kss[32];
+            mlkem768_decaps(s->priv + HYB_DK_OFF, spub, kss);
             uint8_t xs[32];
             x25519(xs, s->priv, spub + HYB_CT_LEN);
-            uint8_t z = 0; for (int i = 0; i < 32; i++) z |= xs[i];
-            if (z) {
-                for (int i = 0; i < 32; i++) out[32 + i] = xs[i];
-                *outlen = HYB_SS_LEN;
-                rc = 0;
-            }
+            if (tls_hybrid_combine(kss, xs, out) == 0) { *outlen = HYB_SS_LEN; rc = 0; }
             crypto_wipe(xs, sizeof xs);
+            crypto_wipe(kss, sizeof kss);
         }
     } else if (s->group == GRP_X25519) {
         if (splen == 32) {
@@ -396,6 +420,68 @@ int tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
         }
     }
     TLSPROF_END(tls_kx_shared);
+    return rc;
+}
+
+/* Server-side reply for GRP_X25519MLKEM768. This is a THIRD shape, not a
+ * variant of tls_gen_share+tls_compute_shared above: a KEM server has no
+ * share of its own to generate until it has seen the CLIENT's (there is no
+ * "our ephemeral keypair" the way there is for x25519/EC -- what we send back
+ * is a ciphertext ENCAPSULATED to their key), so keygen-then-derive does not
+ * fit and calling tls_gen_share for this group would mint and discard a
+ * useless 2400-byte ML-KEM decapsulation key.
+ *
+ * Lives here, next to the two functions above, for the same reason
+ * tls_compute_shared's hybrid branch calls tls_hybrid_combine instead of
+ * repeating it: this is the one place both this file's client role and the
+ * TLS SERVER (tls_server.c) reach the mlkem||x25519 concatenation, so
+ * tls_server.c never has to spell the wire order itself.
+ *
+ * cpub must be exactly HYB_SHARE_CLI (1216) bytes: client ek (1184) || client
+ * x25519 public (32). NOTE THE OFFSET: the client reads the SERVER's x25519
+ * half at spub + HYB_CT_LEN (1088, see tls_compute_shared above); the server
+ * reads the CLIENT's x25519 half at cpub + HYB_EK_LEN (1184). The two offsets
+ * differ by 96 bytes because the two shares have different layouts (ct is
+ * shorter than ek), and using the wrong one here would silently read 96 bytes
+ * into the wrong field rather than fail loudly.
+ *
+ * On success, sets s->pub/s->publen to ct || our x25519 public (HYB_SHARE_SRV,
+ * 1120 bytes) exactly as tls_gen_share does for every other group, so
+ * build_sh needs no group-specific branch to send it, and writes the 64-byte
+ * shared secret to out / *outlen.
+ *
+ * Returns 0 on success. Returns -1, and writes NOTHING to out, on:
+ *   - cpublen != HYB_SHARE_CLI (malformed/truncated client share)
+ *   - mlkem768_encaps() failing the client ek's FIPS 203 7.2 modulus check
+ *   - an all-zero X25519 result (RFC 7748 low-order point)
+ * All three are the CLIENT's fault, so the caller must treat -1 as
+ * AL_ILLEGAL_PARAMETER, never AL_INTERNAL_ERROR.
+ *
+ * The middle case is the one worth naming twice: unlike mlkem768_decaps
+ * (void, no failure return, see mlkem.h and tls_compute_shared above),
+ * mlkem768_encaps DOES return -1 and it is a real error a server must check
+ * -- ignoring it, the way a reader who has just internalised "ML-KEM has no
+ * error path" might reflexively do, ships uninitialised stack as both the
+ * ciphertext and the ML-KEM half of the secret. */
+int tls_srv_kem_reply(struct tls_sess *s, const uint8_t *cpub, int cpublen,
+                      uint8_t *out, int *outlen)
+{
+    if (cpublen != HYB_SHARE_CLI) return -1;
+    s->group2 = 0;
+    rand_bytes(s->priv, HYB_X_LEN);
+    x25519_base(s->pub + HYB_CT_LEN, s->priv);
+    uint8_t kss[32];
+    if (mlkem768_encaps(cpub, s->pub, kss) != 0) {
+        crypto_wipe(kss, sizeof kss);
+        return -1;
+    }
+    s->publen = HYB_SHARE_SRV;
+    uint8_t xs[32];
+    x25519(xs, s->priv, cpub + HYB_EK_LEN);
+    int rc = tls_hybrid_combine(kss, xs, out);
+    if (rc == 0) *outlen = HYB_SS_LEN;
+    crypto_wipe(xs, sizeof xs);
+    crypto_wipe(kss, sizeof kss);
     return rc;
 }
 

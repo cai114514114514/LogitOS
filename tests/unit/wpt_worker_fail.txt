@@ -1,0 +1,273 @@
+# WPT subtests that fail today, as "<path>::<subtest name>".
+#
+# "<path>::*" means EVERY subtest in that file fails -- the file is
+# collapsed to one line because a per-subtest list of an all-red file
+# carries no information a single line does not, and the uncollapsed
+# form of this corpus is a 16 MB file nobody diffs. Files with a MIXED
+# result keep their exact per-subtest entries, which is where a ratchet
+# earns its keep: a regression there names the subtest.
+#
+# "::[HARNESS]" means the file never completed the harness at all -- a
+# worse category than a failing assertion, and the one to read first.
+#
+# A subtest name may contain a newline (css/css-syntax names cases after
+# the declaration block under test); those are escaped as \n here and
+# unescaped on read, so one entry is always exactly one line.
+#
+# Regenerate with `make wpt-baseline`. Shrinking this file is the point;
+# growing it needs a reason written next to the new entries.
+workers/SharedWorker-MessageEvent-source.any.js::*
+workers/SharedWorker-constructor.html::*
+workers/SharedWorker-detach-frame-in-error-event.html::*
+workers/SharedWorker-exception-propagation.html::*
+workers/SharedWorker-exception.html::*
+workers/SharedWorker-extendedLifetime-blob.html::*
+workers/SharedWorker-extendedLifetime-data.html::*
+workers/SharedWorker-extendedLifetime-named-module.html::*
+workers/SharedWorker-extendedLifetime.html::*
+workers/SharedWorker-replace-EventHandler.any.js::*
+workers/SharedWorker-script-error.html::*
+workers/SharedWorker-simple.html::*
+workers/SharedWorkerPerformanceNow.html::*
+workers/SharedWorker_blobUrl.html::*
+workers/SharedWorker_dataUrl.html::*
+workers/Worker-constructor-proto.any.js::*
+workers/Worker-creation-happens-in-parallel.https.html::*
+workers/Worker-formdata.any.js::*
+workers/Worker-location.sub.any.js::*
+workers/Worker-messageport.html::*
+workers/Worker-multi-port.html::Test postMessage with no port.
+workers/Worker-multi-port.html::Test postMessage with no arguments.
+workers/Worker-multi-port.html::Test postMessage with no ports and empty array.
+workers/Worker-multi-port.html::Test postMessage with two ports.
+workers/Worker-multi-port.html::Test empty postMessage throws exception.
+workers/Worker-multi-port.html::Test postMessage with null ports throws exception.
+workers/Worker-multi-port.html::Test postMessage on channel with previous failed postMessage calls.
+workers/Worker-nested-importScripts-error.html::*
+workers/Worker-postMessage-happens-in-parallel.https.html::*
+workers/Worker-replace-self.any.js::*
+workers/Worker-simultaneous-errors.html::*
+workers/Worker-structure-message.html::*
+workers/Worker-terminate-forever-during-evaluation.html::*
+workers/Worker-termination-with-port-messages.html::*
+workers/Worker-timeout-cancel-order.html::*
+workers/Worker-timeout-decreasing-order.html::*
+workers/Worker-timeout-increasing-order.html::*
+workers/WorkerGlobalScope-close.html::Test type of close function.
+workers/WorkerGlobalScope-close.html::Test sending a message after closing.
+workers/WorkerGlobalScope-close.html::Test workers do not deliver pending events.
+workers/WorkerGlobalScope-close.html::Test terminating a worker after close.
+workers/WorkerLocation-origin.sub.window.js::*
+workers/WorkerNavigator.any.js::*
+workers/WorkerNavigator_userAgentData.http.html::*
+workers/WorkerNavigator_userAgentData.https.html::*
+workers/WorkerPerformanceNow.html::*
+workers/abrupt-completion.html::*
+workers/baseurl/alpha/import-in-moduleworker.html::*
+workers/baseurl/alpha/importScripts-in-sharedworker.html::*
+workers/baseurl/alpha/importScripts-in-worker.html::*
+workers/baseurl/alpha/worker-in-worker.html::*
+workers/baseurl/alpha/xhr-in-moduleworker.html::*
+workers/baseurl/alpha/xhr-in-sharedworker.html::*
+workers/baseurl/alpha/xhr-in-worker.html::*
+workers/constructors/SharedWorker/Infinity-arguments.html::*
+workers/constructors/SharedWorker/NaN-arguments.html::*
+workers/constructors/SharedWorker/SharedWorker-constructor.html::*
+workers/constructors/SharedWorker/connect-event.html::*
+workers/constructors/SharedWorker/dummy-name.html::*
+workers/constructors/SharedWorker/dummy-shared-worker.html::*
+workers/constructors/SharedWorker/empty-name.html::*
+workers/constructors/SharedWorker/global-members.html::*
+workers/constructors/SharedWorker/interface-objects.html::*
+workers/constructors/SharedWorker/name.html::*
+workers/constructors/SharedWorker/no-arguments-ctor.html::*
+workers/constructors/SharedWorker/null-arguments.html::*
+workers/constructors/SharedWorker/number-arguments.html::*
+workers/constructors/SharedWorker/port-onmessage.html::*
+workers/constructors/SharedWorker/port-properties.html::*
+workers/constructors/SharedWorker/port-readonly.html::*
+workers/constructors/SharedWorker/same-origin.html::*
+workers/constructors/SharedWorker/setting-port-members.html::*
+workers/constructors/SharedWorker/undefined-arguments.html::*
+workers/constructors/SharedWorker/unexpected-global-properties.html::*
+workers/constructors/SharedWorker/unresolvable-url.html::*
+workers/constructors/Worker/AbstractWorker.onerror.html::*
+workers/constructors/Worker/Blob-url.html::*
+workers/constructors/Worker/ctor-1.html::*
+workers/constructors/Worker/ctor-null.html::*
+workers/constructors/Worker/ctor-undefined.html::*
+workers/constructors/Worker/same-origin.html::*
+workers/constructors/Worker/use-base-url.html::*
+workers/data-url-shared.html::*
+workers/data-url.html::*
+workers/dedicated-worker-from-blob-url.window.js::*
+workers/dedicated-worker-in-data-url-context.window.js::*
+workers/dedicated-worker-parse-error-failure.html::*
+workers/dedicated-worker-runtime-error-is-not-parse-error.html::Script parse error dispatches plain Event at Worker
+workers/examples/fetch_tests_from_worker.html::*
+workers/examples/general.any.js::Worker top-level script is a generated script.
+workers/examples/onconnect.any.js::*
+workers/importscripts_mime.any.js::*
+workers/importscripts_mime_local.any.js::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/event-ports-dedicated.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/imagedata-cloned-canvas-in-array.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/message-event.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/second-argument-dictionary.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/second-argument-null-in-array.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/second-argument-null.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/second-argument-undefined.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/setting-postMessage.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-imagedata.html::*
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::undefined
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::null
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::false
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::true
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::1
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::NaN
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::Infinity
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::string
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::date
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::regexp
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::self
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::array
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::object
+workers/interfaces/DedicatedWorkerGlobalScope/postMessage/structured-clone-message.html::error
+workers/interfaces/SharedWorkerGlobalScope/name/getting.html::*
+workers/interfaces/SharedWorkerGlobalScope/name/setting.html::*
+workers/interfaces/SharedWorkerGlobalScope/onconnect.html::*
+workers/interfaces/WorkerGlobalScope/close/sending-messages.html::*
+workers/interfaces/WorkerGlobalScope/location/members.html::*
+workers/interfaces/WorkerGlobalScope/location/redirect-module.html::*
+workers/interfaces/WorkerGlobalScope/location/redirect-sharedworker.html::*
+workers/interfaces/WorkerGlobalScope/location/redirect.html::*
+workers/interfaces/WorkerGlobalScope/location/setting-members.html::*
+workers/interfaces/WorkerGlobalScope/location/worker-separate-file.html::*
+workers/interfaces/WorkerGlobalScope/onerror/exception-in-onerror.html::*
+workers/interfaces/WorkerGlobalScope/onerror/handled.html::*
+workers/interfaces/WorkerGlobalScope/onerror/message-classic-DOMException.html::*
+workers/interfaces/WorkerGlobalScope/onerror/message-classic-Error.html::*
+workers/interfaces/WorkerGlobalScope/onerror/message-module-DOMException.html::*
+workers/interfaces/WorkerGlobalScope/onerror/message-module-Error.html::*
+workers/interfaces/WorkerGlobalScope/onerror/not-handled.html::*
+workers/interfaces/WorkerGlobalScope/onerror/propagate-to-window-onerror.html::*
+workers/interfaces/WorkerGlobalScope/self.any.js::self instanceof WorkerGlobalScope
+workers/interfaces/WorkerGlobalScope/self.any.js::self = 1
+workers/interfaces/WorkerUtils/WindowTimers/001.html::*
+workers/interfaces/WorkerUtils/WindowTimers/003.html::*
+workers/interfaces/WorkerUtils/WindowTimers/005.html::*
+workers/interfaces/WorkerUtils/importScripts/003.html::*
+workers/interfaces/WorkerUtils/importScripts/004.html::*
+workers/interfaces/WorkerUtils/importScripts/005.html::*
+workers/interfaces/WorkerUtils/importScripts/006.html::*
+workers/interfaces/WorkerUtils/importScripts/007.html::*
+workers/interfaces/WorkerUtils/importScripts/008.html::*
+workers/interfaces/WorkerUtils/importScripts/009.html::*
+workers/interfaces/WorkerUtils/importScripts/010.html::*
+workers/interfaces/WorkerUtils/importScripts/011.html::*
+workers/interfaces/WorkerUtils/importScripts/012.html::*
+workers/interfaces/WorkerUtils/importScripts/catch.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-cross-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-redirect-to-cross-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-same-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-cross-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-redirect-to-cross-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/importScripts/report-error-setTimeout-same-origin.sub.any.js::*
+workers/interfaces/WorkerUtils/navigator/002.html::*
+workers/interfaces/WorkerUtils/navigator/003.html::*
+workers/interfaces/WorkerUtils/navigator/004.html::*
+workers/interfaces/WorkerUtils/navigator/005.html::*
+workers/interfaces/WorkerUtils/navigator/006.html::*
+workers/interfaces/WorkerUtils/navigator/007.html::*
+workers/interfaces/WorkerUtils/navigator/language.html::*
+workers/modules/dedicated-worker-import-blob-url.any.js::*
+workers/modules/dedicated-worker-import-csp.html::*
+workers/modules/dedicated-worker-import-data-url-cross-origin.html::*
+workers/modules/dedicated-worker-import-data-url.any.js::*
+workers/modules/dedicated-worker-import-failure.html::*
+workers/modules/dedicated-worker-import-meta.html::*
+workers/modules/dedicated-worker-import-referrer.html::*
+workers/modules/dedicated-worker-import.any.js::*
+workers/modules/dedicated-worker-options-credentials.html::*
+workers/modules/dedicated-worker-options-type.html::*
+workers/modules/dedicated-worker-parse-error-failure.html::*
+workers/modules/shared-worker-import-blob-url.window.js::*
+workers/modules/shared-worker-import-csp.html::*
+workers/modules/shared-worker-import-data-url-cross-origin.html::*
+workers/modules/shared-worker-import-data-url.window.js::*
+workers/modules/shared-worker-import-failure.html::*
+workers/modules/shared-worker-import-meta.html::*
+workers/modules/shared-worker-import-referrer.html::*
+workers/modules/shared-worker-import.window.js::*
+workers/modules/shared-worker-options-credentials.html::*
+workers/modules/shared-worker-options-type.html::*
+workers/modules/shared-worker-parse-error-failure.html::*
+workers/multi-globals/url-parsing.html::*
+workers/name-property.html::*
+workers/nested_worker_close_from_parent_worker.html::*
+workers/nested_worker_terminate_from_document.html::*
+workers/opaque-origin.html::*
+workers/postMessage_block.https.html::*
+workers/semantics/encodings/001.html::*
+workers/semantics/encodings/002.html::*
+workers/semantics/encodings/003.html::*
+workers/semantics/encodings/004.html::*
+workers/semantics/interface-objects/003.any.js::The WorkerGlobalScope interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The SharedWorkerGlobalScope interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The WorkerNavigator interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The WorkerLocation interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The ImageBitmap interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The CanvasGradient interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The CanvasPattern interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The Path2D interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The BroadcastChannel interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The Float16Array interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The XMLHttpRequestEventTarget interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The XMLHttpRequestUpload interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The FileReader interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The FileReaderSync interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The ByteLengthQueuingStrategy interface object should be exposed
+workers/semantics/interface-objects/003.any.js::The CountQueuingStrategy interface object should be exposed
+workers/semantics/interface-objects/004.any.js::The DOMImplementation interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The Audio interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The HTMLCanvasElement interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The PopStateEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The HashChangeEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The PageTransitionEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The UIEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The FocusEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The MouseEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The WheelEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The InputEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The KeyboardEvent interface object should not be exposed
+workers/semantics/interface-objects/004.any.js::The CompositionEvent interface object should not be exposed
+workers/semantics/multiple-workers/001.html::*
+workers/semantics/multiple-workers/002.html::*
+workers/semantics/multiple-workers/003.html::*
+workers/semantics/multiple-workers/004.html::*
+workers/semantics/multiple-workers/008.html::*
+workers/semantics/multiple-workers/exposure.any.js::SharedWorker exposure
+workers/semantics/navigation/001.html::*
+workers/semantics/navigation/002.html::*
+workers/semantics/reporting-errors/001.html::*
+workers/semantics/reporting-errors/002.html::*
+workers/semantics/reporting-errors/003.html::*
+workers/semantics/reporting-errors/004.html::*
+workers/semantics/run-a-worker/001.html::*
+workers/semantics/run-a-worker/002.html::*
+workers/semantics/run-a-worker/003.html::shared
+workers/semantics/structured-clone/dedicated.html::*
+workers/semantics/structured-clone/shared.html::*
+workers/semantics/xhr/001.html::*
+workers/semantics/xhr/002.html::*
+workers/semantics/xhr/003.html::*
+workers/semantics/xhr/004.html::*
+workers/semantics/xhr/005.html::*
+workers/semantics/xhr/006.html::*
+workers/shared-worker-from-blob-url.window.js::*
+workers/shared-worker-in-data-url-context.window.js::*
+workers/shared-worker-name-via-options.html::*
+workers/shared-worker-options-mismatch.html::*
+workers/shared-worker-parse-error-failure.html::*
+workers/shared-worker-runtime-error-is-not-parse-error.html::*
+workers/worker-request-animation-frame.html::*
+workers/worker-url-encoding.html::*

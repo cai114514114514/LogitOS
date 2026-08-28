@@ -762,12 +762,21 @@ static void test_location(void)
 static void test_history(void)
 {
     printf("\n-- history --\n");
-    ckjs("history.length === 1", "a fresh document has one history entry");
+    /* NOT length 1: this shares one page/context with every test function
+     * before it (see main()), and test_location() just did three fragment
+     * changes (sec2, third, '') that each grow the joint session history by
+     * one -- a fragment navigation is a same-document navigation like any
+     * other, and WHATWG gives it its own history entry exactly as pushState
+     * does (see js_webapi.c's loc_set / hist_commit). __base captures
+     * wherever that left history.length so everything below is about what
+     * THIS function does, not test_location's internals. */
+    run("var __base = history.length;");
+    ckjs("__base === 4", "the three location.hash changes above each grew history.length by one");
     ckjs("history.state === null", "and no state");
 
     run("history.pushState({ page: 1 }, '', '/app/one');");
     ckjs("location.pathname === '/app/one'", "pushState changes the URL without navigating");
-    ckjs("history.length === 2", "...and grows the history");
+    ckjs("history.length === __base + 1", "...and grows the history");
     ckjs("history.state.page === 1", "history.state");
     {
         char nav[2048];
@@ -778,10 +787,10 @@ static void test_history(void)
     run("history.pushState({ page: 2 }, '', '/app/two?x=1');");
     ckjs("location.pathname === '/app/two' && location.search === '?x=1'",
          "a pushed URL with a query");
-    ckjs("history.length === 3", "three entries");
+    ckjs("history.length === __base + 2", "three entries");
 
     run("history.replaceState({ page: 22 }, '', '/app/two-b');");
-    ckjs("history.length === 3 && history.state.page === 22 && location.pathname === '/app/two-b'",
+    ckjs("history.length === __base + 2 && history.state.page === 22 && location.pathname === '/app/two-b'",
          "replaceState overwrites instead of appending");
 
     /* popstate: queued, then delivered by the pump -- never inline. */

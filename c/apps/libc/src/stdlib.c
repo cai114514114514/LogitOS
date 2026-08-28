@@ -470,7 +470,17 @@ int system(const char *cmd)
     }
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return -1;
-    return status;
+    /* waitpid() hands back this kernel's raw, unshifted exit code (see
+     * io.c's waitpid() -- it stays raw there because a wired on-device gate,
+     * tests/unit/sigtest_main.c, depends on exactly that). system()'s own
+     * contract, stated two lines above this file's own comment block, is
+     * "matching glibc/POSIX": a caller is entitled to run WIFEXITED()/
+     * WEXITSTATUS() (sys/wait.h) on what this returns, and those macros want
+     * (exit_code << 8) | termsig. This kernel never terminates a process by a
+     * raw signal -- a fatal one is already turned into proc_exit(128+signo)
+     * before it gets here (ksigframe.c) -- so termsig is always 0 and the
+     * shift is the whole translation. */
+    return (status & 0xff) << 8;
 }
 
 /* ---------------------------------------------------------------------- */

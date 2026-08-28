@@ -60,12 +60,22 @@ int  js_page_run_due(void);
  * passes a fake it steps by hand -- which is what makes timer ordering testable
  * without sleeping through it. Must be set before js_page_open(). */
 void js_page_set_clock(unsigned long long (*fn)(void));
+/* The same clock, for a second consumer that needs the identical notion of
+ * "now" -- js_worker.c's own per-runtime watchdog and its task queue. Reading
+ * two different clocks for "the page" and "its workers" would let a worker's
+ * due time and the page's agree only by coincidence. */
+unsigned long long js_page_now_ms(void);
 
 /* window.location.href, for pages that read it. Purely informational: assigning
  * to it does not navigate (navigation is driven by the browser's event loop,
  * and re-entering a page load from inside a JS callback would free the DOM the
  * caller is standing on). */
 void js_page_set_location(const char *url);
+/* The same string back out, NUL-terminated. js_worker.c's same-origin check
+ * (a classic worker's script fetch is same-origin-only, RFC-style: refuse by
+ * name, not by network accident) reads it to compare against a worker's
+ * resolved script URL. */
+const char *js_page_location(void);
 
 /* Console output captured from the page (console.log/warn/error + uncaught
  * exceptions), NUL-terminated and bounded. The browser shows the first line in

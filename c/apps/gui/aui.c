@@ -434,6 +434,15 @@ static int pop_changed_id;
 
 static const char *tip_text;
 static int tip_x, tip_y;
+/* The tooltip fades, and it is the LAST-SHOWN content that fades, not the
+ * current-frame request: `tip_text` is cleared every aui_begin() and only set
+ * while the pointer is still dwelling, so the frame the pointer leaves is
+ * exactly the frame the fade-out has to start from. draw_tip() runs
+ * unconditionally every frame from aui_end() (see aui_end below), which is
+ * what keeps this slot continuous through the whole fade in both directions --
+ * unlike a dialog or a popup, whose OWNING call is itself conditional. */
+static const char *tip_last_text;
+static int tip_last_x, tip_last_y, tip_last_owner;
 
 /* focus order = call order; the list is rebuilt every frame and read by
  * aui_feed() one frame later, which is exactly when Tab needs it. */
@@ -863,6 +872,242 @@ void aui_text_ellipsis(int x, int y, int maxw, const char *s, unsigned color, in
 
 unsigned aui_ms(void) { return frame_ms; }
 
+/* ---------------------------------------------------- 5c. motion ----------
+ * The animation core. aui.h carries the design; this carries the three things
+ * that are only decidable in code.
+ *
+ * ONE. IDENTITY IN AN IMMEDIATE-MODE TOOLKIT. There are no widget objects, so
+ * "the button that was 40% hovered last frame" has to be recovered from
+ * something. It is recovered from the SAME THING FOCUS ALREADY USES: the widget
+ * id, which is call order (`++id_ctr` at the top of every widget). During a
+ * widget's body, `id_ctr` IS that widget's id, so aui_anim() needs no argument
+ * for it and no registration step. This is not a new bet -- aui.h has said
+ * "focus order IS call order" since Tab worked -- but it is a bet, and the two
+ * rules below are what make it safe rather than merely conventional.
+ *
+ * TWO. THE CONTINUITY RULE, which is what stops a stuck or flickering state.
+ * A slot carries the FRAME NUMBER it was last queried at. If that is not the
+ * immediately preceding frame, the slot is treated as fresh: it latches to its
+ * target and does not animate. Two things fall out, both wanted. A widget
+ * appearing for the first time appears FINISHED -- open a dialog with thirty
+ * controls and you get one frame, not thirty hover fades. And an evicted or
+ * abandoned slot can never resume mid-flight holding a value that belonged to
+ * something else. It is a frame counter and deliberately not a clock: an app
+ * that sleeps ten seconds and then repaints is still "consecutive", which is
+ * right, because an immediate-mode frame is a pure function of state and the
+ * passage of time did not alter it.
+ *
+ * When the caller's layout DOES change so that a widget inherits an id, that
+ * slot is continuous and re-aims from the previous occupant's value. The result
+ * is one bounded cross-fade of the wrong quantity, over at most `ms`. It cannot
+ * stick (arrival is `elapsed >= dur`, not a threshold on the value) and it
+ * cannot flicker (re-aim is from the CURRENT value, so the sequence of drawn
+ * values is continuous by construction). aui_anim_reset() is the escape hatch,
+ * and it is the same escape hatch, for the same reason, as aui_set_focus().
+ *
+ * THREE. THE WAKE CONTRACT, and the property to protect is that an idle
+ * desktop costs exactly what it cost before this file grew a clock. Both
+ * public queries return from a static and READ NO CLOCK when nothing is
+ * animating -- monotonic_ms() is a syscall on this machine, and a toolkit that
+ * called it once per loop turn would be reintroducing, in a smaller way,
+ * exactly the 3.3-million-syscall mistake the top of aui.h is about. */
+
+struct anim_slot {
+    int      id;        /* owning widget id; 0 = never used                 */
+    int      key;       /* AUI_AK_*: several animations on one widget       */
+    int      from, to;  /* endpoints, 0..255 (aui_mix's domain)             */
+    int      cur;       /* what the last frame actually drew                */
+    int      dur;       /* ms                                               */
+    int      curve;     /* AUI_EASE_*                                       */
+    unsigned t0;        /* frame_ms when this leg started                   */
+    unsigned gen;       /* frame number this slot was last queried at       */
+    int      arrived;   /* latched: returns `to` and schedules nothing      */
+};
+
+static struct anim_slot anim_tab[AUI_ANIM_MAX];
+static unsigned anim_gen = 1;      /* frames since process start; aui_begin++ */
+static unsigned anim_frames_n;     /* frames drawn because a deadline fired   */
+static unsigned anim_due_ms;       /* absolute deadline, ms                   */
+static int      anim_have_due;     /* ...and whether there is one at all      */
+static int      anim_loop_want;    /* an ENDLESS animation drew this frame    */
+static int      anim_live;         /* slots still in flight after this frame  */
+static int      anim_armed;        /* aui_anim_due() said yes, frame pending  */
+
+#ifndef AUI_ANIM_OFF          /* unreferenced in the negative-control build */
+static struct anim_slot *anim_slot_for(int id, int key, int *fresh)
+{
+    struct anim_slot *freeslot = 0, *lru = &anim_tab[0];
+    /* THE WHOLE TABLE IS SCANNED BEFORE ANYTHING IS ALLOCATED, and the first
+     * version of this function did not do that: it took the first free slot and
+     * broke out of the loop. With a hole at index 2 and this widget's live slot
+     * at index 5, that allocated a NEW slot at 2 and orphaned 5 -- so the widget
+     * restarted from its target every frame and never moved, while a second slot
+     * quietly ate a table entry. It would have looked exactly like "the
+     * animation does not work", which is the least informative symptom there is. */
+    for (int i = 0; i < AUI_ANIM_MAX; i++) {
+        struct anim_slot *s = &anim_tab[i];
+        if (s->id == id && s->key == key) {
+            /* Found. Continuous only if it was queried in the frame directly
+             * before this one -- see THE CONTINUITY RULE above. */
+            *fresh = (s->gen + 1 != anim_gen);
+            return s;
+        }
+        if (!s->id) { if (!freeslot) freeslot = s; continue; }
+        /* Least-recently-touched. Unsigned compare is fine: gen is monotone
+         * and the table is scanned within one frame, so no two live entries
+         * can straddle a wrap. */
+        if (s->gen < lru->gen) lru = s;
+    }
+    struct anim_slot *n = freeslot ? freeslot : lru;
+    n->id = id; n->key = key; n->gen = 0; n->t0 = frame_ms;
+    *fresh = 1;
+    return n;
+}
+#endif
+
+int aui_anim(int key, int target, int ms, int curve)
+{
+#ifdef AUI_ANIM_OFF
+    /* THE NEGATIVE CONTROL, and it has to live here rather than in the harness.
+     * Every widget still calls aui_anim() and still draws whatever it returns,
+     * so the picture is identical at rest and every code path above and below
+     * is unchanged -- the value simply arrives instantly. Nothing is live, so
+     * anim_schedule() registers no deadline and the interaction produces ONE
+     * composite instead of eight.
+     *
+     * WHAT IT IS PROTECTING AGAINST is the reading this gate would otherwise
+     * give for free: a compositor that happens to repaint several times after
+     * any click would satisfy the positive assertion whether or not a single
+     * animation ran. If the OFF build also reads eight composites, the harness
+     * is measuring the machine's idle repaints and the `anim` row is not a
+     * measurement. That is a thing this tree has shipped before -- see aui.h's
+     * note on the toggle whose animation the header documented for as long as
+     * it did not exist. */
+    (void)key; (void)ms; (void)curve;
+    return iclamp(target, 0, 255);
+#else
+    int id = id_ctr;                 /* the widget currently being drawn */
+    int fresh = 0;
+    struct anim_slot *s;
+
+    target = iclamp(target, 0, 255);
+    if (ms < 1) ms = 1;
+    /* id 0 means aui_anim() was called outside any widget, where there is no
+     * stable identity to key on. Answer instantly rather than colliding with a
+     * free slot, which is what id 0 and key 0 would otherwise match. */
+    if (id <= 0) return target;
+    s = anim_slot_for(id, key, &fresh);
+
+    if (fresh) {
+        s->from = s->to = s->cur = target;
+        s->arrived = 1;
+    } else if (target != s->to) {
+        /* RE-AIM FROM WHERE THE PIXELS ARE, not from where this leg started.
+         * A pointer that leaves mid-fade reverses out of the value on screen
+         * and never snaps -- which is the whole difference between an
+         * interruptible animation and a broken one. */
+        s->from = s->cur;
+        s->to = target;
+        s->arrived = 0;
+        s->t0 = frame_ms;
+    }
+    s->dur = ms; s->curve = curve; s->gen = anim_gen;
+
+    if (!s->arrived) {
+        unsigned el = frame_ms - s->t0;
+        if ((int)el >= s->dur) {
+            /* TERMINATION IS A PROOF, NOT A THRESHOLD. The slot latches its
+             * target here and stops registering deadlines, so the machine
+             * draws exactly one more frame -- the one that puts the final
+             * pixel down -- and then sleeps for real. */
+            s->cur = s->to;
+            s->arrived = 1;
+        } else {
+            int t = (int)(el * 256u / (unsigned)s->dur);      /* 0..255 */
+            int e = curve == AUI_EASE_INOUT  ? gfx_ease_inout(t)
+                  : curve == AUI_EASE_LINEAR ? t
+                                             : gfx_ease_out(t);
+            /* THE 255/256 SEAM IS CLOSED HERE AND NOWHERE ELSE. The curves are
+             * exact on 0..256 because 256 is a power of two; aui_mix is on
+             * 0..255. Scaling the DELTA by e/256 lands on `to` exactly when e
+             * hits 256 and never overshoots, so no widget ever sees a 256. */
+            s->cur = s->from + (s->to - s->from) * e / 256;
+        }
+    }
+    if (!s->arrived) anim_live++;
+    return s->cur;
+#endif /* AUI_ANIM_OFF */
+}
+
+unsigned aui_anim_loop(void) { anim_loop_want = 1; return frame_ms; }
+
+void aui_anim_reset(void)
+{
+    for (int i = 0; i < AUI_ANIM_MAX; i++) anim_tab[i].id = 0;
+    anim_have_due = 0; anim_live = 0; anim_armed = 0;
+}
+
+int      aui_anim_active(void) { return anim_live; }
+unsigned aui_anim_frames(void) { return anim_frames_n; }
+
+/* Called by aui_end() AFTER gui_flush(), and the ordering is the whole
+ * anti-spin argument: the deadline is `now + tick`, where `now` is measured
+ * once the frame has actually landed -- never `last + tick`. A frame that took
+ * 27 ms against a 16 ms tick therefore yields a 43 ms period rather than a
+ * queue of already-expired deadlines to catch up on. */
+static void anim_schedule(void)
+{
+    int tick;
+    if (!anim_live && !anim_loop_want) {
+        /* Nothing moves. Return before touching the clock: this is the path an
+         * idle desktop takes and it must cost zero syscalls. */
+        anim_have_due = 0;
+        return;
+    }
+    if (anim_live) {
+        /* CADENCE IS DERIVED FROM THE WINDOW, NOT A CONSTANT. SYS_GUI_FLUSH
+         * carries no rectangle, so the frame this deadline buys will cost the
+         * whole canvas; asking for frames faster than the compositor can make
+         * them just queues work behind the BKL. A wrong estimate makes an
+         * animation coarse and can never make it spin, because the floor is
+         * AUI_ANIM_TICK_MIN and the deadline is computed after the fact. */
+        int sc = aui_scale();
+        long long px = (long long)win_w * win_h * sc * sc / 10000;
+        long long est = px * AUI_NS_PER_PX / 1000000;
+        tick = est > 1000 ? 1000 : (int)est;
+        if (tick < AUI_ANIM_TICK_MIN) tick = AUI_ANIM_TICK_MIN;
+        /* Both kinds live at once: the SOONER deadline wins. */
+        if (anim_loop_want && AUI_ANIM_TICK_LOOP < tick) tick = AUI_ANIM_TICK_LOOP;
+    } else {
+        tick = AUI_ANIM_TICK_LOOP;
+    }
+    anim_due_ms = (unsigned)monotonic_ms() + (unsigned)tick;
+    anim_have_due = 1;
+}
+
+int aui_anim_due(void)
+{
+    if (!anim_have_due) { anim_armed = 0; return 0; }
+    unsigned now = (unsigned)monotonic_ms();
+    if ((int)(now - anim_due_ms) < 0) return 0;     /* signed delta: wrap-safe */
+    anim_armed = 1;
+    return 1;
+}
+
+int aui_anim_wait(void)
+{
+    /* THE ZERO IS THE LOAD-BEARING VALUE. wait_idle(0) is "sleep until an
+     * event", which is what every app did before this file grew a clock, so the
+     * safe answer is also the default answer and no app can reintroduce a spin
+     * by forgetting a case. */
+    if (!anim_have_due) return 0;
+    unsigned now = (unsigned)monotonic_ms();
+    int d = (int)(anim_due_ms - now);
+    /* ...and never 0 on this path, because 0 means FOREVER. A deadline already
+     * passed must round up to 1 ms, not down to a sleep that never returns. */
+    return d > 0 ? d : 1;
+}
+
 void aui_set_size(int w, int h) { win_w = w; win_h = h; }
 int  aui_width(void)  { return win_w; }
 int  aui_height(void) { return win_h; }
@@ -1007,23 +1252,42 @@ static struct wres wpoll(int id, int x, int y, int w, int h, int enabled, int fo
 
 /* The colour a control's face should be in a given state. One place, so every
  * control in the system lights up by the same rule. */
+/* Hover is a FAST cross-fade (colour, in place); press is deliberately
+ * INSTANT -- the pressed face has to land on the frame that took the click or
+ * the control reads as deaf, and it is the release that decays, not the
+ * press. aui_anim() is called EVERY time this runs, active or not, so the
+ * hover slot stays continuous across a press -- without that, the release
+ * would find a stale slot and snap instead of decaying. */
+static int hover_t(int st)
+{
+    return aui_anim(AUI_AK_FACE, (st & AUI_HOVER) ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+}
+
 static unsigned face_for(int st)
 {
     if (st & AUI_OFF) return AUI_DISABLED;
-    if (st & AUI_ACTIVE) return AUI_FACE_ACTIVE;
-    if (st & AUI_HOVER) return AUI_FACE_HOVER;
-    return AUI_FACE;
+    int t = hover_t(st);
+    if (st & AUI_ACTIVE) return AUI_FACE_ACTIVE;      /* instant: same frame as the click */
+    return aui_mix(AUI_FACE, AUI_FACE_HOVER, t);
 }
 
 /* Two concentric RINGS, never a filled halo: a filled rounded rect behind the
  * control is drawn over it by the control itself, and drawn after it washes the
  * control blue. Rings also survive on any background, which is the point -- the
- * ring has to read over a card, over glass and over an image. */
-static void focus_ring(int x, int y, int w, int h, int r)
+ * ring has to read over a card, over glass and over an image.
+ *
+ * FADED, NOT POPPED, and that is why `focused` is a PARAMETER rather than a
+ * caller-side `if`: the ring must be queried every frame the owning widget
+ * draws, focused or not, or the slot goes stale the instant focus leaves and
+ * the fade-out has nothing to animate from. Geometry never changes -- only the
+ * mix fraction toward AUI_FOCUS -- so every corner tile this draws stays a
+ * gfx mask-cache hit through the whole fade, in either direction. */
+static void focus_ring(int focused, int x, int y, int w, int h, int r)
 {
-    if (!focus_vis) return;
-    aui_stroke(x - 4, y - 4, w + 8, h + 8, r + 4, 2, aui_mix(AUI_BG, AUI_FOCUS, 110));
-    aui_stroke(x - 2, y - 2, w + 4, h + 4, r + 2, 2, AUI_FOCUS);
+    int t = aui_anim(AUI_AK_FOCUS, (focused && focus_vis) ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    if (t <= 0) return;
+    aui_stroke(x - 4, y - 4, w + 8, h + 8, r + 4, 2, aui_mix(AUI_BG, aui_mix(AUI_BG, AUI_FOCUS, 110), t));
+    aui_stroke(x - 2, y - 2, w + 4, h + 4, r + 2, 2, aui_mix(AUI_BG, AUI_FOCUS, t));
 }
 
 void aui_begin(unsigned bg)
@@ -1032,6 +1296,14 @@ void aui_begin(unsigned bg)
     if (!theme_inited || s != theme_dark) { aui_set_dark(s); bg = aui_t.bg; }
     aui_ensure();
     frame_ms = (unsigned)monotonic_ms();
+    /* The animation frame counter. It is what the continuity rule in section 5c
+     * compares against, so it advances here -- once per DRAWN frame -- and not
+     * on a clock. `anim_live` and `anim_loop_want` are re-derived by the widgets
+     * about to run, so anything that stops being drawn stops being scheduled
+     * for free. */
+    anim_gen++;
+    anim_live = 0; anim_loop_want = 0;
+    if (anim_armed) { anim_frames_n++; anim_armed = 0; }
     id_ctr = 0; foc_n = 0; clipn = 0; ox_ = oy_ = 0;
     in_dialog = 0; in_popup = 0; dlg_open_now = 0;
     in.hot = 0;
@@ -1127,6 +1399,10 @@ void aui_end(void)
     wbb = wbb_next; wbb_any = wbb.w > 0;
     rg_lo = rg_lo_a; rg_hi = rg_hi_a;      /* the radio range this frame observed */
     gui_flush();
+    /* AFTER the flush, deliberately: see anim_schedule(). This is also the only
+     * place the deadline is set, so an app that never calls aui_end() -- there
+     * is none -- would simply never animate rather than animate wrongly. */
+    anim_schedule();
 #ifdef AUI_COST
     ck_wall += monotonic_ns() - ck_fstart;
     ck_report();
@@ -1242,7 +1518,7 @@ int aui_button_ex(int x, int y, int w, int h, const char *label, enum aui_varian
         aui_vgrad_round(x, y, w, h, rad, aui_shade(fill, 10), aui_shade(fill, -10));
         if (v == AUI_V_SECONDARY) aui_stroke(x, y, w, h, rad, 1, AUI_BORDER);
     }
-    if (r.st & AUI_FOCUSED) focus_ring(x, y, w, h, rad);
+    focus_ring(r.st & AUI_FOCUSED, x, y, w, h, rad);
 
     int lw = tw(label);
     txt(x + (w - lw) / 2, y + (h - PX) / 2 - 1, fg, label);
@@ -1259,7 +1535,7 @@ int aui_icon_button(int x, int y, int size, int icon, int enabled)
     int rad = AUI_R_MD;
     if (r.st & AUI_ACTIVE)     aui_round_a(x, y, size, size, rad, AUI_ACCENT, 60);
     else if (r.st & AUI_HOVER) aui_round_a(x, y, size, size, rad, AUI_TEXT, 22);
-    if (r.st & AUI_FOCUSED) focus_ring(x, y, size, size, rad);
+    focus_ring(r.st & AUI_FOCUSED, x, y, size, size, rad);
     unsigned c = (r.st & AUI_OFF) ? AUI_DISABLED_TX : AUI_TEXT;
     int ip = size * 3 / 5;
     gui_icon(icon, X_(x) + (size - ip) / 2, Y_(y) + (size - ip) / 2, ip, c);
@@ -1273,21 +1549,41 @@ void aui_tooltip(const char *s)
     if (!s || in.hot != id_ctr) return;
     if (frame_ms - in.hot_t0 < 450) return;
     tip_text = s; tip_x = in.mx; tip_y = in.my;
+    tip_last_text = s; tip_last_x = in.mx; tip_last_y = in.my; tip_last_owner = id_ctr;
 }
 
 static void draw_tip(void)
 {
-    if (!tip_text) return;
+    if (!tip_last_text) return;             /* never shown this app run: nothing to fade */
+    /* AUI_AK_EXTRA on the OWNING WIDGET's id, not a slot of its own -- the
+     * tooltip has no widget identity of its own to key on, but it borrows the
+     * owner's for exactly as long as the fade needs it. Reading through a
+     * borrowed id_ctr is safe here specifically because this function, unlike
+     * aui_dialog_begin, runs EVERY frame regardless of whether a tooltip is
+     * currently requested -- so the slot never goes stale and the continuity
+     * rule that would otherwise swallow this fade never fires. See the
+     * comment on tip_last_text above. */
+    int saved_id = id_ctr;
+    id_ctr = tip_last_owner;
+    int t = aui_anim(AUI_AK_EXTRA, tip_text ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    id_ctr = saved_id;
+    if (t <= 0) { tip_last_text = 0; return; }
+
     int pad = AUI_SP(2), px = AUI_FS_LABEL;
-    int w = aui_text_w(tip_text, px) + 2 * pad, h = px + 2 * pad;
-    int x = tip_x + 12, y = tip_y + 18;
+    int w = aui_text_w(tip_last_text, px) + 2 * pad, h = px + 2 * pad;
+    int x = tip_last_x + 12, y = tip_last_y + 18;
     if (x + w > win_w) x = win_w - w - 2;
-    if (y + h > win_h) y = tip_y - h - 6;
+    if (y + h > win_h) y = tip_last_y - h - 6;
     if (x < 2) x = 2;
     if (y < 2) y = 2;
-    aui_shadow(x, y, w, h, AUI_R_SM, AUI_ELEV_2);
-    aui_round(x, y, w, h, AUI_R_SM, aui_is_dark() ? rgb(70, 72, 84) : rgb(48, 50, 60));
-    aui_text_sz(x + pad, y + pad - 1, tip_text, rgb(250, 250, 252), px);
+    /* No alpha channel on aui_shadow/aui_text_sz, so the fade is the same
+     * faux-alpha trick focus_ring uses: mix the drawn colour toward the
+     * background as `t` climbs, which reaches the true colour exactly at
+     * t=255 and is invisible against it at t=0. Geometry never moves. */
+    unsigned bg = aui_is_dark() ? rgb(70, 72, 84) : rgb(48, 50, 60);
+    aui_shadow_ex(x, y, w, h, AUI_R_SM, 3, 10, (aui_is_dark() ? 120 : 55) * t / 255);
+    aui_round_a(x, y, w, h, AUI_R_SM, bg, t);
+    aui_text_sz(x + pad, y + pad - 1, tip_last_text, aui_mix(bg, rgb(250, 250, 252), t), px);
 }
 
 int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled)
@@ -1295,12 +1591,23 @@ int aui_checkbox_ex(int x, int y, const char *label, int *state, int enabled)
     int id = ++id_ctr, box = 18, lw = label ? tw(label) : 0;
     int w = box + (label ? AUI_SP(2) + lw : 0);
     struct wres r = wpoll(id, X_(x), Y_(y), w, box, enabled, 1);
-    unsigned fill = *state ? AUI_ACCENT : AUI_SURFACE;
-    if (r.st & AUI_OFF) fill = *state ? AUI_DISABLED_TX : AUI_DISABLED;
-    else if (r.st & AUI_HOVER) fill = *state ? aui_shade(fill, 14) : AUI_FACE_HOVER;
+    /* AUI_T_FAST, not BASE: this is a colour change IN PLACE, not geometry --
+     * the box never moves or resizes, only its fill tone slides between
+     * unchecked and checked. Queried every frame regardless of *state, so the
+     * slot stays continuous across the click and the release fades instead of
+     * snapping, the same reasoning as face_for(). */
+    int vt = aui_anim(AUI_AK_VALUE, *state ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    unsigned fill = (r.st & AUI_OFF) ? (*state ? AUI_DISABLED_TX : AUI_DISABLED)
+                                      : aui_mix(AUI_SURFACE, AUI_ACCENT, vt);
 
-    if (r.st & AUI_FOCUSED) focus_ring(x, y, box, box, AUI_R_SM);
+    focus_ring(r.st & AUI_FOCUSED, x, y, box, box, AUI_R_SM);
     aui_round(x, y, box, box, AUI_R_SM, fill);
+    /* The hover wash stays an instant overlay rather than a second animated
+     * fill: a pointer sweeping a column of checkboxes crosses a dozen of them
+     * in a couple of hundred milliseconds, and a fade there would still be
+     * arriving when the pointer has already left three boxes down. */
+    if (!(r.st & AUI_OFF) && (r.st & AUI_HOVER))
+        aui_round_a(x, y, box, box, AUI_R_SM, *state ? rgb(255, 255, 255) : AUI_TEXT, *state ? 26 : 14);
     if (!*state) aui_stroke(x, y, box, box, AUI_R_SM, 1, (r.st & AUI_OFF) ? AUI_DISABLED : AUI_BORDER);
     if (*state) {
         /* The tick is three anti-aliased rounded bars, not a bitmap: it has to
@@ -1330,9 +1637,14 @@ int aui_radio(int x, int y, const char *label, int *group, int value)
     if (rg_ptr != group) { rg_ptr = group; rg_lo_a = rg_hi_a = value; }
     else { if (value < rg_lo_a) rg_lo_a = value; if (value > rg_hi_a) rg_hi_a = value; }
     int cx = x + box / 2, cy = y + box / 2;
-    if (r.st & AUI_FOCUSED) focus_ring(x, y, box, box, box / 2);
-    aui_circle(cx, cy, box / 2, on ? AUI_ACCENT
-                                   : ((r.st & AUI_HOVER) ? AUI_FACE_HOVER : AUI_SURFACE));
+    focus_ring(r.st & AUI_FOCUSED, x, y, box, box, box / 2);
+    /* Same shape as the checkbox: FAST colour cross-fade for the selected
+     * state, an instant hover wash on top (a radio group is swept the same
+     * way a checkbox column is), and the inner dot stays an instant pop --
+     * matching the checkbox tick's rejection, see anim-no-checkbox-tick. */
+    int vt = aui_anim(AUI_AK_VALUE, on ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    aui_circle(cx, cy, box / 2, aui_mix(AUI_SURFACE, AUI_ACCENT, vt));
+    if (!on && (r.st & AUI_HOVER)) aui_round_a(x, y, box, box, box / 2, AUI_TEXT, 14);
     if (!on) aui_ring(cx, cy, box / 2, 1, AUI_BORDER);
     else     aui_circle(cx, cy, box / 5, AUI_ACCENT_TEXT);
     if (label) txt(x + box + AUI_SP(2), y + (box - PX) / 2 - 1, AUI_TEXT, label);
@@ -1350,20 +1662,45 @@ int aui_radio(int x, int y, const char *label, int *group, int value)
     return 0;
 }
 
+/* THE PROOF WIDGET for the motion core in section 5c, and it is this one for a
+ * reason that is not aesthetic: aui.h has documented the switch knob as a
+ * clock-driven animation since the toggle shipped, and `kx` teleported the knob
+ * 22 points in a single frame. Implementing it closes a documentation lie
+ * rather than adding a feature.
+ *
+ * TWO THINGS BECOME ONE CLOCK. The knob's position and the track's colour both
+ * read the SAME slot, so they cannot drift apart into a knob that has arrived
+ * over a track that has not. The knob's SIZE never changes, so its circle mask
+ * is a gfx cache hit on every frame of the slide -- only x moves.
+ *
+ * THE CLICK IS HANDLED BEFORE THE ANIMATION IS SAMPLED, which is not the order
+ * the old code used. Toggling *state after drawing would have made the frame
+ * that handles the press draw the OLD position, so the knob would sit still for
+ * one frame -- ~21 ms of a 180 ms motion -- and read as a dropped click. */
 int aui_toggle(int x, int y, int *state, int enabled)
 {
     int id = ++id_ctr, w = 44, h = 24;
     struct wres r = wpoll(id, X_(x), Y_(y), w, h, enabled, 1);
-    unsigned track = *state ? AUI_ACCENT : AUI_TRACK;
+    int changed = 0;
+    if (r.clicked) { *state = !*state; changed = 1; }
+
+    /* AUI_T_BASE, not AUI_T_FAST: this is GEOMETRY. In a 640x480 pt window at
+     * 150% the canvas is ~691,200 device px, so 90 ms delivers four frames and
+     * the knob's 33 device-px travel would arrive in four 8-px jumps -- a
+     * strobe. 180 ms delivers eight, i.e. ~4 px a step, which reads as motion.
+     * The same split is why the track colour could have been FAST and is not:
+     * it shares this slot so the two cannot disagree. */
+    int t = aui_anim(AUI_AK_VALUE, *state ? 255 : 0, AUI_T_BASE, AUI_EASE_OUT);
+
+    unsigned track = aui_mix(AUI_TRACK, AUI_ACCENT, t);
     if (r.st & AUI_OFF) track = AUI_DISABLED;
     else if (r.st & AUI_HOVER) track = aui_shade(track, *state ? 14 : -8);
-    if (r.st & AUI_FOCUSED) focus_ring(x, y, w, h, h / 2);
+    focus_ring(r.st & AUI_FOCUSED, x, y, w, h, h / 2);
     aui_round(x, y, w, h, h / 2, track);
-    int kx = *state ? x + w - h + 2 : x + 2;
+    int kx = x + 2 + (w - h) * t / 255;        /* t=0 -> x+2; t=255 -> x+w-h+2 */
     aui_shadow_ex(kx, y + 2, h - 4, h - 4, (h - 4) / 2, 1, 3, 70);
     aui_circle(kx + (h - 4) / 2, y + h / 2, (h - 4) / 2, (r.st & AUI_OFF) ? AUI_DISABLED_TX : rgb(255, 255, 255));
-    if (r.clicked) { *state = !*state; return 1; }
-    return 0;
+    return changed;
 }
 
 int aui_slider(int x, int y, int w, int *value, int lo, int hi)
@@ -1393,11 +1730,30 @@ int aui_slider(int x, int y, int w, int *value, int lo, int hi)
     }
     *value = v;
 
-    int ty = y + h / 2 - 2, fill = (v - lo) * w / (hi - lo);
+    /* Value motion is driven by what moved it. A dragged knob must sit under
+     * the finger with zero lag -- an eased knob under a pointer reads as a
+     * bug, not as polish -- so a drag or a click bypasses aui_anim entirely
+     * and draws the raw position. An arrow key is a discrete event with no
+     * finger to track, so THAT SAME KNOB animates over AUI_T_BASE. Because the
+     * animated branch is only reached while not dragging, the slot goes stale
+     * for the duration of any drag; the continuity rule then makes the very
+     * next animated frame latch fresh at the raw position with zero jump --
+     * which is what buys the drag its zero-cost exemption without a second
+     * code path drawing the knob. */
+    int fill_raw = (v - lo) * w / (hi - lo);
+    int fill;
+    if (dragging || r.clicked) {
+        fill = fill_raw;
+    } else {
+        int target = (hi > lo) ? (v - lo) * 255 / (hi - lo) : 0;
+        int t = aui_anim(AUI_AK_VALUE, target, AUI_T_BASE, AUI_EASE_OUT);
+        fill = t * w / 255;
+    }
+    int ty = y + h / 2 - 2;
     aui_round(x, ty, w, 4, 2, AUI_TRACK);
     aui_round(x, ty, fill, 4, 2, AUI_ACCENT);
     int kx = x + fill;
-    if (r.st & AUI_FOCUSED) focus_ring(kx - kr, y + h / 2 - kr, 2 * kr, 2 * kr, kr);
+    focus_ring(r.st & AUI_FOCUSED, kx - kr, y + h / 2 - kr, 2 * kr, 2 * kr, kr);
     aui_shadow_ex(kx - kr, y + h / 2 - kr, 2 * kr, 2 * kr, kr, 1, 4, 70);
     aui_circle(kx, y + h / 2, kr, rgb(255, 255, 255));
     if (r.st & (AUI_HOVER | AUI_ACTIVE)) aui_ring(kx, y + h / 2, kr, 2, AUI_ACCENT);
@@ -1415,9 +1771,14 @@ void aui_progress(int x, int y, int w, int pct)
         aui_round(x, y, fw, h, h / 2, AUI_ACCENT);
     } else {
         /* Indeterminate: a bar that travels. Driven off the monotonic clock, so
-         * it moves at the same speed whatever the repaint rate is. */
+         * it moves at the same speed whatever the repaint rate is -- except
+         * that until aui_anim_loop() existed NOTHING SET THE REPAINT RATE. In
+         * any app sleeping on wait_idle(0) this was a still picture, and the
+         * only place in the tree where it moved was gallery.c, which
+         * hand-rolled a 50 ms tick of its own. The wake is the fix; the phase
+         * arithmetic below is unchanged. */
         int seg = w / 3;
-        int t = (int)((frame_ms / 6) % (unsigned)(w + seg));
+        int t = (int)((aui_anim_loop() / 6) % (unsigned)(w + seg));
         int bx = x + t - seg;
         int x0 = imax(bx, x), x1 = imin(bx + seg, x + w);
         if (x1 > x0) aui_round(x0, y, x1 - x0, h, h / 2, AUI_ACCENT);
@@ -1431,7 +1792,11 @@ void aui_spinner(int cx, int cy, int r)
      * in eighths scaled by r (integer only, like everything else here). */
     static const int ux[8] = { 0, 181, 256, 181, 0, -181, -256, -181 };
     static const int uy[8] = { -256, -181, 0, 181, 256, 181, 0, -181 };
-    unsigned phase = (frame_ms / 100) % 8;
+    /* aui_anim_loop() rather than frame_ms: same value, plus the wake that
+     * makes it advance in an app that is otherwise asleep. Read aui.h's price
+     * for this before putting a spinner in a large window -- a loop repaints
+     * the WHOLE canvas at AUI_ANIM_TICK_LOOP, forever. */
+    unsigned phase = (aui_anim_loop() / 100) % 8;
     for (int i = 0; i < 8; i++) {
         int a = 40 + (int)((i + 8 - phase) % 8) * 27;
         aui_round_a(cx + ux[i] * r / 256 - 2, cy + uy[i] * r / 256 - 2, 4, 4, 2, AUI_ACCENT, a);
@@ -1626,7 +1991,7 @@ int aui_textfield_ex(int x, int y, int w, char *buf, int cap, const char *placeh
 
     unsigned bg = (r.st & AUI_OFF) ? AUI_DISABLED : AUI_SURFACE;
     aui_round(x, y, w, h, AUI_R_MD, bg);
-    if (foc) focus_ring(x, y, w, h, AUI_R_MD);
+    focus_ring(foc, x, y, w, h, AUI_R_MD);
     aui_stroke(x, y, w, h, AUI_R_MD, 1, foc ? AUI_FOCUS
                                             : ((r.st & AUI_HOVER) ? AUI_MUTED : AUI_BORDER));
 
@@ -1737,7 +2102,7 @@ static int list_body(int x, int y, int w, int h, const char *const *items, int n
     }
 
     aui_round(x, y, w, h, AUI_R_MD, AUI_SURFACE);
-    if (focused) focus_ring(x, y, w, h, AUI_R_MD);
+    focus_ring(focused, x, y, w, h, AUI_R_MD);
     aui_stroke(x, y, w, h, AUI_R_MD, 1, AUI_BORDER);
 
     aui_scroll_begin(x + 1, y + 1, w - 2, h - 2, scroll, nrow * ROWH);
@@ -1745,6 +2110,14 @@ static int list_body(int x, int y, int w, int h, const char *const *items, int n
         int ry = i * ROWH;
         if (ry + ROWH < *scroll || ry > *scroll + h) continue;     /* culled */
         int hovered = input_ok(X_(0), Y_(ry), w - 2, ROWH);
+        /* DELIBERATELY INSTANT, both of these. Selection must land where the
+         * click landed on the frame the click landed -- a highlight that
+         * travels toward a row the pointer has already left reads as lag, not
+         * motion. And a list is the one place the pointer crosses a dozen
+         * targets in a couple hundred milliseconds; a per-row fade would still
+         * be arriving three rows after the pointer moved on. Keeping this
+         * instant is itself an application of the vocabulary, not an omission
+         * from it -- see the design dossier's list-selection item. */
         if (i == *sel)      aui_fill(0, ry, w - 2, ROWH, AUI_ACCENT);
         else if (hovered)   aui_fill_a(0, ry, w - 2, ROWH, AUI_TEXT, 14);
         unsigned fg = (i == *sel) ? AUI_ACCENT_TEXT : AUI_TEXT;
@@ -1804,19 +2177,32 @@ int aui_tabs(int x, int y, int w, const char *const *items, int n, int *sel)
         unsigned fg = (i == *sel) ? AUI_TEXT : AUI_MUTED;
         if (over && i != *sel) aui_fill_a(cx, y + 4, tw_, h - 5, AUI_TEXT, 12);
         aui_text_sz(cx + AUI_SP(3), y + (h - PX) / 2 - 1, items[i], fg, PX);
-        if (i == *sel) aui_round(cx + AUI_SP(2), y + h - 3, tw_ - AUI_SP(4), 3, 1, AUI_ACCENT);
         cx += tw_;
     }
+    /* THE MOVING INDICATOR, drawn once after the loop rather than once per tab,
+     * and on AUI_EASE_INOUT: this is the one category that earns it, an
+     * indicator that starts and ends at rest and whose midpoint the eye tracks
+     * across open space (aui.h's own words for this and the segmented pill).
+     * aui_anim's domain is 0..255, which cannot hold a raw pixel x or width on
+     * a window wider than that -- so both are normalised to a fraction of
+     * win_w first and scaled back afterward, the same trick the toggle knob
+     * uses for its own travel, generalised from two stops to N. Width is
+     * animated too, unlike the segmented pill, because tab labels are not a
+     * fixed division of the strip. */
+    int tx = aui_anim(AUI_AK_VALUE, selx * 255 / imax(1, win_w), AUI_T_BASE, AUI_EASE_INOUT);
+    int twid = aui_anim(AUI_AK_EXTRA, selw * 255 / imax(1, win_w), AUI_T_BASE, AUI_EASE_INOUT);
+    int ux = tx * win_w / 255, uw = twid * win_w / 255;
+    aui_round(ux + AUI_SP(2), y + h - 3, imax(0, uw - AUI_SP(4)), 3, 1, AUI_ACCENT);
     if (focused) {
         /* Ring the SELECTED TAB, not the whole strip: a box drawn around every
          * tab at once says "one of these is focused" and nothing about which,
          * which is the only thing a focus indicator is for. */
-        focus_ring(selx + 2, y + 3, selw - 4, h - 8, AUI_R_SM);
         if (in.ev == EV_KEY && !in.key_used) {
             if (in.a == KEY_LEFT)  { *sel = iclamp(*sel - 1, 0, n - 1); changed = 1; in.key_used = 1; }
             if (in.a == KEY_RIGHT) { *sel = iclamp(*sel + 1, 0, n - 1); changed = 1; in.key_used = 1; }
         }
     }
+    focus_ring(focused, selx + 2, y + 3, selw - 4, h - 8, AUI_R_SM);
     return changed;
 }
 
@@ -1828,10 +2214,17 @@ int aui_segmented(int x, int y, int w, int h, const char *const *items, int n, i
     int focused = (focus_id == id);
     int seg = w / n;
     aui_round(x, y, w, h, AUI_R_MD, AUI_TRACK);
-    if (focused) focus_ring(x, y, w, h, AUI_R_MD);
-    /* The moving pill is drawn first so the labels sit on top of it. */
-    aui_shadow_ex(x + *sel * seg + 2, y + 2, seg - 4, h - 4, AUI_R_SM, 1, 3, 60);
-    aui_round(x + iclamp(*sel, 0, n - 1) * seg + 2, y + 2, seg - 4, h - 4, AUI_R_SM, AUI_SURFACE);
+    focus_ring(focused, x, y, w, h, AUI_R_MD);
+    /* The moving pill is drawn first so the labels sit on top of it. Segment
+     * width is CONSTANT across a change of selection -- only x moves -- so
+     * only one aui_anim call is needed (unlike the tab underline, which also
+     * has to animate width) and the pill's mask stays a cache hit through the
+     * whole slide. AUI_EASE_INOUT for the same reason as the tab underline:
+     * this is the indicator category that earns it. */
+    int pt = aui_anim(AUI_AK_VALUE, iclamp(*sel, 0, n - 1) * seg * 255 / imax(1, w), AUI_T_BASE, AUI_EASE_INOUT);
+    int px = x + pt * w / 255 + 2;
+    aui_shadow_ex(px, y + 2, seg - 4, h - 4, AUI_R_SM, 1, 3, 60);
+    aui_round(px, y + 2, seg - 4, h - 4, AUI_R_SM, AUI_SURFACE);
     for (int i = 0; i < n; i++) {
         int sx = x + i * seg;
         int over = input_ok(X_(sx), Y_(y), seg, h);
@@ -1855,7 +2248,7 @@ int aui_select(int x, int y, int w, const char *const *items, int n, int *sel)
     struct wres r = wpoll(id, X_(x), Y_(y), w, h, 1, 1);
     unsigned fill = face_for(r.st);
     aui_vgrad_round(x, y, w, h, AUI_R_MD, aui_shade(fill, 10), aui_shade(fill, -10));
-    if (focus_id == id) focus_ring(x, y, w, h, AUI_R_MD);
+    focus_ring(focus_id == id, x, y, w, h, AUI_R_MD);
     aui_stroke(x, y, w, h, AUI_R_MD, 1, AUI_BORDER);
     const char *cur = (*sel >= 0 && *sel < n) ? items[*sel] : "";
     aui_text_ellipsis(x + AUI_SP(2), y + (h - PX) / 2 - 1, w - AUI_SP(9), cur, AUI_TEXT, PX);
@@ -1879,33 +2272,58 @@ int aui_select(int x, int y, int w, const char *const *items, int n, int *sel)
 
 static void draw_popup(void)
 {
-    if (pop.kind != 1) { pop_prev.w = 0; return; }
+    /* Fade in on open, alpha only -- no translate and no scale. Scale was
+     * considered and rejected (see the design dossier): it would re-key every
+     * rounded corner in the popup on every frame of the fade, which misses
+     * the gfx mask cache by construction. Queried every frame regardless of
+     * pop.kind, exactly like draw_tip(), so a dismiss has something continuous
+     * to fade out from instead of vanishing. pop.owner is negative for a
+     * menu-bar submenu (aui_menubar's `-2 - i` encoding) and aui_anim's id<=0
+     * guard answers those instantly and on purpose: the menu bar is pure
+     * glass, and animating anything that touches it is the single most
+     * expensive mistake on this machine (dmg_expand grows the damage to the
+     * whole panel -- see aui.h). */
+    int saved_id = id_ctr;
+    id_ctr = pop.owner;
+    int t = aui_anim(AUI_AK_EXTRA, pop.kind == 1 ? 255 : 0, AUI_T_FAST, AUI_EASE_OUT);
+    id_ctr = saved_id;
+    if (t <= 0) { pop_prev.w = 0; return; }
+
     int h = pop.n * pop.itemh + AUI_SP(2);
     int x = pop.x, y = pop.y;
     if (y + h > win_h) y = imax(2, win_h - h - 2);
-    pop_prev = aui_r(x, y, pop.w, h);
 
-    if (in.ev == EV_KEY) {
-        if (in.a == KEY_DOWN)      pop.hi = iclamp(pop.hi + 1, 0, pop.n - 1);
-        else if (in.a == KEY_UP)   pop.hi = iclamp(pop.hi - 1, 0, pop.n - 1);
-        else if (in.a == '\n')     { *pop.sel = pop.hi; pop_changed_id = pop.owner; pop.kind = 0; }
-        else if (in.a == 27)       pop.kind = 0;     /* Escape: see the note in aui.h */
-        in.key_used = 1;
+    if (pop.kind == 1) {
+        /* Input and dismissal only apply while genuinely open; a fading-out
+         * ghost takes no input but keeps blocking the rect it still occupies
+         * on screen (pop_prev is simply left unrefreshed during the fade, so
+         * it holds the last real geometry until t reaches 0 above). */
+        pop_prev = aui_r(x, y, pop.w, h);
+        if (in.ev == EV_KEY) {
+            if (in.a == KEY_DOWN)      pop.hi = iclamp(pop.hi + 1, 0, pop.n - 1);
+            else if (in.a == KEY_UP)   pop.hi = iclamp(pop.hi - 1, 0, pop.n - 1);
+            else if (in.a == '\n')     { *pop.sel = pop.hi; pop_changed_id = pop.owner; pop.kind = 0; }
+            else if (in.a == 27)       pop.kind = 0;     /* Escape: see the note in aui.h */
+            in.key_used = 1;
+        }
     }
 
-    aui_shadow(x, y, pop.w, h, AUI_R_MD, AUI_ELEV_2);
-    aui_round(x, y, pop.w, h, AUI_R_MD, AUI_SURFACE_2);
-    aui_stroke(x, y, pop.w, h, AUI_R_MD, 1, AUI_BORDER);
+    /* Same faux-alpha mix as focus_ring/draw_tip for the border, since
+     * aui_stroke has no alpha parameter. */
+    aui_shadow_ex(x, y, pop.w, h, AUI_R_MD, 3, 10, (aui_is_dark() ? 120 : 55) * t / 255);
+    aui_round_a(x, y, pop.w, h, AUI_R_MD, AUI_SURFACE_2, t);
+    aui_stroke(x, y, pop.w, h, AUI_R_MD, 1, aui_mix(AUI_SURFACE_2, AUI_BORDER, t));
     int hit = -1;
     for (int i = 0; i < pop.n; i++) {
         int iy = y + AUI_SP(1) + i * pop.itemh;
-        int over = in.mx >= x && in.mx < x + pop.w && in.my >= iy && in.my < iy + pop.itemh;
+        int over = pop.kind == 1 &&
+                   in.mx >= x && in.mx < x + pop.w && in.my >= iy && in.my < iy + pop.itemh;
         if (over) { pop.hi = i; hit = i; }
-        if (i == pop.hi) aui_round(x + 3, iy, pop.w - 6, pop.itemh, AUI_R_SM, AUI_ACCENT);
+        if (i == pop.hi) aui_round_a(x + 3, iy, pop.w - 6, pop.itemh, AUI_R_SM, AUI_ACCENT, t);
         aui_text_ellipsis(x + AUI_SP(2), iy + (pop.itemh - PX) / 2 - 1, pop.w - AUI_SP(5),
-                          pop.items[i], i == pop.hi ? AUI_ACCENT_TEXT : AUI_TEXT, PX);
+                          pop.items[i], aui_mix(AUI_SURFACE_2, i == pop.hi ? AUI_ACCENT_TEXT : AUI_TEXT, t), PX);
     }
-    if (in.ev == EV_MOUSE) {
+    if (pop.kind == 1 && in.ev == EV_MOUSE) {
         if (hit >= 0) { *pop.sel = hit; pop_changed_id = pop.owner; }
         pop.kind = 0;                       /* a click anywhere closes it */
     }
@@ -1946,6 +2364,30 @@ int aui_menubar(int x, int y, int w, const char *const *titles,
 
 static struct { int x, y, w, h; } dlg;
 
+/* THE ONE PLACE THIS FILE DOES NOT ROUTE THROUGH aui_anim()'s SLOT TABLE, and
+ * it earns the exception rather than assuming it. aui_dialog_begin() is only
+ * called by the app WHILE THE DIALOG IS OPEN -- unlike a hover fade or the
+ * tooltip/popup above (which run every frame via aui_end() regardless of
+ * their own visibility), there is no counterpart here that keeps polling
+ * during the closed frames. So the slot's continuity rule -- "not queried on
+ * the immediately preceding frame means fresh, latch instantly" -- fires on
+ * the very first frame of every single open, and the entrance would silently
+ * never animate. That is exactly the class of thing rule 5 (a control that
+ * cannot be watched failing is worse than no control) warns about, so it is
+ * written down here instead of hidden behind a plausible-looking aui_anim()
+ * call that would always return 255.
+ *
+ * The fix is the SAME continuity test the slot table runs, done by hand
+ * against the same frame counter (`anim_gen`, a static in this file), and it
+ * reuses the shared curve and duration -- gfx_ease_out(), AUI_T_SLOW -- rather
+ * than inventing a second clock. A dialog held open across frames re-observes
+ * its own t0 and does not restart; closing and reopening (a frame gap, by
+ * definition, since this function was not called in between) is a fresh
+ * entrance, correctly. Close itself stays instant -- see aui.h / the design
+ * dossier's DISMISS rule -- so there is nothing to animate on the way out. */
+static unsigned dlg_last_gen;   /* anim_gen this ran at, last time; 0 = never */
+static unsigned dlg_t0;         /* frame_ms when the CURRENT entrance began   */
+
 int aui_dialog_begin(const char *title, int w, int h)
 {
     dlg_open_now = 1;
@@ -1953,14 +2395,23 @@ int aui_dialog_begin(const char *title, int w, int h)
     int x = (win_w - w) / 2, y = (win_h - h - th) / 3;
     if (y < 12) y = 12;
     dlg.x = x; dlg.y = y + th; dlg.w = w; dlg.h = h;
-    aui_fill_a(0, 0, win_w, win_h, AUI_SCRIM, 110);          /* the scrim */
-    aui_shadow(x, y, w, h + th, AUI_R_XL, AUI_ELEV_3);
-    aui_round(x, y, w, h + th, AUI_R_XL, AUI_SURFACE_2);
-    aui_stroke(x, y, w, h + th, AUI_R_XL, 1, AUI_BORDER);
-    aui_text_in(aui_r(x, y, w, th), title, AUI_TEXT, AUI_FS_TITLE, AUI_ALIGN_CENTER);
+
+    if (!dlg_last_gen || dlg_last_gen + 1 != anim_gen) dlg_t0 = frame_ms;   /* a fresh open */
+    dlg_last_gen = anim_gen;
+    unsigned el = frame_ms - dlg_t0;
+    int e = (int)el >= AUI_T_SLOW ? 256 : gfx_ease_out((int)(el * 256u / AUI_T_SLOW));
+    if (e < 256) anim_live++;      /* keep the wake contract awake for the rest of the entrance */
+    int scrim_a = 110 * e / 256;
+    int rise = 12 * (256 - e) / 256;
+
+    aui_fill_a(0, 0, win_w, win_h, AUI_SCRIM, scrim_a);       /* the scrim */
+    aui_shadow(x, y + rise, w, h + th, AUI_R_XL, AUI_ELEV_3);
+    aui_round(x, y + rise, w, h + th, AUI_R_XL, AUI_SURFACE_2);
+    aui_stroke(x, y + rise, w, h + th, AUI_R_XL, 1, AUI_BORDER);
+    aui_text_in(aui_r(x, y + rise, w, th), title, AUI_TEXT, AUI_FS_TITLE, AUI_ALIGN_CENTER);
     in_dialog = 1;
-    clip_push(aui_r(x, y + th, w, h));
-    ox_ = x; oy_ = y + th;
+    clip_push(aui_r(x, y + rise + th, w, h));
+    ox_ = x; oy_ = y + rise + th;
     return 1;
 }
 

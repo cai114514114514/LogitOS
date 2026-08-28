@@ -68,7 +68,16 @@ endif
 # binary with neither door is more misleading than no jar. (The resulting set
 # is byte-for-byte the list this line held before -- url, http1, hpool, http2,
 # hpack -- so nothing about what this gate measures has changed.)
-H2MUX_HTTP_OUT := c/net/http/cookies.c
+#
+# ws.c is OUT too, added the day WebSocket landed in BROWSER_PIPE: it is
+# transport-free protocol code (frame codec + handshake key), reachable from
+# nothing h2mux_test.c exercises, and its ONE dependency outside itself is
+# `extern void ocsp_sha1(...)` (c/net/ssh/base64.h + c/crypto/hash/sha1.c,
+# neither of which this fragment links) -- so pulling it in here would not
+# multiplex anything, it would just fail this harness's link on a symbol that
+# has nothing to do with HTTP/2. Same shape as cookies.c: a file the browser
+# links that this harness's two doors cannot reach.
+H2MUX_HTTP_OUT := c/net/http/cookies.c c/net/http/ws.c
 H2MUX_SRC := tests/unit/h2mux_test.c c/apps/browser/browser_rt.c \
              $(filter-out $(H2MUX_HTTP_OUT),$(filter c/net/http/%,$(BROWSER_PIPE)))
 

@@ -312,6 +312,24 @@ static void test_class(void)
     CHK(sniff_opener(SN_PNG) && strcmp(sniff_opener(SN_PNG), "show") == 0, "an image says what opens it");
     CHK(sniff_opener(SN_TTF) == 0, "a font has nothing to suggest, and says so");
     CHK(strcmp(sniff_name(SN_TTF), "TrueType font") == 0, "names are for humans");
+
+    /* SNC_AUDIO: the four kinds c/lib/audio's adec_open() actually decodes
+     * (WAV, FLAC, MP3, Vorbis-in-Ogg -- see adec_open's format dispatch in
+     * c/lib/audio/audio.c). Built with -DSNIFF_AUDIO_NEGCTL these four
+     * assertions are the ones REQUIRED to fail (make test-sniff-audio-negctl):
+     * the header falls back to SNC_OPAQUE for them, exactly the behaviour
+     * `show` had before RT_T_AUDIO existed. */
+    CHK(sniff_class(SN_WAV) == SNC_AUDIO, "wav -> audio");
+    CHK(sniff_class(SN_FLAC) == SNC_AUDIO, "flac -> audio");
+    CHK(sniff_class(SN_MP3) == SNC_AUDIO, "mp3 -> audio");
+    CHK(sniff_class(SN_OGG) == SNC_AUDIO, "ogg (assumed vorbis until opened) -> audio");
+    CHK(sniff_opener(SN_WAV) && strcmp(sniff_opener(SN_WAV), "show") == 0,
+        "audio says what opens it, same as image/video");
+    /* A container is not a stream: sniff_id() cannot know what is muxed inside
+     * an MP4 or a Matroska file without demuxing it, so both stay opaque --
+     * unchanged by this class existing at all. */
+    CHK(sniff_class(SN_MP4) == SNC_OPAQUE, "a container is still not audio by itself");
+    CHK(sniff_class(SN_MKV) == SNC_OPAQUE, "neither is Matroska");
 }
 
 int main(void)

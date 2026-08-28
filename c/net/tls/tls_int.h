@@ -365,6 +365,16 @@ int  tls_aead_decrypt(const struct aead *a, const uint8_t nonce[12],
 int  tls_gen_share(struct tls_sess *s);
 int  tls_compute_shared(struct tls_sess *s, const uint8_t *spub, int splen,
                         uint8_t *out, int *outlen);
+
+/* Server-side reply for GRP_X25519MLKEM768 ONLY -- there is no share to
+ * generate until the client's ek has been seen, so this does not fit the
+ * tls_gen_share/tls_compute_shared shape above; see the definition in tls.c
+ * for the full argument and the offset trap (client and server read the
+ * peer's x25519 half at DIFFERENT offsets: HYB_CT_LEN vs HYB_EK_LEN). Used
+ * by tls_server.c. */
+int  tls_srv_kem_reply(struct tls_sess *s, const uint8_t *cpub, int cpublen,
+                       uint8_t *out, int *outlen);
+
 int  tls_group_supported(int grp);        /* ECDHE curves -- TLS 1.2 asks this */
 int  tls_group_supported13(int grp);      /* the above plus the PQ hybrid */
 const char *tls_group_name(int grp);

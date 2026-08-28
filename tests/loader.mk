@@ -5,9 +5,9 @@
 # overwrite of the Makefile, which is exactly how it was lost once already.
 
 .PHONY: test-loader test-loader-negctl test-loader-asan test-script-nav \
-        test-tabs test-tabs-negctl test-tabs-asan
+        test-tabs test-tabs-negctl test-tabs-asan test-media-negctl
 
-test-browser: test-loader test-loader-negctl test-tabs-negctl
+test-browser: test-loader test-loader-negctl test-tabs-negctl test-media-negctl
 
 # --- test-loader: the REAL browser.c load path, host-side ------------------
 # Every other host test in test-browser links a piece of the pipeline. This one
@@ -66,6 +66,41 @@ test-loader-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@grep -q 'ok: CONTROL: the real document' $(BUILD)/loader_negctl.log || \
 	    { echo "FAIL: the control broke the pipeline itself, not just the loader"; exit 1; }
 	@echo "ok: the negative control fails, and on the right checks"
+
+# --- test-media-negctl: the negative control for <link media>/<style media> ---
+# Same test, same fixtures, one thing removed: -DMEDIA_ATTR_IGNORE makes
+# media_needs_wrap() always answer "no" -- exactly what shipped before this
+# change, on BOTH doors (collect_style's <style media> and collect_css_links'
+# <link media>).
+#
+# It must FAIL, and specifically on the two checks that only distinguish
+# "was the attribute honoured" from "did source order alone decide it": the
+# media=print <link> is BOTH later in source order AND wrongly unconditional
+# under the old behaviour, so with the attribute ignored it wins outright,
+# displacing the screen sheet. (The THIRD check -- the narrow inline <style>
+# -- is order-only-coincidentally still correct under the old behaviour too:
+# collect_style() runs before collect_css_links(), so the inline block lands
+# EARLIEST in author_css regardless of its media attribute, and both external
+# sheets already outrank it on source order alone. That check is not asserted
+# to fail here for exactly that reason -- asserting it would be asserting
+# something this control does not isolate.)
+test-media-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@$(CC) -O2 -w $(LOADER_INC) $(BTEST_INC) $(CSS_INC) $(JS_INC) \
+	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DMEDIA_ATTR_IGNORE \
+	    -o $(BUILD)/media_negctl $(LOADER_SRC) $(QJS_SRC) \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@if $(BUILD)/media_negctl > $(BUILD)/media_negctl.log 2>&1; then \
+	    echo "FAIL: the media negative control PASSED -- part 4 does not measure the fix"; \
+	    exit 1; fi
+	@grep -q 'FAIL: the UNCONDITIONAL screen sheet' $(BUILD)/media_negctl.log || \
+	    { echo "FAIL: the control failed, but not on which sheet won"; exit 1; }
+	@grep -q 'FAIL: the media=print <link> did NOT win' $(BUILD)/media_negctl.log || \
+	    { echo "FAIL: the control failed, but print still lost like it should"; exit 1; }
+	@grep -q 'ok: both list items produced boxes' $(BUILD)/media_negctl.log || \
+	    { echo "FAIL: the control broke box generation itself, not just cascade order"; exit 1; }
+	@grep -q 'loader_test: FAIL' $(BUILD)/media_negctl.log || \
+	    { echo "FAIL: the harness did not report an overall failure"; exit 1; }
+	@echo "ok: the media negative control fails, and on the right checks"
 
 # --- test-tabs-negctl: the negative control for TABS -----------------------
 # Same test, same fixtures, one thing removed: -DTABS_NO_RETAIN builds a browser

@@ -199,6 +199,7 @@ int main(void)
     t_stdio2();
     t_dirstat();
     t_atexit();
+    t_system();
     if (fails == 0) printf("LIBC_OK %d/%d\n", checks - fails, checks);
     else            printf("LIBC_FAIL %d/%d (%d failed)\n", checks - fails, checks, fails);
     return fails ? 1 : 0;

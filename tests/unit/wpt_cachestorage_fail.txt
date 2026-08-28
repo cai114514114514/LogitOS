@@ -1,0 +1,514 @@
+# WPT subtests that fail today, as "<path>::<subtest name>".
+#
+# "<path>::*" means EVERY subtest in that file fails -- the file is
+# collapsed to one line because a per-subtest list of an all-red file
+# carries no information a single line does not, and the uncollapsed
+# form of this corpus is a 16 MB file nobody diffs. Files with a MIXED
+# result keep their exact per-subtest entries, which is where a ratchet
+# earns its keep: a regression there names the subtest.
+#
+# "::[HARNESS]" means the file never completed the harness at all -- a
+# worse category than a failing assertion, and the one to read first.
+#
+# A subtest name may contain a newline (css/css-syntax names cases after
+# the declaration block under test); those are escaped as \n here and
+# unescaped on read, so one entry is always exactly one line.
+#
+# Regenerate with `make wpt-baseline`. Shrinking this file is the point;
+# growing it needs a reason written next to the new entries.
+service-workers/cache-storage/cache-abort.https.any.js::put() followed by abort after headers received should reject with AbortError
+service-workers/cache-storage/cache-abort.https.any.js::add() followed by abort after headers received should reject with AbortError
+service-workers/cache-storage/cache-abort.https.any.js::addAll() followed by abort after headers received should reject with AbortError
+service-workers/cache-storage/cache-add.https.any.js::Cache.add called with relative URL specified as a string
+service-workers/cache-storage/cache-add.https.any.js::Cache.add called with Request object
+service-workers/cache-storage/cache-add.https.any.js::Cache.add called twice with the same Request object
+service-workers/cache-storage/cache-add.https.any.js::Cache.add with request with null body (not consumed)
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll with opaque-filtered 206 response
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll with string URL arguments
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll with Request arguments
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll called with the same Request object specified twice
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll should succeed when entries differ by vary header
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll should reject when entries are duplicate by vary header
+service-workers/cache-storage/cache-add.https.any.js::Cache.addAll should reject when one entry has a vary header matching another entry
+service-workers/cache-storage/cache-api-nested-worker.https.html::*
+service-workers/cache-storage/cache-delete.https.any.js::Cache.delete with no arguments
+service-workers/cache-storage/cache-delete.https.any.js::Cache.delete called with a HEAD request
+service-workers/cache-storage/cache-delete.https.any.js::Cache.delete with ignoreSearch option (request with search parameters)
+service-workers/cache-storage/cache-delete.https.any.js::Cache.delete with ignoreSearch option (when it is specified as false)
+service-workers/cache-storage/cache-keys-attributes-for-service-worker.https.html::*
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with URL
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with Request
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with new Request
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with ignoreSearch option (request with no search parameters)
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with ignoreSearch option (request with search parameters)
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys supports ignoreMethod
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys supports ignoreVary
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with URL containing fragment
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys without parameters
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with explicitly undefined request
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys without parameters and VARY entries
+service-workers/cache-storage/cache-keys.https.any.js::Cache.keys with a HEAD Request
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with URL
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with Request
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with multiple cache hits
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with new Request
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with HEAD
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with ignoreSearch option (request with no search parameters)
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with ignoreSearch option (request with search parameter)
+service-workers/cache-storage/cache-match.https.any.js::Cache.match supports ignoreMethod
+service-workers/cache-storage/cache-match.https.any.js::Cache.match supports ignoreVary
+service-workers/cache-storage/cache-match.https.any.js::Cache.match does not support cacheName option
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with URL containing fragment
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with responses containing "Vary" header
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with Request and Response objects with different URLs
+service-workers/cache-storage/cache-match.https.any.js::Cache.match blob should be sliceable
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with a non-2xx Response
+service-workers/cache-storage/cache-match.https.any.js::Cache.match with a network error Response
+service-workers/cache-storage/cache-match.https.any.js::Cache produces large Responses that can be cloned and read correctly.
+service-workers/cache-storage/cache-match.https.any.js::cors-exposed header should be stored correctly.
+service-workers/cache-storage/cache-match.https.any.js::MIME type should be set from content-header correctly.
+service-workers/cache-storage/cache-match.https.any.js::MIME type should reflect Content-Type headers of response.
+service-workers/cache-storage/cache-match.https.any.js::Cache.match ignores vary headers on opaque response.
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with URL
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with Request
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with new Request
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with HEAD
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with ignoreSearch option (request with no search parameters)
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with ignoreSearch option (request with search parameters)
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll supports ignoreMethod
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll supports ignoreVary
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with URL containing fragment
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll without parameters
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with explicitly undefined request
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with explicitly undefined request and empty options
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with responses containing "Vary" header
+service-workers/cache-storage/cache-matchAll.https.any.js::Cache.matchAll with multiple vary pairs
+service-workers/cache-storage/cache-put.https.any.js::Cache.put called with Request and Response from fetch()
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with a Response containing an empty URL
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with HTTP 206 response
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with opaque-filtered HTTP 206 response
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with HTTP 500 response
+service-workers/cache-storage/cache-put.https.any.js::Cache.put called twice with matching Requests and different Responses
+service-workers/cache-storage/cache-put.https.any.js::Cache.put called multiple times with request URLs that differ only by a fragment
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with a relative URL
+service-workers/cache-storage/cache-put.https.any.js::getReader() after Cache.put
+service-workers/cache-storage/cache-put.https.any.js::Cache.put with a VARY:* opaque response should not reject
+service-workers/cache-storage/cache-put.https.any.js::Cache.put should store Response.redirect() correctly
+service-workers/cache-storage/cache-storage-buckets.https.any.js::*
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch with no cache name provided
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch from one of many caches
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch from one of many caches by name
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch a string request
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch a HEAD request
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch with empty cache name provided
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch supports ignoreSearch
+service-workers/cache-storage/cache-storage-match.https.any.js::Cache.match supports ignoreMethod
+service-workers/cache-storage/cache-storage-match.https.any.js::CacheStorageMatch supports ignoreVary
+service-workers/cache-storage/cache-storage.https.any.js::CacheStorage.delete dooms, but does not delete immediately
+service-workers/cache-storage/cache-storage.https.any.js::CacheStorage.open with no arguments
+service-workers/cache-storage/cache-storage.https.any.js::CacheStorage.open with existing cache
+service-workers/cache-storage/common.https.window.js::*
+service-workers/cache-storage/credentials.https.html::*
+service-workers/cache-storage/sandboxed-iframes.https.html::*
+service-workers/idlharness.https.any.js::*
+service-workers/service-worker/Service-Worker-Allowed-header.https.html::Registering within Service-Worker-Allowed path
+service-workers/service-worker/Service-Worker-Allowed-header.https.html::Registering within Service-Worker-Allowed path (absolute URL)
+service-workers/service-worker/Service-Worker-Allowed-header.https.html::Registering within Service-Worker-Allowed path with parent reference
+service-workers/service-worker/ServiceWorkerGlobalScope/close.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/error-message-event.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/extendable-message-event-constructor.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/extendable-message-event.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/fetch-on-the-right-interface.https.any.js::*
+service-workers/service-worker/ServiceWorkerGlobalScope/isSecureContext.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/message-event-ports.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/postmessage.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/registration-attribute.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/service-worker-error-event.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/unregister.https.html::*
+service-workers/service-worker/ServiceWorkerGlobalScope/update.https.html::*
+service-workers/service-worker/about-blank-replacement.https.html::*
+service-workers/service-worker/activate-event-after-install-state-change.https.html::*
+service-workers/service-worker/activation-after-registration.https.html::*
+service-workers/service-worker/activation.https.html::*
+service-workers/service-worker/active.https.html::*
+service-workers/service-worker/add-routes.https.html::*
+service-workers/service-worker/claim-affect-other-registration.https.html::*
+service-workers/service-worker/claim-fetch.https.html::*
+service-workers/service-worker/claim-not-using-registration.https.html::*
+service-workers/service-worker/claim-shared-worker-fetch.https.html::*
+service-workers/service-worker/claim-using-registration.https.html::*
+service-workers/service-worker/claim-with-redirect.https.html::*
+service-workers/service-worker/claim-worker-fetch.https.html::*
+service-workers/service-worker/client-id.https.html::*
+service-workers/service-worker/client-navigate.https.html::*
+service-workers/service-worker/client-url-creation-url.https.html::*
+service-workers/service-worker/client-url-of-blob-url-worker.https.html::*
+service-workers/service-worker/clients-get-client-types.https.html::*
+service-workers/service-worker/clients-get-cross-origin.https.html::*
+service-workers/service-worker/clients-get-resultingClientId.https.html::global setup
+service-workers/service-worker/clients-get-resultingClientId.https.html::get(resultingClientId) for same-origin document
+service-workers/service-worker/clients-get-resultingClientId.https.html::get(resultingClientId) on cross-origin redirect
+service-workers/service-worker/clients-get-resultingClientId.https.html::get(resultingClientId) for document sandboxed by CSP header
+service-workers/service-worker/clients-get-resultingClientId.https.html::get(resultingClientId) for document sandboxed by CSP header with allow-same-origin
+service-workers/service-worker/clients-get.https.html::*
+service-workers/service-worker/clients-matchall-blob-url-worker.https.html::*
+service-workers/service-worker/clients-matchall-client-types.https.html::*
+service-workers/service-worker/clients-matchall-exact-controller.https.html::*
+service-workers/service-worker/clients-matchall-frozen.https.html::*
+service-workers/service-worker/clients-matchall-include-uncontrolled.https.html::*
+service-workers/service-worker/clients-matchall-on-evaluation.https.html::*
+service-workers/service-worker/clients-matchall-order.https.html::*
+service-workers/service-worker/clients-matchall.https.html::*
+service-workers/service-worker/controlled-dedicatedworker-postMessage.https.html::*
+service-workers/service-worker/controlled-iframe-postMessage.https.html::Register service worker
+service-workers/service-worker/controlled-iframe-postMessage.https.html::Verify frame gets early messages if setting synchronously message event listener
+service-workers/service-worker/controlled-iframe-postMessage.https.html::Verify frame does get messages in order
+service-workers/service-worker/controller-on-disconnect.https.html::*
+service-workers/service-worker/controller-on-load.https.html::*
+service-workers/service-worker/controller-on-reload.https.html::*
+service-workers/service-worker/controller-with-no-fetch-event-handler.https.html::*
+service-workers/service-worker/credentials.https.html::Main script should have credentials
+service-workers/service-worker/credentials.https.html::Imported script should have credentials
+service-workers/service-worker/credentials.https.html::Module with an imported statement should not have credentials
+service-workers/service-worker/credentials.https.html::Script with service worker served as modules should not have credentials
+service-workers/service-worker/css-sw-same-origin-substitution.https.html::*
+service-workers/service-worker/data-iframe.html::*
+service-workers/service-worker/data-transfer-files.https.html::*
+service-workers/service-worker/dedicated-worker-service-worker-interception.https.html::*
+service-workers/service-worker/detached-context.https.html::*
+service-workers/service-worker/embed-and-object-are-not-intercepted.https.html::*
+service-workers/service-worker/extendable-event-async-waituntil.https.html::*
+service-workers/service-worker/extendable-event-waituntil.https.html::*
+service-workers/service-worker/fetch-audio-tainting.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-double-write.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-image-cache.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-image.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-video-cache.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-video-with-range-request.https.html::*
+service-workers/service-worker/fetch-canvas-tainting-video.https.html::*
+service-workers/service-worker/fetch-cors-exposed-header-names.https.html::*
+service-workers/service-worker/fetch-cors-xhr.https.html::*
+service-workers/service-worker/fetch-csp.https.html::*
+service-workers/service-worker/fetch-error.https.html::*
+service-workers/service-worker/fetch-event-add-async.https.html::*
+service-workers/service-worker/fetch-event-after-navigation-within-page.https.html::*
+service-workers/service-worker/fetch-event-async-respond-with.https.html::global setup
+service-workers/service-worker/fetch-event-async-respond-with.https.html::respondWith in a task throws InvalidStateError
+service-workers/service-worker/fetch-event-async-respond-with.https.html::respondWith in a microtask does not throw
+service-workers/service-worker/fetch-event-handled.https.html::*
+service-workers/service-worker/fetch-event-network-error.https.html::*
+service-workers/service-worker/fetch-event-redirect.https.html::*
+service-workers/service-worker/fetch-event-referrer-policy.https.html::*
+service-workers/service-worker/fetch-event-respond-with-argument.https.html::*
+service-workers/service-worker/fetch-event-respond-with-body-loaded-in-chunk.https.html::*
+service-workers/service-worker/fetch-event-respond-with-custom-response.https.html::*
+service-workers/service-worker/fetch-event-respond-with-partial-stream.https.html::*
+service-workers/service-worker/fetch-event-respond-with-readable-stream-chunk.https.html::*
+service-workers/service-worker/fetch-event-respond-with-readable-stream.https.html::*
+service-workers/service-worker/fetch-event-respond-with-response-body-with-invalid-chunk.https.html::*
+service-workers/service-worker/fetch-event-respond-with-stops-propagation.https.html::*
+service-workers/service-worker/fetch-event-throws-after-respond-with.https.html::*
+service-workers/service-worker/fetch-event-within-sw.https.html::*
+service-workers/service-worker/fetch-event.https.h2.html::*
+service-workers/service-worker/fetch-event.https.html::global setup
+service-workers/service-worker/fetch-event.https.html::Service Worker headers in the request of a fetch event
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with string
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event using request fragment with string
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with blob body
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with the referrer URL
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with an existing client id
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with the correct resulting client id
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with null response body
+service-workers/service-worker/fetch-event.https.html::Service Worker fetches other file in fetch event
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with POST form
+service-workers/service-worker/fetch-event.https.html::Service Worker falls back to network in fetch event with POST form
+service-workers/service-worker/fetch-event.https.html::Multiple calls of respondWith must throw InvalidStateErrors
+service-workers/service-worker/fetch-event.https.html::Service Worker event.respondWith must set the used flag
+service-workers/service-worker/fetch-event.https.html::Service Worker should expose FetchEvent URL fragments.
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with the correct cache types
+service-workers/service-worker/fetch-event.https.html::Service Worker should intercept EventSource
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with the correct integrity_metadata
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a string
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a ReadableStream
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a string and is passed to network fallback
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a none Uint8Array ReadableStream and is passed to a service worker
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a string, used and passed to network fallback
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a string, cloned and passed to network fallback
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a blob
+service-workers/service-worker/fetch-event.https.html::FetchEvent#body is a blob and is passed to network fallback
+service-workers/service-worker/fetch-event.https.html::Service Worker responds to fetch event with the correct keepalive value
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isReloadNavigation is true (location.reload())
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isReloadNavigation is true (history.go(0))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isReloadNavigation is true (POST + location.reload())
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isReloadNavigation is true (with history traversal)
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is true (with history.go(-1))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is true (with history.go(1))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is false (with history.go(0))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is false (with location.reload)
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is true (with history.go(-2))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is true (with history.go(2))
+service-workers/service-worker/fetch-event.https.html::FetchEvent#request.isHistoryNavigation is true (POST + history.go(-1))
+service-workers/service-worker/fetch-event.https.html::XHR upload progress events for response coming from SW
+service-workers/service-worker/fetch-event.https.html::XHR upload progress events for network fallback
+service-workers/service-worker/fetch-event.https.html::Fetch with POST with text on sw 421 response should not be retried.
+service-workers/service-worker/fetch-frame-resource.https.html::*
+service-workers/service-worker/fetch-header-visibility.https.html::*
+service-workers/service-worker/fetch-mixed-content-to-inscope.https.html::*
+service-workers/service-worker/fetch-mixed-content-to-outscope.https.html::*
+service-workers/service-worker/fetch-request-body-cancel.https.html::*
+service-workers/service-worker/fetch-request-css-base-url.https.html::global setup
+service-workers/service-worker/fetch-request-css-base-url.https.html::base URL when service worker does respondWith(fetch(responseUrl)).
+service-workers/service-worker/fetch-request-css-base-url.https.html::base URL when service worker does respondWith(new Response()).
+service-workers/service-worker/fetch-request-css-cross-origin.https.html::*
+service-workers/service-worker/fetch-request-css-images.https.html::*
+service-workers/service-worker/fetch-request-fallback.https.html::*
+service-workers/service-worker/fetch-request-no-freshness-headers.https.html::*
+service-workers/service-worker/fetch-request-redirect.https.html::*
+service-workers/service-worker/fetch-request-resources.https.html::*
+service-workers/service-worker/fetch-request-xhr-sync-error.https.window.js::*
+service-workers/service-worker/fetch-request-xhr-sync-on-worker.https.html::*
+service-workers/service-worker/fetch-request-xhr-sync.https.html::*
+service-workers/service-worker/fetch-request-xhr.https.html::*
+service-workers/service-worker/fetch-response-taint.https.html::*
+service-workers/service-worker/fetch-response-xhr.https.html::*
+service-workers/service-worker/fetch-waits-for-activate.https.html::*
+service-workers/service-worker/fetch-with-body.https.html::*
+service-workers/service-worker/getregistration.https.html::Register then getRegistration
+service-workers/service-worker/getregistration.https.html::Register then getRegistration with a URL having a fragment
+service-workers/service-worker/getregistration.https.html::getRegistration with a cross origin URL
+service-workers/service-worker/getregistration.https.html::Register then Unregister then getRegistration
+service-workers/service-worker/getregistration.https.html::Register then Unregister then getRegistration in controlled iframe
+service-workers/service-worker/getregistrations.https.html::Register then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register multiple times then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register then Unregister then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register then Unregister with controlled frame then getRegistrations
+service-workers/service-worker/getregistrations.https.html::getRegistrations promise resolves only with same origin registrations.
+service-workers/service-worker/getregistrations.https.html::Register then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register multiple times then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register then Unregister then getRegistrations
+service-workers/service-worker/getregistrations.https.html::Register then Unregister with controlled frame then getRegistrations
+service-workers/service-worker/getregistrations.https.html::getRegistrations promise resolves only with same origin registrations.
+service-workers/service-worker/global-serviceworker.https.any.js::*
+service-workers/service-worker/historical.https.any.js::*
+service-workers/service-worker/http-to-https-redirect-and-register.https.html::*
+service-workers/service-worker/immutable-prototype-serviceworker.https.html::*
+service-workers/service-worker/import-scripts-cross-origin.https.html::*
+service-workers/service-worker/import-scripts-data-url.https.html::*
+service-workers/service-worker/import-scripts-mime-types.https.html::*
+service-workers/service-worker/import-scripts-redirect.https.html::*
+service-workers/service-worker/import-scripts-resource-map.https.html::*
+service-workers/service-worker/import-scripts-updated-flag.https.html::*
+service-workers/service-worker/indexeddb.https.html::*
+service-workers/service-worker/install-event-type.https.html::*
+service-workers/service-worker/installing.https.html::*
+service-workers/service-worker/intercepted-referrer.https.html::*
+service-workers/service-worker/interface-requirements-sw.https.html::*
+service-workers/service-worker/invalid-blobtype.https.html::*
+service-workers/service-worker/invalid-header.https.html::*
+service-workers/service-worker/iso-latin1-header.https.html::*
+service-workers/service-worker/local-url-inherit-controller.https.html::*
+service-workers/service-worker/mime-sniffing.https.html::*
+service-workers/service-worker/multi-globals/url-parsing.https.html::*
+service-workers/service-worker/multipart-image.https.html::*
+service-workers/service-worker/multiple-register.https.html::*
+service-workers/service-worker/multiple-update.https.html::*
+service-workers/service-worker/navigate-window.https.html::*
+service-workers/service-worker/navigation-headers.https.html::*
+service-workers/service-worker/navigation-preload/broken-chunked-encoding.https.html::*
+service-workers/service-worker/navigation-preload/chunked-encoding.https.html::*
+service-workers/service-worker/navigation-preload/content-encoding.https.html::*
+service-workers/service-worker/navigation-preload/empty-preload-response-body.https.html::*
+service-workers/service-worker/navigation-preload/get-state.https.html::*
+service-workers/service-worker/navigation-preload/navigationPreload.https.html::*
+service-workers/service-worker/navigation-preload/redirect.https.html::*
+service-workers/service-worker/navigation-preload/request-headers.https.html::*
+service-workers/service-worker/navigation-preload/resource-timing.https.html::*
+service-workers/service-worker/navigation-preload/samesite-cookies.https.html::*
+service-workers/service-worker/navigation-preload/samesite-iframe.https.html::*
+service-workers/service-worker/navigation-redirect-body.https.html::*
+service-workers/service-worker/navigation-redirect-resolution.https.html::*
+service-workers/service-worker/navigation-redirect-to-http.https.html::*
+service-workers/service-worker/navigation-redirect.https.html::*
+service-workers/service-worker/navigation-sets-cookie.https.html::*
+service-workers/service-worker/navigation-timing-extended.https.html::*
+service-workers/service-worker/navigation-timing-sizes.https.html::*
+service-workers/service-worker/navigation-timing.https.html::*
+service-workers/service-worker/nested-blob-url-workers.https.html::*
+service-workers/service-worker/next-hop-protocol.https.html::*
+service-workers/service-worker/no-dynamic-import-in-module.any.js::*
+service-workers/service-worker/no-dynamic-import.any.js::*
+service-workers/service-worker/onactivate-script-error.https.html::*
+service-workers/service-worker/oninstall-script-error.https.html::*
+service-workers/service-worker/opaque-response-preloaded.https.html::*
+service-workers/service-worker/opaque-script.https.html::*
+service-workers/service-worker/performance-timeline.https.html::*
+service-workers/service-worker/postmessage-blob-url.https.html::*
+service-workers/service-worker/postmessage-from-waiting-serviceworker.https.html::*
+service-workers/service-worker/postmessage-msgport-to-client.https.html::*
+service-workers/service-worker/postmessage-to-client-message-queue.https.html::*
+service-workers/service-worker/postmessage-to-client.https.html::*
+service-workers/service-worker/postmessage.https.html::*
+service-workers/service-worker/ready.https.window.js::ready returns a Promise object in the context of the related document
+service-workers/service-worker/ready.https.window.js::ready on a controlled document
+service-workers/service-worker/ready.https.window.js::ready on a potential controlled document
+service-workers/service-worker/ready.https.window.js::ready on an iframe whose parent registers a new service worker
+service-workers/service-worker/ready.https.window.js::ready on an iframe that installs a new service worker
+service-workers/service-worker/ready.https.window.js::ready after a longer matched registration registered
+service-workers/service-worker/ready.https.window.js::access ready after it has been resolved
+service-workers/service-worker/ready.https.window.js::resolve ready after unregistering
+service-workers/service-worker/redirected-response.https.html::*
+service-workers/service-worker/referer.https.html::*
+service-workers/service-worker/referrer-policy-header.https.html::*
+service-workers/service-worker/referrer-toplevel-script-fetch.https.html::*
+service-workers/service-worker/register-closed-window.https.html::*
+service-workers/service-worker/register-default-scope.https.html::default scope
+service-workers/service-worker/register-default-scope.https.html::undefined scope
+service-workers/service-worker/register-same-scope-different-script-url.https.html::*
+service-workers/service-worker/register-wait-forever-in-install-worker.https.html::*
+service-workers/service-worker/registration-basic.https.html::*
+service-workers/service-worker/registration-end-to-end.https.html::*
+service-workers/service-worker/registration-events.https.html::*
+service-workers/service-worker/registration-iframe.https.html::register method should use the "relevant global object" to parse its scriptURL and scope - normal case
+service-workers/service-worker/registration-iframe.https.html::A scope url should start with the given script url
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with no MIME type
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with bad MIME type
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type application/ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type application/ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type application/javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type application/javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type application/x-ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type application/x-ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type application/x-javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type application/x-javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.0
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.0
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.1
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.1
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.2
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.2
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.3
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.3
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.4
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.4
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/javascript1.5
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/javascript1.5
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/jscript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/jscript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/livescript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/livescript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/x-ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/x-ecmascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script with good MIME type text/x-javascript
+service-workers/service-worker/registration-mime-types.https.html::Registering script that imports script with good MIME type text/x-javascript
+service-workers/service-worker/registration-schedule-job.https.html::*
+service-workers/service-worker/registration-scope-module-static-import.https.html::*
+service-workers/service-worker/registration-scope.https.html::*
+service-workers/service-worker/registration-script-module.https.html::*
+service-workers/service-worker/registration-script-url.https.html::*
+service-workers/service-worker/registration-script.https.html::*
+service-workers/service-worker/registration-security-error.https.html::Script URL is same-origin filesystem: URL
+service-workers/service-worker/registration-service-worker-attributes.https.html::*
+service-workers/service-worker/registration-updateviacache.https.html::*
+service-workers/service-worker/request-end-to-end.https.html::*
+service-workers/service-worker/resource-timing-bodySize.https.html::*
+service-workers/service-worker/resource-timing-cross-origin-server-timing.https.html::*
+service-workers/service-worker/resource-timing-cross-origin.https.html::*
+service-workers/service-worker/resource-timing-fetch-variants.https.html::*
+service-workers/service-worker/resource-timing.sub.https.html::*
+service-workers/service-worker/respond-with-body-accessed-response.https.html::*
+service-workers/service-worker/same-site-cookies.https.html::*
+service-workers/service-worker/sandboxed-iframe-fetch-event.https.html::*
+service-workers/service-worker/sandboxed-iframe-navigator-serviceworker.https.html::Accessing navigator.serviceWorker in normal iframe should not throw.
+service-workers/service-worker/sandboxed-iframe-navigator-serviceworker.https.html::Accessing navigator.serviceWorker in sandboxed iframe should throw.
+service-workers/service-worker/sandboxed-iframe-navigator-serviceworker.https.html::Accessing navigator.serviceWorker in sandboxed iframe with allow-same-origin flag should not throw.
+service-workers/service-worker/secure-context.https.html::*
+service-workers/service-worker/service-worker-csp-connect.https.html::*
+service-workers/service-worker/service-worker-csp-default.https.html::*
+service-workers/service-worker/service-worker-csp-script.https.html::*
+service-workers/service-worker/service-worker-header.https.html::*
+service-workers/service-worker/serviceworker-message-event-historical.https.html::*
+service-workers/service-worker/serviceworkerobject-scripturl.https.html::*
+service-workers/service-worker/skip-waiting-installed.https.html::*
+service-workers/service-worker/skip-waiting-using-registration.https.html::*
+service-workers/service-worker/skip-waiting-without-client.https.html::*
+service-workers/service-worker/skip-waiting-without-using-registration.https.html::*
+service-workers/service-worker/skip-waiting.https.html::*
+service-workers/service-worker/soft-update-fetch-metadata.https.html::*
+service-workers/service-worker/srcdoc-iframe.https.html::*
+service-workers/service-worker/state.https.html::*
+service-workers/service-worker/static-router-cross-origin-navigation.https.html::*
+service-workers/service-worker/static-router-fetch-event.https.html::*
+service-workers/service-worker/static-router-invalid-rules.https.html::*
+service-workers/service-worker/static-router-main-resource.https.html::*
+service-workers/service-worker/static-router-multiple-router-registrations.https.html::*
+service-workers/service-worker/static-router-mutiple-conditions.https.html::*
+service-workers/service-worker/static-router-no-fetch-handler.https.html::*
+service-workers/service-worker/static-router-race-network-and-fetch-handler.https.html::*
+service-workers/service-worker/static-router-request-destination.https.html::*
+service-workers/service-worker/static-router-request-method.https.html::*
+service-workers/service-worker/static-router-subresource.https.html::*
+service-workers/service-worker/svg-target-reftest.https.html::*
+service-workers/service-worker/synced-state.https.html::*
+service-workers/service-worker/tentative/fetch-event-download-fallback.https.html::*
+service-workers/service-worker/tentative/fetch-event-download-out-of-scope.https.html::*
+service-workers/service-worker/tentative/fetch-event-download-respond-with.https.html::*
+service-workers/service-worker/tentative/fetch-event-download.https.html::*
+service-workers/service-worker/tentative/static-router/static-router-resource-timing.https.html::*
+service-workers/service-worker/uncontrolled-page.https.html::*
+service-workers/service-worker/unregister-controller.https.html::*
+service-workers/service-worker/unregister-immediately-before-installed.https.html::*
+service-workers/service-worker/unregister-immediately-during-extendable-events.https.html::*
+service-workers/service-worker/unregister-immediately.https.html::*
+service-workers/service-worker/unregister-then-register-new-script.https.html::*
+service-workers/service-worker/unregister-then-register.https.html::*
+service-workers/service-worker/unregister.https.html::*
+service-workers/service-worker/update-after-navigation-fetch-event.https.html::*
+service-workers/service-worker/update-after-navigation-redirect.https.html::*
+service-workers/service-worker/update-after-oneday.https.html::*
+service-workers/service-worker/update-bytecheck-cors-import.https.html::*
+service-workers/service-worker/update-bytecheck.https.html::*
+service-workers/service-worker/update-import-scripts.https.html::*
+service-workers/service-worker/update-missing-import-scripts.https.html::*
+service-workers/service-worker/update-module-request-mode.https.html::*
+service-workers/service-worker/update-no-cache-request-headers.https.html::*
+service-workers/service-worker/update-not-allowed.https.html::*
+service-workers/service-worker/update-on-navigation.https.html::*
+service-workers/service-worker/update-recovery.https.html::*
+service-workers/service-worker/update-registration-with-type.https.html::*
+service-workers/service-worker/update-result.https.html::*
+service-workers/service-worker/update.https.html::*
+service-workers/service-worker/waiting.https.html::*
+service-workers/service-worker/websocket-in-service-worker.https.html::*
+service-workers/service-worker/websocket.https.html::*
+service-workers/service-worker/webvtt-cross-origin.https.html::*
+service-workers/service-worker/windowclient-ancestorOrigins.sub.https.html::*
+service-workers/service-worker/windowclient-navigate.https.html::*
+service-workers/service-worker/worker-client-id.https.html::*
+service-workers/service-worker/worker-in-sandboxed-iframe-by-csp-fetch-event.https.html::*
+service-workers/service-worker/worker-interception-redirect.https.html::*
+service-workers/service-worker/worker-interception.https.html::Verify a dedicated worker script request gets correct client Ids
+service-workers/service-worker/worker-interception.https.html::Verify a dedicated worker script request issued from a uncontrolled document is intercepted by worker's own service worker.
+service-workers/service-worker/worker-interception.https.html::Verify an out-of-scope dedicated worker script request issued from a controlled document should not be intercepted by document's service worker.
+service-workers/service-worker/worker-interception.https.html::Verify a shared worker script request issued from a uncontrolled document is intercepted by worker's own service worker.
+service-workers/service-worker/worker-interception.https.html::Verify a same-origin worker script served by a service worker succeeds in starting a dedicated worker.
+service-workers/service-worker/worker-interception.https.html::Verify a same-origin worker script served by a service worker succeeds in starting a shared worker.
+service-workers/service-worker/worker-interception.https.html::Verify a cors worker script served by a service worker fails dedicated worker start.
+service-workers/service-worker/worker-interception.https.html::Verify a cors worker script served by a service worker fails shared worker start.
+service-workers/service-worker/worker-interception.https.html::Verify a no-cors cross-origin worker script served by a service worker fails dedicated worker start.
+service-workers/service-worker/worker-interception.https.html::Verify a no-cors cross-origin worker script served by a service worker fails shared worker start.
+service-workers/service-worker/worker-interception.https.html::Register a service worker for worker subresource interception tests.
+service-workers/service-worker/worker-interception.https.html::Requests on a dedicated worker controlled by a service worker.
+service-workers/service-worker/worker-interception.https.html::Requests on a shared worker controlled by a service worker.
+service-workers/service-worker/worker-interception.https.html::Requests on a dedicated worker nested in a dedicated worker and controlled by a service worker
+service-workers/service-worker/worker-interception.https.html::Requests on a dedicated worker nested in a shared worker and controlled by a service worker
+service-workers/service-worker/xhr-content-length.https.window.js::*
+service-workers/service-worker/xhr-response-url.https.html::global setup
+service-workers/service-worker/xhr-response-url.https.html::XHR responseURL should be the response URL
+service-workers/service-worker/xhr-response-url.https.html::XHR responseURL should be the response URL (generated response)
+service-workers/service-worker/xhr-response-url.https.html::XHR Document should use the response URL
+service-workers/service-worker/xhr-response-url.https.html::XHR Document should use the response URL (generated response)
+service-workers/service-worker/xsl-base-url.https.html::*

@@ -1,0 +1,192 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20823 composites=168 ns=2048214710 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=169 cpx=59737504 fpx=59737504 presns=128352354 torn=0 defer=12 late=0 drawmax=33 evdrop=0
+[wm] perf t=21845 composites=207 ns=2485089504 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=208 cpx=76416024 fpx=76416024 presns=162172186 torn=0 defer=12 late=0 drawmax=33 evdrop=0
+[time] tickloss +11/s worstgap=73262us missed=67 of 2197 expected (3.049% of the clock); uptime 22s
+[browser] load: https://www.bing.com/search?q=python
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.86
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=22871 composites=229 ns=2711148370 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=230 cpx=85239464 fpx=85239464 presns=179053104 torn=0 defer=12 late=0 drawmax=33 evdrop=0
+[time] tickloss +14/s worstgap=87095us missed=81 of 2297 expected (3.526% of the clock); uptime 23s
+[time] tickloss   worst gap: bkl held by cpu 1 ra=0x117afe via=irqsave(kernel entry, IF=0); tick on cpu 0, pid 3, not in kernel
+[sock] connected cn.bing.com via ipv4 ::ffff:198.18.0.87
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 69 irq 47 softirq 21 inline 0 poll 5 idle 0/0 halt/skip
+[mm] low: 113192 frames free (442 MiB), 17845 used, 579 shared, 0 bugs
+[dl] painted text: 29 run(s), 207 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 跳至内容
+[dl] 8,88 辅助功能反馈
+[dl] 8,256 国内版
+[dl] 8,276 国际版
+[dl] 14,304 •
+[dl] 36,304 网页
+[dl] 14,324 •
+[dl] 36,324 图片
+[dl] 14,344 •
+[dl] 36,344 视频
+[dl] 14,364 •
+[dl] 36,364 学术
+[dl] 14,384 •
+[dl] 36,384 词典
+[dl] 14,404 •
+[dl] 36,404 地图
+[dl] 14,424 •
+[dl] 36,424 航班
+[dl] 8,460 约
+[dl] 27,460 87,200
+[dl] 74,460 个结果
+[dl] 8,480 在新选项卡中打开链接
+[dl] 8,524 时间不限
+[dl] 18,552 1.
+[dl] 36,584 https://www.
+[dl] 129,584 python
+[dl] 184,584 .org
+[dl] 36,604 python.org
+[dl] 1125,60  
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=23872 composites=235 ns=2741363219 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=236 cpx=86143324 fpx=86143324 presns=180856095 torn=0 defer=15 late=0 drawmax=33 evdrop=0
+[time] tickloss +22/s worstgap=89236us missed=103 of 2395 expected (4.300% of the clock); uptime 24s
+[time] tickloss   worst gap: bkl held by cpu 1 ra=0x136a0e via=bare; tick on cpu 0, pid 3, not in kernel
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=24874 composites=270 ns=3190749967 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=271 cpx=102180024 fpx=102180024 presns=211618941 torn=0 defer=30 late=0 drawmax=84 evdrop=0
+[time] tickloss +27/s worstgap=89236us missed=130 of 2494 expected (5.212% of the clock); uptime 25s
+[wm] perf t=25880 composites=318 ns=3709307373 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=319 cpx=120774704 fpx=120774704 presns=246275769 torn=0 defer=54 late=0 drawmax=84 evdrop=0
+[time] tickloss +25/s worstgap=89236us missed=155 of 2587 expected (5.991% of the clock); uptime 26s
+[e1000] stats: rx 329 pkt / 260884 B, tx 300 pkt / 48887 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 326 (+326)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[wm] perf t=26899 composites=359 ns=4246049685 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=360 cpx=140181084 fpx=140181084 presns=282276589 torn=0 defer=71 late=0 drawmax=84 evdrop=0
+[time] tickloss +23/s worstgap=89236us missed=178 of 2678 expected (6.646% of the clock); uptime 27s
+[browser] heap peak 7211K
+[dl] painted text: 9 run(s), 60 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 168,354 网页
+[dl] 180,393 图片
+[dl] 180,429 视频
+[dl] 180,465 学术
+[dl] 180,501 词典
+[dl] 180,537 地图
+[dl] 180,573 航班
+[dl] 236,211 国内版
+[dl] 240,237 国际版
+[dl] ---8<--- end painted text
+[mm] low: 112936 frames free (441 MiB), 18101 used, 613 shared, 0 bugs
+[browser] scripts collected: 6 external classic, 0 external module, 14 inline
+[netlock] acq 112313 recursive 721 maxdepth 3 violations 0
+[mm] low: 112680 frames free (440 MiB), 18357 used, 613 shared, 0 bugs
+[time] tickloss +12/s worstgap=89236us missed=190 of 2778 expected (6.839% of the clock); uptime 28s
+[browser] load done: 97 requests, 5 connections dialled, 93 reused, 0 modules loaded (0 failed)
+[browser] pool: 93 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 96 from network (tab 2 of 3)
+[wm] perf t=28922 composites=379 ns=4452086651 max=52010739 motions=18 curmoves=11 curns=265998 full=17 rects=380 cpx=147043324 fpx=147043324 presns=296345517 torn=0 defer=79 late=0 drawmax=84 evdrop=0
+[time] tickloss +10/s worstgap=89236us missed=200 of 2876 expected (6.954% of the clock); uptime 29s
+[mm] low: 112424 frames free (439 MiB), 18613 used, 640 shared, 0 bugs
+[mm] low: 112168 frames free (438 MiB), 18869 used, 655 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=27
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=16 peak=6 frames=51/33 hpack_in=8763
+[bxfer] h2 r.bing.com:443 closed: streams=3 peak=3 frames=12/7 hpack_in=1582
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=6 peak=6 frames=21/14 hpack_in=2741
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[time] tickloss +16/s worstgap=89236us missed=216 of 3074 expected (7.026% of the clock); uptime 31s
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 581 irq 586 softirq 265 inline 9 poll 26 idle 0/0 halt/skip
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=1251
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=2187
+[mm] low: 111912 frames free (437 MiB), 19125 used, 665 shared, 0 bugs
+[e1000] stats: rx 686 pkt / 501128 B, tx 616 pkt / 145157 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 709 (+383)
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[time] tickloss +6/s worstgap=89236us missed=222 of 3177 expected (6.987% of the clock); uptime 32s
+[bxfer] h2 cn.bing.com:443 closed: streams=38 peak=6 frames=117/76 hpack_in=34117
+[bxfer] h2 r.bing.com:443 closed: streams=2 peak=2 frames=9/7 hpack_in=1044
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=6 peak=6 frames=21/14 hpack_in=8973
+[mm] low: 111656 frames free (436 MiB), 19381 used, 670 shared, 0 bugs
+[mm] low: 111400 frames free (435 MiB), 19637 used, 670 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=6 peak=6 frames=21/15 hpack_in=2799
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=5 peak=5 frames=18/13 hpack_in=8442
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=546
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=6 peak=6 frames=21/12 hpack_in=11052
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[bxfer] h2 cn.bing.com:443 closed: streams=3 peak=3 frames=11/9 hpack_in=1516
+[time] tickloss +5/s worstgap=89236us missed=227 of 3374 expected (6.727% of the clock); uptime 34s
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 9 run(s), 60 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 168,354 网页
+[dl] 180,393 图片
+[dl] 180,429 视频
+[dl] 180,465 学术
+[dl] 180,501 词典
+[dl] 180,537 地图
+[dl] 180,573 航班
+[dl] 236,211 国内版
+[dl] 240,237 国际版
+[dl] ---8<--- end painted text

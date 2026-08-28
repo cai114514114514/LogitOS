@@ -163,8 +163,17 @@ static void blit_fit_src(const unsigned char *src, int iw, int ih)
 static void blit_fit(int iw, int ih) { blit_fit_src(rgba, iw, ih); }
 
 /* Returns PUMP_*. Called between frames so a playing clip still answers the
- * close button. Esc and the close button quit; Backspace goes back to the
- * list when there is one. */
+ * close button.
+ *
+ * ESCAPE UNWINDS ONE MODE, IT DOES NOT DESTROY THE APP. When there is a list
+ * to go back to (g_from_picker), viewing a file IS a mode nested under that
+ * list -- exactly like Backspace already treats it, one line below -- so Esc
+ * backs out to the list instead of quitting outright. Only when there is
+ * nothing left to back out to (launched directly on one file, no list) does
+ * Esc close the app, because at that point it is the innermost mode. The
+ * owner's own sentence is the spec: "I wanted to keep looking." The close
+ * button (EV_CLOSE) is a harder signal than either key and always quits --
+ * it is the window disappearing, not a request to browse. */
 static int pump_events(void)
 {
     struct logit_event e;
@@ -172,7 +181,7 @@ static int pump_events(void)
     while (poll_event(&e)) {
         if (e.type == EV_CLOSE) return PUMP_QUIT;
         if (e.type == EV_KEY) {
-            if (e.a == 27) return PUMP_QUIT;
+            if (e.a == 27) r = g_from_picker ? PUMP_BACK : PUMP_QUIT;
             if ((e.a == 8 || e.a == 127) && g_from_picker) r = PUMP_BACK;
         }
     }
@@ -186,7 +195,7 @@ static void status(const char *s)
 
 static const char *hint(void)
 {
-    return g_from_picker ? "Backspace for the list, Esc to quit"
+    return g_from_picker ? "Esc or Backspace for the list"
                          : "Esc or the close button to quit";
 }
 

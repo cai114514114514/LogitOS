@@ -548,8 +548,47 @@ static const uint16_t srv_suites[3] = {
     TLS_CHACHA20_POLY1305_SHA256,
     TLS_AES_256_GCM_SHA384,
 };
-/* Our group preference. x25519 first because it is the constant-time one. */
-static const uint16_t srv_groups[3] = { GRP_X25519, GRP_P256, GRP_P384 };
+/* Our group preference. X25519MLKEM768 FIRST -- MEASURED, not a default
+ * ordering choice: a real 2026 client (Chrome/Firefox/OpenSSL 3.6.3's own
+ * s_client) sends TWO key_shares, hybrid AND bare x25519, in that order
+ * (tls_int.h's note on why). select_keyshare below iterates outer-by-SERVER-
+ * preference, so if x25519 were listed ahead of the hybrid here, a browser
+ * offering both would be handed x25519 on the FIRST loop -- no
+ * HelloRetryRequest, no error, just a silent, permanent loss of the
+ * post-quantum property with nothing in the transcript to show for it. That
+ * is CLAUDE.md category (b) ("built with no real consumer") reproduced by one
+ * array position: the hybrid would be selectable, gated, and green, and never
+ * once negotiated by anything that actually reaches this server. x25519
+ * remains the constant-time classical choice and stays ahead of the two NIST
+ * curves for that reason. */
+static const uint16_t srv_groups[] = {
+#ifndef LOGIT_TLSS_NO_HYBRID
+    /* NEGATIVE CONTROL (test-tls-server-negctl): LOGIT_TLSS_NO_HYBRID compiles
+     * the hybrid capability OUT entirely -- not a corrupted defect, an
+     * absence -- which reproduces exactly what this server did before this
+     * change. It must redden the four hybrid rows in run-tls-server.sh (each
+     * through a DIFFERENT assertion: refusal, round-trip count, negotiated
+     * group, and refusal again) and NOTHING else -- see tests/tlsx.mk for the
+     * pinned count. */
+    GRP_X25519MLKEM768,
+#endif
+    GRP_X25519, GRP_P256, GRP_P384
+};
+#define N_SRV_GROUPS ((int)(sizeof srv_groups / sizeof srv_groups[0]))
+
+/* ServerHello/HelloRetryRequest body + output bound (build_sh, and the hrr[]/
+ * sh[] buffers that receive its output). Was a bare 512, sized for only the
+ * largest CLASSICAL share (P-384, 97 bytes); the hybrid's server share is
+ * HYB_SHARE_SRV (1120 bytes, ct || our x25519 public), and a hybrid
+ * ServerHello body runs ~1206 bytes -- a real, measured 694-byte overflow of
+ * the old buffer on the first honest handshake from a real OpenSSL client,
+ * once the hybrid became selectable. TLS_KX_PEER_MAX is the right constant
+ * (not TLS_KX_PUB_MAX, which bounds the CLIENT's longer share): it is
+ * "the largest key_share a TLS peer puts in a ServerHello", which on this
+ * side of the handshake is OUR reply. +256 covers every other ServerHello
+ * field (session_id echo, extensions, the 4-byte handshake header) with
+ * margin to spare, so the next field anyone adds does not reopen this. */
+#define TLSS_SH_MAX (TLS_KX_PEER_MAX + 256)
 
 struct ch_info {
     const uint8_t *sid; int sidlen;
@@ -657,16 +696,13 @@ static int hs_append(struct db *d, struct tls_sess *s, uint8_t type,
  * reads as an ordinary ServerHello and then fails to make sense of. */
 static void hrr_random(uint8_t out[32]) { sha256("HelloRetryRequest", 17, out); }
 
-/* ServerHello / HelloRetryRequest share a structure (RFC 8446 4.1.4). */
+/* ServerHello / HelloRetryRequest share a structure (RFC 8446 4.1.4).
+ * See TLSS_SH_MAX above (with srv_groups) for why `body` is sized the way it
+ * is now, and not 512. */
 static int build_sh(struct srv_sess *v, uint8_t *out, int max, int retry)
 {
     struct tls_sess *s = &v->s;
-    /* 512 covers a ServerHello with the largest classical share we offer (a
-     * P-384 point, 97 bytes). It is deliberately NOT sized from
-     * TLS_KX_PUB_MAX: that bound is set by the post-quantum hybrid, whose
-     * server share is 1120 bytes, and this server does not offer the hybrid
-     * (see srv_groups). Adding it means changing both, together. */
-    uint8_t body[512]; int n = 0;
+    uint8_t body[TLSS_SH_MAX]; int n = 0;
     n += put_u16(body + n, 0x0303);               /* legacy_version */
     if (retry) hrr_random(body + n);
     else       memcpy(body + n, s->random, 32);
@@ -684,6 +720,19 @@ static int build_sh(struct srv_sess *v, uint8_t *out, int max, int retry)
         n += put_u16(body + n, EXT_KEY_SHARE); n += put_u16(body + n, 2);
         n += put_u16(body + n, s->group);
     } else {
+        /* Explicit bound check BEFORE the memcpy, not left to whatever `max`
+         * hs_append happens to be called with below: an overflow here would
+         * land in `body` itself, on the stack of THIS function, before o.max
+         * is ever consulted -- so hs_append's own `d->n + 4 + blen > d->max`
+         * check cannot be the thing that catches it. Measured: with body
+         * undersized, this was a stack-buffer-overflow WRITE that landed on
+         * the very `struct db o` declared below, corrupting the bound that
+         * would otherwise have refused the write. TLSS_SH_MAX is sized with
+         * margin (see TLSS_SH_MAX's definition, above with srv_groups) so
+         * this should never fire in practice;
+         * it exists so a future field added to the ServerHello fails a clean
+         * AL_INTERNAL_ERROR instead of reopening this. */
+        if (n + 4 + s->publen > (int)sizeof body) return -1;
         n += put_u16(body + n, EXT_KEY_SHARE); n += put_u16(body + n, s->publen + 4);
         n += put_u16(body + n, s->group); n += put_u16(body + n, s->publen);
         memcpy(body + n, s->pub, (size_t)s->publen); n += s->publen;
@@ -722,7 +771,7 @@ static int select_suite(const struct ch_info *ci)
  * writes the share and its length through the two out-parameters. */
 static int select_keyshare(const struct ch_info *ci, const uint8_t **pub, int *publen)
 {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < N_SRV_GROUPS; i++) {
         int p = 0;
         while (p + 4 <= ci->kslen) {
             int g = rd_u16(ci->ks + p), l = rd_u16(ci->ks + p + 2);
@@ -735,13 +784,18 @@ static int select_keyshare(const struct ch_info *ci, const uint8_t **pub, int *p
 }
 
 /* Failing that, a group we support that the client at least SAID it supports.
- * That is the HelloRetryRequest case, and it is what makes a 2026 browser
- * reach this server at all: Chrome and Firefox put X25519MLKEM768 in
- * key_share and x25519 in supported_groups, so the first loop finds nothing
- * and this one finds the way forward. */
+ * That is the HelloRetryRequest case. MEASURED, and it is narrower than it
+ * looks: an ordinary 2026 Chrome/Firefox ClientHello carries TWO key_shares
+ * (hybrid AND a bare x25519 -- see tls_int.h), so select_keyshare's first
+ * loop finds x25519 immediately and this function is never reached for that
+ * client. What actually lands here is a client that offers the hybrid ALONE
+ * in key_share (a bare `openssl s_client -groups X25519MLKEM768`, or any
+ * client that has not learned to hedge the way browsers do) with a classical
+ * group still listed in supported_groups -- that is the case this function
+ * finds the way forward for. */
 static int select_retry_group(const struct ch_info *ci)
 {
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < N_SRV_GROUPS; i++)
         for (int j = 0; j + 1 < ci->groupslen; j += 2)
             if (rd_u16(ci->groups + j) == srv_groups[i]) return srv_groups[i];
     return 0;
@@ -1016,7 +1070,7 @@ static int step_recv_ch(struct srv_sess *v)
         tls_th_update(s, s->hsbuf, 4 + ml);         /* CH1 into the transcript... */
         s->group = retry;
         transcript_restart_hrr(s);                   /* ...then replaced by its hash */
-        uint8_t hrr[512];
+        uint8_t hrr[TLSS_SH_MAX];
         int hn = build_sh(v, hrr, sizeof hrr, 1);
         if (hn < 0) return sfail(v, AL_INTERNAL_ERROR, TLS_E_PROTO);
         if (tls_tx_queue(s, REC_HANDSHAKE, hrr, hn)) return sfail(v, AL_INTERNAL_ERROR, TLS_E_PROTO);
@@ -1033,25 +1087,61 @@ static int step_recv_ch(struct srv_sess *v)
         return fl ? step_recv_ch(v) : TLS_WANT_WRITE;
     }
 
+    /* RFC 8446 4.1.4 MUST: after a HelloRetryRequest, ClientHello2's key_share
+     * must name the SAME group the retry asked for (s->group still holds it,
+     * set above at HRR time and not yet overwritten). tls_server.c already
+     * makes the equivalent check for the cipher suite a few lines up, with the
+     * transcript-restart argument for why; the group had no matching check --
+     * measured, on the STOCK server, by answering an HRR for x25519 with a
+     * secp256r1 share and watching it get ACCEPTED. Not remotely exploitable
+     * by itself (CH2 is transcript-bound, so it needs a client that WANTS to
+     * do this), but the moment one of the two groups involved is the hybrid,
+     * this server would be the one performing the downgrade. */
+    if (v->hrr_sent && grp != s->group) {
+        kprintf("[tlss] ClientHello2's key_share (%s) does not match the "
+                "HelloRetryRequest (%s) -- aborting\n",
+                tls_group_name(grp), tls_group_name(s->group));
+        return sfail(v, AL_ILLEGAL_PARAMETER, TLS_E_PROTO);
+    }
     s->group = grp;
     tls_th_update(s, s->hsbuf, 4 + ml);
     s->hslen = 0;
 
     select_alpn(v, &ci);
 
-    /* Our ephemeral share, and the shared secret from the client's. */
-    if (tls_gen_share(s) != 0) return sfail(v, AL_INTERNAL_ERROR, TLS_E_CRYPTO);
-    uint8_t shared[48]; int sharedlen = 0;
-    if (tls_compute_shared(s, cpub, cpublen, shared, &sharedlen) != 0) {
-        crypto_wipe(shared, sizeof shared);
-        /* A share that is the wrong length, off the curve, or (x25519) a
-         * low-order point. illegal_parameter, not handshake_failure: the
-         * client sent something specific and wrong. */
-        return sfail(v, AL_ILLEGAL_PARAMETER, TLS_E_CRYPTO);
+    /* Our reply, and the shared secret from the client's share.
+     *
+     * GRP_X25519MLKEM768 is a THIRD shape, not a variant of the
+     * gen-share-then-derive pair below: a KEM server has no share of its own
+     * to generate until it has SEEN the client's (there is no "our ephemeral
+     * keypair" the way there is for x25519/EC), so tls_gen_share -- which
+     * would mint and discard a 2400-byte ML-KEM decapsulation key for nothing
+     * -- is skipped entirely for this group. tls_srv_kem_reply (tls.c, next
+     * to tls_gen_share/tls_compute_shared) does keygen-less encapsulation and
+     * the wire-order combine in one step, and sets s->pub/s->publen itself so
+     * the ServerHello build below needs no group-specific branch. */
+    uint8_t shared[TLS_KX_SS_MAX]; int sharedlen = 0;
+    if (s->group == GRP_X25519MLKEM768) {
+        if (tls_srv_kem_reply(s, cpub, cpublen, shared, &sharedlen) != 0) {
+            crypto_wipe(shared, sizeof shared);
+            /* Every failure here is the CLIENT's: a mis-sized share, an ek
+             * that fails FIPS 203 7.2's modulus check, or an all-zero X25519
+             * result. illegal_parameter, matching the classical case below. */
+            return sfail(v, AL_ILLEGAL_PARAMETER, TLS_E_CRYPTO);
+        }
+    } else {
+        if (tls_gen_share(s) != 0) return sfail(v, AL_INTERNAL_ERROR, TLS_E_CRYPTO);
+        if (tls_compute_shared(s, cpub, cpublen, shared, &sharedlen) != 0) {
+            crypto_wipe(shared, sizeof shared);
+            /* A share that is the wrong length, off the curve, or (x25519) a
+             * low-order point. illegal_parameter, not handshake_failure: the
+             * client sent something specific and wrong. */
+            return sfail(v, AL_ILLEGAL_PARAMETER, TLS_E_CRYPTO);
+        }
     }
 
     rand_bytes(s->random, 32);
-    uint8_t sh[512];
+    uint8_t sh[TLSS_SH_MAX];
     int shn = build_sh(v, sh, sizeof sh, 0);
     if (shn < 0) { crypto_wipe(shared, sizeof shared); return sfail(v, AL_INTERNAL_ERROR, TLS_E_PROTO); }
     if (tls_tx_queue(s, REC_HANDSHAKE, sh, shn)) { crypto_wipe(shared, sizeof shared); return sfail(v, AL_INTERNAL_ERROR, TLS_E_PROTO); }

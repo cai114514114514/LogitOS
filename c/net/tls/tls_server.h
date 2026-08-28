@@ -27,11 +27,19 @@
  *              answered in 1.2 -- c/net/tls/tls12.c is a CLIENT and there is
  *              no 1.2 server here, so pretending otherwise would mean a
  *              handshake that starts and cannot finish.
- *   groups     x25519, secp256r1, secp384r1, with HelloRetryRequest when the
- *              client's key_share offers none of them but its supported_groups
- *              does. That path is not decoration: a 2026 Chrome or Firefox
- *              leads with X25519MLKEM768, which we do not have, and without
- *              HRR every modern browser would be unable to reach this server.
+ *   groups     X25519MLKEM768 (the post-quantum hybrid, preferred), x25519,
+ *              secp256r1, secp384r1, with HelloRetryRequest when the client's
+ *              key_share offers none of our groups but its supported_groups
+ *              names one. NOTE, measured rather than assumed: a 2026 Chrome/
+ *              Firefox-shaped ClientHello sends TWO key_shares (hybrid AND a
+ *              bare x25519, in that order -- see tls_int.h), so a server with
+ *              NO hybrid support reaches such a client in ONE round trip by
+ *              taking the x25519 share on the first flight -- there is no HRR
+ *              in that case, only the lost post-quantum property. HRR is
+ *              earned only by a client that offers the hybrid ALONE (which is
+ *              what `openssl s_client -groups X25519MLKEM768` does); it is
+ *              not what makes an ordinary 2026 browser reachable, and the
+ *              hybrid above is what stops even that from happening.
  *   suites     TLS_AES_128_GCM_SHA256, TLS_CHACHA20_POLY1305_SHA256,
  *              TLS_AES_256_GCM_SHA384 -- the same three the client offers, so
  *              there is exactly one list of suites in this tree.

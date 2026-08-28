@@ -26,8 +26,8 @@
  * TWO USERS, ONE TABLE
  * --------------------
  * 1. THE PRODUCER (`show`) sniffs a file it is about to open and picks a
- *    handler: image -> an LRT image frame, video -> a video frame, text -> cat,
- *    anything else -> refuse, and say what it is.
+ *    handler: image -> an LRT image frame, video -> a video frame, audio -> an
+ *    audio frame, text -> cat, anything else -> refuse, and say what it is.
  * 2. THE TERMINAL sniffs the BYTE STREAM on fd 1 / fd 2 (sniff_guard). That is
  *    the backstop, and it is the one that has to exist: `cat`, a shell script,
  *    a program written next year -- none of them consult this header, and the
@@ -87,6 +87,7 @@
 #define SNC_IMAGE  1
 #define SNC_VIDEO  2
 #define SNC_OPAQUE 3         /* refuse: printing it is destructive          */
+#define SNC_AUDIO  4         /* an RT_T_AUDIO frame; the terminal plays it  */
 
 /* How many bytes sniff_id() wants. Everything recognized here declares itself
  * in far less; 512 is one disk-friendly read and leaves room for the text test
@@ -263,6 +264,23 @@ static inline int sniff_class(int k)
         return SNC_IMAGE;
     case SN_H264: case SN_H265:
         return SNC_VIDEO;
+#ifndef SNIFF_AUDIO_NEGCTL
+    /* c/lib/audio (WAV/FLAC/MP3, plus Vorbis inside Ogg) decodes exactly these
+     * four kinds -- see adec_open()'s format dispatch in c/lib/audio/audio.c.
+     * SN_MP4 and SN_MKV stay SNC_OPAQUE on purpose: they are CONTAINERS, and
+     * the bytes alone do not say whether the payload inside is something
+     * c/lib/audio or c/lib/video (or neither) can decode, which sniff_id()
+     * cannot know without demuxing -- exactly the same reason SN_MP4 was
+     * already opaque before this class existed (test_magic()'s comment on
+     * why the MP4 case has to be checked before the two-NUL binary fallback).
+     * SN_OGG is handed to SNC_AUDIO on the same terms adec_open() itself
+     * uses for it: the frame names the file, the TERMINAL decodes it, and an
+     * Ogg stream that turns out to be Theora or Opus (formats c/lib/audio's
+     * adec_open does not open) fails there with a visible error rather than
+     * being silently misdeclared playable here. */
+    case SN_WAV: case SN_FLAC: case SN_MP3: case SN_OGG:
+        return SNC_AUDIO;
+#endif
     default:
         return SNC_OPAQUE;
     }
@@ -275,6 +293,7 @@ static inline const char *sniff_opener(int k)
     switch (sniff_class(k)) {
     case SNC_IMAGE: return "show";
     case SNC_VIDEO: return "show";
+    case SNC_AUDIO: return "show";
     default:        return 0;
     }
 }

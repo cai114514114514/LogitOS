@@ -1823,6 +1823,158 @@ static void t_shapes(void)
 	    "blur(2px) invert(80%)");
 }
 
+/* THE 98-NAME TABLE canon.c CALLS unclaimed_props[], PLUS THE THREE REAL
+ * GRAMMARS BESIDE IT (contain-intrinsic-*, font-variation-settings,
+ * counter-set). Added because the RUNNER MUST REACH THE CODE (rule 5 of
+ * this tree's own scars): canon.c's 253-line addition had zero corpus
+ * coverage in this suite before this function existed, so a build that
+ * shipped every one of those declarations dead-on-arrival would have
+ * scored the same 14593/14593 that a build with the feature working
+ * scores. Every expectation below is transcribed from WPT
+ * (css/css-sizing/contain-intrinsic-size/parsing/, css/css-lists/parsing/
+ * counter-set-*, css/css-fonts/parsing/font-variation-settings-*), the
+ * same rule the rest of this file follows. */
+static void t_intrinsic_size(void)
+{
+	group("contain-intrinsic-size");
+	chk_rt("contain-intrinsic-size", "none", "none");
+	chk_rt("contain-intrinsic-size", "1px", "1px");
+	chk_rt("contain-intrinsic-size", "2em 3px", "2em 3px");
+	/* The SHORTHAND collapses to one value when both longhands would
+	 * serialize identically -- not a round-trip case, because "5px" does
+	 * not read back as "5px 5px". */
+	chk("contain-intrinsic-size", "5px 5px", "5px");
+	chk("contain-intrinsic-size", "none none", "none");
+	chk_rt("contain-intrinsic-size", "1px none", "1px none");
+	chk_rt("contain-intrinsic-size", "none 1px", "none 1px");
+	chk_rt("contain-intrinsic-size", "auto 1px 1px", "auto 1px 1px");
+	chk_rt("contain-intrinsic-size", "1px auto 1px", "1px auto 1px");
+	chk("contain-intrinsic-size", "auto 1px auto 1px", "auto 1px");
+	/* `auto` alone is not a value -- it always needs a none|<length>. */
+	chk("contain-intrinsic-size", "auto", NULL);
+	chk("contain-intrinsic-size", "10%", NULL);		/* no <percentage> */
+	chk("contain-intrinsic-size", "-1px", NULL);		/* non-negative */
+	chk("contain-intrinsic-size", "2em 3px 5px", NULL);	/* at most two */
+	chk("contain-intrinsic-size", "1px 1px auto", NULL);
+	chk("contain-intrinsic-size", "legacy", NULL);
+
+	group("contain-intrinsic-size/longhands");
+	/* Every longhand shares canon_intrinsic_size_value with the
+	 * shorthand but takes exactly ONE value -- `auto` must lead, never
+	 * trail, and there is no second component to collapse against. */
+	chk_rt("contain-intrinsic-width", "none", "none");
+	chk_rt("contain-intrinsic-width", "1px", "1px");
+	chk_rt("contain-intrinsic-width", "auto 1px", "auto 1px");
+	chk("contain-intrinsic-width", "1px auto", NULL);
+	chk("contain-intrinsic-width", "1px 1px", NULL);
+	chk("contain-intrinsic-width", "1px none", NULL);
+	chk("contain-intrinsic-width", "20%", NULL);
+	chk("contain-intrinsic-width", "-1px", NULL);
+	chk_rt("contain-intrinsic-height", "2em", "2em");
+	chk_rt("contain-intrinsic-inline-size", "auto 1px", "auto 1px");
+	chk_rt("contain-intrinsic-block-size", "none", "none");
+
+	group("counter-set");
+	chk_rt("counter-set", "none", "none");
+	chk("counter-set", "chapter", "chapter 0");
+	chk_rt("counter-set", "section -1", "section -1");
+	chk("counter-set", "first -1 second third 99",
+	    "first -1 second 0 third 99");
+	chk_rt("counter-set", "a 1 b 2 c 3 d 4 e 5", "a 1 b 2 c 3 d 4 e 5");
+	/* calc() is a valid <integer> production and is NOT restricted to
+	 * literal integers the way the bare-number branch is -- "the same
+	 * asymmetry as everywhere else in this file". This was measured
+	 * absent before the fix beside this test: `section calc(1)` came
+	 * back INVALID because the calc() branch on the value slot did not
+	 * exist at all. */
+	chk_rt("counter-set", "section calc(1)", "section calc(1)");
+	chk_rt("counter-set", "section calc(-2.5)", "section calc(-2.5)");
+	chk("counter-set", "none chapter", NULL);
+	chk("counter-set", "reversed(chapter)", NULL);
+	chk("counter-set", "3", NULL);			/* a number is not a name */
+	chk("counter-set", "99 imagenum", NULL);
+	chk("counter-set", "section -1, imagenum 99", NULL);	/* space, not comma */
+	chk("counter-set", "section 3.14", NULL);	/* a literal must be an integer */
+	chk("counter-set", "inherit 2", NULL);
+	chk("counter-set", "default 2", NULL);
+	chk("counter-set", "revert-layer 2", NULL);
+
+	group("font-variation-settings");
+	chk_rt("font-variation-settings", "normal", "normal");
+	chk_rt("font-variation-settings", "\"wght\" 700", "\"wght\" 700");
+	/* A single-quoted string is not a different value, only a different
+	 * spelling of the same one -- the canonical form is always double
+	 * quotes. */
+	chk("font-variation-settings", "'wght' 700", "\"wght\" 700");
+	chk_rt("font-variation-settings", "\"wght\" 700, \"XHGT\" 0.7",
+	    "\"wght\" 700, \"XHGT\" 0.7");
+	chk("font-variation-settings", "'wght' 1e3, 'slnt' -450.0e-1",
+	    "\"wght\" 1000, \"slnt\" -45");
+	chk("font-variation-settings", "700", NULL);
+	chk("font-variation-settings", "\"XHGT\"", NULL);	/* no number */
+	chk("font-variation-settings", "wght 700", NULL);	/* tag must be a string */
+	chk("font-variation-settings", "normal, \"wght\" 700", NULL);
+	/* The 4-character rule -- three, five and "close enough" are all
+	 * refused, not just the literally-wrong-length cases WPT names. */
+	chk("font-variation-settings", "\"wgt\" 700", NULL);
+	chk("font-variation-settings", "\"XHGTX\" 0.7", NULL);
+	chk("font-variation-settings", "'wght' 200 'abcd' 400", NULL);	/* no comma */
+	chk("font-variation-settings", "'wght' 100px", NULL);	/* a number, not a length */
+
+	/* THE 98-NAME unclaimed_props[] TABLE: no grammar of its own yet, so
+	 * the fallback canon.c documents is "bare css-wide keyword, else
+	 * INVALID" -- never PASS, because a real accessor with a PASS answer
+	 * for every value would let js_dom.c splice `el.style.mask =
+	 * "nonsense"` straight into the style attribute unchecked. This is
+	 * not asking these properties to parse their real grammar (that is
+	 * not implemented yet, and this table says so on its own); it is
+	 * asking that
+	 * claiming the name did not silently reopen the PASS-through hole
+	 * the block comment above unclaimed_props[] measured and closed. One
+	 * name from each family the table's own comments group. */
+	group("unclaimed_props");
+	{
+		static const char *const sample[] = {
+			"border-image", "border-image-width", "mask", "mask-image",
+			"mask-border", "offset", "box-shadow", "text-shadow",
+			"background-size", "font-variant-caps", "font-synthesis",
+			"corner-shape", "corner-top-left-shape",
+			"text-decoration-line", "transform-origin",
+			"row-rule", "row-rule-color", "column-rule-inset", "rule-style",
+			NULL
+		};
+		int i;
+		for (i = 0; sample[i] != NULL; i++) {
+			if (!css_canon_knows_property(sample[i], -1)) {
+				g_fail++;
+				printf("  FAIL [unclaimed_props] %s: "
+				    "css_canon_knows_property() says NO\n", sample[i]);
+			} else {
+				g_pass++;
+			}
+			chk_rt(sample[i], "inherit", "inherit");
+			chk_rt(sample[i], "initial", "initial");
+			chk_rt(sample[i], "unset", "unset");
+			chk_rt(sample[i], "revert", "revert");
+			chk_rt(sample[i], "revert-layer", "revert-layer");
+			/* A REAL value for the property's own grammar -- not a
+			 * css-wide keyword -- must not be silently accepted
+			 * (that would be the PASS-through bug measured and
+			 * fixed in canon.c) or silently stored wrong (that
+			 * would be worse). It is INVALID until the real
+			 * grammar for this name is written. */
+			chk(sample[i], "banana", NULL);
+		}
+		/* the actual value grammar these names will eventually own,
+		 * still refused today -- confirms this is "not yet", not a
+		 * typo in the sample above. */
+		chk("mask", "url(#c)", NULL);
+		chk("border-image", "url(a.png) 30 fill", NULL);
+		chk("box-shadow", "1px 1px red", NULL);
+		chk("transform-origin", "top left", NULL);
+	}
+}
+
 /* THE SAFETY PROPERTY. Everything LibCSS already owns must answer PASS, or
  * wiring this into el.style would reroute ordinary CSS through a parser that
  * does not implement it. */
@@ -1956,6 +2108,7 @@ int main(void)
 	t_color_function();
 	t_grid();
 	t_shapes();
+	t_intrinsic_size();
 	t_passthrough();
 	t_fuzz();
 

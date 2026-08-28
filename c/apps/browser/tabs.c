@@ -337,6 +337,12 @@ int tab_hist_ahead(const struct tab *t)
     return t->htop - t->hcur;
 }
 
+int tab_hist_joint_extra(void)
+{
+    struct tab *t = tab_cur();
+    return t ? tab_hist_behind(t) + tab_hist_ahead(t) : 0;
+}
+
 /* ============================== persistence ============================== */
 
 static const struct bstore_ops *g_store;

@@ -13,6 +13,17 @@
 # actually carries) and pcm.mov is BIG-ENDIAN PCM in ISO-BMFF -- the two audio
 # framings Preview repacks rather than decoding a second way. Neither was on
 # the disk, so neither was reachable from the machine.
+#
+# test-preview-nav (below) needs a self-contained fragmented MP4 and a bare
+# DASH media segment, and BOTH are ALREADY on the disk under other lines'
+# fragments -- tests/demux.mk maps frag.mp4 to /media/clip-frag.mp4 and
+# tests/mse.mk maps video-1.m4s to /media/mse/video-1.m4s. Adding a second
+# FS_FILES entry for either is exactly the "one jar, two doors" mistake
+# CLAUDE.md warns about (and mkfs.py refuses a duplicate destination path
+# outright), so test-preview-nav reads them by the names those fragments
+# already gave them rather than staging its own copies. Preview's picker
+# recurses one level into /media (pick_scan's depth=1), which is why
+# "mse/video-1.m4s" shows up in its list at all.
 PREVIEW_FX := tests/fixtures/media/aac.m4a tests/fixtures/media/pcm.mov \
               tests/fixtures/media/h265.mp4 tests/fixtures/media/mp3.mka
 PREVIEW_AS := $(sort $(wildcard tests/fixtures/preview/*.as))
@@ -159,4 +170,15 @@ test-preview-negctl: $(ISO) $(BUILD)/disk-prevneg.img $(BUILD)/previewref/.stamp
 test-preview-assoc: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_preview.py --iso $(ISO) --disk $(DISK) --assoc
 
-.PHONY: test-preview test-preview-timing test-preview-negctl test-preview-assoc
+# --- navigation: Esc unwinds a mode, a fragmented MP4 is named honestly -----
+# The owner's three complaints in one sitting: "M4S will not open", "the
+# overall navigation is a mess", and "pressing Esc quits outright when I
+# wanted to keep looking". This is the gate for the second and third that a
+# pixel comparison cannot make: whether the PROCESS survived Esc, and whether
+# a refusal names the real reason. See tests/qmp/qmp_preview_nav.py's header
+# for the control (revert pump_events()'s Esc branch and watch this go red).
+test-preview-nav: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_preview_nav.py --iso $(ISO) --disk $(DISK)
+
+.PHONY: test-preview test-preview-timing test-preview-negctl test-preview-assoc \
+        test-preview-nav

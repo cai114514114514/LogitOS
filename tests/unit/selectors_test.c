@@ -272,6 +272,30 @@ static void group_grammar(void)
          "document.getElementsByClassName('sel') instanceof HTMLCollection",
          "querySelectorAll is a NodeList, getElementsBy* are HTMLCollections");
 
+    /* DocumentFragment gets the query half of ParentNode too (dom.spec.whatwg.org
+     * /#parentnode: Element, Document AND DocumentFragment). Before this it was
+     * installed only on `doc` and Element.prototype -- a fragment built with
+     * document.createDocumentFragment() and queried before insertion (the
+     * ordinary "build off-tree, splice in once" pattern) got
+     * `TypeError: querySelectorAll is not a function`, which is jsfb_matrix's
+     * work-order row stopping 2 independent implementations cold: it is a
+     * platform gap in the ParentNode mixin, not a quirk of any one framework's
+     * source -- nothing about this reaches for a hostname, a URL or a bundle
+     * name. */
+    ckjs("(function () {\n"
+         " var f = document.createDocumentFragment();\n"
+         " var a = document.createElement('div'); a.className = 'x';\n"
+         " var b = document.createElement('span'); b.className = 'x';\n"
+         " a.appendChild(b);\n"
+         " f.appendChild(a);\n"
+         " var all = f.querySelectorAll('.x');\n"
+         " return all.length === 2 && all[0] === a && all[1] === b\n"
+         "     && f.querySelector('span') === b\n"
+         "     && f.getElementsByTagName('div').length === 1\n"
+         "     && f.getElementsByClassName('x').length === 2;\n"
+         "})()",
+         "DocumentFragment.querySelectorAll/querySelector/getElementsBy* exist and search its own descendants");
+
     /* ---- DOMTokenList ---- */
     ckjs("(function () { var e = document.getElementById('p1');"
          " return e.classList.length === 2 && e.classList[0] === 'a' && e.classList[1] === 'b'"

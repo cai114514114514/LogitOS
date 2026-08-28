@@ -1,0 +1,340 @@
+# WPT subtests that fail today, as "<path>::<subtest name>".
+#
+# "<path>::*" means EVERY subtest in that file fails -- the file is
+# collapsed to one line because a per-subtest list of an all-red file
+# carries no information a single line does not, and the uncollapsed
+# form of this corpus is a 16 MB file nobody diffs. Files with a MIXED
+# result keep their exact per-subtest entries, which is where a ratchet
+# earns its keep: a regression there names the subtest.
+#
+# "::[HARNESS]" means the file never completed the harness at all -- a
+# worse category than a failing assertion, and the one to read first.
+#
+# A subtest name may contain a newline (css/css-syntax names cases after
+# the declaration block under test); those are escaped as \n here and
+# unescaped on read, so one entry is always exactly one line.
+#
+# Regenerate with `make wpt-baseline`. Shrinking this file is the point;
+# growing it needs a reason written next to the new entries.
+IndexedDB/abort-in-initial-upgradeneeded.any.js::*
+IndexedDB/back-forward-cache-open-connection.window.js::*
+IndexedDB/back-forward-cache-open-transaction.window.js::*
+IndexedDB/bindings-inject-values-bypass.any.js::*
+IndexedDB/blob-composite-blob-reads.any.js::*
+IndexedDB/blob-contenttype.any.js::*
+IndexedDB/blob-delete-objectstore-db.any.js::*
+IndexedDB/blob-valid-after-abort.any.js::*
+IndexedDB/blob-valid-after-deletion.any.js::*
+IndexedDB/blob-valid-before-commit.any.js::*
+IndexedDB/clone-before-keypath-eval.any.js::Failing key path validity check operates on a clone
+IndexedDB/clone-before-keypath-eval.any.js::Cursor update checks and keypath evaluations operate on a clone
+IndexedDB/clone-before-keypath-eval.any.js::Blob expando properties are stripped in the clone used for index key path evaluation
+IndexedDB/close-in-upgradeneeded.any.js::*
+IndexedDB/database-names-by-origin.html::*
+IndexedDB/event-dispatch-active-flag.any.js::*
+IndexedDB/file_support.sub.html::*
+IndexedDB/fire-error-event-exception.any.js::*
+IndexedDB/fire-success-event-exception.any.js::*
+IndexedDB/fire-upgradeneeded-event-exception.any.js::*
+IndexedDB/get-databases.any.js::Ensure that databases() doesn't pick up changes that haven't commited.
+IndexedDB/idb-binary-key-detached.any.js::*
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Uint8Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Uint8ClampedArray
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Int8Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Uint16Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Int16Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Uint32Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Int32Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Float16Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Float32Array
+IndexedDB/idb-binary-key-roundtrip.any.js::Binary keys can be supplied using the view type Float64Array
+IndexedDB/idb-binary-key-roundtrip.any.js::DataView can be used to supply a binary key
+IndexedDB/idb-binary-key-roundtrip.any.js::DataView with explicit offset can be used to supply a binary key
+IndexedDB/idb-binary-key-roundtrip.any.js::DataView with explicit offset and length can be used to supply a binary key
+IndexedDB/idb-binary-key-roundtrip.any.js::Uint8Array with explicit offset can be used to supply a binary key
+IndexedDB/idb-binary-key-roundtrip.any.js::Uint8Array with explicit offset and length can be used to supply a binary key
+IndexedDB/idb-explicit-commit.any.js::A committed transaction becomes inactive immediately.
+IndexedDB/idb-explicit-commit.any.js::A committed transaction is inactive in future request callbacks.
+IndexedDB/idb-explicit-commit.any.js::Puts issued after commit are not fulfilled.
+IndexedDB/idb-explicit-commit.any.js::Calling commit on a committed transaction throws.
+IndexedDB/idb-explicit-commit.any.js::Calling abort on a committed transaction throws and does not prevent persisting the data.
+IndexedDB/idb-explicit-commit.any.js::Calling txn.commit() when txn is inactive should throw.
+IndexedDB/idb-explicit-commit.any.js::Transactions that explicitly commit and have errors should abort.
+IndexedDB/idb-explicit-commit.any.js::Transactions that handle all errors properly should behave as expected when an explicit commit is called in an onerror handler.
+IndexedDB/idb-partitioned-basic.sub.html::*
+IndexedDB/idb-partitioned-coverage.sub.html::*
+IndexedDB/idb-partitioned-persistence.sub.html::*
+IndexedDB/idb_binary_key_conversion.any.js::DataView
+IndexedDB/idb_binary_key_conversion.any.js::TypedArray(Int8Array)
+IndexedDB/idb_binary_key_conversion.any.js::Array of TypedArray(Int8Array)
+IndexedDB/idbcursor-advance-continue-async.any.js::*
+IndexedDB/idbcursor-advance-exception-order.any.js::IDBCursor.advance exception order: TransactionInactiveError vs. InvalidStateError #2
+IndexedDB/idbcursor-advance-invalid.any.js::IDBCursor.advance() - invalid - attempt to call advance twice
+IndexedDB/idbcursor-continuePrimaryKey-exception-order.any.js::InvalidStateError(deleted source) v.s. InvalidAccessError(incorrect source)
+IndexedDB/idbcursor-continuePrimaryKey-exception-order.any.js::InvalidStateError(deleted source) v.s. InvalidAccessError(incorrect direction)
+IndexedDB/idbcursor-continuePrimaryKey-exception-order.any.js::InvalidStateError(iteration ongoing) v.s. DataError(unset key)
+IndexedDB/idbcursor-continuePrimaryKey-exception-order.any.js::DataError(keys are lower then current one) in 'next' direction
+IndexedDB/idbcursor-continuePrimaryKey-exception-order.any.js::DataError(keys are larger then current one) in 'prev' direction
+IndexedDB/idbcursor-continuePrimaryKey-exceptions.any.js::*
+IndexedDB/idbcursor-continuePrimaryKey.any.js::IDBCursor.continuePrimaryKey() with "prev" direction
+IndexedDB/idbcursor-direction-index-keyrange.any.js::IDBCursor direction - index with keyrange - prevunique
+IndexedDB/idbcursor-direction-index.any.js::IDBCursor direction - index - prevunique
+IndexedDB/idbcursor-direction.any.js::*
+IndexedDB/idbcursor-key.any.js::*
+IndexedDB/idbcursor-primarykey.any.js::*
+IndexedDB/idbcursor-request.any.js::*
+IndexedDB/idbcursor-source.any.js::*
+IndexedDB/idbcursor_advance_index.any.js::Calling advance() should throws an exception TransactionInactiveError when the transaction is not active.
+IndexedDB/idbcursor_advance_index.any.js::Calling advance() should throw DOMException when the cursor is currently being iterated.
+IndexedDB/idbcursor_advance_index.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_advance_objectstore.any.js::Calling advance() should throw DOMException when the cursor is currently being iterated.
+IndexedDB/idbcursor_advance_objectstore.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_continue_index.any.js::Iterate using 'prevunique'
+IndexedDB/idbcursor_continue_index.any.js::Calling continue() should throw an exception TransactionInactiveError when the transaction is not active.
+IndexedDB/idbcursor_continue_index.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_continue_invalid.any.js::*
+IndexedDB/idbcursor_continue_objectstore.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_delete_index.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_delete_index.any.js::Throw InvalidStateError when the cursor is being iterated
+IndexedDB/idbcursor_delete_objectstore.any.js::If the cursor's source or effective object store has been deleted, the implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_delete_objectstore.any.js::Throw InvalidStateError when the cursor is being iterated
+IndexedDB/idbcursor_update_index.any.js::Attempt to modify a record after the cursor's source or effective object store has been deleted. The implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_update_index.any.js::No argument
+IndexedDB/idbcursor_update_index.any.js::Throw InvalidStateError when the cursor is being iterated
+IndexedDB/idbcursor_update_objectstore.any.js::Attempt to modify a record after the cursor's source or effective object store has been deleted. The implementation MUST throw a DOMException of type InvalidStateError
+IndexedDB/idbcursor_update_objectstore.any.js::No argument
+IndexedDB/idbcursor_update_objectstore.any.js::Throw InvalidStateError when the cursor is being iterated
+IndexedDB/idbdatabase-createObjectStore-exception-order.any.js::IDBDatabase.createObjectStore exception order: TransactionInactiveError vs. SyntaxError
+IndexedDB/idbdatabase-createObjectStore-exception-order.any.js::IDBDatabase.createObjectStore exception order: SyntaxError vs. ConstraintError
+IndexedDB/idbdatabase-deleteObjectStore-exception-order.any.js::IDBDatabase.deleteObjectStore exception order: TransactionInactiveError vs. NotFoundError
+IndexedDB/idbdatabase-transaction-exception-order.any.js::IDBDatabase.transaction exception order: NotFoundError vs. TypeError
+IndexedDB/idbdatabase_close.any.js::*
+IndexedDB/idbdatabase_createObjectStore.any.js::Attempt to create an object store with an invalid key path 
+IndexedDB/idbdatabase_createObjectStore.any.js::autoInc and empty keyPath
+IndexedDB/idbdatabase_createObjectStore.any.js::autoInc and keyPath array
+IndexedDB/idbdatabase_createObjectStore.any.js::autoInc and keyPath object
+IndexedDB/idbdatabase_deleteObjectStore.any.js::Deleted object store's name should be removed from database's list. Attempting to use a deleted IDBObjectStore should throw an InvalidStateError
+IndexedDB/idbfactory-databases-opaque-origin.html::*
+IndexedDB/idbfactory-deleteDatabase-opaque-origin.html::*
+IndexedDB/idbfactory-open-error-properties.any.js::*
+IndexedDB/idbfactory-open-opaque-origin.html::*
+IndexedDB/idbfactory-open-request-error.any.js::*
+IndexedDB/idbfactory-origin-isolation.html::*
+IndexedDB/idbfactory_deleteDatabase.any.js::deleteDatabase() request should have no source, and deleting a non-existent database should succeed with oldVersion of 0.
+IndexedDB/idbfactory_deleteDatabase.any.js::The deleteDatabase() request's success event is an IDBVersionChangeEvent.
+IndexedDB/idbfactory_open.any.js::Calling open() with version argument 9007199254740992 should throw TypeError.
+IndexedDB/idbfactory_open.any.js::IDBFactory.open() - error in upgradeneeded resets db
+IndexedDB/idbfactory_open.any.js::IDBFactory.open() - second open's transaction is available to get objectStores
+IndexedDB/idbindex-cross-realm-methods.html::*
+IndexedDB/idbindex-getAll-enforcerange.any.js::*
+IndexedDB/idbindex-getAllKeys-enforcerange.any.js::*
+IndexedDB/idbindex-multientry.any.js::*
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.get exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.getAll exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.getAllKeys exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.count exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.openCursor exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-query-exception-order.any.js::IDBIndex.openKeyCursor exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbindex-rename-abort.any.js::*
+IndexedDB/idbindex-rename-errors.any.js::*
+IndexedDB/idbindex-rename.any.js::IndexedDB index rename in new transaction
+IndexedDB/idbindex-rename.any.js::IndexedDB index rename in the transaction where it is created
+IndexedDB/idbindex-rename.any.js::IndexedDB index rename to the name of a deleted index succeeds
+IndexedDB/idbindex-rename.any.js::IndexedDB index swapping via renames succeeds
+IndexedDB/idbindex-rename.any.js::IndexedDB index rename stringifies non-string names
+IndexedDB/idbindex-rename.any.js::IndexedDB index can be renamed to ""
+IndexedDB/idbindex-rename.any.js::IndexedDB index can be renamed to "\\u0000"
+IndexedDB/idbindex-rename.any.js::IndexedDB index can be renamed to "\\uDC00\\uD800"
+IndexedDB/idbindex_get.any.js::get() throws InvalidStateError when the index is deleted
+IndexedDB/idbindex_get.any.js::get() throws InvalidStateError on index deleted by aborted upgrade
+IndexedDB/idbindex_getAll-options.any.js::*
+IndexedDB/idbindex_getAll.any.js::Get all values with invalid query keys
+IndexedDB/idbindex_getAllKeys-options.any.js::*
+IndexedDB/idbindex_getAllKeys.any.js::Get all keys with invalid query keys
+IndexedDB/idbindex_getAllRecords.any.js::*
+IndexedDB/idbindex_getKey.any.js::getKey() throws InvalidStateError when the index is deleted
+IndexedDB/idbindex_getKey.any.js::getKey() throws InvalidStateError on index deleted by aborted upgrade
+IndexedDB/idbindex_keyPath.any.js::IDBIndex's keyPath attribute returns the same object.
+IndexedDB/idbindex_openCursor.any.js::If the index is deleted, throw InvalidStateError
+IndexedDB/idbindex_openCursor.any.js::If the index is deleted by an aborted upgrade, throw InvalidStateError
+IndexedDB/idbindex_openKeyCursor.any.js::Throw InvalidStateError when the index is deleted
+IndexedDB/idbindex_openKeyCursor.any.js::Throw InvalidStateError on index deleted by aborted upgrade
+IndexedDB/idbkeyrange-includes.any.js::IDBKeyRange.includes() with invalid input
+IndexedDB/idbkeyrange.any.js::IDBKeyRange.lowerBound() - returns an IDBKeyRange and the properties are set correctly
+IndexedDB/idbkeyrange.any.js::IDBKeyRange.upperBound() - returns an IDBKeyRange and the properties are set correctly
+IndexedDB/idbkeyrange_incorrect.any.js::IDBKeyRange.bound() - bound requires more than 0 arguments.
+IndexedDB/idbobjectstore-add-put-exception-order.any.js::IDBObjectStore.put exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-add-put-exception-order.any.js::IDBObjectStore.add exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-clear-exception-order.any.js::IDBObjectStore.clear exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-cross-realm-methods.html::*
+IndexedDB/idbobjectstore-delete-exception-order.any.js::IDBObjectStore.delete exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-deleteIndex-exception-order.any.js::IDBObjectStore.deleteIndex exception order: InvalidStateError #2 vs. TransactionInactiveError
+IndexedDB/idbobjectstore-deleteIndex-exception-order.any.js::IDBObjectStore.deleteIndex exception order: TransactionInactiveError vs. NotFoundError
+IndexedDB/idbobjectstore-getAll-enforcerange.any.js::*
+IndexedDB/idbobjectstore-getAllKeys-enforcerange.any.js::*
+IndexedDB/idbobjectstore-index-finished.any.js::*
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.get exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.getAll exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.getAllKeys exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.count exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.openCursor exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-query-exception-order.any.js::IDBObjectStore.openKeyCursor exception order: InvalidStateError vs. TransactionInactiveError
+IndexedDB/idbobjectstore-rename-abort.any.js::*
+IndexedDB/idbobjectstore-rename-errors.any.js::*
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename in new transaction
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename in the transaction where it is created
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename covers index
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename covers key generator
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename to the name of a deleted store succeeds
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store swapping via renames succeeds
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store rename stringifies non-string names
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store can be renamed to ""
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store can be renamed to "\\u0000"
+IndexedDB/idbobjectstore-rename-store.any.js::IndexedDB object store can be renamed to "\\uDC00\\uD800"
+IndexedDB/idbobjectstore_add.any.js::Attempt to 'add()' a record where the record's key does not meet the constraints of a valid key
+IndexedDB/idbobjectstore_add.any.js::Attempt to 'add()' a record where the record's in-line key is not  defined
+IndexedDB/idbobjectstore_add.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError
+IndexedDB/idbobjectstore_clear.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError 
+IndexedDB/idbobjectstore_count.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError 
+IndexedDB/idbobjectstore_createIndex.any.js::Attempt to create an index that requires unique values on an object store already contains duplicates
+IndexedDB/idbobjectstore_createIndex.any.js::Event order when unique constraint is triggered
+IndexedDB/idbobjectstore_createIndex.any.js::Event ordering for ConstraintError on request
+IndexedDB/idbobjectstore_createIndex.any.js::If keyPath is not a valid key path, the implementation must throw a DOMException of type SyntaxError
+IndexedDB/idbobjectstore_createIndex.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError
+IndexedDB/idbobjectstore_createIndex.any.js::InvalidStateError(Deleted ObjectStore) vs. TransactionInactiveError. Deletion check should precede transaction-state check.
+IndexedDB/idbobjectstore_createIndex.any.js::SyntaxError vs. InvalidAccessError. Syntax check should precede multiEntry check of the key path.
+IndexedDB/idbobjectstore_delete.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError
+IndexedDB/idbobjectstore_getAll-options.any.js::*
+IndexedDB/idbobjectstore_getAll.any.js::Get all values with invalid query keys
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Single item get
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Single item get (generated key)
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Test maxCount
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get bound range
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get bound range with maxCount
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get upper excluded
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get lower excluded
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get bound range (generated) with maxCount
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Non existent key
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::zero maxCount
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Max value count
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Query with empty range where  first key < upperBound
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Query with empty range where lowerBound < last key
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction: next
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction: prev
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction: nextunique
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction: prevunique
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction and query
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Direction, query and count
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get all keys with both options and count
+IndexedDB/idbobjectstore_getAllKeys-options.any.js::Get all keys with invalid query keys
+IndexedDB/idbobjectstore_getAllKeys.any.js::Get all keys with invalid query keys
+IndexedDB/idbobjectstore_getAllRecords.any.js::*
+IndexedDB/idbobjectstore_keyPath.any.js::*
+IndexedDB/idbobjectstore_put.any.js::Attempt to call put() without an key parameter when the object store uses out-of-line keys
+IndexedDB/idbobjectstore_put.any.js::Attempt to put() a record where the record's key does not meet the constraints of a valid key
+IndexedDB/idbobjectstore_put.any.js::Attempt to put() a record where the record's in-line key is not defined
+IndexedDB/idbobjectstore_put.any.js::If the object store has been deleted, the implementation must throw a DOMException of type InvalidStateError
+IndexedDB/idbrequest-onupgradeneeded.any.js::Abort transaction before deleting database in upgradeneeded handler
+IndexedDB/idbrequest-onupgradeneeded.any.js::Abort transaction after deleting database in upgradeneeded event handler
+IndexedDB/idbrequest_error.any.js::*
+IndexedDB/idbrequest_result.any.js::*
+IndexedDB/idbtransaction.any.js::IDBTransaction - request returned by open()
+IndexedDB/idbtransaction_abort.any.js::Abort event should fire during transaction
+IndexedDB/idbtransaction_objectStoreNames.any.js::IDBTransaction.objectStoreNames - during upgrade transaction
+IndexedDB/idbtransaction_objectStoreNames.any.js::IDBTransaction.objectStoreNames - value after close
+IndexedDB/idbtransaction_objectStoreNames.any.js::IDBTransaction.objectStoreNames - unusual names
+IndexedDB/idbversionchangeevent.any.js::*
+IndexedDB/idlharness.any.js::*
+IndexedDB/interleaved-cursors-large.any.js::*
+IndexedDB/key-conversion-exceptions.any.js::IDBCursor update() method with throwing/invalid keys
+IndexedDB/key-conversion-exceptions.any.js::IDBObjectStore add() method with throwing/invalid keys
+IndexedDB/key-conversion-exceptions.any.js::IDBObjectStore put() method with throwing/invalid keys
+IndexedDB/key_invalid.any.js::Invalid key - document.getElementsByTagName("script")
+IndexedDB/key_invalid.any.js::Invalid key - proxy of an array
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key 53 bits
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key greater than 53 bits, less than 64 bits
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key 63 bits
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key 64 bits
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key greater than 64 bits, but still finite
+IndexedDB/keygenerator.any.js::Key generator vs. explicit key equal to Infinity
+IndexedDB/keygenerator.any.js::put() throws if key cannot be injected - single segment path
+IndexedDB/keygenerator.any.js::put() throws if key cannot be injected - multi-segment path
+IndexedDB/keypath-exceptions.any.js::The last element of keypath is validated
+IndexedDB/keypath-exceptions.any.js::Key path evaluation: Exceptions from non-enumerable getters
+IndexedDB/keypath-exceptions.any.js::Key path evaluation: Exceptions from non-enumerable getters on prototype
+IndexedDB/keypath-exceptions.any.js::Key path evaluation: Exceptions from enumerable getters on prototype
+IndexedDB/keypath-exceptions.any.js::Array key conversion should not invoke prototype getters
+IndexedDB/keypath-special-identifiers.any.js::Type: Blob, identifier: size
+IndexedDB/keypath-special-identifiers.any.js::Type: Blob, identifier: type
+IndexedDB/keypath-special-identifiers.any.js::Type: File, identifier: name
+IndexedDB/keypath-special-identifiers.any.js::Type: File, identifier: lastModified
+IndexedDB/keypath.any.js::*
+IndexedDB/keypath_invalid.any.js::*
+IndexedDB/nested-cloning-basic.any.js::blob
+IndexedDB/nested-cloning-large-multiple.any.js::*
+IndexedDB/nested-cloning-large.any.js::blob with large typed array
+IndexedDB/nested-cloning-large.any.js::blob with large typed array with key generator
+IndexedDB/nested-cloning-large.any.js::array of blobs and large typed arrays
+IndexedDB/nested-cloning-large.any.js::array of blobs and large typed arrays with key generator
+IndexedDB/nested-cloning-large.any.js::object with blobs and large typed arrays
+IndexedDB/nested-cloning-large.any.js::object with blobs and large typed arrays with key generator
+IndexedDB/nested-cloning-small.any.js::*
+IndexedDB/open-request-queue.any.js::*
+IndexedDB/ready-state-destroyed-execution-context.html::*
+IndexedDB/request-event-ordering-large-mixed-with-small-values.any.js::*
+IndexedDB/request-event-ordering-large-then-small-values.any.js::*
+IndexedDB/request-event-ordering-small-values.any.js::*
+IndexedDB/request_bubble-and-capture.any.js::*
+IndexedDB/serialize-sharedarraybuffer-throws.https.html::*
+IndexedDB/storage-buckets.https.any.js::*
+IndexedDB/structured-clone-transaction-state.any.js::*
+IndexedDB/structured-clone.any.js::Boolean: false
+IndexedDB/structured-clone.any.js::Boolean: true
+IndexedDB/structured-clone.any.js::Number: NaN
+IndexedDB/structured-clone.any.js::Number: -Infinity
+IndexedDB/structured-clone.any.js::Number: -1.7976931348623157e+308
+IndexedDB/structured-clone.any.js::Number: -4294967295
+IndexedDB/structured-clone.any.js::Number: -2147483648
+IndexedDB/structured-clone.any.js::Number: -2147483647
+IndexedDB/structured-clone.any.js::Number: -1
+IndexedDB/structured-clone.any.js::Number: -5e-324
+IndexedDB/structured-clone.any.js::Number: -0
+IndexedDB/structured-clone.any.js::Number: 0
+IndexedDB/structured-clone.any.js::Number: 1
+IndexedDB/structured-clone.any.js::Number: 5e-324
+IndexedDB/structured-clone.any.js::Number: 2147483647
+IndexedDB/structured-clone.any.js::Number: 2147483648
+IndexedDB/structured-clone.any.js::Number: 4294967295
+IndexedDB/structured-clone.any.js::Number: 1.7976931348623157e+308
+IndexedDB/structured-clone.any.js::Number: Infinity
+IndexedDB/structured-clone.any.js::BigInt: -12345678901234567890
+IndexedDB/structured-clone.any.js::BigInt: -1
+IndexedDB/structured-clone.any.js::BigInt: 0
+IndexedDB/structured-clone.any.js::BigInt: 1
+IndexedDB/structured-clone.any.js::BigInt: 12345678901234567890
+IndexedDB/structured-clone.any.js::String: 
+IndexedDB/structured-clone.any.js::String: this is a sample string
+IndexedDB/structured-clone.any.js::String: null(
+IndexedDB/structured-clone.any.js::Array: foo,bar
+IndexedDB/transaction-abort-generator-revert.any.js::*
+IndexedDB/transaction-abort-index-metadata-revert.any.js::*
+IndexedDB/transaction-abort-multiple-metadata-revert.any.js::*
+IndexedDB/transaction-abort-object-store-metadata-revert.any.js::*
+IndexedDB/transaction-abort-request-error.any.js::*
+IndexedDB/transaction-create_in_versionchange.any.js::*
+IndexedDB/transaction-deactivation-timing.any.js::New transactions are deactivated before next task
+IndexedDB/transaction-deactivation-timing.any.js::New transactions from microtask are deactivated before next task
+IndexedDB/transaction-deactivation-timing.any.js::Deactivation of new transactions happens at end of invocation
+IndexedDB/transaction-lifetime-empty.any.js::*
+IndexedDB/transaction-lifetime.any.js::*
+IndexedDB/transaction-relaxed-durability.any.js::*
+IndexedDB/transaction-scheduling-across-connections.any.js::*
+IndexedDB/transaction-scheduling-mixed-scopes.any.js::*
+IndexedDB/transaction-scheduling-rw-scopes.any.js::*
+IndexedDB/transaction_bubble-and-capture.any.js::*
+IndexedDB/upgrade-transaction-deactivation-timing.any.js::*
+IndexedDB/upgrade-transaction-lifecycle-user-aborted.any.js::synchronously after abort() is called
+IndexedDB/upgrade-transaction-lifecycle-user-aborted.any.js::in a promise microtask after abort() is called, before the transaction abort event is fired
+IndexedDB/value.any.js::BigInts as values in IndexedDB - BigInt object
+IndexedDB/value.any.js::BigInts as values in IndexedDB - BigInt object inside object
+IndexedDB/worker-termination-aborts-upgrade.window.js::*

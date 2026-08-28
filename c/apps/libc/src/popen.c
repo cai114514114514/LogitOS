@@ -93,5 +93,11 @@ int pclose(FILE *f)
                                                     * is expected to exit on its own */
     int status = 0;
     if (waitpid((pid_t)pid, &status, 0) < 0) return -1;
-    return status;
+    /* Shifted here, not in waitpid(): see stdlib.c's system() for the reason
+     * -- io.c's waitpid() is left raw for a wired on-device gate
+     * (tests/unit/sigtest_main.c) that reads it unshifted, so the two
+     * functions whose OWN documented contract is "matching glibc/POSIX" (this
+     * one included, see the file header above) do the (exit_code<<8)|termsig
+     * translation themselves before returning. */
+    return (status & 0xff) << 8;
 }

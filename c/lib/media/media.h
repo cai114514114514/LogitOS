@@ -59,6 +59,13 @@
 #define MEDIA_ERR_UNSUPPORTED -2   /* a valid file using something we do not do */
 #define MEDIA_ERR_OOM         -3
 #define MEDIA_ERR_RANGE       -4   /* self-consistent but absurd (guards allocation) */
+#define MEDIA_ERR_NO_INIT     -5   /* a fragment (moof/mdat) with no moov: this IS a
+                                     * media segment, correctly sniffed as one, and it
+                                     * has no track/codec info of its own -- that lives
+                                     * in the init segment (ftyp+moov+mvex), which a
+                                     * DASH/CMAF player appends first. Distinct from
+                                     * CORRUPT: the bytes are not malformed, the file is
+                                     * just one half of a pair. */
 
 /* Ceilings. Every one of these is a header field multiplied into an allocation
  * somewhere below, and a header field is a claim, not a fact. */

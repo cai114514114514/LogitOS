@@ -222,7 +222,15 @@ test-wpt-link:
 # "logit.h" (the ring-3 syscall wrappers) unconditionally for its getrandom
 # path. On the host those wrappers are never called -- the file's own fallback
 # is -- but the header still has to resolve.
-WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/lib/video $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+## -Ic/net/ssh (base64.h) and -Ic/crypto (crypto.h) are here for exactly one
+# TU each -- c/net/http/ws.c and c/crypto/hash/sha1.c, riding along in
+# BROWSER_PIPE since WebSocket landed (see that list's own comment). Neither
+# is added to BTEST_INC itself: that flat list is shared by every fragment in
+# tests/, and CLAUDE.md's own scar tissue on this tree is that a header
+# basename collision two directories deep is invisible until a clean clone
+# proves it -- scoping the addition to the one runner that needs it is
+# cheaper than auditing every other consumer of BTEST_INC for a clash.
+WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/lib/video -Ic/net/ssh -Ic/crypto $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(BUILD)/wpt_test: $(WPT_TEST_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)

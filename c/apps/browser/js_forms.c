@@ -510,6 +510,47 @@ static const char SHIM[] =
 "  if (get) d.get = get; if (set) d.set = set;\n"
 "  try { Object.defineProperty(o, name, d); } catch (e) {}\n"
 "}\n"
+/* ---- FileList, and why <input type=file>.files is always EMPTY -----------
+ *
+ * MEASURED: jsfb_matrix's work order names one implementation stopped cold by
+ * `ReferenceError: FileList is not defined` -- a bare reference to the global
+ * constructor, the same shape NodeList/HTMLCollection needed (js_select.c
+ * already carries that fix for those two; this file is FileList's, because
+ * `.files` is a control's property, the same family as `.value`/`.checked`
+ * two sections up, not a query-collection).
+ *
+ * The honest answer for .files on this machine is an always-EMPTY, but REAL,
+ * FileList -- not absent, not a plain array pretending to be one. There is no
+ * native file-picker anywhere in this tree (grep -rn 'file.*picker\\|choose.*file'
+ * across c/kernel/gui and c/apps/gui finds nothing), so a user can never
+ * actually select a file through an <input type=file>; "zero files chosen" is
+ * not a limitation being papered over, it is the SAME state a real browser
+ * reports before its picker has ever been used. Answering it with a genuine
+ * FileList (constructor identity, .length, .item(), numeric indices,
+ * iterable) rather than leaving `.files` undefined means `input.files
+ * instanceof FileList`, `for (var f of input.files)` and `input.files.length
+ * === 0` all get the SAME true answer a real browser gives an untouched
+ * input, instead of a page's own `.files &&` guard taking the wrong branch.
+ * What is NOT here: DataTransfer.files (drag-and-drop has no source on this
+ * machine either) and any path that could ever populate this list with a
+ * real File -- both absent by name rather than guessed at, per rule 1. */
+"if (!('FileList' in G)) {\n"
+"  var FileList = function FileList(){ throw new TypeError('Illegal constructor'); };\n"
+"  var FLP = { length: 0 };\n"
+"  FLP.item = function(i){ i = i|0; return (i >= 0 && i < this.length && this[i] !== undefined) ? this[i] : null; };\n"
+"  try { FLP[Symbol.iterator] = Array.prototype[Symbol.iterator]; } catch (e) {}\n"
+"  FileList.prototype = FLP;\n"
+"  try { Object.defineProperty(FileList, 'name', { value: 'FileList', configurable: true }); } catch (e) {}\n"
+"  G.FileList = FileList;\n"
+"}\n"
+/* One EMPTY FileList per element -- fresh on first read, then cached on the
+ * element so `input.files === input.files` stays true across reads, the way
+ * a live collection's identity is supposed to. */
+"function emptyFileList(){\n"
+"  var fl = Object.create(G.FileList.prototype);\n"
+"  try { Object.defineProperty(fl, 'length', { value: 0 }); } catch (e) {}\n"
+"  return fl;\n"
+"}\n"
 /* Everything from here to the end of installOn() is per-served-tag. `proto` is
  * the parameter, not a closure over one prototype, which is the whole change:
  * `def`'s "if it already resolves, its owner keeps it" rule is now evaluated
@@ -578,6 +619,20 @@ static const char SHIM[] =
 "boolattr('required','required');\n"
 "boolattr('multiple','multiple');\n"
 "boolattr('autofocus','autofocus');\n"
+/* .files -- see the FileList comment above installOn for why this is always
+ * a real, empty FileList rather than absent or a plain array. Guarded on
+ * type=file the same way `checked` is guarded on tag==='input': every other
+ * <input> type answers undefined, matching the spec (files is declared only
+ * on the file state's IDL attributes). */
+"def(proto, 'files',\n"
+"  function(){\n"
+"    if (tag(this)!=='input' || (this.getAttribute('type')||'text').toLowerCase()!=='file') return undefined;\n"
+"    if (!Object.prototype.hasOwnProperty.call(this, '__fcFiles')) {\n"
+"      var fl = emptyFileList();\n"
+"      try { Object.defineProperty(this, '__fcFiles', { value: fl, enumerable: false, configurable: false }); }\n"
+"      catch (e) { this.__fcFiles = fl; }\n"
+"    }\n"
+"    return this.__fcFiles; });\n"
 "def(proto, 'maxLength',\n"
 "  function(){ var v = this.getAttribute('maxlength'); return v === null ? -1 : (parseInt(v,10)|0); },\n"
 "  function(v){ this.setAttribute('maxlength', String(v|0)); });\n"
@@ -719,13 +774,17 @@ static const char SHIM[] =
 "  (function walk(n){ var c = n.children||[];\n"
 "     for (var i=0;i<c.length;i++){ if ((c[i].tagName||'').toLowerCase()==='form') out.push(c[i]); walk(c[i]); } })(doc.documentElement||doc);\n"
 "  return out; } }); } catch (e) {}\n"
-/* document.defaultView -- one property, the global object. Absent before this
- * (grep for it returned nothing), which is why editor-test-utils.js's
- * `this.window.test_driver` read `undefined.test_driver` and reported
- * "cannot read property 'test_driver' of undefined": the message named
- * testdriver but the first thing actually missing was ours. */
-"try { Object.defineProperty(doc, 'defaultView', { configurable: true,\n"
-"  get: function(){ return G; } }); } catch (e) {}\n"
+/* document.defaultView USED to be defined here as `Object.defineProperty(doc,
+ * 'defaultView', { get: function(){ return G; } })` -- an own property on the
+ * live `document` instance that unconditionally answered the global object.
+ * ONE JAR, TWO DOORS: js_dom_iface.inc's document_extra_funcs[] now installs
+ * the real accessor on Document.prototype, and an own property on `doc` would
+ * SHADOW it there -- silently, since both compute the same answer for the
+ * live document and only diverge for a document this file never sees
+ * (createHTMLDocument's detached tree, where the correct answer is NULL, not
+ * G). Two implementations of one property that happen to agree today is
+ * exactly the shape rule 3 in CLAUDE.md warns about, so this door is closed;
+ * see js_dom_iface.inc's docx_get_defaultView for the one that stays open. */
 "})(globalThis);\n";
 
 

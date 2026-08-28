@@ -116,19 +116,41 @@ struct refl_elem { const char *tag; short first; short n; };
  * ("the rules are complicated, and a lot of them are SHOULDs") and passes
  * defaultVal:null, so every subtest whose expectation would be the default is
  * skipped. We answer 0 for the elements that are focusable without help and -1
- * for the rest, which is what browsers do. */
+ * for the rest, which is what browsers do.
+ *
+ * RFL_GLOBAL is two overlapping sets, not one, and the enum below exists so
+ * the split has names instead of positional indices. `autofocus` and
+ * `tabIndex` belong to the HTMLOrSVGElement mixin (called
+ * HTMLOrSVGOrMathMLElement by mathml-core, same members) and are shared with
+ * SVGElement and MathMLElement; `title`, `lang`, `dir` and `accessKey` are
+ * HTMLElement's alone. `hidden` is neither -- it is on HTMLElement only and
+ * every reflection.js case for it is scoped to HTML tags, so it stays out of
+ * the shared subset by omission rather than by a rule this file enforces.
+ * js_dom.c installs RFL_GLOBAL whole onto HTMLElement.prototype and then
+ * RFLG_HOSM_SUBSET onto SVGElement.prototype and MathMLElement.prototype --
+ * see js_reflect_install_hosm below. Installing the wrong four (title/lang/
+ * dir/accessKey) on the latter two is not a smaller bug: mathml/relations/
+ * html5-tree/html-or-svg-or-mathml-element-interfaces.html's sibling files
+ * check exactly this split, and over-installing turns a pass into a fail. */
 static const char *const KW_DIR[] = { "ltr", "rtl", "auto" };
 
+enum { RFLG_TITLE, RFLG_LANG, RFLG_DIR, RFLG_AUTOFOCUS, RFLG_HIDDEN,
+       RFLG_ACCESSKEY, RFLG_TABINDEX };
+
 static const struct refl_attr RFL_GLOBAL[] = {
-    { "title",     "title",     RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
-    { "lang",      "lang",      RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
-    { "dir",       "dir",       RT_ENUM,   3,KW_DIR, 0,0, "", "", 0.0, 0,0, 0, RTGT_SELF },
-    { "autofocus", "autofocus", RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
-    { "hidden",    "hidden",    RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
-    { "accessKey", "accesskey", RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
-    { "tabIndex",  "tabindex",  RT_LONG,   0,0, 0,0, 0, 0, 0.0, 0,0, RF_DEFNULL, RTGT_SELF },
+    [RFLG_TITLE]     = { "title",     "title",     RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_LANG]      = { "lang",      "lang",      RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_DIR]       = { "dir",       "dir",       RT_ENUM,   3,KW_DIR, 0,0, "", "", 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_AUTOFOCUS] = { "autofocus", "autofocus", RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_HIDDEN]    = { "hidden",    "hidden",    RT_BOOL,   0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_ACCESSKEY] = { "accessKey", "accesskey", RT_STRING, 0,0, 0,0, 0, 0, 0.0, 0,0, 0, RTGT_SELF },
+    [RFLG_TABINDEX]  = { "tabIndex",  "tabindex",  RT_LONG,   0,0, 0,0, 0, 0, 0.0, 0,0, RF_DEFNULL, RTGT_SELF },
 };
 #define RFL_NGLOBAL ((int)(sizeof RFL_GLOBAL / sizeof RFL_GLOBAL[0]))
+
+/* The HTMLOrSVGElement / HTMLOrSVGOrMathMLElement subset of RFL_GLOBAL. */
+static const int RFLG_HOSM_SUBSET[] = { RFLG_AUTOFOCUS, RFLG_TABINDEX };
+#define RFL_NHOSM ((int)(sizeof RFLG_HOSM_SUBSET / sizeof RFLG_HOSM_SUBSET[0]))
 
 /* ---- the reflections that live on Document -----------------------------
  *
@@ -824,4 +846,26 @@ void js_reflect_install(JSContext *ctx, JSValueConst html_proto,
         JSValueConst proto = proto_for(ud, HL_TAGS[t]);
         if (JS_IsObject(proto)) define_hlink(ctx, proto);
     }
+}
+
+/* SVGElement.prototype / MathMLElement.prototype get only the two RFL_GLOBAL
+ * rows the HTMLOrSVGElement mixin actually specifies -- see the comment above
+ * RFL_GLOBAL for why the other four must NOT land here too. Called once per
+ * prototype, after js_reflect_install has already run (so `proto` is real and
+ * `title`/`lang`/etc. on HTMLElement.prototype are unaffected -- these are two
+ * different prototype objects).
+ *
+ * Deliberately NOT folded into js_reflect_install itself: that function's
+ * `html_proto` parameter is singular and every existing caller passes exactly
+ * one prototype, so a second parameter would change a signature three other
+ * things depend on (the LOGIT_WEAK declaration in js_dom.c mirrors this one by
+ * hand and would have to change in lockstep -- one more jar, one more door).
+ * A second function with its own weak stub costs nothing extra and cannot
+ * silently disagree with the first about the mixin's membership, because
+ * there is only one RFLG_HOSM_SUBSET array and both call sites read it. */
+void js_reflect_install_hosm(JSContext *ctx, JSValueConst proto)
+{
+    if (!JS_IsObject(proto)) return;
+    for (int i = 0; i < RFL_NHOSM; i++)
+        define_one(ctx, proto, MAGIC_GLOBAL + RFLG_HOSM_SUBSET[i]);
 }
