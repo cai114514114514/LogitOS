@@ -31,6 +31,9 @@ apple	https://www.apple.com/	0 images; TypeError split of undefined
 stripe	https://stripe.com/	73 scripts, extremely slow
 qwen	https://chat.qwen.ai/	hangs
 
+google	https://www.google.com/	"验证都无法加载出来" -- the bot check appears and its challenge will not render
+google-search	https://www.google.com/search?q=python	"只要搜索入一个 Paton" -- the homepage renders; this is the path the owner actually uses
+bing-search	https://www.bing.com/search?q=python	"我使用bing搜索python成功返回了结果!!!可是......CSS渲染根本无法正常使用"
 control-example	http://example.com/	CONTROL: the simplest page on the web, no JS, no CSS worth the name
 control-wikipedia	https://en.wikipedia.org/wiki/Operating_system	CONTROL: known to render since M13
 kimi	https://www.kimi.com/	the one the whole browser arc was aimed at -- an LLM chat page: React, streaming fetch, and a text input that has to accept keystrokes

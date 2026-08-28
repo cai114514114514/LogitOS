@@ -261,6 +261,7 @@ test-reflect
 test-reflect-table
 test-reftest
 test-reftest-ahem
+test-repaint
 test-script-nav
 test-sec
 test-sec-report

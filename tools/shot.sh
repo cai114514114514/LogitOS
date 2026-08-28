@@ -24,11 +24,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# -snapshot so a diagnostic run can never modify the disk image.
+# The memory size comes from the Makefile, which passes its own $(QEMU_RAM)
+# in QEMU_RAM_ARGS. It used to be spelled `-m 512M` right here, and that made
+# this script a SECOND DOOR onto the same jar: the moment `make run` moved to
+# 1 GiB, `make shot` kept photographing a 512 MiB machine and the picture was
+# of something the user never runs. This script's whole job is telling "the OS
+# is broken" apart from "the window is not painting", so a screenshot of a
+# different machine than the one being complained about is worse than none.
+# The literal survives only as the standalone fallback, for running this by
+# hand outside make.
 "$QEMU" -cdrom build/logit.iso \
     -drive file=build/disk.img,format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
-    -m 512M -smp 4 -accel tcg,thread=multi -cpu "${QEMU_CPU_MODEL:-max}" \
+    ${QEMU_RAM_ARGS:--m 1G} -smp 4 -accel tcg,thread=multi -cpu "${QEMU_CPU_MODEL:-max}" \
     -rtc base=localtime \
     -vga none -device virtio-gpu-pci,xres=1280,yres=800 \
     -netdev user,id=n0 -device e1000,netdev=n0 \

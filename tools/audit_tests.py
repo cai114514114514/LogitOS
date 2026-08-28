@@ -351,10 +351,36 @@ def find_mute(dead_files):
 # Targets that are deliberately not part of `ci`: benchmarks (they print
 # numbers, they do not assert), negative controls that are RUN BY their
 # positive counterpart, and interactive/manual drivers.
+#
+# `test-kbench.*` USED TO be here, alongside `.*-bench$`, and it was wrong in
+# a way that mattered more than an ordinary over-broad exclusion: NOT_CI is
+# consulted by BOTH classify() (what tools/ci.sh runs) AND
+# find_orphan_targets() (what the UNWIRED report can even see), so a name
+# that matches it is invisible from BOTH ends at once. tests/kbench.mk's own
+# header says test-kbench, test-kbench-5 and test-kbench-1core are NOT
+# benchmarks in the sense this list means -- they assert (three of the
+# checks are chosen to FAIL against the kernel as it was before that work
+# landed) and test-kbench-negctl is a real negative control proving they
+# can. Only test-kbench-micro fits the "prints numbers, does not assert"
+# description this list is for -- it needs a kernel rebuilt with KBENCH=1
+# and stalls the desktop 270ms, "not something to inject into every boot",
+# per its own comment -- so it alone keeps a kbench-specific exclusion here.
+# test-kbench-negctl needs no kbench-specific entry: `test-.*-negctl$` below
+# already covers it (and correctly -- it's real debt, tracked as one of the
+# 54 in tests/audit-stranded.baseline under its own name).
+#
+# The fix surfaces test-kbench, test-kbench-5 and test-kbench-1core in the
+# UNWIRED report (see tests/audit-unwired.baseline) rather than adding them
+# to ci-boot: they boot QEMU for real wall-clock time (test-kbench-5 is five
+# boots) and would fight a parallel `make` for $(DISK)/$(ISO), the same
+# reason test-oom-os in tests/mem.mk is deliberately not on ci-boot either.
+# Visible-but-unwired is still strictly better than invisible: `make
+# test-mk-wired`/`test-audit` can now name them, and a human decides whether
+# they belong on ci-boot instead of the audit silently hiding the question.
 NOT_CI = re.compile(
     r"^(run|shot|debug|clean|all|probe-|.*-bench$|bench-|.*-diff$|.*-profile$|"
     r"perf-|.*-manual$|test-.*-negctl$|test-.*-control$|"
-    r"test-kbench.*|test-perf$|test-net-ab$|test-tcp-throughput$|"
+    r"test-kbench-micro$|test-perf$|test-net-ab$|test-tcp-throughput$|"
     r"test-preview-timing$|test-.*-deep$)")
 
 

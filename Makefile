@@ -162,6 +162,32 @@ endif
 ifeq ($(NETNOTXLOCK),1)
 CFLAGS += -DNETLOCK_NEGCTL_NO_TX_LOCK
 endif
+#   make FILECLOSEOK=1  build file_close() (c/kernel/exec/file.c) back to its
+#                  pre-fix behaviour: the last close's write-back to the
+#                  backend can fail and SYS_CLOSE still reports 0. The
+#                  NEGATIVE CONTROL for tests/boot/run-closefull-test.sh: on
+#                  the SAME deliberately near-full image (tests/boot/
+#                  mkdiskfull.py), CLOSETEST-BIG's rc line reads 0 instead of
+#                  nonzero, because the disk-full write failure is real either
+#                  way -- only whether close() SAYS SO changes.
+ifeq ($(FILECLOSEOK),1)
+CFLAGS += -DFILE_CLOSE_ALWAYS_OK
+endif
+#   make GLASSSLOW=1  build fb_liquid_glass_cut (c/kernel/gui/fb.c) with the
+#                  binary-search row-dominant run collapsed out, i.e. every
+#                  pixel of a glass panel re-walks the general per-pixel path
+#                  (isqrt + SDF + normal) that the row/column hoisting in this
+#                  file exists to avoid. The NEGATIVE CONTROL for "cache the
+#                  glass field": same panel, bit-identical pixels out (the two
+#                  paths are the same formula, proven equal for qxc==0 in the
+#                  run region), and the wm perf counters' ns/px on a glass-heavy
+#                  workload (dock hover) must go back up. Before this knob
+#                  existed, GLASS_FIELD_SLOW was a #ifndef nothing ever defined
+#                  -- a control that could not be watched failing, which rule 5
+#                  says is worse than no control at all.
+ifeq ($(GLASSSLOW),1)
+CFLAGS += -DGLASS_FIELD_SLOW
+endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
 
@@ -212,7 +238,30 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 # with LIBC_OBJS, like the video decoder does.
 RING3_SSH := $(wildcard c/net/ssh/*.c)
 RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
-             c/net/http/hpack.c c/net/http/http2.c $(RING3_SSH)
+             c/net/http/hpack.c c/net/http/http2.c c/net/http/ws.c $(RING3_SSH)
+# ws.c IS THE SECOND INSTANCE OF THE FAILURE THE PARAGRAPH ABOVE DESCRIBES, and
+# it landed 2026-08-28: a new WebSocket client was added to c/net/http/ and not
+# to this line, so the `find` swept it into the kernel and the whole kernel link
+# died on `undefined symbol: malloc / free / realloc / b64_encode`. Nothing was
+# wrong with ws.c -- it is ring-3 code doing ring-3 things -- and nothing was
+# wrong with the kernel. The build simply stops, for every target that needs a
+# kernel, until somebody reads a link error in a file they did not touch.
+#
+# THE COST OF THAT IS NOT THE FIX, IT IS THE HALF DAY OF OTHER PEOPLE'S TIME.
+# A concurrent line measuring compositor performance could not build a kernel
+# at all, reported its own item as unmeasurable, and its reviewer independently
+# re-derived the same three symbols before either of them looked here.
+#
+# THIS LIST IS THE JAR AND THE DIRECTORY IS THE OTHER DOOR. c/net/ssh is a
+# $(wildcard) two lines up precisely so a new ssh_*.c cannot do this -- and the
+# comment there already says why: "a new ssh_*.c that silently rejoined the
+# kernel is the c/lib/nn mistake again". c/net/http CANNOT take a wildcard,
+# because http.c and url.c in the same directory are the kernel's own client
+# and must stay in. So this line is hand-maintained by necessity, which makes
+# it exactly the shape this tree has paid for three times: a rule that lives in
+# one file and a fact that lives in another. If you add a .c to c/net/http that
+# ring 3 owns, it goes here in the same commit, or the tree stops building for
+# everyone.
 # c/net/ssh is a PROTOCOL and lives with the other protocols (c/net/tls is the
 # precedent: crypto holds primitives, net holds what is built on them). It is
 # written freestanding so the kernel COULD link it -- nothing in the kernel
@@ -396,8 +445,34 @@ $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 # Gallery: every aui widget in every state. It is the toolkit's demo AND its
 # regression test (tests/qmp/qmp_gallery.py asserts against its pixels), which is
 # why it ships on the disk rather than living behind a build flag -- a visual
-# test you have to opt into is a visual test nobody runs.
+# test you have to opt into is a visual test nobody runs. THIS RULE STILL
+# PRODUCES THE ORDINARY, VISIBLE .aex -- test-aui, test-aui-negctl, bench-aui
+# and bench-gfx-frame all still launch it by clicking the Dock, on their OWN
+# disk images, exactly as before. See $(BUILD)/gallery_hidden.aex below for
+# what actually ships on $(DISK).
 $(eval $(call APP_RULE,gallery, 0x4A000000,Gallery,-,G,120,140,250))
+# THE PRODUCT NO LONGER LAUNCHES GALLERY FROM THE DOCK. It demonstrates
+# effects the toolkit now applies everywhere else, and shipping it as a
+# clickable app is the exact absurdity the owner named ("这动画也实在太少了点
+# ... 把UI应用拿掉降级"). --category test tags the SAME elf/binary as
+# AEX_CAT_TEST ("built for a harness, not for a person", aex.h:150); wm.c's
+# scan_apps reads that byte back and makes the tile un-hoverable and
+# un-clickable -- see the comment on `struct regent`. The tile is still
+# PAINTED (same colour, same position): blanking it would read as a
+# structural dock defect to qmp_desktop_look.py's pixel-precision checks,
+# which count on eleven evenly pitched, filled icons. "Not launchable" only
+# needs interaction removed, not the pixel.
+#
+# It KEEPS its slot in the pack list (immediately below), which is the part
+# that must not move: dock_geom() centres the whole strip on nreg, so this
+# costs nothing to BROWSER_SLOT/GALLERY_SLOT/SETTINGS_SLOT and every driver
+# that clicks one of them by index. Dropping the entry instead -- the
+# "APPS-list change" this was tempted to be -- would have shifted all three
+# and broken tests/ch.mk, qmp_repaint.py's Settings window and every other
+# driver on this disk that has nothing to do with Gallery.
+$(BUILD)/gallery_hidden.aex: $(BUILD)/gallery.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/gallery.elf $@ 'Gallery' - 'G' 120 140 250 \
+	    --category test --id os.logit.gallery
 # Settings: the window where the machine's memory of its user is editable.
 # Packed AFTER gallery for the same reason gallery is packed after browser --
 # see the APPS note below.
@@ -459,7 +534,15 @@ ROOT_AEX_PACK = $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$
 # Appending to APPS would insert gallery BEFORE browser and silently move the
 # icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
 # dock is centred, so one more app shifts every icon.)
-GALLERY_AEX := $(BUILD)/gallery.aex
+#
+# DEFAULT IS THE HIDDEN BUILD -- $(DISK) (the product) gets the
+# AEX_CAT_TEST .aex, so Gallery keeps its slot in the pack list (same file
+# NAME, "gallery.aex", same position) but wm.c never draws or hit-tests it.
+# Anything that still wants the ORDINARY visible Gallery -- test-aui,
+# test-aui-negctl, bench-aui, bench-gfx-frame -- overrides this on its own
+# `$(MAKE) DISK=... GALLERY_AEX=...` line, exactly the mechanism
+# test-aui-negctl already used for GALLERY_AEX=$(BUILD)/gallery_noaa.aex.
+GALLERY_AEX := $(BUILD)/gallery_hidden.aex
 
 # Which Activity Monitor goes on the disk. Overridable for the same reason
 # BROWSER_AEX is: test-monitor-negctl packs a deliberately crippled build (one
@@ -817,8 +900,21 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/css_interp.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/net/http/http2.c c/net/http/hpack.c \
+                c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
                 c/lib/image/exif.c c/lib/image/img.c
+# c/net/http/ws.c is WebSocket's transport-free frame codec (RFC 6455); the
+# JS surface is c/apps/browser/js_websocket.c, picked up automatically below
+# by the js_*.c wildcard.  c/net/ssh/base64.c and c/crypto/hash/sha1.c ride
+# along because the handshake's Sec-WebSocket-Accept is base64(SHA-1(key +
+# GUID)) -- RFC 6455 1.3 states plainly that hash is not a security
+# mechanism (it only proves the server understood the handshake), so reusing
+# c/crypto/hash/sha1.c's existing SHA-1 (previously reachable only from
+# c/net/tls/ocsp.c -- see that file's own header on why a second caller is
+# the moment to re-read it, not to promote it to crypto.h) was the right call
+# rather than writing a second one inside ws.c. All three are transport-free
+# and host-testable, which is why they ride in BROWSER_PIPE rather than being
+# hand-added to every fragment that links "the browser minus something".
 BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 
 # dom.c interns element and attribute names through libwapcaplet (LibCSS's own
@@ -831,10 +927,24 @@ $(BUILD)/browserobj/%.o: %.c
 
 # NetSurf LibCSS (+ libparserutils + libwapcaplet) + our css_engine.c adapter.
 CSS_DIR := third_party/css
+# -Iinclude is here ONLY for language.c's `#include "weaksym.h"` (the
+# @supports-honesty hooks into c/apps/browser/css_engine.c and css_extra.c --
+# see the block comment above supports_decl() in
+# third_party/css/libcss/src/parse/language.c). A relative "../../../../../
+# include/weaksym.h" path broke test-css-web-negctl, which sed-copies
+# language.c to a SHALLOWER directory ($(NEGDIR)/libcss/parse/) than its real
+# home (third_party/css/libcss/src/parse/) -- same number of ".." components,
+# different actual depth, so the relative path resolved to the wrong place
+# for the copy while working for the original. `weaksym.h` is a unique
+# basename under include/ (checked: `find . -iname weaksym.h`), so this one
+# addition cannot shadow anything the CLAUDE.md flat-include-list trap warns
+# about -- that trap is INCDIRS (c + include together); this is CSS_INC alone.
 CSS_INC := -I$(CSS_DIR)/libwapcaplet/include -I$(CSS_DIR)/libparserutils/include \
-           -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src
+           -I$(CSS_DIR)/libcss/include -I$(CSS_DIR)/libcss/src -I$(CSS_DIR)/libparserutils/src \
+           -Iinclude
 CSS_SRC := $(shell find $(CSS_DIR) -name '*.c' ! -name css_property_parser_gen.c)
-CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/browser/css_engine.o
+CSS_OBJ := $(patsubst %.c,$(BUILD)/cssobj/%.o,$(CSS_SRC)) $(BUILD)/cssobj/c/apps/browser/css_engine.o \
+           $(BUILD)/cssobj/c/apps/browser/css_report.o
 
 $(BUILD)/cssobj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -975,6 +1085,20 @@ $(BUILD)/libctest.elf: $(BUILD)/asobj/tests/unit/libctest_main.o $(LIBC_OBJS) $(
 $(BUILD)/libctest.aex: $(BUILD)/libctest.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/libctest.elf $@ libctest - '?' 150 150 150
 
+# /bin/closefull -- THE GATE for making close() report a failed write (see
+# tests/unit/closefull_main.c and tests/boot/run-closefull-test.sh). Same
+# recipe shape as libctest above: the real mini-libc objects, not a
+# reimplementation of open/write/close.
+$(BUILD)/asobj/tests/unit/closefull_main.o: tests/unit/closefull_main.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+$(BUILD)/closefull.elf: $(BUILD)/asobj/tests/unit/closefull_main.o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/closefull.crt0c.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/closefull.crt0c.o $(BUILD)/asobj/tests/unit/closefull_main.o $(LIBC_OBJS)
+$(BUILD)/closefull.aex: $(BUILD)/closefull.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/closefull.elf $@ closefull - '?' 150 150 150
+
 # --- H.264 decoder, built for the target ---------------------------------
 # c/lib/video is plain C99 over malloc/memset, so the same sources that the
 # host gate proves bit-exact against ffmpeg compile straight for x86_64-elf
@@ -1007,7 +1131,19 @@ $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 # broke build/h2check.elf -- a diagnostic tool that wants HTTP/2 and no
 # crypto -- with nine undefined symbols. sshd links c/net/ssh explicitly
 # through tests/ssh.mk, which is where a program that WANTS ssh asks for it.
-R3NET_SRC  := $(filter-out $(RING3_SSH),$(RING3_NET))
+#
+# c/net/http/ws.c is now the SAME shape as ssh, for the same reason: its
+# handshake needs b64_encode (c/net/ssh/base64.c, already excluded above)
+# and ocsp_sha1 (c/crypto/hash/sha1.c, which is NOT in RING3_NET at all --
+# it stays in the kernel's C_SRC because c/net/tls/ocsp.c calls it there --
+# so R3NET_OBJ never had it and never will). Filtering only $(RING3_SSH)
+# left ws.c in R3NET_SRC and broke build/h2check.elf again, same two
+# undefined symbols this comment already warned about for a different
+# file. h2check wants HTTP/2 and no crypto; it does not want WebSocket
+# either. The browser links ws.c + base64.c + sha1.c together and
+# correctly -- see BROWSER_PIPE -- this filter only concerns R3NET_OBJ's
+# OTHER consumers (h2check.elf, check-ring3-net, the http1_fuzz host build).
+R3NET_SRC  := $(filter-out $(RING3_SSH) c/net/http/ws.c,$(RING3_NET))
 R3NET_HDRS := c/net/http/http1.h c/net/http/cookies.h c/net/http/hpool.h \
               c/net/http/hpack.h c/net/http/http2.h
 R3NET_OBJ  := $(patsubst %.c,$(BUILD)/r3netobj/%.o,$(R3NET_SRC))
@@ -1162,16 +1298,24 @@ $(BUILD)/preview.aex: $(BUILD)/preview.elf tools/mkaex.py
 # would mean 300 KB per frame through a pipe with a 16 KiB payload limit. The
 # decode is ring-3 for the same reason Preview's is: megabytes of live reference
 # frames and an untrusted-input parser do not belong under the big lock.
+#
+# AUD_OBJ + LIBM_OBJ joined the link line with RT_T_AUDIO: the same shape as
+# VID_OBJ above, and the same hazard this Makefile has already paid for once --
+# mjpeg.c dragging c/lib/image into every VID_OBJ consumer while a stale .elf
+# on disk hid the missing link for a while (see the comment on AUD_OBJ's own
+# audiocheck.elf rule above). Naming both here, at the moment the source that
+# calls adec_open() is added, is how this terminal avoids being the SECOND
+# time that link line does not follow the dependency.
 $(BUILD)/terminal.elf: $(GUIDIR)/terminal.c $(APPDIR)/logit.h $(CLIDIR)/logit_rich.h \
-                       $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(APPDIR)/crt0.asm \
-                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(IMGCHK_OBJ) \
-                       $(RUST_LIB) $(LIBC_OBJS)
+                       $(CLIDIR)/logit_sniff.h $(VID_HDRS) $(AUD_HDRS) $(APPDIR)/crt0.asm \
+                       $(BUILD)/apps/aui.o $(GFX_OBJ) $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) \
+                       $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/terminal.crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/terminal.c -o $(BUILD)/apps/terminal.o
 	$(LD) -nostdlib -e _start -Ttext=0x43000000 -o $@ --start-group \
 	    $(BUILD)/apps/terminal.crt0.o $(BUILD)/apps/terminal.o $(BUILD)/apps/aui.o $(GFX_OBJ) \
-	    $(VID_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBC_OBJS) --end-group
+	    $(VID_OBJ) $(AUD_OBJ) $(IMGCHK_OBJ) $(RUST_LIB) $(LIBM_OBJ) $(LIBC_OBJS) --end-group
 $(BUILD)/terminal.aex: $(BUILD)/terminal.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/terminal.elf $@ Terminal - '>' 70 80 100
 
@@ -1219,7 +1363,33 @@ IMG_FIXTURES_ON_DISK := $(foreach f,$(IMG_FIXTURES),$(f):/media/img/$(notdir $(f
 MODEL_LM         := $(wildcard $(BUILD)/model.lm)
 MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM)
+# tcc.aex (tests/tcc.mk) so the compiler that `make test-sysroot-link` and
+# `test-tcc-build` already prove works has somewhere to run: previously
+# /bin/tcc, /usr/include and /usr/lib existed on no image `make run` or
+# `make test` ever produced. It is exactly $(TCC_OUT)/tcc.aex from
+# tests/tcc.mk, referenced by its literal path the same way every other .aex
+# on this line already is.
+#
+# THE SYSROOT IS *NOT* NAMED ON THIS LINE, AND THAT IS DELIBERATE -- READ
+# THIS BEFORE PUTTING IT BACK. It was, briefly, as the bare word `sysroot`,
+# under a comment arguing that borrowing the phony target tests/sysroot.mk
+# exports avoids spelling $(SYSROOT_WORK)/sysroot.stamp a second time --
+# CLAUDE.md's "one jar, two doors". The intent was right and the mechanism
+# was wrong: **a .PHONY prerequisite is unconditionally out of date**, so
+# $(DISK) could never again be up to date. Measured: `make -q build/disk.img`
+# answered 1 on a tree where nothing had changed, which means every
+# `make run`, every boot harness and every gate that wants a disk re-ran the
+# sysroot pipeline and re-packed the whole 512 MiB image first. Nothing
+# FAILED, which is exactly why it survived -- it was pure cost, paid
+# silently, on the command this tree's owner runs most.
+#
+# Both properties are available at once, and tests/sysroot.mk now takes them:
+# the fragment appends `$(DISK): $(SYSROOT_WORK)/sysroot.stamp` itself, next
+# to the variable's own definition. The path is still spelled ONCE, in the
+# file that owns it, and the prerequisite is now a real file with a real
+# timestamp. A fragment adding prerequisites to a target defined elsewhere is
+# ordinary make, and it is how $(DISK) already grows its fixtures.
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
 	    sz=$$(stat -c%s $(MODEL_LM)); \
@@ -1252,6 +1422,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    third_party/libm/COPYRIGHT:/licenses/third_party/musl-libm-COPYRIGHT.txt \
 	    $(ROOT_AEX_PACK) \
 	    $(foreach c,$(CLI),$(BUILD)/$(c).aex:/bin/$(c)) $(BUILD)/as.aex:/bin/as $(BUILD)/libctest.aex:/bin/libctest \
+	    $(BUILD)/closefull.aex:/bin/closefull \
 	    $(BUILD)/vidcheck.aex:/bin/vidcheck $(BUILD)/h2check.aex:/bin/h2check \
 	    $(BUILD)/audiocheck.aex:/bin/audiocheck \
 	    $(BUILD)/imgcheck.aex:/bin/imgcheck \
@@ -1267,10 +1438,51 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \
 	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
-	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s)))
+	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
+	    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
 
 QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pci,drive=hd0 -boot d
-QEMU_RAM  := -m 512M                # headroom for the loaded fonts + glyph cache
+# 1 GiB, and THAT NUMBER IS A CEILING RATHER THAN A PREFERENCE. Do not raise
+# it without reading the next paragraph -- the machine will still boot.
+#
+# c/boot/boot.asm:80 identity-maps EXACTLY the first 1 GiB, one PD of 512
+# 2 MiB pages, and c/kernel/mm/mmhost.h:43 makes that an assumption the whole
+# kernel rests on: mm_p2v(phys) is `(void *)phys`, with the file's own comment
+# saying so -- "the kernel identity-maps the low 1 GiB, so phys == virt".
+#
+# Nothing clamps the allocator to that. pmm.c:251 takes total_frames from the
+# multiboot map, and pmm_init frees every AVAILABLE region firmware reports
+# (`release(me->addr, me->len)`), so with more than 1 GiB the PMM hands out
+# frames it has no way to address. The kernel then does the ordinary thing --
+# e.g. next_table()'s `memset(mm_p2v(frame), 0, 4096)` -- and writes to a
+# VIRTUAL address above 0x40000000, which is PDPT[1]: the USER region
+# (vmm.c:120-125). Every GUI app is linked at 0x49000000 or 0x50000000, so
+# that write lands in a running program's own image.
+#
+# THE FAILURE SHAPE IS THE BAD ONE. pmm_alloc scans from low, so a machine
+# with 2 GiB boots fine, runs fine, and only starts corrupting when demand
+# pushes an allocation past the first gigabyte -- i.e. exactly under the load
+# that made someone want more memory. It does not fault at boot and it does
+# not fault at the moment of the mistake.
+#
+# Measured 2026-08-28 on the shipped ISO, headless, 4-core TCG:
+#   -m 512M   131037 frames (511 MiB), 127272 free, LOGIT_BOOT_OK, 0 faults
+#   -m 1G     262109 frames (1023 MiB), 258240 free, LOGIT_BOOT_OK, 0 faults
+# So 1 GiB is free: twice the memory, no code change, and still entirely
+# inside the mapped window.
+#
+# GOING ABOVE THIS IS A PROJECT, NOT A FLAG, and it is the same wall as
+# CLAUDE.md's structural gap #2 (the user address space is one PDPT entry):
+# physical memory above 1 GiB has nowhere to be identity-mapped, because that
+# virtual range is user space. It needs either a physmap at a high virtual
+# base -- mmhost.h already has the seam, its MM_HOSTTEST branch is
+# `mm_host_base + phys` -- or user space moved out of PDPT[1].
+#
+# The ~100 boot harnesses that spell `-m 512M` themselves are deliberately NOT
+# changed: test-oom and test-swap are calibrated against a memory size, and
+# CLAUDE.md already records a gate going hollow when the workload stopped
+# reaching its budget. This variable is the interactive machine only.
+QEMU_RAM  := -m 1G                  # headroom for the loaded fonts + glyph cache
 # 4 cores, parallel TCG threads. Both system-freeze bugs are now fixed: the
 # single-core WM IRQ-vs-render race (input deferral, commit ffd3b90) and the
 # multi-core g_bkl/g_sched_lock ABBA deadlock (first-run threads now start IF=0,
@@ -1302,6 +1514,58 @@ QEMU_GPU  := -vga none -device virtio-gpu-pci,xres=1920,yres=1200
 QEMU_NET  := -netdev user,id=n0 -device e1000,netdev=n0 \
              -object filter-dump,id=f0,netdev=n0,file=$(BUILD)/net.pcap
 
+# Sound. `make run` shipped with ZERO audio parameters despite
+# c/drivers/audio/hda.c (CORB/RIRB, codec-graph walk, BDL DMA) +
+# c/kernel/audio/ + six decoders in c/lib/audio -- every gate in the audio
+# line was proving a machine the user never got ("声卡没装上"). Proven first,
+# not assumed: tests/audio.mk's test-audio-wav/-mix/-underrun drive the SAME
+# intel-hda/hda-output pair through QEMU's `wav` audiodev and check the
+# captured samples one by one (frame index advances by exactly one, the mix
+# is SUMMED not overwritten, an underrun goes silent and recovers) --
+# 2026-08-28, all three green against the real driver.
+#
+# coreaudio is this tree's documented host (macOS); `-audiodev help` on that
+# host lists none/coreaudio/dbus/wav. Idle cost, measured the way a
+# host-contended machine has to be measured -- the guest's OWN counters at
+# matching uptime, not host wall clock (three other QEMU instances were
+# running on this host during the measurement): [time] tickloss read
+# 2/201 missed (0.995%) at uptime=2s and ~3-5/800 missed (~0.4-0.6%) at
+# uptime=8s in BOTH configurations, and [wm] perf's composites/ns/cpx were in
+# the same range with and without the device. That is expected from the
+# driver's own design (mixer.c's kaudio thread is started by
+# snd_engine_ensure() on the first real playback syscall, not at probe time),
+# so a device that is present but never opened costs nothing on the frame
+# path that CLAUDE.md already measured as the bottleneck.
+#
+# THE TRAP (hda.c's own header): a boot that shows the codec graph and no
+# errors is not evidence of sound -- the DAC can be left untold which stream
+# to listen to and the DMA engine runs happily with LPIB advancing into
+# silence. The wav-capture gates above are the instrument that actually
+# proves it; this line only wires the same device into the interactive run.
+#
+# THE NAME IS QEMU_SND AND NOT QEMU_AUDIO, WHICH LOOKS WRONG BESIDE
+# QEMU_GPU/QEMU_NET/QEMU_DISP UNTIL YOU KNOW WHY. `QEMU_AUDIO` was already
+# taken, by tests/audio.mk:91, and it means something DIFFERENT there: the
+# DEVICE ONLY, because tests/boot/run-audio-wav-test.sh:52 composes its own
+# `-audiodev wav,id=snd0,path=...` and then reads QEMU_AUDIO from the
+# ENVIRONMENT at :55 for the card to attach to it. This variable is the whole
+# pair, backend included.
+#
+# Spelling one name with two meanings is CLAUDE.md's "one jar, two doors", and
+# here it did not merely risk drift -- it was already broken in both
+# directions. Both are `?=` and this file is evaluated before
+# `-include tests/audio.mk`, so the fragment's definition was DEAD; and the
+# hook that fragment documents (`export QEMU_AUDIO="-device intel-hda -device
+# hda-output,audiodev=snd0"`, its own default) silently poisoned `make run` in
+# the same shell -- QEMU refuses to start with "audiodev 'snd0' not found"
+# because the hda-output then references a backend nothing defines. A
+# developer on the audio line would have hit that with no clue why, in a
+# command that has nothing to do with what they were testing.
+#
+#   make run QEMU_SND=            silence -- no sound card, matches pre-2026-08-28
+#   make run QEMU_SND="-audiodev wav,id=snd0,path=out.wav -device intel-hda -device hda-output,audiodev=snd0"
+QEMU_SND ?= -audiodev coreaudio,id=snd0 -device intel-hda -device hda-output,audiodev=snd0
+
 # Display backend. QEMU picks gtk by default on Linux, which is the right choice
 # on a normal desktop -- but under WSLg a window can appear in the taskbar and
 # then never paint, with QEMU reporting no error at all.
@@ -1329,14 +1593,14 @@ DISP ?=
 QEMU_DISP := $(if $(DISP),-display $(DISP),)
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
 
 # What is the guest ACTUALLY drawing? Boots headless, screendumps over QMP and
 # writes a PNG. This is the check that separates "the OS is broken" from "the
 # window is not painting" -- it reads the scanout the guest produced, with no
 # host window involved.
 shot: $(ISO) $(DISK)
-	@bash tools/shot.sh
+	@QEMU_RAM_ARGS='$(QEMU_RAM)' bash tools/shot.sh
 
 debug: $(ISO) $(DISK)
 	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) -serial stdio -no-reboot -s -S
@@ -1353,9 +1617,23 @@ test: test-crypto test-net $(ISO) $(DISK)
 # host-side crypto build needs on its include path. c/crypto/kdf joined the
 # set when crypto_vec_test.c grew PBKDF2 cases: the KDF is part of the same
 # battery, and every other CRYPTO_SRC consumer links it without noticing.
+#
+# c/crypto/pq/keccak.c IS NOT OPTIONAL HERE, and the reason is exactly the
+# sentence above. The find is a GLOB, so the day c/crypto/hash/cshake.c and
+# kmac.c landed (SP 800-185, 2026-08-28) they joined CRYPTO_SRC without anyone
+# editing this line -- and cshake.h includes "keccak.h", which lives in
+# c/crypto/pq, a directory the find deliberately does not walk. `make
+# test-crypto` -- and therefore `make test`, the first command in CLAUDE.md --
+# stopped COMPILING with "keccak.h file not found", in a link line nobody had
+# edited, for a file nobody had added to a list. Adding the TU and the -I is
+# the whole fix; keccak.c is already in the kernel via C_SRC's own find over
+# c/crypto, so this changes no shipped binary, only the host gates.
+# Deliberately NOT `find c/crypto/pq`: mlkem.c/mldsa.c pull in their own
+# randomness TUs and belong to their own gates, not to the vector battery.
 CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/kdf c/crypto/pubkey -name '*.c') \
+              c/crypto/pq/keccak.c \
               c/kernel/cpu/cpufeat.c
-CRYPTO_INC := -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu
+CRYPTO_INC := -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu -Ic/crypto/pq
 test-crypto: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_vec_test tests/unit/crypto_vec_test.c $(CRYPTO_SRC) $(CRYPTO_INC) -Itests/unit
 	$(BUILD)/crypto_vec_test
@@ -1700,6 +1978,27 @@ $(BUILD)/disk2.img: tools/mkfs.py
 # tests/boot/run-vfs-test.sh for what each assertion is worth.
 test-vfs-os: $(ISO) $(DISK) $(BUILD)/disk2.img
 	@bash tests/boot/run-vfs-test.sh $(ISO) $(DISK) $(BUILD)/disk2.img
+
+# THE GATE for "make close() able to report a failed write" (audit item 3;
+# CLAUDE.md structural gap #3's tail). tests/boot/mkdiskfull.py patches a COPY
+# of $(DISK)'s own free-block bitmap to leave a handful of blocks free --
+# every file already on the image is untouched -- and /bin/closefull
+# (tests/unit/closefull_main.c) writes past that on the real machine, over
+# the real mini-libc open/write/close path this item changed. See
+# run-closefull-test.sh for the full argument and run-closefull-negctl.sh for
+# the control: file_close() built -DFILE_CLOSE_ALWAYS_OK (Makefile's
+# FILECLOSEOK=1 knob) on the SAME near-full image, watched failing.
+.PHONY: test-closefull test-closefull-negctl
+# The control runs as a PREREQUISITE of the gate, not named on a ci-boot: line
+# instead -- see CLAUDE.md on stranded controls: that would satisfy the audit
+# and still run it never.
+test-closefull: test-closefull-negctl
+test-closefull: $(ISO) $(DISK)
+	@bash tests/boot/run-closefull-test.sh $(ISO) $(DISK)
+test-closefull-negctl: $(DISK)
+	@bash tests/boot/run-closefull-negctl.sh $(DISK)
+
+ci-boot: test-closefull
 
 # Partition-table parsing (MBR incl. the extended chain, GPT incl. both CRC32s),
 # on the host against synthetic sector images. This is where nearly all the risk
@@ -2416,6 +2715,33 @@ test-sniff-negctl:
 		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/sniff_negctl.log) checks fail without the guard"; \
 	fi
 
+# Second negative control on the SAME file, for the OTHER thing sniff_class()
+# does: -DSNIFF_AUDIO_NEGCTL compiles out the WAV/FLAC/MP3/OGG -> SNC_AUDIO
+# routing inside logit_sniff.h's sniff_class(), i.e. what `show` did to a sound
+# file before RT_T_AUDIO existed -- SNC_OPAQUE, refused, hexdumped. This is a
+# SEPARATE control from test-sniff-negctl above because it exercises a
+# different `#ifndef` in the same header; a single negative build cannot prove
+# both independent things stayed protected. REQUIRED to redden exactly the 5
+# audio-classification checks test_class() added and nothing else -- a control
+# that reddens more than that is not isolating the thing it claims to.
+test-sniff-audio-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DSNIFF_AUDIO_NEGCTL -o $(BUILD)/sniff_audio_negctl tests/unit/sniff_test.c \
+		-Ic/apps/coreutils -Ic/apps -Iinclude/abi
+	@if ./$(BUILD)/sniff_audio_negctl >$(BUILD)/sniff_audio_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: the suite passes with audio classification removed"; \
+		exit 1; \
+	else \
+		n=$$(grep -c '^FAIL' $(BUILD)/sniff_audio_negctl.log); \
+		if [ "$$n" != "5" ]; then \
+			echo "FAIL: expected exactly 5 reddened checks (wav/flac/mp3/ogg/opener), got $$n"; \
+			grep '^FAIL' $(BUILD)/sniff_audio_negctl.log | sed 's/^/       /'; \
+			exit 1; \
+		fi; \
+		echo "negative control ok: exactly 5 checks fail with audio classification removed"; \
+		grep '^FAIL' $(BUILD)/sniff_audio_negctl.log | sed 's/^/       /'; \
+	fi
+
 # The cell/byte rule (c/apps/coreutils/logit_cells.h): the ONE conversion
 # between a byte index in a UTF-8 string and the column the terminal grid draws
 # it at. Two binaries depend on it agreeing -- /bin/sh publishes its edit cursor
@@ -2457,7 +2783,7 @@ test-cells-negctl:
 	fi
 
 test-term-host: test-term-proto test-sh test-sh-negctl test-sniff test-sniff-negctl \
-                test-cells test-cells-negctl
+                test-sniff-audio-negctl test-cells test-cells-negctl
 
 # The whole suite into ci-host, not test-cells alone. test-audit flagged
 # test-cells as unwired the day it landed, and the reason was not test-cells:
@@ -2477,6 +2803,26 @@ test-term-ui: $(ISO) $(DISK)
 # nothing runs cannot fail either.
 test-term-gui: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_term.py $(ISO) $(DISK) $(BUILD)/term.ppm
+
+# RT_T_AUDIO, judged by the samples QEMU's `wav` audiodev says the guest
+# actually played -- see qmp_audio_term.py's own header for why a log line
+# saying "opened" is not evidence (hda.c's comment on a DAC nobody told which
+# stream to listen to). $(QEMU_AUDIO) is the same variable tests/audio.mk
+# already defines for exactly this purpose (a device set some OTHER driver
+# invocation can override) rather than a second copy of it.
+#
+# TWO TARGETS, not one with a flag folded into the recipe, because they boot
+# DIFFERENT MACHINES and the second one is the machine `make run` actually
+# produces today: zero audio parameters on its QEMU command line. A single
+# target that only exercised the device case would leave the one config every
+# user has right now unwatched.
+test-term-audio-wav: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_audio_term.py $(ISO) $(DISK) device $(BUILD)/audioterm-device.ppm
+
+test-term-audio-none: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_audio_term.py $(ISO) $(DISK) none $(BUILD)/audioterm-none.ppm
+
+test-term-audio: test-term-audio-wav test-term-audio-none
 
 test-dhcp-host: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
@@ -2864,7 +3210,13 @@ BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gf
 # paint_test links the REAL browser_paint.c and asserts on the draw ops. It must
 # come first on the include path (same shape as tests/unit/kheapstub).
 PAINT_INC := -Itests/unit/painthost
-CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC))
+# css_report.o rides in the archive rather than on each gate's link line so that
+# the stylesheet accounting is available to every host CSS gate with no source
+# list to keep in step. It is an archive member with no other member depending
+# on it, so a gate that never calls css_report_* does not pull it in and its
+# link line is byte-for-byte what it was.
+CSSHOST_OBJ := $(patsubst %.c,$(BUILD)/csshost/%.o,$(CSS_SRC)) \
+               $(BUILD)/csshost/c/apps/browser/css_report.o
 
 # -MMD -MP so a change to a vendored LibCSS HEADER rebuilds the objects that
 # include it. Without them this rule tracked .c files only, and LibCSS keeps
@@ -4041,6 +4393,7 @@ clean:
 # The CSS engine corpus audit + fidelity targets (kept out of this file so a
 # whole-file Makefile overwrite from a concurrent line cannot delete them).
 -include tests/cssweb.mk
+-include tests/cssreport.mk
 
 # The CSSOM: CSSOM-View geometry, document.styleSheets, the CSS object,
 # matchMedia (test-cssom, its two negative controls, and the wpt-cssom
@@ -4087,6 +4440,10 @@ clean:
 -include tests/settings.mk
 # The desktop's own login, and the per-user settings store it needs.
 -include tests/desktop.mk
+# What a repaint costs per event class, and whether a widget animation STOPS.
+# tests/qmp/qmp_repaint.py had no make target at all until this line: five other
+# drivers import it as a library, so it was reachable and never run.
+-include tests/repaint.mk
 
 # The browser LOADER test (test-loader), its negative control and the on-device
 # test-script-nav. Own fragment for the same reason as every other one above --
@@ -4101,6 +4458,7 @@ clean:
 # broken loaders the tests above must fail against), test-exec-bases and
 # test-exec-os. Own fragment for the same reason as every other one above.
 -include tests/exec.mk
+-include tests/aexsig.mk
 
 # The ring-3 heap's COST: test-arena (the .bss/commit-bound gate plus its two
 # negative controls) and bench-arena (per-page heap over the cssweb corpus).
@@ -4168,8 +4526,17 @@ test-glass-negctl:
 # The same assertions then fail, which is how "these corners are really
 # anti-aliased" is demonstrated rather than asserted. The target succeeds when
 # the test fails.
-test-aui: $(ISO) $(DISK)
-	bash tests/boot/run-aui-test.sh $(ISO) $(DISK)
+#
+# $(DISK) -- the product -- ships Gallery as AEX_CAT_TEST now (see GALLERY_AEX
+# above), so it is not a Dock icon a click can find. The gate still needs the
+# ordinary, clickable build, so it packs its own disk with GALLERY_AEX
+# overridden back to $(BUILD)/gallery.aex -- the SAME mechanism
+# test-aui-negctl already used for gallery_noaa.aex, just without the -DAUI_NO_AA
+# rebuild. Same elf either way; only the mkaex metadata byte differs from what
+# $(DISK) carries.
+test-aui: $(ISO) $(BUILD)/gallery.aex
+	$(MAKE) DISK=$(BUILD)/disk_gallery.img GALLERY_AEX=$(BUILD)/gallery.aex $(BUILD)/disk_gallery.img
+	bash tests/boot/run-aui-test.sh $(ISO) $(BUILD)/disk_gallery.img
 
 $(BUILD)/apps/aui_noaa.o: $(GUIDIR)/aui.c $(GUIDIR)/aui.h $(APPDIR)/logit.h c/lib/gfx/gfx.h
 	@mkdir -p $(BUILD)/apps
@@ -4242,8 +4609,14 @@ test-aui-negctl: $(ISO)
 # What one aui frame costs, measured on the machine at 1920x1200 under TCG
 # rather than estimated: Gallery times its own repaint with CLOCK_MONOTONIC and
 # prints it on the serial console.
-bench-aui: $(ISO) $(DISK)
-	bash tests/boot/run-aui-bench.sh $(ISO) $(DISK)
+#
+# Same reason as test-aui above: $(DISK) no longer carries a clickable Gallery,
+# so this needs the ordinary build on its own disk. Reuses disk_gallery.img --
+# if test-aui already built it in the same `make`, this is a no-op remake check,
+# not a second QEMU-adjacent image write.
+bench-aui: $(ISO) $(BUILD)/gallery.aex
+	$(MAKE) DISK=$(BUILD)/disk_gallery.img GALLERY_AEX=$(BUILD)/gallery.aex $(BUILD)/disk_gallery.img
+	bash tests/boot/run-aui-bench.sh $(ISO) $(BUILD)/disk_gallery.img
 
 # Open Logit, the 2D rendering engine: accuracy against a 16x supersampled
 # reference, compositing against the Porter-Duff formula in double, the
@@ -4281,6 +4654,10 @@ bench-aui: $(ISO) $(DISK)
 
 -include tests/http2.mk
 
+# WebSocket (RFC 6455): the frame codec + the browser's `WebSocket`, host-
+# tested against an in-memory server. See tests/ws.mk's own header.
+-include tests/ws.mk
+
 # mini-libc -> real libc gates (fnmatch/glob/regex/inet/pwd/grp/uname/mman/
 # sched/poll/select/resource/syslog/termios/netdb/socket). See its header.
 -include tests/libc.mk
@@ -4315,6 +4692,12 @@ bench-aui: $(ISO) $(DISK)
 # html5lib shape one layer up. See its header.
 -include tests/wpt.mk
 
+# The nested browsing context (<iframe>): a 14-case termination probe over
+# $(BUILD)/wpt_test, plus its negative control. See tests/iframe.mk -- must
+# come after tests/wpt.mk, whose WPT_TEST_SRC/WPT_CF/WPT_ROOT it reuses rather
+# than re-deriving.
+-include tests/iframe.mk
+
 # SERVER SOCKETS -- the passive open, SYS_SOCKET..SYS_SOCKSTAT, and /bin/httpd.
 # The device target proves INBOUND from the host through a SLIRP hostfwd rule;
 # the negative control is a stack that accepts the connection but reuses one
@@ -4342,6 +4725,14 @@ bench-aui: $(ISO) $(DISK)
 # header for the target list and which five of them are negative controls.
 -include tests/crypto.mk
 
+# The 2026-08-28 primitive batch -- thirteen new algorithms (BLAKE2b/2s/3,
+# CRC-32C, cSHAKE/KMAC, scrypt, Argon2, XChaCha20-Poly1305, AES-GCM-SIV, X448,
+# secp256k1, ML-DSA) with official vectors and one watched-failing negative
+# control each. LIBRARY PRIMITIVES ONLY: nothing in that fragment is reachable
+# from c/crypto/trust, the TLS handshake, aex.c or login, and its header argues
+# why that is what keeps the batch out of CLAUDE.md's category (b).
+-include tests/crypto2026.mk
+
 # The negative control for the HTML tree builder: rebuilds the parser with the
 # adoption agency algorithm stubbed out and requires the html5lib corpus to go
 # red. See the fragment header.
@@ -4352,6 +4743,11 @@ bench-aui: $(ISO) $(DISK)
 # the three-phase dispatcher in js_dom.c. Reuses the WPT runner's source list
 # from tests/wpt.mk, but does NOT assume it was read first -- see its header.
 -include tests/events.mk
+
+# IndexedDB (c/apps/browser/js_idb.c): the coherent-subset suite plus the
+# termination-bar quiescence check and its negative control. Independent of
+# tests/events.mk's own source list -- see tests/idb.mk's header.
+-include tests/idb.mk
 
 # The SITE SCOREBOARD: `make scoreboard`, `scoreboard-quick`, `scoreboard-1
 # SITE=<name>`, `scoreboard-diff FROM=... TO=...`. Eighteen live sites, one
@@ -4566,6 +4962,8 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/containers.mk
 -include tests/fsgeom.mk
 -include tests/imelearn.mk
+-include tests/worker.mk
+-include tests/cache.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:

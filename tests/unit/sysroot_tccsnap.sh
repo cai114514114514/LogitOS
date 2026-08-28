@@ -52,6 +52,21 @@ try_build() {  # $CAND -> $HOST/tcc.new ; 0 on success, log in $HOST/build.log
         -o "$HOST/tcc.new" "$CAND/tcc.c" -lm -ldl -lpthread > "$HOST/build.log" 2>&1
 }
 
+# `stat -c %s` is GNU coreutils and the documented development host is macOS,
+# where BSD stat spells it `stat -f %z` and answers `-c` with "illegal option"
+# on stderr plus nothing on stdout. It was doing exactly that on every single
+# sysroot build -- the last line of promote() read
+#   sysroot: host tcc built from third_party/tcc (the live tree) -> ... ( bytes)
+# with the size missing and a usage message above it. Harmless, and that is
+# the problem: it was the fourth entry in CLAUDE.md's host-reality table
+# ("Shell and coreutil differences") sitting in plain sight in the output of a
+# command run all day, and it trains a reader to skim past stderr in the one
+# recipe where a real error also appears. Ask the shell which stat this is
+# once, rather than probing per call.
+filesize() {
+    stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo "?"
+}
+
 promote() {    # $1 = a description of where the snapshot came from
     rm -rf "$SNAP"; mv "$CAND" "$SNAP"; mv "$HOST/tcc.new" "$HOST/tcc"
     {
@@ -60,7 +75,7 @@ promote() {    # $1 = a description of where the snapshot came from
         echo "sources md5: $(cd "$SNAP" && cat *.c *.h include/*.h lib/* | md5sum | cut -d' ' -f1)"
         echo "host tcc: $("$HOST/tcc" -v 2>&1 | head -1)"
     } > "$SNAP/SNAPSHOT.txt"
-    echo "sysroot: host tcc built from $1 -> $HOST/tcc ($(stat -c %s "$HOST/tcc") bytes)"
+    echo "sysroot: host tcc built from $1 -> $HOST/tcc ($(filesize "$HOST/tcc") bytes)"
 }
 
 copy_src "$LIVE"

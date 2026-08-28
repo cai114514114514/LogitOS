@@ -219,3 +219,55 @@ test-oom-os: $(ISO) $(DISK)
 # alone. Recorded here rather than left to be rediscovered from the audit's
 # UNWIRED list, where it looks like an oversight.
 ci-host: test-oom
+
+# --- four DEAD boot harnesses, found by a 2026-08-28 audit and wired here ---
+#
+# tests/boot/run-execshare-test.sh, run-elfshare.sh, run-pcachefill.sh and
+# run-pcachepeak.sh existed, worked, and NO Makefile target named any of
+# them -- tools/audit_tests.py's DEAD category. Two kernel source files cite
+# the first BY NAME as if it were already a gate: shm.h:21 ("tests/boot/
+# run-execshare-test.sh already gates it") and fault.c:388 (the
+# MM_NEGCTL_NOSHARE negative control's own comment names it as "THE NEGATIVE
+# CONTROL FOR THE SHARING GATE"). Neither claim had a Makefile line behind
+# it; the comments were citing a script nothing ran.
+#
+# All four were run BY HAND before wiring, per the rule that an unwired
+# harness which FAILS is a different finding from one that passes:
+#
+#   run-execshare-test.sh  PASS  32 pages shared between 2nd/3rd copies of
+#                           /bin/as (>= T_MIN=16), mm audit 0 inconsistencies
+#   run-elfshare.sh        PASS  3 subjects, 7 measurements (>= 3 and 7
+#                           required), ELFSTAT-AUDIT 0 at every checkpoint
+#   run-pcachefill.sh      PASS  4818 pages resident across 25 files, 0
+#                           orphaned, 0 uncached, 0 unaccounted-for
+#   run-pcachepeak.sh      PASS  on a clean run. The FIRST run reported
+#                           "bad aex header" for six binaries loaded late in
+#                           the sequence (vidcheck, asnative, jsbench, lm,
+#                           echo, as) -- but that run had a concurrent
+#                           `make build/sysroot-work/disk.img` rewriting
+#                           $(DISK) via mkfs.py WHILE this harness's QEMU
+#                           (file.locking=off, no OS-level lock) was reading
+#                           it mid-boot. Rerun alone, with nothing else
+#                           touching $(DISK): every binary loaded cleanly,
+#                           no corruption, no FAIL. Apparatus, not a bug --
+#                           rule 1. Do not run this harness (or its
+#                           siblings) concurrently with a `make` that can
+#                           rewrite $(DISK)/$(ISO).
+#
+# Deliberately NOT on ci-boot, same reasoning as test-oom-os above: each
+# boots QEMU for real wall-clock time (pcachepeak drives ~15 binaries in
+# sequence) and would fight a parallel `make` for $(DISK)/$(ISO) -- which is
+# exactly the failure mode the pcachepeak rerun above hit. Run them alone.
+.PHONY: test-execshare-os test-elfshare-os test-pcachefill-os test-pcachepeak-os
+
+test-execshare-os: $(ISO) $(DISK)
+	@bash tests/boot/run-execshare-test.sh $(ISO) $(DISK)
+
+test-elfshare-os: $(ISO) $(DISK)
+	@bash tests/boot/run-elfshare.sh $(ISO) $(DISK)
+
+test-pcachefill-os: $(ISO) $(DISK)
+	@bash tests/boot/run-pcachefill.sh $(ISO) $(DISK)
+
+test-pcachepeak-os: $(ISO) $(DISK)
+	@bash tests/boot/run-pcachepeak.sh $(ISO) $(DISK)

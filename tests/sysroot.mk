@@ -68,8 +68,31 @@ SYSROOT_ABS    := $(abspath $(SYSROOT))
 # llvm-ar is asked for by name because its deterministic mode and its GNU
 # index are what tcc's loader reads; the versioned names are what Ubuntu
 # installs. GNU ar is the fallback (it also writes a GNU "/" index).
-SYSROOT_AR     := $(firstword $(shell which llvm-ar llvm-ar-21 llvm-ar-20 llvm-ar-19 llvm-ar-18 2>/dev/null) ar)
-SYSROOT_NM     := $(firstword $(shell which llvm-nm llvm-nm-21 llvm-nm-20 llvm-nm-19 llvm-nm-18 2>/dev/null) nm)
+#
+# THE HOMEBREW PATHS ARE NOT DECORATION -- WITHOUT THEM THIS FRAGMENT CANNOT
+# BUILD ON ITS OWN DOCUMENTED HOST. `which llvm-ar` finds nothing on macOS
+# even with LLVM installed, because brew keeps the llvm formula KEG-ONLY: the
+# binaries live in /opt/homebrew/opt/llvm/bin and that directory is
+# deliberately off PATH (they would shadow Apple's clang). So this fell
+# through to `ar`, which on macOS is Apple's, which has neither -D nor
+# --format=gnu and dies with "illegal option -- D". Measured 2026-08-28: the
+# whole sysroot stamp went red the first time anything invalidated it, and
+# with it $(DISK) and therefore `make run`. It had been latent for as long as
+# the stamp happened to stay fresh.
+#
+# THE FALLBACK MUST NEVER BECOME APPLE'S ar SILENTLY, and that is worth more
+# than the convenience: tools/mksysroot.py:48 records that tcc reads a GNU
+# archive only through its "/" symbol index, and that "a BSD-format archive
+# (__.SYMDEF) has no such member and every object in it is SILENTLY SKIPPED".
+# An Apple ar that accepted these flags would hand us a libc.a that links to
+# nothing and complains about nothing. Today it refuses the flags outright,
+# which is loud and therefore fine; if that ever changes, this needs a
+# positive check of the index rather than a name.
+SYSROOT_ARDIRS := /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin
+SYSROOT_AR     := $(firstword $(shell which llvm-ar llvm-ar-21 llvm-ar-20 llvm-ar-19 llvm-ar-18 2>/dev/null) \
+                              $(wildcard $(addsuffix /llvm-ar,$(SYSROOT_ARDIRS))) ar)
+SYSROOT_NM     := $(firstword $(shell which llvm-nm llvm-nm-21 llvm-nm-20 llvm-nm-19 llvm-nm-18 2>/dev/null) \
+                              $(wildcard $(addsuffix /llvm-nm,$(SYSROOT_ARDIRS))) nm)
 SYSROOT_TCCLIVE := third_party/tcc
 # The SNAPSHOT of third_party/tcc everything below reads -- see
 # tests/unit/sysroot_tccsnap.sh for why the live tree is not read directly
@@ -123,6 +146,23 @@ SYSROOT_TCC1_SRC := $(SYSROOT_TCCSRC)/lib/libtcc1.c $(SYSROOT_TCCSRC)/lib/va_lis
 SYSROOT_TCC1_OBJ := $(patsubst %.S,%.o,$(patsubst %.c,%.o,\
                       $(patsubst $(SYSROOT_TCCSRC)/lib/%,$(SYSROOT_WORK)/tcc1/%,$(SYSROOT_TCC1_SRC))))
 $(SYSROOT_TCC1_OBJ): $(SYSROOT_TCC_STAMP)
+# The .c/.S files under $(SYSROOT_TCCSRC)/lib are a SIDE EFFECT of the stamp
+# recipe above, not tracked targets of their own -- so on a truly clean tree
+# GNU Make's implicit-rule search for the %.o pattern below stats them BEFORE
+# the stamp recipe has run, finds neither a file nor a rule, and silently
+# drops the pattern: no error, no compile command, and mksysroot.py fails
+# later on three "objects do not exist" it was itself told to expect. This
+# empty-recipe rule is what makes the existence check succeed on the FIRST
+# build, not just a second one where the snapshot happens to already be on
+# disk from a prior failed attempt (that is how this went unnoticed).
+#
+# Deliberately the exact THREE paths in $(SYSROOT_TCC1_SRC), not a %.c/%.S
+# pattern over the whole directory: a blanket pattern makes every stem's .c
+# AND .S candidate look equally "makeable", so the %.o:%.c rule below (listed
+# first) wins the implicit-rule search even for alloca86_64, which only has a
+# .S -- silently compiling a nonexistent alloca86_64.c instead. Naming only
+# the files that are really there keeps the .c-vs-.S disambiguation exact.
+$(SYSROOT_TCC1_SRC): $(SYSROOT_TCC_STAMP) ;
 $(SYSROOT_WORK)/tcc1/%.o: $(SYSROOT_TCCSRC)/lib/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(SYSROOT_UCFLAGS) -w -c $< -o $@
@@ -154,6 +194,26 @@ $(SYSROOT_WORK)/sysroot.stamp: tools/mksysroot.py $(LIBC_OBJS) $(LIBM_OBJ) $(SYS
 	@touch $@
 sysroot: $(SYSROOT_WORK)/sysroot.stamp
 
+# $(DISK) needs the sysroot on the image, and it takes the dependency FROM
+# HERE rather than naming it in the root Makefile's prerequisite list. Two
+# reasons, and the second one was paid for:
+#
+#   1. The path is spelled once, in the file that owns it. That is what the
+#      root Makefile was reaching for when it briefly listed the bare word
+#      `sysroot` instead.
+#   2. `sysroot` IS .PHONY (line 62), and **a phony prerequisite is
+#      unconditionally out of date**. With it on $(DISK)'s line, `make -q
+#      build/disk.img` answered 1 on an unchanged tree: every `make run` and
+#      every boot harness re-ran this pipeline and re-packed 512 MiB before
+#      starting. It never failed, so nothing noticed.
+#
+# The stamp is a real file with a real timestamp, so this gives $(DISK) the
+# same up-to-date check every other prerequisite on that line already has.
+# $(DISK) is defined in the root Makefile long before this fragment is
+# included; appending a prerequisite to it here adds to that rule rather than
+# replacing it, which is why this line carries no recipe.
+$(DISK): $(SYSROOT_WORK)/sysroot.stamp
+
 # --- gates (host) --------------------------------------------------------------
 test-sysroot-tree: tools/mkfs.py tests/unit/sysroot_tree_test.py
 	python3 tests/unit/sysroot_tree_test.py $(SYSROOT_WORK)/treetest
@@ -175,16 +235,26 @@ $(SYSROOT_WORK)/hello-tcc.aex: $(SYSROOT_WORK)/link/hello_sys tools/mkaex.py
 	@python3 tools/mkaex.py $< $@ hello-tcc - '?' --cli --category test \
 	    --id os.logit.sysroot.hello > /dev/null
 
-# --- the test image: the Makefile's disk + the sysroot at / + /bin/hello-tcc ---
-# NOT $(DISK): the sysroot is 500-odd inodes of test fixture until tcc.aex
-# exists to use it, and every other harness boots $(DISK). The Makefile's
-# file list is taken from `make -n` (continuations joined; -W so the recipe
-# is printed even when the disk is up to date), never retyped.
+# --- the test image: the Makefile's disk (which now PACKS the sysroot and
+# tcc.aex itself, Makefile:1222 + the mkfs arg list) plus /bin/hello-tcc -----
+#
+# THIS WAS "the Makefile's disk + the sysroot at / + /bin/hello-tcc" and added
+# $(SYSROOT):/ here as an EXTRA, back when the comment below was true: "the
+# sysroot is 500-odd inodes of test fixture until tcc.aex exists to use it".
+# tcc.aex exists now and $(DISK) itself packs $(SYSROOT):/ and tcc.aex at
+# /bin/tcc (that is item 2 of the audit this fragment implements) -- so
+# `make -n $(DISK)` below ALREADY contains the sysroot, and re-adding it as an
+# extra here packed it TWICE: `mkfs: duplicate path /usr/include/assert.h`,
+# watched failing before this line dropped $(SYSROOT):/ from the extras. The
+# only thing this target still adds beyond what ships is /bin/hello-tcc, the
+# host-tcc-linked test fixture nothing on the real image needs.
+# The Makefile's file list is taken from `make -n` (continuations joined; -W
+# so the recipe is printed even when the disk is up to date), never retyped.
 $(SYSROOT_WORK)/disk.img: $(SYSROOT_WORK)/sysroot.stamp $(SYSROOT_WORK)/hello-tcc.aex $(DISK) \
                           tests/unit/sysroot_img.py tools/mkfs.py
 	@$(MAKE) -n -W tools/mkfs.py $(DISK) > $(SYSROOT_WORK)/make-n.txt
 	python3 tests/unit/sysroot_img.py . $(SYSROOT_WORK)/make-n.txt $@ \
-	    $(SYSROOT):/ $(SYSROOT_WORK)/hello-tcc.aex:/bin/hello-tcc
+	    $(SYSROOT_WORK)/hello-tcc.aex:/bin/hello-tcc
 
 # fs_format_test is the Makefile's own geometry + fsck checker, built here from
 # the same recipe test-fs-format uses, pointed at this image.
