@@ -25,7 +25,13 @@ FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
 AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
-FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+# Four faces, two weights. The Bold pair is an INSTANCE of the same vendored
+# variable fonts at wght=700 -- same source file, same OFL licence, same
+# mkfont.py -- which is why FONT_UI_SRC/FONT_MONO_SRC below did not grow.
+# There is no italic: neither source carries an `ital` or `slnt` axis. See
+# fsroot/fonts/README.md and tools/mkfont.py's docstring.
+FONTS       := fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
+               fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf
 # The shaping font. Vendored unmodified (see third_party/fonts/README.md):
 # the Noto subsets above carry no Arabic, no Hebrew and -- because subsetting
 # stripped them -- no GSUB/GPOS at all, so the shaper would have nothing to do.
@@ -141,6 +147,20 @@ endif
 #                  define drives the host differential (make test-shape-negctl).
 ifeq ($(NOSHAPE),1)
 CFLAGS += -DSHAPE_NEGATIVE_CONTROL
+endif
+#   make NETNOTXLOCK=1  build eth_send() WITHOUT taking net_lock(), i.e. the
+#                  transmit path exactly as it was before step 4a of the BKL
+#                  removal -- when every comment in it said it was fine.
+#                  The NEGATIVE CONTROL for tests/boot/run-netlock-test.sh:
+#                  the machine still boots, still gets a lease and still
+#                  fetches, and `[netlock] ... violations` stops being 0
+#                  because the senders that never held the lock (udp_send's
+#                  broadcast path -- DHCP) start tripping
+#                  net_lock_assert_held(). That is the whole difference, and
+#                  it is why the control has to be run rather than reasoned
+#                  about: nothing user-visible distinguishes the two builds.
+ifeq ($(NETNOTXLOCK),1)
+CFLAGS += -DNETLOCK_NEGCTL_NO_TX_LOCK
 endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
@@ -278,7 +298,7 @@ RUST_LIB  := rust/target/x86_64-unknown-none/release/liblogit_rust.a
 RUST_SRC  := $(shell find rust/src -name '*.rs') rust/Cargo.toml
 
 .PHONY: test-img test-img-still test-img-anim test-img-exif test-img-fuzz test-img-fuzz-negctl test-imgcheck
-.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-webp-vp8 test-webp-vp8-negctl test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
+.PHONY: test-fs test-fs-boot probe-webapi test-platform test-platform-control test-platform-asan test-platform-page test-platform-page-control test-webapi test-webapi-asan test-webapi-page test-webapi-page-control test-fetch-ui all run shot debug test test-durability test-barrier test-fscrash test-hugefile test-fsreplay test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format test-fs-host test-fsmount test-h264 test-h264-units test-h264-diff test-browser test-css-asan test-css-fidelity test-nvme test-part test-part-asan test-ahci test-ahci-raw test-ahci-mbr test-ahci-gpt test-ahci-two test-selfhost test-selfhost-lex test-selfhost-compile test-selfhost-fixpoint clean test-as test-as-gcstress test-as-stress test-as-asan test-as-fast check-asops check-abi test-as-bcstable test-shell test-as-port-negctl test-ash test-shell-as test-video test-evq test-clock test-input test-html5lib test-html5lib-tok test-html5lib-asan test-js-dom-asan test-live-page test-as-os test-smp test-net test-net-os test-sock test-sock-ui test-tcp-host test-tcp-negctl test-net-proto test-ip6 test-ip6-dns test-ip6-dns-negctl test-ip6-host test-ip6-negctl test-nd-host test-nd-negctl test-ip6-fallback test-ip6-fallback-negctl test-ip6-os test-dhcp-host test-dhcp-os test-https-smoke test-browser-https test-complete test-libc test-fb-clip test-kheap test-malloc test-png test-jpeg test-webp-vp8 test-webp-vp8-negctl test-svg test-crypto test-crypto-diff test-tls-interop test-tls-resume-control test-p521 test-p521-control test-tls-psk test-tls-psk-control test-libc-diff test-x509-fuzz test-http-fuzz test-font test-font-otl test-font-color test-font-fuzz test-font-control test-glyph-agree test-font-weight test-font-weight-negctl test-h2 test-h2-fuzz test-h2-control test-h2-os check-ring3-net test-modules test-handshakes test-time-host test-time-negctl test-time test-time-smp test-klog test-klog-control test-panic test-panic-log test-stream test-stream-control test-stream-asan test-cookie-cors test-cookie-cors-asan test-sse-page test-sse-page-control
 
 .PHONY: test-aui-mask test-aui test-aui-negctl bench-aui
 .PHONY: test-monitor test-monitor-negctl
@@ -789,7 +809,7 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
-                c/apps/browser/layout.c \
+                c/apps/browser/layout.c c/apps/browser/layout_text.c \
                 c/apps/browser/forms.c c/apps/browser/focus.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
                 c/apps/browser/tabs.c \
@@ -1074,6 +1094,21 @@ $(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
+# musl's libm, given its own objects so an ordinary CLI program can link it:
+# `make test-libm-cli` asserts the freestanding cross-build is BIT-IDENTICAL to
+# a native build of the same sources. The fragment also defines $(LIBM_OBJ),
+# which the ports link. It is included HERE, above every rule that names
+# $(LIBM_OBJ) in a prerequisite list (audiocheck.elf and preview.elf below,
+# lm.elf much further down): GNU make expands a rule's prerequisites when it
+# READS the rule, not at build time, so an -include placed below the first
+# user silently expands $(LIBM_OBJ) to EMPTY and the link then fails on .o
+# files nothing ever built. Recipe bodies are deferred and were never the
+# problem. Everything the fragment dereferences immediately (BUILD, CC,
+# UCFLAGS, LIBC_OBJS, APPDIR, DISK, CLI, ASM, LD) is defined above this
+# point. Read its header before reusing $(BUILD)/jsobj's libm objects -- the
+# scoping of `-include features.h` is load-bearing, not tidiness.
+-include tests/libm.mk
+
 # /bin/audiocheck -- decodes a file on-device and prints the same CRC32 the
 # host build prints, which is what turns "the audio decoders also work on
 # LogitOS" into a comparison rather than a claim. FLAC additionally reports its
@@ -1112,7 +1147,7 @@ $(BUILD)/audiocheck.aex: $(BUILD)/audiocheck.elf tools/mkaex.py
 $(BUILD)/preview.elf: $(GUIDIR)/preview.c $(APPDIR)/logit.h $(VID_HDRS) \
                       c/lib/image/img.h c/apps/coreutils/logit_sniff.h \
                       $(BUILD)/apps/crt0.o $(VID_OBJ) $(IMGCHK_OBJ) $(GFX_OBJ) $(RUST_LIB) \
-                      $(LIBC_OBJS)
+                      $(LIBM_OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(CC) $(UCFLAGS) $(PREVIEW_CF) -c $(GUIDIR)/preview.c -o $(BUILD)/apps/preview.o
 	$(LD) -nostdlib -e _start -Ttext=0x48000000 -o $@ --start-group \
@@ -1152,7 +1187,8 @@ verify-fonts: verify-font-sources
 
 regen-fonts: verify-font-sources tools/mkfont.py $(FONT_UI_SRC) $(FONT_MONO_SRC)
 	@mkdir -p fsroot/fonts
-	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+	python3 tools/mkfont.py fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
+	    fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf
 	@cd fsroot/fonts && sha256sum -c SHA256SUMS
 
 $(FONTS):
@@ -1198,6 +1234,8 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/login.aex:/bin/login \
 	    $(GREETER_AEX):/sbin/greeter.aex \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
+	    fsroot/fonts/ui-bold.ttf:/fonts/ui-bold.ttf \
+	    fsroot/fonts/mono-bold.ttf:/fonts/mono-bold.ttf \
 	    $(FONT_TEXT):/fonts/text.ttf \
 	    LICENSE:/licenses/README.txt LICENSING.md:/licenses/Logit-LICENSING.md \
 	    LICENSES/GPL-3.0-or-later.txt:/licenses/GPL-3.0-or-later.txt \
@@ -1462,6 +1500,14 @@ test-crypto-diff: $(BUILD)
 # independent decode of the same bits) in both directions, so a mis-numbered
 # feature bit fails here rather than at the point where a dispatch picks an
 # implementation the CPU cannot run.
+#
+# NOTE the host: this builds for the HOST, not the target, so on a non-x86 host
+# (macOS/Apple Silicon, the machine CLAUDE.md documents) there is no CPUID to
+# execute and cpufeat.c has no detection path at all. The test SKIPS LOUDLY
+# there and names every property it did not check -- it used to assert the
+# x86-64 baseline against that build and fail 12 of 1622 checks, which made
+# `make test` red through test-crypto for a reason that was never about the
+# decode. The bit tuples are UNMEASURED on such a host; run this on x86-64.
 test-cpufeat: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/cpufeat_test tests/unit/cpufeat_test.c \
 	    c/kernel/cpu/cpufeat.c -Ic/kernel/cpu
@@ -1799,7 +1845,19 @@ ci-boot: test-sigint
 test-sigint: test-sigint-negctl
 
 # How spec-conformant is the HTML parser? Runs the shared tree-construction
-# suite every browser is measured against (third_party/html5lib-tests -- data
+# THE CORPUS IS FETCHED, NOT VENDORED, since 2026-08-28. It used to be 75 files
+# in $(H5L_ROOT)/ carrying TWO upstreams and two licence files,
+# which is why it never had a revision to pin: measured byte for byte, the 14
+# tokenizer/ files are html5lib/html5lib-tests and the 61 tree-construction/
+# files ARE wpt html/syntax/parsing/resources -- a corpus this tree already
+# fetches at a pinned revision. It was vendored twice with nothing checking the
+# copies agreed.
+#   make h5l-fetch     tokenizer/ at tools/h5l_revision.txt + tree-construction/
+#                      out of the WPT checkout that already exists (not a second
+#                      download); says so loudly and exits 0 when WPT is absent.
+# H5L_ROOT is overridable, same as WPT_ROOT, so a full upstream checkout works.
+H5L_ROOT ?= build/html5lib-tests
+# suite every browser is measured against (the corpus above -- data
 # only, the runner is ours) and prints a pass rate.
 #
 # This is a MEASUREMENT, not a gate: it exits 0 whatever the rate. The parser
@@ -1818,9 +1876,9 @@ test-sigint: test-sigint-negctl
 #   make test-html5lib-tok          pass counts
 #   make test-html5lib-tok V=20     dump the first 20 failures
 $(BUILD)/html5lib_tok_cases.inc: tools/gen_html5lib_tok.py \
-                                 $(wildcard third_party/html5lib-tests/tokenizer/*.test)
+                                 $(wildcard $(H5L_ROOT)/tokenizer/*.test)
 	@mkdir -p $(BUILD)
-	@python3 tools/gen_html5lib_tok.py third_party/html5lib-tests/tokenizer $@
+	@python3 tools/gen_html5lib_tok.py $(H5L_ROOT)/tokenizer $@
 
 test-html5lib-tok: $(BUILD)/html5lib_tok_cases.inc
 	@$(CC) -O2 -w $(BTEST_INC) -I$(BUILD) -o $(BUILD)/html_tok_test \
@@ -1842,7 +1900,7 @@ test-html5lib: $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_test tests/unit/html5lib_test.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
-	@$(BUILD)/html5lib_test third_party/html5lib-tests/tree-construction \
+	@$(BUILD)/html5lib_test $(H5L_ROOT)/tree-construction \
 	    $(if $(V),-v $(V),) $(if $(BASELINE),--write-baseline,) $(if $(STRICT),--strict,)
 
 # The same corpus under ASan/UBSan/LeakSanitizer, plus a fuzz pass that feeds
@@ -1856,12 +1914,12 @@ test-html5lib-asan: $(BUILD)/libcss_host.a
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_asan tests/unit/html5lib_test.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-	    $(BUILD)/html5lib_asan third_party/html5lib-tests/tree-construction --strict
+	    $(BUILD)/html5lib_asan $(H5L_ROOT)/tree-construction --strict
 	@$(CC) -O1 -g -w -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/html5lib_fuzz tests/unit/html5lib_fuzz.c \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
-	    $(BUILD)/html5lib_fuzz third_party/html5lib-tests/tree-construction
+	    $(BUILD)/html5lib_fuzz $(H5L_ROOT)/tree-construction
 
 # Does the H.264 decoder work on LogitOS, not just on the host? make test-h264
 # proves it bit-exact against ffmpeg, but that is a glibc build on Linux. This
@@ -2791,7 +2849,16 @@ test-malloc:
 # that links the painter needs the engine's header AND $(GFX_SRC) in its
 # source list. The two travel together -- adding the include without the
 # sources fails at link with five undefined gfx_* symbols.
-BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx
+# -Iinclude/abi is here because layout.c reads LOGIT_FACE_MONO/LOGIT_FACE_BOLD
+# out of include/abi/logit_abi.h -- the mask text_measure() and gui_text_run()
+# both take. Three fragments (wpt, canvas, reftest) already passed it
+# separately; a duplicate -I is harmless and the other seventeen fragments that
+# compile layout.c needed it. The basenames in include/abi (logit_abi.h,
+# logit_exec.h, logit_pack.h, sockerr.h) are unique across c/, include/, tests/
+# and third_party/ -- checked, because CLAUDE.md's flat-include-list trap is
+# exactly a new -I shadowing a header somebody else was including by basename.
+BTEST_INC := -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx \
+             -Iinclude/abi
 # The painter draws through logit.h's `int 0x80` wrappers, which a host process
 # cannot execute. tests/unit/painthost/logit.h shadows them with recorders, so
 # paint_test links the REAL browser_paint.c and asserts on the draw ops. It must
@@ -2845,30 +2912,30 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 # stale-stylesheet checks that are the real risk of caching it.
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_perf_test tests/unit/css_perf_test.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_perf_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_test tests/unit/layout_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/layout_test
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_test tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/paint_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_test tests/unit/page_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/page_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_test tests/unit/table_list_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/table_list_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/pipeline_stress tests/unit/pipeline_stress.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/pipeline_stress
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(IMG_HOST_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm -Ic/kernel/mm
 	@$(BUILD)/layout_svg_test
@@ -3174,22 +3241,22 @@ test-css-asan: $(BUILD)/libcss_host.a
 	@echo "css_vars: ASan + UBSan clean over the unit cases and the fuzz corpus"
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_asan tests/unit/layout_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
 	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/layout_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $(BUILD)/paint_asan tests/unit/paint_test.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) $(HTML_PARSER_SRC) \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/paint_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/table_list_asan tests/unit/table_list_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
 	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/table_list_asan >/dev/null
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) -o $(BUILD)/page_asan tests/unit/page_test.c \
-	    c/apps/browser/layout.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c \
 	    c/apps/browser/css_vars.c $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/page_asan >/dev/null
 	@echo "test-css-asan: ALL PASS"
@@ -3258,7 +3325,7 @@ test-dom-device: $(ISO) $(DISK)
 test-dom-bindings: $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
 	    -o $(BUILD)/dom_bindings_test tests/unit/dom_bindings_test.c \
-	    c/apps/browser/js_dom.c c/apps/browser/layout.c \
+	    c/apps/browser/js_dom.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/dom_bindings_test
@@ -3270,7 +3337,7 @@ test-dom-bindings-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
 	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
 	    -o $(BUILD)/dom_bindings_asan tests/unit/dom_bindings_test.c \
-	    c/apps/browser/js_dom.c c/apps/browser/layout.c \
+	    c/apps/browser/js_dom.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/dom_bindings_asan
@@ -3290,11 +3357,11 @@ BENCH_CSS   ?= $(wildcard tests/fixtures/cssperf/ds-*.css)
 BENCH_ITERS ?= 9
 $(BUILD)/css_bench: tests/unit/css_bench.c $(BUILD)/libcss_host.a \
                     c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-                    c/apps/browser/css_extra.c c/apps/browser/layout.c \
+                    c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
                     c/apps/browser/browser_paint.c $(HTML_PARSER_SRC)
 	@$(CC) -O2 -w $(PAINT_INC) $(BTEST_INC) $(CSS_INC) -o $@ tests/unit/css_bench.c \
 	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
-	    c/apps/browser/layout.c c/apps/browser/browser_paint.c $(GFX_SRC) \
+	    c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c $(GFX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 
 bench-css: $(BUILD)/css_bench
@@ -3594,9 +3661,17 @@ FONT_INC   := -Ic/lib/text -Ic/kernel/gui -Ic/lib/gfx
 FONT_FIX   := tests/fixtures/fonts
 # The committed fixtures plus the fonts we actually ship on the disk image --
 # a regression that only shows up in ui.ttf is still a regression.
+#
+# The BOLD pair is here for the same reason and one more: it is a new asset, and
+# the check that a new font file is a font this tree's parser reads correctly is
+# a differential against FreeType, not "it loaded". test-glyph-agree is
+# deliberately NOT given the bold faces -- it reports one mean and one worst
+# pixel over its whole argument list, so adding fonts moves the recorded
+# 0.310/255 and 16 and a moved number cannot be told from a regression.
 FONT_CASES := $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
               $(FONT_FIX)/colr-emoji-subset.ttf $(FONT_FIX)/kern-subset.ttf \
-              fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf
+              fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
+              fsroot/fonts/ui-bold.ttf fsroot/fonts/mono-bold.ttf
 FONT_OTL_CASES := $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/cid-cff-subset.otf \
                   $(FONT_FIX)/kern-subset.ttf $(FONT_FIX)/colr-emoji-subset.ttf
 
@@ -3701,6 +3776,98 @@ test-glyph-agree:
 	@$(BUILD)/glyph_agree_test fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf \
 	    $(FONT_FIX)/SourceSans3-Regular.otf $(FONT_FIX)/kern-subset.ttf
 
+# --- does a bold run select a bold FACE? -----------------------------------
+# The gate the four rounds of "no improvement" needed and did not have: every
+# <h1> and <strong> rendered at regular weight while test-font and
+# test-glyph-agree were both green, because neither asks a question about
+# SELECTION. This links the real c/kernel/gui/text.c against the real
+# fsroot/fonts. See tests/unit/font_weight_test.c's header for the four
+# properties and why each is separately necessary.
+#
+# text.c is not in $(FONT_SRC) and needs the shaper and the kernel headers its
+# own #includes name, hence the wider list. -Iinclude/abi is for
+# LOGIT_FACE_MONO/LOGIT_FACE_BOLD, which text.c reads rather than respelling.
+FONT_WEIGHT_SRC := c/kernel/gui/text.c c/lib/text/bidi.c c/lib/text/script.c \
+                   c/lib/text/shape.c c/lib/text/utf8.c $(FONT_SRC) $(FONT_RAS)
+FONT_WEIGHT_INC := $(FONT_INC) -Iinclude/abi -Ic/kernel/cpu -Ic/kernel/core \
+                   -Ic/kernel/mm -Ic/fs
+
+$(BUILD)/font_weight_test: tests/unit/font_weight_test.c $(FONT_WEIGHT_SRC)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -Wall -Wextra -o $@ tests/unit/font_weight_test.c \
+	    $(sort $(FONT_WEIGHT_SRC)) $(FONT_WEIGHT_INC) -lm
+
+# Wired, and the control is a PREREQUISITE of the positive rather than a name
+# on the ci-host line. tools/audit_tests.py's NOT_CI drops every
+# `test-*-negctl` from the suite listing on the ground that a control is "run
+# by its positive counterpart"; naming it here instead would satisfy the audit
+# and still run it never, which is worse because it looks fixed. This is the
+# shape tests/license.mk and tests/logreporter.mk use.
+ci-host: test-font-weight
+test-font-weight: test-font-weight-negctl
+test-font-weight: $(BUILD)/font_weight_test $(FONTS)
+	@$(BUILD)/font_weight_test fsroot
+
+# NEGATIVE CONTROL, and it is not decoration: it is the thing that found the
+# bug the positive now guards. Three roots, each a real deployment state:
+#
+#   (a) no bold faces at all      -- an image built before they existed. Every
+#                                    weight check must fail and the PITCH check
+#                                    must still PASS, because falling back to
+#                                    the matching-pitch regular face is the
+#                                    designed degradation.
+#   (b) ui-bold only              -- the state that exposed the defect: the old
+#                                    single bold fallback order walked past the
+#                                    absent mono-bold to the PROPORTIONAL face,
+#                                    so bold <code> silently stopped being
+#                                    monospaced. The pitch check must fail here
+#                                    and only here.
+#   (c) no fonts at all           -- the harness must say so and exit 2 rather
+#                                    than report four green comparisons of zero
+#                                    against zero.
+#
+# Each is checked two ways: nonzero exit AND the message naming the thing that
+# broke. "It failed" is not the property under test.
+test-font-weight-negctl: $(BUILD)/font_weight_test $(FONTS)
+	@rm -rf $(BUILD)/fwctl
+	@mkdir -p $(BUILD)/fwctl/a/fonts $(BUILD)/fwctl/b/fonts $(BUILD)/fwctl/c/fonts
+	@cp fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf $(BUILD)/fwctl/a/fonts/
+	@cp fsroot/fonts/ui.ttf fsroot/fonts/mono.ttf fsroot/fonts/ui-bold.ttf $(BUILD)/fwctl/b/fonts/
+	@cp $(FONT_TEXT) $(BUILD)/fwctl/a/fonts/text.ttf
+	@cp $(FONT_TEXT) $(BUILD)/fwctl/b/fonts/text.ttf
+	@out=`$(BUILD)/font_weight_test $(BUILD)/fwctl/a 2>&1`; ec=$$?; \
+	 if [ $$ec -eq 0 ]; then \
+	    echo "CONTROL FAILED (a): no bold faces on disk and the gate PASSED"; \
+	    echo "$$out"; exit 1; fi; \
+	 echo "$$out" | grep -qE '^ +FAIL +ui bold is WIDER' || { \
+	    echo "CONTROL FAILED (a): exited $$ec but not on the width check"; \
+	    echo "$$out"; exit 1; }; \
+	 echo "$$out" | grep -qE '^ +ok +a bold MONO run stayed monospaced' || { \
+	    echo "CONTROL FAILED (a): with no bold face the fallback lost the PITCH too"; \
+	    echo "$$out"; exit 1; }; \
+	 echo "control (a) ok: no bold faces -> weight checks fail, pitch survives"
+	@out=`$(BUILD)/font_weight_test $(BUILD)/fwctl/b 2>&1`; ec=$$?; \
+	 if [ $$ec -eq 0 ]; then \
+	    echo "CONTROL FAILED (b): mono-bold.ttf absent and the gate PASSED --"; \
+	    echo "  the pitch check cannot see a bold mono run falling back to the UI face"; \
+	    echo "$$out"; exit 1; fi; \
+	 echo "$$out" | grep -qE '^ +FAIL +mono bold puts down MORE INK' || { \
+	    echo "CONTROL FAILED (b): exited $$ec but not on the mono ink check"; \
+	    echo "$$out"; exit 1; }; \
+	 echo "$$out" | grep -qE '^ +ok +ui bold is WIDER' || { \
+	    echo "CONTROL FAILED (b): the PRESENT ui-bold.ttf was not used either"; \
+	    echo "$$out"; exit 1; }; \
+	 echo "control (b) ok: mono-bold absent -> only the mono checks fail"
+	@out=`$(BUILD)/font_weight_test $(BUILD)/fwctl/c 2>&1`; ec=$$?; \
+	 if [ $$ec -ne 2 ]; then \
+	    echo "CONTROL FAILED (c): an empty font root exited $$ec, expected 2"; \
+	    echo "$$out"; exit 1; fi; \
+	 echo "$$out" | grep -q 'REGULAR faces did not load' || { \
+	    echo "CONTROL FAILED (c): exited 2 without naming the missing fonts"; \
+	    echo "$$out"; exit 1; }; \
+	 echo "control (c) ok: no fonts at all is reported, not scored"
+	@echo "test-font-weight-negctl: OK -- three collapses, each naming the right thing"
+
 # The H.264 decoder gates live in tests/h264.mk (see the note at its top);
 # the include sits with the other test-suite includes further down.
 
@@ -3791,7 +3958,16 @@ clean:
 
 # Header-dependency fragments emitted by -MMD (kernel AND app objects). A stale
 # object compiled against an old struct layout is memory corruption at runtime.
--include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
+#
+# -type f, and it is load-bearing rather than tidy: `find -name '*.d'` matches
+# DIRECTORIES too, and make's answer to being handed one is to stop the whole
+# build with "Is a directory. Stop." -- before any target runs, so every target
+# dies, including ones that have nothing to do with $(BUILD). WPT's vendored
+# tools/third_party/attrs/changelog.d is exactly that, and the moment a full
+# corpus was fetched into build/ (2026-08-28) `make run` stopped working with a
+# message naming a Python changelog. Anything unpacked under $(BUILD) can do
+# this again; the fix belongs here rather than in a list of what not to unpack.
+-include $(shell find $(BUILD) -type f -name '*.d' 2>/dev/null)
 
 # NIC driver test targets (test-nic, test-nic-drv, test-nic-e1000/virtio/
 # rtl8139, test-nic-none). Kept in their own fragment so they could be added
@@ -4258,13 +4434,11 @@ bench-aui: $(ISO) $(DISK)
 # drop shadow did not leave ghosts.
 -include tests/window.mk
 
-# musl's libm, given its own objects so an ordinary CLI program can link it:
-# `make test-libm-cli` asserts the freestanding cross-build is BIT-IDENTICAL to
-# a native build of the same sources. The fragment also defines $(LIBM_OBJ),
-# which the ports link, and it is included BEFORE them so the variable exists.
-# Read its header before reusing $(BUILD)/jsobj's libm objects -- the scoping of
-# `-include features.h` is load-bearing, not tidiness.
--include tests/libm.mk
+# musl's libm lives in tests/libm.mk, -include'd up by the audio rules: it
+# defines $(LIBM_OBJ), and the FIRST prerequisite-list use of that variable is
+# audiocheck.elf, so the include has to sit above that rule (GNU make expands
+# prerequisites at read time). This is where the include used to be; keep it
+# there, not here.
 
 # --- LOGITLM inference, built for the target --------------------------------
 # c/lib/nn is ring-3 (nn.h says why: it allocates and holds tens of megabytes
@@ -4385,6 +4559,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/opus.mk
 -include tests/containers.mk
 -include tests/fsgeom.mk
+-include tests/imelearn.mk
 
 .PHONY: test-mk-wired
 test-mk-wired:
