@@ -2,6 +2,14 @@
 #include "aex.h"
 #include "elf.h"
 #include "crc32.h"      /* c/drivers/block: the one CRC-32 in the tree */
+#include "aexsig.h"     /* c/crypto/trust: the OPTIONAL Ed25519 signature --
+                         * see the comment above the AEX_T_SIG case below and
+                         * the one above "THE INTEGRITY RECORD" for what
+                         * checking one does and does not mean. */
+#include "pkgsig.h"     /* pkg_root_name(): named in the per-load log line --
+                         * aexsig.h deliberately does not re-export pkgsig.h's
+                         * accessors, so a TU that wants the root's NAME (not
+                         * just whether one matched) asks for them itself. */
 #include "kprintf.h"
 #include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
@@ -44,6 +52,12 @@ static int g_said_v1;
 static uint32_t g_v1_images;
 
 uint32_t aex_v1_images(void) { return g_v1_images; }
+
+/* Same shape, for v2 images with no AEX_T_SIG record -- see aex.h. */
+static int g_said_unsigned;
+static uint32_t g_unsigned_images;
+
+uint32_t aex_unsigned_images(void) { return g_unsigned_images; }
 
 /* ---- a bare ELF -----------------------------------------------------------
  *
@@ -164,6 +178,12 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
     struct aex_info tmp;
     if (!out) out = &tmp;
     for (unsigned i = 0; i < sizeof *out; i++) ((uint8_t *)out)[i] = 0;
+    /* sig_status's zero value IS AEX_SIG_ABSENT (aexsig.h), so that field
+     * needs no help from the zero-init above; sig_root's zero value is NOT
+     * "no root" -- it is root index 0 -- so every return path (bare ELF, v1,
+     * v2 unsigned or signed) has to see -1 unless a signature actually
+     * verified against a compiled-in key. */
+    out->sig_root = -1;
 
     uint64_t file_size = rd->size;
     const uint8_t *p = rd->mem;          /* NULL on the streaming path */
@@ -283,6 +303,8 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
      * compatibility story `flags` deliberately does not get. */
     int have_crc = 0;
     uint32_t want_crc = 0;
+    int have_sig = 0;
+    uint8_t sigrec[AEX_SIG_LEN];
     for (uint32_t off = AEX_HDR_SIZE; off + AEX_TLV_HDR <= h->hdr_size; ) {
         uint8_t rec[AEX_TLV_HDR];
         if (elf_read(rd, off, rec, AEX_TLV_HDR) < 0)
@@ -335,6 +357,21 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
                 out->ntypes = (int)(len / 2);
             }
             break;
+        case AEX_T_SIG: {
+            /* Structurally malformed (wrong length) IS still a hard refusal --
+             * that is a broken TLV region, the same class of bug AEX_E_TLV
+             * exists for elsewhere in this loop, and it is not the same
+             * question as "does the signature verify". A record of the right
+             * SHAPE that fails to verify is handled after the loop, by
+             * LOGGING rather than refusing -- see the comment above the
+             * aex_sig_verify() call below for why those two are different. */
+            if (len != AEX_SIG_LEN)
+                return reject(AEX_E_TLV, "the signature record is not 96 bytes", off, len);
+            if (elf_read(rd, voff, sigrec, AEX_SIG_LEN) < 0)
+                return reject(AEX_E_TLV, "could not read the signature record", voff, AEX_SIG_LEN);
+            have_sig = 1;
+            break;
+        }
         default:
             break;                       /* unknown tag: ignored, on purpose */
         }
@@ -342,18 +379,52 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
     }
 
     /* THE INTEGRITY RECORD IS NOT OPTIONAL for v2. "No size, no checksum, no
-     * signature" was the survey's finding, and a checksum a file may leave out
-     * is not a checksum -- it is a checksum for the files that already work.
+     * signature" was the survey's finding when this comment was first written,
+     * and a checksum a file may leave out is not a checksum -- it is a
+     * checksum for the files that already work.
      *
      * What it is and is not: it is CRC-32 over the ELF image, so a truncated
      * write, a half-flushed disk or a bit-rotted block is refused by name
      * instead of arriving in ring 3 as a fault with no explanation. It is NOT
-     * a signature. There is deliberately none: a signature needs a key this
-     * system has nowhere to keep and a policy for what to do when it fails,
-     * and a CRC that reads as authentication is worse than no CRC. The related
-     * gap stays open and is not this line's to close -- tools/mkfs.py stores no
-     * mode bit, so "executable" still means "the bytes start with AEX1", and
-     * anything a program can write is launchable.
+     * a signature -- CRC-32 has no secret in it, so anyone who can write the
+     * file can also write a CRC that matches whatever they wrote. A CRC that
+     * read as authentication would be worse than no CRC.
+     *
+     * "A SIGNATURE NEEDS A KEY THIS SYSTEM HAS NOWHERE TO KEEP" WAS TRUE WHEN
+     * THAT SENTENCE WAS WRITTEN AND IS FALSE NOW. c/crypto/trust/pkgsig.c
+     * ships Ed25519 root public keys compiled into the kernel image for the
+     * .lpk package format, generated by tools/genpkgroots.py from
+     * tools/pkgroots/ -- exactly the key store this comment used to say did
+     * not exist. AEX_T_SIG (see the TLV case above and c/crypto/trust/
+     * aexsig.h) reuses that SAME key store and that same sign-a-manifest
+     * construction, under its OWN domain string so a .lpk signature can never
+     * be replayed as an .aex one.
+     *
+     * WHAT DID NOT CHANGE: "a policy for what to do when it fails." That is
+     * still an open question and this file does not answer it -- the decision
+     * made HERE is LOG BUT ALLOW: the verdict (no record / invalid / valid but
+     * untrusted / valid and trusted) is written to the serial log below, by
+     * name, and the program is loaded in every one of those four cases. A
+     * checked signature that changes nothing about whether the program runs
+     * is exactly the trap this comment used to warn against for the CRC --
+     * "a CRC that reads as authentication is worse than no CRC" applies with
+     * full force to a signature that reads as enforcement. So: this is
+     * observability, not a gate. It answers "who, if anyone, vouched for the
+     * bytes I am about to run" for a human or a future policy reading the log
+     * or aex_info.sig_status; it does NOT answer "should this run", and
+     * nothing downstream may treat AEX_SIG_OK as though it did. Turning it
+     * into a gate needs, at minimum: a decision about what refuses (untrusted
+     * only, or invalid too), a way to build an image without triggering it
+     * during development, and to live somewhere a reviewer will look for a
+     * security boundary being added -- not as a side effect of this comment.
+     * SECURITY.md's frame applies unchanged: do not treat this as a security
+     * boundary for hostile workloads.
+     *
+     * The related gap stays open and is not this line's to close --
+     * tools/mkfs.py stores no mode bit, so "executable" still means "the bytes
+     * start with AEX1", and anything a program can write is launchable; a
+     * verified-and-trusted signature says nothing about whether the file
+     * should have been executable in the first place.
      *
      * COST, MEASURED AND NOT GUESSED, because the first draft of this comment
      * said "/bin/sh is ~100 KiB, which is noise" and exec.c's own per-exec
@@ -382,6 +453,77 @@ static int aex_parse_src(const struct elf_reader *rd, struct aex_info *out)
     if (out->crc32 != want_crc)
         return reject(AEX_E_CRC, "the image does not match its CRC-32",
                       out->crc32, want_crc);
+
+    /* THE OPTIONAL SIGNATURE -- LOG BUT ALLOW. See the long comment above the
+     * CRC check for the decision and why it is deliberate; this is only the
+     * mechanics of it. Nothing below can turn into a `return reject(...)`
+     * without turning "log but allow" into "log and refuse" by accident --
+     * that is a real policy change and belongs at that comment, reviewed on
+     * purpose, not slipped in here as a bug fix.
+     *
+     * have_sig is FALSE for the overwhelming majority of images on this tree
+     * today (nothing in the Makefile signs by default), so that case is
+     * bounded to one log line per boot, the same shape as the v1/bare lines
+     * above. A file WITH a record is rare enough, and interesting enough,
+     * that it is logged every time -- that IS the observability this feature
+     * exists to add. */
+    if (!have_sig) {
+        g_unsigned_images++;
+        if (!g_said_unsigned) {
+            g_said_unsigned = 1;
+            kprintf("[aex] '%s' is unsigned: no AEX_T_SIG record. Loading anyway "
+                    "(log but allow) -- see the comment above the CRC check in "
+                    "aex.c for what a signature here would and would not mean.\n",
+                    out->name);
+        }
+    } else {
+        /* The image was already hashed once, for the CRC, above -- but that
+         * fold is CRC-32 and this needs SHA-256, so the image is read a
+         * SECOND time here. That extra pass is the entire cost this feature
+         * adds, and it is paid ONLY on a signed image (see elf_read_sha256's
+         * comment in elf.c); an unsigned exec pays exactly what it always
+         * did. */
+        uint8_t digest[32];
+        if (elf_read_sha256(rd, h->hdr_size, out->elf_size, digest) < 0) {
+            /* The CRC above already proved these bytes ARE readable, so this
+             * can only mean the source vanished between the two passes (a
+             * file the streaming path is reading was truncated or unmounted
+             * concurrently) -- report it as an invalid signature rather than
+             * a silent AEX_SIG_ABSENT, because a record WAS present and this
+             * loader could not clear it, which is not the same claim as "no
+             * one signed this". */
+            out->sig_status = AEX_SIG_INVALID;
+            for (int i = 0; i < 32; i++) out->signer[i] = sigrec[i];
+            kprintf("[aex] '%s': a signature record is present but the image "
+                    "could not be re-read to hash it -- treating as INVALID. "
+                    "Loading anyway (log but allow).\n", out->name);
+        } else {
+            int root = -1;
+            int v = aex_sig_verify(sigrec, out->elf_size, digest, &root);
+            out->sig_status = v;
+            out->sig_root = (v == AEX_SIG_OK) ? root : -1;
+            for (int i = 0; i < 32; i++) out->signer[i] = sigrec[i];
+            switch (v) {
+            case AEX_SIG_OK:
+                kprintf("[aex] '%s': signature VERIFIED, signed by root '%s'. "
+                        "Loading (this is a LOG, not enforcement -- an unsigned "
+                        "or untrusted-signer binary loads exactly the same).\n",
+                        out->name, pkg_root_name(root));
+                break;
+            case AEX_SIG_UNTRUSTED:
+                kprintf("[aex] '%s': signature valid but the signer is NOT a "
+                        "trusted root. Loading anyway (log but allow).\n",
+                        out->name);
+                break;
+            case AEX_SIG_INVALID:
+            default:
+                kprintf("[aex] '%s': signature record present and INVALID -- "
+                        "does not match this image or this key. Loading anyway "
+                        "(log but allow).\n", out->name);
+                break;
+            }
+        }
+    }
 
     return AEX_OK;
 }
@@ -520,9 +662,25 @@ static uint32_t g_ld_seen;
 
 static inline uint64_t aex_rdtsc(void)
 {
+#if defined(__x86_64__) || defined(__i386__)
     uint32_t lo, hi;
     __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
+#else
+    /* APPARATUS, NOT FEATURE: this file is compiled for the real target
+     * (x86_64) and, unmodified, for tests/exec.mk's LOGIT_HOSTTEST build --
+     * which runs on whatever architecture the developer's machine is,
+     * arm64 Apple Silicon included per CLAUDE.md's documented host. rdtsc is
+     * meaningless off x86, and "=a"/"=d" are not even valid REGISTER CLASSES
+     * there, so this was a host build failure waiting for any TU that pulled
+     * this file in without also linking tests/unit/exechost/space.c's other
+     * x86-only assumptions to surface it first. The kprintf below that reads
+     * this value is a KERNEL-only diagnostic (aex_load_path's per-exec
+     * report); no host test calls aex_load_path or asserts on the number, so
+     * 0 costs nothing real and is not presented as a measurement anywhere it
+     * would be read as one. */
+    return 0;
+#endif
 }
 
 int aex_load_path(const char *path, uint64_t file_size, char *out_name, char *out_ext,

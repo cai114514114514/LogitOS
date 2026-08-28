@@ -1085,17 +1085,30 @@ int file_pipe(struct file **rd, struct file **wr)
 }
 
 /* Release a reference. At the last one: flush a dirty F_VFS file back to disk, or
- * drop a pipe end (freeing the buffer when both ends are gone). */
-void file_close(struct file *f)
+ * drop a pipe end (freeing the buffer when both ends are gone).
+ *
+ * Returns 0 on success, -1 if the last close's write-back failed -- the same
+ * 0/-1 convention file_fsync() (above) already uses for the identical
+ * vfs_write() call, deliberately: these are two entry points to the same
+ * flush, and giving them different value spaces (this one a raw VFS_E*, that
+ * one a boolean) would be the two-doors trap in a subtler shape, where the
+ * two doors are functions instead of constants. This is the ONLY place a
+ * plain write()+close() can learn a write failed: file_write() just appends
+ * to the in-heap `backing` buffer and marks it dirty (the VFS op table has no
+ * ->pwrite, so there is nothing to flush per-write), so a full disk or
+ * anything else vfs_write() can fail on is invisible until the whole-file
+ * write happens here. Before this return value existed, the only symptom of
+ * a failed write was that the file quietly was not there. */
+int file_close(struct file *f)
 {
-    if (!f) return;
+    if (!f) return 0;
     /* Drop the reference under the lock; only the caller that takes it to 0 owns the
      * teardown. The slot is fully detached (fields reset) BEFORE the lock is
      * released: a concurrent file_alloc can reclaim a refcount==0 slot immediately,
      * so teardown writes to f->* after the unlock would clobber the NEW owner's
      * state. The vfs flush / kfree still run OUTSIDE the lock, on local copies. */
     uint64_t fl = spin_lock_irqsave(&g_file_lock);
-    if (f->refcount <= 0) { spin_unlock_irqrestore(&g_file_lock, fl); return; }
+    if (f->refcount <= 0) { spin_unlock_irqrestore(&g_file_lock, fl); return 0; }
     int last = (--f->refcount == 0);
     int type = 0, dirty = 0, is_write = 0;
     long size = 0;
@@ -1108,11 +1121,24 @@ void file_close(struct file *f)
         f->backing = 0; f->path[0] = 0; f->type = F_NONE;
     }
     spin_unlock_irqrestore(&g_file_lock, fl);
-    if (!last) return;
+    if (!last) return 0;
 
+    int rc = 0;
     if (type == F_VFS) {
-        if (dirty && path[0])
-            vfs_write(path, backing ? backing : "", (int)size);
+        if (dirty && path[0]) {
+            int wrote = vfs_write(path, backing ? backing : "", (int)size);
+#ifndef FILE_CLOSE_ALWAYS_OK
+            if (wrote < 0) rc = -1;
+#else
+            /* THE NEGATIVE CONTROL for "make close() able to report a failed
+             * write" (test-closefull-negctl): a kernel built with this
+             * defined restores the pre-fix behaviour -- SYS_CLOSE always
+             * returned 0 -- so the gate can be watched failing for the right
+             * reason rather than assumed. `wrote` stays referenced so this
+             * branch is not "unused variable" under -Werror-adjacent flags. */
+            (void)wrote;
+#endif
+        }
         if (backing) kfree(backing);
     } else if (type == F_SOCK) {
         /* The socket state is lsock.c's, and the LAST close is what releases the
@@ -1153,4 +1179,5 @@ void file_close(struct file *f)
             else           waitq_wake_all(&p->wq);
         }
     }
+    return rc;
 }

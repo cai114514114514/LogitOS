@@ -161,6 +161,18 @@ struct aex_header {
                                     * order files landed on the disk.          */
 #define AEX_T_TYPES   0x50595441u  /* "ATYP": u16[] of logit_sniff SN_* ids the
                                     * app can open. See the note in aex.c.     */
+#define AEX_T_SIG     0x47495341u  /* "ASIG": pub[32] || Ed25519 sig[64], 96
+                                    * bytes. UNLIKE AEX_T_CRC32, this is
+                                    * OPTIONAL even for v2 -- see the comment
+                                    * beside the CRC requirement in aex.c for
+                                    * why the two differ, and see aexsig.h
+                                    * (c/crypto/trust/) for the domain, the
+                                    * manifest it covers and the trust roots
+                                    * it is checked against. Checking one of
+                                    * these is LOG-BUT-ALLOW: the verdict is
+                                    * reported and the program runs regardless
+                                    * -- read aex.c before treating a verified
+                                    * signature as a security boundary.      */
 #define AEX_T_APAD    0x44415041u  /* "APAD": zero bytes, present only to push
                                     * hdr_size to a multiple of 4096 so the ELF
                                     * image starts on a page boundary. Carries
@@ -182,6 +194,21 @@ struct aex_info {
     const uint16_t *types;      /* SN_* ids, or 0                          */
     int      ntypes;
     char     name[32], ext[8];
+
+    /* AEX_SIG_* from c/crypto/trust/aexsig.h (ABSENT/INVALID/UNTRUSTED/OK,
+     * kept as plain int here rather than pulling a crypto header into every
+     * TU that already includes aex.h -- exec.c and wm.c among them).
+     * NOT ENFORCEMENT: aex_parse() sets this and loads the program either
+     * way. `sig_root` is a pkg_root_name() index, valid only when
+     * sig_status == 3 (AEX_SIG_OK); -1 otherwise, including UNTRUSTED, where
+     * the signature is real but signed by nobody this build trusts.
+     * `signer` is the record's claimed public key, valid whenever
+     * sig_status != 0 (ABSENT) -- including INVALID, where the bytes were
+     * present but did not check out, because a caller may still want to
+     * print what key claimed to sign a program that failed to verify. */
+    int      sig_status;
+    int      sig_root;
+    uint8_t  signer[32];
 };
 
 /* Validate the container and fill `out` (may be NULL). Returns 0, or a negative
@@ -222,6 +249,15 @@ uint32_t aex_bare_images(void);
  * so the COUNT is the machine-readable form, and it is what a test asserts on:
  * "did it print" depends on what ran first, a counter does not. */
 uint32_t aex_v1_images(void);
+
+/* How many v2 images this boot has loaded with NO AEX_T_SIG record -- the
+ * unsigned-and-that-is-fine case, which is still every binary this tree
+ * builds by default, so it gets the same bounded-once-per-boot log line as
+ * v1/bare above rather than one line per exec. A file WITH a record (valid,
+ * invalid or untrusted) is rare enough by contrast that aex.c logs it every
+ * time; see aex.c for that line and struct aex_info.sig_status for the
+ * per-load verdict. */
+uint32_t aex_unsigned_images(void);
 
 /* Load an in-memory .aex (`file_size` bytes) into the current address space
  * (user pages) and return the entry point (0 on failure). Fills name/ext if

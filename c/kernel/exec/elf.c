@@ -7,6 +7,10 @@
 #include "rng.h"       /* kernel_random_bytes(): AT_RANDOM's 16 bytes */
 #include "kprintf.h"
 #include "crc32.h"     /* the streaming CRC below folds the image as it reads */
+#include "crypto.h"    /* SHA-256, for elf_read_sha256 below -- aex.c's signature
+                        * record needs the image's digest, not just its CRC, and
+                        * it needs it without materialising the image, for the
+                        * same streaming reason elf_read_crc32 exists. */
 /* OUTSIDE the LOGIT_HOSTTEST branch below on purpose: tests/unit/exechost is
  * exactly the build whose link the two weak declarations exist to protect. */
 #include "../../../include/weaksym.h"
@@ -157,6 +161,38 @@ int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32
         }
     }
     *crc = crc32_final(c);
+    return 0;
+}
+
+/* SHA-256 of a range of the image, same streaming shape as elf_read_crc32
+ * immediately above and for the same reason -- it lives here rather than in
+ * aex.c so there is exactly one bounce buffer serving both.
+ *
+ * This is the ONLY extra full read of the image the signature feature costs:
+ * it runs once per load, and only when aex.c found an AEX_T_SIG record --
+ * unsigned images (still the overwhelming majority on this tree) never call
+ * it, so the CRC's already-measured cost is the only tax an ordinary exec
+ * pays. See aex.c's per-exec report for the signed case's number. */
+int elf_read_sha256(const struct elf_reader *rd, uint64_t off, uint64_t n, uint8_t out[32])
+{
+    if (!rd || !out) return -1;
+    if (off > rd->size || n > rd->size - off) return -1;
+    struct sha256 c;
+    sha256_init(&c);
+    if (rd->mem) {
+        sha256_update(&c, rd->mem + off, (size_t)n);
+    } else {
+        if (!rd->path || !LOGIT_HAVE(vfs_pread)) return -1;
+        while (n) {
+            uint64_t want = n > ELF_BOUNCE ? ELF_BOUNCE : n;
+            int got = vfs_pread(rd->path, g_bounce, (int)want,
+                                (long long)(rd->base + off));
+            if (got != (int)want) return -1;
+            sha256_update(&c, g_bounce, (size_t)want);
+            off += want; n -= want;
+        }
+    }
+    sha256_final(&c, out);
     return 0;
 }
 

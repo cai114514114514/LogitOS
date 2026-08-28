@@ -23,7 +23,62 @@ The file:  [ 64-byte fixed header ][ TLV metadata ][ ELF64 image ]
 c/kernel/exec/aex.h is the definition site; this mirrors it, and
 tests/unit/exec_test.c asserts the two agree against a real file.
 """
-import sys, struct, os, zlib, argparse
+import sys, struct, os, zlib, argparse, subprocess
+
+
+def write_atomic(path, data):
+    """Write `data` to `path` so that no reader can ever see it half-written.
+
+    THIS IS NOT DEFENSIVE PROGRAMMING. It fixes an observed failure, and the
+    failure looks like a corrupt binary rather than a race, which is why it
+    survived:
+
+        [aex] refused (-5): elf_size does not fit after the header
+                            (0x4d8950, 0x4d8800)
+        [wm] launch: load failed
+
+    -- the browser refusing to start, intermittently. 0x4d8950 - 0x4d8800 is
+    336 bytes: the header said the ELF was 5,081,936 bytes and only 5,081,600
+    were present after it.
+
+    THE MECHANISM, and the asymmetry is the whole thing. `open(path, "wb")`
+    TRUNCATES TO ZERO before the first byte is written, and a 5 MB write() is
+    not atomic. So from the moment make invokes this script until it finishes,
+    build/browser.aex is a file whose length is whatever has been flushed. The
+    aex HEADER sits at the front of the blob, so a reader that catches the file
+    mid-write gets a CORRECT header describing an ELF that is not all there
+    yet -- exactly the inequality aex.c's elf_size check reports.
+
+    The reader is tools/mkfs.py packing the disk image. Make's dependency graph
+    orders them within ONE make; it says nothing about two makes sharing one
+    build/, which CLAUDE.md already warns produces "a sweep that manufactures
+    bugs". Here it manufactures a broken disk image instead, and the symptom
+    surfaces one boot later with nothing pointing back at the cause.
+
+    os.replace() is atomic on POSIX, so a reader now sees either the whole
+    previous file or the whole new one. The temp file is in the SAME directory
+    because rename is only atomic within a filesystem, and fsync precedes the
+    rename so a crash cannot leave the name pointing at unflushed blocks.
+
+    SEVEN OTHER GENERATORS IN tools/ HAVE THIS SHAPE (gen_mjpeg_tables.py,
+    genmpeg12_interlaced.py, genweights.py, lmcorpus.py, mkfs.py, mkesp.py,
+    mksysroot.py). Only mkfs.py and this one are in a path where somebody reads
+    the output while it is being written -- mkfs.py's output is read by QEMU --
+    so they are the two that matter, and this is the one with the evidence.
+    """
+    tmp = path + ".tmp%d" % os.getpid()
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 AEX_VERSION = 2
 HDR_FIXED   = 64
@@ -33,6 +88,7 @@ CATS = {"none": 0, "system": 1, "media": 2, "dev": 3, "net": 4, "util": 5, "test
 T_CRC32 = 0x43524341   # "ACRC"
 T_APPID = 0x44495841   # "AXID"
 T_TYPES = 0x50595441   # "ATYP"
+T_SIG   = 0x47495341   # "ASIG": pub[32]+sig[64], see aex_sig_record() below
 T_APAD  = 0x44415041   # "APAD": the alignment pad, below
 
 # THE ELF IMAGE STARTS ON A PAGE BOUNDARY, and this one line is what makes
@@ -100,6 +156,40 @@ def tlv(tag, payload):
     return rec + b"\0" * ((-len(rec)) % 8)
 
 
+# --- OPTIONAL signing: AEX_T_SIG -------------------------------------------
+#
+# THE ONE THING THIS FUNCTION DELIBERATELY DOES NOT DO is Ed25519 math. That
+# is a second implementation of a signature scheme waiting to disagree with
+# the kernel's by one byte -- see tools/aexsign.c's header, which is the SAME
+# C the kernel verifies with (c/crypto/trust/aexsig.c), just built for the
+# host. This function's only job is to hand it the raw ELF bytes on stdin and
+# fold the 96-byte answer into a TLV record; the SHA-256 digest that gets
+# signed is computed by aexsign too, from the SAME bytes, so there is no
+# window where this script's idea of "the image" and the signer's could
+# differ. Failure is loud: an aexsign that cannot run, or a seed that is not
+# 64 hex characters, is `die()`, never a silently unsigned file -- an
+# operator who asked to sign and got an unsigned binary with no message is
+# the exact "reads as authentication, worse than no check" trap aex.c's own
+# comment warns about, aimed at the build instead of the load.
+def aex_sig_record(elf_bytes, seed_hex, aexsign_bin):
+    if not aexsign_bin:
+        die("--sign-seed requires --aexsign-bin <path to build/aexsign>")
+    try:
+        p = subprocess.run([aexsign_bin, "sign", seed_hex], input=elf_bytes,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        die("could not run %s: %s" % (aexsign_bin, e))
+    if p.returncode != 0:
+        die("aexsign failed: %s" % p.stderr.decode("utf-8", "replace").strip())
+    parts = p.stdout.decode("ascii", "strict").split()
+    if len(parts) != 2:
+        die("aexsign: unexpected output %r" % p.stdout)
+    pub, sig = bytes.fromhex(parts[0]), bytes.fromhex(parts[1])
+    if len(pub) != 32 or len(sig) != 64:
+        die("aexsign: bad key/signature length (%d/%d)" % (len(pub), len(sig)))
+    return pub + sig
+
+
 def elf_entry_and_shape(data):
     """(entry, lowest user-region PT_LOAD vaddr) of an ELF64 image."""
     if len(data) < 64 or data[:4] != b"\x7fELF":
@@ -118,6 +208,12 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
     entry, base = elf_entry_and_shape(elf_bytes)
     if base is None:
         die("the ELF has no PT_LOAD in the private user region (0x40000000+)")
+    if opts.sign_seed and opts.v1:
+        # v1 has no TLV region at all (see the --v1 branch below, which
+        # returns before `body` is ever consulted) -- so silently ignoring
+        # --sign-seed here would sign nothing and say nothing, which is the
+        # exact silent-failure this feature exists to not be.
+        die("--v1 has no TLV region and cannot carry a signature; drop --sign-seed")
 
     app_id = opts.id or ("os.logit." + os.path.basename(opts.out).rsplit(".", 1)[0])
 
@@ -142,6 +238,15 @@ def build(elf_bytes, name, ext, icon, rgb, opts):
     if opts.types:
         ids = [int(t, 0) for t in opts.types.split(",") if t.strip()]
         body += tlv(T_TYPES, struct.pack("<%dH" % len(ids), *ids))
+    if opts.sign_seed:
+        # BEFORE the padding calculation below: the signature covers the ELF
+        # bytes only (aex_sig_hash's manifest is elf_size + elf_sha256, never
+        # hdr_size or the padding), but it still has to be IN the TLV region
+        # before the region's total length -- and therefore the padding that
+        # brings hdr_size to a page boundary -- is computed. Signing after
+        # padding was placed would either leave the pad wrong or need a
+        # second padding pass; this ordering needs one.
+        body += tlv(T_SIG, aex_sig_record(elf_bytes, opts.sign_seed, opts.aexsign_bin))
     # Pad to a page boundary with a self-describing record. `tlv` already
     # rounds a record up to 8 bytes, so the payload is (target - here - 8): the
     # gap is always >= 8 because HDR_FIXED + len(body) is 8-aligned and short of
@@ -269,6 +374,14 @@ def main():
     ap.add_argument("--sort", type=int, default=0)
     ap.add_argument("--stack-pages", dest="stack_pages", type=int, default=0)
     ap.add_argument("--types", default=None, help="comma-separated logit_sniff SN_* ids")
+    ap.add_argument("--sign-seed", dest="sign_seed", default=None,
+                    help="64 hex char Ed25519 seed -- adds an AEX_T_SIG record "
+                         "(see tools/pkgroots/DEV-SIGNING-KEY.txt for the dev one). "
+                         "Omit this and the file is unsigned, which is VALID: "
+                         "aex.c logs 'unsigned' and loads it, same as always.")
+    ap.add_argument("--aexsign-bin", dest="aexsign_bin", default=None,
+                    help="path to the built build/aexsign host tool; required "
+                         "with --sign-seed")
     # --emit only
     ap.add_argument("--base", default="0x50000000")
     ap.add_argument("--entry-off", dest="entry_off", default="0")
@@ -309,12 +422,12 @@ def main():
 
     opts.out = out
     blob, entry, base, app_id, flags, hdr_size = build(elf, name, ext, icon, (r, g, b), opts)
-    with open(out, "wb") as f:
-        f.write(blob)
+    write_atomic(out, blob)
     kind = "cli" if flags & F_CLI else "gui"
-    print("mkaex: %s  v%d %s '%s' ext='%s' id=%s base=0x%x hdr=%d elf=%d"
+    signed = " signed" if (opts.sign_seed and not opts.v1) else ""
+    print("mkaex: %s  v%d %s '%s' ext='%s' id=%s base=0x%x hdr=%d elf=%d%s"
           % (out, 1 if opts.v1 else AEX_VERSION, kind, name, ext, app_id,
-             base, hdr_size if not opts.v1 else 64, len(elf)))
+             base, hdr_size if not opts.v1 else 64, len(elf), signed))
 
 
 if __name__ == "__main__":

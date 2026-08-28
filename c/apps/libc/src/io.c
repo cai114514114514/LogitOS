@@ -51,7 +51,27 @@ ssize_t write(int fd, const void *buf, size_t n)
     if (r < 0) errno = EBADF;
     return r;
 }
-int     close(int fd)                            { return (int)fail(sys(SYS_CLOSE, fd, 0, 0), EBADF); }
+/* SYS_CLOSE returns -1 for two different reasons the kernel cannot tell apart
+ * on this fd's last close: an invalid descriptor, or -- new as of this
+ * change -- a dirty file's whole-file write-back to the backend failing (a
+ * full disk and friends). EIO is the POSIX errno close(2) documents for
+ * exactly that second case ("an I/O error occurred while writing"), and it is
+ * a closer match than EBADF for a descriptor that was valid enough to accept
+ * writes all along; a caller cannot distinguish the two cases here, but
+ * neither could it before -- what changed is that failure is now reachable
+ * at all instead of always reading back 0. */
+int close(int fd)
+{
+    long r = sys(SYS_CLOSE, fd, 0, 0);
+    /* -2: the last close of a dirty file, and the whole-file write-back to
+     * the backend failed. EIO is the errno close(2) documents for exactly
+     * that ("an I/O error occurred while writing"). -1 is the older and
+     * narrower failure, an fd that was not open, and it keeps EBADF -- the
+     * kernel spells the two apart (syscall.c, SYS_CLOSE) precisely so this
+     * line does not have to choose one errno for both. */
+    if (r == -2) { errno = EIO; return -1; }
+    return (int)fail(r, EBADF);
+}
 off_t   lseek(int fd, off_t off, int whence)
 {
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) { errno = EINVAL; return -1; }
@@ -148,6 +168,18 @@ pid_t waitpid(pid_t pid, int *status, int opts)
     /* Interrupted by a signal, not "no such child". A shell that cannot tell
      * those apart either exits on Ctrl+C or loops forever on a reaped child. */
     if (r == SIG_E_INTR) { errno = EINTR; return -1; }
+    /* NOT shifted here, on purpose -- see proc.c:456's comment, which already
+     * flags this exact spot as the place someone would be tempted to fix it.
+     * The kernel writes a PLAIN 0-255 exit code into *status; sys/wait.h's
+     * WIFEXITED/WEXITSTATUS macros want the POSIX (exit_code<<8)|termsig
+     * shape, so this value does not satisfy them. It is left raw anyway
+     * because tests/unit/sigtest_main.c -- a wired, on-device gate -- reads
+     * this same *status straight as a plain code (`st == 139`, `st == 128 +
+     * SIGTERM`) and would silently start failing (comparing 139 against
+     * 139<<8) if this function shifted it. Changing what THIS function
+     * returns changes it for every caller, wired or not; system()/popen()
+     * are the two callers whose OWN documented contract is the POSIX shape,
+     * so they do the shift themselves, locally, on their own return value. */
     return (int)fail(r, ECHILD);
 }
 pid_t wait(int *status) { return waitpid(-1, status, 0); }

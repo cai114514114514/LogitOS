@@ -960,10 +960,25 @@ int fclose(FILE *f)
     int fd = f->fd;
     if (f->rbuf) free(f->rbuf);
     if (f->wbuf && (f->flags & F_OWNBUF)) free(f->wbuf);
-    if (f->flags & F_TMP) { close(fd); if (f->tmpname) { unlink(f->tmpname); free(f->tmpname); } }
+    /* close()'s own return matters as much as flush_w()'s above, and for a
+     * different reason: this library's write buffer only stages bytes into
+     * the KERNEL's per-fd buffer (file_write() -- see file.c), which is not
+     * itself written back to the backend until the last close. So a stream
+     * that flushed its userspace buffer with no error can still fail HERE,
+     * at close(), if the disk is full -- and until now that failure was
+     * thrown away: close(fd) was called for its side effect only and its
+     * return discarded, so fclose() could return 0 for a file that was never
+     * actually written. Folding it into `r` is the other half of making
+     * close() able to report a failed write (io.c's close() is the first). */
+    if (f->flags & F_TMP) {
+        if (close(fd) < 0) r = EOF;
+        if (f->tmpname) { unlink(f->tmpname); free(f->tmpname); }
+    }
     /* F_MEM/F_MEMSTR: fd is -1, a sentinel, not a real descriptor -- closing
      * it would be a no-op EBADF at best, so just skip the call. */
-    else if ((f->flags & F_ALLOC) && !(f->flags & (F_MEM | F_MEMSTR))) close(fd);
+    else if ((f->flags & F_ALLOC) && !(f->flags & (F_MEM | F_MEMSTR))) {
+        if (close(fd) < 0) r = EOF;
+    }
     /* fmemopen(NULL, ...): we malloc'd mbuf, so we free it. A caller-supplied
      * buffer (F_MEM without F_MEMOWN) is never touched -- it's theirs, and
      * fmemopen(3) says its final contents are whatever was last written.

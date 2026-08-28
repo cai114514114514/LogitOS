@@ -46,7 +46,20 @@
 #define SYS_WAITPID     52 /* (pid, int *status, opts) -> reaped pid, or <0. pid=-1: any child */
 #define SYS_GETPID      53 /* () -> current pid */
 #define SYS_OPEN        54 /* (path, flags) -> fd, or <0 */
-#define SYS_CLOSE       55 /* (fd) -> 0, or <0 */
+#define SYS_CLOSE       55 /* (fd) -> 0, -1 (fd was not open), or -2 (the
+                             * last close of a written-to fd, and the
+                             * whole-file write-back to the backend failed --
+                             * e.g. the disk is full). -2 is the only place
+                             * that can be learned: a plain write() just
+                             * buffers into the fd, see file.c's
+                             * file_close(). It is a SEPARATE value and not
+                             * another -1 because mini-libc turns these into
+                             * errno, and one value would force EBADF and EIO
+                             * to share a spelling -- close(999) on a
+                             * never-opened fd would report "Input/output
+                             * error". Before this, -1 was unreachable in
+                             * practice: SYS_CLOSE returned 0 whatever
+                             * happened. */
 #define SYS_READ        56 /* (fd, buf, len) -> bytes read (0 = EOF), or <0 */
 #define SYS_LSEEK       57 /* (fd, off, whence) -> new offset, or <0 */
 #define SYS_DUP2        58 /* (oldfd, newfd) -> newfd, or <0 */
@@ -240,6 +253,27 @@
 #define KEY_END   0x106
 #define KEY_LEFT  0x107
 #define KEY_RIGHT 0x108
+
+/* F1..F12, added for DevTools (F12 toggles the browser's chain panel).
+ * Continues the block above at 0x109..0x114 -- inside the SAME Latin
+ * Extended-A collision window the KEY_UP..KEY_RIGHT comment already argues
+ * is safe today (U+0109..U+0114, and the pinyin IME is still the only
+ * non-ASCII EV_KEY producer, still refusing anything outside
+ * U+4E00..U+9F9F at delivery). Pure additive #defines: `grep KEY_` is zero
+ * hits in both c/apps/as/abi_layout.inc and include/abi/logit_calls.abi, so
+ * this does not move anything `make check-abi` or tools/gen_abi.py track. */
+#define KEY_F1    0x109
+#define KEY_F2    0x10A
+#define KEY_F3    0x10B
+#define KEY_F4    0x10C
+#define KEY_F5    0x10D
+#define KEY_F6    0x10E
+#define KEY_F7    0x10F
+#define KEY_F8    0x110
+#define KEY_F9    0x111
+#define KEY_F10   0x112
+#define KEY_F11   0x113
+#define KEY_F12   0x114
 
 #define EV_MOUSE  2   /* a = x, b = y (window-local), mouse-button down */
 #define EV_CLOSE  3   /* the window's close button was pressed */
@@ -2333,6 +2367,50 @@ struct logit_ptrace_word {
                                 * is one, measured), and every other 64-bit field
                                 * in it is spelled the same way. */
 };
+
+/* --- SYS_GUI_FLUSH_RECT (188): present the window, but say WHICH part of the
+ * canvas changed --------------------------------------------------------
+ *
+ * Args, same packing convention as SYS_GUI_RECT: pack(x:16:16,y:0:16)
+ * pack(w:16:16,h:0:16). The rectangle is CONTENT-LOCAL POINTS -- the same
+ * origin every other gui_* draw call already uses (0,0 is the top-left pixel
+ * of the canvas below the titlebar), so a caller that already knows what
+ * region it just drew reports the same numbers here, no new coordinate
+ * space to get wrong.
+ *
+ * SYS_GUI_FLUSH (7) IS UNCHANGED, ON PURPOSE. This is a NEW syscall number,
+ * not a new argument bolted onto the old one: dozens of ring-3 binaries on
+ * this disk already call SYS_GUI_FLUSH with rsi/rdx (and half of rdi) never
+ * cleared by the three-argument stub, and reinterpreting those registers as
+ * a caller-supplied rectangle would read whatever garbage an unrelated
+ * binary's stack happened to hold and could shrink the damage below what it
+ * actually drew -- silent stale pixels, in the one binary that never asked
+ * for this feature. An app that has not been rebuilt against this header
+ * keeps calling SYS_GUI_FLUSH and keeps getting today's whole-canvas
+ * behaviour, unconditionally. See tools/gen_abi.py's note on this file for
+ * why guessing at a caller's forgotten argument is never the fix.
+ *
+ * A DEGENERATE RECTANGLE -- w<=0 or h<=0, which is what an all-zero (0,0,0,0)
+ * call is -- means "the whole canvas", i.e. exactly SYS_GUI_FLUSH's contract.
+ * That is deliberate: it is the fallback this call's OWN kernel-side safety
+ * net already has to implement (a window that is mid-animation this frame
+ * cannot honour a sub-rectangle -- its shadow moved -- so it reports its
+ * whole footprint regardless of what the caller asked for), so a caller that
+ * cannot compute a tighter rectangle this frame may pass zeros and get
+ * exactly SYS_GUI_FLUSH's behaviour through this number instead of having to
+ * keep both calls in its own code.
+ *
+ * THE RECTANGLE IS A REQUEST, NOT A LITERAL PROMISE THE KERNEL KEEPS. The
+ * compositor still owns dmg_expand (a glass panel the rectangle touches is
+ * still grown to its whole extent, never cut in half) and still falls back
+ * to the window's WHOLE frame, shadow included, whenever the window is not
+ * drawn at its own, stationary, fully-opaque position this pass -- see
+ * dirty_win_content_rect() in c/kernel/gui/wm.c, which is this call's kernel
+ * side and shares both fallbacks with dirty_win_content() (SYS_GUI_FLUSH's).
+ * A caller that reports a rectangle SMALLER than what it actually drew is the
+ * one thing this contract cannot protect against -- see wm.c's WM_DAMAGE_LIE
+ * for how that failure is watched for. */
+#define SYS_GUI_FLUSH_RECT 188
 
 #define LOGIT_MODNAME_LEN 32
 struct logit_modinfo {

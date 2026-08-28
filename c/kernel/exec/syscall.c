@@ -397,7 +397,26 @@ static void syscall_do(struct registers *r)
     case SYS_CLOSE: {
         struct proc *p = proc_current(); int fd = (int)r->rdi;
         if (!p || fd < 0 || fd >= NFD || !p->fd[fd]) { r->rax = (uint64_t)-1; return; }
-        file_close(p->fd[fd]); p->fd[fd] = NULL; r->rax = 0;
+        /* file_close() now returns 0/-1 (see file.c): -1 means THIS was the
+         * last reference to a dirty F_VFS file and its whole-file write-back
+         * to the backend failed -- e.g. the disk is full. The ABI already
+         * documented SYS_CLOSE as "(fd) -> 0, or <0" before this change; what
+         * changes is that <0 was previously unreachable -- SYS_CLOSE used to
+         * return 0 unconditionally, so the only symptom of a failed write was
+         * that the file quietly was not there. */
+        /* -1 and -2 are DIFFERENT failures and ring 3 needs to tell them
+         * apart. -1 keeps its historic and only meaning, "fd was not open",
+         * which is the guard three lines above; the write-back failure gets
+         * -2 of its own. Collapsing both into -1 costs a real distinction:
+         * mini-libc's close() would have to pick one errno for both, and it
+         * picked EIO -- so close(999) on a descriptor that was never open
+         * started reporting "Input/output error". That is a worse answer than
+         * the one this whole change exists to make reachable. file_close()
+         * keeps its own 0/-1 convention (it argues for matching
+         * file_fsync()); the translation belongs here, at the ABI edge, which
+         * is the only place that knows both spellings. */
+        int rc = file_close(p->fd[fd]); p->fd[fd] = NULL;
+        r->rax = (uint64_t)(long)(rc < 0 ? -2 : 0);
         return;
     }
     case SYS_LSEEK: {
