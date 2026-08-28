@@ -468,3 +468,159 @@ test-netlock-negctl:
 		$(BUILD)/netlock-negctl/logit.iso $(DISK)
 
 ci-boot: test-netlock
+
+# =============================================================================
+# CAN THIS MACHINE SUSTAIN VIDEO? -- calibrating the "269.9 Mbit/s, no
+# denominator" number CLAUDE.md names, against a load shaped like streaming
+# rather than a single burst. The e1000 MPC/RNBC investigation running
+# alongside this one settled that MPC's growth in a live douyin session was a
+# STICKY, non-clearing QEMU register re-added every sample (verdict:
+# MPC_IS_ARTEFACT, four independent angles) -- so the counter the user quoted
+# does not answer "will video choke", and this block is the part that does.
+#
+# THE INSTRUMENTS ALREADY EXISTED. `test-net-bench` (tests/netperf.mk) and
+# `run-net-ab.sh`'s paired A/B are the right apparatus -- real TCP over a wire
+# this tree controls (netwire.py; SLIRP alone cannot show a window-limited
+# transfer at all, see that file's header) -- so nothing new was built for the
+# receive side. One real bug in the SECOND stood between "exists" and "can be
+# run": `run-net-ab.sh` used bash 4's `exec {fd}<>file` auto-allocation in
+# three places, and macOS's shipped `/bin/bash` is 3.2.57 (CLAUDE.md's rule 1
+# table, a new row for it) with no bash 4+ installed anywhere on this host.
+# Every invocation failed before booting anything:
+#
+#   tests/boot/run-net-ab.sh: line 130: exec: {fd}: not found
+#
+# Fixed by replacing the three `{fd}` sites with a plain counted FD (10, 11,
+# ...) opened via `eval "exec $fd<>...`" -- bash 3.2 has always supported
+# fixed-number redirection, it is only the brace-allocation FORM that is new.
+# BEFORE: every `run-net-ab.sh` call on this host exits before the first QEMU
+# boots. AFTER: the same commands below, unchanged, complete and print a
+# table. That is the control for this one-line-shaped fix: it was watched
+# failing in exactly the form above, on every arm count, before the patch.
+#
+# THE NUMBERS, all TCG on a contended host (`uptime` mid-run: load 19-25 on 16
+# cores -- CLAUDE.md's own "2.6x spread from host load alone" applies; treat
+# every Mbit/s here as this-host-this-hour, not an absolute).
+#
+#   near-zero RTT (delay=0), e1000, 917,504 B x 5:
+#     goodput  median 391.6 Mbit/s   spread 333.9-425.1   retrans 0/3194 (0%)
+#   realistic RTT (delay=15, i.e. ~30-34ms guest-experienced RTT -- ordinary
+#   CDN/broadband, not a pathological case), e1000, same body x 5:
+#     goodput  median  10.7 Mbit/s   spread  10.5-10.9    retrans 0/3195 (0%)
+#
+# THAT IS A 36x DROP WITH ZERO LOSS AT THE TCP LAYER BOTH TIMES. Not a single
+# segment was retransmitted or arrived out of order in either run -- this is
+# NOT a story about dropped frames (the MPC investigation already closed that
+# question), it is a story about RATE: a short (897 KB) flow needs ~21 round
+# trips to finish at this RTT, standard TCP slow start over 21 RTTs is
+# inherently far below the zero-RTT ceiling, and something on this machine
+# makes each of those round trips cost more than an idealised stack would (a
+# 900 KB transfer at this RTT under textbook slow start -- IW≈14.6KB doubling
+# each RTT -- finishes in 6-8 RTTs, not 21).
+#
+# WHERE THE CEILING IS -- decided by a PAIRED, CONTEMPORANEOUS comparison
+# (run-net-ab.sh, same delay=15, same host-minute, fetches alternating so
+# neither arm can blame the other's host-load moment), because a driver guess
+# from one arm's number is exactly the kind of unpaired claim CLAUDE.md's own
+# run-net-ab.sh header was written to rule out:
+#
+#   e1000        n=5  median 10.7  IQR 10.6-10.8  rtt 33.25ms  retrans 0/3193
+#     rx->ack turnaround  median 18.972ms  p90 20.332  p99 21.546  max 21.723
+#   virtio       n=5  median  8.1  IQR  8.0-8.2   rtt 33.58ms  retrans 5/3198
+#     rx->ack turnaround  median 19.036ms  p90 20.478  p99 21.720  max 22.080
+#   paired ratio (virtio/e1000): median 0.759, virtio SLOWER in 5 of 5 reps
+#
+# virtio-net -- a completely different driver with none of e1000's descriptor-
+# ring or QEMU-model quirks -- is not faster, it is 24% SLOWER, and the two
+# drivers' rx-to-ack turnaround (time from a data frame crossing the wire to
+# this guest's ACK crossing back, measured by the relay so the guest cannot be
+# blamed for the relay's own queueing -- see netwire.py's comment on that
+# number) agree to within 0.3%. That rules the NIC OUT: whatever costs the
+# 36x is in code both drivers sit on top of -- the TCP stack's ACK/window
+# handling and/or the softirq or BKL scheduling under it -- not in e1000's
+# ring, MPC, or anything else specific to one card.
+#
+# ~19ms of that turnaround is worth naming against CLAUDE.md's own numbers.
+# net.c documents receive as SOFTIRQ_NET raised by the NIC ISR, and
+# irq_isr_entry() (c/drivers/core/irq.c:186) takes the BKL on any non-nested
+# entry -- so an ACK cannot leave until whichever core is servicing this
+# connection's softirq can get the global lock. The MACHINE SAID SO WHILE
+# THIS RAN: kdiag's tickloss self-check (c/kernel/core/ktime.c, always live,
+# not something this job turned on) printed, during the delay=15 run --
+#
+#   [time] tickloss +79/s worstgap=786039us missed=170 of 3921 expected
+#          (4.335% of the clock); uptime 39s
+#   [time] tickloss   worst gap: bkl held by cpu 3 ra=0x136d5e via=bare;
+#          tick on cpu 0, pid 2, not in kernel
+#
+# -- i.e. up to ~79 of that second's 100 expected 10ms ticks lost, and one
+# single gap of 786 ms the kernel's OWN bookkeeping attributes to a bare
+# (non-irqsave) BKL hold on another core. That figure is not this job's
+# arithmetic; ktime.c prints it from a live ticket sample with no
+# argument attached.
+#
+# ONE MORE CAP, FOUND BY HITTING IT: SYS_HTTP_GET's underlying kernel client
+# (c/net/http/http.c) buffers the whole response in a fixed `raw[RAW_MAX]`,
+# RAW_MAX = 1024*1024 -- one mebibyte, PER REQUEST, HARD. Asked for 6,000,000
+# bytes at delay=15, three separate reps all delivered ~1,179,648 wire bytes
+# (body + headers) and no more -- tight enough across reps (not a random
+# truncation) to be the cap, not noise. run-net-bench.sh's own --bytes flag
+# already documented this ("under http.c's 1 MiB cap"); this job just ran into
+# it by asking for more, which is why every number above uses 917,504 B.
+#
+# WHICH CODE PATH THIS ACTUALLY MEASURES, stated because it changes what the
+# 10.7 Mbit/s number is evidence FOR. SYS_HTTP_GET is TOP-LEVEL PAGE
+# NAVIGATION ONLY (browser.c: "the kernel does DNS+TCP+TLS+HTTP (SYS_HTTP_GET)
+# and hands us the raw body") and its own comment above HTTP_FETCH_CAP_TICKS
+# in wm.c says outright that it "holds the big kernel lock" for the fetch's
+# whole duration, up to a hard 15 s wall-clock cap, during which "the WM
+# thread cannot enter the kernel to drain input... the machine appears hung,
+# not merely slow". BROWSER SUBRESOURCES -- images today, and structurally
+# whatever a video player's own segment fetches would use -- do NOT take this
+# path: browser_rt.c:1855 overrides the `res_fetch()` symbol the kernel's
+# http.c also defines with a ring-3 version that calls `bfetch_sync()`, and
+# bfetch.h's own header names its mechanism: "the non-blocking socket ABI
+# (sock_open/poll/send/recv)". So the 36x collapse measured here is a real,
+# reproducible property of PAGE LOADS, not proven to be identically the
+# number a video segment's own fetch would see -- this job had no existing
+# on-device instrument to drive bfetch's non-blocking path at the scale
+# needed for an equally load-bearing number, and that is a named gap rather
+# than an assumption filled in either direction.
+#
+# THE ANSWER THAT DOES NOT DEPEND ON WHICH PATH: the mechanism under both
+# paths is the same shared machinery -- one BKL, taken by every kernel entry
+# including the NIC's own interrupt (irq.c:186), and net.c's own SOFTIRQ_NET
+# receive path runs under it regardless of which ring 3 call started the
+# socket. CLAUDE.md's own already-verified, independently-measured numbers
+# (2026-08-28, "The desktop is slow" section) put the COMPOSITOR'S share of
+# BKL-held time at up to 99% on one core while painting, 94 ms per composited
+# frame at 10.6 fps during an ordinary drag or keystroke. This job's own
+# instrumentation, on this same host, independently caught the SAME lock
+# stalling a different consumer -- a plain network fetch -- for up to 786 ms
+# at a stretch. A real viewing session needs BOTH: a socket pulling segments
+# and a compositor painting the frames those segments decode into, and both
+# now have their OWN measured evidence of blocking on the one lock between
+# them.
+#
+# THE VERDICT. NO, the raw pipe is not what would choke a video site: at
+# near-zero RTT the NIC+ring+TCP stack delivers a clean, lossless 391.6
+# Mbit/s -- 78x 1080p's ~5 Mbit/s and 16-25x 4K's 15-25 Mbit/s -- and a
+# controlled driver swap shows the NIC is not even the marginal cost. YES,
+# something on this machine chokes sustained throughput under conditions
+# closer to real use: realistic RTT alone cost 36x on the one path fully
+# instrumented here, with zero packet loss either time, and the mechanism is
+# the same global lock CLAUDE.md's compositor investigation already
+# convicted for painting -- now independently caught, by this job, doing the
+# same thing to a socket.
+#
+# make test-net-video           -- reruns the paired e1000/virtio comparison
+#                                   above (delay=15, 5 reps, 917,504 B/rep)
+# make test-net-video DELAY=0   -- the near-zero-RTT arm for comparison
+.PHONY: test-net-video
+
+test-net-video: $(ISO) $(DISK)
+	@bash tests/boot/run-net-ab.sh --disk $(DISK) \
+	    --arm e1000:$(ISO):e1000 \
+	    --arm virtio:$(ISO):virtio-net-pci:virtio-net \
+	    --reps $(if $(REPS),$(REPS),5) --delay $(if $(DELAY),$(DELAY),15) \
+	    --bytes $(if $(BYTES),$(BYTES),917504)

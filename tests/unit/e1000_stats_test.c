@@ -5,10 +5,16 @@
  * tests/unit/net_drv_test.c's header argues that a NIC's register PROGRAMMING
  * must not be mocked -- "if the fake agrees with the driver, both can be wrong
  * together". That argument does not apply here and its converse does. The
- * statistics registers have ONE externally-specified behaviour, read-to-clear,
- * which the 8254x manual states in so many words, and every bug this file
- * exists to catch is a bug in the arithmetic wrapped around that behaviour,
- * not in which register was poked:
+ * 8254x manual specifies every register below as read-to-clear -- and QEMU
+ * 11.0.0's e1000 model, the only device this tree has ever booted on,
+ * measurably does NOT implement that for MPC (hw/net/e1000.c: `mac_readreg`,
+ * a plain non-clearing getter, vs GPRC's `mac_read_clr4`). A single missed
+ * frame used to re-add itself to the software total once a second FOREVER --
+ * a real boot's log showed `mpc` climbing by a constant, hundreds of times,
+ * with no traffic. Every bug this file exists to catch is a bug in the
+ * arithmetic wrapped around register behaviour, not in which register was
+ * poked, and that now includes NOT ASSUMING which behaviour is in front of
+ * it:
  *
  *   - `sw = read()` instead of `sw += read()`. Compiles, runs, reports numbers
  *     that go up and down plausibly, and quietly means "since the last sample"
@@ -20,11 +26,16 @@
  *     every octet total comes back a multiple of 4 GiB.
  *   - 32-bit software counters, which wrap after 4 GiB -- about two minutes at
  *     the 269.9 Mbit/s this tree has measured.
+ *   - trusting `*sw += hw` for a register that never clears: the exact bug
+ *     above, now with its own model (`sticky_singles`) and its own section
+ *     ("the MPC bug, reproduced").
  *
- * The model below implements the documented rule and its one plausible
- * variant, and is driven through e1000_stats_sample() -- the same function the
- * kernel calls. Nothing in this file re-implements the accumulation, which is
- * what stops the model and the driver from being wrong together.
+ * The model below implements the documented rule and its plausible variants
+ * -- for 64-bit pairs, which half clears; for single registers, whether they
+ * clear at all -- and is driven through e1000_stats_sample() -- the same
+ * function the kernel calls. Nothing in this file re-implements the
+ * accumulation, which is what stops the model and the driver from being
+ * wrong together.
  *
  * Built by tests/nic.mk: `make test-e1000-stats`.
  * Negative control:      `make test-e1000-stats-negctl` (-DE1000_STATS_NO_ACC).
@@ -84,6 +95,14 @@ struct model {
     int      reads;                  /* every register access, for ordering */
     uint32_t last_off;
     int      saturating;             /* 1 = a counter left unread sticks at ~0 */
+    int      sticky_singles;         /* 1 = single (32-bit) registers do NOT
+                                       * clear on read -- QEMU 11.0.0's e1000
+                                       * model for MPC, measured, not the
+                                       * 8254x manual's spec. Pairs are
+                                       * unaffected: this flag exists to drive
+                                       * e1000_stat_acc_auto() through both
+                                       * branches, not to add a third pair
+                                       * convention. */
 };
 
 static int midx(uint32_t off) { return (int)((off - 0x04000u) / 4u); }
@@ -113,9 +132,11 @@ static uint32_t model_read(void *ctx, uint32_t off)
     if (pair_partner(off, &lo, &hi)) {
         int clears = (m->kind == MODEL_CLR_LO) ? (off == lo) : (off == hi);
         if (clears) { m->reg[midx(lo)] = 0; m->reg[midx(hi)] = 0; }
-    } else {
+    } else if (!m->sticky_singles) {
         m->reg[midx(off)] = 0;
     }
+    /* sticky_singles: no side effect at all -- exactly QEMU 11.0.0's
+     * mac_readreg, measured for MPC. */
     return v;
 }
 
@@ -252,7 +273,177 @@ static void test_every_counter_is_drained(void)
     int left = 0;
     for (int i = 0; i < n; i++) if (m.reg[midx(all[i])]) left++;
     CHECK_EQ(left, 0, "one sample drains every counter in the block");
-    CHECK_EQ(m.reads, n, "and reads each of them exactly once");
+    /* 9 single (32-bit) registers read TWICE each by e1000_stat_acc_auto()'s
+     * discriminator (see its comment), 8 pair registers read once: 9*2+8=26.
+     * Under this model (MODEL_CLR_HI, sticky_singles off) every single also
+     * clears on its first read, so the second read of each sees 0 and the
+     * "left == 0" check above still holds -- doubling the read count changes
+     * nothing this test already asserted, only how many traps it costs. */
+    CHECK_EQ(m.reads, 26, "singles are read twice, pairs once: 9*2 + 8");
+}
+
+/* ------------------------------------------- the MPC bug, reproduced --- */
+/*
+ * MEASURED, QEMU 11.0.0's e1000 model (hw/net/e1000.c, fetched at the v11.0.0
+ * tag): MPC is served by `mac_readreg`, a plain non-clearing getter, unlike
+ * GPRC's `mac_read_clr4`. Under the OLD `*sw += hw`, a single missed frame
+ * re-added itself to the software total once every sample FOREVER -- a real
+ * boot's serial log showed `mpc` climbing by a constant +32 per line,
+ * hundreds of times, with rx flat and irq (+0), which is exactly what
+ * `sticky_singles = 1` reproduces below. This section is the regression test
+ * for that: e1000_stat_acc_auto() must (a) take a sticky counter's value
+ * exactly once no matter how many idle samples follow, (b) attribute a NEW
+ * event correctly on top of a sticky baseline, and (c) produce the SAME
+ * total a clearing register would have produced for the identical sequence
+ * of real hardware events -- "right under both", the same bar
+ * e1000_stat_acc64 already had to clear for the 64-bit pairs.
+ */
+
+static void test_sticky_counter_does_not_reflood(void)
+{
+    struct model m; struct e1000_stats st;
+    model_init(&m, MODEL_CLR_HI); stats_zero(&st);
+    m.sticky_singles = 1;
+
+    /* One real overrun. MPC now holds 32 and NEVER clears on this model,
+     * exactly as measured. */
+    model_bump(&m, E1000_REG_MPC, 32);
+    e1000_stats_sample(&st, model_read, &m);
+    CHECK_EQ(st.rx_missed, 32, "the one real overrun is counted");
+
+    /* This is the flood, reproduced: under the OLD `*sw += hw` this loop
+     * would take rx_missed to 32 + 5*32 = 192. A card that dropped 32 frames
+     * once and then went quiet must still say 32 after any number of idle
+     * samples -- the same invariant test_idle_sample_changes_nothing already
+     * proves for a clearing register, now proved for a sticky one. */
+    for (int i = 0; i < 5; i++) e1000_stats_sample(&st, model_read, &m);
+    CHECK_EQ(st.rx_missed, 32,
+             "five idle samples of a STICKY register do not re-add its value");
+    CHECK_EQ(st.samples, 6, "but they are still counted as samples");
+}
+
+static void test_sticky_counter_attributes_new_events(void)
+{
+    struct model m; struct e1000_stats st;
+    model_init(&m, MODEL_CLR_HI); stats_zero(&st);
+    m.sticky_singles = 1;
+
+    model_bump(&m, E1000_REG_MPC, 32);          /* raw MPC: 32 */
+    e1000_stats_sample(&st, model_read, &m);
+    CHECK_EQ(st.rx_missed, 32, "first overrun");
+
+    e1000_stats_sample(&st, model_read, &m);    /* idle */
+    e1000_stats_sample(&st, model_read, &m);    /* idle */
+    CHECK_EQ(st.rx_missed, 32, "still 32 after two idle samples");
+
+    /* A second, distinct overrun. The register does not reset -- it is
+     * sticky -- so its raw value is now 32+11=43, and the correct software
+     * delta is 11, not 43 (which would double-count the first event) and not
+     * 0 (which would drop the second event entirely). */
+    model_bump(&m, E1000_REG_MPC, 11);          /* raw MPC: 43 */
+    e1000_stats_sample(&st, model_read, &m);
+    CHECK_EQ(st.rx_missed, 43, "second overrun adds exactly its own 11");
+}
+
+static void test_sticky_and_clearing_agree_on_total(void)
+{
+    /* The property that matters is not the mechanics, it is the ANSWER: for
+     * the identical sequence of real hardware events, a sticky register and
+     * a clearing one must accumulate to the SAME total. Three bursts, three
+     * idle samples folded in between each, driven through both models. */
+    uint32_t bursts[] = { 7, 0, 0, 15, 0, 3 };
+    const int n = (int)(sizeof bursts / sizeof bursts[0]);
+    uint64_t totals[2];
+
+    for (int sticky = 0; sticky < 2; sticky++) {
+        struct model m; struct e1000_stats st;
+        model_init(&m, MODEL_CLR_HI); stats_zero(&st);
+        m.sticky_singles = sticky;
+        for (int i = 0; i < n; i++) {
+            if (bursts[i]) model_bump(&m, E1000_REG_MPC, bursts[i]);
+            e1000_stats_sample(&st, model_read, &m);
+        }
+        totals[sticky] = st.rx_missed;
+    }
+    CHECK_EQ(totals[0], 7 + 15 + 3, "clearing model: totals sum the bursts");
+    CHECK_EQ(totals[1], totals[0],
+             "sticky model reaches the SAME total as clearing -- right under both");
+}
+
+static void test_stat_acc_auto_directly(void)
+{
+    /* The function's own two branches, exercised without a device model at
+     * all -- the same directness test_octet_read_order uses for the pair
+     * helper. */
+    uint64_t sw; uint32_t raw;
+
+    /* hw2 == 0, hw1 != 0: a register that just cleared. hw1 is the whole
+     * delta, unconditionally -- no history consulted. */
+    sw = 0; raw = 0xDEADBEEF;   /* a stale raw value must not leak in */
+    e1000_stat_acc_auto(&sw, &raw, 9, 0);
+    CHECK_EQ(sw, 9, "cleared branch: hw1 taken whole");
+    CHECK_EQ(raw, 0, "cleared branch: last_raw reset to 0");
+
+    /* hw1 == hw2 == 0: nothing happened, either model. Must not fabricate a
+     * "cleared" event out of two honest zeros. */
+    sw = 5; raw = 0;
+    e1000_stat_acc_auto(&sw, &raw, 0, 0);
+    CHECK_EQ(sw, 5, "double zero: no change");
+
+    /* Sticky, first observation: hw1==hw2==20, last_raw starts at 0. */
+    sw = 0; raw = 0;
+    e1000_stat_acc_auto(&sw, &raw, 20, 20);
+    CHECK_EQ(sw, 20, "sticky first read: delta against a zero baseline");
+    CHECK_EQ(raw, 20, "sticky first read: last_raw becomes 20");
+
+    /* Sticky, unchanged: hw1==hw2==20 again (idle). Delta must be 0. */
+    e1000_stat_acc_auto(&sw, &raw, 20, 20);
+    CHECK_EQ(sw, 20, "sticky idle: unchanged");
+
+    /* Sticky, register itself reset underneath us (e.g. a device reset): the
+     * fresh reading is BELOW last_raw, so it is taken whole rather than
+     * subtracted (which would underflow a uint32_t and fabricate a huge
+     * loss). */
+    e1000_stat_acc_auto(&sw, &raw, 3, 3);
+    CHECK_EQ(sw, 23, "sticky reset-underneath: fresh value taken whole (3)");
+    CHECK_EQ(raw, 3, "last_raw follows the reset value");
+}
+
+/* --------------------------------------------- good-octet liveness --- */
+
+static void test_good_bytes_stuck_flag(void)
+{
+    /* QEMU 11.0.0 hard-zeros GORC/GOTC (MAC_ACCESS_FLAG_NEEDED, unsatisfiable
+     * gate) -- packets counted, their bytes never counted. That must be
+     * DETECTED, not silently reported as "0 good bytes". */
+    struct model m; struct e1000_stats st;
+    model_init(&m, MODEL_CLR_HI); stats_zero(&st);
+
+    CHECK(!st.rx_good_bytes_stuck, "not stuck before any traffic");
+
+    model_bump(&m, E1000_REG_GPRC, 5);          /* packets counted... */
+    e1000_stats_sample(&st, model_read, &m);    /* ...GORCL/GORCH never bumped */
+    CHECK_EQ(st.rx_pkts, 5, "packets were counted");
+    CHECK_EQ(st.rx_good_bytes, 0, "and GORC read 0, as measured on QEMU");
+    CHECK(st.rx_good_bytes_stuck, "so the driver must flag it, not print a bare 0");
+
+    /* Sticky once set. */
+    e1000_stats_sample(&st, model_read, &m);
+    CHECK(st.rx_good_bytes_stuck, "stays flagged on a later idle sample");
+}
+
+static void test_good_bytes_not_stuck_when_it_moves(void)
+{
+    /* The safety half of the same check: a device that DOES implement GORC
+     * (real silicon, or a future QEMU) must never be flagged. */
+    struct model m; struct e1000_stats st;
+    model_init(&m, MODEL_CLR_HI); stats_zero(&st);
+
+    model_bump(&m, E1000_REG_GPRC, 5);
+    model_bump64(&m, E1000_REG_GORCL, 700);     /* the register DOES move */
+    e1000_stats_sample(&st, model_read, &m);
+    CHECK(!st.rx_good_bytes_stuck,
+          "a good-octet register that actually counts is never flagged stuck");
 }
 
 /* -------------------------------------------------- 64-bit octet counts --- */
@@ -466,6 +657,12 @@ int main(void)
     test_second_reader_sees_zero();
     test_prime_discards();
     test_every_counter_is_drained();
+    test_sticky_counter_does_not_reflood();
+    test_sticky_counter_attributes_new_events();
+    test_sticky_and_clearing_agree_on_total();
+    test_stat_acc_auto_directly();
+    test_good_bytes_stuck_flag();
+    test_good_bytes_not_stuck_when_it_moves();
     test_octets_under_both_models();
     test_octet_read_order();
     test_counters_are_64_bit();

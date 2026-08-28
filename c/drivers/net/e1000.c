@@ -80,9 +80,24 @@ void *memcpy(void *, const void *, size_t);
 #define TCTL_CT_SHIFT  4        /* collision threshold = 0x10 */
 #define TCTL_COLD_SHIFT 12      /* collision distance = 0x40 (full duplex) */
 
+/* RING DEPTH, OVERRIDABLE ONLY AS AN INSTRUMENT (make ... E1000_RXDESC=8).
+ *
+ * The default is the shipped value and nothing below changes without the knob.
+ * It exists because MPC -- the one drop counter QEMU's e1000 lets a guest read
+ * -- is incremented in exactly one place in the model (e1000_receiver_overrun),
+ * which fires only when a frame arrives and the ring has no room. On the
+ * shipped 64-descriptor ring a 16 MiB SLIRP download produces ZERO overruns, so
+ * the register stays 0 and a probe of it measures nothing. Shrinking the ring
+ * is how the counter is made non-zero ON PURPOSE, so that its READ semantics
+ * (sticky vs read-to-clear) can be observed at all. It is a knob for the probe
+ * build, not a tuning parameter, and the default must never move. */
+#ifndef RX_DESC
 #define RX_DESC 64      /* deeper RX ring: absorb a full receive-window burst
                         * (~45 frames for 64 KiB) before the guest drains it */
+#endif
+#ifndef RX_REFILL
 #define RX_REFILL 16    /* descriptors returned per RDT write -- see e1000_rx_drain */
+#endif
 #define TX_DESC 8
 #define BUF_SIZE 2048
 
@@ -151,6 +166,10 @@ static struct e1000_stats g_stats;      /* 64-bit accumulators; see e1000_stats.
 static uint64_t g_stat_next_ms;         /* when the block may be sampled again    */
 static uint64_t g_report_pkts;          /* rx+tx total at the last printed line   */
 static uint64_t g_report_losses;        /* losses at the last printed line        */
+static uint64_t g_report_loss_ms;       /* timer_ms() of the last printed line    */
+static uint64_t g_sample_losses;        /* losses as of the PREVIOUS sample (every*/
+                                         /* call, printed or not) -- see below     */
+static uint64_t g_sample_loss_delta;    /* that sample's delta, i.e. the "shape"  */
 
 static uint32_t g_link;                 /* last STATUS we reported                */
 static int      g_link_known;           /* 0 until the first observation          */
@@ -158,6 +177,8 @@ static volatile uint32_t g_link_evt;    /* set by the ISR on ICR.LSC            
 
 static uint32_t g_irq;                  /* NIC interrupts taken (ITR's denominator) */
 static uint32_t g_irq_reported;
+
+static int g_goct_note_printed;         /* the "*" legend, printed at most once */
 
 /* THE accessor. Deliberately does not sample: sampling is what clears the
  * device, and a getter that cleared would make every caller a thief. Two
@@ -184,6 +205,58 @@ static const struct e1000_stats *stats_get(void) { return &g_stats; }
  * packets that may never come is how it would be missed. */
 #define REPORT_EVERY_PKTS 512
 
+/* THE FLOOD, AND WHY "loss != g_report_losses" WAS NOT SAFE.
+ *
+ * The line above says "a loss prints immediately", and on real 8254x silicon
+ * that is exactly right: MPC is R/clr, so a report of 32 followed by a report
+ * of 0 IS 32 distinct events settling back to quiet. This tree's settle-phase
+ * dossier (tests/boot/run-e1000-mpc-probe.sh, both a direct register re-read
+ * and QEMU 11.0.0's own hw/net/e1000.c: `[CRCERRS ... MPC] = &mac_readreg`,
+ * no clear) found that MPC is NOT read-to-clear on the one machine this tree
+ * has ever booted on. A sticky register under e1000_stats.h's `*sw += hw` is
+ * re-added to the software loss total once per STAT_PERIOD_MS forever, so
+ * `loss != g_report_losses` is true on EVERY sample once a single overrun has
+ * ever happened -- including 148 of 148 idle samples measured in the dossier,
+ * with rx flat and irq (+0). "Print immediately on any change" degenerates
+ * into "print forever", one busy-waited kprintf per second, unboundedly.
+ *
+ * THE FIX IS SHAPE, NOT SILENCE. What made the original line interesting was
+ * never "the total changed" -- a monotone counter's total changes on every
+ * sample once it is nonzero, log-worthy or not. What is interesting is a
+ * change in RATE: the total starting to move at all (0 -> nonzero), or moving
+ * at a different pace than it was a moment ago (a second, distinct burst on
+ * top of a sticky reading, or a real drop rate that is climbing or easing).
+ * A steady +32/sample forever is exactly the shape a sticky register with no
+ * new events produces, and it is also the shape a print-suppression rule
+ * should treat as "already said".
+ *
+ * The per-sample delta is tracked against the PREVIOUS SAMPLE, not the
+ * previous PRINTED line -- deliberately. STAT_PERIOD_MS gates stats_poll() to
+ * once a second regardless of whether the last call printed, so if the shape
+ * comparison used the last-printed baseline, a quiet pulse 30 s later would
+ * compare this second's +32 against a baseline 30 samples stale (+960) and
+ * misread its own pulse as a new shape, printing every second again from
+ * there. Comparing consecutive samples keeps the shape check correct no
+ * matter how long the printing side has been suppressing. So: report
+ * immediately when this sample's delta differs from the immediately
+ * preceding sample's delta (which covers the first-ever loss, since the
+ * baseline delta starts at 0); otherwise, print at most once every
+ * REPORT_LOSS_QUIET_MS as a "still losing, same rate" pulse, so an
+ * unattended serial log never goes silent about an ongoing problem -- it
+ * just stops repeating the identical line every second.
+ *
+ * WHAT THIS NOW MISSES, stated rather than discovered later: two real,
+ * distinct overrun bursts of the identical size arriving back to back will
+ * be reported as one shape-unchanged event and merged into the periodic
+ * pulse -- rule 3 (never stub to success) is not violated because the count
+ * itself is never altered, only how often the same count is re-announced.
+ * And on real silicon, where MPC genuinely clears, this policy is *stricter*
+ * than the original: a train of many small distinct drops of the same size
+ * (a real, if unlikely, failure mode) prints once per quiet window instead of
+ * once per drop. Both are read from `g_stats`, which is untouched -- nothing
+ * here changes what is COUNTED, only what is PRINTED. */
+#define REPORT_LOSS_QUIET_MS 30000
+
 /* WHAT GETS PRINTED, DECIDED UNDER THE LOCK AND PRINTED OUTSIDE IT.
  *
  * The split is not tidiness. serial_putc() busy-waits on the UART's
@@ -202,9 +275,75 @@ struct e1000_pending {
     int      link;              /* print a link line */
     uint32_t link_status;
     int      stats;             /* print a stats line */
+    int      goct_note;         /* print the "*" legend once -- see stats_poll */
     struct e1000_stats s;       /* the snapshot to print */
     uint32_t irq, dirq;
+#ifdef E1000_REG_PROBE
+    int      probe;             /* print a [e1000-probe] line -- see below */
+    uint32_t p[16];
+#endif
 };
+
+/* ====================================================================== */
+/* TEMPORARY PROBE -- off unless built with -DE1000_REG_PROBE             */
+/* (make ... E1000_PROBE=1). THIS IS AN INSTRUMENT, NOT A FEATURE.        */
+/*                                                                        */
+/* Everything in e1000_stats.h rests on ONE assumption, stated at the top  */
+/* of this block: "every register e1000_stats_sample() touches is cleared  */
+/* BY the read". That is what the 8254x manual specifies for silicon. It   */
+/* has never been measured on the device model this tree actually runs,    */
+/* and e1000_stats.h says so out loud about the 64-bit pairs ("WHICH ONE   */
+/* QEMU IMPLEMENTS IS DELIBERATELY NOT ASSERTED HERE").                    */
+/*                                                                        */
+/* So: read each register TWICE IN A ROW with nothing in between. A        */
+/* read-to-clear register answers <n> then 0. A sticky one answers <n>     */
+/* twice -- and a sticky one under `*sw += hw` is added to the software    */
+/* total once per sample period FOREVER, which is a counter that climbs by */
+/* a constant with no traffic at all.                                      */
+/*                                                                        */
+/* THE CONTROL IS THE FIRST LINE OF IT. GPRC is read-to-clear on this part */
+/* and is the register whose totals this tree has always believed. If      */
+/* gprc b != 0 while gprc a != 0, the probe cannot tell the two behaviours */
+/* apart -- it is reading a stale cache line, or the MMIO window is wrong, */
+/* or reg_read got optimised -- and NOTHING BELOW IT MEANS ANYTHING. A     */
+/* probe whose discriminating power is not visible in its own output is    */
+/* the thing CLAUDE.md rule 5 is about.                                    */
+/*                                                                        */
+/* A PROBE BUILD'S STATS LINE IS NOT A MEASUREMENT. These reads happen     */
+/* before e1000_stats_sample() and, for the registers that DO clear, they  */
+/* take the count away from it -- exactly the "second reader steals from   */
+/* the first" failure the block above forbids. That is why this is a build */
+/* knob and why the output carries its own prefix.                         */
+/* ====================================================================== */
+#ifdef E1000_REG_PROBE
+static void e1000_probe_read(struct e1000_pending *p)
+{
+    /* THE CONTROL. A register the manual and QEMU both make read-to-clear. */
+    p->p[0]  = reg_read(E1000_REG_GPRC);     /* gprc a */
+    p->p[1]  = reg_read(E1000_REG_GPRC);     /* gprc b -- must be 0 if a != 0 */
+    /* The two drop counters, which are the whole question. */
+    p->p[2]  = reg_read(E1000_REG_MPC);      /* mpc a  */
+    p->p[3]  = reg_read(E1000_REG_MPC);      /* mpc b  */
+    p->p[4]  = reg_read(E1000_REG_RNBC);     /* rnbc a */
+    p->p[5]  = reg_read(E1000_REG_RNBC);     /* rnbc b */
+    /* The 64-bit pairs. low, high, low again: under CLEAR-ON-HIGH the third
+     * read is 0 and low-then-high is exact; under CLEAR-ON-LOW the second is
+     * 0. e1000_stats.h names both conventions and refuses to guess which. */
+    p->p[6]  = reg_read(E1000_REG_TORL);
+    p->p[7]  = reg_read(E1000_REG_TORH);
+    p->p[8]  = reg_read(E1000_REG_TORL);     /* torl again */
+    p->p[9]  = reg_read(E1000_REG_GORCL);
+    p->p[10] = reg_read(E1000_REG_GORCH);
+    p->p[11] = reg_read(E1000_REG_GORCL);    /* gorcl again */
+    p->p[12] = reg_read(E1000_REG_GOTCL);
+    p->p[13] = reg_read(E1000_REG_GOTCH);
+    /* Two more of the "always zero" family, to say whether they are zero
+     * because nothing happened or zero because the model does not have them. */
+    p->p[14] = reg_read(E1000_REG_CRCERRS);
+    p->p[15] = reg_read(E1000_REG_COLC);
+    p->probe = 1;
+}
+#endif
 
 static void report_flush(const struct e1000_pending *p)
 {
@@ -218,9 +357,19 @@ static void report_flush(const struct e1000_pending *p)
     }
     if (p->stats) {
         const struct e1000_stats *s = &p->s;
+        /* "0" and "unreadable on this device" print identically as a bare
+         * number, and CLAUDE.md rule 5 is exactly about a zero that reads as
+         * a fact when it is really a hole in the instrument. goct rx/tx carry
+         * a "*" the moment rx_good_bytes_stuck/tx_good_bytes_stuck goes true
+         * (see the comment on those fields in e1000_stats.h) so this line
+         * stops claiming "0 good bytes" for a register QEMU never lets the
+         * guest read. rnbc has no such marker: unlike GORC/GOTC, RNBC and MPC
+         * measure genuinely different events that CAN disagree on real
+         * silicon, so there is no safe live signal for "this rnbc is not to
+         * be trusted" -- see the struct comment above rx_no_buf. */
         kprintf("[e1000] stats: rx %llu pkt / %llu B, tx %llu pkt / %llu B; "
                 "drop rnbc %llu mpc %llu; err crc %llu rlec %llu; "
-                "col %llu ecol %llu late %llu; goct rx %llu tx %llu; "
+                "col %llu ecol %llu late %llu; goct rx %llu%s tx %llu%s; "
                 "irq %u (+%u)\n",
                 (unsigned long long)s->rx_pkts,   (unsigned long long)s->rx_bytes,
                 (unsigned long long)s->tx_pkts,   (unsigned long long)s->tx_bytes,
@@ -228,9 +377,24 @@ static void report_flush(const struct e1000_pending *p)
                 (unsigned long long)s->crc_errs,  (unsigned long long)s->len_errs,
                 (unsigned long long)s->colls,     (unsigned long long)s->excess_colls,
                 (unsigned long long)s->late_colls,
-                (unsigned long long)s->rx_good_bytes,
-                (unsigned long long)s->tx_good_bytes, p->irq, p->dirq);
+                (unsigned long long)s->rx_good_bytes, s->rx_good_bytes_stuck ? "*" : "",
+                (unsigned long long)s->tx_good_bytes, s->tx_good_bytes_stuck ? "*" : "",
+                p->irq, p->dirq);
+        if (p->goct_note)
+            kprintf("[e1000] goct*: this register cannot be read on this "
+                    "device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU "
+                    "11.0.0) -- 0 does NOT mean zero good bytes\n");
     }
+#ifdef E1000_REG_PROBE
+    if (p->probe) {
+        kprintf("[e1000-probe] gprc a=%u b=%u | mpc a=%u b=%u | rnbc a=%u b=%u | "
+                "torl=%u torh=%u torl2=%u | gorcl=%u gorch=%u gorcl2=%u | "
+                "gotcl=%u gotch=%u | crcerrs=%u colc=%u\n",
+                p->p[0], p->p[1], p->p[2], p->p[3], p->p[4], p->p[5],
+                p->p[6], p->p[7], p->p[8], p->p[9], p->p[10], p->p[11],
+                p->p[12], p->p[13], p->p[14], p->p[15]);
+    }
+#endif
 }
 
 /* Once per TRANSITION, never per poll. e1000_link_changed() compares only
@@ -260,19 +424,48 @@ static void stats_poll(struct e1000_pending *p)
     if (now < g_stat_next_ms) return;
     g_stat_next_ms = now + STAT_PERIOD_MS;
 
+#ifdef E1000_REG_PROBE
+    e1000_probe_read(p);            /* BEFORE the sample, and it steals from it */
+#endif
     e1000_stats_sample(&g_stats, e1000_rd, 0);
     link_check(p);                       /* the backstop: LSC can be masked or lost */
 
     const struct e1000_stats *s = stats_get();
     uint64_t pkts = s->rx_pkts + s->tx_pkts, loss = e1000_stats_losses(s);
-    if (loss != g_report_losses || pkts >= g_report_pkts + REPORT_EVERY_PKTS) {
+    /* This SAMPLE's delta, against the previous SAMPLE -- see the comment on
+     * REPORT_LOSS_QUIET_MS for why this is not measured against the last
+     * PRINTED baseline. Both operands are monotone, so this never borrows. */
+    uint64_t sample_delta = loss - g_sample_losses;
+
+    /* new_shape covers 0 -> nonzero (g_sample_loss_delta starts at 0, so the
+     * first loss is always a shape change) and any later change of PACE,
+     * sticky or not. quiet_pulse is the once-per-window reminder for a loss
+     * that keeps recurring at an unchanged pace since it was last shown, so a
+     * real, ongoing problem never goes fully silent between prints. */
+    int new_shape   = loss != g_sample_losses && sample_delta != g_sample_loss_delta;
+    int quiet_pulse = loss != g_report_losses &&
+                       now - g_report_loss_ms >= REPORT_LOSS_QUIET_MS;
+
+    /* Advance the sample baseline EVERY call, print or not -- this is what
+     * makes the shape comparison immune to how long the print side has been
+     * suppressing (see the comment above). */
+    g_sample_losses = loss;
+    g_sample_loss_delta = sample_delta;
+
+    if (new_shape || quiet_pulse || pkts >= g_report_pkts + REPORT_EVERY_PKTS) {
         g_report_losses = loss;
         g_report_pkts = pkts;
+        g_report_loss_ms = now;
         p->stats = 1;
         p->s = *s;
         p->irq = g_irq;
         p->dirq = g_irq - g_irq_reported;
         g_irq_reported = g_irq;
+        if (!g_goct_note_printed &&
+            (s->rx_good_bytes_stuck || s->tx_good_bytes_stuck)) {
+            g_goct_note_printed = 1;
+            p->goct_note = 1;
+        }
     }
 }
 
@@ -353,7 +546,10 @@ static int e1000_tx_frame(const void *frame, uint16_t len)
 static int e1000_rx_drain(net_rx_cb cb)
 {
     if (!mmio) return 0;
-    struct e1000_pending rep; rep.link = rep.stats = 0; rep.link_status = 0; rep.irq = rep.dirq = 0;
+    struct e1000_pending rep; rep.link = rep.stats = 0; rep.goct_note = 0; rep.link_status = 0; rep.irq = rep.dirq = 0;
+#ifdef E1000_REG_PROBE
+    rep.probe = 0;
+#endif
     uint64_t f = net_lock();                     /* exclude the RX IRQ + mainline tcp_recv */
     /* ACK FIRST, THEN DRAIN -- and ack HERE, not only in the ISR.
      *
@@ -571,7 +767,10 @@ int e1000_probe(struct device *dev)
      * rather than from the first transition. It is also the control for the
      * transition reporting: a harness that unplugs the cable needs to know the
      * link was up first, and "no line at all" and "down" read the same. */
-    struct e1000_pending rep; rep.link = rep.stats = 0; rep.link_status = 0; rep.irq = rep.dirq = 0;
+    struct e1000_pending rep; rep.link = rep.stats = 0; rep.goct_note = 0; rep.link_status = 0; rep.irq = rep.dirq = 0;
+#ifdef E1000_REG_PROBE
+    rep.probe = 0;
+#endif
     link_check(&rep);
     report_flush(&rep);
 

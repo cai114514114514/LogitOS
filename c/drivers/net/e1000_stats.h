@@ -77,19 +77,44 @@ static inline int e1000_link_changed(uint32_t a, uint32_t b)
 }
 
 /* ------------------------------------------------------ statistics block -- */
-/* All of these are READ-TO-CLEAR. Reading one returns the count since the last
- * read and zeroes it in the same access, so:
+/* The 8254x manual specifies every register below as READ-TO-CLEAR: reading
+ * one returns the count since the last read and zeroes it in the same access.
+ *
+ * THAT IS FALSE OF THE ONLY DEVICE THIS TREE HAS EVER BOOTED ON, MEASURED
+ * rather than assumed -- see e1000_stat_acc_auto() below. QEMU 11.0.0's e1000
+ * model (hw/net/e1000.c, fetched at the v11.0.0 tag, not recalled) clears
+ * GPRC/GPTC and the high half of each 64-bit octet pair on read, exactly as
+ * the manual says, and does NOT clear MPC -- ever, on any read, by anyone.
+ * Trusting `*sw += hw` for a register that never clears re-adds whatever it
+ * last held once every STAT_PERIOD_MS FOREVER: one real missed frame prints
+ * as a "mpc" field that climbs by a constant with no traffic at all, for the
+ * rest of the boot, and because e1000_stats_losses() (below) then changes on
+ * every single sample as a side effect, it also floods stats_poll()'s report
+ * line once a second for the rest of the boot -- CLAUDE.md rule 5's "an
+ * instrument that floods the log it writes to has replaced the thing it was
+ * measuring". Both held, unnoticed, since this driver's first boot.
+ *
+ * A handful of the registers below are a THIRD case, worse than either:
+ * RNBC, GORCL/GORCH, GOTCL/GOTCH, RLEC, COLC, ECOL and LATECOL never reach a
+ * real register at all on this device -- see the comment above `rx_no_buf`
+ * in `struct e1000_stats`.
+ *
+ * What is still true everywhere, silicon or QEMU, clearing or not:
  *
  *   - THERE MAY BE EXACTLY ONE READER IN THE WHOLE KERNEL. A second one sees
- *     zero and, worse, steals the count from the first. e1000.c has that one
+ *     whatever the first left behind (zero, on a register that does clear)
+ *     and, worse, steals the count from the first. e1000.c has that one
  *     reader (its stats_poll(), inside the RX drain and under net_lock) and
  *     every other consumer goes through its stats_get(), which does not touch
  *     the device at all.
  *   - the software counters must be 64-bit accumulators. `sw = read()` is the
- *     naive form and it is not merely imprecise: it silently redefines every
- *     counter as "since the previous sample", so a total of zero and a link
- *     that has never dropped a frame print identically. That form is what
- *     -DE1000_STATS_NO_ACC compiles, and it is the negative control.
+ *     naive form and it is not merely imprecise: on a register that DOES
+ *     clear it silently redefines the counter as "since the previous
+ *     sample", and on one that does NOT clear it silently redefines the
+ *     counter as "whatever the register currently holds" -- either way a
+ *     total of zero and a link that has never dropped a frame print
+ *     identically. That form is what -DE1000_STATS_NO_ACC compiles, and it is
+ *     the negative control.
  */
 
 #define E1000_REG_CRCERRS 0x04000   /* CRC error count                        */
@@ -143,16 +168,67 @@ struct e1000_stats {
      * "this emulator does not implement them" a visible fact in the log
      * instead of a thing somebody has to rediscover. Their difference from
      * rx_bytes/tx_bytes is the errored traffic, which the error counters below
-     * already break down by cause. */
+     * already break down by cause.
+     *
+     * THE ZERO IS NOW EXPLAINED, NOT JUST OBSERVED. QEMU 11.0.0's e1000 model
+     * tags GORCL/GORCH/GOTCL/GOTCH MAC_ACCESS_FLAG_NEEDED in mac_reg_access[]
+     * (hw/net/e1000.c:1235-1236) with no compat_flags bit that can ever
+     * satisfy the read gate at :1296-1309 (`mac_reg_access[x] >> 2 == 0` for
+     * every entry that carries only that flag, so `compat_flags & 0` is
+     * always false) -- e1000_mmio_read returns a literal 0 for these four
+     * registers UNCONDITIONALLY, on every guest, regardless of traffic. That
+     * is a fact about the register, not about the network, and rx_good_bytes
+     * / tx_good_bytes staying zero forever must not be printed as though it
+     * were the latter. `rx_good_bytes_stuck` / `tx_good_bytes_stuck` below
+     * are how the sampler tells the two apart: a good packet's octets ALWAYS
+     * contribute to GORC by protocol definition, on any 8254x-compatible
+     * device, so packets counted with their bytes never once counted cannot
+     * be a legitimate zero -- unlike RNBC below, this correlation does not
+     * depend on which emulator is running, so it is safe to detect live
+     * rather than only assert from the QEMU source. */
     uint64_t rx_good_bytes; /* GORCL + GORCH */
     uint64_t tx_good_bytes; /* GOTCL + GOTCH */
+    int rx_good_bytes_stuck; /* rx_pkts moved, rx_good_bytes never did: this
+                               * register cannot be read on this device, full
+                               * stop -- see the comment above. Sticky: once
+                               * earned it is never cleared back to 0, because
+                               * the evidence that earned it does not expire. */
+    int tx_good_bytes_stuck;
 
     /* The denominator. CLAUDE.md quotes 269.9 Mbit/s with nothing beside it;
      * these are the two numbers that say whether that run was clean.
      * RNBC = the NIC had a frame and we had posted no descriptor for it.
      * MPC  = the on-chip FIFO overflowed, i.e. the host bus or the driver did
      *        not keep up. They are different failures with different fixes,
-     *        which is why they are not summed into one "dropped". */
+     *        which is why they are not summed into one "dropped".
+     *
+     * MEASURED, QEMU 11.0.0 (hw/net/e1000.c, fetched at the v11.0.0 tag, not
+     * recalled): MPC is real and moves -- e1000_receiver_overrun() is the
+     * model's only writer of it -- but is served by `mac_readreg`, a PLAIN,
+     * NON-CLEARING getter, unlike the 8254x manual's read-to-clear spec. That
+     * is exactly what e1000_stat_acc_auto() below exists to be right about
+     * regardless (see its comment); rx_missed does not special-case MPC by
+     * name, because a build constant naming ONE register as the exception is
+     * CLAUDE.md's "one jar, two doors" waiting to disagree with itself the
+     * day this driver runs on silicon where MPC genuinely does clear.
+     *
+     * RNBC does NOT get the same automatic correction, and that is a
+     * decision, not an oversight: it is tagged MAC_ACCESS_FLAG_NEEDED in
+     * mac_reg_access[] the same way GORC/GOTC are (:1232, gated the same
+     * unsatisfiable way at :1296-1309), so e1000_mmio_read returns a literal
+     * 0 for it UNCONDITIONALLY -- confirmed live, RNBC read 0 across 700
+     * logged samples and 107 MB of traffic including runs where its sibling
+     * MPC was demonstrably nonzero. The reason this is NOT auto-detected the
+     * way rx_good_bytes_stuck is above: RNBC and MPC measure two genuinely
+     * DIFFERENT physical events -- ring exhaustion vs on-chip FIFO overflow
+     * -- that CAN disagree on real silicon (a card can overflow its FIFO
+     * without the ring ever running dry, or the reverse). "MPC moved and
+     * RNBC didn't" is proof of nothing there; it is only proof here, because
+     * the QEMU source settles it. A caller that needs "did the ring run dry
+     * on THIS emulator" cannot get that answer from rx_no_buf -- there is no
+     * live signal that would tell it apart from a real, honest zero, so this
+     * driver reports the register faithfully (0, always, on this device)
+     * rather than fabricate a flag it cannot back with evidence. */
     uint64_t rx_no_buf;     /* RNBC  */
     uint64_t rx_missed;     /* MPC   */
 
@@ -162,6 +238,17 @@ struct e1000_stats {
     uint64_t excess_colls;  /* ECOL    */
     uint64_t late_colls;    /* LATECOL */
 
+    /* Last raw value read from each SINGLE (32-bit) counter above, i.e. every
+     * field on this list except the 64-bit octet pairs. e1000_stat_acc_auto()
+     * needs these to tell "this register is sticky and unchanged" from "this
+     * register is disabled and reads 0" across a sample boundary -- see its
+     * comment. Persisted here rather than as file-local statics in e1000.c so
+     * a host test can drive two independent `struct e1000_stats` instances
+     * (test_second_reader_sees_zero already relies on exactly that). */
+    uint32_t raw_rx_pkts, raw_tx_pkts;
+    uint32_t raw_rx_no_buf, raw_rx_missed;
+    uint32_t raw_crc_errs, raw_len_errs, raw_colls, raw_excess_colls, raw_late_colls;
+
     uint64_t samples;       /* how many times the block has been folded in */
 };
 
@@ -169,12 +256,63 @@ struct e1000_stats {
  * load; in the host test it is a model that implements read-to-clear. */
 typedef uint32_t (*e1000_rd32)(void *ctx, uint32_t off);
 
-static inline void e1000_stat_acc(uint64_t *sw, uint32_t hw)
+/* SINGLE (32-bit) COUNTER, ACCUMULATED WITHOUT ASSUMING HOW IT CLEARS.
+ *
+ * The naive form, `*sw += hw`, is correct only if the register cleared itself
+ * on the read that produced `hw` -- true of GPRC/GPTC on this device, false
+ * of MPC (see the block comment above `struct e1000_stats`'s `rx_no_buf`
+ * field, and the block comment at the top of this file). A build constant
+ * naming MPC as the exception would fix today's bug and reintroduce it the
+ * day this driver runs on real silicon, where MPC genuinely IS read-to-clear
+ * -- CLAUDE.md's "one jar, two doors" with a `#define` standing in for the
+ * door that should be a live read. So this does not choose a behaviour for a
+ * named register; it is handed TWO back-to-back reads of the SAME register,
+ * taken with nothing else touching the device in between (e1000_stats_sample
+ * below does exactly that for every field this function drives), and derives
+ * which behaviour it is looking at from them:
+ *
+ *   hw2 == 0 and hw1 != 0   the read cleared it. hw1 IS the exact count since
+ *                           the previous sample -- there is no earlier state
+ *                           to consult, and none is used.
+ *   otherwise               nothing cleared between hw1 and hw2 (the common
+ *                           case is hw1 == hw2). The register is a
+ *                           free-running total, so the delta since the LAST
+ *                           SAMPLE is against `*last_raw`, the raw value this
+ *                           function itself saved then -- not against zero,
+ *                           which is what made MPC re-add itself forever. A
+ *                           drop below `*last_raw` means the counter itself
+ *                           was reset underneath us (a device reset, not a
+ *                           read), so the fresh value is already the count
+ *                           since that reset and is taken whole.
+ *
+ * `*last_raw` is per-register state in `struct e1000_stats`, not a file-local
+ * static, for the same reason `struct e1000_stats` itself is a parameter
+ * rather than a global: test_second_reader_sees_zero already proves a driver
+ * bug by running two independent samplers against one register file, and that
+ * stops being possible the moment any of this state lives outside the struct
+ * the caller owns.
+ *
+ * This is the SAME TECHNIQUE `e1000_stat_acc64` above already uses to survive
+ * not knowing which half of a 64-bit pair clears -- a delta taken against
+ * state this function saved last time, rather than an assumption about the
+ * hardware's contract -- just carried inside one register instead of across
+ * the two halves of a pair, and settled by direct observation (the two reads)
+ * instead of by an argument that has to work under either convention. */
+static inline void e1000_stat_acc_auto(uint64_t *sw, uint32_t *last_raw,
+                                        uint32_t hw1, uint32_t hw2)
 {
 #ifdef E1000_STATS_NO_ACC
-    *sw = hw;                    /* NEGATIVE CONTROL: the naive read */
+    *sw = hw1;                    /* NEGATIVE CONTROL: the naive read */
+    *last_raw = hw2;
 #else
-    *sw += hw;
+    if (hw1 != 0 && hw2 == 0) {
+        *sw += hw1;                /* cleared: hw1 is the whole delta */
+        *last_raw = 0;
+    } else {
+        uint32_t now = hw2;        /* did not clear: a free-running total */
+        *sw += (now >= *last_raw) ? (now - *last_raw) : now;
+        *last_raw = now;
+    }
 #endif
 }
 
@@ -220,13 +358,26 @@ static inline void e1000_stat_acc64(uint64_t *sw, uint32_t lo, uint32_t hi)
  * only care about two of them: leaving one unread on real silicon lets it
  * saturate at 0xFFFFFFFF, and a saturated counter reports the same number
  * forever, which reads as "nothing is happening" -- the failure mode this
- * whole block exists to make impossible. */
+ * whole block exists to make impossible.
+ *
+ * Every SINGLE (32-bit) counter is now read TWICE, back to back, so
+ * e1000_stat_acc_auto() can tell a register that just cleared from one that
+ * never does -- see its comment. That doubles the trap count for those nine
+ * registers (18 instead of 9); at this function's one-second call rate
+ * (STAT_PERIOD_MS in e1000.c) that is nine extra MMIO reads a second, not a
+ * cost worth a second code path for. GPRC/GPTC go through the same double
+ * read as MPC/RNBC/etc for the same reason ONE mechanism is used throughout
+ * this function rather than "clearing registers use the old accumulate,
+ * MPC uses the new one": a per-register special case is exactly the thing
+ * that was wrong here before. */
 static inline void e1000_stats_sample(struct e1000_stats *st, e1000_rd32 rd, void *ctx)
 {
-    uint32_t lo, hi;
+    uint32_t lo, hi, a, b;
 
-    e1000_stat_acc(&st->rx_pkts,      rd(ctx, E1000_REG_GPRC));
-    e1000_stat_acc(&st->tx_pkts,      rd(ctx, E1000_REG_GPTC));
+    a = rd(ctx, E1000_REG_GPRC); b = rd(ctx, E1000_REG_GPRC);
+    e1000_stat_acc_auto(&st->rx_pkts, &st->raw_rx_pkts, a, b);
+    a = rd(ctx, E1000_REG_GPTC); b = rd(ctx, E1000_REG_GPTC);
+    e1000_stat_acc_auto(&st->tx_pkts, &st->raw_tx_pkts, a, b);
 
     lo = rd(ctx, E1000_REG_TORL);  hi = rd(ctx, E1000_REG_TORH);
     e1000_stat_acc64(&st->rx_bytes, lo, hi);
@@ -237,13 +388,26 @@ static inline void e1000_stats_sample(struct e1000_stats *st, e1000_rd32 rd, voi
     lo = rd(ctx, E1000_REG_GOTCL); hi = rd(ctx, E1000_REG_GOTCH);
     e1000_stat_acc64(&st->tx_good_bytes, lo, hi);
 
-    e1000_stat_acc(&st->rx_no_buf,    rd(ctx, E1000_REG_RNBC));
-    e1000_stat_acc(&st->rx_missed,    rd(ctx, E1000_REG_MPC));
-    e1000_stat_acc(&st->crc_errs,     rd(ctx, E1000_REG_CRCERRS));
-    e1000_stat_acc(&st->len_errs,     rd(ctx, E1000_REG_RLEC));
-    e1000_stat_acc(&st->colls,        rd(ctx, E1000_REG_COLC));
-    e1000_stat_acc(&st->excess_colls, rd(ctx, E1000_REG_ECOL));
-    e1000_stat_acc(&st->late_colls,   rd(ctx, E1000_REG_LATECOL));
+    a = rd(ctx, E1000_REG_RNBC); b = rd(ctx, E1000_REG_RNBC);
+    e1000_stat_acc_auto(&st->rx_no_buf, &st->raw_rx_no_buf, a, b);
+    a = rd(ctx, E1000_REG_MPC); b = rd(ctx, E1000_REG_MPC);
+    e1000_stat_acc_auto(&st->rx_missed, &st->raw_rx_missed, a, b);
+    a = rd(ctx, E1000_REG_CRCERRS); b = rd(ctx, E1000_REG_CRCERRS);
+    e1000_stat_acc_auto(&st->crc_errs, &st->raw_crc_errs, a, b);
+    a = rd(ctx, E1000_REG_RLEC); b = rd(ctx, E1000_REG_RLEC);
+    e1000_stat_acc_auto(&st->len_errs, &st->raw_len_errs, a, b);
+    a = rd(ctx, E1000_REG_COLC); b = rd(ctx, E1000_REG_COLC);
+    e1000_stat_acc_auto(&st->colls, &st->raw_colls, a, b);
+    a = rd(ctx, E1000_REG_ECOL); b = rd(ctx, E1000_REG_ECOL);
+    e1000_stat_acc_auto(&st->excess_colls, &st->raw_excess_colls, a, b);
+    a = rd(ctx, E1000_REG_LATECOL); b = rd(ctx, E1000_REG_LATECOL);
+    e1000_stat_acc_auto(&st->late_colls, &st->raw_late_colls, a, b);
+
+    /* GOOD-OCTET LIVENESS -- see the comment above `rx_good_bytes_stuck` in
+     * `struct e1000_stats`. Once true, stays true: the evidence that earned
+     * it (packets counted, their bytes never counted) does not un-happen. */
+    if (st->rx_pkts && !st->rx_good_bytes) st->rx_good_bytes_stuck = 1;
+    if (st->tx_pkts && !st->tx_good_bytes) st->tx_good_bytes_stuck = 1;
 
     st->samples++;
 }
@@ -259,8 +423,13 @@ static inline void e1000_stats_prime(e1000_rd32 rd, void *ctx)
     struct e1000_stats junk;
     junk.rx_pkts = junk.tx_pkts = junk.rx_bytes = junk.tx_bytes = 0;
     junk.rx_good_bytes = junk.tx_good_bytes = 0;
+    junk.rx_good_bytes_stuck = junk.tx_good_bytes_stuck = 0;
     junk.rx_no_buf = junk.rx_missed = junk.crc_errs = junk.len_errs = 0;
     junk.colls = junk.excess_colls = junk.late_colls = junk.samples = 0;
+    junk.raw_rx_pkts = junk.raw_tx_pkts = 0;
+    junk.raw_rx_no_buf = junk.raw_rx_missed = 0;
+    junk.raw_crc_errs = junk.raw_len_errs = junk.raw_colls = 0;
+    junk.raw_excess_colls = junk.raw_late_colls = 0;
     e1000_stats_sample(&junk, rd, ctx);
     (void)junk;
 }
