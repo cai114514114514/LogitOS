@@ -28,6 +28,7 @@
  */
 
 #include <pthread.h>
+#include "../../../../include/weaksym.h"   /* the ELF-only spelling, one place */
 #include <semaphore.h>
 #include <errno.h>
 #include <string.h>
@@ -82,9 +83,14 @@ static inline int xchg(volatile int *p, int v)
  * `__thread` writes land inside the control block.
  * ------------------------------------------------------------------------- */
 
-extern char __logit_tls_start[] __attribute__((__weak__));
-extern char __logit_tdata_end[] __attribute__((__weak__));
-extern char __logit_tls_end[]   __attribute__((__weak__));
+extern char __logit_tls_start[] LOGIT_WEAK;
+extern char __logit_tdata_end[] LOGIT_WEAK;
+extern char __logit_tls_end[]   LOGIT_WEAK;
+/* No LOGIT_WEAK_STUB: these three are LINKER-SCRIPT symbols, not code, and this
+ * TU is filtered out of every host build (Makefile:2523 -- it needs
+ * __logit_thread_entry from pthread_entry.asm). The declaration goes through
+ * the shared spelling so a grep for the idiom finds it; the Mach-O half would
+ * have nothing to stand in for. */
 
 /* WHAT SITS AT THE THREAD POINTER, and why libc's own state is not in it.
  *

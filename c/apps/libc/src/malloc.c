@@ -1,4 +1,9 @@
 #include <stddef.h>
+/* LOGIT_WEAK/_STUB/LOGIT_HAVE for the two __libc_lock hooks at the bottom of
+ * this file. Relative, because the host gates that build this TU
+ * (tests/mem.mk's arena_malloc_real, arena_page_mem, arena_js_mem and
+ * tests/libc.mk) each bring their own narrow -I list. */
+#include "../../../../include/weaksym.h"
 #include <stdint.h>
 
 /* mini-libc allocator: segregated free lists over one static arena.
@@ -687,13 +692,15 @@ static void *calloc_nl(size_t a, size_t b)
  * functions lock once; the _nl bodies call each other.
  * ========================================================================= */
 
-void __libc_lock(volatile int *v)   __attribute__((__weak__));
-void __libc_unlock(volatile int *v) __attribute__((__weak__));
+void __libc_lock(volatile int *v)   LOGIT_WEAK;
+void __libc_unlock(volatile int *v) LOGIT_WEAK;
+LOGIT_WEAK_STUB(__libc_lock);
+LOGIT_WEAK_STUB(__libc_unlock);
 
 static volatile int heap_lock;
 
-static inline void hlock(void)   { if (__libc_lock)   __libc_lock(&heap_lock); }
-static inline void hunlock(void) { if (__libc_unlock) __libc_unlock(&heap_lock); }
+static inline void hlock(void)   { if (LOGIT_HAVE(__libc_lock))   __libc_lock(&heap_lock); }
+static inline void hunlock(void) { if (LOGIT_HAVE(__libc_unlock)) __libc_unlock(&heap_lock); }
 
 void *malloc(size_t n)
 { hlock(); void *r = malloc_nl(n); hunlock(); return r; }
