@@ -844,6 +844,56 @@ JSValue JS_NewPromiseCapability(JSContext *ctx, JSValue *resolving_funcs);
 JSPromiseStateEnum JS_PromiseState(JSContext *ctx, JSValue promise);
 JSValue JS_PromiseResult(JSContext *ctx, JSValue promise);
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * THE SILENT-STALL CENSUS.
+ *
+ * Every instrument in this tree reports things that HAPPENED -- a request, an
+ * exception, a painted glyph. Nothing reports what a page is still WAITING
+ * for, and a page that finishes loading and never becomes usable is waiting
+ * for something by definition. The largest such class is a promise that never
+ * settles, and it is invisible from JavaScript: an `await` inside an async
+ * function creates a promise the page never named, holds no reference a script
+ * can enumerate, and produces no event when it fails to resolve.
+ *
+ * It IS visible from here. Every promise and every suspended async-function
+ * frame is a GC object on rt->gc_obj_list, so one walk answers the question
+ * exactly, with no cooperation from the page and no wrapper that could change
+ * what the page does. THIS IS READ-ONLY: it takes no reference, runs no
+ * finalizer, allocates nothing, and calls nothing. Running it cannot alter the
+ * measurement, which is the property an instrument has to have.
+ *
+ * The distinction that carries the diagnosis is AWAITED vs ORPHAN. A pending
+ * promise with an empty reaction list is nobody's problem -- a page may create
+ * thousands and drop them. A pending promise with a reaction registered has
+ * something parked behind it. That is the stall.
+ *
+ * Strings are copied into caller storage rather than handed back as atoms, so
+ * there is no free function to forget and no lifetime coupled to the runtime.
+ */
+typedef struct JSStallFrame {
+    char func[64];        /* function name, "" if anonymous */
+    char file[160];       /* script filename/URL as the engine knows it */
+    int  line;            /* -1 when the function carries no debug info */
+    int  pc;              /* bytecode offset of the await, -1 if unknown.
+                           * The only field that separates two await sites
+                           * inside one minified line, which is the shape of
+                           * every real bundle. */
+} JSStallFrame;
+
+typedef struct JSStallCensus {
+    int promise_total;
+    int promise_pending;
+    int promise_pending_awaited;   /* pending AND a reaction is registered */
+    int promise_fulfilled;
+    int promise_rejected;
+    int promise_rejected_unhandled;/* rejected with nobody having handled it */
+    int async_suspended;           /* async frames parked at an await */
+    int async_frames;              /* how many of those filled into frames[] */
+} JSStallCensus;
+
+void JS_StallCensus(JSRuntime *rt, JSStallCensus *out,
+                    JSStallFrame *frames, int nframes);
+
 /* is_handled = TRUE means that the rejection is handled */
 typedef void JSHostPromiseRejectionTracker(JSContext *ctx, JSValueConst promise,
                                            JSValueConst reason,

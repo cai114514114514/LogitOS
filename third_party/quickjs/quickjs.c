@@ -48301,6 +48301,132 @@ static void js_promise_mark(JSRuntime *rt, JSValueConst val,
     JS_MarkValue(rt, s->promise_result, mark_func);
 }
 
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * THE SILENT-STALL CENSUS. The contract, and the argument for it, is in
+ * quickjs.h. This half is one read-only walk of rt->gc_obj_list.
+ *
+ * Read-only is the whole point and is enforced by construction: nothing below
+ * takes a reference, calls into JS, allocates, or triggers the GC, so the
+ * census cannot move the thing it measures. It is safe to call at any moment
+ * the runtime is not mid-collection.
+ *
+ * The frame's line number is the AWAIT SITE, not the function's declaration:
+ * a suspended async function's cur_pc is the instruction after the await it is
+ * parked on, and find_line_num maps that back. "Stuck at bundle.js:1:48213" is
+ * a diagnosis; "there is a suspended async function somewhere" is not.
+ */
+static void js_stall_copy(char *dst, int cap, const char *src)
+{
+    int i = 0;
+    if (cap <= 0)
+        return;
+    if (src)
+        for (; src[i] && i < cap - 1; i++)
+            dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+void JS_StallCensus(JSRuntime *rt, JSStallCensus *out,
+                    JSStallFrame *frames, int nframes)
+{
+    struct list_head *el;
+    char abuf[192];
+
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!rt)
+        return;
+    if (!frames || nframes < 0)
+        nframes = 0;
+
+    list_for_each(el, &rt->gc_obj_list) {
+        JSGCObjectHeader *gp = list_entry(el, JSGCObjectHeader, link);
+
+        if (gp->gc_obj_type == JS_GC_OBJ_TYPE_JS_OBJECT) {
+            JSObject *p = (JSObject *)gp;
+            JSPromiseData *s;
+            if (p->class_id != JS_CLASS_PROMISE)
+                continue;
+            s = p->u.promise_data;
+            if (!s)
+                continue;
+            out->promise_total++;
+            if (s->promise_state == JS_PROMISE_PENDING) {
+                out->promise_pending++;
+                /* BOTH reaction lists. `p.catch(f)` registers on [1] only, and
+                 * a page parked behind a rejection handler is parked all the
+                 * same. Counting [0] alone would report the commonest
+                 * error-handling shape on the web as "nobody is waiting". */
+                if (!list_empty(&s->promise_reactions[0]) ||
+                    !list_empty(&s->promise_reactions[1]))
+                    out->promise_pending_awaited++;
+            } else if (s->promise_state == JS_PROMISE_FULFILLED) {
+                out->promise_fulfilled++;
+            } else {
+                out->promise_rejected++;
+                if (!s->is_handled)
+                    out->promise_rejected_unhandled++;
+            }
+        } else if (gp->gc_obj_type == JS_GC_OBJ_TYPE_ASYNC_FUNCTION) {
+            JSAsyncFunctionState *s = (JSAsyncFunctionState *)gp;
+            JSStallFrame *f;
+            JSFunctionBytecode *b;
+            JSObject *fp;
+
+            /* is_completed: the function has returned and the frame is dead.
+             * Not a stall, and reading the frame would be reading freed
+             * storage. A function that is RUNNING right now also has an
+             * incomplete state -- which is why this is called at settle, when
+             * no JS is on the stack. Called from inside a callback it would
+             * count that callback, correctly but uninterestingly. */
+            if (s->is_completed)
+                continue;
+            out->async_suspended++;
+            if (out->async_frames >= nframes)
+                continue;
+            if (JS_VALUE_GET_TAG(s->frame.cur_func) != JS_TAG_OBJECT)
+                continue;
+            fp = JS_VALUE_GET_OBJ(s->frame.cur_func);
+            if (!js_class_has_bytecode(fp->class_id))
+                continue;
+            b = fp->u.func.function_bytecode;
+            if (!b)
+                continue;
+            f = &frames[out->async_frames++];
+            js_stall_copy(f->func, (int)sizeof(f->func),
+                          b->func_name != JS_ATOM_NULL
+                          ? JS_AtomGetStrRT(rt, abuf, sizeof(abuf), b->func_name)
+                          : "");
+            f->file[0] = '\0';
+            f->line = -1;
+            f->pc = -1;
+            if (b->has_debug) {
+                js_stall_copy(f->file, (int)sizeof(f->file),
+                              JS_AtomGetStrRT(rt, abuf, sizeof(abuf),
+                                              b->debug.filename));
+                /* cur_pc is the instruction AFTER the await, matching what
+                 * build_backtrace does for a live frame. NULL ctx is safe:
+                 * find_line_num does not use it. */
+                f->line = b->debug.line_num;
+                if (s->frame.cur_pc) {
+                    f->pc = (int)(s->frame.cur_pc - b->byte_code_buf - 1);
+                    /* find_line_num returns -1 for a function whose pc2line
+                     * table is EMPTY, and it is empty whenever the function
+                     * never changes line -- which is every function in every
+                     * minified bundle on the real web. Falling back to the
+                     * declaration line keeps a real number in the field; `pc`
+                     * is what actually discriminates two await sites inside
+                     * one 400 KB line, and it is why it is reported. */
+                    int ln = find_line_num(NULL, b, (uint32_t)f->pc);
+                    if (ln >= 0)
+                        f->line = ln;
+                }
+            }
+        }
+    }
+}
+
 static JSValue js_promise_constructor(JSContext *ctx, JSValueConst new_target,
                                       int argc, JSValueConst *argv)
 {

@@ -2984,6 +2984,12 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # committed real-page corpus) and test-platform / -control / -asan for
 # js_platform.c + js_select.c. Own fragment; see the file.
 -include tests/webapi_platform.mk
+# The silent-stall instrument -- what a page is still WAITING for once it has
+# settled. The other half of probe-webapi: that one finds what a page reached
+# for and did not FIND, this one finds what it is parked on when nothing threw
+# at all. Rides on the same $(BUILD)/webapi_probe binary, so it must come after
+# the fragment that builds it.
+-include tests/stall.mk
 -include tests/canvas.mk
 -include tests/nn.mk
 
@@ -4565,3 +4571,4 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 test-mk-wired:
 	@python3 tools/mk_wired.py
 -include tests/vp8.mk
+-include tests/jsfb.mk

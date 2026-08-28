@@ -48,6 +48,7 @@
 #include "js_page.h"
 #include "js_webapi.h"
 #include "js_module.h"
+#include "js_stall.h"
 #include "bfetch.h"
 
 void *kmalloc(unsigned long n) { return malloc(n); }
@@ -447,23 +448,114 @@ static const char *route(const char *url)
 }
 
 static char g_fixdir[512];
+/* The directory that URL path `/` names. Equal to g_fixdir unless --docroot
+ * moved it up to the corpus root; see fs_map. */
+static char g_fsroot[512];
+static char g_docroot[512];       /* --docroot=DIR, empty when not given */
 static char *slurp(const char *path, int *out_len);
+
+/* ---- the fixture as a DIRECTORY TREE, when the manifest cannot answer ----
+ *
+ * WHY A SECOND WAY IN. capture.py flattens a captured site: every <script src>
+ * becomes `s001.js` in one directory and manifest.txt is the only thing that
+ * knows which URL that was. A corpus that was never captured has no manifest
+ * and needs none, because its layout IS the routing table -- build/jsfb ships
+ * `index.html` beside `src/Main.js`, and `<script src="src/Main.js">` is a path
+ * on disk relative to the document. With a manifest as the only door, every one
+ * of those pages probed as "0 scripts", which is the failure mode this file's
+ * own header calls the worst one: an instrument that measures a page with the
+ * application removed and reports it clean.
+ *
+ * IT IS A FALLBACK, NOT A REPLACEMENT, and the order is load-bearing. The
+ * manifest is consulted first and wins, so no captured fixture changes meaning:
+ * this runs only where the old code had already given up.
+ *
+ * THE RULE IS ONE LINE: the URL's PATH is a path under g_fsroot, the directory
+ * that URL `/` names. Without --docroot that is the fixture directory itself
+ * and the document sits at the root of its own origin, so `src/Main.js` and
+ * `/src/Main.js` are the same file -- which is the whole of what a captured
+ * fixture ever needed. With --docroot it is the corpus root, the document gets
+ * the URL it is really served from, and a ROOT-RELATIVE src resolves the way a
+ * browser resolves it. That second case is not hypothetical: laminar's entire
+ * application is `<script src="/frameworks/keyed/laminar/bundled-dist/assets/
+ * index-84d215d4.js">`, and against the fixture directory alone it is
+ * unresolvable -- the probe read the page as having no scripts at all.
+ *
+ * THREE REFUSALS, because a file that opens is not the same as a file that was
+ * asked for:
+ *   - a different ORIGIN never maps. `https://cdn.example/x.js` on a page from
+ *     `https://www.bing.com/` is not `<fixture>/x.js`, and answering it from the
+ *     fixture would invent a same-origin script the browser would never have.
+ *   - a path that climbs out of g_fsroot is refused outright rather than
+ *     clamped, so `../../etc` cannot read a neighbouring fixture and be counted
+ *     as this one's. bfetch_resolve has already removed dot segments, so what
+ *     is left here is the residue that escaped the root, which is a refusal.
+ *   - the file must actually OPEN. If it does not, this returns 0 and the caller
+ *     falls through to the NOT IN FIXTURE line exactly as before. An
+ *     unresolvable script stays NAMED; that property is why we know what to fix.
+ *
+ * Returns 1 and writes the on-disk path; 0 means "not mine, say so out loud". */
+static const char *url_path(const char *u, int *hostlen)
+{
+    const char *c = strstr(u, "://");
+    if (!c) { if (hostlen) *hostlen = 0; return u; }
+    const char *sl = strchr(c + 3, '/');
+    if (hostlen) *hostlen = sl ? (int)(sl - u) : (int)strlen(u);
+    return sl ? sl : "/";
+}
+
+static int fs_map(const char *url, char *out, int max)
+{
+    if (!g_fsroot[0] || !url || !url[0]) return 0;
+    int uh = 0, bh = 0;
+    const char *up = url_path(url, &uh);
+    (void)url_path(g_pagebase, &bh);
+    if (uh != bh || (uh && strncmp(url, g_pagebase, (size_t)uh))) return 0;
+
+    if (up[0] != '/') return 0;
+    const char *rel = up + 1;
+
+    int n = 0;                                  /* the query is not a path */
+    while (rel[n] && rel[n] != '?' && rel[n] != '#') n++;
+    char relbuf[600];
+    if (n <= 0 || n >= (int)sizeof relbuf) return 0;
+    memcpy(relbuf, rel, (size_t)n);
+    relbuf[n] = 0;
+    if (relbuf[0] == '/') return 0;
+    if (!strncmp(relbuf, "..", 2) && (relbuf[2] == 0 || relbuf[2] == '/')) return 0;
+    if (strstr(relbuf, "/../") || strstr(relbuf, "//")) return 0;
+
+    char p[1200];
+    snprintf(p, sizeof p, "%s/%s", g_fsroot, relbuf);
+    FILE *f = fopen(p, "rb");
+    if (!f) return 0;
+    fclose(f);
+    snprintf(out, max, "%s", p);
+    return 1;
+}
 
 int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
 {
     char abs[600];
     bfetch_resolve(0, ref, abs, sizeof abs);
     const char *file = route(abs);
-    if (!file) {
+    char p[1200];
+    if (file) snprintf(p, sizeof p, "%s/%s", g_fixdir, file);
+    else if (!fs_map(abs, p, sizeof p)) {
         g_fetch_miss++;
         if (g_nmodmiss < MODMISS_MAX) snprintf(g_modmiss[g_nmodmiss++], 256, "%s", abs);
         return -1;
     }
-    char p[1200];
-    snprintf(p, sizeof p, "%s/%s", g_fixdir, file);
     int len = 0;
     char *d = slurp(p, &len);
-    if (!d) { g_fetch_miss++; return -1; }
+    /* A manifest entry naming a file that is not there used to increment the
+     * miss counter and vanish. Same rule as everywhere else in this file: it
+     * gets named. */
+    if (!d) {
+        g_fetch_miss++;
+        if (g_nmodmiss < MODMISS_MAX) snprintf(g_modmiss[g_nmodmiss++], 256, "%s", abs);
+        return -1;
+    }
     *out = (unsigned char *)d;
     *outlen = len;
     g_fetch_ok++;
@@ -515,32 +607,41 @@ static void collect(struct node *n, const char *dir)
         } else if (!module && dom_attr(n, "nomodule")) {
             /* the fallback for an engine without modules; we are not one */
         } else if (src) {
-            int found = 0;
+            int mi = -1;
             for (int i = 0; i < g_nman; i++)
-                if (!strcmp(g_man[i].src, src)) { found = 1; break; }
-            /* A <script src> the manifest does not hold used to vanish without
-             * a word, and the cost of that silence was the headline number:
+                if (!strcmp(g_man[i].src, src)) { mi = i; break; }
+            /* The manifest first and the directory second -- see fs_map. A
+             * captured fixture answers from the manifest and nothing about it
+             * moves; a fixture that never went through capture.py has its src
+             * attributes as paths on disk and is answered from there. */
+            char p[1200], abs[600];
+            p[0] = 0;
+            if (mi >= 0) {
+                snprintf(p, sizeof p, "%s/%s", dir, g_man[mi].file);
+                snprintf(abs, sizeof abs, "%s", g_man[mi].abs);
+            } else {
+                bfetch_resolve(g_pagebase, src, abs, sizeof abs);
+                if (!fs_map(abs, p, sizeof p)) p[0] = 0;
+            }
+            int len = 0;
+            char *d = p[0] ? slurp(p, &len) : 0;
+            if (d) {
+                g_scr[g_nscr].data = d; g_scr[g_nscr].len = len;
+                g_scr[g_nscr].module = module;
+                snprintf(g_scr[g_nscr].url, sizeof g_scr[g_nscr].url, "%s",
+                         mi >= 0 ? g_man[mi].file : src);
+                snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs, "%s", abs);
+                g_nscr++;
+            }
+            /* A <script src> nothing could answer used to vanish without a
+             * word, and the cost of that silence was the headline number:
              * kimi's ENTRY POINT is `index-h6DE6Ow7.js`, a module that fans out
              * to the rest of the application, and it is not in the capture. The
              * probe reported "kimi: 3 scripts, all clean". It was measuring a
-             * page with the application removed. */
-            if (!found && g_ndropped < DROPMAX)
+             * page with the application removed. Both doors have now been tried,
+             * so this is still the same claim: NOBODY here holds this file. */
+            else if (g_ndropped < DROPMAX)
                 snprintf(g_dropped[g_ndropped++], 256, "%s", src);
-            for (int i = 0; i < g_nman; i++)
-                if (!strcmp(g_man[i].src, src)) {
-                    char p[600];
-                    snprintf(p, sizeof p, "%s/%s", dir, g_man[i].file);
-                    int len = 0;
-                    char *d = slurp(p, &len);
-                    if (d) {
-                        g_scr[g_nscr].data = d; g_scr[g_nscr].len = len;
-                        g_scr[g_nscr].module = module;
-                        snprintf(g_scr[g_nscr].url, sizeof g_scr[g_nscr].url, "%s", g_man[i].file);
-                        snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs, "%s", g_man[i].abs);
-                        g_nscr++;
-                    }
-                    break;
-                }
         } else {
             int total = 0;
             for (struct node *c = n->first_child; c; c = c->next)
@@ -694,6 +795,39 @@ static void drain_console(int show_errors, const char *tag)
     g_outseen = n;
 }
 
+/* ---- --stall: what is the page still WAITING for at settle? --------------
+ *
+ * 0 = off, 1 = armed (js_stall_arm before the first script), 2 = bare (the
+ * native census only, which cannot perturb what it measures).
+ *
+ * TWO MODES BECAUSE THE ARMED HALF HAS A KNOWN OBSERVER EFFECT and this is
+ * where it is measured rather than asserted: arming attaches a settlement
+ * handler to every fetch promise, which registers a reaction and therefore
+ * raises `pending_awaited` by exactly the number of fetches in flight. Running
+ * the same fixture both ways and diffing the census IS the control -- if the
+ * bare and armed censuses differ by anything other than that, one of them is
+ * wrong. See tests/stall.mk. */
+static int g_stall;
+
+static void stall_dump(const char *site)
+{
+    char buf[8192];
+    JSContext *ctx = js_page_ctx();
+    if (!g_stall || !ctx) return;
+    int n = js_stall_report(ctx, buf, (int)sizeof buf);
+    if (n <= 0) return;
+    printf("  %-11s ... STALL %s | blocked=%s\n", site,
+           g_stall == 1 ? "armed" : "bare",
+           js_stall_blocked(ctx) ? "YES" : "no");
+    for (const char *p = buf; *p; ) {
+        const char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        if (len > 0) printf("  %-11s ...   %.*s\n", site, len, p);
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
 static void run_event_loop(int show_errors, const char *tag, int record)
 {
     for (int i = 0; i < LOOP_PASSES; i++) {
@@ -751,6 +885,68 @@ static void note_c2_error(const char *msg)
     miss_note_c2(nm);
 }
 
+/* ---- --drive: a loaded page is not a USED page -------------------------
+ *
+ * Everything above measures a page up to the settle point: scripts evaluated,
+ * modules linked, the loop turned until nothing more is due. That is loading.
+ * An application does its real work AFTER that, when somebody presses
+ * something -- and a page whose whole render path is behind a click is scored
+ * "ran clean, 0 uncaught" by every line above while doing nothing at all. The
+ * `_paint` reader in tests/fixtures/frameworks closed half of that gap by
+ * reading the DOM back; this closes the other half by producing the INPUT.
+ *
+ * TWO PIECES, AND BOTH ARE DELIBERATELY CONTENT-FREE. Nothing here knows what
+ * a corpus is or what it should assert:
+ *
+ *   --drive FILE   evaluate FILE as a classic script in the page's own context
+ *                  at the settle point, in CHANNEL 2 ONLY. Channel 2 is the
+ *                  unwrapped path the browser really takes; running a driver
+ *                  under channel 1's `with (Proxy)` scope would measure the
+ *                  probe's own suppression machinery, and it would also print
+ *                  every result line twice.
+ *   __probeClick(el)  dispatch a click AT el.
+ *
+ * WHY __probeClick IS NATIVE AND WHY IT IS NOT `el.click()`.
+ * `el.click()` exists (js_semantics.c:997) and is a JS shim WE wrote: it
+ * constructs one untrusted `click` event and runs the activation steps. A user
+ * pressing a mouse button goes somewhere else entirely -- browser.c:3492/3540/
+ * 3550 raises TRUSTED mousedown, mouseup and click through js_dom_dispatch(),
+ * in that order, with detail=1 and buttons set. A driver built on click()
+ * would be this instrument measuring another thing this line also wrote, and
+ * would silently miss every handler bound to mousedown. So the primitive is
+ * the browser's own C entry point, called with browser.c's own initialiser,
+ * and the loop is turned afterwards because a real click is followed by a
+ * frame. What it does NOT do is browser.c's control_activate() -- the default
+ * action of a checkbox or a submit -- which is stated because it is a
+ * limitation of the driver rather than of the engine.
+ *
+ * The return value is the one js_dom_dispatch gives: 1 if the default action
+ * survived, 0 if a listener called preventDefault(). */
+static char       *g_drive_src;
+static int         g_drive_len;
+static const char *g_drive_path;
+
+static JSValue js_probe_click(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 1) return JS_FALSE;
+    struct node *n = js_dom_node_from(argv[0]);
+    if (!n) return JS_FALSE;
+    struct js_event_init ji = { 0 };
+    ji.bubbles = 1; ji.cancelable = 1; ji.detail = 1;
+    ji.button = 0; ji.buttons = 1;
+    js_dom_dispatch(n, "mousedown", &ji);
+    ji.buttons = 0;
+    js_dom_dispatch(n, "mouseup", &ji);
+    int go = js_dom_dispatch(n, "click", &ji);
+    /* A click is followed by a frame: timers, microtasks and the promise a
+     * framework schedules its render on. Without this the driver would read
+     * the DOM back before the application had touched it and report every
+     * asynchronous renderer as broken. */
+    run_event_loop(0, "drive", 1);
+    return JS_NewBool(ctx, go);
+}
+
 struct siteres { int nscript; int c1_ok; int c2_ok; };
 
 static void probe_site(const char *dir, int show_errors, int show_scripts)
@@ -777,9 +973,37 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
         free(srcline);
     }
     if (g_base_override[0]) snprintf(url, sizeof url, "%s", g_base_override);
+    /* --docroot: the document is given the URL it is REALLY served from, which
+     * is its path under the corpus root. Everything else follows from that --
+     * a root-relative src resolves against the same root a browser would use,
+     * and `/css/currentStyle.css` is the file the corpus actually ships. Only
+     * used when no SOURCE and no --base said otherwise, because those are two
+     * deliberate statements about the document's identity and this is a
+     * default. */
+    int under_docroot = 0;
+    if (!url[0] && g_docroot[0]) {
+        size_t rl = strlen(g_docroot);
+        while (rl && g_docroot[rl - 1] == '/') rl--;
+        if (!strncmp(dir, g_docroot, rl) && (dir[rl] == '/' || dir[rl] == 0)) {
+            const char *rel = dir + rl;
+            while (*rel == '/') rel++;
+            snprintf(url, sizeof url, "http://fixture.invalid/%s%s",
+                     rel, (*rel && rel[strlen(rel) - 1] == '/') ? "" : "/");
+            under_docroot = 1;
+        } else {
+            /* A fixture outside the docroot is NAMED, not silently given the
+             * root's URL: a page probed at the wrong URL resolves every
+             * absolute src to the wrong file and reports the result as ours. */
+            printf("  (%s is not under --docroot %s; using its own directory)\n",
+                   dir, g_docroot);
+        }
+    }
     if (!url[0]) snprintf(url, sizeof url, "http://fixture.invalid/");
     snprintf(g_pagebase, sizeof g_pagebase, "%s", url);
     snprintf(g_fixdir, sizeof g_fixdir, "%s", dir);
+    /* g_fsroot is what URL `/` names: the corpus root when one was given and
+     * this fixture is under it, the fixture's own directory otherwise. */
+    snprintf(g_fsroot, sizeof g_fsroot, "%s", under_docroot ? g_docroot : dir);
 
     load_manifest(dir);
     g_nscr = 0;
@@ -833,6 +1057,10 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
     js_page_set_location(url);
     js_module_reset();
     if (js_page_open(root)) {
+        /* BEFORE the first script: a tracker installed afterwards would miss
+         * every fetch the page starts on its first line, which on an
+         * application page is most of them. */
+        if (g_stall == 1) js_stall_arm(js_page_ctx());
         /* TWO PASSES, because that is the order the spec gives and browser.c
          * follows: classic scripts in document order, then modules -- every
          * <script type=module> is implicitly `defer`. A probe that ran them
@@ -916,6 +1144,103 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
         run_event_loop(show_errors, "c2", 1);
         cap_stop();
         harvest_module_output("<loop>");
+        /* THE LIFECYCLE EVENTS, and they are here because their ABSENCE was
+         * the instrument's first false positive.
+         *
+         * The stall report on the first run said `DOMContentLoaded listeners=1
+         * dispatched=0 NEVER-DISPATCHED` on a page, which reads as the exact
+         * silent stall this whole instrument exists to find -- and it was the
+         * HARNESS. browser.c dispatches both events at the document root once
+         * the scripts have run (browser.c, just after `load done:`); this probe
+         * is a script runner and dispatched neither, so every page that defers
+         * its work to `addEventListener('load', ...)` was reported as parked on
+         * a gun that never fired. It is the browser's own sequence, copied
+         * exactly -- bubbles on the first, off on the second -- because a
+         * settle point that differs from the browser's measures a browser
+         * nobody runs.
+         *
+         * Only under --stall: channel 2's existing numbers are a published
+         * baseline and must not move because a diagnostic was added. */
+        /* --drive JOINS --stall ON THIS BLOCK, and it is not a convenience.
+         * An application that binds its buttons inside
+         * `addEventListener('DOMContentLoaded', ...)` has bound nothing at the
+         * settle point, so a driver that clicked without firing the lifecycle
+         * would report every one of those as dead -- a harness result wearing
+         * an engine result's clothes, which is this tree's first rule. The
+         * published channel-2 numbers still cannot move, because a plain run
+         * passes neither flag. */
+        if (g_stall || g_drive_src) {
+            struct js_event_init li;
+            memset(&li, 0, sizeof li);
+            li.bubbles = 1;
+            js_dom_dispatch(js_dom_root(), "DOMContentLoaded", &li);
+            li.bubbles = 0;
+            js_dom_dispatch(js_dom_root(), "load", &li);
+            /* pageshow JOINS this block for the same reason load did: browser.c
+             * now fires it immediately after `load`, unconditionally, on every
+             * page (see browser.c's load_once). It is NOT the bfcache-restore
+             * event some page authors assume -- HTML requires it on every load
+             * -- so a page whose bootstrap is `addEventListener('pageshow', ..)`
+             * instead of `'load'` is exactly the DOMContentLoaded-vs-load trap
+             * this comment already tells the story of, one event later.
+             *
+             * pagehide, deliberately, does NOT join it. browser.c only ever
+             * fires pagehide when NAVIGATING AWAY from a live document (see
+             * load_once) -- closing the browser outright (EV_CLOSE) does not
+             * fire it either, which is the same asymmetry a real desktop
+             * browser has between "back/forward or a typed URL" and "quit".
+             * This probe's per-site teardown is the latter shape: one process,
+             * one site, then js_page_close() -- there is no second document
+             * being navigated INTO. Dispatching pagehide here would be firing
+             * an event for a navigation that never happened, which is exactly
+             * the fabrication rule 3 forbids; a page that registers pagehide
+             * and never gets it in this harness is reporting the harness's
+             * shape correctly, not a bug. */
+            js_dom_dispatch(js_dom_root(), "pageshow", &li);
+            cap_start();
+            run_event_loop(show_errors, "c2", 1);
+            cap_stop();
+            harvest_module_output("<lifecycle>");
+        }
+        /* THE SETTLE POINT. run_event_loop has just returned because nothing
+         * ran and nothing is due -- which is exactly the browser's definition
+         * of a page that has finished loading. Whatever is outstanding here is
+         * outstanding forever. */
+        stall_dump(g_sitename[g_site]);
+        /* ---- the driver, at the settle point and in channel 2 only.
+         * Its exceptions are the PAGE's ledger entries under `drive`, not a
+         * separate bucket, because a driver that pressed a button and got a
+         * TypeError has found exactly the thing this instrument exists to
+         * count. A throw in the driver's own body is reported and named as
+         * such -- an instrument that cannot say "the fault was mine" is the
+         * one that reports its own bugs as the machine's. */
+        if (g_drive_src && js_page_ctx()) {
+            JSContext *ctx = js_page_ctx();
+            JSValue g = JS_GetGlobalObject(ctx);
+            JS_SetPropertyStr(ctx, g, "__probeClick",
+                              JS_NewCFunction(ctx, js_probe_click, "__probeClick", 1));
+            JS_FreeValue(ctx, g);
+            cap_start();
+            js_page_begin_script("<drive>");
+            JSValue v = JS_Eval(ctx, g_drive_src, (size_t)g_drive_len,
+                                g_drive_path ? g_drive_path : "<drive>",
+                                JS_EVAL_TYPE_GLOBAL);
+            js_page_end_script();
+            if (JS_IsException(v)) {
+                JSValue e = JS_GetException(ctx);
+                const char *m = JS_ToCString(ctx, e);
+                if (m) {
+                    exc_add("drive", "<drive>", m);
+                    printf("  %-11s ... DRIVER THREW: %.200s\n", g_sitename[g_site], m);
+                    JS_FreeCString(ctx, m);
+                }
+                JS_FreeValue(ctx, e);
+            }
+            JS_FreeValue(ctx, v);
+            run_event_loop(show_errors, "drive", 1);
+            cap_stop();
+            harvest_module_output("<drive>");
+        }
         js_page_close();
     }
 
@@ -1066,28 +1391,72 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--deep")) g_deep = 1;
         else if (!strcmp(argv[i], "--scripts")) show_scripts = 1;
         else if (!strcmp(argv[i], "--json")) g_json = 1;
+        else if (!strcmp(argv[i], "--stall")) g_stall = 1;
+        else if (!strcmp(argv[i], "--stall-bare")) g_stall = 2;
+        /* --drive FILE. A file that cannot be read is a REFUSAL, not a silent
+         * plain run: the caller asked for a driven measurement and would
+         * otherwise get an undriven one under the driven one's name. */
+        else if (!strcmp(argv[i], "--drive") && i + 1 < argc) {
+            g_drive_path = argv[++i];
+            g_drive_src = slurp(g_drive_path, &g_drive_len);
+            if (!g_drive_src) {
+                fprintf(stderr, "webapi_probe: --drive %s: cannot read\n", g_drive_path);
+                return 2;
+            }
+        }
         else if (!strncmp(argv[i], "--base=", 7))
             snprintf(g_base_override, sizeof g_base_override, "%s", argv[i] + 7);
+        /* --docroot=DIR: the directory that URL `/` names, for a corpus whose
+         * documents sit in subdirectories of one served tree. See probe_site
+         * and fs_map. Without it every fixture is the root of its own origin,
+         * which is what a captured fixture is and what this always did. */
+        else if (!strncmp(argv[i], "--docroot=", 10))
+            snprintf(g_docroot, sizeof g_docroot, "%s", argv[i] + 10);
         else if (nd < SITEMAX) dirs[nd++] = argv[i];
     }
     if (!nd) {
         printf("usage: webapi_probe [--errors] [--deep] [--scripts] [--json] "
-               "[--base=URL] <fixture-dir>...\n");
+               "[--stall|--stall-bare] [--base=URL] [--docroot=DIR] "
+               "[--drive FILE] [NAME=]<fixture-dir>...\n");
         return 2;
     }
 
     printf("== webapi_probe: global lookups that MISS, across %d fixtures ==\n\n", nd);
     static char names[SITEMAX][64];
     for (int i = 0; i < nd; i++) {
+        /* NAME=PATH. The label defaults to the directory's basename, which is
+         * ambiguous the moment two fixtures' documents live in identically
+         * named subdirectories -- js-framework-benchmark has two whose
+         * documents are both `bundled-dist/`, and a report with two rows called
+         * `bundled-dist` is a report that lies about which one failed. A caller
+         * that knows the real name says it.
+         *
+         * THE RULE, so it can be worked around rather than guessed at: an
+         * argument is read as NAME=PATH when it contains an `=` and does NOT
+         * begin with `/`, `.` or `~`. A directory whose own name contains an
+         * `=` is therefore passed as `./that=dir` or by absolute path, and is
+         * then a directory again. */
+        const char *arg = dirs[i], *eq = strchr(dirs[i], '=');
+        const char *label = 0;
+        static char lbuf[SITEMAX][64];
+        if (eq && eq != dirs[i] && eq[1]
+            && dirs[i][0] != '/' && dirs[i][0] != '.' && dirs[i][0] != '~') {
+            int ln = (int)(eq - dirs[i]);
+            if (ln > (int)sizeof lbuf[i] - 1) ln = (int)sizeof lbuf[i] - 1;
+            memcpy(lbuf[i], dirs[i], (size_t)ln);
+            lbuf[i][ln] = 0;
+            label = lbuf[i];
+            arg = eq + 1;
+        }
         /* $(dir ...) hands these over with a trailing slash, so the basename has
          * to be taken after trimming it -- otherwise every site is named "". */
         char t[512];
-        snprintf(t, sizeof t, "%s", dirs[i]);
+        snprintf(t, sizeof t, "%s", arg);
         int n = (int)strlen(t);
         while (n > 1 && (t[n - 1] == '/' || t[n - 1] == '\\')) t[--n] = 0;
         char *base = strrchr(t, '/');
         if (!base) base = strrchr(t, '\\');
-        snprintf(names[i], sizeof names[i], "%s", base ? base + 1 : t);
+        snprintf(names[i], sizeof names[i], "%s", label ? label : (base ? base + 1 : t));
         g_sitename[i] = names[i];
         g_site = i;
         g_nsite = nd;
