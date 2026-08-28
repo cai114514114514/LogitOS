@@ -17,11 +17,13 @@
 #include "uthread.h"            /* M30: a process is a set of threads */
 #include "ksignal.h"            /* M31: signals -- lifecycle, SIGCHLD, EINTR, kill */
 #include "ptrace.h"             /* a dying process is either end of a trace link */
+#include "../../../include/weaksym.h"   /* the weak sock_close_owner below */
 
 void wm_app_exit(void);   /* wm.c: mark the current proc's window dead */
 /* net/core/sock.c: release the non-blocking sockets this process owns. Weak so
  * the process model does not hard-depend on the network stack being linked. */
-void sock_close_owner(int pid) __attribute__((weak));
+void sock_close_owner(int pid) LOGIT_WEAK;
+LOGIT_WEAK_STUB(sock_close_owner);
 
 /* M25 P2: the process table is peeled out from under the BKL so SYS_FORK can run
  * BKL-free (concurrent worker spawn). g_proc_lock guards the procs[] table + the
@@ -450,7 +452,7 @@ void proc_exit(int code)
          * faulted) strands its connections until something else needs the slot
          * -- the same class of leak the g_net_busy watchdog exists to catch on
          * the blocking path, except here it can simply be closed properly. */
-        if (sock_close_owner) sock_close_owner(p->pid);
+        if (LOGIT_HAVE(sock_close_owner)) sock_close_owner(p->pid);
         /* Stored RAW -- the plain code passed to proc_exit(), not the POSIX
          * (code<<8)|signo wait-status encoding c/apps/libc/include/sys/wait.h's
          * WIFEXITED/WEXITSTATUS macros expect. Verified deliberate, not fixed

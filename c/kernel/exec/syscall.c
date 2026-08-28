@@ -49,6 +49,7 @@
  * safe here -- `module.h` is a unique basename under c/ and include/ (checked),
  * unlike the wait.h case documented above. */
 #include "module.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* M25 P1: which syscalls run WITHOUT the Big Kernel Lock (interrupt_handler skips
  * the BKL for these; they self-lock via fine-grained locks). Only the kheap stress
@@ -133,7 +134,8 @@ long proc_syscall(long num, long a, long b, long c);
 /* The SYS_GETRANDOM back end, weak -- see the case for why. Prototyped here
  * rather than by including c/kernel/core/rng.h so that the weakness is stated
  * at the point that depends on it. */
-long rng_syscall(long ubuf, long len, long flags) __attribute__((weak));
+long rng_syscall(long ubuf, long len, long flags) LOGIT_WEAK;
+LOGIT_WEAK_STUB(rng_syscall);
 int  proc_kill_armed(void);
 void proc_kill_check(void);      /* does not return if THIS process is the victim */
 
@@ -1402,7 +1404,7 @@ static void syscall_do(struct registers *r)
          * turns "their file is mid-edit" into "the kernel does not link". A
          * build without it answers -1, which is what an unimplemented syscall
          * answered before the number existed. */
-        r->rax = rng_syscall
+        r->rax = LOGIT_HAVE(rng_syscall)
                ? (uint64_t)rng_syscall((long)r->rdi, (long)r->rsi, (long)r->rdx)
                : (uint64_t)-1;
         return;

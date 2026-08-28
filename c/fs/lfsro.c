@@ -8,6 +8,7 @@
 #include "blkdev.h"
 #include "vfs_path.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 void *memcpy(void *, const void *, size_t);
 
@@ -19,15 +20,29 @@ struct lro {
     struct blkdev *dev;
     struct lfs_super sb;
     struct filesystem fs;
-    uint8_t  blk[LFS_BS];        /* one block of staging; every read is synchronous
-                                  * and under the BKL, so one buffer is enough */
+    /* THE LOCK IS PER INSTANCE, and that is the whole point of the instance.
+     * `blk`/`dblk`/`ind`/`namebuf` used to be justified as "every read is
+     * synchronous and under the BKL, so one buffer is enough" -- true, and true
+     * because of a global lock three files away. They are one buffer per MOUNT
+     * now, serialised by this lock across a whole operation, for the same
+     * reason logitfs.c's are: bmap() leaves a block in `ind` that the caller
+     * then indexes, and dir_lookup() re-reads `dblk` per block while the walk
+     * above it still holds a dirent from the previous one. Two threads on one
+     * mount interleave those; two mounts never share them. */
+    spinlock_t lock;
+    uint8_t  blk[LFS_BS];        /* one block of staging, per mount */
     uint8_t  dblk[LFS_BS];       /* a second, for directory scans that also need
                                   * to fetch an inode mid-walk */
     uint32_t ind[LFS_PPB];
     char  namebuf[LFS_NAME_MAX + 2];
 };
 
+/* The pool itself is shared: two concurrent lfsro_create() calls scan for a free
+ * slot and would claim the same one -- the same "the hazard is the slot claim"
+ * shape the WM's window table has. The critical section is a scan of one int
+ * per instance and the `used = 1` that ends it, and it must cover both. */
 static struct lro pool[LFSRO_MAXFS];
+static spinlock_t pool_lock = SPINLOCK_INIT;
 
 static struct lro *self(struct filesystem *f) { return (struct lro *)f->priv; }
 
@@ -129,7 +144,7 @@ static uint32_t path_ino(struct lro *L, const char *path, struct lfs_dinode *out
 
 /* --- ops ---------------------------------------------------------------- */
 
-static int lr_mount(struct filesystem *f)
+static int lr_mount_locked(struct filesystem *f)
 {
     struct lro *L = self(f);
     if (!L->dev) return -1;
@@ -149,9 +164,11 @@ static int lr_mount(struct filesystem *f)
     return 0;
 }
 
+/* The only op with no wrapper below, and deliberately: it touches nothing.
+ * Named here so its absence from that list reads as a decision. */
 static void lr_umount(struct filesystem *f) { (void)f; }
 
-static int lr_size(struct filesystem *f, const char *path)
+static int lr_size_locked(struct filesystem *f, const char *path)
 {
     struct lro *L = self(f);
     struct lfs_dinode ino;
@@ -165,7 +182,7 @@ static int lr_size(struct filesystem *f, const char *path)
  * staging buffer, so the offset form is the same loop with the file position
  * carried rather than assumed to start at zero -- which is why lr_read is now
  * this function at offset 0 instead of a second copy of the walk. */
-static int lr_pread(struct filesystem *f, const char *path, void *buf, int max, long long off)
+static int lr_pread_locked(struct filesystem *f, const char *path, void *buf, int max, long long off)
 {
     struct lro *L = self(f);
     struct lfs_dinode ino;
@@ -188,12 +205,12 @@ static int lr_pread(struct filesystem *f, const char *path, void *buf, int max, 
     return done;
 }
 
-static int lr_read(struct filesystem *f, const char *path, void *buf, int max)
+static int lr_read_locked(struct filesystem *f, const char *path, void *buf, int max)
 {
-    return lr_pread(f, path, buf, max, 0);
+    return lr_pread_locked(f, path, buf, max, 0);
 }
 
-static int lr_count(struct filesystem *f, const char *dir)
+static int lr_count_locked(struct filesystem *f, const char *dir)
 {
     struct lro *L = self(f);
     struct lfs_dinode ino;
@@ -229,7 +246,7 @@ static int nth_ent(struct lro *L, const char *dir, int idx, struct lfs_dirent *d
     return -1;
 }
 
-static const char *lr_ent_name(struct filesystem *f, const char *dir, int i)
+static const char *lr_ent_name_locked(struct filesystem *f, const char *dir, int i)
 {
     struct lro *L = self(f);
     struct lfs_dirent de;
@@ -240,7 +257,7 @@ static const char *lr_ent_name(struct filesystem *f, const char *dir, int i)
     return L->namebuf;
 }
 
-static int lr_ent_size(struct filesystem *f, const char *dir, int i)
+static int lr_ent_size_locked(struct filesystem *f, const char *dir, int i)
 {
     struct lro *L = self(f);
     struct lfs_dirent de; struct lfs_dinode ino;
@@ -249,7 +266,7 @@ static int lr_ent_size(struct filesystem *f, const char *dir, int i)
     return (int)ino.size;
 }
 
-static int lr_ent_is_dir(struct filesystem *f, const char *dir, int i)
+static int lr_ent_is_dir_locked(struct filesystem *f, const char *dir, int i)
 {
     struct lro *L = self(f);
     struct lfs_dirent de; struct lfs_dinode ino;
@@ -257,6 +274,39 @@ static int lr_ent_is_dir(struct filesystem *f, const char *dir, int i)
     if (read_inode(L, de.ino, &ino) < 0) return 0;
     return ino.type == LFS_T_DIR;
 }
+
+
+/* --- the lock, in one place ------------------------------------------------
+ * Same discipline as c/fs/logitfs.c: every entry point is a wrapper that takes
+ * the MOUNT's lock, calls the identically-named `_locked` body and releases it.
+ * The bodies are unchanged. lr_read_locked calls lr_pread_locked directly and
+ * not the wrapper, which is what stops the one nesting this file could have.
+ *
+ * irqsave, for logitfs.c's reason: the holder must not be preempted, and
+ * blk_dev_read() is a submit-and-poll that runs with the block layer's
+ * non-preemption flag raised, so the sti window inside it is already covered.
+ *
+ * ent_name() hands out a pointer into L->namebuf and carries logitfs.c's
+ * hazard 1 unchanged -- the fill is atomic, the lifetime is the VFS ABI's. */
+#define LRO_OP(rettype, name, params, args)                     \
+    static rettype name params                                  \
+    {                                                           \
+        struct lro *L_ = self(f);                               \
+        uint64_t fl = spin_lock_irqsave(&L_->lock);             \
+        rettype r_ = name##_locked args;                        \
+        spin_unlock_irqrestore(&L_->lock, fl);                  \
+        return r_;                                              \
+    }
+
+LRO_OP(int, lr_mount, (struct filesystem *f), (f))
+LRO_OP(int, lr_size, (struct filesystem *f, const char *path), (f, path))
+LRO_OP(int, lr_read, (struct filesystem *f, const char *path, void *buf, int max), (f, path, buf, max))
+LRO_OP(int, lr_pread, (struct filesystem *f, const char *path, void *buf, int max, long long off),
+       (f, path, buf, max, off))
+LRO_OP(int, lr_count, (struct filesystem *f, const char *dir), (f, dir))
+LRO_OP(const char *, lr_ent_name, (struct filesystem *f, const char *dir, int i), (f, dir, i))
+LRO_OP(int, lr_ent_size, (struct filesystem *f, const char *dir, int i), (f, dir, i))
+LRO_OP(int, lr_ent_is_dir, (struct filesystem *f, const char *dir, int i), (f, dir, i))
 
 /* No write/del/mkdir/rename: read-only, and a NULL op is a clean -1 through
  * the VFS dispatch rather than a half-written block. */
@@ -271,11 +321,22 @@ struct filesystem *lfsro_create(const char *dev)
 {
     struct blkdev *d = blk_find(dev);
     if (!d) { kprintf("[lfsro] no block device '%s'\n", dev ? dev : "(null)"); return NULL; }
+    /* THE SCAN AND THE CLAIM ARE ONE CRITICAL SECTION. Splitting them is the
+     * bug: two callers both read used==0 for slot i and both take it, and the
+     * loser's mount silently rewrites the winner's device pointer. The rest of
+     * the initialisation is under the lock too because it is bounded (a name
+     * copy and a dozen stores) and because publishing `used` before `priv` is
+     * the half-built-object shape the WM's window table is documented to have. */
+    uint64_t pf = spin_lock_irqsave(&pool_lock);
     for (int i = 0; i < LFSRO_MAXFS; i++) {
         if (pool[i].used) continue;
         struct lro *L = &pool[i];
         L->used = 1;
         L->dev = d;
+        /* Not SPINLOCK_INIT-by-static: a slot is reused after lfsro_destroy, and
+         * a lock left with owner_cpu from its last holder makes spin_unlock's
+         * bad-release check report a phantom. ticket == serving == 0 is free. */
+        L->lock = (spinlock_t)SPINLOCK_INIT;
         int k = 0;
         for (; k < (int)sizeof L->name - 1 && dev[k]; k++) L->name[k] = dev[k];
         L->name[k] = 0;
@@ -287,13 +348,23 @@ struct filesystem *lfsro_create(const char *dev)
         L->fs.name = L->name;
         L->fs.iops = &lfsro_iops;
         L->fs.priv = L;
+        spin_unlock_irqrestore(&pool_lock, pf);
         return &L->fs;
     }
+    spin_unlock_irqrestore(&pool_lock, pf);
     return NULL;
 }
 
 void lfsro_destroy(struct filesystem *fs)
 {
     if (!fs || !fs->priv) return;
+    /* Releasing the slot is a write to the same table the scan above reads.
+     * It does NOT take the instance's own lock: an operation in flight on this
+     * mount holds that, and taking it here would make destroy WAIT for a
+     * caller that is about to dereference a filesystem the VFS has already
+     * unmounted -- the lifetime is the VFS's to enforce (it removes the mount
+     * before calling this), not something a lock in this file can rescue. */
+    uint64_t pf = spin_lock_irqsave(&pool_lock);
     ((struct lro *)fs->priv)->used = 0;
+    spin_unlock_irqrestore(&pool_lock, pf);
 }

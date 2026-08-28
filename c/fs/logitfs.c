@@ -9,6 +9,7 @@
 #include "rtc.h"
 #include "kheap.h"
 #include "kprintf.h"
+#include "spinlock.h"
 
 void *memcpy(void *, const void *, size_t);   /* lib/string.c */
 void *memset(void *, int, size_t);
@@ -54,8 +55,10 @@ static struct dinode *inodes;           /* inode_blocks  * BS, in RAM */
  * reissued to it -- see bfree() below, which is where the in-place overwrite
  * hazard is dealt with.
  *
- * One transaction per VFS mutating op (tx_begin .. log_commit/log_abort). The
- * BKL serializes ops, so there is no nesting. The log is written once per op,
+ * One transaction per VFS mutating op (tx_begin .. log_commit/log_abort).
+ * lfs_lock serializes ops (see the concurrency block below), so there is no
+ * nesting -- and the transaction therefore belongs to the OPERATION that holds
+ * the lock rather than to this file. The log is written once per op,
  * not once per block: flush_* below only STAGE blocks.
  *
  * The invariant this gives, the case analysis that establishes it, and the
@@ -75,9 +78,124 @@ static uint32_t dind_buf[PPB];          /* double-indirect L1 staging */
 static uint32_t l2_buf[PPB];            /* double-indirect L2 staging (inode_write) */
 static char     namebuf[NAME_MAX];      /* ent_name return storage */
 
-/* Concurrency: every op runs under the kernel BKL and the shared static staging
- * buffers above (blk_buf/ind_buf/dind_buf/namebuf) carry no lock of their own.
- * Correctness relies on the BKL never being dropped mid-operation. */
+/* ===========================================================================
+ * CONCURRENCY: ONE LOCK PER MOUNT, HELD ACROSS A WHOLE OPERATION
+ * ===========================================================================
+ *
+ * This comment used to say "every op runs under the kernel BKL and the shared
+ * static staging buffers above (blk_buf/ind_buf/dind_buf/namebuf) carry no lock
+ * of their own; correctness relies on the BKL never being dropped
+ * mid-operation." That was the only place in the three BKL-covered subsystems
+ * that named its dependency out loud -- AND IT LISTED FOUR OF TWENTY. The five
+ * it omitted that matter most are not staging at all: tx_targets, tx_bufs,
+ * tx_count, tx_gen and tx_hdr ARE THE TRANSACTION. Two operations sharing them
+ * do not corrupt a scratch buffer and recover; they stage blocks into one
+ * another's journal record and commit it.
+ *
+ * So the list below comes from the DECLARATIONS (`python3 tools/bkl_shared.py
+ * c/fs`), not from this paragraph's memory. Everything `lfs_lock` covers:
+ *
+ *   the mount        sb, bitmap, inodes, log_max, freed, nfreed, ts_now
+ *   the transaction  tx_targets, tx_bufs, tx_count, tx_gen, tx_hdr
+ *   staging          blk_buf, ind_buf, dind_buf, l2_buf, run_map, namebuf
+ *   the allocator    alloc_hint  (its invariant spans balloc/bit_clear/reload)
+ *   the read policy  read_run    (must not change under an op in flight)
+ *
+ * That is 20, and here is the arithmetic against the tool rather than a claim
+ * that they agree. `bkl_shared.py c/fs` prints 19 for this file; one of the 19
+ * is `lfs_lock` itself, which is the lock and not something the lock covers, so
+ * it finds 18 of the 20. The two it cannot see are the two shapes its own
+ * header says a regex over C declarations misses: `static uint8_t
+ * (*tx_bufs)[BS]` (pointer-to-array -- the journal's staged-block storage, the
+ * example that header names) and `static int64_t (*ts_now)(void)` (function
+ * pointer). 18 + 2 = 20. Both are mutable shared state; neither is optional.
+ *
+ * WHY THE WHOLE OPERATION AND NOT EACH BUFFER. A transaction spans tx_begin ..
+ * log_commit and read-your-writes (bread's tx_targets scan) makes every read
+ * inside it depend on the staged set. Any lock finer than the operation would
+ * let a second op observe or extend a half-built journal record, which is the
+ * one failure the three barriers below cannot detect: the record would be
+ * perfectly formed and describe two operations' blocks.
+ *
+ * WHY irqsave. The holder must not be preempted, and a spinlock a timer tick
+ * can preempt the holder of is a livelock on one core.
+ *
+ * IT COSTS NOTHING TODAY, and that is checkable rather than plausible: the BKL
+ * is itself taken with spin_lock_irqsave (c/kernel/cpu/interrupts.c, at the
+ * `if (!nested && !bkl_free)` on kernel entry), so IF is ALREADY 0 when an op
+ * gets here. The flags this saves have IF clear and the restore puts IF back to
+ * clear. Zero new interrupt-off time; the same window the BKL imposes, scoped
+ * to the filesystem. When syscalls stop taking the BKL they will run with IF=1
+ * and this becomes the thing doing the work instead of the thing agreeing.
+ *
+ * THE ONE WINDOW WHERE IF IS ON UNDER THIS LOCK is inside the block layer:
+ * blk_wait() raises g_ata_busy and then `sti` UNCONDITIONALLY, restoring the
+ * caller's IF afterwards (c/drivers/block/blkdev.c). That is safe and stays
+ * safe, by the flag rather than by IF: interrupts.c skips schedule() while
+ * ata_busy() || virtio_busy() || nvme_busy(), so nothing can preempt a core
+ * out of an operation during a transfer. blkdev.c's own header names THIS FILE
+ * as the reason the order is flag-then-sti and never the reverse.
+ *
+ * ORDER: BKL -> lfs_lock -> {kheap_lock -> pmm_lock, cmos_lock, g_klog_lock}.
+ * inode_write, dir_add, dir_remove and mount all kmalloc under this lock, so
+ * "nothing below calls back into a filesystem" has to be true rather than
+ * assumed -- and it is derived the same way the covered-state list above is,
+ * from the object rather than from prose:
+ *
+ *   nm -u BUILD/c/fs/logitfs.o     21 symbols
+ *   nm -u BUILD/c/fs/lfsro.o        6 symbols
+ *
+ * logitfs reaches exactly bcache_*, blk_read, crc32/lfs_log_hdr_crc, kmalloc,
+ * kfree, kprintf, fsck_*, rtc_unix, memcpy, memset and the two spinlock calls.
+ * Following each one hop further (nm -u on kheap.o, kprintf.o, klog.o,
+ * bcache.o, fsck.o, rtc.o) reaches no vfs_*, no file_*, and no pcache_* -- so
+ * there is no edge back into c/fs and the order cannot invert.
+ *
+ * ONE FACT IN THAT CHAIN IS LOAD-BEARING AND NOT OBVIOUS. kheap's grow() calls
+ * pmm_alloc_contig(), which -- unlike pmm_alloc() -- does NOT call
+ * reclaim_on_alloc(). That is the whole reason kmalloc is safe here. Reclaim
+ * evicts through swap, swap's dev_io() parks over budget in sw_park(), and
+ * sw_park() calls bkl_hlt_wait(): it RELEASES THE BKL AND HALTS. Reached with
+ * lfs_lock held and IF clear, that is a core that halts forever holding the
+ * filesystem. If kheap ever grows through pmm_alloc(), this comment is the
+ * thing that has to change first. (Its sibling, oom_kheap_fail(), is safe by
+ * inspection: it kprintf()s and MARKS a victim -- oom.o has no vfs or file
+ * edge, and only the FAULT path, not the kmalloc path, waits.)
+ *
+ * Nothing here takes the BKL, and a core waiting on lfs_lock still answers a
+ * TLB shootdown, because spin_lock()'s wait loop polls for one
+ * (c/kernel/cpu/spinlock.c) -- step 1 of the removal plan is what makes that
+ * true, and this lock is one of the BKL-free waits it was written for.
+ *
+ * TWO THINGS THIS LOCK DOES NOT CLOSE, named rather than left to be
+ * rediscovered:
+ *
+ *  1. ent_name() RETURNS A POINTER INTO namebuf. The lock is released before
+ *     the caller reads it, so the value is only stable until this mount's next
+ *     operation. Same shape as any cache handing out an interior pointer.
+ *     Nothing inside this file can fix it: the lifetime is a VFS ABI question
+ *     (c/fs/vfs.h's `const char *(*ent_name)(...)`, implemented by four
+ *     filesystems and returned straight through vfs_ent_name to ring 3). The
+ *     fix is `ent_name(dir, i, char *out, int n)` across that ABI.
+ *
+ *  2. A PAGE FAULT INSIDE AN OPERATION COULD RE-ENTER THE FILESYSTEM, and does
+ *     not, for a reason that lives in another file. The kernel memcpy()s
+ *     directly through user pointers here (c/kernel/cpu/prot.c names this file
+ *     in its SMAP audit), and a file-backed user page faults into
+ *     mm_fault -> do_file -> pcache_get -> pcv_read -> vfs_pread -> this file.
+ *     That does not happen because user_range_ok() IS A FAULT-IN, not a check
+ *     (c/kernel/exec/usercopy.c), so SYS_READ_FILE / SYS_WRITE_FILE make the
+ *     whole range present BEFORE vfs_read/vfs_write is called. Under the BKL
+ *     that recursion was silent corruption of blk_buf; under this lock it
+ *     would be a self-deadlock. It is a dependency on a caller three files
+ *     away -- exactly the shape this comment used to be an example of -- so it
+ *     is written down here and not assumed. What would reopen it: a reclaim
+ *     that evicts a pre-faulted user page mid-operation from another core
+ *     (impossible while the BKL still serialises reclaim against this path,
+ *     possible after it goes; the closer is pmm_pin over the faulted range in
+ *     usercopy.c, not an edit here).
+ * ======================================================================== */
+static spinlock_t lfs_lock = SPINLOCK_INIT;
 
 /* --- helpers --- */
 /* Compare a fixed-size on-disk dirent name against a C string without ever
@@ -338,7 +456,15 @@ static int log_recover(void)
 
 static int64_t (*ts_now)(void) = rtc_unix;   /* indirection: tests pin the clock */
 
-void logitfs_set_clock(int64_t (*fn)(void)) { ts_now = fn ? fn : rtc_unix; }
+/* Under the lock like every other write to a covered static: ts_now is read by
+ * itouch() inside a transaction, and a clock that changes mid-operation would
+ * stamp one inode from one epoch and its parent from another. */
+void logitfs_set_clock(int64_t (*fn)(void))
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    ts_now = fn ? fn : rtc_unix;
+    spin_unlock_irqrestore(&lfs_lock, fl);
+}
 
 static void itouch(struct dinode *in, int which)
 {
@@ -483,7 +609,8 @@ static void bfree_discard(void)
  * `size > MAX_FILE_SZ` was a comparison that could never be true. The bound
  * that actually bites is the IMAGE. A size claiming more blocks than the disk
  * has is impossible by construction, and refusing it is what stops a forged
- * inode turning a directory scan into a million-block walk with the BKL held. */
+ * inode turning a directory scan into a million-block walk with the filesystem
+ * locked (today the BKL as well; see the concurrency block above). */
 static int size_ok(uint32_t sz) { return (uint64_t)sz <= (uint64_t)sb.total_blocks * BS; }
 
 static struct dinode *iget(uint32_t ino)
@@ -597,7 +724,7 @@ static int flush_inode(uint32_t ino)
  * READ_RUN is how many blocks one device command may carry: 128 x 4 KiB =
  * 512 KiB. The ceiling is a deliberate compromise and not a hardware limit.
  * Bigger commands keep helping right up to the whole file, but a device command
- * runs with the BKL held and non-preemptible, so its duration is time no other
+ * runs with lfs_lock held and non-preemptible, so its duration is time no other
  * thread on the machine can use; 512 KiB is about 150 us on this device, which
  * is comparable to one scheduler slice and therefore not a latency anyone can
  * see. It also bounds the run-map array to 512 bytes of BSS. */
@@ -616,7 +743,7 @@ static uint32_t run_map[READ_RUN];
  * not comparable and two numbers from two seconds apart are. */
 static uint32_t read_run = READ_RUN;
 
-void logitfs_set_read_run(uint32_t n)
+static void logitfs_set_read_run_locked(uint32_t n)
 {
     if (n < 1) n = 1;
     if (n > READ_RUN) n = READ_RUN;
@@ -890,7 +1017,8 @@ static uint32_t dir_nth(uint32_t dino, int idx, char *nameout)
 }
 
 /* Count live entries in one pass (calling dir_nth per index was O(n^2)
- * re-scanning under the BKL -- a system-wide stall on a large directory). */
+ * re-scanning with the filesystem locked -- a stall for every other caller of
+ * this mount, and before the BKL was peeled, for the whole machine). */
 static int dir_count_live(uint32_t dino)
 {
     struct dinode *d = iget(dino);
@@ -1047,8 +1175,11 @@ static void fsck_report_line(void *cx, const char *msg, uint32_t a, uint32_t b)
 
 /* Check the mounted filesystem. repair != 0 writes the fixes back.
  * Returns 0 if clean (or fully repaired). Safe to call only when no transaction
- * is open, which under the BKL means "not from inside a VFS op". */
-int logitfs_fsck(int repair)
+ * is open -- which is now ENFORCED rather than assumed: this body runs under
+ * lfs_lock, so no VFS op can be mid-transaction while it does. (It used to read
+ * "under the BKL means not from inside a VFS op", which was a statement about a
+ * lock in another subsystem.) */
+static int logitfs_fsck_locked(int repair)
 {
     if (!bitmap || !inodes) return -1;
     struct fsck_dev d;
@@ -1089,13 +1220,13 @@ int logitfs_fsck(int repair)
  * before it returns, so a completed vfs_write is ALREADY durable and this is
  * the whole-device `sync(2)`. It exists for the caller that wants to be sure
  * after a burst of activity, and for shutdown. */
-int logitfs_sync(void)
+static int logitfs_sync_locked(void)
 {
     if (!bitmap || !inodes) return -1;
     return bcache_sync();
 }
 
-static int logitfs_mount(void)
+static int logitfs_mount_locked(void)
 {
     if (bitmap || inodes) return -1;           /* already mounted: no re-entry */
     uint8_t b0[SECTOR];
@@ -1192,7 +1323,7 @@ oom:
  * is the CLEAN unmount; a caller simulating power loss calls bcache_drop()
  * first. Needed by the crash tests, which mount the same image dozens of times
  * in one process, and by any future eject/shutdown path. */
-void logitfs_unmount(void)
+static void logitfs_unmount_locked(void)
 {
     if (!bitmap && !inodes) return;
     bcache_shutdown();
@@ -1202,7 +1333,7 @@ void logitfs_unmount(void)
     tx_gen = 0;
 }
 
-static int logitfs_size(const char *path)
+static int logitfs_size_locked(const char *path)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO) return -1;
@@ -1213,7 +1344,7 @@ static int logitfs_size(const char *path)
     return (int)in->size;
 }
 
-static int logitfs_read(const char *path, void *buf, int max)
+static int logitfs_read_locked(const char *path, void *buf, int max)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO) return -1;
@@ -1222,7 +1353,7 @@ static int logitfs_read(const char *path, void *buf, int max)
     return inode_read(in, buf, max);
 }
 
-static int logitfs_pread(const char *path, void *buf, int max, long long off)
+static int logitfs_pread_locked(const char *path, void *buf, int max, long long off)
 {
     if (off < 0) return -1;
     uint32_t ino = resolve(path);
@@ -1232,7 +1363,7 @@ static int logitfs_pread(const char *path, void *buf, int max, long long off)
     return inode_pread(in, buf, max, (uint64_t)off);
 }
 
-static int logitfs_write(const char *path, const void *buf, int size)
+static int logitfs_write_locked(const char *path, const void *buf, int size)
 {
     uint32_t ino = resolve(path);
     if (ino != NOINO) {                          /* overwrite existing file */
@@ -1262,7 +1393,7 @@ static int logitfs_write(const char *path, const void *buf, int size)
     return log_commit() ? -1 : size;
 }
 
-static int logitfs_mkdir(const char *path)
+static int logitfs_mkdir_locked(const char *path)
 {
     if (resolve(path) != NOINO) return -1;        /* already exists */
     char leaf[NAME_MAX];
@@ -1285,7 +1416,7 @@ static int logitfs_mkdir(const char *path)
     return log_commit() ? -1 : 0;
 }
 
-static int logitfs_delete(const char *path)
+static int logitfs_delete_locked(const char *path)
 {
     uint32_t ino = resolve(path);
     if (ino == NOINO || ino == sb.root_ino) return -1;
@@ -1312,13 +1443,13 @@ static uint32_t resolve_dir(const char *dir)
     return (d && d->type == T_DIR) ? ino : NOINO;
 }
 
-static int logitfs_count(const char *dir)
+static int logitfs_count_locked(const char *dir)
 {
     uint32_t ino = resolve_dir(dir);
     return ino == NOINO ? -1 : dir_count_live(ino);   /* -1: not a directory */
 }
 
-static const char *logitfs_ent_name(const char *dir, int i)
+static const char *logitfs_ent_name_locked(const char *dir, int i)
 {
     namebuf[0] = 0;
     uint32_t ino = resolve_dir(dir);
@@ -1326,7 +1457,7 @@ static const char *logitfs_ent_name(const char *dir, int i)
     return namebuf;
 }
 
-static int logitfs_ent_size(const char *dir, int i)
+static int logitfs_ent_size_locked(const char *dir, int i)
 {
     uint32_t dino = resolve_dir(dir);
     if (dino == NOINO) return 0;
@@ -1335,7 +1466,7 @@ static int logitfs_ent_size(const char *dir, int i)
     return (in && in->size <= (uint32_t)INT32_MAX) ? (int)in->size : 0;
 }
 
-static int logitfs_ent_is_dir(const char *dir, int i)
+static int logitfs_ent_is_dir_locked(const char *dir, int i)
 {
     uint32_t dino = resolve_dir(dir);
     if (dino == NOINO) return 0;
@@ -1372,7 +1503,7 @@ static int logitfs_ent_is_dir(const char *dir, int i)
  * filesystem, -1 when it does not (a symlink, or nothing) -- and the VFS falls
  * back to its own store on -1, which is exactly what a symlink needs. */
 #ifndef LOGITFS_NO_ATTR
-static int logitfs_getattr(const char *path, struct vattr *a)
+static int logitfs_getattr_locked(const char *path, struct vattr *a)
 {
     if (!a) return -1;
     uint32_t ino = resolve(path);
@@ -1431,7 +1562,7 @@ static int logitfs_getattr(const char *path, struct vattr *a)
 /* Install mode/uid/gid on the inode. One transaction, like every other metadata
  * mutation in this file. ctime moves because the inode changed, which is what
  * ctime is for; mtime does not, because the contents did not. */
-static int logitfs_setattr(const char *path, const struct vattr *a)
+static int logitfs_setattr_locked(const char *path, const struct vattr *a)
 {
     if (!a) return -1;
     uint32_t ino = resolve(path);
@@ -1464,7 +1595,7 @@ static int logitfs_setattr(const char *path, const struct vattr *a)
 }
 #endif /* !LOGITFS_NO_ATTR */
 
-static void logitfs_list(void)
+static void logitfs_list_locked(void)
 {
     int n = dir_count_live(sb.root_ino);
     kprintf("[fs] LogitFS v4: %d entr(ies) in /:\n", n);
@@ -1493,9 +1624,11 @@ static int path_under(const char *a, const char *b)
 
 /* Move/rename: re-link a directory entry. Resolve everything first (the shared
  * static blk_buf/ind_buf make interleaving resolution with dir_add/dir_remove
- * unsafe), then mutate add-then-remove inside ONE transaction -- a crash sees
+ * unsafe -- lfs_lock keeps a SECOND operation out, and does nothing about this
+ * one clobbering its own buffers), then mutate add-then-remove inside ONE
+ * transaction -- a crash sees
  * the entry in exactly one place, never both and never neither. */
-static int logitfs_rename(const char *old_path, const char *new_path)
+static int logitfs_rename_locked(const char *old_path, const char *new_path)
 {
     uint32_t src = resolve(old_path);
     if (src == NOINO || src == sb.root_ino) return -1;
@@ -1526,6 +1659,119 @@ static int logitfs_rename(const char *old_path, const char *new_path)
     if (flush_inode(src) || flush_inode(op) || flush_inode(np) || flush_bitmap())
         { log_abort(); return -1; }
     return log_commit() ? -1 : 0;
+}
+
+
+/* ===========================================================================
+ * THE LOCK, IN ONE PLACE
+ * ===========================================================================
+ *
+ * Every entry point into this filesystem is a thin wrapper that takes lfs_lock,
+ * calls the identically-named `_locked` body, and releases it. The bodies are
+ * unchanged: they were already written to run with nothing else in the
+ * filesystem, which is what "correctness relies on the BKL never being dropped
+ * mid-operation" meant. Nothing about WHAT is written or the ORDER it is
+ * written in moved -- log_commit()'s three barriers, bfree()'s deferral and the
+ * data=ordered rule are byte-for-byte what they were.
+ *
+ * They are collected here rather than spread through the file for the same
+ * reason win_draw_rect() and text.c's single funnel exist: one place to audit
+ * says "is every door locked" in one screen. A new op that forgets its wrapper
+ * is visible as an absence from this list.
+ *
+ * NO NESTING, and it is a plain lock rather than a recursive one because of it.
+ * No `_locked` body calls an entry point; they call the internal helpers
+ * (resolve, dir_, inode_, log_) directly. A reader has to believe that, so it
+ * is written as a command that re-derives it rather than as a claim. Every
+ * mention of a wrapper name followed by an open paren, minus the `_locked`
+ * bodies (which are what the wrappers are FOR) and minus comment prose:
+ *
+ *   grep -nE 'logitfs_[a-z_]+ *\(' c/fs/logitfs.c | grep -v _locked | grep -v ': \*'
+ *
+ * Eight hits, and every one must be a DEFINITION line. A call site would be a
+ * self-deadlock rather than a slow path, so re-run it after adding an op. (The
+ * macro-built wrappers do not appear at all: their names reach the compiler
+ * through `##`, and the vtable below spells them without a paren.)
+ *
+ * The one nesting this file could have had is the mount-time fsck, which is
+ * on every boot. It calls fsck_run() directly and not logitfs_fsck(), and
+ * always did -- checked, because the wrapper would deadlock at every mount.
+ * ======================================================================== */
+#define LFS_OP(rettype, name, params, args)            \
+    static rettype name params                         \
+    {                                                  \
+        uint64_t fl = spin_lock_irqsave(&lfs_lock);    \
+        rettype r_ = name##_locked args;               \
+        spin_unlock_irqrestore(&lfs_lock, fl);         \
+        return r_;                                     \
+    }
+
+LFS_OP(int, logitfs_mount, (void), ())
+LFS_OP(int, logitfs_size, (const char *path), (path))
+LFS_OP(int, logitfs_read, (const char *path, void *buf, int max), (path, buf, max))
+LFS_OP(int, logitfs_pread, (const char *path, void *buf, int max, long long off), (path, buf, max, off))
+LFS_OP(int, logitfs_write, (const char *path, const void *buf, int size), (path, buf, size))
+LFS_OP(int, logitfs_mkdir, (const char *path), (path))
+LFS_OP(int, logitfs_delete, (const char *path), (path))
+LFS_OP(int, logitfs_count, (const char *dir), (dir))
+LFS_OP(int, logitfs_ent_size, (const char *dir, int i), (dir, i))
+LFS_OP(int, logitfs_ent_is_dir, (const char *dir, int i), (dir, i))
+LFS_OP(int, logitfs_rename, (const char *o, const char *n), (o, n))
+#ifndef LOGITFS_NO_ATTR
+LFS_OP(int, logitfs_getattr, (const char *path, struct vattr *a), (path, a))
+LFS_OP(int, logitfs_setattr, (const char *path, const struct vattr *a), (path, a))
+#endif
+
+static void logitfs_list(void)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    logitfs_list_locked();
+    spin_unlock_irqrestore(&lfs_lock, fl);
+}
+
+/* THE ONE THAT HANDS OUT AN INTERIOR POINTER. namebuf is filled under the lock
+ * and read by the caller after it -- see hazard 1 in the concurrency block. The
+ * lock makes the FILL atomic (the name is whole, never half of one entry and
+ * half of another, which is what a torn scan would give); it cannot make the
+ * READ safe, because the lifetime is the VFS ABI's to fix. */
+static const char *logitfs_ent_name(const char *dir, int i)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    const char *s = logitfs_ent_name_locked(dir, i);
+    spin_unlock_irqrestore(&lfs_lock, fl);
+    return s;
+}
+
+int logitfs_fsck(int repair)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    int rc = logitfs_fsck_locked(repair);
+    spin_unlock_irqrestore(&lfs_lock, fl);
+    return rc;
+}
+
+int logitfs_sync(void)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    int rc = logitfs_sync_locked();
+    spin_unlock_irqrestore(&lfs_lock, fl);
+    return rc;
+}
+
+void logitfs_unmount(void)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    logitfs_unmount_locked();
+    spin_unlock_irqrestore(&lfs_lock, fl);
+}
+
+/* read_run is read by inode_pread inside an operation, so it must not change
+ * under one. The getter is a single aligned 32-bit load and takes nothing. */
+void logitfs_set_read_run(uint32_t n)
+{
+    uint64_t fl = spin_lock_irqsave(&lfs_lock);
+    logitfs_set_read_run_locked(n);
+    spin_unlock_irqrestore(&lfs_lock, fl);
 }
 
 struct filesystem logitfs = {

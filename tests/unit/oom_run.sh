@@ -30,36 +30,35 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 # way the kernel wires it -- vmm.c and rmap.c are not optional here, they are
 # what produces the resident-set numbers the policy is judged on.
 MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c \
-       $MM/pcache.c $MM/shm.c $MM/oom.c"
+       $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
 
-# swap.c IS in the set -- reclaim.c calls it -- but it is compiled separately,
-# with ONE warning demoted, and this is a quarantine rather than a preference.
-# Measured 2026-08-20, before this line changed anything:
+# swap.c IS BACK IN THAT LIST, and the four lines that used to stand here are
+# gone. They compiled it separately with -Wno-error=unused-function, because on
+# 2026-08-20 the block line had an in-flight edit that left dev_read() defined
+# and unreferenced:
 #
-#     $ sh tests/unit/mm_run.sh build
-#     === mm_pmm_test ===
 #     c/kernel/mm/swap.c:101:12: error: 'dev_read' defined but not used
 #
-# So `make test-mm` is red in this tree right now, for a reason that has nothing
-# to do with the memory-management code it is testing: the block line has an
-# in-flight edit in swap.c that leaves a static function unreferenced under the
-# submit/poll rewrite. That file is explicitly not this line's to touch.
+# The comment ended "delete these four lines and put $MM/swap.c back in MMSRC
+# the day that edit settles". Measured 2026-08-28: it has settled -- dev_read()
+# is called at swap.c:137 and :161, and `cc -Wall -Wextra -Werror -DMM_HOSTTEST
+# -c c/kernel/mm/swap.c` is clean. Keeping the waiver would have left this
+# script the only one of the three mm host scripts that cannot see an unused
+# static in that file, while tests/unit/mm_run.sh compiles the same TU -Werror
+# and would go red on it anyway -- a shield over one gate and not the other.
 #
-# The waiver is aimed at exactly one warning in exactly one translation unit, so
-# every other file -- including all of oom.c -- is still compiled -Werror. The
-# alternative, dropping -Werror from FLAGS, would have quietly bought this
-# line's own code the same exemption. Delete these four lines and put $MM/swap.c
-# back in MMSRC the day that edit settles.
-SWAPOBJ="$OUT/oom_swap.o"
-# shellcheck disable=SC2086
-$CC $FLAGS -Wno-error=unused-function -c -o "$SWAPOBJ" "$MM/swap.c" 2>/dev/null \
-    || { echo "FAIL: swap.c does not compile even with the waiver"; exit 1; }
+# vmm.c's cross-core shootdown is not in c/kernel/mm and never was: see
+# tests/unit/mmstub/mm_hoststub.c for why the weak declaration at vmm.c:16 is a
+# hard link error on this host rather than the NULL it asks for. Without it,
+# every build below died at `ld` and the -DOOM_KILL_NEWEST control -- the one
+# thing this script exists to watch fail -- had never run here at all.
+STUB="$ROOT/tests/unit/mmstub/mm_hoststub.c"
 
 fail=0
 
 echo "=== mm_oom_test ==="
 # shellcheck disable=SC2086
-$CC $FLAGS -o "$OUT/mm_oom_test" "$ROOT/tests/unit/mm_oom_test.c" "$COMMON" $MMSRC "$SWAPOBJ"
+$CC $FLAGS -o "$OUT/mm_oom_test" "$ROOT/tests/unit/mm_oom_test.c" "$COMMON" $MMSRC "$STUB"
 if ! "$OUT/mm_oom_test"; then fail=1; fi
 echo
 
@@ -80,7 +79,7 @@ echo
 echo "=== NEGATIVE CONTROL: mm_oom_test with -DOOM_KILL_NEWEST ==="
 # shellcheck disable=SC2086
 if ! $CC $FLAGS -DOOM_KILL_NEWEST -o "$OUT/mm_oom_negctl" \
-        "$ROOT/tests/unit/mm_oom_test.c" "$COMMON" $MMSRC "$SWAPOBJ"; then
+        "$ROOT/tests/unit/mm_oom_test.c" "$COMMON" $MMSRC "$STUB"; then
     echo "    FAIL: the -DOOM_KILL_NEWEST build does not compile, so it is not a control"
     exit 1
 fi

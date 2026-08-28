@@ -3,11 +3,13 @@
 #include "elf.h"
 #include "crc32.h"      /* c/drivers/block: the one CRC-32 in the tree */
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* WEAK for the reason elf.c gives at its own copy: tests/unit/exechost links
  * this file with no filesystem under it, so the symbol is absent, the streaming
  * entry points refuse, and the memory ones are unaffected. */
-int vfs_pread(const char *path, void *buf, int max, long long off) __attribute__((weak));
+int vfs_pread(const char *path, void *buf, int max, long long off) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_pread);
 
 /* See aex.h for the format, the version rules, and why AEX keeps an ELF inside
  * it rather than describing its own segments. This file is the reader. */
@@ -559,7 +561,7 @@ int aex_load_path(const char *path, uint64_t file_size, char *out_name, char *ou
 int aex_info_path(const char *path, char *out_name, char *out_ext)
 {
     struct aex_header h;
-    if (!vfs_pread) return -1;
+    if (!LOGIT_HAVE(vfs_pread)) return -1;
     if (vfs_pread(path, &h, AEX_HDR_SIZE, 0) != AEX_HDR_SIZE) return -1;
     return info_from_hdr(&h, path, out_name, out_ext);
 }

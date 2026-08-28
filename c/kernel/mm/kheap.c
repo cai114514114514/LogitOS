@@ -5,12 +5,14 @@
 #include "mmhost.h"      /* mm_p2v: identity in the kernel, an offset on the host */
 #include "spinlock.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* The kernel's own out-of-memory hook (c/kernel/mm/oom.h). Weak for the reason
  * given at the same declaration in fault.c: tests/unit/leak_run.sh compiles
  * this file with no process table behind it, and a hard call would turn a
  * diagnostic into a link error in a suite that is about heap growth. */
-void oom_kheap_fail(uint64_t bytes) __attribute__((weak));
+void oom_kheap_fail(uint64_t bytes) LOGIT_WEAK;
+LOGIT_WEAK_STUB(oom_kheap_fail);
 
 /* M25 P1: kheap is peeled out from under the BKL -- kmalloc/kfree take their own
  * lock so they are safe to call from BKL-free kernel paths running concurrently
@@ -367,8 +369,9 @@ static struct header *coalesce(struct header *h)
  * on its include path -- the same reason vfs.c reports through a hook instead
  * of calling kprintf. Absent, it answers 0: the host test then exercises one
  * magazine, which is exactly the coverage a single-threaded test can give. */
-int kheap_cpu_index(void) __attribute__((weak));
-static inline int mag_cpu(void) { return kheap_cpu_index ? kheap_cpu_index() : 0; }
+int kheap_cpu_index(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(kheap_cpu_index);
+static inline int mag_cpu(void) { return LOGIT_HAVE(kheap_cpu_index) ? kheap_cpu_index() : 0; }
 
 #define MAG_CLASSES   6                     /* 16, 32, 64, 128, 256, 512 */
 #define MAG_DEPTH     32                    /* blocks parked per class per core */
@@ -522,7 +525,7 @@ void *kmalloc(size_t size)
      * rounded up to 16 with a MIN_PAYLOAD floor. A diagnostic that reports the
      * rounded figure sends whoever reads it looking for an allocation nobody
      * made. */
-    if (!ret && oom_kheap_fail) oom_kheap_fail(req);
+    if (!ret && LOGIT_HAVE(oom_kheap_fail)) oom_kheap_fail(req);
     return ret;
 }
 

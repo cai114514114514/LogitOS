@@ -61,7 +61,7 @@
  *
  *     short lsock_file_poll(struct file *f, struct poll_table *pt);
  *
- * file.c already declares it __attribute__((weak)) and calls it for F_SOCK
+ * file.c already declares it LOGIT_WEAK (include/weaksym.h) and calls it for F_SOCK
  * exactly as it already does for lsock_file_read / lsock_file_write, so a build
  * without a network stack links unchanged and answers LPOLLNVAL. What it should
  * return: for a connection, poll_wait() on the rx wait queue (tcp.c's rx_wq)

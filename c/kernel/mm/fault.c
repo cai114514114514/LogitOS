@@ -11,6 +11,7 @@
 #include "oom.h"
 #include "mmhost.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak oom_fault_retry below */
 
 /* WEAK, and the reason is about the test tree rather than about the kernel.
  * c/kernel/mm/oom.c reads the PROCESS TABLE, so it only makes sense where there
@@ -22,7 +23,8 @@
  * kernel always provides it (C_SRC globs c/kernel/mm), and a harness that does
  * not link it gets exactly the behaviour that existed before this line. The
  * same trick, for the same reason, as proc.c's sock_close_owner. */
-int oom_fault_retry(void) __attribute__((weak));
+int oom_fault_retry(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(oom_fault_retry);
 
 void reclaim_late_init(void);
 #ifndef MM_HOSTTEST
@@ -91,6 +93,17 @@ static inline uint64_t fault_cyc(void)
 #endif
 static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin, g_cyc_file;
 static uint64_t g_swapin, g_file;
+/* THE FILE CASE SPLIT BY OUTCOME, which the block below at MM_FAULT_FILE said
+ * was already done and was not. It said "the split between them is
+ * pcache_hits()/pcache_misses(), reported next to this" -- but those are COUNTS
+ * and this is a TIME, and the two halves differ by four orders of magnitude: a
+ * hit is a hash probe, a pmm_ref and a PTE write, while a miss is a backend
+ * read whose price is linear in the whole FILE's size (see pcache.h's
+ * pcache_backend_*). One average over both says nothing about either, and it
+ * was the number a reader would quote for "what does a page-cache miss cost".
+ * The discriminator is pcache_misses() across the call: free, exact, and it
+ * cannot disagree with the cache about what happened. */
+static uint64_t g_file_miss, g_cyc_file_miss;
 static uint64_t g_shm, g_cyc_shm;
 
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
@@ -517,16 +530,27 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
     case MM_FAULT_ANON:
         if (do_anon(cr3, page, prot, active)) { g_cyc_anon += fault_cyc() - t0; return 1; }
         break;
-    case MM_FAULT_FILE:
+    case MM_FAULT_FILE: {
         /* Timed separately from anon for the same reason swap-in is: a cache
          * HIT is a pmm_ref and a PTE write, a cache MISS is a device read, and
-         * an average over both says nothing about either. The split between
-         * them is pcache_hits()/pcache_misses(), reported next to this. */
+         * an average over both says nothing about either.
+         *
+         * AND NOW SPLIT, which the sentence that used to end this comment said
+         * was already true: "the split between them is pcache_hits()/
+         * pcache_misses(), reported next to this". Those are counts. This is a
+         * time, and the two are not interchangeable -- the average printed by
+         * mm_report() was over a population whose two halves differ by four
+         * orders of magnitude, so it read as "what a file fault costs" and was
+         * neither number. See the declaration of g_file_miss. */
+        uint64_t m0 = pcache_misses();
         if (do_file(cr3, page, fh, findex, prot, active)) {
-            g_cyc_file += fault_cyc() - t0;
+            uint64_t d = fault_cyc() - t0;
+            g_cyc_file += d;
+            if (pcache_misses() != m0) { g_file_miss++; g_cyc_file_miss += d; }
             return 1;
         }
         break;
+    }
     case MM_FAULT_SHM:
         /* Timed separately from the file case for the reason that one is timed
          * separately from anon: this path has no device read and no allocation
@@ -584,7 +608,7 @@ int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
     int r = fault_once(cr3, va, err);
     if (r || !g_oom_decline) return r;
 
-    if (!oom_fault_retry) return 0;     /* no killer linked: the old behaviour */
+    if (!LOGIT_HAVE(oom_fault_retry)) return 0;  /* no killer linked: the old behaviour */
     g_oom_retry++;
     if (!oom_fault_retry()) return 0;   /* we were the victim, or nothing helped */
 
@@ -641,9 +665,24 @@ void mm_report(const char *tag)
             (int)(g_cyc_reuse / 1000),  (int)(g_cow_reuse  ? g_cyc_reuse / g_cow_reuse : 0),
             (int)(g_cyc_anon / 1000),   (int)(g_anon       ? g_cyc_anon / g_anon : 0),
             (int)(g_cyc_swapin / 1000), (int)(g_swapin     ? g_cyc_swapin / g_swapin : 0));
-    kprintf("[mm] %s: file faults %d (%d kcycles total / %d each)\n",
-            tag ? tag : "-", (int)g_file, (int)(g_cyc_file / 1000),
-            (int)(g_file ? g_cyc_file / g_file : 0));
+    /* HIT and MISS on the same line and never averaged together. The hit
+     * number is what demand paging costs per page of a program's text; the
+     * miss number is what one backend read costs with the BKL held and this
+     * core non-preemptible, which is the number that decides whether a launch
+     * stalls the compositor. pcache_report() below breaks the miss down
+     * further -- how many backend calls, and what each carried. */
+    {
+        uint64_t hits = g_file - g_file_miss;
+        uint64_t hcyc = g_cyc_file - g_cyc_file_miss;
+        kprintf("[mm] %s: file faults %d (%d kcycles total / %d each); "
+                "HIT %d (%d cyc each), MISS %d (%d kcyc each, %d%% of the time)\n",
+                tag ? tag : "-", (int)g_file, (int)(g_cyc_file / 1000),
+                (int)(g_file ? g_cyc_file / g_file : 0),
+                (int)hits, (int)(hits ? hcyc / hits : 0),
+                (int)g_file_miss,
+                (int)(g_file_miss ? g_cyc_file_miss / g_file_miss / 1000 : 0),
+                (int)(g_cyc_file ? (g_cyc_file_miss * 100) / g_cyc_file : 0));
+    }
     kprintf("[mm] %s: shm faults %d (%d kcycles total / %d each)\n",
             tag ? tag : "-", (int)g_shm, (int)(g_cyc_shm / 1000),
             (int)(g_shm ? g_cyc_shm / g_shm : 0));

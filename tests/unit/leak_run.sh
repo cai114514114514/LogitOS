@@ -35,11 +35,42 @@ MM="$ROOT/c/kernel/mm"
 # fail. Same source set as tests/unit/mm_run.sh, for the same reason: the thing
 # under test is c/kernel/mm wired the way the kernel wires it.
 SRC="$ROOT/tests/unit/leak_kheap_test.c $ROOT/tests/unit/mm_common.c \
+     $ROOT/tests/unit/mmstub/mm_hoststub.c \
      $MM/kheap.c $MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c \
-     $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c"
+     $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
 # pcache.c: fault.c and vma.c call pcache_get/pcache_file_put/pcache_report
 # since the file-backed page cache landed, so this list stopped linking the
 # moment that happened. Nothing said so -- no suite reaches test-leak.
+#
+# shm.c and oom.c are the same story told twice more, and mm_run.sh's list now
+# carries both for the same reasons. shm.c is the plain case: fault.c's shared
+# page and vma.c's segment-backed areas call shm_frame/shm_pages/shm_ref/
+# shm_put/shm_report directly, so it is a link error and not a coverage choice.
+#
+# oom.c is the one with a second cause underneath it. kheap.c calls
+# oom_kheap_fail(), pmm.c calls oom_alloc_fail() and fault.c calls
+# oom_fault_retry(), and all three are declared __attribute__((weak))
+# specifically so THIS script would keep linking without oom.c --
+# tests/unit/oom_run.sh:9 says so in as many words. That is the ELF idiom, and
+# it does not hold on the documented development host: Mach-O needs
+# `weak_import` for a nullable undefined symbol, so on macOS/Apple Silicon each
+# weak reference is a hard link error, and this suite reported
+#
+#     Undefined symbols for architecture arm64:
+#       "_kheap_cpu_index" "_oom_alloc_fail" "_oom_fault_retry"
+#       "_oom_kheap_fail" "_shm_frame" "_shm_pages" "_shm_put" "_shm_ref"
+#       "_shm_report" "_tlb_flush_all"
+#     FAIL: leak_kheap_test did not build
+#
+# -- ten symbols, and the two negative controls this file exists to watch fail
+# had therefore never been built here at all. Linking the real oom.c is
+# behaviour-neutral for what is measured: leak_kheap_test registers no task
+# through oom_test_add(), so gather() returns 0 and oom_kill() returns
+# OOM_NO_VICTIM, which is exactly the path the absent hook took.
+#
+# mm_hoststub.c covers the two symbols that are NOT in c/kernel/mm at all --
+# tlb_flush_all (c/kernel/cpu/tlb.c) and kheap_cpu_index (c/kernel/cpu/
+# percpu.c), both weak for the same reason and both undefined here for it.
 
 fail=0
 
@@ -63,11 +94,30 @@ echo
 #                      the original (measured at ~2.7 MB per open/close cycle),
 #                      because the heap grinds itself into pieces too small for
 #                      the next window surface while staying 90% free.
+#
+# THE WAIVER BELOW IS AIMED AT ONE WARNING, IN THE CONTROL BUILDS ONLY, and it
+# is aimed at the CONTROL rather than at the code under test. -DKHEAP_NO_COALESCE
+# compiles out the only caller of kheap.c's blk_prev() (kheap.c:309, inside
+# `#ifndef KHEAP_NO_COALESCE`), so the helper is necessarily unused in that
+# build. GCC does not warn about an unused `static inline`; clang does, so on
+# the documented development host the control did not compile:
+#
+#     c/kernel/mm/kheap.c:143:30: error: unused function 'blk_prev'
+#         [-Werror,-Wunused-function]
+#     FAIL: the negative control did not build
+#
+# That is the apparatus penalising a control for being a control -- and "did not
+# build" is the one outcome this script treats as proving nothing at all, so
+# with -Werror on, the KHEAP_NO_COALESCE half of the pair could never be watched
+# to fail on this host. The waiver is one warning class and applies to the two
+# negctl builds; the shipped build above is compiled -Werror, unchanged, so the
+# allocator itself buys no exemption from this line. It does NOT touch the
+# runtime requirement, which is still that the control FAILS.
 negctl() {
     flag="$1"; why="$2"
     echo "=== NEGATIVE CONTROL ($flag: $why) ==="
     # shellcheck disable=SC2086
-    if ! $CC $FLAGS "$flag" -o "$OUT/leak_negctl" $SRC; then
+    if ! $CC $FLAGS -Wno-error=unused-function "$flag" -o "$OUT/leak_negctl" $SRC; then
         echo "FAIL: the negative control did not build"; return 1
     fi
     if "$OUT/leak_negctl" > "$OUT/leak_negctl.log" 2>&1; then

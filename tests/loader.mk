@@ -29,7 +29,7 @@ test-browser: test-loader test-loader-negctl test-tabs-negctl
 LOADER_INC := -Itests/unit/loaderhost -Itests/unit -Iinclude/abi
 LOADER_SRC := tests/unit/loader_test.c tests/unit/loader_fakebfetch.c \
               c/apps/browser/browser.c c/apps/browser/browser_paint.c \
-              c/apps/browser/layout.c c/apps/browser/forms.c c/apps/browser/focus.c \
+              c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c \
               c/apps/browser/css_engine.c \
               c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
               c/apps/browser/js_dom.c c/apps/browser/js_page.c \

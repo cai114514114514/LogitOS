@@ -4,6 +4,7 @@
 
 #include "vfs_meta.h"
 #include "vfs_path.h"
+#include "../../include/weaksym.h"  /* the weak vfs_cred_ingroup below */
 
 struct vrec {
     char     path[VMETA_PATH];       /* "" = free slot */
@@ -272,9 +273,10 @@ void vmeta_forget_subtree(const char *prefix)
  * vfs.c's cred_now() fills `c` from vfs_cred_current() -- and when the
  * credential moves into struct proc (see vfs_cred.h) the group list moves with
  * it and this hook goes away. */
-int vfs_cred_ingroup(uint32_t gid) __attribute__((weak));
+int vfs_cred_ingroup(uint32_t gid) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_cred_ingroup);
 static int in_supp_group(uint32_t gid)
-{ return vfs_cred_ingroup ? vfs_cred_ingroup(gid) : 0; }
+{ return LOGIT_HAVE(vfs_cred_ingroup) ? vfs_cred_ingroup(gid) : 0; }
 
 int vmeta_permission(const struct vattr *a, const struct vcred *c, int want)
 {

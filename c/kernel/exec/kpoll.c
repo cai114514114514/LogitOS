@@ -23,13 +23,15 @@
 #include "kpoll.h"
 #include "sched.h"
 #include "pit.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* EINTR. Declared weak here rather than by including ksignal.h, for the same
  * reason file.c declares the lsock hooks weak: this TU is linked into a host
  * test binary that has no signal delivery at all, and a hard reference would
  * make it fail to link over a facility it never uses. NULL means "this build
  * cannot be interrupted", which is the truth in that build. */
-int ksig_interrupted(void) __attribute__((weak));
+int ksig_interrupted(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ksig_interrupted);
 
 /* --------------------------------------------------------------------------
  * Registration.
@@ -167,7 +169,7 @@ int poll_core(struct pollsrc *src, int n, int timeout_ms)
          * alongside real readiness must not throw the readiness away. POSIX
          * agrees, and the alternative loses data on a fd the caller will not be
          * told to re-read. */
-        if (ksig_interrupted && ksig_interrupted()) {
+        if (LOGIT_HAVE(ksig_interrupted) && ksig_interrupted()) {
             poll_unregister(&pt);
             return SIG_E_INTR;
         }

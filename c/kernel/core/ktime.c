@@ -740,6 +740,74 @@ int time_cpu_ns(int pid, uint64_t *user_ns, uint64_t *sys_ns)
 
 uint64_t time_cpu_total_ns(void) { return g_acc_total; }
 
+/* ---- lost ticks: the tick counted against a clock that cannot be lost ------
+ *
+ * WHY THIS EXISTS. `timer_ticks()` is the clock every WM animation and every
+ * device/network timeout in this tree subtracts, and it is an INTERRUPT COUNT:
+ * one IRQ0, one increment. An interrupt that is never delivered is not late,
+ * it is gone -- the PIC coalesces every further edge while IRQ0 is pending or
+ * in service -- so a window in which the tick cannot be taken does not stretch
+ * a duration by that window, it stretches it by however many periods fitted
+ * inside it, and NOTHING IN THE TREE COULD SEE THAT. Every consumer subtracts
+ * two readings of the same counter, so a counter that skips is a counter that
+ * agrees with itself.
+ *
+ * The measurement is free and it is possible only here: this is the one place
+ * that holds both clocks at once. `now` is the freshly folded TSC-derived
+ * nanosecond clock, which keeps running with IF=0 because it is a register
+ * read and not an interrupt; the tick is the thing under test. The gap
+ * between two consecutive ticks is therefore the ONE number that says whether
+ * an interrupt was missed, and how many.
+ *
+ * FLOOR, not round: `gap / per - 1` charges a 19.9 ms gap with one missed
+ * period and a 10.9 ms gap with none. That direction is deliberate -- an
+ * instrument built to test a claim of loss must not be able to manufacture it.
+ *
+ * ONE BLIND SPOT, stated rather than discovered: while the live clocksource IS
+ * the PIT (the fallback self-test switches onto it for 500 ms on every boot,
+ * and a machine with no usable TSC runs there permanently), `now` is derived
+ * from `ticks` itself, so the gap is exactly one period by construction and
+ * this counts nothing. A single source cannot detect its own drift; it cannot
+ * detect its own absence either. */
+static uint64_t g_tick_prev_ns;      /* g_base_ns at the previous tick */
+static uint64_t g_tick_seen;         /* inter-tick intervals observed */
+static uint64_t g_tick_missed;       /* whole periods that produced no interrupt */
+static uint64_t g_tick_gap_max;      /* the worst inter-tick gap, ns */
+
+/* AND WHO WAS HOLDING THE KERNEL LOCK WHEN THE WORST ONE ENDED.
+ *
+ * "N% of the clock is missing" is a fault report with no address in it, and the
+ * address is the whole value: 72 missed periods in a second and 0 while idle
+ * says the loss is the guest's own doing, but not WHOSE. The ticket lock
+ * already records the return address of whoever acquired it, always on, for
+ * exactly this class of question -- so a gap costs one extra pair of loads to
+ * carry a call site out with it.
+ *
+ * Sampled at the tick that ENDS the gap, and that is the right instant rather
+ * than a compromise: timer_tick() runs BEFORE this core's BKL acquire (see the
+ * pre-BKL window in interrupts.c), so a gap caused by a long BKL hold is
+ * observed while the holder still holds it. A gap caused by something else --
+ * a core spinning on the lock with IF=0, a device poll -- shows a holder that
+ * is innocent, which is why the CPU indices are printed too: owner != me and
+ * pid/kernel-mode together say which of the two shapes it was.
+ *
+ * Resolve the address the same way a kprof line is resolved:
+ *     nm -n build/kernel.elf | awk '$1 <= "<ra>"' | tail -1 */
+#ifndef LOGIT_TIME_HOST
+static unsigned long g_tick_gap_ra;      /* g_bkl.owner_ra when the worst gap ended */
+static int  g_tick_gap_owner = -1;       /* the core holding g_bkl then */
+static int  g_tick_gap_cpu;              /* the core that took the tick (the BSP) */
+static int  g_tick_gap_pid;              /* the process current on it */
+static int  g_tick_gap_ink;              /* was that context in the kernel? */
+#endif
+
+void timer_tick_loss(uint64_t *seen, uint64_t *missed, uint64_t *gap_max_ns)
+{
+    if (seen)       *seen       = g_tick_seen;
+    if (missed)     *missed     = g_tick_missed;
+    if (gap_max_ns) *gap_max_ns = g_tick_gap_max;
+}
+
 /* ============================================================================
  * 7. The calibration cross-check (pure, so it can be tested from the host)
  * ==========================================================================*/
@@ -874,11 +942,25 @@ static void xcheck_tick(struct ktimer *t)
      * Printing all three means a disagreement says WHICH one is odd instead of
      * only that something is. A 2x tick shows up as tick=2x with mono and rtc
      * agreeing; a mis-calibrated TSC shows up as mono alone drifting. */
-    char a[32], b[32];
-    kprintf("[time] xcheck src=%s rtc=%ds mono=%sms tick=%sms err=%s%dppt %s\n",
+    /* AND THE FOURTH READING, which is the first three's own arithmetic and was
+     * not being printed: how many ticks SHOULD have arrived in `d` nanoseconds,
+     * against how many did. `err` above compares two DURATIONS and a duration
+     * built from a counter that skips still looks like a duration -- 5000 ms of
+     * mono against 5000 ms of tick is 0 ppt whether 500 interrupts arrived or
+     * 500 arrived out of 500. `lost` is the count, and it is the number the
+     * animations and the timeouts actually run on. */
+    uint64_t per      = NS_PER_SEC / TIMER_HZ;
+    uint64_t expected = d / per;
+    uint64_t lost     = expected > dt ? expected - dt : 0;
+    uint64_t tl_seen, tl_miss, tl_gapmax;
+    timer_tick_loss(&tl_seen, &tl_miss, &tl_gapmax);
+    char a[32], b[32], e[32], f[32], g[32];
+    kprintf("[time] xcheck src=%s rtc=%ds mono=%sms tick=%sms err=%s%dppt %s "
+            "lost=%s/%s worstgap=%sus\n",
             g_src[g_cur].name, xc_edges, u64d(d / NS_PER_MS, a),
             u64d(dt * (NS_PER_SEC / TIMER_HZ) / NS_PER_MS, b),
-            ppt >= 0 ? "+" : "", ppt, ok ? "OK" : "FAIL");
+            ppt >= 0 ? "+" : "", ppt, ok ? "OK" : "FAIL",
+            u64d(lost, e), u64d(expected, f), u64d(tl_gapmax / 1000, g));
 
     /* The negative control, run in the same breath and on the same code: feed
      * the checker a monotonic reading that is twice the RTC's opinion -- the
@@ -916,6 +998,141 @@ static void acc_fire(struct ktimer *t)
             acc_n, u64d(s[0] / 1000, a), u64d(s[acc_n/2] / 1000, b),
             u64d(s[(acc_n*9)/10] / 1000, c), u64d(s[acc_n-1] / 1000, d),
             TIMER_HZ);
+}
+
+/* --- (b2) lost ticks, for the life of the machine, in silence -----------
+ *
+ * The other four checks run once at boot and stop. This one cannot, and the
+ * reason is a measurement rather than a worry. MEASURED 2026-08-28, one boot,
+ * 1920x1200, -smp 4 TCG, driven by tests/qmp/qmp_repaint.py:
+ *
+ *   idle  (the cross-check's own window, t = 2.4 .. 7 s)   lost 0 of 440
+ *   drag / dock / type / scroll, per second      +8 +23 +61 +35 +17 +15 +16 +65
+ *   worst single inter-tick gap                            119.8 ms (12 periods)
+ *
+ * A second that loses 65 of its 100 ticks is a second in which every animation
+ * and every timeout built on timer_ticks() runs 2.9x long, and the ONE boot
+ * where that is not happening is the one a boot-time check would have sampled.
+ * Same host, same boot, minutes apart: nothing about the machine outside the
+ * guest changed between "0 of 440" and "+65 in a second", which is what makes
+ * this the guest's own doing and not TCG's.
+ *
+ * WHAT IT SAYS, from the `via` field below: in every attributed sample the BKL
+ * was held BY ANOTHER CORE through the irqsave path, i.e. inside a kernel
+ * entry with IF=0, while cpu 0 -- the only core that ticks -- sat in
+ * spin_lock_irqsave() waiting for it, also with IF=0. The tick that STARTS the
+ * gap is not lost (timer_tick() runs before that acquire, deliberately; see
+ * interrupts.c); every pulse during the wait is, because the PIC/LAPIC holds
+ * one pending edge per vector and the core cannot take it anyway. So this is a
+ * BKL-contention reading that happens to be visible in the clock, and the fix
+ * is not in this file.
+ *
+ * THE CONTROL, and it is the one that settles it. Same image, same host, same
+ * workload, ONE core instead of four: 4 missed of 2502 (0.16%) against 182 of
+ * 5293 (3.4%), worst gap 29 ms against 89 ms, and not one line printed during
+ * the whole drag/dock/type/scroll sequence. 22x, in the direction the theory
+ * requires -- on one core the spinner IS the BSP, so timer_tick() runs ahead of
+ * the acquire and time keeps moving. That asymmetry is not new: it is written
+ * out in full at c/kernel/exec/syscall.c:625, where the SAME mechanism in its
+ * pathological form (a spin holding the BKL while the BSP waited for it with
+ * IF=0) froze the machine outright and was fixed with bkl_hlt_wait(). What is
+ * measured here is the sub-pathological version of it -- not a freeze, just
+ * 20-120 ms at a time, thousands of times, taking the clock with it.
+ *
+ * SILENCE IS THE LOAD-BEARING HALF, exactly as it is for wm_perf_report(): this
+ * console is also /bin/sh's stdout and `make test-shell` reads command output
+ * off it, so a monitor that spoke once a second would interleave itself into
+ * another test's expected bytes. Three things keep it quiet:
+ *
+ *   - nothing is printed for a gap under 2 tick periods. A healthy machine's
+ *     worst gap is 10-point-something ms, so a healthy machine prints NOTHING,
+ *     ever, and this line costs the serial log zero bytes.
+ *   - the gap trigger is a NEW WORST, which is monotone and therefore
+ *     self-limiting -- a machine losing ticks steadily converges in a few
+ *     lines rather than repeating itself.
+ *   - a hard budget of TICKLOSS_LINES for the whole boot, after which the timer
+ *     cancels itself. The counters keep counting; timer_tick_loss() still has
+ *     the live totals for anything that can read them.
+ *
+ * The second trigger exists because the two failure shapes are different: one
+ * long window shows up as a gap, while many ordinary windows show up as
+ * nothing at all until you count them. Five missed periods in a second is 5%
+ * of the clock gone -- an animation running 5% long and a timeout 5% late --
+ * and it is worth a line even when no single gap was remarkable. Measured
+ * floor for the threshold, not a guess: an idle desktop boots losing 3 periods
+ * in its first two seconds (device init) and then reports lost=0 of 441 across
+ * the cross-check's whole window, so 5 per second cannot fire on a machine
+ * doing nothing.
+ *
+ * SELF-INFLUENCE, admitted: this line is printed from inside time_tick() with
+ * IF=0, so the printer is itself a window in which a tick can be lost, and its
+ * cost lands in the NEXT interval. The line budget is what bounds that; the
+ * snapshot is retaken after the print so nothing before it is charged twice.
+ * (Under QEMU the 16550 accepts a byte per store, so this is theoretical.) */
+#define TICKLOSS_LINES 16
+#define TICKLOSS_RATE  5              /* missed periods in one second: 5% of the clock */
+static struct ktimer t_tickloss;
+static uint64_t tl_missed, tl_gap;
+static int      tl_lines;
+
+static void tickloss_step(struct ktimer *t)
+{
+    uint64_t per = NS_PER_SEC / TIMER_HZ;
+    uint64_t seen, missed, gap;
+    timer_tick_loss(&seen, &missed, &gap);
+
+    if (gap < 2 * per) return;                       /* nothing was ever lost */
+    if (gap <= tl_gap && missed - tl_missed < TICKLOSS_RATE) return;
+
+    uint64_t total = seen + missed;
+    /* SIX distinct buffers. kprintf takes all its arguments before it formats
+     * any of them, so two %s sharing one scratch buffer both print the second
+     * value -- the bug that made the smp-mono line report reads=0.
+     *
+     * The RATE is the field to read, not the total: the total is dominated by
+     * boot forever after, while "+N in the last second" is the machine under
+     * whatever the hand is doing right now. */
+    char a[24], b[24], c[24], d[24], e[24], f[24];
+    kprintf("[time] tickloss +%s/s worstgap=%sus missed=%s of %s expected "
+            "(%s%% of the clock); uptime %ss\n",
+            u64d(missed - tl_missed, f), u64d(gap / 1000, a),
+            u64d(missed, b), u64d(total, c),
+            milli(total ? missed * 100000 / total : 0, d),
+            u64d(time_mono_ns() / NS_PER_SEC, e));
+    /* The address, on its own line and only when the worst gap MOVED -- a
+     * repeated call site says nothing new, and the rate lines above are the
+     * ones a reader scans.
+     *
+     * `via` is not decoration and it is the field that ended this
+     * investigation. spin_lock() records __builtin_return_address(0), so for a
+     * lock taken through spin_lock_irqsave() the recorded site is ALWAYS
+     * spin_lock_irqsave itself -- one frame too shallow to name a caller. That
+     * looks like a useless reading and is in fact a conclusive one, because
+     * the BKL has exactly two irqsave acquirers in the tree and both are kernel
+     * ENTRIES (interrupts.c:156 and drivers/core/irq.c:186): "via irqsave"
+     * means the holder is inside an interrupt or a syscall, holding the global
+     * lock with IF=0. Comparing against the function's own address rather than
+     * a symbol table is what lets the line say so on the machine, where there
+     * is no nm.
+     *
+     * owner < 0 means the lock was already free by the time the tick that
+     * ended the gap ran, and the address is then the LAST holder -- spin_unlock
+     * clears owner_cpu and deliberately leaves owner_ra, so the word to print
+     * is "last", not "held by". */
+    if (gap > tl_gap) {
+        unsigned long irqs = (unsigned long)(void *)spin_lock_irqsave;
+        int via = (g_tick_gap_ra >= irqs && g_tick_gap_ra < irqs + 64);
+        kprintf("[time] tickloss   worst gap: bkl %s cpu %d ra=%p via=%s; "
+                "tick on cpu %d, pid %d, %s\n",
+                g_tick_gap_owner >= 0 ? "held by" : "last held by",
+                g_tick_gap_owner, (void *)g_tick_gap_ra,
+                via ? "irqsave(kernel entry, IF=0)" : "bare",
+                g_tick_gap_cpu, g_tick_gap_pid,
+                g_tick_gap_ink ? "in kernel" : "not in kernel");
+    }
+
+    timer_tick_loss(0, &tl_missed, &tl_gap);
+    if (++tl_lines >= TICKLOSS_LINES) ktimer_cancel(t);
 }
 
 /* --- (c) the PIT fallback, actually exercised --------------------------- */
@@ -1038,6 +1255,9 @@ static void selftests_arm(void)
     }
     ktimer_add(&t_fallback, 8 * NS_PER_SEC, 500 * NS_PER_MS, fallback_step, 0, "fallback");
     ktimer_add(&t_smp, 10 * NS_PER_SEC, 0, smp_kick, 0, "smpkick");
+    /* Periodic and never cancelled by a deadline, only by its own line budget:
+     * the windows that lose a tick are a hand on the mouse, not a boot. */
+    ktimer_add(&t_tickloss, 2 * NS_PER_SEC, 1 * NS_PER_SEC, tickloss_step, 0, "tickloss");
 }
 #else
 void time_safepoint(void) {}
@@ -1089,6 +1309,28 @@ void time_tick(void)
     uint64_t now = g_base_ns;
     spin_unlock_irqrestore(&g_tlock, f);
 
+    /* Six arithmetic operations, a hundred times a second, on a counter that
+     * has already been read. Always on for the same reason every other check in
+     * this file is: the 2x-tick bug lived for the life of the kernel because
+     * the only thing that could have seen it ran nowhere. */
+    if (g_tick_prev_ns && now > g_tick_prev_ns) {
+        uint64_t per = NS_PER_SEC / TIMER_HZ;
+        uint64_t gap = now - g_tick_prev_ns;
+        if (gap > g_tick_gap_max) {
+            g_tick_gap_max = gap;
+#ifndef LOGIT_TIME_HOST
+            g_tick_gap_ra    = g_bkl.owner_ra;
+            g_tick_gap_owner = g_bkl_owner;
+            g_tick_gap_cpu   = cpu_index();
+            g_tick_gap_pid   = proc_current_pid();
+            g_tick_gap_ink   = in_kernel_now();
+#endif
+        }
+        if (gap >= 2 * per) g_tick_missed += gap / per - 1;
+        g_tick_seen++;
+    }
+    g_tick_prev_ns = now;
+
     account_sample(now);
     ktimer_run(now);
 }
@@ -1102,6 +1344,7 @@ void time_host_reset(uint64_t hz, uint64_t mask)
     g_ready = 0; g_seq = 0; g_base_ns = 0; g_last_cycles = 0;
     g_mono_last = 0; g_backsteps = 0; g_backstep_max = 0; g_reads = 0;
     g_nheap = 0; g_fired = 0; g_seqno = 0;
+    g_tick_prev_ns = 0; g_tick_seen = 0; g_tick_missed = 0; g_tick_gap_max = 0;
     g_acc_total = 0; g_acc_idle = 0; g_acc_last_ns = 0;
     g_wall_offset_ns = 0;
     for (int i = 0; i < CPUACC_MAX; i++) g_acc[i].pid = 0;

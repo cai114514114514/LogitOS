@@ -39,7 +39,32 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 # shm.c joins for the third time the same argument has been made in this file:
 # fault.c's shared case and vma.c's segment-backed areas call straight into it,
 # so leaving it out is not "one fewer thing under test", it is a link error.
-MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c"
+#
+# oom.c joins for the FOURTH time, and this one had a second cause underneath
+# it. pmm.c calls oom_alloc_fail() and fault.c calls oom_fault_retry(), both
+# declared __attribute__((weak)) so that this script and leak_run.sh would keep
+# linking without it -- tests/unit/oom_run.sh:9 says so in as many words. That
+# is the ELF idiom and it does not hold on the documented development host:
+# Mach-O needs `weak_import` for a nullable undefined symbol, so on macOS the
+# weak reference is a hard link error and this whole suite died with
+#
+#     Undefined symbols for architecture arm64:
+#       "_oom_alloc_fail", referenced from: _pmm_alloc in pmm-1d0277.o
+#       "_oom_fault_retry", referenced from: _mm_fault_in in fault-e00e65.o
+#       "_tlb_flush_all",   referenced from: _vmm_free_space in vmm-29fca6.o
+#
+# before running a single one of its seven suites or six controls. Linking the
+# REAL oom.c is the right resolution rather than a stub: it is the same "the
+# whole of c/kernel/mm, wired the way the kernel wires it" argument the three
+# paragraphs above make, and it is what oom_run.sh:11 says this file should end
+# up doing anyway. It is behaviour-neutral for the seven suites here -- none of
+# them registers a task through oom_test_add(), so gather() returns 0 and
+# oom_kill() returns OOM_NO_VICTIM, which is exactly the "hook absent" path.
+#
+# The third symbol is not in c/kernel/mm at all: see tests/unit/mmstub/
+# mm_hoststub.c, which supplies vmm.c's cross-core shootdown for the host.
+MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
+STUB="$ROOT/tests/unit/mmstub/mm_hoststub.c"
 
 fail=0
 run_one() {
@@ -47,7 +72,7 @@ run_one() {
     [ -f "$ROOT/tests/unit/$name.c" ] || { echo "=== $name: not present, skipped ==="; return; }
     echo "=== $name ==="
     # shellcheck disable=SC2086
-    $CC $FLAGS "$@" -o "$OUT/$name" "$ROOT/tests/unit/$name.c" "$COMMON" $MMSRC
+    $CC $FLAGS "$@" -o "$OUT/$name" "$ROOT/tests/unit/$name.c" "$COMMON" $MMSRC "$STUB"
     if ! "$OUT/$name"; then fail=1; fi
     echo
 }
@@ -63,7 +88,7 @@ run_negative() {
     # look identical to a control that failed for the right reason.
     # shellcheck disable=SC2086
     if ! $CC $FLAGS "-D$tag" -o "$OUT/${name}_$tag" \
-             "$ROOT/tests/unit/$name.c" "$COMMON" $MMSRC; then
+             "$ROOT/tests/unit/$name.c" "$COMMON" $MMSRC "$STUB"; then
         echo "    FAIL: the -D$tag build does not compile, so it is not a control"
         fail=1
         return

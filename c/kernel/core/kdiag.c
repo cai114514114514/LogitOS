@@ -9,6 +9,7 @@
 #include "kprof.h"
 #include "kprintf.h"
 #include "panic.h"
+#include "../../../include/weaksym.h"   /* the weak net_debug_* below */
 #include "percpu.h"
 #include "spinlock.h"
 #include "lapic.h"
@@ -360,8 +361,10 @@ static unsigned popcount32(unsigned v)
  * including net.h so this file keeps building in any configuration that has no
  * network layer; weak so such a build resolves to NULL and the verb reports
  * itself unavailable instead of failing to link. */
-void net_debug_park(long ms) __attribute__((weak));
-void net_debug_tcp_on_wm(int on) __attribute__((weak));
+void net_debug_park(long ms) LOGIT_WEAK;
+void net_debug_tcp_on_wm(int on) LOGIT_WEAK;
+LOGIT_WEAK_STUB(net_debug_park);
+LOGIT_WEAK_STUB(net_debug_tcp_on_wm);
 
 static void do_irqstorm(long rounds)
 {
@@ -530,10 +533,10 @@ int kdiag_write(const char *path, const void *buf, int len)
         long ms = parse_long(&rest, e);
         while (rest < e && *rest == ' ') rest++;
         int on_wm = (rest + 1 < e && rest[0] == 'w' && rest[1] == 'm');
-        if (!net_debug_park) {
+        if (!LOGIT_HAVE(net_debug_park)) {
             klog(KL_WARN, "KDIAG_NETWEDGE unavailable: no network layer linked");
         } else {
-            if (net_debug_tcp_on_wm) net_debug_tcp_on_wm(on_wm);
+            if (LOGIT_HAVE(net_debug_tcp_on_wm)) net_debug_tcp_on_wm(on_wm);
             net_debug_park(ms);
             klog(KL_INFO, "KDIAG_NETWEDGE ms=%ld on_wm=%d", ms, on_wm);
         }

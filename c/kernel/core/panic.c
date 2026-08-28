@@ -36,6 +36,11 @@
 #include "interrupts.h"
 #include "kdiag.h"
 
+/* The Mach-O half of panic.h's weak ksym_lookup: this is the only TU that
+ * references it, so this is the only TU that needs the stub. See
+ * include/weaksym.h. */
+LOGIT_WEAK_STUB(ksym_lookup);
+
 extern char _kernel_end[];          /* linker.ld: first byte past the image */
 
 #define KIMAGE_LO   0x100000UL      /* linker.ld: . = 1M */
@@ -102,7 +107,7 @@ int backtrace(uint64_t rbp, uint64_t rsp, uint64_t *out, int max)
 static void print_frame(int level, int i, uint64_t a)
 {
     uint64_t off = 0;
-    const char *sym = ksym_lookup ? ksym_lookup(a, &off) : (const char *)0;
+    const char *sym = LOGIT_HAVE(ksym_lookup) ? ksym_lookup(a, &off) : (const char *)0;
     if (sym)
         klog(level, "  #%d %p  %s+0x%x%s", i, (void *)(uintptr_t)a, sym,
              (unsigned)off, is_call_site(a) ? "" : "  ?");
@@ -134,7 +139,7 @@ void backtrace_print(int level, uint64_t rbp, uint64_t rsp, int max)
             if (!is_call_site(v))
                 continue;
             uint64_t off = 0;
-            const char *sym = ksym_lookup ? ksym_lookup(v, &off) : (const char *)0;
+            const char *sym = LOGIT_HAVE(ksym_lookup) ? ksym_lookup(v, &off) : (const char *)0;
             if (sym)
                 klog(level, "  ?%d %p  %s+0x%x", shown, (void *)(uintptr_t)v, sym, (unsigned)off);
             else

@@ -458,6 +458,23 @@ uint64_t pcache_ra_reads(void);     /* backend read calls those batches cost.
 uint64_t pcache_ra_short(void);     /* batches whose backend read came back short --
                                      * see struct pcache_ops. Nonzero on the real
                                      * filesystem means vfs_pread stopped early. */
+/* WHAT A MISS COSTS, in cycles, on the machine rather than in an argument.
+ *
+ * The price of a ->read is NOT the bytes it carries and the four numbers are
+ * here so that nobody has to take that on trust. On this tree's own filesystem
+ * a call runs vfs_pread, whose per-call permission check runs logitfs's
+ * getattr, which counts the file's allocated blocks with one imap() -- one
+ * 4 KiB buffer copy -- per block. Measured host-side against the real c/fs
+ * sources: 7 block-buffer touches for a 48 KiB file, 59 for 256 KiB, 1,263 for
+ * a 4.5 MiB browser.aex, 5,103 for 12 MiB, and the SAME 764 whether the call
+ * asks for one page or thirty-three. So cycles/call is flat in the request and
+ * linear in the FILE, and every bound in ra_batch() that reads as "how many
+ * bytes may we speculatively fetch" is really "how many whole misses may we
+ * pay". `worst` matters on its own: this runs with the BKL held. */
+uint64_t pcache_backend_calls(void);
+uint64_t pcache_backend_cycles(void);
+uint64_t pcache_backend_pages(void);/* pages ASKED FOR, not delivered */
+uint64_t pcache_backend_worst(void);/* the single most expensive call, cycles */
 uint64_t pcache_invalidated(void);  /* pages a write threw away */
 uint64_t pcache_shared(void);       /* pages currently mapped more than once */
 uint64_t pcache_bypassed(void);     /* whole-file reads too big to install */

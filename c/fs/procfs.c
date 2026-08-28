@@ -15,12 +15,14 @@
 #include "procfs.h"
 #include "vfs.h"
 #include "vfs_path.h"
+#include "../../include/weaksym.h"   /* the weak vfs_mount_at below */
 
 /* vfs_mount_at, weak, for exactly the reason c/fs/vfs.c declares kdiag weakly:
  * this file is linked into a host unit test that has no mount table and wants
  * none. Absent, procfs_mount() reports that it could not mount, which is the
  * truth in that build. */
-int vfs_mount_at(const char *dir, struct filesystem *fs) __attribute__((weak));
+int vfs_mount_at(const char *dir, struct filesystem *fs) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_mount_at);
 
 /* --------------------------------------------------------------------------
  * Sizing, argued rather than rounded.
@@ -598,7 +600,7 @@ const char *procfs_mountpoint(void) { return g_at; }
  * through the other, with nothing to say which. */
 int procfs_mount(const char *at)
 {
-    if (!vfs_mount_at) return VFS_ENOSYS;
+    if (!LOGIT_HAVE(vfs_mount_at)) return VFS_ENOSYS;
     if (!at || at[0] != '/') return VFS_EINVAL;
     int rc = vfs_mount_at(at, procfs_get());
     if (rc == 0) p_cpy(g_at, at, PROCFS_PATH_MAX);

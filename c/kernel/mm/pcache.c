@@ -133,6 +133,53 @@ static uint64_t c_orphan, c_uncached;
 static uint64_t c_ra_run, c_ra_pages, c_ra_reads, c_ra_short;
 static uint64_t c_bug;
 
+/* WHAT ONE BACKEND CALL COSTS, and why this is not decoration.
+ *
+ * pcache.h's ops contract says a read is "at most one page" or, for a batch,
+ * at most PCACHE_RA_MAX+1 of them, and every bound in ra_batch() is written as
+ * if the price of a call were the BYTES it carries. On this machine it is not:
+ * pcv_read() goes through vfs_pread(), whose per-call permission check runs the
+ * backend's getattr, and logitfs's getattr counts a file's allocated blocks by
+ * calling imap() once per block -- one 4 KiB buffer copy each, ONE THOUSAND AND
+ * SIXTY-THREE of them for a 4.5 MiB browser.aex, to deliver 4 KiB. Measured
+ * host-side against the real c/fs sources: 7 block-buffer touches for a 48 KiB
+ * file, 1,263 for 4.5 MiB, 5,103 for 12 MiB -- LINEAR IN FILE SIZE and
+ * INDEPENDENT of how much was asked for (a 1-page read and a 33-page read cost
+ * the same 764).
+ *
+ * So the two numbers below are the ones that decide whether readahead is worth
+ * anything at all here: `calls` is what is actually being paid for, and
+ * cycles/call is the price. A reader who assumes the price is per byte will
+ * size batches for the device and be wrong by two orders of magnitude.
+ *
+ * rdtsc directly rather than through kbench.h, for the reason fault.c gives at
+ * its own fault_cyc(): this file is compiled for the host test too, which has
+ * neither c/kernel/sched on the include path nor an x86 underneath it. */
+#ifdef MM_HOSTTEST
+static inline uint64_t pc_cyc(void) { return 0; }
+#else
+static inline uint64_t pc_cyc(void)
+{ uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | lo; }
+#endif
+static uint64_t c_be_calls, c_be_cyc, c_be_pages, c_be_worst;
+
+/* The one place pc_ops->read is called from, so the accounting cannot drift
+ * from the thing it accounts for. `pages` is what the call was ASKED for, not
+ * what came back: the ratio cycles/page is only meaningful against the request,
+ * because a short read is the backend refusing, not the cost falling. */
+static long backend_read(int fh, uint64_t off, void *dst, uint64_t len)
+{
+    uint64_t t0 = pc_cyc();
+    long r = pc_ops->read(pf[fh].path, off, dst, len);
+    uint64_t d = pc_cyc() - t0;
+    c_be_calls++;
+    c_be_cyc += d;
+    c_be_pages += (len + FRAME_SIZE - 1) / FRAME_SIZE;
+    if (d > c_be_worst) c_be_worst = d;
+    return r;
+}
+
 uint64_t pcache_hits(void)        { return c_hit; }
 uint64_t pcache_misses(void)      { return c_miss; }
 uint64_t pcache_resident(void)    { return c_resident; }
@@ -148,6 +195,10 @@ uint64_t pcache_ra_runs(void)     { return c_ra_run; }
 uint64_t pcache_ra_pages(void)    { return c_ra_pages; }
 uint64_t pcache_ra_reads(void)    { return c_ra_reads; }
 uint64_t pcache_ra_short(void)    { return c_ra_short; }
+uint64_t pcache_backend_calls(void) { return c_be_calls; }
+uint64_t pcache_backend_cycles(void){ return c_be_cyc; }
+uint64_t pcache_backend_pages(void) { return c_be_pages; }
+uint64_t pcache_backend_worst(void) { return c_be_worst; }
 int      pcache_ready(void)       { return pc_ready; }
 
 uint64_t pcache_files(void)
@@ -852,6 +903,46 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
     n = got;
     c_ra_run++;
 
+    /* (4b) ASCENDING, and this is the step that decides how many BACKEND CALLS
+     * this batch costs rather than how many device commands it costs.
+     *
+     * The read loop below issues one pc_ops->read per run of frames that is
+     * contiguous IN PHYSICAL MEMORY, and frames[i] holds page first+i -- so
+     * whether 33 pages are one call or thirty-three is decided entirely by the
+     * ORDER pmm_alloc() happened to hand them back in. The order is arbitrary:
+     * at this point every frame is interchangeable, nothing has been read into
+     * any of them, and the assignment of frame to page index is made right here
+     * by position. Sorting ascending is therefore free of meaning and MINIMISES
+     * the number of maximal ascending-consecutive runs for this multiset of
+     * frames -- it can only reduce c_ra_reads, never raise it.
+     *
+     * It was not worth doing while a call's price was believed to be its bytes,
+     * because the block layer merges by LBA and a second command is cheap. It
+     * is worth doing now: see backend_read() above -- a call costs the same
+     * whether it carries one page or thirty-three, so a batch that fragments
+     * into k calls costs k times a whole miss.
+     *
+     * SAY WHAT IT IS WORTH, WHICH IS NOT MUCH TODAY. pmm.c's alloc_locked()
+     * scans forward from a rotating hint, so consecutive pmm_alloc() calls
+     * already return ASCENDING frames and this sort is the identity on
+     * everything except the one batch per wrap of the hint, where the frames
+     * come back as a high group followed by a low one and today's code splits
+     * that into two full-price calls. Measured on the host suite: 33 batches,
+     * 33 backend reads before AND after -- the frames were already in order.
+     * It is here as a bound, not as a speed-up: after it, c_ra_reads is as
+     * close to c_ra_run as this multiset of frames permits, so the "pages per
+     * read" figure in pcache_report() is a statement about FRAGMENTATION and
+     * no longer about allocation order.
+     *
+     * Insertion sort: n <= 33, the array is nearly sorted already, and this
+     * runs immediately before a call that is measured in milliseconds. */
+    for (unsigned i = 1; i < n; i++) {
+        uint64_t v = frames[i];
+        unsigned j = i;
+        while (j > 0 && frames[j - 1] > v) { frames[j] = frames[j - 1]; j--; }
+        frames[j] = v;
+    }
+
     /* (5) Zero, then read over it. Zeroing every page and not only the file's
      * tail is what makes a short read SAFE TO DETECT rather than dangerous to
      * miss: an uncovered page holds zeroes, never the previous owner's bytes.
@@ -874,7 +965,7 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
         uint64_t off = (first + i) * (uint64_t)FRAME_SIZE;
         uint64_t len = (uint64_t)(j - i) * FRAME_SIZE;
         if (off + len > size) len = size - off;      /* off < size: bounded at (1) */
-        long r = pc_ops->read(pf[fh].path, off, mm_p2v(frames[i]), len);
+        long r = backend_read(fh, off, mm_p2v(frames[i]), len);
         c_ra_reads++;
         if (r < 0) break;
 
@@ -964,7 +1055,7 @@ uint64_t pcache_get(int fh, uint64_t index)
     memset(mm_p2v(frame), 0, FRAME_SIZE);
     uint64_t want = pf[fh].size - off;
     if (want > FRAME_SIZE) want = FRAME_SIZE;
-    long got = pc_ops->read(pf[fh].path, off, mm_p2v(frame), want);
+    long got = backend_read(fh, off, mm_p2v(frame), want);
     if (got < 0) { pmm_free(frame); return 0; }
     c_miss++;
 
@@ -1127,4 +1218,21 @@ void pcache_report(const char *tag)
             tag ? tag : "-", (int)c_ra_run, (int)c_ra_pages, (int)c_ra_reads,
             (int)(c_ra_reads ? (c_ra_pages + c_ra_run) / c_ra_reads : 0),
             (int)c_ra_short, (int)PCACHE_RA_MIN, (int)PCACHE_RA_MAX);
+    /* THE BACKEND, and it is the only line here that is about TIME. Every
+     * other counter above says how often the cache answered; this one says
+     * what it cost when it could not. Read cycles/call against cycles/page: if
+     * they are the same number the price is per byte, and if cycles/call is
+     * flat while cycles/page falls with the batch size then the price is per
+     * CALL -- which is what this machine measures, because vfs_pread runs a
+     * getattr whose cost is linear in the FILE's size, not the request's (see
+     * backend_read()). `worst` is there because an average over a boot's worth
+     * of small files hides the one call that stalled the compositor: this runs
+     * with the big kernel lock held and the core non-preemptible. */
+    kprintf("[pcache] %s: backend %d calls for %d pages, %d Mcyc total "
+            "(%d kcyc/call, %d kcyc/page, worst %d kcyc)\n",
+            tag ? tag : "-", (int)c_be_calls, (int)c_be_pages,
+            (int)(c_be_cyc / 1000000),
+            (int)(c_be_calls ? c_be_cyc / c_be_calls / 1000 : 0),
+            (int)(c_be_pages ? c_be_cyc / c_be_pages / 1000 : 0),
+            (int)(c_be_worst / 1000));
 }

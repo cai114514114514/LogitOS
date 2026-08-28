@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include "settings.h"
 #include "logit_abi.h"      /* SYS_SETTING_* / SETCTL_* / struct logit_setting */
+/* The portable spelling of the idiom the next paragraph describes. It has to
+ * be a relative include for the same reason accounts.h below is one: the host
+ * gates that compile this file bring their own -I list. */
+#include "../../../include/weaksym.h"
 /* WEAK, and declared BEFORE vfs.h so the attribute sticks to the symbol (a
  * later plain declaration does not take it away).
  *
@@ -19,8 +23,10 @@
  *
  * The prototypes must match c/fs/vfs.h exactly or the two declarations are
  * different functions and the link silently keeps the wrong one. */
-int vfs_chmod(const char *path, unsigned mode) __attribute__((weak));
-int vfs_chown(const char *path, unsigned uid, unsigned gid) __attribute__((weak));
+int vfs_chmod(const char *path, unsigned mode) LOGIT_WEAK;
+int vfs_chown(const char *path, unsigned uid, unsigned gid) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_chmod);
+LOGIT_WEAK_STUB(vfs_chown);
 
 /* Same idiom, same reason, one door down: the permission gate (below, in
  * settings_syscall()) needs "what uid is calling", and c/fs/vfs_cred.c is
@@ -38,8 +44,10 @@ int vfs_chown(const char *path, unsigned uid, unsigned gid) __attribute__((weak)
  * read itself, so it reads it the way everything else does. It needs the VMM,
  * which the host tests do not link either -- same weak treatment. */
 struct vcred;
-void vfs_cred_current(struct vcred *c) __attribute__((weak));
-int  user_copy_string(char *dst, int max, const char *src) __attribute__((weak));
+void vfs_cred_current(struct vcred *c) LOGIT_WEAK;
+int  user_copy_string(char *dst, int max, const char *src) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_cred_current);
+LOGIT_WEAK_STUB(user_copy_string);
 
 #include "vfs.h"
 #include "kprintf.h"
@@ -638,8 +646,8 @@ int settings_prepare_user(unsigned uid)
          * fault trying. It still creates it, which is the part that build can
          * observe. */
         int rmk = vfs_mkdir(dir);                    /* already there: fine */
-        int rcd = vfs_chown ? vfs_chown(dir, uid, a.gid) : 0;
-        int rmd = vfs_chmod ? vfs_chmod(dir, 0700) : 0;
+        int rcd = LOGIT_HAVE(vfs_chown) ? vfs_chown(dir, uid, a.gid) : 0;
+        int rmd = LOGIT_HAVE(vfs_chmod) ? vfs_chmod(dir, 0700) : 0;
         int rwr = 0;
         if (vfs_size(pending_path) < 0) {
             /* A comment, not an empty file: a zero-length file is
@@ -650,8 +658,8 @@ int settings_prepare_user(unsigned uid)
                 "# /etc/settings.conf, which supplies the system defaults.\n";
             rwr = vfs_write(pending_path, seed, (int)sizeof seed - 1);
         }
-        int rcf = vfs_chown ? vfs_chown(pending_path, uid, a.gid) : 0;
-        int rmf = vfs_chmod ? vfs_chmod(pending_path, 0600) : 0;
+        int rcf = LOGIT_HAVE(vfs_chown) ? vfs_chown(pending_path, uid, a.gid) : 0;
+        int rmf = LOGIT_HAVE(vfs_chmod) ? vfs_chmod(pending_path, 0600) : 0;
         /* SAY WHAT WAS REFUSED. A store that silently could not be created
          * looks exactly like a user whose settings do not persist, which is
          * the bug this file exists to fix -- so it gets a line rather than a
@@ -1337,7 +1345,7 @@ long settings_syscall(long num, long a, long b, long c)
          * user could not write to made no sense. */
         if (settings_schema_find(key)) {
             struct vcred me;
-            if (vfs_cred_current) vfs_cred_current(&me);
+            if (LOGIT_HAVE(vfs_cred_current)) vfs_cred_current(&me);
             else                  me.uid = 0;   /* host test link: no cred table -> root */
 #if defined(SETTINGS_GATE_KEY_IS_MACHINE)   /* negctl: the gate as it shipped */
             if (me.uid != 0) return ID_E_PERM;
@@ -1379,7 +1387,7 @@ long settings_syscall(long num, long a, long b, long c)
          * raw table offset -- which is how a caller lists its own domain
          * ("app.textedit.") without knowing its keys in advance. */
         char pfx[SET_KEYLEN];
-        if (!user_copy_string || user_copy_string(pfx, (int)sizeof pfx, prefix) < 0) return -1;
+        if (!LOGIT_HAVE(user_copy_string) || user_copy_string(pfx, (int)sizeof pfx, prefix) < 0) return -1;
         int pn = s_len(pfx);
         int idx = 0;
         for (int si = 0; si < NSCHEMA; si++) {
@@ -1441,7 +1449,7 @@ long settings_syscall(long num, long a, long b, long c)
              * user-aware; only this gate was not, and between them a logged-in
              * user could not reset settings that were hers to begin with. */
             struct vcred me;
-            if (vfs_cred_current) vfs_cred_current(&me);
+            if (LOGIT_HAVE(vfs_cred_current)) vfs_cred_current(&me);
             else                  me.uid = 0;   /* host test link: no cred table -> root */
 #if defined(SETTINGS_GATE_KEY_IS_MACHINE)   /* negctl: the gate as it shipped */
             if (me.uid != 0) return ID_E_PERM;

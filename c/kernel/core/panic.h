@@ -2,6 +2,7 @@
 #define LOGIT_PANIC_H
 
 #include <stdint.h>
+#include "../../../include/weaksym.h"   /* LOGIT_WEAK, for ksym_lookup below */
 
 struct registers;   /* interrupts.h */
 
@@ -86,8 +87,14 @@ uint64_t panic_count(void);
 const char *panic_last_message(void);         /* "" if none */
 
 /* Optional symbol resolution. Weak: if no symbol table is linked in, the
- * backtrace prints bare addresses to be resolved against build/kernel.map. */
-const char *ksym_lookup(uint64_t addr, uint64_t *offset) __attribute__((weak));
+ * backtrace prints bare addresses to be resolved against build/kernel.map.
+ *
+ * The Mach-O half of the idiom (include/weaksym.h) needs a stub emitted in a
+ * TU, and it is emitted in panic.c rather than here: this header is included
+ * by roughly a hundred kernel TUs and only panic.c REFERENCES the symbol, so
+ * a stub here would be a weak definition in every one of them for no reader.
+ * A new caller of ksym_lookup outside panic.c adds its own LOGIT_WEAK_STUB. */
+const char *ksym_lookup(uint64_t addr, uint64_t *offset) LOGIT_WEAK;
 
 #define KASSERT(cond)                                                        \
     do {                                                                     \

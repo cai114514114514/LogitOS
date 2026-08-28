@@ -7,6 +7,9 @@
 #include "rng.h"       /* kernel_random_bytes(): AT_RANDOM's 16 bytes */
 #include "kprintf.h"
 #include "crc32.h"     /* the streaming CRC below folds the image as it reads */
+/* OUTSIDE the LOGIT_HOSTTEST branch below on purpose: tests/unit/exechost is
+ * exactly the build whose link the two weak declarations exist to protect. */
+#include "../../../include/weaksym.h"
 #ifndef LOGIT_HOSTTEST
 #include "vma.h"       /* VMA_READ/VMA_EXEC + the file-mapping entry point */
 #else
@@ -28,7 +31,8 @@ void *memset(void *, int, size_t);
  * filesystem, so the symbol is absent there, `rd->path` is never used, and the
  * host tests go on measuring the eager loader byte for byte. A hard reference
  * would make them a link error instead. */
-int vfs_pread(const char *path, void *buf, int max, long long off) __attribute__((weak));
+int vfs_pread(const char *path, void *buf, int max, long long off) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_pread);
 
 /* THE BOUNCE, AND WHY THE FILE BYTES DO NOT GO STRAIGHT TO THEIR DESTINATION.
  *
@@ -100,7 +104,7 @@ int elf_read(const struct elf_reader *rd, uint64_t off, void *dst, uint64_t n)
     if (!n) return 0;
 
     if (rd->mem) { memcpy(dst, rd->mem + off, (size_t)n); return 0; }
-    if (!rd->path || !vfs_pread) return -1;
+    if (!rd->path || !LOGIT_HAVE(vfs_pread)) return -1;
 
     uint8_t *out = (uint8_t *)dst;
     while (n) {
@@ -142,7 +146,7 @@ int elf_read_crc32(const struct elf_reader *rd, uint64_t off, uint64_t n, uint32
     if (rd->mem) {
         c = crc32_update(c, rd->mem + off, (size_t)n);
     } else {
-        if (!rd->path || !vfs_pread) return -1;
+        if (!rd->path || !LOGIT_HAVE(vfs_pread)) return -1;
         while (n) {
             uint64_t want = n > ELF_BOUNCE ? ELF_BOUNCE : n;
             int got = vfs_pread(rd->path, g_bounce, (int)want,
@@ -446,7 +450,8 @@ static int in_runs(const struct elf_run *runs, int nrun, uint64_t va)
  * is skipped, and the host tests go on measuring the eager loader byte for
  * byte. A hard reference would make them a link error instead. */
 int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
-                           uint32_t prot, int fh, uint64_t foff) __attribute__((weak));
+                           uint32_t prot, int fh, uint64_t foff) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vma_reserve_file_fixed);
 
 /* Allocate + map one zeroed user page at `va`. Returns 0 on OOM, 1 if a page
  * was already there, 2 if this call allocated one. Skips the allocation if
@@ -884,7 +889,7 @@ int elf_load_reader(const struct elf_reader *rd, struct elf_image *out,
      * the eager path is still right -- it is merely more expensive. */
     struct elf_run runs[ELF_MAX_RUNS];
     int nrun = 0;
-    if (src && src->fh >= 0 && vma_reserve_file_fixed) {
+    if (src && src->fh >= 0 && LOGIT_HAVE(vma_reserve_file_fixed)) {
         int want = elf_file_runs(ph, phnum, src->base_off, src->file_pages,
                                  runs, ELF_MAX_RUNS);
         int kept = 0;

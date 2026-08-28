@@ -10,6 +10,7 @@
 #include "vfs_path.h"
 #include "vfs_meta.h"
 #include "vfsctl.h"     /* the VFS's own control + introspection nodes under /dev */
+#include "../../include/weaksym.h"  /* every weak declaration below goes through it */
 
 /* Synthetic files come first. They are served by the kernel itself (no disk, no
  * inode) and every one of them returns SYN_NOT_MINE for a path it does not
@@ -24,27 +25,39 @@
  * hard #include makes this file -- which every path in the kernel goes through
  * -- fail to compile whenever that line is mid-landing. Weak symbols say what
  * is actually true: "if kdiag is linked in, ask it first". The host unit tests
- * define these strongly and are unaffected. */
+ * define these strongly and are unaffected.
+ *
+ * Spelled LOGIT_WEAK since 2026-08-28. An undefined weak reference is an ELF
+ * property; on the Mach-O dev host it is a hard link error, and test-vfs-mount
+ * -- which links this file precisely so the shipping permission code is the
+ * code under test -- died at link on kdiag_*, vfs_cred_pid, vfs_note_refusal
+ * and vfs_cred_ingroup. include/weaksym.h says what replaced it. */
 #define SYN_NOT_MINE (-2)
 
-int         kdiag_size(const char *path) __attribute__((weak));
-int         kdiag_read(const char *path, void *buf, int max) __attribute__((weak));
-int         kdiag_write(const char *path, const void *buf, int len) __attribute__((weak));
-int         kdiag_dir_count(const char *dir) __attribute__((weak));
-const char *kdiag_dir_name(const char *dir, int i) __attribute__((weak));
-int         kdiag_dir_size(const char *dir, int i) __attribute__((weak));
+int         kdiag_size(const char *path) LOGIT_WEAK;
+int         kdiag_read(const char *path, void *buf, int max) LOGIT_WEAK;
+int         kdiag_write(const char *path, const void *buf, int len) LOGIT_WEAK;
+int         kdiag_dir_count(const char *dir) LOGIT_WEAK;
+const char *kdiag_dir_name(const char *dir, int i) LOGIT_WEAK;
+int         kdiag_dir_size(const char *dir, int i) LOGIT_WEAK;
+LOGIT_WEAK_STUB(kdiag_size);
+LOGIT_WEAK_STUB(kdiag_read);
+LOGIT_WEAK_STUB(kdiag_write);
+LOGIT_WEAK_STUB(kdiag_dir_count);
+LOGIT_WEAK_STUB(kdiag_dir_name);
+LOGIT_WEAK_STUB(kdiag_dir_size);
 
-static int k_size(const char *p)  { return kdiag_size ? kdiag_size(p) : SYN_NOT_MINE; }
+static int k_size(const char *p)  { return LOGIT_HAVE(kdiag_size) ? kdiag_size(p) : SYN_NOT_MINE; }
 static int k_read(const char *p, void *b, int m)
-{ return kdiag_read ? kdiag_read(p, b, m) : SYN_NOT_MINE; }
+{ return LOGIT_HAVE(kdiag_read) ? kdiag_read(p, b, m) : SYN_NOT_MINE; }
 static int k_write(const char *p, const void *b, int n)
-{ return kdiag_write ? kdiag_write(p, b, n) : SYN_NOT_MINE; }
+{ return LOGIT_HAVE(kdiag_write) ? kdiag_write(p, b, n) : SYN_NOT_MINE; }
 static int k_dir_count(const char *d)
-{ return kdiag_dir_count ? kdiag_dir_count(d) : SYN_NOT_MINE; }
+{ return LOGIT_HAVE(kdiag_dir_count) ? kdiag_dir_count(d) : SYN_NOT_MINE; }
 static const char *k_dir_name(const char *d, int i)
-{ return kdiag_dir_name ? kdiag_dir_name(d, i) : 0; }
+{ return LOGIT_HAVE(kdiag_dir_name) ? kdiag_dir_name(d, i) : 0; }
 static int k_dir_size(const char *d, int i)
-{ return kdiag_dir_size ? kdiag_dir_size(d, i) : SYN_NOT_MINE; }
+{ return LOGIT_HAVE(kdiag_dir_size) ? kdiag_dir_size(d, i) : SYN_NOT_MINE; }
 
 /* --------------------------------------------------------------------------
  * The mount table
@@ -101,8 +114,9 @@ static int fs_rename(struct filesystem *f, const char *o, const char *n)
  * same reason kdiag above is: c/fs/vfs_cred.c is a kernel TU and the host unit
  * tests link this file without it. Absent, every caller shares the boot default
  * mask, which is what the machine did before umask existed. */
-int vfs_cred_pid(void) __attribute__((weak));
-static int cur_pid(void) { return vfs_cred_pid ? vfs_cred_pid() : 0; }
+int vfs_cred_pid(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_cred_pid);
+static int cur_pid(void) { return LOGIT_HAVE(vfs_cred_pid) ? vfs_cred_pid() : 0; }
 
 /* The page cache's write barrier (c/kernel/mm/pcache.c, c/kernel/mm/pcache.h).
  * Weak for the same reason kdiag and vfs_cred_pid are: tests/unit/vfs_mount_test.c
@@ -113,9 +127,10 @@ static int cur_pid(void) { return vfs_cred_pid ? vfs_cred_pid() : 0; }
  * since a host VFS test never brought a page cache up and has nothing to
  * invalidate. In the kernel build, and in `make test-mm` (which links pcache.c
  * but not this file), the real symbol binds. */
-void pcache_invalidate_path(const char *path) __attribute__((weak));
+void pcache_invalidate_path(const char *path) LOGIT_WEAK;
+LOGIT_WEAK_STUB(pcache_invalidate_path);
 static void pc_invalidate(const char *path)
-{ if (pcache_invalidate_path) pcache_invalidate_path(path); }
+{ if (LOGIT_HAVE(pcache_invalidate_path)) pcache_invalidate_path(path); }
 
 static int  s_len(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 static int  s_eq(const char *a, const char *b)
@@ -358,7 +373,8 @@ static void attrs_of(const char *abs, struct vattr *a)
  * the file itself has a record. */
 /* Set by the kernel (file.c); absent in host test binaries. See below. */
 void vfs_note_refusal(const char *dir, unsigned mode, unsigned ouid, unsigned ogid,
-                      unsigned cuid, unsigned cgid) __attribute__((weak));
+                      unsigned cuid, unsigned cgid) LOGIT_WEAK;
+LOGIT_WEAK_STUB(vfs_note_refusal);
 
 static int check_parent_write(const char *abs, const struct vcred *c)
 {
@@ -374,7 +390,7 @@ static int check_parent_write(const char *abs, const struct vcred *c)
      * the report exonerates the bug. Weak, and reported through a hook rather
      * than kprintf, because this file deliberately has no kernel headers --
      * it is linked into host tests that have no console at all. */
-    if (p < 0 && vfs_note_refusal)
+    if (p < 0 && LOGIT_HAVE(vfs_note_refusal))
         vfs_note_refusal(dir, (unsigned)a.mode, (unsigned)a.uid, (unsigned)a.gid,
                          (unsigned)c->uid, (unsigned)c->gid);
     return p;

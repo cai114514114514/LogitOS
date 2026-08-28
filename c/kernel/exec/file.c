@@ -19,6 +19,7 @@
                          * NOT "poll.h" -- mini-libc owns that basename and
                          * INCDIRS is flat; kpoll.h's own header says why. */
 #include "pit.h"        /* timerfd: the 100 Hz tick IS its clock */
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 void *memcpy(void *, const void *, size_t);
 
@@ -27,15 +28,19 @@ void *memcpy(void *, const void *, size_t);
  * reference would make every one of them fail to link over a type they never
  * create. NULL here means "this build has no sockets", which read/write already
  * report as -1. */
-long lsock_file_read(struct file *f, void *buf, long len) __attribute__((weak));
-long lsock_file_write(struct file *f, const void *buf, long len) __attribute__((weak));
-void lsock_file_release_backing(void *backing) __attribute__((weak));
+long lsock_file_read(struct file *f, void *buf, long len) LOGIT_WEAK;
+long lsock_file_write(struct file *f, const void *buf, long len) LOGIT_WEAK;
+void lsock_file_release_backing(void *backing) LOGIT_WEAK;
+LOGIT_WEAK_STUB(lsock_file_read);
+LOGIT_WEAK_STUB(lsock_file_write);
+LOGIT_WEAK_STUB(lsock_file_release_backing);
 /* The readiness half of the same seam, and the ONE function the network line
  * has to write for a socket to become pollable. Same weak treatment and the
  * same meaning when absent: this build has no sockets. Its exact contract --
  * which queue to register on for a connection and for a listener -- is in
  * c/kernel/exec/kpoll.h, written for whoever picks it up. */
-short lsock_file_poll(struct file *f, struct poll_table *pt) __attribute__((weak));
+short lsock_file_poll(struct file *f, struct poll_table *pt) LOGIT_WEAK;
+LOGIT_WEAK_STUB(lsock_file_poll);
 
 /* --------------------------------------------------------------------------
  * WHAT THE CONSOLE WAIT COSTS.
@@ -542,7 +547,7 @@ short file_poll(struct file *f, struct poll_table *pt)
          * second parks it forever. mini-libc's old poll() made the second
          * choice for pipes and said so in its own header; this does not repeat
          * it. The one function that closes this is named in kpoll.h. */
-        return lsock_file_poll ? lsock_file_poll(f, pt) : LPOLLNVAL;
+        return LOGIT_HAVE(lsock_file_poll) ? lsock_file_poll(f, pt) : LPOLLNVAL;
     }
     return LPOLLNVAL;
 }
@@ -772,8 +777,9 @@ static void open_refused(const char *path, const char *gate, int flags)
  * no filesystem layer at all, and a hard reference would make every one of
  * them fail to link over a facility they never mount. Absent, this is 0 and
  * every file behaves exactly as it did before /proc existed. */
-int procfs_owns_path(const char *abs) __attribute__((weak));
-static int is_generated(const char *p) { return procfs_owns_path ? procfs_owns_path(p) : 0; }
+int procfs_owns_path(const char *abs) LOGIT_WEAK;
+LOGIT_WEAK_STUB(procfs_owns_path);
+static int is_generated(const char *p) { return LOGIT_HAVE(procfs_owns_path) ? procfs_owns_path(p) : 0; }
 /* KNOWN LIMIT, stated rather than found later: this asks about the path the
  * SYSCALL LAYER handed us -- absolute and with "." and ".." collapsed by
  * proc_resolve, but with symlinks NOT expanded. A symlink pointing into /proc
@@ -981,7 +987,7 @@ long file_read(struct file *f, void *buf, long len)
     if (f->type == F_PIPE)  return pipe_read(f, buf, len);
     if (f->type == F_TTY)   return tty_read(f, buf, len);
     if (f->type == F_EVENT) return evt_read(f, buf, len);
-    if (f->type == F_SOCK)  return lsock_file_read ? lsock_file_read(f, buf, len) : -1;
+    if (f->type == F_SOCK)  return LOGIT_HAVE(lsock_file_read) ? lsock_file_read(f, buf, len) : -1;
     return -1;
 }
 
@@ -1011,7 +1017,7 @@ long file_write(struct file *f, const void *buf, long len)
     if (f->type == F_PIPE)  return pipe_write(f, buf, len);
     if (f->type == F_TTY)   return tty_write(f, buf, len);
     if (f->type == F_EVENT) return evt_write(f, buf, len);
-    if (f->type == F_SOCK)  return lsock_file_write ? lsock_file_write(f, buf, len) : -1;
+    if (f->type == F_SOCK)  return LOGIT_HAVE(lsock_file_write) ? lsock_file_write(f, buf, len) : -1;
     return -1;
 }
 
@@ -1113,7 +1119,7 @@ void file_close(struct file *f)
          * listener/connection underneath -- so a dup'd or forked socket fd stays
          * live until every copy is gone, exactly like every other type here.
          * f->backing was cleared above, hence the local copy. */
-        if (lsock_file_release_backing) lsock_file_release_backing(backing);
+        if (LOGIT_HAVE(lsock_file_release_backing)) lsock_file_release_backing(backing);
     } else if (type == F_EVENT) {
         struct eventobj *e = (struct eventobj *)backing;
         if (e) {

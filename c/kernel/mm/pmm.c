@@ -6,11 +6,13 @@
 #include "mmhost.h"
 #include "spinlock.h"
 #include "kprintf.h"
+#include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* The out-of-memory recorder (c/kernel/mm/oom.h). Weak for the reason given at
  * the same declaration in fault.c: this file is compiled by host harnesses with
  * no process table behind them. */
-void oom_alloc_fail(void) __attribute__((weak));
+void oom_alloc_fail(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(oom_alloc_fail);
 
 /* M25 P1/P2: the physical frame allocator is peeled out from under the BKL --
  * pmm_alloc/free/alloc_contig take their own lock so BKL-free paths on other
@@ -460,7 +462,7 @@ uint64_t pmm_alloc(void)
      * and mm_report() already printed the total, but nothing said a word at the
      * instant the machine first ran out, so the first refusal of a run was
      * invisible until somebody thought to ask for a report. */
-    if (!ret && oom_alloc_fail) oom_alloc_fail();
+    if (!ret && LOGIT_HAVE(oom_alloc_fail)) oom_alloc_fail();
     return ret;
 }
 
