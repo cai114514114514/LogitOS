@@ -4314,6 +4314,37 @@ test-time-smp: $(ISO) $(DISK)
 clean:
 	rm -rf $(BUILD)
 
+# EVERY AGENT'S SCRATCH TREE, IN ONE COMMAND. Not tidiness -- a measurement.
+#
+# Eight parallel workflows ran on 2026-08-28/29, each correctly given its own
+# BUILD dir because several makes sharing one build/ make targets fail for
+# reasons that have nothing to do with the code under test (CLAUDE.md: "a sweep
+# that manufactures bugs", which is worse than missing them). That was right.
+# What nobody owned was the other end: by morning there were 110 of them
+# holding 22 GB, and `git status` listed 262 entries with the real signal -- a
+# staged deletion, an uncommitted test -- somewhere inside that.
+#
+# .gitignore already carries build-*/ and refute-*/ and the story of the two
+# earlier times this happened. A pattern keeps them out of git; it does not get
+# them off the disk, and the person who has to type a glob at 2am types it
+# wrong. Hence a target.
+#
+# IT DELIBERATELY DOES NOT TOUCH $(BUILD). build/ holds the fetched corpora --
+# 13 GB of js-framework-benchmark and 254 MB of WPT at pinned revisions -- and
+# re-fetching them is a network operation that a cleanup command has no
+# business triggering. `make clean` is still the one that takes build/.
+.PHONY: clean-scratch
+clean-scratch:
+	@n=$$(ls -d build-* wbuild refute-* 2>/dev/null | wc -l | tr -d ' '); \
+	 if [ "$$n" = "0" ]; then echo "clean-scratch: nothing to remove"; else \
+	   sz=$$(du -sk build-* wbuild refute-* 2>/dev/null | awk '{s+=$$1} END{ \
+	         if (s > 1048576) printf "%.1f GB", s/1048576; \
+	         else if (s > 1024) printf "%.0f MB", s/1024; \
+	         else printf "%d KB", s }'); \
+	   rm -rf build-* wbuild refute-*; \
+	   echo "clean-scratch: removed $$n scratch tree(s), $$sz  ($(BUILD)/ and its fetched corpora untouched)"; \
+	 fi
+
 # Header-dependency fragments emitted by -MMD (kernel AND app objects). A stale
 # object compiled against an old struct layout is memory corruption at runtime.
 #
