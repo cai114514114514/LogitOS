@@ -4468,8 +4468,26 @@ void app_main(void)
                          * hist_replace vs hist_push. Refused while the bar is
                          * being edited (a half-typed address is not "the
                          * current page") and on an empty bar (nothing has
-                         * loaded yet, freshly booted or a bare new tab). */
-                        if (!editing && url[0]) { load(url); navigated = 1; }
+                         * loaded yet, freshly booted or a bare new tab).
+                         *
+                         * RELOAD BYPASSES THE HTTP CACHE (webaccel,
+                         * 2026-08-30). load() alone is indistinguishable
+                         * from a link navigation at the fetcher's layer --
+                         * same door, same flags -- so without this arm a
+                         * reload serves heuristic-fresh subresources from
+                         * memory, which is what any OTHER revisit does but
+                         * is not what a user asking the server again means
+                         * (RFC 9111's reload semantics). bfetch_set_bypass
+                         * closes both doors for the duration of the load:
+                         * no lookups, no stores. Minimal edit inside this
+                         * branch on purpose; the rest of load() is anim's
+                         * and is not touched. */
+                        if (!editing && url[0]) {
+                            bfetch_set_bypass(1);
+                            load(url);
+                            bfetch_set_bypass(0);
+                            navigated = 1;
+                        }
                         handled = 1;
                     } else if (c == 'f') {                       /* find in page */
                         /* browser_paint_text_find()'s own comment says the

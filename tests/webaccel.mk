@@ -72,9 +72,9 @@ ci-host: test-webaccel
 # Local fixtures served from the host: no live network, deterministic bytes
 # (tests/fixtures/webaccel/gen.py is seeded), so the gate cannot redden
 # because a site shipped a new bundle overnight.
-test-webaccel-os: test-webaccel-os-negctl
+test-webaccel-os: test-webaccel-os-negctl $(ISO) $(DISK)
 	python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(DISK) \
-	    --rv --out $(BUILD)/wa-os.json
+	    --rv --reload-probe --out $(BUILD)/wa-os.json
 
 # --- guest negctl: the browser with the cache COMPILED OUT --------------------
 # browser_rt.c rebuilt with -DWACACHE_OFF (every wacache_* becomes its refusal
@@ -102,11 +102,18 @@ test-webaccel-os-negctl: $(ISO) $(BUILD)/browser-waoff.aex
 	python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(BUILD)/disk-waoff.img \
 	    --out $(BUILD)/wa-os-negctl.json --expect-off
 
-# WATCHED RED, guest side, recorded 2026-08-30 on disk-waoff.img: visit 2
-# printed "[wa] ... loadend reqs=14 dials=2 ... hits=0" and the driver exited
-# nonzero with "GATE RED: visit 2 dialled 2 and served 0/14 from cache -- the
-# cache did not carry the revisit" -- the exact sentence the positive gate
-# exists to keep unsaid.
+# WATCHED RED, guest side, recorded 2026-08-30 on disk-waoff.img (exit 0 from
+# --expect-off, the redness being the expected kind): visit 2 printed
+# "[wa] ... loadend reqs=22 dials=2 ... hits=0" and the driver said
+# "NEGCTL RED AS EXPECTED: visit 2 dialled 2 and served 0/22 from cache --
+# compiled out is indistinguishable from absent".
+#
+# THE RATIO ALONE CANNOT CARRY THIS GATE, and that is a measurement, not a
+# guess: on the same fixture the no-cache run's ratio was 0.759 -- UNDER the
+# 0.8 bound -- versus 0.628 with the cache. 0.13 of ratio separates them,
+# which host contention can eat. The categorical assertions (dials == 0,
+# hits == requests) are the load-bearing half; the ratio is a ratchet against
+# engine-side regressions, ordered AFTER them on purpose.
 #
 # NOT on ci-boot (deliberately, unlike docwrite's boot pair): the positive
 # guest gate is a full QEMU boot and the negctl is a second one; ci-boot

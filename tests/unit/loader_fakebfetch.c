@@ -210,4 +210,10 @@ void bfetch_set_tick(void (*fn)(void)) { g_tick = fn; }
 void bfetch_stats(int *d, int *r, int *q) { if (d) *d = g_dials; if (r) *r = g_reuses; if (q) *q = g_requests; }
 void bfetch_pool_stats(int *h, int *e, int *c) { if (h) *h = 0; if (e) *e = 0; if (c) *c = 0; }
 void bfetch_reset_stats(void) { g_dials = g_reuses = g_requests = 0; }
+/* The http cache's reload door (webaccel, 2026-08-30). browser.c's ctrl+R
+ * arms it around load(); this fake has no cache to bypass, so the flag is
+ * accepted and dropped. Present because this file's contract is "everything
+ * in bfetch.h that browser.c calls" -- the link broke the moment the call
+ * landed, which is the honest way to learn a fake has drifted. */
+void bfetch_set_bypass(int on) { (void)on; }
 void bfetch_close_all(void) { }

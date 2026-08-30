@@ -46,10 +46,17 @@
  * WHAT IT DELIBERATELY IS NOT: persistent. It is process memory, gone at
  * exit; the storage wave's SYS_FTRUNCATE makes a disk-backed cache possible
  * and that is a later wave's job. Not authenticated-request-aware beyond the
- * Set-Cookie clamp. Not a shared cache. reload() cannot bypass it yet --
- * browser.c's ctrl+R calls load() with no distinguishing signal; the knob
- * exists (bfetch_set_bypass) and the one-line browser.c diff is in the
- * webaccel report until that file's owner lands it. */
+ * Set-Cookie clamp. Not a shared cache. Redirect HOP TARGETS are never
+ * cache-served: the cache is consulted when a request is armed, and a hop
+ * re-queues straight to the network (validators cleared, so url-A's ETag can
+ * never ask url-B for a 304) -- the hop target's real bytes arrive and are
+ * stored under their own URL; serving B from memory mid-chain would save one
+ * request and cost a second request-identity rule, and the first measured
+ * corpus redirect chains are short enough that it buys nothing. reload()
+ * cannot bypass it yet -- browser.c's ctrl+R calls load() with no
+ * distinguishing signal; the knob exists (bfetch_set_bypass) and the
+ * one-line browser.c diff is in the webaccel report until that file's owner
+ * lands it. */
 
 /* Wipe every entry (memory pressure, tests). NOT called on navigation. */
 void wacache_reset(void);

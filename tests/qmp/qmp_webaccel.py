@@ -148,8 +148,21 @@ def parse_visit(text):
     """One navigation's events, from its '[browser] load:' line to 'load done'."""
     ev = {"t_nav": None, "t_docdone": None, "t_t0": None, "t_end": None,
           "t_loadend": None, "loadend_counts": None,
-          "idles": [], "loaddone": None, "wm": []}
+          "idles": [], "loaddone": None, "wm": [],
+          "tls_full": 0, "tls_resumed": 0, "tls_tickets": 0}
     for ln in text.splitlines():
+        # TLS evidence (live runs): a full handshake prints "chain of N
+        # verified", a resumed one "resumed session", and a NewSessionTicket
+        # receipt prints "ticket stored".
+        if ln.startswith("[tls] chain of"):
+            ev["tls_full"] += 1
+            continue
+        if ln.startswith("[tls] resumed session"):
+            ev["tls_resumed"] += 1
+            continue
+        if ln.startswith("[tls] ticket stored"):
+            ev["tls_tickets"] += 1
+            continue
         m = WA_RE.search(ln)
         if m:
             if m.group(2) == "nav":
@@ -246,6 +259,14 @@ def main():
                          ">1 s between (its resources are max-age=1), gating "
                          "that visit 2 revalidated (304s, rvs>0) and still "
                          "rendered")
+    ap.add_argument("--reload-probe", action="store_true",
+                    help="after the visits, Ctrl+R the page and require that "
+                         "the loadend line shows dials>0 and hits=0 -- the "
+                         "reload bypass really goes to the network. This is "
+                         "the watched-green half of browser.c's ctrl+R "
+                         "bfetch_set_bypass arm; without that arm the probe "
+                         "fails (a reload served from cache would show "
+                         "hits==reqs, dials=0)")
     args = ap.parse_args()
 
     for p, what in ((args.iso, "iso"), (args.disk, "disk")):
@@ -308,16 +329,29 @@ def main():
         sys.exit(code)
 
     def navigate_and_capture(page, label, settle=SETTLE):
-        """Ctrl+L, type, Enter; return the serial slice for ONE load."""
+        """Ctrl+L, type, Enter; return the serial slice for ONE load.
+        `page` is a fixture name (served from 10.0.2.2) OR a full URL -- the
+        full-URL form is how the LIVE two-visit TLS measurement runs: the
+        first visit pays full handshakes, the second rides ticket resumption
+        plus this cache, and the serial's [tls] lines name which happened."""
         mark = len(serial())
         ui.key_mods(["ctrl"], "l")
         time.sleep(0.3)
-        ui.typ("http://10.0.2.2:%d/%s" % (port, page))
+        target = page if page.startswith("http") else \
+            "http://10.0.2.2:%d/%s" % (port, page)
+        ui.typ(target)
         ui.key("ret")
         if not wait_for("[browser] load: ", 20.0, mark):
             finish(2, "%s: the address bar never took the URL" % label)
-        if not wait_for("WA-END ", LOAD_BUDGET, mark):
-            finish(2, "%s: the page never stamped WA-END (load did not finish)" % label)
+        # A fixture page stamps WA-END from its own last script; a LIVE page
+        # cannot, so its load-end is "[browser] load done" -- one wm-perf
+        # second coarser, stated in the table, and only ever used for the
+        # ungated live diagnosis runs.
+        done_needle = "WA-END " if not target.startswith("http") \
+            else "[browser] load done"
+        if not wait_for(done_needle, LOAD_BUDGET, mark):
+            finish(2, "%s: the page never finished (%s never appeared)"
+                  % (label, done_needle))
         time.sleep(settle)
         return serial()[mark:]
 
@@ -355,6 +389,18 @@ def main():
             time.sleep(2.5)                      # past max-age=1: now STALE
             rv2 = parse_visit(navigate_and_capture("rv.html", "rv visit 2"))
             rec["rv"] = [rv1, rv2]
+
+        # ---- the reload probe: Ctrl+R must go to the network --------------
+        if args.reload_probe:
+            mark = len(serial())
+            ui.key_mods(["ctrl"], "r")
+            if not wait_for("[browser] load: ", 20.0, mark):
+                finish(2, "reload-probe: ctrl+R never started a load")
+            if not wait_for("[browser] load done", LOAD_BUDGET, mark):
+                finish(2, "reload-probe: the reload never finished")
+            time.sleep(SETTLE)
+            rl = parse_visit(serial()[mark:])
+            rec["reload"] = rl
 
         for name, v in (("visit 1", v1), ("visit 2", v2)):
             print("== %s ==" % name)
@@ -448,9 +494,35 @@ def main():
             print("rv corner: visit 2 rvs=%d dials=%d (conditional 304s "
                   "answered from cache, page complete)"
                   % (lc_rv2[6], lc_rv2[1]))
+        if args.reload_probe:
+            rl = rec["reload"]
+            lc_rl = rl["loadend_counts"]
+            # hits/rvs in the loadend line are PROCESS-CUMULATIVE (they count
+            # every serve since boot), so "hits must be 0" was the first draft
+            # of this assertion and it was wrong: a reload that bypassed
+            # perfectly still shows the earlier visits' hits. The honest test
+            # is a DELTA against the last loadend before the chord: no NEW
+            # hits (nothing served from memory) and dials > 0 (the network
+            # answered). The pre-reload baseline is the rv corner's last
+            # visit when --rv ran, else visit 2.
+            prior = (rec.get("rv") or rec["visits"])[-1]["loadend_counts"]
+            prior_hits = prior[5] if prior else None
+            ok_rl = (lc_rl is not None and lc_rl[1] > 0
+                     and prior_hits is not None and lc_rl[5] == prior_hits)
+            rec["gate"]["ok_reload"] = ok_rl
+            if not ok_rl:
+                finish(1, "GATE RED: reload did not bypass -- loadend %s "
+                          "(dials must be >0 and hits must not have grown "
+                          "past %s; grew-to-%s means ctrl+R served from "
+                          "cache)" % (lc_rl, prior_hits,
+                                      lc_rl[5] if lc_rl else "?"))
+            print("reload probe: dials=%d, hits %d->%d (unchanged; the "
+                  "network answered)" % (lc_rl[1], prior_hits, lc_rl[5]))
         finish(0, "GATE GREEN: second visit %.1f%% of first, dials %s->0, "
-                  "%d cache hits%s" % (ratio * 100, dials1, hits2,
-                                       ", rv corner green" if args.rv else ""))
+                  "%d cache hits%s%s"
+                  % (ratio * 100, dials1, hits2,
+                     ", rv corner green" if args.rv else "",
+                     ", reload bypassed" if args.reload_probe else ""))
     finally:
         try:
             proc.kill()
