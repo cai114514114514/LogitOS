@@ -61,9 +61,19 @@ void text_init(void)
      * these two files existed -- and in tests/unit/refhost, which maps only
      * /fonts/ui.ttf and /fonts/mono.ttf to host paths -- a bold request
      * degrades to exactly the font set a regular request gets, which is
-     * byte-for-byte what this file did before it learned about weight. */
+     * byte-for-byte what this file did before it learned about weight.
+     *
+     * THE NEGATIVE CONTROL for the guest gate is built by suppressing these
+     * two loads (-DLOGIT_BOLD_NO_FACE, make test-bold-page-negctl in
+     * tests/bold.mk). That reproduces the pre-bold machine exactly -- the
+     * degradation argument above IS the sabotage -- so
+     * tests/qmp/qmp_bold_page.py, which asserts bold > regular in advance
+     * and ink, must go red on it. An assertion nobody has watched fail is
+     * not a known-failing assertion; the ifdef exists to be watched. */
+#ifndef LOGIT_BOLD_NO_FACE
     load_font("/fonts/ui-bold.ttf", F_UI_B);
     load_font("/fonts/mono-bold.ttf", F_MONO_B);
+#endif
 }
 
 /* --- glyph cache (open addressing with hash-slot eviction) --- */

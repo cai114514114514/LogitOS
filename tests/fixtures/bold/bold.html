@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- The bold gate page. Served by tests/qmp/qmp_bold_page.py over SLIRP and
+     measured off the screendump; every band is a unique odd solid colour so
+     the driver can find it without OCR or hardcoded coordinates (the same
+     trick as tests/fixtures/css-fidelity's pages).
+
+     Two kinds of band:
+       the SPECIMEN line is the gate statement verbatim --
+           abc <b>abc</b> <strong>def</strong>
+           <span style="font-weight:700">ghi</span> <code>x<b>y</b></code>
+       -- with a plain-text CONTROL line of the same words below it, so the
+       pair answers "did marking half this line up actually put more ink on
+       the glass than the identical unmarked line?".
+
+       The R*/B* bands are the MEASUREMENT pairs: one string as plain text,
+       the same string in each of the three ways css_engine.c sets o->bold
+       (<b>, <strong>, numeric font-weight:700), plus the mono pair for
+       <code>, where the claim is different: bold mono must keep the mono
+       ADVANCE (the box must not widen) while putting down more ink.
+
+     Every band carries the same padding and font-size, which is what makes
+     the R1/B1 TOP-ink comparison a vertical-metrics check: the kernel places
+     the baseline at hhea.ascent of the run's first font, so a bold face whose
+     ascent differed from its regular twin's would sit the B1 glyphs higher or
+     lower inside an otherwise identical band. -->
+<html><head><title>boldgate</title><style>
+html, body { background: #ffffff; margin: 0; padding: 0; color: #000000; }
+p, div { margin: 0; padding: 4px 10px; font-size: 24px; }
+</style></head>
+<body>
+<p style="background:#fe0305">abc <b>abc</b> <strong>def</strong> <span style="font-weight:700">ghi</span> <code>x<b>y</b></code></p>
+<p style="background:#05fe03">abc abc def ghi xy</p>
+<div style="background:#0305fe">abc</div>
+<div style="background:#fe05fa"><b>abc</b></div>
+<div style="background:#05fafe">def</div>
+<div style="background:#fafe05"><strong>def</strong></div>
+<div style="background:#fefa05">ghi</div>
+<div style="background:#0505fa"><span style="font-weight:700">ghi</span></div>
+<!-- The mono pair answers a different question, so it is built differently:
+     two runs per band (adjacent elements keep the runs split -- see the [dl]
+     dump), because a run's START is advance-pure where its ink edges are
+     not: n_x - m_x is exactly the advance of the m run at its weight. The
+     bold band bolds the FIRST glyph, so the delta measures the BOLD mono
+     advance; it must equal the regular band's delta to the pixel. The
+     bands' own width is useless here (block bands are viewport-wide), which
+     is why the assertion lives in the serial, not the screendump. -->
+<div style="background:#fa05fe"><code>m</code><code>n</code></div>
+<div style="background:#05fefa"><code><b>m</b>n</code></div>
+</body></html>
