@@ -5082,3 +5082,4 @@ test-mk-wired:
 -include tests/crashhunt.mk
 -include tests/webaccel.mk
 -include tests/grender.mk
+-include tests/zaiblank.mk
