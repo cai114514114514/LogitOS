@@ -25,9 +25,10 @@
  * count it expects -- before a single handshake is attempted.
  *
  * `logit_nroots` is deliberately the only thing asserted: it is the exact bound
- * of both trust loops (c/net/tls/x509.c:422 is_pinned_root, :447
- * signed_by_root), so it is the number whose being zero is what makes
- * x509_verify_chain return X509_E_UNTRUSTED at x509.c:534-536. Anything else
+ * of both trust loops (c/net/tls/x509.c:420 is_pinned_root, :439
+ * signed_by_root -- line numbers moved by the 2026-08-30 path-building
+ * rewrite, commit 0b0b610ab), so it is the number whose being zero is what
+ * makes x509_verify_chain return X509_E_UNTRUSTED at x509.c:629. Anything else
  * about the store would be a proxy for it.
  *
  * usage: roots_count_probe zero|nonzero
