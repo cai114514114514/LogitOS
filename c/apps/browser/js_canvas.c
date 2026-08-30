@@ -201,6 +201,7 @@
 #include "quickjs.h"
 #include "dom.h"
 #include "js_dom.h"
+#include "layout.h"
 #include "gfx.h"
 #include "img.h"
 /* c/net/ssh/base64.h -- the tree's one C base64, reached through the flat
@@ -208,7 +209,165 @@
  * this is not the basename-collision trap CLAUDE.md's layout section names. */
 #include "base64.h"
 
+/* drawImage's <img> source reaches the decoded bitmap through the layout
+ * display list -- the SAME pointer browser_paint.c blits for IT_IMAGE. layout.c
+ * is not on this file's host link (tests/canvas.mk excludes it: it calls
+ * text_measure, a ring-3 syscall every host harness defines for itself), so the
+ * reference is weak, the js_dom.c seam this file's header already documents for
+ * layout_count/layout_items. Relative path per weaksym.h's own rule: host gates
+ * build with narrow -I lists. */
+#include "../../include/weaksym.h"
+extern const struct item *layout_items(void) LOGIT_WEAK;
+extern int layout_count(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_items);
+LOGIT_WEAK_STUB(layout_count);
+
 int printf(const char *, ...);
+
+/* ------------------------------------------------------------- the fonts --
+ * TEXT NEEDS c/lib/text, AND THE BROWSER DOES NOT LINK IT. The guest link
+ * (Makefile:1033) is ENGINE_OBJ (QuickJS + libm + mini-libc) + BROWSER_JS_OBJ
+ * + BROWSER_OBJ + CSS_OBJ + GFX_OBJ + RUST_LIB -- c/lib/text is in none of
+ * them: page text has always been drawn by the KERNEL through gui_text_run,
+ * so ring 3 never needed a font. A canvas needs glyphs rasterised into an
+ * OFFSCREEN RGBA surface, which is a different consumer than a window blit,
+ * and the shaper must come to it.
+ *
+ * The Makefile cannot be edited from this file's change (a shared tree, and
+ * every browser link line is contested), so the library rides in TEXTUALLY --
+ * the js_wasm.c pattern (js_wasm.c:116 includes c/lib/wasm's three .c files
+ * for exactly this reason, and its own comment is the argument). Consequences,
+ * named rather than discovered:
+ *
+ *   - These symbols become js_canvas.o's globals. No other TU on EITHER link
+ *     defines them (checked: the only same-named function anywhere in the
+ *     browser, js_url.c's utf8_next, is `static`), and the kernel's copy of
+ *     c/lib/text lives in a different binary.
+ *   - The included files are freestanding-clean (they compile into the kernel
+ *     beside c/kernel/gui/text.c), so the guest build needs nothing new.
+ *   - glyphras.c is deliberately NOT here: its gr_* statics are sized for the
+ *     kernel glyph cache and its build_path is static besides. What is reused
+ *     is the PATTERN -- outline to gfx_path, per point, CTM per point at the
+ *     caller -- which is re-expressed below against canvas's own CTM rule
+ *     (the file header's "the path's matrix stays identity here" note).
+ *
+ * Ordering matters only once: cff.c before ttf.c, because ttf.c calls
+ * cff_parse for CFF outlines and C comes from whichever TU saw a prototype. */
+#include "shape.h"
+#include "utf8.c"
+#include "cff.c"
+#include "ttf.c"
+#include "otlayout.c"
+#include "script.c"
+#include "bidi.c"
+#include "shape.c"
+
+/* Reading the font bytes differs by world, and the split is the one every
+ * ring-3-capable js_*.c here already uses (js_webapi.c:38, js_dom.c:45,
+ * js_platform.c:58, js_websocket.c:66): the syscall path is compiled only
+ * when WEBAPI_HOST is absent, which is how this one TU keeps building in
+ * tests/canvas.mk's host harness. */
+#ifndef WEBAPI_HOST
+#include "logit.h"              /* read_file(): ring 3's whole-file read */
+#else
+#include <stdio.h>              /* the host harness runs from the repo root */
+#endif
+
+/* The four shipped faces (fsroot/fonts/README.md): Noto Sans SC subsets with
+ * GB2312 + ASCII (ui / ui-bold) and Noto Sans Mono subsets with printable
+ * ASCII (mono / mono-bold). That is the whole map from a canvas `font` string
+ * to a file, and every mapping decision is stated at cv_font_set() below.
+ *
+ * LOADED ON DEMAND, not at install: 2.2 MB per proportional face is real
+ * memory (the image cache's whole budget is 64 MiB against a 320 MiB arena),
+ * and a page that never calls fillText or measureText -- which is most of
+ * them; the qq.com census in the header counted 33 getContext calls and zero
+ * text draws -- must pay none of it. `tried` makes the attempt once per
+ * process per face; a face that fails is reported to the console once and
+ * stays refused rather than being re-read on every fillText.
+ *
+ * The byte budget is a refusal, not a truncation: ttf_parse points into the
+ * buffer, and a font cut off mid-table parses as a broken font, which is a
+ * worse answer than "no text" said out loud. */
+#define CV_FONT_MAX  (3u << 20)     /* largest shipped face is 2,222,264 B */
+#define CV_F_UI      0
+#define CV_F_UI_B    1
+#define CV_F_MONO    2
+#define CV_F_MONO_B  3
+
+struct cv_font {
+    struct ttf_font f;              /* points into `bytes`; parse-once */
+    unsigned char *bytes;
+    int ok, tried;
+};
+static struct cv_font cv_fonts[4];
+
+static const char *cv_font_path(int i)
+{
+    static const char *const P[4] =
+        { "/fonts/ui.ttf", "/fonts/ui-bold.ttf", "/fonts/mono.ttf", "/fonts/mono-bold.ttf" };
+    return P[i];
+}
+
+/* The host twin. fsroot/ is the disk image's source directory and the make
+ * recipes run from the repo root, so a relative open is honest here -- and a
+ * SECOND candidate is tried because a host run from elsewhere (a debugger's
+ * cwd) should still find the same bytes rather than quietly refuse text. */
+#ifdef WEBAPI_HOST
+static unsigned char *cv_font_read_host(const char *rel, int *outn)
+{
+    static const char *const ROOTS[] = { "fsroot/", "" };
+    for (unsigned r = 0; r < sizeof ROOTS / sizeof ROOTS[0]; r++) {
+        char path[128];
+        snprintf(path, sizeof path, "%s%s", ROOTS[r], rel);
+        FILE *fh = fopen(path, "rb");
+        if (!fh) continue;
+        unsigned char *b = (unsigned char *)malloc(CV_FONT_MAX);
+        if (!b) { fclose(fh); return NULL; }
+        size_t n = fread(b, 1, CV_FONT_MAX, fh);
+        fclose(fh);
+        if (n == 0 || n >= CV_FONT_MAX) { free(b); continue; }
+        *outn = (int)n;
+        return b;
+    }
+    return NULL;
+}
+#endif
+
+static int cv_font_load(int i)
+{
+    struct cv_font *v = &cv_fonts[i];
+    if (v->tried) return v->ok;
+    v->tried = 1;
+
+    unsigned char *b = NULL;
+    int n = 0;
+#ifdef WEBAPI_HOST
+    /* The guest's absolute /fonts/... path, minus the mount point, is the
+     * same file in the tree. */
+    b = cv_font_read_host(cv_font_path(i) + 1, &n);
+#else
+    /* read_file is SYS_READ_FILE: vfs_read(path, buf, max), whole file. It
+     * is CAP_FS and the browser process already holds that capability
+     * (browser.c's os_store_read uses the same call for its own storage),
+     * so this is not a new grant. */
+    b = (unsigned char *)malloc(CV_FONT_MAX);
+    if (b) {
+        long r = read_file(cv_font_path(i), b, CV_FONT_MAX);
+        if (r <= 0 || r >= (long)CV_FONT_MAX) { free(b); b = NULL; }
+        else n = (int)r;
+    }
+#endif
+    if (!b || ttf_parse(b, n, &v->f) != 0) {
+        free(b);
+        printf("[canvas] text: %s could not be read or parsed; fillText/"
+               "measureText will draw nothing rather than guess shapes\n",
+               cv_font_path(i));
+        return v->ok = 0;
+    }
+    v->bytes = b;
+    return v->ok = 1;
+}
 
 /* Point budget for one path. gfx latches overflow rather than truncating, so
  * this is a number that gets REPORTED when a page exceeds it, not one that
@@ -237,6 +396,27 @@ struct cv_clip {
     unsigned char *cov;    /* c->w * c->h bytes, device-sized: 255 visible..0 clipped */
 };
 
+/* The text half of the drawing state (font, textBaseline, textAlign -- all
+ * three are saved/restored per the spec, like everything else here).
+ *
+ * THE FONT IS STORED THREE WAYS, and each way exists because the other two
+ * cannot answer its question:
+ *   fontstr  the VERBATIM string the page set, returned by the getter exactly
+ *            as Chrome returns it (including "italic", which this build draws
+ *            upright -- see cv_set_font's comment before changing that).
+ *   px/bold/mono  what the shaper needs; parsed once at set time so a
+ *            fillText in a loop never re-parses the font shorthand.
+ *   tbase/talign  small enums rather than strings so a typo'd value cannot be
+ *            stored as a state this file then has to re-spell at draw time.
+ */
+#define CV_TB_ALPHABETIC 0
+#define CV_TB_TOP        1
+#define CV_TB_MIDDLE     2
+#define CV_TB_BOTTOM     3
+#define CV_TA_START      0
+#define CV_TA_CENTER     1
+#define CV_TA_RIGHT      2
+
 struct cv_state {
     struct gfx_matrix m;
     unsigned char fill[4], stroke[4];
@@ -246,6 +426,10 @@ struct cv_state {
     int miter;                     /* 16.16 */
     int fill_grad, stroke_grad;    /* index into grads[], -1 = solid colour */
     struct cv_clip *clip;          /* NULL = unclipped */
+    int font_px;                   /* whole user pixels; shape_line's contract */
+    int font_bold, font_mono;
+    int tbase, talign;
+    char fontstr[48];              /* verbatim, what the getter returns */
 };
 
 struct cv_grad {
@@ -359,6 +543,9 @@ static void st_reset(struct cv_state *s)
     s->miter = 10 * 65536;
     s->fill_grad = s->stroke_grad = -1;
     s->clip = NULL;
+    s->font_px = 10; s->font_bold = s->font_mono = 0;
+    s->tbase = CV_TB_ALPHABETIC; s->talign = CV_TA_START;
+    strcpy(s->fontstr, "10px sans-serif");
 }
 
 static void clip_unref(struct cv_clip *cl)
@@ -622,9 +809,546 @@ static void do_stroke(struct canvas2d *c, struct gfx_path *path)
     }
 }
 
-/* ------------------------------------------------------- context methods -- */
+/* ------------------------------------------------------------------ text -- *
+ *
+ * measureText / fillText / strokeText, over the same shaper the kernel draws
+ * page text with (c/lib/text, textually included above). ONE function lays
+ * out a string for both the measure and the draw -- shape_line -- so the two
+ * cannot drift the way a per-character-advance measure drifts under shaping
+ * (a ligature is one glyph for two characters; that is the whole argument in
+ * shape.h, and it applies to a canvas exactly as it applies to a window).
+ *
+ * WHAT THE GATE CAN HOLD THESE TO: measureText(s).width and the pen advance
+ * of fillText(s) are the same number BY CONSTRUCTION (both are shape_line's
+ * return value at the same px), and the test asserts it as an equality
+ * between the reported width and the distance between the ink of two
+ * consecutive draws -- an agreement that would break if measure ever took a
+ * different path than draw.
+ *
+ * THE PEN IS WHOLE PIXELS, and that is shape_line's contract, not a choice
+ * available here: it lays out at an integer pen ("at `px` device pixels"),
+ * so a run's glyph origins land on whole USER pixels. Chrome places glyphs at
+ * fractional advances and reports fractional widths; this reports the integer
+ * the shaper produced. The run ORIGIN keeps its fractional part (it is 24.8
+ * until it reaches the emit callback), so `fillText(s, 10.5, y)` starts at
+ * 10.5 -- the quantization is WITHIN a run, between its glyphs.
+ *
+ * Glyphs are converted to gfx_paths one glyph at a time and filled
+ * immediately -- the glyphras.c pattern (ttf_glyph_path -> fp commands ->
+ * gfx_move_to/... -> gfx_fill). Two reasons, both stated there: a per-glyph
+ * path bounds the point budget to ONE glyph (the densest shipped glyph at the
+ * largest cacheable size flattens to 1,079 points, glyphras.c's own measured
+ * number, against this buffer's 8,192), and filling closed disjoint contours
+ * one at a time is the same picture as filling them together -- nonzero
+ * winding does not couple contours that do not overlap, and glyph contours
+ * that DO overlap (accent over letter) are within one glyph anyway.
+ *
+ * strokeText strokes the SAME per-glyph paths through do_stroke, so a
+ * lineWidth/lineJoin change moves text exactly where it moves a rect.
+ *
+ * WHAT IS DELIBERATELY NOT HERE:
+ *   - letter-spacing / wordSpacing / fontKerning / fontStretch (no engine
+ *     support; accepting-and-ignoring them would be present-and-wrong).
+ *   - fractional px sizes in the font shorthand (rounded to whole pixels --
+ *     shape_line's contract, above).
+ *   - em/rem/%/keyword sizes in the font shorthand (an `em` resolves against
+ *     a computed font-size this canvas has no access to; refusing the whole
+ *     set is the spec's rule for a font string that cannot be parsed, and a
+ *     guessed 16px would lay text at a size no stylesheet on the page named).
+ *   - direction / ctx.direction: absent entirely, not stored-and-ignored.
+ *   - the bounding-box half of TextMetrics (actualBoundingBox* / fontBoundingBox*):
+ *     width is present, the rest is absent rather than fabricated, per this
+ *     file's own header rule.
+ *   - italic: PARSED AND REMEMBERED but drawn upright, because neither
+ *     shipped font family has an italic and tools/mkfont.py documents why
+ *     shearing was refused. The getter returns the string the page set, so a
+ *     page that asks what it set is told the truth; what it draws is a
+ *     limitation of the font set, named here.
+ */
 
+/* The layout scratch, file-scope for the same reason c/kernel/gui/text.c's
+ * is: one set of buffers behind one entry point, sized for the UI's own
+ * numbers (TL_CP 1024 codepoints / TL_GLYPH 2048 / TL_RUN 64, and
+ * bidi_scratch_size is 26n + slack so 32 KiB covers 1024 with room). A
+ * canvas string longer than 1024 codepoints is REFUSED out loud rather than
+ * silently truncated, because shape_line's decode loop stops at ncp_cap
+ * without reporting it -- and a fingerprint hash of a truncated string is a
+ * wrong answer nobody could see was wrong. */
+#define CV_TEXT_CP    1024
+#define CV_TEXT_GLYPH 2048
+#define CV_TEXT_RUN     64
+static uint32_t cv_t_cps[CV_TEXT_CP];
+static uint8_t  cv_t_levels[CV_TEXT_CP];
+static int      cv_t_order[CV_TEXT_CP];
+static struct shape_glyph cv_t_glyphs[CV_TEXT_GLYPH];
+static struct text_run    cv_t_runs[CV_TEXT_RUN];
+static uint8_t  cv_t_bidi[32 * 1024];
+
+/* One glyph's outline conversion buffers, the glyphras sizes: 4096 fp
+ * commands, 256 KiB of glyf point scratch, and a point table matched to the
+ * engine's edge cap (GR_MAXPT == GFX_MAX_EDGES -- a path that fits here
+ * always fits the engine, and one that does not would have been refused
+ * there anyway). */
+#define CV_TEXT_PTS  GFX_MAX_EDGES
+#define CV_TEXT_SUB  512
+static struct fp_cmd cv_t_cmds[4096];
+static unsigned char cv_t_scratch[1 << 18];
+static int cv_t_pt[CV_TEXT_PTS * 2];
+static int cv_t_sub[CV_TEXT_SUB];
+
+static void cv_text_scratch(struct shape_scratch *sc)
+{
+    sc->cps = cv_t_cps; sc->levels = cv_t_levels; sc->order = cv_t_order;
+    sc->glyphs = cv_t_glyphs; sc->runs = cv_t_runs; sc->bidi = cv_t_bidi;
+    sc->ncp_cap = CV_TEXT_CP; sc->nglyph_cap = CV_TEXT_GLYPH;
+    sc->nrun_cap = CV_TEXT_RUN; sc->bidi_cap = (int)sizeof cv_t_bidi;
+}
+
+/* Font preference order for a canvas font string. Two real families exist
+ * (fsroot/fonts/README.md): a Noto Sans SC subset carrying GB2312 + ASCII,
+ * and a Noto Sans Mono subset carrying printable ASCII only. Every generic
+ * family a page can name (serif, sans-serif, cursive, fantasy, system-ui,
+ * and any concrete family name) maps to the Sans subset, because the other
+ * alternative is refusing families this machine cannot honour -- a page
+ * asking for Helvetica and getting the Sans subset is the SAME decision the
+ * CSS cascade already makes for rendered text, not a new one.
+ *
+ * The fallback ORDER is the kernel's pitch-before-weight rule
+ * (c/kernel/gui/text.c tl_fonts): a bold-mono request falls back through
+ * mono regular before it reaches sans bold, because losing the weight is a
+ * degradation and losing the PITCH is a different font -- measured there
+ * when bold landed, with the bold files moved aside. */
+static int cv_font_set(struct canvas2d *c, struct shape_font_set *fs)
+{
+    static const int P_REG[]     = { CV_F_UI,     CV_F_MONO };
+    static const int P_REG_MONO[]= { CV_F_MONO,   CV_F_UI };
+    static const int P_BOLD[]    = { CV_F_UI_B,   CV_F_UI,     CV_F_MONO_B };
+    static const int P_BOLD_MONO[]= { CV_F_MONO_B, CV_F_MONO,  CV_F_UI_B, CV_F_UI };
+    const int *order; int n;
+    if (c->st.font_bold && c->st.font_mono)     { order = P_BOLD_MONO; n = 4; }
+    else if (c->st.font_bold)                   { order = P_BOLD;      n = 3; }
+    else if (c->st.font_mono)                   { order = P_REG_MONO;  n = 2; }
+    else                                        { order = P_REG;       n = 2; }
+
+    fs->n = 0;
+    for (int i = 0; i < n && fs->n < SHAPE_MAX_FONTS; i++)
+        if (cv_font_load(order[i]))
+            fs->f[fs->n++] = &cv_fonts[order[i]].f;
+    return fs->n > 0;
+}
+
+/* Code points in `s`, or -1 if it cannot be counted / is over budget. */
+static int cv_text_cps(const char *s)
+{
+    if (!s) return 0;
+    int n = 0;
+    const char *p = s;
+    uint32_t cp;
+    while (*p) {
+        const char *q = utf8_next(p, &cp);
+        if (q <= p || !cp) break;
+        p = q;
+        if (++n > CV_TEXT_CP) return -1;
+    }
+    return n;
+}
+
+/* Baseline placement for textBaseline, in user 24.8, ADDED to the page's y.
+ * alphabetic = 0. top/middle/bottom use hhea of the run's FIRST font -- the
+ * same "first font of the run" rule c/kernel/gui/text.c applies, and the
+ * shipped pairs keep identical vertical metrics by construction
+ * (fsroot/fonts/README.md measures both weights at ascent=1160
+ * descent=-288), so this is not a per-glyph accident. hanging and
+ * ideographic are NOT here: computing either needs baseline data neither
+ * shipped font carries, so they are accepted-and-stored by the setter and
+ * DRAW as alphabetic -- the value round-trips (the state is real) while the
+ * placement is the one this font set can compute, which is a named
+ * approximation rather than a silent wrong one. */
+static int cv_baseline_off(const struct shape_font_set *fs, int px, int tbase)
+{
+    if (tbase == CV_TB_ALPHABETIC || fs->n <= 0 || !fs->f[0]) return 0;
+    const struct ttf_font *f = fs->f[0];
+    if (f->units_per_em <= 0) return 0;
+    int asc = (int)(((long long)f->ascent  * px * 256) / f->units_per_em);
+    int dsc = (int)(((long long)f->descent * px * 256) / f->units_per_em);
+    switch (tbase) {
+    case CV_TB_TOP:    return asc;
+    case CV_TB_MIDDLE: return (asc + dsc) / 2;
+    case CV_TB_BOTTOM: return dsc;          /* descent is negative in hhea */
+    default:           return 0;
+    }
+}
+
+/* One glyph outline into `gp`, positioned at the run origin (bx, by are the
+ * glyph ORIGIN -- the pen x plus the GPOS x offset, the baseline minus the
+ * GPOS y offset -- in user 24.8). Per-point exact scaling, glyphras.c's
+ * FX/BX/BY arithmetic: (v * px * 256) / upem, never a 16.16 scale matrix,
+ * because px*65536/upem is inexact for upem 1000 and that error is then
+ * multiplied by coordinates up to a full em (measured there: ~0.03 px at CJK
+ * upem/px combinations). Flattening tolerance is glyphras's measured 1/32
+ * device pixel (GR_TOL's table: 0.310 mean error vs the supersampled oracle,
+ * raster.c's fixed-segment replacement scored 0.490).
+ *
+ * Returns 0 drawn-ready, 1 for a blank glyph (space: nothing to convert, not
+ * an error), -1 for a real refusal (outline too big / malformed). */
+static int cv_glyph_path(struct canvas2d *c, const struct ttf_font *f, int gid,
+                         int px, int bx, int by, struct gfx_path *gp)
+{
+    struct fp_path fp;
+    fp_init(&fp, cv_t_cmds, (int)sizeof cv_t_cmds);
+    if (ttf_glyph_path(f, gid, &fp, cv_t_scratch, (int)sizeof cv_t_scratch)) return -1;
+    if (fp.n == 0) return 1;
+
+    int upem = f->units_per_em;
+    if (upem <= 0) return -1;
+    gfx_path_init(gp, cv_t_pt, CV_TEXT_PTS, cv_t_sub, CV_TEXT_SUB);
+    gfx_path_tolerance(gp, GFX_ONE / 32);   /* device-space: points below are
+                                             * CTM'd before they land in the
+                                             * path, so the tolerance is met
+                                             * in DEVICE pixels exactly as
+                                             * glyphras meets it */
+    for (int i = 0; i < fp.n; i++) {
+        const struct fp_cmd *k = &fp.cmd[i];
+        int x[3], y[3], dx[3], dy[3];
+        for (int j = 0; j < 3; j++) {
+            /* font units, y up -> user 24.8, y down */
+            x[j] = bx + (int)(((long long)k->x[j] * px * 256) / upem);
+            y[j] = by - (int)(((long long)k->y[j] * px * 256) / upem);
+            dev(c, x[j], y[j], &dx[j], &dy[j]);
+        }
+        switch (k->op) {
+        case FP_MOVE:  gfx_move_to(gp, dx[0], dy[0]); break;
+        case FP_LINE:  gfx_line_to(gp, dx[0], dy[0]); break;
+        case FP_QUAD:  gfx_quad_to(gp, dx[0], dy[0], dx[1], dy[1]); break;
+        case FP_CUBIC: gfx_cubic_to(gp, dx[0], dy[0], dx[1], dy[1], dx[2], dy[2]); break;
+        case FP_CLOSE: gfx_close(gp); break;
+        }
+    }
+    return gp->overflow ? -1 : 0;
+}
+
+struct cv_text_ctx {
+    struct canvas2d *c;
+    struct shape_font_set *fs;
+    int px;
+    int bx, by;                     /* run origin, user 24.8 */
+    int stroke;                     /* 0 fill, 1 stroke */
+    int refused;                    /* a glyph outline did not fit */
+};
+
+/* shape_line's emit callback. x/y_off are whole USER pixels (the shaper's
+ * "device" is the canvas's user space); the CTM is applied by cv_glyph_path
+ * through dev(), like every other point this file records. */
+static void cv_text_emit(void *ud, int fidx, int gid, int x, int y_off)
+{
+    struct cv_text_ctx *t = (struct cv_text_ctx *)ud;
+    if (fidx < 0 || fidx >= t->fs->n || !t->fs->f[fidx]) return;
+    struct gfx_path gp;
+    int r = cv_glyph_path(t->c, t->fs->f[fidx], gid, t->px,
+                          t->bx + x * 256, t->by - y_off * 256, &gp);
+    if (r == 1) return;                       /* blank glyph: nothing to draw */
+    if (r < 0) { t->refused++; return; }
+    if (t->stroke) do_stroke(t->c, &gp);
+    else          do_fill(t->c, &gp, GFX_NONZERO);
+}
+
+/* Measure only: shape_line at the same px the draw uses. Returns the advance
+ * in whole user pixels, 0 for empty/unprintable. */
+static int cv_text_width(struct canvas2d *c, const char *s,
+                         struct shape_font_set *fs)
+{
+    struct shape_scratch sc;
+    cv_text_scratch(&sc);
+    return shape_line(fs, s, (int)strlen(s), c->st.font_px, 0, 0, NULL, &sc);
+}
+
+/* fillText/strokeText common body. `stroke` picks the paint; everything else
+ * (font, baseline, align, maxWidth squash, CTM) is shared so the two cannot
+ * disagree about where a glyph lands. Returns nothing: per the spec every
+ * non-finite argument silently aborts the whole call. */
+static void cv_text_draw(struct canvas2d *c, const char *s, int stroke,
+                         double x, double y, double mw)
+{
+    if (!c->px || !s || !*s) return;
+    if (!isfinite(x) || !isfinite(y)) return;
+    if (cv_text_cps(s) < 0) {
+        printf("[canvas] fillText/strokeText refused: the string is longer "
+               "than %d code points (the layout scratch), so it would be "
+               "silently truncated -- measure it and split it instead\n",
+               CV_TEXT_CP);
+        return;
+    }
+
+    struct shape_font_set fs;
+    if (!cv_font_set(c, &fs)) {
+        /* The one-per-face note has already printed in cv_font_load. */
+        return;
+    }
+
+    int w = cv_text_width(c, s, &fs);
+    int x24 = fx(x), y24 = fx(y);
+
+    /* textAlign shifts the ORIGIN before anything is laid out. start == left
+     * here because ctx.direction is absent (above) and the default is ltr. */
+    if (c->st.talign == CV_TA_CENTER) x24 -= w * 128;
+    else if (c->st.talign == CV_TA_RIGHT) x24 -= w * 256;
+
+    int base24 = y24 + cv_baseline_off(&fs, c->st.font_px, c->st.tbase);
+
+    /* maxWidth: if the advance exceeds it, the whole run is SQUASHED
+     * HORIZONTALLY around the (align-adjusted) origin -- k = mw/w on x, 1 on
+     * y. That is what every browser implements for "squash", and the
+     * vertical unscaled half is the visible part of the choice: some old
+     * engines scaled both axes and every glyph got thinner, which is not
+     * what any page asks for. The squash is a CTM composition, so it
+     * composes with a caller's transform rather than being applied to the
+     * points behind its back. mw <= 0 with w > 0 is k = 0: everything
+     * collapses onto one column and draws as nothing, which is the spec's
+     * own limit of the same formula rather than a special case. */
+    struct gfx_matrix saved = c->st.m;
+    if (isfinite(mw) && mw > 0 && w > 0 && (double)w > mw) {
+        int k16 = (int)((mw / (double)w) * 65536.0);
+        if (k16 < 0) k16 = 0;
+        struct gfx_matrix sq;
+        gfx_m_set(&sq, k16, 0, 0, 65536,
+                  x24 - (int)(((long long)k16 * x24) >> 16), 0);
+        gfx_m_mul(&c->st.m, &saved, &sq);    /* squash first, then the CTM */
+    }
+
+    struct cv_text_ctx t = { c, &fs, c->st.font_px, x24, base24, stroke, 0 };
+    struct shape_emit em = { cv_text_emit, &t };
+    struct shape_scratch sc;
+    cv_text_scratch(&sc);
+    shape_line(&fs, s, (int)strlen(s), c->st.font_px, 0, 0, &em, &sc);
+    c->st.m = saved;
+
+    if (t.refused)
+        printf("[canvas] fillText/strokeText: %d glyph outline(s) exceeded "
+               "%d points and were not drawn (font %dpx, this canvas is "
+               "%dx%d)\n", t.refused, CV_TEXT_PTS, c->st.font_px, c->w, c->h);
+}
+
+/* ---- the font shorthand --------------------------------------------------
+ * "italic bold 12px/1.4 monospace, sans-serif" minus the line-height clause
+ * (a `/1.4` inside the size token makes the token invalid here, which makes
+ * the whole set invalid -- the spec's rule, not a lenient skip).
+ *
+ * WHAT PARSES: an optional style, variant and weight (in any of the orders
+ * the shorthand allows), then ONE size token (Npx or Npt, N > 0), then the
+ * family list, verbatim. `mono` inside any family name selects the mono
+ * faces (Courier, Consolas and monospace all carry it); everything else
+ * selects Sans. Weights bold/bolder/600..900 are the bold faces.
+ * ANYTHING ELSE -- em/rem/%/keyword sizes, a missing family, a missing size
+ * -- leaves the previous font UNTOUCHED (the spec's invalid-font rule), so
+ * the state can never hold a size nobody set. */
+static int cv_font_parse(const char *s, int *px, int *bold, int *mono)
+{
+    int size_seen = 0, family_seen = 0;
+    *px = 0; *bold = 0; *mono = 0;
+    const char *p = s;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *t = p;
+        while (*t && *t != ' ' && *t != '\t' && *t != ',') t++;
+        int tl = (int)(t - p);
+        if (!size_seen) {
+            /* property tokens before the size */
+            if (tl == 6 && !strncasecmp(p, "italic", 6)) { p = t; continue; }
+            if (tl == 7 && !strncasecmp(p, "oblique", 7)) { p = t; continue; }
+            if (tl == 6 && !strncasecmp(p, "normal", 6)) { p = t; continue; }
+            if (tl == 10 && !strncasecmp(p, "small-caps", 10)) { p = t; continue; }
+            if ((tl == 4 && !strncasecmp(p, "bold", 4)) ||
+                (tl == 6 && !strncasecmp(p, "bolder", 6))) { *bold = 1; p = t; continue; }
+            if (tl == 7 && !strncasecmp(p, "lighter", 7)) { p = t; continue; }
+            /* a bare 100..900 */
+            if (tl == 3 && p[0] >= '1' && p[0] <= '9' &&
+                p[1] >= '0' && p[1] <= '9' && p[2] >= '0' && p[2] <= '9') {
+                int wv = (p[0] - '0') * 100 + (p[1] - '0') * 10 + (p[2] - '0');
+                if (wv >= 600) *bold = 1;
+                p = t; continue;
+            }
+            /* the size: NNN[.NN]px or pt */
+            const char *d = p; double v = 0; int nd = 0, bad = 0;
+            while (d < t && ((*d >= '0' && *d <= '9') || *d == '.')) {
+                if (*d == '.') { if (++nd > 1) { bad = 1; break; } }
+                d++;
+            }
+            if (bad || d == p || d >= t) return 0;    /* not a number token */
+            char unit[8]; int ul = 0;
+            while (d < t && ul < 7) unit[ul++] = *d++;
+            unit[ul] = 0;
+            if (!strcasecmp(unit, "px")) v = 1.0;
+            else if (!strcasecmp(unit, "pt")) v = 96.0 / 72.0;
+            else return 0;                            /* em/rem/%/...: refuse */
+            /* reparse the number (strtol-free, the token is digits/dot) */
+            double num = 0, div = 1; int seen_dot = 0;
+            for (const char *q = p; q < d; q++) {
+                if (*q == '.') { seen_dot = 1; continue; }
+                if (seen_dot) div *= 10.0;
+                num = num * 10.0 + (double)(*q - '0');
+            }
+            double final = num / div * v;
+            if (!(final > 0.0) || final > 500.0) return 0;
+            *px = (int)(final + 0.5);                 /* whole px, shape_line */
+            size_seen = 1; p = t; continue;
+        }
+        /* past the size: the family list begins */
+        family_seen = 1;
+        /* scan the rest for a mono name, case-insensitively */
+        const char *r = p;
+        while (*r) {
+            if ((r[0] == 'm' || r[0] == 'M') &&
+                (r[1] == 'o' || r[1] == 'O') &&
+                (r[2] == 'n' || r[2] == 'N') &&
+                (r[3] == 'o' || r[3] == 'O')) { *mono = 1; break; }
+            r++;
+        }
+        break;
+    }
+    return size_seen && family_seen;
+}
+
+static JSValue cv_get_font(JSContext *ctx, JSValueConst t)
+{
+    struct canvas2d *c = cv_of(t);
+    return c ? JS_NewString(ctx, c->st.fontstr) : JS_UNDEFINED;
+}
+static JSValue cv_set_font(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct canvas2d *c = cv_of(t);
+    if (!c) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_UNDEFINED;
+    int px, bold, mono;
+    /* Unparseable keeps the previous font, the same rule fillStyle already
+     * follows two properties up -- and for the same reason: silently
+     * dropping to 10px sans-serif is how a chart loses its axis labels. */
+    if (cv_font_parse(s, &px, &bold, &mono)) {
+        c->st.font_px = px; c->st.font_bold = bold; c->st.font_mono = mono;
+        size_t n = strlen(s);
+        if (n >= sizeof c->st.fontstr) n = sizeof c->st.fontstr - 1;
+        memcpy(c->st.fontstr, s, n);
+        c->st.fontstr[n] = 0;
+    }
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+
+static JSValue cv_get_tbase(JSContext *ctx, JSValueConst t)
+{
+    struct canvas2d *c = cv_of(t);
+    if (!c) return JS_UNDEFINED;
+    static const char *const N[] = { "alphabetic", "top", "middle", "bottom" };
+    return JS_NewString(ctx, N[c->st.tbase & 3]);
+}
+static JSValue cv_set_tbase(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct canvas2d *c = cv_of(t);
+    const char *s = c ? JS_ToCString(ctx, v) : NULL;
+    if (!s) return JS_UNDEFINED;
+    /* hanging/ideographic are STORED (the getter round-trips them) but drawn
+     * as alphabetic -- cv_baseline_off's comment. An unknown string is
+     * ignored per spec, leaving the previous value. */
+    if      (!strcmp(s, "alphabetic")) c->st.tbase = CV_TB_ALPHABETIC;
+    else if (!strcmp(s, "top"))        c->st.tbase = CV_TB_TOP;
+    else if (!strcmp(s, "middle"))     c->st.tbase = CV_TB_MIDDLE;
+    else if (!strcmp(s, "bottom"))     c->st.tbase = CV_TB_BOTTOM;
+    else if (!strcmp(s, "hanging") || !strcmp(s, "ideographic"))
+        c->st.tbase = CV_TB_ALPHABETIC;
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+
+static JSValue cv_get_talign(JSContext *ctx, JSValueConst t)
+{
+    struct canvas2d *c = cv_of(t);
+    if (!c) return JS_UNDEFINED;
+    return JS_NewString(ctx, c->st.talign == CV_TA_CENTER ? "center" :
+                             c->st.talign == CV_TA_RIGHT  ? "right" : "left");
+}
+static JSValue cv_set_talign(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct canvas2d *c = cv_of(t);
+    const char *s = c ? JS_ToCString(ctx, v) : NULL;
+    if (!s) return JS_UNDEFINED;
+    /* start/end collapse to left/right because ctx.direction is absent
+     * (ltr is the only direction this build lays out), and an unknown string
+     * is ignored, leaving the previous value, like every setter here. */
+    if      (!strcmp(s, "left") || !strcmp(s, "start"))  c->st.talign = CV_TA_START;
+    else if (!strcmp(s, "center"))                       c->st.talign = CV_TA_CENTER;
+    else if (!strcmp(s, "right") || !strcmp(s, "end"))   c->st.talign = CV_TA_RIGHT;
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+
+/* Defined here (above its first use in cv_measureText's siblings) rather than
+ * in the "context methods" block below: the dead canvas agent inserted the
+ * text trio before it, and a fresh tree failed to compile -- uses of CV_THIS
+ * at cv_fillText/cv_strokeText preceded the macro. Moved by orchestrator
+ * arbitration at the video agent's report; canvas owns the region from here. */
 #define CV_THIS struct canvas2d *c = cv_of(t); if (!c) return JS_UNDEFINED
+
+/* measureText: a TextMetrics with `width`, which is shape_line's advance at
+ * the current font -- the SAME call fillText makes, so the number cannot
+ * disagree with the picture. The rest of TextMetrics is absent rather than
+ * fabricated (the section comment above). */
+static JSValue cv_measureText(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct canvas2d *c = cv_of(t);
+    if (!c) return JS_ThrowTypeError(ctx, "not a 2d context");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "measureText needs text");
+    JSValue r = JS_NewObject(ctx);
+    if (JS_IsException(r)) return r;
+    double w = 0.0;
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (s && *s) {
+        if (cv_text_cps(s) < 0)
+            printf("[canvas] measureText: the string is longer than %d code "
+                   "points (the layout scratch) and is refused rather than "
+                   "measured truncated -- the draw side refuses it too, so "
+                   "measure and draw still agree\n", CV_TEXT_CP);
+        else {
+            struct shape_font_set fs;
+            if (cv_font_set(c, &fs)) w = (double)cv_text_width(c, s, &fs);
+        }
+    }
+    if (s) JS_FreeCString(ctx, s);
+    JS_SetPropertyStr(ctx, r, "width", JS_NewFloat64(ctx, w));
+    return r;
+}
+
+static JSValue cv_fillText(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    CV_THIS;
+    if (argc < 3) return JS_ThrowTypeError(ctx, "fillText needs (text, x, y)");
+    double x, y, mw = 0.0 / 0.0;   /* NaN: "no maxWidth given" */
+    if (JS_ToFloat64(ctx, &x, argv[1]) || JS_ToFloat64(ctx, &y, argv[2]))
+        return JS_UNDEFINED;
+    if (argc > 3) JS_ToFloat64(ctx, &mw, argv[3]);
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) return JS_UNDEFINED;
+    cv_text_draw(c, s, 0, x, y, mw);
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+
+static JSValue cv_strokeText(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    CV_THIS;
+    if (argc < 3) return JS_ThrowTypeError(ctx, "strokeText needs (text, x, y)");
+    double x, y, mw = 0.0 / 0.0;
+    if (JS_ToFloat64(ctx, &x, argv[1]) || JS_ToFloat64(ctx, &y, argv[2]))
+        return JS_UNDEFINED;
+    if (argc > 3) JS_ToFloat64(ctx, &mw, argv[3]);
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) return JS_UNDEFINED;
+    cv_text_draw(c, s, 1, x, y, mw);
+    JS_FreeCString(ctx, s);
+    return JS_UNDEFINED;
+}
+
+/* ------------------------------------------------------- context methods -- */
 
 static JSValue cv_save(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
@@ -1480,7 +2204,259 @@ static JSValue cv_putImageData(JSContext *ctx, JSValueConst t, int argc, JSValue
     return JS_UNDEFINED;
 }
 
-/* ---------------------------------------------------------- gradients -- */
+/* ----------------------------------------------------------------- images -- *
+ *
+ * drawImage, in all three arities, from the two sources this browser actually
+ * holds pixels for:
+ *
+ *   another <canvas>  its backing store, found through the same g_all list
+ *                     the painter reads (browser_paint.c IT_CANVAS). Straight
+ *                     RGBA8, exactly what the image paint wants.
+ *   an <img>          the DECODED bitmap the painter blits (layout.c's
+ *                     display list, reached through the weak layout_items
+ *                     seam at the top of this file), or -- for an img the
+ *                     layout pass has not answered yet -- the `src` attribute
+ *                     decoded here when it is a base64 `data:` URL, which is
+ *                     the one case where the bytes are already in hand.
+ *
+ * A <video> source is a TypeError, deliberately: the decoded frame belongs to
+ * the media engine (js_media.c) and wiring that is a different surface with a
+ * different owner, not a hole to half-fill here.
+ *
+ * SCALING IS NEAREST-NEIGHBOUR, both directions, and that is a decision
+ * stated rather than a filter left half-implemented. The engine's image paint
+ * offers bilinear (gfx_paint_image's last argument), but bilinear is an
+ * INTERPOLATION kernel, not an area filter: it genuinely smooths upscale and
+ * aliases downscale exactly as badly as nearest does. Shipping it would make
+ * imageSmoothingEnabled=true "work" for the magnification half of a page's
+ * request and lie about the minification half, which is the present-and-wrong
+ * shape this file's header ranks below absent. So: nearest, always, and the
+ * imageSmoothingEnabled property is an honest accessor for that fact -- the
+ * getter says false (true about this build), and a setter is accepted and
+ * leaves it false, announced once, which is the same "accept and say so"
+ * shape the header proposes for globalCompositeOperation.
+ *
+ * THE TRANSFORM IS THE AFFINE CHAIN, not a special-cased blit: the source
+ * sub-rect maps to the destination rect through img2dev = CTM . translate(dx,dy)
+ * . scale(dw/sw, dh/sh) . translate(-sx,-sy), and the engine's GFX_IMAGE paint
+ * samples through the inverse of that per device pixel (gfx_paint.c
+ * sample_image). A rotated or scaled CTM therefore rotates and scales the
+ * picture with antialiased EDGES (the fill's coverage handles the boundary),
+ * and the one-rasterizer rule survives: this file owns no sampling loop.
+ */
+static JSValue cv_get_smooth(JSContext *ctx, JSValueConst t)
+{
+    (void)t;
+    /* Not stored: there is nothing to store (see the section comment -- the
+     * answer is false in this build, and reading it back says so). */
+    return JS_NewBool(ctx, 0);
+}
+static JSValue cv_set_smooth(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    (void)t;
+    if (JS_ToBool(ctx, v)) {
+        static int said;
+        if (!said) {
+            said = 1;
+            printf("[canvas] imageSmoothingEnabled=true was set and ignored: "
+                   "drawImage scales nearest-neighbour in this build "
+                   "(bilinear would smooth upscale and alias downscale, and "
+                   "half a filter is worse than a stated absence)\n");
+        }
+    }
+    return JS_UNDEFINED;
+}
+
+/* Decode a base64 data: URL from an <img>'s src attribute. Only base64 is
+ * accepted -- a percent-encoded data: URL is absent here rather than
+ * partially parsed, and the comment says so where the decision lands (the
+ * caller names the whole fallback). Returns a malloc'd byte buffer the
+ * caller frees, or NULL. */
+static unsigned char *cv_data_url_bytes(const char *src, int *outn)
+{
+    if (!src || strncmp(src, "data:", 5) != 0) return NULL;
+    const char *comma = strchr(src, ',');
+    if (!comma) return NULL;
+    /* base64,ignore ... the mediatype section between "data:" and "," */
+    int b64 = 0;
+    for (const char *q = src + 5; q < comma; q++)
+        if ((q[0] == 'b' || q[0] == 'B') && q + 6 <= comma &&
+            !strncasecmp(q, "base64", 6)) { b64 = 1; break; }
+    if (!b64) return NULL;
+    const char *b = comma + 1;
+    int bl = (int)strlen(b);
+    if (bl <= 0 || bl > 8 * 1024 * 1024) return NULL;
+    unsigned char *raw = (unsigned char *)malloc(((size_t)bl * 3) / 4 + 4);
+    if (!raw) return NULL;
+    int n = b64_decode(b, bl, raw, (int)(((size_t)bl * 3) / 4 + 4));
+    if (n <= 0) { free(raw); return NULL; }
+    *outn = n;
+    return raw;
+}
+
+/* Resolve drawImage's source argument to pixels. Returns 1 with *px/*w/*h
+ * set (stride is always w*4: both sources are tightly packed RGBA8), 0 when
+ * this argument holds no drawable pixels (an <img> still loading, an
+ * undecodable src, a canvas with no context). `snap`, when non-NULL, may be
+ * set to a malloc'd snapshot the caller must free -- see the self-draw case
+ * in cv_drawImage. */
+static int cv_src_pixels(JSContext *ctx, JSValueConst v,
+                         const unsigned char **px, int *w, int *h,
+                         unsigned char **snap)
+{
+    *snap = NULL;
+    if (!JS_IsObject(v)) return 0;
+
+    /* another canvas: the element (not the context object -- Chrome agrees:
+     * drawImage(ctx2d) is a TypeError there too) */
+    struct node *n = js_dom_node_from(v);
+    if (!n) return 0;
+    for (struct canvas2d *s = g_all; s; s = s->next)
+        if (s->el == n && s->px) { *px = s->px; *w = s->w; *h = s->h; return 1; }
+
+    if (n->tag && !strcmp(n->tag, "img")) {
+        /* 1. the decoded bitmap the PAINTER uses -- the display list entry
+         *    for this very node. Absent on the host build (layout.c is not
+         *    linked there), which is what LOGIT_HAVE answers. */
+        if (LOGIT_HAVE(layout_items) && LOGIT_HAVE(layout_count)) {
+            const struct item *it = layout_items();
+            int ni = layout_count();
+            for (int i = 0; i < ni && it; i++)
+                if (it[i].type == IT_IMAGE && it[i].node == n && it[i].img &&
+                    it[i].img->rgba) {
+                    *px = it[i].img->rgba; *w = it[i].img->w; *h = it[i].img->h;
+                    return 1;
+                }
+        }
+        /* 2. bytes already in the document: a base64 data: src decodes here.
+         *    img_decode sniffs the format (img.c), so this is the SAME decode
+         *    layout.c would run, not a second opinion. */
+        int alen = 0;
+        const char *src = js_dom_attr_len(n, "src", &alen);
+        int rn = 0;
+        unsigned char *raw = src ? cv_data_url_bytes(src, &rn) : NULL;
+        if (raw) {
+            struct image im;
+            if (img_decode(raw, rn, &im) == 0 && im.rgba && im.w > 0 && im.h > 0) {
+                /* keep the bitmap, free the encoded bytes; img_free() takes
+                 * the rgba and nothing else was allocated. */
+                free(raw);
+                *snap = im.rgba;      /* caller frees: it outlives the decode */
+                *px = im.rgba; *w = im.w; *h = im.h;
+                return 1;
+            }
+            free(raw);
+        }
+        /* 3. an <img> that is not decoded yet: NOTHING is drawn, silently,
+         *    which is the spec's behaviour for an image that is not fully
+         *    decodable and every browser' behaviour for one still loading. */
+        return 0;
+    }
+    return 0;
+}
+
+static JSValue cv_drawImage(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct canvas2d *c = cv_of(t);
+    if (!c || !c->px) return JS_ThrowTypeError(ctx, "not a 2d context");
+    if (argc < 3) return JS_ThrowTypeError(ctx, "drawImage needs at least (image, dx, dy)");
+    if (!JS_IsObject(argv[0]))
+        return JS_ThrowTypeError(ctx, "drawImage: the source must be an image "
+                                  "or canvas element");
+
+    const unsigned char *src = NULL;
+    int sw = 0, sh = 0;
+    unsigned char *snap = NULL;
+    if (!cv_src_pixels(ctx, argv[0], &src, &sw, &sh, &snap))
+        return JS_UNDEFINED;          /* not loaded / not decodable: no draw,
+                                       * no exception -- see cv_src_pixels 3 */
+
+    double dx, dy, dw, dh;
+    double sx = 0.0, sy = 0.0, swd = sw, shd = sh;
+    if (argc == 3 || argc == 4) {
+        if (JS_ToFloat64(ctx, &dx, argv[1]) || JS_ToFloat64(ctx, &dy, argv[2]))
+            return JS_UNDEFINED;
+        dw = swd; dh = shd;           /* the source's own size */
+        if (argc == 4) { JS_ToFloat64(ctx, &dw, argv[3]); }
+    } else if (argc == 5) {
+        if (JS_ToFloat64(ctx, &dx, argv[1]) || JS_ToFloat64(ctx, &dy, argv[2]) ||
+            JS_ToFloat64(ctx, &dw, argv[3]) || JS_ToFloat64(ctx, &dh, argv[4]))
+            return JS_UNDEFINED;
+    } else {
+        if (argc < 9) return JS_ThrowTypeError(ctx, "drawImage: 3, 5 or 9 arguments");
+        if (JS_ToFloat64(ctx, &sx, argv[1]) || JS_ToFloat64(ctx, &sy, argv[2]) ||
+            JS_ToFloat64(ctx, &swd, argv[3]) || JS_ToFloat64(ctx, &shd, argv[4]) ||
+            JS_ToFloat64(ctx, &dx, argv[5]) || JS_ToFloat64(ctx, &dy, argv[6]) ||
+            JS_ToFloat64(ctx, &dw, argv[7]) || JS_ToFloat64(ctx, &dh, argv[8]))
+            return JS_UNDEFINED;
+    }
+    /* Every non-finite argument silently ends the call, and a zero or
+     * non-positive SOURCE rect draws nothing -- HTML's own step order for
+     * this method (it returns before painting, without an exception). */
+    if (!isfinite(dx) || !isfinite(dy) || !isfinite(dw) || !isfinite(dh) ||
+        !isfinite(sx) || !isfinite(sy) || !isfinite(swd) || !isfinite(shd))
+        return JS_UNDEFINED;
+    if (swd <= 0.0 || shd <= 0.0) return JS_UNDEFINED;
+
+    /* SELF-DRAW: a canvas drawing itself would read pixels the same fill is
+     * overwriting, row by row (the engine samples during the composite), so
+     * the sub-rect actually sampled is snapshotted first. This is the whole
+     * reason `snap` exists in cv_src_pixels's signature -- every other
+     * source is immutable for the duration of one fill. */
+    if (snap == NULL && src == c->px) {
+        int sxp = (int)sx, syp = (int)sy;
+        int swp = (int)(swd + 0.5), shp = (int)(shd + 0.5);
+        if (sxp < 0) sxp = 0; if (syp < 0) syp = 0;
+        if (sxp >= sw) sxp = sw - 1; if (syp >= sh) syp = sh - 1;
+        if (sxp + swp > sw) swp = sw - sxp;
+        if (syp + shp > sh) shp = sh - syp;
+        if (swp <= 0 || shp <= 0) return JS_UNDEFINED;
+        unsigned char *cp = (unsigned char *)malloc((size_t)swp * shp * 4);
+        if (!cp) return JS_UNDEFINED;
+        for (int yy = 0; yy < shp; yy++)
+            memcpy(cp + (size_t)yy * swp * 4,
+                   c->px + ((size_t)(syp + yy) * sw + sxp) * 4,
+                   (size_t)swp * 4);
+        snap = cp;
+        src = cp; sw = swp; sh = shp;
+        sx = 0.0; sy = 0.0; swd = swp; shd = shp;
+    }
+
+    /* img2dev: image pixels (24.8) -> device (24.8), CTM last so a translate
+     * or rotate in force moves the picture exactly where it moves a rect. */
+    struct gfx_matrix mi, img2dev;
+    gfx_m_identity(&mi);
+    gfx_m_translate(&mi, -fx(sx), -fx(sy));
+    gfx_m_scale(&mi, (int)((dw / swd) * 65536.0), (int)((dh / shd) * 65536.0));
+    gfx_m_translate(&mi, fx(dx), fx(dy));
+    gfx_m_mul(&img2dev, &c->st.m, &mi);
+
+    struct gfx_paint p;
+    if (!gfx_paint_image(&p, src, sw, sh, sw * 4, &img2dev, 0 /* nearest */)) {
+        if (snap) free(snap);
+        return JS_UNDEFINED;
+    }
+    p.global_alpha = c->st.galpha;
+
+    int tp[16], ts[4];
+    struct gfx_path r;
+    gfx_path_init(&r, tp, 8, ts, 4);
+    rect_into(c, &r, fx(dx), fx(dy), fx(dw), fx(dh));
+    if (r.overflow) { if (snap) free(snap); return JS_UNDEFINED; }
+
+    struct gfx_surface s; surf_of(c, &s);
+    struct gfx_rect clip = { 0, 0, c->w, c->h };
+    if (c->st.clip) {
+        struct gfx_clip_mask cm = { c->st.clip->cov, c->w, c->h, 0, 0 };
+        gfx_fill_clipped(&s, &r, GFX_NONZERO, &p, &clip, GFX_SUBS, &cm);
+    } else {
+        gfx_fill(&s, &r, GFX_NONZERO, &p, &clip);
+    }
+    if (snap) free(snap);
+    return JS_UNDEFINED;
+}
+
+
 
 struct grad_ref { struct canvas2d *c; int idx; };
 
