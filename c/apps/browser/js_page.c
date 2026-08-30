@@ -102,6 +102,23 @@ LOGIT_WEAK_STUB(js_semantics_install);
 LOGIT_WEAK_STUB(js_anim_install);
 LOGIT_WEAK_STUB(js_domparser_install);
 LOGIT_WEAK_STUB(js_canvas_install);
+
+/* ---- the CSS animation/transition clock, as a consumer of THIS queue -----
+ *
+ * js_anim.c part 2 owns the clock's engine; this file owns the QUEUE, and
+ * the rule (its own header, and the engine's) is ONE clock: the animation
+ * tick is wired into the same three doors the timers use -- pending, next
+ * due, run due -- so the main loop's computed sleep wakes at the
+ * animation's own frame boundary and never on a second timer of its own.
+ * Weak for the same reason as the installs above: js_page.c is linked into
+ * host harnesses that carry no js_anim.o, and there the stub (guarded by
+ * LOGIT_HAVE) leaves the queue exactly as it was. */
+int  css_anim_active(void) LOGIT_WEAK;
+long long css_anim_next_due(void) LOGIT_WEAK;
+int  css_anim_tick(unsigned long long now) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_anim_active);
+LOGIT_WEAK_STUB(css_anim_next_due);
+LOGIT_WEAK_STUB(css_anim_tick);
 /* js_wasm_install was CALLED through LOGIT_HAVE() below without ever being
  * declared here, and the two platforms disagree about what that means: on ELF
  * an undefined weak symbol resolves to NULL and the guard works, on Mach-O it
@@ -627,6 +644,11 @@ int js_page_pending(void)
      * because on the device now_ms() is a syscall and this runs every pass. */
     if (g_prof_on && g_prof_in_js) js_page_slice_end();
     if (g_timers) return 1;
+    /* A running CSS animation/transition ticks on THIS queue's frame
+     * boundary; without this line the main loop would park until an event
+     * and a page whose only activity is CSS animation would never advance
+     * past its first frame. */
+    if (LOGIT_HAVE(css_anim_active) && css_anim_active()) return 1;
     /* A fetch in flight also needs the loop to call js_page_run_due(), which is
      * where its socket is stepped. */
     if (LOGIT_HAVE(js_webapi_pending) && js_webapi_pending()) return 1;
@@ -650,6 +672,13 @@ long long js_page_next_due(void)
     if (LOGIT_HAVE(js_worker_next_due)) {
         long long wbest = js_worker_next_due();
         if (wbest >= 0 && (best < 0 || wbest < best)) best = wbest;
+    }
+    /* The animation clock's next frame boundary, so the main loop's sleep
+     * ends on the animation's own cadence (20 ms) rather than on the pump
+     * fallback -- the same argument the rAF comment above FRAME_MS makes. */
+    if (LOGIT_HAVE(css_anim_next_due)) {
+        long long abest = css_anim_next_due();
+        if (abest >= 0 && (best < 0 || abest < best)) best = abest;
     }
     return best;
 }
@@ -684,6 +713,14 @@ int js_page_run_due(void)
      * worker must still be driven every pass, which is why this runs before
      * the `!g_timers` early return below. */
     if (LOGIT_HAVE(js_worker_run_due)) ran += js_worker_run_due();
+    /* The CSS animation tick, BEFORE the timer scan and unconditional like
+     * the pumps above: an animating page with no JS timer at all (the
+     * common case -- a page that animates with CSS has usually no script)
+     * must still advance. It overlays values and returns whether a pixel
+     * changed; browser.c reads css_anim_needs_layout() to decide whether
+     * the frame owes a relayout (opacity) or only a repaint (transform).
+     * It is not JS, so it takes no slice and pumps no jobs. */
+    if (LOGIT_HAVE(css_anim_tick) && css_anim_tick(now_ms())) ran++;
     if (!g_timers) return ran;
 
     unsigned long long now = now_ms();

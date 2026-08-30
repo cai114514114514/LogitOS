@@ -346,6 +346,27 @@ struct cstyle {
      * the correct answer for nearly every element. */
     const char    *xraw[XR__COUNT];
     unsigned short xrawlen[XR__COUNT];
+
+    /* ---- the ANIMATION declarations, same shape one more time ----
+     *
+     * The `animation` and `transition` SHORTHAND values (not the longhands;
+     * see css_extra.c for why the longhands are deliberately not captured).
+     * They are what the animation clock (js_anim.c part 2) resolves into a
+     * per-element entry: name/duration/timing/delay/iterations/direction/
+     * fill/play-state, and the transition's property list with its own
+     * duration/delay/timing per item.
+     *
+     * LIFETIME is grid_raw[]'s and xraw[]'s exactly: spans into css_extra's
+     * private sheet copy or into the node's style="" attribute; the ENGINE
+     * never keeps them past entry creation, it copies what it interpolates
+     * between (bounded buffers inside the entry) precisely because the sheet
+     * copy can be freed and recompiled while a clocked animation is mid-
+     * flight -- a viewport change re-keys the compile cache and drops g_src.
+     * css_extra_sheet_gen() is how the engine detects that and restarts. */
+    const char    *anim_raw;
+    unsigned short anim_rawlen;
+    const char    *trans_raw;
+    unsigned short trans_rawlen;
 };
 
 /* ---------------- CSSOM: the property surface ----------------
@@ -596,6 +617,165 @@ void css_extra_apply(struct node *root, const char *page_css, int page_len);
 /* Test seam: rules in the last COMPILED sheet (see css_extra.c), or -1 if the
  * compile fell back to scanning the text. */
 int  css_extra_rules(void);
+
+/* ---- timing functions (css_interp.c) --------------------------------------
+ *
+ * Declared HERE and not in css_interp.h because the consumer is the CSS
+ * animation clock, which includes this file for the cstyle it overlays
+ * anyway, and css_interp.h belongs to a line this one does not own. A
+ * timing function maps iteration progress to eased progress; the values
+ * that matter are MID-CURVE, because both endpoints are pinned by
+ * construction and a wrong curve is invisible to the eye at 20 ms/frame --
+ * which is why check_anim_clock.c asserts mid-curve values against
+ * references and why its negative control collapses every easing to
+ * identity.
+ *
+ * Supported: linear, ease, ease-in, ease-out, ease-in-out,
+ * cubic-bezier(x1,y1,x2,y2) with x1/x2 clamped-rejected to [0,1] (y may
+ * overshoot), step-start, step-end, and steps(n, jump-start | jump-end |
+ * jump-none | jump-both | start | end). ci_ease_apply clamps its RESULT to
+ * [0,1] -- opacity cannot overshoot, and a caller that needs raw overshoot
+ * must not route through it. */
+enum { CI_EASE_LINEAR = 0, CI_EASE_CUBIC, CI_EASE_STEPS };
+enum { CI_STEP_START = 0, CI_STEP_END, CI_STEP_NONE, CI_STEP_BOTH };
+
+struct ci_ease {
+    int    kind;                        /* CI_EASE_* */
+    double x1, y1, x2, y2;              /* CI_EASE_CUBIC control points */
+    int    steps;                       /* CI_EASE_STEPS count */
+    int    step_pos;                    /* CI_STEP_* */
+};
+
+/* Parse one <timing-function>. 0 on success, -1 if the text is not one --
+ * the caller then uses linear (the CSS initial) and says so, never a guess
+ * at what the author meant. */
+int    ci_ease_parse(const char *s, int len, struct ci_ease *out);
+/* The eased progress for raw progress t. t <= 0 -> 0, t >= 1 -> 1, exactly
+ * and by construction, so an animation's endpoints are pixel-identical to
+ * its non-animated end-state renders. */
+double ci_ease_apply(const struct ci_ease *e, double t);
+
+/* ---- @keyframes, captured (css_extra.c) -----------------------------------
+ *
+ * `@keyframes` is ABSENT from our vendored LibCSS's grammar (checked: no
+ * match in third_party/css/libcss/src/parse/), so LibCSS reports each one
+ * through the unknown-at-rule funnel css_report.c counts as drop_atrule
+ * and THIS text scan is its only producer -- the same position grid,
+ * transform and the logical box family are already in.
+ *
+ * One rule = one name + N stops. A stop's declarations stay a SPAN into
+ * css_extra's private sheet copy (same lifetime rule as grid_raw[]); the
+ * ENGINE copies out the two values it interpolates between at entry
+ * creation and never holds the span past that. `off` is PER-MILLE of the
+ * iteration (0 = from, 1000 = to) because keyframe selectors are
+ * percentages with two decimals in the wild and hundredths would quantise
+ * `33.33%` wrong by construction. */
+#define CSS_KF_MAXRULE 64      /* @keyframes rules kept per sheet; the rest */
+                               /* are dropped, loudly (counted, see below)  */
+#define CSS_KF_MAXSTOP 16      /* stops kept per rule; ditto                 */
+#define CSS_KF_NAME    48      /* animation names this long or shorter       */
+
+struct css_kfstop {
+    int         off;                    /* 0..1000 per-mille */
+    const char *decls;                  /* the stop's declarations, span */
+    int         dlen;
+};
+
+struct css_kf {
+    char name[CSS_KF_NAME];
+    int  nstop;                         /* >0 and sorted by `off` */
+    struct css_kfstop stop[CSS_KF_MAXSTOP];
+    int  overflow;                      /* stops past CSS_KF_MAXSTOP, dropped */
+};
+
+/* Find the captured rule named [name,len). 1 and *out set (points into
+ * css_extra's storage, stable until the sheet recompiles), 0 if no such
+ * rule -- which is CSS's own answer too: an animation-name with no
+ * @keyframes runs no animation at all. */
+int  css_keyframes_find(const char *name, int len, const struct css_kf **out);
+/* The compile generation: bumped every time css_extra recompiles (or drops)
+ * the sheet its spans point into. The engine stores it per entry and
+ * retires everything when it changes -- see cstyle's anim_raw comment. */
+int  css_extra_sheet_gen(void);
+/* How many @keyframes rules + stops were dropped for want of table space on
+ * the last compile. Reported, not branched on: the cap is stated, silent
+ * truncation would not be. */
+void css_keyframes_dropped(int *rules, int *stops);
+
+/* ---- the CSS animation/transition clock (js_anim.c part 2) ----------------
+ *
+ * The engine owns NOTHING the page owns: it neither runs the cascade nor
+ * paints. It reads the spans css_extra captured, keeps a bounded list of
+ * clocked entries, and overlays the CURRENT animated value onto the same
+ * cstyle fields the painter already reads -- st->opacity and
+ * st->xraw[XR_TRANSFORM] -- so browser_paint.c needed no change. The
+ * overlay is re-applied after every cascade (css_anim_note, called from
+ * css_extra_apply) and every frame (css_anim_tick, called from the page's
+ * ONE deadline queue in js_page.c, never a second clock).
+ *
+ * All entry points take `now` as a PARAMETER: js_page passes its injected
+ * monotonic clock, and the host checker steps a fake -- the engine never
+ * reads time itself, which is what keeps it testable and what keeps the
+ * browser's single notion of "now" single. */
+/* 1 when any entry is still ticking (or in its delay): js_page_pending()
+ * reports it so the main loop wakes at frame boundaries. */
+int  css_anim_active(void);
+/* Next frame boundary in monotonic ms, or -1 when idle. js_page_next_due()
+ * merges this with the timers'. */
+long long css_anim_next_due(void);
+/* Advance every entry to `now`, overlay the values, and return 1 when a
+ * pixel value changed. Sets the needs-layout flag (css_anim_needs_layout)
+ * when an OPACITY changed: opacity is snapshotted into the display list at
+ * layout time, while transform is read live at paint, so a transform-only
+ * tick costs no relayout. */
+int  css_anim_tick(unsigned long long now);
+int  css_anim_needs_layout(void);
+/* Post-cascade, from css_extra_apply: adopt elements whose anim_raw/
+ * trans_raw spans appeared, retire ones whose spans vanished, re-apply the
+ * overlay so a cascade cannot flash the base value between ticks, and
+ * start transitions where the pre-cascade snapshot (css_anim_snapshot)
+ * disagrees with the new cascade value. Reads the page clock itself (the
+ * weak js_page_now_ms -- 0 in host links, which is why the host checker
+ * drives css_anim_tick's explicit `now` instead). */
+void css_anim_note(struct node *root);
+/* Pre-cascade, from browser.c's restyle(): remember the current effective
+ * opacity/transform of every transition-capable tracked element, so the
+ * change a class flip is about to make can be transitioned FROM it. */
+void css_anim_snapshot(struct node *root);
+/* Drop every entry. Called on navigation BEFORE the DOM is freed: entries
+ * hold node pointers, and the arena's chunk chain is about to go away. */
+void css_anim_reset(void);
+
+/* The shorthand parsers, exported for the host checker (they are pure
+ * string -> struct and carry no DOM, which is exactly why they can be).
+ * Both return 0 on success; -1 means "not a shorthand we clock", and the
+ * caller keeps the end-state fallback for the element. */
+enum { CAD_NORMAL = 0, CAD_REVERSE, CAD_ALTERNATE, CAD_ALTERNATE_REV };
+struct anim_spec {
+    char           name[CSS_KF_NAME];
+    int            has_name;
+    double         dur_ms, delay_ms;
+    double         iters;                      /* 1 = CSS initial */
+    int            infinite;
+    int            dir, fill_fwd, fill_bwd, paused;
+    struct ci_ease ease;                       /* struct ci_ease above */
+};
+struct trans_spec {
+    double         dur_ms, delay_ms;
+    struct ci_ease ease;
+};
+int css_anim_parse_animation(const char *v, int len, struct anim_spec *out);
+/* `prop` is the property the caller cares about ("opacity"/"transform");
+ * 0/-1 = the transition list does not cover it. */
+int css_anim_parse_transition(const char *v, int len, const char *prop,
+                              struct trans_spec *out);
+/* The concurrent-entry cap and the live/degraded counts, for the loud
+ * serial line and for the gates. Frozen entries keep their CASCADE BASE
+ * value -- exactly what CSS says a fill:none animation leaves behind when
+ * it ends, so over-cap degrades to the same shape as "animation finished". */
+#define CSS_ANIM_CAP 32
+int  css_anim_entries(void);
+int  css_anim_frozen(void);
 
 /* ---- the paint-value parsers (css_extra.c) -------------------------------
  *

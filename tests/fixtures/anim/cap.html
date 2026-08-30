@@ -1,0 +1,71 @@
+<!doctype html>
+<html><head><title>anim-cap</title><style>
+/* THE CAP / DEGRADATION MEASUREMENT PAGE.
+ *
+ * Runs phases of 0/8/32/96/192 simultaneously animated boxes and counts the
+ * rAF callbacks delivered per 1.5 s phase. rAF rides the same 20 ms frame
+ * boundary the animation clock ticks on (js_page.c's one deadline queue), so
+ * the count is the delivered frame cadence under animation load -- measured
+ * in the guest, by the page, never by a host stopwatch around QEMU.
+ *
+ * Each box animates opacity .25 -> 1, 1.2 s, infinite alternate, so the load
+ * never drains and each phase measures the steady state. The number this
+ * page produces is what fixed the engine's concurrent-animation cap: past the
+ * cap the engine freezes extra boxes at their end-state (loudly, with a
+ * [css-anim] cap line on serial) rather than degrading every frame, and the
+ * cap is set where the delivered cadence is still a majority of the baseline.
+ */
+html, body { background: #ffffff; margin: 0; padding: 0; }
+/* A CLASS selector, single compound -- deliberately NOT `#host div`: the
+ * animation/transition SHORTHAND capture in css_extra.c is a one-compound
+ * matcher, and a descendant selector's animation never reaches the clock
+ * at all. [2026-08-30, measured: with `#host div` this page reported
+ * entries=0 on the host engine harness and no [css-anim] cap line on the
+ * guest -- every phase measured rAF under ZERO animation load and the
+ * numbers were meaningless.] The script sets the class on each box it
+ * makes; the gate's cap line + frozen count prove the load is real. */
+.cap {
+  position: absolute; width: 22px; height: 22px; background: #0203fe;
+  animation: animcappulse 1.2s linear infinite alternate;
+}
+@keyframes animcappulse { from { opacity: 0.25 } to { opacity: 1 } }
+</style></head>
+<body>
+<div id="host"></div>
+<script>
+var host = document.getElementById("host");
+var PHASES = [0, 8, 32, 96, 192];
+var MS = 1500;
+
+function phase(i) {
+  if (i >= PHASES.length) { console.log("ANIM-CAP-DONE"); return; }
+  var n = PHASES[i], made = [], k;
+  for (k = 0; k < n; k++) {
+    var d = document.createElement("div");
+    d.className = "cap";
+    d.style.left = ((k * 26) % 1240) + "px";
+    d.style.top = (16 + Math.floor((k * 26) / 1240) * 26) + "px";
+    host.appendChild(d);
+    made.push(d);
+  }
+  /* Let the mutation restyle + first ticks settle BEFORE counting, so the
+   * phase measures the steady state and not the appendChild storm. */
+  setTimeout(function () {
+    var frames = 0, t0 = Date.now();
+    function count() {
+      frames++;
+      if (Date.now() - t0 < MS) requestAnimationFrame(count);
+      else {
+        console.log("ANIM-CAP n=" + n + " frames=" + frames +
+                    " ms=" + (Date.now() - t0));
+        for (k = 0; k < made.length; k++) host.removeChild(made[k]);
+        setTimeout(function () { phase(i + 1); }, 300);
+      }
+    }
+    requestAnimationFrame(count);
+  }, 400);
+}
+console.log("ANIM-CAP-READY");
+setTimeout(function () { phase(0); }, 300);
+</script>
+</body></html>

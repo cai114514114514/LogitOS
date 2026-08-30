@@ -34,6 +34,18 @@
 void js_forms_cleanup(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(js_forms_cleanup);
 
+/* The CSS animation clock's engine hooks (js_anim.c part 2). Weak for the
+ * same reason: the host loader test links no js_anim.o and must keep the
+ * pre-clock behaviour exactly. css_anim_tick is called by js_page_run_due
+ * -- the tick rides the page's one deadline queue -- and this file reads
+ * the frame kind back after it. */
+void css_anim_reset(void) LOGIT_WEAK;
+void css_anim_snapshot(struct node *root) LOGIT_WEAK;
+int  css_anim_needs_layout(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_anim_reset);
+LOGIT_WEAK_STUB(css_anim_snapshot);
+LOGIT_WEAK_STUB(css_anim_needs_layout);
+
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
@@ -1801,6 +1813,12 @@ static struct dt_chain g_dt;
 static void load_once(const char *u)
 {
     set_status(g_hydrating ? "restoring tab..." : "loading...");
+    /* The animation clock's entries point into the document that is about
+     * to be freed, and unlike the JS wrappers they have no teardown hook
+     * of their own -- dropped here, before dom_free, for the same reason
+     * focus_reset() is: a recycled slot would silently name a different
+     * element. Weak: the host loader test links no js_anim.o. */
+    if (LOGIT_HAVE(css_anim_reset)) css_anim_reset();
     /* pagehide, on the document about to be torn down -- mirrors the pageshow
      * dispatch near the bottom of this function. Must run BEFORE js_page_close:
      * that call frees the runtime this event needs to run any listener at all.
@@ -2398,6 +2416,14 @@ static int restyle(void)
     if (!g_root) return 0;
     int level = js_dom_inval_level();
     if (level == INVAL_NONE) return 0;
+
+    /* BEFORE the cascade runs: the animation clock snapshots the current
+     * effective opacity/transform of every element it watches, so that a
+     * class change can be TRANSITIONED from the value the user was seeing
+     * rather than discovering the old value only after it is gone. This is
+     * the pre-half of the css_anim_note() css_extra_apply performs inside
+     * the cascade below. Weak like the reset in load_once(). */
+    if (LOGIT_HAVE(css_anim_snapshot)) css_anim_snapshot(g_root);
 
     int nroots = js_dom_inval_roots();
     int changed = CSS_CHANGED_NONE;
@@ -5155,6 +5181,22 @@ void app_main(void)
                 if (g_pending_n > 0) run_pending_inserted_scripts(url);
                 if (settle_frame()) need = 1;
                 if (js_page_output_len() != js_out_shown) { status_from_js("loaded"); need = 1; }
+                /* The CSS animation tick ran inside run_due and overlayed
+                 * values on cstyle; the frame it is owed depends on WHAT
+                 * moved. opacity is snapshotted into the display list at
+                 * layout, so an opacity frame costs one layout_page; a
+                 * transform-only frame is read live by the painter and
+                 * costs only the repaint. css_anim_needs_layout() answers
+                 * 2 / 1 / 0 and clears itself, so a pass where nothing
+                 * animated buys neither. */
+                if (LOGIT_HAVE(css_anim_needs_layout)) {
+                    int fk = css_anim_needs_layout();
+                    if (fk == 2 && g_root) {
+                        layout_page(g_root, win_w);
+                        ph = layout_height();
+                    }
+                    if (fk) need = 1;
+                }
             }
         }
 

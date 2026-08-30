@@ -33,6 +33,15 @@
 #include <string.h>
 #include <stdio.h>
 
+/* The easing section at the bottom of this file declares its API in css.h
+ * (the browser's CSS umbrella header) rather than in css_interp.h: the
+ * consumer is js_anim.c's animation clock, which includes css.h for the
+ * cstyle it overlays anyway, and css.h is where every other cross-file CSS
+ * contract in this tree lives. css.h needs no include path beyond this
+ * directory -- it forward-declares libwapcaplet, so the host test lines
+ * that compile this file unchanged still link. */
+#include "css.h"
+
 /* NO atof, NO strtod, NO pow, NO log10 -- and that is a link constraint, not
  * taste. This TU is in BROWSER_PIPE, so it is linked into the ring-3
  * browser.aex against mini-libc, where <stdlib.h> DECLARES atof and nothing
@@ -1662,4 +1671,264 @@ int ci_value_composite(const char *prop, const char *underlying,
         wrote = 1;
     }
     return o;
+}
+
+/* ======================================================================
+ * Timing functions (easing), for the CSS animation/transition clock
+ *
+ * js_anim.c's WAAPI half computes its own easing in JS because the harness
+ * reads it back through getComputedStyle at a page-chosen currentTime; this
+ * half exists for the CSS half, where the engine is C and the easing has to
+ * be applied per tick on the frame boundary -- 20 ms apart, not at a
+ * page-chosen instant, so the values that matter are the mid-curve ones and
+ * those are exactly where a wrong bezier is invisible to the eye.
+ *
+ * WHAT IS SUPPORTED, and each is a promise the gates hold:
+ *
+ *   linear
+ *   ease, ease-in, ease-out, ease-in-out   (the four named beziers)
+ *   cubic-bezier(x1,y1,x2,y2)              x1/x2 in [0,1]; y outside is
+ *                                          legal CSS (overshoot) and works
+ *   step-start, step-end                   1-step stairs
+ *   steps(n, jump-start|jump-end|jump-none|jump-both|start|end)
+ *                                          jump-* per CSS Easing 2; the
+ *                                          legacy `start`/`end` keywords are
+ *                                          jump-start/jump-end
+ *
+ * cubic-bezier() is solved by Newton-Raphson over the x(t) polynomial (the
+ * bezier's x half is monotone because x1,x2 are clamped to [0,1]),
+ * safeguarded by a maintained bisection bracket. [2026-08-30, correction
+ * kept beside the old claim: the ORIGINAL loop here ran eight iterations
+ * with a bracket it never tightened on Newton steps, which measured (by
+ * check_anim_clock.c against double-precision bisection references) as
+ * ~4e-3 of mid-curve error -- ease at x=0.25 returned 0.4050 where 0.4085
+ * belongs -- while its comment claimed 1e-7. Eight pure bisections over
+ * [0,1] is exactly 1/256 = 0.0039, and that was the number being seen;
+ * Newton was bouncing out of a stale bracket.] The loop below updates the
+ * bracket by the residual's sign EVERY iteration and takes the Newton step
+ * only when it lands strictly inside, so convergence is Newton-fast near
+ * the root and at least bisection-sure everywhere; the 1e-12 break fires
+ * after ~6 iterations in practice, and 100 iterations is 2^-100 -- below
+ * double epsilon, i.e. the cap cannot be what stops it. The solver is
+ * exact at t=0 and t=1 by construction (returned early), which is what
+ * keeps the endpoints of every animation pixel-identical to the
+ * non-animated end-state renders -- the property the guest gate's
+ * start/end screenshots depend on.
+ *
+ * DELIBERATELY NOT SUPPORTED: `steps(n, jump-...)` is parsed but the clock
+ * applies the eased value to the WHOLE iteration, not per keyframe segment;
+ * per-keyframe `animation-timing-function` inside a @keyframes rule is
+ * captured but ignored (see css_extra.c). Both are named so the next reader
+ * finds a decision rather than a gap.
+ * ====================================================================== */
+
+int ci_ease_parse(const char *s, int len, struct ci_ease *out)
+{
+    /* Everything is parsed into a LOCAL and committed only on success: the
+     * shorthand parsers try ci_ease_parse on EVERY token of an
+     * `animation:`/`transition:` list against the SAME struct, and a
+     * failed attempt that had already zeroed the control points would wipe
+     * the easing an earlier token successfully set -- `spin 1s
+     * cubic-bezier(.4,0,.6,1) infinite reverse` came out with x1=0 that
+     * way, on the checker's first red run. */
+    struct ci_ease o;
+
+    if (!s || !out || len <= 0) return -1;
+    while (len > 0 && ci_ws(s[0])) { s++; len--; }
+    while (len > 0 && ci_ws(s[len-1])) len--;
+    if (len <= 0) return -1;
+
+    o.x1 = o.y1 = o.x2 = o.y2 = 0.0;
+    o.steps = 0;
+    o.step_pos = 0;
+
+    if (len == 6 && !memcmp(s, "linear", 6)) { o.kind = CI_EASE_LINEAR; *out = o; return 0; }
+    if (len == 4 && !memcmp(s, "ease", 4)) {
+        o.kind = CI_EASE_CUBIC;
+        o.x1 = 0.25; o.y1 = 0.1; o.x2 = 0.25; o.y2 = 1.0;
+        *out = o; return 0;
+    }
+    if (len == 7 && !memcmp(s, "ease-in", 7)) {
+        o.kind = CI_EASE_CUBIC;
+        o.x1 = 0.42; o.y1 = 0.0; o.x2 = 1.0; o.y2 = 1.0;
+        *out = o; return 0;
+    }
+    if (len == 8 && !memcmp(s, "ease-out", 8)) {
+        o.kind = CI_EASE_CUBIC;
+        o.x1 = 0.0; o.y1 = 0.0; o.x2 = 0.58; o.y2 = 1.0;
+        *out = o; return 0;
+    }
+    /* "ease-in-out" is ELEVEN characters; the recovered half-edit compared
+     * against 12, so the keyword never parsed and every `animation:
+     * x Ns ease-in-out ...` shorthand was refused as a whole (found by
+     * check_anim_clock.c's parse row, red on its first run). */
+    if (len == 11 && !memcmp(s, "ease-in-out", 11)) {
+        o.kind = CI_EASE_CUBIC;
+        o.x1 = 0.42; o.y1 = 0.0; o.x2 = 0.58; o.y2 = 1.0;
+        *out = o; return 0;
+    }
+    if (len == 10 && !memcmp(s, "step-start", 10)) {
+        o.kind = CI_EASE_STEPS; o.steps = 1; o.step_pos = CI_STEP_START;
+        *out = o; return 0;
+    }
+    if (len == 8 && !memcmp(s, "step-end", 8)) {
+        o.kind = CI_EASE_STEPS; o.steps = 1; o.step_pos = CI_STEP_END;
+        *out = o; return 0;
+    }
+    if (len > 13 && !memcmp(s, "cubic-bezier(", 13) && s[len-1] == ')') {
+        /* Four comma-separated numbers, read with this file's own scanner
+         * (sk_num), so 1e-2 and -0.5 both parse; x1/x2 outside [0,1] are
+         * not a timing function (the curve's x half stops being a
+         * function) and are refused rather than clamped -- a clamp would
+         * draw a DIFFERENT curve than the author named, silently. */
+        const char *b = s + 13;
+        int blen = len - 14;
+        double v[4];
+        int i = 0, k = 0;
+        while (k < 4) {
+            while (i < blen && (ci_ws(b[i]) || b[i] == ',')) i++;
+            struct ci_scan sc = { b, blen, i };
+            if (!sk_num(&sc, &v[k])) return -1;
+            i = sc.i;
+            k++;
+        }
+        while (i < blen && ci_ws(b[i])) i++;
+        if (i != blen) return -1;
+        if (v[0] < 0 || v[0] > 1 || v[2] < 0 || v[2] > 1) return -1;
+        o.kind = CI_EASE_CUBIC;
+        o.x1 = v[0]; o.y1 = v[1]; o.x2 = v[2]; o.y2 = v[3];
+        *out = o; return 0;
+    }
+    if (len > 6 && !memcmp(s, "steps(", 6) && s[len-1] == ')') {
+        const char *b = s + 6;
+        int blen = len - 7, i = 0;
+        struct ci_scan sc = { b, blen, 0 };
+        double d = 0;
+        /* The count is an <integer>: 2.5 is not steps(2) silently rounded,
+         * it is refused. Bounds: 1 (the spec minimum) .. 1000 (beyond any
+         * real sheet; a million-step stair is a denial of the tick). */
+        if (!sk_num(&sc, &d) || d < 1 || d > 1000) return -1;
+        if (d != (double)(long long)d) return -1;
+        int count = (int)d;
+        i = sc.i;
+        while (i < blen && ci_ws(b[i])) i++;
+        int pos = CI_STEP_END;                     /* CSS initial: steps(n, end) */
+        if (i < blen && b[i] == ',') {
+            i++;
+            while (i < blen && ci_ws(b[i])) i++;
+            int st = i;
+            while (i < blen && b[i] != ')') i++;
+            int kl = i - st;
+            if (kl == 10 && !memcmp(b + st, "jump-start", 10)) pos = CI_STEP_START;
+            else if (kl == 8 && !memcmp(b + st, "jump-end", 8)) pos = CI_STEP_END;
+            else if (kl == 9 && !memcmp(b + st, "jump-none", 9)) pos = CI_STEP_NONE;
+            else if (kl == 9 && !memcmp(b + st, "jump-both", 9)) pos = CI_STEP_BOTH;
+            else if (kl == 5 && !memcmp(b + st, "start", 5)) pos = CI_STEP_START;
+            else if (kl == 3 && !memcmp(b + st, "end", 3)) pos = CI_STEP_END;
+            else return -1;
+        }
+        /* jump-none divides by n-1, so the spec requires n > 1 for it;
+         * steps(1, jump-none) has a zero denominator and is invalid
+         * SYNTAX, not a runtime corner to clamp. */
+        if (pos == CI_STEP_NONE && count < 2) return -1;
+        o.kind = CI_EASE_STEPS;
+        o.steps = count;
+        o.step_pos = pos;
+        *out = o; return 0;
+    }
+    return -1;
+}
+
+/* The bezier curve through the four control points, parameterised by t in
+ * [0,1]. x(t) and y(t) share the shape; the easing is y(t(x)). */
+static double bez(double t, double p1, double p2)
+{
+    double u = 1.0 - t;
+    return 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t;
+}
+
+/* dx/dt of the x half; zero where Newton stalls and bisection takes over. */
+static double bez_dx(double t, double p1, double p2)
+{
+    double u = 1.0 - t;
+    return 3.0 * u * u + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (1.0 - p2);
+}
+
+double ci_ease_apply(const struct ci_ease *e, double t)
+{
+    if (!e) return t;
+    if (!(t > 0.0)) return 0.0;                    /* t <= 0, and the -0 too */
+    if (t >= 1.0) return 1.0;
+
+#ifdef CSS_ANIM_NEGCTL_EASE_LINEAR
+    /* NEGATIVE CONTROL (tests/anim.mk): every easing collapses to identity.
+     * Endpoints still agree, so only a suite that asserts MID-CURVE values
+     * can catch it -- which is exactly what check_anim_clock.c does. */
+    return t;
+#else
+    if (e->kind == CI_EASE_LINEAR) return t;
+
+    if (e->kind == CI_EASE_STEPS) {
+        /* css-easing-1 2.3.1, verbatim: current step = floor(x*n), +1 for
+         * jump-start and jump-both; jumps = n / n-1 / n+1 (end / none /
+         * both); y = current/jumps, clamped to [0, jumps].
+         *
+         * [2026-08-30, correction kept beside what the recovered half-edit
+         * did: the old jump-end returned (floor+1)/n when x*n was not
+         * integral -- steps(4) at x=0.3 gave 0.5 where the spec's floor/x
+         * gives 0.25 -- and the old jump-none was (floor+1)/(n+1) instead
+         * of floor(x*n)/(n-1). Both were caught by check_anim_clock.c's
+         * hand-evaluated spec rows on its first red run; jump-start and
+         * jump-both were already correct and are unchanged.
+         *
+         * The spec's step 3 (boundary minus one, the "before flag" corner)
+         * is unreachable from the clock, which samples strictly inside
+         * (0,1) on 20 ms boundaries and pins the endpoints above.] */
+        int n = e->steps > 0 ? e->steps : 1;
+        double scaled = t * (double)n;
+        long long k = (long long)scaled;           /* floor: t < 1 so k <= n-1 */
+        long long jumps, cur;
+        switch (e->step_pos) {
+        case CI_STEP_START: cur = k + 1; jumps = n;     break;
+        case CI_STEP_NONE:  cur = k;     jumps = n - 1; break;
+        case CI_STEP_BOTH:  cur = k + 1; jumps = n + 1; break;
+        default:            cur = k;     jumps = n;     break;  /* jump-end */
+        }
+        if (cur < 0) cur = 0;
+        if (cur > jumps) cur = jumps;
+        return (double)cur / (double)jumps;
+    }
+
+    /* cubic-bezier: safeguarded Newton -- see the corrected block comment
+     * above ci_ease_parse for why the old 8-iteration loop was really
+     * 1/256-precision bisection. The bracket is tightened by the
+     * residual's sign EVERY iteration (the old loop never tightened it on
+     * Newton steps, which is what let Newton bounce), and the Newton step
+     * is taken only when it lands strictly inside. */
+    {
+        double lo = 0.0, hi = 1.0, x = t;
+        for (int it = 0; it < 100; it++) {
+            double cx = bez(x, e->x1, e->x2) - t;
+            if (fabs(cx) < 1e-12) break;
+            if (cx < 0.0) lo = x; else hi = x;
+            double d = bez_dx(x, e->x1, e->x2);
+            double nx;
+            if (fabs(d) < 1e-12) {
+                nx = 0.5 * (lo + hi);
+            } else {
+                nx = x - cx / d;
+                if (!(nx > lo && nx < hi)) nx = 0.5 * (lo + hi);
+            }
+            x = nx;
+        }
+        double y = bez(x, e->y1, e->y2);
+        /* y1/y2 outside [0,1] is legal and overshoots; clamp only at the
+         * physical stops so a property that cannot exceed its range (an
+         * alpha) still lands inside it at the overshoot's peak. Callers
+         * that need the raw overshoot (transform) clamp themselves. */
+        if (y < 0.0) y = 0.0;
+        if (y > 1.0) y = 1.0;
+        return y;
+    }
+#endif
 }

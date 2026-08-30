@@ -106,19 +106,26 @@
  * is now a real moving clock -- see the DocumentTimeline section below --
  * but nothing ticks a playing Animation from it; currentTime is exactly what
  * play()/pause()/the setter last left it at), no animation events
- * (animationstart/finish/cancel), no @keyframes/CSS-animation integration --
- * which is why the `Compositing CSS Animations` half of every composition
- * file, exactly 1,061 subtests, is out of this file's reach no matter how
- * right the composition is -- no ScrollTimeline, no commitStyles, no
+ * (animationstart/finish/cancel), no ScrollTimeline, no commitStyles, no
  * pseudo-element TARGETING of the getComputedStyle overlay (KeyframeEffect's
  * `pseudoElement` property is real and validated, but `patched()` below
  * still answers only for the no-pseudo call, exactly as before), and no CSS
  * value validity checking (RULE 3 above).
+ *
+ * [2026-08-30] ONE ITEM LEFT THAT LIST, and the correction is kept beside
+ * the old claim: @keyframes/CSS-animation integration NOW EXISTS, as PART 2
+ * at the bottom of this file -- a clock that runs CSS `animation` and
+ * `transition` off the page's one deadline queue. The `Compositing CSS
+ * Animations` half of every composition file (1,061 subtests) is still out
+ * of reach: composition still happens only within one WAAPI effect, never
+ * between a WAAPI effect and a concurrently-running CSS animation, and the
+ * two clocks do not read each other's currentTime.
  */
 #include "css_interp.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "quickjs.h"
 
@@ -1382,3 +1389,1103 @@ void js_anim_install(JSContext *ctx)
     }
     JS_FreeValue(ctx, r);
 }
+
+/* ======================================================================
+ * PART 2 -- the CSS animation/transition clock
+ *
+ * Everything above this line is the WAAPI surface (Element.animate, a JS
+ * prelude over two natives). Everything below is the CSS half: `animation:`
+ * and `transition:` driven by a real clock instead of approximated to their
+ * static END-STATE, which is what this tree did before 2026-08-30 because
+ * nothing drove frames (see the corrected comment at css_extra.c's
+ * walk_anim).
+ *
+ * THE ARCHITECTURE IN ONE PARAGRAPH, so the seams below read as design and
+ * not omission:
+ *
+ *   - ONE clock. There is no second timer anywhere in this half. The tick
+ *     (css_anim_tick) is a consumer on the page's EXISTING deadline queue
+ *     in js_page.c -- the same queue setTimeout/rAF live in, the same
+ *     injected monotonic clock, the same computed sleep in browser.c's
+ *     main loop. js_page_pending() asks css_anim_active(), js_page_next_due()
+ *     merges css_anim_next_due(), js_page_run_due() calls the tick. An
+ *     idle page with no animation and no timer costs exactly what it did
+ *     before this file grew a second half.
+ *
+ *   - The engine owns no rendering. It overlays the CURRENT animated value
+ *     onto the same cstyle fields the painter already reads --
+ *     st->opacity and st->xraw[XR_TRANSFORM] -- which is the C-side twin
+ *     of the WAAPI overlay at the top of this file (that one patches the
+ *     computed-style ANSWER a page reads; this one patches the style the
+ *     painter sees). browser_paint.c needed no change, by construction.
+ *
+ *   - Capture is css_extra.c's: @keyframes into the css_kf table, the
+ *     `animation`/`transition` SHORTHAND spans into cstyle.anim_raw/
+ *     trans_raw. This file resolves spans into entries and COPIES the two
+ *     endpoint values it interpolates between, because the spans point
+ *     into css_extra's private sheet copy, which a viewport change frees
+ *     and recompiles mid-flight; css_extra_sheet_gen() is how an entry
+ *     notices and rebuilds.
+ *
+ * WHAT ANIMATES: opacity and transform, and nothing else. Both are
+ * paint-time values; transform is read LIVE by the painter (no relayout
+ * per frame), opacity is snapshotted into the display list at layout (so
+ * an opacity tick costs one layout -- css_anim_needs_layout() tells
+ * browser.c which kind of frame it owes). Every other property a
+ * @keyframes rule may name -- width, margin, color, border-radius, ... --
+ * keeps the element's CASCADE BASE value, which is the same end-state-
+ * shaped answer the pre-clock tree gave. The refusal is deliberate and
+ * gated (tests/fixtures/anim/static.html animates margin-left and must
+ * not move): each layout-affecting property added here buys a per-frame
+ * relayout, and the cap below exists precisely because relayout is what
+ * an animation costs.
+ *
+ * THE CAP, and the degradation past it, stated rather than implied: at
+ * most CSS_ANIM_CAP (32) concurrent entries exist. Elements past the cap
+ * -- first come in the note walk's document order, so the degradation is
+ * deterministic -- are never adopted: they keep their cascade base value,
+ * which is exactly what CSS says a finished fill:none animation leaves
+ * behind, so over-cap degrades to "animation already over" rather than to
+ * jank, and the [css-anim] cap line on serial says so. 32 was set from
+ * the guest measurement in tests/fixtures/anim/cap.html (delivered rAF
+ * frames per 1.5 s at 0/8/32/96/192 simultaneous animations); the gate's
+ * report carries the numbers.
+ *
+ * LIFETIME, both halves enforced here: entries hold node pointers and
+ * navigation frees the DOM arena out from under them, so css_anim_reset()
+ * drops everything WITHOUT touching the nodes (browser.c calls it before
+ * the teardown dom_free). A node destroyed between navigations is caught
+ * by the DOM's own generation stamp -- node->serial, the same mechanism
+ * JS wrappers use; a recycled slot's serial differs, and a freed-but-
+ * unrecycled node is merely detached, so overlaying it paints nothing.
+ *
+ * NOT DONE, named: per-keyframe `animation-timing-function` (the
+ * animation-level easing is applied to the whole iteration, which is
+ * exact for the two-stop rules real pages ship), animation events
+ * (animationstart/end/iteration stay absent in BOTH halves of this file),
+ * compositing a CSS animation against a WAAPI effect (the two clocks do
+ * not read each other), and longhand-only animation/transition
+ * declarations (the capture takes the shorthand; a longhand-only sheet
+ * keeps the end-state behaviour -- css_extra.c states why).
+ * ====================================================================== */
+
+#include "css.h"
+#include "dom.h"
+#include "../../../include/weaksym.h"
+
+/* The page's monotonic clock, css_extra's tables and the root font size:
+ * all live in files a host link of this TU does not carry (js_page.c,
+ * css_extra.c, css_engine.c), so every call is guarded with LOGIT_HAVE --
+ * calling a stub is a SIGTRAP on the Mach-O host, not a quiet 0 (read
+ * include/weaksym.h). The host checker drives the tick with an explicit
+ * `now`, so a frozen 0 clock costs it nothing. */
+unsigned long long js_page_now_ms(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_page_now_ms);
+int css_keyframes_find(const char *name, int len, const struct css_kf **out) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_keyframes_find);
+int css_extra_sheet_gen(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_extra_sheet_gen);
+int css_root_px(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_root_px);
+
+static unsigned long long clk_now(void)
+{
+    return LOGIT_HAVE(js_page_now_ms) ? js_page_now_ms() : 0;
+}
+
+static int root_px_now(void)
+{
+    return LOGIT_HAVE(css_root_px) ? css_root_px() : 16;
+}
+
+/* One tick per 20 ms. The clock advances in 10 ms steps and rAF's own
+ * target (FRAME_MS 16 in js_page.c) rounds up to the same 20 ms in
+ * practice, so this rides the page's existing animation rhythm instead of
+ * inventing a faster one the compositor cannot keep. */
+#define CANIM_FRAME_MS 20
+
+/* One endpoint value, copied out of the sheet at entry creation. 128
+ * bytes holds a transform list of about eight functions; the longest in
+ * tests/fixtures/cssweb is four. A longer one declines that entry's
+ * transform (opacity is unaffected) rather than truncating it -- a cut
+ * transform list is a DIFFERENT animation, silently. */
+#define CANIM_VAL 128
+
+/* animation-direction: enum CAD_* and struct anim_spec/trans_spec live in
+ * css.h beside their prototypes -- the host checker drives the parsers. */
+
+/* A property-specific keyframe list: the subset of a rule's stops that
+ * declare the property, with implicit 0%/100% ends filled from the
+ * element's cascade base (CSS Animations 5.4: missing from/to are the
+ * underlying value). The +2 in the arrays covers those two ends. */
+struct pkf { int off; char val[CANIM_VAL]; int len; };
+
+struct canim {
+    struct node *node;
+    uint32_t     serial;                 /* liveness: dom.c's generation stamp */
+    int          gen;                    /* css_extra_sheet_gen at adoption */
+    const char  *anim_raw_at;            /* the span adopted from; a different
+                                          * span means a different rule -> restart */
+    int          anim_rawlen_at;
+
+    /* The animation half. */
+    int          is_anim;
+    struct anim_spec as;
+    int          n_op, n_xf;             /* 0 = the property is not animated */
+    struct pkf   op[CSS_KF_MAXSTOP + 2];
+    struct pkf   xf[CSS_KF_MAXSTOP + 2];
+    unsigned long long t0;
+    unsigned long long acc;              /* active ms; paused spans excluded */
+    unsigned long long last_now;
+    int          anim_done;              /* finished; overlay held iff fill_fwd */
+
+    /* The transition half. is_trans entries WATCH the element even when
+     * idle -- the trigger is a future cascade the clock cannot see coming,
+     * and css_anim_snapshot() keeps the "from" the change will need. */
+    int          is_trans;
+    struct trans_spec t_op_spec, t_xf_spec;
+    char         w_op[16]; int w_op_n;   /* the pre-cascade snapshot */
+    char         w_xf[CANIM_VAL]; int w_xf_n;
+    int          trans_op, trans_xf;     /* transitions in flight */
+    unsigned long long tt0;
+    char         tf_op[16], tt_op[16];
+    char         tf_xf[CANIM_VAL], tt_xf[CANIM_VAL];
+    int          tf_xf_n, tt_xf_n;
+
+    /* The overlay actually applied, and the base to restore to. */
+    int          ov_op, ov_xf;
+    int          last_op;                /* last written st->opacity */
+    char         ov_xfbuf[CANIM_VAL]; int ov_xflen;
+    int          base_op;
+    char         base_xf[CANIM_VAL]; int base_xf_len; int base_had_xf;
+};
+
+static struct canim g_ca[CSS_ANIM_CAP];
+static int          g_ncan;
+static int          g_frozen;            /* elements past the cap this sheet */
+static int          g_frozen_said;       /* the loud line, once per sheet */
+static unsigned long long g_next_frame;  /* next tick boundary, monotonic ms */
+static int          g_dirty;             /* a tick changed a pixel value */
+static int          g_need_layout;       /* ...and it was an OPACITY change */
+
+/* ---- small scanners (css_extra's equivalents are static; duplicating
+ * eight lines is cheaper than widening a link boundary for a scanner that
+ * must agree with the CSS grammar anyway) --------------------------------- */
+
+static int ca_ws(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+static int ca_id(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                 (c >= '0' && c <= '9') || c == '-' || c == '_'; }
+
+static int ca_num(const char *s, int len, double *out)
+{
+    int i = 0, seen = 0, neg = 0;
+    double v = 0;
+    while (i < len && ca_ws(s[i])) i++;
+    if (i < len && (s[i] == '+' || s[i] == '-')) { neg = s[i] == '-'; i++; }
+    while (i < len && s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; seen = 1; }
+    if (i < len && s[i] == '.') {
+        i++;
+        double sc = 0.1;
+        while (i < len && s[i] >= '0' && s[i] <= '9') {
+            if (i < 60) v += (s[i] - '0') * sc;   /* precision floor, not a cap */
+            sc *= 0.1; i++; seen = 1;
+        }
+    }
+    if (!seen) return 0;
+    if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+        int j = i + 1, en = 0, eneg = 0;
+        if (j < len && (s[j] == '+' || s[j] == '-')) { eneg = s[j] == '-'; j++; }
+        int k = j;
+        while (k < len && s[k] >= '0' && s[k] <= '9') { en = en * 10 + (s[k] - '0'); k++; }
+        if (k > j) {
+            double m = 1.0;
+            for (int q = 0; q < en && q < 300; q++) m *= 10.0;
+            v = eneg ? v / m : v * m;
+            i = k;
+        }
+    }
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* Top-level whitespace/comma tokens (outside parens, so
+ * `cubic-bezier(.4,0,.6,1)` is one token). */
+static int ca_tokens(const char *v, int len, int *ts, int *te, int max)
+{
+    int n = 0, i = 0, depth = 0;
+    while (i < len && n < max) {
+        while (i < len && (ca_ws(v[i]) || v[i] == ',')) i++;
+        if (i >= len) break;
+        int s = i;
+        for (; i < len; i++) {
+            char c = v[i];
+            if (depth == 0 && (ca_ws(c) || c == ',')) break;
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+        }
+        int e = i;
+        while (e > s && ca_ws(v[e-1])) e--;
+        if (e > s) { ts[n] = s; te[n] = e; n++; }
+    }
+    return n;
+}
+
+/* `2s` / `350ms` -> ms. 1 on success. */
+static int ca_time(const char *v, int len, double *ms)
+{
+    double d;
+    if (!ca_num(v, len, &d)) return 0;
+    int i = 0;
+    while (i < len && (ca_ws(v[i]) || v[i] == '+' || v[i] == '-' || v[i] == '.' ||
+                       v[i] == 'e' || v[i] == 'E' || (v[i] >= '0' && v[i] <= '9'))) {
+        if ((v[i] == 'e' || v[i] == 'E') && i + 1 < len &&
+            (v[i+1] == '+' || v[i+1] == '-' || (v[i+1] >= '0' && v[i+1] <= '9'))) { i += 2; continue; }
+        i++;
+    }
+    if (len - i == 1 && (v[i] == 's' || v[i] == 'S')) { *ms = d * 1000.0; return 1; }
+    if (len - i == 2 && (v[i] == 'm' || v[i] == 'M') && (v[i+1] == 's' || v[i+1] == 'S')) {
+        *ms = d;
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- the `animation` shorthand -------------------------------------------
+ *
+ * Position-independent grammar (CSS Animations 1 4.8): the first <time> is
+ * the duration, a second is the delay; everything else is recognised by
+ * its own keyword; the first bare <custom-ident> is the animation-name. A
+ * SECOND bare ident is ambiguous and refused (-1), which degrades to the
+ * end-state fallback rather than guessing which ident was meant.
+ *
+ * Exported (css.h) so the host checker can drive it without a DOM. */
+int css_anim_parse_animation(const char *v, int len, struct anim_spec *out)
+{
+    if (!v || len <= 0 || !out) return -1;
+    memset(out, 0, sizeof *out);
+    out->ease.kind = CI_EASE_LINEAR;          /* CSS initial */
+    int ts[16], te[16];
+    int n = ca_tokens(v, len, ts, te, 16);
+    int ndur = 0, nname = 0, niter = 0;
+    for (int i = 0; i < n; i++) {
+        const char *t = v + ts[i];
+        int tl = te[i] - ts[i];
+        double ms;
+        if (ca_time(t, tl, &ms)) {
+            if (ndur == 0) { out->dur_ms = ms; ndur = 1; }
+            else if (ndur == 1) { out->delay_ms = ms; ndur = 2; }
+            else return -1;                   /* three times: not our grammar */
+            continue;
+        }
+        if (ci_ease_parse(t, tl, &out->ease) == 0) continue;
+        if (tl == 6 && !memcmp(t, "normal", 6)) { out->dir = CAD_NORMAL; continue; }
+        if (tl == 7 && !memcmp(t, "reverse", 7)) { out->dir = CAD_REVERSE; continue; }
+        if (tl == 9 && !memcmp(t, "alternate", 9)) { out->dir = CAD_ALTERNATE; continue; }
+        if (tl == 17 && !memcmp(t, "alternate-reverse", 17)) { out->dir = CAD_ALTERNATE_REV; continue; }
+        if (tl == 4 && !memcmp(t, "none", 4)) continue;
+        if (tl == 8 && !memcmp(t, "forwards", 8)) { out->fill_fwd = 1; continue; }
+        if (tl == 9 && !memcmp(t, "backwards", 9)) { out->fill_bwd = 1; continue; }
+        if (tl == 4 && !memcmp(t, "both", 4)) { out->fill_fwd = out->fill_bwd = 1; continue; }
+        if (tl == 7 && !memcmp(t, "running", 7)) continue;
+        if (tl == 6 && !memcmp(t, "paused", 6)) { out->paused = 1; continue; }
+        if (tl == 8 && !memcmp(t, "infinite", 8)) { out->infinite = 1; continue; }
+        /* A bare number is ALWAYS the iteration count, never the name:
+         * <custom-ident> cannot start with a digit, so there is nothing to
+         * disambiguate. [The recovered half-edit gated this on
+         * `!out->has_name`, which refused `slide 350ms ease-in-out .5s 3
+         * alternate` -- the count arriving after the name is the spelling
+         * real sheets use; caught by check_anim_clock.c's keyword-soup
+         * row, red on its first run. A SECOND number is invalid grammar.]
+         * A negative count is not <number> per the animations spec and is
+         * refused rather than absolute-valued. */
+        double cnt;
+        if (ca_num(t, tl, &cnt)) {
+            if (niter) return -1;
+            if (cnt < 0) return -1;
+            out->iters = cnt;
+            niter = 1;
+            continue;
+        }
+        if (nname) return -1;                 /* two idents: ambiguous, refuse */
+        for (int k = 0; k < tl; k++) if (!ca_id(t[k])) return -1;
+        if (tl >= CSS_KF_NAME) return -1;     /* longer than the table stores */
+        memcpy(out->name, t, (size_t)tl);
+        out->name[tl] = 0;
+        out->has_name = 1;
+        nname = 1;
+    }
+    /* iteration-count defaults to 1 only when UNSPECIFIED: a spelled
+     * `animation: x 2s 0` is legal CSS and runs zero iterations (the old
+     * `iters <= 0 -> 1` clamp silently animated what the author turned
+     * off); anim_progress already treats iter >= iters as finished. */
+    if (!niter && !out->infinite) out->iters = 1;
+    return 0;
+}
+
+/* ---- the `transition` shorthand, one property's item ----------------------
+ *
+ * A comma list; a property is covered by the item that NAMES it, or by an
+ * `all` item. The first matching item wins, which is source order and not
+ * a choice. Returns 0 with *out filled when covered, -1 when the property
+ * is not transitioned at all. `none` covers nothing. */
+int css_anim_parse_transition(const char *v, int len, const char *prop,
+                              struct trans_spec *out)
+{
+    if (!v || len <= 0 || !prop || !out) return -1;
+    memset(out, 0, sizeof *out);
+    out->ease.kind = CI_EASE_LINEAR;
+    int i = 0;
+    while (i < len) {
+        while (i < len && (ca_ws(v[i]) || v[i] == ',')) i++;
+        if (i >= len) break;
+        int s = i, depth = 0;
+        while (i < len && !(depth == 0 && v[i] == ',')) {
+            if (v[i] == '(') depth++;
+            else if (v[i] == ')') depth--;
+            i++;
+        }
+        int e = i;
+        while (e > s && ca_ws(v[e-1])) e--;
+        int ts[8], te[8];
+        int n = ca_tokens(v + s, e - s, ts, te, 8);
+        if (n <= 0) continue;
+        const char *p0 = v + s + ts[0];
+        int p0l = te[0] - ts[0];
+        int pl = (int)strlen(prop);
+        int match = (p0l == pl && !memcmp(p0, prop, (size_t)pl)) ||
+                    (p0l == 3 && !memcmp(p0, "all", 3));
+        if (p0l == 4 && !memcmp(p0, "none", 4)) match = 0;
+        if (!match) continue;
+        struct trans_spec t;
+        memset(&t, 0, sizeof t);
+        t.ease.kind = CI_EASE_LINEAR;
+        int ndur = 0;
+        for (int k = 1; k < n; k++) {
+            const char *tk = v + s + ts[k];
+            int tkl = te[k] - ts[k];
+            double ms;
+            if (ca_time(tk, tkl, &ms)) {
+                if (ndur == 0) { t.dur_ms = ms; ndur = 1; }
+                else if (ndur == 1) { t.delay_ms = ms; ndur = 2; }
+            } else if (ci_ease_parse(tk, tkl, &t.ease) == 0) {
+                /* an easing */
+            } else return -1;                 /* not a transition item we know */
+        }
+        *out = t;
+        return 0;
+    }
+    return -1;
+}
+
+/* ---- @keyframes resolution ---------------------------------------------- */
+
+/* The LAST `key: value` in a stop's declarations, trimmed. Last-wins is
+ * source order for one block, matching find_decl's semantics upstream. */
+static int kf_val(const char *d, int dlen, const char *key, char *out, int outmax)
+{
+    int kl = (int)strlen(key), found = 0, vs = 0, ve = 0;
+    for (int i = 0; i + kl < dlen; i++) {
+        if (i > 0 && !ca_ws(d[i-1]) && d[i-1] != ';' && d[i-1] != '{') continue;
+        if (memcmp(d + i, key, (size_t)kl)) continue;
+        int j = i + kl;
+        while (j < dlen && ca_ws(d[j])) j++;
+        if (j >= dlen || d[j] != ':') continue;
+        j++;
+        vs = j;
+        while (j < dlen && d[j] != ';' && d[j] != '}') j++;
+        ve = j;
+        found = 1;
+        i = j;
+    }
+    if (!found) return 0;
+    while (vs < ve && ca_ws(d[vs])) vs++;
+    while (ve > vs && ca_ws(d[ve-1])) ve--;
+    if (ve - vs <= 0 || ve - vs >= outmax) return 0;
+    memcpy(out, d + vs, (size_t)(ve - vs));
+    out[ve - vs] = 0;
+    return ve - vs;
+}
+
+/* cstyle opacity (0..255) as CSS text. Three decimals is below the 1/255
+ * quantum, so the round trip through ci_value_interp cannot drift. */
+static void op_text(int op, char *out, int outmax)
+{
+    if (op < 0) op = 0;
+    if (op > 255) op = 255;
+    snprintf(out, (size_t)outmax, "%d.%03d", op / 255, (op * 1000 / 255) % 1000);
+}
+
+/* Property-specific stop list. `base` is the cascade value text (opacity,
+ * or the transform span; NULL/"" means `none`). Returns the stop count, 0
+ * when the rule does not animate this property. */
+static int pkf_build(const struct css_kf *kf, const char *propname, const char *base,
+                     struct pkf *out, int outmax)
+{
+    int n = 0, any = 0;
+    for (int i = 0; i < kf->nstop && n < outmax; i++) {
+        char val[CANIM_VAL];
+        int vl = kf_val(kf->stop[i].decls, kf->stop[i].dlen, propname, val, sizeof val);
+        if (vl <= 0) continue;                 /* this stop does not name it */
+        any = 1;
+        out[n].off = kf->stop[i].off;
+        memcpy(out[n].val, val, (size_t)vl + 1);
+        out[n].len = vl;
+        n++;
+    }
+    if (!any) return 0;
+    const char *b = (base && base[0]) ? base : "none";
+    int bl = (int)strlen(b);
+    if (bl >= CANIM_VAL) bl = CANIM_VAL - 1;
+    if (out[0].off > 0) {                      /* implicit 0% from the base */
+        for (int i = n; i > 0; i--) out[i] = out[i - 1];
+        memcpy(out[0].val, b, (size_t)bl);
+        out[0].val[bl] = 0; out[0].len = bl; out[0].off = 0;
+        n++;
+    }
+    if (n < outmax && out[n - 1].off < 1000) { /* implicit 100% from the base */
+        memcpy(out[n].val, b, (size_t)bl);
+        out[n].val[bl] = 0; out[n].len = bl; out[n].off = 1000;
+        n++;
+    }
+    return n;
+}
+
+/* The interpolated text at (already eased) progress prog over a stop
+ * list. Returns the length written, -1/-2 when this frame IS an endpoint
+ * (the caller then writes the endpoint's own text, which keeps endpoint
+ * frames byte-identical to a non-animated render: the painter parses the
+ * very text the sheet carried), or 0 when the pair cannot be bridged. */
+static int pkf_interp(const struct pkf *st, int n, double prog, const char *propname,
+                      int fs, char *buf, int bufmax)
+{
+    double target = prog * 1000.0;
+    if (target <= (double)st[0].off) return -1;
+    if (target >= (double)st[n - 1].off) return -2;
+    int a = 0, b = n - 1;
+    for (int i = 0; i < n - 1; i++)
+        if (target >= (double)st[i].off && target <= (double)st[i + 1].off) {
+            a = i; b = i + 1; break;
+        }
+    if (st[b].off == st[a].off) return -1;
+    double p = (target - (double)st[a].off) / (double)(st[b].off - st[a].off);
+
+    if (!strcmp(propname, "transform")) {
+        struct ci_xform xa, xb, xr;
+        if (ci_transform_parse(st[a].val, st[a].len, (double)fs, (double)root_px_now(), &xa) != 0 ||
+            ci_transform_parse(st[b].val, st[b].len, (double)fs, (double)root_px_now(), &xb) != 0)
+            return 0;                          /* a shape we cannot bridge */
+        ci_transform_interp(&xa, &xb, p, &xr);
+        return ci_transform_text(&xr, buf, bufmax);
+    }
+    int r = ci_value_interp(propname, st[a].val, st[b].val, p, buf, bufmax);
+    if (r >= 0) return r;
+    /* Discrete fallback (shape mismatch): flip at .5, the rule
+     * css_interp.h hands back to ITS callers for the same reason. */
+    int l = p < 0.5 ? st[a].len : st[b].len;
+    const char *s = p < 0.5 ? st[a].val : st[b].val;
+    if (l >= bufmax) return 0;
+    memcpy(buf, s, (size_t)l);
+    buf[l] = 0;
+    return l;
+}
+
+/* ---- overlay ------------------------------------------------------------ */
+
+/* Stop overlaying; put the base back. The base texts live in the entry
+ * (copied at adoption) so they outlive the sheet the cascade's own xraw
+ * spans came from. */
+static void ca_release(struct canim *e)
+{
+    struct cstyle *st = (struct cstyle *)e->node->style;
+    if (!st) { e->ov_op = e->ov_xf = 0; return; }
+    if (e->ov_op) st->opacity = e->base_op;
+    if (e->ov_xf) {
+        if (e->base_had_xf) {
+            st->xraw[XR_TRANSFORM] = e->ov_xfbuf;
+            memcpy(e->ov_xfbuf, e->base_xf, (size_t)e->base_xf_len + 1);
+            st->xrawlen[XR_TRANSFORM] = (unsigned short)e->base_xf_len;
+        } else {
+            st->xraw[XR_TRANSFORM] = 0;
+            st->xrawlen[XR_TRANSFORM] = 0;
+        }
+    }
+    if (e->ov_op || e->ov_xf) g_dirty = 1;
+    e->ov_op = e->ov_xf = 0;
+}
+
+/* Write one frame. opv/xfv NULL = leave that property alone this frame. */
+static int ca_write(struct canim *e, const char *opv, const char *xfv, int xfl)
+{
+    struct cstyle *st = (struct cstyle *)e->node->style;
+    if (!st) return 0;
+    int changed = 0;
+    if (opv) {
+        double d;
+        if (ca_num(opv, (int)strlen(opv), &d)) {
+            if (d < 0) d = 0;
+            if (d > 1) d = 1;
+            int px = (int)(d * 255.0 + 0.5);
+            if (!e->ov_op || px != e->last_op) {
+                /* An opacity:0 + animation element must PAINT while it
+                 * animates or the fade-in would be invisible for its whole
+                 * duration; walk_anim cleared `hidden`, we own the alpha
+                 * and base_op remembers what to restore. */
+                st->hidden = 0;
+                st->opacity = px;
+                e->last_op = px;
+                e->ov_op = 1;
+                changed = 1;
+                g_need_layout = 1;             /* opacity is snapshotted at layout */
+            }
+        }
+    }
+    if (xfv && xfl > 0 && xfl < CANIM_VAL) {
+        if (!e->ov_xf || xfl != e->ov_xflen || memcmp(e->ov_xfbuf, xfv, (size_t)xfl)) {
+            memcpy(e->ov_xfbuf, xfv, (size_t)xfl);
+            e->ov_xfbuf[xfl] = 0;
+            e->ov_xflen = xfl;
+            st->xraw[XR_TRANSFORM] = e->ov_xfbuf;
+            st->xrawlen[XR_TRANSFORM] = (unsigned short)xfl;
+            e->ov_xf = 1;
+            changed = 1;                       /* transform is read at paint: no layout */
+        }
+    }
+    /* A write that changed a value IS a pixel change: g_dirty is what
+     * css_anim_tick returns, js_page counts it into run_due's total, and
+     * browser.c only calls css_anim_needs_layout() when run_due came back
+     * nonzero. [2026-08-30: the recovered body returned `changed` to its
+     * CALLER and set nothing here -- ca_release was the only g_dirty
+     * writer -- so a ticking animation that wrote fresh values every 20 ms
+     * reported "nothing happened", run_due returned 0, and the frame
+     * block that owes the relayout/repaint was skipped entirely. On the
+     * guest that presented as every animated element frozen at its
+     * load-time paint.] */
+    if (changed) g_dirty = 1;
+    return changed;
+}
+
+/* Iteration progress for ACTIVE time at (ms since the delay elapsed).
+ * Returns eased progress in [0,1], -1 before the active interval, 2 after
+ * the final iteration. */
+static double anim_progress(const struct canim *e, double at)
+{
+    double dur = e->as.dur_ms;
+    if (dur <= 0) return 2.0;                  /* finished by definition */
+    if (at < 0) return -1.0;
+    double iter = at / dur;
+    if (!e->as.infinite && iter >= e->as.iters) return 2.0;
+    double frac = iter - (double)(long long)iter;
+    long long k = (long long)iter;
+    double p = frac;
+    switch (e->as.dir) {
+    case CAD_REVERSE:       p = 1.0 - frac; break;
+    case CAD_ALTERNATE:     if (k & 1) p = 1.0 - frac; break;
+    case CAD_ALTERNATE_REV: if (!(k & 1)) p = 1.0 - frac; break;
+    default: break;
+    }
+    /* The timing function is applied to the WHOLE iteration here, not per
+     * keyframe segment (CSS applies it per segment; for the two-stop
+     * fade/slide rules real pages ship the two are identical). Listed in
+     * the not-done note above. */
+    return ci_ease_apply(&e->as.ease, p);
+}
+
+/* One animation frame at eased progress prog (out of [0,1] = outside the
+ * active interval: fill decides, and without fill the overlay comes OFF). */
+static int anim_frame(struct canim *e, double prog)
+{
+    char opbuf[CANIM_VAL], xfbuf[CANIM_VAL];
+    const char *opv = 0, *xfv = 0;
+    int xfl = 0;
+
+    if (prog < 0.0) {
+        if (e->as.fill_bwd) prog = 0.0;
+        else return (e->ov_op || e->ov_xf) ? (ca_release(e), 1) : 0;
+    } else if (prog > 1.0) {
+        if (e->as.fill_fwd) prog = 1.0;
+        else return (e->ov_op || e->ov_xf) ? (ca_release(e), 1) : 0;
+    }
+
+    int fs = 16;
+    if (e->node->style) fs = ((struct cstyle *)e->node->style)->font_px;
+
+    if (e->n_op) {
+        int r = pkf_interp(e->op, e->n_op, prog, "opacity", fs, opbuf, sizeof opbuf);
+        if (r == -1) opv = e->op[0].val;
+        else if (r == -2) opv = e->op[e->n_op - 1].val;
+        else if (r > 0) opv = opbuf;
+    }
+    if (e->n_xf) {
+        int r = pkf_interp(e->xf, e->n_xf, prog, "transform", fs, xfbuf, sizeof xfbuf);
+        if (r == -1) { xfv = e->xf[0].val; xfl = e->xf[0].len; }
+        else if (r == -2) { xfv = e->xf[e->n_xf - 1].val; xfl = e->xf[e->n_xf - 1].len; }
+        else if (r > 0) { xfv = xfbuf; xfl = r; }
+    }
+    return ca_write(e, opv, xfv, xfl);
+}
+
+/* One transition property's frame. prop 0 = opacity, 1 = transform. */
+static int trans_frame(struct canim *e, unsigned long long now, int prop)
+{
+    struct trans_spec *sp = prop == 0 ? &e->t_op_spec : &e->t_xf_spec;
+    double at = (double)(now - e->tt0) - sp->delay_ms;
+    char buf[CANIM_VAL];
+
+    if (at < 0) {
+        /* In the delay the change has not happened yet: hold the FROM. */
+        return prop == 0 ? ca_write(e, e->tf_op, 0, 0)
+                         : ca_write(e, 0, e->tf_xf, e->tf_xf_n);
+    }
+    if (sp->dur_ms <= 0 || at >= sp->dur_ms) {
+        /* Done. The TO value IS the new cascade base, so it becomes the
+         * entry's BASE before the overlay comes off -- ca_release()
+         * restores `base`, and restoring the adoption-time base here would
+         * snap the element back to the value the class change was supposed
+         * to move it FROM. */
+        if (prop == 0) {
+            double d;
+            if (ca_num(e->tt_op, (int)strlen(e->tt_op), &d)) {
+                if (d < 0) d = 0;
+                if (d > 1) d = 1;
+                e->base_op = (int)(d * 255.0 + 0.5);
+            }
+            e->trans_op = 0;
+        } else {
+            memcpy(e->base_xf, e->tt_xf, (size_t)e->tt_xf_n + 1);
+            e->base_xf_len = e->tt_xf_n;
+            e->base_had_xf = 1;
+            e->trans_xf = 0;
+        }
+        if (!e->trans_op && !e->trans_xf) { ca_release(e); return 1; }
+        return 1;
+    }
+    double prog = ci_ease_apply(&sp->ease, at / sp->dur_ms);
+    if (prop == 0) {
+        int r = ci_value_interp("opacity", e->tf_op, e->tt_op, prog, buf, sizeof buf);
+        if (r <= 0) {
+            const char *s = prog < 0.5 ? e->tf_op : e->tt_op;   /* discrete flip */
+            int l = (int)strlen(s);
+            if (l < (int)sizeof buf) { memcpy(buf, s, (size_t)l); buf[l] = 0; r = l; }
+        }
+        return r > 0 ? ca_write(e, buf, 0, 0) : 0;
+    }
+    struct ci_xform a, b, xr;
+    if (ci_transform_parse(e->tf_xf, e->tf_xf_n, 16.0, (double)root_px_now(), &a) == 0 &&
+        ci_transform_parse(e->tt_xf, e->tt_xf_n, 16.0, (double)root_px_now(), &b) == 0) {
+        ci_transform_interp(&a, &b, prog, &xr);
+        int r = ci_transform_text(&xr, buf, sizeof buf);
+        if (r > 0) return ca_write(e, 0, buf, r);
+    }
+    /* Unbridgeable pair: jump to the end, which is the cascade's value. */
+    e->trans_xf = 0;
+    if (!e->trans_op && !e->trans_xf) { ca_release(e); return 1; }
+    return 1;
+}
+
+/* ---- entry lifecycle ----------------------------------------------------- */
+
+static struct canim *ca_find(struct node *n)
+{
+    for (int i = 0; i < g_ncan; i++)
+        if (g_ca[i].node == n) return &g_ca[i];
+    return 0;
+}
+
+static void ca_retire(struct canim *e)
+{
+    ca_release(e);
+    int i = (int)(e - g_ca);
+    if (i < 0 || i >= g_ncan) return;
+    g_ca[i] = g_ca[g_ncan - 1];                /* swap-remove; the tail slot */
+    g_ncan--;                                  /* is dead space until reused */
+}
+
+/* Get or create the entry for n, rebuilding it if the sheet generation or
+ * the anim span moved. *fresh says the entry was (re)created this call and
+ * the caller must (re)start the animation's clock. Returns 0 when the
+ * entry table is full (the caller counts the element as frozen and leaves
+ * it at its cascade base). */
+static struct canim *ca_entry(struct node *n, struct cstyle *st, int gen, int *fresh)
+{
+    struct canim *e = ca_find(n);
+    int rebuild = 0;
+    if (e) {
+        if (e->node->serial != n->serial) rebuild = 1;   /* recycled slot */
+        else if (e->gen != gen) rebuild = 1;             /* sheet recompiled */
+        else if (st->anim_raw != e->anim_raw_at ||
+                 st->anim_rawlen != e->anim_rawlen_at) rebuild = 1;  /* new rule */
+        /* ONLY a currently-adopted entry has an overlay that needs
+         * releasing before the slot is rebuilt. [2026-08-30: the original
+         * shape released on EVERY rebuild, including a slot taken fresh
+         * from the tail -- and a fresh slot is one of three corpses: a
+         * bss-zero slot (node == NULL: the FIRST adoption of a browsing
+         * session died on exactly that, guest-verified -- SIGSEGV reading
+         * node->style, cr2=0x50, RIP inside ca_adopt, on the first page
+         * whose keyframes animate a supported property), a corpse
+         * css_anim_reset() left (its node dangles into the arena reset
+         * exists to stop us touching), or dead space a swap-remove left
+         * (already released by ca_retire). Releasing any of them is either
+         * a fault or a write through a dangling pointer.] */
+        if (rebuild) ca_release(e);
+    } else {
+        if (g_ncan >= CSS_ANIM_CAP) return 0;
+        e = &g_ca[g_ncan++];
+        rebuild = 1;
+    }
+    if (rebuild) {
+        /* THE BASE SNAPSHOT IS TAKEN HERE AND ONLY HERE. This runs inside
+         * css_anim_note's walk, which is BEFORE the overlay re-apply and
+         * AFTER the cascade, so st carries BASE values at this moment --
+         * snapshotting anywhere else would capture an overlay as the base
+         * and the animation would "restore" to its own mid-frame. */
+        memset(e, 0, sizeof *e);
+        e->node = n;
+        e->serial = n->serial;
+        e->gen = gen;
+        e->base_op = st->opacity;
+        e->base_had_xf = st->xraw[XR_TRANSFORM] ? 1 : 0;
+        if (e->base_had_xf) {
+            int l = st->xrawlen[XR_TRANSFORM];
+            if (l >= CANIM_VAL) l = CANIM_VAL - 1;
+            memcpy(e->base_xf, st->xraw[XR_TRANSFORM], (size_t)l);
+            e->base_xf[l] = 0;
+            e->base_xf_len = l;
+        }
+        e->anim_raw_at = st->anim_raw;
+        e->anim_rawlen_at = st->anim_rawlen;
+        if (fresh) *fresh = 1;
+    } else if (fresh) {
+        *fresh = 0;
+    }
+    return e;
+}
+
+/* Adopt one element the note walk found. The entry is created only when
+ * something clockable resolved: an animation whose @keyframes exist AND
+ * name opacity or transform, or a transition covering either. Everything
+ * else -- including an element whose animation stopped resolving, because
+ * its @keyframes left the sheet -- is retired to the pre-clock end-state
+ * behaviour. */
+static void ca_adopt(struct node *n, struct cstyle *st, unsigned long long now)
+{
+    int gen = LOGIT_HAVE(css_extra_sheet_gen) ? css_extra_sheet_gen() : 0;
+    struct canim *e = ca_find(n);
+
+    /* Resolve the animation half against the captured table. */
+    struct anim_spec as;
+    struct pkf op[CSS_KF_MAXSTOP + 2], xf[CSS_KF_MAXSTOP + 2];
+    int n_op = 0, n_xf = 0, have_anim = 0;
+    if (st->anim_raw && st->anim_rawlen > 0 &&
+        css_anim_parse_animation(st->anim_raw, st->anim_rawlen, &as) == 0 &&
+        as.has_name && as.dur_ms > 0 &&
+        LOGIT_HAVE(css_keyframes_find)) {
+        const struct css_kf *kf = 0;
+        if (css_keyframes_find(as.name, (int)strlen(as.name), &kf) && kf) {
+            char bop[16], bxf[CANIM_VAL];
+            const char *bxf_p = 0;
+            op_text(st->opacity, bop, sizeof bop);
+            if (st->xraw[XR_TRANSFORM]) {
+                int l = st->xrawlen[XR_TRANSFORM];
+                if (l >= CANIM_VAL) l = CANIM_VAL - 1;
+                memcpy(bxf, st->xraw[XR_TRANSFORM], (size_t)l);
+                bxf[l] = 0;
+                bxf_p = bxf;
+            }
+            n_op = pkf_build(kf, "opacity", bop, op, CSS_KF_MAXSTOP + 2);
+            n_xf = pkf_build(kf, "transform", bxf_p, xf, CSS_KF_MAXSTOP + 2);
+            have_anim = (n_op || n_xf);
+        }
+    }
+
+    /* Resolve the transition half: does the shorthand cover either
+     * property we interpolate? */
+    struct trans_spec top, txf;
+    int cop = st->trans_raw && st->trans_rawlen > 0 &&
+              css_anim_parse_transition(st->trans_raw, st->trans_rawlen,
+                                        "opacity", &top) == 0;
+    int cxf = st->trans_raw && st->trans_rawlen > 0 &&
+              css_anim_parse_transition(st->trans_raw, st->trans_rawlen,
+                                        "transform", &txf) == 0;
+
+    if (!have_anim && !cop && !cxf) {
+        if (e) ca_retire(e);
+        return;
+    }
+    int fresh = 0;
+    e = ca_entry(n, st, gen, &fresh);
+    if (!e) { g_frozen++; return; }
+
+    if (have_anim) {
+        e->is_anim = 1;
+        e->as = as;
+        e->n_op = n_op;
+        e->n_xf = n_xf;
+        memcpy(e->op, op, (size_t)n_op * sizeof op[0]);
+        memcpy(e->xf, xf, (size_t)n_xf * sizeof xf[0]);
+        if (fresh) {
+            /* ONLY a freshly (re)built entry starts its clock here. An
+             * unchanged re-adopt -- every full-document css_extra_apply
+             * reaches this line -- must NOT restart the animation, or a
+             * page that re-styles itself would never get past t=0. */
+            e->t0 = now;
+            e->acc = 0;
+            e->last_now = now;
+            e->anim_done = 0;
+        }
+    } else if (e->is_anim) {
+        /* The animation stopped resolving (keyframes left the sheet, or
+         * the rule now animates nothing we interpolate): stop the clock,
+         * release the overlay, keep any transition watch. */
+        if (e->ov_op || e->ov_xf) ca_release(e);
+        e->is_anim = 0;
+        e->anim_done = 0;
+    }
+    if (cop || cxf) {
+        e->is_trans = 1;
+        if (cop) e->t_op_spec = top;
+        if (cxf) e->t_xf_spec = txf;
+    }
+}
+
+/* The note walk: over the scope css_extra was handed (the whole document
+ * on a full apply, the invalidated subtree on a scoped restyle). */
+static void note_walk(struct node *n, unsigned long long now)
+{
+    if (n->type == N_ELEM) {
+        struct cstyle *st = (struct cstyle *)n->style;
+        struct canim *e = ca_find(n);
+        if (st && (st->anim_raw || st->trans_raw)) {
+            ca_adopt(n, st, now);
+            e = ca_find(n);
+        } else if (e) {
+            /* The style stopped asking for a clock (class removed, rule
+             * unmatched). A running animation that is removed stops
+             * applying, which for a fill:none animation is the base at
+             * every t anyway. */
+            ca_retire(e);
+            e = 0;
+        }
+        /* A finished fill:none animation with no overlay left would occupy
+         * a cap slot forever; retire it. A fill:fwd one KEEPS its overlay
+         * and its slot -- the held frame is the point. */
+        if (e && e->is_anim && e->anim_done && !e->is_trans &&
+            !e->ov_op && !e->ov_xf) {
+            ca_retire(e);
+            e = 0;
+        }
+        /* The transition trigger: the pre-cascade snapshot disagrees with
+         * what the cascade just applied. */
+        if (e && e->is_trans && st) {
+            if (e->w_op_n) {
+                char nowb[16];
+                op_text(st->opacity, nowb, sizeof nowb);
+                if (strcmp(nowb, e->w_op) != 0 && e->t_op_spec.dur_ms > 0 &&
+                    !e->is_anim && !e->trans_op) {
+                    memcpy(e->tf_op, e->w_op, (size_t)e->w_op_n);
+                    e->tf_op[e->w_op_n] = 0;
+                    strcpy(e->tt_op, nowb);
+                    e->trans_op = 1;
+                    e->tt0 = now;
+                }
+                e->w_op_n = 0;
+            }
+            if (e->w_xf_n) {
+                const char *cur = st->xraw[XR_TRANSFORM];
+                int curl = cur ? (int)st->xrawlen[XR_TRANSFORM] : 0;
+                int same = curl == e->w_xf_n &&
+                           (curl == 0 || memcmp(cur, e->w_xf, (size_t)curl) == 0);
+                if (!same && e->t_xf_spec.dur_ms > 0 && !e->is_anim && !e->trans_xf) {
+                    memcpy(e->tf_xf, e->w_xf, (size_t)e->w_xf_n);
+                    e->tf_xf[e->w_xf_n] = 0;
+                    e->tf_xf_n = e->w_xf_n;
+                    if (cur) {
+                        int l = curl;
+                        if (l >= CANIM_VAL) l = CANIM_VAL - 1;
+                        memcpy(e->tt_xf, cur, (size_t)l);
+                        e->tt_xf[l] = 0;
+                        e->tt_xf_n = l;
+                    } else {
+                        memcpy(e->tt_xf, "none", 5);
+                        e->tt_xf_n = 4;
+                    }
+                    e->trans_xf = 1;
+                    e->tt0 = now;
+                }
+                e->w_xf_n = 0;
+            }
+        }
+    }
+    for (struct node *c = n->first_child; c; c = c->next) note_walk(c, now);
+}
+
+/* Advance the ANIMATION half of one entry to `now`. Shared by note and
+ * tick so a cascade-restyled element and a ticked one take the same path. */
+static void anim_advance(struct canim *e, unsigned long long now)
+{
+    if (e->as.paused) { e->last_now = now; return; }
+    e->acc += now - e->last_now;
+    e->last_now = now;
+    double at = (double)e->acc - e->as.delay_ms;
+    double prog = anim_progress(e, at);
+    if (prog > 1.5 && !e->as.infinite) {
+        e->anim_done = 1;
+        if (e->as.fill_fwd) anim_frame(e, 1.0);   /* hold the last frame */
+        else if (e->ov_op || e->ov_xf) ca_release(e);
+        return;
+    }
+    anim_frame(e, prog);
+}
+
+/* ---- the public clock (css.h) ------------------------------------------- */
+
+#ifndef LOGIT_ANIM_NO_CLOCK
+
+int css_anim_entries(void) { return g_ncan; }
+int css_anim_frozen(void)  { return g_frozen; }
+
+void css_anim_reset(void)
+{
+    /* NOT ca_release() per entry: on navigation the DOM arena is about to
+     * be freed, and writing through node pointers here would be the very
+     * use-after-free this function exists to prevent. Drop, don't touch. */
+    g_ncan = 0;
+    g_frozen = 0;
+    g_frozen_said = 0;
+    g_next_frame = 0;
+    g_dirty = g_need_layout = 0;
+}
+
+void css_anim_snapshot(struct node *root)
+{
+    (void)root;                    /* the walk is over ENTRIES, not the tree:
+                                    * bounded by the cap, one pass, no alloc */
+    for (int i = 0; i < g_ncan; i++) {
+        struct canim *e = &g_ca[i];
+        if (!e->is_trans || e->trans_op || e->trans_xf) continue;
+        if (!e->node || e->node->serial != e->serial) continue;
+        struct cstyle *st = (struct cstyle *)e->node->style;
+        if (!st) continue;
+        op_text(st->opacity, e->w_op, sizeof e->w_op);
+        e->w_op_n = (int)strlen(e->w_op);
+        const char *x = st->xraw[XR_TRANSFORM];
+        int l = x ? (int)st->xrawlen[XR_TRANSFORM] : 0;
+        if (l >= CANIM_VAL) l = CANIM_VAL - 1;
+        if (x) memcpy(e->w_xf, x, (size_t)l);
+        e->w_xf[l] = 0;
+        e->w_xf_n = x ? l : 0;
+    }
+}
+
+void css_anim_note(struct node *root)
+{
+    if (!root) return;
+    unsigned long long now = clk_now();
+    g_frozen = 0;                              /* counted per walk; the loud */
+    note_walk(root, now);                      /* line prints once per sheet */
+    if (g_frozen && !g_frozen_said) {
+        printf("[css-anim] cap %d reached: %d element(s) keep their cascade"
+               " base value (no animation)\n", CSS_ANIM_CAP, g_frozen);
+        g_frozen_said = 1;
+    }
+    /* Re-apply every running overlay: the cascade that just ran overwrote
+     * st->opacity / st->xraw with base values, and one frame at the base
+     * would be a visible flash on every scoped restyle of an animated
+     * page. Bounded by the cap. */
+    for (int i = 0; i < g_ncan; i++) {
+        struct canim *e = &g_ca[i];
+        if (!e->node || e->node->serial != e->serial) { ca_retire(e); i--; continue; }
+        if (!e->node->style) { ca_retire(e); i--; continue; }
+        if (e->is_anim && !e->anim_done) anim_advance(e, now);
+        if (e->is_anim && e->anim_done && e->as.fill_fwd &&
+            (e->ov_op || e->ov_xf)) {
+            /* A held fill frame must survive cascades too. */
+            struct cstyle *st = (struct cstyle *)e->node->style;
+            if (e->ov_op) { st->opacity = e->last_op; st->hidden = 0; }
+            if (e->ov_xf) {
+                st->xraw[XR_TRANSFORM] = e->ov_xfbuf;
+                st->xrawlen[XR_TRANSFORM] = (unsigned short)e->ov_xflen;
+            }
+        }
+        if (e->trans_op) trans_frame(e, now, 0);
+        if (e->trans_xf) trans_frame(e, now, 1);
+    }
+}
+
+int css_anim_active(void)
+{
+    for (int i = 0; i < g_ncan; i++) {
+        struct canim *e = &g_ca[i];
+        if (!e->node || e->node->serial != e->serial) continue;
+        if (e->is_anim && !e->anim_done) return 1;   /* includes the delay */
+        if (e->trans_op || e->trans_xf) return 1;
+    }
+    return 0;
+}
+
+long long css_anim_next_due(void)
+{
+    if (!css_anim_active()) { g_next_frame = 0; return -1; }
+    unsigned long long now = clk_now();
+    if (!g_next_frame || g_next_frame <= now) g_next_frame = now + CANIM_FRAME_MS;
+    return (long long)g_next_frame;
+}
+
+int css_anim_tick(unsigned long long now)
+{
+    g_dirty = g_need_layout = 0;
+    if (g_ncan == 0) return 0;
+    g_next_frame = now + CANIM_FRAME_MS;
+    for (int i = 0; i < g_ncan; i++) {
+        struct canim *e = &g_ca[i];
+        if (!e->node || e->node->serial != e->serial) { ca_retire(e); i--; continue; }
+        struct cstyle *st = (struct cstyle *)e->node->style;
+        if (!st || (!st->anim_raw && !st->trans_raw)) {
+            /* The declarations left the style without a note walk seeing
+             * it (an inline style= rewrite reaches us this way). Retire. */
+            ca_retire(e);
+            i--;
+            continue;
+        }
+        if (e->is_anim && !e->anim_done) anim_advance(e, now);
+        if (e->trans_op) trans_frame(e, now, 0);
+        if (e->trans_xf) trans_frame(e, now, 1);
+    }
+    return g_dirty;
+}
+
+int css_anim_needs_layout(void)
+{
+    /* 2 = an OPACITY value moved (the display list snapshots opacity at
+     * layout: this frame is owed a relayout_page, not just a repaint),
+     * 1 = only paint-live values moved (transform: the redraw browser.c
+     * already does is enough), 0 = nothing moved. That 2/1/0 contract is
+     * browser.c's comment at the call site; [2026-08-30] the recovered
+     * body here returned the g_need_layout BOOLEAN -- opacity frames came
+     * back as 1 and never bought their relayout, transform-only frames
+     * came back as 0 and never bought even the redraw -- and every
+     * animated element froze at its load-time paint. Guest-verified
+     * before this fix: the @keyframes fade-in box rendered as nothing at
+     * all (alpha 0 at first layout, held forever) and a transition's
+     * screen never left its pre-change value. */
+    int r = g_need_layout ? 2 : (g_dirty ? 1 : 0);
+    g_need_layout = 0;
+    return r;
+}
+
+#else  /* LOGIT_ANIM_NO_CLOCK: the negative control's world. The clock is
+        * inert and the browser is behaviourally the pre-clock machine --
+        * css_extra's end-state approximation is the whole answer. The
+        * PARSERS above stay compiled (the host checker drives them in both
+        * worlds); only the clock stops. */
+
+int  css_anim_entries(void) { return 0; }
+int  css_anim_frozen(void)  { return 0; }
+void css_anim_reset(void) {}
+void css_anim_snapshot(struct node *root) { (void)root; }
+void css_anim_note(struct node *root) { (void)root; }
+int  css_anim_active(void) { return 0; }
+long long css_anim_next_due(void) { return -1; }
+int  css_anim_tick(unsigned long long now) { (void)now; return 0; }
+int  css_anim_needs_layout(void) { return 0; }
+
+#endif /* LOGIT_ANIM_NO_CLOCK */

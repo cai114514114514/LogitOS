@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><title>anim-static</title><style>
+/* THE PERMANENT NEGATIVE CONTROL, run inside every invocation of the gate.
+ *
+ * Two things must NOT animate, and each for a stated reason:
+ *
+ *   #drift  @keyframes animate `margin-left`, a property the animation clock
+ *           deliberately does not interpolate (it is layout-affecting; the
+ *           supported set is opacity + transform, both paint-time). The box
+ *           must sit at its base margin for the whole 2 s -- mid == end ==
+ *   start. If a future change "animates everything", this page goes red
+ *   before any real page regresses.
+ *
+ *   #reveal opacity:0 + `animation: nosuchkf 2s linear` -- the animation NAME
+ *           has no @keyframes, so per CSS NO animation runs and the element
+ *           stays at its base opacity:0 -- INVISIBLE, in the pre-clock tree
+ *           and under the clock alike. (Verified against the pre-clock
+ *           build: css_extra's "end-state approximation" clears the hidden
+ *           FLAG but never the alpha, so the box painted alpha-0 before the
+ *           clock existed too. A clock that invented a 0%-frame hold, or
+ *           "released" the base opacity for an animation that never ran,
+ *           would make this box visible -- the exact silent failure this
+ *           control exists to catch.)
+ */
+html, body { background: #ffffff; margin: 0; padding: 0; }
+@keyframes animstaticdrift { from { margin-left: 0 } to { margin-left: 120px } }
+#drift {
+  position: absolute; left: 60px; top: 40px; width: 130px; height: 130px;
+  background: #fea501; margin: 0;
+  animation: animstaticdrift 2s linear;
+}
+#reveal {
+  position: absolute; left: 260px; top: 40px; width: 130px; height: 130px;
+  background: #010303; opacity: 0;
+  animation: nosuchkf 2s linear;
+}
+</style></head>
+<body>
+<div id="drift"></div>
+<div id="reveal"></div>
+<script>console.log("ANIM-STATIC-READY");</script>
+</body></html>
