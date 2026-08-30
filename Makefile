@@ -5083,3 +5083,4 @@ test-mk-wired:
 -include tests/webaccel.mk
 -include tests/grender.mk
 -include tests/zaiblank.mk
+-include tests/intlseg.mk
