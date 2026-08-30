@@ -10,7 +10,7 @@
 # attribute ask the SAME question, and css.h is emphatic that two evaluators
 # for one question do not fail by being approximate, they fail by DISAGREEING.
 .PHONY: test-canvas test-canvas-negctl test-canvas-readback-negctl canvas-link-check
-.PHONY: test-canvas-refuse-negctl
+.PHONY: test-canvas-refuse-negctl test-canvas-text-negctl
 
 # ---------------------------------------------------------------------------
 # THE SOURCE LIST, AS A SUBTRACTION -- it was a hand copy and it drifted
@@ -147,7 +147,7 @@ canvas-link-check:
 
 test-canvas: canvas-link-check $(BUILD)/libcss_host.a $(RUST_LIB_HOST) \
              test-canvas-negctl test-canvas-readback-negctl test-canvas-b64-negctl \
-             test-canvas-refuse-negctl
+             test-canvas-refuse-negctl test-canvas-text-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(CANVAS_CF) -o $(BUILD)/canvas_test \
 	    $(CANVAS_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
@@ -302,6 +302,45 @@ test-canvas-refuse-negctl: canvas-link-check $(BUILD)/libcss_host.a $(RUST_LIB_H
 	   echo "test-canvas-refuse-negctl: ok -- the pre-2026-08-29 refusal reddens"; \
 	   echo "  the gate, so the flag still compiles and still means what it says:"; \
 	   grep '^FAIL:' $(BUILD)/canvas_refuse.log | head -4; \
+	 fi
+
+# THE FIFTH CONTROL (2026-08-30), and the one that exists because of how the
+# text/image half of this file actually died.
+#
+# -DCANVAS_TEXT_ABSENT compiles js_canvas.c with the fillText/strokeText/
+# measureText/drawImage registrations LEFT OUT -- every function body still
+# compiles, none is reachable from JS. That is not a hypothetical wrong
+# implementation, it is the PRE-2026-08-30 build as a flag: the dead canvas
+# agent of that day wrote all the bodies and never reached cv_proto_funcs, so
+# the tree compiled clean and `typeof ctx.fillText` read "undefined" with a
+# thousand lines of working text code one table away. "Implemented but
+# unregistered" is invisible to a compile and to a link, which is precisely
+# the "linking a translation unit is not running it" failure tests/wpt.mk
+# records three times, one layer down.
+#
+# As a prerequisite of test-canvas (the audit rule: named on a ci- line it
+# would satisfy the wiring check and run never), and it asserts BOTH halves:
+# the suite must FAIL, and the failures must be the text/drawImage checks --
+# a build that reddened only on some unrelated check would be proving the
+# flag changes SOMETHING, not that these checks measure this feature.
+.PHONY: test-canvas-text-negctl
+test-canvas-text-negctl: canvas-link-check $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(CANVAS_CF) -DCANVAS_TEXT_ABSENT -o $(BUILD)/canvas_text_absent \
+	    $(CANVAS_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@if $(BUILD)/canvas_text_absent > $(BUILD)/canvas_text_absent.log 2>&1; then \
+	   echo "test-canvas-text-negctl: FAILED -- the suite PASSED with the text and"; \
+	   echo "  image methods unregistered, so nothing in it measures them. This is"; \
+	   echo "  the dead-agent state this flag exists to catch."; exit 1; \
+	 fi
+	@if grep -q '^FAIL: measureText' $(BUILD)/canvas_text_absent.log; then \
+	   echo "test-canvas-text-negctl: ok -- the pre-2026-08-30 build (bodies present,"; \
+	   echo "  registrations absent) reddens the gate, and on the text checks:"; \
+	   grep '^FAIL:' $(BUILD)/canvas_text_absent.log | head -6; \
+	 else \
+	   echo "test-canvas-text-negctl: FAILED -- the suite went red, but NOT on a"; \
+	   echo "  text check. The flag is proving something other than what it says:"; \
+	   grep '^FAIL:' $(BUILD)/canvas_text_absent.log | head -6; exit 1; \
 	 fi
 
 # --- test-canvas-readback-os: the same claim, IN THE GUEST ------------------

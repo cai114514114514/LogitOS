@@ -476,6 +476,232 @@ int main(void)
     dump_url("1x2", "mk(1,2,'#00ff00')");
     dump_url("4x3-known", "url");
 
+    /* ---- text: measureText / fillText / strokeText --------------------------
+     *
+     * Everything here runs against a SECOND canvas (t/q) so the readback
+     * block's state above cannot be disturbed by font settings.
+     *
+     * WHAT IS AND IS NOT ASSERTED. The glyphs' antialiased EDGES are not this
+     * block's subject -- c/lib/text's own suites hold the shaper to a
+     * HarfBuzz differential and glyphras's flattening to a FreeType
+     * differential, and re-deriving coverage here would be a third oracle
+     * that can only disagree. What IS the subject is the PLUMBING: that a
+     * measure and a draw agree BY CONSTRUCTION (both are shape_line at the
+     * same px), that the CTM moves text where it moves a rect, that align /
+     * baseline / maxWidth / strokeStyle each move ink, and that the font
+     * shorthand parses or refuses honestly. The ink extents below are
+     * INTEGERS -- shape_line's whole-pixel pen -- so no coverage tolerance
+     * is involved anywhere.
+     *
+     * make test-canvas-text-negctl compiles this suite with
+     * -DCANVAS_TEXT_ABSENT: every check in this block must REDDEN there,
+     * because that flag is the pre-2026-08-30 build (registrations absent,
+     * `typeof ctx.fillText` undefined) -- which is exactly the state the
+     * dead canvas agent left this file in, bodies written, none reachable.
+     */
+    run("var t = document.createElement('canvas'); t.width = 64; t.height = 40;"
+        "var q = t.getContext('2d');"
+        /* ink(x0,x1,y0,y1): opaque-ink COUNT:FIRSTCOL:LASTCOL over the box --
+         * extents, not coverage, for the reason above. p2 is this block's
+         * px(), on q: the checks below draw on the SECOND canvas and must
+         * not read the first one's pixels by accident. */
+        "function ink(x0, x1, y0, y1) {"
+        "  var n = 0, first = -1, last = -1;"
+        "  for (var y = y0; y < y1; y++) for (var x = x0; x < x1; x++) {"
+        "    if (q.getImageData(x, y, 1, 1).data[3] !== 0) {"
+        "      n++; if (first < 0) first = x; last = x; } }"
+        "  return n + ':' + first + ':' + last; }"
+        "function p2(x, y) { var d = q.getImageData(x, y, 1, 1).data;"
+        "  return d[0] + ',' + d[1] + ',' + d[2] + ',' + d[3]; }");
+
+    eq("measureText returns a TextMetrics with a numeric width",
+       "typeof q.measureText('W').width", "number");
+    eq("a wider string measures wider",
+       "q.measureText('WWWW').width > q.measureText('W').width", "true");
+    eq("widths are whole user pixels (the shaper's integer pen)",
+       "q.measureText('Hello, world!').width % 1", "0");
+    run("q.font = '16px monospace';");
+    eq("a monospace face advances identically per glyph",
+       "q.measureText('iiii').width === 4 * q.measureText('i').width", "true");
+    run("q.font = '20px sans-serif';");
+    eq("the font string round-trips what was set",
+       "(function(){ q.font = 'bold 20px monospace'; return q.font; })()",
+       "bold 20px monospace");
+    eq("an unparseable font keeps the previous one (no em/%/keywords)",
+       "(function(){ q.font = '12em serif'; return q.font; })()",
+       "bold 20px monospace");
+    eq("the default font string",
+       "(function(){ var f = document.createElement('canvas');"
+       "  return f.getContext('2d').font; })()", "10px sans-serif");
+
+    /* THE MEASURE/DRAW AGREEMENT, as an integer identity: the same string at
+     * the same font drawn at x and at x+width starts its ink exactly `width`
+     * further right. If measure ever took a different path than draw (a
+     * per-character-advance measure misses ligatures and kern pairs), this
+     * difference stops being the width. */
+    eq("the pen advances exactly measureText's width between two draws",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '20px sans-serif';"
+       "  q.fillText('Hi!', 4, 20);"
+       "  var a = parseInt(ink(0, 30, 0, 40).split(':')[1], 10);"
+       "  var w = q.measureText('Hi!').width;"
+       "  q.clearRect(0,0,64,40);"
+       "  q.fillText('Hi!', 4 + w, 20);"
+       "  var b = parseInt(ink(0, 64, 0, 40).split(':')[1], 10);"
+       "  return b - a - w; })()", "0");
+
+    run("q.clearRect(0,0,64,40); q.fillStyle = '#ffffff'; q.fillText('WWWW', 2, 20);");
+    eq("fillText paints ink", "ink(0, 40, 0, 40).split(':')[0] != '0'", "true");
+    eq("fillText honours the fill colour",
+       "(function(){ for (var y = 0; y < 40; y++) for (var x = 0; x < 40; x++) {"
+       "  var d = q.getImageData(x, y, 1, 1).data;"
+       "  if (d[0] === 255 && d[1] === 255 && d[2] === 255 && d[3] === 255) return true; }"
+       "  return false; })()", "true");
+    eq("fillText leaves the row above the ascendant untouched",
+       "ink(0, 64, 0, 2).split(':')[0]", "0");
+
+    /* The CTM must move text exactly where it moves a rect -- the same
+     * property test-canvas-negctl's -DCANVAS_IGNORE_CTM exists for, so this
+     * check reddens there too. */
+    eq("a scaled CTM scales the glyphs",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '10px sans-serif';"
+       "  q.fillText('W', 2, 10);"
+       "  var c1 = parseInt(ink(0, 30, 0, 40).split(':')[0], 10);"
+       "  q.clearRect(0,0,64,40);"
+       "  q.save(); q.scale(2, 2); q.fillText('W', 2, 10); q.restore();"
+       "  var c2 = parseInt(ink(0, 64, 0, 40).split(':')[0], 10);"
+       "  return c2 > 2 * c1; })()", "true");
+
+    eq("textAlign='right' puts the pen at the RIGHT edge",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '20px sans-serif';"
+       "  q.textAlign = 'right'; q.fillText('WWWW', 50, 20); q.textAlign = 'left';"
+       "  var e = ink(0, 64, 0, 40).split(':');"
+       "  return parseInt(e[2], 10) <= 50 &&"
+       "         parseInt(e[2], 10) > 50 - q.measureText('WWWW').width; })()", "true");
+    eq("textAlign round-trips, start collapsing to left (no ctx.direction)",
+       "(function(){ q.textAlign = 'start'; return q.textAlign; })()", "left");
+    eq("textBaseline defaults to alphabetic", "q.textBaseline", "alphabetic");
+    eq("textBaseline round-trips 'top'",
+       "(function(){ q.textBaseline = 'top'; return q.textBaseline; })()", "top");
+    eq("'hanging' is stored and read back, drawn as alphabetic",
+       "(function(){ q.textBaseline = 'hanging'; var s = q.textBaseline;"
+       "  q.textBaseline = 'alphabetic'; return s; })()", "hanging");
+    eq("an unknown textBaseline is ignored, keeping the previous value",
+       "(function(){ q.textBaseline = 'middle'; q.textBaseline = 'subscript';"
+       "  return q.textBaseline; })()", "middle");
+    run("q.textBaseline = 'alphabetic';");
+
+    eq("strokeText draws with the STROKE paint and lineWidth",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '24px sans-serif';"
+       "  q.lineWidth = 2; q.strokeStyle = '#ff0000'; q.strokeText('W', 4, 24);"
+       "  var n = 0;"
+       "  for (var y = 0; y < 40; y++) for (var x = 0; x < 40; x++) {"
+       "    var d = q.getImageData(x, y, 1, 1).data;"
+       "    if (d[3] !== 0 && d[0] > 200 && d[1] < 60) n++; }"
+       "  return n > 0; })()", "true");
+
+    eq("maxWidth squashes the run horizontally",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '20px sans-serif';"
+       "  var w = q.measureText('WWWWWW').width;"
+       "  q.fillText('WWWWWW', 2, 20, w / 2);"
+       "  var e = ink(0, 64, 0, 40).split(':');"
+       "  return (parseInt(e[2], 10) - parseInt(e[1], 10)) < 0.75 * w; })()", "true");
+    eq("maxWidth 0 draws nothing (the squash limit, not a full-width draw)",
+       "(function(){ q.clearRect(0,0,64,40); q.font = '20px sans-serif';"
+       "  q.fillText('WWWW', 2, 20, 0);"
+       "  return ink(0, 64, 0, 40).split(':')[0]; })()", "0");
+    eq("a string over the layout scratch is refused, not measured truncated",
+       "(function(){ q.font = '10px monospace';"
+       "  return q.measureText(new Array(1100).join('W')).width; })()", "0");
+    run("q.font = '20px sans-serif';");
+
+    /* ---- drawImage: three arities, two sources, the transform --------------
+     *
+     * s1 is a 2x1 canvas, red|blue -- small enough that every mapped pixel is
+     * nameable and NEAREST sampling has no interesting interior.
+     *
+     * The 5-argument check is the one that catches the composition-order bug
+     * the dead agent's draft shipped: with the img2dev matrix multiplied
+     * destination-translate FIRST (the wrong order for post-multiplying
+     * helpers), a 2x-scaled draw at dx=5 lands its origin at x=10 and every
+     * pixel below asserts transparent.
+     */
+    run("var s1 = document.createElement('canvas'); s1.width = 2; s1.height = 1;"
+        "var h1 = s1.getContext('2d');"
+        "h1.fillStyle = '#ff0000'; h1.fillRect(0, 0, 1, 1);"
+        "h1.fillStyle = '#0000ff'; h1.fillRect(1, 0, 1, 1);"
+        "q.clearRect(0, 0, 64, 40);");
+    eq("q is clean before the image checks", "p2(5,5)", "0,0,0,0");
+
+    run("q.clearRect(0,0,64,40); q.drawImage(s1, 5, 5);");
+    eq("drawImage 3-arg paints the source at natural size (left)",
+       "p2(5,5)", "255,0,0,255");
+    eq("drawImage 3-arg paints the source at natural size (right)",
+       "p2(6,5)", "0,0,255,255");
+    eq("and nothing beyond it", "p2(7,5)", "0,0,0,0");
+
+    run("q.clearRect(0,0,64,40); q.drawImage(s1, 5, 5, 4, 2);");
+    eq("drawImage 5-arg scales up (left half red)",
+       "p2(6,5)", "255,0,0,255");
+    eq("drawImage 5-arg scales up (right half blue)",
+       "p2(7,5)", "0,0,255,255");
+    eq("the destination rect is where the page put it (not CTM-order-flipped)",
+       "p2(4,5)", "0,0,0,0");
+
+    run("q.clearRect(0,0,64,40); q.drawImage(s1, 1, 0, 1, 1, 5, 5, 2, 2);");
+    eq("drawImage 9-arg takes only the blue sub-rect",
+       "(function(){ return p2(5,5) + '|' + p2(6,6); })()", "0,0,255,255|0,0,255,255");
+    eq("the 9-arg draw stays inside its destination rect",
+       "p2(7,7)", "0,0,0,0");
+
+    /* 4 arguments: dw given, dh missing. The missing dh is WebIDL's NaN, not
+     * a default, so the call draws NOTHING -- pinning the rule the obvious
+     * parser gets wrong (and the dead agent's draft did). */
+    run("q.clearRect(0,0,64,40); q.drawImage(s1, 5, 5, 4);");
+    eq("a 4-argument drawImage draws nothing (dh is NaN, not defaulted)",
+       "p2(5,5)", "0,0,0,0");
+    eq("6..8 arguments match no overload and throw TypeError",
+       "(function(){ try { q.drawImage(s1, 0, 0, 1, 1, 0, 0); return 'no throw'; }"
+       "  catch (e) { return e.constructor.name; } })()", "TypeError");
+
+    /* SELF-DRAW. A canvas drawing itself must read a SNAPSHOT of the sampled
+     * sub-rect: the composite writes destination pixels left to right, and
+     * dest[x] samples src[x-1] -- a pixel one step of the same sweep has
+     * already rewritten. r,b,r,b shifted right by one makes dest[2]'s answer
+     * the whole distinction: the snapshot reads src[1] = BLUE; a live read
+     * sees the red that was just written over x=1 and answers RED. */
+    eq("a canvas drawing ITSELF reads a snapshot, not rows it is rewriting",
+       "(function(){ var z = document.createElement('canvas'); z.width = 4; z.height = 1;"
+       "  var zz = z.getContext('2d');"
+       "  zz.fillStyle = '#ff0000'; zz.fillRect(0, 0, 1, 1); zz.fillRect(2, 0, 1, 1);"
+       "  zz.fillStyle = '#0000ff'; zz.fillRect(1, 0, 1, 1); zz.fillRect(3, 0, 1, 1);"
+       "  zz.drawImage(z, 0, 0, 4, 1, 1, 0, 4, 1);"
+       "  return zz.getImageData(2, 0, 1, 1).data[2]; })()", "255");
+
+    eq("drawImage from an <img> whose src is a data: URL the page built",
+       "(function(){ var im = document.createElement('img');"
+       "  im.setAttribute('src', s1.toDataURL());"
+       "  q.clearRect(0,0,64,40); q.drawImage(im, 3, 3);"
+       "  var a = q.getImageData(3, 3, 1, 1).data, b = q.getImageData(4, 3, 1, 1).data;"
+       "  return a[0] + ',' + b[2]; })()", "255,255");
+    eq("a canvas with no context is a valid source that paints nothing",
+       "(function(){ var b = document.createElement('canvas'); b.width = 2; b.height = 1;"
+       "  q.clearRect(0,0,64,40); var r = q.drawImage(b, 1, 1);"
+       "  return String(r) + ',' + q.getImageData(1, 1, 1, 1).data[3]; })()", "undefined,0");
+    eq("an undecodable <img> is silence, not an exception",
+       "(function(){ var im = document.createElement('img');"
+       "  im.setAttribute('src', 'data:text/plain;base64,QUJD');"
+       "  q.clearRect(0,0,64,40); q.drawImage(im, 0, 0);"
+       "  return q.getImageData(0, 0, 1, 1).data[3]; })()", "0");
+    eq("a source that is not an image at all is a TypeError",
+       "(function(){ try { q.drawImage({}, 0, 0); return 'no throw'; }"
+       "  catch (e) { return e.constructor.name; } })()", "TypeError");
+
+    eq("imageSmoothingEnabled tells the truth about this build: false",
+       "q.imageSmoothingEnabled", "false");
+    eq("setting imageSmoothingEnabled=true is accepted and stays false",
+       "(function(){ q.imageSmoothingEnabled = true;"
+       "  return q.imageSmoothingEnabled; })()", "false");
+
     js_page_close();
     if (failed) { printf("\ncanvas_test: %d/%d checks FAILED\n", failed, checks); return 1; }
     printf("\ncanvas_test: %d checks pass\n", checks);

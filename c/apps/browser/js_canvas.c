@@ -111,13 +111,25 @@
  * refusal, it is the truth.
  *
  * NOT HERE YET, and deliberately left to throw so that the same instrument
- * which chose this file chooses what comes next: drawImage, fillText /
- * strokeText / measureText, ~~clip(),~~ and the composite operations beyond
+ * which chose this file chooses what comes next: ~~drawImage, fillText /
+ * strokeText / measureText,~~ ~~clip(),~~ and the composite operations beyond
  * source-over.
  *
  * `clip()` IS HERE (cv_clip, and it honours evenodd and intersects with the
- * enclosing clip). The struck word is left because the list above is quoted
+ * enclosing clip). The struck words are left because the list above is quoted
  * as an inventory and a stale entry in an inventory reads as a decision.
+ *
+ * TEXT AND drawImage ARE HERE TOO (2026-08-30): measureText/fillText/strokeText
+ * shape through c/lib/text -- the SAME shaper the kernel draws page text
+ * with, textually included per the fonts section below -- and turn each glyph
+ * outline into a gfx_path per the glyphras.c pattern; drawImage takes all
+ * three arities from another canvas or an <img> (nearest-neighbour, said out
+ * loud in the images section). The dead canvas agent of 2026-08-30 wrote the
+ * bodies but never registered them: every entry sat below cv_proto_funcs'
+ * close brace, so the whole file compiled and `typeof ctx.fillText` still
+ * read "undefined". The registrations carry their own negative control
+ * (-DCANVAS_TEXT_ABSENT, the block's comment) for exactly that failure --
+ * "implemented but unreachable" is invisible to a compile and to a link.
  *
  * ---------------------------------------------------------------------------
  * THE NEXT WALL, MEASURED IN THE GUEST 2026-08-29, NOT DERIVED FROM THIS LIST
@@ -137,6 +149,29 @@
  * kernel syscall that paints into a WINDOW, and a canvas needs glyphs
  * rasterised into an offscreen RGBA surface instead -- c/lib/text/glyphras.c
  * already converts an outline to a gfx_path, which is the seam.
+ *
+ * [CORRECTION, 2026-08-30, kept beside the paragraph above rather than
+ * replacing it: the paragraph is what was measured on the day and the day
+ * was real.] TEXT IS HERE. Measured in the guest by
+ * tests/qmp/qmp_canvas_readback.py (same machine, same disk image, serial
+ * log): the measure/draw identity holds as an integer
+ * (CV-T-ADV 0: a second draw of the same string starts exactly one
+ * measureText width right), the shipped mono face advances uniformly per
+ * glyph at 16px (CV-T-MONO true), fillText paints 52 opaque pixels of a
+ * 10px 'W' (CV-T-INK 52), and a 2x CTM more than doubles the ink
+ * (CV-T-CTM "52 151"). drawImage took all three sources, including the one
+ * only the guest can reach: an <img> fetched over HTTP and decoded by the
+ * layout pass reached drawImage with the fixture's exact red|blue pixels
+ * (CV-IMG-LAYOUT 255,255). And the instrument that named this wall now goes
+ * PAST it: probe-canvas-fingerprint runs FingerprintJS's canvas component
+ * VERBATIM at its real 2000x200 and it COMPLETED -- steps=all, a
+ * 2,133,874-character data URL encoded in 30 ms, `winding:yes` -- where the
+ * run recorded above died at "fillText is not a function". The next wall the
+ * same instrument names is the one this file already documents:
+ * globalCompositeOperation (inventory: undefined). The dead-agent draft this
+ * file carried for six hours had NONE of that visible: every body was
+ * written, none was registered -- see the registration block under
+ * cv_proto_funcs and the -DCANVAS_TEXT_ABSENT control it carries.]
  *
  * ---------------------------------------------------------------------------
  * AND ON REAL PAGES IT MOVED NOTHING, MEASURED BOTH WAYS 2026-08-30
@@ -252,15 +287,24 @@ int printf(const char *, ...);
  *     (the file header's "the path's matrix stays identity here" note).
  *
  * Ordering matters only once: cff.c before ttf.c, because ttf.c calls
- * cff_parse for CFF outlines and C comes from whichever TU saw a prototype. */
-#include "shape.h"
-#include "utf8.c"
-#include "cff.c"
-#include "ttf.c"
-#include "otlayout.c"
-#include "script.c"
-#include "bidi.c"
-#include "shape.c"
+ * cff_parse for CFF outlines and C comes from whichever TU saw a prototype.
+ *
+ * BY RELATIVE PATH, not bare basename, and that is load-bearing on the HOST
+ * side: the guest compile reaches every directory through $(INCDIRS), but
+ * tests/canvas.mk builds this file with a narrow -I list that does NOT carry
+ * c/lib/text (the js_wasm.c rule, from include/weaksym.h: a host gate's -I
+ * list lives in a fragment this file does not own). Quoted-include lookup
+ * starts at THIS file's directory, and each included file's own quoted
+ * includes then resolve against c/lib/text itself, so nothing needs an -I
+ * entry anywhere. */
+#include "../../lib/text/shape.h"
+#include "../../lib/text/utf8.c"
+#include "../../lib/text/cff.c"
+#include "../../lib/text/ttf.c"
+#include "../../lib/text/otlayout.c"
+#include "../../lib/text/script.c"
+#include "../../lib/text/bidi.c"
+#include "../../lib/text/shape.c"
 
 /* Reading the font bytes differs by world, and the split is the one every
  * ring-3-capable js_*.c here already uses (js_webapi.c:38, js_dom.c:45,
@@ -289,7 +333,8 @@ int printf(const char *, ...);
  * The byte budget is a refusal, not a truncation: ttf_parse points into the
  * buffer, and a font cut off mid-table parses as a broken font, which is a
  * worse answer than "no text" said out loud. */
-#define CV_FONT_MAX  (3u << 20)     /* largest shipped face is 2,222,264 B */
+#define CV_FONT_MAX  (3u << 20)     /* largest shipped face is 2,221,984 B
+                                     * (fsroot/fonts/ui.ttf, stat -f %z) */
 #define CV_F_UI      0
 #define CV_F_UI_B    1
 #define CV_F_MONO    2
@@ -404,6 +449,11 @@ struct cv_clip {
  *   fontstr  the VERBATIM string the page set, returned by the getter exactly
  *            as Chrome returns it (including "italic", which this build draws
  *            upright -- see cv_set_font's comment before changing that).
+ *            Truncated at 47 characters: cv_state is copied BY VALUE into the
+ *            save stack, so the string is a fixed array, not a pointer that
+ *            would need the clip buffer's refcount dance; a longer list still
+ *            lays out (the parse happens before the copy) and only READS BACK
+ *            short. Real font shorthands are far under the cap.
  *   px/bold/mono  what the shaper needs; parsed once at set time so a
  *            fillText in a loop never re-parses the font shorthand.
  *   tbase/talign  small enums rather than strings so a typo'd value cannot be
@@ -413,6 +463,15 @@ struct cv_clip {
 #define CV_TB_TOP        1
 #define CV_TB_MIDDLE     2
 #define CV_TB_BOTTOM     3
+/* hanging and ideographic are STORED as their own values so the getter
+ * round-trips what the page set (state is state), and DRAWN as alphabetic
+ * because neither shipped font carries the baseline data to place them --
+ * cv_baseline_off's switch falls through to 0 for both. A stored value that
+ * drew as alphabetic but READ BACK as "alphabetic" would be a setter that
+ * quietly rewrites history; this way the state is real and the limitation is
+ * in the one place it lives, the draw. */
+#define CV_TB_HANGING     4
+#define CV_TB_IDEOGRAPHIC 5
 #define CV_TA_START      0
 #define CV_TA_CENTER     1
 #define CV_TA_RIGHT      2
@@ -1102,11 +1161,16 @@ static void cv_text_draw(struct canvas2d *c, const char *s, int stroke,
      * engines scaled both axes and every glyph got thinner, which is not
      * what any page asks for. The squash is a CTM composition, so it
      * composes with a caller's transform rather than being applied to the
-     * points behind its back. mw <= 0 with w > 0 is k = 0: everything
+     * points behind its back. mw == 0 with w > 0 is k = 0: everything
      * collapses onto one column and draws as nothing, which is the spec's
-     * own limit of the same formula rather than a special case. */
+     * own limit of the same formula rather than a special case. (The draft
+     * of this guard said `mw > 0`, which let mw == 0 through UNSQUASHED --
+     * the comment said "collapses to nothing" and the code drew full width;
+     * the gate pins mw == 0 to nothing.) A NEGATIVE maxWidth is excluded on
+     * purpose: the spec's formula would mirror the run, and mirrored text is
+     * a picture no caller wants, so it is drawn unsquashed instead. */
     struct gfx_matrix saved = c->st.m;
-    if (isfinite(mw) && mw > 0 && w > 0 && (double)w > mw) {
+    if (isfinite(mw) && mw >= 0 && w > 0 && (double)w > mw) {
         int k16 = (int)((mw / (double)w) * 65536.0);
         if (k16 < 0) k16 = 0;
         struct gfx_matrix sq;
@@ -1135,9 +1199,14 @@ static void cv_text_draw(struct canvas2d *c, const char *s, int stroke,
  *
  * WHAT PARSES: an optional style, variant and weight (in any of the orders
  * the shorthand allows), then ONE size token (Npx or Npt, N > 0), then the
- * family list, verbatim. `mono` inside any family name selects the mono
- * faces (Courier, Consolas and monospace all carry it); everything else
- * selects Sans. Weights bold/bolder/600..900 are the bold faces.
+ * family list, verbatim. A family list containing the substring "mono" --
+ * which is the generic `monospace` and any name like "Roboto Mono" --
+ * selects the mono faces; everything else selects Sans. Concrete mono
+ * families whose name carries no "mono" (Courier New, Consolas) select Sans
+ * too, and that is the SAME degradation the CSS cascade makes for a family
+ * this machine does not ship rather than a second, name-sniffing map; a
+ * page that means mono says monospace, usually in the same list. Weights
+ * bold/bolder/600..900 are the bold faces.
  * ANYTHING ELSE -- em/rem/%/keyword sizes, a missing family, a missing size
  * -- leaves the previous font UNTOUCHED (the spec's invalid-font rule), so
  * the state can never hold a size nobody set. */
@@ -1175,6 +1244,16 @@ static int cv_font_parse(const char *s, int *px, int *bold, int *mono)
                 d++;
             }
             if (bad || d == p || d >= t) return 0;    /* not a number token */
+            const char *dend = d;   /* end of the NUMBER. The unit copy below
+                                     * advances d to the token end, and the
+                                     * reparse must stop at the number: the
+                                     * dead-agent draft of this loop reused d
+                                     * and folded the unit LETTERS into the
+                                     * value ('20px' -> 20*10+('p'-'0') ...
+                                     * = 2712 > 500), so EVERY font string
+                                     * was refused and the canvas silently
+                                     * drew at 10px forever. Found by the
+                                     * host gate's font round-trip check. */
             char unit[8]; int ul = 0;
             while (d < t && ul < 7) unit[ul++] = *d++;
             unit[ul] = 0;
@@ -1183,7 +1262,7 @@ static int cv_font_parse(const char *s, int *px, int *bold, int *mono)
             else return 0;                            /* em/rem/%/...: refuse */
             /* reparse the number (strtol-free, the token is digits/dot) */
             double num = 0, div = 1; int seen_dot = 0;
-            for (const char *q = p; q < d; q++) {
+            for (const char *q = p; q < dend; q++) {
                 if (*q == '.') { seen_dot = 1; continue; }
                 if (seen_dot) div *= 10.0;
                 num = num * 10.0 + (double)(*q - '0');
@@ -1239,23 +1318,24 @@ static JSValue cv_get_tbase(JSContext *ctx, JSValueConst t)
 {
     struct canvas2d *c = cv_of(t);
     if (!c) return JS_UNDEFINED;
-    static const char *const N[] = { "alphabetic", "top", "middle", "bottom" };
-    return JS_NewString(ctx, N[c->st.tbase & 3]);
+    static const char *const N[] =
+        { "alphabetic", "top", "middle", "bottom", "hanging", "ideographic" };
+    return JS_NewString(ctx, N[c->st.tbase]);
 }
 static JSValue cv_set_tbase(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct canvas2d *c = cv_of(t);
     const char *s = c ? JS_ToCString(ctx, v) : NULL;
     if (!s) return JS_UNDEFINED;
-    /* hanging/ideographic are STORED (the getter round-trips them) but drawn
-     * as alphabetic -- cv_baseline_off's comment. An unknown string is
-     * ignored per spec, leaving the previous value. */
-    if      (!strcmp(s, "alphabetic")) c->st.tbase = CV_TB_ALPHABETIC;
-    else if (!strcmp(s, "top"))        c->st.tbase = CV_TB_TOP;
-    else if (!strcmp(s, "middle"))     c->st.tbase = CV_TB_MIDDLE;
-    else if (!strcmp(s, "bottom"))     c->st.tbase = CV_TB_BOTTOM;
-    else if (!strcmp(s, "hanging") || !strcmp(s, "ideographic"))
-        c->st.tbase = CV_TB_ALPHABETIC;
+    /* hanging/ideographic are stored (the getter round-trips them) and drawn
+     * as alphabetic -- the enum comment above cv_baseline_off's switch. An
+     * unknown string is ignored per spec, leaving the previous value. */
+    if      (!strcmp(s, "alphabetic"))   c->st.tbase = CV_TB_ALPHABETIC;
+    else if (!strcmp(s, "top"))          c->st.tbase = CV_TB_TOP;
+    else if (!strcmp(s, "middle"))       c->st.tbase = CV_TB_MIDDLE;
+    else if (!strcmp(s, "bottom"))       c->st.tbase = CV_TB_BOTTOM;
+    else if (!strcmp(s, "hanging"))      c->st.tbase = CV_TB_HANGING;
+    else if (!strcmp(s, "ideographic"))  c->st.tbase = CV_TB_IDEOGRAPHIC;
     JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
 }
@@ -2294,25 +2374,36 @@ static unsigned char *cv_data_url_bytes(const char *src, int *outn)
     return raw;
 }
 
-/* Resolve drawImage's source argument to pixels. Returns 1 with *px/*w/*h
- * set (stride is always w*4: both sources are tightly packed RGBA8), 0 when
- * this argument holds no drawable pixels (an <img> still loading, an
- * undecodable src, a canvas with no context). `snap`, when non-NULL, may be
- * set to a malloc'd snapshot the caller must free -- see the self-draw case
- * in cv_drawImage. */
+/* Resolve drawImage's source argument to pixels.
+ *   1  pixels found; *px/*w/*h set (stride is always w*4: both sources are
+ *      tightly packed RGBA8)
+ *   0  a REAL image source that holds no drawable pixels RIGHT NOW -- an <img>
+ *      still loading or undecodable, a canvas whose context was never drawn.
+ *      The spec's answer for all of these is "draw nothing, silently"; a
+ *      contextless canvas IS a valid CanvasImageSource whose bitmap is
+ *      transparent black, so throwing there would be the wrong failure.
+ *   -1 not an image source at all (a plain object, a <div>, a <video>): the
+ *      spec says TypeError, and the caller throws it. <video> is in this class
+ *      ON PURPOSE -- its decoded frame belongs to the media engine, a
+ *      different surface with a different owner, not a hole to half-fill.
+ * `snap`, when non-NULL, may be set to a malloc'd snapshot the caller must
+ * free -- see the self-draw case in cv_drawImage. */
 static int cv_src_pixels(JSContext *ctx, JSValueConst v,
                          const unsigned char **px, int *w, int *h,
                          unsigned char **snap)
 {
     *snap = NULL;
-    if (!JS_IsObject(v)) return 0;
+    if (!JS_IsObject(v)) return -1;
 
     /* another canvas: the element (not the context object -- Chrome agrees:
      * drawImage(ctx2d) is a TypeError there too) */
     struct node *n = js_dom_node_from(v);
-    if (!n) return 0;
+    if (!n) return -1;
     for (struct canvas2d *s = g_all; s; s = s->next)
         if (s->el == n && s->px) { *px = s->px; *w = s->w; *h = s->h; return 1; }
+
+    if (n->tag && !strcmp(n->tag, "canvas"))
+        return 0;        /* a canvas with no drawn context: transparent black */
 
     if (n->tag && !strcmp(n->tag, "img")) {
         /* 1. the decoded bitmap the PAINTER uses -- the display list entry
@@ -2352,7 +2443,7 @@ static int cv_src_pixels(JSContext *ctx, JSValueConst v,
          *    decodable and every browser' behaviour for one still loading. */
         return 0;
     }
-    return 0;
+    return -1;            /* any other element/object: TypeError, see above */
 }
 
 static JSValue cv_drawImage(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -2367,29 +2458,51 @@ static JSValue cv_drawImage(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     const unsigned char *src = NULL;
     int sw = 0, sh = 0;
     unsigned char *snap = NULL;
-    if (!cv_src_pixels(ctx, argv[0], &src, &sw, &sh, &snap))
-        return JS_UNDEFINED;          /* not loaded / not decodable: no draw,
-                                       * no exception -- see cv_src_pixels 3 */
+    int got = cv_src_pixels(ctx, argv[0], &src, &sw, &sh, &snap);
+    if (got < 0)
+        return JS_ThrowTypeError(ctx, "drawImage: the source must be an image "
+                                  "or canvas element");
+    if (got == 0) return JS_UNDEFINED;  /* valid source, no pixels yet: no draw,
+                                         * no exception -- cv_src_pixels's 0 */
 
-    double dx, dy, dw, dh;
-    double sx = 0.0, sy = 0.0, swd = sw, shd = sh;
-    if (argc == 3 || argc == 4) {
-        if (JS_ToFloat64(ctx, &dx, argv[1]) || JS_ToFloat64(ctx, &dy, argv[2]))
-            return JS_UNDEFINED;
-        dw = swd; dh = shd;           /* the source's own size */
-        if (argc == 4) { JS_ToFloat64(ctx, &dw, argv[3]); }
-    } else if (argc == 5) {
-        if (JS_ToFloat64(ctx, &dx, argv[1]) || JS_ToFloat64(ctx, &dy, argv[2]) ||
-            JS_ToFloat64(ctx, &dw, argv[3]) || JS_ToFloat64(ctx, &dh, argv[4]))
-            return JS_UNDEFINED;
+    /* Two overloads, so the arity IS the signature (WebIDL resolves them by
+     * argument count): 3..5 arguments take the destination form
+     * (dx, dy, [dw, dh]), 9 take the source form
+     * (sx, sy, sw, sh, dx, dy, dw, dh), and 6..8 match NO overload -- every
+     * browser throws TypeError there, and so does this. A missing OPTIONAL
+     * argument is WebIDL's undefined, which ToNumber turns into NaN; the
+     * spec's algorithm then defaults sx,sy to 0, sw,sh to the source's own
+     * size, and dw,dh to sw,sh -- but only when BOTH are unspecified (the
+     * 3-argument form). That last rule is the one the obvious parser gets
+     * wrong: a 4-argument call (dw given, dh missing) does NOT default dh, it
+     * carries a NaN through to the finite check below and draws NOTHING,
+     * silently. The dead-agent draft of this body special-cased argc==4 into
+     * "dh = source height", which draws a picture nobody asked for. */
+    double v[8];                        /* parsed doubles, arity-mapped below */
+    for (int i = 0; i < 8; i++) v[i] = 0.0 / 0.0;
+    int navail = argc - 1;
+    if (navail > 8) navail = 8;         /* >9 arguments: extras are ignored */
+    for (int i = 0; i < navail; i++)
+        if (JS_ToFloat64(ctx, &v[i], argv[1 + i])) return JS_UNDEFINED;
+    double dx, dy, dw, dh, sx, sy, swd, shd;
+    if (argc < 6) {
+        dx = v[0]; dy = v[1]; dw = v[2]; dh = v[3];
+        sx = 0.0; sy = 0.0; swd = (double)sw; shd = (double)sh;
     } else {
-        if (argc < 9) return JS_ThrowTypeError(ctx, "drawImage: 3, 5 or 9 arguments");
-        if (JS_ToFloat64(ctx, &sx, argv[1]) || JS_ToFloat64(ctx, &sy, argv[2]) ||
-            JS_ToFloat64(ctx, &swd, argv[3]) || JS_ToFloat64(ctx, &shd, argv[4]) ||
-            JS_ToFloat64(ctx, &dx, argv[5]) || JS_ToFloat64(ctx, &dy, argv[6]) ||
-            JS_ToFloat64(ctx, &dw, argv[7]) || JS_ToFloat64(ctx, &dh, argv[8]))
-            return JS_UNDEFINED;
+        if (argc < 9)
+            return JS_ThrowTypeError(ctx, "drawImage: 3, 5 or 9 arguments "
+                                      "(6..8 matches no overload)");
+        sx = v[0]; sy = v[1]; swd = v[2]; shd = v[3];
+        dx = v[4]; dy = v[5]; dw = v[6]; dh = v[7];
     }
+    /* NaN here means "was not given", never "was given as NaN" -- an explicit
+     * NaN argument is converted by the same ToNumber and is caught by the
+     * finite check below, so defaulting only the SELF-inflicted NaNs is safe.
+     * dw/dh default only as a PAIR: see the overload comment above. */
+    if (!(swd == swd)) swd = (double)sw;
+    if (!(shd == shd)) shd = (double)sh;
+    if (!(dw == dw) && !(dh == dh)) { dw = swd; dh = shd; }
+
     /* Every non-finite argument silently ends the call, and a zero or
      * non-positive SOURCE rect draws nothing -- HTML's own step order for
      * this method (it returns before painting, without an exception). */
@@ -2423,12 +2536,23 @@ static JSValue cv_drawImage(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     }
 
     /* img2dev: image pixels (24.8) -> device (24.8), CTM last so a translate
-     * or rotate in force moves the picture exactly where it moves a rect. */
+     * or rotate in force moves the picture exactly where it moves a rect.
+     *
+     * THE MULTIPLY ORDER IS THE TRAP, and the dead-agent draft of these three
+     * lines had it backwards: gfx_m_translate/gfx_m_scale POST-multiply
+     * (m = m . t), so the matrix they build applies the calls in REVERSE
+     * order. Written as translate(-sx), scale, translate(+dx) it computes
+     * T(-sx).S.T(dx) -- dx is applied FIRST, and a 2x-scaled draw at dx=10
+     * lands its source origin at 20, not 10; a perfectly good picture in the
+     * wrong place, which is the same wrong implementation the CTM negctl
+     * exists for. Building the application order destination-rect-first --
+     * T(dx).S.T(-sx) -- needs the calls in the reverse sequence: +dx, then
+     * the scale, then -sx. */
     struct gfx_matrix mi, img2dev;
     gfx_m_identity(&mi);
-    gfx_m_translate(&mi, -fx(sx), -fx(sy));
-    gfx_m_scale(&mi, (int)((dw / swd) * 65536.0), (int)((dh / shd) * 65536.0));
     gfx_m_translate(&mi, fx(dx), fx(dy));
+    gfx_m_scale(&mi, (int)((dw / swd) * 65536.0), (int)((dh / shd) * 65536.0));
+    gfx_m_translate(&mi, -fx(sx), -fx(sy));
     gfx_m_mul(&img2dev, &c->st.m, &mi);
 
     struct gfx_paint p;
@@ -2747,6 +2871,29 @@ static const JSCFunctionListEntry cv_proto_funcs[] = {
     JS_CFUNC_DEF("createImageData", 2, cv_createImageData),
     JS_CFUNC_DEF("createLinearGradient", 4, cv_createLinear),
     JS_CFUNC_DEF("createRadialGradient", 6, cv_createRadial),
+    /* ---- text and images, registered LAST and under a negctl flag --------
+     *
+     * -DCANVAS_TEXT_ABSENT compiles this whole block out, which is the
+     * pre-2026-08-30 build as a FLAG: every function and accessor above this
+     * block still exists and still compiles, but none is reachable from JS,
+     * so `typeof ctx.fillText` reads "undefined" exactly as it did the day
+     * the dead canvas agent left this file half-wired. That is the same
+     * construction as el_toDataURL's CANVAS_READBACK_REFUSE -- the
+     * before-picture must stay BUILDABLE, because "a green gate was red on
+     * the pre-fix build" is only a claim you can make while the pre-fix
+     * build exists. test-canvas-text-negctl asserts the gate reddens under
+     * it; the entries being here (rather than the functions being #ifdef'd
+     * whole) is what makes the control about REACHABILITY and nothing else. */
+#ifndef CANVAS_TEXT_ABSENT
+    JS_CGETSET_DEF("font", cv_get_font, cv_set_font),
+    JS_CGETSET_DEF("textAlign", cv_get_talign, cv_set_talign),
+    JS_CGETSET_DEF("textBaseline", cv_get_tbase, cv_set_tbase),
+    JS_CFUNC_DEF("measureText", 1, cv_measureText),
+    JS_CFUNC_DEF("fillText", 3, cv_fillText),
+    JS_CFUNC_DEF("strokeText", 3, cv_strokeText),
+    JS_CFUNC_DEF("drawImage", 3, cv_drawImage),
+    JS_CGETSET_DEF("imageSmoothingEnabled", cv_get_smooth, cv_set_smooth),
+#endif
 };
 
 /* ------------------------------------------------------ the element side -- */
