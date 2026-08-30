@@ -2628,6 +2628,256 @@ static const char *PLATFORM_PRELUDE =
 "  reflect('action', 'action', ['form']);\n"
 "}\n"
 
+/* ==== document.write / document.writeln ===================================
+ * THE SPEC, CONDENSED TO THE TWO SENTENCES THIS ENGINE MUST ANSWER (WHATWG
+ * "document write steps", dynamic-markup-insertion): while a script inserted
+ * by the parser is executing, the string goes into the input stream JUST
+ * BEFORE THE INSERTION POINT -- the tokenizer's current position, which for
+ * an executing script is immediately after its own end tag -- and parsing
+ * continues from there; and writeln is write plus U+000A.
+ *
+ * WHY THE SPLICE IS AT TREE LEVEL AND NOT IN THE TOKENIZER. This engine does
+ * not parse and script concurrently: browser.c runs dom_parse() to EOF first
+ * (html_tree.c's DEVIATION 3 note says so -- "there is no script execution
+ * point in this parser"), and only then executes the collected scripts in
+ * document order. By the time any script runs, html_tok_free() has already
+ * released the input buffer; there is no insertion point to splice into. A
+ * spec-literal splice would mean moving script execution INSIDE the parse
+ * loop, which is browser.c's and js_page.c's plumbing, not this file's. What
+ * is emulated instead is the OBSERVABLE of the splice: the inserted stream
+ * position "just after </script>" has a tree address -- immediately after the
+ * script element -- and everything the source puts after the script is
+ * already sitting there. So a write inserts its parsed nodes after the
+ * WRITING script element, a per-script cursor advancing across that script's
+ * successive writes so they land in call order. The resulting document order
+ * is the order a real browser's parser produces for the same page; what
+ * differs is timing, and every timing difference is named below.
+ *
+ * THE WRAP-LIST RULE, PAID IN THIS COMMIT: insertion goes through
+ * parent.insertBefore() -- a prototype method installIframes wraps -- so a
+ * written <iframe> reaches onInsert()/initFrame, and at C level the call
+ * lands in insert_run(), where js_dom.c's offer_scripts() enqueue picks up
+ * a written <script> -- provided the installer revived it first (trap 7:
+ * the parse stamps fragment scripts done, and only a rebuilt, unstamped
+ * script is offered). So the door-eight rule's "call through
+ * insert_run/insert_markup OR be on the wrap list" is satisfied by both
+ * halves at once.
+ *
+ * THE SPEC'S TRAPS, EACH WITH WHAT THIS DOES INSTEAD AND WHY:
+ *
+ *   1. A write after the parser is done. The modern spec's answer is an
+ *      IMPLICIT document.open() -- which WIPES the tree and every listener
+ *      on it -- unless the ignore-destructive-writes counter is set (which
+ *      is how real browsers answer writes from asynchronously-loaded
+ *      scripts, the python.org case in collapse-recount.md: an event
+ *      listener's write is refused, not honoured). That wipe is precisely
+ *      the half-built shape this tree refuses to ship behind a silent
+ *      default, so this implements the counter's behaviour for EVERY
+ *      after-load write: contribute nothing, throw nothing, keep the page.
+ *      The gate's negative control exists to watch that refusal hold
+ *      (tests/qmp/qmp_docwrite.py, DW-DOM-ORDER2 / no-orange assertions).
+ *      document.open() itself stays ABSENT: the only thing it would add
+ *      here is the wipe-plus-resurrection path, and without a streaming
+ *      parser to hand the new document to, resurrected writes would be
+ *      present-and-wrong rather than absent.
+ *
+ *   2. "After the parser is done" has to be DETECTED, not assumed. The
+ *      gate is document.currentScript's node bridge: js_page.c sets it for
+ *      exactly the synchronous extent of a classic script's execution and
+ *      clears it before timers or event handlers run, so currentScript ==
+ *      null is this engine's "no insertion point". A write from a timer
+ *      (the fixture's setTimeout), an event handler, or a module (modules
+ *      never get currentScript, by spec) is ignored by the same test. A
+ *      script that REMOVED itself (the x.com currentScript.remove() idiom)
+ *      and then writes is ignored too -- parentNode null -- because the
+ *      insertion point this implementation can name was just destroyed.
+ *
+ *   3. The insertion point is the SCRIPT'S POSITION, not "append". The
+ *      wrong-but-tempting implementation is body.appendChild, which puts a
+ *      head script's write AFTER page content it precedes in the source.
+ *      A real browser parses a head-positioned write with the "in head"
+ *      insertion mode, which pops to body for body-flow content, so such
+ *      writes land at the TOP of body, before source body content, in write
+ *      order across MULTIPLE head scripts. Hence the head rule below: head
+ *      writes insert before body.firstChild, and the body cursor (bodyAt)
+ *      is GLOBAL across scripts rather than per-script -- the second head
+ *      script's write must land after the first's, and per-script cursors
+ *      would both aim at body.firstChild and land in reverse execution
+ *      order. Head-ALLOWED content written from head (a <style>, a
+ *      <script src>) lands in body instead of head: visually
+ *      indistinguishable (CSS and script execution do not care where in the
+ *      tree they sit, and document order among WRITTEN nodes is preserved),
+ *      and stated here rather than fixed with a per-token classifier, which
+ *      would guess the parser's "left head and cannot go back" state that
+ *      only the real mode machine knows.
+ *
+ *   4. Nested writes. The spec ignores a write whose entry's script nesting
+ *      level exceeds 1. That state is unreachable here: js_dom.c's script
+ *      sink ENQUEUES rather than executing on the inserting stack (the
+ *      recursion trap its own comment names), so no classic script ever
+ *      executes synchronously beneath another. Stated rather than handled;
+ *      if synchronous script-in-script execution ever lands, this is the
+ *      line that needs a nesting counter.
+ *
+ *   5. Execution order of a WRITTEN <script>. In a spec browser a written
+ *      blocking script executes when the parser reaches it -- before the
+ *      SOURCE content that follows, so before a later source script. Here
+ *      all parse-collected scripts run first (browser.c collected them
+ *      before the first write happened), then the drain runs written ones
+ *      in tree order. Position is exact, timing is one drain late; the
+ *      python.org shape -- write, then a LATER script reads the written
+ *      node back -- works because later source scripts run after the
+ *      writing script's nodes are already in the tree, synchronously.
+ *
+ *   6. Synchronous visibility. The spec defers parsing written input until
+ *      the executing script yields, so in a spec browser the write's own
+ *      script cannot see its nodes on the next statement. Here insertion is
+ *      immediate, so it can. The observable difference is confined to the
+ *      writing script itself (every later observer sees the same tree),
+ *      and immediate is strictly the more useful choice for pages that
+ *      write-then-query.
+ *
+ *   7. A written <script> must EXECUTE, and the parse door above is built
+ *      to stop exactly that. el_set_html stamps every fragment-parsed
+ *      script "already started" (js_dom.c's mark_fragment_scripts_started,
+ *      the 2026-08-30 data-block fix) -- CORRECT for innerHTML, where
+ *      Chrome executes an injected script never, and wrong here:
+ *      document.write input goes through the MAIN parser in a real
+ *      browser, and the main parser does not set that flag. The stamp is
+ *      why the installer REVIVES each written script by rebuilding the
+ *      element -- createElement('script') + copied attributes + copied
+ *      text, swapped in inside the detached scratch -- before the subtree
+ *      is inserted into the connected document, where offer_scripts()
+ *      finds it unstamped, enqueues it, and the drain runs it. That is the
+ *      createElement('script')+appendChild path the corpus already
+ *      exercises, not a new execution door. A C-level un-stamp API was
+ *      rejected: it would live in dom.c (not this file) and any caller
+ *      could use it to resurrect a genuine innerHTML script, undoing the
+ *      data-block fix from the outside. The rebuild changes the script
+ *      element's identity, which no page can observe: it happens
+ *      synchronously inside the write call, before any handle to either
+ *      the old or the new node has escaped to page code.
+ *      [The claim this corrects -- "a written <script> reaches
+ *      offer_scripts()' enqueue" by insertion alone -- was true when this
+ *      section was written (2026-08-30 13:14) and was falsified forty
+ *      minutes later by the stamp above landing in js_dom.c; it is kept
+ *      here because the git history will happily show it both ways.]
+ *
+ * WHAT ELSE IS DELIBERATELY NOT HERE: document.open()/document.close() (see
+ * trap 1); writes into a DOMParser document or a frame document (this
+ * installs on the PAGE document only -- `G.document` -- and js_domparser.c's
+ * documents never pass the `('write' in D)` absence test anyway); entity
+ * re-processing differences that only a streaming tokenizer positioned
+ * mid-token would show. Parsing of the written string itself IS the real
+ * spec machinery, not a scanner: it rides el_set_html's
+ * html_parse_fragment() with a <body> context element, the WHATWG fragment
+ * parsing algorithm this tree already scores against html5lib. */
+"function installDocWrite() {\n"
+"  var D = G.document;\n"
+"  if (!D || ('write' in D) || typeof D.createElement !== 'function') return;\n"
+"  if (typeof G.__currentScriptNode !== 'function') return;\n"
+   /* at: the in-place cursor -- the script element on its first write, the
+      last node IT wrote afterwards; bodyAt: the head-written position in
+      body, deliberately GLOBAL (trap 3). forScript keys the reset. */
+"  var forScript = null, at = null, bodyAt = null;\n"
+"  var tagOf = function (n) {\n"
+"    return (n && n.tagName) ? String(n.tagName).toLowerCase() : '';\n"
+"  };\n"
+"  var inHead = function (n) {\n"
+"    for (var p = n; p; p = p.parentNode) {\n"
+"      var t = tagOf(p);\n"
+"      if (t === 'body') return false;\n"
+"      if (t === 'head') return true;\n"
+"    }\n"
+"    return false;\n"
+"  };\n"
+"  var make = function (lineFeed) {\n"
+"    return function () {\n"
+"      var s = '';\n"
+"      for (var i = 0; i < arguments.length; i++) s += String(arguments[i]);\n"
+"      if (lineFeed) s += '\\n';\n"
+"      var cs = G.__currentScriptNode();\n"
+#ifdef JS_DOCWRITE_AFTERLOAD
+      /* THE NEGATIVE CONTROL'S WRONG IMPLEMENTATION, compiled in only for
+       * the control build (make test-docwrite-afterload-red). This is the
+       * tempting shape trap 1 refuses: after-load writes appended at body
+       * end. It exists so the gate's DW-DOM-ORDER2 / no-orange assertions
+       * can be WATCHED FAILING -- a control that has never failed is not
+       * evidence -- and compiles away entirely in the shipped browser. */
+"      if (!cs || !cs.parentNode) {\n"
+"        if (D.body && s !== '') {\n"
+"          var sc = D.createElement('body');\n"
+"          sc.innerHTML = s;\n"
+"          for (var c = sc.firstChild; c; ) {\n"
+"            var nx = c.nextSibling;\n"
+"            D.body.appendChild(c);\n"
+"            c = nx;\n"
+"          }\n"
+"        }\n"
+"        return;\n"
+"      }\n"
+#else
+      /* Trap 1 + trap 2: no current script (or it removed itself) means no
+       * insertion point -- contribute nothing, throw nothing, keep the
+       * page. */
+"      if (!cs || !cs.parentNode) return;\n"
+#endif
+"      if (s === '') return;\n"
+"      if (forScript !== cs) { forScript = cs; at = cs; }\n"
+"      var parent, ref;\n"
+"      if (inHead(cs)) {\n"
+"        if (!D.body) return;\n"
+"        if (!bodyAt || bodyAt.parentNode !== D.body) bodyAt = D.body.firstChild;\n"
+"        parent = D.body; ref = bodyAt;\n"
+"      } else {\n"
+"        parent = at.parentNode;\n"
+"        if (!parent) return;\n"
+"        ref = at.nextSibling;\n"
+"      }\n"
+      /* The real parser, by the only door that gives the fragment
+       * algorithm with a body context: innerHTML on a scratch <body>. The
+       * scratch is never connected, so its own mutations mark nothing; the
+       * insertBefore moves below mark the REAL destination and that is what
+       * invalidates layout. */
+"      var scratch = D.createElement('body');\n"
+"      scratch.innerHTML = s;\n"
+      /* Then revive every <script> the parse just killed (trap 7 below).
+       * next is captured BEFORE reviving a child because replaceChild
+       * detaches the old node and a detached node's nextSibling is null --
+       * without it the walk would silently stop at the first written
+       * script, skipping any markup after it. */
+"      var revive = function (n) {\n"
+"        if (!n || n.nodeType !== 1) return;\n"
+"        if (tagOf(n) === 'script') {\n"
+"          try {\n"
+"            var f = D.createElement('script');\n"
+"            var aa = n.attributes;\n"
+"            for (var q = 0; q < aa.length; q++)\n"
+"              f.setAttribute(aa[q].name, aa[q].value);\n"
+"            f.textContent = n.textContent;\n"
+"            if (n.parentNode) n.parentNode.replaceChild(f, n);\n"
+"          } catch (e) { try { G.reportError(e); } catch (e2) {} }\n"
+"        }\n"
+"        for (var c = n.firstChild; c; ) {\n"
+"          var nx = c.nextSibling;\n"
+"          revive(c);\n"
+"          c = nx;\n"
+"        }\n"
+"      };\n"
+"      revive(scratch);\n"
+"      var kids = [], k = scratch.firstChild;\n"
+"      while (k) { kids.push(k); k = k.nextSibling; }\n"
+"      for (var j = 0; j < kids.length; j++) {\n"
+"        parent.insertBefore(kids[j], ref);\n"
+"        ref = kids[j];\n"
+"      }\n"
+"      if (kids.length) { if (inHead(cs)) bodyAt = ref; else at = ref; }\n"
+"    };\n"
+"  };\n"
+"  def(D, 'write', make(false));\n"
+"  def(D, 'writeln', make(true));\n"
+"}\n"
+
 /* ==== <iframe>: a nested browsing context =================================
  * THE TERMINATION QUESTION FOR THIS FEATURE IS THE LOAD EVENT. A page that
  * creates an iframe and waits for its onload must get exactly one, on every
@@ -2752,12 +3002,40 @@ static const char *PLATFORM_PRELUDE =
  * callers are html_tree.c's parser (the initial parse, already covered by
  * the existing_iframes pass at the bottom of this function) and forms.c's
  * native text-editing splices (contenteditable caret/line-break handling --
- * not a script-reachable insertion primitive). Two APIs are deliberately
+ * not a script-reachable insertion primitive). Two APIs were deliberately
  * ABSENT rather than half-built and would be door eight if either is ever
  * added: Range.insertNode/surroundContents (js_forms.c names them as
- * withheld) and document.write/writeln (not implemented at all, zero hits).
- * The rule if either lands: it must call through insert_run/insert_markup or
- * be added to this file's wrap list in the SAME commit, not after.
+ * withheld) and ~~document.write/writeln (not implemented at all, zero
+ * hits)~~.
+ *
+ * THE STRUCK CLAIM IS KEPT BESIDE ITS CORRECTION because somebody is going
+ * to arrive holding it. "Zero hits" was true of the webapi probe's seven
+ * pages and was refuted the moment the scoreboard measured real navigation:
+ * tests/scoreboard/collapse-recount.md records `TypeError: write is not a
+ * function (it is undefined)` from www.2345.com/#inline-script-4:7 (page
+ * painted minus its written half, 2 exceptions) and from python.org inside
+ * an event listener (1 exception), and 0820-g4/qwen.json catches an
+ * iconfont injector calling document.write('<style>...') in a try block.
+ * With the method ABSENT each of those pages took a hard TypeError that
+ * killed its script -- the same trap shape as a null-returning
+ * getContext, except here absence was NOT the safe side. document.write and
+ * document.writeln are implemented now -- installDocWrite(), the section
+ * above this one, with the spec mapping and the deviation list in its own
+ * comment.
+ *
+ * THE RULE, AND HOW THE NEW DOOR PAID IT: "it must call through
+ * insert_run/insert_markup or be added to this file's wrap list in the SAME
+ * commit, not after." installDocWrite does BOTH, in the commit that added
+ * it: it inserts by calling parent.insertBefore() -- the prototype method
+ * installIframes wraps -- so an <iframe> inside written markup reaches
+ * onInsert()/initFrame through the wrap, and at C level the call lands in
+ * insert_run(), where js_dom.c's offer_scripts() enqueue picks up a
+ * written <script> for run_pending_inserted_scripts() -- once the
+ * installer has revived it, because the innerHTML parse stamps fragment
+ * scripts dead and only the rebuilt element is enqueueable (trap 7 in the
+ * section above). Nothing inserts written nodes behind those doors.
+ * Range.insertNode/surroundContents remain absent, still js_forms.c's to
+ * name.
  *
  * wrapMethod('ifr', ...) (see its own comment above for why each method is
  * wrapped where it is OWNED, not on a shared prototype the interface
@@ -3515,6 +3793,14 @@ static const char *PLATFORM_PRELUDE =
 "try { installImportAdopt(); } catch (e) {}\n"
 "installCurrentScript();\n"
 "installReflectedURLs();\n"
+/* JS_DOCWRITE_NO_INSTALL: test-docwrite-negctl's control (the same idiom as
+ * the JS_IFRAME_NO_INSTALL guard ten lines below). Compiling the installer
+ * out is what reproduces the pre-feature build exactly -- document.write
+ * absent, pages still render -- so the positive gate is known to measure
+ * THIS feature and not some other reason written blocks happen to appear. */
+#ifndef JS_DOCWRITE_NO_INSTALL
+"try { installDocWrite(); } catch (e) {}\n"
+#endif
 "installCustomElements();\n"
 "try { installElementInternals(); } catch (e) {}\n"
 "try { installDataset(Object.getPrototypeOf(G.document.createElement('div'))); } catch (e) {}\n"
