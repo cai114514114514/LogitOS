@@ -314,6 +314,7 @@ void as_install_indirection(void)
     as_define_int("SYS_DUP",         SYS_DUP);
     as_define_int("SYS_SETNB",       SYS_SETNB);
     as_define_int("SYS_FSYNC",       SYS_FSYNC);
+    as_define_int("SYS_FTRUNCATE",   SYS_FTRUNCATE);
     as_define_int("SYS_OPEN_PATH",   SYS_OPEN_PATH);
     as_define_int("SYS_IMG_DECODE",  SYS_IMG_DECODE);
     as_define_int("SYS_KHEAP_STRESS", SYS_KHEAP_STRESS);

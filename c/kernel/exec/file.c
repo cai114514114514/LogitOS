@@ -22,6 +22,7 @@
 #include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 void *memcpy(void *, const void *, size_t);
+void *memset(void *, int, size_t);
 
 /* The F_SOCK backend lives in c/net/core/lsock.c. WEAK on purpose: file.c is
  * linked into host test binaries that have no network stack at all, and a hard
@@ -71,7 +72,22 @@ void tty_wait_stats(uint64_t *wakes, uint64_t *awake_cyc)
 
 /* --- F_TTY backend: the serial console. Single shared device; fd 0/1/2 of the
  *     shell point at one F_TTY file (dup'd). Reads block (yield) for one key,
- *     echo it, translate CR->LF; writes expand LF->CRLF for serial terminals. */
+ *     echo it, translate CR->LF; writes expand LF->CRLF for serial terminals.
+ *
+ * The two asm statements the read loop below uses, hoisted into macros for one
+ * reason only: tests/unit/storage_test.c compiles THIS FILE on the host (the
+ * pollhost pattern), and on an arm64 host "cli"/"sti ... hlt" do not assemble.
+ * The x86 expansions are the exact statements that stood here -- same
+ * instructions, same volatile, same position in the BKL release window -- and
+ * the host stand-ins are never executed because the host test never reads the
+ * console. */
+#if defined(__x86_64__) || defined(__i386__)
+#define TTY_IRQ_OFF()      __asm__ volatile ("cli")
+#define TTY_IDLE_IRQ_OFF() __asm__ volatile ("sti\n\thlt\n\tcli")
+#else
+#define TTY_IRQ_OFF()      ((void)0)
+#define TTY_IDLE_IRQ_OFF() ((void)0)
+#endif
 static long tty_read(struct file *f, void *vbuf, long len)
 {
     (void)f;
@@ -113,10 +129,10 @@ static long tty_read(struct file *f, void *vbuf, long len)
          * window (spin_lock .. in_kernel=1) must run with IF=0: a nested IRQ in
          * either gap reads nested=0 and re-acquires the BKL this core holds ->
          * self-deadlock. `hlt` returns via iretq with IF=1, so cli AFTER hlt too. */
-        __asm__ volatile ("cli");
+        TTY_IRQ_OFF();
         this_cpu()->in_kernel = 0;
         spin_unlock(&g_bkl);
-        __asm__ volatile ("sti\n\thlt\n\tcli");
+        TTY_IDLE_IRQ_OFF();
         woke_at = kb_rdtsc();
         spin_lock(&g_bkl);
         this_cpu()->in_kernel = 1;
@@ -1008,6 +1024,27 @@ long file_write(struct file *f, const void *buf, long len)
         if (f->flags & O_APPEND) f->off = f->size;
         if (f->off > (long)0x7fffffffffffffffL - len) return -1;   /* off+len would wrap negative */
         if (vfs_ensure_cap(f, f->off + len) < 0) return -1;
+        /* THE HOLE IS ZERO-FILLED, and this line is a measured bug fix, not a
+         * nicety. vfs_ensure_cap() grows the buffer and copies the OLD
+         * contents; the gap between the old size and a write offset above it
+         * was left as whatever kmalloc handed back. A write past EOF -- the
+         * POSIX way to grow a file, and exactly what libc's old ftruncate()
+         * workaround did -- therefore persisted UNINITIALIZED KERNEL HEAP into
+         * a file ring 3 can then read back: measured on the machine
+         * (storprobe.as, 2026-08-30, pre-fix kernel), 10 of 16 hole bytes came
+         * back non-zero. Zero here is POSIX's sparse-file rule and the close of
+         * an information leak in the same stroke.
+         *
+         * STORAGE_NEGCTL is the gate's control, in the FILE_CLOSE_ALWAYS_OK
+         * tradition: it restores the pre-fix behaviour so
+         * tests/unit/storage_test.c can WATCH the hole leak rather than assume
+         * the assert would have caught it. */
+#ifndef STORAGE_NEGCTL
+        if (f->off > f->size) {
+            memset((char *)f->backing + f->size, 0, (size_t)(f->off - f->size));
+            f->size = f->off;
+        }
+#endif
         memcpy((char *)f->backing + f->off, buf, (size_t)len);
         f->off += len;
         if (f->off > f->size) f->size = f->off;
@@ -1044,6 +1081,61 @@ long file_lseek(struct file *f, long off, int whence)
     if (no < 0) return -1;
     f->off = no;
     return no;
+}
+
+/* Set the length of a WRITABLE, buffered F_VFS description. SYS_FTRUNCATE's
+ * kernel side -- read that call's block in include/abi/logit_abi.h for the
+ * measurement that motivated it and the two alternatives it rejects; this
+ * comment is only about what happens in HERE.
+ *
+ * Growing extends with zeros (POSIX's sparse rule; without it the extension
+ * would be whatever was in the kmalloc -- the measured hole bug one function
+ * up). Shrinking just lowers `size`: the buffer keeps its capacity, so a
+ * later grow inside the same description does not re-allocate, and the bytes
+ * past `size` are dead until overwritten. The cursor is NOT moved, POSIX's
+ * choice: an offset beyond the new end reads EOF and the next write there
+ * re-extends zero-filled. The change reaches the path itself only at the
+ * existing flush points (file_fsync, last close) -- the identical discipline
+ * a write() through this description already has, which is why SYS_FSYNC's
+ * and SYS_CLOSE's error reporting already cover this call's failure modes
+ * without any new plumbing.
+ *
+ * REFUSES (-1), rather than pretending: a read-only description, a streamed
+ * or generated one (nothing buffers to truncate, and /proc has no write op
+ * to flush a lie to), any non-F_VFS type, a negative length, or an extension
+ * whose buffer allocation failed. libc maps the -1 to EINVAL/EBADF/ENOSPC
+ * the way it already does for every other fd call. */
+long file_truncate(struct file *f, long len)
+{
+    if (!f || f->type != F_VFS || len < 0) return -1;
+    if (f->amode == O_RDONLY) return -1;          /* the description may not write */
+    if (f->stream || f->live) return -1;          /* nothing buffered: no length to set */
+#ifdef STORAGE_NEGCTL
+    /* The control half of the same flag as the hole guard above: with it,
+     * truncate is ABSENT again, exactly as the pre-fix kernel was (every call
+     * answered -1, which is also what an unclaimed syscall number answers),
+     * so both halves of tests/unit/storage_test.c can be watched going red
+     * against one build. */
+    (void)len; (void)f->size;
+    return -1;
+#else
+    int changed = 0;
+    if (len > f->size) {
+        if (vfs_ensure_cap(f, len) < 0) return -1;
+        memset((char *)f->backing + f->size, 0, (size_t)(len - f->size));
+        f->size = len;
+        changed = 1;
+    } else if (len < f->size) {
+        f->size = len;
+        changed = 1;
+    }
+    /* Only a real change marks the description dirty. A no-op ftruncate on a
+     * CLEAN description must not schedule a write-back: the flush at close
+     * rewrites identical bytes for nothing, and on a full disk it can FAIL --
+     * SYS_CLOSE would answer -2 for a file the caller never modified. */
+    if (changed) f->dirty = 1;
+    return 0;
+#endif
 }
 
 /* Flush a dirty F_VFS file back to the on-disk filesystem NOW, without waiting

@@ -426,6 +426,19 @@ static void syscall_do(struct registers *r)
         r->rax = (uint64_t)file_lseek(f, (long)r->rsi, (int)r->rdx);
         return;
     }
+    /* SYS_FTRUNCATE: fd-only, like its neighbours here, so the M28 capability
+     * gate classifies it CAP_NONE -- the path was checked at SYS_OPEN. The
+     * contract, the Step-0 measurement that motivated it, and the two
+     * rejected alternatives (rename-replace, pwrite) are the SYS_FTRUNCATE
+     * block in include/abi/logit_abi.h; the body and its refusal set are
+     * file_truncate() in file.c. */
+    case SYS_FTRUNCATE: {
+        struct proc *p = proc_current();
+        struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;
+        if (!f) { r->rax = (uint64_t)-1; return; }
+        r->rax = (uint64_t)file_truncate(f, (long)r->rsi);
+        return;
+    }
     case SYS_DUP: {
         struct proc *p = proc_current();
         struct file *f = p ? proc_fd_get(p, (int)r->rdi) : NULL;

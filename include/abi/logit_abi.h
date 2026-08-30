@@ -2412,6 +2412,87 @@ struct logit_ptrace_word {
  * for how that failure is watched for. */
 #define SYS_GUI_FLUSH_RECT 188
 
+/* ---- SYS_FTRUNCATE: set a file's length through an fd (storage wave, 2026-08-30)
+ *
+ * WHY THIS NUMBER EXISTS -- the measured gap, not the quoted one.
+ * c/apps/browser/js_idb.c and js_cache.c both refuse durable storage with
+ * "there is no VFS positional write to build real durability on (CLAUDE.md
+ * structural gap #3)". Before building on that sentence, ring 3's ACTUAL
+ * capabilities on the disk filesystem were measured on the machine
+ * (fsroot/as/examples/storprobe.as, run-storage-probe.sh, 2026-08-30,
+ * 512M TCG -smp 4, persistent disk copy -- the full matrix is in this file's
+ * commit message and tests/storage.mk):
+ *
+ *   open+O_TRUNC+full rewrite          WORKS   64/64 bytes verified at reopen
+ *   append (O_APPEND)                  WORKS   byte-exact at the seam
+ *   lseek+write mid-file (O_RDWR)      WORKS   in-place, byte-exact (the fd
+ *                                            layer already holds the whole
+ *                                            file for a writable open, so
+ *                                            "positional write" EXISTS there)
+ *   grow by seek-past-end+write        BROKEN  the gap [old_size, off) was
+ *                                            never zeroed: 10 of 16 hole
+ *                                            bytes read back NON-ZERO --
+ *                                            uninitialized kernel heap
+ *                                            persisted into a file (also an
+ *                                            information leak into ring 3)
+ *   shrink a file                      ABSENT  no syscall; libc ftruncate()
+ *                                            grows via the broken hole path
+ *                                            and refuses shrink with ENOSYS
+ *   rename over an existing file       REFUSED logitfs_rename returns -1
+ *                                            ("no clobber"), so temp+rename
+ *                                            atomic replace is not available
+ *   fsync / failed-write reporting     WORKS   SYS_FSYNC; SYS_CLOSE returns
+ *                                            -2 when the flush failed
+ *
+ * So the comment was STALE in both directions: the hard whole-file
+ * create-or-overwrite path it assumed missing works and is journaled
+ * old-or-new by the LogitFS v4 transaction log (tx_begin .. log_commit
+ * around inode_write in c/fs/logitfs.c; data blocks go to disk first, the
+ * inode and bitmap commit last -- the same data=ordered claim
+ * tests/boot/run-fscrash-test.sh crashes the machine to verify), and the
+ * thing actually missing was a LENGTH CHANGE: a store that shrank (a deleted
+ * cookie, a cleared localStorage key) could not be written back shorter.
+ *
+ * THE PRIMITIVE CHOSEN: fd-level ftruncate, implemented in the buffer the
+ * writable description already holds (c/kernel/exec/file.c), flushed by the
+ * existing whole-file write-back at fsync/close. That rides the journaled
+ * overwrite for free, which is why it was chosen over the alternative:
+ *
+ *   REJECTED: atomic replace via temp+rename. Correct POSIX shape, but
+ *   logitfs_rename refuses to clobber today (measured above), and fixing
+ *   THAT means editing c/fs/logitfs.c, which the crash-consistency line is
+ *   rewriting (c/fs/vfs.h says so at the top). It would also be redundant
+ *   for the consumer this serves: localStorage/IndexedDB/cookies serialize
+ *   WHOLE stores, and a whole-store write is exactly the journaled
+ *   create-or-overwrite that already works. Rename-replace is the right
+ *   primitive for sqlite-style partial updates, which nothing here has.
+ *
+ *   REJECTED: pwrite(fd, buf, len, off). Mid-file writes already work via
+ *   lseek+write (measured), pwrite's only addition is position atomicity
+ *   across threads of one process, and this syscall ABI passes three
+ *   arguments (rdi/rsi/rdx) -- a fourth means the entry asm in
+ *   c/kernel/cpu/, a blast radius this change does not need. If a real
+ *   thread-race consumer appears, the number space has room.
+ *
+ * CONTRACT: (fd, len) -> 0, or -1. -1 means exactly one of:
+ *   - the fd is not an open F_VFS description (EBADF-shaped)
+ *   - the description is read-only (O_RDONLY amode -- EINVAL-shaped), a
+ *     generated /proc node, a streamed one, a pipe, tty, socket or timer
+ *   - len < 0, or the buffer for `len` bytes could not be allocated
+ * Growing (len > size) extends with ZERO bytes -- POSIX's sparse-file rule,
+ * and the fix for the measured hole: after this call every byte of the file
+ * has a defined value. Shrinking cuts; the description's own offset is NOT
+ * moved (POSIX ftruncate leaves it alone): a cursor beyond the new end
+ * simply reads EOF, and the next write at it re-extends, zero-filled.
+ * The change is visible to every reader of the path only after the existing
+ * flush points (fsync, last close) -- the same write-back discipline a
+ * write() through this fd already has, and the reason a durable store
+ * pattern is open/ftruncate/write/fsync/close rather than open/ftruncate.
+ * An fd-only call, so the M28 capability gate files it CAP_NONE like
+ * SYS_WRITE and SYS_LSEEK: the path was checked at SYS_OPEN.
+ */
+#define SYS_FTRUNCATE 189 /* (fd, len) -> 0, or -1; see the block above */
+
 #define LOGIT_MODNAME_LEN 32
 struct logit_modinfo {
     int      id;
