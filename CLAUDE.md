@@ -784,6 +784,21 @@ HarfBuzz venv) and `test-bidi` fails hard rather than skipping — see rule 5.
   regular weight. `css_engine.c` computes `o->bold`; the painter reads it **zero
   times**. Closing this is a font asset + an ABI parameter + kernel face
   selection, in that order.
+  **HALF-STALE SINCE 2026-08-28 (`2ec6f9873`) — the bold half is closed; the
+  italic half is still true.** `ui-bold.ttf` and `mono-bold.ttf` are on the disk
+  (wght=700 instances of the same vendored variable sources, codepoint sets
+  identical to their regular twins), `struct logit_run` has carried a `bold`
+  field since that commit, and the painter passes `o->bold` through
+  `gui_text_run_w`. Measured off the scanout 2026-08-30 (`make test-bold-page`):
+  plain `abc` 38 px/332 ink vs `<b>abc</b>` 40/441; `<strong>` 35→37/325→432;
+  `font-weight:700` 31→34/339→468; bold mono advance 14==14 px with ink
+  238→279; bold and regular ink at identical band depth (the hhea identity
+  `test-bold-metrics` asserts on the bytes: ui 1160/−288/0, mono 1069/−293/0,
+  upem 1000). Still true of the old sentence: **no italic** (no `ital`/`slnt`
+  axis; shearing deliberately refused — `tools/mkfont.py`), and
+  `font-weight:600` still renders regular (the collapse lives in
+  `css_engine.c` at `>= 700`, not the 600 the font-matching approximation
+  would pick).
 
 ### The 2D engine (`c/lib/gfx`) — Open Logit
 
