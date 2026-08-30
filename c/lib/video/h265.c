@@ -371,6 +371,21 @@ static void queue_output(h265dec *d)
         int waiting = 0, used = 0;
         for (int i = 0; i < H265_MAX_DPB; i++) {
             if (!d->pics[i].used) continue;
+            /* DPB FULLNESS COUNTS ONLY PICTURES NEEDED FOR REFERENCE OR
+             * OUTPUT (C.4.5), not every slot that is still held. A picture
+             * already emitted whose slot the caller has not returned yet
+             * (the to_free deferral in emit()), and one already bumped into
+             * out_queue, are OUT of the DPB as far as the spec is concerned.
+             * Counting them inflated fullness by one, which fired the
+             * buffer-full bump one picture EARLY: on x265's bframes=1
+             * I P B P ... pattern (measured, 64x64, sps_max_dec_pic_buffering
+             * 4, four live references) decoding P6 saw used=5 >= 5 over a
+             * zombie and bumped P6 itself out while B5 had not been decoded
+             * -- the display order became ...4,6,5,8,7 and every picture
+             * from there on compared against the wrong frame. The B-slice
+             * matrix (tests/h265.mk test-h265-b) failed 28 of 30 pictures
+             * with 1.4M wrong samples, and the real decode was fine. */
+            if (!d->pics[i].reference && !d->pics[i].output) continue;
             used++;
             if (d->pics[i].output) waiting++;
         }

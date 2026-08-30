@@ -104,10 +104,94 @@ static int node_media_key(struct node *n)
     return k;
 }
 
+static void draw_subs(melem *el);
+
 void media_paint_box(struct node *node, int x, int y, int w, int h,
                      int clip_x, int clip_y, int clip_w, int clip_h)
 {
     media_paint_key(node_media_key(node), x, y, w, h, clip_x, clip_y, clip_w, clip_h);
+    /* Subtitles are painted ON TOP of whatever the box now shows, both on the
+     * full-page repaint that just happened and after every video blit (the
+     * pump path calls draw_subs too, because a blit over the box erases a cue
+     * drawn by a repaint). This is the only place in the media feature that
+     * draws text, and it lives in the bindings -- the engine owns time and
+     * cues, the platform owns fonts. */
+    draw_subs(mel_for_key(node_media_key(node), 0));
+}
+
+/* ---- the cue renderer -----------------------------------------------------
+ * WHITE TEXT ON A SOLID DARK SLAB, no outline. browser_paint.c's five
+ * primitives have no stroked text (gui_text_run takes one colour), and the
+ * choices are a backing slab or bare text -- bare white on an arbitrary video
+ * vanishes on snow scenes, which is most of why outlines exist. The slab is
+ * honest: it is what a television's own captions have drawn for decades.
+ *
+ * Positioning is deliberately the bottom-centre DEFAULT only. subs.c carries
+ * each cue's line/position/align settings and this file ignores them: WebVTT
+ * placement is a percentage box of the VIDEO region with cue-level anchoring,
+ * and doing it approximately would put cues in the wrong place while claiming
+ * the feature -- absent beats present-and-wrong. The default position is what
+ * a page gets for a track with no settings, which is most of them. */
+static void draw_subs(melem *el)
+{
+    if (!el) return;
+    char buf[1024];
+    if (!mel_subs_active(el, buf, (int)sizeof buf)) return;
+    int x, y, w, h;
+    if (!mel_box(el, &x, &y, &w, &h) || w < 40 || h < 24) return;
+
+    /* One font size from the box, in a range a 384px-high box lands at 20px
+     * and a 96px one at 9px. Below 8px the glyphs the GUI hands back are not
+     * readable at any resolution and the cue is skipped rather than smeared. */
+    int px = h / 16;
+    if (px > 22) px = 22;
+    if (px < 8) return;
+
+    /* LF-join into up to 3 lines: mel_subs_active already joined simultaneous
+     * cues with LF, and a cue's own payload can carry newlines. Past three,
+     * later lines are dropped -- a caption wall is unreadable, and the band
+     * this paints in has room for three at this font size by construction. */
+    const char *ln[3];
+    int nn = 0;
+    const char *p = buf;
+    while (nn < 3) {
+        ln[nn++] = p;
+        const char *nl = p;
+        while (*nl && *nl != '\n') nl++;
+        if (!*nl) break;
+        p = nl + 1;
+    }
+    /* Measure once; a line wider than the box is not wrapped (word wrap needs
+     * shaping decisions this renderer does not own) but shrunk to fit, which
+     * keeps the whole cue visible instead of cropping its ends. */
+    int widest = 0;
+    int lw[3];
+    for (int i = 0; i < nn; i++) {
+        const char *nl = ln[i];
+        while (*nl && *nl != '\n') nl++;
+        lw[i] = text_measure_px(ln[i], (int)(nl - ln[i]), px, 0);
+        if (lw[i] > widest) widest = lw[i];
+    }
+    int use_px = px;
+    if (widest > w - 8 && widest > 0)
+        use_px = px * (w - 8) / widest;
+    if (use_px < 8) use_px = 8;
+    if (use_px != px)
+        for (int i = 0; i < nn; i++)
+            lw[i] = lw[i] * use_px / px;
+
+    int lh = use_px + use_px / 3 + 2;
+    int slab_pad = use_px / 4 + 1;
+    int y0 = y + h - nn * lh - 2 * slab_pad - (h / 24);
+    for (int i = 0; i < nn; i++) {
+        const char *nl = ln[i];
+        while (*nl && *nl != '\n') nl++;
+        int tx = x + (w - lw[i]) / 2;
+        gui_rect(tx - slab_pad, y0 - slab_pad,
+                 lw[i] + 2 * slab_pad, lh + 2 * slab_pad, 0x141418);
+        gui_text_run(tx, y0, use_px, 0, 0xF2F2F2, ln[i], (int)(nl - ln[i]));
+        y0 += lh;
+    }
 }
 
 /* =============================================== MediaSource class ====== */
@@ -614,6 +698,46 @@ static JSValue js_m_srcfail(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     return JS_UNDEFINED;
 }
 
+/* <track>: the shim fetched the resource and hands the bytes over. Returns
+ * the cue count so the shim can log a track that parsed to nothing -- an
+ * empty track attached silently looks exactly like a missing one, and the
+ * page author debugging it cannot see either. A track that fails to parse is
+ * NOT a MediaError on the element (the video keeps playing); it is a dead
+ * track, reported and dropped, which is also what the spec's error model
+ * does with an undecodable track. */
+static JSValue js_m_trackload(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int key = 0;
+    if (argc < 2 || JS_ToInt32(ctx, &key, argv[0])) return JS_UNDEFINED;
+    melem *el = el_of(key, 1);
+    if (!el) return JS_UNDEFINED;
+    size_t len = 0;
+    uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[1]);
+    JSValue held = JS_UNDEFINED;
+    if (!p) {
+        size_t off = 0, blen = 0, bpe = 0;
+        held = JS_GetTypedArrayBuffer(ctx, argv[1], &off, &blen, &bpe);
+        if (JS_IsException(held)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            return JS_NewInt32(ctx, -1);
+        }
+        size_t whole = 0;
+        uint8_t *base = JS_GetArrayBuffer(ctx, &whole, held);
+        if (!base) { JS_FreeValue(ctx, held); return JS_NewInt32(ctx, -1); }
+        p = base + off;
+        len = blen;
+    }
+    int n = mel_subs_attach(el, p, (long)len);
+    JS_FreeValue(ctx, held);
+    if (n < 0) mel_subs_detach(el);
+    /* A cue appearing over the NEXT frame needs a pump tick to paint; arming
+     * one also covers a track attached while paused, where no video blit will
+     * come and only a page repaint would otherwise show the first cue. */
+    arm_pump();
+    return JS_NewInt32(ctx, n);
+}
+
 /* Property ids. A single get/set pair beats forty exported functions, and the
  * shim's property table is the readable half. */
 enum {
@@ -826,6 +950,19 @@ int js_media_pump(JSContext *ctx)
     }
 
     did += media_pump();
+
+    /* media_pump just blitted any due pictures straight into their boxes,
+     * which erased whatever a page repaint had drawn there -- including a
+     * caption. Redraw the active cue for every element that has a box and a
+     * track, after the blit, so the two survive each other. This runs on the
+     * pump tick (the setTimeout chain), i.e. at the element's own pace and
+     * not the compositor's 30 Hz: a cue is a function of media time, and
+     * media time only advances here. */
+    for (int i = 0; i < 64; i++) {
+        melem *el = mel_at(i);
+        if (!el) break;               /* mel_at: NULL past the last live one */
+        draw_subs(el);
+    }
 
     /* Element events. The engine decided they happened; this turns them into
      * DOM events on the element, through js_dom.c's real dispatch so a
@@ -1044,6 +1181,43 @@ static const char g_shim[] =
 "  if (!a) return;\n"
 "  el.__srcApplied = true;\n"
 "  applySrc(el, a);\n"
+"  ensureTracks(el);\n"
+"};\n"
+/* <track> children, fetched and handed to the engine as bytes. THREE
+   deliberate omissions, each with its reason:
+   - kind metadata/chapters: the engine has no consumer for them and a
+     renderer that DREW them would be present-and-wrong.
+   - a track with no `default`: the spec shows exactly the tracks the page
+     marked, and honouring the default attribute is what makes the attribute
+     mean anything at all.
+   - no textTracks API: it would need mode/cues objects with live timing,
+     and half of that would be a lie. Pixels are the deliverable here;
+     track.textTracks is absent rather than fake. */
+"var ensureTracks = function (el) {\n"
+"  if (!isMedia(el) || el.__tracksApplied) return;\n"
+"  el.__tracksApplied = true;\n"
+"  var kids = el.children || [];\n"
+"  for (var i = 0; i < kids.length; i++) {\n"
+"    var tr = kids[i];\n"
+"    if (!tr || tr.tagName !== 'TRACK') continue;\n"
+"    var src = tr.getAttribute && tr.getAttribute('src');\n"
+"    if (!src) continue;\n"
+"    var kind = (tr.getAttribute('kind') || 'subtitles').toLowerCase();\n"
+"    if (kind !== 'subtitles' && kind !== 'captions') continue;\n"
+"    if (tr.getAttribute('default') === null) continue;\n"
+"    (function (s) {\n"
+"      var k = keyOf(el, true);\n"
+"      G.fetch(s).then(function (r) {\n"
+"        if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + s);\n"
+"        return r.arrayBuffer();\n"
+"      }).then(function (b) {\n"
+"        var n = G.__mediaTrackLoad(k, b);\n"
+"        console.log('track ' + s + ': ' + (n < 0 ? 'would not parse' : n + ' cues'));\n"
+"      }).catch(function (e) {\n"
+"        console.log('track ' + s + ' failed: ' + e);\n"
+"      });\n"
+"    })(src);\n"
+"  }\n"
 "};\n"
 "def(proto, 'play', function () {\n"
 "  ensureSrc(this);\n"
@@ -1113,6 +1287,8 @@ void js_media_install(JSContext *ctx)
                       JS_NewCFunction(ctx, js_m_loadbytes, "__mediaLoadBytes", 2));
     JS_SetPropertyStr(ctx, g, "__mediaSrcFail",
                       JS_NewCFunction(ctx, js_m_srcfail, "__mediaSrcFail", 2));
+    JS_SetPropertyStr(ctx, g, "__mediaTrackLoad",
+                      JS_NewCFunction(ctx, js_m_trackload, "__mediaTrackLoad", 2));
     JS_SetPropertyStr(ctx, g, "__mediaGet", JS_NewCFunction(ctx, js_m_get, "__mediaGet", 2));
     JS_SetPropertyStr(ctx, g, "__mediaSet", JS_NewCFunction(ctx, js_m_set, "__mediaSet", 3));
     JS_SetPropertyStr(ctx, g, "__mediaCall", JS_NewCFunction(ctx, js_m_call, "__mediaCall", 2));

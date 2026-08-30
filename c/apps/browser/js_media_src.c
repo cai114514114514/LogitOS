@@ -43,6 +43,7 @@
 #include "audio.h"
 #include "aac.h"
 #include "mp3.h"
+#include "subs.h"
 
 /* ============================================================ limits ==== */
 /* Every one of these bounds an allocation driven by something a page said. */
@@ -948,6 +949,11 @@ struct melem {
     /* where the painter last put us, in device pixels */
     int    bx, by, bw, bh, cx, cy, cw, ch, box_valid;
 
+    /* A <track> this element is showing. Belongs to the ELEMENT, not to the
+     * resource: the spec keeps tracks across src changes, so mel_load() must
+     * NOT drop it -- only navigation (mel_free_all) and a second attach do. */
+    subs_track *subs;
+
     struct mel_stats st;
 };
 
@@ -990,6 +996,7 @@ void mel_free_all(void)
     for (int i = 0; i < MSE_MAX_ELEM; i++) {
         if (!g_el[i].used) continue;
         mel_teardown_decoders(&g_el[i]);
+        if (g_el[i].subs) { subs_close(g_el[i].subs); g_el[i].subs = 0; }
         if (g_el[i].rgba) free(g_el[i].rgba);
         if (g_el[i].nal) free(g_el[i].nal);
         if (g_el[i].ms) { g_el[i].ms->el = 0; g_el[i].ms->state = MSE_CLOSED; }
@@ -1965,6 +1972,71 @@ unsigned mel_take_events(melem *el)
     unsigned e = el->events;
     el->events = 0;
     return e;
+}
+
+/* ---- subtitles ---------------------------------------------------------- */
+int mel_subs_attach(melem *el, const unsigned char *data, long n)
+{
+    if (!el || !data || n <= 0) return SUBS_ERR_FORMAT;
+    /* subs_parse sniffs VTT vs SRT itself: a <track src> names a resource,
+     * not a format, and "whatever the file is" is the honest reading. */
+    subs_track *tr = subs_parse(data, n, 0, 0);
+    if (!tr) return SUBS_ERR_FORMAT;
+    if (el->subs) subs_close(el->subs);
+    el->subs = tr;
+    return subs_cue_count(tr);
+}
+
+void mel_subs_detach(melem *el)
+{
+    if (!el || !el->subs) return;
+    subs_close(el->subs);
+    el->subs = 0;
+}
+
+int mel_subs_active(melem *el, char *out, int max)
+{
+    if (out && max > 0) out[0] = 0;
+#ifdef SUBS_CONTROL_HIDE
+    /* THE NEGATIVE CONTROL for the whole subtitle path. With this defined the
+     * engine still PARSES and still tracks time -- only the report of what is
+     * active is silenced -- so a suite that passed anyway would be proving it
+     * never asks, which is the one failure mode pixels cannot catch: a
+     * renderer that never draws looks identical to a track that never parsed,
+     * and both look like a page with no track element. make
+     * test-videosrc-negctl builds with this and REQUIRES the cue assertions
+     * to fail while the playback assertions still pass, which is what makes
+     * it a control on THIS defect and not on the suite's mood. */
+    return 0;
+#endif
+    if (!el || !el->subs || !out || max <= 0) return 0;
+    int64_t t_ms = el->current_ns / 1000000LL;
+    /* Overlapping cues are rare but legal; cap at four, which covers every
+     * karaoke-style file while bounding the join. More than four at once is
+     * not readable at any font size, and the caller is about to paint this. */
+    int idx[4];
+    int n = subs_active_at(el->subs, t_ms, idx, 4);
+    if (n > 4) n = 4;
+    int len = 0;
+    for (int k = 0; k < n; k++) {
+        const subs_cue *c = subs_cue_at(el->subs, idx[k]);
+        if (!c || !c->text) continue;
+        for (const char *p = c->text; *p && len < max - 1; p++)
+            out[len++] = *p;
+        if (k + 1 < n && len < max - 1) out[len++] = '\n';
+    }
+    out[len] = 0;
+    return n;
+}
+
+int mel_box(const melem *el, int *x, int *y, int *w, int *h)
+{
+    if (!el || !el->box_valid) return 0;
+    if (x) *x = el->bx;
+    if (y) *y = el->by;
+    if (w) *w = el->bw;
+    if (h) *h = el->bh;
+    return 1;
 }
 
 melem *mel_at(int i)

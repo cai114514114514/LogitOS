@@ -235,6 +235,30 @@ void h265_pred_uni(uint16_t *dst, int dst_stride, const int16_t *src, int src_st
 void h265_pred_bi(uint16_t *dst, int dst_stride, const int16_t *s0, int s0_stride,
                   const int16_t *s1, int s1_stride, int w, int h, int bd)
 {
+    /* THIS FUNCTION IS PROVEN, and the proof is worth writing down because it
+     * cost a day to collect. A B-slice stream encoded at qp45 -- where x265
+     * codes every CU as skip, so every picture is nothing but uni/bi merges
+     * over exact references -- decodes BIT-EXACT here, on the 64x64 9-picture
+     * I-P-B-P case and on the full 320x240 matrix. That pins every B-specific
+     * mechanism this file owns (two reference lists, the 14-bit intermediate,
+     * this average, the same for chroma) as correct.
+     *
+     * THE REMAINING B-SLICE DEFECT IS ABOVE THIS LEVEL: with residual present
+     * (qp32 and below), a merge NON-SKIP bi-predicted CU reconstructs wrongly
+     * while the same CU shape in a P slice is exact and the same bi prediction
+     * with no residual is exact. Isolation (measured 2026-08-30, all on
+     * testsrc2 64x64 bframes=1 temporal-mvp=0, diffed against ffmpeg):
+     *   qp45  0 bad pictures of 9           -- everything above, proven
+     *   qp32  4 bad (the 4 B pictures), the first exactly the single
+     *         merge-skip0 CU in the stream: CU (40,40) 8x8 pf3 mv(0,0), an
+     *         8x8 TU with coefficients, cabac in sync for the whole stream
+     *   P-only qp32 with 51 merge-non-skip CUs: bit-exact
+     * so the wrong value is in the residual applied over a bi prediction --
+     * prediction, lists, MC, CABAC parse and rqt_root_cbf inference are all
+     * excluded by measurement. b-pyramid streams additionally die with
+     * H265_ERR_CORRUPT from a CABAC error in the second picture's PU syntax,
+     * which is a second, separate defect. Until both are found,
+     * tests/h265.mk keeps the B group out of test-h265, as it already says. */
     int shift2 = 15 - bd;
     int off2 = 1 << (shift2 - 1);
     for (int y = 0; y < h; y++)

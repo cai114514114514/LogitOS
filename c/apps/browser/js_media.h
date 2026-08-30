@@ -223,6 +223,29 @@ int      mse_object_url(msource *ms, char *out, int max);   /* "blob:logit/7" */
 msource *mse_from_object_url(const char *url);
 void     mse_revoke_object_url(const char *url);
 
+/* ---- subtitles: <track>, parsed but rendered by the bindings --------------
+ * subs.c (c/lib/media) parses WebVTT and SRT into cues and answers "which are
+ * active at t_ms"; that is a bytes-and-time question, so the ENGINE owns the
+ * track and the clock reading, exactly like everything else above. What the
+ * engine deliberately does NOT own is a font: pixels are a platform thing
+ * (gui_text_run on the device, a counter on the host), so the bindings ask
+ * mel_subs_active() each paint and draw what it says. That split is what keeps
+ * this host-testable -- tests/unit/videosrc_test.c asserts on cue text at
+ * media times with no renderer in the process.
+ *
+ * The clock this reads is el->current_ns, the CURRENT PICTURE's presentation
+ * time -- the only timeline the engine has. A paused element therefore holds
+ * its cue on screen, which is what a paused caption should do. */
+int  mel_subs_attach(melem *el, const unsigned char *data, long n);
+void mel_subs_detach(melem *el);
+/* Copy the text of every cue active at the element's current time into `out`,
+ * LF-joined, always NUL-terminated, truncated to fit. Returns the number of
+ * active cues (0 = nothing to draw). */
+int  mel_subs_active(melem *el, char *out, int max);
+/* The box the painter last reported, in device pixels; 0 when there is none.
+ * The cue renderer needs it and must not reach into struct melem to get it. */
+int  mel_box(const melem *el, int *x, int *y, int *w, int *h);
+
 /* ---- the pump -------------------------------------------------------------
  * One step of every playing element: feed the sound card, decode what is due,
  * decide show/wait/drop against the clock, and paint the frame into the box the

@@ -128,7 +128,7 @@ $(BUILD)/mse_test: tests/unit/mse_test.c $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse
 	    $(BUILD)/mse_kshim.c $(MSE_SRC) c/lib/media/*.c c/lib/video/*.c \
 	    c/lib/audio/*.c $(MSE_IMG_SRC) $(MSE_INC) -lm
 
-test-mse: $(BUILD)/mse_test test-mse-nocard-negctl
+test-mse: $(BUILD)/mse_test test-mse-negctl test-mse-nocard-negctl
 	@$(BUILD)/mse_test $(MSE_FX)
 
 # Under the sanitizers, because every byte in this path arrived through
@@ -291,3 +291,13 @@ test-mse-os: $(ISO) $(DISK)
 # hda.c's DMA engine runs happily into silence with every register correct.
 test-video-page: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_video_page.py $(ISO) $(DISK)
+
+# --- ci wiring (2026-08-30, video wave-1) ------------------------------------
+# test-mse now REQUIRES both negctls as prerequisites -- the AV1 one had been
+# named on no ci line at all, which tests/audit-stranded.baseline records as
+# exactly the "named on a ci- line and run never" shape rule 4 exists for.
+# The on-machine targets go to ci-boot: they boot QEMU, and a boot gate on
+# ci-host would skip loudly on a machine without qemu and quietly never prove
+# anything on one that has it but is busy.
+ci-host: test-mse
+ci-boot: test-mse-os test-video-page
