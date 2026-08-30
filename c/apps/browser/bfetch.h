@@ -188,6 +188,27 @@ void bfetch_set_tick(void (*fn)(void));
  * `dials` is how many TCP/TLS connections were actually opened, `reuses` how
  * many requests rode a connection that already existed. */
 void bfetch_stats(int *dials, int *reuses, int *requests);
+
+/* ---- the cross-navigation HTTP cache's doors (http_cache.c) ---------------
+ *
+ * THE CACHE SURVIVES NAVIGATIONS. bfetch_cache_clear() below clears the
+ * PER-NAVIGATION prefetch cache (browser.c calls it in load_once); this cache
+ * is a different thing, keyed by absolute post-redirect URL with a freshness
+ * policy, and nothing clears it on a navigation. That is the whole point: a
+ * revisit finds the last visit's stylesheets, scripts and document.
+ *
+ * bfetch_set_bypass(1) makes the NEXT requests ignore the cache both ways --
+ * no lookups, no stores -- until it is called with 0. It exists for RELOAD:
+ * browser.c's ctrl+R wants it and cannot say so yet (load() carries no
+ * reload signal), so the one-line call at that branch lives in the webaccel
+ * report until browser.c's owner lands it. Default 0. */
+void bfetch_set_bypass(int on);
+/* What the cache currently holds -- observability, the same argument as
+ * bfetch_stats: a cache that silently serves nothing looks exactly like one
+ * that is not there. */
+void bfetch_http_cache_stats(int *entries, int *bytes, int *hits, int *revalidations);
+/* Drop every entry (memory pressure, tests). NOT called on navigation. */
+void bfetch_http_cache_clear(void);
 /* The pool's own counters. `evicted` (ran out of slots) and `closed` (the
  * connection went away) are the two reasons a page dials more than it should,
  * and they are indistinguishable from the request side. */

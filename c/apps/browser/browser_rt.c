@@ -22,6 +22,12 @@
 #include "hpack.h"
 #include "hpool.h"
 #include "bfetch.h"
+/* The cross-navigation HTTP cache, textually: js_wasm.c's pattern for a TU
+ * the frozen BROWSER_PIPE list cannot name this wave (see http_cache.h's own
+ * comment for the full why). #include'd rather than linked so the cache's
+ * statics are browser_rt.c's -- one translation unit, one symbol space, no
+* chance of a second consumer half-linking it. */
+#include "http_cache.c"
 /* For CK_HEADER_MAX only -- the ONE size of a Cookie: value, shared with the
  * two js_webapi.c call sites that used to disagree with this one by 8x. The
  * header declares no symbol this file links, so the cookieless build below
@@ -92,6 +98,13 @@ struct breq {
      * and re-classifying hop 2 as a subresource would log the user out exactly
      * on the sites that redirect to their own login. */
     int   nav;
+    /* ---- http_cache (revalidation) ----
+     * A stale-cache hit arms this request as a CONDITIONAL GET: these hold
+     * the stored entry's validators, build_get() turns them into
+     * If-None-Match/If-Modified-Since, and a 304 back is answered from the
+     * cache in req_step_xfer(). Both empty = an ordinary unconditional GET. */
+    char  wv_etag[256];
+    char  wv_lmod[64];
     int   c_live;                    /* h1_conn needs freeing */
     struct h1_conn c;
     unsigned char *body;
@@ -125,6 +138,51 @@ static struct hpool g_pool;
 static int  g_pool_ready;
 static char g_base[BF_URLMAX] = "about:blank";
 static int  g_dials, g_reuses, g_reqs;
+/* The cross-navigation cache's ONE OFF switch (bfetch_set_bypass). Zero for
+ * every ordinary navigation; browser.c's ctrl+R SHOULD set it and does not
+ * yet, because load() has no way to say "this is a reload" -- the one-line
+ * diff is in the webaccel report. While it is unset, a reload reuses cached
+ * subresources like any other revisit, which is what a heuristic-freshness
+ * cache legitimately does. */
+static int  g_wa_bypass;
+
+/* ===================== [wa]: the open-time timeline stamps =================
+ *
+ * WHY THESE LINES EXIST (webaccel, 2026-08-30). "Page-open speed is too slow"
+ * was the complaint, and the house rules forbid answering it with host wall
+ * clock -- five sibling agents run QEMU on this host, so the only comparable
+ * numbers are GUEST timestamps taken inside ONE boot. The browser app already
+ * reads the kernel's monotonic clock (monotonic_ms, the same counter
+ * tools/perf uses through /dev/kstat), and the phases this file can see are
+ * exactly the network ones an accelerator has levers over: when the navigation
+ * request was armed, when its document settled, and when the network last went
+ * idle mid-load (which is where a subresource batch ended).
+ *
+ * THE ENGINE-SIDE PHASES (parse, css apply, layout, paint) are deliberately
+ * NOT stamped from here: they happen in browser.c, and the driver gets them
+ * from that file's own serial prints plus the [wm] perf t= line the window
+ * manager prints every second -- ~1 s resolution, stated as such. What is
+ * stamped from here is millisecond-exact because monotonic_ms() is.
+ *
+ * DELIBERATELY NOT a per-request log. Serial output is flow-controlled and a
+ * heavy page runs 30+ subresource requests; stamping each would put harness
+ * cost inside the thing being measured. Phase-level transitions only. */
+static unsigned long long wa_last_stamp;
+static void wa_stamp(const char *what)
+{
+    unsigned long long now = monotonic_ms();
+    printf("[wa] t=%llu (+%llu) %s\n", now, now - wa_last_stamp, what);
+    wa_last_stamp = now;
+}
+/* Track the pending-count edge so "network went idle" prints once per batch,
+ * not once per pump pass. 0 = "was idle (or never pumped) last time we looked". */
+static int wa_was_busy;
+/* Set the first time a NAVIGATION request is armed. The loadend stamp below
+ * rides bfetch_stats(), and the host range tests call bfetch_stats() without
+ * ever arming a navigation -- without this guard their logs grow a [wa] line
+ * per call and any output-comparing assertion sees a cache that was never
+ * asked about. */
+static int wa_saw_nav;
 
 static void pool_closer(int fd, void *ctx, void *user)
 {
@@ -381,6 +439,15 @@ static char *build_get(struct breq *r, int *outlen)
     }
     /* The entire point: no `Connection: close`. */
     h1_request_set_header(&q, "Connection", "keep-alive");
+    /* Revalidation conditionals, when a stale cross-navigation cache entry
+     * armed this request (bfetch_start_range_impl copies the stored ETag /
+     * Last-Modified into the breq). Empty strings mean an ordinary GET. Both
+     * at once is normal and correct -- RFC 9111 13.1.4 says a cache SHOULD
+     * send both and the server prefers ETag. */
+    if (r->wv_etag[0])
+        h1_request_set_header(&q, "If-None-Match", r->wv_etag);
+    if (r->wv_lmod[0])
+        h1_request_set_header(&q, "If-Modified-Since", r->wv_lmod);
     /* Cookies, on EVERY transport request -- navigation, reload, and each
      * subresource -- not only the JS fetch()/XHR path. The jar lives in
      * js_webapi.c and is reached through a weak symbol so builds without
@@ -785,6 +852,12 @@ static void req_step_xfer(struct breq *r)
                  * is per hop and is cleared. */
                 r->rres = BF_R_NONE;
                 r->got_first = r->got_last = r->got_total = -1;
+                /* Validators do NOT survive a hop: they vouch for the STORED
+                 * entry under this request's URL, and the hop's target is a
+                 * different resource. Sending url-A's ETag to url-B asks B to
+                 * 304 a body it never served -- silent wrong-bytes territory. */
+                r->wv_etag[0] = 0;
+                r->wv_lmod[0] = 0;
                 int i = 0; while (next[i] && i < BF_URLMAX - 1) { r->url[i] = next[i]; i++; }
                 r->url[i] = 0;
                 if (url_parse(r->url, &r->u) != 0) { req_fail(r, "bad redirect target"); return; }
@@ -792,6 +865,37 @@ static void req_step_xfer(struct breq *r)
                 return;
             }
         }
+    }
+
+    /* ---- 304: the cache's answer, not an error --------------------------------
+     *
+     * This request was armed as a conditional GET because a stored entry was
+     * stale; the server just said the stored bytes are still the bytes. The
+     * caller sees status 200 and the stored body -- what a browser reports
+     * for a validated cache hit, because that is what the user got. A 304
+     * with NO armed validator is a server bug (nothing here asked "changed?")
+     * and is failed BY NAME rather than handed to the caller as a bodyless
+     * 2xx-looking success. */
+    if (resp->code == 304) {
+        unsigned char *b = 0; int bl = 0;
+        if ((r->wv_etag[0] || r->wv_lmod[0]) &&
+            wacache_body(r->url, &b, &bl) == 0) {
+            wacache_refresh(r->url,
+                            h1_headers_get(&resp->hdr, "cache-control"),
+                            h1_headers_get(&resp->hdr, "expires"),
+                            h1_headers_get(&resp->hdr, "date"));
+            req_drop_conn(r, keep);
+            r->body = b; r->blen = bl;
+            r->status = 200;
+            r->rres = BF_R_NONE;
+            r->got_first = r->got_last = r->got_total = -1;
+            r->state = RQ_DONE;
+            return;
+        }
+        req_drop_conn(r, 0);
+        r->err = "304 without a usable cached entry";
+        r->state = RQ_FAIL;
+        return;
     }
 
     /* The range verdict, BEFORE h1_decode_body: one of its answers is "these
@@ -814,6 +918,27 @@ static void req_step_xfer(struct breq *r)
     r->body = resp->body;
     r->blen = resp->body_len;
     resp->body = 0; resp->body_len = 0; resp->body_cap = 0;
+
+    /* Store into the cross-navigation cache -- BEFORE req_drop_conn, which is
+     * what frees the header list these reads come from. Whole-resource 2xx
+     * GETs only: rq_first < 0 says no range was ASKED (a 206 or a
+     * range-ignored 200 never reaches here with rq_first >= 0, and
+     * range_check has already refused the malformed ones), and the cache is
+     * keyed by URL alone so a slice under a plain URL is corruption
+     * (bfetch.h's invariant). Store REFUSALS are silent to the page: the
+     * entry is simply not cached and the next visit refetches, which is
+     * exactly what a browser with no cache does. */
+    if (r->rq_first < 0 && r->status / 100 == 2 && r->body && r->blen > 0 &&
+        !g_wa_bypass) {
+        wacache_store(r->url, r->body, r->blen,
+                      h1_headers_get(&resp->hdr, "cache-control"),
+                      h1_headers_get(&resp->hdr, "expires"),
+                      h1_headers_get(&resp->hdr, "date"),
+                      h1_headers_get(&resp->hdr, "last-modified"),
+                      h1_headers_get(&resp->hdr, "etag"),
+                      h1_headers_get(&resp->hdr, "vary"),
+                      h1_headers_count(&resp->hdr, "set-cookie") > 0);
+    }
 
     req_drop_conn(r, keep);
     r->state = RQ_DONE;
@@ -854,6 +979,32 @@ int bfetch_pump(void)
         if (r->state == RQ_XFER) req_step_xfer(r);
     }
     hpool_expire(&g_pool, (int64_t)monotonic_ms());
+    /* RECOUNT after advancing: a request that settled during this pass was
+     * counted busy at the top of its own iteration, so the pending count the
+     * loop built is stale-high by exactly the requests that finished inside
+     * it -- which are precisely the ones at the end of every batch. Without
+     * the recount, the idle stamp below waits for a pump that never comes
+     * (the batch's driver loop exits instead), and no batch end is ever
+     * stamped. Found on the first measured run: zero idle lines. */
+    pending = 0;
+    for (int i = 0; i < BF_NREQ; i++) {
+        int s = g_req[i].state;
+        if (s == RQ_FREE || s == RQ_DONE || s == RQ_FAIL) continue;
+        pending++;
+    }
+    /* The idle edge, once per batch: a subresource batch (stylesheets, scripts,
+     * images -- browser.c's three res_fetch_all calls) ends when pending hits
+     * zero and stays there until the next batch arms. Counters ride the line so
+     * a batch's dial/reuse cost is readable without waiting for "load done". */
+    if (pending == 0 && wa_was_busy) {
+        unsigned long long now = monotonic_ms();   /* read once: two reads could straddle a tick */
+        printf("[wa] t=%llu (+%llu) idle reqs=%d dials=%d reuses=%d\n",
+               now, now - wa_last_stamp, g_reqs, g_dials, g_reuses);
+        wa_last_stamp = now;
+        wa_was_busy = 0;
+    } else if (pending > 0) {
+        wa_was_busy = 1;
+    }
     return pending;
 }
 
@@ -888,6 +1039,42 @@ static int bfetch_start_range_impl(const char *base, const char *ref,
         r->t_start = r->t0;                 /* the one clock no hop may reset */
         r->state = RQ_QUEUED;
         g_reqs++;
+        /* nav=1 means browser.c's ONE navigation door armed this request -- the
+         * moment the address bar's string became a fetch. The stamp is here
+         * and not in browser.c because this file owns the clock's rendering;
+         * the URL itself is on the "[browser] load:" line immediately before. */
+        if (nav) { wa_stamp("nav"); wa_saw_nav = 1; }
+
+        /* ---- the cross-navigation cache, consulted before a connection ----
+         *
+         * Whole-resource GETs only (first < 0): the cache is keyed by URL
+         * alone and a ranged answer is a slice -- bfetch.h's invariant, and
+         * the same rule the prefetch cache guards. Three outcomes:
+         *   FRESH  -> the request settles HERE, no connection, no dial, no
+         *             DNS. The caller's state machine sees the one shape it
+         *             already knows (BF_DONE + body + status 200).
+         *   STALE  -> the stored validators arm a conditional GET below, and
+         *             a 304 is answered from the cache in req_step_xfer().
+         *   MISS   -> an ordinary GET, byte-identical to before this existed.
+         * Reload-bypass (g_wa_bypass) skips both -- the caller asked for the
+         * network and gets it, stores included. */
+        if (first < 0 && !g_wa_bypass) {
+            unsigned char *cbody = 0; int clen = 0;
+            if (wacache_lookup(abs, &cbody, &clen) == 0) {
+                r->body = cbody;
+                r->blen = clen;
+                r->status = 200;
+                r->state = RQ_DONE;
+                /* g_reqs already counted this request -- deliberately: the
+                 * "load done: N requests" line stays comparable across cache
+                 * on/off (it counts what the PAGE asked for), while dials and
+                 * reuses are what show the network never ran. */
+                return i;
+            }
+            (void)wacache_validators(abs, r->wv_etag, (int)sizeof r->wv_etag,
+                                     r->wv_lmod, (int)sizeof r->wv_lmod);
+        }
+
         req_connect(r);                     /* a free slot dials immediately */
         return i;
     }
@@ -991,7 +1178,25 @@ void bfetch_wait(int id, void (*tick)(void))
 {
     for (;;) {
         int pending = bfetch_pump();
-        if (id >= 0) { if (bfetch_state(id) != BF_PENDING) return; }
+        if (id >= 0) {
+            if (bfetch_state(id) != BF_PENDING) {
+                /* Only NAVIGATION documents stamp here: bfetch_sync() also
+                 * waits on subresource ids (module loads, the image decode
+                 * path), and those would double-stamp every batch. The nav
+                 * flag is the request-table's own classification, not a
+                 * guess from the call site. Status and byte count ride the
+                 * line: "fetch done" without "what arrived" is not a phase
+                 * boundary anyone can use. */
+                struct breq *r = req_of(id);
+                if (r && r->nav) {
+                    unsigned long long now = monotonic_ms();  /* once: two reads could straddle a tick */
+                    printf("[wa] t=%llu (+%llu) docdone status=%d len=%d\n",
+                           now, now - wa_last_stamp, r->status, r->blen);
+                    wa_last_stamp = now;
+                }
+                return;
+            }
+        }
         else if (pending == 0) return;
         if (tick) tick();
         /* Yield so the WM thread runs net_poll(), which is what advances every
@@ -1055,6 +1260,26 @@ void bfetch_stats(int *dials, int *reuses, int *requests)
     if (dials) *dials = g_dials;
     if (reuses) *reuses = g_reuses;
     if (requests) *requests = g_reqs;
+    /* THE LOAD-END STAMP. browser.c calls this exactly once per load, on the
+     * line before it prints "load done" -- i.e. after the last script ran,
+     * with the whole load behind it. That makes it the one point where a
+     * boot-clock timestamp of "open finished" exists in THIS file, and the
+     * [wa] nav stamp ~5 s earlier is its partner: the pair brackets a whole
+     * navigation in ONE clock (the guest's monotonic ms), which is what the
+     * webaccel gate divides. The page's own performance.now() stamps cannot
+     * serve: their epoch is js_page_open (js_page.c's g_t0), mid-load, so a
+     * page stamp minus a nav stamp is not a duration at all -- the first
+     * baseline run computed a NEGATIVE open time from exactly that mistake.
+     * wacache counters ride along because "hits" is the number the whole
+     * cache is for. */
+    {
+        int ents = 0, bytes = 0, hits = 0, rvs = 0;
+        wacache_stats(&ents, &bytes, &hits, &rvs);
+        if (wa_saw_nav)
+            printf("[wa] t=%llu loadend reqs=%d dials=%d reuses=%d cache ents=%d "
+                   "%dK hits=%d rvs=%d\n", monotonic_ms(), g_reqs, g_dials,
+                   g_reuses, ents, bytes / 1024, hits, rvs);
+    }
 }
 
 /* The pool's own view, which answers a different question from the one above:
@@ -1073,6 +1298,11 @@ void bfetch_pool_stats(int *hits, int *evicted, int *closed)
     if (closed) *closed = g_pool.closed;
 }
 void bfetch_reset_stats(void) { g_dials = g_reuses = g_reqs = 0; }
+
+void bfetch_set_bypass(int on) { g_wa_bypass = on ? 1 : 0; }
+void bfetch_http_cache_stats(int *entries, int *bytes, int *hits, int *revalidations)
+{ wacache_stats(entries, bytes, hits, revalidations); }
+void bfetch_http_cache_clear(void) { wacache_reset(); }
 
 void bfetch_close_all(void)
 {
