@@ -5084,3 +5084,5 @@ test-mk-wired:
 -include tests/grender.mk
 -include tests/zaiblank.mk
 -include tests/intlseg.mk
+-include tests/biliplay.mk
+-include tests/firsttoken.mk
