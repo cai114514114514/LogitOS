@@ -98,6 +98,7 @@
  */
 #include "quickjs.h"
 #include "dom.h"
+#include "html_tree.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -106,7 +107,17 @@
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-/* ---- the arena: one detached dom_doc, refcounted by its live wrappers ---- */
+/* ---- the arena: one detached dom_doc, refcounted by its live wrappers ----
+ * Moved up from its original spot (further down this file, right where the
+ * ORIGINAL "static JSValue g_dp_node_proto..." comment still introduces it)
+ * so the MUTATION SURFACE block below -- which needs the full definition of
+ * both types, not just a name, because js_domparser_doc_of() dereferences
+ * `h->arena->doc` -- can come after it instead of before it. This is a pure
+ * reordering: nothing about dp_arena/dp_handle/dp_cid changed, and the
+ * second copy that used to sit lower in the file is deleted, not duplicated
+ * (a repeated `struct dp_arena {...}` definition is not the same type to a
+ * strict reading of the standard, even with identical members, so this had
+ * to be a move rather than a forward-declare-and-also-define). */
 struct dp_arena {
     struct dom_doc *doc;
     struct node    *root;      /* N_DOCUMENT, what dom_free() takes */
@@ -116,6 +127,145 @@ struct dp_arena {
 struct dp_handle { struct dp_arena *arena; struct node *n; uint32_t serial; };
 
 static JSClassID dp_cid;
+
+/* ============================================================================
+ * MUTATION SURFACE -- added for js_frame.c (a same-origin second browsing
+ * context, see js_frame.c's own header). Everything above this block is the
+ * original read-only DOMParser surface; everything from here down is new.
+ *
+ * WHY HERE AND NOT A NEW FILE: dp_arena/dp_wrap/dp_of are all `static` to
+ * this translation unit on purpose (see the file header's "what is reused"
+ * section -- this is the ONLY multi-instance document representation this
+ * browser has), so a mutation surface for that same representation has
+ * nowhere else to live without exporting internals that were deliberately
+ * kept private.
+ *
+ * THE SCRIPT SINK, mirroring js_dom.c's g_script_sink/offer_scripts
+ * (js_dom.c:239-241,864-869) exactly on purpose: same shape, same reason.
+ * js_domparser.c does not decide whether a document is a "live frame" --
+ * that decision, and the second JSContext a script actually runs in, belong
+ * to js_frame.c, which is the only reasonable owner of "does this detached
+ * document get to execute code". This file just offers every <script> that
+ * becomes reachable -- ~~inserted into a connected subtree, or given content
+ * via innerHTML/textContent~~; the correction is kept beside the original
+ * because the original is the sentence someone will arrive holding, and it
+ * was wrong in the direction that reads as a bug report against the code
+ * rather than against itself. What actually fires the sink is (a) INSERTION
+ * into a connected subtree -- appendChild/insertBefore, and innerHTML=
+ * because that inserts a parsed fragment -- and (b)
+ * js_domparser_offer_scripts(), the once-per-document walk js_frame.c's
+ * __frameAdopt makes so a script already present in the PARSED MARKUP is not
+ * missed. textContent= is NOT a door and must not become one: see the comment
+ * in dp_set_text for the gate that was written, watched failing, and settled
+ * it. Exactly once per node EVER, enforced by dom.h's NF_SCRIPT_DONE -- the
+ * same flag and the same event js_dom.c fires on.
+ * An ordinary `new DOMParser().parseFromString(...)` caller that never calls
+ * js_domparser_set_script_sink() gets a sink of NULL, i.e. no behaviour
+ * change at all: this addition is inert until js_frame.c opts a document in. */
+static void (*g_dp_script_sink)(struct node *);
+void js_domparser_set_script_sink(void (*fn)(struct node *)) { g_dp_script_sink = fn; }
+
+/* THE DOC-FREE SINK -- found NECESSARY by frame_test.c's own "never-adopted
+ * document must stay inert" check, which failed against the FIRST version of
+ * this file: `malloc`/`kfree` reuse addresses, so once scenario 1's arena
+ * (referenced by nothing but a discarded IIFE-local variable) hit refcount 0
+ * and its `struct dom_doc` was freed, js_frame.c's doc-keyed table still had
+ * a LIVE-LOOKING entry for that exact pointer value -- and the NEXT
+ * `dom_doc_new()` in the process (scenario 3's supposedly never-adopted
+ * document) came back at the SAME address, by ordinary allocator reuse, and
+ * inherited a frame context it was never given. That is a real
+ * use-after-free-shaped correctness bug (a stale table keyed on identity
+ * across a free), not a hypothetical one -- it reproduced on the second run
+ * of this file's own three-scenario test, unprompted. This sink is the fix:
+ * called with the doc about to be destroyed, immediately before dom_free()
+ * runs, so whatever js_frame.c keyed on that pointer can drop the entry
+ * before the pointer can be reborn as someone else's document. */
+static void (*g_dp_docfree_sink)(struct dom_doc *);
+void js_domparser_set_docfree_sink(void (*fn)(struct dom_doc *)) { g_dp_docfree_sink = fn; }
+
+/* The other half of the same narrow door: js_frame.c's __frameAdopt needs the
+ * `struct dom_doc *` a Document *wrapper* stands for, to key its own
+ * doc->JSContext table by -- WITHOUT reaching past dp_cid/dp_h, which stay
+ * static. NULL for anything that is not a live dp Document wrapper (a
+ * recycled handle, an Element, a value from some other class entirely --
+ * JS_GetOpaque2-style safety, checked the same way dp_of() already does). */
+struct dom_doc *js_domparser_doc_of(JSValueConst v)
+{
+    struct dp_handle *h = JS_GetOpaque(v, dp_cid);
+    if (!h || !h->n || h->n->serial != h->serial || h->n->type != N_DOCUMENT) return 0;
+    return h->arena->doc;
+}
+
+/* "Connected" for a detached tree: reachable from ITS OWN document root, the
+ * only root a dp arena ever has. Walking to a NULL parent lands on the
+ * N_DOCUMENT node for any subtree still attached somewhere inside the arena
+ * -- there is no second document to confuse it with, unlike js_dom.c's
+ * connected() which has to check against one specific live g_root among
+ * many possible detached trees floating in the same runtime. */
+static int dp_connected(struct node *n)
+{
+    struct node *p = n;
+    while (p->parent) p = p->parent;
+    return p->type == N_DOCUMENT;
+}
+
+static int dp_tag_is(const struct node *n, const char *want)
+{
+    if (n->type != N_ELEM) return 0;
+    return strcmp(n->tag, want) == 0;   /* tags are stored lowercase; see tagName's own comment */
+}
+
+static void dp_offer_scripts(struct node *n)
+{
+    /* dom_script_is_done is the SAME run-once flag js_dom.c's offer_scripts
+     * consults (js_dom.c:864-870), for the same reason and deliberately not a
+     * second one of this file's own -- one jar, one door. js_frame.c sets it
+     * (dom_script_mark_done) the moment it has DECIDED about a node, whether
+     * that decision was "run it" or a named refusal, so no node can be acted
+     * on twice. Without it, `s.textContent = code` on a script already in the
+     * tree runs it, and a later `s.textContent = more` runs BOTH the old and
+     * the new -- the shape a real browser does not have, arrived at by
+     * accident rather than chosen. */
+    if (dp_tag_is(n, "script") && g_dp_script_sink && !dom_script_is_done(n))
+        g_dp_script_sink(n);
+    /* `next` captured BEFORE the recursion, because the sink runs JS: a script
+     * that removes its own next sibling would otherwise leave this loop
+     * holding a freed `c->next`. This does not make the walk fully
+     * mutation-proof (nothing short of a live NodeList would) -- it removes
+     * the one shape that costs nothing to remove. */
+    for (struct node *c = n->first_child, *nx; c; c = nx) {
+        nx = c->next;
+        dp_offer_scripts(c);
+    }
+}
+
+/* THE THIRD HALF OF js_frame.c's narrow door, and the reason it exists is a
+ * gap the insertion-only sink above cannot see. dp_offer_scripts is called
+ * from the MUTATION paths (appendChild/insertBefore/innerHTML=/textContent=),
+ * which is exactly right for the specimen js_frame.c was built against --
+ * a script CREATED and INSERTED after the document exists. It is blind to the
+ * other, and on the open web far more common, case: a <script> that was
+ * already in the frame's MARKUP when it was parsed (`<iframe srcdoc="...">`,
+ * or a same-origin src whose response body contains one). Those nodes are
+ * never inserted by anybody, so no sink ever sees them, and without this door
+ * a same-origin frame with an inline script in its own HTML would be exactly
+ * the "present and does nothing" shape js_frame.c exists to prevent.
+ *
+ * Called ONCE, by js_frame.c's __frameAdopt, immediately after a document is
+ * given a JSContext -- never during parseFromString itself, because a plain
+ * `new DOMParser().parseFromString(html)` must stay inert (that is the whole
+ * premise of the sink being opt-in per document). NULL/not-a-Document is a
+ * no-op, same JS_GetOpaque-checked safety js_domparser_doc_of uses. */
+void js_domparser_offer_scripts(JSValueConst v)
+{
+    struct dp_handle *h = JS_GetOpaque(v, dp_cid);
+    if (!h || !h->n || h->n->serial != h->serial || h->n->type != N_DOCUMENT) return;
+    if (!g_dp_script_sink) return;
+    dp_offer_scripts(h->n);
+}
+
+/* dp_arena / dp_handle / dp_cid / countof: moved to just after the includes,
+ * above the MUTATION SURFACE block -- see the comment there for why. */
 
 /* Set by js_domparser_install, valid for as long as the one page runtime is
  * (same singleton assumption js_dom.c's g_ctx/g_root make -- exactly one page
@@ -131,6 +281,7 @@ static void dp_arena_unref(struct dp_arena *a)
 {
     if (!a) return;
     if (--a->refcnt > 0) return;
+    if (g_dp_docfree_sink) g_dp_docfree_sink(a->doc);   /* see the sink's own comment: BEFORE dom_free, not after */
     dom_free(a->root);
     free(a);
 }
@@ -460,6 +611,23 @@ static JSValue dp_set_text(JSContext *ctx, JSValueConst t, JSValueConst v)
         if (*s) { struct node *tn = dom_create_text(n->doc, s, -1); if (tn) dom_append_child(n, tn); }
     }
     JS_FreeCString(ctx, s);
+    /* NO SCRIPT OFFER HERE, AND THE ATTEMPT TO ADD ONE IS WHY THIS COMMENT
+     * EXISTS. This file's header used to say the sink fires for a script
+     * "inserted into a connected subtree, or given content via
+     * innerHTML/textContent" -- innerHTML was wired, textContent was not, so
+     * the sentence was true of the intent and false of the code. The obvious
+     * fix (offer here too) was written, gated, and WATCHED FAILING, which is
+     * what settled it: appending a still-empty <script> already runs the
+     * "prepare a script" step, so the node is marked NF_SCRIPT_DONE before any
+     * text exists, and a later `t.textContent = code` must then do nothing.
+     * That is not a limitation of this file -- it is what every real browser
+     * does, because `already started` is set when a script is prepared, not
+     * when it has content, and js_dom.c's own offer_scripts is insertion-only
+     * for the identical reason. So the door stays shut and the header sentence
+     * was corrected instead. The shape that DOES work, and the one real
+     * loaders use, is detached-first: create, set textContent (or innerHTML),
+     * THEN insert -- one offer, at the insert, with the text already there.
+     * tests/unit/frame_test.c scenario 5 pins both halves. */
     return JS_UNDEFINED;
 }
 
@@ -584,6 +752,169 @@ static JSValue dp_querySelectorAll(JSContext *ctx, JSValueConst t, int argc, JSV
     return arr;
 }
 
+/* ---- mutation: createElement / createTextNode / createComment ----
+ * document-only (like getElementById below): a node needs a `struct dom_doc`
+ * arena to be created in, and only the Document wrapper's dp_handle carries
+ * one (`h->arena->doc`). Real DOM has Document.createElement; a Node does
+ * not, so this matches the spec shape as a side effect of matching the
+ * implementation's, not by design intent. */
+static JSValue dp_doc_createElement(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct dp_handle *h = dp_h(t);
+    if (!h || argc < 1) return JS_NULL;
+    const char *tag = JS_ToCString(ctx, argv[0]);
+    if (!tag) return JS_NULL;
+    struct node *n = dom_create_element(h->arena->doc, tag, -1);
+    JS_FreeCString(ctx, tag);
+    return dp_wrap(ctx, h->arena, n);
+}
+static JSValue dp_doc_createTextNode(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct dp_handle *h = dp_h(t);
+    if (!h || argc < 1) return JS_NULL;
+    size_t sl = 0;
+    const char *s = JS_ToCStringLen(ctx, &sl, argv[0]);
+    if (!s) return JS_NULL;
+    struct node *n = dom_create_text(h->arena->doc, s, (int)sl);
+    JS_FreeCString(ctx, s);
+    return dp_wrap(ctx, h->arena, n);
+}
+static JSValue dp_doc_createComment(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct dp_handle *h = dp_h(t);
+    if (!h || argc < 1) return JS_NULL;
+    size_t sl = 0;
+    const char *s = JS_ToCStringLen(ctx, &sl, argv[0]);
+    if (!s) return JS_NULL;
+    struct node *n = dom_create_comment(h->arena->doc, s, (int)sl);
+    JS_FreeCString(ctx, s);
+    return dp_wrap(ctx, h->arena, n);
+}
+
+/* ---- mutation: append/insert/remove, on Node (not Document-only) ----
+ * NO DocumentFragment: real appendChild(frag) moves the fragment's children
+ * rather than the fragment itself, which needs the same is_fragment()
+ * special-casing js_dom.c carries (js_dom.c:779-854) and this mutation
+ * surface does not reimplement -- appendChild(x) here always inserts `x`
+ * itself. Nothing in the specimen this was built for needs fragments; a
+ * script that passes one gets a real, if spec-incomplete, node inserted
+ * rather than a silent no-op. */
+static JSValue dp_appendChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *p = dp_of(t);
+    if (!p || argc < 1) return JS_ThrowTypeError(ctx, "appendChild requires a node");
+    struct node *c = dp_of(argv[0]);
+    if (!c) return JS_ThrowTypeError(ctx, "appendChild: not a node from this document");
+    dom_append_child(p, c);
+    if (dp_connected(p)) dp_offer_scripts(c);
+    return JS_DupValue(ctx, argv[0]);
+}
+static JSValue dp_insertBefore(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *p = dp_of(t);
+    if (!p || argc < 1) return JS_ThrowTypeError(ctx, "insertBefore requires a node");
+    struct node *c = dp_of(argv[0]);
+    if (!c) return JS_ThrowTypeError(ctx, "insertBefore: not a node from this document");
+    struct node *ref = argc > 1 ? dp_of(argv[1]) : 0;
+    dom_insert_before(p, c, ref);
+    if (dp_connected(p)) dp_offer_scripts(c);
+    return JS_DupValue(ctx, argv[0]);
+}
+static JSValue dp_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *p = dp_of(t);
+    if (!p || argc < 1) return JS_ThrowTypeError(ctx, "removeChild requires a node");
+    struct node *c = dp_of(argv[0]);
+    if (!c) return JS_ThrowTypeError(ctx, "removeChild: not a node from this document");
+    dom_remove_child(p, c);
+    return JS_DupValue(ctx, argv[0]);
+}
+
+static JSValue dp_setAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = dp_of(t);
+    if (!n || argc < 2) return JS_UNDEFINED;
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_UNDEFINED;
+    size_t vlen = 0;
+    const char *val = JS_ToCStringLen(ctx, &vlen, argv[1]);
+    if (!val) { JS_FreeCString(ctx, name); return JS_UNDEFINED; }
+    dom_set_attr_raw(n, name, (int)strlen(name), val, (int)vlen);
+    JS_FreeCString(ctx, name);
+    JS_FreeCString(ctx, val);
+    return JS_UNDEFINED;
+}
+static JSValue dp_removeAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *n = dp_of(t);
+    if (!n || argc < 1) return JS_UNDEFINED;
+    const char *name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_UNDEFINED;
+    dom_set_attr_raw(n, name, (int)strlen(name), 0, 0);   /* dom.c: an empty/NULL value clears */
+    JS_FreeCString(ctx, name);
+    return JS_UNDEFINED;
+}
+
+/* innerHTML SETTER only -- no getter. Same fragment-parse-then-import idiom
+ * as js_dom.c's el_set_html (js_dom.c:573-597), copied rather than shared
+ * because js_dom.c's version is `static` and hardwired to nothing this file
+ * can reach anyway. No getter: nothing in the surface this was built for
+ * (js_frame.c's script sink) ever reads innerHTML back, and a serialiser
+ * good enough to be honest is a separate piece of work (dom_serialize.c is
+ * built for the top-level page, not audited here for reuse against a
+ * detached arena). Reading innerHTML on a dp node is `undefined`, not a
+ * silently wrong string. */
+static JSValue dp_set_innerHTML(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    struct node *n = dp_of(t);
+    if (!n || n->type != N_ELEM) return JS_UNDEFINED;
+    const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_UNDEFINED;
+    struct dom_doc *fdoc = 0;
+    struct node *frag = html_parse_fragment(&fdoc, s, (int)strlen(s),
+                                            n->tag, (int)strlen(n->tag), n->ns);
+    JS_FreeCString(ctx, s);
+    if (frag) {
+        dom_destroy_children(n);
+        for (struct node *c = frag->first_child; c; c = c->next) {
+            struct node *cp = dom_import_node(n->doc, c);
+            if (cp) dom_append_child(n, cp);
+        }
+    }
+    if (fdoc) dom_free(dom_doc_root(fdoc));
+    if (dp_connected(n)) dp_offer_scripts(n);
+    return JS_UNDEFINED;
+}
+
+/* getElementsByTagName: a snapshot array, same "not live" deviation as
+ * childNodes/children above (see the file header). '*' matches every
+ * element, same as the real DOM. Lives on Node (not Document-only) so it
+ * works identically whether called on the Document or on an Element --
+ * exactly what dp_querySelector already does, and for the same reason. */
+static void dp_walk_tagname(JSContext *ctx, struct dp_arena *a, struct node *n,
+                            const char *tag, int all, JSValue arr, uint32_t *idx)
+{
+    for (struct node *c = n->first_child; c; c = c->next) {
+        if (c->type == N_ELEM && (all || dp_tag_is(c, tag)))
+            JS_DefinePropertyValueUint32(ctx, arr, (*idx)++, dp_wrap(ctx, a, c), JS_PROP_C_W_E);
+        dp_walk_tagname(ctx, a, c, tag, all, arr, idx);
+    }
+}
+static JSValue dp_getElementsByTagName(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct dp_handle *h = dp_h(t);
+    struct node *n = dp_of(t);
+    JSValue arr = JS_NewArray(ctx);
+    if (!n || !h || argc < 1 || JS_IsException(arr)) return arr;
+    const char *tag = JS_ToCString(ctx, argv[0]);
+    if (!tag) return arr;
+    int all = strcmp(tag, "*") == 0;
+    uint32_t idx = 0;
+    dp_walk_tagname(ctx, h->arena, n, tag, all, arr, &idx);
+    JS_FreeCString(ctx, tag);
+    return arr;
+}
+
 /* ---- document-only: getElementById, body, documentElement ---- */
 static JSValue dp_doc_getById(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
@@ -632,10 +963,20 @@ static const JSCFunctionListEntry dp_node_funcs[] = {
     JS_CFUNC_DEF("contains", 1, dp_contains),
     JS_CFUNC_DEF("querySelector", 1, dp_querySelector),
     JS_CFUNC_DEF("querySelectorAll", 1, dp_querySelectorAll),
+    JS_CFUNC_DEF("getElementsByTagName", 1, dp_getElementsByTagName),
+    JS_CFUNC_DEF("appendChild", 1, dp_appendChild),
+    JS_CFUNC_DEF("insertBefore", 2, dp_insertBefore),
+    JS_CFUNC_DEF("removeChild", 1, dp_removeChild),
+    JS_CFUNC_DEF("setAttribute", 2, dp_setAttribute),
+    JS_CFUNC_DEF("removeAttribute", 1, dp_removeAttribute),
+    JS_CGETSET_DEF("innerHTML", NULL, dp_set_innerHTML),
 };
 
 static const JSCFunctionListEntry dp_doc_funcs[] = {
     JS_CFUNC_DEF("getElementById", 1, dp_doc_getById),
+    JS_CFUNC_DEF("createElement", 1, dp_doc_createElement),
+    JS_CFUNC_DEF("createTextNode", 1, dp_doc_createTextNode),
+    JS_CFUNC_DEF("createComment", 1, dp_doc_createComment),
     JS_CGETSET_DEF("body", dp_doc_get_body, NULL),
     JS_CGETSET_DEF("documentElement", dp_doc_get_docel, NULL),
 };

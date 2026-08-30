@@ -89,6 +89,45 @@ static void run(const char *src)
     free(s);
 }
 
+/* ------------------------------------------------- the external oracle's tap --
+ *
+ * WHY THIS EXISTS, and it is a hole this file had rather than a nicety.
+ *
+ * Every readback assertion below reaches the bytes through `atob`. That is a
+ * real differential for the ALPHABET and the bit packing -- js_canvas.c's
+ * b64_encode is a C table and js_platform.c's atob is a JS shim, they share no
+ * line -- but it is NOT one for the PADDING, and the reason is in atob's
+ * second statement: `if (s.length % 4 === 0) s = s.replace(/==?$/, '')`, then
+ * a refusal only of `length % 4 === 1`. Unpadded base64 decodes there
+ * perfectly. So an encoder that never emitted a '=' would keep all 68 checks
+ * green while producing a data: URL that python, libpng, and the URL parser in
+ * every other browser reject.
+ *
+ * That is this tree's own "wrong CRC polynomial computed the same way round
+ * trips perfectly" shape, one layer up from where tests/pngenc.mk found it.
+ * The answer is the same answer: a second oracle that shares no code with
+ * either side. tests/unit/canvas_b64_ext_test.py is python3's
+ * base64.b64decode(validate=True) plus binascii.crc32 and zlib, and this
+ * function is how the URLs reach it.
+ *
+ * The dump is a corpus, not one string, and the sizes are chosen so the PNG
+ * byte length lands in all three residues mod 3 -- with only n%3==0 there is
+ * no padding in the file at all and the control could not fire. The python
+ * side REFUSES a corpus that does not cover all three, rather than reporting
+ * a happy count over a corpus that cannot fail. */
+static void dump_url(const char *label, const char *jsexpr)
+{
+    const char *path = getenv("CANVAS_URL_DUMP");
+    if (!path) return;
+    char *u = evals(jsexpr);
+    if (!u) { printf("FAIL: dump_url(%s) threw\n", label); failed++; return; }
+    FILE *f = fopen(path, "a");
+    if (!f) { printf("FAIL: dump_url cannot open %s\n", path); failed++; free(u); return; }
+    fprintf(f, "%s\t%s\n", label, u);
+    fclose(f);
+    free(u);
+}
+
 /* The page every check runs against. One <canvas>, sized so a check can name a
  * pixel without arithmetic. */
 static const char *PAGE =
@@ -275,13 +314,167 @@ int main(void)
        "(function(){ try { lg.addColorStop(0.5,'zzz'); return 'no throw'; }"
        "  catch (e) { return e.constructor.name; } })()", "SyntaxError");
 
-    /* ---- what is refused, by name ------------------------------------------ */
-    /* A fabricated data URL is believed rather than detected -- it is what
-     * every fingerprint and every format-support probe reads -- so this must
-     * keep throwing for as long as there is no encoder behind it. */
-    eq("toDataURL throws rather than fabricating",
-       "(function(){ try { e.toDataURL(); return 'no throw'; }"
+    /* ---- readback: toDataURL / toBlob --------------------------------------
+     *
+     * THIS BLOCK REPLACES AN ASSERTION THAT THE METHOD THROWS, and the reason
+     * the old one was right is the reason these have the shape they do. It
+     * read: "A fabricated data URL is believed rather than detected -- it is
+     * what every fingerprint and every format-support probe reads -- so this
+     * must keep throwing for as long as there is no encoder behind it." There
+     * is an encoder behind it now (rust/src/pngenc.rs, gated by make
+     * test-pngenc against two oracles), so the condition attached to that
+     * sentence has been met rather than waived.
+     *
+     * WHAT IS ASSERTED IS THE PIXELS, NOT THE SHAPE OF THE STRING. A data URL
+     * of the right length with the right prefix is exactly the fabrication the
+     * old note feared; the only assertion that cannot be satisfied by a
+     * plausible-looking lie is one that decodes the URL and finds the colour
+     * the test drew. So every check below goes through the bytes.
+     */
+    run("var e2 = document.createElement('canvas'); e2.width = 4; e2.height = 3;"
+        "var g2 = e2.getContext('2d');"
+        "g2.fillStyle = '#ff0000'; g2.fillRect(0,0,4,3);"
+        "g2.fillStyle = '#0000ff'; g2.fillRect(0,0,1,1);"
+        "var url = e2.toDataURL();"
+        /* atob is js_platform.c's; decoding here rather than in C keeps the
+         * assertion on what a PAGE can observe. */
+        "var raw = atob(url.slice(url.indexOf(',') + 1));"
+        "var by = []; for (var i = 0; i < raw.length; i++) by.push(raw.charCodeAt(i));");
+
+    eq("toDataURL returns a data: URL that DECLARES image/png",
+       "url.slice(0, 22)", "data:image/png;base64,");
+    /* The eight-byte PNG signature, by value. A file that does not start with
+     * these is not a PNG whatever its URL says. */
+    eq("the decoded bytes carry the PNG signature",
+       "by.slice(0,8).join(',')", "137,80,78,71,13,10,26,10");
+    eq("the first chunk is IHDR",
+       "String.fromCharCode(by[12],by[13],by[14],by[15])", "IHDR");
+    /* THE DIMENSIONS COME FROM THE FILE, not from the element. A canvas that
+     * encoded a default 300x150 while reporting 4x3 would pass every check
+     * that only looks at the URL. */
+    eq("IHDR width is the canvas width",
+       "((by[16]<<24)|(by[17]<<16)|(by[18]<<8)|by[19])", "4");
+    eq("IHDR height is the canvas height",
+       "((by[20]<<24)|(by[21]<<16)|(by[22]<<8)|by[23])", "3");
+    eq("IHDR is depth 8, colour type 6 (RGBA), no interlace",
+       "[by[24],by[25],by[26],by[27],by[28]].join(',')", "8,6,0,0,0");
+    eq("the file ends with IEND",
+       "String.fromCharCode(by[by.length-8],by[by.length-7],by[by.length-6],by[by.length-5])",
+       "IEND");
+
+    /* THE PIXELS. The IDAT holds a zlib stream of STORED deflate blocks, so at
+     * this size the raw scanlines are literally in the file and a page can
+     * read them without an inflater: 8 signature + 25 IHDR chunk + 8 IDAT
+     * length/type + 2 zlib header + 5 stored-block header = 48, then row 0 is
+     * one filter byte followed by 4 RGBA pixels.
+     *
+     * This is the check the old refusal existed to protect: it fails for a
+     * fabricated URL, for a URL of the wrong canvas, for a transposed axis and
+     * for a swapped channel, and it cannot be satisfied by anything except
+     * having actually encoded what was actually drawn. */
+    eq("row 0 carries filter type 0 (None)", "by[48]", "0");
+    eq("pixel (0,0) is the blue square that was painted over the red",
+       "by.slice(49,53).join(',')", "0,0,255,255");
+    eq("pixel (1,0) is the red fill",
+       "by.slice(53,57).join(',')", "255,0,0,255");
+    /* Row 0 is bytes 49..64 (4 px x 4 B); byte 65 is row 1's filter type;
+     * row 1's first pixel is 66..69. Spelled as arithmetic on the row stride
+     * rather than as a literal, so a reader can check it. */
+    eq("row 1 carries its own filter byte", "by[48 + 1 + 4*4]", "0");
+    eq("pixel (0,1), one row down, is red",
+       "by.slice(48 + 1 + 4*4 + 1, 48 + 1 + 4*4 + 1 + 4).join(',')", "255,0,0,255");
+
+    /* A canvas that never got a context is transparent black at its attribute
+     * size -- the spec's answer, and the honest one: nothing was drawn. A
+     * fingerprint probe calling toDataURL on a fresh canvas is a real shape,
+     * and throwing there would put us back where this started. */
+    run("var e3 = document.createElement('canvas'); e3.width = 2; e3.height = 2;"
+        "var u3 = e3.toDataURL();"
+        "var r3 = atob(u3.slice(u3.indexOf(',') + 1));"
+        "var b3 = []; for (var i = 0; i < r3.length; i++) b3.push(r3.charCodeAt(i));");
+    eq("a canvas with no context still encodes, at its own size",
+       "((b3[16]<<24)|(b3[17]<<16)|(b3[18]<<8)|b3[19]) + 'x' +"
+       "((b3[20]<<24)|(b3[21]<<16)|(b3[22]<<8)|b3[23])", "2x2");
+    eq("and its pixels are transparent black, not garbage",
+       "b3.slice(49,57).join(',')", "0,0,0,0,0,0,0,0");
+
+    /* A zero-sized canvas is the spec's "data:," and the one case where there
+     * are no pixels to be honest about. */
+    eq("a zero-sized canvas returns data:,",
+       "(function(){ var z = document.createElement('canvas');"
+       "  z.width = 0; z.height = 0; return z.toDataURL(); })()", "data:,");
+
+    /* THE MIME FALLBACK IS VISIBLE, WHICH IS THE WHOLE POINT. HTML says a UA
+     * that cannot produce the requested type must use image/png; the lie would
+     * be a `data:image/webp` prefix over PNG bytes, because that is exactly
+     * what a "does this browser support webp" probe reads. Asking for webp
+     * must therefore come back SAYING png. */
+    eq("toDataURL('image/webp') falls back to PNG and says so in the URL",
+       "e2.toDataURL('image/webp').slice(0, 22)", "data:image/png;base64,");
+    eq("toDataURL('image/jpeg') too",
+       "e2.toDataURL('image/jpeg').slice(0, 22)", "data:image/png;base64,");
+    eq("and the fallback returns the same bytes as an explicit image/png",
+       "e2.toDataURL('image/webp') === e2.toDataURL('image/png')", "true");
+
+    /* ---- toBlob: async, and asserted to BE async ---------------------------
+     *
+     * Both halves, because each is a different bug. If the callback has run by
+     * the time toBlob returns, this is the one asynchronous API in this
+     * browser that is not, and a page doing `toBlob(cb); next();` sees the
+     * wrong order. If it never runs after a pump, the work was queued
+     * somewhere nothing drains. js_page_pump() is js_dom_run_jobs, the same
+     * drain every promise reaction in this engine settles on -- which is the
+     * claim being made: as async as a promise here, and no more. */
+    eq("toBlob returns undefined and has NOT called back yet",
+       "(function(){ __bl = 'pending';"
+       "  var r = e2.toBlob(function (b) { __bl = b; });"
+       "  return String(r) + '/' + (__bl === 'pending' ? 'deferred' : 'ran-inline'); })()",
+       "undefined/deferred");
+    js_page_pump();
+    eq("after one pump the callback has run with a Blob",
+       "(__bl && __bl.constructor && __bl.constructor.name)", "Blob");
+    eq("the Blob declares image/png", "__bl.type", "image/png");
+    eq("the Blob's bytes are the same PNG toDataURL produced",
+       "(function(){ var b = __bl._b;"
+       "  if (!b || b.length !== by.length) return 'len ' + (b && b.length) + ' vs ' + by.length;"
+       "  for (var i = 0; i < b.length; i++) if (b[i] !== by[i]) return 'differ at ' + i;"
+       "  return 'same'; })()", "same");
+    eq("toBlob without a callback throws",
+       "(function(){ try { e2.toBlob(); return 'no throw'; }"
        "  catch (x) { return x.constructor.name; } })()", "TypeError");
+
+    /* ---- the corpus for the external oracle --------------------------------
+     *
+     * Written only when CANVAS_URL_DUMP names a file, so an ordinary run is
+     * unchanged. The sizes are picked for their PNG LENGTHS, not their
+     * pictures, because base64 only CARRIES padding when the byte count is not
+     * a multiple of 3 -- a corpus of one residue could not fail the check it
+     * exists for.
+     *
+     * A stored-block PNG of a w x h canvas is 68 + h*(1+4w) bytes: 8 signature
+     * + 25 IHDR + 23 IDAT (4 length, 4 type, 2 zlib header, 5 stored-block
+     * header, 4 Adler-32, 4 CRC) + 12 IEND. MEASURED, and the first draft of
+     * this comment said 64 and named the wrong canvas for each residue -- it
+     * had dropped the Adler-32 trailer, which is four bytes that only exist
+     * because inflate.rs verifies them. The numbers below are read off
+     * build/canvas_urls.txt rather than derived a second time:
+     *
+     *     1x1  ->  73 bytes,  73 % 3 == 1  ->  TWO '='
+     *     2x1  ->  77 bytes,  77 % 3 == 2  ->  ONE '='
+     *     1x2  ->  78 bytes,  78 % 3 == 0  ->  NO padding
+     *
+     * All three, so the padding check can fire. The 4x3 canvas is dumped as
+     * well because it is the one carrying a KNOWN picture: it lets the oracle
+     * assert a pixel from outside this tree, not merely a well-formed file. */
+    run("var mk = function (w, h, fill) {"
+        "  var e = document.createElement('canvas'); e.width = w; e.height = h;"
+        "  if (fill) { var g = e.getContext('2d'); g.fillStyle = fill;"
+        "              g.fillRect(0, 0, w, h); }"
+        "  return e.toDataURL(); };");
+    dump_url("1x1", "mk(1,1,'#00ff00')");
+    dump_url("2x1", "mk(2,1,'#00ff00')");
+    dump_url("1x2", "mk(1,2,'#00ff00')");
+    dump_url("4x3-known", "url");
 
     js_page_close();
     if (failed) { printf("\ncanvas_test: %d/%d checks FAILED\n", failed, checks); return 1; }

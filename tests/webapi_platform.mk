@@ -10,6 +10,7 @@
 .PHONY: test-platform-page test-platform-page-control test-webapi-url-negctl
 .PHONY: test-webapi-slots-negctl
 .PHONY: test-platform-timing-negctl test-platform-livecollection-negctl
+.PHONY: test-platform-observer-negctl
 .PHONY: webapi-link-check
 
 # ===========================================================================
@@ -195,7 +196,18 @@ PROBE_CF  += -fno-builtin-printf
 # .PHONY prerequisite makes a file rule unconditionally out of date, and this
 # is a two-minute link that probe-frameworks and test-frameworks both hang
 # off. It hangs off the phony entry points instead.
-$(BUILD)/webapi_probe: $(PROBE_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+# $(HTML_PARSER_SRC) AND $(QJS_SRC) ARE PREREQUISITES BECAUSE THE RECIPE
+# COMPILES THEM. They were on the command line below and NOT in this list, so
+# `make $(BUILD)/webapi_probe` answered "up to date" after an edit to dom.c,
+# html_tree.c, html_tokenizer.c, dom_serialize.c or quickjs.c, and the next
+# measurement was taken with the OLD engine and the NEW source on disk. Found
+# 2026-08-30 by editing dom.c and being told there was nothing to do. It is the
+# hand-copied-source-list shape CLAUDE.md rule 4 names, in its quietest form:
+# not a link error, not a build failure -- a green instrument reporting on code
+# that is no longer in the tree. It matters today in particular because the
+# wrong-type line is editing quickjs.c and ranking its work with this binary.
+$(BUILD)/webapi_probe: $(PROBE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
+                       $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PROBE_CF) -o $@ $(PROBE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
@@ -262,7 +274,7 @@ PLATFORM_TEST_SRC += c/apps/browser/css_interp.c
 PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
-test-platform: webapi-link-check test-platform-timing-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+test-platform: webapi-link-check test-platform-timing-negctl test-platform-observer-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/platform_test
@@ -411,4 +423,48 @@ test-platform-livecollection-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	 else \
 	   echo "test-platform-livecollection-negctl: ok -- the five liveness checks fail without the fix, identity still passes:"; \
 	   grep -E '^(FAIL|ok  ): (children|childNodes)' $(BUILD)/platform_llneg.log; \
+	 fi
+
+# --- test-platform-observer-negctl -------------------------------------------
+# The negative control for PerformanceObserver (js_platform.c). MEASURED IN
+# THE GUEST: bing.com constructs one un-guarded and threw a ReferenceError that
+# took the rest of its IIFE with it -- see js_platform.c's comment above
+# SUPPORTED_TYPES for the call site and tests/scoreboard/full-corpus/bing.json
+# for the recorded exception.
+#
+# -DPLATFORM_NO_PERFORMANCE_OBSERVER restores exactly what shipped before this
+# change: `if (!G.PerformanceObserver) def(...)` is skipped, so the global
+# stays absent and every check about it must fail.
+#
+# MATCHED BY DESCRIPTION, not a blind FAIL count, for the reason
+# test-platform-livecollection-negctl above gives verbatim: this file's source
+# lists (PLATFORM_TEST_SRC) are mid-drift from other workflows landing in
+# c/apps/browser at the same time, and at the moment this target was written
+# that collateral noise was three UNRELATED failures (indexedDB, crypto.subtle,
+# Element.attachShadow) that have nothing to do with this change and must not
+# make this control flap. A blind count would go red the next time that drift
+# count changes and blame the wrong fix.
+#
+# EXACTLY 11, not 14: three of the fourteen PerformanceObserver checks assert
+# an ABSENCE of a side effect ("has not fired synchronously", "an unsupported
+# type never fires", "disconnect() removes the observer before its callback
+# ever ran") and are true VACUOUSLY when the whole feature is missing -- there
+# is no callback to have fired either way. Each of those three is paired with
+# a positive check right next to it (the batched-delivery count, the
+# instanceof check, takeRecords) that DOES fail here, so the feature is still
+# proven; counting the vacuous three as evidence would be the exact "control
+# passes for the wrong reason" shape CLAUDE.md rule 5 names.
+test-platform-observer-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(PLATFORM_CF) -DPLATFORM_NO_PERFORMANCE_OBSERVER \
+	    -o $(BUILD)/platform_poneg $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@$(BUILD)/platform_poneg > $(BUILD)/platform_poneg.log 2>&1; \
+	 n=`grep -cE '^FAIL: (PerformanceObserver exists|supportedEntryTypes |PerformanceObserver requires|three entries made|the batched callback|the delivered list|delivered entries are instanceof|buffered:true replays|takeRecords )' $(BUILD)/platform_poneg.log`; \
+	 if [ "$$n" != "11" ]; then \
+	   echo "test-platform-observer-negctl: FAILED -- expected exactly 11 PerformanceObserver checks to FAIL, got $$n:"; \
+	   grep -E '^(FAIL|ok  ): (PerformanceObserver|supportedEntryTypes|three entries|the batched|the delivered|delivered entries|buffered:true|takeRecords)' $(BUILD)/platform_poneg.log; exit 1; \
+	 else \
+	   echo "test-platform-observer-negctl: ok -- the observer's real-delivery checks fail without the fix:"; \
+	   grep -E '^FAIL: (PerformanceObserver|supportedEntryTypes|three entries|the batched|the delivered|delivered entries|buffered:true|takeRecords)' $(BUILD)/platform_poneg.log; \
 	 fi

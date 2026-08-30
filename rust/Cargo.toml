@@ -36,6 +36,23 @@ vp8-interframe = []
 # rounding/clamp to u8 happens between the two passes). Inert unless
 # vp8-interframe is also enabled.
 vp8-sixtap-swap = []
+# NEGATIVE CONTROLS for the PNG ENCODER (rust/src/pngenc.rs). Each turns one
+# documented rule off, and `make test-pngenc-negctl` fails if turning it off
+# does NOT redden the gate it is supposed to redden. The interesting part is
+# WHICH oracle catches which -- that is the argument for having two.
+#
+# The chunk CRC is computed with CRC-32C (Castagnoli, 0x82F63B78) instead of
+# PNG's CRC-32/ISO-HDLC. A real polynomial a real person could pick. THIS ONE
+# IS INVISIBLE TO THE ROUND-TRIP: rust/src/png.rs does not check chunk CRCs at
+# all, so oracle 1 stays green and only tests/unit/pngenc_ext_test.py's
+# binascii.crc32 sees it. It is the entire justification for a second oracle,
+# expressed as a switch instead of as a paragraph.
+pngenc-bad-crc = []
+# Every stored deflate block claims BFINAL. Correct for a stream that fits in
+# one 65535-byte block and a silent TRUNCATION for anything larger -- so this
+# one is invisible at 1x1 and 37x11 and reddens only at 200x100 and up, which
+# is what makes those sizes load-bearing rather than decorative.
+pngenc-always-final = []
 
 [profile.release]
 panic = "abort"

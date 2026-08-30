@@ -44,7 +44,8 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, dock_icon, BROWSER_SLOT          # noqa: E402
+import qmp_ui                                                 # noqa: E402
+from qmp_ui import Session                                    # noqa: E402
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -251,11 +252,17 @@ if not wait_for("desktop live", 90):
 pump(4)
 
 # ------------------------------------------------------- the browser + page
-ui.click_at(*dock_icon(BROWSER_SLOT))
+# The tile comes from the guest's own [wm] dock line, read out of the same
+# pumped log this driver's wait_for() already greps (its serial is a unix
+# socket, not a file, so Session(serial=...) has nothing to point at).
+dock = qmp_ui.parse_dock(log)
+if dock is None:
+    die("no [wm] dock N apps: line on the serial log -- cannot aim the click")
+ui.click_at(*qmp_ui.dock_icon_of("browser", dock))
 for _ in range(4):
     if wait_for("launched Browser", 15):
         break
-    ui.click_at(*dock_icon(BROWSER_SLOT))
+    ui.click_at(*qmp_ui.dock_icon_of("browser", dock))
 else:
     die("the Dock never launched the Browser")
 pump(6)

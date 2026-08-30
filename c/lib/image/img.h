@@ -74,4 +74,28 @@ int  exif_apply(struct image *im, int orientation);  /* 0 ok, -1 alloc failure *
 /* Shared by ico.c (icons hold whole PNGs) and the BMP-in-ICO path. */
 int  bmp_decode_dib(const uint8_t *p, int n, int is_icon, struct image *out);
 
+/* --- ENCODING -------------------------------------------------------------
+ * The direction this tree could not go until 2026-08-29. Everything above
+ * READS an image; `rust/src/pngenc.rs` writes one -- straight (non-
+ * premultiplied) RGBA8 in, a conforming PNG out (colour type 6, depth 8, no
+ * interlace, filter None, a zlib stream of RFC 1951 STORED deflate blocks).
+ * Its whole reason for existing is that a canvas readback must report what was
+ * actually drawn: `js_canvas.c`'s toDataURL threw for years precisely because
+ * a FABRICATED data URL is believed rather than detected, and the way past
+ * that was to remove the premise rather than relax the rule.
+ *
+ * No compression: the output is ~1.001x the raw RGBA. That is a size cost and
+ * not a correctness one, and a real deflate slots in behind this same
+ * signature later.
+ *
+ * FREE IT WITH png_encode_free AND NOT WITH free(). The Rust staticlib links
+ * into two domains with two different allocators (the kernel heap; mini-libc's
+ * arena via browser_rt.c's kmalloc shim), and pairing the allocation with its
+ * own free is the only form that is right in both without the caller having to
+ * know which one it is in. Returns 0 on a bad size or OOM, and writes the
+ * length through out_len (which is zeroed first, so a caller that checks only
+ * the length still sees a failure). */
+uint8_t *png_encode_rgba(const uint8_t *px, int w, int h, int *out_len);
+void     png_encode_free(uint8_t *p);
+
 #endif /* LOGIT_IMG_H */

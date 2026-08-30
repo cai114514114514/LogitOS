@@ -17,7 +17,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, configure, dock_icon, pt, GALLERY_SLOT  # noqa: E402
+from qmp_ui import Session, configure, pt  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PAGES = ["Controls", "Shapes", "Data", "Overlays"]
@@ -64,7 +64,10 @@ def main(argv):
 
         ui = Session(sock, serial=serial)
         probe = os.path.join(tmp, "probe.ppm")
-        ui.click_at_confirmed(probe, *dock_icon(GALLERY_SLOT))
+        # launch_app: the tile from the guest's [wm] dock line (which is the
+        # only honest source -- these benches boot their OWN disks, whose pack
+        # list need not match the product image's), and a verified launch.
+        ui.launch_app("gallery", probe=probe)
         time.sleep(8 * slow)
         ui.goto(xres - pt(40), pt(40))          # pointer off every widget
 

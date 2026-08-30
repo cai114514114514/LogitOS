@@ -22,17 +22,24 @@ Notes baked in from debugging this stack (see qmp_fs.py):
     W/2,H/2 = 640,400 -- see mouse.c) and steps stay small (<=120) with a slow
     cadence (the PS/2 1-byte buffer drops fast bursts). This mirrors the proven
     tools/qmp_term.py driver.
-  - the Dock scans root .aex in mkfs packing order:
-    clock(0) textedit(1) monitor(2) terminal(3) widgets(4) files(5)
-    preview(6) studio(7) browser(8). With 9 icons @1280x800 the dock is
-    dw=14+9*64=590 wide, x0=(1280-590)/2=345, icon i center x = 384 + i*64,
-    y = 753 (dock_y0=H-82=718, +10+25). So Files (index 5) sits at (704,753).
+  - the Dock's layout is NOT spelled here any more. This comment used to
+    derive Files' tile as "index 5 of 9 -> screen (704,753)" from a
+    NINE-icon dock; the disk ships ELEVEN apps, and (704,753) is preview.aex's
+    tile centre under that dock -- this driver was clicking Preview, calling
+    it Files, and passing on the screenshot alone. It now reads the tile off
+    the guest's own [wm] dock line and refuses to continue unless the click
+    focused or launched the Finder. See tests/qmp/qmp_ui.py's dock block.
   - wm_run auto-launches files.aex (cascade 0 -> window (110,70), content
     origin (110,100)) and clock.aex (cascade 1 -> (138,98), spans x138-378,
-    y98-230). The dock click on Files just raises that boot window
-    (single-instance), so all window coordinates below reference (110,70).
+    y98-230). The dock click on Files is therefore a single-instance
+    RE-RAISE, not a launch (see the check below), and all window coordinates
+    below reference (110,70).
 """
 import socket, json, sys, os, time, subprocess, tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+import qmp_ui                                    # noqa: E402
+from qmp_ui import LAUNCH_RE, FOCUS_RE, dock_icon_of, parse_dock, title_of  # noqa: E402
 
 iso, disk = sys.argv[1], sys.argv[2]
 out = sys.argv[3] if len(sys.argv) > 3 else "build/files_smoke.ppm"
@@ -44,6 +51,9 @@ proc = subprocess.Popen([
     qemu, "-cpu", "max", "-cdrom", iso,
     "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
     "-snapshot",                                   # ephemeral writes -> deterministic
+    # The dock arithmetic assumes 1280x800 (qmp_ui's default). Pinned here
+    # explicitly because it used to be an accident of the default framebuffer.
+    "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
     "-display", "none", "-no-reboot",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait",
 ])
@@ -107,8 +117,32 @@ def send(t):
 
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
 
-# 1. Launch (raise) Files from the Dock (index 5 of 9 -> screen (704,753)).
-goto(704, 753); click(); time.sleep(1.2)
+# 1. Raise the Finder from the Dock. Tile from the guest's own [wm] dock
+#    line; the click is then VERIFIED against the guest's own report. The
+#    Finder is already live (boot), so the good answer is the focus line; a
+#    click that lands on any OTHER tile launches that app instead, and its
+#    [wm] launched line names it -- that is the failure this used to miss
+#    when it silently clicked Preview. See the header.
+dock = None
+for _ in range(300):                       # the line is printed by wm_init()
+    dock = parse_dock(open(serial, errors="replace").read())
+    if dock:
+        break
+    if proc.poll() is not None: fail("qemu exited before the WM published its dock")
+    time.sleep(0.2)
+if dock is None:
+    fail("no [wm] dock line on serial -- is this disk the one wm.c dock_publish() ships on?")
+fx, fy = dock_icon_of("files", dock)
+mark = len(open(serial, errors="replace").read())
+goto(fx, fy); click(); time.sleep(1.2)
+newlog = open(serial, errors="replace").read()[mark:]
+launched = [m.group(1).strip() for m in LAUNCH_RE.finditer(newlog)]
+if launched != [] and launched != [title_of("files")]:
+    fail("clicked the Finder's dock tile at (%d,%d): guest launched %r (expected %r)"
+         % (fx, fy, launched, title_of("files")))
+if launched == [] and not FOCUS_RE.search(newlog):
+    fail("clicked the Finder's dock tile at (%d,%d): no launch and no focus -- "
+         "the click hit nothing" % (fx, fy))
 
 # 2. Drive New Folder: click the toolbar "New Folder" button, type a name, Enter.
 #    The boot Finder window sits at cascade 0 -> (110,70), content origin

@@ -177,6 +177,7 @@ css_error css__language_create(css_stylesheet *sheet, css_parser *parser,
 	c->namespaces = NULL;
 	c->num_namespaces = 0;
 	c->strings = sheet->propstrings;
+	c->in_not_depth = 0;
 
 	*language = c;
 
@@ -1680,6 +1681,57 @@ css_error parseNth(css_language *c,
 	return CSS_OK;
 }
 
+/**
+ * LogitOS: is this an unknown pseudo-ELEMENT that Selectors 4 §
+ * "Compatibility Selectors" requires us to accept anyway?
+ *
+ * The rule is exactly `-webkit-` and exactly a prefix -- ASCII
+ * case-insensitive, and the trailing dash is load-bearing: WPT's
+ * css/selectors/webkit-pseudo-element.html asserts in the same file that
+ * `::-WeBkIt-sOmEtHiNg-NoNeXiSt123` is VALID and `::-webkitfoo` is INVALID
+ * (it checks sheet.cssRules.length == 2, i.e. the ::-webkitfoo rule was
+ * dropped whole, taking the `#test` beside it with it). Getting the dash
+ * wrong therefore fails a test that is already in this tree's corpus.
+ *
+ * Nothing else is blessed. `-moz-`, `-ms-` and `-o-` are NOT in the compat
+ * section, and css/selectors/x-pseudo-element.html pins the general case:
+ * `::x-something-nobody-would-think-of, p { color: red }` must leave `p`
+ * green, i.e. an unknown pseudo-element invalidates the WHOLE selector
+ * list. That test is why this function is a narrow allowance and not the
+ * general "unknown pseudos become inert" it was first written as -- which
+ * recovered more of tests/fixtures/cssweb and reddened x-pseudo-element.html.
+ * A corpus number bought with a spec violation is the corpus fitting the
+ * engine, not the engine fitting the web.
+ */
+static bool pseudo_is_webkit_compat(lwc_string *name)
+{
+	static const char prefix[] = "-webkit-";
+	const size_t plen = sizeof(prefix) - 1;
+	const char *d;
+	size_t n, i;
+
+	if (name == NULL)
+		return false;
+
+	n = lwc_string_length(name);
+	d = lwc_string_data(name);
+
+	/* A bare `::-webkit-` names nothing; the compat rule is about a
+	 * prefix on a name, so require at least one character after it. */
+	if (n <= plen)
+		return false;
+
+	for (i = 0; i < plen; i++) {
+		char ch = d[i];
+		if (ch >= 'A' && ch <= 'Z')
+			ch = (char) (ch - 'A' + 'a');
+		if (ch != prefix[i])
+			return false;
+	}
+
+	return true;
+}
+
 css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 		int32_t *ctx, bool in_not, css_selector_detail *specific)
 {
@@ -1761,6 +1813,7 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 	css_qname qname;
 	const css_token *token;
 	bool match = false, require_element = false, negate = false;
+	bool inert = false;
 	uint32_t lut_idx;
 	css_selector_type type = CSS_SELECTOR_PSEUDO_CLASS;/* GCC's braindead */
 	css_error error;
@@ -1801,9 +1854,50 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 		}
 	}
 
-	/* Not found: invalid */
-	if (lut_idx == N_ELEMENTS(pseudo_lut))
-		return CSS_INVALID;
+	/* LogitOS correction, kept beside the old claim because the old claim
+	 * shipped in this tree: this branch briefly made EVERY unknown pseudo
+	 * inert in order to save the other selectors in a comma list. That is
+	 * not Selectors' error-recovery rule. WPT
+	 * css/selectors/x-pseudo-element.html proves that `::x-unknown, #t`
+	 * must invalidate the whole list, and css_report_test proves the parser
+	 * must report that refusal rather than silently counting declarations
+	 * from a rule that does not exist.
+	 *
+	 * Selectors 4 has one deliberately narrow compatibility exception:
+	 * unknown `::-webkit-*` pseudo-elements are valid but never match. The
+	 * prefix predicate above encodes its case-insensitive spelling and the
+	 * required dash. Unknown pseudo-classes, non-webkit pseudo-elements and
+	 * `::-webkitfoo` stay invalid. This loses the sibling selector in those
+	 * invalid lists ON PURPOSE; preserving it would make our parser accept a
+	 * stylesheet the platform says must be rejected, a standards percentage
+	 * bought by changing the question rather than answering it. */
+	if (lut_idx == N_ELEMENTS(pseudo_lut)) {
+		if (require_element == false ||
+				pseudo_is_webkit_compat(qname.name) == false)
+			return CSS_INVALID;
+		inert = true;
+		type = CSS_SELECTOR_PSEUDO_ELEMENT;
+
+		/* THE ONE UNSAFE POSITION. Under a negation an always-false
+		 * detail is an always-TRUE selector: `:not(:indeterminate)`
+		 * would match every element on the page, which is the
+		 * styles-the-whole-document failure this change must not
+		 * introduce. Selectors L4 says the same thing from the other
+		 * end -- :not() is not a forgiving selector list, so an
+		 * unknown selector inside it invalidates the rule -- so
+		 * refusing here is both safe and correct, and it is exactly
+		 * the behaviour this whole function had before this change.
+		 *
+		 * Deliberately conservative: the counter is not cleared when
+		 * an :is()/:where() opens inside a :not(), so
+		 * `:not(:is(.a, :unknown))` is refused although a forgiving
+		 * list could have dropped just the one alternative. That
+		 * over-refusal is today's behaviour, i.e. no regression, and
+		 * being wrong in the direction of the drop is the only side
+		 * of this trade that cannot paint the page. */
+		if (c->in_not_depth > 0)
+			return CSS_INVALID;
+	}
 
 	/* Required a pseudo element, but didn't find one: invalid */
 	if (require_element && type != CSS_SELECTOR_PSEUDO_ELEMENT)
@@ -1811,11 +1905,11 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 
 	/* :not() and pseudo elements are not permitted in :not() */
 	if (in_not && (type == CSS_SELECTOR_PSEUDO_ELEMENT ||
-			pseudo_lut[lut_idx].index == NOT))
+			(inert == false && pseudo_lut[lut_idx].index == NOT)))
 		return CSS_INVALID;
 
 	if (token->type == CSS_TOKEN_FUNCTION) {
-		int fun_type = pseudo_lut[lut_idx].index;
+		int fun_type = inert ? -1 : pseudo_lut[lut_idx].index;
 
 		consumeWhitespace(vector, ctx);
 
@@ -1873,8 +1967,15 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 			 * the OR, never a wrong answer. */
 			css_selector_altlist *altlist = NULL;
 
+			/* LogitOS: in_not_depth -- the ONE thing an
+			 * unrecognised pseudo below here must know, because
+			 * under a negation "matches nothing" becomes "matches
+			 * everything". See language.h and the
+			 * lut_idx == N_ELEMENTS(pseudo_lut) branch above. */
+			c->in_not_depth++;
 			error = parseIsWhereList(c, vector, ctx, false,
 					&altlist);
+			c->in_not_depth--;
 			if (error != CSS_OK)
 				return error;
 
@@ -1948,6 +2049,27 @@ css_error parsePseudo(css_language *c, const parserutils_vector *vector,
 			detail_value.altlist = altlist;
 			value_type = CSS_SELECTOR_DETAIL_VALUE_SELECTOR_LIST;
 
+			consumeWhitespace(vector, ctx);
+		} else if (inert) {
+			/* LogitOS: an unrecognised FUNCTIONAL pseudo --
+			 * `:-moz-any(...)`, `::-webkit-scrollbar-button(...)`,
+			 * `:state(x)`. Same rule as :has()/:host()/::part()
+			 * above: consume the argument without judging its
+			 * grammar so the rule and its selector list survive,
+			 * and leave the detail matching nothing.
+			 *
+			 * `inert` rather than a bare `else` ON PURPOSE. A name
+			 * that IS in pseudo_lut but is written as a function
+			 * with no branch above it -- `:hover(x)` -- must stay
+			 * refused: skipping its argument here would leave a
+			 * detail named "hover", and select.c matches that name
+			 * for real, so a syntax error would silently become a
+			 * working :hover. That is the parses-and-matches-TOO-
+			 * MUCH direction, and it is the one this change exists
+			 * to avoid. Falling through with nothing consumed
+			 * fails the ')' check below, which is what this
+			 * function has always done for it. */
+			skipParenArgument(vector, ctx);
 			consumeWhitespace(vector, ctx);
 		}
 
@@ -2647,9 +2769,28 @@ css_error parseProperty(css_language *c, const css_token *property,
 		return CSS_INVALID;
 	}
 
-	/* Get handler */
+	/* Get handler.
+	 *
+	 * LogitOS patch: the upstream line here is a bare `assert(handler !=
+	 * NULL)`, and the SHIPPED browser is built -DNDEBUG (Makefile's
+	 * UCFLAGS), so upstream's only guard on this table is compiled out in
+	 * exactly the build a real page runs through. property_handlers[] is
+	 * dimensioned LAST_PROP + 1 - FIRST_PROP, so a name added to
+	 * propstrings without a handler appended beside it does not fail to
+	 * compile -- the initializer list is short and C zero-fills the tail.
+	 * The assert would then be a NULL call through a function pointer in
+	 * ring 3.
+	 *
+	 * Refusing the declaration instead is the same answer the property
+	 * would have got before it was added (unknown -> dropped), it is
+	 * reported through the drop hook so `make audit-css` shows the name,
+	 * and it cannot corrupt anything. `make test-css-proptables` is the
+	 * gate that says WHICH name; this is only the seatbelt. */
 	handler = property_handlers[i - FIRST_PROP];
-	assert(handler != NULL);
+	if (handler == NULL) {
+		report_drop(property, CSS_DROP_UNKNOWN_PROP);
+		return CSS_INVALID;
+	}
 
 	/* allocate style */
 	error = css__stylesheet_style_create(c->sheet, &style);
@@ -2705,4 +2846,3 @@ css_error parseProperty(css_language *c, const css_token *property,
 
 	return CSS_OK;
 }
-

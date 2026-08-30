@@ -30,7 +30,7 @@ case_gen() {
     local name="$1" input="$2"; shift 2
     ffmpeg -v error -f lavfi -i "$input" -t 2 "$@" -f h264 "$OUT/$name.h264" -y
     ffmpeg -v error -i "$OUT/$name.h264" -f rawvideo -pix_fmt yuv420p "$OUT/$name.ref.yuv" -y
-    echo "  $name: $(stat -c%s "$OUT/$name.h264") bytes"
+    echo "  $name: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name.h264") bytes"
 }
 
 ENC="-c:v libx264 -profile:v baseline -pix_fmt yuv420p -preset veryslow"

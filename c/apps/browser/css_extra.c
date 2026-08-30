@@ -1,5 +1,5 @@
 /* css_extra.c -- capture properties our vendored LibCSS doesn't know about.
- * Currently: border-radius (px + %), the "visually hidden" pattern
+ * Currently: the "visually hidden" pattern
  * (clip-path:inset(50%) / clip:rect(0,0,0,0)) which real browsers lift out of
  * flow via position:absolute -- we force display:none instead, minimal grid
  * tracks (grid-template-columns repeat(N,1fr)/px/fr lists + px gaps), and the
@@ -21,42 +21,27 @@ static int spc(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' |
 static int ident(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                                  (c >= '0' && c <= '9') || c == '-' || c == '_'; }
 
-/* Parse a border-radius value list: first length wins. "6px" -> 6, "50%" -> pct. */
-static int parse_radius(const char *v, int len, int *px, int *pct)
-{
-    int i = 0, n = 0, is_pct = 0;
-    while (i < len && spc(v[i])) i++;
-    for (; i < len && v[i] >= '0' && v[i] <= '9'; i++) {
-        if (n > 100000) break;
-        n = n * 10 + (v[i] - '0');
-    }
-    if (i < len && v[i] == '%') is_pct = 1;
-    if (n <= 0) return -1;
-    if (n > 512) n = 512;
-    if (is_pct) { if (n > 50) n = 50; *pct = n; }
-    else *px = n;
-    return 0;
-}
-
-/* 1 if the declarations block [d,dlen) sets border-radius; fills px/pct. */
-static int decls_radius(const char *d, int dlen, int *px, int *pct)
-{
-    const char *key = "border-radius";
-    int kl = 13, found = 0;
-    for (int i = 0; i + kl < dlen; i++) {
-        if (i > 0 && !spc(d[i-1]) && d[i-1] != ';' && d[i-1] != '{') continue;
-        if (memcmp(d + i, key, kl)) continue;
-        int j = i + kl;
-        while (j < dlen && spc(d[j])) j++;
-        if (j >= dlen || d[j] != ':') continue;
-        j++;
-        int vs = j;
-        while (j < dlen && d[j] != ';' && d[j] != '}') j++;
-        if (parse_radius(d + vs, j - vs, px, pct) == 0) found = 1;
-        i = j;
-    }
-    return found;
-}
+/* BORDER-RADIUS USED TO BE PARSED HERE AND IS NOT ANY MORE. It is a real
+ * cascaded property in LibCSS now -- five names in propstrings, four corner
+ * longhands with opcodes, third_party/css/libcss/src/{parse,select}/properties/
+ * border_radius.c -- and css_engine.c's convert() reads all four corners.
+ *
+ * The two functions that were here (parse_radius/decls_radius) are DELETED
+ * rather than left behind a flag, because a property with two producers is the
+ * fourth-rasterizer mistake this tree already paid for in c/lib/gfx: "an engine
+ * that coexists with what it replaced is a fourth path." css_extra_apply() runs
+ * AFTER css_apply(), so a surviving raw-text scan would have silently BEATEN
+ * the real cascade and the whole change would have measured as zero with every
+ * gate green.
+ *
+ * What the deleted scan could not do, and the cascade now does for free:
+ * specificity (it applied in source order, last wins), !important (trim_val
+ * cut the value at '!'), the exact selector (last_compound() below matches a
+ * descendant chain on its LAST COMPOUND only and strips every pseudo-class, so
+ * `.card .thumb {border-radius:8px}` rounded every .thumb on the page and
+ * `.btn:hover {border-radius:0}` un-rounded every .btn always), per-corner
+ * values (it took the first integer of the list and gave it to all four
+ * corners), decimals and em/rem (it read digits only, so `0.5rem` was 0). */
 
 /* 1 if the declarations block uses the classic "visually hidden" pattern
  * (clip-path:inset(50%) or clip:rect(0...)). Real browsers pull those out of
@@ -288,7 +273,6 @@ struct xpatch {
     int do_masked;                          /* mask-image set: the background is
                                              * a SHAPE we cannot cut -- see
                                              * decls_masked */
-    int do_radius, px, pct;
     int do_grid, gcols, gtracks[GRID_MAXCOL];
     int gx_set, gx, gy_set, gy;
     int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
@@ -651,6 +635,76 @@ static void xr_set(struct xpatch *p, int idx, const char *s, int len)
     p->xr[idx] = s; p->xr_len[idx] = len; p->xr_any = 1;
 }
 
+/* THE PROPERTY NAMES parse_xraw() ANSWERS TO, hoisted to file scope so that
+ * they are read by the producer below AND by logit_css_extra_supports_name()
+ * at the bottom of this file, instead of being spelled a second time there.
+ *
+ * This is the whole point of the hoist. The @supports list used to be a
+ * hand-kept copy of these literals, and its own comment predicted what then
+ * happened: "a property added to one of those producers is invisible to
+ * @supports until it is added here too". transform, transform-origin and
+ * box-shadow were produced here and missing there, so `@supports (transform:
+ * translateX(10px))` answered NO for a declaration this engine renders -- and
+ * a NO on a feature test is not a missing feature, it is the page being TALKED
+ * OUT OF the branch it would have rendered, into a fallback written for
+ * browsers from before 2012.
+ *
+ * Derived, not mirrored: there is now no second list to forget. Adding a key
+ * to k_xform[] extends what @supports affirms in the same edit, and there is
+ * no state in which the two can disagree.
+ *
+ * AND THE DERIVATION TRACKS THE NEGATIVE CONTROL, which a copied list could
+ * not. Under CSS_NEGCTL_NO_XCAPTURE the producer is reverted to a no-op, so
+ * xr_names() answers nothing and @supports goes back to NO for exactly these
+ * properties -- the control turns the capability and the claim of the
+ * capability off together. A hand-kept list would have gone on affirming
+ * transform while the control proved nothing produced it, which is the
+ * says-YES-cannot-do-it lie in its purest form. */
+#ifndef CSS_NEGCTL_NO_XCAPTURE
+/* Unprefixed FIRST in every one of these -- see the comment above decl_first
+ * for why that is a property-identity rule and not a source-order one. */
+static const char *const k_xform[]  = { "transform", "-webkit-transform",
+                                        "-moz-transform", "-o-transform",
+                                        "-ms-transform" };
+static const char *const k_orig[]   = { "transform-origin", "-webkit-transform-origin" };
+static const char *const k_shadow[] = { "box-shadow", "-webkit-box-shadow",
+                                        "-moz-box-shadow" };
+/* k_bg[] is deliberately NOT in the @supports derivation below, and that is a
+ * measured exclusion rather than an oversight -- see xr_names(). */
+static const char *const k_bg[]     = { "background-image", "background" };
+#endif
+
+/* Every property name the xraw producer accepts, as one flat list, in the one
+ * order the arrays above are declared. Empty under the negative control. */
+static int xr_names(const char *const **out, int i)
+{
+#ifdef CSS_NEGCTL_NO_XCAPTURE
+    (void)i;
+    *out = 0;              /* always written: the caller loops until it is NULL */
+    return 0;
+#else
+    switch (i) {
+    case 0: *out = k_xform;  return 5;
+    case 1: *out = k_orig;   return 2;
+    case 2: *out = k_shadow; return 3;
+    /* k_bg[] STOPS HERE, and the reason is that @supports cannot reach it
+     * anyway -- measured, not assumed. logit_css_extra_supports_name() is
+     * consulted by language.c's supports_decl() ONLY on the branch where the
+     * name was not found in LibCSS's own FIRST_PROP..LAST_PROP table.
+     * `background-image` IS in that table (propstrings.h, BACKGROUND_IMAGE),
+     * so the scan finds it, the branch is never taken, and a "background-image"
+     * entry here would be dead text that reads like a fix. `transform`,
+     * `transform-origin` and `box-shadow` are absent from that enum, which is
+     * why the same edit works for those three and not for this one.
+     *
+     * background-image's @supports answer is decided one function along, by
+     * logit_css_engine_ignores_name() -- see the note there about the gradient
+     * value, which is the case this file really does produce. */
+    default: *out = 0; return 0;
+    }
+#endif
+}
+
 #ifdef CSS_NEGCTL_NO_XCAPTURE
 /* NEGATIVE CONTROL: the capture reverted. Everything else in this file --
  * radius, grid, gaps, the logical properties, the animation approximation --
@@ -666,15 +720,6 @@ static void parse_xraw(const char *d, int dlen, struct xpatch *p)
 #else
 static void parse_xraw(const char *d, int dlen, struct xpatch *p)
 {
-    /* Unprefixed FIRST in every one of these -- see the comment above for why
-     * that is a property-identity rule and not a source-order one. */
-    static const char *const k_xform[]  = { "transform", "-webkit-transform",
-                                            "-moz-transform", "-o-transform",
-                                            "-ms-transform" };
-    static const char *const k_orig[]   = { "transform-origin", "-webkit-transform-origin" };
-    static const char *const k_shadow[] = { "box-shadow", "-webkit-box-shadow",
-                                            "-moz-box-shadow" };
-    static const char *const k_bg[]     = { "background-image", "background" };
     int vs, ve;
 
     if (decl_first(d, dlen, k_xform, 5, &vs, &ve))
@@ -712,7 +757,6 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     parse_xraw(d, dlen, p);
     if (decls_vish(d, dlen)) p->do_none = 1;
     if (decls_masked(d, dlen)) p->do_masked = 1;
-    if (decls_radius(d, dlen, &p->px, &p->pct)) p->do_radius = 1;
     int vs, ve;
     if (find_decl(d, dlen, "grid-template-columns", &vs, &ve) &&
         parse_grid_cols(d + vs, ve - vs, &p->gcols, p->gtracks) == 0)
@@ -912,11 +956,50 @@ static void compile_selector(const char *s, int len, struct xsel *x)
     }
 }
 
+/* --- APPROXIMATION ACCOUNTING (measurement only; nothing branches on it) ---
+ *
+ * The error this file makes is not a DROP and no drop counter can see it: a
+ * descendant selector reduced to its last compound is APPLIED, to a superset
+ * of the elements it names. `.card .thumb` becomes `.thumb`, and a .thumb
+ * outside any .card comes out styled. Rule 4 of this tree's five: absent beats
+ * present-and-wrong, because unmatched leaves the page visibly unstyled while
+ * approximate styles the WRONG elements and looks plausible.
+ *
+ * So the one number that must exist beside every "drops went down" claim is
+ * how much of this file's output went through an approximation. These four
+ * counters are that number, at two granularities that answer different
+ * questions -- RULES (how much of the sheet is approximated) and APPLICATIONS
+ * (how many element-times-rule stylings were), weighted by the declarations
+ * each patch carries. Read by tests/unit/css_selcensus.c. */
+static long g_ax_rules_exact, g_ax_rules_approx;
+static long g_ax_apply_exact, g_ax_apply_approx;
+static long g_ax_decl_exact,  g_ax_decl_approx;
+static int  g_ax_last_approx;
+
+void css_extra_approx_stats(long *re, long *ra, long *ae, long *aa,
+                            long *de, long *da)
+{
+    if (re) *re = g_ax_rules_exact;   if (ra) *ra = g_ax_rules_approx;
+    if (ae) *ae = g_ax_apply_exact;   if (aa) *aa = g_ax_apply_approx;
+    if (de) *de = g_ax_decl_exact;    if (da) *da = g_ax_decl_approx;
+}
+void css_extra_approx_reset(void)
+{
+    g_ax_rules_exact = g_ax_rules_approx = 0;
+    g_ax_apply_exact = g_ax_apply_approx = 0;
+    g_ax_decl_exact  = g_ax_decl_approx  = 0;
+}
+
 static int match_xsel(struct node *n, const struct xsel *x, const char *s, int len)
 {
     for (int i = 0; i < x->nalt; i++)
-        if (match_xcomp(n, &x->alt[i])) return 1;
-    return x->spill ? match_selector(n, s, len) : 0;
+        if (match_xcomp(n, &x->alt[i])) { g_ax_last_approx = x->alt[i].approx; return 1; }
+    /* The spilled tail re-matches from text; last_compound() there computes the
+     * same `approx` and match_selector() does not hand it back, so a spilled
+     * match is counted as approximate. There are very few (XSEL_MAXALT is 6)
+     * and calling them exact would be the flattering direction. */
+    if (x->spill && match_selector(n, s, len)) { g_ax_last_approx = 1; return 1; }
+    return 0;
 }
 
 static void apply_patch(struct node *n, const struct xpatch *p)
@@ -928,10 +1011,6 @@ static void apply_patch(struct node *n, const struct xpatch *p)
      * colour is strictly wrong (see decls_masked). Drop the background and
      * keep the box. */
     if (p->do_masked) st->has_bg = 0;
-    if (p->do_radius) {
-        if (p->pct > 0) { st->radius_pct = p->pct; st->radius = 0; }
-        else { st->radius = p->px; st->radius_pct = 0; }
-    }
     if (p->do_grid) {
         st->grid_cols = p->gcols;
         for (int i = 0; i < p->gcols && i < GRID_MAXCOL; i++) st->grid_tracks[i] = p->gtracks[i];
@@ -991,10 +1070,38 @@ static void walk(struct node *n, const char *sel, int slen, const struct xpatch 
 }
 
 /* The same walk against a pre-parsed selector -- the compiled path. */
+/* How many DECLARATIONS this patch carries. One per producer that fired, which
+ * is one per declaration the rule body contained that this file understands --
+ * the weight the approximation accounting above needs, and it is derived from
+ * the patch rather than kept as a second field that could disagree with it. */
+static int patch_ndecl(const struct xpatch *p)
+{
+    int n = 0;
+    if (p->do_none) n++;
+    if (p->do_masked) n++;
+    if (p->do_grid) n++;
+    if (p->gx_set) n++;
+    if (p->gy_set) n++;
+    if (p->anim) n++;
+    if (p->trans_op) n++;
+    for (int i = 0; i < LGX__COUNT; i++) if (p->lg_set[i]) n++;
+    for (int i = 0; i < GR__COUNT; i++)  if (p->gr[i]) n++;
+    for (int i = 0; i < XR__COUNT; i++)  if (p->xr[i]) n++;
+    return n;
+}
+
 static void walk_x(struct node *n, const struct xsel *x, const char *sel, int slen,
                    const struct xpatch *p)
 {
-    if (n->type == N_ELEM && match_xsel(n, x, sel, slen)) apply_patch(n, p);
+    if (n->type == N_ELEM) {
+        g_ax_last_approx = 0;
+        if (match_xsel(n, x, sel, slen)) {
+            int nd = patch_ndecl(p);
+            if (g_ax_last_approx) { g_ax_apply_approx++; g_ax_decl_approx += nd; }
+            else                  { g_ax_apply_exact++;  g_ax_decl_exact  += nd; }
+            apply_patch(n, p);
+        }
+    }
     for (struct node *c = n->first_child; c; c = c->next) walk_x(c, x, sel, slen, p);
 }
 
@@ -1010,7 +1117,7 @@ static void walk_anim(struct node *n)
     for (struct node *c = n->first_child; c; c = c->next) walk_anim(c);
 }
 
-/* inline style="border-radius:...;animation:..." on each element */
+/* inline style="animation:...;grid-template-columns:..." on each element */
 static void walk_inline(struct node *n)
 {
     if (n->type == N_ELEM && n->style) {
@@ -1092,7 +1199,7 @@ static int media_active_at(int s)
  *
  * So the text half is compiled once into the rules that can actually patch
  * something, and only the tree walk runs per call. The rule list is a small
- * subset of the sheet: only border-radius / grid / gap / animation /
+ * subset of the sheet: only grid / gap / animation /
  * visually-hidden rules survive, which is tens of rules out of thousands.
  *
  * Cache key is the sheet bytes PLUS the three inputs an @media verdict depends
@@ -1135,6 +1242,12 @@ static int rules_push(int sel, int slen, const struct xpatch *p)
     g_rules[g_nrules].slen = slen;
     g_rules[g_nrules].p = *p;
     compile_selector(g_src + sel, slen, &g_rules[g_nrules].x);
+    {
+        const struct xsel *x = &g_rules[g_nrules].x;
+        int ap = x->spill;
+        for (int i = 0; i < x->nalt; i++) if (x->alt[i].approx) ap = 1;
+        if (ap) g_ax_rules_approx++; else g_ax_rules_exact++;
+    }
     g_nrules++;
     return 1;
 }
@@ -1174,7 +1287,7 @@ static int compile_sheet(const char *css, int len)
         if (dlen <= 0 || !media_active_at(s)) continue;
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
-        if (p.do_none || p.do_masked || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+        if (p.do_none || p.do_masked || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
             p.gr_any || p.xr_any || xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
@@ -1211,7 +1324,7 @@ static void apply_uncompiled(struct node *root, const char *css, int len)
         struct xpatch p;
         parse_decls(css + d, dlen, &p);
         gr_drop(&p);            /* the caller.s buffer moves; see gr_drop() */
-        if (p.do_none || p.do_masked || p.do_radius || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+        if (p.do_none || p.do_masked || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
             xpatch_has_logical(&p))
             walk(root, css + s, slen, &p);
     }
@@ -1791,6 +1904,32 @@ int css_gradient_parse(const char *v, int len, int fs_px, int root_px,
 int logit_css_engine_ignores_name(const char *name, int len)
 {
     static const char *const ignored[] = {
+        /* background-image IS NOT A CLEAN ENTRY AND THE COMMENT SAYS SO
+         * RATHER THAN THE LIST PRETENDING IT IS. It was measured value-blind,
+         * and it is right for `url(...)` -- nothing in the engine fetches or
+         * paints one -- but WRONG for `linear-gradient(...)`, which parse_xraw()
+         * above captures into XR_BG_IMAGE and browser_paint.c:1055 really
+         * paints. So `@supports (background-image: linear-gradient(red,blue))`
+         * answers NO for something this engine draws.
+         *
+         * IT CANNOT BE FIXED BY EDITING EITHER LIST IN THIS FILE, and that is
+         * the finding rather than an excuse:
+         *   - adding it to logit_css_extra_supports_name() is DEAD TEXT. That
+         *     hook is consulted by language.c's supports_decl() only on the
+         *     branch where the name was absent from LibCSS's FIRST_PROP..
+         *     LAST_PROP table, and BACKGROUND_IMAGE is in that table
+         *     (propstrings.h). The branch is never taken, so the entry would
+         *     read like a fix and change nothing -- measured, and it is why
+         *     xr_names() above stops before k_bg[].
+         *   - deleting it from HERE is worse than leaving it. It would flip
+         *     `background-image: url(x.png)` to YES, which is the
+         *     says-YES-cannot-do-it direction: the page skips the fallback
+         *     that would have rendered. Trading a lost enhancement for a lost
+         *     fallback is the wrong way round.
+         * The property genuinely needs a VALUE-aware answer, and both hooks
+         * here take a name only. That is a language.c signature change, in the
+         * vendored library, and it is left un-taken deliberately -- it is a
+         * different slice from this one. */
         "background-image", "background-position", "background-repeat",
         "background-attachment",
         "vertical-align", "content", "cursor",
@@ -1816,19 +1955,86 @@ int logit_css_engine_ignores_name(const char *name, int len)
  * this vendored LibCSS's table does not have AT ALL, so supports_decl()'s
  * FIRST_PROP..LAST_PROP loop never finds the name and answers no by
  * construction -- while THIS file is those properties' ONLY producer and
- * measurably moves used values for them (grid via gr_names[] above,
- * border-radius via decl_border_radius(), the logical box family via
- * logical_one()/logical_pair(), gap/inset, the animation/transition
- * end-state patch). One list, matched against the exact literal keys the
- * scans elsewhere in this file already use, so a property added to one of
- * those producers is invisible to @supports until it is added here too --
- * the same one-jar-two-doors risk CLAUDE.md names, made as small as this
- * file can make it by keeping the spellings textually next to each other. */
+ * measurably moves used values for them (grid via gr_names[] above, the
+ * logical box family via logical_one()/logical_pair(), gap/inset, the
+ * animation/transition end-state patch).
+ *
+ * THIS LIST SHRINKS BY ONE EVERY TIME A PROPERTY MOVES INTO LibCSS, and that
+ * is the point: `border-radius` was the first entry here and is gone, because
+ * supports_decl()'s FIRST_PROP..LAST_PROP loop now finds the name in the same
+ * table that decides whether the declaration renders. When the last entry
+ * leaves, this function and its hook can be deleted and the engine will have
+ * ONE capability oracle instead of two.
+ *
+ * ONE DOOR FOR THE xraw FAMILY NOW, TWO STILL FOR THE REST, and the split is
+ * the honest report of how far the derivation reaches.
+ *
+ * The xraw producer's names are no longer spelled here at all: xr_names()
+ * above hands back parse_xraw()'s OWN key arrays, so transform,
+ * transform-origin and box-shadow (and every vendor-prefixed spelling of
+ * them) are affirmed because the producer accepts them, not because somebody
+ * remembered to type them twice. That family's jar has one door. It is also
+ * the family that had gone wrong: three properties this engine renders, and
+ * @supports said NO to all three.
+ *
+ * The names still listed below CANNOT be derived the same way today, and
+ * saying so is worth more than pretending otherwise:
+ *
+ *   - the grid family has gr_names[] already, but the producer keyed off it
+ *     stores TEXT for layout_grid.c to re-parse, so "the producer accepts this
+ *     name" and "this name reaches a used value" are not the same predicate
+ *     there -- `subgrid` is the standing proof (css-drop-probe reports it
+ *     STORED-UNUSED: stored as text, never read).
+ *   - the logical box family and gap/inset are produced by logical_one() /
+ *     logical_pair() from names built by CONCATENATION at the call site rather
+ *     than from a table, so there is no array to hand back.
+ *
+ * So the other half of the instruction is a gate: where the list cannot be
+ * derived, leave something that FAILS when it disagrees with reality.
+ * **test-css-selstatic** carries it (t_supports_no_dead_text), and it does not
+ * check what a reader expects. Forgetting to ADD a name is not the failure
+ * this list has -- the failure is a name going DEAD. This hook is consulted by
+ * language.c's supports_decl() only on the branch where the name was absent
+ * from LibCSS's FIRST_PROP..LAST_PROP table, so the moment a property moves
+ * INTO LibCSS -- the declared direction of travel, and border-radius has
+ * already made the trip -- its entry here stops being consulted while still
+ * reading like a fix. Nothing about the build changes and nothing goes red.
+ * The gate walks every name affirmed here against LibCSS's own table and
+ * reddens on exactly that.
+ *
+ * IT FOUND ONE ON ITS FIRST RUN: `column-gap` was in the list below and had
+ * been dead all along. See the note at the head of the array. */
 int logit_css_extra_supports_name(const char *name, int len)
 {
+    /* Derived half: parse_xraw()'s own keys. */
+    for (int g = 0; ; g++) {
+        const char *const *k = 0;
+        int nk = xr_names(&k, g);
+        if (!k) break;
+        for (int j = 0; j < nk; j++) {
+            size_t n = strlen(k[j]);
+            if ((int)n == len && memcmp(k[j], name, (size_t)len) == 0)
+                return 1;
+        }
+    }
+
     static const char *const extra[] = {
-        "border-radius",
-        "gap", "column-gap", "row-gap",
+        /* `column-gap` WAS HERE AND WAS DEAD TEXT. It is in LibCSS's own
+         * FIRST_PROP..LAST_PROP window (propstrings.h:76, COLUMN_GAP -- the
+         * MULTICOL property of the same name), so supports_decl()'s scan finds
+         * it and this hook is never consulted about it. The entry read like a
+         * fix and was not one, which is the same shape as the background-image
+         * note in logit_css_engine_ignores_name() above -- only that one was
+         * found by measurement and this one by the gate.
+         *
+         * `gap` and `row-gap` are NOT in that window and stay. The asymmetry
+         * is real rather than an oversight: LibCSS predates the box-alignment
+         * module, so it has multicol's column-gap and neither of the other two.
+         *
+         * Found by test-css-selstatic's dead-text check, which walks every
+         * name this function affirms against LibCSS's own table. That check is
+         * what the comment above promises where the list cannot be derived. */
+        "gap", "row-gap",
         "grid-gap", "grid-column-gap", "grid-row-gap",
         "grid-template",
         "grid-template-columns", "grid-template-rows", "grid-template-areas",

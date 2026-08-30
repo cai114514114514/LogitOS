@@ -192,6 +192,95 @@ int main(int argc, char **argv)
          "  catch (e) { return e instanceof SyntaxError; } })()",
          "a non-numeric timing member is not a timestamp");
 
+    /* ==== PerformanceObserver ===========================================
+     * MEASURED IN THE GUEST: bing.com's own inline script constructs one
+     * un-guarded (tests/scoreboard/full-corpus/bing.serial.txt) and threw a
+     * ReferenceError that took the rest of its IIFE with it -- the
+     * indexedDB image-of-the-day fetch, a placeholder cleanup, a 2s
+     * fallback timer. These checks are the contract that fix rests on:
+     * exactly two entry types delivered for real, everything else a silent
+     * no-op rather than a second exception. */
+    ckjs("typeof PerformanceObserver === 'function'", "PerformanceObserver exists");
+    /* ONE JAR: supportedEntryTypes must be EXACTLY ['mark','measure'] -- not
+     * a superset (which would promise entries -- 'resource', 'element',
+     * 'longtask', 'navigation' -- this machine never produces, breaking the
+     * honest false branch every measured reach already takes) and not a
+     * subset (which would take mark/measure observation, the one real
+     * consumer, away from a page that checks first). */
+    ckjs("(function(){ var t = PerformanceObserver.supportedEntryTypes;"
+         "  return Array.isArray(t) && t.length === 2 && t.indexOf('mark') >= 0"
+         "      && t.indexOf('measure') >= 0 && t.indexOf('resource') < 0"
+         "      && t.indexOf('element') < 0 && t.indexOf('longtask') < 0"
+         "      && t.indexOf('navigation') < 0 && t.indexOf('paint') < 0; })()",
+         "supportedEntryTypes is exactly ['mark','measure'], not a superset or subset");
+    ckjs("Object.isFrozen(PerformanceObserver.supportedEntryTypes)",
+         "supportedEntryTypes is frozen (a page cannot widen its own capability check)");
+    ckjs("(function(){ try { new PerformanceObserver(); return false; }"
+         "  catch (e) { return e instanceof TypeError; } })()",
+         "PerformanceObserver requires a callback");
+
+    /* The real consumer: mark+measure in ONE script turn deliver as ONE
+     * batched callback carrying both, after the script yields -- not one
+     * callback per entry, and not synchronously (a page that reads
+     * `po.observe(...)` and immediately checks its own side effect on the
+     * next line must still see nothing yet). */
+    /* Raw eval, not run() -- run() pumps microtasks itself, which would hide
+     * the one thing worth proving here: the callback does not fire inside
+     * the same script turn that made the entries. */
+    JS_FreeValue(ctx, eval(
+        "__po1 = []; __po1n = 0; var po1 = new PerformanceObserver(function(list){"
+        "  __po1n++; __po1 = __po1.concat(list.getEntries()); });"
+        "po1.observe({ entryTypes: ['mark', 'measure'] });"
+        "performance.mark('po-a'); performance.mark('po-b');"
+        "__m1 = performance.measure('po-span', 'po-a', 'po-b');"));
+    ckjs("__po1.length === 0", "the observer callback has not fired synchronously");
+    js_page_pump();
+    ckjs("__po1n === 1", "three entries made in one turn deliver as ONE callback, not three");
+    ckjs("__po1.length === 3", "the batched callback carries all three entries");
+    ckjs("__po1.indexOf(__m1) >= 0", "the delivered list is the SAME entries getEntries() returns");
+    /* length > 0 first -- an empty array would make the loop vacuously true
+     * and pass this check in a build with no PerformanceObserver at all. */
+    ckjs("(function(){ if (__po1.length !== 3) return false;"
+         "  for (var i = 0; i < __po1.length; i++)"
+         "    if (!(__po1[i] instanceof PerformanceEntry)) return false; return true; })()",
+         "delivered entries are instanceof PerformanceEntry");
+
+    /* Naming an unsupported type is a SILENT NO-OP, not a throw -- this is
+     * the exact bing.com line: an un-guarded observe({type:'element',...})
+     * must not trade one ReferenceError for a TypeError. */
+    run("__po2fired = false; var po2 = new PerformanceObserver(function(){ __po2fired = true; });"
+        "po2.observe({ type: 'element', buffered: true });"
+        "performance.mark('po-unsupported');");
+    js_page_pump();
+    ckjs("__po2fired === false",
+         "observe() of an unsupported type never fires (bing.com's exact un-guarded call)");
+
+    /* buffered:true replays entries that already existed before observe(). */
+    run("performance.mark('po-early');"
+        "__po3 = []; var po3 = new PerformanceObserver(function(list){ __po3 = __po3.concat(list.getEntries()); });"
+        "po3.observe({ type: 'mark', buffered: true });");
+    js_page_pump();
+    ckjs("(function(){ for (var i = 0; i < __po3.length; i++) if (__po3[i].name === 'po-early') return true; return false; })()",
+         "buffered:true replays a mark made before observe() was called");
+
+    /* disconnect() stops future delivery; takeRecords() drains what is
+     * pending without waiting for the callback turn. */
+    run("__po4 = []; var po4 = new PerformanceObserver(function(list){ __po4 = __po4.concat(list.getEntries()); });"
+        "po4.observe({ type: 'mark' });"
+        "performance.mark('po-before-disconnect');"
+        "po4.disconnect();"
+        "performance.mark('po-after-disconnect');");
+    js_page_pump();
+    ckjs("__po4.length === 0", "disconnect() removes the observer before its callback ever ran");
+    run("__po5rec = null; var po5 = new PerformanceObserver(function(){});"
+        "po5.observe({ type: 'mark' }); performance.mark('po-taken');"
+        "__po5rec = po5.takeRecords();");
+    ckjs("__po5rec.length === 1 && __po5rec[0].name === 'po-taken'",
+         "takeRecords drains pending entries synchronously, without a callback turn");
+    js_page_pump();
+    ckjs("po5.takeRecords().length === 0",
+         "takeRecords clears what it returned -- the second call is empty");
+
     /* canvas.getContext is a REAL context now (js_canvas.c), which this build
      * does not link -- so the right assertion here is not "absent" and not
      * "present", it is that nothing in THIS file quietly provides one. A
@@ -273,6 +362,127 @@ int main(int argc, char **argv)
     run("__pm = null; window.onmessage = function(e){ __pm = e; }; postMessage({n:7}, '*');");
     tick(1);
     ckjs("__pm && __pm.data.n === 7 && __pm.type === 'message'", "window.postMessage to self");
+
+    /* targetOrigin honoured for real, even though there is only one window to
+     * check it against -- see the comment over the definition in
+     * js_platform.c. This is the half of the cross-window contract that is
+     * checkable WITHOUT a second browsing context, and it used to be a
+     * silently-ignored second argument. */
+    run("__pm2 = null; window.onmessage = function(e){ __pm2 = e; }; postMessage({n:8}, 'http://fixture.test');");
+    tick(1);
+    ckjs("__pm2 && __pm2.data.n === 8", "postMessage delivers when targetOrigin matches self.origin exactly");
+
+    /* THREW3 IS PART OF THE ASSERTION, NOT DECORATION: "__pm3 stays untouched"
+     * is also exactly what happens in the CONTROL build, where postMessage
+     * does not exist at all and the call throws before ever reaching a
+     * delivery decision -- a check of __pm3 alone cannot tell "correctly
+     * refused" from "is not there", which is the rule-3 trap this file's own
+     * project exists to avoid. Requiring !__threw3 closes it: the control
+     * build throws (postMessage is not a function), so this check now FAILS
+     * there as it must, and only a build that both accepts the call AND
+     * declines to deliver passes. */
+    run("__pm3 = 'untouched'; __threw3 = false; window.onmessage = function(e){ __pm3 = e; };"
+        "try { postMessage({n:9}, 'https://evil.example'); } catch (e) { __threw3 = true; }");
+    tick(5);
+    ckjs("!__threw3 && __pm3 === 'untouched'",
+         "postMessage with a mismatched targetOrigin does not throw but is silently NOT delivered "
+         "(negative control -- watch this NOT fire)");
+
+    /* THIS CHECK USED TO ASSERT THE DEFECT, AND THAT IS THE INTERESTING PART.
+     * It read
+     *
+     *   ckjs("__errName === 'TypeError'",
+     *        "postMessage() with no targetOrigin throws TypeError ...");
+     *
+     * which is what you write when the expectation is a hand-written belief
+     * rather than a reference. There are TWO overloads and only the legacy one
+     * requires the second argument:
+     *
+     *   undefined postMessage(any message, USVString targetOrigin,
+     *                         optional sequence<object> transfer = []);
+     *   undefined postMessage(any message,
+     *                         optional WindowPostMessageOptions options = {});
+     *
+     * With one argument, Web IDL picks the second and `options.targetOrigin`
+     * defaults to '/' -- same origin -- so `postMessage(m)` DELIVERS in every
+     * current browser. The gate was green on a behaviour no browser has, which
+     * is the exact shape of "a gate that records what its author already
+     * believed". What broke it in the field: google.com/search, measured in the
+     * guest 2026-08-30, whose only JS exception was the SyntaxError from the
+     * OTHER unimplemented half of the same overload set.
+     *
+     * Delivery, not merely "does not throw": a check that only asserted the
+     * absence of an exception would also pass in a build where postMessage was
+     * a no-op. */
+    run("__errName = null; __pm7 = 'untouched'; window.onmessage = function(e){ __pm7 = e; };"
+        "try { postMessage({n:11}); } catch (e) { __errName = e.name; }");
+    tick(1);
+    ckjs("__errName === null && __pm7 !== 'untouched' && __pm7.data.n === 11",
+         "postMessage(message) -- the one-argument overload -- delivers with targetOrigin '/'");
+
+    /* The options-dictionary overload, both ways round: a matching origin
+     * delivers and a mismatched one is silently dropped, exactly as the string
+     * form is tested above. Two checks rather than one because a build that
+     * ignored `options` entirely and defaulted to '*' would pass the first. */
+    run("__pm8 = 'untouched'; __errName8 = null; window.onmessage = function(e){ __pm8 = e; };"
+        "try { postMessage({n:12}, {targetOrigin: '*'}); } catch (e) { __errName8 = e.name; }");
+    tick(1);
+    ckjs("__errName8 === null && __pm8 !== 'untouched' && __pm8.data.n === 12",
+         "postMessage(message, {targetOrigin:'*'}) delivers (was: SyntaxError on '[object Object]')");
+
+    run("__pm9 = 'untouched'; __errName9 = null; window.onmessage = function(e){ __pm9 = e; };"
+        "try { postMessage({n:13}, {targetOrigin: 'https://evil.example'}); } catch (e) { __errName9 = e.name; }");
+    tick(5);
+    ckjs("__errName9 === null && __pm9 === 'untouched'",
+         "a mismatched targetOrigin inside the options dictionary is honoured, not ignored");
+
+    /* null and undefined are the dictionary overload too (Web IDL: a nullish
+     * distinguishing argument selects the dictionary), so they deliver rather
+     * than stringifying to the literal origins 'null' and 'undefined' -- which
+     * is what String(targetOrigin) did and is a SyntaxError. */
+    run("__pm10 = 'untouched'; window.onmessage = function(e){ __pm10 = e; };"
+        "postMessage({n:14}, null);");
+    tick(1);
+    ckjs("__pm10 !== 'untouched' && __pm10.data.n === 14",
+         "postMessage(message, null) selects the options overload and delivers");
+
+    /* The zero-argument case still throws, and the MESSAGE is part of the
+     * assertion for the reason every other check here gives: in the control
+     * build `postMessage` does not exist, so calling it is also a TypeError,
+     * and a check on the name alone would pass there -- a control that cannot
+     * be watched failing. Only a build that HAS the function and rejects the
+     * empty call for the right reason says "1 argument required". */
+    run("__errMsg11 = null; try { postMessage(); } catch (e) { __errMsg11 = String(e.message); }");
+    ckjs("__errMsg11 !== null && __errMsg11.indexOf('1 argument required') >= 0",
+         "postMessage() with NO arguments still throws TypeError naming the arity");
+
+    run("__errName2 = null; __pm4 = 'untouched'; window.onmessage = function(e){ __pm4 = e; };"
+        "try { postMessage({n:1}, 'not a valid origin'); } catch (e) { __errName2 = e.name; }");
+    tick(1);
+    ckjs("__errName2 === 'SyntaxError'", "postMessage with a malformed targetOrigin throws SyntaxError");
+    /* Same trap as __pm3 above, closed the same way: "__pm4 untouched" alone
+     * is also true of a control build where postMessage does not exist (a
+     * TypeError, not a SyntaxError). Requiring the SyntaxError alongside it
+     * means this check can only pass in a build that threw the RIGHT error
+     * for the RIGHT reason and still delivered nothing. */
+    ckjs("__errName2 === 'SyntaxError' && __pm4 === 'untouched'", "a malformed targetOrigin never queues a delivery");
+
+    /* The clone is real: mutating the object AFTER the call must not reach
+     * the delivered event, and it must not reach it because a NEW object was
+     * made at call time -- not because delivery happened to run first. */
+    run("__src = {n:5}; window.onmessage = function(e){ __pm5 = e; }; postMessage(__src, '*'); __src.n = 999;");
+    tick(1);
+    ckjs("__pm5.data.n === 5 && __pm5.data !== __src",
+         "postMessage clones data at call time (later mutation of the source object does not leak through)");
+
+    run("__errName3 = null; __pm6 = 'untouched'; window.onmessage = function(e){ __pm6 = e; };"
+        "try { postMessage(function(){}, '*'); } catch (e) { __errName3 = e.name; }");
+    tick(1);
+    ckjs("__errName3 === 'DataCloneError'", "postMessage with a function value throws DataCloneError synchronously");
+    /* Same trap again, same fix: gate on the specific error name so a control
+     * build (postMessage undefined -> TypeError, not DataCloneError) fails
+     * this check instead of passing it by accident. */
+    ckjs("__errName3 === 'DataCloneError' && __pm6 === 'untouched'", "a clone failure never queues a delivery");
 
     ckjs("typeof requestIdleCallback === 'function'", "requestIdleCallback exists");
     run("__idle = null; requestIdleCallback(function(d){ __idle = d; });");

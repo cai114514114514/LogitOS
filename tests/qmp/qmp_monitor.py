@@ -42,10 +42,13 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, configure, dock_icon, pt, PPM, NAPPS  # noqa: E402
+from qmp_ui import Session, configure, pt, PPM  # noqa: E402
 
-MONITOR_SLOT = 2                  # clock textedit MONITOR terminal widgets ...
-CLOCK_SLOT = 0                    # the victim
+# MONITOR_SLOT = 2 and CLOCK_SLOT = 0 used to live here -- scan_apps order as a
+# pair of hand-maintained integers. The dock's layout is read from the guest
+# now (launch_app/dock_icon_of below): these were the constants that went stale
+# the day Settings was packed, which is why this driver grew a retry loop over
+# guessed app counts that the guest's own dock line makes unnecessary.
 
 PROBES = {
     "processes": (255, 0, 128),
@@ -203,30 +206,18 @@ def main(argv):
             time.sleep(1.0 * slow)
 
         # --- open the Monitor -------------------------------------------------
-        # The dock is CENTRED, so every icon's position depends on how many apps
-        # are on the disk -- and that number changes whenever anybody adds one
-        # (a Settings app appeared in this tree while this driver was being
-        # written, moving every icon and making the click land on the
-        # wallpaper, which looks exactly like the app failing to launch).
-        # qmp_ui.NAPPS is therefore a starting guess, not a fact: try it, and if
-        # the Monitor did not come up, try the neighbouring counts. The probe is
-        # the oracle, so a wrong guess costs a retry rather than a false FAIL.
-        f = None
-        for n in (NAPPS, NAPPS + 1, NAPPS + 2, NAPPS - 1):
-            if n < 1:
-                continue
-            ui.click_at_confirmed(probe, *dock_icon(MONITOR_SLOT, n))
-            time.sleep(5 * slow)
-            ui.screendump(shot, settle=1.2 * slow)
-            cand = Frame(shot)
-            if cand.ok():
-                f = cand
-                if n != NAPPS:
-                    print("     (dock has %d apps, not qmp_ui.NAPPS=%d)" % (n, NAPPS))
-                break
-        dock_n = n
-        if f is None:
-            f = Frame(shot)
+        # The tile comes from the guest's own [wm] dock line, and launch_app
+        # refuses to return unless the guest says the Monitor itself came up --
+        # which is what the guessed-count retry loop below used to work around
+        # (qmp_ui.NAPPS went stale when Settings was packed, moving every icon
+        # half a slot, and the click landed on the wallpaper, which looks
+        # exactly like the app failing to launch). The Frame probe below still
+        # asserts the window's actual state; the launch line only answers
+        # "did the click open the right app".
+        ui.launch_app("monitor", probe=probe)
+        time.sleep(5 * slow)
+        ui.screendump(shot, settle=1.2 * slow)
+        f = Frame(shot)
         ck(f.ok() and f.tab == "processes",
            "Activity Monitor opens on the Processes tab", "tab=%r" % (f.tab,))
         if not f.ok():
@@ -298,11 +289,15 @@ def main(argv):
         time.sleep(2.5 * slow)
 
         # --- launch the victim -------------------------------------------------
-        # Clock is spawned last, so it holds the HIGHEST pid. Sorting the table
-        # descending by PID therefore puts it in row 0 deterministically --
-        # which beats hunting for its name, because the cells are anti-aliased
-        # glyphs and this driver does not do OCR.
-        ui.click_at_confirmed(probe, *dock_icon(CLOCK_SLOT, dock_n))
+        # Clock is spawned by wm_run at boot (after the Finder), so it holds the
+        # HIGHEST pid among the boot apps. Sorting the table descending by PID
+        # therefore puts it in row 0 deterministically -- which beats hunting
+        # for its name, because the cells are anti-aliased glyphs and this
+        # driver does not OCR. The dock click is a single-instance RE-RAISE of
+        # an already-running app: the guest prints "already live, focusing" and
+        # no launched line, hence allow_focus. A click on the WRONG tile still
+        # launches that app and names it on a launched line, which fails.
+        ui.launch_app("clock", probe=probe, allow_focus=True)
         time.sleep(6 * slow)
         ui.screendump(shot, settle=1.2 * slow)
         f = Frame(shot)

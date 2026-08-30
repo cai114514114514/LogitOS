@@ -40,7 +40,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT  # noqa: E402
+from qmp_ui import Session, PPM  # noqa: E402
 
 # Deliberately odd colours -- find_color() locates each word's box without
 # OCR or hand-computed font metrics, the same technique qmp_forms.py uses to
@@ -181,14 +181,14 @@ def main():
             fail("window manager never brought the desktop up")
         time.sleep(3)
 
+# One click, at the tile the GUEST names for browser.aex, verified against the
+        # guest's own [wm] launched line -- the re-click loop this replaces was
+        # the apology a hand-kept slot constant needed. See qmp_ui's dock block.
         ui = Session(qmp_path, serial=serial_path)
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-        for _ in range(5):
-            if wait_for("launched Browser", 15):
-                break
-            ui.click_at(*dock_icon(BROWSER_SLOT))
-        else:
-            fail("the Dock never launched the Browser")
+        try:
+            ui.launch_app("browser")
+        except AssertionError as e:
+            fail(str(e))
         time.sleep(5)
 
         # ---- navigate to the fixture -----------------------------------

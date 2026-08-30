@@ -1391,7 +1391,17 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                  * an inline <script> resolved against nothing and failed --
                  * while the identical call in an external script, or in the
                  * inline MODULE path ten lines below, worked. Same rule as the
-                 * module path: the document's URL with a discriminator. */
+                 * module path: the document's URL with a discriminator.
+                 *
+                 * AND THE NODE GOES WITH IT, separately, because it is a
+                 * separate fact. `e->node` is the <script> element these bytes
+                 * came from and it becomes document.currentScript; the runtime
+                 * used to have to work that out by pattern-matching cnm, which
+                 * for the string built right below can never succeed -- every
+                 * page URL contains "https:" and the inline test was "no ':'
+                 * anywhere". So the SAME commit that gave an inline script a
+                 * real import() base took its currentScript away, and neither
+                 * half was wrong on its own. See js_page.c. */
                 char cname[600];
                 const char *cnm = e->url;
                 if (!cnm) {
@@ -1403,7 +1413,7 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                     cname[p] = 0;
                     cnm = cname;
                 }
-                if (!js_page_eval((const char *)e->data, e->len, cnm)) exc_n++;
+                if (!js_page_eval((const char *)e->data, e->len, cnm, e->node)) exc_n++;
                 dom_script_mark_done(e->node);   /* never re-run via DOM insertion */
                 ran++;
                 continue;
@@ -1529,7 +1539,11 @@ static int run_pending_inserted_scripts(const char *page_url)
         }
         if (data && len > 0 && !(src && body_is_html_not_js(data, len))) {
             if (is_module) js_module_eval((const char *)data, len, name);
-            else           js_page_eval((const char *)data, len, name);
+            /* `n` is the node, and a dynamically inserted script's
+             * document.currentScript is itself exactly as a parsed one's is --
+             * which is how a bundler's chunk loader finds its own <script>
+             * after appendChild has run it. */
+            else           js_page_eval((const char *)data, len, name, n);
             ran++;
         }
         free(data);
@@ -1976,6 +1990,23 @@ static void load_once(const char *u)
      * see css_report.h on why a missing reset must read as a dead instrument
      * rather than as a plausible report. */
     css_report_reset();
+    /* :target's ONE input, and the only place the URL and the cascade meet.
+     *
+     * css_engine.c answers :target from a fragment somebody has to hand it, and
+     * until this line nobody did -- the handler was live, gated on the host, and
+     * fed nothing, so on the machine every `:target` rule still matched nothing.
+     * That is this tree's "built with no real consumer" shape and it is exactly
+     * what a host gate cannot see: css_selstatic_test.c calls
+     * css_set_target_fragment() itself, so it passes either way.
+     *
+     * Set from `url` rather than re-derived from a parsed struct because `url`
+     * is the post-redirect document URL that every other reference on this page
+     * resolves against; taking the fragment from the typed URL instead would
+     * disagree with the document after a 302. A URL with no '#' clears it, and
+     * clearing means "no target" -- never "match everything". */
+    { const char *frag = 0;
+      for (int i = 0; url[i]; i++) if (url[i] == '#') { frag = url + i + 1; break; }
+      css_set_target_fragment(frag, -1); }
     int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
     /* HYDRATING: the tab kept the FULL author stylesheet (inline + every
      * external sheet, concatenated exactly as assembled below), so the whole

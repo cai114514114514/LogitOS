@@ -51,11 +51,12 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure, dock_icon, pt   # noqa: E402
+from qmp_ui import PPM, Session, configure, pt              # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-TEXTEDIT_SLOT = 1
+# TEXTEDIT_SLOT = 1 used to live here; the window this driver types into is
+# opened by name now -- see t_focus().
 
 # draw_frame() in c/kernel/gui/wm.c: only the FOCUSED window paints its close
 # button in this colour, so its bounding box is both "which window has focus"
@@ -388,7 +389,11 @@ def t_focus(g, shots, W, H):
     place in the z-order. This is how that is checked rather than asserted --
     type, interrupt, type again, and require the second batch of characters to
     have landed exactly like the first."""
-    g.s.click_at(*dock_icon(TEXTEDIT_SLOT))
+    # Verified launch: the check below types into "the focused window" and
+    # asserts where the characters landed. If the click had silently opened a
+    # different app, every keystroke assertion would still be tested -- against
+    # the wrong window. launch_app refuses unless TextEdit is what came up.
+    g.s.launch_app("textedit")
     time.sleep(3.0)
     base = PPM(g.s.screendump(shots("focus-0-empty")))
 

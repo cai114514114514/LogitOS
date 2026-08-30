@@ -33,6 +33,14 @@ JSBENCH_PACK := $(BUILD)/jsbench.aex:/bin/jsbench \
                 $(foreach f,$(JSPERF_GUEST_FIXTURES),$(f):/jsperf/$(notdir $(f)))
 $(DISK): $(BUILD)/jsbench.aex $(JSPERF_GUEST_FIXTURES)
 
+# One more file rides along, for test-js-callee-os below. It is packed through
+# this variable rather than a new one because $(JSBENCH_PACK) is the ONE token
+# this fragment already owns inside the root Makefile's $(DISK) recipe, and
+# adding a second would mean editing a file three other lines are editing.
+JSCALLEE_FIXTURE := tests/fixtures/jscallee/shapes.js
+JSBENCH_PACK     += $(JSCALLEE_FIXTURE):/jscallee/shapes.js
+$(DISK): $(JSCALLEE_FIXTURE)
+
 # --- /bin/jsbench: the SAME js_bench.c, built for the machine ---------------
 # Same program on both sides on purpose -- the guest differs from the host in
 # the two ways that break engines (mini-libc's arena allocator and -msse2), and
@@ -194,7 +202,7 @@ $(BUILD)/js_stack_test: tests/unit/js_stack_test.c $(QJS_SRC)
 	@$(CC) -O2 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $@ \
 	    tests/unit/js_stack_test.c $(QJS_SRC) -lm
 
-test-js-stack: $(BUILD)/js_stack_test test-js-callee-control
+test-js-stack: $(BUILD)/js_stack_test test-js-callee-control test-js-callee-atom-control
 	@$(BUILD)/js_stack_test
 
 # THE NEGATIVE CONTROL. One sed turns the prepend off -- restoring exactly
@@ -227,10 +235,11 @@ test-js-stack-control: $(BUILD)/negctl/quickjs_nostack.c
 # a different set, and one control turning off both would not say which patch
 # either group of checks was measuring.
 #
-# EXACTLY 6 is asserted. Two of the eight checks added with the patch must
-# keep PASSING here: a call that works, and an error thrown from inside a real
-# function. They are what stops "rewrite every failed call's message" from
-# satisfying the other six.
+# EXACTLY 21 is asserted (it was 6 until 2026-08-30, when the message learned
+# to name eight more call shapes and to print the callee's VALUE). Two checks
+# added with the patch must keep PASSING here: a call that works, and an error
+# thrown from inside a real function. They are what stops "rewrite every failed
+# call's message" from satisfying the other twenty-one.
 $(BUILD)/negctl/quickjs_nocallee.c: third_party/quickjs/quickjs.c
 	@mkdir -p $(dir $@)
 	@sed 's|.*/\* LOGIT-NAME-CALLEE \*/|                    if (0)  /* negative control: bare "not a function" */|' $< > $@
@@ -245,10 +254,71 @@ test-js-callee-control: $(BUILD)/negctl/quickjs_nocallee.c
 	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
 	@$(BUILD)/js_callee_control > $(BUILD)/js_callee_control.log 2>&1; \
 	 n=`grep -c '^FAIL:' $(BUILD)/js_callee_control.log`; \
-	 if [ "$$n" != "6" ]; then \
-	   echo "FAIL (control): expected exactly 6 checks to fail without the naming, got $$n"; \
+	 if [ "$$n" != "21" ]; then \
+	   echo "FAIL (control): expected exactly 21 checks to fail without the naming, got $$n"; \
 	   grep '^FAIL:' $(BUILD)/js_callee_control.log; exit 1; \
 	 else \
-	   echo "PASS (control): a bare 'not a function' fails 6 checks as it must"; \
+	   echo "PASS (control): a bare 'not a function' fails 21 checks as it must"; \
 	 fi
-.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-propeq-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control
+
+# --- test-js-callee-atom-control -------------------------------------------
+# The THIRD control over the same file, and the one that measures the
+# 2026-08-30 change on its own. test-js-callee-control above reverts the whole
+# message; this one reverts ONLY the name recovery -- js_callee_atom() is
+# replaced by JS_ATOM_NULL at all three call sites, which is exactly the
+# engine Google's page reported against ("not a function (the callee is a
+# number)"). What must redden is the naming checks and NOTHING ELSE: the
+# value-precision checks and the two "names nothing rather than guessing"
+# checks must keep PASSING, because they do not depend on the scan and are
+# what stops "print any atom you can find" from satisfying the rest.
+#
+# EXACTLY 13 is asserted -- the thirteen shapes the scan names.
+$(BUILD)/negctl/quickjs_noatom.c: third_party/quickjs/quickjs.c
+	@mkdir -p $(dir $@)
+	@sed 's|.*/\* LOGIT-CALLEE-ATOM \*/|                            JS_ATOM_NULL);  /* negative control: no name recovered */|' $< > $@
+	@grep -q 'negative control: no name recovered' $@ || \
+	    { echo "FAIL: the negative-control sed matched nothing -- the patch it reverts has moved"; exit 1; }
+
+test-js-callee-atom-control: $(BUILD)/negctl/quickjs_noatom.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -w $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_callee_atom_control \
+	    tests/unit/js_stack_test.c $(BUILD)/negctl/quickjs_noatom.c \
+	    third_party/quickjs/cutils.c third_party/quickjs/libregexp.c \
+	    third_party/quickjs/libunicode.c third_party/quickjs/libbf.c -lm
+	@$(BUILD)/js_callee_atom_control > $(BUILD)/js_callee_atom_control.log 2>&1; \
+	 n=`grep -c '^FAIL:' $(BUILD)/js_callee_atom_control.log`; \
+	 if [ "$$n" != "13" ]; then \
+	   echo "FAIL (control): expected exactly 13 naming checks to fail without js_callee_atom(), got $$n"; \
+	   grep '^FAIL:' $(BUILD)/js_callee_atom_control.log; exit 1; \
+	 else \
+	   echo "PASS (control): without the bytecode scan, 13 call shapes go back to naming nothing"; \
+	 fi
+
+# --- test-js-callee-os: the same question, ON THE MACHINE -------------------
+# THE HOST BINARY IS NOT THE BROWSER, and this message is built out of a
+# bytecode scan and snprintf -- neither of which is the same code on the two
+# sides. js_stack_test links $(QJS_SRC) for arm64/darwin against the system
+# libc; /bin/jssem links $(ENGINE_OBJ), the literal object files browser.elf
+# links, for x86_64-elf against mini-libc. Rule 1: a survey run in the probe
+# measures the probe.
+#
+# Rides on /bin/jssem rather than a binary of its own because jssem already
+# does exactly this job -- eval a file, install `print`, and nothing else.
+JSCALLEE_LOG ?= $(BUILD)/js-callee-os.log
+test-js-callee-os: $(ISO) $(DISK)
+	@JSSEM_GUEST_LOG=$(JSCALLEE_LOG) bash tests/jssem/run-guest.sh \
+	    $(ISO) $(DISK) /jscallee/shapes.js >/dev/null
+	@grep -E '^(FAIL|CALLEE-OS-RESULT)' $(JSCALLEE_LOG) || true
+	@r=`grep -o 'CALLEE-OS-RESULT ok=[0-9]* fail=[0-9]*' $(JSCALLEE_LOG) | tail -1`; \
+	 case "$$r" in \
+	   "") echo "FAIL: the guest never printed a verdict -- transcript at $(JSCALLEE_LOG)"; exit 1;; \
+	   *fail=0) echo "PASS: $$r  (browser engine, in the guest)";; \
+	   *) echo "FAIL: $$r -- transcript at $(JSCALLEE_LOG)"; exit 1;; \
+	 esac
+.PHONY: bench-js bench-js-os test-js-syntax test-js-syntax-control test-js-propeq-control test-js-dynimport test-js-stack test-js-stack-control test-js-callee-control test-js-callee-atom-control test-js-callee-os
+
+# Both controls are PREREQUISITES of test-js-stack, not siblings on this line:
+# naming a control on ci-host: satisfies the stranded-control audit and still
+# runs it never, which is worse than being stranded because it looks fixed.
+ci-host: test-js-stack
+ci-boot: test-js-callee-os

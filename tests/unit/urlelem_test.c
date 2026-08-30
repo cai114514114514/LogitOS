@@ -221,7 +221,7 @@ int main(int argc, char **argv)
     JS_FreeValue(ctx, g);
     free(d1); free(d2);
 
-    if (!js_page_eval(DRIVER, (int)strlen(DRIVER), "<driver>")) {
+    if (!js_page_eval(DRIVER, (int)strlen(DRIVER), "<driver>", 0)) {
         printf("FAIL: the driver did not evaluate\n");
         js_page_close(); dom_free(root_node); return 1;
     }

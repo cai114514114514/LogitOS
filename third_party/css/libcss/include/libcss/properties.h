@@ -140,6 +140,18 @@ enum css_properties_e {
 	CSS_PROP_ORDER				= 0x07b,
 	CSS_PROP_FILL_OPACITY			= 0x07c,
 	CSS_PROP_STROKE_OPACITY			= 0x07d,
+	/* LogitOS: border-radius. FOUR corner longhands and no opcode for the
+	 * shorthand -- `border-radius` expands to these four at PARSE time, the
+	 * way `padding` expands to the four padding sides, so the cascade,
+	 * specificity and !important all operate on the longhands and there is
+	 * exactly one place a corner's value can come from.
+	 *
+	 * buildOPV() masks the opcode to 0x3ff (bytecode.h), so there are 1024
+	 * slots and 130 are now used. Appending is free. */
+	CSS_PROP_BORDER_TOP_LEFT_RADIUS		= 0x07e,
+	CSS_PROP_BORDER_TOP_RIGHT_RADIUS	= 0x07f,
+	CSS_PROP_BORDER_BOTTOM_RIGHT_RADIUS	= 0x080,
+	CSS_PROP_BORDER_BOTTOM_LEFT_RADIUS	= 0x081,
 
 	CSS_N_PROPERTIES
 };
@@ -215,6 +227,13 @@ enum css_border_collapse_e {
 enum css_border_spacing_e {
 	CSS_BORDER_SPACING_INHERIT		= 0x0,
 	CSS_BORDER_SPACING_SET			= 0x1
+};
+
+/* LogitOS: one value enum shared by all four border-*-radius corners, the way
+ * css_border_width_e is shared by the four border-*-width sides. */
+enum css_border_radius_e {
+	CSS_BORDER_RADIUS_INHERIT		= 0x0,
+	CSS_BORDER_RADIUS_SET			= 0x1
 };
 
 enum css_border_color_e {

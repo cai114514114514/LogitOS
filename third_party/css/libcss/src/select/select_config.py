@@ -134,6 +134,21 @@ style = {
     # Uncommon group
     ('border_spacing', 1, (('length',), ('length',)), 'CSS_BORDER_SPACING_SET',
         'CSS_BORDER_SPACING_SET'),
+    # LogitOS: the four border-radius corners. Each is a PAIR (horizontal,
+    # vertical), which is the same (('length',), ('length',)) shape
+    # border_spacing and background_position already use -- so this needed no
+    # new generator machinery, only four lines of configuration. Everything
+    # else (the struct member, its bit allocation, the getter, the setter and
+    # the destroy hook) is emitted by select_generator.py, which reproduces
+    # the checked-in tree byte for byte; `make check-cssgen` asserts that.
+    ('border_top_left_radius', 1, (('length',), ('length',)),
+        'CSS_BORDER_RADIUS_SET', 'CSS_BORDER_RADIUS_SET'),
+    ('border_top_right_radius', 1, (('length',), ('length',)),
+        'CSS_BORDER_RADIUS_SET', 'CSS_BORDER_RADIUS_SET'),
+    ('border_bottom_right_radius', 1, (('length',), ('length',)),
+        'CSS_BORDER_RADIUS_SET', 'CSS_BORDER_RADIUS_SET'),
+    ('border_bottom_left_radius', 1, (('length',), ('length',)),
+        'CSS_BORDER_RADIUS_SET', 'CSS_BORDER_RADIUS_SET'),
     ('break_after', 4, None, None, 'CSS_BREAK_AFTER_AUTO'),
     ('break_before', 4, None, None, 'CSS_BREAK_BEFORE_AUTO'),
     ('break_inside', 4, None, None, 'CSS_BREAK_INSIDE_AUTO'),

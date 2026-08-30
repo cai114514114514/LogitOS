@@ -128,6 +128,30 @@ uint8_t css_computed_border_spacing(
 		css_fixed *hlength, css_unit *hunit,
 		css_fixed *vlength, css_unit *vunit);
 
+/* LogitOS: border-radius corners. Each returns css_border_radius_e and fills
+ * the (horizontal, vertical) pair. A percentage arrives here as CSS_UNIT_PCT
+ * and is DELIBERATELY not resolved -- a radius percentage is relative to the
+ * border box, which the cascade does not know. */
+uint8_t css_computed_border_top_left_radius(
+		const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit);
+
+uint8_t css_computed_border_top_right_radius(
+		const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit);
+
+uint8_t css_computed_border_bottom_right_radius(
+		const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit);
+
+uint8_t css_computed_border_bottom_left_radius(
+		const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit);
+
 uint8_t css_computed_word_spacing(
 		const css_computed_style *style,
 		css_fixed *length, css_unit *unit);

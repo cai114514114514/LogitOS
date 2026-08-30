@@ -337,6 +337,8 @@ test-video
 test-video265
 test-vorbis
 test-wait-smp
+test-wasm-asan
+test-wasm-clang
 test-wav
 test-webapi
 test-webapi-asan

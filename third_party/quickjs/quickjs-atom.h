@@ -250,6 +250,12 @@ DEF(SyntaxError, "SyntaxError")
 DEF(TypeError, "TypeError")
 DEF(URIError, "URIError")
 DEF(InternalError, "InternalError")
+/* LOGITOS PATCH (jssem differential, "objects-weak-intl"): class-name
+   atoms for WeakRef/FinalizationRegistry -- appended at the end of the
+   file so no existing JS_ATOM_* numeric value shifts (this header is a
+   flat #include, atom ids come from expansion order, not position). */
+DEF(WeakRef, "WeakRef")
+DEF(FinalizationRegistry, "FinalizationRegistry")
 /* private symbols */
 DEF(Private_brand, "<brand>")
 /* symbols */

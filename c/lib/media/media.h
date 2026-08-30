@@ -273,6 +273,28 @@ void avclock_audio(avclock *c, long long played_pts_ns);
  * `now_ns`. On AV_WAIT the caller sleeps and calls again with the same frame. */
 int avclock_frame(avclock *c, long long pts_ns, long long now_ns, long long *sleep_ns);
 
+/* THE AUDIO STREAM IS OVER: there will be no more audio, ever, on this clock.
+ *
+ * Not the same as "the ring is empty" and not an error path. It is the moment
+ * the player has decoded and written the LAST audio sample the media contains,
+ * and it matters because the master clock stops being a measurement at exactly
+ * that point: the card's play cursor advances only while the DMA engine is
+ * consuming, and once nothing more is written it parks -- on this machine ~104
+ * ms short of what it was given, permanently.
+ *
+ * Any picture whose presentation time is past where the cursor parked would
+ * then be AV_WAIT for ever. Measured, in the browser, on a plain 2 s MP4:
+ * decoded=30 shown=29, drift a healthy -14 ms, readyState 4, no error, and the
+ * last frame withheld until the tab was closed. That is the one-frame stall
+ * that reads as a codec bug and is a clock policy.
+ *
+ * So the tail is paced by WALL TIME, re-anchored where the audio master left
+ * off. That is a demotion, not a fallback: audio was the master for as long as
+ * there was audio, and the only frames it can no longer speak for are the ones
+ * after the sound has finished -- for which nothing about them is audible and
+ * being late is invisible. Idempotent; calling it twice does not re-anchor. */
+void avclock_audio_end(avclock *c, long long now_ns);
+
 /* Signed drift of the last decision: video minus master. Positive = video is
  * ahead of the clock, negative = video is behind. */
 long long avclock_drift_ns(const avclock *c);

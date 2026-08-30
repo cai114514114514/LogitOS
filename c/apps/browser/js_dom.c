@@ -29,6 +29,22 @@
 #include "js_dom.h"
 #include "layout.h"
 #include "../../../include/weaksym.h"   /* the weak layout_* declarations below */
+/* THE SAME SPLIT js_platform.c ALREADY CARRIES, AND ITS COMMENT SAYS WHY IT
+ * IS NOT OPTIONAL: "this include missed when the getrandom line landed -- it
+ * broke every test-platform* link with logit.h not found until the
+ * webapi_platform units hit it". This is that mistake a second time, in a
+ * sibling file, caught by the build rather than by remembering.
+ *
+ * On the host there is no kernel clock, and the choice of what activation
+ * means there is not a formality. Granting it unconditionally would make the
+ * host gate unable to watch the refusal -- rule 5. So the host build keeps
+ * the same STATE MACHINE and drops only the expiry: a dispatched activation
+ * event grants, and nothing else does. What the host cannot test is that the
+ * grant times out; what it can test, and what the interesting half is, is
+ * that a page which never saw a click is refused. */
+#ifndef WEBAPI_HOST
+#include "logit.h"    /* monotonic_ms -- the transient-activation window below */
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -349,6 +365,10 @@ static JSValue wrap(JSContext *ctx, struct node *n)
     }
     return o;
 }
+
+/* The one export of wrap(). See js_dom.h for why it exists and what having no
+ * way to say "this node" cost document.currentScript. */
+JSValue js_dom_node_value(JSContext *ctx, struct node *n) { return wrap(ctx, n); }
 
 /* ---- a growable byte buffer: textContent has no business being capped ---- */
 struct sbuf { char *p; size_t len, cap; };
@@ -3400,6 +3420,50 @@ static int dispatch_event(JSContext *ctx, struct node *target, JSValueConst evob
     return !ev->prevented;
 }
 
+/* ---- transient activation ------------------------------------------------
+ * "Did the user just do something?", as one timestamp, because exactly one
+ * capability asks: navigator.clipboard.writeText, which writes the machine's
+ * clipboard for every process on it.
+ *
+ * WHY A WINDOW AND NOT A ONE-SHOT FLAG. The spec's transient activation is a
+ * duration for a reason a flag cannot express: a copy button that awaits
+ * anything at all -- a fetch, a canvas encode, a microtask chain -- runs its
+ * writeText after its handler has returned, and a flag cleared at the end of
+ * dispatch would refuse the single most common legitimate use of this API
+ * while allowing nothing extra. The spec's own figure is five seconds; this
+ * uses the same one rather than inventing a second number, and the two known
+ * ways to get this wrong are both about the wrong end: too short refuses real
+ * copy buttons, too long (or never expiring) is no gate at all.
+ *
+ * NOT CONSUMED ON USE. The spec distinguishes transient activation from
+ * "consume user activation"; clipboard-write is the former, so two copy
+ * buttons clicked in quick succession both work. Consuming here would produce
+ * a failure nobody could reproduce deliberately.
+ *
+ * THE HONEST LIMIT, stated because the next reader will assume otherwise:
+ * this is per-DOCUMENT-LOAD state in a single-window browser, not per-frame
+ * and not per-origin. When there are real iframes with their own scripts, a
+ * click anywhere grants activation everywhere, which is weaker than a real
+ * browser. It is written down here rather than discovered later. */
+static unsigned long long g_last_activation_ms;
+
+#ifndef WEBAPI_HOST
+void js_dom_note_activation(void) { g_last_activation_ms = monotonic_ms(); }
+
+int js_dom_has_activation(void)
+{
+    if (!g_last_activation_ms) return 0;
+    return (monotonic_ms() - g_last_activation_ms) <= 5000ULL;
+}
+#else
+/* Host: same state machine, no clock -- see the include split at the top. A
+ * grant never expires here, so the host gate can watch the REFUSAL (a page
+ * that never saw a click) but not the timeout. The device gate covers the
+ * other half. */
+void js_dom_note_activation(void) { g_last_activation_ms = 1; }
+int  js_dom_has_activation(void) { return g_last_activation_ms != 0; }
+#endif
+
 int js_dom_dispatch(struct node *target, const char *type,
                     const struct js_event_init *init)
 {
@@ -3415,6 +3479,28 @@ int js_dom_dispatch(struct node *target, const char *type,
     if (!ev) return 1;
     ev->type = dupstr(type);
     ev->trusted = 1;
+    /* TRANSIENT ACTIVATION. Everything that reaches this function came from
+     * the embedder -- a real key, a real button, a real scroll -- which is
+     * exactly why `trusted` is unconditionally 1 here and 0 in the
+     * dispatchEvent() path forty lines down. That makes this the one honest
+     * place to record that the user did something, and the reason to record
+     * it at all is that a capability now depends on it: navigator.clipboard's
+     * writeText writes the MACHINE-WIDE clipboard through SYS_CLIP_SET, and
+     * without a gate any page could overwrite whatever the user had copied
+     * from another application, at any time, from a timer, while the browser
+     * sat in the background. That was shipped and caught by review, not by a
+     * gate.
+     *
+     * Only the ACTIVATION event types count. A page scrolling or a mouse
+     * moving across the window is not the user asking for anything, and
+     * counting them would make the gate permanently open on any page with a
+     * scroll animation -- which is a gate that cannot be watched failing.
+     * The list is the HTML spec's activation triggering input events, minus
+     * the ones this machine has no source for (touch, pointer). */
+    if (!strcmp(type, "click") || !strcmp(type, "mousedown") ||
+        !strcmp(type, "mouseup") || !strcmp(type, "keydown") ||
+        !strcmp(type, "keyup") || !strcmp(type, "dblclick"))
+        js_dom_note_activation();
     JSValueConst proto = g_proto_event;
     if (init) {
         ev->bubbles    = (unsigned char)!!init->bubbles;

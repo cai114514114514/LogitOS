@@ -18,6 +18,22 @@ void  kfree(void *);
 void *memcpy(void *, const void *, unsigned long);
 void *memset(void *, int, unsigned long);
 
+/* dom_stat -- see the long comment in dom.h. Plain globals, no call out, so
+ * nothing that links this file gains a dependency. One increment each on paths
+ * that already intern a string or walk an attribute array. */
+unsigned long long dom_stat[DOM_ST_COUNT];
+void dom_stat_reset(void)
+{ for (int i = 0; i < DOM_ST_COUNT; i++) dom_stat[i] = 0; }
+const char *dom_stat_name(int i)
+{
+    static const char *nm[DOM_ST_COUNT] = {
+        "attr_get", "attr_set", "create", "mutate",
+        "destroy", "byid", "flatwalk", "wrap"
+    };
+    return (i >= 0 && i < DOM_ST_COUNT) ? nm[i] : "?";
+}
+#define DST(k) (dom_stat[k]++)
+
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -503,6 +519,7 @@ static void unlink_from_parent(struct node *c)
 
 void dom_destroy_subtree(struct node *n)
 {
+    DST(DOM_ST_DESTROY);
     if (!n || !n->doc || n == n->doc->root) return;
     unlink_from_parent(n);
     recycle_tree(n->doc, n);
@@ -510,6 +527,7 @@ void dom_destroy_subtree(struct node *n)
 
 void dom_destroy_children(struct node *n)
 {
+    DST(DOM_ST_DESTROY);
     if (!n || !n->doc) return;
     struct node *c = n->first_child;
     n->first_child = n->last_child = 0;
@@ -534,6 +552,7 @@ void dom_free(struct node *n)
 /* ------------------------------------------------------------------ */
 void dom_append_child(struct node *p, struct node *c)
 {
+    DST(DOM_ST_MUTATE);
     if (!p || !c || p == c || c == c->doc->root) return;
     if (c->parent) unlink_from_parent(c);        /* DOM move semantics */
     c->parent = p;
@@ -546,12 +565,14 @@ void dom_append_child(struct node *p, struct node *c)
 
 void dom_remove_child(struct node *p, struct node *c)
 {
+    DST(DOM_ST_MUTATE);
     if (!p || !c || c->parent != p) return;
     unlink_from_parent(c);                       /* O(1): the node knows its prev */
 }
 
 void dom_insert_before(struct node *p, struct node *c, struct node *ref)
 {
+    DST(DOM_ST_MUTATE);
     if (!p || !c || p == c || c == c->doc->root) return;
     if (!ref || ref->parent != p) { dom_append_child(p, c); return; }
     if (ref == c) return;
@@ -613,6 +634,7 @@ static struct node *elem_new(struct dom_doc *d, const char *lname, size_t len)
 
 struct node *dom_create_element(struct dom_doc *d, const char *name, int len)
 {
+    DST(DOM_ST_CREATE);
     if (!d || !name) return 0;
     size_t l = (len < 0) ? zlen(name) : (size_t)len;
     if (!l) return 0;
@@ -627,6 +649,7 @@ struct node *dom_create_element(struct dom_doc *d, const char *name, int len)
  * dom_create_element, so a foreign element is not a second kind of node. */
 struct node *dom_create_element_ns(struct dom_doc *d, const char *name, int len, int ns)
 {
+    DST(DOM_ST_CREATE);
     if (!d || !name) return 0;
     size_t l = (len < 0) ? zlen(name) : (size_t)len;
     if (!l) return 0;
@@ -662,6 +685,7 @@ static struct node *clone_elem_into(struct dom_doc *d, const struct node *src)
 
 struct node *dom_clone_element(const struct node *src)
 {
+    DST(DOM_ST_CREATE);
     if (!src || src->type != N_ELEM || !src->doc) return 0;
     return clone_elem_into(src->doc, src);
 }
@@ -722,6 +746,7 @@ static void import_shadow_if_clonable(struct dom_doc *d, struct node *dst_host,
 
 struct node *dom_import_node(struct dom_doc *d, const struct node *src)
 {
+    DST(DOM_ST_CREATE);
     if (!d || !src) return 0;
     struct node *root = import_one(d, src);
     if (!root) return 0;
@@ -756,6 +781,7 @@ void dom_set_raw(struct node *n, const char *src, int len)
 
 struct node *dom_create_text(struct dom_doc *d, const char *text, int len)
 {
+    DST(DOM_ST_CREATE);
     if (!d) return 0;
     size_t l = (len < 0) ? zlen(text ? text : "") : (size_t)len;
     struct node *n = node_alloc(d);
@@ -771,6 +797,7 @@ struct node *dom_create_text(struct dom_doc *d, const char *text, int len)
 
 int dom_text_append(struct node *n, const char *s, int len)
 {
+    DST(DOM_ST_MUTATE);
     if (!n || !n->doc || !s || len <= 0) return 0;
     if (n->type != N_TEXT && n->type != N_COMMENT) return 0;
     struct dom_doc *d = n->doc;
@@ -795,6 +822,7 @@ int dom_text_append(struct node *n, const char *s, int len)
 
 struct node *dom_create_comment(struct dom_doc *d, const char *data, int len)
 {
+    DST(DOM_ST_CREATE);
     if (!d) return 0;
     size_t l = (len < 0) ? zlen(data ? data : "") : (size_t)len;
     struct node *n = node_alloc(d);
@@ -941,6 +969,7 @@ static int attr_set(struct dom_doc *d, struct node *n,
 
 int dom_set_attr(struct node *n, const char *name, const char *val)
 {
+    DST(DOM_ST_ATTR_SET);
     if (!n || !name || n->type != N_ELEM) return 0;
     struct dom_doc *d = n->doc;
     size_t nl = zlen(name);
@@ -954,6 +983,7 @@ int dom_set_attr(struct node *n, const char *name, const char *val)
 int dom_set_attr_raw(struct node *n, const char *name, int nlen,
                      const char *val, int vlen)
 {
+    DST(DOM_ST_ATTR_SET);
     if (!n || !name || n->type != N_ELEM || nlen <= 0) return 0;
     return attr_set(n->doc, n, name, (size_t)nlen,
                     val ? val : "", (vlen > 0) ? (size_t)vlen : 0);
@@ -961,6 +991,7 @@ int dom_set_attr_raw(struct node *n, const char *name, int nlen,
 
 const char *dom_attr_lw(const struct node *n, lwc_string *name)
 {
+    DST(DOM_ST_ATTR_GET);
     if (!n || n->type != N_ELEM || !name) return 0;
     for (int i = 0; i < n->nattr; i++)
         if (n->attrs[i].name == name) return n->attrs[i].value;
@@ -999,7 +1030,11 @@ const char *dom_attr(const struct node *n, const char *name)
         if (at) return dom_attr_lw(n, at);      /* the hot path: pointer compares */
     }
     /* Cold path: an attribute name nobody asks for often. Compare bytes rather
-     * than interning a transient string into the process-global table. */
+     * than interning a transient string into the process-global table.
+     * Counted HERE and not at the top of the function, because the hot path
+     * above returns through dom_attr_lw() which counts itself -- a bump at the
+     * top would double-count exactly the crossings that matter most. */
+    DST(DOM_ST_ATTR_GET);
     for (int i = 0; i < n->nattr; i++) {
         lwc_string *an = n->attrs[i].name;
         if (lwc_string_length(an) != len) continue;
@@ -1061,18 +1096,21 @@ struct node *dom_attach_shadow(struct node *host, int mode, unsigned flags)
 
 struct node *dom_flat_first_child(const struct node *n)
 {
+    DST(DOM_ST_FLATWALK);
     if (!n) return 0;
     if (n->type == N_ELEM && n->shadow) return n->shadow->first_child;
     return n->first_child;
 }
 
-struct node *dom_flat_next_sibling(const struct node *n) { return n ? n->next : 0; }
+struct node *dom_flat_next_sibling(const struct node *n)
+{ DST(DOM_ST_FLATWALK); return n ? n->next : 0; }
 
 /* ------------------------------------------------------------------ */
 /* id lookup + JS wrapper slots                                        */
 /* ------------------------------------------------------------------ */
 struct node *dom_get_element_by_id(struct dom_doc *d, const char *id)
 {
+    DST(DOM_ST_BYID);
     if (!d || !d->idb || !id || !*id) return 0;
     /* getElementById is case-SENSITIVE per the DOM spec, so this is an exact
      * interned-pointer match; a value nothing in the document uses will not be
@@ -1094,6 +1132,7 @@ struct node *dom_get_element_by_id(struct dom_doc *d, const char *id)
 
 void dom_set_wrapper(struct node *n, void *jsobj)
 {
+    DST(DOM_ST_WRAP);
     if (!n || !n->doc) return;
     n->jsw = jsobj;
     if (jsobj && !(n->flags & NF_WRAPLISTED)) {

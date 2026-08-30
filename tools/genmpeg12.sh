@@ -42,7 +42,7 @@ case_gen() {
         ffmpeg -v error -threads 1 -idct simple -i "$OUT/$name.m2v" \
                -f rawvideo -pix_fmt yuv420p "$OUT/$name.ref.yuv" -y
     fi
-    echo "  $name: $(stat -c%s "$OUT/$name.m2v") bytes"
+    echo "  $name: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name.m2v") bytes"
 }
 
 M2="-c:v mpeg2video -pix_fmt yuv420p"

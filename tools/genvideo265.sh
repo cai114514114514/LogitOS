@@ -52,7 +52,7 @@ case_gen() {
         -x265-params "$params" -f hevc "$OUT/$name.h265" -y
     ffmpeg -v error -i "$OUT/$name.h265" -f rawvideo -pix_fmt yuv420p \
         "$OUT/$name.ref.yuv" -y
-    echo "  $name: $(stat -c%s "$OUT/$name.h265") bytes"
+    echo "  $name: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name.h265") bytes"
 }
 
 # The same, at 10 bits per sample. Separate function rather than a pix_fmt
@@ -66,7 +66,7 @@ case_gen10() {
         -x265-params "$params" -f hevc "$OUT/$name.h265" -y
     ffmpeg -v error -i "$OUT/$name.h265" -f rawvideo -pix_fmt yuv420p10le \
         "$OUT/$name.ref.yuv" -y
-    echo "  $name: $(stat -c%s "$OUT/$name.h265") bytes (10-bit)"
+    echo "  $name: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name.h265") bytes (10-bit)"
 }
 
 TS="testsrc2=rate=30"

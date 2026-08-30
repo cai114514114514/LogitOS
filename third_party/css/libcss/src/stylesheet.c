@@ -1316,6 +1316,17 @@ css_error css__stylesheet_rule_add_selector(css_stylesheet *sheet,
  * \param style	 The style to add
  * \return CSS_OK on success, appropriate error otherwise
  */
+/* LogitOS MEASUREMENT HOOK -- NULL in every shipping build. See the twin in
+ * select/select.c.
+ *
+ * "Ranked by declarations carried, not by rule count" needs a declaration
+ * count PER RULE, and this function is the only place in the library that
+ * sees both at once: parseProperty() calls it once per ACCEPTED declaration,
+ * with the owning rule. Counting from the bytecode instead would mean
+ * re-deriving each opcode's operand size outside prop_dispatch -- a second
+ * door on the one jar in this library that is hardest to keep shut. */
+void (*css__stylesheet_rule_decl_report)(const css_rule *rule) = NULL;
+
 css_error css__stylesheet_rule_append_style(css_stylesheet *sheet,
 		css_rule *rule, css_style *style)
 {
@@ -1324,6 +1335,9 @@ css_error css__stylesheet_rule_append_style(css_stylesheet *sheet,
 
 	if (sheet == NULL || rule == NULL || style == NULL)
 		return CSS_BADPARM;
+
+	if (css__stylesheet_rule_decl_report != NULL)
+		css__stylesheet_rule_decl_report(rule);
 
 	assert(rule->type == CSS_RULE_SELECTOR || rule->type == CSS_RULE_PAGE);
 

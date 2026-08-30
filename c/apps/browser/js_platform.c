@@ -13,6 +13,19 @@
  * script cannot produce any. */
 #include "quickjs.h"
 #include "js_platform.h"
+#include "js_dom.h"        /* js_dom_has_activation -- the writeText activation gate below */
+/* js_frame.c: the same-origin second browsing context an <iframe> below hands
+ * its settled document to. OPTIONAL on purpose -- six host source lists name
+ * js_platform.c and do not name js_frame.c (tests/domsub.mk, domiface.mk,
+ * selectors.mk, webapi_platform.mk's PLATFORM_MOD, wpt.mk, iframe.mk), and a
+ * hard reference here would break every one of them at link, which is exactly
+ * the "hand-copied source lists" failure CLAUDE.md names. Same spelling
+ * js_page.c uses for js_worker.h, including the weaksym.h Mach-O half. */
+#define JS_FRAME_OPTIONAL
+#include "js_frame.h"
+#include "logit_abi.h"     /* CLIP_F_TEXT / CLIP_E_* -- needed in BOTH builds,
+                             * see the clipboard section below for why the host
+                             * stub still needs the real error codes. */
 #include <string.h>
 #include <stdlib.h>
 
@@ -52,6 +65,12 @@ void js_platform_set_viewport(int w, int h) { if (w > 0) g_vw = w; if (h > 0) g_
  * already owns, reported honestly as __randomStrong()=0. */
 static int getrandom_bytes(void *buf, unsigned long n) { (void)buf; (void)n; return -1; }
 static int getrandom_strong(void) { return 0; }   /* unreachable: bytes always fails */
+/* No kernel clipboard on the host either -- every host clipboard gate builds
+ * its OWN clip_set/clip_get stub already (see webapi_probe.c); this one only
+ * has to exist so js_platform.c links, and it always refuses so no host test
+ * can mistake it for the real store. */
+static int clip_set(int flavour, const void *buf, int len)
+{ (void)flavour; (void)buf; (void)len; return CLIP_E_ARG; }
 #endif
 static unsigned long long g_s0, g_s1;
 static int g_seeded;
@@ -135,6 +154,59 @@ static JSValue js_random_strong(JSContext *ctx, JSValueConst t, int argc, JSValu
     return JS_NewInt32(ctx, getrandom_strong() ? 2 : 1);
 }
 
+/* ---- clipboard: writeText only -------------------------------------------
+ *
+ * MEASURED (188 bundles, 22 saved pages): 6 real writeText call sites in 5
+ * bundles (baidu, kimi x2, nodejs, deepseek), ZERO readText/read() sites.
+ * navigator.clipboard.readText and .write([ClipboardItem]) are therefore NOT
+ * built -- readText because nothing asks for it and it is the one place a
+ * page could read what the user copied out of a DIFFERENT application, and
+ * write()/ClipboardItem because its one measured caller (kimi/s005.js)
+ * already falls back to writeText in a catch. See the JS prelude below for
+ * both refusals and why readText REJECTS rather than resolving "".
+ *
+ * __clipWriteText(s) -> the bytes stored, or a negative CLIP_E_* (see
+ * include/abi/logit_abi.h). JS_ToCStringLen hands back the string's UTF-8
+ * bytes directly -- clipboard.c validates them again on the way in, so a
+ * lone surrogate the engine could not represent as UTF-8 is caught by the
+ * SAME validator the keyboard shortcut and the address bar already go
+ * through (clip_set_common, one call site for all three). There is
+ * deliberately no second validator here: one jar, one door, this time by
+ * construction rather than by discipline. */
+static JSValue js_clip_write_text(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    /* THE GATE, AND IT IS IN C RATHER THAN IN THE PRELUDE ON PURPOSE. The
+     * prelude below is ordinary JavaScript on the page's own global: a page
+     * can replace navigator.clipboard, or reach the bound function through
+     * any reference it kept, and be talking to this binding directly. A check
+     * written up there guards the door and leaves the wall open. This is the
+     * only place the syscall can be reached from, so this is where the
+     * question has to be asked.
+     *
+     * WHAT IT PREVENTS, measured rather than imagined: without it any page
+     * could call writeText from a timer and overwrite the clipboard EVERY
+     * PROCESS ON THIS MACHINE reads -- whatever the user had copied out of
+     * Terminal or TextEdit, replaced silently, with the browser in the
+     * background. That shipped, and an adversarial review of the diff caught
+     * it; no gate did, because none existed.
+     *
+     * CLIP_E_ARG rather than a new code: every measured call site treats a
+     * negative return as failure and the prelude collapses everything but
+     * CLIP_E_TOOBIG into one DOMException already. A page that is refused
+     * gets the same rejected promise it gets when the clipboard is full,
+     * which is a state its .catch() is already written for -- as opposed to a
+     * resolved promise over a write that did not happen, which is the lie
+     * this whole file's rule forbids. */
+    if (!js_dom_has_activation()) return JS_NewInt32(ctx, CLIP_E_ARG);
+    size_t len = 0;
+    const char *s = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : "";
+    if (!s) return JS_NewInt32(ctx, CLIP_E_ARG);
+    int r = clip_set(CLIP_F_TEXT, s, (int)len);
+    if (argc > 0) JS_FreeCString(ctx, s);
+    return JS_NewInt32(ctx, r);
+}
+
 /* ---- unhandled promise rejections --------------------------------------
  * QuickJS reports these through a runtime hook rather than as an event, so the
  * bridge has to be in C. A page that installs window.onunhandledrejection
@@ -161,7 +233,7 @@ static void rejection_tracker(JSContext *ctx, JSValueConst promise, JSValueConst
 
 /* ---- the prelude -------------------------------------------------------- */
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh, __randomStrong) {\n"
+"(function (__random, __vw, __vh, __randomStrong, __clipWriteText) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -257,16 +329,119 @@ static const char *PLATFORM_PRELUDE =
 "  var origin = Date.now() - perf.now();\n"
 "  def(perf, 'timeOrigin', origin);\n"
 "  var entries = [];\n"
+"  var PE = function PerformanceEntry() {};\n"
+"  if (!G.PerformanceEntry) def(G, 'PerformanceEntry', PE);\n"
 "  function ent(name, type, start, dur) {\n"
-"    return { name: String(name), entryType: type, startTime: start, duration: dur,\n"
-"             toJSON: function () { return { name: this.name, entryType: this.entryType,\n"
-"                                            startTime: this.startTime, duration: this.duration }; } };\n"
+"    var e = Object.create(PE.prototype);\n"
+"    e.name = String(name); e.entryType = type; e.startTime = start; e.duration = dur;\n"
+"    e.toJSON = function () { return { name: this.name, entryType: this.entryType,\n"
+"                                       startTime: this.startTime, duration: this.duration }; };\n"
+"    return e;\n"
 "  }\n"
+   /* ==== PerformanceObserver ==============================================
+    * MEASURED IN THE GUEST (rule 1 -- the host probe does not reach this):
+    * tests/scoreboard/full-corpus/bing.serial.txt records a REAL
+    * ReferenceError -- `PerformanceObserver` is not defined -- inside
+    * bing.com's own inline script, un-guarded by any typeof check:
+    *   `PerformanceObserver.supportedEntryTypes.indexOf("element")!==-1 &&
+    *    (t=new PerformanceObserver(...), t.observe({type:"element",...}))`
+    * The throw does not just skip that one line -- it takes the REST of the
+    * enclosing IIFE with it: `window.iotdLiteCleanup` (removes the
+    * image-of-the-day placeholder), a 2s fallback timer, and `c(2)` (the
+    * indexedDB fetch that actually loads the image). Recorded as one of
+    * bing's exactly 2 JS exceptions in the committed scoreboard baseline.
+    *
+    * SUPPORTED_TYPES IS THE ONLY LIST -- this is the ONE JAR, and
+    * supportedEntryTypes plus the observe() filter below both read it, so
+    * they cannot drift apart the way CLAUDE.md's cookie/ARG_MAX examples did.
+    * It holds exactly 'mark' and 'measure' because those are the only entry
+    * types this machine genuinely produces (the User Timing store two lines
+    * up is real, not a stub) -- NOT 'resource', 'element', 'longtask',
+    * 'paint', 'largest-contentful-paint' or 'navigation'. Every one of those
+    * six is reached for by a page in the corpus (apple: resource,
+    * bing-search/bing: element, jd/doubao's Slardar SDK + kimi's web-vitals:
+    * longtask) and every one of those reaches has an honest false branch that
+    * already does the right thing without ever constructing an observer --
+    * listing the type here would silently break that branch by promising
+    * entries that will never arrive. jd/doubao's SDK guards on the SEPARATE
+    * global `PerformanceLongTaskTiming`, which this file does not define, so
+    * their observer stays correctly unconstructed; deliberately NOT closing
+    * that second door is what keeps them off. */
+"  var SUPPORTED_TYPES = ['mark', 'measure'];\n"
+"  var observers = [];\n"
+"  var flushScheduled = false;\n"
+"  function poelFor(list) {\n"
+"    return { getEntries: function () { return list.slice(); },\n"
+"             getEntriesByType: function (t) { return list.filter(function (x) { return x.entryType === t; }); },\n"
+"             getEntriesByName: function (n, t) { return list.filter(function (x) { return x.name === n && (!t || x.entryType === t); }); } };\n"
+"  }\n"
+"  function scheduleFlush() {\n"
+"    if (flushScheduled) return;\n"
+"    flushScheduled = true;\n"
+"    Promise.resolve().then(flushObservers);\n"
+"  }\n"
+   /* One flush per microtask tick, over EVERY observer with something pending,
+    * so several marks/measures made in one script turn deliver as ONE
+    * callback with all of them -- not one callback per entry, which is not
+    * what the spec does and not what a page's own batching logic expects. */
+"  function flushObservers() {\n"
+"    flushScheduled = false;\n"
+"    for (var i = 0; i < observers.length; i++) {\n"
+"      var o = observers[i];\n"
+"      if (!o._pending.length) continue;\n"
+"      var list = o._pending; o._pending = [];\n"
+"      try { o._cb(poelFor(list), o); } catch (e) { G.reportError(e); }\n"
+"    }\n"
+"  }\n"
+"  function notifyObservers(e) {\n"
+"    for (var i = 0; i < observers.length; i++) {\n"
+"      var o = observers[i];\n"
+"      if (o._types[e.entryType]) { o._pending.push(e); scheduleFlush(); }\n"
+"    }\n"
+"  }\n"
+"  function PerformanceObserver(cb) {\n"
+"    if (typeof cb !== 'function') throw new TypeError('PerformanceObserver requires a callback');\n"
+"    this._cb = cb; this._types = {}; this._pending = []; this._active = false;\n"
+"  }\n"
+"  Object.defineProperty(PerformanceObserver, 'supportedEntryTypes',\n"
+"    { value: Object.freeze(SUPPORTED_TYPES.slice()), enumerable: true });\n"
+   /* observe() naming an unsupported type is a SILENT NO-OP, never a throw --
+    * this is what bing's typeof-guarded 'resource'/'element' reaches and
+    * kimi's TTI path all depend on: they check supportedEntryTypes THEMSELVES
+    * before observing, and the ones that do not (bing's un-guarded 'element'
+    * call above) must not be handed a second exception in place of the first
+    * one this file exists to remove. */
+"  PerformanceObserver.prototype.observe = function (opts) {\n"
+"    opts = opts || {};\n"
+"    var types = opts.entryTypes ? opts.entryTypes.slice() : (opts.type ? [opts.type] : null);\n"
+"    if (!types) throw new TypeError(\"observe() requires 'type' or 'entryTypes'\");\n"
+"    for (var i = 0; i < types.length; i++) {\n"
+"      if (SUPPORTED_TYPES.indexOf(types[i]) < 0) continue;\n"
+"      this._types[types[i]] = true;\n"
+"    }\n"
+"    if (!this._active) { observers.push(this); this._active = true; }\n"
+"    if (opts.buffered) {\n"
+"      var self = this;\n"
+"      entries.forEach(function (e) { if (self._types[e.entryType]) self._pending.push(e); });\n"
+"      if (self._pending.length) scheduleFlush();\n"
+"    }\n"
+"  };\n"
+"  PerformanceObserver.prototype.disconnect = function () {\n"
+"    var i = observers.indexOf(this);\n"
+"    if (i >= 0) observers.splice(i, 1);\n"
+"    this._active = false; this._types = {}; this._pending = [];\n"
+"  };\n"
+"  PerformanceObserver.prototype.takeRecords = function () {\n"
+"    var r = this._pending; this._pending = []; return r;\n"
+"  };\n"
+#ifndef PLATFORM_NO_PERFORMANCE_OBSERVER
+"  if (!G.PerformanceObserver) def(G, 'PerformanceObserver', PerformanceObserver);\n"
+#endif
 "  def(perf, 'mark', function (name, opts) {\n"
 "    var t = (opts && typeof opts.startTime === 'number') ? opts.startTime : perf.now();\n"
 "    var e = ent(name, 'mark', t, 0);\n"
 "    if (opts && opts.detail !== undefined) e.detail = opts.detail;\n"
-"    entries.push(e); return e;\n"
+"    entries.push(e); notifyObservers(e); return e;\n"
 "  });\n"
    /* User Timing L2, "convert a name to a timestamp": a name that is not a
       user mark is looked up in the PerformanceTiming interface BEFORE it is
@@ -303,7 +478,7 @@ static const char *PLATFORM_PRELUDE =
 "    }\n"
 "    if (typeof b === 'string') { var m2 = markTime(b); if (m2 === null) throw new SyntaxError(\"mark '\" + b + \"' does not exist\"); e = m2; }\n"
 "    var r = ent(name, 'measure', s, e - s);\n"
-"    entries.push(r); return r;\n"
+"    entries.push(r); notifyObservers(r); return r;\n"
 "  });\n"
 "  def(perf, 'getEntries', function () { return entries.slice(); });\n"
 "  def(perf, 'getEntriesByName', function (n, t) {\n"
@@ -458,12 +633,100 @@ static const char *PLATFORM_PRELUDE =
 "    this.port1._peer = this.port2; this.port2._peer = this.port1;\n"
 "  };\n"
 "}\n"
-/* window.postMessage to ourselves. One window, so the only meaningful target is
-   this one; delivery is async and the event carries our own origin. */
-"def(G, 'postMessage', function (data, origin) {\n"
+/* window.postMessage to ourselves. One window, so the only meaningful TARGET
+ * is this one -- there is no second browsing context a message could reach
+ * (js_dom.c's document/context statics are a hard singleton; see the comment
+ * over the <iframe> feature below, and js_dom.c:4364's unguarded
+ * JS_NewClassID for the measurement that makes a second live document unsafe
+ * to build today). That is the one thing this function still cannot do.
+ *
+ * What it got WRONG even for a single window, fixed here: it accepted any
+ * second argument and ignored it, and it delivered `data` BY REFERENCE. Both
+ * are the same bug from two directions -- a page that relies on
+ * postMessage's origin check (`event.origin === expectedOrigin`) to decide
+ * whether to trust a message was, on this engine, never actually gated by
+ * anything, and a page that mutates the object it just posted (a very common
+ * pattern -- fire-and-forget, then reuse the buffer) would see that mutation
+ * on the "received" side too, because there was only ever one object.
+ *
+ * TARGETORIGIN IS CHECKED FOR REAL, even with one window: 'the right target
+ * window' collapses to G, but 'does the caller's asserted origin match', the
+ * other half of the contract, does not collapse to a no-op just because
+ * there is nowhere else to check it against -- skipping it would be the
+ * exact silent-wrong-answer shape this whole file argues against elsewhere.
+ * A mismatched, syntactically valid targetOrigin means the message is
+ * silently NOT delivered (spec-correct: this is not a throw), watched by
+ * test-platform's negative case rather than merely asserted.
+ *
+ * THE CLONE IS REAL AND SYNCHRONOUS. `G.structuredClone` (below in this same
+ * file) is reused rather than a second clone implementation -- it is already
+ * the one cycle-safe, Map/Set/TypedArray-aware clone this runtime has, and it
+ * already throws DataCloneError exactly where the spec wants (functions,
+ * symbols). The clone runs at CALL time, synchronously, so a clone failure
+ * throws out of the postMessage() call itself -- not out of the deferred
+ * task, where nothing could ever catch it and a page would see an
+ * unhandledrejection-shaped mystery instead of the exception it threw.
+ *
+ * THERE ARE TWO OVERLOADS AND THIS FUNCTION KNEW ONLY ONE, WHICH IS WHY IT
+ * THREW ON A CORRECT CALL. MEASURED IN THE GUEST, 2026-08-30, on
+ * google.com/search?q=python -- the only JS exception on the page:
+ *
+ *   [browser] JS exception: SyntaxError: Failed to execute 'postMessage':
+ *             Invalid target origin '[object Object]' in a call to 'postMessage'.
+ *
+ * `[object Object]` is `String({...})`. The caller had passed the MODERN form.
+ * The IDL is two overloads, not one:
+ *
+ *   undefined postMessage(any message, USVString targetOrigin,
+ *                         optional sequence<object> transfer = []);
+ *   undefined postMessage(any message,
+ *                         optional WindowPostMessageOptions options = {});
+ *
+ * so `postMessage(m)`, `postMessage(m, null)` and `postMessage(m, {targetOrigin:
+ * '*'})` are all valid and all worked nowhere here: the first two died on the
+ * "2 arguments required" TypeError this commit deletes, the third on the
+ * SyntaxError above. Web IDL's overload resolution on argument 1 is the rule
+ * implemented below and it is three lines: null/undefined -> dictionary, any
+ * other object (including a function) -> dictionary, anything else -> USVString.
+ * The dictionary's `targetOrigin` DEFAULTS TO '/' (same origin), which is why
+ * the one-argument form delivers rather than throwing.
+ *
+ * AND THIS IS THE CLASS, NOT THE INSTANCE. `typeof window.postMessage ===
+ * 'function'` answered true the whole time; a page feature-tests presence, gets
+ * a truthy function, calls it the way every current browser accepts, and gets
+ * an exception. Absence would have been survivable -- the page takes its
+ * fallback. Present with a contract narrower than the one it advertises is not.
+ * tests/fixtures/jstype/postmessage.html is the gate, host and guest.
+ *
+ * WHAT IS STILL NOT HERE, NAMED RATHER THAN FAKED: `transfer`. There is one
+ * browsing context, so there is nowhere to transfer TO, and this runtime has no
+ * detachable objects; the message is CLONED in every form. A page that posts
+ * `{transfer: [buf]}` and then expects `buf.byteLength === 0` sees a length it
+ * would not see in a browser. That is a behaviour difference and it is written
+ * down here rather than papered over -- accepting the option and silently not
+ * transferring is the lesser of the two wrongs only because the alternative
+ * (throwing) breaks the call outright, which is the bug this comment opens on. */
+"def(G, 'postMessage', function (data, targetOrigin) {\n"
 "  var org = (G.location && G.location.origin) || '';\n"
+"  if (arguments.length < 1) throw new TypeError(\"Failed to execute 'postMessage': 1 argument required, but only 0 present.\");\n"
+"  var to;\n"
+"  if (targetOrigin === null || targetOrigin === undefined) {\n"
+"    to = '/';\n"
+"  } else if (typeof targetOrigin === 'object' || typeof targetOrigin === 'function') {\n"
+"    var _t = targetOrigin.targetOrigin;\n"
+"    to = (_t === undefined) ? '/' : String(_t);\n"
+"  } else {\n"
+"    to = String(targetOrigin);\n"
+"  }\n"
+"  if (to !== '*' && to !== '/') {\n"
+"    var validOrigin = false;\n"
+"    try { validOrigin = (new G.URL(to)).origin === to; } catch (e) { validOrigin = false; }\n"
+"    if (!validOrigin) throw new G.DOMException(\"Failed to execute 'postMessage': Invalid target origin '\" + to + \"' in a call to 'postMessage'.\", 'SyntaxError');\n"
+"  }\n"
+"  var cloned = G.structuredClone(data);\n"
+"  if (to !== '*' && to !== '/' && to !== org) return;\n"
 "  setTimeout(function () {\n"
-"    var ev = new G.MessageEvent('message', { data: data, origin: org, source: G });\n"
+"    var ev = new G.MessageEvent('message', { data: cloned, origin: org, source: G });\n"
 "    if (typeof G.onmessage === 'function') { try { G.onmessage(ev); } catch (e) { G.reportError(e); } }\n"
 "    try { if (G.dispatchEvent) G.dispatchEvent(ev); } catch (e) {}\n"
 "  }, 0);\n"
@@ -636,6 +899,84 @@ static const char *PLATFORM_PRELUDE =
 "  def(nav, 'mimeTypes', emptyColl());\n"
 "  def(nav, 'plugins', emptyColl());\n"
 "})();\n"
+
+/* ==== navigator.clipboard ================================================
+ * MEASURED (188 bundles + 22 saved pages, tests/scoreboard/full-corpus): 6
+ * real writeText call sites in 5 bundles -- baidu (also jsperf/baidu-async-
+ * search.js), kimi s005 + s047 (Lexical), nodejs s017, deepseek s010. Every
+ * one is a feature test with a document.execCommand('copy') fallback, but
+ * that fallback is ALSO absent on this browser (js_forms.c's EDIT_CMDS never
+ * registers 'copy'), so before this the measured behaviour split three ways:
+ * baidu shows the user a literal "复制失败，请重试" error, nodejs/kimi leave
+ * a Copy button that never flips to Copied, and kimi's Lexical site (whose
+ * call is NOT inside a try) throws an uncaught TypeError because the
+ * property access on undefined `navigator.clipboard` fails synchronously,
+ * before .catch ever attaches.
+ *
+ * writeText -> the real store. SYS_CLIP_SET is already live in ring 3
+ * (browser.c's own Ctrl+C/Ctrl+V on the address bar, psel_copy() on page
+ * text) and /bin/clip is a second process that already reads it back, so
+ * this is a fourth caller of a path with three working ones, not a new
+ * capability.
+ *
+ * readText / read() are PRESENT AND REJECT, always, with a real
+ * DOMException. Zero pages in the corpus call either, so refusing costs no
+ * measured path, and rejecting is what a real browser does without a
+ * permission grant -- every measured .catch() already handles it. This
+ * MUST NOT resolve '' or []: a page that gets '' believes the clipboard is
+ * genuinely empty (this item's own precedent, tests/fixtures/jsperf/baidu-
+ * async-search.js's `getContext === i ? !1 : ...`, is exactly a plausible
+ * wrong value walking a page further than absence would). THIS BROWSER
+ * NEVER LETS A PAGE READ WHAT THE USER COPIED FROM ANOTHER APPLICATION --
+ * there is no gesture or prompt that turns it on, because there is no UI on
+ * this machine to ask the question with, and a permission prompt nobody can
+ * answer is a control that cannot be watched failing (CLAUDE.md rule 5).
+ *
+ * write([ClipboardItem]) is left ABSENT, not stubbed. Its one measured
+ * caller (kimi/s005.js's copyTextAndHtmlToClipboard) already catches and
+ * falls back to writeText -- the working path -- and building it would mean
+ * inventing a CLIP_F_HTML producer for a flavour the ABI declares and
+ * nothing on this machine fills (logit_abi.h: "only CLIP_F_TEXT has a
+ * producer today"), i.e. a brand-new category-(b) subsystem to serve a
+ * call site that is already served. */
+/* JS_CLIPBOARD_NO_INSTALL: the negative control, same shape as
+ * JS_IFRAME_NO_INSTALL above -- compiling the installer out entirely (rather
+ * than an in-page runtime flag) is what proves qmp_clipboard_js.py measures
+ * THIS feature and not some other reason a page's writeText call happened to
+ * resolve. See tests/clip.mk's test-clip-js-negctl. */
+#ifndef JS_CLIPBOARD_NO_INSTALL
+"(function () {\n"
+"  var nav = G.navigator;\n"
+"  if (!nav) return;\n"
+"  var deny = function () {\n"
+"    return Promise.reject(new G.DOMException(\n"
+"      'Reading the clipboard is not permitted on this browser.', 'NotAllowedError'));\n"
+"  };\n"
+"  def(nav, 'clipboard', {\n"
+"    writeText: function (text) {\n"
+"      var s;\n"
+"      try { s = String(text); }\n"
+"      catch (e) { return Promise.reject(e); }\n"
+"      return new Promise(function (resolve, reject) {\n"
+"        var r = __clipWriteText(s);\n"
+"        if (r >= 0) { resolve(); return; }\n"
+          /* CLIP_E_TOOBIG (-2) is the one refusal a page's own error message
+           * can be specific about without inventing anything: the store said
+           * no, not "something went wrong". Every other code (-1 bad arg,
+           * -3 no kernel memory, -5 not valid UTF-8) collapses to the same
+           * NotAllowedError every measured .catch() already treats as
+           * failure. */
+"        var msg = (r === -2)\n"
+"          ? 'The text is too large for the clipboard.'\n"
+"          : 'Writing to the clipboard failed.';\n"
+"        reject(new G.DOMException(msg, 'NotAllowedError'));\n"
+"      });\n"
+"    },\n"
+"    readText: deny,\n"
+"    read: deny\n"
+"  });\n"
+"})();\n"
+#endif
 
 /* ==== crypto =============================================================
  * REQUESTED, NOT MEASURED: no page in the corpus reached crypto.getRandomValues
@@ -2206,24 +2547,32 @@ static const char *PLATFORM_PRELUDE =
 "    return node;\n"
 "  });\n"
 "}\n"
-/* document.currentScript. js_page.c knows WHICH script is running and cannot
- * hand out a node (js_dom.c's wrapper is static to that file), so it publishes
- * the index and document.scripts -- which js_select.c builds in document order
- * -- turns it back into the element. Null outside a classic script's own
- * synchronous execution, which is what the spec says and what js_page.c
- * enforces by clearing the index before the microtask drain. */
+/* document.currentScript. js_page.c is handed the <script> NODE by whoever is
+ * running it and hands that same node straight back out through
+ * js_dom_node_value -- so this is a one-line forward, with no lookup and
+ * nothing that can go stale.
+ *
+ * IT USED TO BE AN INDEX INTO document.scripts and this getter was the second
+ * half of that: js_page.c published __currentScriptIndex() and the element was
+ * recovered as document.scripts[i]. Two things were wrong with it and only the
+ * first was ever visible. The index was derived by matching the filename
+ * string the embedder passed, and for an inline classic script in the shipped
+ * browser it never matched, so this getter returned null for every inline
+ * script on every page (see js_page.c). And `document.currentScript.remove()`
+ * -- the commonest thing pages do with the property -- renumbers
+ * document.scripts underneath an index that is still standing on it, so even a
+ * correct index would name the wrong element on the next read.
+ *
+ * Null outside a classic script's own synchronous execution, which is what the
+ * spec says and what js_page.c enforces by clearing the node before the
+ * microtask drain. */
 "function installCurrentScript() {\n"
 "  if (!G.document || ('currentScript' in G.document)) return;\n"
-"  if (typeof G.__currentScriptIndex !== 'function') return;\n"
+"  if (typeof G.__currentScriptNode !== 'function') return;\n"
 "  try {\n"
 "    Object.defineProperty(G.document, 'currentScript', {\n"
 "      configurable: true,\n"
-"      get: function () {\n"
-"        var i = G.__currentScriptIndex();\n"
-"        if (i < 0) return null;\n"
-"        var s = G.document.scripts;\n"
-"        return (s && s[i]) ? s[i] : null;\n"
-"      }\n"
+"      get: function () { return G.__currentScriptNode() || null; }\n"
 "    });\n"
 "  } catch (e) {}\n"
 "}\n"
@@ -2285,10 +2634,25 @@ static const char *PLATFORM_PRELUDE =
  * path -- success, failure, refusal -- or it waits forever. Every branch below
  * ends in settle(), and settle() always schedules exactly one 'load'.
  *
- * WHAT THIS DELIBERATELY IS NOT: a second JSRuntime. There is exactly one
+ * WHAT THIS DELIBERATELY IS NOT: a second JSRuntime. ~~There is exactly one
  * JSContext for the whole page (js_page.h), so no script ever runs "as" a
- * frame -- a frame's document is DATA, not a second program. That is also why
- * contentDocument is built through `new DOMParser().parseFromString(...)`
+ * frame -- a frame's document is DATA, not a second program.~~ THE SECOND
+ * HALF OF THAT IS NO LONGER TRUE AND THE CORRECTION IS KEPT BESIDE IT,
+ * because it is the sentence someone will arrive holding. A frame's document
+ * now gets a second JSCONTEXT (js_frame.c, reached from settle() below), on
+ * the page's ONE runtime -- which is the opposite of js_worker.c's second
+ * RUNTIME and for the opposite reason: worker values must not cross, and
+ * same-origin frame values MUST (`frame.contentDocument.body` and the
+ * parent's handle to that node have to be the same object). A second context
+ * also delivers, by mechanism rather than simulation, the one property the
+ * measured specimen is actually reaching for -- fresh intrinsics the page has
+ * not monkey-patched, which is precisely what an about:blank detection frame
+ * is built to obtain. What a frame still does NOT get is a DOM of its own:
+ * `document` inside a frame script is a ReferenceError, stated, and the
+ * measured reason is in settle()'s own comment (js_dom.c:4364).
+ *
+ * The rest of this paragraph stands unchanged and is now load-bearing for a
+ * second reason: contentDocument is built through `new DOMParser().parseFromString(...)`
  * rather than through js_dom.c's own document: js_dom.c is hardwired to ONE
  * live document via file statics (g_root/g_document and everything the
  * mutation-invalidation record touches), and reaching into that for a second,
@@ -2297,12 +2661,23 @@ static const char *PLATFORM_PRELUDE =
  * representation with its own recycle-safe {node,serial} handles -- reusing
  * it here costs nothing new and, critically, cannot cross-contaminate
  * js_dom.c's dirty-scope tracking: a frame document has none to leak into,
- * because nothing here ever mutates the frame's own tree after it is parsed.
- * The honest cost: contentDocument has DOMParser's surface (getElementById,
- * querySelector(All), traversal, textContent) and not the full Document
- * interface, and nothing inside a frame document ever runs a <script> of its
- * own -- refused by construction, not refused by name, because this design
- * never gives a frame's markup to anything that would execute it.
+ * and that survives the frame document becoming MUTABLE (js_domparser.c grew
+ * createElement/createTextNode/appendChild/insertBefore/removeChild/
+ * setAttribute/innerHTML=/getElementsByTagName for js_frame.c) precisely
+ * because those mutations are dp_arena's, not js_dom.c's -- the two document
+ * representations share no statics at all, which is the property that made
+ * dp_cid the right thing to reuse and would not have held for any shortcut
+ * through js_dom.c.
+ * The honest cost, restated for what it is TODAY: contentDocument has
+ * DOMParser's surface (getElementById, querySelector(All), traversal,
+ * textContent, plus the mutation methods above) and not the full Document
+ * interface -- no live NodeLists, no events, no DocumentFragment, no
+ * innerHTML getter. ~~and nothing inside a frame document ever runs a
+ * <script> of its own -- refused by construction~~ -- that clause is retired:
+ * an inline <script> in a frame document now runs, in the frame's own
+ * JSContext, whether it arrived by insertion or was already in the parsed
+ * markup. A <script src=...> is still refused, BY NAME on the console rather
+ * than by construction (js_frame.c's cut list, item 6).
  *
  * SAME-ORIGIN IS THE GATE, NOT A COURTESY. A cross-origin src is refused
  * before any fetch is attempted (checked against the parsed URL's origin, not
@@ -2412,10 +2787,13 @@ static const char *PLATFORM_PRELUDE =
 "  try { IFP = Object.getPrototypeOf(D.createElement('iframe')); } catch (e) {}\n"
 "  if (!IFP || Object.prototype.hasOwnProperty.call(IFP, 'contentWindow')) return;\n"
    /* One record per element, an own non-enumerable expando -- lives exactly as
-      long as the element does, needs no separate side table and no C-side
-      lifetime hook (js_page_close tears the whole context down, which frees
-      it with everything else, same as every other JS-only piece of state in
-      this file). `gen` is the in-flight-load fence: startLoad bumps it before
+      long as the element does. ~~It needs no C-side lifetime hook.~~ That old
+      claim was refuted by WPT creating and removing more than eight sequential
+      iframes: the record itself keeps `doc` reachable, so DOMParser's finalizer
+      cannot free js_frame.c's JSContext and its fixed 8-slot table fills. The
+      release helpers below explicitly end that context at removal/navigation;
+      js_page_close remains the backstop. `gen` is the in-flight-load fence:
+      startLoad bumps it before
       it does anything async, and every continuation checks its own captured
       gen against the current one before touching anything -- a src changed or
       an element removed mid-fetch is a stale continuation that settles into
@@ -2435,6 +2813,19 @@ static const char *PLATFORM_PRELUDE =
 "  var connected = function (el) {\n"
 "    for (var n = el; n; n = n.parentNode) if (n === D) return true;\n"
 "    return false;\n"
+"  };\n"
+   /* One authoritative context-release door. It deliberately does not clear
+      r.win: committed navigation keeps WindowProxy identity while its
+      document changes. A DOM removal clears r.win separately because that
+      browsing context is destroyed; reinsertion creates a new one. The C
+      call is idempotent, so a later DOMParser finalizer is a harmless no-op. */
+"  var releaseDoc = function (r) {\n"
+"    if (!r || !r.doc) return;\n"
+"    var old = r.doc;\n"
+"    r.doc = null;\n"
+"    if (typeof G.__frameRelease === 'function') {\n"
+"      try { G.__frameRelease(old); } catch (e) {}\n"
+"    }\n"
 "  };\n"
 "  var fireLoad = function (el) {\n"
 "    setTimeout(function () { try { el.dispatchEvent(new G.Event('load')); } catch (e) {} }, 0);\n"
@@ -2472,7 +2863,48 @@ static const char *PLATFORM_PRELUDE =
       and left null. Whichever it is, exactly one load. */
 "  var settle = function (el, r, gen, doc, blocked) {\n"
 "    if (r.gen !== gen) return;\n"
+       /* A committed navigation replaces the browsing context. Keeping the
+          old context until page close was not a cache: after eight src/srcdoc
+          changes the ninth document had no JS realm. Release only at commit,
+          not at fetch start, so the old document remains active while an
+          asynchronous navigation is still in flight. */
+"    if (r.doc && r.doc !== doc) releaseDoc(r);\n"
 "    r.doc = doc; r.blocked = blocked || null;\n"
+       /* ==== the frame becomes a SCRIPT HOST here, and only here ==========
+          __frameAdopt (js_frame.c) gives this document a JSContext of its own
+          on the page's existing runtime, so a <script> inside it runs instead
+          of being data. Everything about WHICH documents may do that is
+          already decided ABOVE this line and is unchanged: the cross-origin
+          refusal and the sandbox refusal both `settle(el, r, gen, null,
+          'cross-origin'|'sandbox')` and so arrive here with doc === null AND
+          blocked set, failing this guard twice over. This call adds no origin
+          logic of its own -- deliberately, because it MUST NOT become a
+          second place where "may this run" is decided (one jar, two doors);
+          js_platform.c's existing gate stays the only door.
+
+          AND THE REFUSAL AT THAT GATE STAYS A REFUSAL, with a measurement
+          behind it now rather than a preference: a real cross-origin frame
+          would need a second DOM, and js_dom.c:4364 calls
+          `JS_NewClassID(&elem_cid)` UNGUARDED inside js_dom_init, so a second
+          js_dom_init does not leak the parent's g_root/g_ctx/g_document -- it
+          OVERWRITES them, and the parent page's own document.getElementById
+          would then search the untrusted child's tree. That failure runs in
+          the direction that makes it a vulnerability, not merely a bug, so
+          the boundary cannot be made real on today's DOM and the honest
+          answer is to keep refusing. Said plainly, because it is the thing
+          most likely to be misread as done: this closes the frame BOOTSTRAP
+          that a same-origin about:blank frame is, and NOT any cross-origin
+          embed -- no third-party widget, player, card field or OAuth frame
+          becomes reachable through this line.
+
+          Guarded by `typeof` rather than a C-side link edge on purpose: the
+          six host source lists that build js_platform.c without js_frame.c
+          (see the include) then take a JS branch that does not exist, which
+          is the same "absent dependency is inert" contract the weak symbol
+          gives the C half. */
+"      if (doc && !blocked && typeof G.__frameAdopt === 'function') {\n"
+"        try { G.__frameAdopt(doc); } catch (eAdopt) {}\n"
+"      }\n"
        /* ONE JAR, TWO DOORS, closed: contentDocument.defaultView must be the
           SAME object as contentWindow (probe B1 -- WPT's own idiom, e.g.
           `doc.defaultView.DOMException`), not a second window built lazily
@@ -2490,16 +2922,26 @@ static const char *PLATFORM_PRELUDE =
 "            } });\n"
 "        } catch (e5) {}\n"
 "      }\n"
-       /* Named refusals, not silent absence. Neither is a termination
-          concern -- a frame document is DATA, nothing here ever asks a
-          <script> to run or a nested <iframe> to navigate, so there is no
-          pending anything to leave dangling -- but a page whose frame is a
-          script host, or that nests frames, should be diagnosable instead of
-          mysteriously and permanently inert. */
+       /* Named refusals, not silent absence -- and the FIRST of the two is no
+          longer a refusal at all when js_frame.c is linked, which is why the
+          line is split rather than left standing. A console line that says a
+          script "will never run" while it is at that moment running is worse
+          than no line: it is an instrument that lies, and it would be read by
+          exactly the person trying to work out why their frame behaved
+          unexpectedly. So the message is decided by the same `typeof` the
+          adopt call above uses, not by belief about what is linked.
+          The nested-<iframe> half is unchanged and still a true refusal:
+          js_frame.c does not re-scan a frame document for nested browsing
+          contexts (its own cut list, item 3). Neither branch is a termination
+          concern -- settle() has already committed to firing exactly one
+          `load` below whichever way this goes. */
 "      if (doc && !blocked) {\n"
 "        try { if (doc.querySelector && doc.querySelector('script'))\n"
-"          console.log('[iframe] a <script> inside a frame document will never run: ' +\n"
-"                      'frame documents are parsed data (DOMParser-backed), not a second program'); } catch (e3) {}\n"
+"          console.log(typeof G.__frameAdopt === 'function'\n"
+"            ? '[iframe] a <script> inside this frame document runs in the frame\\'s OWN JSContext ' +\n"
+"              '(fresh intrinsics, no document/DOM of its own) -- see js_frame.c'\n"
+"            : '[iframe] a <script> inside a frame document will never run: ' +\n"
+"              'frame documents are parsed data (DOMParser-backed), not a second program'); } catch (e3) {}\n"
 "        try { if (doc.querySelector && doc.querySelector('iframe'))\n"
 "          console.log('[iframe] a nested <iframe> inside a frame document will not be navigated: ' +\n"
 "                      'frame documents are not re-scanned for nested browsing contexts'); } catch (e4) {}\n"
@@ -2612,10 +3054,19 @@ static const char *PLATFORM_PRELUDE =
 "    } catch (e) {}\n"
 "    win.parent = G; win.top = G; win.self = win; win.frameElement = el;\n"
 "    win.DOMException = G.DOMException; win.Node = G.Node; win.Element = G.Element; win.Document = G.Document;\n"
-       /* No script ever runs as this window, so nothing can ever be
-          listening on the other end -- a real, terminating no-op rather than
-          a queue that fills forever. See the file comment on postMessage's
-          scope. */
+       /* Still a terminating no-op, but the REASON changed and the old one is
+          now false, so it is restated rather than left to rot: it used to be
+          "no script ever runs as this window", and with js_frame.c linked a
+          script does run for this frame. What remains true is narrower and is
+          the honest statement of a gap: `win` is a plain object built in the
+          PARENT's realm, and js_frame.c's frame context has no reference to
+          it, so nothing inside the frame can ever addEventListener('message')
+          on this object. Cross-context message delivery therefore does not
+          exist in either direction and this stays a no-op rather than a queue
+          that fills forever. Closing it means contentWindow BEING the frame's
+          own global object instead of this stand-in -- a real change to what
+          this getter returns, and the next thing to build here, not something
+          to half-wire by making postMessage enqueue to nobody. */
 "    win.postMessage = function () {};\n"
 "    return win;\n"
 "  };\n"
@@ -2648,13 +3099,23 @@ static const char *PLATFORM_PRELUDE =
 "    } catch (e) {}\n"
 "  };\n"
 "  ['appendChild', 'insertBefore', 'replaceChild'].forEach(function (m) {\n"
-"    wrapMethod('ifr', m, function (orig) {\n"
+"    wrapMethod('ifr', m, function (orig, name) {\n"
 "      return function () {\n"
+"        var removed = name === 'replaceChild' ? listIframes(arguments[1]) : [];\n"
 "        var r = orig.apply(this, arguments);\n"
+"        releaseDetachedList(removed);\n"
 "        scan(arguments[0]);\n"
 "        return r;\n"
 "      };\n"
 "    });\n"
+"  });\n"
+"  wrapMethod('ifr', 'removeChild', function (orig) {\n"
+"    return function (node) {\n"
+"      var removed = listIframes(node);\n"
+"      var r = orig.apply(this, arguments);\n"
+"      releaseDetachedList(removed);\n"
+"      return r;\n"
+"    };\n"
 "  });\n"
    /* REFUTED 2026-08-28: these four methods, plus setAttribute/innerHTML
       below, do NOT cover every insertion path. ParentNode.append/prepend/
@@ -2668,14 +3129,37 @@ static const char *PLATFORM_PRELUDE =
       shape for the new siblings, so every argument is scanned, not just the
       first -- a string argument is a text node and scan() no-ops on it
       (nodeType check), so this costs nothing on the common one-node call. */
-"  ['append', 'prepend', 'replaceChildren', 'before', 'after', 'replaceWith'].forEach(function (m) {\n"
-"    wrapMethod('ifr', m, function (orig) {\n"
+   /* insertAdjacentElement joins this loop and NOT the one above, because the
+      node it inserts is arguments[1] -- arguments[0] is the position string.
+      That is exactly the shape this loop already handles: it scans EVERY
+      argument, and scan() no-ops on a non-node (the nodeType check), which is
+      how append/prepend already tolerate their string arguments. Landing it
+      here in the same commit as the method itself is the rule this file states
+      thirty lines above: a new insertion door must call through
+      insert_run/insert_markup OR be added to this list, "not after". It does
+      both -- js_dom_iface.inc routes it through insert_run -- because the
+      C-level choke point does not signal this file, so the C routing buys the
+      cascade-refusal and cycle checks and the wrap buys the iframe init. */
+"  ['append', 'prepend', 'replaceChildren', 'before', 'after', 'replaceWith',\n"
+"   'insertAdjacentElement'].forEach(function (m) {\n"
+"    wrapMethod('ifr', m, function (orig, name) {\n"
 "      return function () {\n"
+"        var removed = (name === 'replaceChildren' || name === 'replaceWith')\n"
+"          ? listIframes(this) : [];\n"
 "        var r = orig.apply(this, arguments);\n"
+"        releaseDetachedList(removed);\n"
 "        for (var i = 0; i < arguments.length; i++) scan(arguments[i]);\n"
 "        return r;\n"
 "      };\n"
 "    });\n"
+"  });\n"
+"  wrapMethod('ifr', 'remove', function (orig) {\n"
+"    return function () {\n"
+"      var removed = listIframes(this);\n"
+"      var r = orig.apply(this, arguments);\n"
+"      releaseDetachedList(removed);\n"
+"      return r;\n"
+"    };\n"
 "  });\n"
    /* innerHTML is not the only C-parser insertion door. innerHTML replaces
       ALL of `this`'s children, so scan(this) after the call only ever sees
@@ -2700,6 +3184,24 @@ static const char *PLATFORM_PRELUDE =
 "    } catch (e) {}\n"
 "    return out;\n"
 "  };\n"
+   /* Release only after the native mutation and only if the frame really is
+      detached. That connectedness check distinguishes removal from a move:
+      appendChild can detach from one parent and attach to another inside one
+      native call, and destroying the context in the middle would turn a move
+      into a reload. Lists are captured before destructive setters because
+      replaceChildren/innerHTML may recycle their C nodes while the wrappers
+      still carry the __frame record needed to release the JS context. */
+"  var releaseDetachedList = function (frames) {\n"
+"    for (var i = 0; i < frames.length; i++) {\n"
+"      var el = frames[i], live = false;\n"
+"      try { live = connected(el); } catch (e) {}\n"
+"      if (live || !Object.prototype.hasOwnProperty.call(el, '__frame')) continue;\n"
+"      var r = el.__frame;\n"
+"      ++r.gen;\n"
+"      releaseDoc(r);\n"
+"      r.win = null; r.blocked = null;\n"
+"    }\n"
+"  };\n"
 "  var scanNew = function (scope, before) {\n"
 "    if (!scope) return;\n"
 "    var after = listIframes(scope);\n"
@@ -2718,7 +3220,34 @@ static const char *PLATFORM_PRELUDE =
 "      var origSet = desc.set, origGet = desc.get;\n"
 "      Object.defineProperty(EP, 'innerHTML', { configurable: true, enumerable: desc.enumerable,\n"
 "        get: origGet,\n"
-"        set: function (v) { origSet.call(this, v); scan(this); } });\n"
+"        set: function (v) {\n"
+"          var removed = listIframes(this);\n"
+"          origSet.call(this, v);\n"
+"          releaseDetachedList(removed);\n"
+"          scan(this);\n"
+"        } });\n"
+"    } catch (e) {}\n"
+"  })();\n"
+   /* textContent= is another subtree-replacement door. It can insert only a
+      text node, so there is nothing to scan afterwards, but every former
+      iframe descendant still needs its context released. */
+"  (function () {\n"
+"    var NP = ownerOf('textContent');\n"
+"    if (!NP) return;\n"
+"    var desc = Object.getOwnPropertyDescriptor(NP, 'textContent');\n"
+"    if (!desc || typeof desc.set !== 'function') return;\n"
+"    var key = '__w_ifr_textContent';\n"
+"    if (NP[key]) return;\n"
+"    try {\n"
+"      Object.defineProperty(NP, key, { value: true, enumerable: false, configurable: true });\n"
+"      var origSet = desc.set, origGet = desc.get;\n"
+"      Object.defineProperty(NP, 'textContent', { configurable: true, enumerable: desc.enumerable,\n"
+"        get: origGet,\n"
+"        set: function (v) {\n"
+"          var removed = listIframes(this);\n"
+"          origSet.call(this, v);\n"
+"          releaseDetachedList(removed);\n"
+"        } });\n"
 "    } catch (e) {}\n"
 "  })();\n"
    /* insertAdjacentHTML(position, html): beforebegin/afterend land among
@@ -2758,6 +3287,7 @@ static const char *PLATFORM_PRELUDE =
 "          var scope = this.parentNode;\n"
 "          var before = scope ? listIframes(scope) : [];\n"
 "          origSet.call(this, v);\n"
+"          releaseDetachedList(before);\n"
 "          scanNew(scope, before);\n"
 "        } });\n"
 "    } catch (e) {}\n"
@@ -3046,13 +3576,14 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[4];
+    JSValue args[5];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
     args[3] = JS_NewCFunction(ctx, js_random_strong, "__randomStrong", 0);
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 4, (JSValueConst *)args);
-    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, args[i]);
+    args[4] = JS_NewCFunction(ctx, js_clip_write_text, "__clipWriteText", 1);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 5, (JSValueConst *)args);
+    for (int i = 0; i < 5; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
@@ -3067,10 +3598,26 @@ void js_platform_install(JSContext *ctx)
     g_reject_hook = JS_GetPropertyStr(ctx, hooks, "onReject");
     JS_FreeValue(ctx, hooks);
     JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), rejection_tracker, 0);
+    /* AFTER the prelude, not before: js_frame_install defines __frameAdopt on
+     * globalThis and the prelude's settle() reads it by `typeof` at call time,
+     * so ordering only has to put it before the first navigation -- which is
+     * any time after installIframes() merely DEFINED the getters. Installed
+     * from here rather than from js_page.c because js_page_close() already
+     * calls js_platform_close() at exactly the point js_frame_close_all needs
+     * (before JS_FreeContext/JS_FreeRuntime), so this needs no new hook cut
+     * into a file another line of work is actively editing. */
+    if (LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
 }
 
 void js_platform_close(JSContext *ctx)
 {
+    /* FIRST, and the ordering is the same invariant js_page.c states above its
+     * js_worker_close_all() call: every live frame holds a JSContext on this
+     * page's runtime, and JS_FreeRuntime asserts on live GC objects. This
+     * function is itself called from js_page_close() before
+     * JS_FreeContext(g_ctx)/JS_FreeRuntime(g_rt), which is the whole reason
+     * the hook lives here. */
+    if (LOGIT_HAVE(js_frame_close_all)) js_frame_close_all();
     if (ctx) {
         JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), 0, 0);
         JS_FreeValue(ctx, g_reject_hook);

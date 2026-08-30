@@ -475,4 +475,50 @@ struct dom_atoms {
 extern struct dom_atoms dom_atoms;
 void dom_atoms_init(void);
 
+/* ---------------- dom_stat: HOW MANY TIMES THE DOM CORE WAS ENTERED -------
+ *
+ * WHY COUNTERS AND NOT A TIMER. js_page.c's js_prof answers "how much of the
+ * slice was interpretation" with a clock. It cannot answer "how much of it was
+ * the C boundary", because a native call produces exactly ONE poll event on
+ * entry and then no more -- the interpreter is not running inside it, so no
+ * sample lands there and its cost appears only as the gap after it returns.
+ * The missing half is a COUNT, and a count is the half that is machine-
+ * independent: it is identical on the host and on the device, so it can be
+ * taken on the host in a second and multiplied by a per-unit cost measured in
+ * the guest.  That product is a work order; a timer alone is not.
+ *
+ * WHY HERE RATHER THAN IN THE BINDINGS. c/apps/browser/js_dom.c is the file
+ * every DOM property goes through and it belongs to another line of work.
+ * dom.c is one layer below it and every binding that does real work lands
+ * here.  THE CONSEQUENCE, said rather than left to be found: this is a LOWER
+ * BOUND on JS->C crossings.  A binding that answers out of `struct node`
+ * directly -- nodeType, and anything served from a cached wrapper -- never
+ * reaches dom.c and is not counted.  DOM_ST_FLATWALK has the same gap and a
+ * bigger one: this header says at the shadow-tree comment that most callers
+ * "still use first_child/next directly", so it counts only the flat-tree
+ * walkers and is NOT a census of tree steps.  THE QUADRATIC IS THEREFORE NOT
+ * FOUND BY THESE COUNTERS.  It is found by measuring cost against input size
+ * from outside, which needs no instrumentation in the suspect at all -- see
+ * tests/fixtures/jscost/index.html.  These counters answer the other question:
+ * how many crossings a real page makes, so a per-unit cost can be multiplied
+ * up into a share of the slice.
+ *
+ * NO LINK DEPENDENCY. These are plain globals in dom.c with no call out, so
+ * every harness that already links dom.c keeps linking exactly what it did.
+ * Zero cost when unread: one increment on paths that already do more work. */
+enum {
+    DOM_ST_ATTR_GET,      /* dom_attr / dom_attr_lw / dom_has_attr_lw       */
+    DOM_ST_ATTR_SET,      /* dom_set_attr / dom_set_attr_raw                */
+    DOM_ST_CREATE,        /* dom_create_* / dom_clone_element / import      */
+    DOM_ST_MUTATE,        /* append / insert_before / remove / text_append  */
+    DOM_ST_DESTROY,       /* dom_destroy_subtree / dom_destroy_children     */
+    DOM_ST_BYID,          /* dom_get_element_by_id                          */
+    DOM_ST_FLATWALK,      /* dom_flat_first_child / dom_flat_next_sibling   */
+    DOM_ST_WRAP,          /* dom_set_wrapper: a JS wrapper was (re)bound    */
+    DOM_ST_COUNT
+};
+extern unsigned long long dom_stat[DOM_ST_COUNT];
+void dom_stat_reset(void);
+const char *dom_stat_name(int i);
+
 #endif /* LOGIT_DOM_H */

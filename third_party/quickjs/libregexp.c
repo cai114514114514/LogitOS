@@ -1753,7 +1753,11 @@ uint8_t *lre_compile(int *plen, char *error_msg, int error_msg_size,
     s->buf_end = s->buf_ptr + buf_len;
     s->buf_start = s->buf_ptr;
     s->re_flags = re_flags;
-    s->is_utf16 = ((re_flags & LRE_FLAG_UTF16) != 0);
+    /* LOGITOS PATCH (jssem differential, tests/jssem/cases/08-regexp.js):
+       'v' (LRE_FLAG_UNICODE_SETS) gets every code-point-aware behavior
+       's->is_utf16' gates, same as 'u' -- see the flag's own comment in
+       libregexp.h for scope. */
+    s->is_utf16 = ((re_flags & (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)) != 0);
     is_sticky = ((re_flags & LRE_FLAG_STICKY) != 0);
     s->ignore_case = ((re_flags & LRE_FLAG_IGNORECASE) != 0);
     s->dotall = ((re_flags & LRE_FLAG_DOTALL) != 0);
@@ -2426,7 +2430,9 @@ int lre_exec(uint8_t **capture,
     re_flags = bc_buf[RE_HEADER_FLAGS];
     s->multi_line = (re_flags & LRE_FLAG_MULTILINE) != 0;
     s->ignore_case = (re_flags & LRE_FLAG_IGNORECASE) != 0;
-    s->is_utf16 = (re_flags & LRE_FLAG_UTF16) != 0;
+    /* LOGITOS PATCH: see the compile-time assignment of the same field,
+       above in this file. */
+    s->is_utf16 = (re_flags & (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)) != 0;
     s->capture_count = bc_buf[RE_HEADER_CAPTURE_COUNT];
     s->stack_size_max = bc_buf[RE_HEADER_STACK_SIZE];
     s->cbuf = cbuf;

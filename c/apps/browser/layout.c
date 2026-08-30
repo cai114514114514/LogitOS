@@ -689,7 +689,7 @@ static void fill_rect_item(struct item *bg, const struct cstyle *st, int x, int 
         bg->border_w[i] = st->border_w[i]; bg->border_color[i] = st->border_color[i];
         bg->border_style[i] = st->border_style[i];
     }
-    bg->radius = st->radius; bg->radius_pct = st->radius_pct;
+    for (int ri = 0; ri < 4; ri++) { bg->radius[ri] = st->radius[ri]; bg->radius_pct[ri] = st->radius_pct[ri]; }
     bg->hidden = st->hidden;
     bg->opacity = st->opacity;
 }
@@ -1537,7 +1537,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
                         it->border_color[bi] = st->border_color[bi];
                         it->border_style[bi] = st->border_style[bi];
                     }
-                    it->radius = st->radius; it->radius_pct = st->radius_pct;
+                    for (int ri = 0; ri < 4; ri++) { it->radius[ri] = st->radius[ri]; it->radius_pct[ri] = st->radius_pct[ri]; }
                 }
             }
             /* A <button>'s CONTENT is real markup -- an icon, a <span>, a
@@ -2328,6 +2328,181 @@ static void clip_push(const struct cstyle *st, int x, int y, int w)
 
 static int layout_flow(struct node *n, int x, int y, int w, int hoist);   /* fwd */
 
+/* Lay out and paint one out-of-flow box (position:absolute, or -- since the
+ * fix below -- position:fixed) anchored at g_cb, the padding box of the
+ * nearest positioned ancestor. This is EXACTLY the abspos branch layout_flow
+ * has always run for a normal-flow parent; it is factored out here so the
+ * flex/grid item collector can call the identical code instead of silently
+ * dropping the box, which is what it used to do (layout.c:3038's `if
+ * (skipped(c)) continue`, with no out-of-flow branch anywhere on that side --
+ * see the block comment at the flex/grid call site for the defect this
+ * closes).
+ *
+ * `x,y,w` are the CALLER's own content-box origin/width -- i.e. `nst`'s own
+ * box, where `nst` is `n->style` for the block or flex/grid container being
+ * iterated. They are used only by LAYOUT_NEGCTL_ABS_PARENT, which
+ * reconstructs the old (wrong) "parent's padding box" anchor for the control
+ * that catches it.
+ *
+ * `psx,psy` is the STATIC position -- where the box would have landed had it
+ * stayed in flow -- before its own left margin is added. layout_flow passes
+ * the real flow pen (`x`, `cy + mset_val(&pend)`). Flex and grid have no flow
+ * pen to offer an out-of-flow child (a flex/grid item is never a normal-flow
+ * box), so they pass the container's own content-box origin instead: an
+ * approximation of CSS's static-position algorithm, chosen because it puts
+ * the box somewhere bounded and visible inside its container rather than
+ * nowhere at all. It is exact whenever the box also gives both insets on an
+ * axis (the sx/sy branches below are never reached) and it is exact when the
+ * out-of-flow child is the container's first child, which is the common
+ * "modal backdrop as the first thing in a flex/grid wrapper" shape. */
+static void layout_abspos_child(struct node *c, struct cstyle *st, struct cstyle *nst,
+                                 int x, int y, int w, int psx, int psy)
+{
+#ifndef LAYOUT_NEGCTL_ABS_PARENT
+    (void)nst; (void)x; (void)y; (void)w;   /* only LAYOUT_NEGCTL_ABS_PARENT reads these */
+#endif
+    /* ---- an absolutely (or fixed) positioned box ----
+     *
+     * Anchored at g_cb, the padding box of the nearest POSITIONED
+     * ancestor (the initial containing block when there is none). It
+     * used to be anchored at THIS block's padding box whatever this
+     * block's position was, reconstructed as `x - parent->pl`. That is
+     * the same answer whenever the parent is the positioned ancestor,
+     * which is the common `position:relative` wrapper and is why it
+     * held up on real pages; it is wrong by the whole offset of every
+     * static box in between otherwise, and `abspos` is the second
+     * largest failure class in the reftest corpus (2,455 tests).
+     *
+     * Full-bleed covers (bilibili's .bili-video-card__cover:
+     * top:0;left:0;w/h:100%) still land exactly on their card, because
+     * that card is the positioned ancestor. */
+    int ml = st->ml<0?0:st->ml;
+    int cbx = g_cbx, cby = g_cby;
+    int pw = g_cbw, ph = g_cbh;                  /* containing block = padding box */
+#ifdef LAYOUT_NEGCTL_ABS_PARENT
+    /* What this replaced, kept compilable so the assertions that catch
+     * it can be watched failing: the PARENT's padding box whatever the
+     * parent's position was, reconstructed as (x - parent->pl).
+     * Identical whenever the parent IS the positioned ancestor, which
+     * is why it survived so long. */
+    { int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
+      cbx = x - ppl; cby = y - ppt; pw = w + ppl + ppr; ph = -1; }
+#endif
+    /* ---- AN AUTO WIDTH, AND THE ONE THING MEASURED AND NOT KEPT ----
+     *
+     * CSS 2.1 10.3.7 says an auto width fills the gap only when BOTH
+     * insets are given, and SHRINK-TO-FITS in every other case. Only
+     * the first half of that is here, and the omission is deliberate
+     * and measured rather than unnoticed.
+     *
+     * Shrink-to-fit (float_box_width() over the space left by the
+     * insets, which is exactly the same min(max(min-content, avail),
+     * max-content)) was implemented and run over the whole reftest
+     * corpus. It fixes the CSS2 `left-applies-to` /`bottom-applies-to`
+     * /`position-applies-to` families outright -- each of those drew a
+     * full-width band where the reference has a 96px square, 76,800
+     * wrong pixels a test, 13 tests recovered. And it cost 52
+     * elsewhere: 3,101 discriminating passes fell to 3,062.
+     *
+     * WHY, and it is worth writing down because the next person will
+     * reach for this again: a reftest judges OUR two renderings
+     * against each other. Shrink-to-fit collapses an abspos box to its
+     * content, which is also what that box does with no stylesheet at
+     * all -- so thirty tests that used to pass DISCRIMINATINGLY
+     * started passing the same way their own CSS-stripped control
+     * does. The change is right; what it is compared against is not
+     * right yet. It goes back in when the reference side of those
+     * pages lands, not before.
+     *
+     * The both-insets case below IS kept: it used to ignore `right`
+     * entirely, so `left:10;right:10` came out ten pixels too wide. */
+    int mr_ = st->mr < 0 ? 0 : st->mr;
+    int ow;
+    if (st->has_w)
+        ow = to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, pw));
+    else if (st->has_left && st->has_right)
+        ow = pw - st->left - st->right - ml - mr_;
+    else
+        ow = pw - (st->has_left ? st->left : 0) - ml;
+    if (ow < 0) ow = 0;
+    ow = clamp_w(st, ow, pw);
+    /* ---- the STATIC POSITION, which is the other half of this ----
+     *
+     * `left:auto` does not mean `left:0`. CSS 2.1 10.3.7/10.6.4: with
+     * both inset properties auto the box goes where it WOULD have been
+     * in normal flow -- and an abspos box with no inset at all is not a
+     * corner case, it is how every `position:absolute` used purely to
+     * take something out of flow is written.
+     *
+     * The old parent-padding-box anchor was an approximation of THIS,
+     * not of the containing block, which is why replacing it with the
+     * containing block alone lost tests: it was right about the wrong
+     * thing for a first child and wrong about both for anything else.
+     * (psx, psy) is the pen a static sibling would occupy -- the real
+     * flow pen for a block parent, the container's content-box origin
+     * for a flex/grid parent (see the function comment above).
+     *
+     * Inset given -> the containing block. Inset auto -> the static
+     * position. The two are different origins and the old code had one
+     * of them. */
+    int sx = psx + ml, sy = psy;
+    int ox = st->has_left  ? cbx + st->left + ml
+           : st->has_right ? cbx + pw - st->right - ow
+           : sx;
+    int oy = st->has_top ? cby + st->top : sy;
+    int zsave = g_z;
+    if (st->has_z) g_z = st->z_index;
+    int omark = nitem, obmark = nbox;
+    int bgidx = -1;
+    if (st_inked(st)) {
+        struct item *bg = additem(IT_RECT, c);
+        if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, ox, oy, ow); }
+    }
+    int obi = box_open(c, ox, oy, ow, 0);
+    int ovl_save = g_in_overlay;
+    /* An absolutely positioned box is itself positioned, so IT is the
+     * containing block for its own absolute descendants. */
+    int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+    g_cbx = ox + st->border_w[3]; g_cby = oy + st->border_w[0];
+    g_cbw = ow - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
+    { int sh = spec_h(st, -1);
+      g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
+      if (g_cbh < 0 && sh >= 0) g_cbh = 0; }
+    g_in_overlay = 1;
+    resolve_pad(st, ow);
+    int oinner = layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
+    g_in_overlay = ovl_save;
+    g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
+    /* Its height, which used to be `spec_h(...) > 0 ? that : 0` -- so
+     * an overlay with an auto height painted a zero-tall background.
+     * It is a block box: content bottom, then the block-height rules. */
+    int oh = (oinner - oy) + st->pb + st->border_w[2];
+    oh = block_height(st, oh, ph);
+    /* `top` and `bottom` both given with an auto height STRETCHES the
+     * box -- the one place `bottom` does something other than move it.
+     * With only `bottom`, the box hangs from the far edge, which means
+     * moving what has already been emitted (its height was not known
+     * when its contents were placed). Both need a definite containing
+     * block height, so both are skipped when g_cbh is indefinite. */
+    if (ph >= 0 && st->has_top && st->has_bottom && !st->has_h) {
+        int stretched = ph - st->top - st->bottom;
+        if (stretched > oh) oh = stretched;
+    } else if (ph >= 0 && !st->has_top && st->has_bottom) {
+        /* `bottom` alone hangs the box from the far edge, which means
+         * moving what has already been emitted: its height was not
+         * known when its contents were placed. */
+        int dy = (cby + ph - st->bottom - oh) - oy;
+        if (dy) {
+            shift_items(omark, nitem, 0, dy);
+            shift_boxes(obmark, nbox, 0, dy);
+            oy += dy;
+        }
+    }
+    if (bgidx >= 0) items[bgidx].h = oh;
+    box_close(obi, ox, oy, ow, oh);
+    g_z = zsave;
+}
+
 /* Lay out the children of block `n` whose content box starts at (x,y) with
  * content width w; returns the bottom y.
  *
@@ -2420,144 +2595,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
     for (struct node *c = n->first_child; c; c = c->next) {
         struct cstyle *st = c->style;
         if (st && st->pos_abs && blockish(c)) {
-            /* ---- an absolutely positioned box ----
-             *
-             * Anchored at g_cb, the padding box of the nearest POSITIONED
-             * ancestor (the initial containing block when there is none). It
-             * used to be anchored at THIS block's padding box whatever this
-             * block's position was, reconstructed as `x - parent->pl`. That is
-             * the same answer whenever the parent is the positioned ancestor,
-             * which is the common `position:relative` wrapper and is why it
-             * held up on real pages; it is wrong by the whole offset of every
-             * static box in between otherwise, and `abspos` is the second
-             * largest failure class in the reftest corpus (2,455 tests).
-             *
-             * Full-bleed covers (bilibili's .bili-video-card__cover:
-             * top:0;left:0;w/h:100%) still land exactly on their card, because
-             * that card is the positioned ancestor. */
-            int ml = st->ml<0?0:st->ml;
-            int cbx = g_cbx, cby = g_cby;
-            int pw = g_cbw, ph = g_cbh;                  /* containing block = padding box */
-#ifdef LAYOUT_NEGCTL_ABS_PARENT
-            /* What this replaced, kept compilable so the assertions that catch
-             * it can be watched failing: the PARENT's padding box whatever the
-             * parent's position was, reconstructed as (x - parent->pl).
-             * Identical whenever the parent IS the positioned ancestor, which
-             * is why it survived so long. */
-            { int ppl = nst ? nst->pl : 0, ppt = nst ? nst->pt : 0, ppr = nst ? nst->pr : 0;
-              cbx = x - ppl; cby = y - ppt; pw = w + ppl + ppr; ph = -1; }
-#endif
-            /* ---- AN AUTO WIDTH, AND THE ONE THING MEASURED AND NOT KEPT ----
-             *
-             * CSS 2.1 10.3.7 says an auto width fills the gap only when BOTH
-             * insets are given, and SHRINK-TO-FITS in every other case. Only
-             * the first half of that is here, and the omission is deliberate
-             * and measured rather than unnoticed.
-             *
-             * Shrink-to-fit (float_box_width() over the space left by the
-             * insets, which is exactly the same min(max(min-content, avail),
-             * max-content)) was implemented and run over the whole reftest
-             * corpus. It fixes the CSS2 `left-applies-to` /`bottom-applies-to`
-             * /`position-applies-to` families outright -- each of those drew a
-             * full-width band where the reference has a 96px square, 76,800
-             * wrong pixels a test, 13 tests recovered. And it cost 52
-             * elsewhere: 3,101 discriminating passes fell to 3,062.
-             *
-             * WHY, and it is worth writing down because the next person will
-             * reach for this again: a reftest judges OUR two renderings
-             * against each other. Shrink-to-fit collapses an abspos box to its
-             * content, which is also what that box does with no stylesheet at
-             * all -- so thirty tests that used to pass DISCRIMINATINGLY
-             * started passing the same way their own CSS-stripped control
-             * does. The change is right; what it is compared against is not
-             * right yet. It goes back in when the reference side of those
-             * pages lands, not before.
-             *
-             * The both-insets case below IS kept: it used to ignore `right`
-             * entirely, so `left:10;right:10` came out ten pixels too wide. */
-            int mr_ = st->mr < 0 ? 0 : st->mr;
-            int ow;
-            if (st->has_w)
-                ow = to_border_w(st, resolve_len(st->width, st->w_pct, st->w_off, pw));
-            else if (st->has_left && st->has_right)
-                ow = pw - st->left - st->right - ml - mr_;
-            else
-                ow = pw - (st->has_left ? st->left : 0) - ml;
-            if (ow < 0) ow = 0;
-            ow = clamp_w(st, ow, pw);
-            /* ---- the STATIC POSITION, which is the other half of this ----
-             *
-             * `left:auto` does not mean `left:0`. CSS 2.1 10.3.7/10.6.4: with
-             * both inset properties auto the box goes where it WOULD have been
-             * in normal flow -- and an abspos box with no inset at all is not a
-             * corner case, it is how every `position:absolute` used purely to
-             * take something out of flow is written.
-             *
-             * The old parent-padding-box anchor was an approximation of THIS,
-             * not of the containing block, which is why replacing it with the
-             * containing block alone lost tests: it was right about the wrong
-             * thing for a first child and wrong about both for anything else.
-             * (x, cy + pending) is the pen a static sibling would occupy.
-             *
-             * Inset given -> the containing block. Inset auto -> the static
-             * position. The two are different origins and the old code had one
-             * of them. */
-            int sx = x + ml, sy = cy + mset_val(&pend);
-            int ox = st->has_left  ? cbx + st->left + ml
-                   : st->has_right ? cbx + pw - st->right - ow
-                   : sx;
-            int oy = st->has_top ? cby + st->top : sy;
-            int zsave = g_z;
-            if (st->has_z) g_z = st->z_index;
-            int omark = nitem, obmark = nbox;
-            int bgidx = -1;
-            if (st_inked(st)) {
-                struct item *bg = additem(IT_RECT, c);
-                if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, ox, oy, ow); }
-            }
-            int obi = box_open(c, ox, oy, ow, 0);
-            int ovl_save = g_in_overlay;
-            /* An absolutely positioned box is itself positioned, so IT is the
-             * containing block for its own absolute descendants. */
-            int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
-            g_cbx = ox + st->border_w[3]; g_cby = oy + st->border_w[0];
-            g_cbw = ow - st->border_w[3] - st->border_w[1]; if (g_cbw < 0) g_cbw = 0;
-            { int sh = spec_h(st, -1);
-              g_cbh = sh >= 0 ? sh - st->border_w[0] - st->border_w[2] : -1;
-              if (g_cbh < 0 && sh >= 0) g_cbh = 0; }
-            g_in_overlay = 1;
-            resolve_pad(st, ow);
-            int oinner = layout_block(c, ox + cx_off(st), oy + cy_off(st), ow - hextra(st));
-            g_in_overlay = ovl_save;
-            g_cbx = cbsx; g_cby = cbsy; g_cbw = cbsw; g_cbh = cbsh;
-            /* Its height, which used to be `spec_h(...) > 0 ? that : 0` -- so
-             * an overlay with an auto height painted a zero-tall background.
-             * It is a block box: content bottom, then the block-height rules. */
-            int oh = (oinner - oy) + st->pb + st->border_w[2];
-            oh = block_height(st, oh, ph);
-            /* `top` and `bottom` both given with an auto height STRETCHES the
-             * box -- the one place `bottom` does something other than move it.
-             * With only `bottom`, the box hangs from the far edge, which means
-             * moving what has already been emitted (its height was not known
-             * when its contents were placed). Both need a definite containing
-             * block height, so both are skipped when g_cbh is indefinite. */
-            if (ph >= 0 && st->has_top && st->has_bottom && !st->has_h) {
-                int stretched = ph - st->top - st->bottom;
-                if (stretched > oh) oh = stretched;
-            } else if (ph >= 0 && !st->has_top && st->has_bottom) {
-                /* `bottom` alone hangs the box from the far edge, which means
-                 * moving what has already been emitted: its height was not
-                 * known when its contents were placed. */
-                int dy = (cby + ph - st->bottom - oh) - oy;
-                if (dy) {
-                    shift_items(omark, nitem, 0, dy);
-                    shift_boxes(obmark, nbox, 0, dy);
-                    oy += dy;
-                }
-            }
-            if (bgidx >= 0) items[bgidx].h = oh;
-            box_close(obi, ox, oy, ow, oh);
-            g_z = zsave;
+            layout_abspos_child(c, st, nst, x, y, w, x, cy + mset_val(&pend));
             continue;
         }
         if (skipped(c)) continue;
@@ -2612,7 +2650,7 @@ static int layout_flow(struct node *n, int x, int y, int w, int hoist)
                             it->border_color[bi] = st->border_color[bi];
                             it->border_style[bi] = st->border_style[bi];
                         }
-                        it->radius = st->radius; it->radius_pct = st->radius_pct;
+                        for (int ri = 0; ri < 4; ri++) { it->radius[ri] = st->radius[ri]; it->radius_pct[ri] = st->radius_pct[ri]; }
                     }
                     if (it && tag_eq(c->tag, "button")) {
                         struct iflow bf;
@@ -3016,9 +3054,24 @@ static int flex_align_of(const struct cstyle *nst, const struct flexslot *fi)
 
 /* Gather the container's flex items in document order, then stable-sort by
  * `order`. `cap` is the child count, which is an upper bound on the item count
- * (an anonymous run always swallows at least one child). */
-static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, int fmono)
+ * (an anonymous run always swallows at least one child).
+ *
+ * `cx,cy,cw` are the CONTAINER's own content-box origin/width -- `n`'s box,
+ * the same x/y/w layout_flex()/grid_spec() were called with. An out-of-flow
+ * child (position:absolute or :fixed) is not a flex/grid item at all -- CSS
+ * Flexbox SS 4.1 / Grid SS 6 both say so in as many words -- and used to be
+ * dropped from the display list ENTIRELY here (`if (skipped(c)) { c =
+ * c->next; continue; }`, with no branch anywhere on this side to catch what
+ * it drops): the box, its background, and its whole subtree, silently, for
+ * both flex and grid since grid_spec() reuses this same collector. It is now
+ * laid out through layout_abspos_child(), the identical code a block parent
+ * has always run for the same box -- see that function's comment for why
+ * `cx,cy` (rather than a flow pen, which a flex/grid item never has) is what
+ * static-position falls back to. */
+static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, int fmono,
+                         int cx, int cy, int cw)
 {
+    struct cstyle *nst = n->style;
     int cnt = 0;
     struct node *c = n->first_child;
     while (c && cnt < cap) {
@@ -3035,6 +3088,21 @@ static int flex_collect(struct node *n, struct flexslot *fi, int cap, int fpx, i
             c = end;
             continue;
         }
+        { struct cstyle *cst = c->style;
+          if (cst && cst->pos_abs) {
+#ifndef LAYOUT_NEGCTL_FLEX_OOF_DROP
+              layout_abspos_child(c, cst, nst, cx, cy, cw, cx, cy);
+#else
+              /* What this replaced, kept compilable as a control: an
+               * out-of-flow child of a flex/grid container used to be
+               * dropped from the display list ENTIRELY -- box, background,
+               * whole subtree -- with no branch anywhere to catch it. Define
+               * this to reproduce that and watch tests/qmp's zwprobe/c.html
+               * lose W1/W2/W3/W4/W6 again. */
+#endif
+              c = c->next;
+              continue;
+          } }
         if (skipped(c)) { c = c->next; continue; }
         struct flexslot *f = &fi[cnt++];
         memset(f, 0, sizeof *f);
@@ -3371,7 +3439,7 @@ static int layout_flex(struct node *n, int x, int y, int w)
     if (!fi) return y;
     int *lstart = (int *)(fi + nkids);
     int *lend = lstart + nkids, *ytop = lend + nkids, *yhgt = ytop + nkids;
-    int cnt = flex_collect(n, fi, nkids, fpx, fmono);
+    int cnt = flex_collect(n, fi, nkids, fpx, fmono, x, y, w);
     if (!cnt) { kfree(fi); return y; }
 
     /* A row goes through CSS Flexbox § 9 proper (layout_flex.c). Only a failed
@@ -3784,7 +3852,7 @@ static int grid_spec(struct node *n, int x, int y, int w, int *out_bottom)
     fi = kmalloc(sizeof(struct flexslot) * (unsigned long)nalloc);
     if (!gi || !fi) goto done;
     memset(gi, 0, sizeof(struct griditem) * (unsigned long)nalloc);
-    nitems_g = nkids ? flex_collect(n, fi, nkids, fpx, fmono) : 0;
+    nitems_g = nkids ? flex_collect(n, fi, nkids, fpx, fmono, x, y, w) : 0;
 
     for (int i = 0; i < nitems_g; i++) {
         struct cstyle *st = fi[i].st;

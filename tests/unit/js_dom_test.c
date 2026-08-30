@@ -52,7 +52,7 @@ static unsigned long long g_now;
 static unsigned long long fake_clock(void) { return g_now; }
 
 /* Evaluate in the page runtime (which drains the microtask queue for us). */
-static int prun(const char *src) { return js_page_eval(src, (int)strlen(src), "<t>"); }
+static int prun(const char *src) { return js_page_eval(src, (int)strlen(src), "<t>", 0); }
 
 /* Advance the clock and service whatever came due. */
 static int tick_to(unsigned long long t) { g_now = t; return js_page_run_due(); }

@@ -561,6 +561,85 @@ static JSValue el_insertAdjacentHTML(JSContext *ctx, JSValueConst t, int argc, J
     return JS_UNDEFINED;
 }
 
+/* insertAdjacentElement(position, element) -- the ELEMENT twin of
+ * insertAdjacentHTML above, and NOT a variation on it: that one parses markup,
+ * this one MOVES a node that already exists. It therefore goes through
+ * insert_run(), the same C function appendChild/insertBefore/replaceChild and
+ * el_insert_variadic already share, rather than reaching dom_insert_before()
+ * directly the way insert_markup() does.
+ *
+ * THAT ROUTING IS A RULE THIS FILE'S NEIGHBOUR WROTE DOWN IN ADVANCE, and it
+ * is the reason this landed with a second edit in the same commit rather than
+ * on its own. js_platform.c, listing every JS-reachable insertion door for its
+ * iframe tracker, ends: "Two APIs are deliberately ABSENT rather than
+ * half-built and would be door eight if either is ever added ... The rule if
+ * either lands: it must call through insert_run/insert_markup or be added to
+ * this file's wrap list in the SAME commit, not after." Both halves are done:
+ * insert_run below, and the name is in that wrap list now. Without the second
+ * half, `container.insertAdjacentElement('beforeend', iframe)` would insert an
+ * iframe that never initialises -- parentNode set, element really in the
+ * document, and nothing ever navigating it.
+ *
+ * WHY IT IS HERE AT ALL, measured: bilibili's player bundle mounts itself with
+ * it. `TypeError: insertAdjacentElement is not a function (it is undefined)`
+ * in video.<hash>.js, thrown while mounting -- so the player dies before it
+ * reaches MediaSource, fetches a segment, or touches a byte of the media
+ * stack. That is the isEqualNode shape for the third time: one absent DOM
+ * method, no exception the page reports, a whole feature line dead behind it.
+ *
+ * THE RETURN VALUE IS NOT DECORATION, which is the one thing that makes this
+ * more than a rename of insertAdjacentHTML. The spec returns the inserted
+ * element, or NULL when the position is beforebegin/afterend and there is no
+ * parent -- and `if (!el.insertAdjacentElement(...))` is a real idiom. Return
+ * undefined and that guard never fires. */
+static JSValue insert_adjacent_node(JSContext *ctx, struct node *n,
+                                    const char *pos, struct node *c)
+{
+    if (!n || !c) return JS_NULL;
+    int ok = 0;
+    if (ieq(pos, "beforebegin")) {
+        /* No parent is NULL, not an exception: the spec distinguishes this
+         * from a bad position string, and a page that inserts before a
+         * detached element is asking a question with a legitimate answer. */
+        if (!n->parent || n->parent->type != N_ELEM) return JS_NULL;
+        ok = insert_run(n->parent, c, n);
+    } else if (ieq(pos, "afterend")) {
+        if (!n->parent || n->parent->type != N_ELEM) return JS_NULL;
+        ok = insert_run(n->parent, c, n->next);
+    } else if (ieq(pos, "afterbegin")) {
+        ok = insert_run(n, c, n->first_child);
+    } else if (ieq(pos, "beforeend")) {
+        ok = insert_run(n, c, 0);
+    } else {
+        /* A position string that is not one of the four is a SyntaxError, by
+         * name -- not a silent no-op. A page that mistypes it and gets
+         * `undefined` back debugs the wrong thing; the throw is the answer. */
+        return js_dom_throw_dom(ctx, "SyntaxError",
+            "insertAdjacentElement: position must be one of 'beforebegin', "
+            "'afterbegin', 'beforeend' or 'afterend'");
+    }
+    /* insert_run refuses a cycle, a cross-document node and a non-container
+     * parent (can_insert). Refusing is NULL here rather than a throw, matching
+     * what this engine already does for appendChild -- js_dom.c's own comment:
+     * "one bad call should cost the page that call, not the rest of the
+     * script". */
+    if (!ok) return JS_NULL;
+    return js_dom_node_value(ctx, c);
+}
+
+static JSValue el_insertAdjacentElement(JSContext *ctx, JSValueConst t,
+                                        int argc, JSValueConst *argv)
+{
+    struct node *n = node_of(t);
+    if (!n || argc < 2) return JS_NULL;
+    struct node *c = node_of(argv[1]);
+    const char *pos = JS_ToCString(ctx, argv[0]);
+    if (!pos) return JS_NULL;
+    JSValue r = insert_adjacent_node(ctx, n, pos, c);
+    JS_FreeCString(ctx, pos);
+    return r;
+}
+
 /* getElementsByTagNameNS(ns, localName) -- missing entirely, and the reason
  * `getElementsByTagName` cannot simply be reused is that this one is
  * case-SENSITIVE on the local name and filters on the namespace, which is the
@@ -1291,6 +1370,7 @@ static const JSCFunctionListEntry node_extra_funcs[] = {
 static const JSCFunctionListEntry element_extra_funcs[] = {
     JS_CGETSET_DEF("outerHTML", el_get_outerHTML, el_set_outerHTML),
     JS_CFUNC_DEF("insertAdjacentHTML", 2, el_insertAdjacentHTML),
+    JS_CFUNC_DEF("insertAdjacentElement", 2, el_insertAdjacentElement),
     JS_CFUNC_DEF("getElementsByTagNameNS", 2, el_getElementsByTagNameNS),
     JS_CGETSET_DEF("localName", el_get_localName, NULL),
     JS_CGETSET_DEF("prefix", el_get_prefix, NULL),

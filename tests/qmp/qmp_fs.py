@@ -12,24 +12,45 @@ Notes baked in from debugging this stack:
   - wait for LOGIT_BOOT_OK before sending any input;
   - QEMU qcodes are 'ctrl'/'shift' (NOT 'ctrl_l'/'shift_l');
   - PS/2 relative motion is clamped to ~9 bits, so step moves <=200 px.
-  - the Dock scans root .aex in mkfs packing order (see qmp_files.py):
-    clock(0) textedit(1) monitor(2) terminal(3) widgets(4) files(5)
-    preview(6) studio(7) browser(8). With 9 icons @1280x800 the dock is
-    dw=14+9*64=590 wide, x0=(1280-590)/2=345, icon i center x = 384 + i*64,
-    y = 753; the kernel cursor starts at screen center (640,400).
+  - the Dock's layout is NOT stated here any more. This comment used to spell
+    the mkfs packing order out -- "clock(0) textedit(1) monitor(2) terminal(3)
+    widgets(4) files(5) preview(6) studio(7) browser(8), icon i centre x =
+    384 + i*64" -- for a NINE-icon dock, and the disk now ships eleven. That
+    is not a hypothetical: under the eleven-icon dock this file's
+    goto(576, 753) landed EXACTLY on widgets.aex's tile (centre 512+64), so
+    the "Terminal" commands below were being typed into the Widgets window
+    and the disk probe could never appear. It now reads the tile off the
+    guest's own [wm] dock line and refuses to continue unless the guest says
+    the click launched Terminal. See tests/qmp/qmp_ui.py's dock block.
 """
-import socket, json, sys, os, time, subprocess, tempfile
+import socket, json, shutil, sys, os, time, subprocess, tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+import qmp_ui                                    # noqa: E402
+from qmp_ui import LAUNCH_RE, dock_icon_of, parse_dock, title_of  # noqa: E402
 
 iso, disk = sys.argv[1], sys.argv[2]
 out = sys.argv[3] if len(sys.argv) > 3 else "build/fs_smoke.ppm"
+# The persistence assertion at the bottom reads THIS file, not the caller's
+# image: this driver used to boot with -snapshot, under which every guest
+# write lands in a temporary overlay and the backing image can NEVER contain
+# the probe -- an assertion that could only ever fail, on a driver nothing
+# wired up, so it failed unobserved. A private copy boots writable and is
+# thrown away whole.
+work = tempfile.mkdtemp(prefix="logit-fs-")
+private_disk = os.path.join(work, "disk.img")
+shutil.copyfile(disk, private_disk)
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)  # QEMU binds the socket itself
 fd, serial = tempfile.mkstemp(suffix=".log"); os.close(fd)
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 
 proc = subprocess.Popen([
     qemu, "-cpu", "max", "-cdrom", iso,
-    "-drive", f"file={disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
-    "-snapshot",                                   # ephemeral writes -> no probe residue across runs
+    "-drive", f"file={private_disk},format=raw,if=ide,index=0,media=disk", "-boot", "d",
+    # WRITABLE -- no -snapshot: see the private_disk comment above.
+    # The dock arithmetic assumes 1280x800 (qmp_ui's default). Pinned here
+    # explicitly because it used to be an accident of the default framebuffer.
+    "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
     "-display", "none", "-no-reboot",
     "-serial", f"file:{serial}", "-qmp", f"unix:{sock},server,nowait",
 ])
@@ -99,7 +120,35 @@ def send(t):
         else: key(KMAP.get(ch, ch))
 
 json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
-goto(576, 753); click(); time.sleep(1.0)            # launch Terminal from the Dock (icon 3 of 9)
+
+# Launch Terminal from the Dock -- tile read off the guest's own [wm] dock
+# line (see the header), then VERIFIED: the [wm] launched line must name
+# Terminal. Without the check this driver's failure mode was silent: a stale
+# coordinate typed mkdir into whatever neighbouring app the click landed on,
+# and the only symptom was the disk probe never appearing at the very end.
+dock = None
+for _ in range(300):                       # the line is printed by wm_init()
+    dock = parse_dock(open(serial, errors="replace").read())
+    if dock:
+        break
+    if proc.poll() is not None:
+        fail("qemu exited before the WM published its dock")
+    time.sleep(0.2)
+if dock is None:
+    fail("no [wm] dock line on serial -- is this disk the one wm.c dock_publish() ships on?")
+tx, ty = dock_icon_of("terminal", dock)
+mark = len(open(serial, errors="replace").read())
+goto(tx, ty); click(); time.sleep(1.0)
+got = [m.group(1).strip() for m in LAUNCH_RE.finditer(open(serial, errors="replace").read()[mark:])]
+if got != [title_of("terminal")]:
+    fail("clicked Terminal's dock tile at (%d,%d): guest launched %r (expected %r)"
+         % (tx, ty, got, title_of("terminal")))
+# The launched line means the process EXISTS; the shell it runs has to exec
+# before the first keystroke means anything. 3 s measured enough under TCG
+# (the login -> sh exec chain), and a keystroke dropped here looks exactly
+# like a filesystem that lost the file.
+time.sleep(3.0)
+
 for line in ["mkdir proj\n", "cd proj\n", "echo smokeprobe > note.txt\n", "ls\n", "cat note.txt\n"]:
     send(line); time.sleep(0.5)
 time.sleep(0.4)
@@ -108,10 +157,17 @@ cmd({"execute": "quit"})
 try: proc.wait(timeout=5)
 except Exception: proc.kill()
 
-with open(disk, "rb") as fh:
+with open(private_disk, "rb") as fh:
     blob = fh.read()
 ok = b"smokeprobe" in blob and b"proj" in blob and b"note.txt" in blob
-os.unlink(sock) if os.path.exists(sock) else None
-os.unlink(serial) if os.path.exists(serial) else None
-print("PASS: /proj/note.txt created and persisted" if ok else "FAIL: probe not found on disk")
+if ok:
+    os.unlink(sock) if os.path.exists(sock) else None
+    os.unlink(serial) if os.path.exists(serial) else None
+    print("PASS: /proj/note.txt created and persisted")
+else:
+    # Evidence survives a failure: the serial log is the only record of what
+    # the guest did with the keystrokes, and this driver used to unlink it
+    # before printing its verdict.
+    print("FAIL: probe not found on the booted copy (serial log kept at %s)"
+          % serial)
 sys.exit(0 if ok else 1)

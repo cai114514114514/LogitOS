@@ -2681,6 +2681,15 @@ static const char *PRELUDE =
 "  entries: function () { return hdrSortedCombined(this._l)[Symbol.iterator](); }\n"
 "};\n"
 "G.Headers.prototype[Symbol.iterator] = G.Headers.prototype.entries;\n"
+   /* Symbol.toStringTag: Object.prototype.toString on a Headers used to read
+      '[object Object]'. That is not cosmetic -- axios's kindOfTest and every
+      library built the same way (isXxx(v) = Object.prototype.toString.call(v)
+      === '[object Xxx]') use exactly this string to answer "is this a
+      Headers/Request/Response/ReadableStream", and gate real behaviour on the
+      answer. See the matching tags on Response/Request/ReadableStream below;
+      this is the same fix, once per interface, done where each prototype is
+      already being finished. */
+"Object.defineProperty(G.Headers.prototype, Symbol.toStringTag, { value: 'Headers', configurable: true });\n"
 
 /* ---- streams ----
  * A real ReadableStream, because Response.body has to be one and because a
@@ -2730,7 +2739,22 @@ static const char *PRELUDE =
 "  s._q = []; s._qb = 0;\n"
 "  rsClosedSettle(s);\n"
 "}\n"
-"function rsPull(s) { if (typeof s._src.pull === 'function') { try { s._src.pull(s._c); } catch (e) { rsErr(s, e); } } }\n"
+   /* pull() may be an async function -- its return value is a promise, and a
+      SYNCHRONOUS throw inside it never happens; the rejection surfaces only
+      through that promise. Before this fix the promise pull() returned was
+      simply dropped, so an async pull that rejected settled nothing: the
+      reader's read() stayed pending forever, with no error and no log line
+      (measured against axios's trackStream, whose pull ends
+      `.catch(err => { onFinish(err); throw err })` -- exactly this shape, and
+      exactly the shape a mid-stream network failure produces). Route it to
+      rsErr the same way a synchronous throw already is. */
+"function rsPull(s) {\n"
+"  if (typeof s._src.pull !== 'function') return;\n"
+"  try {\n"
+"    var __rp = s._src.pull(s._c);\n"
+"    if (__rp && typeof __rp.then === 'function') __rp.then(undefined, function (e) { rsErr(s, e); });\n"
+"  } catch (e) { rsErr(s, e); }\n"
+"}\n"
 "function rsRead(s) {\n"
 "  if (s._q.length) { var c = s._q.shift(); s._qb -= chLen(c); if (s._qb < 0) s._qb = 0;\n"
 "    rsPull(s); return Promise.resolve({ value: c, done: false }); }\n"
@@ -2858,6 +2882,7 @@ static const char *PRELUDE =
 "  },\n"
 "  pipeThrough: function (t) { this.pipeTo(t.writable); return t.readable; }\n"
 "};\n"
+"Object.defineProperty(G.ReadableStream.prototype, Symbol.toStringTag, { value: 'ReadableStream', configurable: true });\n"
 "if (typeof Symbol !== 'undefined' && Symbol.asyncIterator) {\n"
 "  G.ReadableStream.prototype[Symbol.asyncIterator] = function () {\n"
 "    var rd = this.getReader();\n"
@@ -3221,6 +3246,7 @@ static const char *PRELUDE =
 "  }\n"
 "};\n"
 "installBody(G.Response.prototype);\n"
+"Object.defineProperty(G.Response.prototype, Symbol.toStringTag, { value: 'Response', configurable: true });\n"
    /* Response.error(): status 0, an IMMUTABLE Headers (append/set/delete all
       throw) and type 'error' -- the immutability is the one thing that
       cannot be reached any other way: response-static-error.any.js's only
@@ -3707,6 +3733,7 @@ static const char *PRELUDE =
 "  }\n"
 "};\n"
 "installBody(G.Request.prototype);\n"
+"Object.defineProperty(G.Request.prototype, Symbol.toStringTag, { value: 'Request', configurable: true });\n"
    /* request-structure.any.js's whole point: these fourteen are IDL attributes
       with a getter and NO setter, so `request.method = 'POST'` must be a
       silent no-op (sloppy-mode [[Set]] on an inherited accessor with no
@@ -4342,6 +4369,105 @@ void js_webapi_install(JSContext *ctx, const char *url)
         JS_SetConstructor(ctx, ctor, proto);
         JS_SetPropertyStr(ctx, g, "Storage", ctor);
         JS_FreeValue(ctx, proto);
+    }
+
+    /* THE SAME OMISSION AS Storage, SEVEN MORE TIMES, AND NOBODY GENERALISED IT.
+     *
+     * The Storage block above records why an interface object matters: kimi's
+     * entire application failed to boot on `ReferenceError: 'Storage' is not
+     * defined`, thrown by a bare reference in a feature check, over a name that
+     * was never published. That was fixed -- for Storage, and separately for
+     * Document, and for nothing else.
+     *
+     * MEASURED 2026-08-29, asking each singleton and its interface in one page:
+     *     navigator   object  ->  Navigator    undefined
+     *     location    object  ->  Location     undefined
+     *     history     object  ->  History      undefined
+     *     screen      object  ->  Screen       undefined
+     *     performance object  ->  Performance  undefined
+     *     console     object  ->  Console      undefined
+     *     crypto      object  ->  Crypto       undefined
+     * Seven instances a page can reach and seven interfaces it cannot. And it
+     * is not hypothetical: douyin.com throws
+     * `ReferenceError: 'Navigator' is not defined` on load and renders a
+     * sidebar and nothing else -- 29 painted text runs over 2,276 changed
+     * pixels, which is the shape of a page that started and stopped.
+     *
+     * DERIVED, NOT LISTED, and that is the point of doing it this way. Each
+     * interface object takes its prototype from the instance that is already
+     * installed, so `navigator instanceof Navigator` is true by construction
+     * rather than by a second declaration that could disagree with the first.
+     * A new singleton added above this loop gets its interface by adding one
+     * row, and a singleton that is NOT installed is skipped rather than
+     * publishing an interface for an object that does not exist -- an
+     * interface with no instance would be a new way to lie about a capability.
+     *
+     * Calling any of them throws, as every interface object on the platform
+     * must: `new Navigator()` is illegal.
+     *
+     * NOT DONE HERE, and named rather than left to be rediscovered:
+     * CSSStyleDeclaration is also undefined, and it does not fit this loop
+     * because it has no singleton -- its instances are element.style, which
+     * needs a document that does not exist when this runs. */
+    {
+        static const struct { const char *inst, *iface; } singletons[] = {
+            { "navigator",   "Navigator"   },
+            { "location",    "Location"    },
+            { "history",     "History"     },
+            { "screen",      "Screen"      },
+            { "performance", "Performance" },
+            { "console",     "Console"     },
+            { "crypto",      "Crypto"      },
+        };
+        for (unsigned i = 0; i < sizeof singletons / sizeof singletons[0]; i++) {
+            JSValue have = JS_GetPropertyStr(ctx, g, singletons[i].iface);
+            int already = !JS_IsUndefined(have);
+            JS_FreeValue(ctx, have);
+            if (already) continue;          /* somebody else published it */
+
+            JSValue inst = JS_GetPropertyStr(ctx, g, singletons[i].inst);
+            if (!JS_IsObject(inst)) { JS_FreeValue(ctx, inst); continue; }
+
+            /* A FRESH PROTOTYPE, INSERTED. The obvious version of this loop
+             * took the instance's EXISTING prototype and handed it to the
+             * constructor -- and every one of these singletons is a plain
+             * object whose prototype is Object.prototype, so that published
+             * seven interfaces whose .prototype WAS Object.prototype.
+             *
+             * Measured, on the first build:
+             *     ({}) instanceof Navigator          = true
+             *     []   instanceof Navigator          = true
+             *     document instanceof Navigator      = true
+             *     navigator instanceof Location      = true
+             * Every object in the page an instance of every interface. That is
+             * far worse than the interfaces being absent, and it is the exact
+             * present-and-wrong shape js_platform.h spends a page warning
+             * about: absence makes a feature check take its fallback, a wrong
+             * answer makes it take the branch it cannot follow.
+             *
+             * AND THE FIRST CONTROL PASSED. It asserted
+             * `navigator instanceof Navigator`, which was true -- for the
+             * wrong reason, because navigator is an object and Object.prototype
+             * is in every object's chain. A control that cannot distinguish the
+             * fix from the catastrophe is not a control. The gate now asserts
+             * the NEGATIVE as well, which is the half that has teeth.
+             *
+             * So: mint a prototype per interface and splice it in between the
+             * instance and Object.prototype. The chain is one link longer and
+             * otherwise unchanged, so every property the instance already had
+             * still resolves. */
+            JSValue proto = JS_NewObject(ctx);
+            if (!JS_IsObject(proto)) { JS_FreeValue(ctx, proto); JS_FreeValue(ctx, inst); continue; }
+            JS_SetPrototype(ctx, inst, proto);
+            JS_FreeValue(ctx, inst);
+
+            JSValue ctor = JS_NewCFunction2(ctx, storage_illegal_ctor,
+                                            singletons[i].iface, 0,
+                                            JS_CFUNC_constructor, 0);
+            JS_SetConstructor(ctx, ctor, proto);
+            JS_SetPropertyStr(ctx, g, singletons[i].iface, ctor);
+            JS_FreeValue(ctx, proto);
+        }
     }
 
     /* Viewport metrics, only if nothing else claimed them. */

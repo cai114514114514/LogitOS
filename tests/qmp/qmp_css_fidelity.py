@@ -94,7 +94,7 @@ import time
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import (Session, PPM, dock_icon, BROWSER_SLOT,      # noqa: E402
+from qmp_ui import (Session, PPM,      # noqa: E402
                     configure, pt)
 
 ISO, DISK = sys.argv[1], sys.argv[2]
@@ -374,8 +374,15 @@ try:
         die("kernel never printed LOGIT_BOOT_OK")
     time.sleep(6)                          # desktop + dock composited
 
-    ui = Session(qmp_path)
-    ui.click_at(*dock_icon(BROWSER_SLOT))
+    ui = Session(qmp_path, serial=serial_path)
+    # launch_app ADDS the check this driver never had: it used to click and
+    # sleep 3 s, so a click that opened nothing (or the wrong app) silently
+    # turned every later screendump comparison into a comparison of whatever
+    # window did happen to be up.
+    try:
+        ui.launch_app("browser")
+    except AssertionError as e:
+        die(str(e))
     time.sleep(3.0)                        # ~2.7 MB .aex off virtio-blk, then ELF load
     ui.screendump(os.path.join(tmp, "launch.ppm"), settle=0.4)
 

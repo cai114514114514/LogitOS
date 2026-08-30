@@ -63,20 +63,21 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import (PPM, Session, SETTINGS_SLOT, configure,   # noqa: E402
-                    dock_icon, pt)
+from qmp_ui import (PPM, Session, configure, dock_icon,     # noqa: E402
+                    dock_icon_of, pt)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-TEXTEDIT_SLOT = 1
-TERMINAL_SLOT = 3
-
+# TEXTEDIT_SLOT = 1 / TERMINAL_SLOT = 3 used to live here, and SETTINGS_SLOT
+# was imported from qmp_ui. Every tile this driver clicks is looked up on the
+# guest's [wm] dock line now; the dock-band geometry below uses the band the
+# guest names (first icon through last icon), not icons 0..6 of a guessed
+# count.
 # settings.c's page probe: a 6x6 pt swatch at window-local (4,4), one colour per
 # tab, painted for exactly this purpose. It answers two questions no amount of
 # coordinate arithmetic in this file could: where the Settings window's content
-# origin actually is, and which page is on screen. SETTINGS_SLOT comes from
-# qmp_ui rather than being spelled again here, so a change to what is packed on
-# the disk moves one number in one file.
+# origin actually is, and which page is on screen. (The tile that opens the
+# window comes from the guest's dock line; the probe answers the rest.)
 SETTINGS_PROBE = {(0xFF, 0x00, 0x80): 0,    # Appearance  (the default tab)
                   (0x00, 0xFF, 0x80): 1,    # Desktop     (the animated toggle)
                   (0xFF, 0xC8, 0x00): 2,    # Network
@@ -239,8 +240,11 @@ def w_drag(ui, geo, steps=180):
 
 def w_dock(ui, geo, steps=200):
     """Sweep the pointer along the dock row, crossing icon boundaries."""
-    lo, row = dock_icon(0)
-    hi = dock_icon(6)[0]
+    # The band is the guest's dock: first tile through last tile. "Icon 6" was
+    # a third of the row once Settings was packed and nobody had said so.
+    n = len(ui.dock())
+    lo, row = dock_icon(0, n)
+    hi = dock_icon(n - 1, n)[0]
     got = ui.settle_pointer(geo["ppm"], lo, row)      # confirmed: see w_theme
     if got != (lo, row):
         print("     warning: pointer would not settle on the dock (%r, wanted "
@@ -337,7 +341,7 @@ def anim_setup(ui, tmp, serial):
     """Open Settings, land on the Desktop tab, and return the geometry the
     `anim` workload needs. Returns None (loudly) if any hop is unconfirmed --
     a row that could not aim is not a row that measured zero."""
-    ui.click_at(*dock_icon(SETTINGS_SLOT))
+    ui.launch_app("settings")
     # POLL FOR THE PROBE, do not sleep a guess at it. The first version waited a
     # flat 6 s, which was enough when five other workloads had already warmed
     # the machine and NOT enough on a cold `--only anim` run -- so the class
@@ -439,7 +443,7 @@ def anim_push_to_dock(ui, tmp, geo, aim_pt):
     # dock is cheaper", which is the opposite of the property being measured.
     # Aim instead: put the window's bottom edge on the dock's icon row, which is
     # inside the panel by construction and leaves the whole window on screen.
-    _, row = dock_icon(0)
+    _, row = dock_icon(0, len(ui.dock()))
     dy_total = row - (geo["origin"][1] + pt(SETTINGS_WINH_PT))
     ui._input([{"type": "btn", "data": {"button": "left", "down": True}}])
     time.sleep(0.05)
@@ -594,9 +598,12 @@ def main(argv):
                         {"title": t, "ppm": os.path.join(tmp, "aim.ppm")})
 
         # TextEdit, then the Terminal: two more windows, the Terminal focused.
-        ui.click_at(*dock_icon(TEXTEDIT_SLOT))
+        # Verified launches: the rows below measure repaints of "the TextEdit
+        # window" and "the Terminal window", claims that are only true if those
+        # are the windows that came up.
+        ui.launch_app("textedit")
         time.sleep(6 * slow)
-        ui.click_at(*dock_icon(TERMINAL_SLOT))
+        ui.launch_app("terminal")
         time.sleep(10 * slow)
 
         title = focused_titlebar(ui, tmp)

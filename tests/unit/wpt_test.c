@@ -352,7 +352,11 @@ static void incl_reset(void)
  * Keeping them separate also makes the line numbers in an exception's stack
  * refer to the SCRIPT the corpus actually ships, so a failure names a file and
  * a line somebody can open. */
-struct script { char *name; char *src; long len; int module; };
+/* `node` is the <script> element the bytes came from, carried so this runner
+ * can hand it to js_page_begin_script -- document.currentScript is the node,
+ * not a name for it, and a runner that passed a name was measuring its own
+ * naming scheme rather than the browser's. */
+struct script { char *name; char *src; long len; int module; struct node *node; };
 struct sctx {
     struct script *s; int n, cap;
     const char *testdir; int missing; int modules;
@@ -365,7 +369,8 @@ struct sctx {
     int needs_driver;
 };
 
-static void sc_add(struct sctx *c, const char *name, char *src, long len, int module)
+static void sc_add(struct sctx *c, const char *name, char *src, long len, int module,
+                   struct node *node)
 {
     if (c->n == c->cap) { c->cap = c->cap ? c->cap * 2 : 16;
                           c->s = realloc(c->s, (size_t)c->cap * sizeof *c->s); }
@@ -373,6 +378,7 @@ static void sc_add(struct sctx *c, const char *name, char *src, long len, int mo
     c->s[c->n].src = src;
     c->s[c->n].len = len;
     c->s[c->n].module = module;
+    c->s[c->n].node = node;
     c->n++;
 }
 
@@ -399,7 +405,7 @@ static void collect_scripts(struct node *n, struct sctx *c)
                     if (incl_seen(path)) goto kids;
                     long len = 0;
                     char *s = xread(path, &len);
-                    if (s) sc_add(c, src, s, len, module);
+                    if (s) sc_add(c, src, s, len, module, n);
                     else c->missing++;
                 } else { c->missing++; }
             } else {
@@ -410,7 +416,7 @@ static void collect_scripts(struct node *n, struct sctx *c)
                         char *s = malloc((size_t)t->textlen + 1);
                         memcpy(s, t->text, (size_t)t->textlen);
                         s[t->textlen] = 0;
-                        sc_add(c, nm, s, t->textlen, module);
+                        sc_add(c, nm, s, t->textlen, module, n);
                     }
             }
         }
@@ -441,7 +447,9 @@ static void meta_scripts(const char *src, struct sctx *c)
                 char path[1024];
                 if (resolve_url(url, c->testdir, path, sizeof path) && !incl_seen(path)) {
                     long n = 0; char *s = xread(path, &n);
-                    if (s) sc_add(c, url, s, n, 0); else c->missing++;
+                    /* a `// META: script=` include: bytes with no <script> element,
+                     * so no currentScript -- NULL, not a stand-in. */
+                    if (s) sc_add(c, url, s, n, 0, 0); else c->missing++;
                 }
             }
         }
@@ -894,7 +902,7 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
             "<!doctype html><meta charset=utf-8><title>wpt</title><div id=log></div>";
         root = dom_parse(DOC, (int)strlen(DOC));
         meta_scripts(fsrc, &c);
-        sc_add(&c, relpath, fsrc, flen, 0);       /* takes ownership of fsrc */
+        sc_add(&c, relpath, fsrc, flen, 0, 0);    /* takes ownership of fsrc */
         fsrc = 0;
     } else {
         root = dom_parse(fsrc, (int)flen);
@@ -1027,8 +1035,12 @@ static void run_one(const char *relpath, struct res *out, struct outcome *oc)
             }
             JS_FreeValue(ctx, m);
         } else {
-            js_page_begin_script(c.s[i].name);
+            js_page_begin_script(c.s[i].node);
             EVAL(c.s[i].src, c.s[i].len, c.s[i].name);
+            /* The checkpoint runs INSIDE the script's scope, per HTML: "run a
+             * classic script" performs it, and "execute the script element"
+             * restores currentScript afterwards. Same order as js_page_eval. */
+            js_page_pump();
             js_page_end_script();
         }
         free(c.s[i].name); free(c.s[i].src);

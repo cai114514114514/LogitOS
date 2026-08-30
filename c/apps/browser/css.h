@@ -236,8 +236,23 @@ struct cstyle {
                                      * draws solid/dotted/dashed/double and the
                                      * four bevelled styles; double degrades to
                                      * solid below 3px, where it cannot show. */
-    int radius;                     /* border-radius px (via css_extra; LibCSS predates it) */
-    int radius_pct;                 /* border-radius % (of min(w,h) at paint) */
+    /* border-radius, PER CORNER, in TL TR BR BL order -- clockwise from the
+     * top-left, which is the order the shorthand's value list is written in.
+     *
+     * Produced by the CASCADE now (css_engine.c reads LibCSS's four
+     * border-*-radius corner longhands). It used to come from css_extra.c's
+     * raw-text scan, which took the first integer of the value list and
+     * applied it to all four corners through a selector matcher that matched
+     * on the LAST COMPOUND only -- so `.card .thumb { border-radius: 8px }`
+     * rounded every .thumb in the document and `.btn:hover { border-radius: 0 }`
+     * un-rounded every .btn always. That producer is DELETED; there is exactly
+     * one door now. See the header of tests/unit/css_border_radius_test.c.
+     *
+     * radius_pct[i] is a percentage of min(w,h), resolved at paint because a
+     * percentage radius is relative to the border box. A corner is either px
+     * or pct, never both: setting one clears the other. */
+    int radius[4];
+    int radius_pct[4];
     int underline, strike, overline;            /* text-decoration bits */
     int opacity;                    /* 0..255; 255 = fully opaque */
     int list_item;                  /* 1 for <li>-style markers */
@@ -559,7 +574,22 @@ int  css_media_matches(const char *query, int len);
  * preference reports. Set BEFORE css_apply -- it changes which rules cascade. */
 void css_set_color_scheme(int dark);
 int  css_color_scheme(void);
-/* Post-pass for properties our LibCSS doesn't know (border-radius): scans the
+
+/* The URL fragment `:target` is matched against -- the part after '#', with no
+ * '#' and not percent-decoded here. NULL or "" means no target, so :target
+ * matches nothing; that is both the spec's answer for a fragmentless URL and
+ * the only safe default, since the failure mode of the other one is matching
+ * every element. Set BEFORE css_apply: it changes which rules cascade, exactly
+ * like css_set_color_scheme.
+ *
+ * ONE spelling of the fragment lives here, and css_target_fragment() reads it
+ * back rather than any caller keeping a second copy -- a constant that must
+ * agree between the navigator and the selector engine is the shape CLAUDE.md
+ * calls one jar, two doors. */
+void        css_set_target_fragment(const char *frag, int len);
+const char *css_target_fragment(int *len);
+/* Post-pass for properties our LibCSS doesn't know (grid, gap, the logical
+ * box family): scans the
  * author sheet's simple selectors + inline style= attrs and patches node->style
  * after css_apply. */
 void css_extra_apply(struct node *root, const char *page_css, int page_len);

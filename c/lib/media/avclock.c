@@ -176,4 +176,28 @@ int avclock_frame(avclock *c, long long pts_ns, long long now_ns, long long *sle
     return AV_SHOW;
 }
 
+/* See the long note in media.h. Two things are load-bearing here and both are
+ * about NOT losing the position the audio master had established:
+ *
+ *  - `anchor_pts_ns` is set to where the master WAS, not to the held frame's
+ *    pts. Anchoring on the frame would declare it due immediately and collapse
+ *    the remaining tail into one instant -- the last half second of a film
+ *    played in a single frame time. Anchoring on the master keeps the tail's
+ *    pacing exactly what it was.
+ *  - `offset_ns` is folded in and then zeroed, because it existed only to
+ *    relate the audio timeline to the video one and there is no audio timeline
+ *    any more. Leaving it would apply the correction twice.
+ *
+ * A clock that never had audio is untouched: there is nothing to demote. */
+void avclock_audio_end(avclock *c, long long now_ns)
+{
+    if (!c->have_audio) return;                  /* idempotent, and a no-op for
+                                                  * a video-only stream */
+    c->anchor_pts_ns = (c->audio_pts_ns >= 0) ? c->audio_pts_ns + c->offset_ns
+                                              : c->anchor_pts_ns;
+    c->start_ns = now_ns;
+    c->offset_ns = 0;
+    c->have_audio = 0;
+}
+
 long long avclock_drift_ns(const avclock *c) { return c->last_drift_ns; }

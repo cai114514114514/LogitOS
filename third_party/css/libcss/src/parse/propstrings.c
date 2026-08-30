@@ -251,6 +251,14 @@ const stringmap_entry stringmap[LAST_KNOWN] = {
 	SMAP("word-spacing"),
 	SMAP("writing-mode"),
 	SMAP("z-index"),
+	/* LogitOS: APPENDED at the TAIL of the property block, deliberately out
+	 * of the alphabetical order the rest of this table is in. See the
+	 * comment above the same five names in propstrings.h. */
+	SMAP("border-radius"),
+	SMAP("border-top-left-radius"),
+	SMAP("border-top-right-radius"),
+	SMAP("border-bottom-right-radius"),
+	SMAP("border-bottom-left-radius"),
 
 	SMAP("inherit"),
 	SMAP("unset"),
@@ -733,6 +741,15 @@ css_error css__propstrings_get(lwc_string ***strings)
 
 		/* Intern all known strings */
 		for (i = 0; i < LAST_KNOWN; i++) {
+			/* LogitOS: stringmap[] is dimensioned LAST_KNOWN, so
+			 * an enumerator added without its SMAP() leaves a
+			 * ZERO entry rather than failing to compile, and
+			 * lwc_intern_string(NULL, 0) is undefined. Fail the
+			 * whole initialisation instead: a table that does not
+			 * line up must not half-work. */
+			if (stringmap[i].data == NULL)
+				return CSS_BADPARM;
+
 			lerror = lwc_intern_string(stringmap[i].data,
 					stringmap[i].len,
 					&css__propstrings.strings[i]);

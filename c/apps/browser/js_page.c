@@ -45,6 +45,7 @@
  * host tests of THIS file link without it and simply have no WebSocket. */
 #define JS_WEBSOCKET_OPTIONAL
 #include "js_websocket.h"
+#include "js_wasm.h"
 /* `indexedDB` -- js_idb.c, layered over G.EventTarget from js_events.c above
  * and G.DOMException/G.structuredClone from js_platform.c. Weak for the same
  * reason as the five above: the host tests of THIS file link without it and
@@ -101,6 +102,21 @@ LOGIT_WEAK_STUB(js_semantics_install);
 LOGIT_WEAK_STUB(js_anim_install);
 LOGIT_WEAK_STUB(js_domparser_install);
 LOGIT_WEAK_STUB(js_canvas_install);
+/* js_wasm_install was CALLED through LOGIT_HAVE() below without ever being
+ * declared here, and the two platforms disagree about what that means: on ELF
+ * an undefined weak symbol resolves to NULL and the guard works, on Mach-O it
+ * is a HARD LINK ERROR. So browser.aex built fine and FOURTEEN host gates went
+ * red at once -- canvas, cssom, csstyle, currentscript, domiface, domparser,
+ * domsub, events, loader, logreporter, selectors, webapi_globals,
+ * webapi_platform, worker -- every one of them on `Undefined symbols:
+ * _js_wasm_install`, none of them for a reason connected to the code under
+ * test.
+ *
+ * That is shape #2 of CLAUDE.md's host-reality table, verbatim, and the tree
+ * had already paid for it once and built include/weaksym.h to fix it. The
+ * mechanism was there; the one line registering this symbol with it was not.
+ * A new js_*_install must join this list in the same commit as its call. */
+LOGIT_WEAK_STUB(js_wasm_install);
 /* The WHATWG URL parser and URLSearchParams -- js_url.c. Weak for the same
  * reason as the six above. */
 #define JS_URL_OPTIONAL
@@ -182,10 +198,28 @@ unsigned long long js_page_now_ms(void) { return now_ms(); }
  * a time-only watchdog provably never fires there (the first draft hung
  * loader_test inside its own while(1) fixture). The fuel rail counts
  * interrupt-handler invocations, which QuickJS makes every
- * JS_INTERRUPT_COUNTER_INIT = 10,000 bytecodes -- so fuel is a pure
- * CPU-work budget that no clock can freeze. Defaults: 45 s wall (several
- * times any honest script at TCG speed) and 2,000,000 calls (= 2e10
- * bytecodes; astronomically above legit, purely the frozen-clock backstop). */
+ * JS_INTERRUPT_COUNTER_INIT = 10,000 ~~bytecodes~~ -- AND THAT WORD WAS WRONG,
+ * measured 2026-08-30 and corrected beside the original because somebody will
+ * arrive holding it. `js_poll_interrupts` is not called per bytecode. Reading
+ * third_party/quickjs/quickjs.c, it is called from OP_goto/goto8/goto16 and
+ * from OP_if_true/if_false and their 8-bit forms (17629-17721) -- taken or
+ * not -- and from JS_CallInternal's entry (16569). So the unit is a BRANCH OR
+ * A CALL, not a bytecode, and 10,000 of those is far more work than 10,000
+ * bytecodes. Confirmed against a known answer rather than by reading alone:
+ * `for (i=0;i<N;i++) s+=i` costs exactly 2.00 polls per iteration -- the loop
+ * test and the back edge -- measured at N = 200k/400k/800k by
+ * `webapi_probe --prof-selftest`, which is the gate for this sentence.
+ * The consequence for anyone sizing this rail: 2,000,000 calls is 2e10
+ * BRANCHES AND CALLS, not 2e10 bytecodes, so the fuel budget is even further
+ * above any honest script than the old wording claimed -- which is why it has
+ * never been the rail that fires. Defaults: 45 s wall (several times any
+ * honest script at TCG speed) and 2,000,000 calls, purely the frozen-clock
+ * backstop.
+ *
+ * A SECOND CONSEQUENCE, and it is the one that bites: THE WATCHDOG CAN ONLY
+ * FIRE AT A POLL POINT. A synchronous entry that executes fewer than 10,000
+ * branches-or-calls is never checked at all, so the dog's resolution is coarse
+ * and a small handler is invisible to it. */
 #define JS_SLICE_MS_DEFAULT   45000
 #define JS_SLICE_FUEL_DEFAULT 2000000
 static long long g_slice_ms = JS_SLICE_MS_DEFAULT;
@@ -198,23 +232,289 @@ void js_page_set_slice_ms(int ms) { g_slice_ms = ms > 0 ? ms : JS_SLICE_MS_DEFAU
 void js_page_set_slice_fuel(long long calls)
 { g_slice_fuel_max = calls > 0 ? calls : JS_SLICE_FUEL_DEFAULT; }
 int  js_page_slice_hits(void) { return g_slice_hits; }
+/* The WATCHDOG's own fuel counter for the slice that just ran -- deliberately a
+ * different counter from js_prof's `fuel`, and exported for exactly one reason:
+ * the observer-effect control. Comparing js_prof's count with the profiler on
+ * against js_prof's count with it on again measures run-to-run determinism and
+ * calls itself an observer-effect check, which is a control that cannot be
+ * watched failing. This counter is incremented by slice_interrupt whether or
+ * not g_prof_on, so it is the one number that can answer "does profiling change
+ * the work?" -- see webapi_probe.c's check 5. */
+long long js_page_slice_fuel_used(void) { return g_slice_fuel; }
 void js_page_slice_begin(void);               /* defined after now_ms() */
+
+static void prof_begin(long long t);          /* the profiler, defined below */
 
 void js_page_slice_begin(void)
 {
-    g_slice_due = g_clock ? (long long)now_ms() + g_slice_ms : 0;
+    long long t = g_clock ? (long long)now_ms() : 0;
+    g_slice_due = g_clock ? t + g_slice_ms : 0;
     g_slice_fuel = 0;
     g_slice_armed = 1;
+    prof_begin(t);
 }
 
-/* QuickJS calls this every 10,000 bytecodes. Nonzero = interrupt: the engine
+/* ---- js_prof: WHERE A SLICE'S TIME ACTUALLY GOES ------------------------
+ *
+ * THE QUESTION THIS EXISTS FOR. A page reports "[watchdog] script exceeded
+ * its CPU slice" and nothing in this tree can say what the script was doing
+ * for the budget. Raising the budget is not an answer; it is the same wait,
+ * longer. The five things it could be need completely different work:
+ *   (a) honest interpretation -- a megabyte of minified bundle really is a
+ *       lot of bytecode on an interpreter under TCG;
+ *   (b) the C boundary -- hundreds of thousands of DOM crossings;
+ *   (c) something quadratic -- cost that grows faster than the input;
+ *   (d) a spin -- forward progress zero, the watchdog SAVED us;
+ *   (e) layout or paint re-entered from script, charged to the slice.
+ * and a sixth this instrument found on its first run, which none of the five
+ * covers: the budget being consumed by wall clock the script did not spend.
+ *
+ * THE CLOCK IS QUICKJS'S OWN WORK COUNTER, NOT THE HOST'S WALL CLOCK.
+ * QuickJS calls slice_interrupt() every JS_INTERRUPT_COUNTER_INIT = 10,000
+ * POLL EVENTS, and a poll event is a branch (OP_goto*, OP_if_true*,
+ * OP_if_false*) or a function call -- NOT a bytecode; see the watchdog comment
+ * above for the measurement that corrected that word. It is still what this
+ * profiler needs: a known, uniform, machine-independent period, already in the
+ * guest, immune to tools/perf/'s rule that "the host is contended, so host wall
+ * clock is worthless here". `fuel` below counts those calls, so fuel*10,000 is
+ * exactly the number of loop iterations and function calls the page performed.
+ *
+ * THE ONE WALL-CLOCK READ IS THE ONE THE WATCHDOG ALREADY DID. slice_interrupt
+ * has always called now_ms() on every sample to test the time rail. This
+ * profiler reuses that single read, so it adds no clock traffic at all -- which
+ * matters, because on the device now_ms() is a syscall.
+ *
+ * WHAT A SAMPLE RECORDS, AND WHY THESE THREE NUMBERS SEPARATE THE HYPOTHESES.
+ * Between two consecutive samples the page executed exactly 10,000 branches
+ * and calls. The wall time that elapsed across them is therefore the cost of
+ * that work PLUS everything the interpreter called out to and waited for. So:
+ *   fuel    -- (branches+calls)/10,000. Rises only when interpreted code runs.
+ *   js_ms   -- wall ms summed across samples taken INSIDE a JS entry.
+ *   out_ms  -- wall ms that elapsed between one entry ending and the next
+ *              sample arriving; i.e. time the browser spent NOT in JS.
+ * and the discriminator is the ratio. js_ms/fuel near the interpreter's own
+ * rate is (a). js_ms/fuel far above it is (b) or (e) -- time inside C called
+ * from JS, which produces no poll events and so no samples. fuel large with the
+ * page's DOM not growing is (d). And js_ms much SMALLER than the elapsed time
+ * the watchdog is measuring means the budget is being spent by a clock rather
+ * than by the script, which is the sixth case and is not a performance problem
+ * at all.
+ *
+ * `gaps` is the coarse localiser: a single delta of JSPROF_GAP_MS or more
+ * between two samples cannot be 10,000 branches of interpretation at any
+ * plausible rate, so it is one long call out of the interpreter. The threshold
+ * is four ticks of the device's 10 ms clock deliberately -- a granularity that
+ * cannot manufacture a gap the way a 1-tick threshold would.
+ *
+ * WHAT IT CANNOT SEE, said rather than left to be discovered. It cannot name
+ * the C function: a native call polls once on entry and then executes no
+ * branches, so no sample lands inside it and
+ * it, and the cost shows up only as the gap after it returns. It cannot name
+ * the JS function either -- that needs the interpreter's current stack frame,
+ * which is internal to third_party/quickjs and is another line's file. Both
+ * are attributable to the SLICE, which is a script URL or a timer, and that is
+ * the resolution this instrument claims. Nothing here is a per-function
+ * profile and it must not be quoted as one. */
+/* struct js_prof_slice is in js_page.h -- a harness reads the fields. */
+#define JSPROF_SLICES   256
+#define JSPROF_GAP_MS   40
+static struct js_prof_slice g_prof[JSPROF_SLICES];
+static int  g_prof_n;                 /* records in use */
+static int  g_prof_over;              /* entries folded into the last record */
+static int  g_prof_on;
+static long long g_prof_last_ms;      /* clock at the previous sample/boundary */
+static int  g_prof_in_js;             /* 1 between slice_begin and slice_end */
+static const char *g_prof_label = "?";
+
+/* A FREE-RUNNING POLL COUNTER, and it is deliberately not any of the three
+ * counters above it. g_slice_fuel is zeroed by every slice_begin and
+ * struct js_prof_slice::fuel is per record; neither can answer "how much work
+ * did the four statements between these two lines of script cost", which is the
+ * question a scaling scan asks -- cost against input size, the shape CLAUDE.md
+ * says hides in an average. This one only ever increases and is reset by
+ * js_prof_reset(), so a harness reads it before and after a benchmark and
+ * subtracts. It is incremented whether or not the profiler is on, for the same
+ * reason js_page_slice_fuel_used() is: a counter that exists only while being
+ * observed cannot be the control for the observation. */
+static long long g_polls;
+long long js_prof_polls(void) { return g_polls; }
+
+void js_prof_enable(int on) { g_prof_on = on ? 1 : 0; }
+int  js_prof_enabled(void)  { return g_prof_on; }
+void js_prof_label(const char *what) { g_prof_label = what ? what : "?"; }
+void js_prof_reset(void)
+{
+    g_prof_n = 0; g_prof_over = 0; g_prof_last_ms = 0; g_prof_in_js = 0;
+    g_polls = 0;
+    for (int i = 0; i < JSPROF_SLICES; i++) {
+        g_prof[i].what[0] = 0; g_prof[i].fuel = 0; g_prof[i].js_ms = 0;
+        g_prof[i].out_ms = 0; g_prof[i].begin_ms = 0; g_prof[i].max_gap_ms = 0;
+        g_prof[i].gap_ms = 0; g_prof[i].gaps = 0; g_prof[i].resumed = 0;
+        g_prof[i].bitten = 0;
+    }
+}
+int js_prof_count(void) { return g_prof_n; }
+int js_prof_overflow(void) { return g_prof_over; }
+const struct js_prof_slice *js_prof_at(int i)
+{ return (i >= 0 && i < g_prof_n) ? &g_prof[i] : 0; }
+
+static struct js_prof_slice *prof_cur(void)
+{
+    if (!g_prof_on) return 0;
+    if (g_prof_n == 0) {            /* a sample before any slice_begin */
+        g_prof_n = 1;
+        g_prof[0].what[0] = '?'; g_prof[0].what[1] = 0;
+    }
+    return &g_prof[g_prof_n - 1];
+}
+
+static void prof_begin(long long t)
+{
+    if (!g_prof_on) { g_prof_in_js = 1; g_prof_last_ms = t; return; }
+    struct js_prof_slice *s;
+    if (g_prof_n < JSPROF_SLICES) {
+        s = &g_prof[g_prof_n++];
+        s->fuel = 0; s->js_ms = 0; s->out_ms = 0; s->max_gap_ms = 0;
+        s->gap_ms = 0; s->gaps = 0; s->resumed = 0; s->bitten = 0;
+    } else {
+        /* Full. Fold the rest into the last record rather than dropping them:
+         * a total that silently stops counting is the failure mode this tree
+         * calls a silent cap. js_prof_overflow() reports how many. */
+        g_prof_over++;
+        s = &g_prof[JSPROF_SLICES - 1];
+    }
+    s->begin_ms = t;
+    int i = 0;
+    while (g_prof_label[i] && i < (int)sizeof s->what - 1) { s->what[i] = g_prof_label[i]; i++; }
+    s->what[i] = 0;
+    g_prof_in_js = 1;
+    g_prof_last_ms = t;
+}
+
+/* Called when a synchronous JS entry returns, and from js_page_pending() -- the
+ * browser's main loop -- for the entries that bracket nothing.
+ *
+ * IT MUST CHARGE THE INTERVAL SINCE THE LAST SAMPLE, and the first version did
+ * not: it only reset the cursor, so the wall time between the final sample of
+ * an entry and this boundary was charged to NOBODY. That is worse than the
+ * misattribution it replaced, because a total that silently loses time reads as
+ * a fast page. In the selftest it lost exactly the 5,000 ms the whole check
+ * exists to see: js_ms fell from 5012 to 11 and out_ms stayed at 2.
+ *
+ * WHICH BUCKET, and this is the honest part. The interval ends at a boundary
+ * the sampler did not observe, so it cannot be split between "the tail of the
+ * handler" and "idle". The one thing that CAN be said about it is the thing
+ * checks 4a/4b of the selftest validate: an interval of JSPROF_GAP_MS or more
+ * cannot be 10,000 branches of interpretation at any plausible rate. So a long
+ * interval goes to out_ms and is counted as a gap; a short one is charged to
+ * js_ms, which is the conservative direction -- it bills the script.
+ *
+ * The consequence for the reader is a definition, and out_ms's is now "wall
+ * time not attributable to interpretation" rather than "time with no JS
+ * running". A long native call made FROM a script -- a forced layout, a decode
+ * -- lands here too. That is a conflation and it is deliberate: separating it
+ * needs the interpreter's stack frame, which is another line's file. `gaps`
+ * counts both kinds and neither is script CPU, which is the question this
+ * instrument was built to answer. */
+void js_page_slice_end(void)
+{
+    if (g_prof_on) {
+        long long t = (long long)now_ms();
+        struct js_prof_slice *s = prof_cur();
+        if (s && g_prof_last_ms) {
+            long long d = t - g_prof_last_ms;
+            if (d < 0) d = 0;
+            if (d >= JSPROF_GAP_MS) {
+                s->out_ms += d;
+                s->gap_ms += d; s->gaps++;
+                if (d > s->max_gap_ms) s->max_gap_ms = d;
+            } else {
+                s->js_ms += d;
+            }
+        }
+        g_prof_last_ms = t;
+    }
+    g_prof_in_js = 0;
+}
+
+static void prof_sample(long long t)
+{
+    struct js_prof_slice *s = prof_cur();
+    if (!s) return;
+    s->fuel++;
+    if (g_prof_last_ms) {
+        long long d = t - g_prof_last_ms;
+        if (d < 0) d = 0;
+        if (g_prof_in_js) {
+            s->js_ms += d;
+            if (d >= JSPROF_GAP_MS) {
+                s->gap_ms += d; s->gaps++;
+                if (d > s->max_gap_ms) s->max_gap_ms = d;
+            }
+        } else {
+            s->out_ms += d;
+            s->resumed++;      /* a JS entry ran that never began a slice */
+        }
+    }
+    g_prof_in_js = 1;
+    g_prof_last_ms = t;
+}
+
+void js_prof_totals(long long *fuel_o, long long *js_ms_o, long long *out_ms_o,
+                    int *gaps_o, int *resumed_o)
+{
+    long long fuel = 0, js_ms = 0, out_ms = 0;
+    int gaps = 0, resumed = 0;
+    for (int i = 0; i < g_prof_n; i++) {
+        fuel += g_prof[i].fuel; js_ms += g_prof[i].js_ms;
+        out_ms += g_prof[i].out_ms;
+        gaps += g_prof[i].gaps; resumed += g_prof[i].resumed;
+    }
+    if (fuel_o) *fuel_o = fuel;
+    if (js_ms_o) *js_ms_o = js_ms;
+    if (out_ms_o) *out_ms_o = out_ms;
+    if (gaps_o) *gaps_o = gaps;
+    if (resumed_o) *resumed_o = resumed;
+}
+
+void js_prof_dump(const char *tag)
+{
+    long long fuel = 0, js_ms = 0, out_ms = 0, gap = 0;
+    int gaps = 0, resumed = 0;
+    for (int i = 0; i < g_prof_n; i++) {
+        fuel += g_prof[i].fuel; js_ms += g_prof[i].js_ms;
+        out_ms += g_prof[i].out_ms; gap += g_prof[i].gap_ms;
+        gaps += g_prof[i].gaps; resumed += g_prof[i].resumed;
+    }
+    printf("[jsprof] %s: slices=%d(+%d folded) fuel=%lld (=%lld branches+calls) "
+           "js_ms=%lld out_ms=%lld gaps=%d/%lldms resumed=%d\n",
+           tag ? tag : "", g_prof_n, g_prof_over, fuel, fuel * 10000,
+           js_ms, out_ms, gaps, gap, resumed);
+    printf("[jsprof] %-40s %10s %8s %8s %6s %8s %3s\n",
+           "slice", "fuel", "js_ms", "out_ms", "gaps", "maxgap", "bit");
+    for (int i = 0; i < g_prof_n; i++) {
+        struct js_prof_slice *s = &g_prof[i];
+        if (!s->fuel && !s->out_ms) continue;      /* under one poll period */
+        printf("[jsprof] %-40s %10lld %8lld %8lld %6d %8lld %3d\n",
+               s->what, s->fuel, s->js_ms, s->out_ms, s->gaps,
+               s->max_gap_ms, s->bitten);
+    }
+}
+
+/* QuickJS calls this every 10,000 branches-or-calls. Nonzero = interrupt: the
  * throws an uncatchable InternalError and the current synchronous entry
  * unwinds through the caller's normal exception printing. */
 static int slice_interrupt(JSRuntime *rt, void *opaque)
 {
     (void)rt; (void)opaque;
+    /* ONE clock read, shared by the watchdog's time rail and the profiler.
+     * On the device now_ms() is a syscall; a second one here would make the
+     * instrument the largest thing it measures. */
+    long long t = g_clock ? (long long)now_ms() : 0;
+    g_polls++;
+    if (g_prof_on) prof_sample(t);
     if (!g_slice_armed) return 0;
-    int over_time = g_slice_due && g_clock && (long long)now_ms() > g_slice_due;
+    int over_time = g_slice_due && g_clock && t > g_slice_due;
     int over_fuel = ++g_slice_fuel > g_slice_fuel_max;
     if (!over_time && !over_fuel) return 0;
     g_slice_hits++;
@@ -222,6 +522,21 @@ static int slice_interrupt(JSRuntime *rt, void *opaque)
     note("[watchdog] script exceeded its CPU slice -- interrupted\n");
     printf("[js] watchdog: script exceeded its CPU slice (%s) -- interrupted\n",
            over_time ? "wall time" : "instruction fuel");
+    /* AND WHAT THE BITTEN SLICE ACTUALLY CONSUMED, because the rail name alone
+     * does not say whether the budget was spent or merely expired. `since` is
+     * the interval the wall-time rail measured; js_ms is how much of it the
+     * script was running in. When those two disagree the watchdog is not
+     * reporting a slow script. */
+    {
+        struct js_prof_slice *s = g_prof_on ? prof_cur() : 0;
+        if (s) s->bitten = over_time ? 1 : 2;
+        printf("[js] watchdog: fuel=%lld (=%lld branches+calls) since_begin_ms=%lld"
+               " js_ms=%lld out_ms=%lld resumed=%d slice=%s\n",
+               g_slice_fuel, g_slice_fuel * 10000,
+               g_slice_due ? t - (g_slice_due - g_slice_ms) : -1,
+               s ? s->js_ms : -1, s ? s->out_ms : -1, s ? s->resumed : -1,
+               s ? s->what : "<prof off>");
+    }
     return 1;
 }
 
@@ -295,6 +610,22 @@ static void timer_unlink(struct jstimer *t)
 
 int js_page_pending(void)
 {
+    /* THE JS/NOT-JS BOUNDARY THE PROFILER COULD NOT SEE, and it is here rather
+     * than in js_page_slice_end() because slice_end has callers only for the
+     * entries that ALSO call slice_begin -- script eval and timer callbacks.
+     * Event dispatch does not: js_dom_dispatch() brackets nothing, so every
+     * DOMContentLoaded, load, click and input handler ran with g_prof_in_js
+     * left at 1 by the previous entry's last sample, and prof_sample charged
+     * the idle BETWEEN two dispatches to js_ms -- script time the script never
+     * spent. `resumed` was supposed to be the flag that said so and it only
+     * fired for the FIRST unbracketed entry, for the same reason.
+     *
+     * This is the browser's main loop, which is by definition not inside a JS
+     * entry, so clearing here is correct for every entry regardless of what it
+     * brackets. Cost when profiling is off is one load and one branch; the
+     * clock read is inside slice_end's own g_prof_on guard, which matters
+     * because on the device now_ms() is a syscall and this runs every pass. */
+    if (g_prof_on && g_prof_in_js) js_page_slice_end();
     if (g_timers) return 1;
     /* A fetch in flight also needs the loop to call js_page_run_due(), which is
      * where its socket is stepped. */
@@ -399,6 +730,7 @@ int js_page_run_due(void)
             timer_free(g_ctx, best);
         }
 
+        js_prof_label(best->raf ? "<rAF callback>" : "<timer callback>");
         js_page_slice_begin();       /* each timer callback is its own slice */
         JSValue r = JS_Call(g_ctx, fn, JS_UNDEFINED, nargs, (JSValueConst *)args);
         if (JS_IsException(r)) {
@@ -414,6 +746,7 @@ int js_page_run_due(void)
         for (int i = 0; i < nargs; i++) JS_FreeValue(g_ctx, args[i]);
         free(args);
         js_dom_run_jobs(g_ctx);          /* a timer that resolves a promise: run its reactions now */
+        js_page_slice_end();
         ran++;
     }
 
@@ -580,67 +913,78 @@ static JSValue con_error(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
  *                of undefined`, from the standard document.currentScript
  *                .remove() idiom where an inline script deletes its own tag.
  *
- * WHY IT IS AN INDEX AND NOT A NODE. js_dom.c's node-to-JSValue wrapper is
- * static to that file, so this file cannot hand a JSValue for a node to
- * anybody. What it CAN do is say which <script> element, by position in
- * document order -- and js_select.c already publishes document.scripts in
- * exactly that order. So the C side publishes __currentScriptIndex() and
- * js_platform.c defines the property as document.scripts[i]. The alternative
- * was a js_dom.c export, which is another line's file.
+ * THE NODE, NOT A NAME FOR IT, AND THAT IS THE WHOLE FIX. Until 2026-08-29
+ * this held an INDEX into document.scripts and worked out which script was
+ * running by pattern-matching the filename the embedder passed:
  *
- * WHICH SCRIPT IS RUNNING is worked out here rather than passed in, because
- * the embedder (browser.c, another line's file) calls js_page_eval with a
- * filename and no node. An external script is matched by its src attribute
- * against that filename; an inline one takes the next inline <script> in
- * document order. Both consume from the same cursor, so a page that
- * interleaves them stays aligned. */
-static int g_cur_script = -1;
-static int g_script_used[256];
+ *     match = !filename || !strchr(filename, ':');   / * an inline one * /
+ *
+ * Every page URL contains "https:", so for an inline classic script in the
+ * SHIPPED BROWSER that test was false every time, the index stayed -1, and
+ * document.currentScript was null for the entire life of the feature. The two
+ * halves were each right on their own and landed the same day, 25 commits
+ * apart: browser.c had just started passing the page URL + "#inline-script-N"
+ * so that `import('./x.js')` from an inline <script> has a base to resolve
+ * against, and this matcher was written for the "<inline>" that used to be
+ * there. The src branch had the mirror-image defect -- it paired the attribute
+ * to the filename with a SUFFIX test, so src="./x.js" against the absolute URL
+ * it resolved to (".../x.js") did not match, because the literal "./" is in
+ * the attribute and not in the URL.
+ *
+ * A string that has to be pattern-matched to recover information the caller
+ * already had is the defect, not the pattern -- so the caller passes the node.
+ * There is nothing left to match, no cursor to keep aligned, and no filename
+ * shape a future embedder can break by changing. js_dom.c grew ONE export
+ * (js_dom_node_value) so the node can be handed to JavaScript as itself; the
+ * index indirection through document.scripts is gone with it, which is also
+ * what makes `document.currentScript.remove()` -- the x.com idiom above --
+ * behave: removing the element used to renumber the collection the index was
+ * standing in.
+ *
+ * NULL EVERYWHERE ELSE, which is the spec and is also rule 2 of this tree: a
+ * currentScript that names the wrong script is worse than one that names
+ * none. "Everywhere else" has a precise edge and it is NOT where this file
+ * first put it -- the script's own MICROTASK CHECKPOINT is inside the script,
+ * not after it, so a `.then()` the script queued sees the script and a
+ * setTimeout callback does not. The full argument, and the production code
+ * that depends on it, is on js_page_eval below. js_module_eval never sets it
+ * at all: currentScript is null during a module by definition. */
+static struct node *g_cur_script;
 
-static int script_index_for(struct node *n, const char *filename, int *idx, int *found)
-{
-    if (!n) return 0;
-    if (n->type == N_ELEM && n->tag && !strcmp(n->tag, "script")) {
-        int i = (*idx)++;
-        if (*found < 0 && i < 256 && !g_script_used[i]) {
-            const char *src = dom_attr(n, "src");
-            int match;
-            if (src && src[0]) {
-                /* The filename the embedder passes is the ABSOLUTE url; the
-                 * attribute is whatever the author wrote. A suffix test is
-                 * enough to pair them and needs no URL resolver here. */
-                int sl = (int)strlen(src), fl = filename ? (int)strlen(filename) : 0;
-                match = filename && fl >= sl && !strcmp(filename + fl - sl, src);
-            } else {
-                match = !filename || !strchr(filename, ':');   /* an inline one */
-            }
-            if (match) { *found = i; g_script_used[i] = 1; }
-        }
-    }
-    for (struct node *c = n->first_child; c; c = c->next)
-        script_index_for(c, filename, idx, found);
-    return *found;
-}
-
-static JSValue js_cur_script_index(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+static JSValue js_cur_script_node(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc; (void)argv;
-    return JS_NewInt32(ctx, g_cur_script);
+    return g_cur_script ? js_dom_node_value(ctx, g_cur_script) : JS_NULL;
 }
 
 /* Exported because js_page_eval is not the only caller that runs a page's
- * classic script: tests/unit/webapi_probe.c evaluates each one itself so it
- * can keep the exception object rather than the printed message. Without
- * these it measured a document.currentScript that was null for every script
- * on every page -- an instrument reporting the feature as broken because it
- * had not turned it on. */
-void js_page_begin_script(const char *filename)
+ * classic script: tests/unit/webapi_probe.c and the WPT runner evaluate each
+ * one themselves so they can keep the exception object rather than the printed
+ * message. They pass the same node browser.c does, through the same door --
+ * before this took a node they passed a filename string, which is how the
+ * probe came to be measuring a currentScript the browser could never produce.
+ * A NULL node means "no script is running", i.e. currentScript === null. */
+void js_page_begin_script(struct node *node)
 {
-    int idx = 0, found = -1;
-    script_index_for(js_dom_root(), filename, &idx, &found);
-    g_cur_script = found;
+#ifdef JS_CURRENTSCRIPT_NOTOLD
+    /* THE NEGATIVE CONTROL, and it is the defect itself on a switch rather
+     * than a lookalike: the runtime is not told which node is running, so
+     * document.currentScript is null. That is EXACTLY the state the shipped
+     * browser was in for every inline classic script on every page -- not
+     * because anyone chose it, but because the only channel was a filename
+     * string and the string could not carry the answer.
+     *
+     * It is here so `make test-currentscript-negctl` can be WATCHED FAILING
+     * the positive gate's assertions on the real machine. A control that
+     * cannot be watched failing is worse than no control (rule 5), and this
+     * one is cheap: one -D, one link, the same driver, the same page. */
+    (void)node;
+    g_cur_script = 0;
+#else
+    g_cur_script = node;
+#endif
 }
-void js_page_end_script(void) { g_cur_script = -1; }
+void js_page_end_script(void) { g_cur_script = 0; }
 
 int js_page_open(struct node *root)
 {
@@ -660,8 +1004,7 @@ int js_page_open(struct node *root)
 
     g_t0 = now_ms();
     g_seq = 0; g_next_id = 1; g_next_raf_id = 1; g_frame_due = 0;
-    g_cur_script = -1;
-    memset(g_script_used, 0, sizeof g_script_used);
+    g_cur_script = 0;
 
     JSValue g = JS_GetGlobalObject(g_ctx);
     JSValue con = JS_NewObject(g_ctx);
@@ -689,9 +1032,9 @@ int js_page_open(struct node *root)
 
     /* The bridge js_platform.c turns into document.currentScript. Not a
      * property of `document` here because js_dom.c owns that object and
-     * installs it below; see the comment on script_index_for. */
-    JS_SetPropertyStr(g_ctx, g, "__currentScriptIndex",
-                      JS_NewCFunction(g_ctx, js_cur_script_index, "__currentScriptIndex", 0));
+     * installs it below; see the comment above js_cur_script_node. */
+    JS_SetPropertyStr(g_ctx, g, "__currentScriptNode",
+                      JS_NewCFunction(g_ctx, js_cur_script_node, "__currentScriptNode", 0));
 
     /* `location` normally comes from js_webapi_install below, parsed into
      * components and writable. This href-only stand-in is what a build without
@@ -821,6 +1164,20 @@ int js_page_open(struct node *root)
      * Weak like every install above: a build without js_worker.c keeps
      * `typeof Worker === 'undefined'`. */
     if (LOGIT_HAVE(js_worker_install)) js_worker_install(g_ctx);
+    /* AFTER js_webapi_install, and that ordering is the one thing js_wasm.c
+     * asks for: WebAssembly.instantiateStreaming takes a Response and reads it
+     * with .arrayBuffer(), so it needs the real G.Response.  It degrades the
+     * right way rather than half-installing -- with no Response the streaming
+     * pair is simply not defined, which is the correct feature-detect answer,
+     * while the rest of the namespace works.  ("Streaming" is also the honest
+     * word for it: Response.body is undefined in this browser, so it awaits
+     * the whole body, which the specification explicitly permits.)
+     * Weak like every install above: a build without js_wasm.c keeps
+     * `typeof WebAssembly === 'undefined'`, and that matters more here than
+     * anywhere else in this list -- a page feature-tests the constructor and
+     * then TRUSTS what it gets, so a half-built WebAssembly is worse than
+     * none. */
+    if (LOGIT_HAVE(js_wasm_install)) js_wasm_install(g_ctx);
     /* AFTER js_forms_install, and that ordering is load-bearing in one place:
      * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
      * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
@@ -874,17 +1231,14 @@ void js_page_close(void)
     g_ctx = 0; g_rt = 0;
 }
 
-int js_page_eval(const char *src, int len, const char *filename)
+int js_page_eval(const char *src, int len, const char *filename, struct node *node)
 {
     if (!g_ctx || !src) return 0;
+    js_prof_label(filename ? filename : "<page>");
     js_page_slice_begin();
-    js_page_begin_script(filename);
+    js_page_begin_script(node);
     JSValue v = JS_Eval(g_ctx, src, (size_t)len, filename ? filename : "<page>",
                         JS_EVAL_TYPE_GLOBAL);
-    /* Cleared before the microtask drain: currentScript is null everywhere
-     * except a classic script's own synchronous execution, and a .then()
-     * queued by the script runs after it, not during it. */
-    js_page_end_script();
     int ok = !JS_IsException(v);
     if (!ok) {
         JSValue e = JS_GetException(g_ctx);
@@ -922,9 +1276,40 @@ int js_page_eval(const char *src, int len, const char *filename)
         JS_FreeValue(g_ctx, e);
     }
     JS_FreeValue(g_ctx, v);
-    /* Promise reactions queued by the script run now, not "eventually": a page
-     * whose whole body is `main().then(render)` has to have rendered by the time
-     * the loader repaints. */
+    /* THE MICROTASK CHECKPOINT, AND IT RUNS WHILE currentScript IS STILL THIS
+     * SCRIPT. That ordering is not a detail and it is not ours -- it is what
+     * HTML says, and getting it backwards is what this file did until
+     * 2026-08-29.
+     *
+     * "Execute the script element" sets document's currentScript to el, calls
+     * "run a classic script", and only THEN restores the old value. The
+     * microtask checkpoint lives inside "run a classic script" ("clean up
+     * after running script": pop the execution context, and if the stack is
+     * now empty, perform a microtask checkpoint) -- so it happens BEFORE the
+     * restore. A promise reaction queued by a classic script therefore sees
+     * that script as document.currentScript in every real browser.
+     *
+     * THE CORPUS SAYS SO, WHICH IS WORTH MORE THAN THE SPEC CITATION. Next.js's
+     * turbopack runtime (tests/fixtures/frameworks/next, s011.js) registers a
+     * chunk from an `async` function that AWAITS the sibling chunks and then
+     * calls getAssetPrefix(), which is
+     *
+     *     let e = document.currentScript;
+     *     if (!(e instanceof HTMLScriptElement)) throw new InvariantError(...)
+     *
+     * -- production code on every turbopack-built site on the web. It runs as
+     * a promise reaction, never synchronously. If currentScript were null at a
+     * post-script checkpoint, that invariant would fire on every Next.js page
+     * load for everybody; it does not. It fired HERE, twice per run, and that
+     * exception is what killed the client render.
+     *
+     * The restore is BELOW this line for exactly that reason. Note what does
+     * NOT change: a setTimeout callback still sees null (js_page_run_due drains
+     * jobs with no script in scope), and so does anything a later task queues
+     * -- currentScript is bounded by the script's own checkpoint, not left
+     * lying around. */
     js_dom_run_jobs(g_ctx);
+    js_page_end_script();
+    js_page_slice_end();
     return ok;
 }

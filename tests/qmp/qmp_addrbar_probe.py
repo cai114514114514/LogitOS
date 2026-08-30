@@ -31,7 +31,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, dock_icon, BROWSER_SLOT  # noqa: E402
+from qmp_ui import Session                           # noqa: E402
 
 
 def ctrl(ui, qcode):
@@ -122,13 +122,15 @@ def main():
         time.sleep(3)
 
         ui = Session(qmp_path, serial=serial_path)
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-        for _ in range(5):
-            if wait_for("launched Browser", 15):
-                break
-            ui.click_at(*dock_icon(BROWSER_SLOT))
-        else:
-            fail("the Dock never launched the Browser")
+        # One click at the tile the GUEST names, verified against the guest's
+        # own [wm] launched line. The re-click loop existed because the slot
+        # constant under the coordinate could be stale; the machine's line
+        # cannot be. (This probe exists because five drivers' ADDRESS-BAR click
+        # had drifted into the WM titlebar -- same disease, one joint over.)
+        try:
+            ui.launch_app("browser")
+        except AssertionError as e:
+            fail(str(e))
         time.sleep(7)
 
         # ---- WARM-UP, absorbing a ~20s one-time stall that is NOT the

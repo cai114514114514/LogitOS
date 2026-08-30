@@ -522,5 +522,24 @@ struct prop_table prop_dispatch[CSS_N_PROPERTIES] = {
 	{
 		PROPERTY_FUNCS(stroke_opacity),
 		1,
+	},
+	/* LogitOS: border-radius corners. This table is indexed by OPCODE
+	 * (CSS_PROP_*), so these four sit at 0x07e-0x081 and are an append.
+	 * The trailing 0 is `inherited` -- border-radius is not. */
+	{
+		PROPERTY_FUNCS(border_top_left_radius),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(border_top_right_radius),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(border_bottom_right_radius),
+		0,
+	},
+	{
+		PROPERTY_FUNCS(border_bottom_left_radius),
+		0,
 	}
 };

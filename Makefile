@@ -213,6 +213,24 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
            -fno-stack-protector -fno-pic -fno-pie \
            -mno-red-zone -mno-mmx -msse -msse2 -DNDEBUG \
            -std=c11 -Wall -Wextra -O2 -MMD -MP -Ic/apps/libc/include/uonly $(INCDIRS)
+#   make OOFCTL=1  build the browser (UCFLAGS, not CFLAGS -- layout.c and
+#                  css_engine.c are ring-3 TUs) with out-of-flow
+#                  (position:absolute or :fixed) children of a flex/grid
+#                  container handled the way they were before 2026-08-30:
+#                  dropped from the display list ENTIRELY (layout.c's
+#                  flex_collect, LAYOUT_NEGCTL_FLEX_OOF_DROP), and :fixed
+#                  left IN NORMAL FLOW so a full-viewport hidden overlay
+#                  costs a screen of layout height (css_engine.c,
+#                  LAYOUT_NEGCTL_FIXED_INFLOW). The NEGATIVE CONTROL for both
+#                  fixes: boot this build against tests/qmp/zwprobe/c.html and
+#                  W1/W2/W3/W4/W6 (abs-in-relflex, fixed-in-flex, abs-in-grid,
+#                  abs-in-inline-flex, abs-in-flex-no-offset) are gone from
+#                  `about:text`'s painted-run dump; against f.html,
+#                  REAL-CONTENT-1/2 move from right under TOP-HEADER to
+#                  roughly a viewport height below it.
+ifeq ($(OOFCTL),1)
+UCFLAGS += -DLAYOUT_NEGCTL_FLEX_OOF_DROP -DLAYOUT_NEGCTL_FIXED_INFLOW
+endif
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
 # inflate.c + png.c are excluded: ported to Rust (rust/src/{inflate,png}.rs provide
@@ -903,6 +921,14 @@ BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
                 c/lib/image/exif.c c/lib/image/img.c
+# c/lib/wasm (the WebAssembly decoder, validator and interpreter) is
+# deliberately NOT here.  It rides inside c/apps/browser/js_wasm.c, which
+# #includes the three .c files textually -- see that file's own comment for the
+# argument.  The short version: js_*.c is a WILDCARD that nine test fragments
+# subtract from, each with its own narrow -I list, and putting the library in
+# this variable broke test-canvas with "'wasm.h' file not found" while the
+# browser itself linked fine.
+#
 # c/net/http/ws.c is WebSocket's transport-free frame codec (RFC 6455); the
 # JS surface is c/apps/browser/js_websocket.c, picked up automatically below
 # by the js_*.c wildcard.  c/net/ssh/base64.c and c/crypto/hash/sha1.c ride
@@ -1392,7 +1418,7 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
-	    sz=$$(stat -c%s $(MODEL_LM)); \
+	    sz=$$(bash tools/filesize.sh $(MODEL_LM)); \
 	    echo "disk: /model.lm is $$sz bytes ($$((sz / 1024)) KiB) against a 64 MiB (65536 KiB) image"; \
 	else \
 	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
@@ -1430,6 +1456,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	    $(BUILD)/lm.aex:/bin/lm $(MODEL_LM_ON_DISK) \
 	    $(IMG_FIXTURES_ON_DISK) \
 	    $(JSBENCH_PACK) \
+	    $(JSSEM_PACK) \
 	    $(CH_PACK) \
 	    tests/fixtures/video/sample.h264:/media/sample.h264 \
 	    $(BUILD)/dot.png:/media/dot.png \
@@ -3343,6 +3370,10 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # the fragment that builds it.
 -include tests/stall.mk
 -include tests/canvas.mk
+# The PNG ENCODER (rust/src/pngenc.rs) -- the other direction from png.rs, and
+# what removes the premise under js_canvas.c's toDataURL refusal. Two oracles,
+# one of them outside this tree; own fragment, see the file.
+-include tests/pngenc.mk
 -include tests/nn.mk
 
 # The platform globals: TextEncoder/TextDecoder against the WPT encoding
@@ -3355,6 +3386,18 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # advertises it -- driven by a reduction of the one page whose stack named it.
 # Own fragment; see the file.
 -include tests/logreporter.mk
+
+# document.currentScript in the SHIPPED browser, on the machine -- the one
+# question no host gate can ask, because the subject is the channel between the
+# embedder and the runtime and a host gate is a different embedder. Its control
+# is the defect on a -D switch. Own fragment; see the file.
+-include tests/currentscript.mk
+
+# The TYPE of every member on every interface prototype, taken in the guest and
+# ratcheted against a committed baseline. The three fixes above this line were
+# all ABSENCE; a member with the wrong type is strictly worse, because a page
+# feature-tests for presence and calls what it finds. Own fragment; see the file.
+-include tests/jstype.mk
 
 # The jar's SameSite rule and its eviction order, each with a control that is
 # watched failing -- and the transport door built the way it shipped, which is
@@ -4400,6 +4443,10 @@ clean-scratch:
 # shape as the fragments above.
 -include tests/fullsystem.mk
 
+# The Dock's slot order, published by the guest and read back by the QMP
+# helpers instead of restated as a constant. Own fragment; see the file.
+-include tests/dock.mk
+
 -include tests/prof.mk
 
 # TLS/crypto performance: the per-phase handshake breakdown, the host
@@ -4447,6 +4494,12 @@ clean-scratch:
 # line cannot delete it. It also defines $(JSBENCH_PACK), used in the $(DISK)
 # recipe above.
 -include tests/jsperf.mk
+-include tests/jsprof.mk
+
+# JS engine semantics differential against node (test-jssem, test-jssem-os).
+# Defines $(JSSEM_PACK), used in the $(DISK) recipe above.
+-include tests/jssem.mk
+-include tests/jsmicro.mk
 
 # Container demuxer test targets (test-demux and its parts: -units, -diff,
 # -lacing, -fuzz, -negctl, test-avsync, test-demux-os) plus MED_OBJ and
@@ -4994,6 +5047,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/fsgeom.mk
 -include tests/imelearn.mk
 -include tests/worker.mk
+-include tests/framefetch.mk
 -include tests/cache.mk
 
 .PHONY: test-mk-wired
@@ -5001,3 +5055,12 @@ test-mk-wired:
 	@python3 tools/mk_wired.py
 -include tests/vp8.mk
 -include tests/jsfb.mk
+-include tests/coldcode.mk
+
+# WebAssembly MVP decoder + validator (c/lib/wasm).  See tests/wasm.mk.
+-include tests/wasm.mk
+
+# A same-origin second browsing context (c/apps/browser/js_frame.c) + the
+# js_domparser.c mutation surface it needed. See tests/frame.mk.
+-include tests/frame.mk
+-include tests/filesize.mk

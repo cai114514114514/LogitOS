@@ -463,6 +463,22 @@ css_error css__parse_writing_mode(css_language *c,
 css_error css__parse_z_index(css_language *c,
 		const parserutils_vector *vector, int32_t *ctx,
 		css_style *result);
+/* LogitOS: border-radius. See src/parse/properties/border_radius.c. */
+css_error css__parse_border_radius(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_border_top_left_radius(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_border_top_right_radius(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_border_bottom_right_radius(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
+css_error css__parse_border_bottom_left_radius(css_language *c,
+		const parserutils_vector *vector, int32_t *ctx,
+		css_style *result);
 
 /** Mapping from property bytecode index to bytecode unit class mask. */
 extern const uint32_t property_unit_mask[CSS_N_PROPERTIES];
@@ -578,5 +594,9 @@ extern const uint32_t property_unit_mask[CSS_N_PROPERTIES];
 #define UNIT_MASK_FLEX_WRAP             (0)
 #define UNIT_MASK_JUSTIFY_CONTENT       (0)
 #define UNIT_MASK_ORDER                 (0)
+#define UNIT_MASK_BORDER_TOP_LEFT_RADIUS     (UNIT_LENGTH | UNIT_PCT)
+#define UNIT_MASK_BORDER_TOP_RIGHT_RADIUS    (UNIT_LENGTH | UNIT_PCT)
+#define UNIT_MASK_BORDER_BOTTOM_RIGHT_RADIUS (UNIT_LENGTH | UNIT_PCT)
+#define UNIT_MASK_BORDER_BOTTOM_LEFT_RADIUS  (UNIT_LENGTH | UNIT_PCT)
 
 #endif

@@ -228,7 +228,36 @@ int main(void)
      * and the half that separates a missing API (undefined) from a shape
      * mismatch (an object).
      *
-     * NEGATIVE CONTROL: make test-js-callee-control. */
+     * ---- 2026-08-30: ONE SHAPE OUT OF NINE ------------------------------
+     *
+     * The first version of this section measured `o.a()` and stopped, because
+     * that is the only shape the cached-atom mechanism could name. GOOGLE
+     * MEASURED THE REST FOR US. www.google.com/search caught a TypeError out
+     * of this engine, URL-encoded our own message and stack into the `sg_ss`
+     * parameter and navigated to report it to itself -- and the message it
+     * carried was the UNNAMED half:
+     *
+     *     TypeError: not a function (the callee is a number)
+     *         at N (<input>) at VD (<input>) ... at ia (...#inline-script-4)
+     *
+     * So the engine's whole account of a live defect on the largest page on
+     * the web was "something, somewhere, is a number". The page that
+     * navigation lands on is the "unusual traffic" interstitial.
+     *
+     * The matrix below is every call shape the engine has, and it is the
+     * product: a property that is PRESENT with the wrong TYPE is worse than an
+     * absent one, because a page that feature-tests for presence gets a truthy
+     * number and calls it instead of taking its fallback. Naming it is what
+     * makes that class of defect findable at all.
+     *
+     * Chrome's strings are quoted per line. We deliberately differ twice:
+     * Chrome reconstructs the callee EXPRESSION from source text ("o.a",
+     * "(intermediate value).nope") and we have only the bytecode, so we name
+     * the last identifier; and Chrome never prints the VALUE, where 0, NaN and
+     * 1 are three different bugs that all used to print as "a number".
+     *
+     * NEGATIVE CONTROLS: make test-js-callee-control (removes the whole
+     * message) and make test-js-callee-atom-control (removes only the name). */
     expect_str(ctx, "a missing method names itself and says it was undefined",
         "(function(){ try { ({}).nope(); } catch (e) { return e.message; } })()",
         /* Chrome: "(intermediate value).nope is not a function" */
@@ -236,34 +265,166 @@ int main(void)
     expect_str(ctx, "a method that is a number says so",
         "(function(){ var o = { a: 1 }; try { o.a(); } catch (e) { return e.message; } })()",
         /* Chrome: "o.a is not a function" */
-        "a is not a function (it is a number)");
-    expect_str(ctx, "a plain call reports what the callee was",
-        "(function(){ var f = 'x'; try { f(); } catch (e) { return e.message; } })()",
-        /* Chrome: "f is not a function" -- the variable name needs the source */
-        "not a function (the callee is a string)");
+        "a is not a function (it is the number 1)");
     expect_str(ctx, "a null method is not confused with a missing one",
         "(function(){ var o = { a: null }; try { o.a(); } catch (e) { return e.message; } })()",
         "a is not a function (it is null)");
-    /* The stale-atom trap: a plain call AFTER a method call must not inherit
-     * the method's name. Without the reset in OP_call_method this reads
-     * "then is not a function", which would send the reader to the wrong line
-     * of a bundle -- worse than the bare message it replaces. */
-    expect_str(ctx, "a plain call does not inherit the previous method's name",
+
+    /* ---- the shapes that were unnamed until the bytecode was read -------- */
+    expect_str(ctx, "a plain call through a LOCAL names the local",
+        "(function(){ var f = 'x'; try { f(); } catch (e) { return e.message; } })()",
+        /* Chrome: "f is not a function" */
+        "f is not a function (it is the string \"x\")");
+    expect_str(ctx, "a plain call through an ARGUMENT names the argument",
+        "(function(){ return (function (g) {"
+        "  try { g(); } catch (e) { return e.message; } })(1); })()",
+        "g is not a function (it is the number 1)");
+    expect_str(ctx, "a plain call through a CLOSURE variable names it",
+        "(function(){ var c = 1; return (function(){"
+        "  try { c(); } catch (e) { return e.message; } })(); })()",
+        "c is not a function (it is the number 1)");
+    expect_str(ctx, "a plain call through a GLOBAL names the global",
+        "(function(){ globalThis.gnum = 1;"
+        "  try { gnum(); } catch (e) { return e.message; } })()",
+        "gnum is not a function (it is the number 1)");
+    expect_str(ctx, "the bundler's `(0, o.a)()` still names the property",
+        "(function(){ var o = { a: 1 };"
+        "  try { (0, o.a)(); } catch (e) { return e.message; } })()",
+        "a is not a function (it is the number 1)");
+    expect_str(ctx, "a chain names the LAST link, not the first",
+        "(function(){ var o = { a: { b: 1 } };"
+        "  try { o.a.b(); } catch (e) { return e.message; } })()",
+        "b is not a function (it is the number 1)");
+    expect_str(ctx, "a call with arguments is named across the argument pushes",
+        "(function(){ var f = 1; try { f(1, 2, 3); } catch (e) { return e.message; } })()",
+        "f is not a function (it is the number 1)");
+    expect_str(ctx, "a call inside a branch is still named",
+        "(function(){ var o = { a: 1 };"
+        "  try { if (o) { o.a(); } else { o.a(); } } catch (e) { return e.message; } })()",
+        "a is not a function (it is the number 1)");
+    expect_str(ctx, "a tagged template names its tag",
+        "(function(){ var t = 1; try { t`x`; } catch (e) { return e.message; } })()",
+        "t is not a function (it is the number 1)");
+    /* `new C()` printed the bare upstream string -- not even the kind the
+     * other arms gave -- because OP_call_constructor had no arm at all. */
+    expect_str(ctx, "new on a non-function names the constructor",
+        "(function(){ var C = 1; try { new C(); } catch (e) { return e.message; } })()",
+        /* Chrome: "C is not a constructor" */
+        "C is not a function (it is the number 1)");
+
+    /* ---- what the callee WAS, with enough precision to tell bugs apart ----
+     * 0, NaN and 1 are three different defects. So are "" and a 40 KB string,
+     * and an Array where a function belongs is a different mistake from a
+     * plain object. All four printed as "a number" / "a string" / "an object"
+     * before, which is one bug report for many bugs.
+     *
+     * These three deliberately use the COMPUTED shape, which the name scan
+     * cannot name. That is what keeps the two mechanisms separable: they must
+     * keep passing under test-js-callee-atom-control, so that control measures
+     * the naming and only the naming. */
+    expect_str(ctx, "the number is printed, because 0 is not 1",
+        "(function(){ var m = { q: 0 }, k = 'q';"
+        "  try { m[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is the number 0)");
+    expect_str(ctx, "NaN is printed as NaN",
+        "(function(){ var m = { q: NaN }, k = 'q';"
+        "  try { m[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is the number NaN)");
+    expect_str(ctx, "an object reports its class",
+        "(function(){ var m = { q: [] }, k = 'q';"
+        "  try { m[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is an object (Array))");
+    /* A long string must not become the message: 2 MB of bundle text in a
+     * TypeError is how a diagnostic turns into a denial of service. */
+    expect_true(ctx, "a long string callee is truncated with an ellipsis",
+        "(function(){ var f = new Array(400).join('x');"
+        "  try { f(); } catch (e) {"
+        "    return e.message.length < 100 && e.message.indexOf('\\\"...') > 0; } })()");
+
+    /* ---- WHERE THE NAME IS UNRECOVERABLE, SAY NOTHING -------------------
+     * `o[k]()` computes its key at runtime and OP_get_array_el2 consumes it
+     * before the call can fail; the callee of `o.a()()` is a value no name was
+     * ever attached to. Both must fall back to the unnamed form. Naming the
+     * WRONG property sends the reader to a line that is fine, which is worse
+     * than the bare message -- so these two are the guard on the whole scan. */
+    expect_str(ctx, "a computed call names nothing rather than guessing",
+        "(function(){ var o = { z: 1 }, k = 'z';"
+        "  try { o[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is the number 1)");
+    expect_str(ctx, "calling the RESULT of a call names nothing",
+        "(function(){ var o = { a: function(){ return 1; } };"
+        "  try { o.a()(); } catch (e) { return e.message; } })()",
+        "not a function (the callee is the number 1)");
+    /* The two stale-atom traps the deleted cache needed explicit resets for.
+     * They now hold by construction -- the name belongs to the instruction
+     * that pushed the callee, not to the last one that happened to run -- and
+     * they stay here because that is a property to keep, not an implementation
+     * detail: without it a plain call after a method call read "then is not a
+     * function", and `o.a?.()` on a nullish o.a (which SKIPS the call, so its
+     * atom was never consumed) lent "a" to the next unrelated failure. */
+    expect_str(ctx, "a computed call does not inherit the previous method's name",
         "(function(){ var p = { then: function(){} }; p.then();"
-        "  var g = 7; try { g(); } catch (e) { return e.message; } })()",
-        "not a function (the callee is a number)");
-    /* The same trap through the OTHER door, and the one that needed a second
-     * pass to see: `o.a?.()` on a nullish o.a SKIPS the call, so the atom the
-     * bytecode pushed is never consumed and stays live for whatever fails
-     * next. A computed call has no name of its own to overwrite it, so that
-     * next failure would be reported as `a is not a function` -- pointing at
-     * a line that is fine. A message that names the WRONG thing is worse than
-     * the bare one it replaces. */
+        "  var m = { q: 7 }, k = 'q';"
+        "  try { m[k](); } catch (e) { return e.message; } })()",
+        "not a function (the callee is the number 7)");
     expect_str(ctx, "a skipped optional call does not lend its name to the next failure",
         "(function(){ var o = { a: null }; o.a?.();"
         "  var m = {}, k = 'z';"
         "  try { m[k](); } catch (e) { return e.message; } })()",
         "not a function (the callee is undefined)");
+
+    /* ---- THE GUARD, and the reason the scan refuses rather than guesses --
+     *
+     * The checks above measure COVERAGE: which shapes get named. This one
+     * measures the opposite and is the more important of the two -- across a
+     * spread of shapes (loops, switch, try/finally, optional chaining, getters,
+     * generators, nesting, spread, `new`, computed keys) the recovered name
+     * must be either RIGHT or ABSENT. Never wrong.
+     *
+     * It deliberately accepts "absent" everywhere, so it cannot substitute for
+     * the coverage checks and cannot be satisfied by naming less. What it
+     * catches is the failure mode a stack-effect walk actually has: drifting by
+     * one slot and confidently reporting the name of a neighbouring value,
+     * which points the reader at a line that is fine. `null` in the third
+     * column means NO name may be produced for that shape at all. */
+    expect_str(ctx, "across 24 call shapes the name is right or absent, never wrong",
+        "(function(){"
+        "  function m(f){ try { f(); } catch (e) { return e.message; } return 'NO THROW'; }"
+        "  function nm(s){ var i = s.indexOf(' is not a function');"
+        "                  return i < 0 ? null : s.slice(0, i); }"
+        "  var C = ["
+        "   ['local',      function(){ var zz=1; zz(); }, 'zz'],"
+        "   ['prop',       function(){ var o={pp:1}; o.pp(); }, 'pp'],"
+        "   ['chain',      function(){ var o={pp:{qq:1}}; o.pp.qq(); }, 'qq'],"
+        "   ['args3',      function(){ var zz=1; zz(1,2,3); }, 'zz'],"
+        "   ['nested-arg', function(){ var zz=1, h=function(x){return x;}; zz(h(1),h(2)); }, 'zz'],"
+        "   ['in-for',     function(){ var zz=1; for(var i=0;i<3;i++){ zz(i); } }, 'zz'],"
+        "   ['in-while',   function(){ var zz=1,i=0; while(i<3){ i++; zz(i); } }, 'zz'],"
+        "   ['in-dowhile', function(){ var zz=1,i=0; do { zz(i); i++; } while(i<3); }, 'zz'],"
+        "   ['in-switch',  function(){ var zz=1,k=2; switch(k){ case 1: break; case 2: zz(); break; } }, 'zz'],"
+        "   ['in-ternary', function(){ var zz=1,c=1; (c ? zz : zz)(); }, null],"
+        "   ['in-try',     function(){ var zz=1; try { zz(); } finally { } }, 'zz'],"
+        "   ['in-catch',   function(){ var zz=1; try { throw 1; } catch(e) { zz(); } }, 'zz'],"
+        "   ['after-and',  function(){ var zz=1,c=1; c && zz(); }, 'zz'],"
+        "   ['after-or',   function(){ var zz=1,c=0; c || zz(); }, 'zz'],"
+        "   ['optchain',   function(){ var o={pp:1}; o?.pp(); }, 'pp'],"
+        "   ['optcall',    function(){ var o={pp:1}; o.pp?.(); }, 'pp'],"
+        "   ['getter',     function(){ var o={get pp(){ return 1; }}; o.pp(); }, 'pp'],"
+        "   ['generator',  function(){ function* g(){ var zz=1; zz(); } g().next(); }, 'zz'],"
+        "   ['closure2',   function(){ var zz=1; (function(){ (function(){ zz(); })(); })(); }, 'zz'],"
+        "   ['newop',      function(){ var zz=1; new zz(); }, 'zz'],"
+        "   ['tagged',     function(){ var zz=1; zz`t`; }, 'zz'],"
+        "   ['this-prop',  function(){ var o={pp:1,go:function(){ this.pp(); }}; o.go(); }, 'pp'],"
+        "   ['spread',     function(){ var zz=1,a=[1]; zz(...a); }, null],"
+        "   ['computed',   function(){ var o={pp:1},k='pp'; o[k](); }, null]"
+        "  ]; var bad = [];"
+        "  for (var i = 0; i < C.length; i++) {"
+        "    var g = nm(m(C[i][1]));"
+        "    if (g !== null && g !== C[i][2]) bad.push(C[i][0] + ':' + g);"
+        "  }"
+        "  return bad.join(',');"
+        "})()",
+        "");
 
     /* And the call that SUCCEEDS is untouched -- the check runs only after an
      * exception, so nothing here may change what a working call returns. */

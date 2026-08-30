@@ -44,7 +44,7 @@ import time
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT      # noqa: E402
+from qmp_ui import Session, PPM      # noqa: E402
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -261,13 +261,16 @@ def goto(ui, path, secs=90, tries=3):
 
 
 def launch_browser(ui):
-    ui.click_at(*dock_icon(BROWSER_SLOT))
-    for _ in range(4):
-        if "launched Browser" in serial():
-            return True
-        time.sleep(4)
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-    return "launched Browser" in serial()
+    """One click, at the tile the GUEST names for browser.aex, verified against
+    the guest's own [wm] launched line. The re-click loop this replaces was the
+    apology a hand-kept slot constant needed: half a slot off, the miss looks
+    exactly like a slow launch. See tests/qmp/qmp_ui.py's dock block."""
+    try:
+        ui.launch_app("browser")
+        return True
+    except AssertionError as e:
+        print("     " + str(e))
+        return False
 
 
 try:

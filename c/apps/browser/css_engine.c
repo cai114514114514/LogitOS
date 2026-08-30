@@ -321,6 +321,159 @@ static css_error h_node_is_link(void *pw, void *node, bool *match)
 static css_error h_false(void *pw, void *node, bool *match)
 { (void)pw; (void)node; *match = false; return CSS_OK; }
 
+/* ---------- the four STATIC pseudo-classes -------------------------------
+ *
+ * :checked, :disabled, :enabled and :target answered h_false unconditionally,
+ * which meant every rule behind them was selected away -- 578 uses across the
+ * 15-site corpus (:checked 252, :disabled 230, :target 93, :enabled 3).
+ *
+ * They are grouped here, and :hover/:active/:focus/:visited are deliberately
+ * left on h_false, because the four below are a DIFFERENT KIND of question.
+ * These are functions of the document as it stands: an attribute, a form
+ * control's stored state, the URL's fragment. The other four are functions of
+ * a transient UI state that CHANGES WITHOUT THE DOM CHANGING, so answering
+ * them truthfully once is not enough -- the cascade has to be re-run at the
+ * moment the state flips, and there is no invalidation path for that here.
+ * Answering :hover truthfully with no re-style would be strictly worse than
+ * answering it false: the page would style whatever happened to be under the
+ * pointer during the ONE pass that ran and then keep those styles forever.
+ * (:visited is not a machinery question at all -- every browser refuses it on
+ * purpose, because answering it leaks the user's history to getComputedStyle.)
+ *
+ * forms.c owns checked/disabled and is WEAK here for the reason the block at
+ * ci_transform_parse gives: css_engine.c appears in ~51 host source lists that
+ * do not name forms.c, and a hard reference would turn this into fifty-one
+ * link failures in other lines' files. $(BROWSER_PIPE) names forms.c, so the
+ * shipped browser gets the live answers; a host gate without it degrades to
+ * the CONTENT ATTRIBUTE, which is the right floor -- `<input checked>` in the
+ * source still matches :checked, only a box the user or a script toggled since
+ * parse does not. Degrading to "no" would have been the other option and is
+ * worse: it is the h_false we are removing.
+ *
+ * fc_kind() is a static inline in forms.h and costs no link edge at all, so
+ * the "is this even a form control" half of :enabled/:disabled is always
+ * exact. */
+#include "forms.h"
+extern int fc_checked(struct node *n)  LOGIT_WEAK;
+extern int fc_disabled(struct node *n) LOGIT_WEAK;
+LOGIT_WEAK_STUB(fc_checked);
+LOGIT_WEAK_STUB(fc_disabled);
+
+/* :checked -- a checked checkbox/radio, or a selected <option>.
+ *
+ * <option selected> is in the spec's definition and is NOT reachable through
+ * fc_checked (that function is about input toggles), so it is answered here
+ * from the attribute. Selecting a different option through the DOM is a
+ * dirtiness fc_selected_index() knows about; matching the attribute is this
+ * pass's floor for the same reason as above. */
+static css_error h_node_is_checked(void *pw, void *node, bool *match)
+{
+    (void)pw; struct node *n = node;
+    *match = false;
+    if (!n || n->type != N_ELEM) return CSS_OK;
+    if (n->tag_id == TAG_OPTION) {
+        *match = dom_attr(n, "selected") != NULL;
+        return CSS_OK;
+    }
+    if (!FC_IS_TOGGLE(fc_kind(n))) return CSS_OK;
+    *match = LOGIT_HAVE(fc_checked) ? (fc_checked(n) != 0)
+                                    : (dom_attr(n, "checked") != NULL);
+    return CSS_OK;
+}
+
+/* Attribute-only :disabled, used when forms.c is not in the link. Mirrors
+ * fc_disabled()'s two rules (own attribute, or an ancestor <fieldset
+ * disabled>) rather than only the first -- a fieldset-disabled control that
+ * reported :enabled would be a NEW wrong answer, and a wrong answer is worse
+ * than the missing one this replaces. */
+static int css_attr_disabled(struct node *n)
+{
+    if (dom_attr(n, "disabled")) return 1;
+    for (struct node *p = n->parent; p; p = p->parent)
+        if (p->type == N_ELEM && p->tag_id == TAG_FIELDSET &&
+            dom_attr(p, "disabled")) return 1;
+    return 0;
+}
+
+/* :disabled / :enabled are NOT each other's negation over all elements: both
+ * are defined only on elements that CAN be disabled, so a <div> is neither.
+ * Writing :enabled as "not disabled" would match every div, span and text
+ * wrapper on the page -- present-and-wrong, and invisible to a drop counter
+ * because nothing was dropped. fc_kind() decides candidacy; the two then
+ * disagree only on the boolean. */
+static css_error h_node_is_disabled(void *pw, void *node, bool *match)
+{
+    (void)pw; struct node *n = node;
+    *match = false;
+    if (!n || n->type != N_ELEM || fc_kind(n) == FC_NONE) return CSS_OK;
+    *match = LOGIT_HAVE(fc_disabled) ? (fc_disabled(n) != 0)
+                                     : (css_attr_disabled(n) != 0);
+    return CSS_OK;
+}
+
+static css_error h_node_is_enabled(void *pw, void *node, bool *match)
+{
+    bool dis = false;
+    css_error e = h_node_is_disabled(pw, node, &dis);
+    struct node *n = node;
+    *match = (e == CSS_OK && !dis && n && n->type == N_ELEM &&
+              fc_kind(n) != FC_NONE);
+    return e;
+}
+
+/* :target -- the element the URL's fragment names.
+ *
+ * ONE spelling of the fragment, set through css_set_target_fragment() by
+ * whoever owns the URL, rather than css_engine.c re-deriving it from a
+ * document URL it would have to be handed anyway. An empty fragment matches
+ * nothing at all, which is the spec's answer and also the only safe default:
+ * a NULL here has to mean "no target", never "match everything".
+ *
+ * The id comparison is the interned pointer's BYTES, not the pointer: the
+ * fragment arrives as text from a URL and was never interned. */
+static char g_target_frag[128];
+static int  g_target_fraglen;
+
+void css_set_target_fragment(const char *frag, int len)
+{
+    if (!frag) { g_target_fraglen = 0; g_target_frag[0] = 0; return; }
+    if (len < 0) len = (int)strlen(frag);
+    if (len > (int)sizeof g_target_frag - 1) len = (int)sizeof g_target_frag - 1;
+    memcpy(g_target_frag, frag, (size_t)len);
+    g_target_frag[len] = 0;
+    g_target_fraglen = len;
+}
+
+const char *css_target_fragment(int *len)
+{
+    if (len) *len = g_target_fraglen;
+    return g_target_fraglen ? g_target_frag : NULL;
+}
+
+static css_error h_node_is_target(void *pw, void *node, bool *match)
+{
+    (void)pw; struct node *n = node;
+    *match = false;
+    if (!n || n->type != N_ELEM || g_target_fraglen == 0) return CSS_OK;
+    if (n->id &&
+        (int)lwc_string_length(n->id) == g_target_fraglen &&
+        memcmp(lwc_string_data(n->id), g_target_frag,
+               (size_t)g_target_fraglen) == 0) {
+        *match = true;
+        return CSS_OK;
+    }
+    /* HTML's "find a potential indicated element" falls back to <a name=...>
+     * when no id matches. Only <a>: `name` on a form control is the submission
+     * name and has nothing to do with fragments. */
+    if (n->tag_id == TAG_A) {
+        const char *nm = dom_attr(n, "name");
+        if (nm && (int)strlen(nm) == g_target_fraglen &&
+            memcmp(nm, g_target_frag, (size_t)g_target_fraglen) == 0)
+            *match = true;
+    }
+    return CSS_OK;
+}
+
 static css_error h_node_is_lang(void *pw, void *node, lwc_string *lang, bool *match)
 { (void)pw; (void)node; (void)lang; *match = false; return CSS_OK; }
 
@@ -365,9 +518,14 @@ static css_select_handler g_handler = {
     h_node_has_attribute_prefix, h_node_has_attribute_suffix,
     h_node_has_attribute_substring,
     h_node_is_root, h_node_count_siblings, h_node_is_empty,
-    h_node_is_link, h_false /*visited*/, h_false /*hover*/, h_false /*active*/,
-    h_false /*focus*/, h_false /*enabled*/, h_false /*disabled*/, h_false /*checked*/,
-    h_false /*target*/, h_node_is_lang,
+    h_node_is_link,
+    /* :visited is a deliberate refusal, not a gap -- see h_node_is_checked's
+     * block. :hover/:active/:focus need re-style on state change, which does
+     * not exist here; answering them once would freeze the styles of whatever
+     * was hovered during that one pass. */
+    h_false /*visited*/, h_false /*hover*/, h_false /*active*/, h_false /*focus*/,
+    h_node_is_enabled, h_node_is_disabled, h_node_is_checked,
+    h_node_is_target, h_node_is_lang,
     h_node_presentational_hint, h_ua_default_for_property,
     h_set_libcss_node_data, h_get_libcss_node_data,
 };
@@ -610,7 +768,16 @@ static const char UA_CSS[] =
      * UA default (an inset 2px groove) so an empty frame reads as a frame
      * and not as a stray blank rectangle. */
     "iframe{display:inline-block;width:300px;height:150px;border:2px inset #8a8a8a}"
-    "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}";
+    "script,style,head,title,meta,link,noscript,template,[hidden]{display:none}"
+    /* HTML SS 4.11.4's UA sheet, missing outright: a closed <dialog> (no
+     * `open` attribute) is display:none. Absent this rule a closed dialog
+     * lays out as an ordinary block wherever the document puts it, and a
+     * dialog placed before <main> and sized to the viewport (a common
+     * pattern: mount the modal root once, near the top of the DOM, and
+     * toggle `open` later) is now doubly wrong with position:fixed also
+     * fixed to be out-of-flow above -- it would anchor to the viewport
+     * origin at its full declared size instead of disappearing. */
+    "dialog:not([open]){display:none}";
 
 /* The quirks-mode UA sheet, appended ON TOP of UA_CSS (same UA origin, later
  * wins on equal specificity) when dom_doc_quirks() says QM_QUIRKS. This is the
@@ -924,6 +1091,42 @@ static int clamp_px(int v) { if (v > 8192) return 8192; if (v < -8192) return -8
 
 static uint32_t to_rgb(css_color c) { return (uint32_t)(c & 0x00FFFFFF); }
 
+/* CSS Backgrounds 3 sec 5.5: border-radius DOES NOT APPLY to a table or its
+ * internal elements when border-collapse is `collapse` -- the two boxes share
+ * one edge in the collapsed model, so there is no second border to curve, and
+ * every engine drops the radius rather than picking a winner.
+ *
+ * WHY THIS ASKS THE TAG AND NOT `display`, which is what the spec says: this
+ * engine has no table formatting context, and its UA sheet (UA_CSS above) maps
+ * `table, tr, td, th, thead, tbody, tfoot` to `display:block`. So the computed
+ * display of a <td> here is BLOCK and the spec's condition is not expressible
+ * through it. The HTML tag is the only place the same information survives.
+ * That is a limitation of the table support, named here rather than left for
+ * someone to find as a wrong render, and this function is where it stops being
+ * true the day tables get a real display value.
+ *
+ * border-collapse itself is INHERITED, so the value read off a <td> is its
+ * table's, which is what the rule is about -- and a <div> inside a collapsed
+ * table inherits `collapse` too, which is exactly why the tag test is needed
+ * and not merely convenient: without it that div would lose its own radius.
+ *
+ * MEASURED: WPT css-backgrounds/ttwf-reftest-borderRadius asserts the radius
+ * is ignored here. The engine passed it by accident while it ignored
+ * border-radius everywhere; implementing a property is what turns an
+ * accidental pass into a real requirement. */
+static int is_html_table_box(const struct node *n)
+{
+    static const char *const tags[] = {
+        "table", "tr", "td", "th", "thead", "tbody", "tfoot",
+        "col", "colgroup", "caption"
+    };
+    size_t i;
+    if (!n || !n->tag) return 0;
+    for (i = 0; i < sizeof tags / sizeof tags[0]; i++)
+        if (!strcasecmp(n->tag, tags[i])) return 1;
+    return 0;
+}
+
 static void convert(const css_computed_style *cs, int parent_font, struct cstyle *o)
 {
     css_fixed len; css_unit unit; css_color col;
@@ -1209,6 +1412,58 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     EDGE_CONVERT(3, left)
 #undef EDGE_CONVERT
 
+    /* border-radius, one corner at a time, TL TR BR BL.
+     *
+     * THE PAINTER DRAWS A CIRCULAR ARC and CSS's corner is an ELLIPSE
+     * (`border-bottom-left-radius: 48px 28px`, or a percentage, which resolves
+     * horizontally against the border box's WIDTH and vertically against its
+     * HEIGHT). One number has to come out of two, and the rule is THE SMALLER
+     * OF THE PAIR, for two reasons that are not aesthetic:
+     *
+     *   - CSS says a corner with EITHER radius zero is SQUARE. `25px 0` is a
+     *     sharp corner, and taking the horizontal radius rounds a corner the
+     *     author explicitly did not round -- ink where none was asked for,
+     *     which is the failure direction this tree refuses. min() gets it
+     *     right by construction rather than by a special case.
+     *     (Measured: WPT css-backgrounds/border-bottom-left-radius-010 is
+     *     exactly this test, and it went red with the horizontal rule.)
+     *   - Under-curving withholds ink at a corner; over-curving removes ink
+     *     from a corner the author filled. The first is a smaller lie.
+     *
+     * A percentage stays a percentage: browser_paint.c resolves it against
+     * min(w,h), which is min(pct*w, pct*h) -- i.e. the same min() rule, in the
+     * one place that knows the box. Mixing a length with a percentage in one
+     * pair cannot be compared here (the box is not known yet) and is
+     * vanishingly rare; the LENGTH wins, because it is exact.
+     *
+     * NOTHING IS SILENTLY DISCARDED: both halves of the pair are read, and
+     * the reduction happens once, here, where it can be argued. */
+#define RADIUS_CONVERT(i, NAME) \
+    { css_fixed vlen = 0; css_unit vunit = CSS_UNIT_PX; \
+      int hp = 0, vp = 0; \
+      if (css_computed_border_##NAME##_radius(cs, &len, &unit, &vlen, &vunit) \
+              == CSS_BORDER_RADIUS_SET) { \
+        int hv = len_px(len, unit, fp, &hp); \
+        int vv = len_px(vlen, vunit, fp, &vp); \
+        int is_pct = hp && vp; \
+        int v; \
+        if (hp == vp) v = hv < vv ? hv : vv;   /* same kind: the smaller */ \
+        else          v = hp ? vv : hv;        /* mixed: the LENGTH */ \
+        if (v < 0) v = 0; \
+        if (is_pct) { \
+            if (v > 50) v = 50; \
+            o->radius_pct[i] = v; o->radius[i] = 0; \
+        } else { \
+            o->radius[i] = clamp_px(v); o->radius_pct[i] = 0; \
+        } \
+      } }
+    RADIUS_CONVERT(0, top_left)
+    RADIUS_CONVERT(1, top_right)
+    RADIUS_CONVERT(2, bottom_right)
+    RADIUS_CONVERT(3, bottom_left)
+#undef RADIUS_CONVERT
+
+
     { uint8_t td = css_computed_text_decoration(cs);
       if (td & CSS_TEXT_DECORATION_UNDERLINE)    o->underline = 1;
       if (td & CSS_TEXT_DECORATION_LINE_THROUGH) o->strike = 1;
@@ -1224,14 +1479,52 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       } }
     { uint8_t p = css_computed_position(cs);
       switch (p) {
-      /* absolute: out of flow (dropdowns/overlays would smear the normal
-       * flow). fixed stays in flow -- fixed headers sit at the top anyway, and
-       * a viewport-anchored box would need the painter to exempt it from
-       * scrolling. sticky is laid out as relative, which is what it is until
-       * the scroll offset reaches it. */
+      /* absolute AND fixed: out of flow. Until 2026-08-30 fixed stayed IN
+       * flow -- pos_abs was set only for CSS_POSITION_ABSOLUTE -- on the
+       * argument that "fixed headers sit at the top anyway, and a
+       * viewport-anchored box would need the painter to exempt it from
+       * scrolling". That argument covers the 60px sticky-header case and
+       * says nothing about the far more common one: a full-viewport
+       * `position:fixed` overlay (a modal backdrop, a drawer, a nav that is
+       * hidden until opened) declared before the real content. In flow, a
+       * 100vh box costs a screen of layout height whether or not it paints,
+       * and pushes everything after it below the fold -- measured landing
+       * on a real page with no site-specific fix: header y=0, a hidden
+       * 100vh fixed overlay y=20 IN FLOW, main content shoved to y=660 in a
+       * 640px viewport.
+       *
+       * Painting is unaffected by this: `pos_abs` only takes the box out of
+       * NORMAL FLOW LAYOUT and anchors it at the nearest positioned
+       * ancestor's padding box (or the initial containing block, i.e. the
+       * viewport, when there is none) -- see layout_abspos_child() in
+       * layout.c. It does not make fixed track scroll; this engine never
+       * scrolled a fixed box correctly either way (it used to scroll WITH
+       * the page as an ordinary flow box, which is also wrong), so nothing
+       * that worked before regresses, and the catastrophic case -- a
+       * full-viewport box eating the first screen -- is closed. A real
+       * `position:fixed` also ignores any `position:relative` ancestor and
+       * anchors to the viewport specifically; this engine's out-of-flow
+       * anchor is "nearest positioned ancestor" for both absolute and
+       * fixed, so a fixed box inside a `position:relative` wrapper anchors
+       * to that wrapper rather than skipping past it to the viewport. Left
+       * as a known simplification rather than a new mechanism, because the
+       * failure mode is "off by the wrapper's offset", not "gone".
+       *
+       * sticky is laid out as relative, which is what it is until the
+       * scroll offset reaches it. */
       case CSS_POSITION_ABSOLUTE: o->position = POS_ABSOLUTE; o->pos_abs = 1; break;
       case CSS_POSITION_RELATIVE: o->position = POS_RELATIVE; break;
-      case CSS_POSITION_FIXED:    o->position = POS_FIXED; break;
+      case CSS_POSITION_FIXED:    o->position = POS_FIXED;
+#ifndef LAYOUT_NEGCTL_FIXED_INFLOW
+                                   o->pos_abs = 1;
+#endif
+                                   /* LAYOUT_NEGCTL_FIXED_INFLOW, kept
+                                    * compilable as a control: reproduces the
+                                    * pre-2026-08-30 behaviour (fixed stays IN
+                                    * FLOW) so tests/qmp's zwprobe/f.html can
+                                    * be watched pushing REAL-CONTENT-1/2 down
+                                    * by a full viewport height again. */
+                                   break;
       case CSS_POSITION_STICKY:   o->position = POS_STICKY; break;
       default:                    o->position = POS_STATIC; break;
       } }
@@ -2230,6 +2523,12 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
         memset(o, 0, sizeof *o);
         o->font_px = parent_font;          /* sensible default before convert */
         convert(eff, parent_font, o);
+        /* See is_html_table_box(): the collapsed-table exception, which needs
+         * the element and so cannot live inside convert(). */
+        if (css_computed_border_collapse(eff) == CSS_BORDER_COLLAPSE_COLLAPSE &&
+            is_html_table_box(n)) {
+            for (int ri = 0; ri < 4; ri++) { o->radius[ri] = 0; o->radius_pct[ri] = 0; }
+        }
         if (n->style) kfree(n->style);
         n->style = o;
     }
@@ -2648,7 +2947,7 @@ static int cstyle_diff(const struct cstyle *a, const struct cstyle *b)
     t.underline = b->underline; t.strike = b->strike; t.overline = b->overline;
     t.opacity = b->opacity;
     t.hidden = b->hidden; t.op0 = b->op0; t.vis_hid = b->vis_hid;
-    t.radius = b->radius; t.radius_pct = b->radius_pct;
+    for (int i = 0; i < 4; i++) { t.radius[i] = b->radius[i]; t.radius_pct[i] = b->radius_pct[i]; }
     t.z_index = b->z_index; t.has_z = b->has_z;
     t.anim = b->anim; t.trans_op = b->trans_op;
     return memcmp(&t, b, sizeof t) == 0 ? CSS_CHANGED_PAINT : CSS_CHANGED_LAYOUT;

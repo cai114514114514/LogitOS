@@ -45,7 +45,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui                                                     # noqa: E402
-from qmp_ui import PPM, Session, dock_icon                        # noqa: E402
+from qmp_ui import PPM, Session, dock_icon_of, parse_dock         # noqa: E402
 
 if len(sys.argv) < 3:
     sys.stderr.write(__doc__)
@@ -58,12 +58,15 @@ QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 MODE_W, MODE_H = (int(v) for v in os.environ.get("FS_MODE", "1280x800").split("x"))
 SCALE = qmp_ui.configure(MODE_W, MODE_H)
 
-# scan_apps() order, which is the vfs enumeration order of *.aex at the root:
-# clock textedit monitor terminal widgets files preview studio browser.
-# Both slots below are CHECKED against the name the guest reports, so a
-# reordering is a failure message and not a silently different test.
-STUDIO_SLOT, STUDIO_NAME = 7, "Code Studio"
-TERM_SLOT, TERM_NAME = 3, "Terminal"
+# The dock layout comes from the guest now. STUDIO_SLOT = 7 / TERM_SLOT = 3
+# used to live here as scan_apps-order integers, and the click used
+# dock_icon(slot) with qmp_ui's default app count -- a second copy of the same
+# guess. open_app() below parses the [wm] dock line out of this driver's own
+# serial pump (the text, not a file: this driver pipes stdio into memory) and
+# aims at the tile the GUEST named; the launched-line check it already had
+# stays, because a coordinate can be right and the launch still not happen.
+STUDIO_AEX, STUDIO_NAME = "studio", "Code Studio"
+TERM_AEX, TERM_NAME = "terminal", "Terminal"
 
 tmp = tempfile.mkdtemp(prefix="freeze_run_")
 ser_path = os.path.join(tmp, "ser.sock")
@@ -197,23 +200,36 @@ def launched():
     return re.findall(r"\[wm\] launched (.+)", serial())
 
 
-def open_app(slot, name):
+def open_app(file_name, display):
+    """Click the app's dock tile and verify what came up, twice over.
+
+    The coordinate is derived from the guest's own [wm] dock line (parsed from
+    this driver's serial pump -- a memory buffer, not a file, which is why
+    Session.launch_app() is not used here). The launched line is then checked
+    against `display`: the check this driver already had, kept because a right
+    coordinate and a right app are two different facts."""
+    dock = parse_dock(serial())
+    if dock is None:
+        return ck(False, "the Dock opened %s" % display,
+                  "no [wm] dock line on serial -- cannot aim the click")
     before = len(launched())
-    ui.click_at(*dock_icon(slot))
+    where = dock_icon_of(file_name, dock)
+    ui.click_at(*where)
     end = time.time() + 90
     while time.time() < end:
         got = launched()
         if len(got) > before:
-            return ck(got[before].strip() == name,
-                      "the Dock opened %s from slot %d" % (name, slot),
+            return ck(got[before].strip() == display,
+                      "the Dock opened %s (tile %s at %r, from the guest's dock line)"
+                      % (display, file_name, where),
                       "the guest said it launched %r" % got[before].strip())
         if "already live, focusing" in serial()[-4000:]:
-            return ck(True, "the Dock opened %s from slot %d" % (name, slot),
+            return ck(True, "the Dock opened %s (tile %s at %r, from the guest's dock line)"
+                      % (display, file_name, where),
                       "already running; focused")
         time.sleep(0.3)
-    return ck(False, "the Dock opened %s from slot %d" % (name, slot),
-              "no launch appeared -- the click at %r hit nothing"
-              % (dock_icon(slot),))
+    return ck(False, "the Dock opened %s" % display,
+              "no launch appeared -- the click at %r hit nothing" % (where,))
 
 
 # ---- the QUIET BASELINE -----------------------------------------------------
@@ -259,7 +275,7 @@ ck(True, "the desktop settles when left alone",
 FLOOR = max(BASE * 6, 600)
 
 # ---- 1. Code Studio, and typing into it -------------------------------------
-open_app(STUDIO_SLOT, STUDIO_NAME)
+open_app(STUDIO_AEX, STUDIO_NAME)
 time.sleep(4)
 a = shot("studio-open")
 for ch in "print":
@@ -272,7 +288,7 @@ ck(d > FLOOR, "typing into %s changed the screen" % STUDIO_NAME,
    % (d, BASE, FLOOR))
 
 # ---- 2. the Terminal, and a command in it -----------------------------------
-open_app(TERM_SLOT, TERM_NAME)
+open_app(TERM_AEX, TERM_NAME)
 time.sleep(5)
 c = shot("term-open")
 ui.typ("uname\n")

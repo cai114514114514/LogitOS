@@ -94,7 +94,30 @@ enum {
 	VERTICAL_ALIGN, VISIBILITY, VOICE_FAMILY, VOLUME, WHITE_SPACE, WIDOWS,
 	WIDTH, WORD_SPACING, WRITING_MODE, Z_INDEX,
 
-	LAST_PROP = Z_INDEX,
+	/* LogitOS: NEW PROPERTIES ARE APPENDED HERE, NOT INSERTED IN
+	 * ALPHABETICAL ORDER, and that is a decision rather than laziness.
+	 *
+	 * Three tables are positional and must agree by INDEX with nothing
+	 * asserting that they do: this enum, propstrings.c's stringmap[], and
+	 * parse/properties/properties.c's property_handlers[LAST_PROP + 1 -
+	 * FIRST_PROP]. An insertion in the middle shifts every entry after it
+	 * in all three files at once; a shear puts the name at index i beside
+	 * the parser at index i-1, so `border-radius: 4px` is handled by
+	 * border-right-width's parser and paints a 4px border on every rounded
+	 * box -- with no crash and no drop report, because the declaration
+	 * ACCEPTS. Appending makes it three appends at one index instead.
+	 *
+	 * Order is not load-bearing for correctness: parseProperty() in
+	 * language.c is a linear scan from FIRST_PROP to LAST_PROP that breaks
+	 * on first match. Upstream already appends the same way (opacity is
+	 * 0x063 and the flex family 0x075-0x07b, both after z-index at 0x062).
+	 *
+	 * `make test-css-proptables` asserts the three tables agree, and its
+	 * negative control swaps two adjacent entries and must go red. */
+	BORDER_RADIUS, BORDER_TOP_LEFT_RADIUS, BORDER_TOP_RIGHT_RADIUS,
+	BORDER_BOTTOM_RIGHT_RADIUS, BORDER_BOTTOM_LEFT_RADIUS,
+
+	LAST_PROP = BORDER_BOTTOM_LEFT_RADIUS,
 
 	/* Other keywords */
 	INHERIT, UNSET, IMPORTANT, NONE, BOTH, FIXED, SCROLL, TRANSPARENT,

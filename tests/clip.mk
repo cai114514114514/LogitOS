@@ -136,5 +136,33 @@ test-notify-cost: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_notify.py --iso $(BUILD)/animnotify/logit.iso \
 	        --disk $(BUILD)/animnotify/disk.img --only cost
 
+# --- navigator.clipboard, on the device -------------------------------------
+# tests/qmp/qmp_clipboard_js.py boots the real machine, launches the Browser
+# from the Dock, loads a page over HTTP and CLICKS IT over QMP, then reads the
+# clipboard back FROM ANOTHER PROCESS with /bin/clip. Two processes is the
+# whole point and it is the same argument c/kernel/gui/clipboard.c makes for
+# /bin/clip existing at all: the claim is that the clipboard outlives the
+# process that filled it, and one process cannot test that.
+#
+# THIS TARGET DID NOT EXIST WHEN THE DRIVER LANDED. The driver was written,
+# run by hand, reported "28/28 checks pass" -- and nothing in the tree named
+# it, so it was one of CLAUDE.md's 21 DEAD harnesses on the day it arrived.
+# A gate nobody runs is a gate that rots, silently: rule 4, and it takes three
+# lines to not be an instance of it.
+#
+# What it covers that no host test can: the ACTIVATION GATE. writeText writes
+# the clipboard EVERY PROCESS on this machine reads, so a page must not be
+# able to overwrite what the user copied out of Terminal from a timer, in the
+# background. The page here calls writeText at load with no click ever having
+# happened and must be refused -- and then /bin/clip must show the refusal
+# left the real clipboard untouched, because a rejected promise and a
+# clipboard that changed anyway are identical from inside the page. The other
+# direction is covered too: a writeText DEFERRED out of the click handler must
+# still work, because every real copy button that awaits anything calls it
+# after its handler returned, and a gate cleared at end-of-dispatch would
+# refuse them all while still passing a synchronous-only test.
+test-clip-js: $(ISO) $(DISK)
+	python3 tests/qmp/qmp_clipboard_js.py --iso $(ISO) --disk $(DISK)
+
 .PHONY: test-clip test-clip-host test-clip-host-negctl test-clip-negctl \
-        test-notify test-notify-negctl test-notify-cost
+        test-clip-js test-notify test-notify-negctl test-notify-cost

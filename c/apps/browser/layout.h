@@ -58,7 +58,9 @@ struct item {
                                        * pattern -- dashes, dots, the two lines
                                        * of `double`, the two tones of the 3D
                                        * styles */
-    int radius, radius_pct;
+    /* border-radius per corner, TL TR BR BL. Copied straight out of
+     * struct cstyle; browser_paint.c's fill_round4() is the reader. */
+    int radius[4], radius_pct[4];
     /* TEXT */ const char *text; int len, font_px, bold, italic, mono, underline; uint32_t color;
     int strike, overline;             /* the other two text-decoration lines */
     char marker[16];                    /* backing store for <li> markers (roman

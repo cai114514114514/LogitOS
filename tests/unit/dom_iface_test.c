@@ -92,7 +92,7 @@ int main(void)
      * that moves js_select/js_platform's installs off HTMLDivElement.prototype
      * -- has run before anything below inspects a prototype. A page always gets
      * this; a test that skipped it would be measuring a state no page sees. */
-    js_page_eval("void 0;", 7, "<warmup>");
+    js_page_eval("void 0;", 7, "<warmup>", 0);
 
     printf("== group 1: SHAPE -- what the negative control must break ==\n");
 
@@ -229,6 +229,74 @@ int main(void)
          "p.firstChild.insertAdjacentHTML('beforeend', '<s>B</s>');"
          "p.innerHTML === '<u>A<s>B</s></u><b>x</b>'",
          "insertAdjacentHTML, two of the four positions");
+
+    /* insertAdjacentElement -- the ELEMENT twin. Absent until 2026-08-30, and
+     * its absence is what bilibili's player bundle threw on while mounting
+     * (`TypeError: insertAdjacentElement is not a function`), so it never
+     * reached MediaSource at all. The isEqualNode shape a third time.
+     *
+     * All four positions in one program, because the two that read the PARENT
+     * (beforebegin/afterend) and the two that read the ELEMENT
+     * (afterbegin/beforeend) are different code and a test of one pair passes
+     * with the other pair wrong. */
+    ckjs("var p = document.createElement('div');"
+         "p.innerHTML = '<b>x</b>';"
+         "var b = p.firstChild;"
+         "b.insertAdjacentElement('beforebegin', document.createElement('u'));"
+         "b.insertAdjacentElement('afterend',    document.createElement('s'));"
+         "b.insertAdjacentElement('afterbegin',  document.createElement('i'));"
+         "b.insertAdjacentElement('beforeend',   document.createElement('em'));"
+         "p.innerHTML === '<u></u><b><i></i>x<em></em></b><s></s>'",
+         "insertAdjacentElement, all four positions");
+
+    /* THE RETURN VALUE, and it is the whole reason this is not a rename of
+     * insertAdjacentHTML: the spec returns the inserted element, and
+     * `if (!el.insertAdjacentElement(...))` is a real idiom. Returning
+     * undefined would make that guard never fire. Identity, not lookalike --
+     * the same cached wrapper every other binding hands out. */
+    ckjs("var p = document.createElement('div');"
+         "var c = document.createElement('b');"
+         "p.insertAdjacentElement('beforeend', c) === c",
+         "insertAdjacentElement returns the inserted element, by identity");
+
+    /* NULL, not a throw, when there is no parent to insert beside. The spec
+     * separates this from a bad position string, and a page inserting before a
+     * detached element is asking a question with a legitimate answer. */
+    ckjs("var d = document.createElement('div');"
+         "d.insertAdjacentElement('beforebegin', document.createElement('b')) === null",
+         "beforebegin on a parentless element is null, not an exception");
+
+    /* A mistyped position is a SyntaxError BY NAME. Silently doing nothing
+     * sends the author to debug the wrong thing.
+     *
+     * 'middle' and not 'beforeEND': the first draft of this case used the
+     * latter and failed, and the CODE was right -- the spec's position
+     * argument is ASCII case-INSENSITIVE, which is why insertAdjacentHTML
+     * beside it uses ieq() too. A test that demands a throw for a legal input
+     * is a test that would have been "fixed" by breaking the implementation.
+     * The case below therefore also asserts the case-insensitivity, so the
+     * next person cannot make that trade in the other direction. */
+    ckjs("var p = document.createElement('div');"
+         "var threw = '';"
+         "try { p.insertAdjacentElement('middle', document.createElement('b')); }"
+         "catch (e) { threw = e.name; }"
+         "threw === 'SyntaxError'",
+         "an invalid position throws SyntaxError rather than no-opping");
+    ckjs("var p = document.createElement('div');"
+         "p.insertAdjacentElement('BeforeEnd', document.createElement('b'));"
+         "p.innerHTML === '<b></b>'",
+         "the position argument is ASCII case-insensitive, as the spec says");
+
+    /* MOVE semantics, not copy: the DOM has no second node here. Getting this
+     * wrong leaves the element in two places and every later query sees a
+     * tree that cannot exist. */
+    ckjs("var a = document.createElement('div');"
+         "var b = document.createElement('div');"
+         "var c = document.createElement('span');"
+         "a.appendChild(c);"
+         "b.insertAdjacentElement('beforeend', c);"
+         "a.childNodes.length === 0 && b.firstChild === c",
+         "insertAdjacentElement MOVES the node out of its old parent");
 
     ckjs("document.getElementById('d').tagName === 'DIV' && "
          "document.getElementById('d').nodeName === 'DIV' && "

@@ -435,7 +435,7 @@ static int layout_right_edge(void)
  * outside, which is why the settle's return value is checked at the call
  * site. */
 static int mutate(const char *js)
-{ return js_page_eval(js, (int)strlen(js), "http://fixture.test/wide.html"); }
+{ return js_page_eval(js, (int)strlen(js), "http://fixture.test/wide.html", 0); }
 
 static char *g_real_html;              /* the 697 KB fixture, for the size numbers */
 

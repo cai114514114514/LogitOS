@@ -140,6 +140,27 @@ void css__make_style_important(css_style *style)
 					offset += 4; /* two length + units */
 				break;
 
+			/* LogitOS: border-radius corners, (h, v) behind one OPV
+			 * -- the same payload as border-spacing above.
+			 *
+			 * THIS SWITCH IS A FOURTH TABLE AND IT IS THE ONE A NEW
+			 * PROPERTY IS MOST LIKELY TO MISS, because omitting it
+			 * costs nothing until somebody writes `!important`:
+			 * this walker then reads the property's DATA words as
+			 * if they were opcodes and rewrites them. Measured, not
+			 * reasoned -- `border-radius: 0 !important` came out as
+			 * a 1px radius before this case existed, and
+			 * test-css-border-radius's !important check is what
+			 * caught it. If you add a property with a payload, add
+			 * it here. */
+			case CSS_PROP_BORDER_TOP_LEFT_RADIUS:
+			case CSS_PROP_BORDER_TOP_RIGHT_RADIUS:
+			case CSS_PROP_BORDER_BOTTOM_RIGHT_RADIUS:
+			case CSS_PROP_BORDER_BOTTOM_LEFT_RADIUS:
+				if (value == BORDER_RADIUS_SET)
+					offset += 4; /* two length + units */
+				break;
+
 			case CSS_PROP_BORDER_TOP_WIDTH:
 			case CSS_PROP_BORDER_RIGHT_WIDTH:
 			case CSS_PROP_BORDER_BOTTOM_WIDTH:

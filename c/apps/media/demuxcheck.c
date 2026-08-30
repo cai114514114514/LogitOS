@@ -26,6 +26,7 @@
 #include "h264.h"
 #include "h265.h"
 #include "audio.h"
+#include "aac.h"
 
 /* c/lib/video's mjpeg.c decodes each frame through c/lib/image's img_decode(),
  * which allocates with the kernel heap's names. In ring 3 those names are
@@ -183,6 +184,64 @@ static int decode_video(mdemux *m, int ti)
 static int decode_audio(mdemux *m, int ti)
 {
     const media_track *t = media_track_info(m, ti);
+
+    /* MP4/MKV-carried AAC is raw_data_blocks plus a 2-byte
+     * AudioSpecificConfig, not an ADTS elementary stream -- there is no
+     * in-band syncword to prefix-and-concatenate the way FLAC's
+     * STREAMINFO-plus-frames shape allows below, and audio.h:58 says so
+     * outright: "raw ADTS; MP4-carried AAC comes via aac_open_asc". So this
+     * is the one codec here that goes through the demuxer's own per-SAMPLE
+     * boundaries against a persistent decoder -- exactly the shape
+     * js_media_src.c's mel_open_audio/mel_pump_audio already uses to play
+     * this same track shape in the browser. Still no per-codec REPACKING:
+     * every sample is handed to the codec as the container stored it, byte
+     * for byte; only the ENTRY POINT differs because MP4 AAC's own format
+     * requires it. */
+    if (t->codec == MEDIA_CODEC_AAC) {
+        int err = 0;
+        aacdec *ac = aac_open_asc(t->extradata, t->extradata_len, &err);
+        if (!ac) {
+            printf("MEDIA-AUDIO %s asc-err=%d\n", t->codec_name, err);
+            return 1;
+        }
+        int rate = 0, ch = 0;
+        aac_info(ac, &rate, &ch);
+        unsigned crc = 0xFFFFFFFFu;
+        long frames = 0;
+        media_sample s;
+        for (long k = 0; media_get_sample(m, ti, k, &s) == 1; k++) {
+            aacframe f;
+            int got = 0;
+            int rc = aac_decode_raw(ac, s.data, s.size, &f, &got);
+            if (rc < 0) {
+                aac_close(ac);
+                printf("MEDIA-AUDIO %s err=%d\n", t->codec_name, rc);
+                return 1;
+            }
+            if (!got) continue;
+            if (rate <= 0) { rate = f.rate; ch = f.channels; }
+            /* float -> s16, the same conversion mel_pump_audio hands to the
+             * card, so this digest is over the bytes real playback would
+             * actually produce -- not over the float intermediate, which no
+             * consumer on this machine ever plays. */
+            short s16[AAC_FRAME_LEN * AAC_MAX_CHANNELS];
+            int nn = f.nsamples * f.channels;
+            for (int i = 0; i < nn; i++) {
+                double v = (double)f.pcm[i] * 32767.0;
+                if (v > 32767) v = 32767;
+                if (v < -32768) v = -32768;
+                s16[i] = (short)v;
+            }
+            crc = crc_feed(crc, (const unsigned char *)s16, (unsigned long)nn * 2);
+            frames += f.nsamples;
+        }
+        aac_close(ac);
+        crc ^= 0xFFFFFFFFu;
+        printf("MEDIA-AUDIO %s rate=%d ch=%d frames=%ld crc=%08x\n",
+               t->codec_name, rate, ch, frames, crc);
+        return 0;
+    }
+
     if (t->codec != MEDIA_CODEC_MP3 && t->codec != MEDIA_CODEC_FLAC) {
         printf("MEDIA-AUDIO %s no decoder\n", t->codec_name);
         return 0;

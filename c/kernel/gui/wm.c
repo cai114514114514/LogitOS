@@ -5426,6 +5426,46 @@ static void wm_process_mouse(const struct inev *in)
 }
 
 /* ---------- registry + init ---------- */
+
+/* WHERE THIS MACHINE'S APPS ARE, said out loud, exactly once.
+ *
+ * The dock's slot order is `reg[]`, built by scan_apps() below off the disk it
+ * booted from, and until this line existed the machine never published it.
+ * Ten places outside the kernel spelled it instead -- NAPPS, BROWSER_SLOT,
+ * GALLERY_SLOT, SETTINGS_SLOT and a name->index dict in qmp_launch_click.py,
+ * plus a scatter of bare integers -- which is CLAUDE.md rule 3 (one jar, two
+ * doors) at ten doors, and it has already gone wrong the way that rule
+ * predicts: NAPPS went stale the day a settings app was packed (10 -> 11).
+ * The dock is CENTRED, so one more app moves EVERY icon half a slot; a stale
+ * coordinate lands on the wallpaper, which does nothing at all and looks
+ * exactly like the app failing to open.
+ *
+ * A constant maintained in step with a disk image by hand is not a fact, it is
+ * a hope. This is the fact, printed by the ONE function that builds the
+ * registry -- called from inside scan_apps(), not after it, so a second caller
+ * cannot acquire a dock the outside world was never told about.
+ *
+ * THE FORMAT IS CHOSEN FOR THE READER, and the reader is Python in
+ * tests/qmp/ (qmp_ui.py:parse_dock -- keep the two in step):
+ *
+ *   [wm] dock 11 apps: 0=clock.aex,shown 1=textedit.aex,shown ... 9=gallery.aex,hidden
+ *
+ * one line; one whitespace-separated token per slot; each token is
+ * `slot=file,visibility` in that fixed order; no field can contain a space
+ * (the file is a LogitFS root name, and the visibility is one of exactly two
+ * words). `shown`/`hidden` is spelled rather than 0/1 because the line is read
+ * by people on a serial log as well as by a parser, and because it answers a
+ * question a driver otherwise diagnoses as a slow launch: an AEX_CAT_TEST tile
+ * is painted but can never be hovered or clicked, so a click on it does
+ * nothing, forever, and looks identical to an app that is merely slow. */
+static void dock_publish(void)
+{
+    kprintf("[wm] dock %d apps:", nreg);
+    for (int i = 0; i < nreg; i++)
+        kprintf(" %d=%s,%s", i, reg[i].file, reg[i].hidden ? "hidden" : "shown");
+    kprintf("\n");
+}
+
 static void scan_apps(void)
 {
     int n = vfs_count("/");
@@ -5473,6 +5513,7 @@ static void scan_apps(void)
             nreg++;
         }
     }
+    dock_publish();
 }
 
 void wm_init(void)
@@ -5531,23 +5572,7 @@ void wm_init(void)
             hw_cursor ? "display cursor plane (motion does not composite)"
                       : "composited into the frame (no cursor plane)");
 
-    scan_apps();
-    /* The dock's contents, in the order they are drawn.
-     *
-     * The dock is CENTRED, so adding one app moves every icon half a slot and
-     * every hard-coded coordinate in every QMP driver lands on the wallpaper --
-     * which does nothing at all and looks exactly like the app failing to open.
-     * tests/qmp/qmp_ui.py warns about this in a comment and then carries the
-     * app count as a constant, which went stale the day a settings app was
-     * packed (10 -> 11) and silently broke the dock coordinates of every driver
-     * in the tree.
-     *
-     * A constant that has to be maintained in step with the disk image is not a
-     * fact, it is a hope. This is the fact, from the thing that scanned the
-     * disk, and a driver that reads it cannot rot. */
-    kprintf("[wm] dock %d apps:", nreg);
-    for (int i = 0; i < nreg; i++) kprintf(" %s", reg[i].file);
-    kprintf("\n");
+    scan_apps();                /* prints the `[wm] dock` line -- see there */
 
     /* The Finder is now the ring-3 file-manager app, launched in wm_run(). */
     draw_background();          /* wallpaper -> bg; menu bar + dock are per-frame now */

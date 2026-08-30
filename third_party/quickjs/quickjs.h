@@ -371,6 +371,9 @@ void JS_AddIntrinsicRegExp(JSContext *ctx);
 void JS_AddIntrinsicJSON(JSContext *ctx);
 void JS_AddIntrinsicProxy(JSContext *ctx);
 void JS_AddIntrinsicMapSet(JSContext *ctx);
+/* LOGITOS PATCH (jssem differential, "objects-weak-intl"): WeakRef +
+   FinalizationRegistry, see quickjs.c's JS_AddIntrinsicWeakRef(). */
+void JS_AddIntrinsicWeakRef(JSContext *ctx);
 void JS_AddIntrinsicTypedArrays(JSContext *ctx);
 void JS_AddIntrinsicPromise(JSContext *ctx);
 void JS_AddIntrinsicBigInt(JSContext *ctx);

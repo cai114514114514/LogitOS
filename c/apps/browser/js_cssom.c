@@ -2652,8 +2652,10 @@ static int prop_to_idl(const char *p, int n, int lower_first, char *out, int out
 /* Is this a property LibCSS knows the NAME of? The distinction decides whether
  * a rejected value is a rejection or an ignorance, and getting it backwards is
  * expensive in one direction: css_extra.c honours a handful of properties
- * behind LibCSS's back (border-radius, the grid track shorthands,
- * transform/transition end-state), LibCSS drops all of them, and a setter that
+ * behind LibCSS's back (the grid track shorthands, transform/transition
+ * end-state -- border-radius WAS on this list and is a real cascaded property
+ * now, so its values are validated here like any other), LibCSS drops all of
+ * them, and a setter that
  * treated "LibCSS dropped it" as "invalid" would throw away every one of those
  * declarations from script. So an UNKNOWN name is stored unvalidated -- what
  * the cascade does with it afterwards is the cascade's business -- and only a

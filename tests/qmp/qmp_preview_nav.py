@@ -45,8 +45,8 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, configure, dock_icon, pt, PPM  # noqa: E402
-from qmp_preview import (PICK_PROBE, PREVIEW_SLOT, NAPPS,  # noqa: E402
+from qmp_ui import Session, configure, pt, PPM            # noqa: E402
+from qmp_preview import (PICK_PROBE,                      # noqa: E402
                           distinct_colours, ppm_to_png)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -136,7 +136,11 @@ def main(argv):
         shot = os.path.join(tmp, "s.ppm")
 
         # --- open Preview from the Dock, land on its own list ---------------
-        ui.click_at_confirmed(probe, *dock_icon(PREVIEW_SLOT, NAPPS))
+        # Tile from the guest's dock line, verified launch. The PREVIEW_SLOT=6
+        # / NAPPS=10 pair this import used to fetch was already stale: with
+        # eleven apps on the disk it aims at the midpoint of the gap between
+        # preview's tile and studio's, where a click opens nothing.
+        ui.launch_app("preview", probe=probe)
         m = wait_for(r"preview: pick 0 ", 0, 90)
         picks = {mm.group(2): int(mm.group(1))
                  for mm in re.finditer(r"preview: pick (\d+) (\S+)", read(serial))}

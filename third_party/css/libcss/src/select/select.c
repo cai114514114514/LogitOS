@@ -131,6 +131,26 @@ static css_error match_detail(css_select_ctx *ctx, void *node,
 		bool *match, css_pseudo_element *pseudo_element);
 static css_error cascade_style(const css_style *style, css_select_state *state);
 
+/* LogitOS MEASUREMENT HOOK -- NULL in every shipping build, and it is a
+ * MEASUREMENT hook, not a third drop funnel (css_report.h's rule).
+ *
+ * The two hooks this tree already carries (css__parse_drop_report,
+ * css__parse_selector_drop_report) both live in the PARSER, and they answer
+ * "was this accepted". Neither can answer the question the selector work
+ * order needs -- "was this rule, which parsed perfectly, ever TRUE of any
+ * element" -- because that decision is made here and nowhere else. A rule
+ * that parses and never matches applies nothing, exactly like a rule that was
+ * dropped, and is invisible to every existing counter.
+ *
+ * `matched` is 0 when the chain is offered a candidate element (i.e. the
+ * subject's tag/class/id hash bucket produced this element) and 1 when the
+ * whole chain has just been confirmed. The two together separate
+ *   "never offered an element"  -- no such element on this page, not a defect
+ * from
+ *   "offered and always false"  -- where the engine's gaps live.
+ * See tests/unit/css_selcensus.c. */
+void (*css__select_match_report)(const css_selector *sel, int matched) = NULL;
+
 static css_error select_font_faces_from_sheet(
 		const css_stylesheet *sheet,
 		css_origin origin,
@@ -2222,6 +2242,9 @@ css_error match_selector_chain(css_select_ctx *ctx,
 	fprintf(stderr, "\n");
 #endif
 
+	if (css__select_match_report != NULL)
+		css__select_match_report(selector, 0);
+
 	/* Match the details of the first selector in the chain.
 	 *
 	 * Note that pseudo elements will only appear as details of
@@ -2289,6 +2312,9 @@ css_error match_selector_chain(css_select_ctx *ctx,
 	} while (s != NULL);
 
 	/* If we got here, then the entire selector chain matched, so cascade */
+	if (css__select_match_report != NULL)
+		css__select_match_report(selector, 1);
+
 	state->current_specificity = selector->specificity;
 
 	/* Ensure that the appropriate computed style exists */

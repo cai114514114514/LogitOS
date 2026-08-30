@@ -36,7 +36,7 @@ import time
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT      # noqa: E402
+from qmp_ui import Session, PPM      # noqa: E402
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -166,14 +166,16 @@ try:
         die("the window manager never brought the desktop up")
     time.sleep(3)
 
-    ui = Session(qmp_path)
-    ui.click_at(*dock_icon(BROWSER_SLOT))
-    for _ in range(4):
-        if wait_serial("launched Browser", 15, "browser launch"):
-            break
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-    else:
-        die("the Dock never launched the Browser")
+    ui = Session(qmp_path, serial=serial_path)
+    # One click, at the tile the GUEST names for browser.aex, verified against the
+    # guest's own [wm] launched line. The re-click loop this replaces was the
+    # apology a hand-kept slot constant needed: when the pack list grows, the dock
+    # is re-centred, every hard-coded index moves half a slot, and the miss looks
+    # exactly like a slow launch. See tests/qmp/qmp_ui.py's dock block.
+    try:
+        ui.launch_app("browser")
+    except AssertionError as e:
+        die(str(e))
     time.sleep(6)
 
     ui.click_at(420, 145)

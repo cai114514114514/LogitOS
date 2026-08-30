@@ -198,7 +198,7 @@ int main(int argc, char **argv)
 
     /* The bilibili row itself: "1 JS exception(s)" is the thing that has to
      * become zero, and js_page_eval returns 1 only when nothing escaped. */
-    ck(js_page_eval(js, js_len, "log-reporter.js") == 1,
+    ck(js_page_eval(js, js_len, "log-reporter.js", 0) == 1,
        "log-reporter.js runs to completion -- no uncaught exception");
     ckjs("REPORT.errors.length === 0", "...and caught none internally either");
 
@@ -341,7 +341,7 @@ int main(int argc, char **argv)
         if (!js_page_open(root2)) { printf("FAIL: js_page_open (about:blank)\n"); return 1; }
         ctx = js_page_ctx();
 
-        ck(js_page_eval(js, js_len, "log-reporter.js") == 1,
+        ck(js_page_eval(js, js_len, "log-reporter.js", 0) == 1,
            "log-reporter.js runs to completion on about:blank too");
         ckjs("navigator.cookieEnabled === false",
              "navigator.cookieEnabled is FALSE where cookies cannot work");

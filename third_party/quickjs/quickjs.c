@@ -176,6 +176,22 @@ enum {
     JS_CLASS_ASYNC_GENERATOR_FUNCTION,  /* u.func */
     JS_CLASS_ASYNC_GENERATOR,   /* u.async_generator_data */
 
+    /* LOGITOS PATCH (jssem differential, "objects-weak-intl"): appended at
+       the END of the predefined-class enum, deliberately -- MAP/SET/
+       WEAKMAP/WEAKSET rely on `JS_CLASS_MAP + magic` being four
+       CONSECUTIVE ids in that exact order (js_map_constructor()'s magic
+       argument), and several other ranges here are equally position-
+       dependent (js_std_class_def[]/js_proxy_class_def[]/
+       js_async_class_def[] are parallel arrays indexed by `class_id -
+       start`). Inserting a class ANYWHERE but the end would silently
+       renumber every class after it and desync those arrays with no
+       compiler error. See JS_CLASS_WEAK_REF's own class_def table
+       (js_weakref_class_def, next to JS_AddIntrinsicWeakRef()) for why
+       these two are registered separately rather than folded into
+       js_std_class_def[]. */
+    JS_CLASS_WEAK_REF,          /* u.opaque -> JSWeakRefData */
+    JS_CLASS_FINALIZATION_REGISTRY, /* u.opaque -> JSFinRegState */
+
     JS_CLASS_INIT_COUNT, /* last entry for predefined classes */
 };
 
@@ -904,7 +920,15 @@ struct JSObject {
     JSShape *shape; /* prototype and property names + flag */
     JSProperty *prop; /* array of properties */
     /* byte offsets: 24/40 */
-    struct JSMapRecord *first_weak_ref; /* XXX: use a bit and an external hash table? */
+    /* LOGITOS PATCH (jssem differential, "objects-weak-intl": WeakRef and
+       FinalizationRegistry were both `typeof ... === "undefined"` -- see
+       the long comment above JSWeakRefRecord near the Map/Set section for
+       the design. This field used to be typed `struct JSMapRecord *`
+       because WeakMap/WeakSet were the only thing that ever linked into
+       it; it is now a generic singly-linked list of JSWeakRefRecord
+       headers (kind-tagged: MAP, WEAK_REF, or FINALIZATION_REGISTRY),
+       dispatched by reset_weak_ref(). */
+    struct JSWeakRefRecord *first_weak_ref; /* XXX: use a bit and an external hash table? */
     /* byte offsets: 28/48 */
     union {
         void *opaque;
@@ -2169,6 +2193,7 @@ JSContext *JS_NewContext(JSRuntime *rt)
     JS_AddIntrinsicJSON(ctx);
     JS_AddIntrinsicProxy(ctx);
     JS_AddIntrinsicMapSet(ctx);
+    JS_AddIntrinsicWeakRef(ctx); /* LOGITOS PATCH: see JS_AddIntrinsicWeakRef()'s own comment */
     JS_AddIntrinsicTypedArrays(ctx);
     JS_AddIntrinsicPromise(ctx);
     JS_AddIntrinsicBigInt(ctx);
@@ -11593,12 +11618,74 @@ static void js_ecvt1(double d, int n_digits, int *decpt, int *sign, char *buf,
 /* maximum buffer size for js_dtoa */
 #define JS_DTOA_BUF_SIZE 128
 
+/* LOGITOS PATCH (jssem differential, tests/jssem/cases/10-ties.js):
+ *
+ * js_ecvt()'s is_fixed branch and js_fcvt() used to detect an exact decimal
+ * tie (needed because JS specifies toFixed/toPrecision/toExponential as
+ * round-to-nearest ties-AWAY-FROM-ZERO, "RNDNA") by formatting one extra
+ * digit with snprintf() under fesetround(FE_DOWNWARD) and fesetround(FE_UPWARD)
+ * and comparing the two results -- see CONFIG_PRINTF_RNDN above. That trick
+ * is only as good as the platform's snprintf: it assumes "%.*f"/"%.*e" reads
+ * the FPU rounding-mode register. c/apps/libc/src/dtoa.c -- this tree's
+ * freestanding libc, linked into the guest engine -- is a pure integer
+ * big-decimal renderer that never reads MXCSR and always rounds ties-to-even
+ * (dtoa.c:133), so on the guest the FE_DOWNWARD and FE_UPWARD probes always
+ * produced IDENTICAL output to FE_TONEAREST, the tie was never detected, and
+ * every exact .5 rounded ties-to-even instead of away-from-zero -- while the
+ * identical quickjs.c source, compiled against a host libc whose snprintf
+ * *does* honour fesetround (glibc), rounded correctly. Two engines built
+ * from one source disagreeing by host libc quirk is worse than either
+ * implementation being wrong consistently.
+ *
+ * Fixed by using bf_ftoa() -- the arbitrary-precision decimal formatter in
+ * libbf.c that this binary already links for BigInt (bf_ftoa() itself is
+ * NOT gated by CONFIG_BIGNUM, which only gates the *exposure* of the
+ * BigFloat/BigDecimal JS classes -- see js_ecvt1_bf()/js_fcvt() below and
+ * ctx->bf_ctx's unconditional init in JS_NewRuntime2()). bf_ftoa() computes
+ * the double's exact mathematical value via limb arithmetic and rounds it in
+ * BF_RNDNA directly, so the tie decision never depends on any FPU state or
+ * libc behaviour and host and guest now agree by construction. The
+ * round-to-nearest (non-tie) case below -- js_ecvt()'s shortest-round-trip
+ * search for the default Number.prototype.toString() -- was NOT part of the
+ * reported bug (round-to-nearest and ties-to-even agree whenever there is no
+ * exact tie) and is left untouched on purpose: it is the single most
+ * heavily-relied-on numeric formatter in the engine (every implicit
+ * number-to-string conversion goes through it) and rewriting working code
+ * here would be the highest-blast-radius change available for the smallest
+ * benefit. */
+static void js_ecvt1_bf(JSContext *ctx, double d, int n_digits, int *decpt,
+                        int *sign, char *buf)
+{
+    bf_t a_s, *a = &a_s;
+    char *str, *p;
+
+    bf_init(ctx->bf_ctx, a);
+    bf_set_float64(a, d);
+    str = bf_ftoa(NULL, a, 10, n_digits,
+                  BF_FTOA_FORMAT_FIXED | BF_FTOA_FORCE_EXP | BF_RNDNA);
+    bf_delete(a);
+    /* str is "[-]d[.ddd]e[+-]EE", exactly n_digits significant digits */
+    p = str;
+    *sign = (*p == '-');
+    if (*sign)
+        p++;
+    buf[0] = *p++;
+    if (*p == '.') {
+        p++;
+        memcpy(buf + 1, p, n_digits - 1);
+        p += n_digits - 1;
+    }
+    buf[n_digits] = '\0';
+    /* p now points at 'e' */
+    *decpt = atoi(p + 1) + 1;
+    bf_free(ctx->bf_ctx, str);
+}
+
 /* needed because ecvt usually limits the number of digits to
    17. Return the number of digits. */
-static int js_ecvt(double d, int n_digits, int *decpt, int *sign, char *buf,
-                   BOOL is_fixed)
+static int js_ecvt(JSContext *ctx, double d, int n_digits, int *decpt,
+                   int *sign, char *buf, BOOL is_fixed)
 {
-    int rounding_mode;
     char buf_tmp[JS_DTOA_BUF_SIZE];
 
     if (!is_fixed) {
@@ -11620,85 +11707,34 @@ static int js_ecvt(double d, int n_digits, int *decpt, int *sign, char *buf,
             }
         }
         n_digits = n_digits_max;
-        rounding_mode = FE_TONEAREST;
+        js_ecvt1(d, n_digits, decpt, sign, buf, FE_TONEAREST,
+                 buf_tmp, sizeof(buf_tmp));
     } else {
-        rounding_mode = FE_TONEAREST;
-#ifdef CONFIG_PRINTF_RNDN
-        {
-            char buf1[JS_DTOA_BUF_SIZE], buf2[JS_DTOA_BUF_SIZE];
-            int decpt1, sign1, decpt2, sign2;
-            /* The JS rounding is specified as round to nearest ties away
-               from zero (RNDNA), but in printf the "ties" case is not
-               specified (for example it is RNDN for glibc, RNDNA for
-               Windows), so we must round manually. */
-            js_ecvt1(d, n_digits + 1, &decpt1, &sign1, buf1, FE_TONEAREST,
-                     buf_tmp, sizeof(buf_tmp));
-            /* XXX: could use 2 digits to reduce the average running time */
-            if (buf1[n_digits] == '5') {
-                js_ecvt1(d, n_digits + 1, &decpt1, &sign1, buf1, FE_DOWNWARD,
-                         buf_tmp, sizeof(buf_tmp));
-                js_ecvt1(d, n_digits + 1, &decpt2, &sign2, buf2, FE_UPWARD,
-                         buf_tmp, sizeof(buf_tmp));
-                if (memcmp(buf1, buf2, n_digits + 1) == 0 && decpt1 == decpt2) {
-                    /* exact result: round away from zero */
-                    if (sign1)
-                        rounding_mode = FE_DOWNWARD;
-                    else
-                        rounding_mode = FE_UPWARD;
-                }
-            }
-        }
-#endif /* CONFIG_PRINTF_RNDN */
+        /* LOGITOS PATCH: RNDNA via bf_ftoa(), see the block comment above
+           js_ecvt1_bf(). */
+        js_ecvt1_bf(ctx, d, n_digits, decpt, sign, buf);
     }
-    js_ecvt1(d, n_digits, decpt, sign, buf, rounding_mode,
-             buf_tmp, sizeof(buf_tmp));
     return n_digits;
 }
 
-static int js_fcvt1(char *buf, int buf_size, double d, int n_digits,
-                    int rounding_mode)
+static void js_fcvt(JSContext *ctx, char *buf, int buf_size, double d,
+                    int n_digits)
 {
-    int n;
-    if (rounding_mode != FE_TONEAREST)
-        fesetround(rounding_mode);
-    n = snprintf(buf, buf_size, "%.*f", n_digits, d);
-    if (rounding_mode != FE_TONEAREST)
-        fesetround(FE_TONEAREST);
-    assert(n < buf_size);
-    return n;
-}
+    /* LOGITOS PATCH: RNDNA via bf_ftoa(), see the block comment above
+       js_ecvt1_bf() -- toFixed() has the identical tie-rounding bug and the
+       identical fix. */
+    bf_t a_s, *a = &a_s;
+    char *str;
 
-static void js_fcvt(char *buf, int buf_size, double d, int n_digits)
-{
-    int rounding_mode;
-    rounding_mode = FE_TONEAREST;
-#ifdef CONFIG_PRINTF_RNDN
-    {
-        int n1, n2;
-        char buf1[JS_DTOA_BUF_SIZE];
-        char buf2[JS_DTOA_BUF_SIZE];
-
-        /* The JS rounding is specified as round to nearest ties away from
-           zero (RNDNA), but in printf the "ties" case is not specified
-           (for example it is RNDN for glibc, RNDNA for Windows), so we
-           must round manually. */
-        n1 = js_fcvt1(buf1, sizeof(buf1), d, n_digits + 1, FE_TONEAREST);
-        rounding_mode = FE_TONEAREST;
-        /* XXX: could use 2 digits to reduce the average running time */
-        if (buf1[n1 - 1] == '5') {
-            n1 = js_fcvt1(buf1, sizeof(buf1), d, n_digits + 1, FE_DOWNWARD);
-            n2 = js_fcvt1(buf2, sizeof(buf2), d, n_digits + 1, FE_UPWARD);
-            if (n1 == n2 && memcmp(buf1, buf2, n1) == 0) {
-                /* exact result: round away from zero */
-                if (buf1[0] == '-')
-                    rounding_mode = FE_DOWNWARD;
-                else
-                    rounding_mode = FE_UPWARD;
-            }
-        }
-    }
-#endif /* CONFIG_PRINTF_RNDN */
-    js_fcvt1(buf, buf_size, d, n_digits, rounding_mode);
+    bf_init(ctx->bf_ctx, a);
+    bf_set_float64(a, d);
+    if (a->expn == BF_EXP_ZERO)
+        a->sign = 0; /* -0 -> "0", matches the caller's own -0 normalisation */
+    str = bf_ftoa(NULL, a, 10, n_digits,
+                  BF_FTOA_FORMAT_FRAC | BF_RNDNA | BF_FTOA_JS_QUIRKS);
+    bf_delete(a);
+    pstrcpy(buf, buf_size, str);
+    bf_free(ctx->bf_ctx, str);
 }
 
 /* radix != 10 is only supported with flags = JS_DTOA_VAR_FORMAT */
@@ -11711,10 +11747,52 @@ static void js_fcvt(char *buf, int buf_size, double d, int n_digits)
 /* force exponential notation either in fixed or variable format */
 #define JS_DTOA_FORCE_EXP    (1 << 2)
 
+/* LOGITOS PATCH (jssem differential, tests/jssem/cases/04-numstring.js):
+ * js_dtoa_bf() answers Number.prototype.toString(radix) for a radix other
+ * than 10 correctly for ANY finite double, via bf_ftoa() (see the long
+ * comment above js_ecvt1_bf()). Before this, js_dtoa1()'s only radix != 10
+ * handling was the integer fast path a few lines below (i64toa()); every
+ * other case -- a non-integer, or a magnitude beyond MAX_SAFE_INTEGER --
+ * fell through to "generic_conv", the base-10-only formatter, which
+ * silently ignored the requested radix: (0.5).toString(2) printed "0.5",
+ * not "0.1", and (1e21).toString(16) printed "1e+21" instead of the base-16
+ * digits. That is exactly the shape rule 3 warns about: present and wrong
+ * is worse than absent, because it looks like a plausible answer in the
+ * wrong base. */
+static char *js_dtoa_bf(JSContext *ctx, double d, int radix, bf_flags_t flags)
+{
+    bf_t a_s, *a = &a_s;
+    char *str;
+
+    bf_init(ctx->bf_ctx, a);
+    bf_set_float64(a, d);
+    if (a->expn == BF_EXP_ZERO)
+        a->sign = 0; /* -0 -> "0" */
+    flags |= BF_FTOA_JS_QUIRKS;
+    if ((radix & (radix - 1)) != 0) {
+        /* non-power-of-2 radix: must round to the double's actual 53-bit
+           precision first so bf_ftoa()'s round-trip search (which digit
+           count makes bf_atof() return the same double back) uses the
+           right precision -- mirrors js_ftoa()'s handling of a plain
+           (non-BigFloat) value further up in this file. */
+        bf_t r_s, *r = &r_s;
+        int flags1 = bf_set_exp_bits(11) | BF_FLAG_SUBNORMAL;
+        bf_init(ctx->bf_ctx, r);
+        bf_set(r, a);
+        bf_round(r, 53, flags1 | BF_RNDN);
+        str = bf_ftoa(NULL, r, radix, 53, flags1 | flags);
+        bf_delete(r);
+    } else {
+        str = bf_ftoa(NULL, a, radix, BF_PREC_INF, flags);
+    }
+    bf_delete(a);
+    return str;
+}
+
 /* XXX: slow and maybe not fully correct. Use libbf when it is fast enough.
-   XXX: radix != 10 is only supported for small integers
 */
-static void js_dtoa1(char *buf, double d, int radix, int n_digits, int flags)
+static void js_dtoa1(JSContext *ctx, char *buf, double d, int radix,
+                     int n_digits, int flags)
 {
     char *q;
 
@@ -11731,8 +11809,24 @@ static void js_dtoa1(char *buf, double d, int radix, int n_digits, int flags)
         int64_t i64;
         char buf1[70], *ptr;
         i64 = (int64_t)d;
-        if (d != i64 || i64 > MAX_SAFE_INTEGER || i64 < -MAX_SAFE_INTEGER)
+        if (d != i64 || i64 > MAX_SAFE_INTEGER || i64 < -MAX_SAFE_INTEGER) {
+            if (radix != 10) {
+                /* LOGITOS PATCH: see js_dtoa_bf() above. */
+                char *str = js_dtoa_bf(ctx, d, radix, BF_FTOA_FORMAT_FREE_MIN);
+                if (str) {
+                    pstrcpy(buf, JS_DTOA_BUF_SIZE, str);
+                    bf_free(ctx->bf_ctx, str);
+                } else {
+                    /* OOM: js_dtoa1() has no error return (fixed-size stack
+                       buffer, no JSContext-visible failure path in the
+                       original code either) -- degrade instead of
+                       corrupting buf. */
+                    strcpy(buf, "0");
+                }
+                return;
+            }
             goto generic_conv;
+        }
         /* fast path for integers */
         ptr = i64toa(buf1 + sizeof(buf1), i64, radix);
         strcpy(buf, ptr);
@@ -11740,7 +11834,7 @@ static void js_dtoa1(char *buf, double d, int radix, int n_digits, int flags)
         if (d == 0.0)
             d = 0.0; /* convert -0 to 0 */
         if (flags == JS_DTOA_FRAC_FORMAT) {
-            js_fcvt(buf, JS_DTOA_BUF_SIZE, d, n_digits);
+            js_fcvt(ctx, buf, JS_DTOA_BUF_SIZE, d, n_digits);
         } else {
             char buf1[JS_DTOA_BUF_SIZE];
             int sign, decpt, k, n, i, p, n_max;
@@ -11753,7 +11847,7 @@ static void js_dtoa1(char *buf, double d, int radix, int n_digits, int flags)
                 n_max = 21;
             }
             /* the number has k digits (k >= 1) */
-            k = js_ecvt(d, n_digits, &decpt, &sign, buf1, is_fixed);
+            k = js_ecvt(ctx, d, n_digits, &decpt, &sign, buf1, is_fixed);
             n = decpt; /* d=10^(n-k)*(buf1) i.e. d= < x.yyyy 10^(n-1) */
             q = buf;
             if (sign)
@@ -11807,7 +11901,7 @@ static JSValue js_dtoa(JSContext *ctx,
                        double d, int radix, int n_digits, int flags)
 {
     char buf[JS_DTOA_BUF_SIZE];
-    js_dtoa1(buf, d, radix, n_digits, flags);
+    js_dtoa1(ctx, buf, d, radix, n_digits, flags);
     return JS_NewString(ctx, buf);
 }
 
@@ -15700,14 +15794,44 @@ static __exception int JS_CopyDataProperties(JSContext *ctx,
     int ret, gpn_flags;
     JSPropertyDescriptor desc;
     BOOL is_enumerable;
-    
-    if (JS_VALUE_GET_TAG(source) != JS_TAG_OBJECT)
+    JSValue source_obj;
+
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) --------------------
+     * CopyDataProperties (used by both `{...source}` object spread and
+     * Object.assign's OP_copy_data_properties path) must ToObject(source)
+     * before enumerating, per spec 7.3.26 step 3 -- only undefined/null are
+     * skipped outright. The upstream code instead bailed out (`return 0`,
+     * silently copying nothing) for ANY non-object source, which is
+     * unobservable for Number/Boolean/Symbol/BigInt (their boxed wrappers
+     * have no own enumerable properties) but wrong for String: a boxed
+     * string's indices ARE own enumerable properties, so `{...'xy'}` must
+     * produce `{0:'x',1:'y'}` and instead produced `{}`. js_object_assign()
+     * already calls JS_ToObject on its source first and was never
+     * affected -- one jar, two doors, and this door disagreed with Node.
+     * Found by tests/fixtures/jssem-ci/c14-corners.js against the node
+     * oracle (tests/unit/js_sem_node.js): JSON.stringify({...'xy',a:1})
+     * dropped the string's own indices here; node kept them.
+     * RE-APPLYING AFTER A QUICKJS UPDATE: this block plus the JS_FreeValue
+     * calls on source_obj added below (three sites: after the
+     * GetOwnPropertyNamesInternal failure, and both the normal and
+     * exception returns).
+     * ----------------------------------------------------------------------- */
+    if (JS_VALUE_GET_TAG(source) == JS_TAG_UNDEFINED ||
+        JS_VALUE_GET_TAG(source) == JS_TAG_NULL)
         return 0;
+
+    if (JS_VALUE_GET_TAG(source) == JS_TAG_OBJECT) {
+        source_obj = JS_UNDEFINED;
+        p = JS_VALUE_GET_OBJ(source);
+    } else {
+        source_obj = JS_ToObject(ctx, source);
+        if (JS_IsException(source_obj))
+            return -1;
+        p = JS_VALUE_GET_OBJ(source_obj);
+    }
 
     if (JS_VALUE_GET_TAG(excluded) == JS_TAG_OBJECT)
         pexcl = JS_VALUE_GET_OBJ(excluded);
-
-    p = JS_VALUE_GET_OBJ(source);
 
     gpn_flags = JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK | JS_GPN_ENUM_ONLY;
     if (p->is_exotic) {
@@ -15719,9 +15843,11 @@ static __exception int JS_CopyDataProperties(JSContext *ctx,
         }
     }
     if (JS_GetOwnPropertyNamesInternal(ctx, &tab_atom, &tab_atom_count, p,
-                                       gpn_flags))
+                                       gpn_flags)) {
+        JS_FreeValue(ctx, source_obj);  /* LOGIT PATCH */
         return -1;
-    
+    }
+
     for (i = 0; i < tab_atom_count; i++) {
         if (pexcl) {
             ret = JS_GetOwnPropertyInternal(ctx, NULL, pexcl, tab_atom[i].atom);
@@ -15755,9 +15881,11 @@ static __exception int JS_CopyDataProperties(JSContext *ctx,
             goto exception;
     }
     js_free_prop_enum(ctx, tab_atom, tab_atom_count);
+    JS_FreeValue(ctx, source_obj);  /* LOGIT PATCH */
     return 0;
  exception:
     js_free_prop_enum(ctx, tab_atom, tab_atom_count);
+    JS_FreeValue(ctx, source_obj);  /* LOGIT PATCH */
     return -1;
 }
 
@@ -16286,33 +16414,119 @@ typedef enum {
  * the callee provably could not be called -- in which case no user code ran,
  * so the pending exception is necessarily the generic one this replaces. A
  * pre-call JS_IsFunction() on every method call would have cost every call
- * that succeeds, which is all of them. */
-static const char *js_callee_kind(JSValueConst v)
+ * that succeeds, which is all of them.
+ *
+ * ---- 2026-08-30: THE FIRST VERSION NAMED ONE CALL SHAPE OUT OF NINE -------
+ *
+ * MEASURED on www.google.com/search. Google's own page caught a TypeError out
+ * of THIS engine, URL-encoded the message and the whole stack into the `sg_ss`
+ * parameter of a self-report navigation, and the page that navigation lands on
+ * is the "unusual traffic" interstitial. The message it carried was ours:
+ *
+ *     TypeError: not a function (the callee is a number)
+ *         at N (<input>) ...
+ *
+ * -- the UNNAMED half of the message above, so the whole diagnosis of a live
+ * defect was "something, somewhere, is a number". A property that is PRESENT
+ * with the wrong TYPE is strictly worse than an absent one (a page that
+ * feature-tests for presence gets a truthy number and calls it, instead of
+ * taking its fallback), so the message has to be able to say which property.
+ *
+ * The first version cached the atom in `mcall_atom` at OP_get_field2, which
+ * names `o.a()` and NOTHING ELSE. Enumerated against the engine (see
+ * tests/unit/js_stack_test.c), every one of these came out unnamed:
+ *
+ *     f()  local        o[k]()          (0,o.a)()      arr[0]()
+ *     arg()             globalName()    closureVar()   new C()   tag`x`
+ *
+ * -- and the cache had two stale-atom traps that needed two separate resets
+ * (a plain call after a method call, and `o.a?.()` skipping the call so its
+ * atom was never consumed) because ONE VARIABLE was standing in for a fact
+ * that belongs to a particular stack slot at a particular pc.
+ *
+ * THE ATOM IS IN THE BYTECODE, so read the bytecode. `js_callee_atom` decodes
+ * the current function forward from offset 0 (instruction sizes are fixed, so
+ * boundaries are unambiguous), walks BACK from the call over the argument
+ * pushes using the opcode table's own n_pop/n_push, and returns the name
+ * carried by whichever instruction wrote the callee's stack slot -- a local, an
+ * argument, a closure variable, a global, or a property. Two things make that
+ * safe rather than clever: it REFUSES rather than guesses (control flow in the
+ * window, a jump landing in the window, an unknown stack effect all return
+ * JS_ATOM_NULL and the message falls back to the unnamed form), because a
+ * message that names the WRONG thing is worse than the bare one it replaces;
+ * and it runs ONLY on the failure path, so the cost of the cache -- one store
+ * per OP_get_field2, on the hottest opcode in method-heavy code -- is now zero.
+ * `mcall_atom` and both of its resets are DELETED: one jar, one door.
+ *
+ * Where the name is genuinely unrecoverable -- `o[k]()` and `arr[0]()` compute
+ * the key at runtime and OP_get_array_el2 consumes it before the call fails,
+ * and the callee of `o.a()()` is a value no name was ever attached to -- the
+ * message says so by naming nothing, and pays for it with the VALUE instead:
+ * 0, NaN and 1 are three different bugs and used to print as "a number". */
+static const char *js_callee_desc(JSContext *ctx, JSValueConst v,
+                                  char *buf, size_t size)
 {
+    const char *s;
     switch (JS_VALUE_GET_NORM_TAG(v)) {
     case JS_TAG_UNDEFINED: return "undefined";
     case JS_TAG_NULL:      return "null";
-    case JS_TAG_BOOL:      return "a boolean";
+    case JS_TAG_BOOL:
+        return JS_VALUE_GET_BOOL(v) ? "the boolean true" : "the boolean false";
     case JS_TAG_INT:
-    case JS_TAG_FLOAT64:   return "a number";
-    case JS_TAG_STRING:    return "a string";
+        snprintf(buf, size, "the number %d", JS_VALUE_GET_INT(v));
+        return buf;
+    case JS_TAG_FLOAT64:
+        /* a number cannot run user code on the way to a string */
+        s = JS_ToCString(ctx, v);
+        if (!s) { JS_FreeValue(ctx, JS_GetException(ctx)); return "a number"; }
+        snprintf(buf, size, "the number %s", s);
+        JS_FreeCString(ctx, s);
+        return buf;
+    case JS_TAG_STRING:
+        s = JS_ToCString(ctx, v);
+        if (!s) { JS_FreeValue(ctx, JS_GetException(ctx)); return "a string"; }
+        /* the content, bounded -- a 2 MB bundle string must not become the
+         * message.  %.*s truncates on BYTES, so a multi-byte character can be
+         * cut in half; the ellipsis is what says the string continues. */
+        if (strlen(s) > 32)
+            snprintf(buf, size, "the string \"%.32s\"...", s);
+        else
+            snprintf(buf, size, "the string \"%s\"", s);
+        JS_FreeCString(ctx, s);
+        return buf;
     case JS_TAG_SYMBOL:    return "a symbol";
-    case JS_TAG_OBJECT:    return "an object";
+    case JS_TAG_OBJECT: {
+        /* the CLASS, not toString() -- a getter or a proxy trap on the way to
+         * a diagnostic is user code running inside an error path. */
+        JSObject *p = JS_VALUE_GET_OBJ(v);
+        JSAtom cn = ctx->rt->class_array[p->class_id].class_name;
+        char cbuf[ATOM_GET_STR_BUF_SIZE];
+        if (cn == JS_ATOM_NULL) return "an object";
+        snprintf(buf, size, "an object (%s)",
+                 JS_AtomGetStr(ctx, cbuf, sizeof(cbuf), cn));
+        return buf;
+    }
     default:               return "a value";
     }
 }
 
+/* Defined below, next to opcode_info[] which it reads. `above` is the number
+ * of stack slots the call instruction has pushed ON TOP of its callee. */
+static JSAtom js_callee_atom(JSFunctionBytecode *b, const uint8_t *pc,
+                             int opcode, int above);
+
 static void js_name_not_a_function(JSContext *ctx, JSValueConst callee, JSAtom name)
 {
-    char buf[ATOM_GET_STR_BUF_SIZE];
-    JS_FreeValue(ctx, JS_GetException(ctx));
+    char buf[ATOM_GET_STR_BUF_SIZE], vbuf[96];
+    const char *what;
+    JS_FreeValue(ctx, JS_GetException(ctx));   /* before describing: the
+                                                * description allocates */
+    what = js_callee_desc(ctx, callee, vbuf, sizeof(vbuf));
     if (name != JS_ATOM_NULL)
         JS_ThrowTypeError(ctx, "%s is not a function (it is %s)",
-                          JS_AtomGetStr(ctx, buf, sizeof(buf), name),
-                          js_callee_kind(callee));
+                          JS_AtomGetStr(ctx, buf, sizeof(buf), name), what);
     else
-        JS_ThrowTypeError(ctx, "not a function (the callee is %s)",
-                          js_callee_kind(callee));
+        JS_ThrowTypeError(ctx, "not a function (the callee is %s)", what);
 }
 
 static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
@@ -16439,11 +16653,6 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     for(;;) {
         int call_argc;
         JSValue *call_argv;
-        /* The atom of the last OP_get_field2, i.e. the method name of the
-         * call about to happen. Bytecode atoms outlive the frame, so this is
-         * a borrow with no refcount. */
-        JSAtom mcall_atom = JS_ATOM_NULL;
-
         SWITCH(pc) {
         CASE(OP_push_i32):
             *sp++ = JS_NewInt32(ctx, get_u32(pc));
@@ -16767,10 +16976,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                                           JS_UNDEFINED, call_argc, call_argv, 0);
                 if (unlikely(JS_IsException(ret_val))) {
                     if (!JS_IsFunction(ctx, call_argv[-1]))  /* LOGIT-NAME-CALLEE */
-                        js_name_not_a_function(ctx, call_argv[-1], JS_ATOM_NULL);
+                        js_name_not_a_function(ctx, call_argv[-1],
+                            js_callee_atom(b, pc, opcode, call_argc));  /* LOGIT-CALLEE-ATOM */
                     goto exception;
                 }
-                mcall_atom = JS_ATOM_NULL;
                 if (opcode == OP_tail_call)
                     goto done;
                 for(i = -1; i < call_argc; i++)
@@ -16788,8 +16997,15 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 ret_val = JS_CallConstructorInternal(ctx, call_argv[-2],
                                                      call_argv[-1],
                                                      call_argc, call_argv, 0);
-                if (unlikely(JS_IsException(ret_val)))
+                if (unlikely(JS_IsException(ret_val))) {
+                    /* `new C()` on a non-function printed the bare upstream
+                     * message -- not even the KIND the two arms above give.
+                     * The callee sits one slot deeper here (func, new.target). */
+                    if (!JS_IsFunction(ctx, call_argv[-2]))  /* LOGIT-NAME-CALLEE */
+                        js_name_not_a_function(ctx, call_argv[-2],
+                            js_callee_atom(b, pc, opcode, call_argc + 1));  /* LOGIT-CALLEE-ATOM */
                     goto exception;
+                }
                 for(i = -2; i < call_argc; i++)
                     JS_FreeValue(ctx, call_argv[i]);
                 sp -= call_argc + 2;
@@ -16807,10 +17023,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                                           JS_UNDEFINED, call_argc, call_argv, 0);
                 if (unlikely(JS_IsException(ret_val))) {
                     if (!JS_IsFunction(ctx, call_argv[-1]))  /* LOGIT-NAME-CALLEE */
-                        js_name_not_a_function(ctx, call_argv[-1], mcall_atom);
+                        js_name_not_a_function(ctx, call_argv[-1],
+                            js_callee_atom(b, pc, opcode, call_argc));  /* LOGIT-CALLEE-ATOM */
                     goto exception;
                 }
-                mcall_atom = JS_ATOM_NULL;
                 if (opcode == OP_tail_call_method)
                     goto done;
                 for(i = -2; i < call_argc; i++)
@@ -17702,7 +17918,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 val = JS_GetProperty(ctx, sp[-1], atom);
                 if (unlikely(JS_IsException(val)))
                     goto exception;
-                mcall_atom = atom;   /* for the message if the call fails */
+                /* LOGIT: the store that used to be here -- `mcall_atom = atom`,
+                 * one write per OP_get_field2 on the SUCCEEDING path -- is
+                 * gone.  js_callee_atom() reads this same operand out of the
+                 * bytecode, but only when a call has already failed. */
                 *sp++ = val;
             }
             BREAK;
@@ -17914,7 +18133,11 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             BREAK;
 
         CASE(OP_get_array_el2):
-            mcall_atom = JS_ATOM_NULL;   /* x[k]() has no name to borrow */
+            /* LOGIT: `mcall_atom = JS_ATOM_NULL` was here -- one of the two
+             * resets the cache needed so a stale name could not be lent to the
+             * next failure.  Reading the bytecode makes both unnecessary: the
+             * name is a property of the instruction that pushed the callee,
+             * not of the last one that happened to run. */
             {
                 JSValue val;
 
@@ -20055,6 +20278,21 @@ typedef struct BlockEnv {
     int label_finally; /* -1 if none */
     int scope_level;
     int has_iterator;
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ------------------
+     * TRUE iff `has_iterator` is a for-await-of loop's enum_rec rather than
+     * a plain for-of's (or destructuring's) sync one. emit_break() and
+     * emit_return() walk a linked list of these BlockEnvs and, until this
+     * field existed, had no way to tell which kind of iterator they were
+     * closing -- they always emitted the SYNCHRONOUS close (OP_iterator_close),
+     * which for an async iterator never awaits the promise .return() hands
+     * back (see the longer comment at js_parse_for_in_of's label_break site,
+     * which fixed the direct-break case first and is the reference for why
+     * this matters). Every push_break_entry() call defaults this to FALSE;
+     * only js_parse_for_in_of's own for-await-of entry sets it TRUE.
+     * RE-APPLYING AFTER A QUICKJS UPDATE: this field plus every site that
+     * reads it (grep is_async_iterator).
+     * ---------------------------------------------------------------------- */
+    int is_async_iterator;
 } BlockEnv;
 
 typedef struct JSGlobalVar {
@@ -20304,6 +20542,215 @@ static const JSOpCode opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)] = {
 #else
 #define short_opcode_info(op) opcode_info[op]
 #endif
+
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ------------------------
+ * Recover the NAME of a failed call's callee from the bytecode of the function
+ * that made the call.  Declared next to js_name_not_a_function(), defined here
+ * because it reads opcode_info[] and short_opcode_info(), which are below it.
+ *
+ * Runs ONLY after JS_CallInternal has already returned an exception, so this
+ * is two linear passes over a function that is, at that moment, throwing.
+ *
+ * IT REFUSES RATHER THAN GUESSES.  Every "return JS_ATOM_NULL" below is the
+ * message falling back to its unnamed form, which is what the engine printed
+ * before this existed.  A message that names the WRONG property sends the
+ * reader to a line that is fine, and that is worse than the bare one.
+ */
+#define JS_CALLEE_SCAN_MAX 96   /* instructions walked back before giving up */
+
+static JSAtom js_callee_name_at(JSFunctionBytecode *b, const uint8_t *tab, int pos)
+{
+    int op = tab[pos];
+    int idx;
+
+    switch (op) {
+    /* set_* is not a typo: the peephole turns `var f = 1; f()` into
+     * `push_1; set_loc f; call`, so for a variable assigned immediately before
+     * the call it is the STORE that leaves the callee on the stack, and that
+     * is the exact shape a minified bundle's `var N = x.y; N()` compiles to. */
+    case OP_get_loc: case OP_get_loc_check: case OP_get_loc_checkthis:
+    case OP_set_loc:
+        idx = get_u16(tab + pos + 1);
+        goto local;
+    case OP_get_arg: case OP_set_arg:
+        idx = get_u16(tab + pos + 1);
+        goto argument;
+    case OP_get_var_ref: case OP_get_var_ref_check: case OP_set_var_ref:
+        idx = get_u16(tab + pos + 1);
+        goto closure;
+#if SHORT_OPCODES
+    case OP_get_loc8: case OP_set_loc8:
+        idx = tab[pos + 1];
+        goto local;
+    case OP_get_loc0: case OP_get_loc1: case OP_get_loc2: case OP_get_loc3:
+        idx = op - OP_get_loc0;
+        goto local;
+    case OP_set_loc0: case OP_set_loc1: case OP_set_loc2: case OP_set_loc3:
+        idx = op - OP_set_loc0;
+        goto local;
+    case OP_get_arg0: case OP_get_arg1: case OP_get_arg2: case OP_get_arg3:
+        idx = op - OP_get_arg0;
+        goto argument;
+    case OP_set_arg0: case OP_set_arg1: case OP_set_arg2: case OP_set_arg3:
+        idx = op - OP_set_arg0;
+        goto argument;
+    case OP_get_var_ref0: case OP_get_var_ref1:
+    case OP_get_var_ref2: case OP_get_var_ref3:
+        idx = op - OP_get_var_ref0;
+        goto closure;
+    case OP_set_var_ref0: case OP_set_var_ref1:
+    case OP_set_var_ref2: case OP_set_var_ref3:
+        idx = op - OP_set_var_ref0;
+        goto closure;
+#endif
+    /* a global, and a property: the atom is the operand */
+    case OP_get_var: case OP_get_var_undef:
+    case OP_get_field: case OP_get_field2:
+        return get_u32(tab + pos + 1);
+    default:
+        /* OP_get_array_el2 (`o[k]()`), OP_call (`o.a()()`), OP_dup, ... --
+         * values that never carried a name.  See js_callee_desc(). */
+        return JS_ATOM_NULL;
+    }
+local:
+    /* vardefs is stripped under JS_MODE_STRIP; then there is no name to give */
+    if (b->vardefs && idx < b->var_count)
+        return b->vardefs[b->arg_count + idx].var_name;
+    return JS_ATOM_NULL;
+argument:
+    if (b->vardefs && idx < b->arg_count)
+        return b->vardefs[idx].var_name;
+    return JS_ATOM_NULL;
+closure:
+    if (b->closure_var && idx < b->closure_var_count)
+        return b->closure_var[idx].var_name;
+    return JS_ATOM_NULL;
+}
+
+/* The jump target of the instruction at `pos`, or -1 if it is not a jump.
+ * After resolve_labels the operand is an offset RELATIVE TO ITSELF -- see the
+ * pass-3 arm of dump_byte_code(). */
+static int js_jump_target_at(const uint8_t *tab, int pos, const JSOpCode *oi)
+{
+    int opnd = pos + 1;
+    switch (oi->fmt) {
+#if SHORT_OPCODES
+    case OP_FMT_label8:  return opnd + (int)(int8_t)tab[opnd];
+    case OP_FMT_label16: return opnd + (int)(int16_t)get_u16(tab + opnd);
+#endif
+    case OP_FMT_atom_label_u8:
+    case OP_FMT_atom_label_u16:
+        opnd += 4;
+        /* fall through */
+    case OP_FMT_label:
+    case OP_FMT_label_u16:
+        return opnd + (int)get_u32(tab + opnd);
+    default:
+        return -1;
+    }
+}
+
+static JSAtom js_callee_atom(JSFunctionBytecode *b, const uint8_t *pc,
+                             int opcode, int above)
+{
+    const uint8_t *tab;
+    int len, call_off, pos, pos_next, op, i, n, nhist, found;
+    int hist[JS_CALLEE_SCAN_MAX];
+    const JSOpCode *oi;
+
+    if (!b || !b->byte_code_buf)
+        return JS_ATOM_NULL;
+    tab = b->byte_code_buf;
+    len = b->byte_code_len;
+    call_off = (int)(pc - tab) - short_opcode_info(opcode).size;
+    if (call_off < 0 || call_off >= len || tab[call_off] != opcode)
+        return JS_ATOM_NULL;
+
+    /* pass 1: instruction boundaries.  Sizes are fixed per opcode, so a
+     * forward decode is exact where a backward one would be ambiguous.  Only
+     * the last JS_CALLEE_SCAN_MAX starts are kept -- a ring, no allocation. */
+    nhist = 0;
+    for (pos = 0; pos < call_off; pos = pos_next) {
+        op = tab[pos];
+        pos_next = pos + short_opcode_info(op).size;
+        if (pos_next <= pos || pos_next > len)
+            return JS_ATOM_NULL;          /* not a stream we can read */
+        hist[nhist % JS_CALLEE_SCAN_MAX] = pos;
+        nhist++;
+    }
+    if (pos != call_off)
+        return JS_ATOM_NULL;              /* boundaries did not land on the call */
+
+    /* pass 2: walk back over the argument pushes.  `above` counts the slots
+     * between the top of the stack and the callee; an instruction wrote the
+     * callee's slot exactly when its pushes reach that deep. */
+    n = nhist < JS_CALLEE_SCAN_MAX ? nhist : JS_CALLEE_SCAN_MAX;
+    found = -1;
+    for (i = 1; i <= n; i++) {
+        int npop, npush;
+        pos = hist[(nhist - i) % JS_CALLEE_SCAN_MAX];
+        op = tab[pos];
+        oi = &short_opcode_info(op);
+        npop = oi->n_pop;
+        npush = oi->n_push;
+        switch (oi->fmt) {
+        case OP_FMT_label: case OP_FMT_label_u16:
+        case OP_FMT_atom_label_u8: case OP_FMT_atom_label_u16:
+#if SHORT_OPCODES
+        case OP_FMT_label8: case OP_FMT_label16:
+#endif
+            return JS_ATOM_NULL;          /* control flow: stop reasoning */
+        case OP_FMT_npop:                 /* args are not counted in n_pop */
+        case OP_FMT_npop_u16:
+            npop += get_u16(tab + pos + 1);
+            break;
+#if SHORT_OPCODES
+        case OP_FMT_npopx:
+            npop += op - OP_call0;
+            break;
+#endif
+        default:
+            break;
+        }
+        /* a terminator means the window runs through unreachable code */
+        if (op == OP_return || op == OP_return_undef || op == OP_return_async ||
+            op == OP_throw || op == OP_ret)
+            return JS_ATOM_NULL;
+        /* `new C()` compiles to `get_loc C; dup; call_constructor` -- the dup
+         * writes both the callee and new.target, and both copies are the same
+         * value, so follow it back to whatever produced it. */
+        if (op == OP_dup) {
+            above = above - npush + npop;
+            if (above < 0)
+                above = 0;
+            continue;
+        }
+        if (above < npush) {
+            found = pos;
+            break;
+        }
+        above = above - npush + npop;
+    }
+    if (found < 0)
+        return JS_ATOM_NULL;
+
+    /* pass 3: the walk assumed the window executed straight through.  If any
+     * jump in the function lands INSIDE it, it may not have. */
+    for (pos = 0; pos < len; pos = pos_next) {
+        int target;
+        oi = &short_opcode_info(tab[pos]);
+        pos_next = pos + oi->size;
+        if (pos_next <= pos || pos_next > len)
+            return JS_ATOM_NULL;
+        target = js_jump_target_at(tab, pos, oi);
+        if (target > found && target <= call_off)
+            return JS_ATOM_NULL;
+    }
+
+    /* borrowed: every atom returned is owned by `b`, which is the function
+     * currently executing, so it outlives the message being built. */
+    return js_callee_name_at(b, tab, found);
+}
 
 static __exception int next_token(JSParseState *s);
 
@@ -26130,6 +26577,7 @@ static void push_break_entry(JSFunctionDef *fd, BlockEnv *be,
     be->label_finally = -1;
     be->scope_level = fd->scope_level;
     be->has_iterator = FALSE;
+    be->is_async_iterator = FALSE; /* LOGIT PATCH: see BlockEnv's own comment */
 }
 
 static void pop_break_entry(JSFunctionDef *fd)
@@ -26137,6 +26585,56 @@ static void pop_break_entry(JSFunctionDef *fd)
     BlockEnv *be;
     be = fd->top_break;
     fd->top_break = be->prev;
+}
+
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) -----------------------
+ * emit_async_iterator_close: bytecode equivalent of AsyncIteratorClose
+ * (spec 7.4.11) for an enum_rec [iter_obj, next, catch_offset] left
+ * entirely on the stack by OP_for_await_of_start -- i.e. nothing else
+ * needs preserving underneath it. Consumes exactly those three slots and
+ * pushes nothing, matching OP_iterator_close's own stack contract, so it
+ * is a drop-in async replacement for it wherever the enum_rec is known to
+ * be a for-await-of's rather than a plain for-of's.
+ *
+ * This is the exact sequence js_parse_for_in_of's label_break site used
+ * inline before this patch factored it out to also cover emit_break's and
+ * emit_return's has_iterator branches -- a `break outer;` or a bare
+ * `return;` reaching PAST an open for-await-of loop closes that loop's
+ * iterator exactly the same way a plain `break;` targeting it directly
+ * does, and before this it did not: both call sites still emitted the
+ * unconditional, synchronous OP_iterator_close regardless of
+ * `top->is_async_iterator`. See BlockEnv's own comment for why that field
+ * exists and js_parse_for_in_of's for-await-of call site (search
+ * "AsyncIteratorClose") for the full account of WHY awaiting the close
+ * matters and what is still open (the exception-unwind path).
+ * RE-APPLYING AFTER A QUICKJS UPDATE: this function, BlockEnv's
+ * is_async_iterator field, and every site that branches on it.
+ * ------------------------------------------------------------------------- */
+static void emit_async_iterator_close(JSParseState *s)
+{
+    int label_skip, label_noreturn;
+
+    label_skip = new_label(s);
+    /* stack: iter_obj next catch_offset */
+    emit_op(s, OP_dup3);   /* -> iter_obj next catch_offset iter_obj' next' catch_offset' */
+    emit_op(s, OP_drop);   /* drop catch_offset' */
+    emit_op(s, OP_drop);   /* drop next', leaves iter_obj' on top */
+    emit_op(s, OP_is_undefined_or_null);
+    emit_goto(s, OP_if_true, label_skip);
+    /* stack: iter_obj next catch_offset  (a live iterator) */
+    emit_op(s, OP_undefined);   /* dummy arg slot for OP_iterator_call */
+    emit_op(s, OP_iterator_call);
+    emit_u8(s, 2);   /* flags: bit0=0 "return", bit1=1 no-argument call */
+    label_noreturn = emit_goto(s, OP_if_true, -1); /* no return method -> nothing to await */
+    emit_op(s, OP_await);
+    emit_op(s, OP_iterator_check_object);
+    emit_label(s, label_noreturn);
+    emit_op(s, OP_drop);   /* drop the (possibly awaited) return value */
+    emit_label(s, label_skip);
+    /* stack: iter_obj next catch_offset -- generic free, no second close */
+    emit_op(s, OP_drop);
+    emit_op(s, OP_drop);
+    emit_op(s, OP_drop);
 }
 
 static __exception int emit_break(JSParseState *s, JSAtom name, int is_cont)
@@ -26164,7 +26662,13 @@ static __exception int emit_break(JSParseState *s, JSAtom name, int is_cont)
         }
         i = 0;
         if (top->has_iterator) {
-            emit_op(s, OP_iterator_close);
+            /* LOGIT PATCH: async-close a for-await-of's enum_rec when
+               breaking/continuing PAST it to an outer label -- see
+               emit_async_iterator_close's own comment. */
+            if (top->is_async_iterator)
+                emit_async_iterator_close(s);
+            else
+                emit_op(s, OP_iterator_close);
             i += 3;
         }
         for(; i < top->drop_count; i++)
@@ -26218,30 +26722,34 @@ static void emit_return(JSParseState *s, BOOL hasval)
             emit_op(s, OP_nip_catch);
             /* stack: iter_obj next ret_val */
             if (top->has_iterator) {
-                if (s->cur_func->func_kind == JS_FUNC_ASYNC_GENERATOR) {
-                    int label_next, label_next2;
-                    emit_op(s, OP_nip); /* next */
-                    emit_op(s, OP_swap);
-                    emit_op(s, OP_get_field2);
-                    emit_atom(s, JS_ATOM_return);
-                    /* stack: iter_obj return_func */
-                    emit_op(s, OP_dup);
-                    emit_op(s, OP_is_undefined_or_null);
-                    label_next = emit_goto(s, OP_if_true, -1);
-                    emit_op(s, OP_call_method);
-                    emit_u16(s, 0);
-                    emit_op(s, OP_iterator_check_object);
-                    emit_op(s, OP_await);
-                    label_next2 = emit_goto(s, OP_goto, -1);
-                    emit_label(s, label_next);
-                    emit_op(s, OP_drop);
-                    emit_label(s, label_next2);
-                    emit_op(s, OP_drop);
-                } else {
-                    emit_op(s, OP_rot3r);
-                    emit_op(s, OP_undefined); /* dummy catch offset */
+                /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) --------
+                 * Upstream gated the async close on `s->cur_func->func_kind
+                 * == JS_FUNC_ASYNC_GENERATOR` -- the ENCLOSING function's
+                 * kind, not whether THIS loop's iterator is async. Both
+                 * directions are wrong: a for-await-of loop can sit inside
+                 * a plain `async function` (no generator involved at all),
+                 * and an async generator can just as well contain an
+                 * ordinary sync for-of. `top->is_async_iterator` records
+                 * what the enum_rec on the stack actually is, set once at
+                 * js_parse_for_in_of's for-await-of entry point -- that is
+                 * the only thing this decision should depend on. The two
+                 * previously-separate bytecode sequences (a hand-written
+                 * async-generator-only one, and the sync `rot3r + dummy +
+                 * OP_iterator_close` used for everything else) collapse
+                 * into one: rot3r the pending return value out of the way
+                 * to expose the same [iter_obj, next, marker] shape
+                 * OP_iterator_close already expects, then either close it
+                 * synchronously or through emit_async_iterator_close --
+                 * see that function's own comment for why the async form
+                 * needs to be bytecode rather than a JS_IteratorClose call.
+                 * RE-APPLYING AFTER A QUICKJS UPDATE: this whole branch.
+                 * ------------------------------------------------------------ */
+                emit_op(s, OP_rot3r);
+                emit_op(s, OP_undefined); /* dummy catch offset / marker */
+                if (top->is_async_iterator)
+                    emit_async_iterator_close(s);
+                else
                     emit_op(s, OP_iterator_close);
-                }
             } else {
                 /* execute the "finally" block */
                 emit_goto(s, OP_gosub, top->label_finally);
@@ -26471,6 +26979,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
     BOOL has_initializer, is_for_of, has_destructuring;
     int tok, tok1, opcode, scope, block_scope_level;
     int label_next, label_expr, label_cont, label_body, label_break;
+    int label_after_close; /* LOGIT PATCH: see its own comment at label_break's async-close block */
     int pos_next, pos_expr;
     BlockEnv break_entry;
 
@@ -26582,6 +27091,9 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
 
     if (token_is_pseudo_keyword(s, JS_ATOM_of)) {
         break_entry.has_iterator = is_for_of = TRUE;
+        /* LOGIT PATCH: record whether this is a for-await-of's enum_rec,
+           for emit_break/emit_return to branch on -- see BlockEnv. */
+        break_entry.is_async_iterator = is_async;
         break_entry.drop_count += 2;
         if (has_initializer)
             goto initializer_error;
@@ -26675,13 +27187,156 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
     /* drop the undefined value from for_xx_next */
     emit_op(s, OP_drop);
 
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) --------------------
+     * REGRESSION FOUND BY tests/jsmicro (m12_asyncgen, m44_asyncgen_yield_
+     * promise, m60_symbol_asynciter_missing), introduced by the
+     * AsyncIteratorClose fix at label_break below.  That fix's own comment
+     * says the `is_undefined_or_null` probe at label_break skips the close
+     * "because plain iteration completion already sets the enum_rec's
+     * iterator slot to JS_UNDEFINED (js_for_of_next)" -- true for SYNC
+     * for-of (OP_for_of_next calls js_for_of_next, which does exactly
+     * that), but FALSE for ASYNC for-of: the `is_async` branch just above
+     * never calls js_for_of_next at all -- it does its own OP_call_method +
+     * OP_await + OP_iterator_get_value_done and never clears sp[iter_obj].
+     * So on a for-await-of loop's ORDINARY exhaustion (no break, no throw --
+     * the iterator itself reported done:true) iter_obj was still the live
+     * generator/iterator object when execution fell through into
+     * label_break, the probe saw a live object, and the close logic called
+     * .return() on an iterator that had already finished normally and
+     * AWAITED it -- both a spec violation (14.7.5.5 calls AsyncIteratorClose
+     * only on an ABRUPT completion, never after the loop's own done:true)
+     * and the observed bug: every ordinary for-await-of loop's continuation
+     * ran 1-2 extra microtask ticks late.
+     *
+     * FIRST FIX ATTEMPT (reverted): clear iter_obj here via rot3l/OP_drop/
+     * OP_undefined/rot3r, mirroring js_for_of_next. That is runtime-correct
+     * but broke every case that ALSO wraps the loop in a try/finally (m28,
+     * m31, m32, m33, m71, m72: "InternalError: inconsistent catch position"
+     * -- compute_stack_size's static verifier, not the interpreter).
+     * compute_stack_size (below in this file) tracks, for each PC, which
+     * try/catch is statically "active"; OP_for_of_start/OP_for_await_of_start
+     * set `catch_pos = pos` and ONLY four opcodes are recognised as ever
+     * retiring it -- OP_drop, OP_nip, OP_nip1, OP_iterator_close -- each by
+     * comparing the STACK DEPTH at that exact opcode against the depth
+     * recorded at for_of_start ("we assume the catch offset entry is only
+     * removed with some op codes", ~30 lines into compute_stack_size). A
+     * bare OP_drop hidden inside a rotate sequence, at a stack depth that
+     * does not match the pattern the verifier expects, retires (or fails to
+     * retire) the catch marker inconsistently between this fallthrough edge
+     * and the direct `break`-goto edge that also reaches `label_break` --
+     * two paths into one PC disagreeing on catch state is exactly the
+     * invariant ss_check() exists to catch.
+     *
+     * FIXED instead by giving the two edges into label_break the SAME
+     * shape they had before this whole patch: no runtime check, no partial
+     * rotate. On normal completion (this fallthrough) the spec requires NO
+     * close at all, so this drops the whole enum_rec outright -- three
+     * plain OP_drop in a row, at the SAME stack depths already proven safe
+     * by the existing label_skip tail three drops below -- and jumps past
+     * the close block entirely to label_after_close. A `break;` still
+     * enters at `label_break` with iter_obj guaranteed live (this code
+     * never runs on that edge) and takes the dup3/is_undefined_or_null/
+     * await path unchanged. The two edges no longer converge until
+     * label_after_close, well past every catch-affecting opcode, so there
+     * is nothing left for compute_stack_size to see as inconsistent.
+     * RE-APPLYING AFTER A QUICKJS UPDATE: this block and label_after_close
+     * below, together with the label_break async-close block and
+     * emit_async_iterator_close it shares its shape with. */
+    label_after_close = new_label(s);
+    if (is_for_of && is_async) {
+        emit_op(s, OP_drop);
+        emit_op(s, OP_drop);
+        emit_op(s, OP_drop);
+        emit_goto(s, OP_goto, label_after_close);
+    }
+
     emit_label(s, label_break);
     if (is_for_of) {
-        /* close and drop enum_rec */
-        emit_op(s, OP_iterator_close);
+        /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------
+         * Spec 14.7.5.5 ForIn/OfBodyEvaluation calls AsyncIteratorClose
+         * (7.4.11), not IteratorClose (7.4.9), to close a for-await-of loop
+         * on an abrupt completion (break / labelled break / return) out of
+         * the body. AsyncIteratorClose's extra step over the sync version is
+         * exactly the one that matters: it AWAITS the result of calling
+         * .return() before the completion continues. OP_iterator_close
+         * (below, still used for the `!is_async` case, and unconditionally
+         * for the other call sites in this file -- destructuring, spread --
+         * which the spec never routes through AsyncIteratorClose regardless
+         * of enclosing-function asyncness) calls JS_IteratorClose
+         * synchronously and never awaits -- there was only ONE opcode here
+         * regardless of is_async, so a for-await-of loop's `break`
+         * observably ran the code AFTER the loop before the iterator's own
+         * `finally` block, which is late-release of whatever that finally
+         * frees (a stream reader, a lock, a subscription -- anything
+         * written as the standard `try { yield ... } finally { release() }`
+         * shape).
+         *
+         * There is no single opcode that can "call then await": OP_await
+         * works by returning out of JS_CallInternal (FUNC_RET_AWAIT) so the
+         * async-function driver can suspend and later resume this same pc --
+         * a C function cannot do that itself. So this composes the exact
+         * primitives OP_yield_star's own async-close path already uses
+         * (js_parse_expr2's `is_star` yield handling, ~150 lines above):
+         * OP_iterator_call (fetch+call "return" with no argument, per 7.4.11
+         * step 3) then, only if a return method existed, OP_await on its
+         * result, then OP_iterator_check_object (7.4.11 step 7: a non-object
+         * result is a TypeError). The `dup3, drop, drop, is_undefined_or_null`
+         * probe is needed because plain iteration completion (the loop body
+         * ran to `done`) already sets the enum_rec's iterator slot to
+         * JS_UNDEFINED (js_for_of_next), and calling .return on undefined
+         * would throw where upstream's own is_undefined check inside
+         * JS_IteratorClose silently no-ops.
+         *
+         * The exception-unwind path (JS_TAG_CATCH_OFFSET handling in the
+         * interpreter's `exception:` label, `JS_IteratorClose(ctx, sp[-1],
+         * TRUE)`) is UNCHANGED and still synchronous for both sync and async
+         * iterators -- unwinding through a live C stack frame there cannot
+         * suspend either, and fixing that is a materially bigger project
+         * (the completion has to survive a real suspend/resume, not just a
+         * single await). Measured and left open: a `throw` propagating OUT
+         * of the whole for-await-of statement (not caught by a `try` inside
+         * the loop body) still closes the iterator without awaiting.
+         *
+         * Found by tests/fixtures/jssem-ci/c12-async-close.js against the
+         * node oracle (tests/unit/js_sem_node.js): `for await (const v of
+         * gen()) { break }` printed 'after' before the generator's 'finally'
+         * on this engine; node prints 'finally' first.
+         * RE-APPLYING AFTER A QUICKJS UPDATE: this whole is_async branch.
+         * ------------------------------------------------------------------- */
+        if (is_async) {
+            int label_skip, label_noreturn;
+
+            label_skip = new_label(s);
+            /* stack: iter_obj next catch_offset */
+            emit_op(s, OP_dup3);   /* -> iter_obj next catch_offset iter_obj' next' catch_offset' */
+            emit_op(s, OP_drop);   /* drop catch_offset' */
+            emit_op(s, OP_drop);   /* drop next', leaves iter_obj' on top */
+            emit_op(s, OP_is_undefined_or_null);
+            emit_goto(s, OP_if_true, label_skip);
+            /* stack: iter_obj next catch_offset  (a live iterator) */
+            emit_op(s, OP_undefined);   /* dummy arg slot for OP_iterator_call */
+            emit_op(s, OP_iterator_call);
+            emit_u8(s, 2);   /* flags: bit0=0 "return", bit1=1 no-argument call */
+            label_noreturn = emit_goto(s, OP_if_true, -1); /* no return method -> nothing to await */
+            emit_op(s, OP_await);
+            emit_op(s, OP_iterator_check_object);
+            emit_label(s, label_noreturn);
+            emit_op(s, OP_drop);   /* drop the (possibly awaited) return value */
+            emit_label(s, label_skip);
+            /* stack: iter_obj next catch_offset -- generic free, no second close */
+            emit_op(s, OP_drop);
+            emit_op(s, OP_drop);
+            emit_op(s, OP_drop);
+        } else {
+            /* close and drop enum_rec */
+            emit_op(s, OP_iterator_close);
+        }
     } else {
         emit_op(s, OP_drop);
     }
+    /* LOGIT PATCH: join point for the normal-completion fallthrough that
+       skips the async close block above -- see its own comment. */
+    emit_label(s, label_after_close);
     pop_break_entry(s->cur_func);
     pop_scope(s);
     return 0;
@@ -37326,22 +37981,24 @@ static int js_obj_to_desc(JSContext *ctx, JSPropertyDescriptor *d,
     val = JS_UNDEFINED;
     getter = JS_UNDEFINED;
     setter = JS_UNDEFINED;
-    if (JS_HasProperty(ctx, desc, JS_ATOM_configurable)) {
-        JSValue prop = JS_GetProperty(ctx, desc, JS_ATOM_configurable);
-        if (JS_IsException(prop))
-            goto fail;
-        flags |= JS_PROP_HAS_CONFIGURABLE;
-        if (JS_ToBoolFree(ctx, prop))
-            flags |= JS_PROP_CONFIGURABLE;
-    }
-    if (JS_HasProperty(ctx, desc, JS_ATOM_writable)) {
-        JSValue prop = JS_GetProperty(ctx, desc, JS_ATOM_writable);
-        if (JS_IsException(prop))
-            goto fail;
-        flags |= JS_PROP_HAS_WRITABLE;
-        if (JS_ToBoolFree(ctx, prop))
-            flags |= JS_PROP_WRITABLE;
-    }
+    /* ---- LOGITOS PATCH (jssem differential, cases/13-accessors.js) --------
+     * ECMA-262 6.2.6.5 ToPropertyDescriptor reads the descriptor object's
+     * fields in a FIXED order:
+     *
+     *     enumerable, configurable, value, writable, get, set
+     *
+     * This function read them configurable, writable, enumerable, value, ...
+     * The four blocks below are mutually independent -- each does its own
+     * HasProperty/GetProperty and accumulates into `flags` with |= -- so the
+     * order is unobservable on a plain data object and NOTHING ELSE CHANGES
+     * by reordering them.
+     *
+     * It is observable, and it is the whole point, when the descriptor object
+     * is itself a Proxy or carries accessors, which is what a library that
+     * synthesises descriptors lazily hands to Object.defineProperty. Then this
+     * order decides which of two side-effecting or throwing getters runs
+     * first. Measured against node: the trap sequence read
+     * [has:configurable,...] where the spec and node read [has:enumerable,...]. */
     if (JS_HasProperty(ctx, desc, JS_ATOM_enumerable)) {
         JSValue prop = JS_GetProperty(ctx, desc, JS_ATOM_enumerable);
         if (JS_IsException(prop))
@@ -37350,11 +38007,27 @@ static int js_obj_to_desc(JSContext *ctx, JSPropertyDescriptor *d,
         if (JS_ToBoolFree(ctx, prop))
             flags |= JS_PROP_ENUMERABLE;
     }
+    if (JS_HasProperty(ctx, desc, JS_ATOM_configurable)) {
+        JSValue prop = JS_GetProperty(ctx, desc, JS_ATOM_configurable);
+        if (JS_IsException(prop))
+            goto fail;
+        flags |= JS_PROP_HAS_CONFIGURABLE;
+        if (JS_ToBoolFree(ctx, prop))
+            flags |= JS_PROP_CONFIGURABLE;
+    }
     if (JS_HasProperty(ctx, desc, JS_ATOM_value)) {
         flags |= JS_PROP_HAS_VALUE;
         val = JS_GetProperty(ctx, desc, JS_ATOM_value);
         if (JS_IsException(val))
             goto fail;
+    }
+    if (JS_HasProperty(ctx, desc, JS_ATOM_writable)) {
+        JSValue prop = JS_GetProperty(ctx, desc, JS_ATOM_writable);
+        if (JS_IsException(prop))
+            goto fail;
+        flags |= JS_PROP_HAS_WRITABLE;
+        if (JS_ToBoolFree(ctx, prop))
+            flags |= JS_PROP_WRITABLE;
     }
     if (JS_HasProperty(ctx, desc, JS_ATOM_get)) {
         flags |= JS_PROP_HAS_GET;
@@ -38077,6 +38750,38 @@ static JSValue js_object_isSealed(JSContext *ctx, JSValueConst this_val,
         return JS_TRUE;
 
     p = JS_VALUE_GET_OBJ(obj);
+
+    /* ---- LOGITOS PATCH (jssem differential, cases/14-integrity.js) --------
+     * ECMA-262 7.3.15 TestIntegrityLevel:
+     *
+     *   2. Let extensible be ? IsExtensible(O).
+     *   3. If extensible is true, return false.
+     *   4. NOTE: If the object is extensible, none of its properties are
+     *      examined.
+     *
+     * The note is normative in effect and this function ignored it: it
+     * enumerated every own key and called [[GetOwnProperty]] on each one
+     * FIRST, and only consulted IsExtensible after the loop.
+     *
+     * On an ordinary object that is merely wasted work. On a PROXY it is
+     * observable three ways, and all three are what a reactivity library does:
+     *   - it drives the ownKeys and getOwnPropertyDescriptor traps for
+     *     nothing, so a tracker records dependencies on an object it was only
+     *     asked a yes/no question about (measured: ownKeys-trap-ran=2 where
+     *     node reads 0);
+     *   - it reports the trap sequence in the wrong order; and
+     *   - worst, if either trap THROWS or violates an invariant, the
+     *     exception propagates OUT of Object.isFrozen()/isSealed() instead of
+     *     the call simply returning false. `if (!Object.isFrozen(x)) track(x)`
+     *     is a common guard, and here it threw RangeError/TypeError rather
+     *     than answering.
+     * The check is therefore hoisted to the top, before any enumeration. */
+    res = JS_IsExtensible(ctx, obj);
+    if (res < 0)
+        return JS_EXCEPTION;
+    if (res)
+        return JS_FALSE;
+
     flags = JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK;
     if (JS_GetOwnPropertyNamesInternal(ctx, &props, &len, p, flags))
         return JS_EXCEPTION;
@@ -38097,11 +38802,13 @@ static JSValue js_object_isSealed(JSContext *ctx, JSValueConst this_val,
             }
         }
     }
-    res = JS_IsExtensible(ctx, obj);
-    if (res < 0)
-        return JS_EXCEPTION;
-    res ^= 1;
-done:        
+    /* LOGITOS PATCH: extensibility was settled before the loop (see the block
+     * comment above), so surviving every property is the whole answer. This
+     * also retires an upstream leak that sat here: the old post-loop
+     * JS_IsExtensible error path did `return JS_EXCEPTION` without freeing
+     * `props`. */
+    res = TRUE;
+done:
     js_free_prop_enum(ctx, props, len);
     return JS_NewBool(ctx, res);
 
@@ -43641,6 +44348,12 @@ static JSValue js_compile_regexp(JSContext *ctx, JSValueConst pattern,
             case 'u':
                 mask = LRE_FLAG_UTF16;
                 break;
+            case 'v':
+                /* LOGITOS PATCH (jssem differential, tests/jssem/cases/08-regexp.js):
+                   see LRE_FLAG_UNICODE_SETS's own comment in libregexp.h
+                   for scope. */
+                mask = LRE_FLAG_UNICODE_SETS;
+                break;
             case 'y':
                 mask = LRE_FLAG_STICKY;
                 break;
@@ -43654,10 +44367,20 @@ static JSValue js_compile_regexp(JSContext *ctx, JSValueConst pattern,
             }
             re_flags |= mask;
         }
+        /* LOGITOS PATCH: 'u' and 'v' are mutually exclusive (ECMA-262
+           22.2.3.3 step 9: it is a SyntaxError for both to be present),
+           same family of check as the per-flag duplicate check above but
+           across two different bits so it can't be folded into the loop. */
+        if ((re_flags & (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)) ==
+            (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)) {
+            JS_FreeCString(ctx, str);
+            return JS_ThrowSyntaxError(ctx, "invalid regular expression flags");
+        }
         JS_FreeCString(ctx, str);
     }
 
-    str = JS_ToCStringLen2(ctx, &len, pattern, !(re_flags & LRE_FLAG_UTF16));
+    str = JS_ToCStringLen2(ctx, &len, pattern,
+                          !(re_flags & (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)));
     if (!str)
         return JS_EXCEPTION;
     re_bytecode_buf = lre_compile(&re_bytecode_len, error_msg,
@@ -43963,7 +44686,13 @@ static JSValue js_regexp_get_flag(JSContext *ctx, JSValueConst this_val, int mas
 
 static JSValue js_regexp_get_flags(JSContext *ctx, JSValueConst this_val)
 {
-    char str[8], *p = str;
+    /* LOGITOS PATCH: str[8] -> str[9] for the new "unicodeSets" ('v')
+       flag. 'u' and 'v' are mutually exclusive by construction (the
+       compile-time check next to LRE_FLAG_UNICODE_SETS), so at most 7 of
+       the 8 possible characters are ever written and the old size was
+       never actually at risk -- widened anyway so that invariant is not
+       load-bearing for buffer safety. */
+    char str[9], *p = str;
     int res;
 
     if (JS_VALUE_GET_TAG(this_val) != JS_TAG_OBJECT)
@@ -43999,6 +44728,11 @@ static JSValue js_regexp_get_flags(JSContext *ctx, JSValueConst this_val)
         goto exception;
     if (res)
         *p++ = 'u';
+    res = JS_ToBoolFree(ctx, JS_GetPropertyStr(ctx, this_val, "unicodeSets"));
+    if (res < 0)
+        goto exception;
+    if (res)
+        *p++ = 'v';
     res = JS_ToBoolFree(ctx, JS_GetPropertyStr(ctx, this_val, "sticky"));
     if (res < 0)
         goto exception;
@@ -44324,7 +45058,9 @@ static JSValue JS_RegExpDelete(JSContext *ctx, JSValueConst this_val, JSValueCon
             break;
         }
         if (end == start) {
-            if (!(re_flags & LRE_FLAG_UTF16) || (unsigned)end >= str->len || !str->is_wide_char) {
+            /* LOGITOS PATCH: advance a whole code point in 'v' mode too. */
+            if (!(re_flags & (LRE_FLAG_UTF16 | LRE_FLAG_UNICODE_SETS)) ||
+                (unsigned)end >= str->len || !str->is_wide_char) {
                 end++;
             } else {
                 string_getc(str, &end);
@@ -45100,6 +45836,8 @@ static const JSCFunctionListEntry js_regexp_proto_funcs[] = {
     JS_CGETSET_MAGIC_DEF("multiline", js_regexp_get_flag, NULL, LRE_FLAG_MULTILINE ),
     JS_CGETSET_MAGIC_DEF("dotAll", js_regexp_get_flag, NULL, LRE_FLAG_DOTALL ),
     JS_CGETSET_MAGIC_DEF("unicode", js_regexp_get_flag, NULL, LRE_FLAG_UTF16 ),
+    /* LOGITOS PATCH (jssem differential, tests/jssem/cases/08-regexp.js) */
+    JS_CGETSET_MAGIC_DEF("unicodeSets", js_regexp_get_flag, NULL, LRE_FLAG_UNICODE_SETS ),
     JS_CGETSET_MAGIC_DEF("sticky", js_regexp_get_flag, NULL, LRE_FLAG_STICKY ),
     JS_CGETSET_MAGIC_DEF("hasIndices", js_regexp_get_flag, NULL, LRE_FLAG_INDICES ),
     JS_CFUNC_DEF("exec", 1, js_regexp_exec ),
@@ -46563,9 +47301,36 @@ static int js_proxy_define_own_property(JSContext *ctx, JSValueConst obj,
                 }
             }
         } else if (flags & JS_PROP_HAS_VALUE) {
+            /* ---- LOGITOS PATCH (jssem differential, cases/16-defineprop.js,
+             * cases/15-exotic.js) -----------------------------------------
+             * ECMA-262 10.5.6 [[DefineOwnProperty]], the last clause of the
+             * post-trap invariant check:
+             *
+             *   If IsDataDescriptor(targetDesc) is true, targetDesc.
+             *   [[Configurable]] is false, and targetDesc.[[Writable]] is
+             *   true, then: if Desc HAS a [[Writable]] field AND Desc.
+             *   [[Writable]] is false, throw a TypeError.
+             *
+             * Both conjuncts are required and only the second was tested. In
+             * this engine an ABSENT [[Writable]] and a PRESENT-AND-FALSE one
+             * are the same bit pattern -- JS_PROP_WRITABLE clear -- and are
+             * told apart only by JS_PROP_HAS_WRITABLE. Without that guard the
+             * check fired on ANY value-only defineProperty against a
+             * non-configurable writable target property.
+             *
+             * WHY THIS IS THE ONE THAT MATTERS. An Array's `length` is exactly
+             * such a property: non-configurable and writable. Every array
+             * mutator that updates length internally -- push, pop, shift,
+             * unshift, splice, and a plain `a.length = n` -- therefore threw
+             * "proxy: inconsistent defineProperty" through ANY Proxy whose
+             * defineProperty trap forwards faithfully to Reflect.
+             * defineProperty. That is the shape of every dependency-tracking
+             * wrapper around a reactive array, so `state.items.push(x)` threw.
+             * Measured: cases/16-defineprop.js had 18 rows reading
+             * throw:TypeError where node reads ok. */
             if ((desc.flags & (JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE)) ==
-                JS_PROP_WRITABLE && !(flags & JS_PROP_WRITABLE)) {
-                /* missing-proxy-check feature */
+                JS_PROP_WRITABLE &&
+                (flags & JS_PROP_HAS_WRITABLE) && !(flags & JS_PROP_WRITABLE)) {
                 goto fail1;
             } else if ((desc.flags & (JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE)) == 0 &&
                 !js_same_value(ctx, val, desc.value)) {
@@ -46573,9 +47338,14 @@ static int js_proxy_define_own_property(JSContext *ctx, JSValueConst obj,
             }
         }
         if (flags & JS_PROP_HAS_WRITABLE) {
+            /* LOGITOS PATCH: same spec clause as the block above. Reaching
+             * here means Desc HAS [[Writable]]; the throw is still conditional
+             * on that field being FALSE. Forwarding a faithful
+             * {value, writable:true} descriptor at a non-configurable writable
+             * target is legal and was refused. */
             if ((desc.flags & (JS_PROP_GETSET | JS_PROP_CONFIGURABLE |
-                               JS_PROP_WRITABLE)) == JS_PROP_WRITABLE) {
-                /* proxy-missing-checks */
+                               JS_PROP_WRITABLE)) == JS_PROP_WRITABLE &&
+                !(flags & JS_PROP_WRITABLE)) {
             fail1:
                 js_free_desc(ctx, &desc);
             fail:
@@ -47080,11 +47850,93 @@ static const JSCFunctionListEntry js_symbol_funcs[] = {
 
 /* Set/Map/WeakSet/WeakMap */
 
+/* LOGITOS PATCH (jssem differential, "objects-weak-intl": typeof WeakRef
+ * and typeof FinalizationRegistry were both "undefined" -- Bellard
+ * QuickJS never had them):
+ *
+ * JSObject.first_weak_ref used to be a list of JSMapRecord ONLY, because
+ * WeakMap/WeakSet were the only thing that ever needed to know "an object
+ * died". WeakRef.deref() and FinalizationRegistry.register() need exactly
+ * the same notification -- the engine already has it, at exactly one
+ * choke point: reset_weak_ref(), called from free_object() on BOTH death
+ * paths an object can take (plain refcount-zero free via
+ * free_zero_refcount(), AND the mark-sweep cycle collector's
+ * gc_free_cycles() -- both funnel through free_object(), see its own
+ * `if (unlikely(p->first_weak_ref))` line). Reusing that choke point
+ * rather than inventing a second one is the whole design.
+ *
+ * JSWeakRefRecord is a common header every kind of weak-ref node starts
+ * with, so p->first_weak_ref can stay ONE singly-linked list of
+ * heterogeneous nodes and reset_weak_ref() dispatches on ->kind. This is
+ * the same trick struct JSGCObjectHeader already uses for gc_obj_type.
+ *
+ * SCOPE: WeakRef/FinalizationRegistry targets (and FinalizationRegistry's
+ * unregisterToken) are restricted to Objects here -- the ORIGINAL
+ * proposal's CanBeHeldWeakly, objects only. The later (2023) extension to
+ * unregistered Symbols is NOT implemented: nothing in the jssem
+ * differential exercised a symbol WeakRef target, and a JSAtomStruct
+ * (what a Symbol actually is) has no first_weak_ref-equivalent slot to
+ * link into -- the same limitation already noted on the WeakMap
+ * symbol-key patch just above this section. A symbol target throws
+ * TypeErrorNotAnObject, same as passing a primitive; that is
+ * present-and-honest (a clear throw) rather than present-and-wrong.
+ *
+ * GC-CYCLE SAFETY, the one subtlety that made this worth a long comment:
+ * a FinalizationRegistry callback is delivered as an enqueued job (see
+ * js_finreg_cleanup_job()), which JS_DupValue()s the held value so the
+ * job can outlive this function. That dup is safe when the target died
+ * by ordinary refcounting (the common case) because the held value, if
+ * it is itself an object, is definitionally still alive elsewhere. It is
+ * NOT safe when the target died as part of a cycle-GC batch
+ * (gc_free_cycles()): if the held value happens to be ANOTHER member of
+ * the same unreachable cycle, gc_free_cycles() will still free it later
+ * in the same pass regardless of the dup (free_object()'s own
+ * "fail safe" branch at `rt->gc_phase == JS_GC_PHASE_REMOVE_CYCLES &&
+ * ref_count != 0` keeps the JSObject shell allocated but its finalizer
+ * has ALREADY run and every field zeroed -- the callback would receive a
+ * zombie). So the FINALIZATION_REGISTRY case in reset_weak_ref() checks
+ * `rt->gc_phase` and skips the job during cycle removal. That is spec-
+ * legal, not a shortcut: the spec's own words are that a host "is not
+ * required to call... [the] cleanup callback... at all" (ECMA-262
+ * 9.13). WeakRef itself has no equivalent hazard: deref() only ever runs
+ * from live script, after reset_weak_ref() has already (synchronously,
+ * as part of the SAME object's death) cleared wrd->target to NULL --
+ * there is no path back to a zombie. */
+typedef struct JSWeakRefRecord {
+    struct JSWeakRefRecord *next_weak_ref;
+    uint8_t kind;
+} JSWeakRefRecord;
+
+#define JS_WEAK_REF_KIND_MAP 0
+#define JS_WEAK_REF_KIND_WEAK_REF 1
+#define JS_WEAK_REF_KIND_FINALIZATION_REGISTRY 2
+
+/* Generic unlink from an object's first_weak_ref chain -- used by
+   delete_weak_ref() (Map/Set) and by the WeakRef/FinalizationRegistry
+   finalizers/unregister() below, whenever a weak-ref HOLDER dies or is
+   explicitly removed while its TARGET is still alive (the reverse of
+   reset_weak_ref(), which runs when the TARGET dies). */
+static void weak_ref_unlink(JSObject *p, JSWeakRefRecord *rec)
+{
+    JSWeakRefRecord **pr = &p->first_weak_ref;
+    for (;;) {
+        JSWeakRefRecord *r1 = *pr;
+        assert(r1 != NULL);
+        if (r1 == rec) {
+            *pr = r1->next_weak_ref;
+            break;
+        }
+        pr = &r1->next_weak_ref;
+    }
+}
+
 typedef struct JSMapRecord {
+    JSWeakRefRecord hdr; /* LOGITOS PATCH: hdr.kind == JS_WEAK_REF_KIND_MAP;
+                             MUST be the first field -- see the long
+                             comment above JSWeakRefRecord. */
     int ref_count; /* used during enumeration to avoid freeing the record */
     BOOL empty; /* TRUE if the record is deleted */
     struct JSMapState *map;
-    struct JSMapRecord *next_weak_ref;
     struct list_head link;
     struct list_head hash_link;
     JSValue key;
@@ -47325,10 +48177,24 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
     mr->map = s;
     mr->empty = FALSE;
     if (s->is_weak) {
-        JSObject *p = JS_VALUE_GET_OBJ(key);
-        /* Add the weak reference */
-        mr->next_weak_ref = p->first_weak_ref;
-        p->first_weak_ref = mr;
+        if (JS_VALUE_GET_TAG(key) == JS_TAG_SYMBOL) {
+            /* LOGITOS PATCH (jssem differential, ES2023 "symbols as weakmap
+               keys", tests/jssem/cases/01-weak.js): see the long comment on
+               the is_weak check in js_map_set() for why this is a real
+               (dup'd) reference rather than the borrowed one an object key
+               gets below -- a Symbol has no reset_weak_ref()-style
+               finalization hook, so nothing would ever clear mr->key back
+               out, and leaving it un-dup'd the way an object key is would
+               dangle the instant the caller's own reference to the symbol
+               is dropped. */
+            JS_DupValue(ctx, key);
+        } else {
+            JSObject *p = JS_VALUE_GET_OBJ(key);
+            /* Add the weak reference */
+            mr->hdr.kind = JS_WEAK_REF_KIND_MAP; /* LOGITOS PATCH */
+            mr->hdr.next_weak_ref = p->first_weak_ref;
+            p->first_weak_ref = &mr->hdr;
+        }
     } else {
         JS_DupValue(ctx, key);
     }
@@ -47349,19 +48215,17 @@ static JSMapRecord *map_add_record(JSContext *ctx, JSMapState *s,
        references to it */
 static void delete_weak_ref(JSRuntime *rt, JSMapRecord *mr)
 {
-    JSMapRecord **pmr, *mr1;
     JSObject *p;
 
-    p = JS_VALUE_GET_OBJ(mr->key);
-    pmr = &p->first_weak_ref;
-    for(;;) {
-        mr1 = *pmr;
-        assert(mr1 != NULL);
-        if (mr1 == mr)
-            break;
-        pmr = &mr1->next_weak_ref;
+    if (JS_VALUE_GET_TAG(mr->key) == JS_TAG_SYMBOL) {
+        /* LOGITOS PATCH: a symbol key holds a real reference (see
+           map_add_record()) instead of being linked into an object's
+           first_weak_ref list, which symbols don't have -- release it. */
+        JS_FreeValueRT(rt, mr->key);
+        return;
     }
-    *pmr = mr1->next_weak_ref;
+    p = JS_VALUE_GET_OBJ(mr->key);
+    weak_ref_unlink(p, &mr->hdr); /* LOGITOS PATCH: generic unlink, see JSWeakRefRecord */
 }
 
 static void map_delete_record(JSRuntime *rt, JSMapState *s, JSMapRecord *mr)
@@ -47397,27 +48261,118 @@ static void map_decref_record(JSRuntime *rt, JSMapRecord *mr)
     }
 }
 
+/* LOGITOS PATCH (jssem differential, "objects-weak-intl"): WeakRef and
+   FinalizationRegistry record types, kept next to JSMapRecord because
+   they share its notification mechanism (see the long comment above
+   JSWeakRefRecord). Defined here, ahead of their constructors/methods
+   (which live after JS_AddIntrinsicMapSet(), in their own section), so
+   reset_weak_ref() below can see full definitions rather than needing
+   forward-declared opaque types. */
+typedef struct JSWeakRefData {
+    JSWeakRefRecord hdr; /* hdr.kind == JS_WEAK_REF_KIND_WEAK_REF */
+    JSObject *target; /* borrowed (weak); NULL once the target has died */
+} JSWeakRefData;
+
+typedef struct JSFinRegState {
+    JSContext *ctx; /* the realm the cleanup callback runs in, captured at
+                        FinalizationRegistry construction time -- this
+                        engine is effectively single-realm (see
+                        js_page.c's one JS_NewContext() call; no iframe/
+                        Worker-per-realm teardown races the way a
+                        multi-realm host would), so a ctx outliving every
+                        object that can reach it is a safe assumption
+                        here, not a general one. */
+    JSValue callback; /* strong ref */
+    struct list_head cells; /* list of JSFinRecEntry.reg_link */
+} JSFinRegState;
+
+typedef struct JSFinRecEntry {
+    JSWeakRefRecord hdr; /* hdr.kind == JS_WEAK_REF_KIND_FINALIZATION_REGISTRY;
+                             linked into the TARGET's first_weak_ref chain */
+    struct list_head reg_link; /* linked into JSFinRegState.cells, for
+                                   unregister() and registry teardown */
+    struct JSFinRegState *reg; /* owning registry; only dereferenced while
+                                   this entry is still on reg->cells, which
+                                   the registry's own finalizer empties
+                                   before freeing *reg -- see
+                                   js_finreg_finalizer() */
+    JSObject *target; /* borrowed (weak); NULL once cleared */
+    JSValue held_value; /* strong ref, held until unregistered or the
+                            cleanup callback is enqueued */
+    JSObject *token; /* borrowed (weak, NOT itself tracked -- see the
+                         SCOPE note above JSWeakRefRecord); NULL if no
+                         unregisterToken was given */
+} JSFinRecEntry;
+
+static JSValue js_finreg_cleanup_job(JSContext *ctx, int argc,
+                                     JSValueConst *argv);
+
 static void reset_weak_ref(JSRuntime *rt, JSObject *p)
 {
-    JSMapRecord *mr, *mr_next;
-    JSMapState *s;
-    
-    /* first pass to remove the records from the WeakMap/WeakSet
-       lists */
-    for(mr = p->first_weak_ref; mr != NULL; mr = mr->next_weak_ref) {
-        s = mr->map;
-        assert(s->is_weak);
-        assert(!mr->empty); /* no iterator on WeakMap/WeakSet */
-        list_del(&mr->hash_link);
-        list_del(&mr->link);
+    JSWeakRefRecord *wr, *wr_next;
+
+    /* first pass: for Map/Set records only, unlink from the map's own
+       hash table now, before any value gets freed (matches the original
+       two-pass shape exactly -- see the second pass below for why it is
+       two passes at all). WeakRef/FinalizationRegistry records have no
+       second table to unlink from here. */
+    for (wr = p->first_weak_ref; wr != NULL; wr = wr->next_weak_ref) {
+        if (wr->kind == JS_WEAK_REF_KIND_MAP) {
+            JSMapRecord *mr = (JSMapRecord *)wr;
+            JSMapState *s = mr->map;
+            assert(s->is_weak);
+            assert(!mr->empty); /* no iterator on WeakMap/WeakSet */
+            list_del(&mr->hash_link);
+            list_del(&mr->link);
+        }
     }
-    
-    /* second pass to free the values to avoid modifying the weak
-       reference list while traversing it. */
-    for(mr = p->first_weak_ref; mr != NULL; mr = mr_next) {
-        mr_next = mr->next_weak_ref;
-        JS_FreeValueRT(rt, mr->value);
-        js_free_rt(rt, mr);
+
+    /* second pass to free/detach, done separately from the first so that
+       freeing one record's value (which could itself run arbitrary
+       finalizer code) never modifies the very list this loop is
+       traversing. */
+    for (wr = p->first_weak_ref; wr != NULL; wr = wr_next) {
+        wr_next = wr->next_weak_ref;
+        switch (wr->kind) {
+        case JS_WEAK_REF_KIND_MAP: {
+            JSMapRecord *mr = (JSMapRecord *)wr;
+            JS_FreeValueRT(rt, mr->value);
+            js_free_rt(rt, mr);
+            break;
+        }
+        case JS_WEAK_REF_KIND_WEAK_REF: {
+            /* LOGITOS PATCH: just detach -- deref() checks ->target ==
+               NULL and returns undefined. The JSWeakRefData itself is
+               owned by the WeakRef JS object and is freed by that
+               object's own finalizer (js_weakref_finalizer), not here. */
+            JSWeakRefData *wrd = (JSWeakRefData *)wr;
+            wrd->target = NULL;
+            break;
+        }
+        case JS_WEAK_REF_KIND_FINALIZATION_REGISTRY: {
+            JSFinRecEntry *fre = (JSFinRecEntry *)wr;
+            list_del(&fre->reg_link);
+            fre->target = NULL;
+            /* LOGITOS PATCH: skip during cycle-GC teardown. See the long
+               comment above JSWeakRefRecord ("GC-CYCLE SAFETY") for why
+               enqueueing here would risk handing the callback a zombie
+               held value, and why skipping is spec-legal (ECMA-262
+               9.13: a host is not required to ever call a
+               FinalizationRegistry cleanup callback). */
+            if (rt->gc_phase != JS_GC_PHASE_REMOVE_CYCLES) {
+                JSValueConst args[2];
+                args[0] = fre->reg->callback;
+                args[1] = fre->held_value;
+                /* best-effort: JS_EnqueueJob() can fail only on OOM, in
+                   which case the callback is simply never run -- again
+                   spec-legal, not a bug. */
+                JS_EnqueueJob(fre->reg->ctx, js_finreg_cleanup_job, 2, args);
+            }
+            JS_FreeValueRT(rt, fre->held_value);
+            js_free_rt(rt, fre);
+            break;
+        }
+        }
     }
 
     p->first_weak_ref = NULL; /* fail safe */
@@ -47433,8 +48388,31 @@ static JSValue js_map_set(JSContext *ctx, JSValueConst this_val,
     if (!s)
         return JS_EXCEPTION;
     key = map_normalize_key(ctx, argv[0]);
-    if (s->is_weak && !JS_IsObject(key))
-        return JS_ThrowTypeErrorNotAnObject(ctx);
+    if (s->is_weak) {
+        /* LOGITOS PATCH (jssem differential, ES2023 "symbols as weakmap
+           keys", tests/jssem/cases/01-weak.js): CanBeHeldWeakly(v) accepts
+           an Object OR any Symbol that is not a *registered* one
+           (Symbol.for) -- this engine predates that addition and refused
+           every Symbol with a TypeError, a hard throw (not a degraded
+           path) on the first .set()/.add() for any library that keys
+           private per-instance state on a unique Symbol, the standard
+           alternative to a string property name that could collide with a
+           subclass's or a mixin's own key. Registered symbols are still
+           refused: they live in a process-wide table and are reachable by
+           name forever (Symbol.keyFor), so "weakly" holding one is
+           meaningless and the spec draws the line exactly there.
+           map_add_record()/delete_weak_ref() hold a real reference to a
+           symbol key instead of a true weak one -- see the comment there
+           for why, and tests/jssem's finding 3 above (this report) for
+           what that costs and does not cost. */
+        BOOL weakly_ok = JS_IsObject(key);
+        if (!weakly_ok && JS_VALUE_GET_TAG(key) == JS_TAG_SYMBOL) {
+            JSAtomStruct *symp = JS_VALUE_GET_PTR(key);
+            weakly_ok = (symp->atom_type != JS_ATOM_TYPE_GLOBAL_SYMBOL);
+        }
+        if (!weakly_ok)
+            return JS_ThrowTypeErrorNotAnObject(ctx);
+    }
     if (magic & MAGIC_SET)
         value = JS_UNDEFINED;
     else
@@ -47973,6 +48951,265 @@ void JS_AddIntrinsicMapSet(JSContext *ctx)
                                    js_map_proto_funcs_ptr[i + 4],
                                    js_map_proto_funcs_count[i + 4]);
     }
+}
+
+/* LOGITOS PATCH (jssem differential, "objects-weak-intl"): WeakRef and
+ * FinalizationRegistry. Record types (JSWeakRefData, JSFinRegState,
+ * JSFinRecEntry) and the reset_weak_ref() dispatch that notifies them of
+ * a target's death are defined above, next to JSMapRecord -- see the long
+ * comment on JSWeakRefRecord for the whole design and its GC-cycle-safety
+ * argument. This section is everything that is pure "new class": the
+ * finalizers, the constructors, and the prototype methods. */
+
+static void js_weakref_finalizer(JSRuntime *rt, JSValue val)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(val);
+    JSWeakRefData *wrd = p->u.opaque;
+
+    if (wrd) {
+        if (wrd->target)
+            weak_ref_unlink(wrd->target, &wrd->hdr);
+        js_free_rt(rt, wrd);
+    }
+}
+
+/* No mark function: a WeakRef holds no strong JS reference to anything
+   (that is the entire point), so it contributes nothing to the cycle
+   collector's reachability graph. */
+
+static JSValue js_weakref_constructor(JSContext *ctx, JSValueConst new_target,
+                                      int argc, JSValueConst *argv)
+{
+    JSValueConst target = argv[0];
+    JSValue obj;
+    JSWeakRefData *wrd;
+    JSObject *p;
+
+    /* SCOPE: object targets only -- see the SCOPE note above JSWeakRefRecord. */
+    if (!JS_IsObject(target))
+        return JS_ThrowTypeErrorNotAnObject(ctx);
+    obj = js_create_from_ctor(ctx, new_target, JS_CLASS_WEAK_REF);
+    if (JS_IsException(obj))
+        return JS_EXCEPTION;
+    wrd = js_mallocz(ctx, sizeof(*wrd));
+    if (!wrd) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    wrd->hdr.kind = JS_WEAK_REF_KIND_WEAK_REF;
+    p = JS_VALUE_GET_OBJ(target);
+    wrd->target = p;
+    wrd->hdr.next_weak_ref = p->first_weak_ref;
+    p->first_weak_ref = &wrd->hdr;
+    JS_SetOpaque(obj, wrd);
+    return obj;
+}
+
+static JSValue js_weakref_deref(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    JSWeakRefData *wrd = JS_GetOpaque2(ctx, this_val, JS_CLASS_WEAK_REF);
+    if (!wrd)
+        return JS_EXCEPTION;
+    if (!wrd->target)
+        return JS_UNDEFINED;
+    return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, wrd->target));
+}
+
+static const JSCFunctionListEntry js_weakref_proto_funcs[] = {
+    JS_CFUNC_DEF("deref", 0, js_weakref_deref ),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "WeakRef", JS_PROP_CONFIGURABLE ),
+};
+
+/* FinalizationRegistry */
+
+static JSValue js_finreg_cleanup_job(JSContext *ctx, int argc,
+                                     JSValueConst *argv)
+{
+    /* argv[0] = callback, argv[1] = held value -- see the JS_EnqueueJob()
+       call in reset_weak_ref()'s FINALIZATION_REGISTRY case. Both were
+       JS_DupValue()'d by JS_EnqueueJob() itself and are freed by
+       JS_ExecutePendingJob() after this returns, same as every other job
+       in this file (promise_reaction_job() etc.) -- nothing here owns
+       them. */
+    return JS_Call(ctx, argv[0], JS_UNDEFINED, 1, &argv[1]);
+}
+
+static void js_finreg_finalizer(JSRuntime *rt, JSValue val)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(val);
+    JSFinRegState *frs = p->u.opaque;
+    struct list_head *el, *el1;
+
+    if (frs) {
+        /* The registry is dying; every cell it owns must be unlinked from
+           its (possibly still very much alive) target BEFORE being freed,
+           or the target's first_weak_ref chain would hold a dangling
+           JSFinRecEntry* and reset_weak_ref() would use-after-free the
+           next time that target dies. */
+        list_for_each_safe(el, el1, &frs->cells) {
+            JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, reg_link);
+            if (fre->target)
+                weak_ref_unlink(fre->target, &fre->hdr);
+            JS_FreeValueRT(rt, fre->held_value);
+            js_free_rt(rt, fre);
+        }
+        JS_FreeValueRT(rt, frs->callback);
+        js_free_rt(rt, frs);
+    }
+}
+
+static void js_finreg_mark(JSRuntime *rt, JSValueConst val,
+                           JS_MarkFunc *mark_func)
+{
+    JSObject *p = JS_VALUE_GET_OBJ(val);
+    JSFinRegState *frs = p->u.opaque;
+    struct list_head *el;
+
+    if (frs) {
+        JS_MarkValue(rt, frs->callback, mark_func);
+        list_for_each(el, &frs->cells) {
+            JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, reg_link);
+            /* held_value is a strong reference the registry keeps ALIVE on
+               the target's behalf; it must be part of the cycle
+               collector's graph or a held_value <-> registry reference
+               cycle would never be collected. */
+            JS_MarkValue(rt, fre->held_value, mark_func);
+        }
+    }
+}
+
+static JSValue js_finreg_constructor(JSContext *ctx, JSValueConst new_target,
+                                     int argc, JSValueConst *argv)
+{
+    JSValueConst cb = argv[0];
+    JSValue obj;
+    JSFinRegState *frs;
+
+    if (!JS_IsFunction(ctx, cb))
+        return JS_ThrowTypeError(ctx, "not a function");
+    obj = js_create_from_ctor(ctx, new_target, JS_CLASS_FINALIZATION_REGISTRY);
+    if (JS_IsException(obj))
+        return JS_EXCEPTION;
+    frs = js_mallocz(ctx, sizeof(*frs));
+    if (!frs) {
+        JS_FreeValue(ctx, obj);
+        return JS_EXCEPTION;
+    }
+    frs->ctx = ctx;
+    frs->callback = JS_DupValue(ctx, cb);
+    init_list_head(&frs->cells);
+    JS_SetOpaque(obj, frs);
+    return obj;
+}
+
+static JSValue js_finreg_register(JSContext *ctx, JSValueConst this_val,
+                                  int argc, JSValueConst *argv)
+{
+    JSFinRegState *frs = JS_GetOpaque2(ctx, this_val, JS_CLASS_FINALIZATION_REGISTRY);
+    JSValueConst target = argv[0];
+    JSValueConst held = argv[1];
+    JSValueConst token = argc > 2 ? argv[2] : JS_UNDEFINED;
+    JSFinRecEntry *fre;
+    JSObject *p;
+
+    if (!frs)
+        return JS_EXCEPTION;
+    /* SCOPE: object targets/tokens only -- see the SCOPE note above
+       JSWeakRefRecord. */
+    if (!JS_IsObject(target))
+        return JS_ThrowTypeErrorNotAnObject(ctx);
+    if (js_same_value(ctx, target, held))
+        return JS_ThrowTypeError(ctx, "held value cannot be the target");
+    if (!JS_IsUndefined(token) && !JS_IsObject(token))
+        return JS_ThrowTypeErrorNotAnObject(ctx);
+
+    fre = js_mallocz(ctx, sizeof(*fre));
+    if (!fre)
+        return JS_EXCEPTION;
+    fre->hdr.kind = JS_WEAK_REF_KIND_FINALIZATION_REGISTRY;
+    fre->reg = frs;
+    p = JS_VALUE_GET_OBJ(target);
+    fre->target = p;
+    fre->hdr.next_weak_ref = p->first_weak_ref;
+    p->first_weak_ref = &fre->hdr;
+    fre->held_value = JS_DupValue(ctx, held);
+    fre->token = JS_IsUndefined(token) ? NULL : JS_VALUE_GET_OBJ(token);
+    list_add_tail(&fre->reg_link, &frs->cells);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_finreg_unregister(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv)
+{
+    JSFinRegState *frs = JS_GetOpaque2(ctx, this_val, JS_CLASS_FINALIZATION_REGISTRY);
+    JSValueConst token = argv[0];
+    JSObject *tok_p;
+    struct list_head *el, *el1;
+    BOOL removed = FALSE;
+
+    if (!frs)
+        return JS_EXCEPTION;
+    if (!JS_IsObject(token))
+        return JS_ThrowTypeErrorNotAnObject(ctx);
+    tok_p = JS_VALUE_GET_OBJ(token);
+    list_for_each_safe(el, el1, &frs->cells) {
+        JSFinRecEntry *fre = list_entry(el, JSFinRecEntry, reg_link);
+        if (fre->token == tok_p) {
+            list_del(&fre->reg_link);
+            if (fre->target)
+                weak_ref_unlink(fre->target, &fre->hdr);
+            JS_FreeValue(ctx, fre->held_value);
+            js_free(ctx, fre);
+            removed = TRUE;
+        }
+    }
+    return JS_NewBool(ctx, removed);
+}
+
+static const JSCFunctionListEntry js_finreg_proto_funcs[] = {
+    JS_CFUNC_DEF("register", 2, js_finreg_register ),
+    JS_CFUNC_DEF("unregister", 1, js_finreg_unregister ),
+    JS_PROP_STRING_DEF("[Symbol.toStringTag]", "FinalizationRegistry", JS_PROP_CONFIGURABLE ),
+};
+
+/* Registered separately from js_std_class_def[]/init_class_range() rather
+   than folded into that array: JS_CLASS_WEAK_REF/JS_CLASS_FINALIZATION_REGISTRY
+   were appended at the END of the predefined-class enum specifically so
+   nothing existing renumbers (see the enum's own comment), which means
+   they are not contiguous with js_std_class_def[]'s range and a shared
+   call would need a gap init_class_range() has no way to express. */
+static const JSClassShortDef js_weakref_class_def[] = {
+    { JS_ATOM_WeakRef, js_weakref_finalizer, NULL },
+    { JS_ATOM_FinalizationRegistry, js_finreg_finalizer, js_finreg_mark },
+};
+
+void JS_AddIntrinsicWeakRef(JSContext *ctx)
+{
+    JSRuntime *rt = ctx->rt;
+    JSValue obj1;
+
+    if (init_class_range(rt, js_weakref_class_def, JS_CLASS_WEAK_REF,
+                         countof(js_weakref_class_def)) < 0)
+        return;
+
+    ctx->class_proto[JS_CLASS_WEAK_REF] = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_WEAK_REF],
+                               js_weakref_proto_funcs,
+                               countof(js_weakref_proto_funcs));
+    obj1 = JS_NewCFunction2(ctx, js_weakref_constructor, "WeakRef", 1,
+                            JS_CFUNC_constructor, 0);
+    JS_NewGlobalCConstructor2(ctx, obj1, "WeakRef",
+                              ctx->class_proto[JS_CLASS_WEAK_REF]);
+
+    ctx->class_proto[JS_CLASS_FINALIZATION_REGISTRY] = JS_NewObject(ctx);
+    JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_FINALIZATION_REGISTRY],
+                               js_finreg_proto_funcs,
+                               countof(js_finreg_proto_funcs));
+    obj1 = JS_NewCFunction2(ctx, js_finreg_constructor, "FinalizationRegistry", 1,
+                            JS_CFUNC_constructor, 0);
+    JS_NewGlobalCConstructor2(ctx, obj1, "FinalizationRegistry",
+                              ctx->class_proto[JS_CLASS_FINALIZATION_REGISTRY]);
 }
 
 /* Generator */
@@ -50353,6 +51590,43 @@ static JSValue js_Date_parse(JSContext *ctx, JSValueConst this_val,
         /* no time: UTC by default */
         is_local = (i > 3);
         fields[1] -= 1;
+
+        /* LOGITOS PATCH (jssem differential, tests/jssem/cases/07-date.js):
+         * the Date Time String Format (ECMA-262 21.4.1.15) is a fixed
+         * grammar with a valid RANGE per field, unlike new Date(y, m, d,
+         * ...), which is specified to *roll over* an out-of-range
+         * component on purpose (MakeDay/MakeTime, implemented for both
+         * call sites by set_date_fields() below). This ISO branch used to
+         * hand every field straight to set_date_fields() with no range
+         * check at all, so Date.parse("2024-13-01") rolled over to
+         * 2025-01-01 instead of returning NaN. isNaN(Date.parse(s)) is THE
+         * validation idiom a form or API-response guard uses for a date
+         * string; a nonexistent day or month rolling over into a
+         * different, entirely plausible date passes that guard silently
+         * and stores, displays and round-trips a date one field off from
+         * what was typed. This validation applies ONLY to the ISO branch;
+         * the legacy toString()/toUTCString() branch below it is
+         * deliberately left as-is -- it was not part of the reported bug
+         * and this tree does not know what, if anything, real engines
+         * validate there. */
+        if (fields[1] < 0 || fields[1] > 11)
+            goto done;
+        {
+            int64_t dim = month_days[fields[1]];
+            if (fields[1] == 1)
+                dim += days_in_year(fields[0]) - 365;
+            if (fields[2] < 1 || fields[2] > dim)
+                goto done;
+        }
+        if (fields[3] < 0 || fields[3] > 24)
+            goto done;
+        if (fields[4] < 0 || fields[4] > 59)
+            goto done;
+        if (fields[5] < 0 || fields[5] > 59)
+            goto done;
+        if (fields[3] == 24 &&
+            (fields[4] != 0 || fields[5] != 0 || fields[6] != 0))
+            goto done; /* ISO 8601 allows 24:00:00.000 only, as midnight */
 
         /* parse the time zone offset if present: [+-]HH:mm or [+-]HHmm */
         tz = 0;
@@ -55935,6 +57209,38 @@ void JS_AddIntrinsicTypedArrays(JSContext *ctx)
                                js_array_buffer_funcs,
                                countof(js_array_buffer_funcs));
 
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+     * SharedArrayBuffer moves INSIDE the same CONFIG_ATOMICS guard Atomics
+     * is already behind (see the bottom of this function, and the guard's own
+     * comment at the top of this file: "LOGIT_OS: single-threaded, no
+     * Atomics"). Upstream registers it out here, unconditionally.
+     *
+     * WHY, AND IT IS THE ABSENT-BEATS-PRESENT-AND-WRONG RULE RATHER THAN
+     * TIDINESS. With -DLOGIT_OS the shipped browser had SharedArrayBuffer
+     * present and Atomics absent -- a combination no real browser has, in
+     * either direction. `typeof SharedArrayBuffer !== 'undefined'` is the
+     * standard test a page uses to decide it is cross-origin isolated and
+     * may use a shared-memory path; answering yes and then having no
+     * Atomics.wait/notify/add to operate on it walks the page into a branch
+     * it can no longer feature-test its way out of. The buffer without the
+     * operations is not half a capability, it is a false signal.
+     *
+     * MEASURED, not reasoned: the same probe built twice on the host with
+     * only -DLOGIT_OS -DCONFIG_STACK_CHECK -DNDEBUG changed moved exactly one
+     * of 69 rows -- `Atomics yes` -> `Atomics odd:false`. So the divergence
+     * is real, it is this define, and SharedArrayBuffer was the half left
+     * standing.
+     *
+     * A LARGER FINDING SITS BEHIND THIS ONE AND IS NOT FIXED HERE: 27
+     * tests/*.mk fragments compile $(QJS_SRC) for the host WITHOUT -DLOGIT_OS,
+     * so every host JS gate in this tree measures an engine that HAS Atomics
+     * while the browser does not. Same for -DCONFIG_STACK_CHECK, where the
+     * divergence is worse than a missing global: without it
+     * js_check_stack_overflow is `return FALSE` and JS_SetMaxStackSize is
+     * inert, so a runaway recursion throws InternalError in the guest and
+     * SEGFAULTS the harness on the host -- a whole class a host-only
+     * differential reports as "no difference". */
+#ifdef CONFIG_ATOMICS
     ctx->class_proto[JS_CLASS_SHARED_ARRAY_BUFFER] = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, ctx->class_proto[JS_CLASS_SHARED_ARRAY_BUFFER],
                                js_shared_array_buffer_proto_funcs,
@@ -55946,6 +57252,9 @@ void JS_AddIntrinsicTypedArrays(JSContext *ctx)
     JS_SetPropertyFunctionList(ctx, shared_array_buffer_func,
                                js_shared_array_buffer_funcs,
                                countof(js_shared_array_buffer_funcs));
+#else
+    (void)shared_array_buffer_func;
+#endif
 
     typed_array_base_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, typed_array_base_proto,

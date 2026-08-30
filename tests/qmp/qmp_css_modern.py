@@ -46,7 +46,7 @@ import time
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import (Session, PPM, dock_icon, BROWSER_SLOT,      # noqa: E402
+from qmp_ui import (Session, PPM,                               # noqa: E402
                     configure, pt)
 
 ISO, DISK = sys.argv[1], sys.argv[2]
@@ -219,8 +219,14 @@ try:
         die("kernel never printed LOGIT_BOOT_OK")
     time.sleep(6)
 
-    ui = Session(qmp_path)
-    ui.click_at(*dock_icon(BROWSER_SLOT))
+    ui = Session(qmp_path, serial=serial_path)
+    # launch_app ADDS the check this driver never had: a click that opened
+    # nothing (or the wrong app) used to turn every screendump comparison
+    # below into a comparison of whatever window happened to be up.
+    try:
+        ui.launch_app("browser")
+    except AssertionError as e:
+        die(str(e))
     time.sleep(3.0)
     ui.screendump(os.path.join(tmp, "launch.ppm"), settle=0.4)
 

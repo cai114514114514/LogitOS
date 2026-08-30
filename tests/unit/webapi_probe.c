@@ -284,6 +284,7 @@ struct script {
     char url[256];              /* the short label used in the report */
     char abs[600];              /* the ABSOLUTE URL: a module's identity */
     int  inl;                   /* inline: no src attribute */
+    struct node *node;          /* the <script> element -- document.currentScript */
 };
 #define SCRMAX 64
 static struct script g_scr[SCRMAX];
@@ -453,6 +454,16 @@ static char g_fixdir[512];
 static char g_fsroot[512];
 static char g_docroot[512];       /* --docroot=DIR, empty when not given */
 static char *slurp(const char *path, int *out_len);
+/* Elements in the tree, counted in C so that counting them is not itself a
+ * selector call the shim would record. */
+static int dom_elem_count(struct node *n)
+{
+    if (!n) return 0;
+    int k = (n->type == N_ELEM) ? 1 : 0;
+    for (struct node *c = n->first_child; c; c = c->next) k += dom_elem_count(c);
+    return k;
+}
+
 
 /* ---- the fixture as a DIRECTORY TREE, when the manifest cannot answer ----
  *
@@ -628,6 +639,7 @@ static void collect(struct node *n, const char *dir)
             if (d) {
                 g_scr[g_nscr].data = d; g_scr[g_nscr].len = len;
                 g_scr[g_nscr].module = module;
+                g_scr[g_nscr].node = n;
                 snprintf(g_scr[g_nscr].url, sizeof g_scr[g_nscr].url, "%s",
                          mi >= 0 ? g_man[mi].file : src);
                 snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs, "%s", abs);
@@ -664,6 +676,7 @@ static void collect(struct node *n, const char *dir)
                     snprintf(g_scr[g_nscr].abs, sizeof g_scr[g_nscr].abs,
                              "%s#inline-module-%d", g_pagebase, g_nscr + 1);
                     g_scr[g_nscr].inl = 1;
+                    g_scr[g_nscr].node = n;
                     g_nscr++;
                 }
             }
@@ -832,6 +845,8 @@ static void drain_console(int show_errors, const char *tag)
  * bare and armed censuses differ by anything other than that, one of them is
  * wrong. See tests/stall.mk. */
 static int g_stall;
+static int g_prof;                /* --prof: dump js_prof per fixture */
+static int g_selcount;            /* --selcount: count selector-engine calls */
 
 static void stall_dump(const char *site)
 {
@@ -950,6 +965,17 @@ static void note_c2_error(const char *msg)
 static char       *g_drive_src;
 static int         g_drive_len;
 static const char *g_drive_path;
+
+/* js_prof_polls() as a JS function -- see where it is installed for why it is
+ * behind --prof. A poll event is one branch or one call (js_page.c's watchdog
+ * comment measures that word against quickjs.c), so the difference between two
+ * reads is a machine-independent cost for the code between them: no clock, no
+ * contention, identical on this host and on the device. */
+static JSValue js_probe_polls(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t; (void)argc; (void)argv;
+    return JS_NewFloat64(ctx, (double)js_prof_polls());
+}
 
 static JSValue js_probe_click(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
@@ -1081,7 +1107,96 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
     js_page_set_clock(clock_fn);
     js_page_set_location(url);
     js_module_reset();
+    if (g_prof) { js_prof_enable(1); js_prof_reset(); }
     if (js_page_open(root)) {
+        /* __polls(): the free-running poll counter, exposed to the fixture ONLY
+         * under --prof. It is installed here rather than in js_page.c because a
+         * global the shipped browser hands to every page is a compatibility and
+         * fingerprinting surface, and this one exists for a scaling scan that
+         * runs in this harness. Under --prof the harness clock is frozen
+         * (clock_fn returns g_now unchanged), so performance.now() cannot cost
+         * anything here -- fuel is the only honest cost on the host, and this
+         * is how a page reads it. The device half of the same scan uses
+         * performance.now() instead, which is why the two must agree in SHAPE
+         * and cannot be compared in units. */
+        if (g_prof) {
+            JSContext *pc = js_page_ctx();
+            JSValue pg = JS_GetGlobalObject(pc);
+            JS_SetPropertyStr(pc, pg, "__polls",
+                              JS_NewCFunction(pc, js_probe_polls, "__polls", 0));
+            JS_FreeValue(pc, pg);
+        }
+        /* --selcount: HOW MANY TIMES DOES A REAL PAGE ASK, AND HOW OFTEN IS IT
+         * THE SAME QUESTION?
+         *
+         * The scaling table gives the price of one selector call. It cannot
+         * give the bill, because the bill is price x COUNT and the count is a
+         * property of the page, not of the engine. And the count splits in two,
+         * which is the whole question the budget turns on: a call that asks
+         * something new is forward progress and is worth waiting for; a call
+         * that re-asks a question already answered is repeated work, and no
+         * budget increase buys anything with it.
+         *
+         * WHAT "REPEATED" MEANS HERE, SAID PRECISELY, because the loose version
+         * would be an accusation rather than a measurement. A call is counted
+         * as a repeat when the pair (scope object, selector string) has been
+         * seen before. That is deliberately the WEAKER claim: it does not say
+         * the answer would have been the same -- the tree may have changed in
+         * between and js_select.c would have to re-walk it anyway. What it does
+         * say is that the engine had no way to know, because it keeps no result
+         * cache and no per-tree generation counter; it re-walks unconditionally.
+         * So this number is an upper bound on what a cache could save and a
+         * lower bound on nothing, and it is reported as such.
+         *
+         * THE WRAPPER IS INSTALLED BEFORE THE FIRST SCRIPT and costs one extra
+         * JS call per selector call, which inflates the page's TIME and not its
+         * COUNT -- and the count is all that is read from it. --prof must not
+         * be quoted for timing alongside --selcount for that reason. */
+        if (g_selcount) {
+            JSContext *pc = js_page_ctx();
+            static const char SHIM[] =
+             "(function(){\n"
+             "var D=document, G=globalThis;\n"
+             "var C={calls:0,distinct:0,byname:{}};\n"
+             "var seen=new Map(), ids=new Map(), nid=0;\n"
+             "function idof(o){ if(o===D) return 'doc';\n"
+             "  var v=ids.get(o); if(v===undefined){v='e'+(++nid); ids.set(o,v);} return v; }\n"
+             "function note(name,scope,sel){\n"
+             "  C.calls++;\n"
+             "  C.byname[name]=(C.byname[name]||0)+1;\n"
+             "  var k=idof(scope)+'|'+name+'|'+String(sel);\n"
+             "  if(!seen.has(k)){ seen.set(k,1); C.distinct++; }\n"
+             "  else seen.set(k, seen.get(k)+1);\n"
+             "}\n"
+             "function wrap(obj,name){\n"
+             "  var f=obj&&obj[name]; if(typeof f!=='function') return;\n"
+             "  try{ Object.defineProperty(obj,name,{configurable:true,writable:true,\n"
+             "    value:function(){ note(name,this,arguments[0]);\n"
+             "      return f.apply(this,arguments); }});\n"
+             "  }catch(e){}\n"
+             "}\n"
+             "var NAMES=['querySelector','querySelectorAll','getElementsByTagName',\n"
+             "           'getElementsByClassName','matches','closest'];\n"
+             "var EP = (typeof G.Element==='function'&&G.Element.prototype)||null;\n"
+             "for (var i=0;i<NAMES.length;i++){ wrap(D,NAMES[i]); if(EP) wrap(EP,NAMES[i]); }\n"
+             "G.__selcount=function(){ return C; };\n"
+             "})();";
+            JSValue v = JS_Eval(pc, SHIM, strlen(SHIM), "<selcount>",
+                                JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) {
+                JSValue e = JS_GetException(pc);
+                const char *m = JS_ToCString(pc, e);
+                /* A shim that failed to install must SAY SO. Silently
+                 * reporting zero selector calls for a page that made ten
+                 * thousand is exactly the shape of the four instruments that
+                 * lied here on 2026-08-28. */
+                printf("  [selcount] SHIM FAILED TO INSTALL: %s -- the counts "
+                       "below are of nothing\n", m ? m : "?");
+                if (m) JS_FreeCString(pc, m);
+                JS_FreeValue(pc, e);
+            }
+            JS_FreeValue(pc, v);
+        }
         /* BEFORE the first script: a tracker installed afterwards would miss
          * every fetch the page starts on its first line, which on an
          * application page is most of them. */
@@ -1096,16 +1211,31 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             /* The browser reaches a classic script through js_page_eval, which
              * sets document.currentScript around it. This file evaluates the
              * script itself so it can keep the exception OBJECT rather than the
-             * printed message, so it has to do that part too -- without it the
-             * probe measured currentScript as null on every script of every
-             * page and would have reported a working feature as absent. */
-            /* An INLINE script must be paired by position, not by URL: its
-             * `abs` is the document's URL with a discriminator, which looks
-             * like an external script's and matched nothing. */
-            js_page_begin_script(g_scr[i].inl || !g_scr[i].abs[0]
-                                 ? g_scr[i].url : g_scr[i].abs);
+             * printed message, so it has to do that part too.
+             *
+             * THIS LINE USED TO BE A WORKAROUND FOR A BROWSER BUG AND HID IT.
+             * js_page_begin_script took a FILENAME and worked the node out by
+             * matching the string; the probe passed a string chosen so the
+             * match would succeed (`url` for an inline script, because the
+             * `abs` it builds for one looks like an external script's), while
+             * the browser passed the page URL + "#inline-script-N" and matched
+             * nothing. So every host measurement of currentScript was a
+             * measurement of the probe's own naming, and the shipped browser
+             * returned null for every inline classic script on every page --
+             * for the whole life of the feature, with a green instrument
+             * beside it. The door is the NODE now, and this passes the same
+             * node browser.c does. */
+            js_page_begin_script(g_scr[i].node);
             JSValue v = JS_Eval(ctx, g_scr[i].data, (size_t)g_scr[i].len, g_scr[i].url,
                                 JS_EVAL_TYPE_GLOBAL);
+            /* THE MICROTASK CHECKPOINT, INSIDE THE SCRIPT'S SCOPE -- the same
+             * order js_page_eval uses and the same order HTML gives: "run a
+             * classic script" performs the checkpoint, and only then does
+             * "execute the script element" restore currentScript. A probe that
+             * drained the queue after the restore would report null to every
+             * promise reaction on every page, which is what Next.js's
+             * turbopack runtime reads. See js_page.c. */
+            js_page_pump();
             js_page_end_script();
             if (JS_IsException(v)) {
                 JSValue e = JS_GetException(ctx);
@@ -1232,6 +1362,35 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
          * of a page that has finished loading. Whatever is outstanding here is
          * outstanding forever. */
         stall_dump(g_sitename[g_site]);
+        /* --selcount's readout, at the settle point: everything the page was
+         * ever going to ask has been asked. */
+        if (g_selcount && js_page_ctx()) {
+            JSContext *pc = js_page_ctx();
+            static const char DUMP[] =
+              "(function(){ var c = (typeof __selcount==='function')?__selcount():null;\n"
+              " if(!c) return 'NOSHIM';\n"
+              " var parts=[]; for (var k in c.byname) parts.push(k+'='+c.byname[k]);\n"
+              " return c.calls+'|'+c.distinct+'|'+parts.join(',');})()";
+            JSValue v = JS_Eval(pc, DUMP, strlen(DUMP), "<selcount>", JS_EVAL_TYPE_GLOBAL);
+            const char *m = JS_IsException(v) ? 0 : JS_ToCString(pc, v);
+            long calls = 0, distinct = 0;
+            const char *rest = "";
+            if (m && strcmp(m, "NOSHIM")) {
+                calls = strtol(m, 0, 10);
+                const char *b = strchr(m, '|');
+                if (b) { distinct = strtol(b + 1, 0, 10); b = strchr(b + 1, '|'); }
+                rest = b ? b + 1 : "";
+            }
+            int elems = dom_elem_count(js_dom_root());
+            printf("  [selcount] %-11s calls=%ld distinct=%ld repeat=%.1f%% "
+                   "elements=%d  est_element_visits=%ld  %s\n",
+                   g_sitename[g_site], calls, distinct,
+                   calls ? 100.0 * (double)(calls - distinct) / (double)calls : 0.0,
+                   elems, (long)calls * (long)elems, rest);
+            if (m) JS_FreeCString(pc, m);
+            if (JS_IsException(v)) { JSValue e = JS_GetException(pc); JS_FreeValue(pc, e); }
+            JS_FreeValue(pc, v);
+        }
         /* ---- the driver, at the settle point and in channel 2 only.
          * Its exceptions are the PAGE's ledger entries under `drive`, not a
          * separate bucket, because a driver that pressed a button and got a
@@ -1246,7 +1405,11 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
                               JS_NewCFunction(ctx, js_probe_click, "__probeClick", 1));
             JS_FreeValue(ctx, g);
             cap_start();
-            js_page_begin_script("<drive>");
+            /* The driver is not a <script> in the document, so it has no
+             * currentScript. NULL, not a placeholder name: a driver that
+             * reported a currentScript would be the instrument answering its
+             * own question. */
+            js_page_begin_script(0);
             JSValue v = JS_Eval(ctx, g_drive_src, (size_t)g_drive_len,
                                 g_drive_path ? g_drive_path : "<drive>",
                                 JS_EVAL_TYPE_GLOBAL);
@@ -1266,6 +1429,11 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             cap_stop();
             harvest_module_output("<drive>");
         }
+        /* THE PROFILE, dumped inside channel 2 and nowhere else. Channel 1
+         * runs every script a second time under a `with` proxy whose `has`
+         * trap is JS the page never had; folding those bytecodes in would
+         * report a load this browser does not perform. */
+        if (g_prof) js_prof_dump(g_sitename[g_site]);
         js_page_close();
     }
 
@@ -1305,7 +1473,18 @@ static void probe_site(const char *dir, int show_errors, int show_scripts)
             memcpy(w + o, g_scr[i].data, (size_t)g_scr[i].len);
             o += g_scr[i].len;
             w[o++] = '\n'; w[o++] = '}'; w[o] = 0;
+            /* The SAME node channel 2 passes. This channel never called
+             * js_page_begin_script at all, so document.currentScript was null
+             * for every script in it -- and because a page that reads it gets
+             * a TypeError one line later, that silently subtracted from the
+             * histogram this channel exists to produce. Measured on
+             * tests/fixtures/webapi/nodejs: c2 goes 15/30 -> 30/30 across this
+             * property alone. A histogram taken with a feature switched off is
+             * a histogram of a browser nobody ships. */
+            js_page_begin_script(g_scr[i].node);
             JSValue v = JS_Eval(ctx, w, (size_t)o, g_scr[i].url, JS_EVAL_TYPE_GLOBAL);
+            js_page_pump();               /* the checkpoint, inside the script */
+            js_page_end_script();
             if (!JS_IsException(v)) { if (mode == 1) c1_ok++; }
             else {
                 JSValue e = JS_GetException(ctx);
@@ -1406,6 +1585,635 @@ static int cmp_miss(const void *a, const void *b)
     return strcmp(x->name, y->name);
 }
 
+/* ==========================================================================
+ * --prof-selftest: PROVE THE PROFILER BEFORE ANY NUMBER FROM IT IS BELIEVED
+ * ==========================================================================
+ *
+ * js_page.c's js_prof samples on the BYTECODE clock -- QuickJS's interrupt
+ * handler, one call per 10,000 bytecodes -- and reads the wall clock the
+ * watchdog was reading anyway. Both halves can be wrong in ways that still
+ * print a plausible table, and this repository's own rule 1 is a list of four
+ * things that looked like instruments and were not: a pointer-settle helper
+ * that searched a composite for an arrow drawn on the hardware cursor plane, a
+ * kprof parser whose regex printed "0 samples over 0 sites" underneath a header
+ * saying 8,471 samples were taken. So every claim the profiler makes is checked
+ * here against an answer known from somewhere else FIRST.
+ *
+ * The clock below is the third source. It is not a real clock and it is not the
+ * harness's frozen one: it advances by exactly `g_st_tick` ms on every READ.
+ * With tick=1 the arithmetic is closed-form -- js_page_slice_begin() reads it
+ * once, and each sample reads it once, so a slice of F samples MUST report
+ * js_ms == F. Nothing in js_page.c knows that; if it reports anything else, the
+ * accounting is wrong and no site measurement taken with it means anything.
+ *
+ * THE FIVE CHECKS, and what each one would catch:
+ *   1 fuel is linear in the work        -- a counter that saturates, or one
+ *                                          that counts entries not bytecodes
+ *   2 bytecodes/iteration is sane       -- a counter off by the 10,000 factor
+ *   3 js_ms == fuel under the 1 ms/read -- the wall-clock accounting
+ *   4 an injected native stall of a     -- the gap detector, positive AND
+ *     known size is found, and a run       negative: a run with no stall must
+ *     without one reports no gap           report NO gap
+ *   5 fuel with the profiler off ==     -- the observer effect, on the one
+ *     fuel with it on                      clock that can measure it exactly
+ * Check 4's negative half is the one that matters most: a gap detector that
+ * fires on ordinary interpretation would attribute a page's whole load to
+ * "native calls" and read exactly like a finding. */
+static unsigned long long g_st_now;
+static int g_st_tick;
+static unsigned long long st_clock(void)
+{ unsigned long long v = g_st_now; g_st_now += (unsigned)g_st_tick; return v; }
+
+/* The injected native cost. A C function that advances the clock by a known
+ * number of ms and executes no bytecodes while doing it -- which is exactly
+ * the shape of every real native call the profiler is meant to detect: layout
+ * forced by an offsetWidth read, a synchronous DOM mutation, a decode. */
+static JSValue js_st_stall(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int ms = 0;
+    if (argc > 0) JS_ToInt32(ctx, &ms, argv[0]);
+    if (ms > 0) g_st_now += (unsigned)ms;
+    return JS_UNDEFINED;
+}
+
+static int g_st_fail;
+static void st_check(int ok, const char *what, const char *detail)
+{
+    printf("  %-4s %s%s%s\n", ok ? "ok" : "FAIL", what,
+           detail && *detail ? "  " : "", detail ? detail : "");
+    if (!ok) g_st_fail++;
+}
+
+/* Run one script as its own slice and return that slice's record. */
+static struct js_prof_slice g_st_last;
+static long long st_run(const char *src, const char *label)
+{
+    js_prof_reset();
+    js_prof_label(label);
+    JSContext *ctx = js_page_ctx();
+    js_page_slice_begin();
+    JSValue v = JS_Eval(ctx, src, strlen(src), label, JS_EVAL_TYPE_GLOBAL);
+    int bad = JS_IsException(v);
+    if (bad) { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); }
+    JS_FreeValue(ctx, v);
+    js_page_slice_end();
+    const struct js_prof_slice *s = js_prof_at(0);
+    if (s) g_st_last = *s; else memset(&g_st_last, 0, sizeof g_st_last);
+    return g_st_last.fuel;
+}
+
+static int prof_selftest(void)
+{
+    static const char DOC[] =
+        "<!doctype html><html><body><div id=t>x</div>"
+        "<button id=b>go</button></body></html>";
+    printf("== jsprof selftest: the profiler against answers known elsewhere ==\n");
+
+    g_st_now = 1000; g_st_tick = 1;
+    js_page_set_clock(st_clock);
+    js_page_set_location("http://selftest.invalid/");
+    struct node *root = dom_parse((char *)DOC, (int)strlen(DOC));
+    if (!root || !js_page_open(root)) { printf("  FAIL cannot open a page\n"); return 1; }
+    JSContext *ctx = js_page_ctx();
+    JSValue g = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, g, "__stall",
+                      JS_NewCFunction(ctx, js_st_stall, "__stall", 1));
+    JS_FreeValue(ctx, g);
+
+    js_prof_enable(1);
+
+    /* ---- 1 + 2: the bytecode clock is linear and the constant is sane ---- */
+    char src[256];
+    long long f[3];
+    const long n[3] = { 200000, 400000, 800000 };
+    for (int i = 0; i < 3; i++) {
+        snprintf(src, sizeof src,
+                 "var s=0; for (var i=0;i<%ld;i++) s+=i; s", n[i]);
+        f[i] = st_run(src, "<loop>");
+    }
+    /* Two independent differences over equal-sized increments of the SAME
+     * loop. Their ratio is 2 for a linear counter and nothing else. */
+    long long d1 = f[1] - f[0], d2 = f[2] - f[1];
+    double ratio = d1 ? (double)d2 / (double)d1 : 0;
+    char det[200];
+    snprintf(det, sizeof det, "fuel %lld/%lld/%lld  d2/d1=%.4f (want 2.0000)",
+             f[0], f[1], f[2], ratio);
+    st_check(d1 > 0 && ratio > 1.98 && ratio < 2.02,
+             "fuel is linear in loop iterations", det);
+    /* AND THE CONSTANT IS DERIVED, NOT GUESSED AT -- this is the check that
+     * caught the tree's own wrong word. js_page.c said the interrupt fires
+     * every 10,000 BYTECODES. It does not: js_poll_interrupts() is called from
+     * OP_goto, OP_if_true and OP_if_false (all widths) and from
+     * JS_CallInternal, so the unit
+     * is a branch or a call. Reading quickjs.c, `for (i=0;i<N;i++) s+=i`
+     * compiles to exactly two of them per iteration -- the loop test and the
+     * back edge -- so this number is predicted to be 2.00 before it is
+     * measured. Anything else means either the reading or the counter is
+     * wrong, and this instrument is not usable until they agree. */
+    double per_iter = d1 ? (double)d1 * 10000.0 / (double)(n[1] - n[0]) : 0;
+    snprintf(det, sizeof det, "%.4f (predicted 2.0000: the loop test + the back edge)",
+             per_iter);
+    st_check(per_iter > 1.99 && per_iter < 2.01,
+             "polls per loop iteration match what quickjs.c says they must be", det);
+
+    /* ---- 3: the wall-clock accounting, closed form ---- */
+    snprintf(src, sizeof src, "var s=0; for (var i=0;i<%ld;i++) s+=i; s", n[1]);
+    long long fu = st_run(src, "<clock>");
+    long long delta = g_st_last.js_ms - fu;
+    if (delta < 0) delta = -delta;
+    snprintf(det, sizeof det, "fuel=%lld js_ms=%lld out_ms=%lld (1 ms per clock read)",
+             fu, g_st_last.js_ms, g_st_last.out_ms);
+    st_check(fu > 10 && delta <= 2 && g_st_last.out_ms == 0,
+             "js_ms equals fuel exactly under a 1 ms/read clock", det);
+
+    /* ---- 4: an injected native stall of a known size, and its control ---- */
+    st_run("var s=0; for (var i=0;i<400000;i++) s+=i; s", "<nogap>");
+    snprintf(det, sizeof det, "gaps=%d max_gap_ms=%lld", g_st_last.gaps, g_st_last.max_gap_ms);
+    st_check(g_st_last.gaps == 0,
+             "NEGATIVE CONTROL: pure interpretation reports no native gap", det);
+
+    st_run("var s=0; for (var i=0;i<200000;i++) s+=i; __stall(500);"
+           " for (var i=0;i<200000;i++) s+=i; s", "<gap>");
+    long long gd = g_st_last.max_gap_ms - 501;   /* 500 injected + 1 clock read */
+    if (gd < 0) gd = -gd;
+    snprintf(det, sizeof det, "gaps=%d max_gap_ms=%lld (injected 500)",
+             g_st_last.gaps, g_st_last.max_gap_ms);
+    st_check(g_st_last.gaps == 1 && gd <= 3,
+             "a 500 ms native call is found, once, at its true size", det);
+
+    /* ---- 5: the observer effect, and THIS CHECK USED TO BE A FAKE ----------
+     * It read: run with the profiler on, then `js_prof_enable(0)`, then
+     * `js_prof_enable(1)`, then run again and compare js_prof's own fuel. Both
+     * runs were profiled. It measured run-to-run determinism and printed the
+     * words "the observer effect" over the top -- a control that cannot be
+     * watched failing, which this repository rates worse than no control,
+     * because js_prof's counter is incremented BY js_prof and so can never
+     * report its own cost.
+     *
+     * The independent counter is the watchdog's. slice_interrupt increments
+     * g_slice_fuel whether or not g_prof_on, so it is the same measurement of
+     * the same work taken by code that does not care whether we are profiling.
+     * js_page_slice_fuel_used() exports it for exactly this. */
+    static const char OBS[] = "var s=0; for (var i=0;i<400000;i++) s+=i; s";
+    js_page_set_slice_fuel(1000000000LL);      /* far above the run, so no bite */
+    js_prof_enable(1);
+    st_run(OBS, "<obs on>");
+    long long wd_on = js_page_slice_fuel_used();
+    js_prof_enable(0);
+    st_run(OBS, "<obs off>");
+    long long wd_off = js_page_slice_fuel_used();
+    js_prof_enable(1);
+    snprintf(det, sizeof det,
+             "watchdog fuel %lld profiled vs %lld unprofiled", wd_on, wd_off);
+    st_check(wd_on > 10 && wd_on == wd_off,
+             "profiling changes the work by exactly nothing", det);
+
+    /* ---- 6: THE BUG THIS INSTRUMENT WAS BUILT AND THEN FOUND -------------
+     * A JS entry that does not call js_page_slice_begin() inherits the
+     * deadline of whichever entry last did. js_dom_dispatch() is such an entry
+     * -- every DOMContentLoaded, load, pageshow, click and input handler in the
+     * browser goes through it, and grep finds no slice_begin on that path. So
+     * the budget is not a CPU budget for those handlers: it is the wall time
+     * since some earlier script, and everything the browser did in between --
+     * fetching, parsing, styling, laying out, painting, waiting -- is spent
+     * out of it.
+     *
+     * Both halves are asserted, because the positive one alone would pass on a
+     * browser that bit every dispatch. */
+    js_page_set_slice_fuel(0);
+    js_page_set_slice_ms(1000);
+    js_prof_reset();
+    js_prof_label("<listener install>");
+    js_page_slice_begin();
+    {
+        static const char INSTALL[] =
+            "globalThis.__n = 0;"
+            "document.getElementById('b').addEventListener('click', function () {"
+            /* 60,000 iterations = 120,000 polls. It has to be well over the
+             * 10,000-poll period or the watchdog is never CONSULTED during the
+             * handler and this test would report "not interrupted" for a
+             * reason that has nothing to do with the deadline -- a control
+             * that passes for the wrong reason, which is worse than none. It
+             * is still a handler that does nothing: no DOM, no allocation. */
+            "  var s = 0; for (var i = 0; i < 60000; i++) s += i; globalThis.__n++; });";
+        JSValue v = JS_Eval(ctx, INSTALL, strlen(INSTALL), "<install>", JS_EVAL_TYPE_GLOBAL);
+        JS_FreeValue(ctx, v);
+    }
+    js_page_slice_end();
+
+    struct node *btn = 0;
+    {   /* the <button>, found the way a page would */
+        static const char FIND[] = "document.getElementById('b')";
+        JSValue v = JS_Eval(ctx, FIND, strlen(FIND), "<find>", JS_EVAL_TYPE_GLOBAL);
+        btn = js_dom_node_from(v);
+        JS_FreeValue(ctx, v);
+    }
+    if (!btn) { printf("  FAIL cannot find the button\n"); g_st_fail++; goto done; }
+
+    {
+        struct js_event_init ji = { 0 };
+        ji.bubbles = 1; ji.cancelable = 1;
+        int hits0 = js_page_slice_hits();
+        js_dom_dispatch(btn, "click", &ji);
+        int hits1 = js_page_slice_hits();
+        snprintf(det, sizeof det, "watchdog hits %d -> %d", hits0, hits1);
+        st_check(hits1 == hits0,
+                 "CONTROL: a click dispatched at once is not interrupted", det);
+
+        /* Now let real time pass with no JS running at all -- exactly what a
+         * page load does between its last <script> and its `load` event, and
+         * what a loaded page does while it waits for the user.
+         *
+         * js_page_pending() IS THE BROWSER'S MAIN LOOP and it is called here
+         * for that reason, not as decoration: browser.c:5151 calls it every
+         * pass, and it is where js_page.c clears the profiler's in-JS flag.
+         * Without this line the harness models a browser whose event loop does
+         * not exist, and the 5,000 idle ms below get charged to js_ms -- the
+         * check underneath then FAILS, which is exactly how the missing
+         * boundary was found. A driver that does not run the loop the product
+         * runs is measuring a different program. */
+        g_st_now += 5000;
+        js_page_pending();
+        js_dom_dispatch(btn, "click", &ji);
+        int hits2 = js_page_slice_hits();
+        const struct js_prof_slice *s = js_prof_at(js_prof_count() - 1);
+        snprintf(det, sizeof det, "hits %d -> %d, the bitten slice is \"%s\" "
+                 "fuel=%lld js_ms=%lld out_ms=%lld resumed=%d",
+                 hits1, hits2, s ? s->what : "?", s ? s->fuel : -1,
+                 s ? s->js_ms : -1, s ? s->out_ms : -1, s ? s->resumed : -1);
+        st_check(hits2 == hits1 + 1,
+                 "REPRODUCED: the same click 5 s later IS interrupted", det);
+        if (s)
+            st_check(s->out_ms > s->js_ms * 10 && s->resumed > 0,
+                     "and the profiler shows the budget went to out_ms, not to the script",
+                     "");
+    }
+
+done:
+    js_prof_dump("selftest");
+    js_page_close();
+    js_page_set_slice_ms(0);
+    printf("\njsprof selftest: %s (%d failure%s)\n",
+           g_st_fail ? "FAILED" : "ok", g_st_fail, g_st_fail == 1 ? "" : "s");
+    return g_st_fail ? 1 : 0;
+}
+
+/* ==========================================================================
+ * --domscale: COST PLOTTED AGAINST INPUT SIZE
+ * ==========================================================================
+ *
+ * THE QUESTION. js_prof answers "how much of the slice was interpretation and
+ * how much was not". It cannot answer the one that turns a 200 ms page into a
+ * 45 s page, because that one is not visible in a total at all: a quadratic
+ * operation and a linear one look identical at one input size and differ by
+ * three orders of magnitude at a thousand. The only way to see it is to run
+ * the SAME operation at one, ten, a hundred and a thousand and divide.
+ *
+ * THE UNIT IS PER-OPERATION COST, AND THE SHAPE IS THE ANSWER. For each row
+ * below the harness reports ns per operation at each N. A row whose per-op
+ * cost is flat is linear (or constant) and is not the bug. A row whose per-op
+ * cost RISES WITH N is superlinear, and the rise IS the finding -- the total
+ * is N times a number that is itself growing.
+ *
+ * TWO NUMBERS PER CELL, BECAUSE THEY SEPARATE TWO HYPOTHESES THAT A SINGLE
+ * TIMING CONFLATES.
+ *   ns   -- wall clock, min over repeats. Charges everything: interpretation,
+ *           the C binding, whatever the binding calls.
+ *   fuel -- QuickJS poll events (branches + calls) / 10,000, from js_prof.
+ *           Rises ONLY when interpreted bytecode runs. A native call executes
+ *           no branches, so it costs ~0 fuel however long it takes.
+ * So: ns/op flat + fuel/op flat = the operation is honest. ns/op rising with
+ * fuel/op FLAT = the growth is inside C, i.e. a linear scan in a binding --
+ * hypothesis (c) living on the (b) side of the boundary. ns/op and fuel/op
+ * rising together = the growth is in the script itself.
+ *
+ * MIN OVER REPEATS, NOT MEAN, AND THE REASON IS THIS TREE'S OWN RULE. tools/
+ * perf/ says host wall clock is worthless here because other agents run QEMU
+ * on this machine. Contention can only ADD time, never remove it, so the
+ * minimum of R runs is the statistic it cannot inflate. The mean cannot be
+ * quoted and is not printed. What survives contention completely is `fuel`,
+ * which is a count of work the interpreter did and has no clock in it at all.
+ *
+ * THE HARNESS'S OWN CONTROL IS ROW 0. `baseline` is a pure-JS loop that never
+ * touches the DOM. Its per-op cost MUST be flat in N -- the DOM it is not
+ * looking at got bigger, and that is all. If baseline rises, the rise in every
+ * other row is the measurement environment (GC pressure from the bigger heap,
+ * cache) and not the operation, and no row below it means anything. A scaling
+ * harness with no flat row is a harness that has never been shown able to
+ * report "not quadratic".
+ *
+ * WHAT THIS IS NOT. It is the HOST binary: arm64/darwin, clang -O2, the system
+ * allocator. The ns are not the machine's ns. What transfers is the SHAPE --
+ * whether a per-op cost is flat or rising is a property of the algorithm, not
+ * of the processor, and TCG multiplies a constant without bending a line. The
+ * guest half is tests/qmp/qmp_jsdomscale.py, which runs the identical
+ * operations in the real browser and times them with the guest's own clock.
+ * Neither half can see layout or paint: layout.c is not in PROBE_SRC. */
+#include <time.h>
+static double now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+}
+static unsigned long long ds_clock(void)
+{ return (unsigned long long)(now_ns() / 1e6); }
+
+/* One row of the table. `per` is what the per-op divisor is:
+ *   DS_K -- the operation is performed K times per repetition; cost is per
+ *           operation and a flat row means O(1) per operation.
+ *   DS_N -- the operation touches all N elements once per repetition; cost is
+ *           per ELEMENT and a flat row means the whole traversal is O(N).
+ *   DS_KN - the operation is performed K times and each one is DEFINED to
+ *           visit the whole document; cost is per ELEMENT VISITED and a flat
+ *           row means the call is linear, which is what the DOM spec asks of
+ *           querySelectorAll. THIS DISTINCTION IS THE HARNESS'S OWN TRAP: a
+ *           spec-linear querySelectorAll divided by K looks like a 2268x
+ *           quadratic and is not one. The first draft of this table printed
+ *           exactly that and it is corrected here rather than deleted, because
+ *           the per-CALL column is still the number a page pays.
+ * Getting this wrong is the way a scaling harness lies: dividing an inherently
+ * O(N) row by K makes a perfectly linear traversal look quadratic. */
+enum { DS_K = 0, DS_N = 1, DS_KN = 2 };
+struct ds_op {
+    const char *name;
+    int         per;
+    const char *cls;      /* which hypothesis this row is evidence about */
+    int         k;        /* repetitions inside the snippet; 0 = DS_KREPS */
+    const char *src;      /* %d is the repetition count (K, or N for DS_N) */
+};
+
+/* K is fixed across N on purpose for the DS_K rows: the whole point is that
+ * the same number of operations is performed against a bigger document. */
+#define DS_KREPS 2000
+
+static const struct ds_op DS_OPS[] = {
+ /* --- the control. No DOM. Must be flat. --- */
+ { "baseline (pure JS, no DOM)", DS_K, "interpretation", 0,
+   "var s=0; for (var k=0;k<%d;k++) s+=k; s" },
+ { "call a JS function", DS_K, "interpretation", 0,
+   "function f(a){return a+1;} var s=0; for (var k=0;k<%d;k++) s=f(s); s" },
+ { "call a JS closure through a callback", DS_K, "interpretation", 0,
+   "var s=0; function g(fn){fn(1);} for (var k=0;k<%d;k++) g(function(x){s+=x;}); s" },
+ { "'a b c'.split(/[ ]+/)", DS_K, "interpretation", 0,
+   "var s=0; for (var k=0;k<%d;k++) s+=('c x y'.split(/[\\t\\n\\f\\r ]+/)).length; s" },
+
+ /* --- one crossing of the C boundary, K times, against a growing tree --- */
+ { "e.nodeType", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.nodeType; s" },
+ { "e.tagName", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.tagName.length; s" },
+ { "e.className (read)", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.className.length; s" },
+ { "e.getAttribute('data-i')", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.getAttribute('data-i').length; s" },
+ { "e.className = (write)", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor');"
+   "for (var k=0;k<%d;k++) e.className='c x'+(k&1); 1" },
+ { "document.createElement('div')", DS_K, "C-boundary", 0,
+   "for (var k=0;k<%d;k++) document.createElement('div'); 1" },
+ { "e.parentNode", DS_K, "C-boundary", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.parentNode?1:0; s" },
+
+ /* --- lookups. getElementById is C and indexed; everything below it is the
+  *     JS selector engine in js_select.c's prelude. --- */
+ { "document.getElementById", DS_K, "lookup(C)", 0,
+   "var s=0; for (var k=0;k<%d;k++) s+=document.getElementById('anchor')?1:0; s" },
+ { "document.querySelector('#anchor') [C, doc_qs]", DS_KN, "lookup(C)", 40,
+   "var s=0; for (var k=0;k<%d;k++) s+=document.querySelector('#anchor')?1:0; s" },
+ { "root.querySelectorAll('.c') [JS engine]", DS_KN, "lookup(JS)", 40,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.querySelectorAll('.c').length; s" },
+ { "root.querySelectorAll('div') [JS engine]", DS_KN, "lookup(JS)", 40,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.querySelectorAll('div').length; s" },
+ { "root.getElementsByTagName('div') [JS engine]", DS_KN, "lookup(JS)", 40,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.getElementsByTagName('div').length; s" },
+ { "root.getElementsByClassName('c') [JS engine]", DS_KN, "lookup(JS)", 40,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.getElementsByClassName('c').length; s" },
+ { "e.matches('.c') [JS engine, ONE element]", DS_K, "lookup(JS)", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.matches('.c')?1:0; s" },
+ { "e.matches('div') [JS engine, ONE element]", DS_K, "lookup(JS)", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.matches('div')?1:0; s" },
+ { "e.closest('#box') [JS engine]", DS_K, "lookup(JS)", 0,
+   "var e=document.getElementById('anchor'),s=0;"
+   "for (var k=0;k<%d;k++) s+=e.closest('#box')?1:0; s" },
+
+ /* --- the C collections the JS engine is built on top of. Each read
+  *     MATERIALISES a fresh array, so its cost is O(children) with zero
+  *     fuel -- native, and invisible to any profiler that counts bytecodes. */
+ { "root.children.length (one read)", DS_KN, "collection(C)", 200,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.children.length; s" },
+ { "root.childNodes.length (one read)", DS_KN, "collection(C)", 200,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var k=0;k<%d;k++) s+=r.childNodes.length; s" },
+
+ /* --- traversal: N touches per repetition, so the divisor is N. --- */
+ { "walk N children by nextSibling", DS_N, "traversal", 0,
+   "var r=document.getElementById('box'),n=r.firstChild,s=0;"
+   "while(n){s++;n=n.nextSibling;} s" },
+ { "index N children by childNodes[i] (hoisted)", DS_N, "traversal", 0,
+   "var r=document.getElementById('box'),c=r.childNodes,s=0;"
+   "for (var i=0;i<%d;i++) s+=c[i]?1:0; s" },
+
+ /* --- THE QUADRATIC IDIOM, and it is the most common line on the web:
+  *     re-reading a live-looking collection inside the loop condition and
+  *     inside the body. Each read is O(children) in C, so the loop is
+  *     O(N^2) with ZERO fuel growth. This row is the reason the fuel column
+  *     exists -- a bytecode profiler cannot see this at all. --- */
+ { "for(i=0;i<r.children.length;i++) r.children[i]", DS_N, "QUADRATIC idiom", 0,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var i=0;i<r.children.length;i++) s+=r.children[i]?1:0; s" },
+ { "querySelectorAll once per element (N calls)", DS_N, "QUADRATIC idiom", 0,
+   "var r=document.getElementById('box'),s=0;"
+   "for (var i=0;i<%d;i++) s+=r.querySelectorAll('.c').length; s" },
+
+ /* --- mutation: N insertions per repetition. --- */
+ { "appendChild N fresh elements (detached)", DS_N, "mutation", 0,
+   "var r=document.createElement('div');"
+   "for (var i=0;i<%d;i++) r.appendChild(document.createElement('span')); r.childNodes.length" },
+ { "appendChild N into the LIVE tree", DS_N, "mutation", 0,
+   "var r=document.getElementById('sink');"
+   "for (var i=0;i<%d;i++) r.appendChild(document.createElement('span')); r.childNodes.length" },
+ { "setAttribute N times", DS_N, "mutation", 0,
+   "var r=document.getElementById('sink');"
+   "for (var i=0;i<%d;i++) r.setAttribute('data-k','v'+i); 1" },
+};
+#define DS_NOPS ((int)(sizeof DS_OPS / sizeof DS_OPS[0]))
+
+/* Build a document with N <div class=c> children under #box, plus the two
+ * anchors every row above reaches for. The anchor is the LAST child, so a
+ * lookup that walks from the head pays the full N -- putting it first would
+ * hide exactly the defect this harness exists to find. */
+static char *ds_doc(int n, int *len_o)
+{
+    int cap = 200 + n * 64;
+    char *b = malloc(cap);
+    int p = snprintf(b, cap,
+        "<!doctype html><html><body><div id=box>");
+    for (int i = 0; i < n; i++)
+        p += snprintf(b + p, cap - p,
+                      "<div class=c data-i=\"%d\"><span>t</span></div>", i);
+    p += snprintf(b + p, cap - p,
+        "<div class=c id=anchor data-i=\"anchor\">a</div></div>"
+        "<div id=sink></div></body></html>");
+    if (len_o) *len_o = p;
+    return b;
+}
+
+static int g_ds_fail;
+/* Run `src` once as its own profiled slice; return wall ns and fuel. */
+static double ds_run1(const char *src, long long *fuel_o)
+{
+    JSContext *ctx = js_page_ctx();
+    js_prof_reset();
+    js_prof_label("<domscale>");
+    double t0 = now_ns();
+    js_page_slice_begin();
+    JSValue v = JS_Eval(ctx, src, strlen(src), "<domscale>", JS_EVAL_TYPE_GLOBAL);
+    int bad = JS_IsException(v);
+    if (bad) {
+        JSValue e = JS_GetException(ctx);
+        const char *m = JS_ToCString(ctx, e);
+        fprintf(stderr, "domscale: %s\n", m ? m : "?");
+        if (m) JS_FreeCString(ctx, m);
+        JS_FreeValue(ctx, e);
+        g_ds_fail++;
+    }
+    JS_FreeValue(ctx, v);
+    js_page_slice_end();
+    double t1 = now_ns();
+    const struct js_prof_slice *s = js_prof_at(0);
+    if (fuel_o) *fuel_o = s ? s->fuel : -1;
+    return t1 - t0;
+}
+
+#define DS_NSIZE 5
+static int domscale(int reps)
+{
+    const int N[DS_NSIZE] = { 1, 10, 100, 1000, 4000 };
+    static double ns[DS_NOPS][DS_NSIZE];
+    static long long fu[DS_NOPS][DS_NSIZE];
+    static double perc[DS_NOPS][DS_NSIZE];   /* per CALL, for the DS_KN rows */
+
+    printf("== domscale: per-operation cost against document size ==\n");
+    printf("HOST binary (arm64/darwin, clang -O2). The ns are not the machine's\n"
+           "ns; the SHAPE is the finding. min of %d repeats -- contention can only\n"
+           "add. Row 0 is the control and must be flat.\n"
+           "The document at N is: <div id=box> with N+1 element children, each\n"
+           "carrying a <span>, so the tree holds about 2N+4 elements.\n\n", reps);
+
+    js_page_set_clock(ds_clock);
+    js_page_set_location("http://domscale.invalid/");
+
+    for (int si = 0; si < DS_NSIZE; si++) {
+        for (int oi = 0; oi < DS_NOPS; oi++) {
+            const struct ds_op *op = &DS_OPS[oi];
+            int k = op->k ? op->k : DS_KREPS;
+            double best = 1e30; long long f = -1;
+            for (int r = 0; r < reps; r++) {
+                /* A FRESH DOCUMENT PER REPEAT. Three rows mutate the tree, and
+                 * a mutation row measured against a document the previous
+                 * repeat already grew is measuring a different input each
+                 * time -- which is the shape of a harness that manufactures
+                 * its own superlinearity. */
+                int dl = 0;
+                char *doc = ds_doc(N[si], &dl);
+                struct node *root = dom_parse(doc, dl);
+                if (!root || !js_page_open(root)) {
+                    printf("FAIL: cannot open a page at N=%d\n", N[si]);
+                    free(doc); return 1;
+                }
+                js_page_set_slice_ms(3600000);
+                js_page_set_slice_fuel(1000000000LL);
+                js_prof_enable(1);
+                char src[1024];
+                snprintf(src, sizeof src, op->src,
+                         op->per == DS_N ? N[si] : k);
+                long long ff = 0;
+                double d = ds_run1(src, &ff);
+                if (d < best) { best = d; f = ff; }
+                js_page_close();
+                free(doc);
+            }
+            int calls = op->per == DS_N ? (N[si] ? N[si] : 1) : k;
+            /* elements the document holds, for the DS_KN per-element divisor.
+             * ds_doc builds N+1 divs each with a span, plus box/sink/body/
+             * html: 2N+6. The constant does not matter to the SHAPE, only the
+             * proportionality does, and it is stated rather than fitted. */
+            double elems = 2.0 * N[si] + 6.0;
+            perc[oi][si] = best / calls;
+            ns[oi][si] = op->per == DS_KN ? (best / calls / elems) : (best / calls);
+            fu[oi][si] = f;
+        }
+        printf("  N=%d done\n", N[si]);
+    }
+
+    printf("\n--- ns per unit (DS_KN rows are per ELEMENT VISITED; all others per operation) ---\n");
+    printf("%-46s %-15s", "operation", "class");
+    for (int si = 0; si < DS_NSIZE; si++) printf("%11d", N[si]);
+    printf("%9s%9s\n", "4000/1", "shape");
+    for (int oi = 0; oi < DS_NOPS; oi++) {
+        double a = ns[oi][0], b = ns[oi][DS_NSIZE - 1];
+        double g = a > 0 ? b / a : 0;
+        /* The classification threshold, said out loud. Between N=1 and N=4000
+         * the input grew 4000x. A row that is O(1) per unit grows by a small
+         * constant; a row that is O(N) per unit grows by ~4000. 8x is the cut,
+         * far enough above measurement scatter (the control's own scatter is
+         * printed on the same table, which is what makes the threshold
+         * checkable rather than asserted). */
+        const char *shape = g >= 8 ? "RISING" : (g >= 2.5 ? "soft" : "flat");
+        printf("%-46s %-15s", DS_OPS[oi].name, DS_OPS[oi].cls);
+        for (int si = 0; si < DS_NSIZE; si++) printf("%11.1f", ns[oi][si]);
+        printf("%8.1fx%9s\n", g, shape);
+    }
+
+    printf("\n--- ns per CALL (what one line of page script pays) ---\n");
+    printf("%-46s", "operation");
+    for (int si = 0; si < DS_NSIZE; si++) printf("%13d", N[si]);
+    printf("\n");
+    for (int oi = 0; oi < DS_NOPS; oi++) {
+        printf("%-46s", DS_OPS[oi].name);
+        for (int si = 0; si < DS_NSIZE; si++) printf("%13.0f", perc[oi][si]);
+        printf("\n");
+    }
+
+    printf("\n--- fuel for the whole measured snippet (poll events/10,000).\n"
+           "    A native call executes no branches, so a row that costs\n"
+           "    milliseconds at zero fuel is entirely inside C. ---\n");
+    printf("%-46s", "operation");
+    for (int si = 0; si < DS_NSIZE; si++) printf("%11d", N[si]);
+    printf("\n");
+    for (int oi = 0; oi < DS_NOPS; oi++) {
+        printf("%-46s", DS_OPS[oi].name);
+        for (int si = 0; si < DS_NSIZE; si++) printf("%11lld", fu[oi][si]);
+        printf("\n");
+    }
+    /* THE CONTROL, ASSERTED RATHER THAN PRINTED AND HOPED FOR. */
+    {
+        double g = ns[0][0] > 0 ? ns[0][DS_NSIZE - 1] / ns[0][0] : 99;
+        printf("\ncontrol: baseline per-op %.1f ns at N=1 -> %.1f ns at N=4000 "
+               "(%.2fx) -- %s\n", ns[0][0], ns[0][DS_NSIZE - 1], g,
+               g < 2.5 ? "flat, as it must be" :
+               "NOT FLAT: every row above is contaminated and none of it counts");
+        if (!(g < 2.5)) g_ds_fail++;
+    }
+    printf("domscale: %s (%d failure%s)\n", g_ds_fail ? "FAILED" : "ok",
+           g_ds_fail, g_ds_fail == 1 ? "" : "s");
+    return g_ds_fail ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     int show_errors = 0, show_scripts = 0;
@@ -1418,6 +2226,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--json")) g_json = 1;
         else if (!strcmp(argv[i], "--stall")) g_stall = 1;
         else if (!strcmp(argv[i], "--stall-bare")) g_stall = 2;
+        /* --prof-selftest takes no fixture: it IS the fixture. */
+        else if (!strcmp(argv[i], "--prof-selftest")) return prof_selftest();
+        /* --domscale [R]: the scaling table. Takes no fixture; it generates
+         * its own documents, because the whole method is the same operation
+         * against inputs of five different sizes and a captured page is one
+         * size forever. */
+        else if (!strcmp(argv[i], "--domscale")) {
+            int r = 3;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+                r = atoi(argv[++i]);
+            return domscale(r > 0 ? r : 3);
+        }
+        else if (!strcmp(argv[i], "--prof")) g_prof = 1;
+        else if (!strcmp(argv[i], "--selcount")) g_selcount = 1;
         /* --drive FILE. A file that cannot be read is a REFUSAL, not a silent
          * plain run: the caller asked for a driven measurement and would
          * otherwise get an undriven one under the driven one's name. */

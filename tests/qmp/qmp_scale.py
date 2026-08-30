@@ -26,7 +26,7 @@ window is tests the hardcoding.
 
 Usage:
     tests/qmp/qmp_scale.py [--xres W] [--yres H] [--out build/scale-WxH.png]
-                           [--control] [--keep]
+                           [--iso PATH] [--disk PATH] [--control] [--keep]
 """
 
 import os
@@ -36,13 +36,15 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import (BROWSER_SLOT, Session, PPM, configure, dock_icon,   # noqa: E402
+from qmp_ui import (Session, PPM, configure, dock_icon_of,     # noqa: E402
                     locate_cursor, pick_scale, pt)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-WIDGETS_SLOT = 4          # scan_apps order: clock textedit monitor terminal widgets ...
-
+# WIDGETS_SLOT = 4 used to live here, and BROWSER_SLOT was imported from
+# qmp_ui. The tiles come off the guest's [wm] dock line now, via launch_app --
+# which also refuses to measure if the click opened anything but the named
+# app, because every check below asserts about a NAMED window.
 # Geometry the Widgets app draws, in POINTS -- read straight off c/apps/gui/widgets.c
 # and c/apps/gui/aui.c. These are the app's own numbers; the whole point is that
 # they did not change and do not have to.
@@ -115,10 +117,14 @@ def main(argv):
     control = False
     tour = False
     i = 1
+    iso = os.path.join(ROOT, "build", "logit.iso")
+    disk = os.path.join(ROOT, "build", "disk.img")
     while i < len(argv):
         if argv[i] == "--xres":   xres = int(argv[i + 1]); i += 2
         elif argv[i] == "--yres": yres = int(argv[i + 1]); i += 2
         elif argv[i] == "--out":  out = argv[i + 1]; i += 2
+        elif argv[i] == "--iso":  iso = argv[i + 1]; i += 2
+        elif argv[i] == "--disk": disk = argv[i + 1]; i += 2
         elif argv[i] == "--control": control = True; i += 1
         elif argv[i] == "--tour": tour = True; i += 1
         else: print("unknown arg %r" % argv[i]); return 2
@@ -146,9 +152,10 @@ def main(argv):
 
     qemu = subprocess.Popen(
         ["qemu-system-x86_64",
-         "-cdrom", os.path.join(ROOT, "build", "logit.iso"),
-         "-drive", "file=%s,format=raw,if=none,id=hd0,file.locking=off"
-                   % os.path.join(ROOT, "build", "disk.img"),
+         # --iso/--disk: this used to hardcode build/, so a driver run under
+         # BUILD=<private> silently measured whichever tree built last.
+         "-cdrom", iso,
+         "-drive", "file=%s,format=raw,if=none,id=hd0,file.locking=off" % disk,
          "-device", "virtio-blk-pci,drive=hd0", "-boot", "d", "-snapshot",
          "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi", "-cpu", "max",
          "-rtc", "base=localtime",
@@ -195,7 +202,7 @@ def main(argv):
         probe = os.path.join(tmp, "probe.ppm")
 
         # 2. Open Widgets and measure something it drew at a known logical size.
-        ui.click_at_confirmed(probe, *dock_icon(WIDGETS_SLOT))
+        ui.launch_app("widgets", probe=probe)
         time.sleep(6 * slow)
         ui.goto(xres // 2, yres - pt(200))        # pointer off the dock + off the window
         before_p = os.path.join(tmp, "b.ppm")
@@ -264,7 +271,7 @@ def main(argv):
             #    one that SYS_GUI_CREATE would refuse first if points were being
             #    scaled past the framebuffer. Nothing else in the tree would
             #    notice; the browser would simply come up with no window.
-            ui.click_at_confirmed(probe, *dock_icon(BROWSER_SLOT))
+            ui.launch_app("browser", probe=probe)
             time.sleep(12 * slow)
             ui.goto(pt(30), yres // 2)          # out of the way, over the wallpaper
             br_p = os.path.join(tmp, "d.ppm")
@@ -289,8 +296,8 @@ def main(argv):
                 # its glyph size are two different numbers, and scaling only the
                 # cell spaces the same small glyphs further apart), so it is
                 # worth looking at rather than only measuring.
-                for slot in (3, 6):        # terminal, preview
-                    ui.click_at_confirmed(probe, *dock_icon(slot))
+                for name in ("terminal", "preview"):   # the scaling tour
+                    ui.launch_app(name, probe=probe)
                     time.sleep(8 * slow)
                 ui.goto(pt(30), yres // 2)
                 ui.screendump(probe, settle=1.0 * slow)

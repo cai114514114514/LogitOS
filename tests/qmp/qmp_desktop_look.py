@@ -95,7 +95,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, NAPPS, DOCK_ISZ_PT, DOCK_GAP_PT  # noqa: E402
+from qmp_ui import PPM, Session, DOCK_ISZ_PT, DOCK_GAP_PT, parse_dock  # noqa: E402
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -265,8 +265,18 @@ def defect_glass_discontinuity(p, y=16):
 # padding now (top AND bottom), not a flat +20, so the mirror has to know the
 # split, not just the total -- see DOCK_PAD_PT's own comment in wm.c.
 DOCK_PAD_PT = 18
+# HOW MANY ICONS THE PANEL CENTRES ON, read from the guest's [wm] dock line.
+# NAPPS in qmp_ui was exactly the staleness this file exists to catch: the
+# drawn dock follows the disk, the constant follows whoever remembered it. The
+# count is set once in main() before any box below is computed; until then it
+# is None, and a defect check that ran without it would be measuring a guess.
+DOCK_N = None
+
+
 def dock_panel_box():
-    isz, gap, n = DOCK_ISZ_PT, DOCK_GAP_PT, NAPPS
+    isz, gap = DOCK_ISZ_PT, DOCK_GAP_PT
+    n = DOCK_N
+    assert n is not None, "DOCK_N not set -- main() must read the guest's dock line first"
     dw = gap + n * (isz + gap)
     dh = isz + 2 * DOCK_PAD_PT
     x0 = (XRES - dw) // 2
@@ -499,6 +509,16 @@ def main():
         ui.screendump(ppm_path, settle=0.5)
         p = PPM(ppm_path)
         text = open(serial, errors="replace").read()
+        global DOCK_N
+        DOCK_N = len(parse_dock(text) or [])
+        if not DOCK_N:
+            print("FATAL: no '[wm] dock N apps:' line in the serial log -- the")
+            print("       dock's icon count is a fact of the boot, not a")
+            print("       constant, and without the line every panel box below")
+            print("       would be computed against a guess")
+            print("----- serial tail -----")
+            print(text[-3000:])
+            return 1
         win = window0_box(text)
 
         print("=== LogitOS desktop look gate === %dx%d, %s" %

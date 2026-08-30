@@ -35,8 +35,16 @@ JSContext *js_page_ctx(void);
 /* Evaluate page script. Drains the microtask queue afterwards, so a script that
  * ends in `await` or `Promise.then` has actually run by the time this returns
  * (up to its first real suspension on a timer). 1 if it completed without an
- * uncaught exception. */
-int  js_page_eval(const char *src, int len, const char *filename);
+ * uncaught exception.
+ *
+ * `filename` is the script's URL -- the base a dynamic import() inside it
+ * resolves against, and what appears in a stack trace. `node` is the <script>
+ * element these bytes came from, or NULL when there is not one (a host test's
+ * synthetic snippet, an injected driver); it becomes document.currentScript
+ * for the duration and NOTHING derives it from `filename`. The two used to be
+ * one argument and the runtime pattern-matched the string to recover the node
+ * -- see the currentScript comment in js_page.c for what that cost. */
+int  js_page_eval(const char *src, int len, const char *filename, struct node *node);
 
 /* Drain the microtask queue; returns the number of jobs run. */
 int  js_page_pump(void);
@@ -94,10 +102,73 @@ void        js_page_output_clear(void);
  * exported for the one out-of-file sync entry, js_module_eval. */
 void js_page_set_slice_ms(int ms);
 /* The frozen-clock rail: budget in interrupt-handler calls (one per 10,000
- * bytecodes). What host harnesses use, and the backstop everywhere else. */
+ * branches-or-calls -- NOT per 10,000 bytecodes; see js_page.c). What host
+ * harnesses use, and the backstop everywhere else. */
 void js_page_set_slice_fuel(long long calls);
 int  js_page_slice_hits(void);
+/* The watchdog's OWN fuel count for the current/last slice. Counted whether or
+ * not js_prof is enabled, which is what makes it the one honest input to an
+ * observer-effect control: js_prof's own counter cannot measure whether js_prof
+ * changes the work. */
+long long js_page_slice_fuel_used(void);
 void js_page_slice_begin(void);
+/* The other end of one synchronous JS entry. Call it when the entry returns
+ * (js_page_eval and js_page_run_due do). It arms nothing and disarms nothing:
+ * its only job is to tell js_prof that the wall clock from here to the next
+ * bytecode belongs to the browser, not to the script. An embedder that never
+ * calls it loses only the js_ms/out_ms split, and gains a `resumed` count that
+ * says so. */
+void js_page_slice_end(void);
+
+/* ---- js_prof: where a slice's time goes ----
+ *
+ * A sampling profiler on QuickJS's own work counter. The engine calls the
+ * interrupt handler every 10,000 POLL EVENTS -- and a poll event is a branch
+ * (OP_goto*, OP_if_true*, OP_if_false*) or a function call, NOT a bytecode;
+ * js_page.c carries the measurement that corrected that word, and the number
+ * is 2.00 polls per `for (i=0;i<N;i++) s+=i` iteration. This counts those
+ * calls and, at each one, reads the wall clock the watchdog was reading
+ * anyway: one array index and some arithmetic per 10,000 branches, no extra
+ * syscall.
+ *
+ * The unit of attribution is a SLICE -- one synchronous entry into JS, named
+ * by the script URL or "<timer callback>". It is not a per-function profile
+ * and must not be quoted as one: a native call polls once on entry and then
+ * runs no branches, so no sample lands inside it, and QuickJS's current stack
+ * frame is internal to third_party/quickjs.
+ *
+ * READING IT.  fuel*10,000 is exactly the branches and calls executed. js_ms is
+ * wall time with a script running; out_ms is wall time with none.  js_ms/fuel
+ * far above the interpreter's own rate means time inside C called from JS.
+ * `resumed` counts JS entries that ran without a slice_begin -- an embedder
+ * gap, and the reason a stale deadline can bite a script that did no work. */
+struct js_prof_slice {
+    char      what[48];      /* the script URL, or "<timer callback>" */
+    long long fuel;          /* interrupt calls = (branches+calls)/10,000 */
+    long long js_ms;         /* wall ms between samples inside a JS entry */
+    long long out_ms;        /* wall ms that passed with no JS running */
+    long long begin_ms;      /* when js_page_slice_begin() armed this slice */
+    long long max_gap_ms;    /* the largest single inter-sample delta */
+    long long gap_ms;        /* sum of deltas >= 40 ms */
+    int       gaps;
+    int       resumed;       /* entries that ran WITHOUT a slice_begin */
+    int       bitten;        /* 0 none, 1 wall-time rail, 2 fuel rail */
+};
+/* Free-running poll-event counter (branches+calls / 10,000), reset only by
+ * js_prof_reset(). Read before and after a block to cost that block. */
+long long js_prof_polls(void);
+void js_prof_enable(int on);
+int  js_prof_enabled(void);
+void js_prof_reset(void);
+/* Names the NEXT slice. Call immediately before js_page_slice_begin(). */
+void js_prof_label(const char *what);
+int  js_prof_count(void);
+int  js_prof_overflow(void);
+const struct js_prof_slice *js_prof_at(int i);
+void js_prof_dump(const char *tag);
+/* The totals, for a harness that wants the numbers rather than the table. */
+void js_prof_totals(long long *fuel, long long *js_ms, long long *out_ms,
+                    int *gaps, int *resumed);
 
 /* Append a fragment to the console buffer from outside js_page.c. Exists for
  * exactly one caller -- js_module.c's module-exception reporter -- so a module
@@ -115,12 +186,22 @@ void js_page_note(const char *frag);
 void js_page_set_note_sink(void (*fn)(const char *frag));
 
 /* document.currentScript, for an embedder that runs a classic script itself
- * rather than through js_page_eval (which calls these for you). `filename` is
- * the script's URL, or anything without a ':' for an inline one; the pairing
- * with the document's <script> elements is done inside. Always call the end
- * half: currentScript must be null everywhere except a classic script's own
- * synchronous execution. */
-void js_page_begin_script(const char *filename);
+ * rather than through js_page_eval (which calls these for you) -- the WPT
+ * runner and tests/unit/webapi_probe.c, both of which need the exception
+ * OBJECT and so cannot go through js_page_eval.
+ *
+ * Pass the <script> node whose bytes are about to be evaluated; NULL means
+ * "not a script element", which is currentScript === null. There is no
+ * filename here and no matching: an instrument that had to describe the
+ * running script in a string was an instrument measuring its own description.
+ *
+ * Always call the end half, and call it AFTER draining the microtask queue
+ * (js_page_pump), not before. HTML performs the checkpoint inside "run a
+ * classic script" and restores currentScript afterwards, so a promise reaction
+ * the script queued still sees it -- which is what every turbopack-built site
+ * on the web reads. js_page_eval does it in that order; an embedder that
+ * drains after this call reports null to every reaction on every page. */
+void js_page_begin_script(struct node *node);
 void js_page_end_script(void);
 
 #endif /* LOGIT_JS_PAGE_H */

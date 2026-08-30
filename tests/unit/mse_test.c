@@ -85,21 +85,43 @@ static int   g_rate, g_ch;
 static long long g_queued_frames;       /* in the card's ring, not yet played */
 static long long g_played_frames;
 static long long g_written_frames;
-#define CARD_RING_FRAMES 32768
+/* THE RING SIZE THIS MODELS: 32768 frames was 743 ms at 44.1 kHz -- 3.7x the
+ * real device's ring, c/kernel/audio/mixer.c:484 `ms = f->buffer_ms ? f->buffer_ms
+ * : 200` (msecheck passes buffer_ms=0, so every real boot gets the 200 ms
+ * default). At the old size the write loop in mel_pump_audio() never went
+ * short, so the short-write accounting bug at js_media_src.c could not be
+ * observed here even though it hung the real device every time -- a control
+ * that could not be watched failing. This models the SAME 200 ms the kernel
+ * actually gives it, computed from the stream's own rate rather than a second
+ * hand-picked constant (one jar, two doors: the frame count must be derived
+ * from the millisecond figure, not spelled twice). */
+#define CARD_RING_MS 200
+static long long g_ring_frames;         /* set from g_rate in host_snd_open */
 
 static unsigned long long host_now(void) { return (unsigned long long)g_now; }
 
+/* NO CARD. `js_media.c`'s os_snd_open returns -1 when the machine has no
+ * audio device, and "no card: play silent, in time" is an explicitly
+ * supported path -- but until this flag existed NOTHING IN THE TREE DROVE IT,
+ * on the host or on the device. Every boot harness and every host case has
+ * always had a working card, so an element with `snd < 0` ran only on real
+ * machines nobody was watching. A path with no gate is not a path with no
+ * bugs; it is a path whose bugs are found by users. */
+static int g_no_card;
+
 static int host_snd_open(int rate, int ch)
 {
+    if (g_no_card) return -1;
     g_rate = rate; g_ch = ch;
     g_queued_frames = g_played_frames = g_written_frames = 0;
+    g_ring_frames = (long long)rate * CARD_RING_MS / 1000;
     return 0;
 }
 static int host_snd_write(int h, const void *buf, int bytes)
 {
     (void)h; (void)buf;
     int bpf = g_ch * 2;
-    long long room = (CARD_RING_FRAMES - g_queued_frames) * bpf;
+    long long room = (g_ring_frames - g_queued_frames) * bpf;
     if (room <= 0) return 0;
     if (bytes > room) bytes = (int)room;
     g_queued_frames += bytes / bpf;
@@ -109,7 +131,7 @@ static int host_snd_write(int h, const void *buf, int bytes)
 static int host_snd_avail(int h)
 {
     (void)h;
-    return (int)((CARD_RING_FRAMES - g_queued_frames) * g_ch * 2);
+    return (int)((g_ring_frames - g_queued_frames) * g_ch * 2);
 }
 static long long host_snd_played(int h) { (void)h; return g_played_frames; }
 static void host_snd_close(int h, int drain) { (void)h; (void)drain; }
@@ -154,6 +176,7 @@ static void world_reset(void)
     g_rate = g_ch = 0;
     g_queued_frames = g_played_frames = g_written_frames = 0;
     g_blits = g_fills = 0;
+    g_no_card = 0;      /* every case has a card unless it says otherwise */
     mel_free_all();
 }
 
@@ -802,6 +825,187 @@ static void test_av1(void)
 }
 
 /* ================================================================ main ==== */
+/* ================== 8. the progressive loader: <video src> ============== */
+/* The floor under everything else. MSE is what a DASH site drives; a plain
+ * `<video src="movie.mp4">` is what most of the rest of the web is, and until
+ * now this browser answered it with MEDIA_ERR_SRC_NOT_SUPPORTED.
+ *
+ * TWO CLAIMS, and the second is the one worth writing a test for.
+ *   - a whole progressive file plays: every picture decoded AND SHOWN.
+ *   - it is not MP4-shaped. The progressive buffer is not box-walked, so what
+ *     opens it is demux.c's content sniff -- and a Matroska file, which has no
+ *     `moov` box at all and would never satisfy the MSE path's saw_moov gate,
+ *     plays through exactly the same code. That is the difference between a
+ *     progressive loader and a second MP4 reader.
+ * The ENGINE still refuses a URL (test_states asserts it, unchanged): the
+ * network belongs to the binding. This tests the door the binding calls. */
+static void progressive_one(const char *path, const char *what, long want_frames)
+{
+    world_reset();
+    long n = 0;
+    unsigned char *buf = slurp(path, &n);
+    if (!buf) { NOTE("%s absent -- skipped", path); return; }
+
+    melem *el = mel_for_key(1, 1);
+    int rc = mel_load_bytes(el, buf, n);
+    CHECK(rc == MSE_OK, "%s: mel_load_bytes accepted %ld bytes (rc=%d, err=%d %s)",
+          what, n, rc, mel_error(el), mel_error_message(el));
+    if (rc != MSE_OK) { free(buf); return; }
+    media_paint_key(1, 0, 0, 256, 192, 0, 0, 800, 600);
+    mel_play(el);
+    for (int i = 0; i < 400000 && !mel_ended(el); i++) {
+        int p = media_pump();
+        advance(p ? 4000000LL : 1000000LL);
+    }
+    struct mel_stats st;
+    mel_get_stats(el, &st);
+    NOTE("%s: decoded %lld, SHOWN %lld, dropped %lld, audio %lld frames, ended=%d",
+         what, st.frames_decoded, st.frames_shown, st.frames_dropped,
+         st.audio_frames_written, mel_ended(el));
+    CHECK(st.frames_decoded >= want_frames,
+          "%s: decoded %lld pictures (wanted at least %ld)",
+          what, st.frames_decoded, want_frames);
+    /* FRAMES SHOWN, not pixels and not "no error". A loader that decodes and
+     * paints nothing is the exact failure a screenshot cannot tell from a dark
+     * scene. */
+    CHECK(st.frames_shown >= want_frames,
+          "%s: %lld of %lld decoded pictures reached the blitter",
+          what, st.frames_shown, st.frames_decoded);
+    /* Asked AFTER playback, deliberately. videoWidth comes from the first
+     * DECODED picture, not from the container -- this browser's demuxers are
+     * not asked to agree with the bitstream about geometry, so before the
+     * first frame the honest answer is 0 and asking earlier tests the wrong
+     * thing. It is here because it is the check that separates "the loader
+     * found the track" from "a decoder actually ran". */
+    CHECK(mel_video_width(el) > 0 && mel_video_height(el) > 0,
+          "%s: %dx%d, from a resource whose MIME type nobody declared",
+          what, mel_video_width(el), mel_video_height(el));
+    CHECK(mel_ended(el), "%s: playback reached the end -- the element is 'ended'", what);
+    free(buf);
+}
+
+static void test_progressive(void)
+{
+    printf("\n== <video src>: a whole file, no MediaSource, no MIME type ==\n");
+    /* h264-mp3.mp4: 30 pictures of AVC with an MP3 track, from the same
+     * fixture set the demuxer's own gates use. */
+    progressive_one("tests/fixtures/media/h264-mp3.mp4", "progressive MP4", 20);
+    /* The generality claim. No moov, no boxes, same code path. */
+    progressive_one("tests/fixtures/media/h264-mp3.mkv", "progressive Matroska", 20);
+
+    /* THE ORDER A PAGE ACTUALLY WRITES IT IN, which is not the order this test
+     * used above and is the one that was broken on the device while every
+     * other number looked healthy. `v.src = url; v.play();` is synchronous:
+     * play() runs while the fetch is still in flight, so the element is
+     * already un-paused when the body arrives. mel_load_bytes() then tears the
+     * element down to load the new resource -- and that teardown sets
+     * paused. Symptom: readyState HAVE_METADATA, videoWidth 64, no error,
+     * decoded=0 for ever. Nothing in the pipeline was wrong. */
+    {
+        world_reset();
+        long n = 0;
+        unsigned char *b = slurp("tests/fixtures/media/h264-mp3.mp4", &n);
+        if (b) {
+            melem *e = mel_for_key(9, 1);
+            mel_play(e);                                    /* BEFORE the bytes */
+            CHECK(mel_load_bytes(e, b, n) == MSE_OK, "play()-then-bytes loads");
+            media_paint_key(9, 0, 0, 256, 192, 0, 0, 800, 600);
+            for (int i = 0; i < 400000 && !mel_ended(e); i++) {
+                int p = media_pump();
+                advance(p ? 4000000LL : 1000000LL);
+            }
+            struct mel_stats st;
+            mel_get_stats(e, &st);
+            CHECK(st.frames_shown > 0,
+                  "a play() issued BEFORE the resource arrived still plays: "
+                  "%lld shown, %lld decoded", st.frames_shown, st.frames_decoded);
+            free(b);
+        }
+    }
+
+    /* And the refusal is still a refusal: bytes that are not a container this
+     * browser reads must produce MediaError 4, not a silent forever-wait. */
+    world_reset();
+    melem *el = mel_for_key(3, 1);
+    unsigned char junk[4096];
+    for (int i = 0; i < (int)sizeof junk; i++) junk[i] = (unsigned char)(i * 7 + 1);
+    CHECK(mel_load_bytes(el, junk, sizeof junk) == MSE_E_DECODE,
+          "4 KiB of noise is refused rather than buffered for ever");
+    CHECK(mel_error(el) == 4,
+          "and it lands as MediaError.code 4: \"%s\"", mel_error_message(el));
+}
+
+/* ============================================== a machine with no card ==== */
+/* WHY THIS EXISTS, AND WHY IT IS AT THE END OF THE FILE RATHER THAN IN THE
+ * MIDDLE OF test_progressive: it is not a variation on playback, it is a gate
+ * for a whole path the tree could not observe.
+ *
+ * The short-write accounting fix above holds an undelivered PCM tail in
+ * `apend` and refuses to decode further until it drains. Correct with a card.
+ * With NO card the write is behind `if (el->snd >= 0 && g_plat->snd_write)`,
+ * so `off` stays 0, the code reads that as "nothing was accepted", parks the
+ * whole block, and stops -- and the drain path at the top of the same loop is
+ * behind the same guard, so it can never empty it. The pump dies on the FIRST
+ * block, `adone` is never set, and `ended` never fires. On a machine with no
+ * audio device, video stopped playing entirely: strictly worse than the
+ * accounting bug the fix was for.
+ *
+ * It was found by an adversarial review reading the diff, NOT by any gate --
+ * because no gate drove it. That is the finding this case is really about.
+ * The rule it is written under is the tree's fifth: a control that cannot be
+ * watched failing is worse than no control, and the way to watch this one is
+ * `g_no_card`, which turns the path on rather than reasoning about it. */
+static void test_no_card(void)
+{
+    printf("\n== no sound card: silent, in time, and it still ENDS ==\n");
+    world_reset();
+    g_no_card = 1;
+
+    long n = 0;
+    unsigned char *b = slurp("tests/fixtures/media/h264-mp3.mp4", &n);
+    if (!b) { printf("   SKIP -- fixture absent\n"); return; }
+
+    melem *e = mel_for_key(11, 1);
+    CHECK(mel_load_bytes(e, b, n) == MSE_OK,
+          "a file with an audio track loads on a machine with no audio device");
+    media_paint_key(11, 0, 0, 256, 192, 0, 0, 800, 600);
+    mel_play(e);
+    for (int i = 0; i < 400000 && !mel_ended(e); i++) {
+        int p = media_pump();
+        advance(p ? 4000000LL : 1000000LL);
+    }
+    struct mel_stats st;
+    mel_get_stats(e, &st);
+
+    /* The three things that all go wrong together when the pump strands, and
+     * they are asserted separately because they fail for one reason but read
+     * as three different bugs: no pictures at all, pictures that stop short,
+     * and playback that never admits it is over. */
+    CHECK(st.frames_decoded > 0,
+          "pictures are still DECODED with no card: %lld", st.frames_decoded);
+    CHECK(st.frames_shown == st.frames_decoded,
+          "every decoded picture still reaches the screen: %lld shown of %lld decoded",
+          st.frames_shown, st.frames_decoded);
+    CHECK(mel_ended(e),
+          "and playback ENDS -- the audio pump did not strand on a held block "
+          "it can never drain");
+    /* And the honest half: there is no card, so nothing was played. A run that
+     * claimed otherwise would mean the accounting had invented delivery. */
+    CHECK(mel_error(e) == 0,
+          "no error was raised -- an absent card is not a decode failure");
+    /* THE NUMBER THAT SAYS WHETHER THE AUDIO PUMP RAN AT ALL. Without it the
+     * four checks above are also satisfied by a machine that silently stopped
+     * decoding audio on the first block -- which is the failure this case was
+     * written for. 89856 is the fixture's whole MP3 track; the same file
+     * reports the same figure on a machine WITH a card. */
+    printf("     no-card: audio_frames_written = %lld\n", st.audio_frames_written);
+    CHECK(st.audio_frames_written > 0,
+          "the audio track was still consumed with no card to consume it into: "
+          "%lld frames -- a 0 here means the pump stranded and the checks above "
+          "passed for the wrong reason", st.audio_frames_written);
+    free(b);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1) FX = argv[1];
@@ -815,6 +1019,8 @@ int main(int argc, char **argv)
     test_modes();
     test_states();
     test_av1();
+    test_progressive();
+    test_no_card();
 
     printf("\nmse_test: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

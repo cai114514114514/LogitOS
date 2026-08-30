@@ -40,6 +40,30 @@
 
 #define LRE_FLAG_NAMED_GROUPS (1 << 7) /* named groups are present in the regexp */
 
+/* LOGITOS PATCH (jssem differential, tests/jssem/cases/08-regexp.js): the
+ * 'v' flag (RegExp.prototype.unicodeSets, ES2024 "set notation and
+ * properties of strings") used to be an outright SyntaxError -- and,
+ * critically, a regexp LITERAL is compiled at PARSE time
+ * (js_parse_regexp() -> s->ctx->compile_regexp(), in the primary-
+ * expression parser), so one `/re/v` anywhere in a file threw before a
+ * single statement of that file ran, which is a strictly worse failure
+ * than any single wrong match result.
+ *
+ * SCOPE: this makes 'v' a recognized flag that behaves exactly like 'u'
+ * (every `s->is_utf16`-gated code-point-aware behavior in libregexp.c
+ * fires for 'v' too -- see the two assignment sites), which is correct
+ * for every regexp that does NOT use v-EXCLUSIVE class syntax (nested
+ * classes, `--`/`&&` set operators, `\q{...}` string-property escapes).
+ * Those are NOT implemented -- a character class using them still fails
+ * (a class-body parse error scoped to that regexp, not this new
+ * SyntaxError, and not a whole-file failure) -- see js_sem_probe's own
+ * v-flag case for what is and is not covered. That is the deliberate
+ * boundary: real-world 'v' usage that does not need the new syntax (many
+ * Babel/TS emissions of \p{...} property escapes with the newer flag)
+ * now works; set-notation class bodies still do not, present-and-honest
+ * rather than present-and-silently-wrong. */
+#define LRE_FLAG_UNICODE_SETS (1 << 8)
+
 uint8_t *lre_compile(int *plen, char *error_msg, int error_msg_size,
                      const char *buf, size_t buf_len, int re_flags,
                      void *opaque);

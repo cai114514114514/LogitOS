@@ -105,7 +105,11 @@ enum {
     MSE_E_INVALIDSTATE = -2,   /* InvalidStateError: wrong readyState/updating */
     MSE_E_QUOTA        = -3,   /* QuotaExceededError: the buffer cap */
     MSE_E_DECODE       = -4,   /* the appended bytes are not a container we read */
-    MSE_E_OOM          = -5
+    MSE_E_OOM          = -5,
+    /* Not an error and deliberately POSITIVE, so no `rc != MSE_OK` test and no
+     * `rc < 0` test mistakes it for one: the src is a network resource and the
+     * binding must go and get it. See mel_load_bytes(). */
+    SRC_NEEDS_FETCH    = 1
 };
 
 msource *mse_new(void);
@@ -171,6 +175,21 @@ int    mel_error(const melem *el);          /* MediaError.code, 0 = none */
 const char *mel_error_message(const melem *el);
 int    mel_attach_url(melem *el, const char *url);   /* "blob:..." -> a msource */
 void   mel_load(melem *el);
+
+/* The progressive loader: `<video src="movie.mp4">`, one whole resource.
+ *
+ * WHY THE ENGINE DOES NOT FETCH IT. This half of the split owns bytes, the
+ * demuxer, the decoders and the clock, and owns no network, no event loop and
+ * no URL resolution -- that is precisely what makes it a host unit test rather
+ * than a QEMU boot. So mel_attach_url() still REFUSES a network URL and says
+ * so; the binding in js_media.c, which can reach the browser's fetch, gets the
+ * body and calls this. The layering is the point: `mel_attach_url(el,
+ * "https://...") == MSE_E_NOTSUPPORTED` remains true of the engine and is
+ * still gated, while the browser plays the file.
+ *
+ * Whole-resource, deliberately: see the long note at the definition. */
+int    mel_load_bytes(melem *el, const unsigned char *bytes, long n);
+void   mel_fail(melem *el, int code, const char *msg);  /* MediaError + `error` */
 
 /* Statistics the tests read back instead of trusting the picture: frames shown,
  * frames dropped, and the A/V drift avclock measured. */

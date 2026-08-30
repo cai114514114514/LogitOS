@@ -73,18 +73,127 @@
  * ---------------------------------------------------------------------------
  * WHAT IS REFUSED, AND WHY BY NAME RATHER THAN STUBBED
  * ---------------------------------------------------------------------------
- * `toDataURL` and `toBlob` THROW. This tree decodes PNG and does not encode
+ * ~~`toDataURL` and `toBlob` THROW. This tree decodes PNG and does not encode
  * it, and a fabricated data URL is the single most load-bearing lie a canvas
  * can tell: it is what every fingerprint and every "does this browser support
- * webp" probe reads, and a wrong one is believed rather than detected.
+ * webp" probe reads, and a wrong one is believed rather than detected.~~
+ *
+ * THAT ARGUMENT WAS RIGHT AND ITS PREMISE IS GONE, 2026-08-29. The sentence
+ * is kept above rather than deleted because somebody will arrive holding it.
+ * It is an argument about FABRICATION, not about the method: a wrong data URL
+ * is believed rather than detected, so do not produce a wrong one. The exit
+ * was never to keep throwing, it was to make the answer true --
+ * `rust/src/pngenc.rs` encodes the backing store for real, and the half of the
+ * sentence that said "this tree ... does not encode it" is simply no longer a
+ * fact about this tree.
+ *
+ * WHAT THAT DOES AND DOES NOT PROMISE. The complaint this came from is a
+ * Cloudflare interstitial that never renders: a bot check's first act is a
+ * canvas fingerprint, `toDataURL` threw, the challenge script died on its
+ * first statement and the widget never appeared. Encoding honestly means the
+ * script RUNS and the PAGE LOADS. It does not mean the challenge passes, and
+ * nothing here is tuned so that it would -- no output mimics another browser,
+ * no signal is spoofed. An honest fingerprint that says "this is LogitOS" is
+ * a correct result even when it is refused, and if a service declines a
+ * from-scratch browser that is that service's decision to make.
+ *
+ * WHAT IS STILL REFUSED, and it is the interesting half of the rule surviving:
+ * `image/jpeg` and `image/webp`. HTML's own text says a user agent that cannot
+ * produce the requested type MUST use `image/png`, and the returned URL
+ * DECLARES its type -- so a caller that asked for webp reads back
+ * `data:image/png;base64,...` and can see exactly what it got. Falling back
+ * and saying so is honest; the lie would be the `data:image/webp` prefix over
+ * PNG bytes, which is precisely the "does this browser support webp" probe the
+ * old note named. So the fallback is taken, it is announced on the console the
+ * first time each type is asked for, and the string never claims otherwise.
  *
  * `getContext` of anything but "2d" returns null. For webgl that is not a
  * refusal, it is the truth.
  *
  * NOT HERE YET, and deliberately left to throw so that the same instrument
  * which chose this file chooses what comes next: drawImage, fillText /
- * strokeText / measureText, clip(), and the composite operations beyond
+ * strokeText / measureText, ~~clip(),~~ and the composite operations beyond
  * source-over.
+ *
+ * `clip()` IS HERE (cv_clip, and it honours evenodd and intersects with the
+ * enclosing clip). The struck word is left because the list above is quoted
+ * as an inventory and a stale entry in an inventory reads as a decision.
+ *
+ * ---------------------------------------------------------------------------
+ * THE NEXT WALL, MEASURED IN THE GUEST 2026-08-29, NOT DERIVED FROM THIS LIST
+ * ---------------------------------------------------------------------------
+ * tests/qmp/qmp_canvas_fingerprint.py runs FingerprintJS's canvas component
+ * VERBATIM at its real 2000x200 and reports where it stops. With toDataURL
+ * honest, it now gets through createElement, getContext, two rect()s,
+ * isPointInPath(5,5,'evenodd') -- which answers `winding:yes`, the same
+ * discriminator the real probe reads -- textBaseline, fillStyle and fillRect,
+ * and throws 10 ms in at
+ *
+ *     TypeError: fillText is not a function (it is undefined)
+ *
+ * So the canvas fingerprint is no longer stopped by the READBACK; it is
+ * stopped by TEXT. That is a different and much better problem, and it is the
+ * next work order for this file. Note what it needs: `gui_text_run()` is a
+ * kernel syscall that paints into a WINDOW, and a canvas needs glyphs
+ * rasterised into an offscreen RGBA surface instead -- c/lib/text/glyphras.c
+ * already converts an outline to a gfx_path, which is the seam.
+ *
+ * ---------------------------------------------------------------------------
+ * AND ON REAL PAGES IT MOVED NOTHING, MEASURED BOTH WAYS 2026-08-30
+ * ---------------------------------------------------------------------------
+ * The sentence this change was made for is "the challenge script died on its
+ * first statement". That is a COMPARISON, and until -DCANVAS_READBACK_REFUSE
+ * existed (see el_toDataURL) there was no second term: every run was an after
+ * run and the before half was quoted from the complaint. So both halves were
+ * built -- one disk image with the readback, one identical image with the
+ * pre-2026-08-29 refusal, same kernel, same everything else -- and the same
+ * real pages loaded on each.
+ *
+ *   nowsecure.nl (a live Cloudflare Turnstile interstitial)
+ *     BEFORE 620,492 px, 2 exceptions, 16 requests-equivalent, 3.7 s
+ *     AFTER  620,408 px, 2 exceptions, same two, same counts, 4.9 s
+ *   qq.com (25 of the 33 getContext calls that chose this file)
+ *     BEFORE 243,976 px, 71 text runs, 1,141 B, no exceptions
+ *     AFTER  243,884 px, 71 text runs, 1,141 B, no exceptions
+ *
+ * IDENTICAL. The readback is not on either page's path, and the reason is
+ * checkable rather than guessed: nowsecure.nl's own document contains zero
+ * occurrences of toDataURL, toBlob or getContext, and its Turnstile loader is a
+ * plain <script src> that this browser fetches over a verified TLS chain and
+ * then throws out of at TOP LEVEL --
+ *
+ *     SyntaxError: invalid escape sequence in regular expression
+ *         at RegExp (native)   at <eval> (challenges.cloudflare.com/.../api.js)
+ *
+ * -- so the widget never reaches a canvas at all. google.com renders with no
+ * exceptions and served no challenge on the day it was asked.
+ *
+ * THAT IS THE HONEST SHAPE OF THIS WORK and it is worth more than the success
+ * story it replaces: the readback is correct, it is proved correct in the guest
+ * against pages that DO call it, and on the three real pages measured so far it
+ * is not the thing standing in the way. The apparatus itself was checked before
+ * the null result was believed -- the refusing image reddens
+ * `test-canvas-readback-os` on its first assertion with the old message on the
+ * serial log, so the two images really do differ and "identical" is a
+ * measurement rather than a build that did not take.
+ *
+ * AND ONE THING HERE IS PRESENT-AND-WRONG, which this file's own rule ranks
+ * below absent. `globalCompositeOperation` is not in cv_proto, so it is not a
+ * property with a setter -- but a plain JS assignment STORES it on the object
+ * and reads back the value that was set. Measured: the guest reports
+ * `typeof ctx.globalCompositeOperation` as "undefined" and then, after
+ * `ctx.globalCompositeOperation = 'multiply'`, reports 'multiply'. Every draw
+ * is still src-over. A probe that sets it and reads it back to decide whether
+ * the mode took -- which is exactly how a page feature-detects it -- is told
+ * yes and is wrong. HTML says an unsupported value must be IGNORED, leaving
+ * the attribute at its previous value, so the honest implementation is a
+ * getter/setter that accepts 'source-over' and silently keeps 'source-over'
+ * for anything this engine cannot do. That is a real accessor, not a
+ * deletion, and it is deliberately NOT done in this pass: it could not be
+ * rebuilt and re-measured in the guest at the time it was found (the shared
+ * tree's third_party/quickjs was mid-edit by another line of work and would
+ * not compile), and shipping an unverified accessor is the failure this file
+ * spends its header warning about.
  */
 #include <string.h>
 #include <stdlib.h>
@@ -94,6 +203,10 @@
 #include "js_dom.h"
 #include "gfx.h"
 #include "img.h"
+/* c/net/ssh/base64.h -- the tree's one C base64, reached through the flat
+ * INCDIRS list. The name is unique across `find c include -name base64.h`, so
+ * this is not the basename-collision trap CLAUDE.md's layout section names. */
+#include "base64.h"
 
 int printf(const char *, ...);
 
@@ -1780,15 +1893,357 @@ static JSValue el_set_w(JSContext *ctx, JSValueConst t, JSValueConst v)
 static JSValue el_set_h(JSContext *ctx, JSValueConst t, JSValueConst v)
 { el_set_dim(ctx, t, v, "height"); return JS_UNDEFINED; }
 
+/* ---------------------------------------------------------------- readback --
+ *
+ * toDataURL / toBlob, over rust/src/pngenc.rs. The header of this file carries
+ * the argument for why these stopped throwing; what is below is the mechanics,
+ * and four of them are decisions rather than plumbing.
+ *
+ * 1. A CANVAS WITH NO CONTEXT IS TRANSPARENT BLACK, NOT AN ERROR. The spec
+ *    says the bitmap of a canvas whose context was never obtained is w x h of
+ *    transparent black, and a fingerprint probe reaching for toDataURL on a
+ *    fresh canvas is a real shape. Throwing there would put us back where we
+ *    started for exactly the caller this work is for. Encoding zeroes is not a
+ *    fabrication: nothing was drawn, and that IS what was drawn.
+ *
+ * 2. A ZERO-SIZED CANVAS RETURNS THE STRING "data:,". Also the spec, and it is
+ *    the one case where there are no pixels to be honest about.
+ *
+ * 3. THE MIME TYPE IS ANSWERED, NEVER ASSUMED. `image/png` is the only type
+ *    this tree can produce. HTML says a UA that cannot produce the requested
+ *    type must use image/png, and the returned URL declares what it is -- so a
+ *    caller that asked for image/webp reads `data:image/png;base64,` back and
+ *    can see the fallback. That string is the whole difference between an
+ *    honest fallback and the lie the old refusal existed to prevent. It is
+ *    also announced on the console once per requested type, because a
+ *    substitution nobody can see is one step from one nobody can detect.
+ *
+ * 4. THE BITMAP IS SNAPSHOTTED SYNCHRONOUSLY EVEN IN toBlob. The encode runs
+ *    inside the toBlob call and only the CALLBACK is deferred. Deferring the
+ *    encode as well would hand the page a picture of whatever the canvas
+ *    looked like later, which is the kind of wrong that looks right most of
+ *    the time.
+ */
+
+/* Base64, RFC 4648, with padding.
+ *
+ * THE ENCODER IS THE TREE'S, NOT A FOURTH COPY. `b64_encode` is
+ * c/net/ssh/base64.c, already in this file's link line by two independent
+ * routes: the browser links it for the WebSocket handshake's
+ * Sec-WebSocket-Accept (Makefile:903) and tests/canvas.mk links it in
+ * CANVAS_WS_SRC (:117). An earlier draft of this function was a private table
+ * and a private loop -- a fourth C base64 in a tree that already had three,
+ * with the SAME NAME as the one three files away and a different signature.
+ * That is rule 3, "one jar, TWO DOORS": two spellings of one constant agree on
+ * the wrong value about as often as the right one, and the tree has paid for
+ * it three times already.
+ *
+ * NOT `btoa` (js_platform.c's `==== base64` block), and that is the one alternative genuinely
+ * refused rather than merely not chosen: btoa is the LATIN-1 pair, so reaching
+ * it means pushing bytes through a JS string and pulling them back out, two
+ * conversions that can each be wrong. It is also a global an embedder may not
+ * have installed, and this path must not depend on which installers ran.
+ *
+ * The `pad` argument is a real parameter of the callee, which is why the
+ * padding control below is an argument rather than an #ifdef around a literal.
+ * b64_encode does not NUL-terminate; its header says so and the caller adds
+ * one. */
+static char *b64_encode_alloc(const unsigned char *p, size_t n, size_t *outlen)
+{
+    /* n is bounded by CV_MAXPX*4 plus PNG overhead -- under 17 MiB, so the
+     * int the callee takes is not in danger. Checked rather than asserted,
+     * because a future caller with a bigger surface would otherwise wrap. */
+    if (n > (size_t)0x30000000) return NULL;
+    size_t cap = ((n + 2) / 3) * 4;
+    char *o = (char *)malloc(cap + 1);
+    if (!o) return NULL;
+
+    /* THE PADDING CONTROL (-DCANVAS_B64_NOPAD, tests/canvas.mk).
+     *
+     * Dropping the '=' is the defect this file's own round-trip CANNOT see,
+     * which is exactly why it is the control. `atob` (js_platform.c, the `def(G, 'atob'` shim -- the TEXT is the anchor,
+     * not a line number; net.c:249 records why) opens
+     * with `if (s.length % 4 === 0) s = s.replace(/==?$/, '')` and then refuses
+     * only `length % 4 === 1` -- so unpadded input decodes there perfectly.
+     * Every pixel assertion in tests/unit/canvas_test.c goes through atob, so
+     * all 68 stay GREEN with this flag on. MEASURED, not predicted: that is
+     * what `make test-canvas-b64-negctl` asserts, and it fails if the C suite
+     * ever starts catching it, because then this comment would be stale.
+     *
+     * The two implementations are genuinely independent -- a C table there, a
+     * JS shim here -- which makes the round-trip a real differential for the
+     * ALPHABET and the bit packing. It is not one for the padding, because a
+     * decoder that tolerates its absence agrees with an encoder that omits it.
+     * That is the "wrong CRC polynomial both sides compute the same way" shape
+     * one layer up from where tests/pngenc.mk found it: the round trip is
+     * perfect and every other program on earth is stricter. Python's
+     * base64.b64decode(validate=True) is, and so is the data: URL parser in
+     * every other browser. Hence tests/unit/canvas_b64_ext_test.py. */
+#ifdef CANVAS_B64_NOPAD
+    const int pad = 0;
+#else
+    const int pad = 1;
+#endif
+    int k = b64_encode((const uint8_t *)p, (int)n, o, (int)cap, pad);
+    if (k < 0) { free(o); return NULL; }
+    o[k] = 0;
+    if (outlen) *outlen = (size_t)k;
+    return o;
+}
+
+/* Announce a fallback ONCE per requested type. A cap rather than a set,
+ * because the list of types a page can name is unbounded and a log line per
+ * call on a page that fingerprints in a loop is its own failure. */
+static void note_type_fallback(const char *want)
+{
+    static char seen[6][32];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (!strcmp(seen[i], want)) return;
+    if (nseen < 6) {
+        size_t n = strlen(want);
+        if (n > 31) n = 31;
+        memcpy(seen[nseen], want, n); seen[nseen][n] = 0;
+        nseen++;
+    }
+    printf("[canvas] toDataURL/toBlob: '%s' is not a type this browser can "
+           "encode; returning image/png, which the returned type declares. "
+           "(PNG is the only encoder here -- c/lib/image/img.h)\n", want);
+}
+
+/* The canvas element's bitmap, as PNG bytes. Returns 0 and sets *len to 0 for
+ * a zero-sized canvas (the caller turns that into "data:,"), or on OOM/encoder
+ * refusal -- distinguished by *why, which is never NULL on failure. Free the
+ * result with png_encode_free. */
+static unsigned char *el_png(JSContext *ctx, JSValueConst t, int *len, const char **why)
+{
+    *len = 0; *why = NULL;
+    struct node *n = js_dom_node_from(t);
+    int w = n ? attr_int(n, "width", 300) : 300;
+    int h = n ? attr_int(n, "height", 150) : 150;
+    if (w <= 0 || h <= 0) return NULL;          /* "data:," -- not a failure */
+    if ((long long)w * h > CV_MAXPX) {
+        *why = "the canvas is larger than this build's backing-store limit";
+        return NULL;
+    }
+
+    JSValue have = JS_GetPropertyStr(ctx, t, "__ctx2d");
+    struct canvas2d *c = cv_of(have);
+    unsigned char *px = NULL;
+    int owned = 0;
+#ifdef CANVAS_READBACK_BLANK
+    /* THE READBACK'S NEGATIVE CONTROL (tests/canvas.mk). The backing store is
+     * ignored and a correctly-sized, correctly-structured, WELL-FORMED PNG of
+     * transparent black is encoded instead.
+     *
+     * It is this defect and not another because it is the one the old refusal
+     * was written against: a valid-looking data URL of the WRONG pixels is
+     * worse than a throw, because the throw is detectable and the wrong pixels
+     * are not. Every check that inspects the URL's prefix, the signature, the
+     * chunk names, the IHDR fields or the filter byte STILL PASSES with this
+     * on -- so if the gate stays green here, its readback assertions are
+     * measuring the shape of a PNG and not the picture in one, and the whole
+     * argument for un-refusing toDataURL is unsupported by its own test. */
+    c = NULL;
+#endif
+    if (c && c->px && c->w == w && c->h == h) {
+        px = c->px;
+    } else {
+        /* No context, or a context whose surface has not caught up with the
+         * attributes: transparent black at the attribute size. This is the
+         * spec's answer AND the honest one -- nothing was drawn. */
+        px = (unsigned char *)calloc((size_t)w * h, 4);
+        owned = 1;
+        if (!px) { JS_FreeValue(ctx, have); *why = "out of memory"; return NULL; }
+    }
+    int outn = 0;
+    unsigned char *png = png_encode_rgba(px, w, h, &outn);
+    if (owned) free(px);
+    JS_FreeValue(ctx, have);
+    if (!png || outn <= 0) { *why = "the PNG encoder refused this bitmap"; return NULL; }
+    *len = outn;
+    return png;
+}
+
+/* Read the optional `type` argument, lowercased into buf. Returns 1 if the
+ * caller asked for something other than image/png (so the fallback is worth
+ * announcing). An absent or non-string type is image/png by default, which is
+ * the spec's default and needs no note. */
+static int wanted_type(JSContext *ctx, int argc, JSValueConst *argv, char *buf, size_t cap)
+{
+    buf[0] = 0;
+    if (argc < 1 || JS_IsUndefined(argv[0]) || JS_IsNull(argv[0])) return 0;
+    const char *s = JS_ToCString(ctx, argv[0]);
+    if (!s) return 0;
+    size_t i = 0;
+    for (; s[i] && i + 1 < cap; i++)
+        buf[i] = (s[i] >= 'A' && s[i] <= 'Z') ? (char)(s[i] + 32) : s[i];
+    buf[i] = 0;
+    JS_FreeCString(ctx, s);
+    if (!buf[0] || !strcmp(buf, "image/png")) return 0;
+    return 1;
+}
+
+/* -DCANVAS_READBACK_REFUSE -- THE BEFORE PICTURE, AS A BUILD FLAG.
+ *
+ * This restores the behaviour that shipped until 2026-08-29 exactly: both
+ * readback entry points throw, with the message they threw. It is NOT a
+ * negative control on the encoder (CANVAS_READBACK_BLANK is that one, and it
+ * tests something else -- that the gate reads the picture rather than the shape
+ * of a file). It exists because of a claim this file's header makes and could
+ * not previously support with a measurement:
+ *
+ *     "the challenge script died on its FIRST STATEMENT and the widget never
+ *      appeared" -- and, downstream of it, "the page now gets further".
+ *
+ * "Further" is a comparison, and until this flag existed there was no second
+ * term: every run was an AFTER run, and the BEFORE half was inherited from the
+ * sentence that motivated the work. CLAUDE.md's rule 1 is precisely about that
+ * shape -- the measurement is right and the sentence around it sends the reader
+ * somewhere else. With this flag, the same page is loaded twice on the same
+ * disk image with one #define between them, and the difference is observed
+ * rather than argued.
+ *
+ * It is deliberately a whole-binary flag rather than a runtime switch: a
+ * runtime toggle would need a way to be set, and every such way is a signal a
+ * page could read. Nothing here is tuned toward any checker, and a build that
+ * can be asked at runtime to lie about its own capabilities is one step from
+ * one that does.
+ */
 static JSValue el_toDataURL(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
+#ifdef CANVAS_READBACK_REFUSE
     (void)t; (void)argc; (void)argv;
-    /* Refused by name. This tree decodes PNG and does not encode it, and a
-     * fabricated data URL is believed rather than detected -- it is what every
-     * fingerprint and every format-support probe reads. */
-    return JS_ThrowTypeError(ctx,
-        "canvas.toDataURL is not implemented: this browser has no image encoder, "
-        "and a fabricated data URL would be believed rather than detected");
+    return JS_ThrowInternalError(ctx, "canvas.toDataURL: this browser decodes "
+                                 "PNG and does not encode it");
+#else
+    char want[64];
+    if (wanted_type(ctx, argc, argv, want, sizeof want)) note_type_fallback(want);
+
+    int n = 0; const char *why = NULL;
+    unsigned char *png = el_png(ctx, t, &n, &why);
+    if (!png) {
+        /* A zero-sized canvas is not an error and the spec names its answer. */
+        if (!why) return JS_NewString(ctx, "data:,");
+        return JS_ThrowInternalError(ctx, "canvas.toDataURL: %s", why);
+    }
+    size_t blen = 0;
+    char *b64 = b64_encode_alloc(png, (size_t)n, &blen);
+    png_encode_free(png);
+    if (!b64) return JS_ThrowOutOfMemory(ctx);
+
+    static const char PFX[] = "data:image/png;base64,";
+    char *url = (char *)malloc(sizeof PFX - 1 + blen + 1);
+    if (!url) { free(b64); return JS_ThrowOutOfMemory(ctx); }
+    memcpy(url, PFX, sizeof PFX - 1);
+    memcpy(url + sizeof PFX - 1, b64, blen + 1);
+    free(b64);
+    JSValue r = JS_NewStringLen(ctx, url, sizeof PFX - 1 + blen);
+    free(url);
+    return r;
+#endif
+}
+
+/* toBlob's deferred half. argv[0] is the callback, argv[1] the Uint8Array of
+ * PNG bytes (or undefined when there were none to produce).
+ *
+ * WHY A JOB AND NOT A DIRECT CALL, AND WHY A JOB AND NOT setTimeout. toBlob is
+ * asynchronous in every browser, and a page that writes
+ * `canvas.toBlob(cb); next();` sees next() first everywhere else -- calling cb
+ * inline would make this the one asynchronous API in this browser that is not.
+ * The queue used is QuickJS's job queue, i.e. the SAME one every promise
+ * reaction in this engine settles on, which is the strongest available
+ * statement of "as async as a promise here and no more".
+ *
+ * AND THE COST IS NAMED, because it is real and it is not obvious: an embedder
+ * that never drains that queue never runs this callback. That is not
+ * hypothetical -- js_dom_iface.inc:1564 records the WPT runner calling JS_Eval
+ * directly and js_dom_run_jobs never being reached, which cost 500-odd
+ * subtests before anybody noticed. A toBlob callback in such an embedder is
+ * exactly as dead as `Promise.resolve().then(cb)` is there, which is the point:
+ * it fails the same way as the thing it is scheduled beside, rather than in a
+ * new way. tests/unit/canvas_test.c therefore asserts BOTH halves -- that the
+ * callback has NOT run when toBlob returns, and that it HAS after a pump. */
+static JSValue toblob_job(JSContext *ctx, int argc, JSValueConst *argv)
+{
+    if (argc < 2) return JS_UNDEFINED;
+    JSValue blob = JS_NULL;
+    if (!JS_IsUndefined(argv[1])) {
+        JSValue g = JS_GetGlobalObject(ctx);
+        JSValue ctor = JS_GetPropertyStr(ctx, g, "Blob");
+        JS_FreeValue(ctx, g);
+        if (JS_IsFunction(ctx, ctor)) {
+            JSValue parts = JS_NewArray(ctx);
+            JS_SetPropertyUint32(ctx, parts, 0, JS_DupValue(ctx, argv[1]));
+            JSValue opts = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, opts, "type", JS_NewString(ctx, "image/png"));
+            JSValueConst a[2] = { parts, opts };
+            blob = JS_CallConstructor(ctx, ctor, 2, a);
+            JS_FreeValue(ctx, parts);
+            JS_FreeValue(ctx, opts);
+            if (JS_IsException(blob)) { JS_FreeValue(ctx, blob); blob = JS_NULL; }
+        } else {
+            /* Named, not silent: the spec's failure answer for toBlob is
+             * null, and a page that gets null with no explanation on the
+             * console has no way to tell "the encoder failed" from "this
+             * build has no Blob constructor". */
+            printf("[canvas] toBlob: the global Blob constructor is absent in this "
+                   "build (js_platform.c installs it), so the callback gets null\n");
+        }
+        JS_FreeValue(ctx, ctor);
+    }
+    JSValueConst cb_args[1] = { blob };
+    JSValue r = JS_Call(ctx, argv[0], JS_UNDEFINED, 1, cb_args);
+    JS_FreeValue(ctx, blob);
+    if (JS_IsException(r)) return r;
+    JS_FreeValue(ctx, r);
+    return JS_UNDEFINED;
+}
+
+static JSValue el_toBlob(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+#ifdef CANVAS_READBACK_REFUSE
+    /* See el_toDataURL. BOTH halves are restored, because a page that finds
+     * toDataURL throwing and toBlob working would be a machine that never
+     * existed, and a before-picture that never existed cannot be compared to
+     * anything. */
+    (void)t; (void)argc; (void)argv;
+    return JS_ThrowInternalError(ctx, "canvas.toBlob: this browser decodes PNG "
+                                 "and does not encode it");
+#else
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0]))
+        return JS_ThrowTypeError(ctx, "toBlob: the first argument must be a function");
+    char want[64];
+    if (wanted_type(ctx, argc - 1, argv + 1, want, sizeof want)) note_type_fallback(want);
+
+    int n = 0; const char *why = NULL;
+    unsigned char *png = el_png(ctx, t, &n, &why);
+    JSValue bytes = JS_UNDEFINED;
+    if (png) {
+        JSValue ab = JS_NewArrayBufferCopy(ctx, png, (size_t)n);
+        png_encode_free(png);
+        if (!JS_IsException(ab)) {
+            JSValue g = JS_GetGlobalObject(ctx);
+            JSValue u8 = JS_GetPropertyStr(ctx, g, "Uint8Array");
+            JS_FreeValue(ctx, g);
+            if (JS_IsFunction(ctx, u8)) {
+                JSValueConst a[1] = { ab };
+                bytes = JS_CallConstructor(ctx, u8, 1, a);
+                if (JS_IsException(bytes)) { JS_FreeValue(ctx, bytes); bytes = JS_UNDEFINED; }
+            }
+            JS_FreeValue(ctx, u8);
+        }
+        JS_FreeValue(ctx, ab);
+    } else if (why) {
+        printf("[canvas] toBlob: %s; the callback will get null\n", why);
+    }
+
+    JSValueConst job[2] = { argv[0], bytes };
+    int r = JS_EnqueueJob(ctx, toblob_job, 2, job);
+    JS_FreeValue(ctx, bytes);
+    if (r < 0) return JS_EXCEPTION;
+    return JS_UNDEFINED;
+#endif
 }
 
 static const JSCFunctionListEntry canvas_el_funcs[] = {
@@ -1796,7 +2251,11 @@ static const JSCFunctionListEntry canvas_el_funcs[] = {
     JS_CGETSET_DEF("height", el_get_h, el_set_h),
     JS_CFUNC_DEF("getContext", 1, el_getContext),
     JS_CFUNC_DEF("toDataURL", 0, el_toDataURL),
-    JS_CFUNC_DEF("toBlob", 1, el_toDataURL),
+    /* Its own function now. It used to be an ALIAS for toDataURL, which was
+     * harmless only because both threw: toBlob's first argument is a callback
+     * and its result arrives through that callback, so the two share no
+     * signature and no return value. */
+    JS_CFUNC_DEF("toBlob", 1, el_toBlob),
 };
 
 /* ------------------------------------------------------- reaching the screen --

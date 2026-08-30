@@ -34,7 +34,7 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, configure, dock_icon, pt, PPM, GALLERY_SLOT  # noqa: E402
+from qmp_ui import Session, configure, pt, PPM  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -162,7 +162,10 @@ def main(argv):
         shot = os.path.join(tmp, "s.ppm")
 
         # --- open Gallery ---------------------------------------------------
-        ui.click_at_confirmed(probe, *dock_icon(GALLERY_SLOT))
+        # launch_app: the tile from the guest's [wm] dock line (which is the
+        # only honest source -- these benches boot their OWN disks, whose pack
+        # list need not match the product image's), and a verified launch.
+        ui.launch_app("gallery", probe=probe)
         time.sleep(6 * slow)
         ui.goto(xres - pt(60), pt(60))
         time.sleep(1.5 * slow)

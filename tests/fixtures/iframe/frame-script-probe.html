@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<meta charset=utf-8>
+<title>LogitOS frame-script wiring probe (scratch, not a WPT file)</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="log"></div>
+<script>
+/* WHAT THIS FILE IS FOR, and why tests/unit/frame_test.c does not already
+ * cover it: that test calls __frameAdopt DIRECTLY, standing in for what
+ * js_platform.c's settle() does. This one never mentions __frameAdopt. It
+ * drives a REAL <iframe> element, reads contentDocument through
+ * js_platform.c's own getter, and asserts the frame's script ran. CLAUDE.md
+ * rule 4 -- linking a translation unit is not running it -- applies exactly
+ * here: js_frame.c can be linked into browser.elf and wpt_test, export every
+ * symbol, pass its own gate, and STILL never be reached by a page, because
+ * the one line that connects the two lives in a different file. This is the
+ * gate for that line.
+ *
+ * THE SIGNAL IS A DOM MUTATION, NOT A CONSOLE LINE. A frame script runs in
+ * its own JSContext with no `document` (js_frame.c's cut list, item 4), so it
+ * cannot touch this page's DOM and it cannot return a value. What it CAN do
+ * is set a property on its own global, and the parent has no reference to
+ * that global either (js_platform.c's makeWindow builds a stand-in object,
+ * not the frame's realm -- named there as the next thing to build). So the
+ * observable is deliberately indirect and is the honest one: the frame script
+ * writes into a place BOTH realms can reach -- the frame's own document,
+ * through a node the parent handed it. Values cross contexts freely inside
+ * one runtime, which is the whole reason js_frame.c chose a second CONTEXT
+ * over a second RUNTIME, so this is testing the architectural claim too.
+ *
+ * NO HOSTNAME, NO PROVIDER, NOTHING SITE-SHAPED. The sequence below is the
+ * measured specimen's mechanism and nothing else. */
+
+function waitLoad(f, name) {
+  return new Promise(function (res, rej) {
+    var done = false;
+    f.addEventListener('load', function () { done = true; res('load'); });
+    setTimeout(function () { if (!done) rej(new Error('NO LOAD EVENT within budget: ' + name)); }, 2000);
+  });
+}
+
+/* F1 is the specimen, verbatim in shape: create an iframe, take its
+ * contentDocument, createElement('script') IN THAT DOCUMENT, give it code,
+ * append it to the frame's own head. Before this pass the failure was one
+ * step earlier than the script -- `createElement is not a function (it is
+ * undefined)`, which is the exact string the guest's scoreboard reported --
+ * so the assertions walk the sequence and each names the wall it is at. */
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'F1 insert').then(function () {
+    var d = f.contentDocument;
+    assert_true(!!d, 'contentDocument is a document');
+    assert_equals(typeof d.createElement, 'function',
+                  'contentDocument.createElement exists (this is the first wall, and the one the guest reported)');
+    assert_equals(typeof d.getElementsByTagName, 'function',
+                  'contentDocument.getElementsByTagName exists');
+    var heads = d.getElementsByTagName('head');
+    assert_equals(heads.length, 1, 'the frame document has exactly one head');
+    var t = d.createElement('script');
+    /* The frame script's only reachable side channel: a node the parent
+       created, in the frame's own document, that the parent still holds. */
+    var probe = d.createElement('div');
+    probe.setAttribute('id', 'ran');
+    d.getElementsByTagName('body')[0].appendChild(probe);
+    t.innerHTML = "var p = null; try { p = FRAME_PROBE; } catch (e) {}";
+    heads[0].appendChild(t);
+    return d;
+  });
+}, 'F1 contentDocument has a mutation surface and takes an appended <script>');
+
+/* F2 is the one that can only pass if the WIRING ran. A frame script with no
+ * document of its own still gets `window`, so it writes there; the parent
+ * cannot read that global (see the header), so instead the script's effect is
+ * observed through js_frame.c's console, which the harness captures -- the
+ * same acceptance criterion tests/unit/frame_test.c uses and for the same
+ * reason. If __frameAdopt was never called, the <script> is inert data and
+ * nothing is printed. */
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('srcdoc',
+    '<html><head><script>console.log("FRAME-WIRED-MARKUP");<\/script></head><body></body></html>');
+  document.body.appendChild(f);
+  return waitLoad(f, 'F2 srcdoc').then(function () {
+    var d = f.contentDocument;
+    assert_true(!!d, 'srcdoc produced a document');
+    var s = d.getElementsByTagName('script');
+    assert_equals(s.length, 1, 'the srcdoc script is in the frame document');
+  });
+}, 'F2 a <script> in the frame MARKUP (srcdoc) is present and was offered');
+
+promise_test(function () {
+  var f = document.createElement('iframe');
+  document.body.appendChild(f);
+  return waitLoad(f, 'F3 insert').then(function () {
+    var d = f.contentDocument;
+    var t = d.createElement('script');
+    t.innerHTML = "console.log('FRAME-WIRED-INSERTED');";
+    d.getElementsByTagName('head')[0].appendChild(t);
+    /* The assertion is made by the harness process, not here: this page
+       cannot see the frame realm. What this test proves on its own is that
+       the whole sequence completes WITHOUT THROWING -- which is what the
+       measured specimen failed to do, at createElement, on line one. */
+    assert_true(true, 'the specimen sequence completed without throwing');
+  });
+}, 'F3 the measured specimen sequence runs end to end without throwing');
+
+/* F4 IS THE BOUNDARY CONTROL, AND IT IS MANDATORY (CLAUDE.md rule 3: an
+ * origin boundary must be PROVEN by trying and failing, watched). A frame
+ * navigated cross-origin must refuse -- and it must refuse by THROWING
+ * SecurityError on contentDocument, not by answering null, because a null
+ * that means "refused" cannot be told from a null that means "not loaded
+ * yet". Nothing about giving same-origin frames a script host may weaken
+ * this, so it is asserted in the SAME file, on the same run, as the feature
+ * that could have weakened it. */
+promise_test(function () {
+  var f = document.createElement('iframe');
+  f.setAttribute('src', 'http://example.invalid:9/cross.html');
+  document.body.appendChild(f);
+  return waitLoad(f, 'F4 cross-origin').then(function () {
+    assert_throws_dom('SecurityError', function () { var d = f.contentDocument; },
+                      'contentDocument on a cross-origin frame THROWS SecurityError');
+    assert_throws_dom('SecurityError', function () { var w = f.contentWindow; },
+                      'contentWindow on a cross-origin frame THROWS SecurityError');
+  });
+}, 'F4 CONTROL: a cross-origin frame is still refused, and refused by throwing');
+
+/* F5 is the lifecycle regression WPT exposed: the native table permits eight
+ * SIMULTANEOUS frame contexts, but a page may create more than eight over its
+ * lifetime. Each iteration waits for load, inserts a script whose console line
+ * the make gate counts, then removes the iframe before starting the next. A
+ * harness-only pass is insufficient because load still terminates when the
+ * ninth script context is refused; tests/frame.mk therefore requires exactly
+ * twelve FRAME-WIRED-LIFECYCLE lines from the real frame realm. */
+promise_test(function () {
+  function cycle(i) {
+    if (i === 12) return Promise.resolve();
+    var f = document.createElement('iframe');
+    document.body.appendChild(f);
+    return waitLoad(f, 'F5 lifecycle ' + i).then(function () {
+      var d = f.contentDocument;
+      assert_true(!!d, 'cycle ' + i + ' has a contentDocument');
+      var t = d.createElement('script');
+      t.textContent = "console.log('FRAME-WIRED-LIFECYCLE')";
+      d.getElementsByTagName('head')[0].appendChild(t);
+      f.remove();
+      assert_equals(f.parentNode, null, 'cycle ' + i + ' is detached before the next starts');
+      return cycle(i + 1);
+    });
+  }
+  return cycle(0);
+}, 'F5 twelve sequential frames reuse the eight live-context slots after removal');
+</script>

@@ -48,6 +48,26 @@ typedef struct css_language {
 	lwc_string *default_namespace;	/**< Default namespace URI */
 	css_namespace *namespaces;	/**< Array of namespace mappings */
 	uint32_t num_namespaces;	/**< Number of namespace mappings */
+
+	/** LogitOS: nesting depth of :not() arguments currently being parsed.
+	 *
+	 * parsePseudo() takes an `in_not` argument for this, but it has been
+	 * dead since :not() was generalised to a comma-separated list: the
+	 * argument's compounds go through parseAppendSpecific(), which threads
+	 * a hardcoded `false`, so nothing below :not() can see that it is
+	 * inside one. Reviving the parameter means changing the signature of
+	 * four functions and every call site; a depth counter on the parse
+	 * context that already carries the namespace table and the at-rule
+	 * state costs one field and reaches the same place.
+	 *
+	 * It exists for exactly one decision, and only that one: an
+	 * UNRECOGNISED pseudo-class parses to a detail that matches NOTHING
+	 * (see parsePseudo()), which is the right answer everywhere except
+	 * under a negation, where "matches nothing" inverts to "matches
+	 * EVERYTHING" and would style the whole document. Selectors L4 agrees
+	 * -- :not() is not a forgiving selector list, so an unknown selector
+	 * inside it invalidates the whole rule -- and that is what we do. */
+	uint32_t in_not_depth;
 } css_language;
 
 css_error css__language_create(css_stylesheet *sheet, css_parser *parser,

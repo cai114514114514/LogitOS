@@ -15,6 +15,8 @@
 /* set_background_position(style, 0, 0, CSS_UNIT_PX); */
 /* set_background_repeat(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_bottom_color(style, 0, 0, CSS_UNIT_PX); */
+/* set_border_bottom_left_radius(style, 0, 0, CSS_UNIT_PX); */
+/* set_border_bottom_right_radius(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_bottom_style(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_bottom_width(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_collapse(style, 0, 0, CSS_UNIT_PX); */
@@ -26,6 +28,8 @@
 /* set_border_right_width(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_spacing(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_top_color(style, 0, 0, CSS_UNIT_PX); */
+/* set_border_top_left_radius(style, 0, 0, CSS_UNIT_PX); */
+/* set_border_top_right_radius(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_top_style(style, 0, 0, CSS_UNIT_PX); */
 /* set_border_top_width(style, 0, 0, CSS_UNIT_PX); */
 /* set_bottom(style, 0, 0, CSS_UNIT_PX); */

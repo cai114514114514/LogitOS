@@ -60,7 +60,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT          # noqa: E402
+from qmp_ui import Session, PPM          # noqa: E402
 
 ISO = sys.argv[1] if len(sys.argv) > 1 else "build/logit.iso"
 DISK = sys.argv[2] if len(sys.argv) > 2 else "build/disk.img"
@@ -159,14 +159,16 @@ try:
         die("the window manager never brought the desktop up")
     time.sleep(3)
 
-    ui = Session(qmp_path)
-    ui.click_at(*dock_icon(BROWSER_SLOT))
-    for _ in range(4):
-        if wait_serial("launched Browser", 15, "browser launch"):
-            break
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-    else:
-        die("the Dock never launched the Browser")
+    ui = Session(qmp_path, serial=serial_path)
+    # One click, at the tile the GUEST names for browser.aex, verified against the
+    # guest's own [wm] launched line. The re-click loop this replaces was the
+    # apology a hand-kept slot constant needed: when the pack list grows, the dock
+    # is re-centred, every hard-coded index moves half a slot, and the miss looks
+    # exactly like a slow launch. See tests/qmp/qmp_ui.py's dock block.
+    try:
+        ui.launch_app("browser")
+    except AssertionError as e:
+        die(str(e))
     time.sleep(6)                      # ~3 MB .aex off virtio-blk, ELF load, first paint
 
     # The control, taken in this same run: the viewport BEFORE any page. If the

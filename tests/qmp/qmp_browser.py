@@ -9,23 +9,42 @@ driver derives the icon position from the same app count -- the coordinate rots
 silently otherwise (the dock is centred, so one more app shifts every icon).
 """
 import os
+import re
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, dock_icon, BROWSER_SLOT       # noqa: E402
+from qmp_ui import Session, dock_icon_of, parse_dock, title_of  # noqa: E402
 
 sock_path, out = sys.argv[1], sys.argv[2]
 url = sys.argv[3] if len(sys.argv) > 3 else None
 wait = float(sys.argv[4]) if len(sys.argv) > 4 else 11   # post-Enter wait before screendump
+# QMP_SERIAL_LOG: the guest's serial log, same escape hatch
+# tests/qmp/qmp_launch_click.py uses. BROWSER_SLOT used to be the default
+# coordinate here -- a constant that named whatever the pack list looked like
+# when the file was written, which is not a fact about the machine in front of
+# it. Now: explicit x,y, or the guest's own dock line. No third option.
+serial_path = os.environ.get("QMP_SERIAL_LOG")
 
-ui = Session(sock_path)
+ui = Session(sock_path, serial=serial_path)
 
-# Launch Browser from the Dock (the globe, currently rightmost).
-# The 5th arg still overrides, for driving a build with a different app set.
-dx, dy = (map(int, sys.argv[5].split(","))) if len(sys.argv) > 5 else dock_icon(BROWSER_SLOT)
-ui.click_at(dx, dy)
+if len(sys.argv) > 5:
+    dx, dy = (map(int, sys.argv[5].split(",")))
+    ui.click_at(dx, dy)
+    launched = None
+elif serial_path:
+    dx, dy = ui.dock_icon_of("browser")
+    ui.click_at(dx, dy)
+else:
+    sys.exit("qmp_browser.py: pass x,y (argv[5]) or set QMP_SERIAL_LOG so the "
+             "dock tile can be read off the guest -- there is no default "
+             "coordinate any more")
 time.sleep(2.5)          # the .aex is ~2.7 MB off virtio-blk, then ELF load + first paint
+if serial_path and len(sys.argv) <= 5:
+    got = re.findall(r"\[wm\] launched (.+)", ui.serial_text())
+    if not got or got[-1].strip() != title_of("browser"):
+        sys.exit("qmp_browser.py: clicked browser's tile at (%s,%s): guest "
+                 "launched %r" % (dx, dy, got[-1].strip() if got else "nothing"))
 
 # Capture the window BEFORE any URL is typed. Without this, "the dock click
 # missed" and "the page failed to render" produce the same blank final image

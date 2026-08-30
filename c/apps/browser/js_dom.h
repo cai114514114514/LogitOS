@@ -113,6 +113,43 @@ int  js_dom_run_jobs(JSContext *ctx);
  * `document` listeners are registered here. */
 struct node *js_dom_root(void);
 
+/* TRANSIENT ACTIVATION -- "did the user do something in the last five
+ * seconds", the gate a capability that acts outside the page must ask before
+ * acting. js_dom_dispatch() stamps it for the activation event types only,
+ * because everything reaching that function came from real input (it is the
+ * same place that sets isTrusted); dispatchEvent() does not, so a page cannot
+ * manufacture activation by synthesising a click.
+ *
+ * THE ONE CALLER TODAY is navigator.clipboard.writeText (js_platform.c),
+ * which writes the clipboard EVERY PROCESS ON THIS MACHINE reads. It shipped
+ * without this and a review caught it, not a gate. Anything else that reaches
+ * outside the page -- a download, a notification, a window-level action --
+ * belongs behind the same call rather than behind a second idea of what a
+ * gesture is. See js_dom.c for the window, why it is a duration and not a
+ * flag, and what it deliberately does not model. */
+void js_dom_note_activation(void);
+int  js_dom_has_activation(void);
+
+/* THE node object for a node -- the same cached wrapper every other binding in
+ * this file hands out, so `js_dom_node_value(ctx, n) === document.scripts[i]`
+ * for the same element rather than being a second object that merely looks
+ * like it.
+ *
+ * Exported for exactly one caller, and the reason is the defect it closed.
+ * js_page.c knows which <script> is executing and could not say so in a node,
+ * because this file's wrap() is static -- so document.currentScript was
+ * published as an INDEX into document.scripts and js_platform.c turned it back
+ * into an element. That indirection is what made an inline classic script's
+ * currentScript null for the entire life of the feature: the index had to be
+ * recovered by pattern-matching a filename string, and the string the browser
+ * passes for an inline script (the page URL + "#inline-script-N", which it
+ * needs as an import() base) never matched the pattern. It also could not
+ * survive the commonest use of the property -- `document.currentScript
+ * .remove()` -- because removing the element renumbers document.scripts under
+ * the index that was still standing on it. A node in, the same node out, no
+ * string in between. */
+JSValue js_dom_node_value(JSContext *ctx, struct node *n);
+
 /* Where diagnostics (uncaught handler exceptions) go, in addition to printf.
  * js_page.c points this at its console buffer so the status bar shows them. */
 void js_dom_set_note(void (*fn)(const char *));

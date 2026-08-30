@@ -362,6 +362,39 @@ uint8_t css_computed_border_spacing(const css_computed_style *style,
 	return get_border_spacing(style, hlength, hunit, vlength, vunit);
 }
 
+/* LogitOS: border-radius corners. */
+uint8_t css_computed_border_top_left_radius(const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit)
+{
+	return get_border_top_left_radius(style, hlength, hunit,
+			vlength, vunit);
+}
+
+uint8_t css_computed_border_top_right_radius(const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit)
+{
+	return get_border_top_right_radius(style, hlength, hunit,
+			vlength, vunit);
+}
+
+uint8_t css_computed_border_bottom_right_radius(const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit)
+{
+	return get_border_bottom_right_radius(style, hlength, hunit,
+			vlength, vunit);
+}
+
+uint8_t css_computed_border_bottom_left_radius(const css_computed_style *style,
+		css_fixed *hlength, css_unit *hunit,
+		css_fixed *vlength, css_unit *vunit)
+{
+	return get_border_bottom_left_radius(style, hlength, hunit,
+			vlength, vunit);
+}
+
 uint8_t css_computed_word_spacing(const css_computed_style *style,
 		css_fixed *length, css_unit *unit)
 {
@@ -1442,6 +1475,35 @@ css_error css__compute_absolute_values(const css_computed_style *parent,
 			&ex_size.data.length,
 			get_border_spacing,
 			set_border_spacing);
+	if (error != CSS_OK)
+		return error;
+
+	/* LogitOS: fix up the four border-radius corners. em/ex have to be
+	 * resolved here like every other length; a PERCENTAGE is left alone
+	 * because it is relative to the border box, which is a LAYOUT answer
+	 * this pass does not have. compute_absolute_length_pair() only touches
+	 * CSS_UNIT_EM/EX, so a pct passes through untouched. */
+	error = compute_absolute_length_pair(style, &ex_size.data.length,
+			get_border_top_left_radius,
+			set_border_top_left_radius);
+	if (error != CSS_OK)
+		return error;
+
+	error = compute_absolute_length_pair(style, &ex_size.data.length,
+			get_border_top_right_radius,
+			set_border_top_right_radius);
+	if (error != CSS_OK)
+		return error;
+
+	error = compute_absolute_length_pair(style, &ex_size.data.length,
+			get_border_bottom_right_radius,
+			set_border_bottom_right_radius);
+	if (error != CSS_OK)
+		return error;
+
+	error = compute_absolute_length_pair(style, &ex_size.data.length,
+			get_border_bottom_left_radius,
+			set_border_bottom_left_radius);
 	if (error != CSS_OK)
 		return error;
 

@@ -29,7 +29,7 @@ import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, configure, dock_icon, pt, PPM, SETTINGS_SLOT  # noqa: E402
+from qmp_ui import Session, configure, pt, PPM                              # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -176,7 +176,11 @@ def main(argv):
         # this cannot hide a real regression in pointer routing.
         for attempt in range(4):
             try:
-                ui.click_at_confirmed(probe, *dock_icon(SETTINGS_SLOT))
+                # launch_app: tile from the guest's [wm] dock line, and the
+                # launch VERIFIED -- the checks below assert about the Settings
+                # window's own pixels, which are only on screen if Settings is
+                # what this click opened.
+                ui.launch_app("settings", probe=probe)
                 break
             except AssertionError as e:
                 if attempt == 3:

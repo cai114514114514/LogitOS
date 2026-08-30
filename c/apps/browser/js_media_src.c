@@ -56,7 +56,30 @@
 #define MSE_NALBUF     (1L << 22)      /* ceiling on ONE access unit */
 #define MSE_PTSQ        64             /* decode-order stamp queue (HEVC only) */
 #define AV_LEAD_NS      150000000LL    /* how far audio may run ahead: preview's */
-#define ABUF_FRAMES     1024
+
+/* THE STAGING BLOCK MUST HOLD THE LARGEST FRAME ANY DECODER HERE PRODUCES, and
+ * it is DERIVED from those decoders' own headers rather than typed, because
+ * this is a one-jar-two-doors constant and the two doors disagreed for as long
+ * as the file has existed.
+ *
+ * It was 1024 -- exactly AAC-LC's frame length -- and the conversion loop below
+ * ended `if (n > ABUF_FRAMES) n = ABUF_FRAMES;`. MP3's frame is 1152 samples
+ * (mp3.h:48 says so, in the header this file includes), so EVERY MP3 FRAME LOST
+ * ITS LAST 128 SAMPLES: 11% of the audio, silently, with no short write, no
+ * error and no counter moving.
+ *
+ * That is bad on its own and much worse through the master clock. `awritten_ns`
+ * is computed from frames WRITTEN, so the audio timeline ran 11% short of the
+ * media it came from; the card's play cursor -- which IS the master clock --
+ * therefore stopped 11% short of the last picture's presentation time; that
+ * picture was AV_WAIT for ever and the element never reached `ended`. Measured
+ * on tests/fixtures/media/h264-mp3.mp4 before the fix: 79,872 audio frames
+ * written where the file holds 89,856, decoded=28 shown=27, ended never fired.
+ * A one-frame stall out of a constant.
+ *
+ * AAC-LC is exactly 1024, which is why the AAC fixtures never showed it. */
+#define MAXFRM(a, b)    ((a) > (b) ? (a) : (b))
+#define ABUF_FRAMES     MAXFRM(MP3_MAX_SAMPLES, AAC_FRAME_LEN)
 /* Two samples' worth of gap is still one buffered range. The spec calls this
  * the "fudge factor" and defines it as 2/frame-rate; we do not know the frame
  * rate before the first fragment, so 100 ms stands in and is stated. */
@@ -329,6 +352,13 @@ struct sbuf {
     long      parsed;           /* prefix ending on a top-level box boundary */
     long      scan;             /* how far the box walk has got */
     int       saw_moov;
+    /* A PROGRESSIVE buffer is not box-walked. See mel_load_bytes(): the whole
+     * resource arrived at once, so the parsable prefix is simply `len` and the
+     * container is whatever demux.c sniffs -- which is what lets <video src>
+     * carry Matroska as well as MP4. The box walk cannot have that generality
+     * because it exists to answer a question progressive never asks: "which
+     * prefix of these bytes is a complete file yet". */
+    int       progressive;
 
     mdemux   *dm;
     int       dirty;            /* the parse is behind `parsed` */
@@ -469,7 +499,11 @@ static int reparse(sbuf *sb)
 {
     if (!sb->dirty) return sb->dm != 0;
     sb->dirty = 0;
-    if (!sb->saw_moov || sb->parsed <= 0) return 0;
+    if (sb->parsed <= 0) return 0;
+    /* `saw_moov` is the MSE-side proof that a whole-file parse can succeed:
+     * fragments before the init segment are not openable. A progressive buffer
+     * has no such intermediate state and no moov at all when it is Matroska. */
+    if (!sb->progressive && !sb->saw_moov) return 0;
 
     mdemux *old = sb->dm;
     int err = 0;
@@ -582,7 +616,8 @@ int sb_append(sbuf *sb, const unsigned char *data, long n)
     sb->appends++;
     sb->bytes_appended += n;
 
-    if (walk_boxes(sb)) sb->dirty = 1;
+    if (sb->progressive) { sb->parsed = sb->len; sb->dirty = 1; }
+    else if (walk_boxes(sb)) sb->dirty = 1;
     if (sb->ms->state == MSE_ENDED) sb->ms->state = MSE_OPEN;   /* spec: re-open */
 
     /* Sequence mode needs the offset computed at append time (the running
@@ -697,6 +732,8 @@ int mse_end_of_stream(msource *ms, const char *err)
     return MSE_OK;
 }
 
+static sbuf *sb_new(msource *ms, const char *type, int *err);
+
 sbuf *mse_add_source_buffer(msource *ms, const char *type, int *err)
 {
     if (err) *err = MSE_OK;
@@ -706,12 +743,22 @@ sbuf *mse_add_source_buffer(msource *ms, const char *type, int *err)
         if (err) *err = MSE_E_INVALIDSTATE;
         return 0;
     }
+    return sb_new(ms, type, err);
+}
+
+/* The allocation half of addSourceBuffer, with no type check and no state
+ * check. Split out because the progressive loader needs a buffer on a source
+ * whose type nobody declared -- there is no MIME type on a <video src>, only
+ * bytes -- and inventing "video/mp4" to satisfy a gate that exists to answer a
+ * PAGE's question would be answering it with a guess. */
+static sbuf *sb_new(msource *ms, const char *type, int *err)
+{
     sbuf *sb = calloc(1, sizeof *sb);
     if (!sb) { if (err) *err = MSE_E_OOM; return 0; }
     sb->ms = ms;
     sb->vtrack = sb->atrack = -1;
     int i = 0;
-    while (type[i] && i < (int)sizeof sb->type - 1) { sb->type[i] = type[i]; i++; }
+    while (type && type[i] && i < (int)sizeof sb->type - 1) { sb->type[i] = type[i]; i++; }
     sb->type[i] = 0;
     ms->sb[ms->nsb++] = sb;
     return sb;
@@ -814,6 +861,10 @@ struct melem {
     int          key;
     int          used;
     msource     *ms;
+    /* A source this ELEMENT owns, as opposed to one a page made and holds a JS
+     * reference to. Only the progressive loader creates one, and only the
+     * element can free it, because nothing else knows it exists. */
+    msource     *prog;
 
     int    paused, ended, seeking, muted, playing;
     double volume;
@@ -842,6 +893,27 @@ struct melem {
                                         * sample handed to the card */
     int        aanchored;
     int        adone;
+
+    /* THE UNDELIVERED TAIL OF ONE DECODED PCM BLOCK, carried PER ELEMENT
+     * across pump calls. SYS_SND_WRITE is a short write by design (it takes
+     * what fits and says how much) -- a caller that ignores the shortfall
+     * either drops audio it already decoded or, worse, counts it as
+     * delivered anyway. `aframes_written` (Door A, what the engine believes
+     * it wrote) must equal what `snd_played()` (Door B, what the card
+     * actually received) can eventually reach, or the master clock's
+     * ceiling permanently sits below where it should and the last frame
+     * never becomes due. So a block is counted into `aframes_written`
+     * exactly once, only when EVERY byte of it has reached the card --
+     * across as many pump calls as that takes -- never partially and never
+     * twice. `acursor` has already moved past the sample this block came
+     * from by the time a short write is discovered, so the fix cannot be
+     * "retry from acursor": the pump must hold this block and refuse to
+     * decode the next one until this one drains, or it would race ahead of
+     * the ring at full decode speed while the ring stays full. */
+    short      apend[ABUF_FRAMES * 2];
+    int        apend_want;             /* bytes remaining in `apend` to write */
+    int        apend_off;              /* bytes of `apend` already accepted by the card */
+    int        apend_n;                /* decoded frame count the whole block represents */
 
     avclock    clk;
     long long  current_ns;
@@ -921,6 +993,9 @@ void mel_free_all(void)
         if (g_el[i].rgba) free(g_el[i].rgba);
         if (g_el[i].nal) free(g_el[i].nal);
         if (g_el[i].ms) { g_el[i].ms->el = 0; g_el[i].ms->state = MSE_CLOSED; }
+        /* A page's MediaSource is freed by the JS GC through ms_finalizer; a
+         * progressive one has no wrapper and would leak the whole file. */
+        if (g_el[i].prog) { mse_free(g_el[i].prog); g_el[i].prog = 0; }
         memset(&g_el[i], 0, sizeof g_el[i]);
     }
     for (int i = 0; i < MSE_MAX_URLS; i++) { g_urls[i].ms = 0; g_urls[i].id = 0; }
@@ -947,6 +1022,21 @@ void mse_detach(msource *ms)
     ms->state = MSE_CLOSED;
 }
 
+/* Set MediaError and make the page hear about it. Both halves together: an
+ * err_code nobody fired an `error` event for is a failure only a debugger
+ * sees, and an event with no code is one a handler cannot act on. */
+void mel_fail(melem *el, int code, const char *msg)
+{
+    if (!el) return;
+    el->err_code = code;
+    int i = 0;
+    while (msg && msg[i] && i < (int)sizeof el->err_msg - 1) { el->err_msg[i] = msg[i]; i++; }
+    el->err_msg[i] = 0;
+    el->net_state = NETWORK_NO_SOURCE;
+    el->ready_state = HAVE_NOTHING;
+    el->events |= MEV_ERROR;
+}
+
 int mel_attach_url(melem *el, const char *url)
 {
     if (!el) return MSE_E_INVALIDSTATE;
@@ -968,6 +1058,84 @@ int mel_attach_url(melem *el, const char *url)
     return mse_attach(ms, el);
 }
 
+/* ---- the progressive loader --------------------------------------------
+ * `<video src="movie.mp4">` is not MSE, and this file has no network: it is
+ * the half that was deliberately kept ignorant of everything above the bytes.
+ * So the split is the same one the whole file rests on -- the JS binding
+ * fetches (it can reach the browser's fetch and its event loop) and hands the
+ * whole body here.
+ *
+ * WHAT HAPPENS THEN IS THE SAME MACHINERY AS MSE, on purpose. One growing
+ * buffer, one demuxer opened over it, the same pump, the same audio-mastered
+ * clock. A separate progressive decode path would be the fourth-rasterizer
+ * mistake in another subsystem: two code paths that agree until they do not,
+ * and only one of them under a gate.
+ *
+ * TWO THINGS THIS IS NOT, said out loud rather than discovered.
+ *   - It is not incremental. The whole resource is resident before the first
+ *     frame: no range requests, no start-before-the-end-arrives. A 200 MB film
+ *     is 200 MB of address space and MSE_BUF_CAP refuses it. Fixing that means
+ *     teaching mp4.c to parse incrementally, which is the same ask the MSE
+ *     re-open note at the top of this file already makes.
+ *   - It is not a container guess. `progressive` skips the box walk, so what
+ *     opens the buffer is demux.c's content sniff -- an .mp4 that is really
+ *     Matroska plays, and a file whose extension is a lie is irrelevant.
+ * The element keeps the source it owns in `prog` so that a second assignment
+ * to .src, or the page navigating away, frees it: nothing in JS holds a
+ * reference to it, which is exactly the difference from a page's MediaSource. */
+int mel_load_bytes(melem *el, const unsigned char *p, long n)
+{
+    if (!el) return MSE_E_INVALIDSTATE;
+    if (!p || n <= 0) return MSE_E_DECODE;
+
+    /* THE PAGE ALMOST ALWAYS ASKED TO PLAY BEFORE THE BYTES ARRIVED. The
+     * ordinary two lines are `v.src = url; v.play();` -- synchronous, and the
+     * fetch that answers the first has not finished when the second runs. So
+     * by the time this is called the element is already un-paused, and the
+     * mel_load() below (which is a real teardown: it resets ready_state, the
+     * cursors and `paused`) would silently undo it. Measured on the device
+     * before this line existed: the resource fetched, the demuxer opened it,
+     * readyState reached HAVE_METADATA and videoWidth read 64 -- and
+     * decoded=0, shown=0, for ever, with no error anywhere. Every part of the
+     * pipeline worked and the element was simply paused. */
+    int wanted_play = !el->paused;
+
+    mel_load(el);                            /* drop the previous source first */
+    if (el->prog) { mse_free(el->prog); el->prog = 0; }
+    el->ms = 0;
+
+    msource *ms = mse_new();
+    if (!ms) return MSE_E_OOM;
+    ms->state = MSE_OPEN;                    /* nothing will call sourceopen */
+    int err = MSE_OK;
+    sbuf *sb = sb_new(ms, "", &err);
+    if (!sb) { mse_free(ms); return err; }
+    sb->progressive = 1;
+
+    if (mse_attach(ms, el) != MSE_OK) { mse_free(ms); return MSE_E_INVALIDSTATE; }
+    el->prog = ms;
+
+    int rc = sb_append(sb, p, n);
+    if (rc != MSE_OK) {
+        mel_fail(el, 2, rc == MSE_E_QUOTA ? "resource is larger than the media buffer"
+                                          : "the resource could not be buffered");
+        return rc;
+    }
+    /* An append with nothing decodable in it is not "loading for ever". The
+     * demuxer has every byte there will ever be, so if it will not open, that
+     * is the answer -- MEDIA_ERR_SRC_NOT_SUPPORTED, code 4, and the page's
+     * error handler runs. A <video> that stays at readyState 0 in silence is
+     * the black box this file exists to not be. */
+    if (!reparse(sb) || (sb->vtrack < 0 && sb->atrack < 0)) {
+        mel_fail(el, 4, "no track this browser can decode in this resource");
+        return MSE_E_DECODE;
+    }
+    mse_end_of_stream(ms, 0);                /* the file is whole: it has an end */
+    el->net_state = NETWORK_IDLE;
+    if (wanted_play) mel_play(el);           /* honour the play() that already ran */
+    return MSE_OK;
+}
+
 void mel_load(melem *el)
 {
     if (!el) return;
@@ -984,6 +1152,9 @@ void mel_load(melem *el)
     el->afirst_ns = 0;
     el->aanchored = 0;
     el->adone = 0;
+    el->apend_want = 0;
+    el->apend_off = 0;
+    el->apend_n = 0;
     el->vcodec = el->acodec = 0;
     el->ready_state = HAVE_NOTHING;
     el->have_frame = 0;
@@ -1202,6 +1373,53 @@ static void mel_pump_audio(melem *el, long long upto_ns)
      * more audio were written, which needed the video to advance. On the
      * machine that looked like a decoder that died after five frames. */
     while (el->afirst_ns + el->awritten_ns < upto_ns) {
+        if (el->apend_want > 0) {
+            /* Finish draining the held block before decoding anything new --
+             * see the field comment on `apend` in struct melem for why. */
+            if (el->snd < 0 || !g_plat->snd_write) {
+                /* The card went away while a block was held (or was never
+                 * there). Same rule as the fresh-write path below: with no
+                 * ring there is nothing to wait for, so the held tail is
+                 * delivered to nowhere and released. Leaving it parked would
+                 * strand the pump exactly as the fresh path did.
+                 *
+                 * MSE_CONTROL_NO_CARD_STRAND removes BOTH halves of this rule
+                 * -- here and at the fresh write below -- and it has to remove
+                 * both, which is the thing that makes it a control rather than
+                 * a gesture. Disabling either one alone changes nothing
+                 * observable, because the other still releases the block: a
+                 * held tail that the fresh path creates is freed here on the
+                 * next call, and a fresh block this path never sees is
+                 * delivered there. They are jointly necessary and separately
+                 * invisible, so a control that flips one is a control that
+                 * cannot be watched failing -- which is worse than none. */
+#ifndef MSE_CONTROL_NO_CARD_STRAND
+                el->apend_off = el->apend_want;
+#endif
+            } else if (g_plat->snd_write) {
+                while (el->apend_off < el->apend_want) {
+                    int room = g_plat->snd_avail ? g_plat->snd_avail(el->snd)
+                                                  : (el->apend_want - el->apend_off);
+                    if (room <= 0) break;
+                    int k = g_plat->snd_write(el->snd,
+                                              (const char *)el->apend + el->apend_off,
+                                              el->apend_want - el->apend_off);
+                    if (k <= 0) break;
+                    el->apend_off += k;
+                }
+            }
+            if (el->apend_off < el->apend_want) break;   /* ring still full: try again next call */
+            /* The whole block reached the card now, across however many
+             * calls that took. Count it ONCE, here, never at the short
+             * write that first discovered it was too big to fit. */
+            el->aframes_written += el->apend_n;
+            el->st.audio_frames_written += el->apend_n;
+            if (el->arate > 0)
+                el->awritten_ns = el->aframes_written * 1000000000LL / el->arate;
+            el->apend_want = 0;
+            el->apend_off = 0;
+            continue;
+        }
         if (el->acursor >= t->nsamples) {
             reparse(sb);
             t = media_track_info(sb->dm, sb->atrack);
@@ -1247,7 +1465,18 @@ static void mel_pump_audio(melem *el, long long upto_ns)
          * clock and freeze the video. */
         double vol = el->muted ? 0.0 : el->volume;
         int n = nsmp;
-        if (n > ABUF_FRAMES) n = ABUF_FRAMES;
+        if (n > ABUF_FRAMES) {
+            /* UNREACHABLE BY CONSTRUCTION, and it says so instead of clamping.
+             * This line used to be `if (n > ABUF_FRAMES) n = ABUF_FRAMES;` --
+             * see the ABUF_FRAMES comment for the 11% of every MP3 frame that
+             * cost. A decoder producing more than its own header declares is a
+             * bug in the decoder, and truncating audio to hide it is exactly
+             * the failure mode this file spends a page arguing against. */
+            el->err_code = 3;                       /* MEDIA_ERR_DECODE */
+            el->events |= MEV_ERROR;
+            el->adone = 1;
+            return;
+        }
         for (int i = 0; i < n; i++)
             for (int c = 0; c < ch; c++) {
                 double v = (double)f[(long)i * ch + c] * vol * 32767.0;
@@ -1255,8 +1484,27 @@ static void mel_pump_audio(melem *el, long long upto_ns)
                 if (v < -32768) v = -32768;
                 pcm[i * ch + c] = (short)v;
             }
-        if (el->snd >= 0 && g_plat->snd_write) {
-            int want = n * ch * 2, off = 0;
+        int want = n * ch * 2, off = 0;
+        if (el->snd < 0 || !g_plat->snd_write) {
+            /* NO CARD. There is no ring, so there is no back-pressure and a
+             * short write is not a thing that can happen: the block is
+             * delivered, vacuously, to nowhere. Saying so here rather than
+             * leaving `off` at 0 is load-bearing -- without it the code below
+             * reads "0 of `want` bytes accepted", takes the short-write branch,
+             * parks the whole block in `apend`, and stops; the drain path at
+             * the top of this loop is behind the same guard, so it can never
+             * empty it. The pump dies on the FIRST block and `adone` is never
+             * set, so `ended` never fires. That is a deadlock on the
+             * explicitly supported "no card: play silent, in time" path
+             * (js_media.c's os_snd_open returns -1), and it is strictly worse
+             * than the accounting bug this whole block exists to fix.
+             * Found by the adversarial review of that fix, not by a gate --
+             * and no gate in the tree drives this path, which is why.
+             * See the drain half above for why the control removes both. */
+#ifndef MSE_CONTROL_NO_CARD_STRAND
+            off = want;
+#endif
+        } else {
             while (off < want) {
                 int room = g_plat->snd_avail ? g_plat->snd_avail(el->snd) : want;
                 if (room <= 0) break;
@@ -1266,16 +1514,58 @@ static void mel_pump_audio(melem *el, long long upto_ns)
             }
         }
         if (!el->aanchored) { el->afirst_ns = at; el->aanchored = 1; }
-        el->aframes_written += n;
-        el->st.audio_frames_written += n;
-        if (el->arate > 0)
-            el->awritten_ns = el->aframes_written * 1000000000LL / el->arate;
+        if (off >= want) {
+            /* The whole block reached the card in this one call: the common
+             * case, count it now exactly as before. */
+            el->aframes_written += n;
+            el->st.audio_frames_written += n;
+            if (el->arate > 0)
+                el->awritten_ns = el->aframes_written * 1000000000LL / el->arate;
+        } else {
+            /* SHORT WRITE. `off` bytes are already in the ring; `want - off`
+             * are not and must NOT be dropped (that plays back as a click
+             * and, worse, permanently strands Door A ahead of Door B -- see
+             * the struct comment) and must NOT be counted as delivered (that
+             * freezes the master clock's ceiling below where real audio can
+             * ever bring it, which is the whole `decoded=60 shown=59`
+             * symptom this fixes). Hold the tail in `apend`; `acursor` has
+             * already moved past this sample, so the outer loop must not
+             * decode a further one until this block finishes draining --
+             * stop for this call. */
+            int rem = want - off;
+            memcpy(el->apend, (const char *)pcm + off, (size_t)rem);
+            el->apend_want = rem;
+            el->apend_off = 0;
+            el->apend_n = n;
+            break;
+        }
         (void)at;
     }
     if (el->asb) {
         const media_track *t2 = media_track_info(sb->dm, sb->atrack);
-        if (t2 && el->acursor >= t2->nsamples && el->ms && el->ms->state == MSE_ENDED)
+        /* `apend_want == 0` is part of the condition, not a nicety: the loop
+         * above can exit with a held block still undelivered, and `adone`
+         * returns early on the next call -- so setting it here with a tail
+         * outstanding silently drops the last block of the film. */
+        if (t2 && el->acursor >= t2->nsamples && el->apend_want == 0 &&
+            el->ms && el->ms->state == MSE_ENDED && !el->adone) {
             el->adone = 1;
+            /* THE AUDIO MASTER RETIRES HERE, and the reason it is safe to do it
+             * at this exact moment (rather than when the card's cursor is seen
+             * to park) is a bound, not a guess. Everything the media contains
+             * has now been handed to the card; what remains unplayed is at most
+             * one ring -- ~200 ms. Over 200 ms the card's crystal and the
+             * monotonic clock differ by parts per million, so pacing the tail
+             * on wall time is indistinguishable from pacing it on the card.
+             *
+             * What it BUYS is the whole point: the play cursor stops advancing
+             * once nothing more is written to push it, and it stops short. On
+             * this machine, measured through the browser on a plain 2 s MP4, it
+             * parked 104 ms below the last picture's presentation time -- so
+             * that picture was AV_WAIT for ever, decoded=30 shown=29, with a
+             * -14 ms drift and no error anywhere. */
+            avclock_audio_end(&el->clk, (long long)now_ns());
+        }
     }
 }
 
@@ -1385,6 +1675,13 @@ int mel_seek(melem *el, double sec)
     el->afirst_ns = 0;
     el->aanchored = 0;
     el->adone = 0;
+    /* A held short-write tail belongs to whatever sample was queued before
+     * the seek; the seek has already thrown away the cursor that produced
+     * it, so replaying those bytes after the jump would put stale audio at
+     * the new position. Drop it -- same rule as `mel_load`. */
+    el->apend_want = 0;
+    el->apend_off = 0;
+    el->apend_n = 0;
     el->ended = 0;
     avclock_init(&el->clk, el->asb != 0);
     return MSE_OK;

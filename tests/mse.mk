@@ -21,7 +21,7 @@
 #   pictures must arrive in presentation order, match the whole-file decode
 #   sample for sample, and hold an A/V drift bound measured by avclock itself.
 
-.PHONY: test-mse test-mse-asan test-mse-negctl test-mse-os mse-fixtures
+.PHONY: test-mse test-mse-asan test-mse-negctl test-mse-nocard-negctl test-mse-os mse-fixtures
 
 MSE_FX   := tests/fixtures/mse
 MSE_SRC  := c/apps/browser/js_media_src.c
@@ -128,7 +128,7 @@ $(BUILD)/mse_test: tests/unit/mse_test.c $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse
 	    $(BUILD)/mse_kshim.c $(MSE_SRC) c/lib/media/*.c c/lib/video/*.c \
 	    c/lib/audio/*.c $(MSE_IMG_SRC) $(MSE_INC) -lm
 
-test-mse: $(BUILD)/mse_test
+test-mse: $(BUILD)/mse_test test-mse-nocard-negctl
 	@$(BUILD)/mse_test $(MSE_FX)
 
 # Under the sanitizers, because every byte in this path arrived through
@@ -186,6 +186,56 @@ test-mse-negctl: $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse_kshim.c \
 	    grep -m5 '^FAIL' $(BUILD)/mse_neg.log | sed 's/^/       /'; exit 1; \
 	 fi
 
+# --- THE SECOND NEGATIVE CONTROL: a machine with no sound card ---------------
+# -DMSE_CONTROL_NO_CARD_STRAND removes BOTH halves of the "no card means the
+# block is delivered vacuously" rule in mel_pump_audio() -- the fresh write and
+# the drain of a held tail. It has to remove both: either one alone releases
+# the block the other parked, so flipping one is a control that cannot be
+# watched failing.
+#
+# WHY THIS EXISTS AT ALL. The short-write carry-forward fix (which closed
+# decoded=60 shown=59 on the device) put an undelivered PCM tail in `apend` and
+# refused to decode further until it drained. Both the write and the drain sit
+# behind `if (el->snd >= 0 && ...)`, so on a machine with NO card `off` stayed 0,
+# the code read that as "nothing was accepted", parked the first block, and
+# stopped for ever. js_media.c's os_snd_open returns -1 there and "no card: play
+# silent, in time" is an explicitly supported path -- so the fix for a red gate
+# would have deadlocked audio on every machine without an audio device.
+#
+# AND THE CASE HAD TO BE MADE WATCHABLE BEFORE IT COULD BE BELIEVED. The first
+# four assertions in test_no_card ALL PASS under the sabotage: video still
+# plays, still ends, raises no error, because with no card the clock falls back
+# and video never waits on audio. Only `audio_frames_written` distinguishes a
+# working silent path (89856, the fixture's whole track) from a stranded pump
+# (0). Four green checks over a dead subsystem is this tree's own rule 5, and
+# it took four tries to notice -- three earlier "controls" measured a stale
+# binary, an inverted guard, and a -D the Makefile never passed on.
+#
+# Not stranded: test-mse depends on it. tests/audit-stranded.baseline records 61
+# controls that are named on a ci-host: line and run never.
+test-mse-nocard-negctl: $(MSE_DEPS) $(MSE_IMG_SRC) $(BUILD)/mse_kshim.c \
+                        tests/unit/mse_test.c
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -w -DMSE_CONTROL_NO_CARD_STRAND=1 -o $(BUILD)/mse_test_nocard \
+	    tests/unit/mse_test.c $(BUILD)/mse_kshim.c $(MSE_SRC) c/lib/media/*.c \
+	    c/lib/video/*.c c/lib/audio/*.c $(MSE_IMG_SRC) $(MSE_INC) -lm
+	@if $(BUILD)/mse_test_nocard $(MSE_FX) > $(BUILD)/mse_nocard.log 2>&1; then \
+	    echo "NEGCTL-FAIL: the audio pump was sabotaged to strand on a machine with"; \
+	    echo "  no sound card and the suite still passed -- so nothing in it checks"; \
+	    echo "  that the silent path consumes audio at all."; \
+	    exit 1; \
+	 elif grep -q 'audio track was still consumed' $(BUILD)/mse_nocard.log; then \
+	    echo "negctl: the no-card strand is caught, and caught where predicted:"; \
+	    grep -m1 'no-card: audio_frames_written' $(BUILD)/mse_nocard.log | sed 's/^/       /'; \
+	    echo "       (and note the four checks ABOVE it still pass -- video plays,"; \
+	    echo "        ends and raises no error over a dead audio pump)"; \
+	 else \
+	    echo "NEGCTL-FAIL: the sabotaged build failed, but NOT on the audio-consumed"; \
+	    echo "  assertion -- so this proves the suite is unhappy, not that it catches"; \
+	    echo "  a stranded pump."; \
+	    grep -m5 '^FAIL' $(BUILD)/mse_nocard.log | sed 's/^/       /'; exit 1; \
+	 fi
+
 # --- on the machine ----------------------------------------------------------
 # /bin/msecheck runs the same segmented playback on LogitOS, against the same
 # fixture, and prints the same numbers -- which is what turns "MSE works" from a
@@ -228,3 +278,16 @@ $(DISK): $(BUILD)/msecheck.aex $(MSE_FX)/init-video.mp4
 
 test-mse-os: $(ISO) $(DISK)
 	@bash tests/boot/run-mse-test.sh $(ISO) $(DISK)
+
+# --- and the one neither of the two above can make ---------------------------
+# test-mse drives the engine on the host; test-mse-os drives it on the machine
+# through /bin/msecheck. NEITHER GOES THROUGH THE BROWSER: no QuickJS, no DOM,
+# no <video> element, no fetch, no layout, no compositor. Both can be green
+# while a page's <video> does nothing, and that is the state this line found.
+#
+# This one loads a page over HTTP in browser.aex and reads the element's own
+# framesShown counter -- twice, seconds apart, because one picture and a freeze
+# satisfies "> 0" -- and then reads the WAV file QEMU's card wrote, because
+# hda.c's DMA engine runs happily into silence with every register correct.
+test-video-page: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_video_page.py $(ISO) $(DISK)

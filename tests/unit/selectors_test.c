@@ -379,7 +379,7 @@ int main(void)
     /* One evaluation first: js_dom.c runs a compatibility bridge out of the job
      * queue, and a test that skipped it would be inspecting a state no page
      * ever sees. */
-    js_page_eval("void 0;", 7, "<warmup>");
+    js_page_eval("void 0;", 7, "<warmup>", 0);
 
     group_case_standards();
     group_grammar();
@@ -393,7 +393,7 @@ int main(void)
     js_page_set_location("http://example.com/q");
     if (!js_page_open(qroot)) { printf("FAIL: js_page_open (quirks)\n"); return 1; }
     g_ctx = js_page_ctx();
-    js_page_eval("void 0;", 7, "<warmup>");
+    js_page_eval("void 0;", 7, "<warmup>", 0);
     group_case_quirks();
     js_page_close();
     dom_free(qroot);

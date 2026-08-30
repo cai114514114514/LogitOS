@@ -58,7 +58,39 @@ jsfb-fetch:
 # driver script in the page's own context at the settle point and dispatches
 # clicks through js_dom_dispatch(), the same C entry point browser.c calls from
 # the mouse path.
+# --- is the corpus still upstream's? ----------------------------------------
+# THE FAILURE THIS ANSWERS HAPPENED, on 2026-08-29, and nothing in the tree
+# said a word. A workflow ran a causal experiment by injecting a fourteen-line
+# `__retain` prelude into four documents inside build/jsfb -- keyed/svelte,
+# keyed/solid-store, keyed/lit, keyed/react-hooks -- and left them there. A
+# later run of the SAME probe binary inherited the intervention and disagreed
+# with the published matrix: svelte 7/8 instead of 0/8, solid-store 8/8
+# instead of 0/8. It was caught only because two runs of one binary disagreed
+# and somebody chased it rather than publishing it.
+#
+# An injected experiment reads as a browser improvement, which is the worst
+# direction for a corpus to drift in. build/jsfb was the one input to this gate
+# that nothing checked and that workflows are expected to poke at.
+#
+# It hashes the DOCUMENTS (asked of jsfb_corpus, never re-derived here) plus the
+# shared css/, and deliberately not node_modules or dist churn -- a gate that
+# reddens on an ordinary npm build is a gate people learn to ignore.
+#
+# NOT WIRED AS A HARD PREREQUISITE OF probe-jsfb, and that is deliberate: this
+# corpus is OPTIONAL (WPT's rule, and jsfb_matrix already SKIPs loudly without
+# it), so a missing manifest must not turn a report into a failure. It runs and
+# says what it found. test-jsfb, which asserts against a baseline, DOES take it
+# as a prerequisite -- a ratchet measured against a corpus nobody published is
+# worse than no ratchet.
+.PHONY: jsfb-manifest jsfb-verify
+jsfb-manifest:
+	@python3 tools/jsfb_manifest.py --root $(JSFB_ROOT) --write
+
+jsfb-verify:
+	@python3 tools/jsfb_manifest.py --root $(JSFB_ROOT) --check
+
 probe-jsfb: $(BUILD)/webapi_probe
+	@-python3 tools/jsfb_manifest.py --root $(JSFB_ROOT) --check
 	@python3 $(JSFB_MATRIX) $(BUILD)/webapi_probe --root $(JSFB_ROOT)
 
 # --- test-jsfb: the assertion -----------------------------------------------
@@ -88,7 +120,7 @@ probe-jsfb: $(BUILD)/webapi_probe
 #     stat -f '%Sm %N' build/webapi_probe; git status --short c/apps/browser
 # A baseline taken during an edit storm records a browser that existed for four
 # minutes, which is worse than no baseline because it reads like one.
-test-jsfb: $(BUILD)/webapi_probe
+test-jsfb: $(BUILD)/webapi_probe jsfb-verify
 	@python3 $(JSFB_MATRIX) $(BUILD)/webapi_probe --root $(JSFB_ROOT) \
 	    --baseline $(JSFB_BASE)
 

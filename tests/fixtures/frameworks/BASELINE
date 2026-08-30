@@ -1,13 +1,13 @@
 angular 2 unclassified: ERROR Error,unclassified: Uncaught (in promise) Error
-next 1 document.currentScript
+next 0 -
 react 0 -
 svelte 0 -
 vite 0 -
 vue 0 -
 webpack 0 -
-api document.currentScript = element | null
-api currentScript.tagName = SCRIPT | null
-api currentScript.src = https://platform.fixture.logitos/probe.js | null
+api document.currentScript = element
+api currentScript.tagName = SCRIPT
+api currentScript.src = https://platform.fixture.logitos/probe.js
 api getElementsByTagName(script).length = 1
 api script[0].src = https://platform.fixture.logitos/probe.js
 api script[0].getAttribute(src) = probe.js
@@ -19,7 +19,7 @@ api window.trustedTypes = undefined
 api document.documentMode = undefined
 api window.event = undefined
 paint angular body=438 #app=218	button="count is 0"	lazy="lazy route loaded"
-paint next body=4728 #app=207	button="count is 0"	lazy=none
+paint next body=4715 #app=123	button="count is 0"	lazy=none
 paint react body=234 #root=155 #app=135	button="count is 0"	lazy="lazy route loaded"
 paint svelte body=424 #app=153	button="count is 0"	lazy="lazy route loaded"
 paint vite body=252 #app=174	button="count is 0"	lazy="lazy chunk loaded"

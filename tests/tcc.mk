@@ -150,7 +150,7 @@ $(TCC_OUT)/hello-dyn: $(TCC_OUT)/host-stock/tcc $(TCC_HELLO_IN)
 # a control named on a `ci-host:` line instead runs never).
 test-tcc-build: test-tcc-build-negctl
 test-tcc-build: $(TCC_OUT)/tcc.aex $(TCC_OUT)/hello-elf $(TCC_OUT)/hello-bad $(TCC_OUT)/hello-dyn
-	@echo "tcc: $$(stat -c%s $(TCC_OUT)/tcc.elf) bytes of ELF, $$(stat -c%s $(TCC_OUT)/tcc.aex) bytes of .aex"
+	@echo "tcc: $$(bash tools/filesize.sh $(TCC_OUT)/tcc.elf) bytes of ELF, $$(bash tools/filesize.sh $(TCC_OUT)/tcc.aex) bytes of .aex"
 	@bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/tcc.elf
 	@bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/hello-elf
 	@if bash tests/unit/tcc_elfcheck.sh $(TCC_OUT)/hello-bad > $(TCC_OUT)/negctl_bad.log 2>&1; then \

@@ -118,14 +118,30 @@ static int g_pump_armed;                 /* a setTimeout tick is outstanding */
 /* Every live MediaSource/SourceBuffer wrapper, so the pump can fire events on
  * them without the engine holding a JSValue. Bounded, like everything else. */
 #define MAXWRAP 16
-static struct { msource *ms; JSValue obj; } g_mswrap[MAXWRAP];
+/* `pending_open` is not bookkeeping, it is the spec. MSE says "QUEUE A TASK to
+ * fire an event named sourceopen", and the canonical five lines every DASH
+ * player is written from depend on that word:
+ *
+ *     var ms = new MediaSource();
+ *     video.src = URL.createObjectURL(ms);        // <- attaches, opens
+ *     ms.addEventListener('sourceopen', ...);     // <- registered AFTER
+ *
+ * Fired synchronously from inside the src setter, the event is delivered on
+ * line 2 and the listener is added on line 3, so it is delivered to nobody and
+ * the player waits for ever with no error, no exception and every object in
+ * the right state. That is what this was doing, and it is the reason a page
+ * could hold a working MediaSource, a working SourceBuffer and a working
+ * decoder and still never append a byte. Deferred to the pump, exactly as
+ * appendBuffer's update/updateend pair already is, and for the same reason. */
+static struct { msource *ms; JSValue obj; int pending_open; } g_mswrap[MAXWRAP];
 static struct { sbuf *sb; JSValue obj; int pending_end; int last_state; } g_sbwrap[MAXWRAP];
 static struct { int key; JSValue obj; } g_elwrap[MAXWRAP];
 
 static void wrap_ms(msource *ms, JSValue obj)
 {
     for (int i = 0; i < MAXWRAP; i++)
-        if (!g_mswrap[i].ms) { g_mswrap[i].ms = ms; g_mswrap[i].obj = obj; return; }
+        if (!g_mswrap[i].ms) { g_mswrap[i].ms = ms; g_mswrap[i].obj = obj;
+                               g_mswrap[i].pending_open = 0; return; }
     JS_FreeValue(g_ctx, obj);
 }
 static JSValue ms_obj(msource *ms)
@@ -184,7 +200,8 @@ static void ms_finalizer(JSRuntime *rt, JSValue val)
     msource *ms = JS_GetOpaque(val, g_ms_cid);
     (void)rt;
     if (!ms) return;
-    for (int i = 0; i < MAXWRAP; i++) if (g_mswrap[i].ms == ms) g_mswrap[i].ms = 0;
+    for (int i = 0; i < MAXWRAP; i++)
+        if (g_mswrap[i].ms == ms) { g_mswrap[i].ms = 0; g_mswrap[i].pending_open = 0; }
     mse_free(ms);
 }
 static JSClassDef g_ms_class = { "MediaSource", .finalizer = ms_finalizer };
@@ -515,8 +532,16 @@ static JSValue js_m_src(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
     } else {
         const char *u = JS_ToCString(ctx, argv[1]);
         if (!u) return JS_EXCEPTION;
-        rc = mel_attach_url(el, u);
+        /* An object URL is a MediaSource this process already holds and the
+         * engine can attach on the spot. Anything else is a RESOURCE, and
+         * getting it is not the engine's job -- it has no network by design.
+         * Answering SRC_NEEDS_FETCH sends the shim to fetch(), which is the
+         * only thing in this browser that knows about URLs, redirects,
+         * cookies and the event loop. Note what is NOT done here: no error is
+         * set. A src that is about to be fetched has not failed. */
+        rc = mse_from_object_url(u) ? mel_attach_url(el, u) : SRC_NEEDS_FETCH;
         JS_FreeCString(ctx, u);
+        if (rc == SRC_NEEDS_FETCH) return JS_NewInt32(ctx, rc);
     }
     if (rc == MSE_OK) {
         msource *ms = direct;
@@ -524,10 +549,69 @@ static JSValue js_m_src(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
             const char *u = JS_ToCString(ctx, argv[1]);
             if (u) { ms = mse_from_object_url(u); JS_FreeCString(ctx, u); }
         }
-        if (ms) fire(ms_obj(ms), "sourceopen");
+        /* QUEUED, not fired. See the g_mswrap declaration. */
+        if (ms) for (int i = 0; i < MAXWRAP; i++)
+            if (g_mswrap[i].ms == ms) { g_mswrap[i].pending_open = 1; break; }
         arm_pump();
     }
     return JS_NewInt32(ctx, rc);
+}
+
+/* The other end of SRC_NEEDS_FETCH: the shim fetched the resource and hands
+ * back the whole body. Same BufferSource unwrapping as appendBuffer -- a page
+ * gets whichever of ArrayBuffer or view its fetch produced, and so do we. */
+static JSValue js_m_loadbytes(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int key = 0;
+    if (argc < 2 || JS_ToInt32(ctx, &key, argv[0])) return JS_EXCEPTION;
+    melem *el = el_of(key, 1);
+    if (!el) return JS_ThrowInternalError(ctx, "too many media elements");
+
+    size_t len = 0;
+    uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[1]);
+    JSValue held = JS_UNDEFINED;
+    if (!p) {
+        size_t off = 0, blen = 0, bpe = 0;
+        held = JS_GetTypedArrayBuffer(ctx, argv[1], &off, &blen, &bpe);
+        if (JS_IsException(held)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            mel_fail(el, 4, "the response body is not bytes");
+            arm_pump();
+            return JS_NewInt32(ctx, MSE_E_DECODE);
+        }
+        size_t whole = 0;
+        uint8_t *base = JS_GetArrayBuffer(ctx, &whole, held);
+        if (!base) { JS_FreeValue(ctx, held);
+                     mel_fail(el, 4, "detached response body"); arm_pump();
+                     return JS_NewInt32(ctx, MSE_E_DECODE); }
+        p = base + off;
+        len = blen;
+    }
+    int rc = mel_load_bytes(el, p, (long)len);
+    JS_FreeValue(ctx, held);
+    /* Whatever happened -- a decoded first frame or a MediaError -- the pump
+     * is what turns it into events on the element. Arming it on the failure
+     * path too is the difference between a page's onerror running and a
+     * <video> that is silently still at readyState 0. */
+    arm_pump();
+    return JS_NewInt32(ctx, rc);
+}
+
+/* The network half failing is still a MediaError on the element: a fetch that
+ * 404s must reach `video.error`, not only the console. */
+static JSValue js_m_srcfail(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    int key = 0;
+    if (argc < 1 || JS_ToInt32(ctx, &key, argv[0])) return JS_UNDEFINED;
+    melem *el = el_of(key, 0);
+    if (!el) return JS_UNDEFINED;
+    const char *m = argc >= 2 ? JS_ToCString(ctx, argv[1]) : 0;
+    mel_fail(el, 2, m ? m : "the resource could not be fetched");   /* NETWORK */
+    if (m) JS_FreeCString(ctx, m);
+    arm_pump();
+    return JS_UNDEFINED;
 }
 
 /* Property ids. A single get/set pair beats forty exported functions, and the
@@ -703,6 +787,12 @@ int js_media_pending(void)
 {
     if (mel_pending()) return 1;
     for (int i = 0; i < MAXWRAP; i++) if (g_sbwrap[i].pending_end) return 1;
+    /* A queued sourceopen keeps the chain alive on its own. Without this a
+     * source attached to a PAUSED element (which is every source, at the
+     * instant it is attached) has nothing else asking for a tick, and the one
+     * event the player is waiting for is the one that would arm the pump. */
+    for (int i = 0; i < MAXWRAP; i++)
+        if (g_mswrap[i].ms && g_mswrap[i].pending_open) return 1;
     return 0;
 }
 
@@ -710,6 +800,17 @@ int js_media_pump(JSContext *ctx)
 {
     if (!ctx) return 0;
     int did = 0;
+
+    /* The queued `sourceopen`. FIRST in the pump, before any append event: a
+     * player's sourceopen handler is where addSourceBuffer and the first
+     * appendBuffer happen, so delivering it after this pump's other events
+     * would report on a source the page has not been told is open yet. */
+    for (int i = 0; i < MAXWRAP; i++) {
+        if (!g_mswrap[i].ms || !g_mswrap[i].pending_open) continue;
+        g_mswrap[i].pending_open = 0;
+        fire(g_mswrap[i].obj, "sourceopen");
+        did++;
+    }
 
     /* The asynchronous half of appendBuffer: updating goes false and the pair
      * of events fires HERE, from the event loop, so a player's updateend
@@ -893,12 +994,59 @@ static const char g_shim[] =
 "acc(proto, 'srcObject', function () { return this.__srcObject || null; },\n"
 "                       function (v) { this.__srcObject = v;\n"
 "                                      G.__mediaSrc(keyOf(this, true), v); });\n"
+/* The progressive load. __mediaSrc answers SRC_NEEDS_FETCH (1) for anything
+   that is not a MediaSource object URL: the engine owns no network, so the
+   binding fetches here and hands the whole body back through
+   __mediaLoadBytes. `gen` is not decoration -- setting .src twice in a row is
+   ordinary (a player picking a quality), and without it the slower of the two
+   responses wins whichever one the page asked for last. */
+"var srcGen = 0;\n"
+"var loadSrc = function (el, k, url) {\n"
+"  if (typeof G.fetch !== 'function') {\n"
+"    G.__mediaSrcFail(k, 'no fetch in this browser: a <video src> cannot be loaded'); return; }\n"
+"  var gen = ++srcGen;\n"
+"  el.__srcGen = gen;\n"
+"  G.fetch(url).then(function (r) {\n"
+"    if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);\n"
+"    return r.arrayBuffer();\n"
+"  }).then(function (b) {\n"
+"    if (el.__srcGen !== gen) return;\n"
+"    G.__mediaLoadBytes(k, b);\n"
+"  }).catch(function (e) {\n"
+"    if (el.__srcGen !== gen) return;\n"
+"    G.__mediaSrcFail(k, String(e && e.message ? e.message : e));\n"
+"  });\n"
+"};\n"
+/* An empty src is how a page DETACHES a source (`v.src = ''`), not a request
+   to fetch the document again -- which is what resolving '' against the base
+   URL would do, and it would do it silently, once per detach. */
+"var applySrc = function (el, v) {\n"
+"  if (!isMedia(el) || v === null || v === undefined || v === '') return;\n"
+"  el.__srcApplied = true;\n"
+"  var k = keyOf(el, true);\n"
+"  if (G.__mediaSrc(k, v) === 1) loadSrc(el, k, v);\n"
+"};\n"
 "acc(proto, 'src', function () { return this.getAttribute('src') || ''; },\n"
-"                  function (v) { this.setAttribute('src', v);\n"
-"                                 if (isMedia(this)) G.__mediaSrc(keyOf(this, true), v); });\n"
+"                  function (v) { this.setAttribute('src', v); applySrc(this, v); });\n"
 "acc(proto, 'currentSrc', function () { return this.getAttribute('src') || ''; });\n"
 "acc(proto, 'playbackRate', function () { return 1; }, function () {});\n"
+/* MARKUP, not just the property. `<video src="movie.mp4">` never runs the src
+   setter -- the parser sets an attribute. The spec starts the resource
+   selection algorithm when such an element is inserted; there is no insertion
+   hook here, so it runs at the first play()/load() instead. The difference a
+   page can observe is that readyState stays 0 until then, which is what an
+   element with preload="none" does anyway. Applying it twice is what
+   __srcApplied prevents: re-fetching a film because the page called play()
+   after a pause is not a subtlety, it is the whole download again. */
+"var ensureSrc = function (el) {\n"
+"  if (!isMedia(el) || el.__srcApplied) return;\n"
+"  var a = el.getAttribute && el.getAttribute('src');\n"
+"  if (!a) return;\n"
+"  el.__srcApplied = true;\n"
+"  applySrc(el, a);\n"
+"};\n"
 "def(proto, 'play', function () {\n"
+"  ensureSrc(this);\n"
 "  G.__mediaCall(keyOf(this, true), 0);\n"
 "  var el = this;\n"
 "  if (typeof el.__mediaFire === 'function') el.__mediaFire('play');\n"
@@ -906,7 +1054,11 @@ static const char g_shim[] =
 "});\n"
 "def(proto, 'pause', function () { G.__mediaCall(keyOf(this, true), 1);\n"
 "  if (typeof this.__mediaFire === 'function') this.__mediaFire('pause'); });\n"
-"def(proto, 'load', function () { G.__mediaCall(keyOf(this, true), 2); });\n"
+/* Order matters and is the opposite of the reading order: M_LOAD tears the
+   element back down to HAVE_NOTHING, so re-applying the src BEFORE it would
+   throw away the very load it just started. */
+"def(proto, 'load', function () { G.__mediaCall(keyOf(this, true), 2);\n"
+"  this.__srcApplied = false; ensureSrc(this); });\n"
 "def(proto, 'canPlayType', function (t) {\n"
 "  return G.MediaSource.isTypeSupported(t) ? 'probably' : '';\n"
 "});\n"
@@ -957,6 +1109,10 @@ void js_media_install(JSContext *ctx)
      * non-enumerable-ish: a page has no business calling them. */
     JS_SetPropertyStr(ctx, g, "__mediaBind", JS_NewCFunction(ctx, js_m_bind, "__mediaBind", 2));
     JS_SetPropertyStr(ctx, g, "__mediaSrc", JS_NewCFunction(ctx, js_m_src, "__mediaSrc", 2));
+    JS_SetPropertyStr(ctx, g, "__mediaLoadBytes",
+                      JS_NewCFunction(ctx, js_m_loadbytes, "__mediaLoadBytes", 2));
+    JS_SetPropertyStr(ctx, g, "__mediaSrcFail",
+                      JS_NewCFunction(ctx, js_m_srcfail, "__mediaSrcFail", 2));
     JS_SetPropertyStr(ctx, g, "__mediaGet", JS_NewCFunction(ctx, js_m_get, "__mediaGet", 2));
     JS_SetPropertyStr(ctx, g, "__mediaSet", JS_NewCFunction(ctx, js_m_set, "__mediaSet", 3));
     JS_SetPropertyStr(ctx, g, "__mediaCall", JS_NewCFunction(ctx, js_m_call, "__mediaCall", 2));

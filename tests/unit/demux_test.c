@@ -219,6 +219,96 @@ static void test_headers(void)
     CHECK(t.t.framing == MEDIA_FRAMING_RAW, "no extradata -> raw framing");
 }
 
+/* CONTROL for the fragmented-MP4 / offset-tolerant open path. Three shapes a
+ * DASH engine (bilibili's MSE path, not a hostname-specific fact -- the
+ * capability is DASH-over-MSE) actually hands this code:
+ *
+ *   1. a media segment (moof/mdat) with no init segment ever appended --
+ *      must fail NAMED (MEDIA_ERR_NO_INIT), not silently and not as generic
+ *      corruption;
+ *   2. an init segment immediately followed by its media segment, as one
+ *      buffer -- must open and yield samples;
+ *   3. a real container preceded by bytes that are not part of the file at
+ *      all (the general shape of anything a captured/relayed stream can
+ *      carry in front of the real bytes) -- must still be found, not refused
+ *      as MEDIA_ERR_UNSUPPORTED merely because byte 0 is not a box.
+ *
+ * Needs the committed MSE fixtures. If they are not reachable from this cwd,
+ * SKIP LOUDLY rather than pass by omission -- rule 5: a control that cannot
+ * be watched failing is worse than none. */
+static void test_frag_open(void)
+{
+    long ilen = 0, mlen = 0, wlen = 0;
+    unsigned char *init  = read_all("tests/fixtures/mse/init-video.mp4", &ilen);
+    unsigned char *m1    = read_all("tests/fixtures/mse/video-1.m4s", &mlen);
+    unsigned char *whole = read_all("tests/fixtures/mse/whole-video.mp4", &wlen);
+    if (!init || !m1 || !whole) {
+        printf("test_frag_open: SKIPPED -- tests/fixtures/mse/{init-video.mp4,"
+               "video-1.m4s,whole-video.mp4} not reachable from cwd '%s'\n", ".");
+        free(init); free(m1); free(whole);
+        return;
+    }
+
+    /* 1. bare media segment: no moov anywhere in the buffer. */
+    int e = 0;
+    mdemux *bare = media_open(m1, mlen, &e);
+    CHECK(bare == 0 && e == MEDIA_ERR_NO_INIT,
+          "bare media segment -> MEDIA_ERR_NO_INIT, got demux=%p err=%d", (void *)bare, e);
+    if (bare) media_close(bare);
+
+    /* 2. init segment + media segment, concatenated the way two appendBuffer
+     * calls land in one growing SourceBuffer store. */
+    unsigned char *cat = (unsigned char *)malloc((size_t)(ilen + mlen));
+    CHECK(cat != 0, "oom building init+media fixture");
+    if (cat) {
+        memcpy(cat, init, (size_t)ilen);
+        memcpy(cat + ilen, m1, (size_t)mlen);
+        e = 0;
+        mdemux *both = media_open(cat, ilen + mlen, &e);
+        CHECK(both != 0 && e == MEDIA_OK, "init+media -> opens, got err %d", e);
+        if (both) {
+            int vt = media_find_track(both, MEDIA_TRACK_VIDEO);
+            CHECK(vt >= 0, "init+media -> has a video track");
+            if (vt >= 0) {
+                const media_track *t = media_track_info(both, vt);
+                CHECK(t && t->nsamples > 0, "init+media -> yields samples, got %ld",
+                      t ? t->nsamples : -1L);
+            }
+            media_close(both);
+        }
+        free(cat);
+    }
+
+    /* 3. THE OFFSET CONTROL: a real, complete, playable MP4 prefixed with 9
+     * bytes that are not a box -- exactly the shape that returned
+     * MEDIA_ERR_UNSUPPORTED before c/lib/media/demux.c gained
+     * media_find_start(). */
+    unsigned char prefix[9] = { 0xDE,0xAD,0xBE,0xEF,0x00,0x11,0x22,0x33,0x44 };
+    unsigned char *shifted = (unsigned char *)malloc(sizeof prefix + (size_t)wlen);
+    CHECK(shifted != 0, "oom building offset fixture");
+    if (shifted) {
+        memcpy(shifted, prefix, sizeof prefix);
+        memcpy(shifted + sizeof prefix, whole, (size_t)wlen);
+        e = 0;
+        mdemux *off = media_open(shifted, (long)sizeof(prefix) + wlen, &e);
+        CHECK(off != 0 && e == MEDIA_OK,
+              "9-byte-prefixed container -> still found, got err %d", e);
+        if (off) {
+            int vt = media_find_track(off, MEDIA_TRACK_VIDEO);
+            CHECK(vt >= 0, "offset container -> has a video track");
+            if (vt >= 0) {
+                const media_track *t = media_track_info(off, vt);
+                CHECK(t && t->nsamples > 0, "offset container -> yields samples, got %ld",
+                      t ? t->nsamples : -1L);
+            }
+            media_close(off);
+        }
+        free(shifted);
+    }
+
+    free(init); free(m1); free(whole);
+}
+
 static int run_units(void)
 {
     fails = 0;
@@ -227,6 +317,7 @@ static int run_units(void)
     test_sniff();
     test_annexb_lengths();
     test_headers();
+    test_frag_open();
     if (fails) { printf("demux units: %d FAILED\n", fails); return 1; }
     printf("demux units: ok\n");
     return 0;

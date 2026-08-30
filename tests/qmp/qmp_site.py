@@ -107,7 +107,7 @@ import zlib
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM, dock_icon, BROWSER_SLOT          # noqa: E402
+from qmp_ui import Session, PPM                                   # noqa: E402
 
 # The User-Agent the guest's own fetcher sends, so the host probe is offered the
 # same document. A site that serves a different page to an unknown UA would
@@ -498,9 +498,60 @@ def host_probe(url, result):
             # the record is meant to be read.
             result["_body"] = body
     except urllib.error.HTTPError as e:
-        result.update(ok=True, status=e.code, final_url=url, bytes=0,
-                      redirects=chain, script_tags=0, script_src=0, img_tags=0,
-                      inventory=None, elapsed=round(time.time() - t0, 1))
+        # AN ERROR RESPONSE HAS A BODY, AND ON THIS CORPUS IT IS OFTEN THE ONLY
+        # INTERESTING ONE. This branch used to record `bytes=0` and drop
+        # `e.read()` unread, which was not a small omission: a Cloudflare
+        # managed challenge IS an HTTP 403, so EVERY challenge page this
+        # harness has ever been served was filed as "0 bytes" with its actual
+        # content discarded. The evidence sat in the tree unexamined --
+        # tests/scoreboard/full-corpus/openai.json reads
+        # `"host": {"ok": true, "status": 403, "bytes": 0}` and there is no
+        # openai.host.html beside it, while every 200 row has one.
+        #
+        # What that cost, concretely: a claim that Cloudflare's challenge ships
+        # a WebAssembly module went unchecked for a day and was told to the
+        # owner, because the one instrument that could have settled it threw
+        # the bytes away. Fetched by hand instead, the answer is zero
+        # occurrences of WebAssembly in 341 KB of real challenge code -- and
+        # the thing that DOES break the page (`contentDocument.createElement`)
+        # is one grep away in those same bytes.
+        #
+        # `ok=True` is kept: the request succeeded and the server answered.
+        # A 403 is a measurement, not a harness failure -- which is exactly
+        # why its body has to be kept.
+        raw = b""
+        try:
+            raw = e.read()
+        except Exception:                                         # noqa: BLE001
+            pass
+        # THE SAME DECODE, THE SAME GUNZIP AND THE SAME COUNTS AS THE 200 PATH,
+        # and the two-line version of this branch was wrong twice over. It kept
+        # `e.read()` as RAW BYTES while the 200 path stores a decoded str, so
+        # the caller's `fh.write(hb)` into a text handle raised
+        # `TypeError: write() argument must be str, not bytes` and the whole
+        # run came back as verdict HARNESS -- i.e. the fix that was made so a
+        # challenge body would finally be kept made every 403 measure NOTHING
+        # AT ALL, which is strictly worse than the bytes=0 it replaced.
+        # Watched happening on the first openai run after it landed.
+        # It also hard-coded script_tags=0/script_src=0/inventory=None, so even
+        # once the body was kept, every COUNT taken from it read zero -- on the
+        # one document in this corpus whose script inventory is the entire
+        # question. An error body is not a lesser body; it is the body.
+        if raw and e.headers is not None and e.headers.get("Content-Encoding", "") == "gzip":
+            try:
+                raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+            except OSError:
+                pass
+        body = raw.decode("utf-8", "replace")
+        result.update(ok=True, status=e.code, final_url=url, bytes=len(raw),
+                      redirects=chain,
+                      script_tags=len(re.findall(r"<script\b", body, re.I)),
+                      script_src=len(re.findall(r"<script\b[^>]*\bsrc=", body, re.I)),
+                      img_tags=len(re.findall(r"<img\b", body, re.I)),
+                      inventory=inventory(body),
+                      elapsed=round(time.time() - t0, 1))
+        if body:
+            result["_body"] = body
     except Exception as e:                                        # noqa: BLE001
         result.update(ok=False, error="%s: %s" % (type(e).__name__, e),
                       elapsed=round(time.time() - t0, 1))
@@ -702,13 +753,14 @@ def main():
         time.sleep(3)
 
         ui = Session(qmp_path, serial=serial_path)
-        ui.click_at(*dock_icon(BROWSER_SLOT))
-        for _ in range(5):
-            if wait_for("launched Browser", 15):
-                break
-            ui.click_at(*dock_icon(BROWSER_SLOT))
-        else:
-            finish("HARNESS", "the Dock never launched the Browser")
+        # One click at the tile the GUEST names for browser.aex, verified
+        # against the guest's own [wm] launched line. The scoreboard boots one
+        # machine per live site; a coordinate that opened the wrong app would
+        # have published every site's numbers as browser findings.
+        try:
+            ui.launch_app("browser")
+        except AssertionError as e:
+            finish("HARNESS", str(e))
         time.sleep(7)                  # ~3 MB .aex off virtio-blk, ELF load, first paint
 
         # ---- the self-test: prove the whole navigation path before scoring ----
@@ -924,15 +976,45 @@ def main():
         # which reads as "the page painted nothing recognisable" rather than
         # "the harness could not read its own instrument".
         tail_n = tail.replace("\r\n", "\n")
-        ms = re.findall(r"\[dl\] painted text: (\d+) run\(s\), (\d+) byte", tail_n)
-        m = ms[-1] if ms else None
+
+        # THE COUNT AND THE WORDS MUST COME FROM THE SAME DUMP, AND FOR MONTHS
+        # THEY DID NOT. The count was findall(...)[-1] -- the LAST summary, on
+        # the reasoning quoted above that the first is an early frame -- while
+        # the words were re.search(...), which returns the FIRST block. Two
+        # doors on one jar, inside one instrument, and it reported a number
+        # from one paint beside the text of another.
+        #
+        # It stayed invisible because it always returned A number. Measured
+        # 2026-08-29: github reported 3 runs / 14 bytes and had actually
+        # painted 89 / 467; kimi reported 5 / 59 and had painted 30 / 188. The
+        # scoreboard's whole reason to exist -- `changed px` cannot tell a
+        # rendered page from a flat dark block, so count the WORDS -- was
+        # reading the wrong paint on every row.
+        #
+        # AND THE "TAKE THE LAST" RULE BROKE WHEN THE DUMP COUNT CHANGED. It
+        # was right when a run produced two dumps and the first was the empty
+        # tab. A run now produces three: the page's early frame, the page
+        # settled, and then about:text's OWN render after the harness navigates
+        # to it -- and about:text paints a handful of runs of its own. So the
+        # last summary in the log is the diagnostic page describing itself.
+        #
+        # The boundary is not a heuristic about sizes: it is the navigation.
+        # Everything before `[browser] load: about:text` is the page under
+        # test; everything after is the instrument. Take the LAST dump before
+        # that line, and take its count and its body together.
+        cut = tail_n.find("[browser] load: about:text")
+        page_part = tail_n[:cut] if cut >= 0 else tail_n
+        pairs = re.findall(
+            r"\[dl\] painted text: (\d+) run\(s\), (\d+) byte[^\n]*\n"
+            r"(?:\[dl\] ---8<--- begin painted text\n(.*?)"
+            r"\[dl\] ---8<--- end painted text)?",
+            page_part, re.S)
+        m = pairs[-1] if pairs else None
         if m:
             rec["text_runs"] = int(m[0])
             rec["text_bytes"] = int(m[1])
-            body = re.search(r"\[dl\] ---8<--- begin painted text\n(.*?)"
-                             r"\[dl\] ---8<--- end painted text", tail_n, re.S)
-            if body:
-                lines = [ln[5:] for ln in body.group(1).splitlines()
+            if m[2]:
+                lines = [ln[5:] for ln in m[2].splitlines()
                          if ln.startswith("[dl] ")]
                 rec["text"] = "\n".join(lines)
         else:

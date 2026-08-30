@@ -66,7 +66,7 @@ afterwards is then about the wrong file. One click is one event, and the
 pointer is confirmed on the pixel before the button goes down.
 
 Usage: qmp_preview.py [--iso X] [--disk X] [--out DIR] [--only NAME,NAME]
-                      [--timing-only] [--napps N] [--slot N] [--keep]
+                      [--timing-only] [--keep]
 """
 import os
 import re
@@ -93,10 +93,12 @@ IMG_BG = (28, 28, 32)          # gui_clear() behind a still or an animation
 # window-local coordinates measured from it. Same device gallery.c uses.
 PICK_PROBE = (255, 0, 128)
 
-# The dock, as qmp_ui models it. Preview is the 7th *.aex at the LogitFS root
-# in scan_apps order: clock textedit monitor terminal widgets files preview.
-PREVIEW_SLOT = 6
-NAPPS = 10
+# PREVIEW_SLOT = 6 and NAPPS = 10 used to live here, and NAPPS was ALREADY
+# STALE: the disk packs eleven apps (settings came last), so dock_icon(6, 10)
+# computed the midpoint BETWEEN preview's tile and studio's, in the gap, where
+# a click opens nothing and the wait for Preview's pick line just times out.
+# That is the exact rot this conversion ends: the tile now comes off the
+# guest's [wm] dock line (launch_app below), so the count cannot disagree.
 
 # name in Preview's list, what it exercises, how to check it, options.
 CASES = [
@@ -322,7 +324,6 @@ def main(argv):
     outdir = os.path.join(ROOT, "build", "preview-shots")
     refdir = os.path.join(ROOT, "build", "previewref")
     only, keep, timing_only, assoc_only = None, False, False, False
-    napps, slot = NAPPS, PREVIEW_SLOT
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -333,8 +334,11 @@ def main(argv):
         elif a == "--only":         only = set(argv[i + 1].split(",")); i += 2
         elif a == "--timing-only":  timing_only = True; i += 1
         elif a == "--assoc":        assoc_only = True; i += 1
-        elif a == "--napps":        napps = int(argv[i + 1]); i += 2
-        elif a == "--slot":         slot = int(argv[i + 1]); i += 2
+        # --napps N / --slot N are GONE. They existed to steer a dock click
+        # whose geometry lived in Python constants here -- a caller could
+        # correct a stale count from the make line instead of the file, which
+        # is the wrong half of the fix: the correction belongs wherever the
+        # fact is, and the fact is on the guest. launch_app() reads it there.
         elif a == "--keep":         keep = True; i += 1
         else:
             print("unknown arg %r" % a); return 2
@@ -501,7 +505,10 @@ def main(argv):
             return 0
 
         # --- open Preview from the Dock -----------------------------------
-        ui.click_at_confirmed(probe, *dock_icon(slot, napps))
+        # launch_app clicks the tile the GUEST names for preview.aex and
+        # refuses unless Preview is what came up; the pick line below remains
+        # the deeper check (the window actually listing /media).
+        ui.launch_app("preview", probe=probe)
         m = wait_for(r"preview: pick 0 ", 0, 90)
         picks = {mm.group(2): int(mm.group(1))
                  for mm in re.finditer(r"preview: pick (\d+) (\S+)", read(serial))}

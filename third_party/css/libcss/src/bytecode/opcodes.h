@@ -101,6 +101,12 @@ enum op_border_spacing {
 	BORDER_SPACING_SET		= 0x0080
 };
 
+/* LogitOS: shared by all four border-*-radius corners, the way
+ * op_border_side_width is shared by the four border-*-width sides. */
+enum op_border_radius {
+	BORDER_RADIUS_SET		= 0x0080
+};
+
 enum op_border_color {
 	BORDER_COLOR_TRANSPARENT	= 0x0000,
 	BORDER_COLOR_CURRENT_COLOR	= 0x0001,

@@ -158,7 +158,15 @@ const css_prop_handler property_handlers[LAST_PROP + 1 - FIRST_PROP] =
 	css__parse_width,
 	css__parse_word_spacing,
 	css__parse_writing_mode,
-	css__parse_z_index
+	css__parse_z_index,
+	/* LogitOS: appended, in lockstep with the tail of propstrings.h's
+	 * property enum and propstrings.c's stringmap[]. See the comment above
+	 * BORDER_RADIUS in propstrings.h for why this is an append. */
+	css__parse_border_radius,
+	css__parse_border_top_left_radius,
+	css__parse_border_top_right_radius,
+	css__parse_border_bottom_right_radius,
+	css__parse_border_bottom_left_radius
 };
 
 /** Mapping from property bytecode index to bytecode unit class mask. */
@@ -289,4 +297,8 @@ const uint32_t property_unit_mask[CSS_N_PROPERTIES] = {
 	[CSS_PROP_FLEX_WRAP]             = UNIT_MASK_FLEX_WRAP,
 	[CSS_PROP_JUSTIFY_CONTENT]       = UNIT_MASK_JUSTIFY_CONTENT,
 	[CSS_PROP_ORDER]                 = UNIT_MASK_ORDER,
+	[CSS_PROP_BORDER_TOP_LEFT_RADIUS]     = UNIT_MASK_BORDER_TOP_LEFT_RADIUS,
+	[CSS_PROP_BORDER_TOP_RIGHT_RADIUS]    = UNIT_MASK_BORDER_TOP_RIGHT_RADIUS,
+	[CSS_PROP_BORDER_BOTTOM_RIGHT_RADIUS] = UNIT_MASK_BORDER_BOTTOM_RIGHT_RADIUS,
+	[CSS_PROP_BORDER_BOTTOM_LEFT_RADIUS]  = UNIT_MASK_BORDER_BOTTOM_LEFT_RADIUS,
 };

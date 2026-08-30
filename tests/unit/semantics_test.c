@@ -110,7 +110,7 @@ int main(void)
      * installs off HTMLDivElement.prototype) has to have run before anything
      * below inspects a prototype. Every page gets this; a test that skipped it
      * would be measuring a state no page sees. */
-    js_page_eval("var $ = function (i) { return document.getElementById(i); };", 60, "<warmup>");
+    js_page_eval("var $ = function (i) { return document.getElementById(i); };", 60, "<warmup>", 0);
 
     printf("== group 1: LIVENESS -- what the negative control must break ==\n");
     in_live = 1;

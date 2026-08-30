@@ -334,6 +334,63 @@ static void test_stream_object(void)
     settle(80);
     ckjs("TT && TT.length > 0 && '\\u4f60\\u597d\\u4e16\\u754c'.indexOf(TT) === 0",
          "pipeThrough(new TextDecoderStream()) yields text chunks");
+
+    /* Symbol.toStringTag. Not decoration: every isXxx() built the way axios's
+     * kindOfTest is (Object.prototype.toString.call(v) === '[object Xxx]')
+     * gates real behaviour on this exact string -- see js_webapi.c's comment
+     * beside G.Headers's tag. Response/Request/Headers/ReadableStream are the
+     * four this file measured wrong in the guest before the fix; Blob is
+     * already right (js_blob_prelude.inc) and is the control that the check
+     * below is discriminating, not a coincidence. */
+    ckjs("Object.prototype.toString.call(new ReadableStream({})) === '[object ReadableStream]'",
+         "a ReadableStream identifies itself to Object.prototype.toString");
+    ckjs("Object.prototype.toString.call(B) === '[object Response]'",
+         "...and so does a Response");
+    ckjs("Object.prototype.toString.call(new Request('/x')) === '[object Request]'",
+         "...and a Request");
+    ckjs("Object.prototype.toString.call(new Headers()) === '[object Headers]'",
+         "...and Headers");
+    /* The exact predicate axios's fetch adapter runs at module load
+     * (kindOfTest('ReadableStream') as a closure over toString.call) --
+     * transcribed rather than duplicated by name, so this fails the same way
+     * the real bundle would if the tag regressed. */
+    run("function kindOfTest(t) { var s = '[object ' + t + ']';"
+        "  return function (x) { return Object.prototype.toString.call(x) === s; }; }"
+        "var isReadableStream = kindOfTest('ReadableStream');"
+        "var supportsResponseStream = isReadableStream(new Response('').body);");
+    ckjs("supportsResponseStream === true",
+         "axios's own supportsResponseStream predicate now reads true");
+}
+
+/* ---- 7. an async pull() that rejects must not hang the reader --------- */
+
+static void test_pull_reject(void)
+{
+    printf("\n-- a rejecting async pull() errors the stream, not silence --\n");
+    /* This is the hazard the brand unlocks: with the tag absent, axios's
+     * supportsResponseStream was false and this path was never taken. With it
+     * true, a re-wrapped script Response over a script ReadableStream whose
+     * pull() is async and rejects (axios's trackStream: `.catch(err => {
+     * onFinish(err); throw err })`, a throw inside a promise) must reject the
+     * pending read, not leave it pending forever. */
+    run("var PS = 'pending';"
+        "var rs = new ReadableStream({ pull: function (c) {"
+        "  return Promise.resolve().then(function () { throw new Error('boom'); });"
+        "} });"
+        "var rd = rs.getReader();"
+        "rd.read().then(function (r) { PS = 'resolved:' + JSON.stringify(r); },"
+        "  function (e) { PS = 'rejected:' + e.message; });");
+    settle(20);
+    ckjs("PS === 'rejected:boom'",
+         "an async pull() that rejects settles the pending read() with the error");
+
+    /* And the stream is left USABLE as an errored stream, not stuck straddling
+     * two states -- a second read must reject too, immediately, with no new
+     * pull() attempted. */
+    run("var PS2 = 'pending';"
+        "rd.read().then(function () { PS2 = 'resolved'; }, function (e) { PS2 = e.message; });");
+    settle(10);
+    ckjs("PS2 === 'boom'", "...and the stream stays errored for the next read()");
 }
 
 /* ---- 6. AbortController really cancels -------------------------------- */
@@ -411,6 +468,7 @@ int main(void)
     test_chunk_splits();
     test_decoder();
     test_stream_object();
+    test_pull_reject();
     test_abort();
 
     close_ctx();

@@ -187,6 +187,30 @@ void md_finish_track(mtrack *t)
     t->t.nsamples = t->n;
 }
 
+/* SCAN for the container, not just PROBE at byte 0. `media_sniff` above is a
+ * single-offset probe and stays one -- its other caller (preview.c) wants a
+ * cheap "is this loadable" yes/no on a buffer it already believes starts at
+ * the file's first byte, and the differential gate (`test-demux`) pins that
+ * exact contract at offset 0. But a buffer handed to `media_open` is not
+ * always the file: a captured/relayed stream can carry bytes in front of the
+ * real container -- a stray length prefix, framing left over from however it
+ * was captured -- that are not part of the file itself. That is a general
+ * property of anything that hands this code bytes it did not author, not a
+ * fact about one site, so a container not starting at offset 0 was refused
+ * outright with MEDIA_ERR_UNSUPPORTED (-2) -- indistinguishable from "this is
+ * not a container at all". Bounded so a buffer that truly is not a container
+ * fails in bounded time rather than being searched to EOF for an accidental
+ * box-shaped byte pattern. */
+#define MEDIA_SCAN_MAX 4096
+static long media_find_start(const uint8_t *d, long n)
+{
+    long lim = n < MEDIA_SCAN_MAX ? n : MEDIA_SCAN_MAX;
+    for (long off = 1; off + 8 <= lim; off++)
+        if (media_sniff(d + off, n - off) != MEDIA_CONT_UNKNOWN)
+            return off;
+    return -1;
+}
+
 /* --------------------------------------------------------- open/close --- */
 mdemux *media_open(const uint8_t *data, long len, int *err)
 {
@@ -195,7 +219,18 @@ mdemux *media_open(const uint8_t *data, long len, int *err)
     if (!data || len <= 0) { if (err) *err = MEDIA_ERR_CORRUPT; return 0; }
 
     media_container k = media_sniff(data, len);
-    if (k == MEDIA_CONT_UNKNOWN) { if (err) *err = MEDIA_ERR_UNSUPPORTED; return 0; }
+    if (k == MEDIA_CONT_UNKNOWN) {
+        /* Every box offset the parser will later trust (stco/co64, moof data
+         * offsets, ...) is relative to what THIS file calls its own start --
+         * so re-anchoring `data`/`len` at the byte where a real container was
+         * found, before a single box is parsed, keeps that arithmetic honest
+         * rather than teaching every offset consumer about a second origin. */
+        long start = media_find_start(data, len);
+        if (start < 0) { if (err) *err = MEDIA_ERR_UNSUPPORTED; return 0; }
+        data += start; len -= start;
+        k = media_sniff(data, len);
+        if (k == MEDIA_CONT_UNKNOWN) { if (err) *err = MEDIA_ERR_UNSUPPORTED; return 0; }
+    }
 
     mdemux *m = (mdemux *)calloc(1, sizeof *m);
     if (!m) { if (err) *err = MEDIA_ERR_OOM; return 0; }

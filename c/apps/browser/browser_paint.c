@@ -335,6 +335,118 @@ static void fill_round(int x, int y, int w, int h, int r, uint32_t color, int al
     fill_round_hole(x, y, w, h, r, color, alpha, 0, 0, 0, 0);
 }
 
+/* ---- PER-CORNER rounding -------------------------------------------------
+ *
+ * `border-radius: 12px 12px 0 0` -- a card rounded at the top only -- is one
+ * of the commonest shapes on the web, and until border-radius became a real
+ * cascaded property this painter could not express it: the whole property
+ * arrived as a single integer from css_extra.c's raw-text scan, which took the
+ * FIRST value of the list and gave it to all four corners. So the card above
+ * came out rounded at the bottom too, and the only alternative available to a
+ * single-radius painter -- take the smallest -- would have come out square.
+ *
+ * radii[] is TL TR BR BL, clockwise from the top-left, matching struct
+ * cstyle's radius[] and the order the CSS shorthand is written in.
+ *
+ * THE CLAMP IS THE CSS-DEFINED ONE (Backgrounds 3 section 5.5, "Overlapping
+ * Curves") AND IT IS NOT OPTIONAL: two radii on one edge may sum past the
+ * edge, and the correct answer is to scale ALL FOUR by the same factor f =
+ * min over the four edges of edge_length / (sum of the two radii on it),
+ * f <= 1. Clamping each corner independently to min(w,h)/2 -- which is what
+ * the single-radius path above does and is exact when all four are equal --
+ * silently changes the shape when they are not: `border-radius: 90px 10px 90px
+ * 10px` on a 100px box would keep both 90s and overlap. Scaling uniformly is
+ * also what makes `border-radius: 50%` on a non-square box draw the ellipse
+ * the author asked for rather than a stadium. */
+static void clamp_radii4(int w, int h, const int in[4], int out[4])
+{
+    /* Exact rational minimum, no floating point: f = num/den, num/den <= 1. */
+    long num = 1, den = 1;
+    static const int edge_pair[4][2] = { {0,1}, {1,2}, {2,3}, {3,0} };  /* T R B L */
+    int i;
+
+    for (i = 0; i < 4; i++) out[i] = in[i] < 0 ? 0 : in[i];
+
+    for (i = 0; i < 4; i++) {
+        long len = (i & 1) ? h : w;                     /* T,B use w; R,L use h */
+        long sum = (long)out[edge_pair[i][0]] + out[edge_pair[i][1]];
+        if (sum <= 0 || sum <= len) continue;
+        /* len/sum < num/den ? */
+        if (len * den < num * sum) { num = len; den = sum; }
+    }
+
+    if (num != den)
+        for (i = 0; i < 4; i++) out[i] = (int)((long)out[i] * num / den);
+}
+
+/* Fill a rectangle whose four corners have their OWN radii.
+ *
+ * Decomposed the way fill_round is -- rectangles for everything that is not a
+ * corner, plus one cached engine tile per corner -- so it is still O(sum r^2)
+ * and not O(w*h). Where it differs is that the top and bottom regions each
+ * split into TWO bands when their two radii differ: in the band both corner
+ * squares reach into, the covered span is inset on both sides; in the band
+ * only the larger one reaches, it is inset on one. */
+static void fill_round4(int x, int y, int w, int h, const int radii[4],
+                        uint32_t color, int alpha)
+{
+    int r[4], i;
+    int tmin, tmax, bmin, bmax, mid_y0, mid_y1;
+
+    if (w <= 0 || h <= 0 || alpha <= 0) return;
+
+    clamp_radii4(w, h, radii, r);
+
+    /* All four equal is the common case and the existing 9-slice is exactly
+     * right for it -- go through the path that is already gated and measured
+     * rather than reimplementing it here. */
+    if (r[0] == r[1] && r[1] == r[2] && r[2] == r[3]) {
+        fill_round(x, y, w, h, r[0], color, alpha);
+        return;
+    }
+
+    tmin = r[0] < r[1] ? r[0] : r[1];  tmax = r[0] > r[1] ? r[0] : r[1];
+    bmin = r[3] < r[2] ? r[3] : r[2];  bmax = r[3] > r[2] ? r[3] : r[2];
+
+    /* Top region. */
+    if (tmin > 0) fill(x + r[0], y, w - r[0] - r[1], tmin, color, alpha);
+    if (tmax > tmin) {
+        if (r[0] > r[1]) fill(x + r[0], y + tmin, w - r[0], tmax - tmin, color, alpha);
+        else             fill(x, y + tmin, w - r[1], tmax - tmin, color, alpha);
+    }
+
+    /* Middle: full width, between the tallest top corner and the tallest
+     * bottom one. The clamp above guarantees tmax + bmax <= h. */
+    mid_y0 = y + tmax; mid_y1 = y + h - bmax;
+    if (mid_y1 > mid_y0) fill(x, mid_y0, w, mid_y1 - mid_y0, color, alpha);
+
+    /* Bottom region, mirrored. */
+    if (bmax > bmin) {
+        if (r[3] > r[2]) fill(x + r[3], y + h - bmax, w - r[3], bmax - bmin, color, alpha);
+        else             fill(x, y + h - bmax, w - r[2], bmax - bmin, color, alpha);
+    }
+    if (bmin > 0) fill(x + r[3], y + h - bmin, w - r[3] - r[2], bmin, color, alpha);
+
+    /* The four arcs. Each corner asks the engine for its OWN tile; identical
+     * radii share a cache entry, so a page of uniformly rounded cards still
+     * rasterizes one tile for the whole document. */
+    for (i = 0; i < 4; i++) {
+        int cx = (i == 0 || i == 3) ? x : x + w - r[i];
+        int cy = (i == 0 || i == 1) ? y : y + h - r[i];
+        int fx = (i == 1 || i == 2), fy = (i == 2 || i == 3);
+        int cw, ch;
+        const unsigned char *cov;
+        if (r[i] <= 0) continue;
+        cw = devlen(cx, r[i]); ch = devlen(cy, r[i]);
+        cov = gfx_mask_corner(GFX_MASK_FILL, cw, ch, 0);
+        /* Same acceptable degradation as fill_round_hole: a radius past the
+         * tile cache's limit draws SQUARE rather than dropping the fill, and
+         * gfx_mask.c has already counted the refusal. */
+        if (!cov) { fill(cx, cy, r[i], r[i], color, alpha); continue; }
+        corner_blit(cx, cy, r[i], cov, cw, ch, color, alpha, fx, fy);
+    }
+}
+
 /* A rounded OUTLINE of thickness `t`, drawn as four straight bars plus four
  * ring corner tiles (GFX_MASK_RING, the tile whose inner arc shares the
  * outer's CENTRE -- see the trap recorded above gfx_corner_ring).
@@ -1059,7 +1171,18 @@ static int rclip_of(const struct item *e, int vx, int vy, int scroll, struct rcl
         if (s->overflow_x == OVF_VISIBLE && s->overflow_y == OVF_VISIBLE) continue;
         int bx, by, bw, bh;
         if (!layout_node_box(p, &bx, &by, &bw, &bh)) return 0;
-        int r = s->radius_pct ? (bw < bh ? bw : bh) * s->radius_pct / 100 : s->radius;
+        /* The rounded overflow clip takes ONE radius: rclip's tile cache and
+         * the corner[] flags below are both single-valued. The LARGEST
+         * corner is the safe reduction here for the opposite reason to the
+         * paint path's -- a clip that curves too little lets content show
+         * outside the scroller's own arc, which is ink where the author
+         * asked for none. Exact whenever the four corners agree. */
+        int r = 0;
+        for (int k = 0; k < 4; k++) {
+            int rk = s->radius_pct[k] ? (bw < bh ? bw : bh) * s->radius_pct[k] / 100
+                                      : s->radius[k];
+            if (rk > r) r = rk;
+        }
         int maxr = (bw < bh ? bw : bh) / 2;
         if (r > maxr) r = maxr;
         if (r <= 0) return 0;
@@ -1752,7 +1875,12 @@ static void paint_control(const struct item *e, int sx, int sy)
     for (int i = 0; i < 4; i++) if (e->border_w[i] > 0) authored = 1;
 
     uint32_t ink = fp.disabled ? CTL_INK_DIS : (authored ? e->color : CTL_INK);
-    int radius = e->radius ? e->radius : (FC_IS_BUTTON(k) || k == FC_SELECT ? 5 : 4);
+    /* A form control takes one radius: the widgets below are chrome, drawn
+     * with the toolkit's own rounded primitives. The page's largest corner
+     * wins, which is exact whenever the four agree. */
+    int radius = 0;
+    for (int i = 0; i < 4; i++) if (e->radius[i] > radius) radius = e->radius[i];
+    if (radius == 0) radius = (FC_IS_BUTTON(k) || k == FC_SELECT ? 5 : 4);
 
     if (FC_IS_TOGGLE(k)) {
         int d = fw < fh ? fw : fh;
@@ -2096,7 +2224,9 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
              * `zoom` idiom on the web writes. */
             int us = gfx_m_scale_of(&xm);
             if (us != GFX_MONE && us > 0) {
-                if (tmp.radius) tmp.radius = (int)((long long)tmp.radius * us >> 16);
+                for (int k = 0; k < 4; k++)
+                    if (tmp.radius[k])
+                        tmp.radius[k] = (int)((long long)tmp.radius[k] * us >> 16);
                 if (tmp.font_px > 0) {
                     tmp.font_px = (int)((long long)tmp.font_px * us >> 16);
                     if (tmp.font_px < 1) tmp.font_px = 1;
@@ -2157,8 +2287,34 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             int bga = e->has_bg ? e->bg_alpha * op / 255 : 0;
             int bmax = e->border_w[0];
             for (int k = 1; k < 4; k++) if (e->border_w[k] > bmax) bmax = e->border_w[k];
-            int r = e->radius_pct ? (e->w < e->h ? e->w : e->h) * e->radius_pct / 100 : e->radius;
-            int maxr = (e->w < e->h ? e->w : e->h) / 2; if (r > maxr) r = maxr;
+            /* border-radius, per corner: TL TR BR BL. A percentage is of
+             * min(w,h) -- CSS resolves the horizontal radius against the width
+             * and the vertical against the height, but this painter draws a
+             * CIRCULAR arc, and min(w,h) is the reading that cannot make a
+             * corner bulge past the shorter side. */
+            int rr[4], maxr = (e->w < e->h ? e->w : e->h) / 2;
+            for (int k = 0; k < 4; k++) {
+                rr[k] = e->radius_pct[k]
+                      ? (e->w < e->h ? e->w : e->h) * e->radius_pct[k] / 100
+                      : e->radius[k];
+                if (rr[k] > maxr) rr[k] = maxr;
+                if (rr[k] < 0) rr[k] = 0;
+            }
+            /* THE SINGLE-RADIUS PATHS AND WHAT THEY GET. box-shadow, the
+             * gradient fill, the rounded border ring and the transformed path
+             * each still take ONE radius; making them per-corner is a
+             * different piece of work in four more primitives and is not in
+             * this change. They are given the LARGEST corner, and that
+             * direction is chosen rather than defaulted: a shadow or a ring
+             * drawn with too SMALL a radius pokes its square corner out from
+             * behind a rounded box, which is visible ink in the wrong place,
+             * while too large only withholds ink at a corner the box has
+             * already rounded away. `r` is exact whenever the four corners
+             * agree, which the corpus says is the overwhelming majority.
+             * The BACKGROUND -- the one thing every rounded box paints --
+             * goes through fill_round4() and is exact for all four. */
+            int r = rr[0];
+            for (int k = 1; k < 4; k++) if (rr[k] > r) r = rr[k];
             int rect_done = 0;
             if (xkind == 2) {
                 /* Rotated or skewed: the box's own rounded rect as ONE PATH
@@ -2181,9 +2337,15 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
                  * with a gradient or a shadow, and it is the rotate/skew
                  * restriction that takes it to two.) A refusal, not an
                  * approximation. */
-                int r0 = e0->radius_pct
-                       ? (e0->w < e0->h ? e0->w : e0->h) * e0->radius_pct / 100
-                       : e0->radius;
+                /* One radius for the transformed path -- see the
+                 * single-radius note where rr[] is built. */
+                int r0 = 0;
+                for (int k = 0; k < 4; k++) {
+                    int rk = e0->radius_pct[k]
+                           ? (e0->w < e0->h ? e0->w : e0->h) * e0->radius_pct[k] / 100
+                           : e0->radius[k];
+                    if (rk > r0) r0 = rk;
+                }
                 int m0 = (e0->w < e0->h ? e0->w : e0->h) / 2;
                 if (r0 > m0) r0 = m0;
                 int ring = bmax > 0 && e0->border_style[0] != BS_NONE &&
@@ -2262,11 +2424,13 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
                     if (ring) stroke_round(sx, sy, e->w, e->h, r, bmax,
                                            e->border_color[0], op);
                 } else if (ring) {
-                    fill_round(sx, sy, e->w, e->h, r, e->border_color[0], op);
-                    fill_round(sx + bmax, sy + bmax, e->w - 2*bmax, e->h - 2*bmax,
-                               r > bmax ? r - bmax : 0, e->bg, bga);
+                    int ri[4];
+                    for (int k = 0; k < 4; k++) ri[k] = rr[k] > bmax ? rr[k] - bmax : 0;
+                    fill_round4(sx, sy, e->w, e->h, rr, e->border_color[0], op);
+                    fill_round4(sx + bmax, sy + bmax, e->w - 2*bmax, e->h - 2*bmax,
+                                ri, e->bg, bga);
                 } else {
-                    fill_round(sx, sy, e->w, e->h, r, e->bg, bga);
+                    fill_round4(sx, sy, e->w, e->h, rr, e->bg, bga);
                 }
             } else {
                 if (e->has_bg && !grad) {

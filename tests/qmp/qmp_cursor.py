@@ -44,11 +44,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import (CURSOR_RGB, PPM, Session, configure, dock_icon,   # noqa: E402
-                    parse_pointer, pt)
+                    dock_icon_of, parse_pointer, pt)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-WIDGETS_SLOT = 4          # scan_apps order: clock textedit monitor terminal widgets ...
+# The dock's layout is read from the guest (ui.dock(), below); WIDGETS_SLOT = 4
+# used to live here and was correct only while scan_apps packed exactly five
+# apps ahead of widgets.aex.
 
 
 def perf_samples(text):
@@ -223,16 +225,21 @@ def main(argv):
         ui = Session(sock, serial=serial)
 
         # An app window, so the sweep in part 3 crosses real content rather than
-        # a flat wallpaper -- a stale region over a gradient can hide.
-        ui.click_at(*dock_icon(WIDGETS_SLOT))
+        # a flat wallpaper -- a stale region over a gradient can hide. The tile
+        # comes from the guest's own dock line, and the click is verified: a
+        # driver that measures the cursor over the WRONG window would still
+        # produce numbers.
+        ui.launch_app("widgets")
+        dock = ui.dock()
+        n_apps = len(dock)
         time.sleep(8 * slow)
 
         # ---- 1/2. Cost of motion ------------------------------------------
         # Wallpaper row: below the menu bar, above the dock, to the LEFT of
         # where the WM cascades its windows. Nothing there can repaint.
         if control:
-            row = dock_icon(0)[1]                     # straight through the dock
-            lo, hi = dock_icon(0)[0], dock_icon(6)[0]
+            row = dock_icon(0, n_apps)[1]             # straight through the dock
+            lo, hi = dock_icon(0, n_apps)[0], dock_icon(n_apps - 1, n_apps)[0]
             what = "sweep over the DOCK (hover magnifies -- must composite)"
         else:
             row = yres - pt(220)
@@ -273,9 +280,12 @@ def main(argv):
         ui.screendump(a_p, settle=1.0 * slow)
 
         # Busy area: across the window, through the dock, along the menu bar.
+        # The two dock stops are named apps' tiles read off the guest's dock,
+        # not indices -- a coordinate that silently lands between icons sweeps
+        # over wallpaper and the "no stale regions" claim measures nothing.
         for (tx, ty) in [(xres // 2, yres // 2), (xres // 2, yres - pt(60)),
-                         (dock_icon(2)[0], dock_icon(2)[1]),
-                         (dock_icon(5)[0], dock_icon(5)[1]),
+                         dock_icon_of("monitor", dock),
+                         dock_icon_of("files", dock),
                          (xres // 2, pt(12)), (xres - pt(60), pt(12)),
                          (xres // 2, yres // 2)]:
             ui.goto(tx, ty, settle=0.15)

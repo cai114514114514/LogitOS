@@ -66,12 +66,12 @@ echo "$SPECS" | while read -r size frames fps; do
     if [ ! -f "$OUT/$name264.h264" ]; then
         ffmpeg -nostdin -v error -f lavfi -i "mandelbrot=rate=$fps:size=$size" -t "$secs" \
             $H264ENC -f h264 "$OUT/$name264.h264" -y </dev/null
-        echo "  $name264: $(stat -c%s "$OUT/$name264.h264") bytes, $frames frames requested"
+        echo "  $name264: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name264.h264") bytes, $frames frames requested"
     fi
     if [ ! -f "$OUT/$name265.h265" ]; then
         ffmpeg -nostdin -v error -f lavfi -i "mandelbrot=rate=$fps:size=$size" -t "$secs" \
             $H265ENC -f hevc "$OUT/$name265.h265" -y </dev/null
-        echo "  $name265: $(stat -c%s "$OUT/$name265.h265") bytes, $frames frames requested"
+        echo "  $name265: $(bash "$(dirname "$0")/filesize.sh" "$OUT/$name265.h265") bytes, $frames frames requested"
     fi
 done
 
