@@ -512,7 +512,10 @@ static int insert_markup(JSContext *ctx, struct node *parent, struct node *ref,
     if (frag) {
         for (struct node *c = frag->first_child; c; c = c->next) {
             struct node *cp = dom_import_node(parent->doc, c);
-            if (cp) dom_insert_before(parent, cp, ref);
+            /* already-started, same as el_set_html: a script built by the
+             * fragment parser never runs, and the stamp must land on the
+             * IMPORTED copy because clone_elem_into does not copy flags. */
+            if (cp) { mark_fragment_scripts_started(cp); dom_insert_before(parent, cp, ref); }
         }
         mark_children(parent);
     }
@@ -1582,6 +1585,33 @@ static void iface_install(JSContext *ctx, JSValueConst g, JSValueConst token_pro
                                document_extra_funcs, countof(document_extra_funcs));
     JS_SetPropertyFunctionList(ctx, g_iproto[IF_PROCESSINGINSTRUCTION],
                                pi_proto_funcs, countof(pi_proto_funcs));
+
+    /* HTMLScriptElement.text is the element's CHILD TEXT CONTENT -- the same
+     * property textContent is, not an attribute reflection, which is why it
+     * is here and not in js_reflect.inc's table (that file reflects content
+     * attributes; script's `text` IDL attribute deliberately is not one).
+     *
+     * Delegates to the SAME el_get_text/el_set_text as textContent because
+     * they are the same operation -- a second implementation of child-text
+     * here is the one-jar-two-doors shape. Why it matters, MEASURED guest-side
+     * 2026-08-30 (tests/fixtures/crashfix/inserted-datablock.html, pre-fix):
+     * `var s = document.createElement('script'); s.text = code; append(s)` is
+     * THE idiom for injecting a data block or inline code, and with `text`
+     * absent the assignment landed as a JS expando -- the element reached the
+     * document with no text children, so run_pending_inserted_scripts found
+     * total==0 and silently ran nothing. Every script injected that way was
+     * dead on this engine, and data blocks injected that way were dead by
+     * accident rather than by the type rule that should be refusing them. */
+    if (JS_IsObject(g_iproto[IF_HTMLSCRIPT])) {
+        JSAtom a = JS_NewAtom(ctx, "text");
+        JS_DefinePropertyGetSet(ctx, g_iproto[IF_HTMLSCRIPT], a,
+            JS_NewCFunction2(ctx, (JSCFunction *)el_get_text, "text", 0,
+                             JS_CFUNC_getter, 0),
+            JS_NewCFunction2(ctx, (JSCFunction *)el_set_text, "text", 1,
+                             JS_CFUNC_setter, 0),
+            JS_PROP_CONFIGURABLE);
+        JS_FreeAtom(ctx, a);
+    }
 
     /* The class prototype is the fallback wrap() uses if it is ever handed a
      * node kind the table does not cover. Node.prototype is the safe floor. */

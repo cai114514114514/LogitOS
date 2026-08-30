@@ -1,0 +1,23 @@
+# CALLER-BASELINE -- the vendored QuickJS's ACTUAL Function.prototype.caller
+# behaviour, recorded 2026-08-30 by tests/fixtures/crashfix/caller_probe.c
+# (gated by make test-crashfix-caller).
+#
+# THIS FILE RECORDS THE GAP, NOT THE GOAL. Every browser answers
+#   called_by_fn = "function"   (a non-strict fn's .caller is its caller)
+#   walk         = "null-at-top" (the frame chain ends in null)
+# and the kimi specimen (trustdecision fm.js, "caller of undefined") walks
+# .caller expecting exactly that: it calls fn.caller.caller... and dies with
+# "cannot read property 'caller' of undefined" on the FIRST hop, because this
+# engine answers undefined where a browser answers the function object. See
+# third_party/quickjs/quickjs.c:14993 js_function_proto_caller, which returns
+# JS_UNDEFINED unconditionally for non-strict functions.
+#
+# The fix belongs to third_party/quickjs (not the crashfix agent's tree); the
+# patch is written out in the crashfix wave-1 report. When it lands, THIS FILE
+# GOES RED ON PURPOSE: update the line below to the browser behaviour in the
+# same commit, and keep this paragraph. The ratchet also guards the other
+# direction -- a quickjs upgrade that silently changes .caller semantics
+# reddens this gate before any site specimen has to.
+#
+# format: exactly one non-# line, the JSON the probe prints, got==want.
+{"called_by_fn":"undefined","walk":"undefined-at-top","strict":"THREW"}

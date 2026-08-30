@@ -72,6 +72,15 @@ extern int layout_count(void) LOGIT_WEAK;
 extern const struct item *layout_items(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(layout_count);
 LOGIT_WEAK_STUB(layout_items);
+/* js_module.c's script-type classifier, weak for the same reason as layout_*:
+ * the host DOM suites link this file without js_module.o. Used by
+ * offer_scripts to refuse a non-JavaScript-type <script> on the insertion
+ * path exactly as the parse path (collect_scripts) already does -- the
+ * signatures are js_module.h's, which stays the one authority. */
+extern int js_module_is_module_type(const char *type) LOGIT_WEAK;
+extern int js_module_is_classic_type(const char *type) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_module_is_module_type);
+LOGIT_WEAK_STUB(js_module_is_classic_type);
 static int have_layout(void) { return LOGIT_HAVE(layout_count) && LOGIT_HAVE(layout_items); }
 
 static struct node *g_root;
@@ -570,6 +579,33 @@ static JSValue el_get_html(JSContext *ctx, JSValueConst t)
     return v;
 }
 
+/* FRAGMENT-PARSED <script>s ARE "already started", and that flag is what this
+ * stamps. The HTML fragment parsing algorithm sets already-started on every
+ * script element it builds, and such a script NEVER executes -- not when the
+ * fragment is inserted (both our fragment paths, el_set_html here and
+ * insert_markup in js_dom_iface.inc, splice nodes with dom_append_child /
+ * dom_insert_before and deliberately bypass insert_run's script sink, which
+ * was correct by luck), and not when a WRAPPER holding it is appended later.
+ * The second half is what was missing: offer_scripts() walks the whole
+ * inserted subtree, so a <script> that arrived via innerHTML executed the
+ * moment its containing div was appended. MEASURED, guest, 2026-08-30, on the
+ * pre-fix build with tests/fixtures/crashfix/inserted-datablock.html: an
+ * innerHTML-injected script's marker printed after document.body.appendChild
+ * (div). Chrome executes it never -- and this is how stripe.com's injected
+ * ld+json data blocks reached JS_Eval as "SyntaxError: expecting ';'" under
+ * the page's own URL.
+ *
+ * Stamped on the IMPORTED copy, not the fragment: dom_import_node's
+ * clone_elem_into does not copy node->flags, so a stamp placed before the
+ * copy would silently vanish with the fragment's document. */
+static void mark_fragment_scripts_started(struct node *n)
+{
+    if (!n) return;
+    if (n->type == N_ELEM && ieq(n->tag, "script")) dom_script_mark_done(n);
+    for (struct node *c = n->first_child; c; c = c->next)
+        mark_fragment_scripts_started(c);
+}
+
 static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
@@ -588,7 +624,7 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
         dom_destroy_children(n);
         for (struct node *c = frag->first_child; c; c = c->next) {
             struct node *cp = dom_import_node(n->doc, c);
-            if (cp) dom_append_child(n, cp);
+            if (cp) { mark_fragment_scripts_started(cp); dom_append_child(n, cp); }
         }
         mark_children(n);
     }
@@ -859,13 +895,68 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
  * order. A node the parser already ran must not run again: parser-built
  * scripts carry ->flags SCRIPT_DONE (set by run_collected_scripts via
  * dom_script_mark_done); only a node that entered the tree AFTER parse, by
- * DOM insertion, is offered. Recursion depth is the inserted fragment's, not
- * the document's. */
+ * DOM insertion, is offered. Recursion depth is the inserted subtree's, not
+ * the document's.
+ *
+ * THE TYPE WHITELIST IS APPLIED HERE TOO, AND FOR TWO YEARS OF INSERTED-SCRIPT
+ * HISTORY IT WAS NOT. collect_scripts (browser.c) has always refused a
+ * non-JavaScript <script type> at parse time -- "prepare a script" makes such
+ * an element a DATA BLOCK, and Chrome executes it never. This path offered
+ * every <script> node to the sink unread, so the identical data block a page
+ * appends AT RUN TIME went to JS_Eval, and its parse failure was printed as
+ * the page's own exception under the DOCUMENT's URL at line 1 (the name a
+ * dynamically inserted inline script is given; see run_pending_inserted_scripts).
+ *
+ * MEASURED, guest, 2026-08-30 (tests/qmp/qmp_crashfix_page.py, pre-fix build):
+ *   stripe.com    x2 "SyntaxError: expecting ';'" -- JSON. `{"@context":...}`
+ *                 at global scope parses as a block, a string-labeled
+ *                 statement, then ':' where ';' or '}' belongs. Confirmed by
+ *                 compiling exactly that text with the vendored QuickJS
+ *                 host-side: byte-identical error, line 1.
+ *   douyin.com    "SyntaxError: unexpected token in expression: '%'" -- a
+ *                 %-placeholder template data block. Same confirmation.
+ * Both throw in zero browsers. The alternative -- checking the type in
+ * browser.c's drain loop -- was rejected because the decision "is this node a
+ * script at all" belongs where the node is classified as runnable, which is
+ * here; two half-gates in two files is how the parse path and the insert path
+ * came to disagree in the first place.
+ *
+ * dom_script_mark_done stamps the refused node: "prepare a script" happens
+ * ONCE, so a later re-insertion of the same element cannot re-decide, exactly
+ * as for a script that ran. The printf mirrors the parse path's own line
+ * ("[browser] skipping <script type=...>") so one grep finds both refusals.
+ *
+ * WEAK, like layout_* above: js_module.c owns the MIME classification and is
+ * not linked into the host DOM suites -- which register no script sink, so
+ * the fallback (offer, unclassified) is unreachable there anyway. */
 static void offer_scripts(struct node *n)
 {
     if (!n) return;
-    if (n->type == N_ELEM && ieq(n->tag, "script") && !dom_script_is_done(n))
-        g_script_sink(n);
+    if (n->type == N_ELEM && ieq(n->tag, "script") && !dom_script_is_done(n)) {
+        const char *type = dom_attr(n, "type");
+        int executable = 1;
+#ifdef CRASHFIX_DATABLOCK_NOTOLD
+        /* THE NEGATIVE CONTROL, and it is the defect itself on a switch: no
+         * type ever disqualifies a script, which is the state this engine
+         * shipped in. Compiled with -DCRASHFIX_DATABLOCK_NOTOLD by
+         * tests/crashfix.mk's control build; qmp_crashfix_page.py
+         * --expect-broken then requires the fixture page's data blocks to
+         * throw the two recorded error shapes -- a control that cannot be
+         * watched failing is worse than none (rule 5). */
+        (void)type;
+        executable = 1;
+#else
+        if (LOGIT_HAVE(js_module_is_module_type) && LOGIT_HAVE(js_module_is_classic_type))
+            executable = js_module_is_module_type(type) || js_module_is_classic_type(type);
+#endif
+        if (!executable) {
+            printf("[browser] skipping inserted <script type=\"%s\"> (not executable)\n",
+                   type ? type : "");
+            dom_script_mark_done(n);
+        } else {
+            g_script_sink(n);
+        }
+    }
     for (struct node *c = n->first_child; c; c = c->next) offer_scripts(c);
 }
 

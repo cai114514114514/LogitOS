@@ -1,0 +1,97 @@
+<!doctype html>
+<html><head><title>crashfix inserted datablock</title></head>
+<body style="background:#ffffff">
+<div style="font-size:28px">CRASHFIX-DATABLOCK-FIXTURE</div>
+<script>
+/* THE GENERAL DEFECT THE SPECIMENS EXPOSED, REDUCED TO A PAGE.
+ *
+ * stripe.com (scoreboard apis-negctl-stripe / collapse-nocs, 2026-08-30)
+ * reported "SyntaxError: expecting ';' ... at https://stripe.com/:1" twice,
+ * and www.douyin.com "SyntaxError: unexpected token in expression: '%' ...
+ * at https://www.douyin.com/:1". The ":1" under the DOCUMENT's own URL is the
+ * attribution of a DYNAMICALLY INSERTED INLINE script -- a fetched script
+ * carries its own URL, a parsed inline one carries #inline-script-N. Both
+ * pages append <script> elements whose type is NOT a JavaScript MIME type
+ * (schema.org ld+json, %-template data) and whose text is DATA; every real
+ * browser refuses to execute those ("prepare a script" step: a non-JS type
+ * makes the element a data block). This engine ran them through JS_Eval and
+ * printed the JSON/template's parse error as the page's own.
+ *
+ * Each block below inserts a script the way real loaders do -- createElement,
+ * properties, appendChild -- and logs a marker ONLY if it executed. The gate
+ * (tests/crashfix.mk, run guest-side by tests/qmp/qmp_crashfix_page.py)
+ * requires:
+ *   - CRASHFIX-DATA-RAN, CRASHFIX-TMPL-RAN, CRASHFIX-SETATTR-RAN: ABSENT
+ *   - CRASHFIX-EXE-RAN, CRASHFIX-MODULE-RAN: PRESENT (the gate must not
+ *     over-block: an executable inserted script still has to run)
+ *   - CRASHFIX-INNERHTML-RAN: ABSENT (innerHTML scripts never execute; this
+ *     was already correct -- see el_set_html, which bypasses insert_run --
+ *     and is asserted here so it STAYS correct)
+ *   - no "[browser] JS exception:" line from this page
+ */
+(function () {
+  function insert(props, marker, viaSetAttr) {
+    var s = document.createElement('script');
+    if (viaSetAttr) {
+      if (props.type) s.setAttribute('type', props.type);
+    } else {
+      /* the property form: exercises the REFLECTED attribute, which is how
+       * the real loaders write it (js_reflect.inc maps script.type -> the
+       * content attribute; the insertion gate must read it back through
+       * dom_attr) */
+      if (props.type) s.type = props.type;
+    }
+    s.text = "console.log('" + marker + "');";
+    document.head.appendChild(s);
+  }
+
+  /* 1. the stripe shape: ld+json data block, property-set type */
+  var ld = document.createElement('script');
+  ld.type = 'application/ld+json';
+  ld.text = '{"@context":"https://schema.org","@type":"WebSite","name":"x"}';
+  document.head.appendChild(ld);           /* must NOT run */
+
+  /* 2. the douyin shape: a %-placeholder template data block */
+  var tm = document.createElement('script');
+  tm.type = 'text/x-template';
+  tm.text = '%HEADER%<div class="%%row%%">{{tpl.var}}</div>%FOOTER%';
+  document.head.appendChild(tm);           /* must NOT run */
+
+  /* 3. the setAttribute authoring form of the same data block */
+  var sa = document.createElement('script');
+  sa.setAttribute('type', 'application/json');
+  sa.text = '{"k":1}';
+  document.head.appendChild(sa);           /* must NOT run */
+
+  /* 4. CONTROL, executable: same insertion path, no type at all. Note every
+   * marker block feeds its code through `s.text = ...` -- the HTMLScriptElement
+   * child-text property, which was ABSENT until js_dom_iface.inc added it: the
+   * assignment used to land as a JS expando, the element reached the document
+   * with no text children, and every script injected this way silently never
+   * ran. So this block is also the .text control. */
+  insert({}, 'CRASHFIX-EXE-RAN');
+
+  /* 5. CONTROL, executable: an explicit JavaScript MIME type */
+  var jt = document.createElement('script');
+  jt.type = 'text/javascript';
+  jt.text = "console.log('CRASHFIX-JSTYPE-RAN');";
+  document.head.appendChild(jt);
+
+  /* 6. CONTROL, module: type="module" is executable (the module goal) */
+  var md = document.createElement('script');
+  md.type = 'module';
+  md.text = "console.log('CRASHFIX-MODULE-RAN');";
+  document.head.appendChild(md);
+
+  /* 7. innerHTML: a browser sets the fragment-parsed script's "already
+   * started" flag and never runs it. Ours bypasses the script sink on this
+   * path (el_set_html uses dom_append_child), so the marker must be absent
+   * here too -- for a different reason, asserted so it stays true. */
+  var host = document.createElement('div');
+  host.innerHTML = "<script>console.log('CRASHFIX-INNERHTML-RAN');<\/script>";
+  document.body.appendChild(host);
+
+  console.log('CRASHFIX-PAGE-LOADED');
+})();
+</script>
+</body></html>
