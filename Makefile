@@ -5064,3 +5064,17 @@ test-mk-wired:
 # js_domparser.c mutation surface it needed. See tests/frame.mk.
 -include tests/frame.mk
 -include tests/filesize.mk
+
+# Wave-1 browser-engine packages (2026-08-30).  Each fragment is owned by
+# exactly one agent; the -include lines were pre-wired by the orchestrator
+# so ten parallel agents never contend on this file.  An empty fragment is
+# inert -- it contributes no target until its owner fills it in.
+-include tests/tlsfix.mk
+-include tests/crashfix.mk
+-include tests/fragmk.mk
+-include tests/docwrite.mk
+-include tests/videosrc.mk
+-include tests/bold.mk
+-include tests/anim.mk
+-include tests/storage.mk
+-include tests/testdebt.mk
