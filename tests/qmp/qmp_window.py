@@ -274,12 +274,37 @@ def dock_apps(serial):
     hard-coded coordinate lands on the wallpaper -- and then it went stale the
     day an eleventh app was packed, which is exactly the failure the comment
     describes. Asking the guest is the only version of this that stays true."""
+    # [CORRECTED 2026-08-30] This used to run a local DOCK_RE that captured
+    # the token list raw and handed slot_of() entries like "1=textedit.aex,
+    # shown" -- startswith("textedit") was never true, and every run died on
+    # "textedit/terminal not on the dock" with both apps visibly on the dock
+    # (measured; the stranded control stayed green only because nobody ran
+    # it -- the rot this package exists to remove). The normalizer below is
+    # deliberately LOCAL rather than qmp_ui.parse_dock, which wm.c:5447 names
+    # as the format's parser: that function is part of the ssh arc's still-
+    # UNCOMMITTED qmp_ui.py, and importing across an uncommitted boundary is
+    # how a commit stops building from a clean clone of itself. When the ssh
+    # arc lands parse_dock, replace the body with a call to it -- one door.
+    names = None
     with open(serial, errors="replace") as fh:
         for line in fh:
             m = DOCK_RE.search(line)
-            if m:
-                return int(m.group(1)), m.group(2).split()
-    return None, []
+            if not m:
+                continue
+            toks = []
+            for tok in m.group(2).split():
+                slot, eq, rest = tok.partition("=")
+                name, comma, vis = rest.partition(",")
+                # slot must be the index, vis exactly shown|hidden (wm.c:5465
+                # spells both; anything else means the format moved again and
+                # the honest answer is a parse failure, not a wrong dock).
+                if eq and comma and slot.isdigit() and vis in ("shown", "hidden") and name:
+                    toks.append(name)
+            if len(toks) == int(m.group(1)):
+                names = toks                 # the LAST well-formed line wins
+    if names is None:
+        return None, []
+    return len(names), names
 
 
 def slot_of(files, name):

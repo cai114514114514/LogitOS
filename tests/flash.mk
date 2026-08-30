@@ -10,7 +10,13 @@
 # correct repaint from a torn one, because both are one frame. The driver
 # photographs the screen ~150 times a second through the gesture and asks how
 # much colour is left in the window.
-test-flash: $(ISO) $(DISK)
+# the DEVICE control: the same driver, --negative, against the same image.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-flash: test-flash-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_flash.py
 
 # THE NEGATIVE CONTROL, and it is meant to fail. Builds the same kernel with

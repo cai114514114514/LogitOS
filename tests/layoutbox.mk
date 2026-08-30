@@ -34,7 +34,13 @@ $(LBOX_DIR)/layout_box_test: $(LBOX_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $@ $(LBOX_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 
-test-layout-box: $(LBOX_DIR)/layout_box_test
+# each -D in LBOX_NEGS breaks a layout-box behaviour this suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-layout-box: test-layout-box-negctl $(LBOX_DIR)/layout_box_test
 	@$(LBOX_DIR)/layout_box_test
 
 # Each sabotage is a real previous behaviour or a plausible wrong one, never a

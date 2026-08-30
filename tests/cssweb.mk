@@ -78,7 +78,17 @@ $(NEGDIR)/css_audit_before: tests/unit/css_audit.c c/apps/browser/css_vars.c \
 # tests/unit/css_modern_test.c for the measured reason each one is here.
 CSSMODERN_SRC := tests/unit/css_modern_test.c tests/unit/css_hostmm.c c/apps/browser/css_engine.c \
                  c/apps/browser/css_vars.c c/apps/browser/css_extra.c
-test-css-modern: $(BUILD)/libcss_host.a
+# test-css-web-negctl runs BOTH halves (VVAL_MAX truncation restored; the
+# libcss group-rule branch disabled); anchoring it on this gate covers the
+# css_modern half AND runs the css_vars half beside it. The css_vars half's
+# own positive (css_vars_test) is defined in the root Makefile, which this
+# package does not edit -- the wiring line for it is in testdebt's report.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-css-modern: test-css-web-negctl $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/css_modern_test \
 	    $(CSSMODERN_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/css_modern_test
@@ -632,7 +642,11 @@ ci-host: test-css-border-radius test-css-proptables check-cssgen \
 # against `struct cstyle`; this one asserts the SCREEN, because linking a
 # translation unit is not running it -- the scar this line carries is a WPT
 # runner that read 531/11152 with and without an entire grid implementation.
-ci-boot: test-css-selstatic-os
+#
+# test-css-modern-os joins it for the same reason with no host twin to lean
+# on: @layer and 208-byte custom properties are only ever asserted on the
+# screendump, and it sat unwired (reachable by nobody) since it landed.
+ci-boot: test-css-selstatic-os test-css-modern-os
 
 # --- css-selector-census: WHICH selectors lose, ranked by what they carry ---
 # A MEASUREMENT, not a gate -- `test-` is deliberately not the prefix, for the
@@ -658,3 +672,8 @@ css-selector-census: $(BUILD)/libcss_host.a
 	@$(BUILD)/css_selcensus --top=$(CENSUS_TOP) $(AUDIT_DIRS)
 
 .PHONY: css-selector-census
+
+# test-css-selector-inert joins the ci-host line above it: same fragment,
+# same shape (its own two negctls already sit on its prerequisite line), and
+# unwired since it landed -- reachable by nobody, reading like coverage.
+ci-host: test-css-selector-inert

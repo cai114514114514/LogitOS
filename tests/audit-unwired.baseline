@@ -64,11 +64,9 @@ test-crypto
 test-crypto-bench-gate
 test-css-anim
 test-css-asan
-test-css-fidelity
 test-css-interp
 test-css-interp-asan
 test-css-modern
-test-css-modern-os
 test-cssd-canon
 test-cssom
 test-cssom-abi
@@ -91,7 +89,6 @@ test-devmodel-a
 test-devmodel-b
 test-dhcp-host
 test-dhcp-os
-test-dom-bindings
 test-dom-bindings-asan
 test-dom-device
 test-dom-iface
@@ -118,7 +115,6 @@ test-font
 test-font-color
 test-font-fuzz
 test-font-otl
-test-forms
 test-forms-asan
 test-forms-ce-device
 test-forms-device
@@ -198,7 +194,6 @@ test-link
 test-link-host
 test-link-nics
 test-link-os
-test-live-page
 test-loader
 test-loader-asan
 test-login
@@ -299,7 +294,6 @@ test-sweep
 test-sweep-confirm
 test-sweep-host
 test-sweep-resume
-test-tabs
 test-tabs-asan
 test-tcp-host
 test-tcp-server
@@ -342,7 +336,6 @@ test-wasm-clang
 test-wav
 test-webapi
 test-webapi-asan
-test-webapi-page
 test-webp-vp8
 test-window
 test-window-apps

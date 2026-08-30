@@ -41,7 +41,13 @@ $(FLEX_DIR)/flex_test: $(FLEX_TEST) $(FLEX_SRC) c/apps/browser/layout_flex.h \
 	@mkdir -p $(FLEX_DIR)
 	@$(CC) $(FLEX_CF) $(FLEX_INC) -o $@ $(FLEX_TEST) $(FLEX_SRC)
 
-test-flex: $(FLEX_DIR)/flex_test
+# each -D in FLEX_NEGS breaks one flex behaviour the suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-flex: test-flex-negctl $(FLEX_DIR)/flex_test
 	@$(FLEX_DIR)/flex_test
 
 # --- the negative controls ---------------------------------------------------

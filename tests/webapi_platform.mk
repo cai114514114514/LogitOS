@@ -173,11 +173,26 @@ PROBE_SRC += c/apps/browser/css_interp.c
 # js_canvas.c's cost, paid on purpose. It reaches gfx_fill/gfx_paint_* and
 # img_css_color(), so the engine and svg.c come with it -- and NOT img.c,
 # which would then want gif_register/jpeg_register/exif_apply for a probe that
-# decodes no image. Leaving js_canvas.c out would have been cheaper and would
+# decodes no image. [CORRECTED 2026-08-30, and the old claim kept beside the
+# correction: js_canvas.c's cv_drawImage now references _img_decode directly,
+# so the probe DOES need the decoders -- the list below stopped being
+# complete the day drawImage landed, found by the frameworks agent. The
+# hand-copy is replaced by $(IMG_HOST_SRC), the Makefile's one authoritative
+# host image list ("there is no narrower place to add it that would not
+# silently miss one" -- its own comment), minus rust_host_shim.c which the
+# ws.c rider below already adds; listing a .c twice in one link is duplicate
+# symbols.] Leaving js_canvas.c out would have been cheaper and would
 # have kept `getContext` at the top of this probe's own ranking forever: it
 # was 33 occurrences and the #1 finding, the context was written, and the
 # instrument that ordered the work could not see its own result land.
-PROBE_SRC += c/lib/image/svg.c $(GFX_SRC)
+# $(IMG_HOST_SRC) itself CANNOT be used here: it is defined in the root
+# Makefile at :3796, AFTER the -include of this fragment (~:3400), and
+# PROBE_SRC is := so the reference expanded EMPTY -- measured: the link line
+# carried no image .c at all and failed on _img_decode regardless. The
+# wildcard is the door instead: c/lib/image/ held exactly the five decoders
+# (checked 2026-08-30), and a sixth that lands there joins every probe link
+# without an edit -- the property the IMG_HOST_SRC comment asks for.
+PROBE_SRC += $(wildcard c/lib/image/*.c) $(GFX_SRC)
 # c/net/http/ws.c: js_websocket.c (in BROWSER_JS_SRC, landed 2026-08-28 21:18,
 # after this list was last touched 14:39) calls ws_accept_matches/
 # ws_frame_write/ws_make_key/ws_parser_*/ws_utf8_valid, all defined only in
@@ -274,7 +289,12 @@ PLATFORM_TEST_SRC += c/apps/browser/css_interp.c
 PLATFORM_TEST_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c
 PLATFORM_TEST_SRC += tests/unit/rust_host_shim.c
 PLATFORM_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
-test-platform: webapi-link-check test-platform-timing-negctl test-platform-observer-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+# test-platform-livecollection-negctl joins its two siblings on this line:
+# same rule (NOT_CI drops test-*-negctl from CI; a prerequisite line is the
+# only thing that makes the positive actually run it), same suite, and it
+# had drifted to stranded-but-never-recorded -- worse than stranded, because
+# the audit had no line to compare against.
+test-platform: webapi-link-check test-platform-timing-negctl test-platform-observer-negctl test-platform-livecollection-negctl $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w $(PLATFORM_CF) -o $(BUILD)/platform_test $(PLATFORM_TEST_SRC) $(PLATFORM_MOD) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@$(BUILD)/platform_test

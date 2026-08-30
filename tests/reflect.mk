@@ -36,14 +36,25 @@ REFLECT_SRC := tests/unit/reflect_test.c c/apps/browser/js_dom.c \
                c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
                c/apps/browser/css_vars.c
 
-REFLECT_CF := -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"'
+# -DWEBAPI_HOST (2026-08-30, testdebt): js_dom.c's logit.h include -- its
+# transient-activation clock -- is kernel-only and guarded by exactly this
+# define; without it every fresh link of this suite died at js_dom.c:46. The
+# define goes here rather than the include moving out of js_dom.c because the
+# guard is the designed host seam (see that file's own comment).
+REFLECT_CF := -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(BUILD)/reflect_test: $(REFLECT_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) $(REFLECT_CF) -o $@ $(REFLECT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a -lm
 
-test-reflect: $(BUILD)/reflect_test
+# -DREFLECT_NEGCTL sabotages the reflection this suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-reflect: test-reflect-negctl $(BUILD)/reflect_test
 	@$(BUILD)/reflect_test
 
 # --- the negative control ---------------------------------------------------
@@ -128,7 +139,13 @@ $(BUILD)/cssprops_test: $(CSSPROPS_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
 	@$(CC) $(REFLECT_CF) -o $@ $(CSSPROPS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) 	    $(BUILD)/libcss_host.a -lm
 
-test-cssprops: $(BUILD)/cssprops_test
+# -DCSSD_PROPS_FROM_ENUM: the named-property set from the cascade enum again.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-cssprops: test-cssprops-negctl $(BUILD)/cssprops_test
 	@$(BUILD)/cssprops_test
 
 test-cssprops-negctl: $(BUILD)/libcss_host.a

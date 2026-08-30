@@ -70,7 +70,14 @@ $(BUILD)/selectors_test: $(SELECTORS_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_hos
 	@$(CC) -O2 -w $(SELECTORS_CF) -o $@ $(SELECTORS_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-test-selectors: $(BUILD)/selectors_test
+# -DSELECT_CASE_SENSITIVE: the suite must catch case-INsensitive matching
+# being compiled wrong, not just right answers on right builds.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-selectors: test-selectors-negctl $(BUILD)/selectors_test
 	@$(BUILD)/selectors_test
 
 test-selectors-negctl: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)

@@ -37,6 +37,10 @@ CSSTYLE_DIR := $(BUILD)/csstyle
 # would make those accessors answer 0 rather than link-fail -- a silent hole
 # rather than a build error. Nothing in THIS suite asserts on geometry; the
 # link is here so the binary is the same shape as the one cssom.mk measures.
+# -DWEBAPI_HOST on the host lines below (2026-08-30, testdebt): js_dom.c's
+# logit.h include -- its transient-activation clock -- is kernel-only and
+# guarded by exactly this define; a fresh link without it dies at js_dom.c:46.
+# The guard is the designed host seam (see that file's own comment).
 CSSTYLE_SRC := tests/unit/csstyle_test.c \
                c/apps/browser/js_page.c c/apps/browser/js_dom.c \
                c/apps/browser/js_cssom.c \
@@ -51,7 +55,7 @@ CSSTYLE_SRC := tests/unit/csstyle_test.c \
 define CSSTYLE_BUILD
 	@mkdir -p $(CSSTYLE_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) \
-	    -DCONFIG_VERSION='"host"' $(2) -o $(1) $(CSSTYLE_SRC) \
+	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST $(2) -o $(1) $(CSSTYLE_SRC) \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 endef
 
@@ -64,7 +68,13 @@ $(CSSTYLE_DIR)/csstyle_negctl_ser: $(CSSTYLE_SRC) $(HTML_PARSER_SRC) $(BUILD)/li
 $(CSSTYLE_DIR)/csstyle_negctl_noflush: $(CSSTYLE_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	$(call CSSTYLE_BUILD,$@,-DCSS_NEGCTL_NOFLUSH)
 
-test-csstyle: $(CSSTYLE_DIR)/csstyle_test
+# the ser/noflush pair breaks the serialization/flushing invariants asserted.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-csstyle: test-csstyle-negctl $(CSSTYLE_DIR)/csstyle_test
 	@$(CSSTYLE_DIR)/csstyle_test
 
 # THE CONTROLS. Two, because the two ways this line can be wrong fail

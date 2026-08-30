@@ -80,7 +80,13 @@ events-root:
 
 # The gate. An empty baseline means every failure is a new failure, so --strict
 # exits non-zero on any of them: this target is green only at 100%.
-test-events: $(BUILD)/wpt_events events-root
+# corpus-gated: it skips LOUDLY without the WPT events corpus (see recipe).
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-events: test-events-negctl $(BUILD)/wpt_events events-root
 	@if [ ! -d $(EVENTS_ROOT)/resources ]; then \
 	    echo "test-events: SKIPPED (no corpus)"; exit 0; fi
 	@$(BUILD)/wpt_events --root $(EVENTS_ROOT) --subset order -b /dev/null --strict -v 20

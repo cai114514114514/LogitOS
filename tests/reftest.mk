@@ -248,7 +248,18 @@ $(REFT_MANIFEST): $(REFT_BIN)
 # lived only in a separate target would never run in CI at all. Putting it here
 # means the gate cannot report a rate without first proving its own comparator
 # is capable of saying no.
-test-reftest: $(REFT_BIN) $(REFT_MANIFEST)
+#
+# THE THREE SEPARATE CONTROL TARGETS are PREREQUISITES of this gate for the
+# same reason (2026-08-30): each was stranded in
+# tests/audit-stranded.baseline -- dropped from CI by NOT_CI's `test-*-negctl`
+# rule and invoked by nobody, which reads exactly like a covered control.
+# The inline always-equal run above is the LIMIT=$(REFT_CTLN) slice; the
+# stranded test-reftest-negctl is the same control over the FULL corpus, and
+# test-reftest-css-negctl / test-reftest-perturb-negctl prove the two halves
+# the inline one cannot (CSS load-bearing on one side only; a one-pixel
+# perturbation visible to every exact pass).
+test-reftest: test-reftest-negctl test-reftest-css-negctl \
+              test-reftest-perturb-negctl $(REFT_BIN) $(REFT_MANIFEST)
 	@echo "--- control: with the comparator stubbed to equality, no rel=match test may fail ---"
 	@$(REFT_BIN) --root $(WPT_ROOT) --manifest $(REFT_MANIFEST) --limit $(REFT_CTLN) \
 	    --always-equal > $(BUILD)/reftest/ctl.log \

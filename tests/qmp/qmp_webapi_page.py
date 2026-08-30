@@ -33,6 +33,7 @@ import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, PPM      # noqa: E402
+import qmp_addrbar                  # noqa: E402  caret-derived address-bar geometry
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 EXPECT_NONE = "--expect-no-webapi" in sys.argv[3:]
@@ -246,11 +247,19 @@ try:
         die(str(e))
     time.sleep(6)                          # ~2.8 MB .aex off virtio-blk + first paint
 
-    ui.click_at(420, 145)                  # the address bar
+    # The address bar, DERIVED: qmp_addrbar.locate() finds the caret
+    # browser.c paints when editing (rgb(90,150,240) at TABH+7) and refuses
+    # to return a click point unless it is inside a window position wm.c's
+    # cascade can produce. The retired hardcoded (420, 145) was 17 px into
+    # the TAB STRIP and this navigation only worked because the Browser
+    # boots with the bar already focused -- the click was decoration.
+    bar = qmp_addrbar.focus(ui)
     for _ in range(70):
         ui.key("backspace", settle=0.02)
     ui.typ("http://10.0.2.2:%d/page.html" % PORT)
+    qmp_addrbar.typed_echo(ui, bar)        # glyphs IN the field, or die before Enter
     ui.key("ret")
+
 
     ck(wait_serial("WEBAPI-START", 90, "page load"),
        "the page loaded and its inline <script> ran")

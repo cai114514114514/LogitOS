@@ -70,6 +70,7 @@ SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c \
            c/apps/browser/forms.c c/apps/browser/focus.c \
            c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c \
+           c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
            c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \
            c/lib/image/svg.c c/lib/image/exif.c \
            $(wildcard c/lib/media/*.c) $(wildcard c/lib/video/*.c) \
@@ -78,8 +79,13 @@ SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
            tests/unit/rust_host_shim.c
 # -Ic/apps because js_platform.c includes "logit.h" unconditionally; the media
 # include dirs because js_media.c drags the demuxer in. Same set as tests/wpt.mk.
+# -Ic/net/ssh (2026-08-30, testdebt): js_canvas.c (in SEM_SRC for canvas
+# semantics) now includes c/net/ssh/base64.h -- "the tree's one C base64", per
+# its own comment, reached on-device through the flat INCDIRS list. Host lists
+# must name the directory themselves, the same rider webapi_platform.mk carries
+# for ws.c. Without it every fresh link of this suite dies at js_canvas.c:222.
 SEM_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio \
-          -Ic/lib/video $(CSS_INC) $(JS_INC) -Iinclude/abi \
+          -Ic/lib/video -Ic/net/ssh -Ic/crypto $(CSS_INC) $(JS_INC) -Iinclude/abi \
           -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(BUILD)/semantics_test: $(SEM_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
@@ -87,7 +93,13 @@ $(BUILD)/semantics_test: $(SEM_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a $(
 	@$(CC) -O2 -w $(SEM_CF) -o $@ $(SEM_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-test-semantics: $(BUILD)/semantics_test
+# -DSEMANTICS_STATIC_COLLECTIONS: live collections become static.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-semantics: test-semantics-negctl $(BUILD)/semantics_test
 	@$(BUILD)/semantics_test
 
 # --- the negative control ---------------------------------------------------

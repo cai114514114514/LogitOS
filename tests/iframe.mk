@@ -71,7 +71,13 @@
 IFRAME_PROBE_DIR := $(WPT_ROOT)/dom
 IFRAME_FIXTURES := tests/fixtures/iframe/iframe-probe.html tests/fixtures/iframe/logit-iframe-child.html
 
-test-iframe: $(BUILD)/wpt_test
+# The control is a PREREQUISITE of the positive, not a name on a ci- line:
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from CI on the
+# assumption the positive runs it, and this line is what makes that true
+# here. Without it the -DJS_IFRAME_NO_INSTALL build that proves this probe
+# can fail (<=2/22 with the installer gone, >=21/22 with it present) runs
+# never -- which reads exactly like a covered control.
+test-iframe: test-iframe-negctl $(BUILD)/wpt_test
 	@if [ ! -f "$(WPT_ROOT)/resources/testharness.js" ]; then \
 	    echo "test-iframe: SKIP -- $(WPT_ROOT)/resources/testharness.js not present."; \
 	    echo "  This gate reuses testharness.js out of the (optional) WPT checkout"; \
@@ -122,3 +128,8 @@ test-iframe-negctl: $(BUILD)/wpt_test_iframe_negctl
 	       exit 1; \
 	   fi; \
 	   echo "test-iframe-negctl: ok -- the control catches it ($$got/22, feature build is >=21/22)" )
+
+# ci-host takes this gate: the probe drives $(BUILD)/wpt_test over a fixture,
+# all host-side. It needs the optional WPT checkout and SKIPS LOUDLY without
+# it (see the recipe) rather than passing silently. Unwired since it landed.
+ci-host: test-iframe

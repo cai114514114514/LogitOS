@@ -15,6 +15,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, dock_icon_of, parse_dock, title_of  # noqa: E402
+import qmp_addrbar                  # noqa: E402  caret-derived address-bar geometry
 
 sock_path, out = sys.argv[1], sys.argv[2]
 url = sys.argv[3] if len(sys.argv) > 3 else None
@@ -53,11 +54,14 @@ base = out.rsplit(".", 1)
 ui.screendump(base[0] + "-launch." + (base[1] if len(base) > 1 else "ppm"), settle=0.4)
 
 if url:
-    # focus the address bar, clear it, type the new URL
-    ui.click_at(420, 145)
+    # focus the address bar, clear it, type the new URL -- caret-derived
+    # (qmp_addrbar); the retired (420, 145) click was in the tab strip and
+    # only worked because the Browser boots with the bar already focused
+    bar = qmp_addrbar.focus(ui)
     for _ in range(60):
         ui.key("backspace")
     ui.typ(url)
+    qmp_addrbar.typed_echo(ui, bar)
 
 ui.key("ret")                       # load
 time.sleep(wait)                    # DNS + TCP (+TLS) + parse + external CSS + layout

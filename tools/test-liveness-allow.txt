@@ -19,14 +19,30 @@ tests/qmp/qmp_shot.py: screendumps a running QEMU; the output IS the result
 tests/qmp/qmp_demo.py: drives a demo sequence for a screenshot
 tests/qmp/qmp_drag.py: demonstrates window dragging for a screenshot
 tests/qmp/qmp_apps.py: opens two apps and screendumps; no claim is made about what is in the pictures
-tests/qmp/qmp_browser.py: launches the Browser and screendumps a page for a human to look at
+tests/qmp/qmp_browser.py: screendumps for a human; its no-URL path asserts nothing on purpose (its URL path now dies through qmp_addrbar, but rule 1 reads this file's text, not its imports')
 tests/qmp/qmp_probe.py: a minimal "does a click arrive" probe used interactively
 tests/qmp/qmp_stress.py: soak driver -- reloads a page N times; the artefact is the screenshot afterwards
+tests/boot/bootwait.sh: a SOURCED helper library, not a test -- it defines logit_wait_for_shell(); every harness that sources it owns its own verdict, and this file returning non-zero would fail the sourcing harness's shell, not the machine
+tests/boot/run-smp-lockprobe.sh: an instrument, not a gate -- samples every lock's ticket counter before and after the smptest workload and prints both; the number is the output and there is no threshold to fail
+tests/unit/p521_gen.sh: a vector GENERATOR -- openssl picks the key, nonce and message and this prints them as hex; the verdict belongs to ecdsa_p521_test, which consumes the output
+tests/boot/ssh_askpass.sh: an SSH_ASKPASS helper that OpenSSH itself invokes during the ssh password test; its whole body is `echo "$SSHTEST_PW"` and the ssh test that spawns it owns the verdict
+
+# --- sweep machinery: the verdict is the RESULT FILE, not the exit code
+# Both must keep running after a failing target -- aborting is exactly the
+# behaviour the sweep exists to avoid -- so they record PASS/FAIL/TIMEOUT per
+# target into <result-file> and always exit 0. Something that consumes that
+# file (a human reading the summary, or a future gate over it) is where a
+# failure would be reported.
+tests/boot/sweep-confirm.sh: re-runs every non-PASS sweep target ALONE and rewrites the result file with the confirmed verdict; the file is the deliverable
+tests/boot/sweep-resume.sh: runs the targets a sweep never reached, then delegates to sweep-confirm.sh; same file, same rule
 
 # --- these PRESENT as detectors and cannot report what they detect.
 # Not this line's files to fix; listed so the next person to touch them knows.
 tests/qmp/qmp_blackframe.py: its docstring defines healthy vs black-frame by pixel content, then exits 0 whichever it saw
 tests/qmp/qmp_fuzz.py: "if heartbeats stop -> FROZEN" is in the docstring; nothing in the code acts on it
 tests/qmp/qmp_watch.py: dumps every CPU's registers when the screen goes static, then exits 0 -- the dump is the output, the verdict is not
-tests/boot/run-launch-profile.sh: a sampling PROFILER -- it prints a kernel-RIP histogram of an app launch; the histogram is the output and there is no threshold to fail
-tests/qmp/qmp_launch_click.py: its own docstring says it asserts nothing on purpose -- it delivers ONE Dock click at a known moment so run-launch-profile.sh can bracket it, and anything else it did would land in that histogram
+
+# 2026-08-30, testdebt: the two lines that were here for run-launch-profile.sh
+# and qmp_launch_click.py were dropped -- both can fail now (their owner added
+# the failing paths), and a line for a script that CAN fail is exactly the
+# "stale" the checker names.

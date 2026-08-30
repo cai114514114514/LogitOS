@@ -1,17 +1,11 @@
 # The desktop's motion gates -- Expose, and the dock fly.
 #
-# NOT YET WIRED INTO THE MAKEFILE, and deliberately so: this landed while three
-# other lines were editing Makefile concurrently, and one `-include` line is a
-# cheaper merge for whoever owns it than a conflict is for everybody. To
-# register it, add next to the other `-include tests/*.mk` lines near the bottom
-# of the Makefile:
-#
-#     -include tests/motion.mk
-#
-# Until then the gate runs directly, and its header documents that:
-#
-#     python3 tests/qmp/qmp_motion.py
-#     python3 tests/qmp/qmp_motion.py --negative
+# [CORRECTION KEPT BESIDE THE OLD CLAIM, 2026-08-30] The header below said
+# "NOT YET WIRED INTO THE MAKEFILE ... add `-include tests/motion.mk`". That
+# was true when written and is not now: the Makefile has carried that exact
+# line (beside tests/menu.mk) for some time, while this comment still told
+# every reader the gate was unreachable -- stale in the direction that costs
+# nothing and explains nothing.
 #
 # WHAT IT MEASURES, in one line each -- the long version is the docstring at the
 # top of tests/qmp/qmp_motion.py:
@@ -33,7 +27,12 @@
 MOTION_OUT ?= build/motion
 
 .PHONY: test-motion test-motion-negctl
-test-motion: $(ISO) $(DISK)
+# THE CONTROL IS A PREREQUISITE OF ITS POSITIVE, not a line on a ci- aggregate:
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what CI runs
+# on the assumption the positive runs it, and naming one on a ci- line
+# satisfies the stranded audit while running it never. This control sat
+# stranded in tests/audit-stranded.baseline from the day it landed.
+test-motion: test-motion-negctl $(ISO) $(DISK)
 	@mkdir -p $(MOTION_OUT)
 	python3 tests/qmp/qmp_motion.py --iso $(ISO) --disk $(DISK) --out $(MOTION_OUT)
 

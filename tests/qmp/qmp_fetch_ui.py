@@ -46,6 +46,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui                                                 # noqa: E402
 from qmp_ui import Session                                    # noqa: E402
+import qmp_addrbar                                            # noqa: E402  caret-derived address-bar geometry
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -267,10 +268,14 @@ else:
     die("the Dock never launched the Browser")
 pump(6)
 
-ui.click_at(420, 145)                      # address bar
+# Address bar via the caret (qmp_addrbar): the retired (420, 145) was in the
+# tab strip, and typing only worked because the Browser boots with the bar
+# already focused -- the click was decoration.
+bar = qmp_addrbar.focus(ui)
 for _ in range(70):
     ui.key("backspace", settle=0.02)
 ui.typ("http://10.0.2.2:%d/page.html" % PORT)
+qmp_addrbar.typed_echo(ui, bar)
 ui.key("ret")
 
 if not wait_for("FETCHLOOP-READY", 120):

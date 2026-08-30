@@ -36,7 +36,13 @@ $(BUILD)/dom_iface_test: $(DOMIFACE_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host
 	@$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(DOMIFACE_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-test-dom-iface: $(BUILD)/dom_iface_test
+# -DJSDOM_NO_INTERFACE_HIERARCHY flattens what the suite must catch.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-dom-iface: test-dom-iface-negctl $(BUILD)/dom_iface_test
 	@$(BUILD)/dom_iface_test
 
 # --- the negative control ---------------------------------------------------

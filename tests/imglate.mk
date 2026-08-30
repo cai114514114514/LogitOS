@@ -41,7 +41,13 @@ $(IMGL_DIR)/img_late_test: $(IMGL_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(IMGL_DEF) -o $@ $(IMGL_SRC) \
 	    $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a -lm
 
-test-img-late: $(IMGL_DIR)/img_late_test
+# each -D in IMGL_NEGS breaks a late-image behaviour this suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-img-late: test-img-late-negctl $(IMGL_DIR)/img_late_test
 	@$(IMGL_DIR)/img_late_test
 
 # Each sabotage is a real previous behaviour or the plausible wrong version of

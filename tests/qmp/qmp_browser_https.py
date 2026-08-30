@@ -61,6 +61,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, PPM          # noqa: E402
+import qmp_addrbar                      # noqa: E402  caret-derived address-bar geometry
 
 ISO = sys.argv[1] if len(sys.argv) > 1 else "build/logit.iso"
 DISK = sys.argv[2] if len(sys.argv) > 2 else "build/disk.img"
@@ -182,10 +183,13 @@ try:
        "the empty Browser viewport is blank (%d ink px, control)" % ink_before)
 
     mark = len(serial())
-    ui.click_at(420, 145)
+    # Address bar via the caret (qmp_addrbar): the retired (420, 145) was in
+    # the tab strip, and typing only worked because the Browser boots editing.
+    bar = qmp_addrbar.focus(ui)
     for _ in range(70):
         ui.key("backspace", settle=0.02)
     ui.typ(URL)
+    qmp_addrbar.typed_echo(ui, bar)
     t0 = time.time()
     ui.key("ret")
 

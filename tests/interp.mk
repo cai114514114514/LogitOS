@@ -67,7 +67,15 @@
 INTERP_SRC := c/apps/browser/css_interp.c
 INTERP_CF  := -O1 -g -Wall -Wextra -Ic/apps/browser
 
-test-css-interp: $(BUILD)/interp_test
+# -DCI_NEGCTL_NO_DECOMPOSE and -DCI_NEGCTL_ACCUM_IS_ADD each sabotage THIS
+# same interp suite (componentwise-always; accumulate-as-add), so wiring both
+# here means the suite cannot pass without also proving it catches them.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-css-interp: test-css-interp-negctl test-css-interp-accum-negctl $(BUILD)/interp_test
 	@$(BUILD)/interp_test
 
 $(BUILD)/interp_test: tests/unit/interp_test.c $(INTERP_SRC) c/apps/browser/css_interp.h
@@ -127,7 +135,13 @@ ANIM_CF  := -O1 -g -w -Ic/apps/browser -Ithird_party/quickjs -Ithird_party/libm 
             -DCONFIG_VERSION='"host"' -DCONFIG_BIGNUM
 ANIM_SRC := c/apps/browser/js_anim.c c/apps/browser/css_interp.c $(QJS_SRC)
 
-test-css-anim: $(BUILD)/anim_test
+# -DJS_ANIM_NEGCTL_CLAMP clamps the animation clock; anim_test must catch it.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-css-anim: test-css-anim-negctl $(BUILD)/anim_test
 	@$(BUILD)/anim_test
 
 $(BUILD)/anim_test: tests/unit/anim_test.c c/apps/browser/js_anim.c $(INTERP_SRC)

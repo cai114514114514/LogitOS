@@ -15,7 +15,13 @@
 # Geometry is asserted against the guest's own `[wm] win ...` report rather than
 # reconstructed from a screendump. Pixels are asserted for the one thing pixels
 # are the authority on: that a window which shrank left nothing behind.
-test-window: $(ISO) $(DISK)
+# the DEVICE control: the same driver, --negative, against the same image.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-window: test-window-negctl $(ISO) $(DISK)
 	python3 tests/qmp/qmp_window.py --iso $(ISO)
 
 # THE NEGATIVE CONTROL, and it is meant to fail. It rebuilds the kernel with

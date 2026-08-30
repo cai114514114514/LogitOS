@@ -66,7 +66,13 @@ $(BUILD)/urlelem_test: $(URLELEM_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a 
 	@$(CC) -O2 -w $(URLELEM_CF) -o $@ $(URLELEM_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
 	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 
-test-urlelem: $(BUILD)/urlelem_test
+# corpus-gated: it skips LOUDLY without urltestdata.json (see recipe).
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-urlelem: test-urlelem-negctl $(BUILD)/urlelem_test
 	@$(BUILD)/urlelem_test $(URLELEM_ROOT)
 
 # --- the negative control ---------------------------------------------------

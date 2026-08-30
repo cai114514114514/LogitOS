@@ -42,14 +42,24 @@ CSSOM_TEST_SRC := tests/unit/cssom_test.c \
                   c/apps/browser/js_tokenlist.c \
                   c/apps/browser/js_characterdata.c
 
+# -DWEBAPI_HOST on the host lines below (2026-08-30, testdebt): js_dom.c's
+# logit.h include -- its transient-activation clock -- is kernel-only and
+# guarded by exactly this define; a fresh link without it dies at js_dom.c:46.
+# The guard is the designed host seam (see that file's own comment).
 $(CSSOM_DIR)/cssom_test: $(CSSOM_TEST_SRC) $(HTML_PARSER_SRC) \
                          $(BUILD)/libcss_host.a
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) \
-	    -DCONFIG_VERSION='"host"' -o $@ $(CSSOM_TEST_SRC) \
+	    -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o $@ $(CSSOM_TEST_SRC) \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 
-test-cssom: $(CSSOM_DIR)/cssom_test
+# each -D in CSSOM_NEGS breaks a cssom behaviour this suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-cssom: test-cssom-negctl $(CSSOM_DIR)/cssom_test
 	@$(CSSOM_DIR)/cssom_test
 
 # --- the negative control ---------------------------------------------------
@@ -85,7 +95,7 @@ test-cssom-negctl: $(BUILD)/libcss_host.a
 	@bad=0; \
 	 for n in $(CSSOM_NEGS); do \
 	   $(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) \
-	       -DCONFIG_VERSION='"host"' -DCSSOM_NEGCTL_$$n \
+	       -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DCSSOM_NEGCTL_$$n \
 	       -o $(CSSOM_DIR)/negctl_$$n $(CSSOM_TEST_SRC) \
 	       $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm || exit 1; \
 	   if $(CSSOM_DIR)/negctl_$$n > $(CSSOM_DIR)/negctl_$$n.log 2>&1; then \
@@ -278,14 +288,20 @@ test-cssom-abi:
 CSSDCANON_SRC := tests/unit/cssdcanon_test.c c/apps/browser/js_dom.c \
                  c/apps/browser/js_reflect.c c/apps/browser/css_engine.c \
                  c/apps/browser/css_vars.c c/apps/browser/css_interp.c
-CSSDCANON_CF   = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"'
+CSSDCANON_CF   = -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 $(CSSOM_DIR)/cssdcanon_test: $(CSSDCANON_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(CSSOM_DIR)
 	@$(CC) $(CSSDCANON_CF) -o $@ $(CSSDCANON_SRC) \
 	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 
-test-cssd-canon: $(CSSOM_DIR)/cssdcanon_test
+# each -D in CSSDCANON_NEGS breaks a canonicalization rule this suite asserts.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-cssd-canon: test-cssd-canon-negctl $(CSSOM_DIR)/cssdcanon_test
 	@$(CSSOM_DIR)/cssdcanon_test
 
 # Three sabotages, because this landed as three changes and one control would

@@ -69,7 +69,12 @@ test-clip-host-negctl:
 	fi
 
 # --- on the machine: two processes, one clipboard ----------------------------
-test-clip: test-clip-host test-clip-host-negctl $(ISO) $(DISK)
+# The device control joins the host control as a prerequisite of the same
+# target -- same discipline as test-clip-host-negctl on the line above it.
+# test-clip-negctl sat stranded in tests/audit-stranded.baseline: excluded
+# from CI by NOT_CI and invoked by nobody, which reads exactly like a control
+# that is covered.
+test-clip: test-clip-host test-clip-host-negctl test-clip-negctl $(ISO) $(DISK)
 	bash tests/boot/run-clip-test.sh $(ISO) $(DISK)
 
 # THE NEGATIVE CONTROL, on the machine. Same disk, same script, a kernel built
@@ -89,7 +94,10 @@ test-clip-negctl:
 # --- notifications, in pixels ------------------------------------------------
 # A visual feature. A claim about it that is not a screenshot is not a claim, so
 # the driver photographs every state it asserts and leaves the frames behind.
-test-notify: $(ISO) $(DISK)
+# The control below is a PREREQUISITE of this target, not a ci- line:
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from CI on the
+# assumption the positive runs it, and this is the line that makes that true.
+test-notify: test-notify-negctl $(ISO) $(DISK)
 	python3 tests/qmp/qmp_notify.py --iso $(ISO) --disk $(DISK)
 
 # The overlay reports only half the column it draws into. Every pixel of the
@@ -166,3 +174,10 @@ test-clip-js: $(ISO) $(DISK)
 
 .PHONY: test-clip test-clip-host test-clip-host-negctl test-clip-negctl \
         test-clip-js test-notify test-notify-negctl test-notify-cost
+
+# ci-boot takes the JS half of the clipboard: the ACTIVATION GATE is a
+# property of the machine (writeText must not fire from a background timer),
+# and no host twin can prove a click-gate that only exists between a page and
+# the WM. It sat unwired (reachable by nobody) with its sibling above -- the
+# debt this package retires.
+ci-boot: test-clip-js

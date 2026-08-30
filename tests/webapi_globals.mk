@@ -73,7 +73,13 @@ io.open('$(WG_LOCAL)/platform/resources/small.json','w').write(json.dumps([{'i':
 io.open('$(WG_LOCAL)/platform/resources/big.json','w').write(json.dumps([{'i':i,'pad':'x'*200} for i in range(1200)]))"
 
 # --- test-encoding ----------------------------------------------------------
-test-encoding: $(BUILD)/wpt_test
+# the control build of this encoding suite (see its own recipe).
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-encoding: test-encoding-negctl $(BUILD)/wpt_test
 	@n=$$($(BUILD)/wpt_test --root $(WG_ROOT) --subset encoding -b /dev/null 2>/dev/null \
 	      | sed -n 's/^WPT: \([0-9]*\)\/.*/\1/p'); \
 	 t=$$($(BUILD)/wpt_test --root $(WG_ROOT) --subset encoding -b /dev/null 2>/dev/null \

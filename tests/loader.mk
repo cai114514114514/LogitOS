@@ -174,3 +174,10 @@ test-script-nav: $(ISO) $(DISK)
 test-tabs: $(ISO) $(DISK)
 	python3 tests/qmp/qmp_tabs.py $(ISO) $(DISK)
 
+# ci-boot takes the DEVICE twin: the host tabs test (below, test-tabs-asan's
+# neighbours) proves the model against a fake network, and only this gate
+# proves two real documents coexist in one process on the machine. It was in
+# tests/audit-unwired.baseline from the day it landed -- reachable by nobody,
+# reading like coverage.
+ci-boot: test-tabs
+

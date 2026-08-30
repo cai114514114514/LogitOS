@@ -133,7 +133,14 @@ test-forms-ce-negctl: $(BUILD)/libcss_host.a
 	 fi
 
 # --- the device test --------------------------------------------------------
-test-forms-device: $(ISO) $(DISK)
+# THE DEVICE CONTROL IS A PREREQUISITE HERE, for the same reason
+# test-forms-ce-negctl is one of test-forms above (see that block's comment):
+# tools/audit_tests.py's NOT_CI drops every `test-*-negctl` from what CI runs
+# on the assumption the positive runs it, and a prerequisite line is the only
+# thing that makes that assumption true. test-forms-negctl sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- a control that
+# looked covered and ran never.
+test-forms-device: test-forms-negctl $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_forms.py $(ISO) $(DISK)
 
 # The same harness, driven at a contenteditable composer instead of an <input>.
@@ -197,3 +204,10 @@ test-forms-negctl: $(ISO) $(BUILD)/browser-nofocus.aex
 	python3 tests/qmp/qmp_forms.py $(ISO) $(BUILD)/disk-nofocus.img --expect-no-focus
 
 # --- WPT: see the header. The shipping runner already links these files. ------
+
+# ci-host takes the HOST gate: the state machine, the caret, the event order.
+# The device gates (test-forms-device/-ce-device) boot QEMU and stay off
+# ci-boot deliberately -- this fragment's own header says the three targets
+# measure different things, and CI's boot budget is better spent on gates no
+# host twin covers. The host twin here is the exhaustive one.
+ci-host: test-forms

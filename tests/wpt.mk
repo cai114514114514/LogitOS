@@ -268,7 +268,19 @@ WPT_ENV = WEBAPI_FILE_ROOT=$(WPT_ROOT)
 # host suite and `make ci` runs it, so this needs no wiring beyond the name --
 # which is the point of that design and the reason 217 targets were once
 # orphans.
-test-wpt: $(BUILD)/wpt_test
+#
+# THE RATCHET CONTROL IS A PREREQUISITE OF THE GATE IT GUARDS, not a name on
+# a ci- line: NOT_CI drops every `test-*-negctl` from what CI runs on the
+# assumption the positive counterpart runs it, and this line is what makes
+# that assumption true here. test-wpt-negctl sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- a control that
+# proves the ratchet can go red, which nobody ever ran.
+# test-wpt-fire-negctl joins it for the same reason: it is the self-check
+# that the runner's own load-event COUNT can fail (a doubled dispatch once
+# doubled css/css-align's subtest count to 9,296 without a single test
+# going red), and a self-check that only ever runs green is a rate nobody
+# can trust.
+test-wpt: test-wpt-negctl test-wpt-fire-negctl $(BUILD)/wpt_test
 	@$(WPT_ENV) $(BUILD)/wpt_test $(WPT_ARGS) --strict
 
 # The same numbers with the gate off, for a tree that is already red for some

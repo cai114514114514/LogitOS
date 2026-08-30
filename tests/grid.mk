@@ -86,7 +86,13 @@ $(BUILD)/grid_align_test: tests/unit/grid_align_test.c $(GRID_SRC) c/apps/browse
 test-grid-align: $(BUILD)/grid_align_test
 	$(BUILD)/grid_align_test
 
-test-grid: test-grid-parse test-grid-place test-grid-size test-grid-align
+# -DGRID_SPAN_EVEN_SPLIT: spanning items split evenly instead of per s12.5.1.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-grid: test-grid-negctl test-grid-parse test-grid-place test-grid-size test-grid-align
 
 # The same four suites under ASan + UBSan. Grid allocates per axis and per item
 # and the placement pass grows an occupancy bitmap in both dimensions, so the

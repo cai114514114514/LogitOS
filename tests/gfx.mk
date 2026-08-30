@@ -31,7 +31,15 @@ $(BUILD)/gfx_paint_test: tests/unit/gfx_paint_test.c $(GFX_SRC) c/lib/gfx/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_paint_test.c $(GFX_SRC) -lm
 
-test-gfx-raster: $(BUILD)/gfx_raster_test
+# test-gfx-negctl (the generic name predates the stroke/clip twins) is the
+# -DGFX_NO_AA build of the RASTER suite, so it anchors here, on the raster
+# gate, rather than on the aggregate -- the aggregate runs it through this.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-gfx-raster: test-gfx-negctl $(BUILD)/gfx_raster_test
 	$(BUILD)/gfx_raster_test
 
 test-gfx-paint: $(BUILD)/gfx_paint_test
@@ -47,7 +55,13 @@ $(BUILD)/gfx_stroke_test: tests/unit/gfx_stroke_test.c $(GFX_SRC) c/lib/gfx/gfx.
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_stroke_test.c $(GFX_SRC) -lm
 
-test-gfx-stroke: $(BUILD)/gfx_stroke_test
+# the stroke-suite control.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-gfx-stroke: test-gfx-stroke-negctl $(BUILD)/gfx_stroke_test
 	$(BUILD)/gfx_stroke_test
 
 # Path clipping: coverage times coverage at the row_fn seam. Its reference is
@@ -62,7 +76,13 @@ $(BUILD)/gfx_clip_test: tests/unit/gfx_clip_test.c $(GFX_SRC) c/lib/gfx/gfx.h
 	@mkdir -p $(BUILD)
 	$(CC) $(GFX_TEST_CF) -o $@ tests/unit/gfx_clip_test.c $(GFX_SRC) -lm
 
-test-gfx-clip: $(BUILD)/gfx_clip_test
+# the clip-suite control.
+# tools/audit_tests.py's NOT_CI drops every test-*-negctl from what CI
+# runs on the assumption the positive runs it; this prerequisite line is
+# what makes that assumption true. The control sat stranded in
+# tests/audit-stranded.baseline from the day it landed -- excluded from
+# CI and invoked by nobody, which reads exactly like a covered control.
+test-gfx-clip: test-gfx-clip-negctl $(BUILD)/gfx_clip_test
 	$(BUILD)/gfx_clip_test
 
 test-gfx: test-gfx-raster test-gfx-paint test-gfx-stroke test-gfx-clip

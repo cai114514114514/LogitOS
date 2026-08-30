@@ -44,6 +44,7 @@ import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from qmp_ui import Session, PPM      # noqa: E402
+import qmp_addrbar                  # noqa: E402  caret-derived address-bar geometry
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -234,10 +235,13 @@ try:
     time.sleep(6)                          # ~2.8 MB .aex off virtio-blk, ELF load, first paint
 
     # Address bar, clear it, type the fixture URL. 10.0.2.2 is the SLIRP host.
-    ui.click_at(420, 145)
+    # The click is caret-derived (qmp_addrbar): the retired (420, 145) was in
+    # the tab strip, and typing only worked because the Browser boots editing.
+    bar = qmp_addrbar.focus(ui)
     for _ in range(70):
         ui.key("backspace", settle=0.02)
     ui.typ("http://10.0.2.2:%d/live.html" % PORT)
+    qmp_addrbar.typed_echo(ui, bar)
     ui.key("ret")
 
     ck(wait_serial("LIVE-SCRIPT-RAN", 60, "page load"),
