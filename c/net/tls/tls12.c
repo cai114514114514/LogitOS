@@ -420,7 +420,10 @@ static int process_flight(struct tls_sess *s)
     }
 
     /* --- the certificate chain --- */
-    int cr = tls_check_chain(s, chain, ncert);
+    /* ncert is in/out: out it is the verified PATH length, which tls_check_
+     * staple needs (a duplicated intermediate in the flight must not be read
+     * as the leaf's issuer -- see x509.c's path-building comment). */
+    int cr = tls_check_chain(s, chain, &ncert);
     if (cr) return cr;
     cr = tls_check_staple(s, chain, ncert, staple, staplelen);
     if (cr) return cr;

@@ -898,7 +898,19 @@ static int step_recv_sh(struct tls_sess *s)
     for (;;) {
         int r = rec_pull(s);
         if (r == 0) return TLS_WANT_READ;
-        if (r < 0) return fail(s, TLS_E_TCP);
+        if (r < 0) {
+            /* Silent until 2026-08-30. A FETCH-FAIL of www.bing.com
+             * (tests/scoreboard/full-corpus/bing-search.serial.txt) showed
+             * "connected" then "TLS refused" with NO [tls] line at all -- the
+             * handshake was refused by a TCP-level death (reset or close
+             * mid-handshake) that this path folded into TLS_E_TCP without a
+             * word, and the socket layer then reported it to the browser as
+             * SOCK_E_TLS, i.e. as a CERTIFICATE problem. It was not one: the
+             * same handshake succeeded 8/8 from the host the next day. Any
+             * recurrence now names itself. */
+            kprintf("[tls] connection closed/reset before ServerHello (%s)\n", s->host);
+            return fail(s, TLS_E_TCP);
+        }
         if (s->rectype == REC_CCS) { rec_drop(s); continue; }
         break;
     }
@@ -906,15 +918,22 @@ static int step_recv_sh(struct tls_sess *s)
     const uint8_t *body = s->rxrec + 5;
     int blen = s->reclen;
     if (s->rectype == REC_ALERT) { log_alert(body, blen); rec_drop(s); return fail(s, TLS_E_PROTO); }
-    if (s->rectype != REC_HANDSHAKE || blen < 4 || body[0] != HS_SERVER_HELLO)
+    if (s->rectype != REC_HANDSHAKE || blen < 4 || body[0] != HS_SERVER_HELLO) {
+        kprintf("[tls] first record was type %d (len %d), not a ServerHello -- aborting\n",
+                s->rectype, blen);
         return fail(s, TLS_E_PROTO);
+    }
 
     int shlen = (body[1] << 16) | (body[2] << 8) | body[3];
     int shend = 4 + shlen;
     /* Bound the ServerHello to what was received AND to the minimum fixed
      * layout (4 hdr + 2 ver + 32 random + 1 sid-len + 2 suite + 1 comp + 2
      * ext-len) before touching any field. */
-    if (blen < 44 || shlen < 40 || shend > blen) return fail(s, TLS_E_PROTO);
+    if (blen < 44 || shlen < 40 || shend > blen) {
+        kprintf("[tls] malformed ServerHello: record %d B, message %d B -- aborting\n",
+                blen, shlen);
+        return fail(s, TLS_E_PROTO);
+    }
 
     int is_hrr = memcmp(body + 6, HRR_RANDOM, 32) == 0;
     int legacy_version = (body[4] << 8) | body[5];
@@ -960,7 +979,11 @@ static int step_recv_sh(struct tls_sess *s)
     /* --- a real ServerHello --- */
     struct sh_info sh; memset(&sh, 0, sizeof sh); sh.retry_group = -1;
     tls_th_update(s, body, shend);
-    if (parse_sh(s, body, shend, 0, &sh) != 0) return fail(s, TLS_E_PROTO);
+    if (parse_sh(s, body, shend, 0, &sh) != 0) {
+        kprintf("[tls] ServerHello failed to parse (version 0x%x, suite 0x%x) -- aborting\n",
+                sh.version ? sh.version : (body[4] << 8) | body[5], sh.suite);
+        return fail(s, TLS_E_PROTO);
+    }
 
     /* --- version negotiation ---
      * RFC 8446 4.2.1: a TLS 1.3 server signals 1.3 in supported_versions and
@@ -1018,10 +1041,15 @@ static int step_recv_sh(struct tls_sess *s)
     /* --- TLS 1.3 from here on --- */
     int suite = sh.suite, splen = sh.splen;
     const uint8_t *spub = sh.spub;
-    if (!spub || splen < 1) return fail(s, TLS_E_PROTO);
-    if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256 &&
-        suite != TLS_AES_256_GCM_SHA384)
+    if (!spub || splen < 1) {
+        kprintf("[tls] TLS 1.3 ServerHello carried no key share -- aborting\n");
         return fail(s, TLS_E_PROTO);
+    }
+    if (suite != TLS_CHACHA20_POLY1305_SHA256 && suite != TLS_AES_128_GCM_SHA256 &&
+        suite != TLS_AES_256_GCM_SHA384) {
+        kprintf("[tls] server chose 1.3 suite 0x%x, which we did not offer\n", suite);
+        return fail(s, TLS_E_PROTO);
+    }
     /* BEFORE the key schedule and before tls_th_hash is called for the first
      * time. Both transcripts have been running since the first ClientHello
      * byte; this is what selects which one is the handshake's. */
@@ -1144,21 +1172,31 @@ static int step_recv_sh(struct tls_sess *s)
  * "TLS_E_CERT" is indistinguishable between an expired leaf, a name mismatch
  * and an anchor we do not hold, and those three call for completely different
  * responses from whoever is looking. Shared by both protocol versions -- the
- * certificate is the one thing TLS 1.2 and 1.3 agree about. */
-int tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert)
+ * certificate is the one thing TLS 1.2 and 1.3 agree about.
+ *
+ * *ncert is IN/OUT. In: certificates the flight carried. Out (on success): the
+ * length of the verified PATH, which can be shorter -- x509_verify_chain
+ * reorders certs[] into path order and drops nothing, but a flight may carry
+ * certificates the path never used (a DUPLICATED intermediate is the live
+ * case, see x509.c). The caller hands the same array to tls_check_staple,
+ * whose CertID is hashes of the leaf ISSUER's name and key: ncert must be the
+ * path length or a good staple could be checked against a bystander. */
+int tls_check_chain(struct tls_sess *s, struct cert *chain, int *ncert)
 {
-    if (ncert < 1) { kprintf("[tls] no usable certificate in the flight\n"); return TLS_E_CERT; }
+    if (*ncert < 1) { kprintf("[tls] no usable certificate in the flight\n"); return TLS_E_CERT; }
     TLSPROF_BEGIN(tls_chain_verify);
-    int vr = x509_verify_chain(chain, ncert, s->host, s->now);
+    int pathlen = *ncert;
+    int vr = x509_verify_chain(chain, *ncert, s->host, s->now, &pathlen);
     TLSPROF_END(tls_chain_verify);
     if (vr != X509_OK) {
-        kprintf("[tls] chain of %d rejected for %s: %s (%d)\n", ncert, s->host,
+        kprintf("[tls] chain of %d rejected for %s: %s (%d)\n", *ncert, s->host,
                 vr == X509_E_NAME ? "host name" : vr == X509_E_EXPIRED ? "validity dates"
                 : vr == X509_E_UNTRUSTED ? "no path to a trusted root"
                 : vr == X509_E_SIG ? "bad signature" : "parse", vr);
         return TLS_E_CERT;
     }
-    kprintf("[tls] chain of %d verified for %s%s%s\n", ncert, s->host,
+    *ncert = pathlen;
+    kprintf("[tls] chain of %d verified for %s%s%s\n", *ncert, s->host,
             s->alpn_sel[0] ? ", alpn=" : "", s->alpn_sel[0] ? s->alpn_sel : "");
     return 0;
 }
@@ -1490,7 +1528,7 @@ static int verify_flight(struct tls_sess *s)
     }
 
     {
-        int cr = tls_check_chain(s, chain, ncert);
+        int cr = tls_check_chain(s, chain, &ncert);
         if (cr != 0) return cr;
     }
     return tls_check_staple(s, chain, ncert, staple, staplelen);

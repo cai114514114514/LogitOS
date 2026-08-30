@@ -506,31 +506,136 @@ static int name_ok(const struct cert *leaf, const char *host)
     return leaf->cn && host_match(host, hl, leaf->cn, leaf->cnlen);
 }
 
-int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t now)
+/* Look for a certificate in certs[1..n-1] that can parent `child`: a CA whose
+ * Subject is byte-identical to child's Issuer AND whose key actually verifies
+ * child's signature. Used entries are skipped, which is what makes cycles and
+ * duplicates terminate.
+ *
+ * *sig_seen is set when at least one candidate matched by NAME but failed the
+ * signature check, so the caller can report X509_E_SIG ("a key claiming to be
+ * the issuer did not sign this") instead of X509_E_UNTRUSTED ("nobody here
+ * claims to be the issuer") -- the two call for completely different
+ * investigations, and folding them loses the more informative one.
+ *
+ * Returns the index of the parent, or -1 when there is none. */
+static int find_parent(const struct cert *certs, int n, const struct cert *child,
+                       const uint8_t *used, int *sig_seen)
 {
-    if (n < 1) return X509_E_PARSE;
-    /* name + validity on the leaf */
-    if (!name_ok(&certs[0], host)) return X509_E_NAME;
-    for (int i = 0; i < n; i++)
-        if (now < certs[i].not_before || now > certs[i].not_after) return X509_E_EXPIRED;
+    for (int j = 1; j < n; j++) {
+        if (used[j]) continue;
+        if (!certs[j].is_ca) continue;
+        if (certs[j].subjectlen != child->issuerlen ||
+            memcmp(certs[j].subject, child->issuer, (size_t)child->issuerlen) != 0)
+            continue;
+        if (x509_verify_signed_by(child, &certs[j]) == X509_OK) return j;
+        *sig_seen = 1;
+    }
+    return -1;
+}
 
-    /* each cert signed by the next; the highest must chain to a trusted root.
-     * Every non-leaf must be a CA (BasicConstraints cA=TRUE) and the chain must
-     * be name-bound: certs[i].issuer must equal certs[i+1].subject, byte for
-     * byte -- otherwise any holder of a valid end-entity cert could mint a
-     * "child" cert for an arbitrary domain and pass the signature checks. */
-    for (int i = 0; i + 1 < n; i++) {
-        if (!certs[i+1].is_ca) return X509_E_UNTRUSTED;
-        if (certs[i].issuerlen != certs[i+1].subjectlen ||
-            memcmp(certs[i].issuer, certs[i+1].subject, certs[i].issuerlen) != 0)
-            return X509_E_UNTRUSTED;
-        if (x509_verify_signed_by(&certs[i], &certs[i+1]) != X509_OK) return X509_E_SIG;
+/* PATH BUILDING, not order assumption.
+ *
+ * The pre-2026-08-30 code required certs[] to arrive as a strictly ordered
+ * chain: certs[i] signed by certs[i+1], issuer Name equal to the next Subject,
+ * and the last certificate already at the trust boundary. That is what RFC
+ * 8446 4.4.2 says a server SHOULD send. It is not what real servers send.
+ *
+ * MEASURED, 2026-08-30, against the live wire (tests/fixtures/tls/):
+ * misc.360buyimg.com and static.360buyimg.com -- two of jd.com's three static
+ * CDNs -- send [leaf, intermediate, intermediate] with the intermediate
+ * DUPLICATED, while storage.360buyimg.com and www.jd.com send [leaf,
+ * intermediate] for the same *.jd.com certificate. The strict reader died on
+ * link 2 of the duplicate flight: certs[2] (the copy) is not the GlobalSign
+ * root, so the issuer-name check returned X509_E_UNTRUSTED and every
+ * subresource on those two CDNs failed with "TLS refused" while the host and
+ * the third CDN worked. Reproduced from the host by the real client in
+ * test-tls-chain-live: "chain of 3 rejected for misc.360buyimg.com: no path
+ * to a trusted root (-3)".
+ *
+ * So this walks the same way a real path builder does: start at the leaf,
+ * repeatedly find a parent among ALL the certificates the server sent (used
+ * entries excluded), and stop as soon as the current certificate reaches a
+ * trust anchor -- either its key IS a held root's key (is_pinned_root, the
+ * in-band self-signed form) or its signature verifies under one
+ * (signed_by_root, the common leaf+intermediate-only flight). The signature
+ * check is part of parent SELECTION, not a separate pass, so the name-binding
+ * property the old comment argued for is preserved exactly: a same-named
+ * certificate whose key did not sign the child is skipped, not trusted.
+ *
+ * Deliberately NOT done: no AIA/URL fetching of missing intermediates (a
+ * leaf-only flight with an unstapled intermediate still fails -- it fails
+ * closed, and fetching HTTP inside a certificate verifier is an SSRF-shaped
+ * feature this machine does not want); no cross-signature exploration beyond
+ * what the flight itself carries (both cross-signed and self-signed forms of
+ * a held root in one flight terminate at whichever is reached first, because
+ * both reach is_pinned_root/signed_by_root). keyUsage (id-kp-keyCertSign on
+ * a CA) and BasicConstraints pathLenConstraint are not parsed either:
+ * struct cert carries is_ca and nothing finer, the strict-order code this
+ * replaces checked exactly that much, and widening the parser for
+ * constraints no measured flight exercises is a separate change with its own
+ * gates -- this rewrite must not widen the trust surface it inherited, only
+ * stop refusing flights real servers actually send.
+ *
+ * SIDE EFFECT: on success, certs[] is REORDERED IN PLACE into path order.
+ * Both callers rely on this: tls.c/tls12.c hand the SAME array to
+ * tls_check_staple afterwards, and the OCSP CertID is hashes of the ISSUER's
+ * name and key -- with a duplicate or out-of-order flight, flight position 1
+ * is not necessarily the leaf's issuer, and a GOOD staple about the leaf
+ * would be refused against the wrong issuer (OCSP_E_CERTID, fatal). After the
+ * reorder, certs[1] IS the issuer the path actually used. */
+int x509_verify_chain(struct cert *certs, int n, const char *host, int64_t now,
+                      int *pathlen)
+{
+#ifdef LOGIT_X509_BREAK_TRUSTALL
+    /* NEGATIVE CONTROL (test-tls-chain-negctl). Trust whatever arrives: skip
+     * path building, link signatures and the anchor search entirely. This is
+     * the one-line shape of every "chain verification" that verifies nothing,
+     * and the case the fixture gate must catch from both directions -- a
+     * well-formed-but-false chain ACCEPTED, and a wrong-host leaf ACCEPTED.
+     * Nothing else in the tree changes behaviour under this define. */
+    if (pathlen) *pathlen = n < 1 ? 0 : n;
+    (void)host; (void)now;
+    return n >= 1 ? X509_OK : X509_E_PARSE;
+#endif
+    /* Both flight readers cap their arrays at 8; this function is public, so
+     * the bound is enforced here rather than trusted. Entries past it are
+     * unusable parents, which fails closed rather than reading past the array.
+     */
+    if (n > 8) n = 8;
+    if (n < 1) return X509_E_PARSE;
+    if (!name_ok(&certs[0], host)) return X509_E_NAME;
+
+    uint8_t used[8] = {0};
+    struct cert path[8];
+    path[0] = certs[0];
+    int plen = 1;
+
+    for (;;) {
+        struct cert *cur = &path[plen - 1];
+        /* Validity is checked per certificate as it JOINS the path, not over
+         * the whole flight: an expired certificate the server appended but the
+         * path never used must not speak for certificates that are in date
+         * (the old code refused the whole flight for one dead bystander). */
+        if (now < cur->not_before || now > cur->not_after) return X509_E_EXPIRED;
+
+        int sig_seen = 0;
+        int j = find_parent(certs, n, cur, used, &sig_seen);
+        if (j >= 0) {
+            used[j] = 1;
+            path[plen++] = certs[j];
+            continue;
+        }
+        /* No parent left in the flight: the path is complete only if the top
+         * reaches an anchor we hold. */
+        if (is_pinned_root(cur) || signed_by_root(cur)) break;
+        /* If some certificate CLAIMED the issuer Name and failed to verify,
+         * that is a bad signature, not a missing path -- say so, it is the
+         * more specific fact. */
+        if (sig_seen) return X509_E_SIG;
+        return X509_E_UNTRUSTED;
     }
 
-    /* top of chain: trusted if it IS a root we hold (sent in-band), or if its
-     * issuer is one of our roots (i.e. a held root key signed it). */
-    const struct cert *top = &certs[n-1];
-    if (is_pinned_root(top)) return X509_OK;
-    if (signed_by_root(top)) return X509_OK;
-    return X509_E_UNTRUSTED;
+    for (int i = 0; i < plen; i++) certs[i] = path[i];
+    if (pathlen) *pathlen = plen;   /* the path can be shorter than the flight */
+    return X509_OK;
 }

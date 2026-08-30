@@ -380,8 +380,10 @@ int  tls_group_supported13(int grp);      /* the above plus the PQ hybrid */
 const char *tls_group_name(int grp);
 
 /* Chain verification + the "say WHY it was refused" logging, shared by both
- * versions. 0 = fully trusted, TLS_E_CERT otherwise. */
-int  tls_check_chain(struct tls_sess *s, const struct cert *chain, int ncert);
+ * versions. 0 = fully trusted, TLS_E_CERT otherwise. *ncert is in/out: out it
+ * is the verified PATH length (x509_verify_chain reorders chain[] in place --
+ * chain[1] is then the leaf's true issuer, which the staple check needs). */
+int  tls_check_chain(struct tls_sess *s, struct cert *chain, int *ncert);
 
 /* The stapled-OCSP decision, shared by both versions. `staple` may be NULL
  * (most servers do not staple), which is not an error -- see ocsp.h for the

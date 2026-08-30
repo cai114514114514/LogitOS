@@ -66,11 +66,21 @@ int x509_der_sig_to_rs(const uint8_t *sig, int len, uint8_t *rs, int flen);
  * the one place where the obvious `curve/8` is wrong, and wrong silently. */
 int x509_ec_flen(int curve);
 
-/* Verify a chain certs[0..n-1] (leaf first): each signed by the next, the top
- * signed by (or equal to) a built-in trusted root, plus host-name and validity
- * checks against `host` and `now` (unix seconds). Returns 0 if fully trusted,
- * <0 with a reason code otherwise. */
-int x509_verify_chain(const struct cert *certs, int n, const char *host, int64_t now);
+/* Verify a chain given as certs[0..n-1] with the LEAF FIRST and everything
+ * else in ANY order -- real flights carry duplicated and out-of-order
+ * intermediates (see the path-building comment in x509.c). Walks from the
+ * leaf, name-and-signature-binds each link, and requires the top to reach a
+ * built-in trusted root; plus host-name and validity checks against `host`
+ * and `now` (unix seconds).
+ *
+ * On success certs[] is REORDERED IN PLACE into path order (leaf first, each
+ * signed by the next) and *pathlen -- when not NULL -- receives the path
+ * length, which can be SHORTER than n: certificates the path never used stay
+ * beyond it and must not be read as chain members by the caller (the OCSP
+ * staple check reads chain[1] as "the issuer").
+ * Returns 0 if fully trusted, <0 with a reason code otherwise. */
+int x509_verify_chain(struct cert *certs, int n, const char *host, int64_t now,
+                      int *pathlen);
 
 #define X509_OK            0
 #define X509_E_PARSE      -1

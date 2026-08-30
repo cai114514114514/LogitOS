@@ -1,0 +1,14 @@
+# handshake facts for www.jd.com captured 2026-08-30T04:49:29Z
+# command: openssl s_client -connect www.jd.com:443 -servername www.jd.com -showcerts </dev/null
+depth=2 OU = GlobalSign Root CA - R3, O = GlobalSign, CN = GlobalSign
+depth=1 C = BE, O = GlobalSign nv-sa, CN = GlobalSign RSA OV SSL CA 2018
+depth=0 C = CN, ST = Beijing, L = Beijing, O = "BEIJING JINGDONG SHANGKE INFORMATION TECHNOLOGY CO., LTD.", CN = *.jd.com
+ 0 s:/C=CN/ST=Beijing/L=Beijing/O=BEIJING JINGDONG SHANGKE INFORMATION TECHNOLOGY CO., LTD./CN=*.jd.com
+   i:/C=BE/O=GlobalSign nv-sa/CN=GlobalSign RSA OV SSL CA 2018
+ 1 s:/C=BE/O=GlobalSign nv-sa/CN=GlobalSign RSA OV SSL CA 2018
+   i:/OU=GlobalSign Root CA - R3/O=GlobalSign/CN=GlobalSign
+Server Temp Key: ECDH, X25519, 253 bits
+New, TLSv1/SSLv3, Cipher is AEAD-AES256-GCM-SHA384
+    Protocol  : TLSv1.3
+    Cipher    : AEAD-AES256-GCM-SHA384
+    Verify return code: 0 (ok)
