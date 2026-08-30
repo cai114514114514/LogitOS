@@ -237,6 +237,29 @@ int js_module_eval(const char *src, int len, const char *url)
 {
     JSContext *ctx = js_page_ctx();
     if (!ctx || !src || !url) return 0;
+#ifdef FRMW_NEGCTL_NOMODULE
+    /* The negative control for tests/fragmk.mk's guest gate, and the choice
+     * of switch is the point: it does not stub the loader, or fetch and drop
+     * the bytes, or mis-resolve one specifier -- it makes this function a
+     * no-op, which is EXACTLY the state this file replaced (qmp_module_page.py
+     * documents that era: every <script type=module> was evaluated as a
+     * classic script, `import` at byte 0 was a SyntaxError, and the whole
+     * class of module-shipped sites had zero JavaScript running while the
+     * HTML-construction score said 1723/1818). With the switch on, the five
+     * module-driven corpus apps mount nothing while webpack (defer) and next
+     * (classic async) still mount, so the gate reads 2 of 7 against a bar of
+     * 5 -- a control that takes the number BELOW the bar rather than to zero,
+     * because a gate that can only fail to zero also passes any
+     * partial-silence defect. Measured in the guest 2026-08-30: red build
+     * mounts 2/7 (webpack + next -- the two classic-script apps), shipped
+     * build 7/7. The reporter the gate reads is deliberately a CLASSIC
+     * inline script for exactly this reason: a module-shaped reporter dies
+     * with this switch and the control reads 0/7, which cannot be told apart
+     * from a broken driver. */
+    (void)ensure_installed; (void)mod_normalize; (void)mod_loader;
+    (void)set_import_meta; (void)report;
+    return 0;
+#endif
     js_page_slice_begin();           /* a module body is one CPU slice too */
     ensure_installed(ctx);
 
