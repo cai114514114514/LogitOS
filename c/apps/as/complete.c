@@ -80,7 +80,14 @@ static const char *const SYSCONSTS[] = {
      * user their picture is a folder. */
     "LST_IFMT","LST_IFREG","LST_IFDIR","LST_IFLNK",
     /* M28 capability classes (mirrors as_native.c's as_define_int block). */
-    "CAP_FS_READ","CAP_FS_WRITE","CAP_NET","CAP_PROC","CAP_GUI","CAP_RAW", 0
+    "CAP_FS_READ","CAP_FS_WRITE","CAP_NET","CAP_PROC","CAP_GUI","CAP_RAW",
+    /* SYS_FTRUNCATE (storage wave, 2026-08-30): the storage-kernel agent died
+     * between spelling the constant in as_native.c/abi (syscall 189) and here,
+     * which check-asops reddens every fresh BUILD tree on -- one jar, two
+     * doors; the mirror half landed by orchestrator arbitration so six
+     * packages could build. If the storage package ever drops ftruncate, both
+     * spellings must go in the same commit. */
+    "SYS_FTRUNCATE", 0
 };
 static const char *const LIST_METHODS[] = { "append", 0 };
 static const char *const DICT_METHODS[] = { "get","has","keys","values","remove", 0 };
