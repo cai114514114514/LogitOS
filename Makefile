@@ -5029,6 +5029,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/license.mk
 -include tests/mjpeg.mk
 -include tests/ssh.mk
+-include tests/ssh_attack.mk
 -include tests/sysroot.mk
 -include tests/tcc.mk
 -include tests/vp9.mk
@@ -5080,3 +5081,4 @@ test-mk-wired:
 -include tests/testdebt.mk
 -include tests/crashhunt.mk
 -include tests/webaccel.mk
+-include tests/grender.mk
