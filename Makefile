@@ -5078,3 +5078,5 @@ test-mk-wired:
 -include tests/anim.mk
 -include tests/storage.mk
 -include tests/testdebt.mk
+-include tests/crashhunt.mk
+-include tests/webaccel.mk
