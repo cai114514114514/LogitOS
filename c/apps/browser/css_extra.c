@@ -12,10 +12,38 @@
  * selectors match on their last compound) and inline style= attributes, and
  * matching nodes' cstyle is patched after css_apply. @media blocks are gated
  * on the viewport width (min/max-width only), so tiered rules like Bilibili's
- * repeat(2..17,1fr) breakpoints apply only in their tier. */
+ * repeat(2..17,1fr) breakpoints apply only in their tier.
+ *
+ * [2026-08-30] The same scan now also captures @keyframes rules (into the
+ * css_kf table, css.h) and the animation/transition SHORTHAND values
+ * (cstyle.anim_raw/trans_raw) for the animation clock in js_anim.c; see the
+ * keyframes_scan() block below. The old "no animation clock, approximate the
+ * end state" note two comments down is corrected in place there. */
 #include <string.h>
+#include <stdio.h>
 #include "css.h"
 #include "dom.h"
+/* The animation-clock hook at the bottom of css_extra_apply is weak: this
+ * file is linked into eighteen host source lists that carry neither
+ * js_anim.c nor a DOM to clock, and the stub (not a NULL test -- see
+ * weaksym.h's Mach-O half) keeps those links whole. */
+#include "../../../include/weaksym.h"
+
+/* The allocator the @keyframes table and the rule cache grow through, and
+ * the serial line the keyframe-cap report prints. Declared at the TOP
+ * because keyframes_scan (~80 lines down) allocates and the cap report in
+ * compile_sheet prints -- both BEFORE the compile section that used to be
+ * the only user, and the recovered half-edit left them below their first
+ * use. stdio is linked everywhere this TU is (mini-libc in the guest, the
+ * host libc on every host list). */
+void *kmalloc(unsigned long);
+void  kfree(void *);
+
+/* css_anim_note: defined in js_anim.c (the engine), called from here once
+ * per css_extra_apply so the engine can adopt/retire clocked elements the
+ * moment the cascade -- not a later tick -- changes what is animated. */
+void css_anim_note(struct node *root) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_anim_note);
 
 static int spc(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 static int ident(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -277,6 +305,19 @@ struct xpatch {
     int gx_set, gx, gy_set, gy;
     int anim;                               /* 0 = untouched, 1 = animated, -1 = none */
     int trans_op;                           /* transition declares opacity/all */
+    /* The `animation` / `transition` SHORTHAND VALUES, as spans. Longhands
+     * (animation-duration on its own, transition-property lists, ...) are
+     * DELIBERATELY NOT CAPTURED: the engine would have to merge shorthand
+     * components with per-longhand overrides under css_extra's source-order
+     * scan, which is a second cascade with the wrong specificity semantics,
+     * and a merged-wrong timing is worse than the end-state fallback that
+     * a longhand-only sheet keeps. Sheets that spell the shorthand animate;
+     * sheets that do not keep today's behaviour. Stated here so the next
+     * reader finds a decision, not a gap. */
+    const char *anim_raw;
+    int         anim_rawlen;
+    const char *trans_raw;
+    int         trans_rawlen;
     int lg_set[LGX__COUNT], lg[LGX__COUNT]; /* logical properties, resolved to physical */
     /* The grid properties, kept as TEXT rather than values -- see the
      * grid_raw[] comment in css.h for why, and for the lifetime rule these
@@ -497,6 +538,12 @@ static void gr_drop(struct xpatch *p)
      * happens to occupy those bytes now. */
     for (int g = 0; g < XR__COUNT; g++) { p->xr[g] = 0; p->xr_len[g] = 0; }
     p->xr_any = 0;
+    /* The animation/transition shorthands point there too, and their failure
+     * mode is nastier than a wrong shadow: the engine would parse a STALE
+     * `animation:` as a real timing and clock a real element with it. On
+     * this path the element simply keeps the end-state approximation. */
+    p->anim_raw = 0; p->anim_rawlen = 0;
+    p->trans_raw = 0; p->trans_rawlen = 0;
 }
 
 /* ---- the PAINT declarations: transform, box-shadow, gradients ------------
@@ -778,6 +825,21 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     parse_logical(d, dlen, p);
     p->anim = decls_anim(d, dlen);
     p->trans_op = decls_trans_op(d, dlen);
+    /* The shorthand spans the clock resolves. !important is cut the way
+     * decls_anim cuts it -- the clock neither knows nor cares about the
+     * cascade layer, it only needs the value. */
+    if (find_decl(d, dlen, "animation", &vs, &ve)) {
+        for (int i = vs; i < ve; i++) if (d[i] == '!') { ve = i; break; }
+        while (vs < ve && spc(d[vs])) vs++;
+        while (ve > vs && spc(d[ve-1])) ve--;
+        if (ve > vs) { p->anim_raw = d + vs; p->anim_rawlen = ve - vs; }
+    }
+    if (find_decl(d, dlen, "transition", &vs, &ve)) {
+        for (int i = vs; i < ve; i++) if (d[i] == '!') { ve = i; break; }
+        while (vs < ve && spc(d[vs])) vs++;
+        while (ve > vs && spc(d[ve-1])) ve--;
+        if (ve > vs) { p->trans_raw = d + vs; p->trans_rawlen = ve - vs; }
+    }
 }
 
 /* ONE compound selector (no combinators) taken apart: [tag][#id][.cls][.cls].
@@ -1061,6 +1123,21 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     if (p->anim > 0) st->anim = 1;
     else if (p->anim < 0) st->anim = 0;
     if (p->trans_op) st->trans_op = 1;
+    /* The shorthand spans, per-property like the grid/paint spans above: a
+     * rule that sets only `animation` must not erase the `transition` a
+     * sibling rule set, and vice versa. */
+    if (p->anim_raw) {
+        int l = p->anim_rawlen;
+        if (l > 0xffff) l = 0xffff;
+        st->anim_raw = p->anim_raw;
+        st->anim_rawlen = (unsigned short)l;
+    }
+    if (p->trans_raw) {
+        int l = p->trans_rawlen;
+        if (l > 0xffff) l = 0xffff;
+        st->trans_raw = p->trans_raw;
+        st->trans_rawlen = (unsigned short)l;
+    }
 }
 
 static void walk(struct node *n, const char *sel, int slen, const struct xpatch *p)
@@ -1106,9 +1183,25 @@ static void walk_x(struct node *n, const struct xsel *x, const char *sel, int sl
 }
 
 /* opacity:0 + animation/opacity-transition -> the end state is visible (we
- * have no animation clock, so approximate the static end state): clear the
- * hidden flag opacity:0 set. Only when the hide came from opacity alone --
- * hover-reveal menus also carry visibility:hidden and stay hidden. */
+ * [2026-08-30: HAD no animation clock, so this approximated the static end
+ * state; the clock now exists -- js_anim.c part 2, driven from js_page.c's
+ * deadline queue -- and for an animation the engine's overlay owns opacity
+ * per tick, starting at the 0% frame. This walk stays, and keeps its old
+ * meaning, for everything the clock does NOT take over: a transition that
+ * never starts, an @keyframes name that does not exist, a sheet spelled in
+ * longhands the capture declines, an element past the engine's cap, or any
+ * host link without js_anim.c at all]): clear the hidden flag opacity:0 set.
+ * Only when the hide came from opacity alone -- hover-reveal menus also
+ * carry visibility:hidden and stay hidden.
+ *
+ * NOTE, found while gating the clock (tests/fixtures/anim/static.html,
+ * verified against the pre-clock build): this walk clears the hidden FLAG
+ * and never the alpha, and the painter multiplies st->opacity either way,
+ * so as PAINTED this approximation has always been a no-op -- the element
+ * keeps alpha 0. It is kept unchanged rather than "fixed" to also clear the
+ * alpha: making it paint-visible would change pixels on real corpus pages
+ * that were measured into the tree as invisible, and that is a corpus
+ * measurement to make, not a side effect of the clock landing. */
 static void walk_anim(struct node *n)
 {
     struct cstyle *st = n->style;
@@ -1183,6 +1276,198 @@ static int media_active_at(int s)
     return 1;
 }
 
+/* ---- @keyframes, captured --------------------------------------------------
+ *
+ * `@keyframes` is ABSENT from our vendored LibCSS's grammar (checked: no
+ * match anywhere in third_party/css/libcss/src/parse/), so LibCSS drops each
+ * one through the unknown-at-rule funnel css_report.c counts as drop_atrule,
+ * and this scan -- run over the same private copy the rule cache compiles
+ * into -- is an animation's only possible producer. css_report.c is another
+ * line's file, so its funnel still counts these as dropped even now that
+ * something consumes them; that is a REPORTED GAP, not an invisible one (see
+ * the anim gate's report, 2026-08-30).
+ *
+ * Storage rides the rule cache's lifecycle exactly: kmalloc'd with the
+ * compile, kfree'd by compile_drop(), spans pointing into g_src. The
+ * GENERATION counter is the engine's dangling-span guard: cstyle.anim_raw
+ * and every stop's decls point into g_src, which a viewport change frees
+ * and recompiles out from under a mid-flight animation, so the engine
+ * stores the generation per entry and retires everything when it moves.
+ *
+ * CAPS, and what hitting one does: CSS_KF_MAXRULE rules and
+ * CSS_KF_MAXSTOP stops per rule are kept; the excess is dropped, COUNTED
+ * (css_keyframes_dropped), and printed once per compile -- an animation
+ * whose @keyframes were truncated runs on the stops that survived, which
+ * is a shorter or jumpier curve, never a wrong one. 64 rules covers the
+ * largest sheet in tests/fixtures/cssweb by an order of magnitude. */
+static struct css_kf *g_kf;
+static int            g_nkf;
+static int            g_kf_droprule, g_kf_dropstop;
+static int            g_sheet_gen;
+/* The compiled sheet text every keyframe span points into. Declared HERE
+ * and not down with its owner (g_srclen/g_rules in the compile section)
+ * because keyframes_scan walks it ~80 lines above that section: the
+ * half-edit this file was recovered from had the uses first and the
+ * declaration last, which is 20 use-before-declaration errors that a warm
+ * object file hid for a whole afternoon (the orchestrator's "tree builds"
+ * check ran against pre-edit .o files). Ownership stays the compile
+ * section's -- allocated by compile_sheet, freed by compile_drop, lifetime
+ * under the comment at the declaration site of g_srclen below. */
+static char          *g_src;
+
+int css_extra_sheet_gen(void) { return g_sheet_gen; }
+void css_keyframes_dropped(int *rules, int *stops)
+{
+    if (rules) *rules = g_kf_droprule;
+    if (stops) *stops = g_kf_dropstop;
+}
+
+int css_keyframes_find(const char *name, int len, const struct css_kf **out)
+{
+    if (!name || len <= 0 || !out) return 0;
+    if (len >= CSS_KF_NAME) return 0;        /* longer than we store: not found */
+    for (int i = 0; i < g_nkf; i++)
+        if ((int)strlen(g_kf[i].name) == len && !memcmp(g_kf[i].name, name, (size_t)len)) {
+            *out = &g_kf[i];
+            return 1;
+        }
+    return 0;
+}
+
+/* One keyframe selector token -> per-mille offset, or -1.
+ * `from`/`to` are the spellings every sheet uses; percentages carry up to
+ * two decimals in the wild (`33.33%`), which is why the unit is per-mille
+ * and not percent. */
+static int kf_offset(const char *s, int len)
+{
+    while (len > 0 && spc(s[0])) { s++; len--; }
+    while (len > 0 && spc(s[len-1])) len--;
+    if (len == 4 && !memcmp(s, "from", 4)) return 0;
+    if (len == 2 && !memcmp(s, "to", 2))   return 1000;
+    /* N% with up to two decimals. Milli-units, integer math, truncation
+     * toward zero on the third decimal -- a third decimal in a keyframe
+     * offset is below one part in 100000 of the duration and below the
+     * 20 ms frame the clock can even express. */
+    long long v = 0;
+    int i = 0, digits = 0, frac = 0;
+    if (i < len && (s[i] == '+' || s[i] == '-')) return -1;
+    while (i < len && s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; digits++; }
+    if (!digits) return -1;
+    v *= 1000;
+    if (i < len && s[i] == '.') {
+        i++;
+        long long scale = 100;
+        while (i < len && s[i] >= '0' && s[i] <= '9') {
+            if (scale > 0) { v += (s[i] - '0') * scale; scale /= 10; }
+            i++; frac++;
+        }
+        (void)frac;
+    }
+    if (i + 1 != len || s[i] != '%') return -1;
+    if (v < 0 || v > 100000) return -1;      /* > 100% is not a keyframe offset */
+    return (int)(v / 100);
+}
+
+/* Insert one stop into rule `r`, replacing any stop at the same offset (the
+ * spec's rule for duplicate keyframe selectors: last wins). Returns 0 when
+ * the table is full -- the stop is dropped and counted by the caller. */
+static int kf_push(struct css_kf *r, int off, const char *decls, int dlen)
+{
+    int at = r->nstop;
+    for (int i = 0; i < r->nstop; i++) {
+        if (r->stop[i].off == off) { r->stop[i].decls = decls; r->stop[i].dlen = dlen; return 1; }
+        if (r->stop[i].off > off) { at = i; break; }
+    }
+    if (r->nstop >= CSS_KF_MAXSTOP) { g_kf_dropstop++; return 0; }
+    for (int i = r->nstop; i > at; i--) r->stop[i] = r->stop[i - 1];
+    r->stop[at].off = off;
+    r->stop[at].decls = decls;
+    r->stop[at].dlen = dlen;
+    r->nstop++;
+    return 1;
+}
+
+/* Capture every @keyframes (and @-webkit-keyframes) in the compiled copy.
+ * Returns 0 only on allocation failure, which makes the caller fall back to
+ * the text path -- where no animation runs at all (see gr_drop), i.e. the
+ * honest degradation rather than a half-captured table. */
+static int keyframes_scan(int from, int len)
+{
+    for (int i = from; i < len; i++) {
+        if (g_src[i] != '@') continue;
+        /* Two spellings, checked literally: the standard one and the one
+         * vendor prefix that ever appears beside it in real sheets. A
+         * character-class skip toward "keyframes" would also swallow
+         * @-webkit-TRANSITION and friends, whose blocks are not keyframes. */
+        int k;
+        if (i + 10 <= len && !memcmp(g_src + i + 1, "keyframes", 9) && !ident(g_src[i + 10]))
+            k = i + 10;
+        else if (i + 18 <= len && !memcmp(g_src + i + 1, "-webkit-keyframes", 17) &&
+                 !ident(g_src[i + 18]))
+            k = i + 18;
+        else continue;
+        int name_s = k, brace = name_s;
+        while (brace < len && g_src[brace] != '{' && g_src[brace] != ';') brace++;
+        if (brace >= len || g_src[brace] == ';') continue;
+        while (name_s < brace && spc(g_src[name_s])) name_s++;
+        int name_e = brace;
+        while (name_e > name_s && spc(g_src[name_e-1])) name_e--;
+        int body = brace + 1, depth = 1, j = body;
+        while (j < len && depth) {
+            if (g_src[j] == '{') depth++;
+            else if (g_src[j] == '}') depth--;
+            j++;
+        }
+        int bodyend = j - 1;
+        /* An @keyframes inside an inactive @media block is not in effect;
+         * skip it whole, exactly like an inactive rule. */
+        if (name_e > name_s && name_e - name_s < CSS_KF_NAME && media_active_at(i)) {
+            if (g_nkf >= CSS_KF_MAXRULE) {
+                g_kf_droprule++;
+            } else if (!g_kf) {
+                g_kf = kmalloc((unsigned long)CSS_KF_MAXRULE * sizeof *g_kf);
+                if (!g_kf) return 0;
+            }
+            if (g_kf && g_nkf < CSS_KF_MAXRULE) {
+                struct css_kf *r = &g_kf[g_nkf++];
+                memset(r, 0, sizeof *r);
+                for (int q = 0; q < name_e - name_s; q++) r->name[q] = g_src[name_s + q];
+                r->name[name_e - name_s] = 0;
+                /* The stops: `sel,sels { decls }` repeated to the body's end. */
+                int p = body;
+                while (p < bodyend) {
+                    while (p < bodyend && (spc(g_src[p]) || g_src[p] == '}')) p++;
+                    int sel_s = p;
+                    while (p < bodyend && g_src[p] != '{') p++;
+                    if (p >= bodyend) break;
+                    int sel_e = p;
+                    p++;
+                    int d = p, d2 = 1;
+                    while (p < bodyend && d2) {
+                        if (g_src[p] == '{') d2++;
+                        else if (g_src[p] == '}') d2--;
+                        p++;
+                    }
+                    int dl = p - 1 - d;
+                    /* The selector list: every comma alternative is its own
+                     * stop at its own offset (CSS 5.4.1: "0%, 50%" applies
+                     * the block at both). */
+                    int t = sel_s;
+                    while (t < sel_e) {
+                        while (t < sel_e && (spc(g_src[t]) || g_src[t] == ',')) t++;
+                        int one_s = t;
+                        while (t < sel_e && g_src[t] != ',') t++;
+                        int off = kf_offset(g_src + one_s, t - one_s);
+                        if (off >= 0 && dl > 0) kf_push(r, off, g_src + d, dl);
+                    }
+                }
+            }
+        }
+        i = bodyend;              /* the whole rule is consumed either way */
+    }
+    return 1;
+}
+
 /* ---------------- the sheet, COMPILED once ----------------
  *
  * Everything above this line -- media_scan, the rule loop, parse_decls with its
@@ -1208,8 +1493,8 @@ static int media_active_at(int s)
  * be reused at another. A private copy of the source is kept because the
  * selector spans point into it and the caller rewrites its buffer in place. */
 struct xrule { int sel, slen; struct xsel x; struct xpatch p; };
-static char        *g_src;
-static int          g_srclen;
+static int          g_srclen;          /* g_src itself is declared up with the
+                                        * keyframes block, above keyframes_scan */
 static struct xrule *g_rules;
 static int          g_nrules, g_rulecap;
 static int          g_compiled;
@@ -1218,14 +1503,19 @@ static int          g_compiles;            /* test seam; see css_extra_compiles(
 
 int css_extra_compiles(void) { return g_compiles; }
 
-void *kmalloc(unsigned long);
-void  kfree(void *);
-
 static void compile_drop(void)
 {
     if (g_src)   { kfree(g_src);   g_src = 0; }
     if (g_rules) { kfree(g_rules); g_rules = 0; }
+    if (g_kf)    { kfree(g_kf);    g_kf = 0; }
     g_srclen = g_nrules = g_rulecap = g_compiled = 0;
+    g_nkf = 0;
+    g_kf_droprule = g_kf_dropstop = 0;
+    /* The generation bump is the ENGINE's dangling-span guard: every
+     * cstyle.anim_raw and every stop's decls point into the g_src this just
+     * freed, so a mid-flight animation must notice the world moved under
+     * it (css_extra_sheet_gen, compared per entry in js_anim.c). */
+    g_sheet_gen++;
 }
 
 static int rules_push(int sel, int slen, const struct xpatch *p)
@@ -1271,11 +1561,38 @@ static int compile_sheet(const char *css, int len)
     g_key_vw = vw; g_key_vh = vh; g_key_dark = dark;
 
     media_scan(g_src, len);
+    if (!keyframes_scan(0, len)) { compile_drop(); return 0; }
+    if (g_kf_droprule || g_kf_dropstop)
+        printf("[css] @keyframes: kept %d rule(s); dropped %d rule(s), %d stop(s) "
+               "for want of table space\n", g_nkf, g_kf_droprule, g_kf_dropstop);
     int i = 0;
     while (i < len) {
         while (i < len && (spc(g_src[i]) || g_src[i] == '}')) i++;
         if (i >= len) break;
-        if (g_src[i] == '@') { while (i < len && g_src[i] != '{') i++; if (i < len) i++; continue; }
+        if (g_src[i] == '@') {
+            /* @keyframes blocks were consumed whole by keyframes_scan; their
+             * `from {}` / `50% {}` inner selectors are NOT element selectors
+             * and must not become rules. Every other at-rule keeps the old
+             * behaviour: step past the header and let the loop scan inside,
+             * which is how rules nested in @supports/@font-face still apply. */
+            int is_kf = (i + 10 <= len && !memcmp(g_src + i + 1, "keyframes", 9) &&
+                         !ident(g_src[i + 10])) ||
+                        (i + 18 <= len && !memcmp(g_src + i + 1, "-webkit-keyframes", 17) &&
+                         !ident(g_src[i + 18]));
+            if (is_kf) {
+                while (i < len && g_src[i] != '{') i++;
+                int depth = 1; i++;
+                while (i < len && depth) {
+                    if (g_src[i] == '{') depth++;
+                    else if (g_src[i] == '}') depth--;
+                    i++;
+                }
+                continue;
+            }
+            while (i < len && g_src[i] != '{') i++;
+            if (i < len) i++;
+            continue;
+        }
         int s = i;
         while (i < len && g_src[i] != '{') i++;
         if (i >= len) break;
@@ -1288,6 +1605,7 @@ static int compile_sheet(const char *css, int len)
         struct xpatch p;
         parse_decls(g_src + d, dlen, &p);
         if (p.do_none || p.do_masked || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
+            p.anim_raw || p.trans_raw ||
             p.gr_any || p.xr_any || xpatch_has_logical(&p))
             if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
     }
@@ -1339,14 +1657,24 @@ int css_extra_rules(void) { return g_compiled ? g_nrules : -1; }
 void css_extra_apply(struct node *root, const char *css, int len)
 {
     if (!root) return;
-    if (!css || len <= 0) { walk_inline(root); walk_anim(root); return; }
-    if (compile_sheet(css, len))
+    if (!css || len <= 0) { walk_inline(root); walk_anim(root); }
+    else if (compile_sheet(css, len))
         for (int r = 0; r < g_nrules; r++)
             walk_x(root, &g_rules[r].x, g_src + g_rules[r].sel, g_rules[r].slen, &g_rules[r].p);
     else
         apply_uncompiled(root, css, len);       /* out of memory: scan as before */
     walk_inline(root);
     walk_anim(root);
+    /* The clock's post-cascade hook, LAST so the engine sees the same
+     * cstyle the painter will: it re-applies the current animated values
+     * (a cascade that just overwrote them must not flash the base value
+     * for one frame), adopts newly-animated elements, retires un-animated
+     * ones, and starts transitions where css_anim_snapshot() -- taken by
+     * browser.c BEFORE the cascade -- disagrees with what it just applied.
+     * Weak: on the host lists without js_anim.c this is the stub and the
+     * end-state approximation above is the whole answer, exactly as it
+     * was before the clock existed. */
+    if (LOGIT_HAVE(css_anim_note)) css_anim_note(root);
 }
 
 /* ======================================================================
