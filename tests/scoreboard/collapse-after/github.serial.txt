@@ -1,0 +1,1242 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +14/s worstgap=327068us missed=170 of 2097 expected (8.106% of the clock); uptime 21s
+[wm] perf t=21807 composites=175 ns=2438117750 max=160508195 motions=18 curmoves=12 curns=274998 full=19 rects=176 cpx=55651888 fpx=55651888 presns=164089166 torn=0 defer=41 late=0 drawmax=346 evdrop=0
+[browser] load: https://github.com/
+[sock] connected github.com via ipv4 ::ffff:198.18.0.96
+[time] tickloss +22/s worstgap=327068us missed=192 of 2195 expected (8.747% of the clock); uptime 22s
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for github.com, alpn=http/1.1
+[netlock] acq 112635 recursive 37 maxdepth 3 violations 0
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 1 cached)
+[tls] ticket stored for github.com (32 bytes, lifetime 7200s, 2 cached)
+[net] rx path: frames 66 irq 34 softirq 15 inline 1 poll 2 idle 0/0 halt/skip
+[mm] low: 113190 frames free (442 MiB), 17847 used, 585 shared, 0 bugs
+[mm] low: 112934 frames free (441 MiB), 18103 used, 596 shared, 0 bugs
+[mm] low: 112678 frames free (440 MiB), 18359 used, 597 shared, 0 bugs
+[mm] low: 112422 frames free (439 MiB), 18615 used, 597 shared, 0 bugs
+[mm] low: 112166 frames free (438 MiB), 18871 used, 613 shared, 0 bugs
+[mm] low: 111910 frames free (437 MiB), 19127 used, 613 shared, 0 bugs
+[mm] low: 111654 frames free (436 MiB), 19383 used, 613 shared, 0 bugs
+[mm] low: 111398 frames free (435 MiB), 19639 used, 613 shared, 0 bugs
+[mm] low: 111142 frames free (434 MiB), 19895 used, 613 shared, 0 bugs
+[mm] low: 110886 frames free (433 MiB), 20151 used, 613 shared, 0 bugs
+[mm] low: 110630 frames free (432 MiB), 20407 used, 613 shared, 0 bugs
+[mm] low: 110374 frames free (431 MiB), 20663 used, 613 shared, 0 bugs
+[mm] low: 110118 frames free (430 MiB), 20919 used, 613 shared, 0 bugs
+[mm] low: 109862 frames free (429 MiB), 21175 used, 613 shared, 0 bugs
+[dl] painted text: 89 run(s), 467 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 content
+[dl] 8,132 Navigation
+[dl] 139,132 Menu
+[dl] 8,262 Sign
+[dl] 42,262 in
+[dl] 14,290 •
+[dl] 42,294 Platform
+[dl] 49,326 ◦
+[dl] 64,326 AI
+[dl] 80,326 CODE
+[dl] 124,326 CREATION
+[dl] 76,354 ▪
+[dl] 108,354 GitHub
+[dl] 161,354 Copilot
+[dl] 212,354 Write
+[dl] 253,354 better
+[dl] 299,354 code
+[dl] 336,354 with
+[dl] 370,354 AI
+[dl] 76,374 ▪
+[dl] 108,374 GitHub
+[dl] 161,374 Copilot
+[dl] 215,374 app
+[dl] 242,374 Direct
+[dl] 288,374 agents
+[dl] 339,374 from
+[dl] 376,374 issue
+[dl] 414,374 to
+[dl] 432,374 merge
+[dl] 76,394 ▪
+[dl] 108,394 MCP
+[dl] 143,394 Registry
+[dl] 201,394 Integrate
+[dl] 269,394 external
+[dl] 329,394 tools
+[dl] 49,430 ◦
+[dl] 64,430 DEVELOPER
+[dl] 153,430 WORKFLOWS
+[dl] 76,458 ▪
+[dl] 108,458 Actions
+[dl] 160,458 Automate
+[dl] 233,458 any
+[dl] 262,458 workflow
+[dl] 76,478 ▪
+[dl] 108,478 Codespaces
+[dl] 192,478 Instant
+[dl] 245,478 dev
+[dl] 273,478 environments
+[dl] 76,498 ▪
+[dl] 108,498 Issues
+[dl] 150,498 Plan
+[dl] 185,498 and
+[dl] 215,498 track
+[dl] 255,498 work
+[dl] 76,518 ▪
+[dl] 108,518 Code
+[dl] 147,518 Review
+[dl] 197,518 Manage
+[dl] 256,518 code
+[dl] 293,518 changes
+[dl] 76,538 ▪
+[dl] 108,538 Code
+[dl] 147,538 Quality
+[dl] 198,538 Enforce
+[dl] 255,538 quality
+[dl] 307,538 at
+[dl] 325,538 merge
+[dl] 49,574 ◦
+[dl] 64,574 APPLICATION
+[dl] 162,574 SECURITY
+[dl] 76,602 ▪
+[dl] 108,602 GitHub
+[dl] 161,602 Advanced
+[dl] 233,602 Security
+[dl] 291,602 Find
+[dl] 324,602 and
+[dl] 354,602 fix
+[dl] 373,602 vulnerabilities
+[dl] 76,622 ▪
+[dl] 108,622 Code
+[dl] 147,622 security
+[dl] 203,622 Secure
+[dl] 254,622 your
+[dl] 289,622 code
+[dl] 326,622 as
+[dl] 345,622 you
+[dl] 374,622 build
+[dl] ---8<--- end painted text
+[sock] connected github.githubassets.com via ipv4 ::ffff:198.18.0.97
+[wm] perf t=25826 composites=189 ns=2487508501 max=160508195 motions=18 curmoves=12 curns=274998 full=19 rects=190 cpx=56709348 fpx=56709348 presns=167288149 torn=0 defer=47 late=0 drawmax=346 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[time] tickloss +7/s worstgap=327068us missed=199 of 2594 expected (7.671% of the clock); uptime 26s
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[tls] chain of 3 verified for github.githubassets.com, alpn=http/1.1
+[tls] OCSP staple: good (github.githubassets.com)
+[time] tickloss +5/s worstgap=327068us missed=204 of 2894 expected (7.049% of the clock); uptime 29s
+[time] tickloss +29/s worstgap=327068us missed=233 of 2995 expected (7.779% of the clock); uptime 30s
+[time] tickloss +21/s worstgap=327068us missed=254 of 3094 expected (8.209% of the clock); uptime 31s
+[time] tickloss +5/s worstgap=327068us missed=259 of 3394 expected (7.631% of the clock); uptime 34s
+[netlock] acq 901116 recursive 413 maxdepth 3 violations 0
+[e1000] stats: rx 313 pkt / 359775 B, tx 236 pkt / 24405 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 190 (+190)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 109606 frames free (428 MiB), 21431 used, 617 shared, 0 bugs
+[mm] low: 109350 frames free (427 MiB), 21687 used, 617 shared, 0 bugs
+[mm] low: 109094 frames free (426 MiB), 21943 used, 618 shared, 0 bugs
+[mm] low: 108838 frames free (425 MiB), 22199 used, 618 shared, 0 bugs
+[mm] low: 108582 frames free (424 MiB), 22455 used, 619 shared, 0 bugs
+[mm] low: 108326 frames free (423 MiB), 22711 used, 619 shared, 0 bugs
+[mm] low: 108070 frames free (422 MiB), 22967 used, 620 shared, 0 bugs
+[mm] low: 107814 frames free (421 MiB), 23223 used, 620 shared, 0 bugs
+[mm] low: 107558 frames free (420 MiB), 23479 used, 620 shared, 0 bugs
+[mm] low: 107302 frames free (419 MiB), 23735 used, 620 shared, 0 bugs
+[mm] low: 107046 frames free (418 MiB), 23991 used, 620 shared, 0 bugs
+[mm] low: 106790 frames free (417 MiB), 24247 used, 620 shared, 0 bugs
+[mm] low: 106534 frames free (416 MiB), 24503 used, 620 shared, 0 bugs
+[mm] low: 106278 frames free (415 MiB), 24759 used, 620 shared, 0 bugs
+[mm] low: 106022 frames free (414 MiB), 25015 used, 620 shared, 0 bugs
+[mm] low: 105766 frames free (413 MiB), 25271 used, 620 shared, 0 bugs
+[time] tickloss +5/s worstgap=327068us missed=264 of 4192 expected (6.297% of the clock); uptime 42s
+[mm] low: 105510 frames free (412 MiB), 25527 used, 632 shared, 0 bugs
+[browser] heap peak 35774K
+[dl] painted text: 3 run(s), 14 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1083,135 Sign
+[dl] 1112,135 in
+[dl] -6,234 Platform
+[dl] ---8<--- end painted text
+[css] linked: 1 <style>, 26 <link rel=stylesheet> (9 not fetched)
+[css] fetched: 17 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 120 inline + 2228831 external = 2228951 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 23272 declarations kept
+[css] dropped: 6825  (103 selector, 89 at-rule, 5934 unknown-prop, 699 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 90 at-rule, 2628 declaration (syntax-malformed; a different population from the drops above)
+[css]      380  unknown-prop gap                      | gap
+[css]      346  unknown-prop box-shadow               | box-shadow
+[css]      293  unknown-prop transition               | transition
+[css]      257  unknown-prop -webkit-*                | -webkit-text-size-adjust
+[css]      250  unknown-prop transform                | transform
+[css]      206  unknown-prop grid-column              | grid-column
+[css]      182  unknown-prop padding-inline           | padding-inline
+[css]      173  unknown-prop margin-block-start       | margin-block-start
+[css]      154  unknown-prop margin-block-end         | margin-block-end
+[css]      143  unknown-prop padding-block-end        | padding-block-end
+[css]      141  unknown-prop outline-offset           | outline-offset
+[css]      138  unknown-prop padding-inline-start     | padding-inline-start
+[css]   ... 116 more reason(s); css_report_verbose=1 for all
+[css]   ... 1628 drop(s) past 128 distinct reasons, not bucketed
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] chain of 3 verified for images.ctfassets.net, alpn=http/1.1
+[tls] OCSP staple: good (images.ctfassets.net)
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 38832s, 3 cached)
+[tls] ticket stored for images.ctfassets.net (138 bytes, lifetime 60421s, 4 cached)
+[net] rx path: frames 583 irq 334 softirq 155 inline 9 poll 8 idle 0/0 halt/skip
+[mm] low: 105254 frames free (411 MiB), 25783 used, 658 shared, 0 bugs
+[mm] low: 104998 frames free (410 MiB), 26039 used, 658 shared, 0 bugs
+[mm] low: 104742 frames free (409 MiB), 26295 used, 658 shared, 0 bugs
+[mm] low: 104486 frames free (408 MiB), 26551 used, 660 shared, 0 bugs
+[mm] low: 104230 frames free (407 MiB), 26807 used, 660 shared, 0 bugs
+[mm] low: 103974 frames free (406 MiB), 27063 used, 660 shared, 0 bugs
+[mm] low: 103718 frames free (405 MiB), 27319 used, 660 shared, 0 bugs
+[mm] low: 103462 frames free (404 MiB), 27575 used, 660 shared, 0 bugs
+[mm] low: 103206 frames free (403 MiB), 27831 used, 660 shared, 0 bugs
+[mm] low: 102950 frames free (402 MiB), 28087 used, 660 shared, 0 bugs
+[mm] low: 102694 frames free (401 MiB), 28343 used, 660 shared, 0 bugs
+[mm] low: 102438 frames free (400 MiB), 28599 used, 660 shared, 0 bugs
+[mm] low: 102182 frames free (399 MiB), 28855 used, 660 shared, 0 bugs
+[mm] low: 101926 frames free (398 MiB), 29111 used, 660 shared, 0 bugs
+[mm] low: 101670 frames free (397 MiB), 29367 used, 660 shared, 0 bugs
+[mm] low: 101414 frames free (396 MiB), 29623 used, 660 shared, 0 bugs
+[mm] low: 101158 frames free (395 MiB), 29879 used, 660 shared, 0 bugs
+[mm] low: 100902 frames free (394 MiB), 30135 used, 660 shared, 0 bugs
+[mm] low: 100646 frames free (393 MiB), 30391 used, 660 shared, 0 bugs
+[mm] low: 100390 frames free (392 MiB), 30647 used, 660 shared, 0 bugs
+[mm] low: 100134 frames free (391 MiB), 30903 used, 660 shared, 0 bugs
+[mm] low: 99878 frames free (390 MiB), 31159 used, 660 shared, 0 bugs
+[mm] low: 99622 frames free (389 MiB), 31415 used, 660 shared, 0 bugs
+[img] 8/8 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 8/256 ents 20979K]
+[e1000] stats: rx 611 pkt / 723576 B, tx 454 pkt / 44541 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 352 (+162)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 0 external classic, 9 external module, 0 inline
+[e1000] stats: rx 992 pkt / 1239451 B, tx 692 pkt / 61870 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 453 (+101)
+[net] rx path: frames 1113 irq 481 softirq 227 inline 11 poll 12 idle 0/0 halt/skip
+[mm] low: 99366 frames free (388 MiB), 31671 used, 660 shared, 0 bugs
+[mm] low: 99110 frames free (387 MiB), 31927 used, 660 shared, 0 bugs
+[mm] low: 98854 frames free (386 MiB), 32183 used, 660 shared, 0 bugs
+[js] module loaded 4622 bytes: https://github.githubassets.com/assets/app-foundation-4437307b8f9d7771.js
+[js] module loaded 83404 bytes: https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js
+[mm] low: 98598 frames free (385 MiB), 32439 used, 672 shared, 0 bugs
+[js] module loaded 7171 bytes: https://github.githubassets.com/assets/fetch-utilities-8fe90c8c85b950d2.js
+[js] module loaded 29374 bytes: https://github.githubassets.com/assets/78205-6cf07db9c71bd767.js
+[js] module loaded 6410 bytes: https://github.githubassets.com/assets/catalyst-38077bb411140672.js
+[js] module loaded 3956 bytes: https://github.githubassets.com/assets/selector-observer-2649f99b2f1a6405.js
+[js] module loaded 20323 bytes: https://github.githubassets.com/assets/relative-time-element-c21b72dfe6bab348.js
+[js] module loaded 20255 bytes: https://github.githubassets.com/assets/296-2e18342b802e67d2.js
+[js] module loaded 14027 bytes: https://github.githubassets.com/assets/816-41f1bbf5693911e3.js
+[js] module loaded 18120 bytes: https://github.githubassets.com/assets/65637-cd80fa0f84afe946.js
+[js] module loaded 18700 bytes: https://github.githubassets.com/assets/58494-bbf2743f411af058.js
+[js] module loaded 16950 bytes: https://github.githubassets.com/assets/31721-0ef53b2f96a19876.js
+[js] module loaded 12269 bytes: https://github.githubassets.com/assets/46740-90376e604f852814.js
+[js] module loaded 132398 bytes: https://github.githubassets.com/assets/98944-57d83b43eefe5ac0.js
+[mm] low: 98342 frames free (384 MiB), 32695 used, 676 shared, 0 bugs
+[mm] low: 98086 frames free (383 MiB), 32951 used, 681 shared, 0 bugs
+[mm] low: 97830 frames free (382 MiB), 33207 used, 681 shared, 0 bugs
+[mm] low: 97574 frames free (381 MiB), 33463 used, 681 shared, 0 bugs
+[js] module loaded 3128 bytes: https://github.githubassets.com/assets/runtime-helpers-fc37f5662f7833a3.js
+[js] module loaded 550 bytes: https://github.githubassets.com/assets/aria-live-7d7a9fdad5f85d01.js
+[js] module loaded 5314 bytes: https://github.githubassets.com/assets/hotkey-1cb8fabe6be5aae6.js
+[e1000] stats: rx 1327 pkt / 1660857 B, tx 937 pkt / 81652 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 684 (+231)
+[js] module loaded 271088 bytes: https://github.githubassets.com/assets/react-core-29d04a3ce0e60b2e.js
+[mm] low: 97318 frames free (380 MiB), 33719 used, 681 shared, 0 bugs
+[mm] low: 97062 frames free (379 MiB), 33975 used, 681 shared, 0 bugs
+[js] module loaded 195190 bytes: https://github.githubassets.com/assets/react-lib-94319d819a6168f4.js
+[js] module loaded 10274 bytes: https://github.githubassets.com/assets/50841-2b0631b45aaf5408.js
+[netlock] acq 7208971 recursive 1945 maxdepth 3 violations 0
+[js] module loaded 16160 bytes: https://github.githubassets.com/assets/2761-b7a9419af18b3168.js
+[js] module loaded 9919 bytes: https://github.githubassets.com/assets/88475-1ef5f4960149f37f.js
+[js] module loaded 75181 bytes: https://github.githubassets.com/assets/26533-677fb085023d4883.js
+[js] module loaded 10017 bytes: https://github.githubassets.com/assets/3609-aeb65154451d2df4.js
+[js] module loaded 41668 bytes: https://github.githubassets.com/assets/87644-a4a8bf1e50c8f268.js
+[js] module loaded 36457 bytes: https://github.githubassets.com/assets/39448-1ea76084e5b8e2e3.js
+[mm] low: 96806 frames free (378 MiB), 34231 used, 681 shared, 0 bugs
+[js] module loaded 34723 bytes: https://github.githubassets.com/assets/54130-e4c7ec7528d1f04f.js
+[js] module loaded 15886 bytes: https://github.githubassets.com/assets/1741-19fd38c1c119f0b9.js
+[js] module loaded 11895 bytes: https://github.githubassets.com/assets/64923-fd55cab179c0991d.js
+[mm] low: 96550 frames free (377 MiB), 34487 used, 687 shared, 0 bugs
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 914510 (https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-933447118d8dea11.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js:35)
+
+[js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+[mm] low: 96294 frames free (376 MiB), 34743 used, 688 shared, 0 bugs
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) InternalError: interrupted
+    at descendants (<select>:604)
+    at qsa (<select>:635)
+    at <anonymous> (<select>)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at E (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at g (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at <anonymous> (https://github.githubassets.com/assets/app-runtime-8365b7f9078f5299.js)
+    at dispatchEvent (native)
+    at call (native)
+    at dispatchEvent (<js_events>:421)
+    at onReject (<platform>:1790)
+
+[error] Uncaught (in promise) TypeError: not an object
+    at getPrototypeOf (native)
+    at 914510 (https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js:27)
+    at call (native)
+    at t (https://github.githubassets.com/assets/wp-runtime-933447118d8dea11.js)
+    at <anonymous> (https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js:35)
+
+[browser] module rejected https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js: TypeError: not an object
+[js] module loaded 15569 bytes: https://github.githubassets.com/assets/41586-fc1d30c8f80a0d11.js
+[mm] low: 96038 frames free (375 MiB), 34999 used, 688 shared, 0 bugs
+[mm] low: 95782 frames free (374 MiB), 35255 used, 688 shared, 0 bugs
+[mm] low: 95526 frames free (373 MiB), 35511 used, 688 shared, 0 bugs
+[mm] low: 95270 frames free (372 MiB), 35767 used, 688 shared, 0 bugs
+[mm] low: 95014 frames free (371 MiB), 36023 used, 688 shared, 0 bugs
+[mm] low: 94758 frames free (370 MiB), 36279 used, 688 shared, 0 bugs
+[mm] low: 94502 frames free (369 MiB), 36535 used, 688 shared, 0 bugs
+[js] module loaded 398079 bytes: https://github.githubassets.com/assets/primer-react-3f5e80eddfe4fa83.js
+[mm] low: 94246 frames free (368 MiB), 36791 used, 688 shared, 0 bugs
+[mm] low: 93990 frames free (367 MiB), 37047 used, 688 shared, 0 bugs
+[js] module loaded 28765 bytes: https://github.githubassets.com/assets/76256-4c9ade0d3ba0f30e.js
+[js] module loaded 17866 bytes: https://github.githubassets.com/assets/2927-a89925c2c122f0b3.js
+[e1000] stats: rx 1621 pkt / 2015954 B, tx 1161 pkt / 99579 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 889 (+205)
+[net] rx path: frames 1625 irq 893 softirq 424 inline 14 poll 27 idle 0/0 halt/skip
+[js] module loaded 67301 bytes: https://github.githubassets.com/assets/13365-afa40f59b2c1ae40.js
+[js] module loaded 13342 bytes: https://github.githubassets.com/assets/82065-d83c3301556505f1.js
+[js] module loaded 99630 bytes: https://github.githubassets.com/assets/81674-b824d6a640686a14.js
+[js] module loaded 19586 bytes: https://github.githubassets.com/assets/58636-57ecb55388677ad5.js
+[js] module loaded 193176 bytes: https://github.githubassets.com/assets/28052-948121aab0837bb7.js
+[mm] low: 93734 frames free (366 MiB), 37303 used, 692 shared, 0 bugs
+[js] module loaded 278133 bytes: https://github.githubassets.com/assets/315-41a95191752f4a55.js
+[mm] low: 93478 frames free (365 MiB), 37559 used, 692 shared, 0 bugs
+[js] module loaded 11413 bytes: https://github.githubassets.com/assets/71236-e2d5e8326b644be4.js
+[js] module loaded 53522 bytes: https://github.githubassets.com/assets/43831-8a4d8947c7761c0c.js
+[js] module loaded 69785 bytes: https://github.githubassets.com/assets/70666-cd50f3399ec2b96d.js
+[js] module loaded 113841 bytes: https://github.githubassets.com/assets/6948-596e9ca3e1c5c195.js
+[mm] low: 93222 frames free (364 MiB), 37815 used, 692 shared, 0 bugs
+[js] module loaded 14130 bytes: https://github.githubassets.com/assets/86432-c74eae620d7e98ca.js
+[mm] low: 92966 frames free (363 MiB), 38071 used, 692 shared, 0 bugs
+[js] module loaded 469269 bytes: https://github.githubassets.com/assets/47166-d242b71989402d84.js
+[mm] low: 92710 frames free (362 MiB), 38327 used, 692 shared, 0 bugs
+[mm] low: 92454 frames free (361 MiB), 38583 used, 692 shared, 0 bugs
+[js] module loaded 40570 bytes: https://github.githubassets.com/assets/48761-e9791729c5d1bdbb.js
+[e1000] stats: rx 1931 pkt / 2420131 B, tx 1384 pkt / 116763 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1071 (+182)
+[js] module loaded 126429 bytes: https://github.githubassets.com/assets/54893-90aac49f1fa14b9c.js
+[js] module loaded 3866 bytes: https://github.githubassets.com/assets/40067-79c787f92051ac5b.js
+[js] module loaded 22034 bytes: https://github.githubassets.com/assets/70191-adfe3ed168dbd916.js
+[js] module loaded 6253 bytes: https://github.githubassets.com/assets/12300-b13e9eea6cc191a1.js
+[js] module loaded 25234 bytes: https://github.githubassets.com/assets/77244-eda98adf1b2e5cff.js
+[js] module loaded 32427 bytes: https://github.githubassets.com/assets/72307-a112a9cb5cac3257.js
+[js] module loaded 108457 bytes: https://github.githubassets.com/assets/44650-9e3583f09b45b865.js
+[mm] low: 92198 frames free (360 MiB), 38839 used, 692 shared, 0 bugs
+[js] module loaded 17987 bytes: https://github.githubassets.com/assets/39569-a2d23d92c0b08f25.js
+[js] module loaded 62963 bytes: https://github.githubassets.com/assets/53288-ce2a615e633eae37.js
+[js] module loaded 10526 bytes: https://github.githubassets.com/assets/35784-71d7847224ffd63e.js
+[js] module loaded 34662 bytes: https://github.githubassets.com/assets/38131-7d6a21708b72172a.js
+[js] module loaded 97375 bytes: https://github.githubassets.com/assets/74234-18365e0618c6fd18.js
+[js] module loaded 10093 bytes: https://github.githubassets.com/assets/16193-c5eab8d8e11589b8.js
+[mm] low: 91942 frames free (359 MiB), 39095 used, 692 shared, 0 bugs
+[mm] low: 91686 frames free (358 MiB), 39351 used, 706 shared, 0 bugs
+[mm] low: 91430 frames free (357 MiB), 39607 used, 706 shared, 0 bugs
+[mm] low: 91174 frames free (356 MiB), 39863 used, 709 shared, 0 bugs
+[mm] low: 90918 frames free (355 MiB), 40119 used, 709 shared, 0 bugs
+[mm] low: 90662 frames free (354 MiB), 40375 used, 709 shared, 0 bugs
+[mm] low: 90406 frames free (353 MiB), 40631 used, 709 shared, 0 bugs
+[mm] low: 90150 frames free (352 MiB), 40887 used, 709 shared, 0 bugs
+[mm] low: 89894 frames free (351 MiB), 41143 used, 709 shared, 0 bugs
+[mm] low: 89638 frames free (350 MiB), 41399 used, 709 shared, 0 bugs
+[mm] low: 89382 frames free (349 MiB), 41655 used, 711 shared, 0 bugs
+[browser] load done: 94 requests, 5 connections dialled, 89 reused, 59 modules loaded (0 failed)
+[browser] pool: 89 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 34 from network (tab 2 of 3)
+[wm] perf t=184164 composites=567 ns=5147398127 max=160508195 motions=18 curmoves=12 curns=274998 full=19 rects=568 cpx=118616188 fpx=118616188 presns=357142179 torn=0 defer=48 late=0 drawmax=346 evdrop=0

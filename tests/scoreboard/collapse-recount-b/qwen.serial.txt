@@ -1,0 +1,192 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +11/s worstgap=69329us missed=49 of 2098 expected (2.335% of the clock); uptime 21s
+[wm] perf t=21678 composites=188 ns=2625117789 max=50086749 motions=18 curmoves=11 curns=221997 full=17 rects=189 cpx=71785480 fpx=71785480 presns=134995330 torn=0 defer=2 late=0 drawmax=34 evdrop=0
+[browser] load: https://chat.qwen.ai/
+[sock] connected chat.qwen.ai via ipv4 ::ffff:198.18.0.123
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for chat.qwen.ai, alpn=http/1.1
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 1 cached)
+[tls] ticket stored for chat.qwen.ai (208 bytes, lifetime 300s, 2 cached)
+[time] tickloss +5/s worstgap=69329us missed=54 of 2198 expected (2.456% of the clock); uptime 22s
+[net] rx path: frames 65 irq 68 softirq 28 inline 4 poll 3 idle 0/0 halt/skip
+[mm] low: 113184 frames free (442 MiB), 17853 used, 591 shared, 0 bugs
+[mm] low: 112928 frames free (441 MiB), 18109 used, 594 shared, 0 bugs
+[dl] painted text: 26 run(s), 104 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,88 Qwen3.7-Plus
+[dl] 6,113 Log
+[dl] 35,113 in
+[dl] 70,113 Sign
+[dl] 104,113 up
+[dl] 0,137 How
+[dl] 35,137 can
+[dl] 64,137 I
+[dl] 71,137 help
+[dl] 104,137 you?
+[dl] 0,206 Auto
+[dl] 0,227 By
+[dl] 21,227 using
+[dl] 62,227 Qwen
+[dl] 105,227 Studio,
+[dl] 158,227 you
+[dl] 187,227 agree
+[dl] 230,227 to
+[dl] 248,227 our
+[dl] 275,227 Terms
+[dl] 322,227 of
+[dl] 339,227 Service
+[dl] 393,227 and
+[dl] 423,227 Privacy
+[dl] 479,227 Policy
+[dl] 522,227 .
+[dl] ---8<--- end painted text
+[sock] connected assets.alicdn.com via ipv4 ::ffff:198.18.0.124
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for assets.alicdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for assets.alicdn.com, alpn=http/1.1
+[mm] low: 112672 frames free (440 MiB), 18365 used, 614 shared, 0 bugs
+[mm] low: 112416 frames free (439 MiB), 18621 used, 614 shared, 0 bugs
+[mm] low: 112160 frames free (438 MiB), 18877 used, 615 shared, 0 bugs
+[mm] low: 111904 frames free (437 MiB), 19133 used, 615 shared, 0 bugs
+[mm] low: 111648 frames free (436 MiB), 19389 used, 615 shared, 0 bugs
+[time] tickloss +8/s worstgap=69329us missed=62 of 2298 expected (2.697% of the clock); uptime 23s
+[mm] low: 111392 frames free (435 MiB), 19645 used, 615 shared, 0 bugs
+[mm] low: 111136 frames free (434 MiB), 19901 used, 615 shared, 0 bugs
+[mm] low: 110880 frames free (433 MiB), 20157 used, 615 shared, 0 bugs
+[mm] low: 110624 frames free (432 MiB), 20413 used, 615 shared, 0 bugs
+[browser] heap peak 15853K
+[css] linked: 24 <style>, 2 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 2 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 61193 inline + 877655 external = 938848 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 19326 declarations kept
+[css] dropped: 3088  (0 selector, 82 at-rule, 2612 unknown-prop, 394 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 82 at-rule, 973 declaration (syntax-malformed; a different population from the drops above)
+[css]      459  unknown-prop gap                      | gap
+[css]      249  unknown-prop -webkit-*                | -webkit-text-decoration-skip
+[css]      217  unknown-prop transform                | transform
+[css]      158  unknown-prop transition               | transition
+[css]      137  unknown-prop text-overflow            | text-overflow
+[css]      133  unknown-prop box-shadow               | box-shadow
+[css]      116  unknown-prop pointer-events           | pointer-events
+[css]      106  bad-value    cursor                   | cursor
+[css]       98  bad-value    width                    | width
+[css]       90  unknown-prop animation                | animation
+[css]       82  at-rule      @keyframes               | @keyframes
+[css]       73  unknown-prop -moz-*                   | -moz-osx-font-smoothing
+[css]   ... 109 more reason(s); css_report_verbose=1 for all
+[mm] low: 110368 frames free (431 MiB), 20669 used, 621 shared, 0 bugs
+[browser] scripts collected: 2 external classic, 1 external module, 14 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for o.alicdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.googletagmanager.com, alpn=http/1.1
+[netlock] acq 112812 recursive 725 maxdepth 3 violations 0
+[net] rx path: frames 580 irq 261 softirq 121 inline 4 poll 12 idle 0/0 halt/skip
+[mm] low: 110112 frames free (430 MiB), 20925 used, 621 shared, 0 bugs
+[mm] low: 109856 frames free (429 MiB), 21181 used, 621 shared, 0 bugs
+[net] rx path: frames 1092 irq 516 softirq 247 inline 4 poll 30 idle 0/0 halt/skip
+[mm] low: 109600 frames free (428 MiB), 21437 used, 621 shared, 0 bugs
+[mm] low: 109344 frames free (427 MiB), 21693 used, 621 shared, 0 bugs
+[mm] low: 109088 frames free (426 MiB), 21949 used, 621 shared, 0 bugs
+[time] tickloss +12/s worstgap=69329us missed=74 of 2497 expected (2.963% of the clock); uptime 25s
+[e1000] stats: rx 1277 pkt / 1501248 B, tx 930 pkt / 69886 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 610 (+610)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 108832 frames free (425 MiB), 22205 used, 631 shared, 0 bugs
+[mm] low: 108576 frames free (424 MiB), 22461 used, 631 shared, 0 bugs
+[mm] low: 108320 frames free (423 MiB), 22717 used, 631 shared, 0 bugs
+[mm] low: 108064 frames free (422 MiB), 22973 used, 632 shared, 0 bugs
+[mm] low: 107808 frames free (421 MiB), 23229 used, 632 shared, 0 bugs
+[mm] low: 107552 frames free (420 MiB), 23485 used, 653 shared, 0 bugs
+[mm] low: 107296 frames free (419 MiB), 23741 used, 653 shared, 0 bugs
+[mm] low: 107040 frames free (418 MiB), 23997 used, 653 shared, 0 bugs
+[js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+[browser] JS exception: InternalError: interrupted
+InternalError: interrupted
+    at wb (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at wl (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <anonymous> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at Ipexfv (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+    at <eval> (https://o.alicdn.com/frontend-lib/common-lib/jquery.min.js)
+Browser detection: [object Object]
+Modern features support: true
+[mm] low: 106784 frames free (417 MiB), 24253 used, 657 shared, 0 bugs
+[mm] low: 106528 frames free (416 MiB), 24509 used, 657 shared, 0 bugs
+[mm] low: 106272 frames free (415 MiB), 24765 used, 658 shared, 0 bugs
+[mm] low: 106016 frames free (414 MiB), 25021 used, 658 shared, 0 bugs
+[mm] low: 105760 frames free (413 MiB), 25277 used, 658 shared, 0 bugs
+[mm] low: 105504 frames free (412 MiB), 25533 used, 658 shared, 0 bugs
+[mm] low: 105248 frames free (411 MiB), 25789 used, 658 shared, 0 bugs
+[mm] low: 104992 frames free (410 MiB), 26045 used, 658 shared, 0 bugs
+[mm] low: 104736 frames free (409 MiB), 26301 used, 658 shared, 0 bugs
+[mm] low: 104480 frames free (408 MiB), 26557 used, 658 shared, 0 bugs
+[mm] low: 104224 frames free (407 MiB), 26813 used, 658 shared, 0 bugs
+[mm] low: 103968 frames free (406 MiB), 27069 used, 658 shared, 0 bugs
+[mm] low: 103712 frames free (405 MiB), 27325 used, 658 shared, 0 bugs
+[js] module loaded 9129 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/react-vendor.js
+[js] module loaded 182575 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/react-dom-vendor.js
+[mm] low: 103456 frames free (404 MiB), 27581 used, 659 shared, 0 bugs
+[js] module loaded 735128 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/antd-vendor.js
+[e1000] stats: rx 1595 pkt / 1862908 B, tx 1168 pkt / 85820 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 779 (+169)
+[js] module loaded 17127 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/dayjs-vendor.js
+[net] rx path: frames 1604 irq 787 softirq 385 inline 4 poll 37 idle 0/0 halt/skip
+[js] module loaded 69376 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/i18next-vendor.js
+[js] module loaded 1341 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/vite-helpers.js
+[net] rx path: frames 2118 irq 1039 softirq 511 inline 5 poll 42 idle 0/0 halt/skip
+[mm] low: 103200 frames free (403 MiB), 27837 used, 659 shared, 0 bugs
+[mm] low: 102944 frames free (402 MiB), 28093 used, 659 shared, 0 bugs
+[e1000] stats: rx 2486 pkt / 2900725 B, tx 1849 pkt / 130340 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1222 (+443)
+[mm] low: 102688 frames free (401 MiB), 28349 used, 659 shared, 0 bugs
+[js] module loaded 3016774 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/mermaid-vendor.js
+[mm] low: 102432 frames free (400 MiB), 28605 used, 659 shared, 0 bugs
+[mm] low: 102176 frames free (399 MiB), 28861 used, 659 shared, 0 bugs
+[mm] low: 101920 frames free (398 MiB), 29117 used, 659 shared, 0 bugs
+[mm] low: 101664 frames free (397 MiB), 29373 used, 659 shared, 0 bugs
+[mm] low: 101408 frames free (396 MiB), 29629 used, 659 shared, 0 bugs
+[mm] low: 101152 frames free (395 MiB), 29885 used, 659 shared, 0 bugs
+[mm] low: 100896 frames free (394 MiB), 30141 used, 659 shared, 0 bugs
+[mm] low: 100640 frames free (393 MiB), 30397 used, 659 shared, 0 bugs
+[mm] low: 100384 frames free (392 MiB), 30653 used, 662 shared, 0 bugs
+[mm] low: 100128 frames free (391 MiB), 30909 used, 662 shared, 0 bugs
+[mm] low: 99872 frames free (390 MiB), 31165 used, 662 shared, 0 bugs
+[mm] low: 99616 frames free (389 MiB), 31421 used, 662 shared, 0 bugs
+[mm] low: 99360 frames free (388 MiB), 31677 used, 662 shared, 0 bugs
+[mm] low: 99104 frames free (387 MiB), 31933 used, 662 shared, 0 bugs
+[mm] low: 98848 frames free (386 MiB), 32189 used, 662 shared, 0 bugs
+[mm] low: 98592 frames free (385 MiB), 32445 used, 662 shared, 0 bugs
+[mm] low: 98336 frames free (384 MiB), 32701 used, 662 shared, 0 bugs
+[mm] low: 98080 frames free (383 MiB), 32957 used, 662 shared, 0 bugs
+[mm] low: 97824 frames free (382 MiB), 33213 used, 662 shared, 0 bugs
+[js] module loaded 28629 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/dompurify-vendor.js
+[js] module loaded 9456 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/es-toolkit-vendor.js
+[js] module loaded 126761 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/lodash-vendor.js
+[js] module loaded 41303 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/marked-vendor.js
+[js] module loaded 37199 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/axios-vendor.js
+[js] module loaded 18246 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/router-vendor.js
+[js] module loaded 47990 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/dnd-vendor.js
+[net] rx path: frames 2632 irq 1299 softirq 637 inline 5 poll 52 idle 0/0 halt/skip
+[e1000] stats: rx 3016 pkt / 3527368 B, tx 2246 pkt / 157623 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1478 (+256)
+[net] rx path: frames 3146 irq 1540 softirq 757 inline 5 poll 63 idle 0/0 halt/skip
+[net] rx path: frames 3661 irq 1792 softirq 880 inline 5 poll 76 idle 0/0 halt/skip
+[mm] low: 97568 frames free (381 MiB), 33469 used, 662 shared, 0 bugs
+[mm] low: 97312 frames free (380 MiB), 33725 used, 662 shared, 0 bugs
+[mm] low: 97056 frames free (379 MiB), 33981 used, 662 shared, 0 bugs
+[js] module loaded 3854316 bytes: https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/monaco-vendor.js
+[browser] module exception in https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/main.js: SyntaxError: invalid escape sequence in regular expression
+SyntaxError: invalid escape sequence in regular expression
+    at https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.89/js/monaco-vendor.js:1
+
+[e1000] stats: rx 3672 pkt / 4295137 B, tx 2750 pkt / 190171 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1802 (+324)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for g.alicdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for d.alicdn.com, alpn=h2
+[browser] load done: 23 requests, 6 connections dialled, 17 reused, 15 modules loaded (1 failed)
+[browser] pool: 17 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[wm] perf t=81807 composites=324 ns=3464113589 max=50086749 motions=18 curmoves=11 curns=221997 full=17 rects=325 cpx=86457120 fpx=86457120 presns=168850158 torn=0 defer=4 late=0 drawmax=37 evdrop=0
+[time] tickloss +6/s worstgap=69329us missed=80 of 8198 expected (0.975% of the clock); uptime 82s
+[time] tickloss +7/s worstgap=69329us missed=87 of 10797 expected (0.805% of the clock); uptime 108s
+[netlock] acq 902501 recursive 5625 maxdepth 3 violations 0
+[time] tickloss +5/s worstgap=69329us missed=92 of 11599 expected (0.793% of the clock); uptime 116s

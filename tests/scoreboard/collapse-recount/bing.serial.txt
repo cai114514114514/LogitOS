@@ -1,0 +1,147 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +6/s worstgap=126685us missed=51 of 2098 expected (2.430% of the clock); uptime 21s
+[wm] perf t=21703 composites=190 ns=2173058076 max=58438706 motions=18 curmoves=11 curns=178997 full=15 rects=192 cpx=66506116 fpx=66506116 presns=163890182 torn=0 defer=12 late=0 drawmax=38 evdrop=0
+[browser] load: https://www.bing.com/
+[sock] connected www.bing.com via ipv4 ::ffff:198.18.0.24
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for www.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (www.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[sock] connected cn.bing.com via ipv4 ::ffff:198.18.0.25
+[time] tickloss +12/s worstgap=126685us missed=63 of 2197 expected (2.867% of the clock); uptime 22s
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[net] rx path: frames 66 irq 49 softirq 19 inline 2 poll 4 idle 0/0 halt/skip
+[mm] low: 113184 frames free (442 MiB), 17853 used, 594 shared, 0 bugs
+[mm] low: 112928 frames free (441 MiB), 18109 used, 599 shared, 0 bugs
+[dl] painted text: 10 run(s), 54 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1012,60  
+[dl] 113,60 国内版
+[dl] 113,80 国际版
+[dl] 297,60  
+[dl] 297,60  
+[dl] 233,60 图片
+[dl] 233,99 视频
+[dl] 233,138 翻译
+[dl] 233,177 地图
+[dl] 233,216 学术
+[dl] ---8<--- end painted text
+[wm] perf t=22705 composites=199 ns=2223868820 max=58438706 motions=18 curmoves=11 curns=178997 full=15 rects=201 cpx=68252396 fpx=68252396 presns=167294166 torn=0 defer=17 late=0 drawmax=71 evdrop=0
+[browser] heap peak 7711K
+[css] linked: 3 <style>, 1 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 1 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 72300 inline + 1194 external = 73494 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 2634 declarations kept
+[css] dropped: 415  (2 selector, 6 at-rule, 385 unknown-prop, 22 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 8 at-rule, 36 declaration (syntax-malformed; a different population from the drops above)
+[css]       78  unknown-prop fill                     | fill
+[css]       54  unknown-prop box-shadow               | box-shadow
+[css]       42  unknown-prop transform                | transform
+[css]       24  unknown-prop grid-area                | grid-area
+[css]       22  unknown-prop pointer-events           | pointer-events
+[css]       22  unknown-prop stroke                   | stroke
+[css]       16  unknown-prop background-size          | background-size
+[css]       16  unknown-prop transition               | transition
+[css]       12  unknown-prop text-overflow            | text-overflow
+[css]        8  unknown-prop filter                   | filter
+[css]        8  unknown-prop grid-template-areas      | grid-template-areas
+[css]        8  unknown-prop grid-template-columns    | grid-template-columns
+[css]   ... 34 more reason(s); css_report_verbose=1 for all
+[mm] low: 112672 frames free (440 MiB), 18365 used, 632 shared, 0 bugs
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] skipping <script type="text/rms"> (not executable)
+[browser] scripts collected: 4 external classic, 0 external module, 9 inline
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=http/1.1
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[wm] perf t=23735 composites=217 ns=2297026450 max=58438706 motions=18 curmoves=11 curns=178997 full=15 rects=219 cpx=70841096 fpx=70841096 presns=172320140 torn=0 defer=30 late=0 drawmax=125 evdrop=0
+[browser] JS exception: ReferenceError: '_w' is not defined
+ReferenceError: '_w' is not defined
+    at <eval> (https://cn.bing.com/#inline-script-2:3)
+[mm] low: 112416 frames free (439 MiB), 18621 used, 635 shared, 0 bugs
+[time] tickloss +16/s worstgap=126685us missed=79 of 2397 expected (3.295% of the clock); uptime 24s
+[browser] load done: 6 requests, 3 connections dialled, 4 reused, 0 modules loaded (0 failed)
+[browser] pool: 4 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 5 from network (tab 2 of 3)
+[mm] low: 112160 frames free (438 MiB), 18877 used, 675 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for cn.bing.com, alpn=h2
+[tls] OCSP staple: good (cn.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[time] tickloss +8/s worstgap=126685us missed=87 of 2495 expected (3.486% of the clock); uptime 25s
+[mm] low: 111904 frames free (437 MiB), 19133 used, 686 shared, 0 bugs
+[netlock] acq 112751 recursive 357 maxdepth 3 violations 0
+[mm] low: 111648 frames free (436 MiB), 19389 used, 686 shared, 0 bugs
+[mm] low: 111392 frames free (435 MiB), 19645 used, 686 shared, 0 bugs
+[mm] low: 111136 frames free (434 MiB), 19901 used, 686 shared, 0 bugs
+[mm] low: 110880 frames free (433 MiB), 20157 used, 686 shared, 0 bugs
+[mm] low: 110624 frames free (432 MiB), 20413 used, 686 shared, 0 bugs
+[mm] low: 110368 frames free (431 MiB), 20669 used, 686 shared, 0 bugs
+[mm] low: 110112 frames free (430 MiB), 20925 used, 686 shared, 0 bugs
+[mm] low: 109856 frames free (429 MiB), 21181 used, 686 shared, 0 bugs
+[mm] low: 109600 frames free (428 MiB), 21437 used, 686 shared, 0 bugs
+[mm] low: 109344 frames free (427 MiB), 21693 used, 686 shared, 0 bugs
+[mm] low: 109088 frames free (426 MiB), 21949 used, 686 shared, 0 bugs
+[mm] low: 108832 frames free (425 MiB), 22205 used, 686 shared, 0 bugs
+[mm] low: 108576 frames free (424 MiB), 22461 used, 686 shared, 0 bugs
+[mm] low: 108320 frames free (423 MiB), 22717 used, 686 shared, 0 bugs
+[mm] low: 108064 frames free (422 MiB), 22973 used, 686 shared, 0 bugs
+[mm] low: 107808 frames free (421 MiB), 23229 used, 686 shared, 0 bugs
+[mm] low: 107552 frames free (420 MiB), 23485 used, 686 shared, 0 bugs
+[e1000] stats: rx 416 pkt / 455453 B, tx 280 pkt / 39469 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 236 (+236)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 107296 frames free (419 MiB), 23741 used, 686 shared, 0 bugs
+[mm] low: 107040 frames free (418 MiB), 23997 used, 686 shared, 0 bugs
+[mm] low: 106784 frames free (417 MiB), 24253 used, 686 shared, 0 bugs
+[mm] low: 106528 frames free (416 MiB), 24509 used, 686 shared, 0 bugs
+[mm] low: 106272 frames free (415 MiB), 24765 used, 686 shared, 0 bugs
+[mm] low: 106016 frames free (414 MiB), 25021 used, 686 shared, 0 bugs
+[mm] low: 105760 frames free (413 MiB), 25277 used, 686 shared, 0 bugs
+[mm] low: 105504 frames free (412 MiB), 25533 used, 686 shared, 0 bugs
+[mm] low: 105248 frames free (411 MiB), 25789 used, 686 shared, 0 bugs
+[mm] low: 104992 frames free (410 MiB), 26045 used, 686 shared, 0 bugs
+[mm] low: 104736 frames free (409 MiB), 26301 used, 686 shared, 0 bugs
+[mm] low: 104480 frames free (408 MiB), 26557 used, 686 shared, 0 bugs
+[mm] low: 104224 frames free (407 MiB), 26813 used, 686 shared, 0 bugs
+[mm] low: 103968 frames free (406 MiB), 27069 used, 686 shared, 0 bugs
+[mm] low: 103712 frames free (405 MiB), 27325 used, 686 shared, 0 bugs
+[mm] low: 103456 frames free (404 MiB), 27581 used, 686 shared, 0 bugs
+[mm] low: 103200 frames free (403 MiB), 27837 used, 686 shared, 0 bugs
+[mm] low: 102944 frames free (402 MiB), 28093 used, 686 shared, 0 bugs
+[mm] low: 102688 frames free (401 MiB), 28349 used, 686 shared, 0 bugs
+[mm] low: 102432 frames free (400 MiB), 28605 used, 686 shared, 0 bugs
+[mm] low: 102176 frames free (399 MiB), 28861 used, 686 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc030 ECDHE-RSA-AES256-GCM-SHA384, ems=yes
+[tls] chain of 3 verified for r.bing.com, alpn=h2
+[tls] OCSP staple: good (r.bing.com)
+[tls] ServerKeyExchange: group secp384r1, signature verified (hash 8 alg 4)
+[time] tickloss +7/s worstgap=126685us missed=94 of 2994 expected (3.139% of the clock); uptime 30s
+[bxfer] h2 r.bing.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=538
+[bxfer] h2 cn.bing.com:443 closed: streams=27 peak=6 frames=102/57 hpack_in=298891
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 10 run(s), 54 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 547,62 国内版
+[dl] 547,99 国际版
+[dl] 1012,60  
+[dl] 297,60  
+[dl] 297,60  
+[dl] 233,60 图片
+[dl] 233,99 视频
+[dl] 233,138 翻译
+[dl] 233,177 地图
+[dl] 233,216 学术
+[dl] ---8<--- end painted text
+[wm] perf t=41782 composites=282 ns=2834679747 max=58438706 motions=18 curmoves=11 curns=178997 full=15 rects=285 cpx=89133216 fpx=89133216 presns=207561971 torn=0 defer=30 late=0 drawmax=125 evdrop=0

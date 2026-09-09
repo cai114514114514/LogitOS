@@ -1,0 +1,83 @@
+{
+ "name": "google",
+ "url": "https://www.google.com/",
+ "started": "2026-08-29T21:29:52",
+ "verdict": "PAINTED",
+ "why": "painted 17768 changed px in 3.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.google.com/",
+  "bytes": 86984,
+  "redirects": [],
+  "script_tags": 10,
+  "script_src": 0,
+  "img_tags": 1,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 0,
+   "inline_scripts": 10,
+   "images": 1,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "elapsed": 1.0
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 4,
+  "dials": 2,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 3.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 17768,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 5607,
+  "ink_px_blank": 4256,
+  "colours": 735,
+  "rich_tiles_proxy": 10
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google.serial.txt",
+ "url_confirmed": "https://www.google.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google.host.html",
+ "text_runs": 18,
+ "text_bytes": 92,
+ "text": "0,212  \n294,219 Advanced\n342,219 search\n531,392 Advertising\n511,408 Business\n563,408 Solutions\n526,424 About\n561,424 Google\n0,459 ©\n13,459 2026\n39,459 -\n44,459 Privacy\n80,459 -\n85,459 Terms\n963,66 Gmail\n963,90 Images\n1045,104 Sign\n1074,104 in",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 0,
+   "inline_scripts": 10,
+   "images": 1,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 2
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T21:30:39"
+}

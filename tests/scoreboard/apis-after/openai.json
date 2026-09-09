@@ -1,0 +1,68 @@
+{
+ "name": "openai",
+ "url": "https://openai.com/",
+ "started": "2026-08-29T23:26:20",
+ "verdict": "ERRORS",
+ "why": "painted 6136 changed px in 125.3s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 403,
+  "final_url": "https://openai.com/",
+  "bytes": 0,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": null,
+  "elapsed": 0.8
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: createElement is not a function (it is undefined)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 118,
+  "dials": 2,
+  "reused": 116,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14163,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 125.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 6136,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 6813,
+  "ink_px_blank": 4256,
+  "colours": 527,
+  "rich_tiles_proxy": 9
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after/openai.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after/openai.serial.txt",
+ "url_confirmed": "https://openai.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "text_runs": 13,
+ "text_bytes": 58,
+ "text": "428,305 This\n478,305 page\n536,305 couldn’t\n648,305 load\n428,349 Reload\n472,349 to\n488,349 try\n508,349 again,\n546,349 or\n562,349 go\n580,349 back.\n434,394 Reload\n508,396 Back",
+ "subresources": {
+  "host_inventory": null,
+  "gap": null
+ },
+ "finished": "2026-08-29T23:29:08"
+}

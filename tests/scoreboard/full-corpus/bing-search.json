@@ -1,0 +1,83 @@
+{
+ "name": "bing-search",
+ "url": "https://www.bing.com/search?q=python",
+ "started": "2026-08-29T21:31:04",
+ "verdict": "FETCH-FAIL",
+ "why": "the guest could not fetch it (TLS refused: handshake or certificate verification failed (https://www.bing.com/search?q=python)) while the host got HTTP 200",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://cn.bing.com/search?q=python",
+  "bytes": 99006,
+  "redirects": [
+   "302 -> https://cn.bing.com/search?q=python"
+  ],
+  "script_tags": 20,
+  "script_src": 6,
+  "img_tags": 3,
+  "inventory": {
+   "stylesheets": 92,
+   "script_src": 6,
+   "inline_scripts": 14,
+   "images": 1,
+   "preloads": 4,
+   "fonts": 0,
+   "mandatory": 99
+  },
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": null,
+  "dials": null,
+  "reused": null,
+  "modules": null,
+  "modules_failed": null,
+  "heap_peak_k": null,
+  "load_done": false,
+  "page_fetch_failed": "TLS refused: handshake or certificate verification failed (https://www.bing.com/search?q=python)",
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 0.7,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2440,
+  "changed_bbox": [
+   152,
+   12,
+   1256,
+   764
+  ],
+  "ink_px": 4256,
+  "ink_px_blank": 4256,
+  "colours": 362,
+  "rich_tiles_proxy": 8
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/bing-search.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/bing-search.serial.txt",
+ "url_confirmed": "https://www.bing.com/search?q=python",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/bing-search.host.html",
+ "text_runs": null,
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 92,
+   "script_src": 6,
+   "inline_scripts": 14,
+   "images": 1,
+   "preloads": 4,
+   "fonts": 0,
+   "mandatory": 99
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T21:31:47"
+}

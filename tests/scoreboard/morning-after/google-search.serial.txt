@@ -1,0 +1,147 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21650 composites=209 ns=2331223255 max=49913750 motions=18 curmoves=12 curns=257998 full=17 rects=213 cpx=74909588 fpx=74909588 presns=136909309 torn=0 defer=14 late=0 drawmax=26 evdrop=0
+[time] tickloss +5/s worstgap=75341us missed=48 of 2196 expected (2.185% of the clock); uptime 22s
+[wm] perf t=22660 composites=237 ns=2615878824 max=49913750 motions=18 curmoves=12 curns=257998 full=17 rects=241 cpx=86361628 fpx=86361628 presns=157651204 torn=0 defer=14 late=0 drawmax=26 evdrop=0
+[browser] load: https://www.google.com/search?q=python
+[sock] connected www.google.com via ipv4 ::ffff:198.18.0.93
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.google.com, alpn=http/1.1
+[time] tickloss +9/s worstgap=75341us missed=57 of 2295 expected (2.483% of the clock); uptime 23s
+[netlock] acq 112470 recursive 71 maxdepth 3 violations 0
+[css] linked: 2 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 169 inline + 0 external = 169 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 9 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 5 inline
+[mm] low: 113192 frames free (442 MiB), 17845 used, 582 shared, 0 bugs
+[mm] low: 112936 frames free (441 MiB), 18101 used, 590 shared, 0 bugs
+[webapi] navigation requested: https://www.google.com/search?q=python&sei=DtSRaoWqJfKf0PEPrpDLWQ (the loader does not consume this yet)
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[net] rx path: frames 64 irq 43 softirq 19 inline 2 poll 4 idle 0/0 halt/skip
+[sock] connected www.google.com via ipv4 ::ffff:198.18.0.93
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.google.com, alpn=http/1.1
+[dl] painted text: 41 run(s), 270 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 28,130 About
+[dl] 67,130 this
+[dl] 91,130 page
+[dl] 28,146 Our
+[dl] 51,146 systems
+[dl] 100,146 have
+[dl] 129,146 detected
+[dl] 182,146 unusual
+[dl] 228,146 traffic
+[dl] 263,146 from
+[dl] 293,146 your
+[dl] 320,146 computer
+[dl] 378,146 network.
+[dl] 28,162 This
+[dl] 53,162 page
+[dl] 84,162 checks
+[dl] 125,162 to
+[dl] 138,162 see
+[dl] 160,162 if
+[dl] 169,162 it's
+[dl] 187,162 really
+[dl] 220,162 you
+[dl] 242,162 sending
+[dl] 289,162 the
+[dl] 309,162 requests,
+[dl] 364,162 and
+[dl] 388,162 not
+[dl] 408,162 a
+[dl] 28,178 robot.
+[dl] 64,178 Why
+[dl] 90,178 did
+[dl] 111,178 this
+[dl] 133,178 happen?
+[dl] 28,194 IP
+[dl] 41,194 address:
+[dl] 93,194 54.193.0.2
+[dl] 28,210 Time:
+[dl] 62,210 2026-08-28T18:31:44Z
+[dl] 28,226 URL:
+[dl] 57,226 https://www.google.com/search?
+[dl] 28,242 q=python&sei=DtSRaoWqJfKf0PEPrpDLWQ
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 0 inline + 0 external = 0 to the parser  (nothing truncated)
+[css] parsed: 0 sheet(s) accepted, 0 refused; 17 declarations kept
+[css] dropped: 2  (0 selector, 0 at-rule, 2 unknown-prop, 0 bad-value, 0 trailing)
+[css]        1  unknown-prop overscroll-behavior      | overscroll-behavior
+[css]        1  unknown-prop line-break               | line-break
+[browser] scripts collected: 1 external classic, 0 external module, 1 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.gstatic.com, alpn=http/1.1
+[mm] low: 112680 frames free (440 MiB), 18357 used, 608 shared, 0 bugs
+[mm] low: 112424 frames free (439 MiB), 18613 used, 608 shared, 0 bugs
+[mm] low: 112168 frames free (438 MiB), 18869 used, 608 shared, 0 bugs
+[mm] low: 111912 frames free (437 MiB), 19125 used, 608 shared, 0 bugs
+[mm] low: 111656 frames free (436 MiB), 19381 used, 608 shared, 0 bugs
+[time] tickloss +8/s worstgap=89194us missed=65 of 2694 expected (2.412% of the clock); uptime 27s
+[time] tickloss   worst gap: bkl last held by cpu -1 ra=0x14f419 via=bare; tick on cpu 0, pid -1, not in kernel
+[e1000] stats: rx 356 pkt / 451181 B, tx 253 pkt / 25829 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 176 (+176)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 111400 frames free (435 MiB), 19637 used, 608 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 608 shared, 0 bugs
+[mm] low: 110888 frames free (433 MiB), 20149 used, 608 shared, 0 bugs
+[browser] load done: 3 requests, 2 connections dialled, 2 reused, 0 modules loaded (0 failed)
+[browser] pool: 2 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 1 from network (tab 2 of 3)
+[js] uncaught in event listener: ReferenceError: 'solveSimpleChallenge' is not defined
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 3 verified for www.google.com, alpn=h2
+[bxfer] h2 www.google.com:443 closed: streams=1 peak=1 frames=10/6 hpack_in=27402
+[iframe] a <script> inside a frame document will never run: frame documents are parsed data (DOMParser-backed), not a second program
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 41 run(s), 270 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 28,284 About
+[dl] 67,284 this
+[dl] 91,284 page
+[dl] 28,300 Our
+[dl] 51,300 systems
+[dl] 100,300 have
+[dl] 129,300 detected
+[dl] 182,300 unusual
+[dl] 228,300 traffic
+[dl] 263,300 from
+[dl] 293,300 your
+[dl] 320,300 computer
+[dl] 378,300 network.
+[dl] 28,316 This
+[dl] 53,316 page
+[dl] 84,316 checks
+[dl] 125,316 to
+[dl] 138,316 see
+[dl] 160,316 if
+[dl] 169,316 it's
+[dl] 187,316 really
+[dl] 220,316 you
+[dl] 242,316 sending
+[dl] 289,316 the
+[dl] 309,316 requests,
+[dl] 364,316 and
+[dl] 388,316 not
+[dl] 408,316 a
+[dl] 28,332 robot.
+[dl] 64,332 Why
+[dl] 90,332 did
+[dl] 111,332 this
+[dl] 133,332 happen?
+[dl] 28,348 IP
+[dl] 41,348 address:
+[dl] 93,348 54.193.0.2
+[dl] 28,364 Time:
+[dl] 62,364 2026-08-28T18:31:44Z
+[dl] 28,380 URL:
+[dl] 57,380 https://www.google.com/search?
+[dl] 28,396 q=python&sei=DtSRaoWqJfKf0PEPrpDLWQ
+[dl] ---8<--- end painted text

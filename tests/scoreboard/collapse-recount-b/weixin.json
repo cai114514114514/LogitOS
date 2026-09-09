@@ -1,0 +1,83 @@
+{
+ "name": "weixin",
+ "url": "https://weixin.qq.com/",
+ "started": "2026-08-30T00:59:41",
+ "verdict": "BLANK",
+ "why": "loaded in 2.5s and painted 2568 changed pixels (0 exceptions)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://weixin.qq.com/",
+  "bytes": 112720,
+  "redirects": [],
+  "script_tags": 10,
+  "script_src": 5,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 5,
+  "dials": 3,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 7711,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 2.5,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 2568,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 4256,
+  "ink_px_blank": 4256,
+  "colours": 370,
+  "rich_tiles_proxy": 8
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/weixin.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/weixin.serial.txt",
+ "url_confirmed": "https://weixin.qq.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/weixin.host.html",
+ "text_runs": 23,
+ "text_bytes": 149,
+ "text": "343,328 微信\n380,328 8.0.77\n427,328 for\n451,328 Android\n514,328 全新发布\n749,328 08-21\n343,342 微信\n380,342 8.0.76\n427,342 for\n451,342 iOS\n480,342 全新发布\n749,342 08-21\n343,360 微信\n380,360 4.1.13\n427,360 for\n451,360 Windows\n522,360 全新发布\n749,360 08-18\n343,387 更多日志\n-24,92 WeChat\n35,92 (繁体)\n97,92 WeChat\n-32,108 (EN)",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 3,
+   "inline_scripts": 3,
+   "images": 0,
+   "preloads": 5,
+   "fonts": 0,
+   "mandatory": 5
+  },
+  "gap": null
+ },
+ "finished": "2026-08-30T01:00:26"
+}

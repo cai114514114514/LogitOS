@@ -1,0 +1,324 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +7/s worstgap=70913us missed=29 of 2100 expected (1.380% of the clock); uptime 21s
+[wm] perf t=21661 composites=198 ns=2080382526 max=50762746 motions=18 curmoves=11 curns=198998 full=20 rects=200 cpx=67469544 fpx=67469544 presns=126708358 torn=0 defer=10 late=0 drawmax=25 evdrop=0
+[browser] load: https://www.douyin.com/
+[sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.81
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
+[time] tickloss +11/s worstgap=70913us missed=40 of 2199 expected (1.819% of the clock); uptime 22s
+[css] linked: 0 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 0 inline + 0 external = 0 to the parser  (nothing truncated)
+[css] parsed: 0 sheet(s) accepted, 0 refused; 0 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 2 inline
+[mm] low: 113184 frames free (442 MiB), 17853 used, 582 shared, 0 bugs
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[sock] connected www.douyin.com via ipv4 ::ffff:198.18.0.81
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.douyin.com, alpn=http/1.1
+[netlock] acq 112390 recursive 91 maxdepth 3 violations 0
+[net] rx path: frames 64 irq 57 softirq 26 inline 1 poll 3 idle 0/0 halt/skip
+[mm] low: 112928 frames free (441 MiB), 18109 used, 600 shared, 0 bugs
+[mm] low: 112672 frames free (440 MiB), 18365 used, 604 shared, 0 bugs
+[dl] painted text: 1 run(s), 9 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 加载中
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-douyin-pc-web.douyinstatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-douyin-pc-web.douyinstatic.com, alpn=http/1.1
+[tls] ticket stored for lf-douyin-pc-web.douyinstatic.com (208 bytes, lifetime 21600s, 1 cached)
+[tls] ticket stored for lf-douyin-pc-web.douyinstatic.com (208 bytes, lifetime 21600s, 2 cached)
+[tls] ticket stored for lf-douyin-pc-web.douyinstatic.com (208 bytes, lifetime 21600s, 3 cached)
+[tls] ticket stored for lf-douyin-pc-web.douyinstatic.com (208 bytes, lifetime 21600s, 4 cached)
+[net] rx path: frames 583 irq 281 softirq 135 inline 1 poll 13 idle 0/0 halt/skip
+[e1000] stats: rx 807 pkt / 920219 B, tx 592 pkt / 48390 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 352 (+352)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[time] tickloss +5/s worstgap=70913us missed=45 of 2598 expected (1.732% of the clock); uptime 26s
+[mm] low: 112416 frames free (439 MiB), 18621 used, 606 shared, 0 bugs
+[net] rx path: frames 1101 irq 447 softirq 218 inline 1 poll 23 idle 0/0 halt/skip
+[net] rx path: frames 1613 irq 630 softirq 306 inline 1 poll 35 idle 0/0 halt/skip
+[mm] low: 112160 frames free (438 MiB), 18877 used, 606 shared, 0 bugs
+[e1000] stats: rx 1852 pkt / 2157828 B, tx 1316 pkt / 97068 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 736 (+384)
+[time] tickloss +7/s worstgap=70913us missed=52 of 2696 expected (1.928% of the clock); uptime 27s
+[net] rx path: frames 2127 irq 850 softirq 418 inline 1 poll 47 idle 0/0 halt/skip
+[wm] perf t=27669 composites=238 ns=2637387732 max=50762746 motions=18 curmoves=11 curns=198998 full=20 rects=240 cpx=87281404 fpx=87281404 presns=163530172 torn=0 defer=13 late=0 drawmax=29 evdrop=0
+[net] rx path: frames 2641 irq 1076 softirq 521 inline 16 poll 49 idle 0/0 halt/skip
+[mm] low: 111904 frames free (437 MiB), 19133 used, 606 shared, 0 bugs
+[e1000] stats: rx 2665 pkt / 3118067 B, tx 1899 pkt / 136045 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1078 (+342)
+[mm] low: 111648 frames free (436 MiB), 19389 used, 607 shared, 0 bugs
+[mm] low: 111392 frames free (435 MiB), 19645 used, 607 shared, 0 bugs
+[mm] low: 111136 frames free (434 MiB), 19901 used, 607 shared, 0 bugs
+[mm] low: 110880 frames free (433 MiB), 20157 used, 608 shared, 0 bugs
+[mm] low: 110624 frames free (432 MiB), 20413 used, 608 shared, 0 bugs
+[mm] low: 110368 frames free (431 MiB), 20669 used, 608 shared, 0 bugs
+[mm] low: 110112 frames free (430 MiB), 20925 used, 608 shared, 0 bugs
+[mm] low: 109856 frames free (429 MiB), 21181 used, 608 shared, 0 bugs
+[mm] low: 109600 frames free (428 MiB), 21437 used, 608 shared, 0 bugs
+[mm] low: 109344 frames free (427 MiB), 21693 used, 608 shared, 0 bugs
+[mm] low: 109088 frames free (426 MiB), 21949 used, 608 shared, 0 bugs
+[mm] low: 108832 frames free (425 MiB), 22205 used, 608 shared, 0 bugs
+[mm] low: 108576 frames free (424 MiB), 22461 used, 608 shared, 0 bugs
+[mm] low: 108320 frames free (423 MiB), 22717 used, 608 shared, 0 bugs
+[mm] low: 108064 frames free (422 MiB), 22973 used, 608 shared, 0 bugs
+[mm] low: 107808 frames free (421 MiB), 23229 used, 608 shared, 0 bugs
+[mm] low: 107552 frames free (420 MiB), 23485 used, 608 shared, 0 bugs
+[mm] low: 107296 frames free (419 MiB), 23741 used, 608 shared, 0 bugs
+[mm] low: 107040 frames free (418 MiB), 23997 used, 608 shared, 0 bugs
+[mm] low: 106784 frames free (417 MiB), 24253 used, 608 shared, 0 bugs
+[mm] low: 106528 frames free (416 MiB), 24509 used, 608 shared, 0 bugs
+[mm] low: 106272 frames free (415 MiB), 24765 used, 608 shared, 0 bugs
+[mm] low: 106016 frames free (414 MiB), 25021 used, 608 shared, 0 bugs
+[mm] low: 105760 frames free (413 MiB), 25277 used, 608 shared, 0 bugs
+[mm] low: 105504 frames free (412 MiB), 25533 used, 608 shared, 0 bugs
+[mm] low: 105248 frames free (411 MiB), 25789 used, 608 shared, 0 bugs
+[mm] low: 104992 frames free (410 MiB), 26045 used, 608 shared, 0 bugs
+[mm] low: 104736 frames free (409 MiB), 26301 used, 608 shared, 0 bugs
+[mm] low: 104480 frames free (408 MiB), 26557 used, 608 shared, 0 bugs
+[mm] low: 104224 frames free (407 MiB), 26813 used, 608 shared, 0 bugs
+[mm] low: 103968 frames free (406 MiB), 27069 used, 608 shared, 0 bugs
+[mm] low: 103712 frames free (405 MiB), 27325 used, 608 shared, 0 bugs
+[mm] low: 103456 frames free (404 MiB), 27581 used, 608 shared, 0 bugs
+[browser] heap peak 40443K
+[css] linked: 1 <style>, 20 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 20 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 29 inline + 2688817 external = 2688846 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 61502 declarations kept
+[css] dropped: 7658  (20 selector, 484 at-rule, 6534 unknown-prop, 620 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 484 at-rule, 1749 declaration (syntax-malformed; a different population from the drops above)
+[css]     1069  unknown-prop transform                | transform
+[css]      955  unknown-prop fill                     | fill
+[css]      543  unknown-prop transition               | transition
+[css]      508  unknown-prop -webkit-*                | -webkit-font-smoothing
+[css]      484  at-rule      @keyframes               | @keyframes
+[css]      351  unknown-prop pointer-events           | pointer-events
+[css]      329  unknown-prop box-shadow               | box-shadow
+[css]      323  unknown-prop text-overflow            | text-overflow
+[css]      309  unknown-prop animation                | animation
+[css]      287  unknown-prop -ms-*                    | -ms-user-select
+[css]      229  unknown-prop background-size          | background-size
+[css]      192  bad-value    cursor                   | cursor
+[css]   ... 116 more reason(s); css_report_verbose=1 for all
+[css]   ... 67 drop(s) past 128 distinct reasons, not bucketed
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 9 external classic, 0 external module, 72 inline
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-c-flwb.bytetos.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for lf-security.bytegoofy.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 4 alg 1)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-static.applogcdn.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for lf-c-flwb.bytetos.com, alpn=http/1.1
+[net] rx path: frames 3165 irq 1256 softirq 617 inline 16 poll 61 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-cdn-tos.bytescm.com, alpn=http/1.1
+[net] rx path: frames 3677 irq 1376 softirq 666 inline 29 poll 63 idle 0/0 halt/skip
+[tls] ticket stored for lf-cdn-tos.bytescm.com (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for lf-cdn-tos.bytescm.com (240 bytes, lifetime 900s, 6 cached)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for privacy.zijieapi.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for sf1-cdn-tos.douyinstatic.com, alpn=http/1.1
+[tls] ticket stored for sf1-cdn-tos.douyinstatic.com (208 bytes, lifetime 21600s, 7 cached)
+[tls] ticket stored for sf1-cdn-tos.douyinstatic.com (208 bytes, lifetime 21600s, 8 cached)
+[wm] perf t=33689 composites=265 ns=2900155409 max=50762746 motions=18 curmoves=11 curns=198998 full=20 rects=267 cpx=96043524 fpx=96043524 presns=180820086 torn=0 defer=19 late=0 drawmax=31 evdrop=0
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for lf9-sec.bytetos.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 4 alg 1)
+[e1000] stats: rx 4103 pkt / 4671602 B, tx 2902 pkt / 215925 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1563 (+485)
+init slardar
+init slardar success
+[mm] low: 103200 frames free (403 MiB), 27837 used, 613 shared, 0 bugs
+[mm] low: 102944 frames free (402 MiB), 28093 used, 613 shared, 0 bugs
+[mm] low: 102688 frames free (401 MiB), 28349 used, 613 shared, 0 bugs
+[mm] low: 102432 frames free (400 MiB), 28605 used, 613 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'getAttribute' of null
+TypeError: cannot read property 'getAttribute' of null
+    at value (https://lf-security.bytegoofy.com/obj/security-secsdk/runtime_bundler_34.js)
+    at e (https://lf-security.bytegoofy.com/obj/security-secsdk/runtime_bundler_34.js)
+    at <anonymous> (https://lf-security.bytegoofy.com/obj/security-secsdk/runtime_bundler_34.js:7)
+    at <anonymous> (https://lf-security.bytegoofy.com/obj/security-secsdk/runtime_bundler_34.js)
+    at <eval> (https://lf-security.bytegoofy.com/obj/security-secsdk/runtime_bundler_34.js:7)
+[mm] low: 102176 frames free (399 MiB), 28861 used, 645 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.zijieapi.com, alpn=h2
+[mm] low: 101920 frames free (398 MiB), 29117 used, 660 shared, 0 bugs
+[a11y] TypeError: no setter for property
+TypeError: no setter for property
+    at <anonymous> (https://sf1-cdn-tos.douyinstatic.com/obj/accessibility-task-platform/entrance/a11y_web_init.js)
+    at <anonymous> (https://sf1-cdn-tos.douyinstatic.com/obj/accessibility-task-platform/entrance/a11y_web_init.js)
+    at <anonymous> (https://sf1-cdn-tos.douyinstatic.com/obj/accessibility-task-platform/entrance/a11y_web_init.js)
+    at <eval> (https://sf1-cdn-tos.douyinstatic.com/obj/accessibility-task-platform/entrance/a11y_web_init.js)
+[mm] low: 101664 frames free (397 MiB), 29373 used, 661 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf3-short.ibytedapm.com, alpn=http/1.1
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 9 cached)
+[tls] ticket stored for lf3-short.ibytedapm.com (240 bytes, lifetime 900s, 10 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mon.zijieapi.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for p-pc-weboff.byteimg.com, alpn=http/1.1
+[net] rx path: frames 4191 irq 1638 softirq 751 inline 69 poll 67 idle 0/0 halt/skip
+[mm] low: 101408 frames free (396 MiB), 29629 used, 661 shared, 0 bugs
+[mm] low: 101152 frames free (395 MiB), 29885 used, 661 shared, 0 bugs
+[mm] low: 100896 frames free (394 MiB), 30141 used, 661 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf-rc1.yhgfb-cn-static.com, alpn=http/1.1
+[tls] ticket stored for lf-rc1.yhgfb-cn-static.com (240 bytes, lifetime 86400s, 11 cached)
+[tls] ticket stored for lf-rc1.yhgfb-cn-static.com (240 bytes, lifetime 86400s, 12 cached)
+[browser] JS exception: SyntaxError: unexpected token in expression: '%'
+SyntaxError: unexpected token in expression: '%'
+    at https://www.douyin.com/:1
+[browser] load done: 33 requests, 14 connections dialled, 20 reused, 0 modules loaded (0 failed)
+[browser] pool: 20 hits, 10 evicted, 12 closed
+[browser] resources: 0 from tab, 29 from network (tab 2 of 3)
+[mm] low: 100640 frames free (393 MiB), 30397 used, 693 shared, 0 bugs
+[error] Uncaught (in promise) NotSupportedError: this build validates and refuses service worker registration -- URL, scope, origin and secure-context checks above all passed, but this engine does not execute a service worker script or intercept fetches (see c/apps/browser/js_swreg.c and js_worker.c)
+Service worker registration failed
+[dl] painted text: 31 run(s), 213 byte(s)
+[dl] ---8<--- begin painted text
+[dl] -359,137 全部
+[dl] -388,157 公开课
+[dl] -388,177 游戏
+[dl] -388,197 二次元
+[dl] -388,217 音乐
+[dl] -388,237 影视
+[dl] -388,257 美食
+[dl] -388,277 知识
+[dl] -388,297 小剧场
+[dl] -388,317 生活vlog
+[dl] -388,337 体育
+[dl] -388,357 旅行
+[dl] -388,377 亲子
+[dl] -388,397 动物
+[dl] -388,417 三农
+[dl] -388,437 汽车
+[dl] -388,457 美妆穿搭
+[dl] 22,98 精选
+[dl] 22,174 推荐
+[dl] 18,250 AI抖音
+[dl] 22,326 关注
+[dl] 22,402 朋友
+[dl] 22,478 我的
+[dl] 22,578 直播
+[dl] 654,62 搜索
+[dl] 1033,67 登录
+[dl] 838,84 充钻石
+[dl] 878,84 客户端
+[dl] 923,84 通知
+[dl] 955,84 消息
+[dl] 987,77 投稿
+[dl] ---8<--- end painted text
+[wm] perf t=39698 composites=286 ns=3029922757 max=50762746 motions=18 curmoves=11 curns=198998 full=20 rects=288 cpx=99812564 fpx=99812564 presns=188539050 torn=0 defer=23 late=0 drawmax=42 evdrop=0
+[netlock] acq 899817 recursive 6015 maxdepth 3 violations 0
+[time] tickloss +11/s worstgap=70913us missed=63 of 4095 expected (1.538% of the clock); uptime 41s
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 31 run(s), 213 byte(s)
+[dl] ---8<--- begin painted text
+[dl] -359,137 全部
+[dl] -388,157 公开课
+[dl] -388,177 游戏
+[dl] -388,197 二次元
+[dl] -388,217 音乐
+[dl] -388,237 影视
+[dl] -388,257 美食
+[dl] -388,277 知识
+[dl] -388,297 小剧场
+[dl] -388,317 生活vlog
+[dl] -388,337 体育
+[dl] -388,357 旅行
+[dl] -388,377 亲子
+[dl] -388,397 动物
+[dl] -388,417 三农
+[dl] -388,437 汽车
+[dl] -388,457 美妆穿搭
+[dl] 22,98 精选
+[dl] 22,174 推荐
+[dl] 18,250 AI抖音
+[dl] 22,326 关注
+[dl] 22,402 朋友
+[dl] 22,478 我的
+[dl] 22,578 直播
+[dl] 654,62 搜索
+[dl] 1033,67 登录
+[dl] 838,84 充钻石
+[dl] 878,84 客户端
+[dl] 923,84 通知
+[dl] 955,84 消息
+[dl] 987,77 投稿
+[dl] ---8<--- end painted text
+[bxfer] h2 mcs.zijieapi.com:443 closed: streams=1 peak=1 frames=4/4 hpack_in=0
+[bxfer] h2 mon.zijieapi.com:443 closed: streams=1 peak=1 frames=6/5 hpack_in=2007
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mcs.zijieapi.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for mon.zijieapi.com, alpn=h2
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[browser] inserted-script queue full -- dropping one
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for vcs.zijieapi.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for lf-douyin-pc-web.douyinstatic.com (no chain, no signature), alpn=http/1.1
+[mm] low: 100384 frames free (392 MiB), 30653 used, 716 shared, 0 bugs
+[net] rx path: frames 4713 irq 1901 softirq 856 inline 73 poll 94 idle 0/0 halt/skip
+[e1000] stats: rx 4873 pkt / 5526315 B, tx 3483 pkt / 271248 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1951 (+388)
+[mm] low: 100128 frames free (391 MiB), 30909 used, 716 shared, 0 bugs

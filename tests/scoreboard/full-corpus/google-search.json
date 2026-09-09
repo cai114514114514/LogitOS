@@ -1,0 +1,85 @@
+{
+ "name": "google-search",
+ "url": "https://www.google.com/search?q=python",
+ "started": "2026-08-29T21:30:39",
+ "verdict": "ERRORS",
+ "why": "painted 26756 changed px in 2.5s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.google.com/search?q=python",
+  "bytes": 91755,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 5,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: ReferenceError: 'solveSimpleChallenge' is not defined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 1,
+  "dials": 1,
+  "reused": 1,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 2.5,
+  "paint_seconds": 16.3,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 26756,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 17620,
+  "ink_px_blank": 4256,
+  "colours": 640,
+  "rich_tiles_proxy": 83
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google-search.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google-search.serial.txt",
+ "url_confirmed": "https://www.google.com/search?q=python",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/google-search.host.html",
+ "text_runs": 35,
+ "text_bytes": 516,
+ "text": "28,113 Our\n51,113 systems\n100,113 have\n129,113 detected\n182,113 unusual\n228,113 traffic\n263,113 from\n293,113 your\n320,113 computer\n378,113 network.\n28,129 Please\n68,129 try\n85,129 your\n112,129 request\n158,129 again\n191,129 later.\n222,129 Why\n248,129 did\n269,129 this\n291,129 happen?\n28,145 IP\n41,145 address:\n93,145 54.153.47.50\n28,161 Time:\n62,161 2026-08-29T13:31:08Z\n28,177 URL:\n57,177 https://www.google.com/search?\n28,193 q=python&sg_ss=E%3Anot%20a%20function%20(the%20callee%20is\n28,209 %20a%20number)\n28,225 %3ATypeError%3A%20not%20a%20function%20(the%20callee%20is\n28,241 %20a%20number)%0A%20%20%20%20at%20N%20(%3Cinput%3E)\n28,257 %0A%20%20%20%20at%20VD%20(%3Cinput%3E)\n28,273 %0A%20%20%20%20at%20%3Canonymous%3E%20(%3Cinput%3E)\n28,289 %0A%20%20%20%20at%20SH%20(%3Cinput%3E)\n28,305 %0A%20%20%20%20at%20",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 5,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T21:31:25"
+}

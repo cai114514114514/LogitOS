@@ -1,0 +1,175 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +5/s worstgap=103842us missed=71 of 2098 expected (3.384% of the clock); uptime 21s
+[wm] perf t=21637 composites=195 ns=2665155599 max=53894730 motions=18 curmoves=10 curns=217998 full=16 rects=195 cpx=70549416 fpx=70549416 presns=130399342 torn=0 defer=11 late=0 drawmax=34 evdrop=0
+[browser] load: https://www.baidu.com/
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.33
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[css] linked: 0 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 0 inline + 0 external = 0 to the parser  (nothing truncated)
+[css] parsed: 0 sheet(s) accepted, 0 refused; 0 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[time] tickloss +17/s worstgap=103842us missed=88 of 2198 expected (4.003% of the clock); uptime 22s
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+[webapi] navigation requested: http://www.baidu.com/ (the loader does not consume this yet)
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[sock] connected www.baidu.com via ipv4 ::ffff:198.18.0.33
+[net] rx path: frames 64 irq 46 softirq 21 inline 1 poll 3 idle 0/0 halt/skip
+[mm] low: 113192 frames free (442 MiB), 17845 used, 574 shared, 0 bugs
+[mm] low: 112936 frames free (441 MiB), 18101 used, 585 shared, 0 bugs
+[mm] low: 112680 frames free (440 MiB), 18357 used, 588 shared, 0 bugs
+[mm] low: 112424 frames free (439 MiB), 18613 used, 588 shared, 0 bugs
+[dl] painted text: 32 run(s), 368 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 590,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 649,245 
+[dl] 245,470 
+[dl] 958,457 
+[dl] 960,472 换一换
+[dl] 242,492 
+[dl] 245,512 弘扬“上海精神”
+[dl] 376,512 凝聚“上合力量”
+[dl] 300,481 5
+[dl] 300,498 用这种微信头像或被封号
+[dl] 308,478 热
+[dl] 245,549 1
+[dl] 245,566 探测淤泥下20米的生命迹象
+[dl] 632,535 6
+[dl] 632,552 “山寨车鼻祖”7年来首次盈利
+[dl] 632,589 7
+[dl] 632,606 樊振东无缘德国杯8强
+[dl] 640,586 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for pss.bdstatic.com, alpn=http/1.1
+[mm] low: 112168 frames free (438 MiB), 18869 used, 634 shared, 0 bugs
+[browser] heap peak 10858K
+[css] linked: 9 <style>, 2 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 2 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 286059 inline + 24765 external = 310824 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 11615 declarations kept
+[css] dropped: 1720  (74 selector, 26 at-rule, 1496 unknown-prop, 124 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 26 at-rule, 120 declaration (syntax-malformed; a different population from the drops above)
+[css]      370  unknown-prop border-radius            | border-radius
+[css]      137  unknown-prop -webkit-*                | -webkit-box-shadow
+[css]      108  unknown-prop transform                | transform
+[css]      104  unknown-prop box-shadow               | box-shadow
+[css]       90  unknown-prop transition               | transition
+[css]       82  unknown-prop pointer-events           | pointer-events
+[css]       70  unknown-prop filter                   | filter
+[css]       62  unknown-prop background-size          | background-size
+[css]       51  unknown-prop -moz-*                   | -moz-box-shadow
+[css]       32  unknown-prop animation                | animation
+[css]       32  unknown-prop user-select              | user-select
+[css]       28  unknown-prop backdrop-filter          | backdrop-filter
+[css]   ... 85 more reason(s); css_report_verbose=1 for all
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for psstatic.cdn.bcebos.com, alpn=http/1.1
+[img] 1/1 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 1/256 ents 27K]
+[mm] low: 111912 frames free (437 MiB), 19125 used, 636 shared, 0 bugs
+[time] tickloss +7/s worstgap=103842us missed=95 of 2398 expected (3.961% of the clock); uptime 24s
+[mm] low: 111656 frames free (436 MiB), 19381 used, 636 shared, 0 bugs
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/json"> (not executable)
+[browser] scripts collected: 11 external classic, 0 external module, 17 inline
+[e1000] stats: rx 396 pkt / 443113 B, tx 333 pkt / 31925 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 199 (+199)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 111400 frames free (435 MiB), 19637 used, 636 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 636 shared, 0 bugs
+[wm] perf t=24644 composites=226 ns=3181949008 max=53894730 motions=18 curmoves=10 curns=217998 full=16 rects=226 cpx=86742776 fpx=86742776 presns=160131194 torn=0 defer=17 late=0 drawmax=53 evdrop=0
+[mm] low: 110888 frames free (433 MiB), 20149 used, 638 shared, 0 bugs
+[mm] low: 110632 frames free (432 MiB), 20405 used, 644 shared, 0 bugs
+[time] tickloss +10/s worstgap=103842us missed=105 of 2497 expected (4.205% of the clock); uptime 25s
+[mm] low: 110376 frames free (431 MiB), 20661 used, 670 shared, 0 bugs
+[mm] low: 110120 frames free (430 MiB), 20917 used, 671 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 671 shared, 0 bugs
+[mm] low: 109608 frames free (428 MiB), 21429 used, 671 shared, 0 bugs
+[mm] low: 109352 frames free (427 MiB), 21685 used, 671 shared, 0 bugs
+[mm] low: 109096 frames free (426 MiB), 21941 used, 671 shared, 0 bugs
+[mm] low: 108840 frames free (425 MiB), 22197 used, 671 shared, 0 bugs
+无畏是青春的态度，热AI是时代的脉搏。
+各位新同学正以无畏的姿态奔赴通用人工智能的星辰大海！
+作为引领AI时代浪潮的主力军，广阔舞台，待你大展身手。
+乘风破浪，勇往直前，未来百度将与你一起，创造无限可能！
+
+%c百度2027校园招聘简历投递：https://talent.baidu.com/jobs/list color:red
+[mm] low: 108584 frames free (424 MiB), 22453 used, 676 shared, 0 bugs
+Error
+[netlock] acq 112509 recursive 877 maxdepth 3 violations 0
+[browser] inserted script LOST: http://pss.bdstatic.com/r/www/cache/static/plugins/bzPopper_d8249c4undefined: no error (status 404)
+[browser] inserted script LOST: https://pss.bdstatic.com/static/superman-san/app/chat-input/result_59c562dundefined: no error (status 404)
+[net] rx path: frames 578 irq 278 softirq 133 inline 1 poll 13 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for hector.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[browser] load done: 19 requests, 8 connections dialled, 11 reused, 0 modules loaded (0 failed)
+[browser] pool: 11 hits, 2 evicted, 4 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[js] uncaught in event listener: TypeError: cannot read property 'ownerDocument' of undefined
+[mm] low: 108328 frames free (423 MiB), 22709 used, 686 shared, 0 bugs
+[mm] low: 108072 frames free (422 MiB), 22965 used, 686 shared, 0 bugs
+[mm] low: 107816 frames free (421 MiB), 23221 used, 686 shared, 0 bugs
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 32 run(s), 368 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 590,245 复杂问题就找文心助手，深入思考回答更优
+[dl] 649,245 
+[dl] 245,470 
+[dl] 958,457 
+[dl] 960,472 换一换
+[dl] 242,492 
+[dl] 245,512 弘扬“上海精神”
+[dl] 376,512 凝聚“上合力量”
+[dl] 300,481 5
+[dl] 300,498 用这种微信头像或被封号
+[dl] 308,478 热
+[dl] 245,549 1
+[dl] 245,566 探测淤泥下20米的生命迹象
+[dl] 632,535 6
+[dl] 632,552 “山寨车鼻祖”7年来首次盈利
+[dl] 632,589 7
+[dl] 632,606 樊振东无缘德国杯8强
+[dl] 640,586 新
+[dl] 912,295 百度一下
+[dl] 612,79 新闻
+[dl] 604,121 hao123
+[dl] 612,163 地图
+[dl] 612,205 贴吧
+[dl] 612,247 视频
+[dl] 612,289 图片
+[dl] 612,331 网盘
+[dl] 612,373 文库
+[dl] 612,415 文心
+[dl] 599,457 百度搭子
+[dl] 612,499 更多
+[dl] 709,79 设置
+[dl] 243,120 登录
+[dl] ---8<--- end painted text
+[time] tickloss +16/s worstgap=103842us missed=121 of 3997 expected (3.027% of the clock); uptime 40s
+[js] uncaught in timer: Error: [MODULE_TIMEOUT]Hang(none) Miss(plugins/bzPopper, superman-san/app/chat-input/result_59c562d)

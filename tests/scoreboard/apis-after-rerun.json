@@ -1,0 +1,394 @@
+{
+ "date": "apis-after-rerun",
+ "generated": "2026-08-29T23:34:12",
+ "iso": "build-apis/logit.iso",
+ "iso_sha256_16": "82ec5e3a8dc5be9e",
+ "commit": "9ba575e93",
+ "wall_seconds": 210.3,
+ "repeat": 2,
+ "sites": [
+  {
+   "name": "bilibili",
+   "url": "https://www.bilibili.com/",
+   "started": "2026-08-29T23:30:42",
+   "verdict": "PAINTED",
+   "why": "painted 269148 changed px in 9.1s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.bilibili.com/",
+    "bytes": 117271,
+    "redirects": [],
+    "script_tags": 21,
+    "script_src": 8,
+    "img_tags": 13,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 20,
+    "dials": 8,
+    "reused": 12,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 9346,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 9.1,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 269148,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 80064,
+    "ink_px_blank": 4256,
+    "colours": 9883,
+    "rich_tiles_proxy": 420
+   },
+   "shot": "tests/scoreboard/apis-after-rerun/bilibili.png",
+   "serial_log": "tests/scoreboard/apis-after-rerun/bilibili.serial.txt",
+   "url_confirmed": "https://www.bilibili.com/",
+   "url_attempts": 1,
+   "about_text_arrived": false,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/bilibili.host.html",
+   "text_runs": 66,
+   "text_bytes": 512,
+   "text": "70,279 动态\n106,279 热门\n478,233 番剧\n478,271 电影\n1154,233 国创\n1147,271 电视剧\n1830,233 综艺\n1823,271 纪录片\n2506,233 动画\n2506,271 游戏\n3182,233 鬼畜\n3182,271 音乐\n3858,233 舞蹈\n3858,271 影视\n4534,233 娱乐\n4534,271 知识\n5197,233 科技数码\n5210,271 资讯\n5886,233 美食\n5878,271 更多\n1044,236 专栏\n1044,274 直播\n1274,236 活动\n1274,274 课堂\n1478,236 社区中心\n1478,274 新歌热榜\n313,458 【四毛】牛来爆了，谁急了？\n330,506 四毛的干爹\n399,506 ·\n414,506 昨天\n573,458 【我的世界】在四季树下的山\n573,480 中，雕刻出了一座神殿\n726,480 |\n573,502 异界生活幻想\n666,502 5\n590,528 不更新A\n640,528 ·\n655,528 昨天\n833,458 你\n851,458 撞\n869,458 不\n887,458 过\n905,458 我\n923,458 你\n941,458 信\n959,458 吗\n850,506 萝太永不破防\n932,506 ·\n947,506 昨天\n340,330 53.4万\n412,330 5135\n511,330 11:04\n600,330 21.9万\n672,330 1460\n771,330 06:43\n860,330 25.1万\n932,330 619\n1031,330 09:55\n42,60 首页\n89,60 番剧\n130,60 直播\n171,60 游戏中心\n240,60 会员购\n295,60 漫画\n336,60 赛事\n393,60 下载客户端",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 12,
+     "images": 12,
+     "preloads": 1,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:31:55",
+   "reported": "TypeError split of undefined",
+   "wall_seconds": 73.3,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "qq",
+   "url": "https://www.qq.com/",
+   "started": "2026-08-29T23:30:42",
+   "verdict": "PAINTED",
+   "why": "painted 243856 changed px in 13.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.qq.com/",
+    "bytes": 126000,
+    "redirects": [],
+    "script_tags": 13,
+    "script_src": 7,
+    "img_tags": 17,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 16,
+    "dials": 7,
+    "reused": 9,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 9933,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 13.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 243856,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 148384,
+    "ink_px_blank": 4256,
+    "colours": 1049,
+    "rich_tiles_proxy": 45
+   },
+   "shot": "tests/scoreboard/apis-after-rerun/qq.png",
+   "serial_log": "tests/scoreboard/apis-after-rerun/qq.serial.txt",
+   "url_confirmed": "https://www.qq.com/",
+   "url_attempts": 1,
+   "about_text_arrived": false,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/qq.host.html",
+   "text_runs": 71,
+   "text_bytes": 1138,
+   "text": "40,96 苏州市\n115,96 阴\n136,96 28\n152,96 ℃\n565,87 邮箱\n565,137 最新游戏\n667,96 网页设置\n759,88 快捷访问\n875,86 登录\n988,81 安装电脑版\n-175,219 要闻\n-139,219 科技\n-69,219 财经\n11,219 AI\n52,219 热问\n122,219 教育\n192,219 国际\n262,219 军事\n332,219 娱乐\n394,219 电视剧\n488,219 体育\n559,219 NBA\n626,219 汽车\n696,219 房产\n766,219 游戏\n836,219 健康\n895,219 QQ游戏\n974,219 小游戏中心\n1134,213 更多\n-156,294 拾光纪·习主席即将出访，这些要点值得关注\n-156,344 “为推动吉中关系高质量发展提供重要指引”\n-156,422 多种专业设备集结全力抢通G216线受损路段\n-156,444 活力中国调研行\n-41,444 |\n-34,444 一朵牡丹，何以开出百亿产业\n-156,488 好评中国｜新电商驭“智”而行，何以“向新又向心”？\n-156,532 时政Vlog丨沉浸式感受在吉尔吉斯斯坦的一天！\n300,422 应急管理部调派“雨燕应急”无人机组\n575,422 持续支持灾害救援\n300,444 晶采观察丨壮大实体经济根基\n511,444 未来5年中国工业将这样干\n300,488 吉尔吉斯斯坦始终视中国为可靠伙伴——访吉尔吉斯斯坦外长\n300,532 中外博主打卡六亩半手作文创园，解锁不一样的新疆体验\n812,389 产品推荐\n772,387 更多\n812,423 腾讯新闻\n907,423 腾讯视频\n1014,423 腾讯体育\n1120,423 腾讯公益\n812,464 微信\n843,464 QQ\n882,464 元宝\n929,464 QQ音乐\n996,464 QQ浏览器\n1077,464 搜狗输入法\n812,490 应用宝\n812,498 企微\n843,498 WorkBuddy\n934,498 ima\n975,498 腾讯文档\n1050,498 腾讯会议\n1125,498 电脑管家\n812,537 QQ游戏\n863,537 棋牌赛事\n938,537 斗地主\n999,537 仙逆\n1046,537 腾讯电子签\n1135,537 软件中心\n791,622 今日热播\n287,86 搜索\n372,95 问AI",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 6,
+     "inline_scripts": 6,
+     "images": 16,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 8
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:31:59",
+   "reported": "Uncaught (in promise) undefined",
+   "wall_seconds": 77.3,
+   "runs": 2,
+   "all_verdicts": [
+    "PAINTED",
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "stripe",
+   "url": "https://stripe.com/",
+   "started": "2026-08-29T23:30:42",
+   "verdict": "ERRORS",
+   "why": "painted 20504 changed px in 29.6s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://stripe.com/jp",
+    "bytes": 741414,
+    "redirects": [
+     "307 -> https://stripe.com/jp"
+    ],
+    "script_tags": 76,
+    "script_src": 73,
+    "img_tags": 30,
+    "inventory": {
+     "stylesheets": 5,
+     "script_src": 72,
+     "inline_scripts": 0,
+     "images": 30,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 78
+    },
+    "elapsed": 2.4
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "SyntaxError: expecting ';'",
+      "stack": [
+       "at https://stripe.com/:1"
+      ],
+      "count": 2
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 3,
+    "requests": 78,
+    "dials": 3,
+    "reused": 76,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 15318,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 29.6,
+    "paint_seconds": 20.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 20504,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 10241,
+    "ink_px_blank": 4256,
+    "colours": 698,
+    "rich_tiles_proxy": 11
+   },
+   "shot": "tests/scoreboard/apis-after-rerun/stripe.png",
+   "serial_log": "tests/scoreboard/apis-after-rerun/stripe.serial.txt",
+   "url_confirmed": "https://stripe.com/",
+   "url_attempts": 1,
+   "about_text_arrived": false,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/stripe.host.html",
+   "text_runs": 37,
+   "text_bytes": 181,
+   "text": "109,192 事\n109,247 業\n109,302 成\n109,357 長\n109,412 を\n109,467 支\n109,522 え\n109,577 る\n811,86 サインイン\n942,88 営業にお問い合わせ\n16,192 Stripe\n55,192 上の\n16,209 決済額が全\n16,226 世界の\n61,226 GDP\n90,226 に\n16,243 占める割合:\n16,470 1\n16,487 .\n16,504 7\n16,521 0\n16,538 6\n16,555 4\n16,572 8\n16,589 2\n16,606 6\n202,192 事\n202,247 業\n202,302 成\n202,357 長\n202,412 を\n202,467 支\n202,522 え\n202,577 る\n295,192 始める\n295,208 Google\n348,208 で登録",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 5,
+     "script_src": 72,
+     "inline_scripts": 0,
+     "images": 30,
+     "preloads": 13,
+     "fonts": 2,
+     "mandatory": 78
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:32:19",
+   "reported": "73 scripts, extremely slow",
+   "wall_seconds": 97.3,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "kimi",
+   "url": "https://www.kimi.com/",
+   "started": "2026-08-29T23:30:42",
+   "verdict": "ERRORS",
+   "why": "painted 11320 changed px in 40.4s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.kimi.com/",
+    "bytes": 483424,
+    "redirects": [],
+    "script_tags": 4,
+    "script_src": 2,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 29,
+     "script_src": 2,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 81,
+     "fonts": 0,
+     "mandatory": 32
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'caller' of undefined",
+      "stack": [
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672)",
+       "at <eval> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496672:4)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 112,
+    "dials": 5,
+    "reused": 107,
+    "modules": 78,
+    "modules_failed": 0,
+    "heap_peak_k": 31629,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 40.4,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 11320,
+    "changed_bbox": [
+     144,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 8624,
+    "ink_px_blank": 4256,
+    "colours": 580,
+    "rich_tiles_proxy": 14
+   },
+   "shot": "tests/scoreboard/apis-after-rerun/kimi.png",
+   "serial_log": "tests/scoreboard/apis-after-rerun/kimi.serial.txt",
+   "url_confirmed": "https://www.kimi.com/",
+   "url_attempts": 1,
+   "about_text_arrived": true,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/kimi.host.html",
+   "text_runs": 5,
+   "text_bytes": 59,
+   "text": "489,311 探索灵感\n475,341 滑动探索\n196,140 尽管问，或做个\n311,140 Agent\n355,140 任务...",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 29,
+     "script_src": 2,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 81,
+     "fonts": 0,
+     "mandatory": 32
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:32:05",
+   "reported": "the one the whole browser arc was aimed at -- an LLM chat page: React, streaming fetch, and a text input that has to accept keystrokes",
+   "wall_seconds": 83.3,
+   "runs": 2,
+   "all_verdicts": [
+    "ERRORS",
+    "ERRORS"
+   ]
+  }
+ ]
+}

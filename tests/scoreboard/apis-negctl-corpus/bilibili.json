@@ -1,0 +1,83 @@
+{
+ "name": "bilibili",
+ "url": "https://www.bilibili.com/",
+ "started": "2026-08-29T23:45:04",
+ "verdict": "PAINTED",
+ "why": "painted 267896 changed px in 9.7s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.bilibili.com/",
+  "bytes": 116763,
+  "redirects": [],
+  "script_tags": 21,
+  "script_src": 8,
+  "img_tags": 13,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 0.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 20,
+  "dials": 8,
+  "reused": 12,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9346,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 9.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 267896,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 83370,
+  "ink_px_blank": 4256,
+  "colours": 7749,
+  "rich_tiles_proxy": 383
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-negctl-corpus/bilibili.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-negctl-corpus/bilibili.serial.txt",
+ "url_confirmed": "https://www.bilibili.com/",
+ "url_attempts": 1,
+ "about_text_arrived": false,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-negctl-corpus/bilibili.host.html",
+ "text_runs": 55,
+ "text_bytes": 436,
+ "text": "70,279 动态\n106,279 热门\n478,233 番剧\n478,271 电影\n1154,233 国创\n1147,271 电视剧\n1830,233 综艺\n1823,271 纪录片\n2506,233 动画\n2506,271 游戏\n3182,233 鬼畜\n3182,271 音乐\n3858,233 舞蹈\n3858,271 影视\n4534,233 娱乐\n4534,271 知识\n5197,233 科技数码\n5210,271 资讯\n5886,233 美食\n5878,271 更多\n1044,236 专栏\n1044,274 直播\n1274,236 活动\n1274,274 课堂\n1478,236 社区中心\n1478,274 新歌热榜\n313,458 你回来吧，你刚刚好！\n330,506 憨态喵\n373,506 ·\n388,506 13小时前\n573,458 空调和朋友，开始今天的洲洲\n590,506 嗷嗷夜\n633,506 ·\n648,506 08-23\n833,458 贺蔚\n850,506 秦观南_毛发旺盛\n952,506 ·\n967,506 22小时前\n340,330 6.4万\n405,330 76\n511,330 02:53\n600,330 152.3万\n679,330 247\n771,330 00:59\n860,330 8.3万\n925,330 66\n1031,330 00:25\n42,60 首页\n89,60 番剧\n130,60 直播\n171,60 游戏中心\n240,60 会员购\n295,60 漫画\n336,60 赛事\n393,60 下载客户端",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 12,
+   "images": 12,
+   "preloads": 1,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T23:46:18"
+}

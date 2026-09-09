@@ -1,0 +1,68 @@
+{
+ "name": "openai#2",
+ "url": "https://openai.com/",
+ "started": "2026-08-30T01:20:19",
+ "verdict": "ERRORS",
+ "why": "painted 25824 changed px in 1.9s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 403,
+  "final_url": "https://openai.com/",
+  "bytes": 0,
+  "redirects": [],
+  "script_tags": 0,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": null,
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: TypeError: createElement is not a function (it is undefined)"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 2,
+  "dials": 2,
+  "reused": 0,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 1.9,
+  "paint_seconds": 16.4,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 25824,
+  "changed_bbox": [
+   152,
+   16,
+   1256,
+   764
+  ],
+  "ink_px": 5094,
+  "ink_px_blank": 4256,
+  "colours": 675,
+  "rich_tiles_proxy": 11
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-openai/openai#2.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-openai/openai#2.serial.txt",
+ "url_confirmed": "https://openai.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "text_runs": 111,
+ "text_bytes": 574,
+ "text": "431,140 Browser\n531,140 not\n576,140 supported\n17,182 Your\n52,182 browser\n112,182 does\n148,182 not\n175,182 support\n233,182 the\n259,182 security\n318,182 verification\n401,182 required\n463,182 by\n483,182 openai.com.\n573,182 This\n605,182 can\n634,182 happen\n690,182 if\n702,182 your\n737,182 browser\n797,182 is\n811,182 either\n855,182 too\n882,182 old\n907,182 to\n925,182 support\n983,182 the\n1009,182 latest\n1052,182 security\n416,202 features\n477,202 or\n495,202 too\n522,202 new\n554,202 to\n572,202 be\n592,202 fully\n625,202 compatible.\n18,230 1.\n171,230 Switch\n224,230 your\n262,230 browser\n323,230 .\n330,230 If\n342,230 you\n371,230 have\n408,230 access\n458,230 to\n476,230 multiple\n537,230 browsers,\n608,230 try\n631,230 accessing\n703,230 the\n729,230 website\n786,230 through\n846,230 a\n858,230 different\n921,230 browser.\n18,250 2.\n350,250 Update\n408,250 your\n446,250 browser\n507,250 .\n514,250 Make\n554,250 sure\n587,250 that\n620,250 your\n655,250 browser\n715,250 is\n729,250 up\n750,250 to\n768,250 date.\n18,270 3.\n59,270 If\n71,270 this\n100,270 error\n138,270 persists\n195,270 after\n232,270 you\n261,270 have\n298,270 followed\n361,270 the\n387,270 previous\n450,270 steps,\n494,270 refer\n530,270 to\n548,270 Cloudflare’s\n647,270 troubleshooting\n763,270 documentation\n875,270 for\n898,270 a\n910,270 list\n934,270 of\n951,270 supported\n1026,270 browsers.\n171,298 For\n197,298 detailed\n257,298 guidance\n325,298 on\n346,298 how\n379,298 to\n397,298 update\n450,298 your\n485,298 browser,\n549,298 refer\n585,298 to\n603,298 your\n638,298 browser's\n709,298 documentation\n821,298 or\n839,298 support\n897,298 website.",
+ "subresources": {
+  "host_inventory": null,
+  "gap": null
+ },
+ "finished": "2026-08-30T01:21:04"
+}

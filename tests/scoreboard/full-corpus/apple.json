@@ -1,0 +1,87 @@
+{
+ "name": "apple",
+ "url": "https://www.apple.com/",
+ "started": "2026-08-29T21:28:00",
+ "verdict": "ERRORS",
+ "why": "painted 566996 changed px in 15.7s but 2 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.apple.com/",
+  "bytes": 254322,
+  "redirects": [],
+  "script_tags": 20,
+  "script_src": 15,
+  "img_tags": 97,
+  "inventory": {
+   "stylesheets": 9,
+   "script_src": 15,
+   "inline_scripts": 1,
+   "images": 41,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 25
+  },
+  "elapsed": 0.5
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "timer: TypeError: javaEnabled is not a function (it is undefined)"
+  ],
+  "module_exceptions": [
+   "https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 4,
+  "requests": 49,
+  "dials": 4,
+  "reused": 45,
+  "modules": 6,
+  "modules_failed": 0,
+  "heap_peak_k": 13990,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 15.7,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 566996,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 48936,
+  "ink_px_blank": 4256,
+  "colours": 807,
+  "rich_tiles_proxy": 9
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/apple.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/apple.serial.txt",
+ "url_confirmed": "https://www.apple.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/full-corpus/apple.host.html",
+ "text_runs": 17,
+ "text_bytes": 77,
+ "text": "317,196 Surprise\n543,196 and\n654,196 shine.\n218,261 Watch\n303,261 a\n324,261 special\n418,261 Apple Event\n575,261 online\n660,261 on\n699,261 9/9\n745,261 at\n776,261 10\n812,261 a.m.\n522,292 PT.\n523,341 Add\n556,341 to\n575,341 calendar",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 9,
+   "script_src": 15,
+   "inline_scripts": 1,
+   "images": 41,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 25
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T21:28:58"
+}

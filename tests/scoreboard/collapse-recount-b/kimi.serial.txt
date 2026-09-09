@@ -1,0 +1,366 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20701 composites=177 ns=2015418870 max=45382772 motions=18 curmoves=11 curns=200999 full=17 rects=178 cpx=61629836 fpx=61629836 presns=114222424 torn=0 defer=11 late=0 drawmax=21 evdrop=0
+[browser] load: https://www.kimi.com/
+[sock] connected www.kimi.com via ipv4 ::ffff:198.18.0.35
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.kimi.com, alpn=http/1.1
+[mm] low: 113184 frames free (442 MiB), 17853 used, 585 shared, 0 bugs
+[mm] low: 112928 frames free (441 MiB), 18109 used, 590 shared, 0 bugs
+[mm] low: 112672 frames free (440 MiB), 18365 used, 590 shared, 0 bugs
+[wm] perf t=21701 composites=202 ns=2281759528 max=45382772 motions=18 curmoves=11 curns=200999 full=17 rects=204 cpx=72205676 fpx=72205676 presns=133109328 torn=0 defer=11 late=0 drawmax=21 evdrop=0
+[mm] low: 112416 frames free (439 MiB), 18621 used, 591 shared, 0 bugs
+[mm] low: 112160 frames free (438 MiB), 18877 used, 591 shared, 0 bugs
+[mm] low: 111904 frames free (437 MiB), 19133 used, 606 shared, 0 bugs
+[mm] low: 111648 frames free (436 MiB), 19389 used, 606 shared, 0 bugs
+[mm] low: 111392 frames free (435 MiB), 19645 used, 606 shared, 0 bugs
+[mm] low: 111136 frames free (434 MiB), 19901 used, 606 shared, 0 bugs
+[mm] low: 110880 frames free (433 MiB), 20157 used, 606 shared, 0 bugs
+[mm] low: 110624 frames free (432 MiB), 20413 used, 606 shared, 0 bugs
+[mm] low: 110368 frames free (431 MiB), 20669 used, 606 shared, 0 bugs
+[mm] low: 110112 frames free (430 MiB), 20925 used, 606 shared, 0 bugs
+[mm] low: 109856 frames free (429 MiB), 21181 used, 606 shared, 0 bugs
+[mm] low: 109600 frames free (428 MiB), 21437 used, 606 shared, 0 bugs
+[mm] low: 109344 frames free (427 MiB), 21693 used, 606 shared, 0 bugs
+[mm] low: 109088 frames free (426 MiB), 21949 used, 606 shared, 0 bugs
+[dl] painted text: 30 run(s), 188 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 35,96 新建会话
+[dl] 8,120 Ctrl
+[dl] 8,140 K
+[dl] 35,160 我的
+[dl] 70,160 Kimi
+[dl] 129,160 定时任务
+[dl] 220,160 PPT
+[dl] 276,160 集群
+[dl] 335,160 深度研究
+[dl] 426,160 文档
+[dl] 485,160 网站
+[dl] 544,160 表格
+[dl] 603,160 设计
+[dl] 41,188 收起
+[dl] 35,212 Kimi
+[dl] 70,212 Work
+[dl] 150,212 Kimi
+[dl] 185,212 Code
+[dl] 41,240 Kimi
+[dl] 76,240 Claw
+[dl] 14,308 •
+[dl] 14,308 •
+[dl] 14,308 •
+[dl] 14,308 •
+[dl] 14,308 •
+[dl] 8,356 尽管问，或做个
+[dl] 123,356 Agent
+[dl] 167,356 任务...
+[dl] 65,417 探索灵感
+[dl] 14,441 滑动探索
+[dl] ---8<--- end painted text
+[sock] connected statics.moonshot.cn via ipv4 ::ffff:198.18.0.36
+[time] tickloss +5/s worstgap=89729us missed=50 of 2196 expected (2.276% of the clock); uptime 22s
+[net] rx path: frames 65 irq 53 softirq 21 inline 2 poll 5 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for statics.moonshot.cn, alpn=http/1.1
+[tls] ticket stored for statics.moonshot.cn (208 bytes, lifetime 21600s, 1 cached)
+[tls] ticket stored for statics.moonshot.cn (208 bytes, lifetime 21600s, 2 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for statics.moonshot.cn, alpn=http/1.1
+[tls] ticket stored for statics.moonshot.cn (208 bytes, lifetime 21600s, 3 cached)
+[tls] ticket stored for statics.moonshot.cn (208 bytes, lifetime 21600s, 4 cached)
+[wm] perf t=22705 composites=232 ns=2628408784 max=45382772 motions=18 curmoves=11 curns=200999 full=17 rects=234 cpx=86557536 fpx=86557536 presns=158594199 torn=0 defer=23 late=0 drawmax=24 evdrop=0
+[mm] low: 108832 frames free (425 MiB), 22205 used, 611 shared, 0 bugs
+[time] tickloss +7/s worstgap=89729us missed=57 of 2293 expected (2.485% of the clock); uptime 23s
+[mm] low: 108576 frames free (424 MiB), 22461 used, 612 shared, 0 bugs
+[mm] low: 108320 frames free (423 MiB), 22717 used, 612 shared, 0 bugs
+[mm] low: 108064 frames free (422 MiB), 22973 used, 612 shared, 0 bugs
+[mm] low: 107808 frames free (421 MiB), 23229 used, 612 shared, 0 bugs
+[mm] low: 107552 frames free (420 MiB), 23485 used, 612 shared, 0 bugs
+[mm] low: 107296 frames free (419 MiB), 23741 used, 612 shared, 0 bugs
+[mm] low: 107040 frames free (418 MiB), 23997 used, 612 shared, 0 bugs
+[mm] low: 106784 frames free (417 MiB), 24253 used, 612 shared, 0 bugs
+[browser] heap peak 31629K
+[dl] painted text: 21 run(s), 157 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 489,311 探索灵感
+[dl] 475,341 滑动探索
+[dl] 41,147 新建会话
+[dl] 174,147 Ctrl
+[dl] 207,147 K
+[dl] 196,140 尽管问，或做个
+[dl] 311,140 Agent
+[dl] 355,140 任务...
+[dl] 34,214 我的
+[dl] 65,214 Kimi
+[dl] 34,254 定时任务
+[dl] 34,294 PPT
+[dl] 34,334 集群
+[dl] 34,374 深度研究
+[dl] 34,414 文档
+[dl] 34,454 网站
+[dl] 34,494 表格
+[dl] 34,534 设计
+[dl] 34,576 收起
+[dl] 34,614 Kimi
+[dl] 64,614 Work
+[dl] ---8<--- end painted text
+[css] linked: 16 <style>, 29 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 29 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 28103 inline + 568488 external = 596591 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 13279 declarations kept
+[css] dropped: 2754  (0 selector, 104 at-rule, 2529 unknown-prop, 121 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 104 at-rule, 703 declaration (syntax-malformed; a different population from the drops above)
+[css]      446  unknown-prop gap                      | gap
+[css]      252  unknown-prop transform                | transform
+[css]      226  unknown-prop transition               | transition
+[css]      190  unknown-prop -webkit-*                | -webkit-backface-visibility
+[css]      156  unknown-prop transform-origin         | transform-origin
+[css]      131  unknown-prop animation                | animation
+[css]      129  unknown-prop transform-box            | transform-box
+[css]      113  unknown-prop text-overflow            | text-overflow
+[css]      110  unknown-prop box-shadow               | box-shadow
+[css]      107  unknown-prop pointer-events           | pointer-events
+[css]      104  at-rule      @keyframes               | @keyframes
+[css]       66  unknown-prop -moz-*                   | -moz-user-select
+[css]   ... 83 more reason(s); css_report_verbose=1 for all
+[browser] scripts collected: 0 external classic, 2 external module, 2 inline
+[netlock] acq 112693 recursive 715 maxdepth 3 violations 0
+[e1000] stats: rx 570 pkt / 618231 B, tx 419 pkt / 39860 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 323 (+323)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 106528 frames free (416 MiB), 24509 used, 684 shared, 0 bugs
+[mm] low: 106272 frames free (415 MiB), 24765 used, 684 shared, 0 bugs
+[mm] low: 106016 frames free (414 MiB), 25021 used, 684 shared, 0 bugs
+[mm] low: 105760 frames free (413 MiB), 25277 used, 684 shared, 0 bugs
+[mm] low: 105504 frames free (412 MiB), 25533 used, 684 shared, 0 bugs
+[js] module loaded 1299 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/rolldown-runtime-B1ws47LE.js
+[net] rx path: frames 578 irq 331 softirq 147 inline 21 poll 9 idle 0/0 halt/skip
+[mm] low: 105248 frames free (411 MiB), 25789 used, 685 shared, 0 bugs
+[js] module loaded 1604873 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/framework-Brev1GCI.js
+[e1000] stats: rx 906 pkt / 1033744 B, tx 656 pkt / 55491 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 452 (+129)
+[mm] low: 104992 frames free (410 MiB), 26045 used, 686 shared, 0 bugs
+[mm] low: 104736 frames free (409 MiB), 26301 used, 686 shared, 0 bugs
+[mm] low: 104480 frames free (408 MiB), 26557 used, 686 shared, 0 bugs
+[mm] low: 104224 frames free (407 MiB), 26813 used, 686 shared, 0 bugs
+[mm] low: 103968 frames free (406 MiB), 27069 used, 686 shared, 0 bugs
+[mm] low: 103712 frames free (405 MiB), 27325 used, 686 shared, 0 bugs
+[mm] low: 103456 frames free (404 MiB), 27581 used, 686 shared, 0 bugs
+[mm] low: 103200 frames free (403 MiB), 27837 used, 686 shared, 0 bugs
+[net] rx path: frames 1094 irq 530 softirq 243 inline 21 poll 19 idle 0/0 halt/skip
+[net] rx path: frames 1612 irq 772 softirq 372 inline 21 poll 33 idle 0/0 halt/skip
+[mm] low: 102944 frames free (402 MiB), 28093 used, 686 shared, 0 bugs
+[mm] low: 102688 frames free (401 MiB), 28349 used, 686 shared, 0 bugs
+[js] module loaded 2940319 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.utils-DdJvBmgg.js
+[e1000] stats: rx 1654 pkt / 1922182 B, tx 1218 pkt / 91688 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 796 (+344)
+[mm] low: 102432 frames free (400 MiB), 28605 used, 686 shared, 0 bugs
+[mm] low: 102176 frames free (399 MiB), 28861 used, 686 shared, 0 bugs
+[mm] low: 101920 frames free (398 MiB), 29117 used, 686 shared, 0 bugs
+[js] module loaded 71806 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/validate_pb-BBLn0AR4.js
+[js] module loaded 129531 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/core-DtB3hMRH.js
+[js] module loaded 1231133 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/vendor-BJi0wtPP.js
+[e1000] stats: rx 2038 pkt / 2343061 B, tx 1507 pkt / 110878 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1011 (+215)
+[mm] low: 101664 frames free (397 MiB), 29373 used, 687 shared, 0 bugs
+[mm] low: 101408 frames free (396 MiB), 29629 used, 687 shared, 0 bugs
+[mm] low: 101152 frames free (395 MiB), 29885 used, 687 shared, 0 bugs
+[mm] low: 100896 frames free (394 MiB), 30141 used, 687 shared, 0 bugs
+[mm] low: 100640 frames free (393 MiB), 30397 used, 687 shared, 0 bugs
+[mm] low: 100384 frames free (392 MiB), 30653 used, 687 shared, 0 bugs
+[mm] low: 100128 frames free (391 MiB), 30909 used, 687 shared, 0 bugs
+[net] rx path: frames 2127 irq 1057 softirq 527 inline 21 poll 39 idle 0/0 halt/skip
+[js] module loaded 725954 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/katex-ZtqYqCJE.js
+[mm] low: 99872 frames free (390 MiB), 31165 used, 687 shared, 0 bugs
+[mm] low: 99616 frames free (389 MiB), 31421 used, 687 shared, 0 bugs
+[mm] low: 99360 frames free (388 MiB), 31677 used, 687 shared, 0 bugs
+[js] module loaded 7366 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/dayjs.min-Dzl-DWR7.js
+[js] module loaded 1536 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/model-BQmO-zRo.js
+[js] module loaded 6516 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/suggest_pb-Os_cFm-z.js
+[js] module loaded 53021 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/token-BOqKsJxF.js
+[js] module loaded 602 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/options_pb-Duoyylwp.js
+[js] module loaded 568 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/logs-CC9yfFmM.js
+[js] module loaded 2570 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.log-DWBFM68G.js
+[js] module loaded 834 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/debug-mode-B5fnzfJw.js
+[js] module loaded 2221 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.bridge-Cy_3PzzN.js
+[js] module loaded 5458 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/slides_pb-CmBZ1cmV.js
+[js] module loaded 73882 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/request-BR6ilT6n.js
+[js] module loaded 99040 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/user-BgEtc5fJ.js
+[js] module loaded 1360 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/annotations_pb-DesszLru.js
+[js] module loaded 601 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/httpbody_pb-CRiv5lsk.js
+[js] module loaded 4073 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimiplus_pb-BhlRgfwU.js
+[js] module loaded 2704 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/job_pb-ibFZ51Qi.js
+[js] module loaded 4061 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/goods_pb-D2G7i3e7.js
+[js] module loaded 6278 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/error-BOSB1x_3.js
+[js] module loaded 3150 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/form.modal-xIAeSowo.js
+[js] module loaded 28775 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/WechatQrPanel-BXpe84PJ.js
+[js] module loaded 456882 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.icon-98FIiRH4.js
+[js] module loaded 74 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.icon-WmVlhSCa.js
+[js] module loaded 231 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/_plugin-vue_export-helper-DuRRB1IC.js
+[js] module loaded 23564 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/FeedbackModal-D49ZKRJX.js
+[js] module loaded 1646 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Button-h85WiyDV.js
+[js] module loaded 4671 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.loading-BYojEr3A.js
+[js] module loaded 823 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Loading-vk1qo0WV.js
+[js] module loaded 368 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/utils-D0B50DUQ.js
+[js] module loaded 14985 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.modal-Dv6UJbfM.js
+[js] module loaded 4109 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.button-BmHiniIi.js
+[js] module loaded 4704 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Modal-I5dPg93A.js
+[js] module loaded 4811 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/ImageThumbnail-DIytXWkW.js
+[js] module loaded 6018 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Image-CtimSc0l.js
+[js] module loaded 8903 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/WithTooltip-2kLKeIzG.js
+[js] module loaded 791 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Tooltip-CxlHfuwf.js
+[js] module loaded 501 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Loading-BVX3voiq.js
+[js] module loaded 309 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.imagePreview-DD4Gw48r.js
+[e1000] stats: rx 2507 pkt / 2834390 B, tx 1876 pkt / 143422 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1340 (+329)
+[js] module loaded 1741 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/Tooltip-DZVvdgsi.js
+[js] module loaded 4027 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/chatBase-K4dDxB2P.js
+[js] module loaded 5230 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/check-BsjWdbMu.js
+[js] module loaded 35292 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/chat-draft-8i-drI_A.js
+[js] module loaded 1860 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/v4-DpEhyEdH.js
+[js] module loaded 92636 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/chat_status_pb-DbvvYa6q.js
+[js] module loaded 6834 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/artifact_pb-C_YRyKQv.js
+[js] module loaded 4901 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/message_ref_pb-CKGYvsW0.js
+[js] module loaded 13716 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/chat_pb-DwbKFqbX.js
+[js] module loaded 9582 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/project_pb-9dz3_VWq.js
+[js] module loaded 10311 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/subscription-BPPf2FoE.js
+[js] module loaded 3241 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/formatter-eYp3ABVg.js
+[js] module loaded 7974 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.confirm-c084Ckmi.js
+[js] module loaded 999 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/google-model-Embby5A1.js
+[js] module loaded 3893 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/login-Cg52Z6RD.js
+[js] module loaded 5854 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/LoginPanelNext-h-jMg3t5.js
+[js] module loaded 480 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/CSROnly-Coq6N66Y.js
+[js] module loaded 18787 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/theme-C55AUnCh.js
+[js] module loaded 4306 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/config-BxH0DqWF.js
+[js] module loaded 1431 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/router-CBHFe89j.js
+[js] module loaded 82437 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.chatMessages-BdM2rj6m.js
+[net] rx path: frames 2641 irq 1462 softirq 732 inline 21 poll 47 idle 0/0 halt/skip
+[js] module loaded 5522 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/response_pb-4JqN2UIG.js
+[js] module loaded 17643 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/event_pb-b7ghC1fY.js
+[js] module loaded 14868 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/bot_pb-BdKZjs4s.js
+[js] module loaded 3864 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/service_pb-Bi-DpoLL.js
+[js] module loaded 46572 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/claw-bot-DQj1yiXz.js
+[js] module loaded 5288 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/RiveImg-DPhxQmwI.js
+[js] module loaded 634 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/RunningText-DLJmghKu.js
+[js] module loaded 1531 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/copy-button-BiTnOWxm.js
+[js] module loaded 1584 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/button-DeVDysup.js
+[js] module loaded 70 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/kimi.css-UacPjh3w.js
+[js] module loaded 2348 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/PopoverMenu-CjpenOjC.js
+[js] module loaded 10532 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/chunk-GIYVHLCQ-CRkof8Y2.js
+[js] module loaded 8583 bytes: https://statics.moonshot.cn/kimi-web-seo/assets/workspace-DTclzdLg.js
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for statics.moonshot.cn (no chain, no signature), alpn=h2
+[mm] low: 99104 frames free (387 MiB), 31933 used, 697 shared, 0 bugs
+[mm] low: 98848 frames free (386 MiB), 32189 used, 697 shared, 0 bugs
+[mm] low: 98592 frames free (385 MiB), 32445 used, 697 shared, 0 bugs
+[mm] low: 98336 frames free (384 MiB), 32701 used, 697 shared, 0 bugs
+[mm] low: 98080 frames free (383 MiB), 32957 used, 697 shared, 0 bugs
+[mm] low: 97824 frames free (382 MiB), 33213 used, 697 shared, 0 bugs
+[mm] low: 97568 frames free (381 MiB), 33469 used, 697 shared, 0 bugs
+[mm] low: 97312 frames free (380 MiB), 33725 used, 697 shared, 0 bugs
+[mm] low: 97056 frames free (379 MiB), 33981 used, 697 shared, 0 bugs
+[mm] low: 96800 frames free (378 MiB), 34237 used, 703 shared, 0 bugs
+[mm] low: 96544 frames free (377 MiB), 34493 used, 703 shared, 0 bugs
+[mm] low: 96288 frames free (376 MiB), 34749 used, 703 shared, 0 bugs
+[mm] low: 96032 frames free (375 MiB), 35005 used, 703 shared, 0 bugs
+[mm] low: 95776 frames free (374 MiB), 35261 used, 703 shared, 0 bugs
+[mm] low: 95520 frames free (373 MiB), 35517 used, 703 shared, 0 bugs
+[mm] low: 95264 frames free (372 MiB), 35773 used, 703 shared, 0 bugs
+[mm] low: 95008 frames free (371 MiB), 36029 used, 703 shared, 0 bugs
+[mm] low: 94752 frames free (370 MiB), 36285 used, 703 shared, 0 bugs
+[mm] low: 94496 frames free (369 MiB), 36541 used, 703 shared, 0 bugs
+[mm] low: 94240 frames free (368 MiB), 36797 used, 703 shared, 0 bugs
+[mm] low: 93984 frames free (367 MiB), 37053 used, 703 shared, 0 bugs
+[mm] low: 93728 frames free (366 MiB), 37309 used, 703 shared, 0 bugs
+[mm] low: 93472 frames free (365 MiB), 37565 used, 703 shared, 0 bugs
+[mm] low: 93216 frames free (364 MiB), 37821 used, 703 shared, 0 bugs
+[mm] low: 92960 frames free (363 MiB), 38077 used, 703 shared, 0 bugs
+%cKimi.ai 
+  color: #1772F6;
+  font-weight: bold;
+  font-size: 3em;
+  padding: 10px 0;
+  text-shadow: 0.7px 1px 0 rgb(255 255 255 / 100%),
+    1.4px 2px 0 rgb(255 255 255 / 96%),
+    2.1px 3px 0 rgb(255 255 255 / 92%),
+    2.8px 4px 0 rgb(255 255 255 / 88%),
+    1px 1px 2px rgb(100 100 100 / 70%);
+
+%c林深时见鹿，海深时见鲸，情深时见你🥰
+
+爬虫万里，不如 API 走起🥺
+
+一键接入 Kimi 大模型👇
+
+https://platform.kimi.com 
+  font-size: 1.2em;
+
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for lf3-data.volccdn.com, alpn=http/1.1
+[tls] ticket stored for lf3-data.volccdn.com (240 bytes, lifetime 900s, 4 cached)
+[tls] ticket stored for lf3-data.volccdn.com (240 bytes, lifetime 900s, 5 cached)
+[mm] low: 92704 frames free (362 MiB), 38333 used, 703 shared, 0 bugs
+[mm] low: 92448 frames free (361 MiB), 38589 used, 703 shared, 0 bugs
+[mm] low: 92192 frames free (360 MiB), 38845 used, 703 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for static.trustdecision.com, alpn=http/1.1
+[mm] low: 91936 frames free (359 MiB), 39101 used, 703 shared, 0 bugs
+[e1000] stats: rx 2926 pkt / 3293068 B, tx 2210 pkt / 177930 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1649 (+309)
+[mm] low: 91680 frames free (358 MiB), 39357 used, 703 shared, 0 bugs
+[mm] low: 91424 frames free (357 MiB), 39613 used, 703 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'caller' of undefined
+TypeError: cannot read property 'caller' of undefined
+    at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673)
+    at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673)
+    at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673)
+    at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673)
+    at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673)
+    at <eval> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496673:4)
+[browser] load done: 112 requests, 5 connections dialled, 107 reused, 78 modules loaded (0 failed)
+[browser] pool: 107 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 31 from network (tab 2 of 3)
+[net] rx path: frames 3156 irq 1763 softirq 884 inline 21 poll 48 idle 0/0 halt/skip
+[e1000] stats: rx 3295 pkt / 3710337 B, tx 2438 pkt / 193481 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1840 (+191)
+[net] rx path: frames 3669 irq 2024 softirq 1014 inline 21 poll 57 idle 0/0 halt/skip
+[mm] low: 91168 frames free (356 MiB), 39869 used, 716 shared, 0 bugs
+[mm] low: 90912 frames free (355 MiB), 40125 used, 716 shared, 0 bugs
+[mm] low: 90656 frames free (354 MiB), 40381 used, 716 shared, 0 bugs
+[mm] low: 90400 frames free (353 MiB), 40637 used, 716 shared, 0 bugs
+[net] rx path: frames 4183 irq 2275 softirq 1138 inline 22 poll 64 idle 0/0 halt/skip
+[mm] low: 90144 frames free (352 MiB), 40893 used, 716 shared, 0 bugs
+[e1000] stats: rx 4387 pkt / 4965533 B, tx 3111 pkt / 237839 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 2378 (+538)
+[net] rx path: frames 4697 irq 2547 softirq 1277 inline 22 poll 80 idle 0/0 halt/skip
+[mm] low: 89888 frames free (351 MiB), 41149 used, 716 shared, 0 bugs
+[mm] low: 89632 frames free (350 MiB), 41405 used, 716 shared, 0 bugs
+[mm] low: 89376 frames free (349 MiB), 41661 used, 716 shared, 0 bugs
+[mm] low: 89120 frames free (348 MiB), 41917 used, 716 shared, 0 bugs
+[mm] low: 88864 frames free (347 MiB), 42173 used, 716 shared, 0 bugs
+[bxfer] h2 statics.moonshot.cn:443 closed: streams=42 peak=8 frames=381/99 hpack_in=2281187
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for statics.moonshot.cn (no chain, no signature), alpn=h2
+[bxfer] h2 statics.moonshot.cn:443 closed: streams=6 peak=6 frames=18/15 hpack_in=11072
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for statics.moonshot.cn (no chain, no signature), alpn=h2
+[net] rx path: frames 5210 irq 2864 softirq 1432 inline 22 poll 88 idle 0/0 halt/skip
+[e1000] stats: rx 5261 pkt / 5899136 B, tx 3680 pkt / 282815 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 2905 (+527)
+[bxfer] h2 statics.moonshot.cn:443 closed: streams=33 peak=6 frames=96/69 hpack_in=141336
+[browser] ctrl+L: address bar focused
+[time] tickloss +11/s worstgap=89729us missed=68 of 7393 expected (0.919% of the clock); uptime 74s
+[browser] load: about:text
+[dl] painted text: 21 run(s), 157 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 489,311 探索灵感
+[dl] 475,341 滑动探索
+[dl] 41,147 新建会话
+[dl] 174,147 Ctrl
+[dl] 207,147 K
+[dl] 196,140 尽管问，或做个
+[dl] 311,140 Agent
+[dl] 355,140 任务...
+[dl] 34,214 我的
+[dl] 65,214 Kimi
+[dl] 34,254 定时任务
+[dl] 34,294 PPT
+[dl] 34,334 集群
+[dl] 34,374 深度研究
+[dl] 34,414 文档
+[dl] 34,454 网站
+[dl] 34,494 表格
+[dl] 34,534 设计
+[dl] 34,576 收起
+[dl] 34,614 Kimi
+[dl] 64,614 Work
+[dl] ---8<--- end painted text

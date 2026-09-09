@@ -1,0 +1,83 @@
+{
+ "name": "deepseek",
+ "url": "https://www.deepseek.com/",
+ "started": "2026-08-29T23:26:20",
+ "verdict": "PAINTED",
+ "why": "painted 10844 changed px in 4.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.deepseek.com/",
+  "bytes": 86879,
+  "redirects": [],
+  "script_tags": 42,
+  "script_src": 19,
+  "img_tags": 2,
+  "inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 23,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 22,
+  "dials": 2,
+  "reused": 20,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 15773,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 4.3,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 10844,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   768
+  ],
+  "ink_px": 13958,
+  "ink_px_blank": 4256,
+  "colours": 630,
+  "rich_tiles_proxy": 14
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after/deepseek.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after/deepseek.serial.txt",
+ "url_confirmed": "https://www.deepseek.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after/deepseek.host.html",
+ "text_runs": 22,
+ "text_bytes": 95,
+ "text": "938,76 Get\n938,76 App\n944,117 Scan\n973,117 to\n986,117 get\n1006,117 DeepSeek\n1066,117 App\n1053,77 中\n1053,95 文\n1094,77 EN\n24,212 DeepSeek\n106,212 Web\n24,288 Download\n110,288 App\n24,364 API\n54,364 Platform\n24,440 DeepSeek\n106,440 Harness\n24,516 API\n54,516 Docs\n24,592 Join\n61,592 Us",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 3,
+   "script_src": 18,
+   "inline_scripts": 23,
+   "images": 2,
+   "preloads": 3,
+   "fonts": 0,
+   "mandatory": 22
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T23:27:07"
+}

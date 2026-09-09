@@ -1,0 +1,94 @@
+{
+ "name": "control-wikipedia",
+ "url": "https://en.wikipedia.org/wiki/Operating_system",
+ "started": "2026-09-02T11:08:09",
+ "verdict": "PAINTED",
+ "why": "painted 82048 changed px in 10.4s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+  "bytes": 676081,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 1,
+  "img_tags": 26,
+  "inventory": {
+   "stylesheets": 2,
+   "script_src": 1,
+   "inline_scripts": 3,
+   "images": 24,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "elapsed": 0.6
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/e/e0/Symbol_question.svg/20px-Symbol_question.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/9/96/Symbol_category_class.svg/20px-Symbol_category_class.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/8/8a/OOjs_UI_icon_edit-ltr-progressive.svg/20px-OOjs_UI_icon_edit-ltr-progressive.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/1/1b/Semi-protection-shackle.svg/20px-Semi-protection-shackle.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Layers_of_a_Linux_system.png/500px-Layers_of_a_Linux_system.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/d/db/Diagram_of_a_security_descriptor_for_a_file_on_Windows.png/330px-Diagram_of_a_security_descriptor_for_a_file_on_Windows.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/9/99/Wiktionary-logo-en-v2.svg/40px-Wiktionary-logo-en-v2.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/en/thumb/4/4a/Commons-logo.svg/40px-Commons-logo.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Wikiversity_logo_2017.svg/40px-Wikiversity_logo_2017.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error",
+   "fetch failed (status 429) //upload.wikimedia.org/wikipedia/commons/thumb/4/41/Global_thinking.svg/20px-Global_thinking.svg.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_content=thumbnail: no error"
+  ],
+  "cannot_fetch": [],
+  "skipped_scripts": 1,
+  "requests": 37,
+  "dials": 4,
+  "reused": 33,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 19291,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 10.4,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 82048,
+  "changed_bbox": [
+   152,
+   20,
+   1260,
+   764
+  ],
+  "ink_px": 20562,
+  "ink_px_blank": 4256,
+  "colours": 1386,
+  "rich_tiles_proxy": 52
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/control-wikipedia.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/control-wikipedia.serial.txt",
+ "url_confirmed": "https://en.wikipedia.org/wiki/Operating_system",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/control-wikipedia.host.html",
+ "text_runs": 207,
+ "text_bytes": 1176,
+ "text": "72,220 Contents\n78,246 hide\n72,284 (Top)\n72,313 Definition\n133,313 and\n159,313 purpose\n72,342 Types\n111,342 of\n126,342 operating\n72,359 systems\n133,267 Toggle\n133,302 Types\n133,334 of\n133,346 operating\n133,397 systems\n133,440 subsection\n72,388 History\n133,313 Toggle\n133,348 History\n133,386 subsection\n72,417 Components\n133,342 Toggle\n133,377 Components\n133,444 subsection\n72,446 Operating\n135,446 system\n72,463 development\n155,463 as\n171,463 a\n181,463 hobby\n72,492 Diversity\n127,492 of\n142,492 operating\n72,509 systems\n124,509 and\n150,509 portability\n72,538 Popular\n122,538 operating\n72,555 systems\n133,463 Toggle\n133,498 Popular\n133,540 operating\n133,591 systems\n72,584 See\n97,584 also\n72,613 Notes\n264,150 Operating\n401,150 system\n761,160 164\n788,160 languages\n264,196 Article\n321,196 Talk\n624,197 Read\n673,197 View\n705,197 source\n765,197 View\n797,197 history\n902,220 Appearance\n908,246 hide\n264,232 From\n299,232 Wikipedia,\n363,232 the\n386,232 free\n412,232 encyclopedia\n609,290 Operating\n697,290 systems\n601,568 Common\n663,568 features\n601,589 Process\n643,589 management\n715,589 Interrupts\n768,589 Memory\n813,589 management\n885,589 File\n905,589 system\n944,589 Device\n981,589 drivers\n1018,589 Networking\n1080,589 Security\n1125,589 Input/output\n601,611 v\n607,611 t\n611,611 e\n264,284 An\n283,284 operating\n350,284 system\n399,284 (\n403,284 OS\n421,284 )\n428,284 is\n440,284 system\n486,284 software\n542,284 that\n264,305 manages\n321,305 computer\n384,305 hardware\n445,305 and\n471,305 software\n264,326 resources,\n329,326 and\n355,326 provides\n410,326 common\n468,326 services\n519,326 for\n264,347 computer\n327,347 programs\n385,347 .\n388,347 [\n391,347 1\n397,347 ]\n264,389 Time-sharing\n345,389 operating\n406,389 systems\n458,389 schedule\n515,389 tasks\n549,389 for\n264,410 efficient\n315,410 use\n339,410 of\n354,410 the\n377,410 system\n423,410 and\n449,410 may\n478,410 also\n505,410 include\n264,431 accounting\n335,431 software\n391,431 for\n411,431 cost\n440,431 allocation\n502,431 of\n517,431 processor\n264,452 time\n291,452 ,\n297,452 mass\n331,452 storage\n376,452 ,\n382,452 peripherals,\n455,452 and\n481,452 other\n517,452 resources.\n264,494 For\n287,494 hardware\n348,494 functions\n408,494 such\n440,494 as\n456,494 input\n491,494 and\n517,494 output\n264,515 and\n290,515 memory\n344,515 allocation\n403,515 ,\n409,515 the\n432,515 operating\n493,515 system\n539,515 acts\n567,515 as\n264,536 an\n282,536 intermediary\n362,536 between\n418,536 programs\n479,536 and\n505,536 the\n264,557 computer\n327,557 hardware,\n388,557 [\n391,557 2\n397,557 ]\n400,557 [\n403,557 3\n409,557 ]\n415,557 although\n472,557 the\n495,557 application\n264,578 code\n297,578 is\n309,578 usually\n354,578 executed\n412,578 directly\n460,578 by\n478,578 the\n501,578 hardware\n264,599 and\n290,599 frequently\n355,599 makes\n397,599 system\n443,599 calls\n472,599 to\n488,599 an\n506,599 OS\n527,599 function\n264,620 or\n280,620 is\n292,620 interrupted\n364,620 by\n382,620 it.\n396,620 Operating\n459,620 systems\n511,620 are\n533,620 found\n660,84 Search\n881,84 Donate\n936,84 Create\n978,84 account\n1039,84 Log\n1064,84 in",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 2,
+   "script_src": 1,
+   "inline_scripts": 3,
+   "images": 24,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 4
+  },
+  "gap": null
+ },
+ "finished": "2026-09-02T11:09:04"
+}

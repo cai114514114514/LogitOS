@@ -1,0 +1,91 @@
+{
+ "name": "stripe",
+ "url": "https://stripe.com/",
+ "started": "2026-08-30T01:00:21",
+ "verdict": "ERRORS",
+ "why": "painted 21960 changed px in 46.6s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/",
+  "bytes": 653733,
+  "redirects": [],
+  "script_tags": 77,
+  "script_src": 74,
+  "img_tags": 35,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 73,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 79
+  },
+  "elapsed": 1.5
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "SyntaxError: expecting ';'",
+    "stack": [
+     "at https://stripe.com/:1"
+    ],
+    "count": 2
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 80,
+  "dials": 4,
+  "reused": 76,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 14750,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 46.6,
+  "paint_seconds": 20.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 21960,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 12988,
+  "ink_px_blank": 4256,
+  "colours": 693,
+  "rich_tiles_proxy": 9
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/stripe.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/stripe.serial.txt",
+ "url_confirmed": "https://stripe.com/",
+ "url_attempts": 1,
+ "about_text_arrived": false,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount-b/stripe.host.html",
+ "text_runs": 41,
+ "text_bytes": 125,
+ "text": "109,192 Fin\n109,247 an\n109,302 cial\n109,357 infr\n109,412 ast\n109,467 ruc\n109,522 tur\n109,577 e\n891,86 Sign\n925,86 in\n990,88 Contact\n1050,88 sales\n16,192 Global\n57,192 GDP\n16,209 running\n66,209 on\n16,226 Stripe:\n16,453 1\n16,470 .\n16,487 7\n16,504 0\n16,521 6\n16,538 5\n16,555 1\n16,572 7\n16,589 5\n16,606 3\n202,192 Fin\n202,247 an\n202,302 cial\n202,357 infr\n202,412 ast\n202,467 ruc\n202,522 tur\n202,577 e\n295,192 Get\n323,192 started\n295,208 Sign\n329,208 up\n350,208 with\n384,208 Google",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 73,
+   "inline_scripts": 0,
+   "images": 35,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 79
+  },
+  "gap": null
+ },
+ "finished": "2026-08-30T01:02:15"
+}

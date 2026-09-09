@@ -1,0 +1,83 @@
+{
+ "name": "douyin",
+ "url": "https://www.douyin.com/",
+ "started": "2026-09-02T11:05:28",
+ "verdict": "PAINTED",
+ "why": "painted 35912 changed px in 1.3s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.douyin.com/",
+  "bytes": 72914,
+  "redirects": [],
+  "script_tags": 2,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 0.1
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 32,
+  "dials": 14,
+  "reused": 19,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 49527,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 1.3,
+  "paint_seconds": 20.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 35912,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 7044,
+  "ink_px_blank": 4256,
+  "colours": 644,
+  "rich_tiles_proxy": 17
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/douyin.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/douyin.serial.txt",
+ "url_confirmed": "https://www.douyin.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/douyin.host.html",
+ "text_runs": 31,
+ "text_bytes": 213,
+ "text": "-359,137 全部\n-388,157 公开课\n-388,177 游戏\n-388,197 二次元\n-388,217 音乐\n-388,237 影视\n-388,257 美食\n-388,277 知识\n-388,297 小剧场\n-388,317 生活vlog\n-388,337 体育\n-388,357 旅行\n-388,377 亲子\n-388,397 动物\n-388,417 三农\n-388,437 汽车\n-388,457 美妆穿搭\n22,98 精选\n22,174 推荐\n18,250 AI抖音\n22,326 关注\n22,402 朋友\n22,478 我的\n22,578 直播\n654,62 搜索\n1033,67 登录\n838,84 充钻石\n878,84 客户端\n923,84 通知\n955,84 消息\n987,77 投稿",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 2,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-09-02T11:06:25"
+}

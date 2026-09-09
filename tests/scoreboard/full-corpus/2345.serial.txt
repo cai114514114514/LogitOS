@@ -1,0 +1,219 @@
+[browser] ctrl+L: address bar focused
+[time] tickloss +8/s worstgap=82550us missed=37 of 1997 expected (1.852% of the clock); uptime 20s
+[wm] perf t=20615 composites=170 ns=2190089725 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=171 cpx=56410284 fpx=56410284 presns=104388278 torn=0 defer=9 late=0 drawmax=27 evdrop=0
+[time] tickloss +14/s worstgap=82550us missed=51 of 2097 expected (2.432% of the clock); uptime 21s
+[browser] load: https://www.2345.com/
+[sock] connected www.2345.com via ipv4 ::ffff:198.18.0.28
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www.2345.com, alpn=http/1.1
+[tls] OCSP staple: good (www.2345.com)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.2345.com (240 bytes, lifetime 900s, 2 cached)
+[mm] low: 113192 frames free (442 MiB), 17845 used, 580 shared, 0 bugs
+[dl] painted text: 40 run(s), 487 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,96 8月29日
+[dl] 64,96 星期六
+[dl] 8,124 七月十七
+[dl] 75,124 宜：
+[dl] 107,124 祭祀
+[dl] 8,160 星座运势
+[dl] 72,160 月历壁纸
+[dl] 8,180 旗下产品
+[dl] 8,200 旗下产品
+[dl] 75,200 下载浏览器
+[dl] 158,200 魔方办公
+[dl] 225,200 装软件赚钱
+[dl] 8,220 163邮箱
+[dl] 8,240 163邮箱
+[dl] 67,240 QQ邮箱
+[dl] 124,240 126邮箱
+[dl] 183,240 腾讯企邮
+[dl] 250,240 139邮箱
+[dl] 309,240 新浪邮箱
+[dl] 376,240 yeah邮箱
+[dl] 445,240 搜狐邮箱
+[dl] 512,240 更多邮箱
+[dl] 8,260 反馈
+[dl] 43,260 换肤
+[dl] 75,260 登录
+[dl] 8,280 登录2345帐号
+[dl] 107,280 注册
+[dl] 142,280 收藏夹
+[dl] 190,280 王牌技术联盟
+[dl] 8,300 把2345设为主页
+[dl] 8,336 [切换]
+[dl] 8,372 今  
+[dl] 30,372 晴
+[dl] 8,392 明
+[dl] 24,392 晴
+[dl] 8,428 15天
+[dl] 8,456 天气
+[dl] 8,580 钢筋石笼首次运抵吉隆抢险现场
+[dl] 8,600 朱忠明任上海市政府党组书记
+[dl] 8,620 一批高新装备投入西藏吉隆受灾核心区
+[dl] ---8<--- end painted text
+[net] rx path: frames 64 irq 47 softirq 23 inline 0 poll 3 idle 0/0 halt/skip
+[sock] connected www-stream.2345cdn.net via ipv4 ::ffff:198.18.0.29
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 4 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-stream.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 5 cached)
+[tls] ticket stored for www-stream.2345cdn.net (240 bytes, lifetime 900s, 6 cached)
+[wm] perf t=21617 composites=197 ns=2582078028 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=198 cpx=69448884 fpx=69448884 presns=127514007 torn=0 defer=9 late=0 drawmax=40 evdrop=0
+[mm] low: 112936 frames free (441 MiB), 18101 used, 598 shared, 0 bugs
+[mm] low: 112680 frames free (440 MiB), 18357 used, 598 shared, 0 bugs
+[mm] low: 112424 frames free (439 MiB), 18613 used, 599 shared, 0 bugs
+[time] tickloss +7/s worstgap=82550us missed=58 of 2197 expected (2.639% of the clock); uptime 22s
+[mm] low: 112168 frames free (438 MiB), 18869 used, 599 shared, 0 bugs
+[browser] heap peak 11222K
+[dl] painted text: 22 run(s), 240 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,561 钢筋石笼首次运抵吉隆抢险现场
+[dl] 1011,577 朱忠明任上海市政府党组书记
+[dl] 809,203 8月29日
+[dl] 809,219 星期六
+[dl] 809,243 七月十七
+[dl] 809,259 宜：
+[dl] 835,259 祭祀
+[dl] 809,311 星座运势
+[dl] 809,332 月历壁纸
+[dl] 816,357 旗下产品
+[dl] 816,381 163邮箱
+[dl] 809,437 反馈
+[dl] 825,458 换肤
+[dl] 810,479 登录
+[dl] 810,501 把2345设为主页
+[dl] 668,192 [切换]
+[dl] 668,210 今  
+[dl] 684,210 晴
+[dl] 668,304 明
+[dl] 687,304 晴
+[dl] 764,335 15天
+[dl] 764,354 天气
+[dl] ---8<--- end painted text
+[css] linked: 1 <style>, 7 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 7 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 7597 inline + 469271 external = 476868 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 7694 declarations kept
+[css] dropped: 2031  (33 selector, 2 at-rule, 1736 unknown-prop, 260 bad-value, 0 trailing)
+[css] parser resync: 6 selector, 2 at-rule, 28 declaration (syntax-malformed; a different population from the drops above)
+[css]      618  unknown-prop -webkit-*                | -webkit-box-shadow
+[css]      283  unknown-prop border-radius            | border-radius
+[css]      222  bad-value    display                  | display
+[css]      192  unknown-prop -ms-*                    | -ms-flex-align
+[css]      116  unknown-prop background-size          | background-size
+[css]      101  unknown-prop transition               | transition
+[css]       89  unknown-prop box-shadow               | box-shadow
+[css]       78  unknown-prop transform                | transform
+[css]       52  unknown-prop text-overflow            | text-overflow
+[css]       25  unknown-prop -o-*                     | -o-object-fit
+[css]       23  unknown-prop object-fit               | object-fit
+[css]       21  unknown-prop -moz-*                   | -moz-user-select
+[css]   ... 52 more reason(s); css_report_verbose=1 for all
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for www-cdn.2345cdn.net, alpn=http/1.1
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 7 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 8 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 9 cached)
+[tls] ticket stored for www-cdn.2345cdn.net (240 bytes, lifetime 900s, 10 cached)
+[wm] perf t=22618 composites=214 ns=2764644757 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=215 cpx=75407264 fpx=75407264 presns=137967337 torn=0 defer=17 late=0 drawmax=40 evdrop=0
+[mm] low: 111912 frames free (437 MiB), 19125 used, 617 shared, 0 bugs
+[img] 12/12 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 12/256 ents 117K]
+[time] tickloss +5/s worstgap=82550us missed=63 of 2297 expected (2.742% of the clock); uptime 23s
+[mm] low: 111656 frames free (436 MiB), 19381 used, 619 shared, 0 bugs
+[browser] scripts collected: 12 external classic, 0 external module, 4 inline
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for passport-plugin.hao184.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for cpro.baidustatic.com, alpn=http/1.1
+[mm] low: 111400 frames free (435 MiB), 19637 used, 619 shared, 0 bugs
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 11 cached)
+[tls] ticket stored for passport-plugin.hao184.com (256 bytes, lifetime 900s, 12 cached)
+[wm] perf t=23630 composites=235 ns=3003692254 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=236 cpx=83050484 fpx=83050484 presns=152251784 torn=0 defer=27 late=0 drawmax=61 evdrop=0
+[mm] low: 111144 frames free (434 MiB), 19893 used, 619 shared, 0 bugs
+[net] rx path: frames 577 irq 358 softirq 101 inline 79 poll 5 idle 0/0 halt/skip
+[mm] low: 110888 frames free (433 MiB), 20149 used, 619 shared, 0 bugs
+[browser] script REFUSED (HTML, not JS): https://www.2345.com/ (status 200, 171382 bytes)
+[mm] low: 110632 frames free (432 MiB), 20405 used, 622 shared, 0 bugs
+[e1000] stats: rx 739 pkt / 765886 B, tx 522 pkt / 53026 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 444 (+444)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 110376 frames free (431 MiB), 20661 used, 634 shared, 0 bugs
+[mm] low: 110120 frames free (430 MiB), 20917 used, 643 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 643 shared, 0 bugs
+[mm] low: 109608 frames free (428 MiB), 21429 used, 643 shared, 0 bugs
+[mm] low: 109352 frames free (427 MiB), 21685 used, 643 shared, 0 bugs
+[mm] low: 109096 frames free (426 MiB), 21941 used, 643 shared, 0 bugs
+[mm] low: 108840 frames free (425 MiB), 22197 used, 643 shared, 0 bugs
+[mm] low: 108584 frames free (424 MiB), 22453 used, 644 shared, 0 bugs
+[mm] low: 108328 frames free (423 MiB), 22709 used, 656 shared, 0 bugs
+[js_domparser] parseFromString: mimeType 'image/svg+xml' is not text/html -- this engine has no XML parser, returning a <parsererror> document.
+[browser] JS exception: NotSupportedError: importing or adopting a node from a document created by new DOMParser().parseFromString() is not supported in this build
+[browser] JS exception: TypeError: write is not a function (it is undefined)
+TypeError: write is not a function (it is undefined)
+    at <anonymous> (https://www.2345.com/#inline-script-4:7)
+    at <eval> (https://www.2345.com/#inline-script-4:8)
+[browser] load done: 32 requests, 7 connections dialled, 25 reused, 0 modules loaded (0 failed)
+[browser] pool: 25 hits, 1 evicted, 2 closed
+[browser] resources: 0 from tab, 31 from network (tab 2 of 3)
+[mm] low: 108072 frames free (422 MiB), 22965 used, 674 shared, 0 bugs
+[error] Failed to calculate load time: TypeError: cannot read property 'loadEventEnd' of undefined
+TypeError: cannot read property 'loadEventEnd' of undefined
+    at getLoadTime (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at next (native)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at Promise (native)
+    at w (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at calculateAndReport (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+[error] Failed to calculate resource size: TypeError: cannot read property 'transferSize' of undefined
+TypeError: cannot read property 'transferSize' of undefined
+    at getResourceSize (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at next (native)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at Promise (native)
+    at w (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at calculateAndReport (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+    at <anonymous> (https://www-stream.2345cdn.net/s/new2345/js/chunk-vendors.34b1db7b.js)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for www.baidu.com, alpn=http/1.1
+[tls] ServerKeyExchange: group secp256r1, signature verified (hash 8 alg 4)
+[wm] perf t=27636 composites=251 ns=3193961226 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=252 cpx=88350764 fpx=88350764 presns=162277100 torn=0 defer=29 late=0 drawmax=61 evdrop=0
+[netlock] acq 112489 recursive 1033 maxdepth 3 violations 0
+[browser] ctrl+L: address bar focused
+[wm] perf t=43665 composites=292 ns=3561801778 max=51076602 motions=18 curmoves=11 curns=265006 full=18 rects=293 cpx=94422104 fpx=94422104 presns=176098535 torn=0 defer=31 late=0 drawmax=61 evdrop=0
+[time] tickloss +9/s worstgap=82550us missed=72 of 4397 expected (1.637% of the clock); uptime 44s
+[browser] load: about:text
+[dl] painted text: 22 run(s), 240 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 1011,561 钢筋石笼首次运抵吉隆抢险现场
+[dl] 1011,577 朱忠明任上海市政府党组书记
+[dl] 809,203 8月29日
+[dl] 809,219 星期六
+[dl] 809,243 七月十七
+[dl] 809,259 宜：
+[dl] 835,259 祭祀
+[dl] 809,311 星座运势
+[dl] 809,332 月历壁纸
+[dl] 816,357 旗下产品
+[dl] 816,381 163邮箱
+[dl] 809,437 反馈
+[dl] 825,458 换肤
+[dl] 810,479 登录
+[dl] 810,501 把2345设为主页
+[dl] 668,192 [切换]
+[dl] 668,210 今  
+[dl] 684,210 晴
+[dl] 668,304 明
+[dl] 687,304 晴
+[dl] 764,335 15天
+[dl] 764,354 天气
+[dl] ---8<--- end painted text
+[time] tickloss +5/s worstgap=82550us missed=77 of 4497 expected (1.712% of the clock); uptime 45s

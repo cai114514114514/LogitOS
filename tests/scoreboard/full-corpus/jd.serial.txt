@@ -1,0 +1,311 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20667 composites=157 ns=2035858747 max=51622739 motions=18 curmoves=11 curns=192000 full=12 rects=157 cpx=54595528 fpx=54595528 presns=99594500 torn=0 defer=6 late=0 drawmax=27 evdrop=0
+[time] tickloss +13/s worstgap=98876us missed=42 of 2100 expected (2.000% of the clock); uptime 21s
+[browser] load: https://www.jd.com/
+[sock] connected www.jd.com via ipv4 ::ffff:198.18.0.56
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for www.jd.com, alpn=http/1.1
+[net] rx path: frames 64 irq 50 softirq 23 inline 1 poll 2 idle 0/0 halt/skip
+[mm] low: 113192 frames free (442 MiB), 17845 used, 578 shared, 0 bugs
+[dl] painted text: 95 run(s), 490 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,138 京东
+[dl] 8,204 京东,多快好省
+[dl] 8,246 京东，多快好省
+[dl] 186,270 
+[dl] 202,270 搜索
+[dl] 8,294 
+[dl] 27,294 我的购物车
+[dl] 14,354 •
+[dl] 36,354 冰洗
+[dl] 71,354 /
+[dl] 80,354 空调
+[dl] 115,354 /
+[dl] 124,354 电视
+[dl] 159,354 /
+[dl] 168,354 厨卫大电
+[dl] 14,374 •
+[dl] 36,374 电脑
+[dl] 71,374 /
+[dl] 80,374 办公
+[dl] 115,374 /
+[dl] 124,374 文具用品
+[dl] 14,394 •
+[dl] 36,394 手机
+[dl] 71,394 /
+[dl] 80,394 运营商
+[dl] 131,394 /
+[dl] 140,394 数码
+[dl] 14,414 •
+[dl] 36,414 生活电器
+[dl] 103,414 /
+[dl] 112,414 厨房小电
+[dl] 179,414 /
+[dl] 188,414 个护健康
+[dl] 14,434 •
+[dl] 36,434 食品
+[dl] 71,434 /
+[dl] 80,434 酒类
+[dl] 115,434 /
+[dl] 124,434 生鲜
+[dl] 159,434 /
+[dl] 168,434 特产
+[dl] 14,454 •
+[dl] 36,454 美妆
+[dl] 71,454 /
+[dl] 80,454 个护清洁
+[dl] 147,454 /
+[dl] 156,454 宠物
+[dl] 14,474 •
+[dl] 36,474 元器件
+[dl] 87,474 /
+[dl] 96,474 劳保物资
+[dl] 163,474 /
+[dl] 172,474 五金机电
+[dl] 14,494 •
+[dl] 36,494 家装
+[dl] 71,494 /
+[dl] 80,494 建材
+[dl] 115,494 /
+[dl] 124,494 家具
+[dl] 14,514 •
+[dl] 36,514 家居日用
+[dl] 103,514 /
+[dl] 112,514 厨具
+[dl] 14,534 •
+[dl] 36,534 男鞋
+[dl] 71,534 /
+[dl] 80,534 运动
+[dl] 115,534 /
+[dl] 124,534 户外
+[dl] 14,554 •
+[dl] 36,554 男装
+[dl] 71,554 /
+[dl] 80,554 女装
+[dl] 115,554 /
+[dl] 124,554 童装
+[dl] 159,554 /
+[dl] 168,554 内衣
+[dl] 14,574 •
+[dl] 36,574 京东买药
+[dl] 103,574 /
+[dl] 112,574 计生情趣
+[dl] 14,594 •
+[dl] 36,594 房产
+[dl] 71,594 /
+[dl] 80,594 汽车
+[dl] 115,594 /
+[dl] 124,594 汽车用品
+[dl] 14,614 •
+[dl] 36,614 图书
+[dl] 71,614 /
+[dl] 80,614 文娱
+[dl] 115,614 /
+[dl] 124,614 教育
+[dl] 159,614 /
+[dl] 168,614 电子书
+[dl] ---8<--- end painted text
+[sock] connected storage.360buyimg.com via ipv4 ::ffff:198.18.0.57
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for storage.360buyimg.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for storage.360buyimg.com, alpn=http/1.1
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 1 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 2 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 3 cached)
+[tls] ticket stored for storage.360buyimg.com (240 bytes, lifetime 1800s, 4 cached)
+[wm] perf t=21669 composites=183 ns=2336847240 max=51622739 motions=18 curmoves=11 curns=192000 full=12 rects=183 cpx=64227608 fpx=64227608 presns=116834414 torn=0 defer=10 late=0 drawmax=43 evdrop=0
+[e1000] stats: rx 387 pkt / 451222 B, tx 282 pkt / 24840 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 175 (+175)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[time] tickloss +7/s worstgap=98876us missed=49 of 2199 expected (2.228% of the clock); uptime 22s
+[netlock] acq 113357 recursive 697 maxdepth 3 violations 0
+[mm] low: 112936 frames free (441 MiB), 18101 used, 601 shared, 0 bugs
+[mm] low: 112680 frames free (440 MiB), 18357 used, 601 shared, 0 bugs
+[mm] low: 112424 frames free (439 MiB), 18613 used, 601 shared, 0 bugs
+[mm] low: 112168 frames free (438 MiB), 18869 used, 603 shared, 0 bugs
+[mm] low: 111912 frames free (437 MiB), 19125 used, 603 shared, 0 bugs
+[mm] low: 111656 frames free (436 MiB), 19381 used, 603 shared, 0 bugs
+[mm] low: 111400 frames free (435 MiB), 19637 used, 603 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 603 shared, 0 bugs
+[browser] heap peak 15021K
+[dl] painted text: 2 run(s), 12 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 615,109 搜索
+[dl] -85,92 京东
+[dl] ---8<--- end painted text
+[css] linked: 2 <style>, 3 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 3 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 9075 inline + 1387026 external = 1396101 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 10964 declarations kept
+[css] dropped: 4179  (82 selector, 42 at-rule, 3256 unknown-prop, 799 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 44 at-rule, 100 declaration (syntax-malformed; a different population from the drops above)
+[css]     1044  unknown-prop -webkit-*                | -webkit-animation
+[css]      719  bad-value    display                  | display
+[css]      676  unknown-prop -ms-*                    | -ms-flex-pack
+[css]      357  unknown-prop border-radius            | border-radius
+[css]      215  unknown-prop background-size          | background-size
+[css]      202  unknown-prop -moz-*                   | -moz-filter
+[css]      124  unknown-prop transform                | transform
+[css]      123  unknown-prop transition               | transition
+[css]       90  unknown-prop -o-*                     | -o-filter
+[css]       79  unknown-prop text-overflow            | text-overflow
+[css]       71  selector     selector-syntax          | // .mod_copyright_license 
+[css]       42  at-rule      @keyframes               | @keyframes
+[css]   ... 61 more reason(s); css_report_verbose=1 for all
+[mm] low: 110888 frames free (433 MiB), 20149 used, 613 shared, 0 bugs
+[browser] scripts collected: 12 external classic, 0 external module, 21 inline
+[net] rx path: frames 585 irq 248 softirq 117 inline 3 poll 6 idle 0/0 halt/skip
+[mm] low: 110632 frames free (432 MiB), 20405 used, 613 shared, 0 bugs
+[e1000] stats: rx 706 pkt / 831394 B, tx 503 pkt / 46245 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 297 (+122)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for wl.jd.com, alpn=http/1.1
+[tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 5 cached)
+[tls] ticket stored for wl.jd.com (208 bytes, lifetime 21600s, 6 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
+[browser] fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for gias.jd.com, alpn=http/1.1
+[tls] chain of 3 rejected for misc.360buyimg.com: no path to a trusted root (-3)
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for storage.360buyimg.com (no chain, no signature), alpn=http/1.1
+[browser] fetch failed (status 0) //misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: TLS refused: handshake or certificate verification failed
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 rejected for static.360buyimg.com: no path to a trusted root (-3)
+[browser] fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: TLS refused: handshake or certificate verification failed
+[net] rx path: frames 1097 irq 439 softirq 188 inline 28 poll 8 idle 0/0 halt/skip
+[mm] low: 110376 frames free (431 MiB), 20661 used, 613 shared, 0 bugs
+[mm] low: 110120 frames free (430 MiB), 20917 used, 613 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 613 shared, 0 bugs
+[wm] perf t=24675 composites=204 ns=2724355292 max=51622739 motions=18 curmoves=11 curns=192000 full=12 rects=204 cpx=76175088 fpx=76175088 presns=138347307 torn=0 defer=12 late=0 drawmax=43 evdrop=0
+[mm] low: 109608 frames free (428 MiB), 21429 used, 613 shared, 0 bugs
+[mm] low: 109352 frames free (427 MiB), 21685 used, 613 shared, 0 bugs
+[mm] low: 109096 frames free (426 MiB), 21941 used, 613 shared, 0 bugs
+[browser] script LOST: https://misc.360buyimg.com/jdf/lib/jquery-1.6.4.js?v=20240117: TLS refused: handshake or certificate verification failed (status 0)
+[browser] JS exception: ReferenceError: 'jQuery' is not defined
+ReferenceError: 'jQuery' is not defined
+    at <eval> (https://wl.jd.com/wl.js:2)
+[browser] script LOST: https://misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: TLS refused: handshake or certificate verification failed (status 0)
+[e1000] stats: rx 1478 pkt / 1813459 B, tx 1000 pkt / 82432 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 537 (+240)
+[time] tickloss +6/s worstgap=98876us missed=55 of 2498 expected (2.201% of the clock); uptime 25s
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at clickReport (https://www.jd.com/#inline-script-16:3)
+    at <eval> (https://www.jd.com/#inline-script-16:18)
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at getClstagPrefix (https://www.jd.com/#inline-script-17:4)
+    at footerRender (https://www.jd.com/#inline-script-17:20)
+    at <eval> (https://www.jd.com/#inline-script-17:24)
+[mm] low: 108840 frames free (425 MiB), 22197 used, 628 shared, 0 bugs
+[mm] low: 108584 frames free (424 MiB), 22453 used, 628 shared, 0 bugs
+[mm] low: 108328 frames free (423 MiB), 22709 used, 635 shared, 0 bugs
+Error
+Error
+    at <anonymous> (https://gias.jd.com/js/pc-tk.js?v=20240117)
+    at getEncryptedCollectInfo (https://gias.jd.com/js/pc-tk.js?v=20240117)
+    at <anonymous> (https://gias.jd.com/js/pc-tk.js?v=20240117)
+    at <eval> (https://gias.jd.com/js/pc-tk.js?v=20240117:1)
+Error
+[mm] low: 108072 frames free (422 MiB), 22965 used, 660 shared, 0 bugs
+[mm] low: 107816 frames free (421 MiB), 23221 used, 661 shared, 0 bugs
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for jra.jd.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for api.m.jd.com, alpn=h2
+[browser] JS exception: TypeError: cannot read property 'length' of undefined
+TypeError: cannot read property 'length' of undefined
+    at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)
+    at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)
+    at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)
+    at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)
+[browser] JS exception: TypeError: not a function
+TypeError: not a function
+    at <anonymous> (https://www.jd.com/#inline-script-20:31)
+    at <eval> (https://www.jd.com/#inline-script-20:32)
+[mm] low: 107560 frames free (420 MiB), 23477 used, 667 shared, 0 bugs
+[mm] low: 107304 frames free (419 MiB), 23733 used, 667 shared, 0 bugs
+[mm] low: 107048 frames free (418 MiB), 23989 used, 667 shared, 0 bugs
+[mm] low: 106792 frames free (417 MiB), 24245 used, 667 shared, 0 bugs
+[mm] low: 106536 frames free (416 MiB), 24501 used, 667 shared, 0 bugs
+[mm] low: 106280 frames free (415 MiB), 24757 used, 667 shared, 0 bugs
+[mm] low: 106024 frames free (414 MiB), 25013 used, 667 shared, 0 bugs
+[mm] low: 105768 frames free (413 MiB), 25269 used, 667 shared, 0 bugs
+[mm] low: 105512 frames free (412 MiB), 25525 used, 667 shared, 0 bugs
+[mm] low: 105256 frames free (411 MiB), 25781 used, 667 shared, 0 bugs
+[browser] JS exception: ReferenceError: '$' is not defined
+ReferenceError: '$' is not defined
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)
+    at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+    at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)
+[mm] low: 105000 frames free (410 MiB), 26037 used, 679 shared, 0 bugs
+[mm] low: 104744 frames free (409 MiB), 26293 used, 679 shared, 0 bugs
+[mm] low: 104488 frames free (408 MiB), 26549 used, 679 shared, 0 bugs
+[mm] low: 104232 frames free (407 MiB), 26805 used, 679 shared, 0 bugs
+[mm] low: 103976 frames free (406 MiB), 27061 used, 679 shared, 0 bugs
+[browser] JS exception: TypeError: cannot read property 'eventCenter' of undefined
+TypeError: cannot read property 'eventCenter' of undefined
+    at BatchQueue (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at tLPg (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at n5if (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at pAZN (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at Qpzn (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at /KoI (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at 6OU5 (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at zPjE (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at yEBl (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at pLYI (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+    at call (native)
+    at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at checkDeferredModules (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at webpackJsonpCallback (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)
+    at <eval> (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)
+[browser] script LOST: https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: TLS refused: handshake or certificate verification failed (status 0)
+[browser] load done: 17 requests, 9 connections dialled, 8 reused, 0 modules loaded (0 failed)
+[browser] pool: 8 hits, 3 evicted, 7 closed
+[browser] resources: 0 from tab, 12 from network (tab 2 of 3)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for h5speed.m.jd.com, alpn=h2
+[bxfer] h2 jra.jd.com:443 closed: streams=1 peak=1 frames=7/6 hpack_in=304
+[bxfer] h2 api.m.jd.com:443 closed: streams=2 peak=2 frames=7/7 hpack_in=259
+[bxfer] h2 h5speed.m.jd.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=746
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for api.m.jd.com, alpn=h2
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for h5speed.m.jd.com, alpn=h2
+[bxfer] h2 api.m.jd.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=99
+[bxfer] h2 h5speed.m.jd.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=746
+[net] rx path: frames 1630 irq 679 softirq 297 inline 33 poll 12 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for h5speed.m.jd.com, alpn=h2
+[bxfer] h2 h5speed.m.jd.com:443 closed: streams=1 peak=1 frames=5/5 hpack_in=92
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for h5speed.m.jd.com, alpn=h2
+[bxfer] h2 h5speed.m.jd.com:443 closed: streams=1 peak=1 frames=6/6 hpack_in=41
+[browser] ctrl+L: address bar focused
+[time] tickloss +8/s worstgap=98876us missed=63 of 4598 expected (1.370% of the clock); uptime 46s
+[browser] load: about:text
+[dl] painted text: 2 run(s), 12 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 615,109 搜索
+[dl] -85,92 京东
+[dl] ---8<--- end painted text
+[wm] perf t=46691 composites=275 ns=3476045524 max=51622739 motions=18 curmoves=11 curns=192000 full=12 rects=275 cpx=92185708 fpx=92185708 presns=172232140 torn=0 defer=12 late=0 drawmax=43 evdrop=0
+[time] tickloss +6/s worstgap=98876us missed=69 of 4696 expected (1.469% of the clock); uptime 47s

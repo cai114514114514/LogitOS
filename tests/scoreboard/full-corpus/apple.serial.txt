@@ -1,0 +1,241 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20678 composites=167 ns=2173385051 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=168 cpx=59261076 fpx=59261076 presns=107574460 torn=0 defer=4 late=0 drawmax=29 evdrop=0
+[browser] load: https://www.apple.com/
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.115
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 2 verified for www.apple.com, alpn=http/1.1
+[tls] ticket stored for www.apple.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for www.apple.com (240 bytes, lifetime 900s, 2 cached)
+[mm] low: 113192 frames free (442 MiB), 17845 used, 581 shared, 0 bugs
+[mm] low: 112936 frames free (441 MiB), 18101 used, 581 shared, 0 bugs
+[mm] low: 112680 frames free (440 MiB), 18357 used, 595 shared, 0 bugs
+[dl] painted text: 18 run(s), 73 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 Apple
+[dl] 14,180 •
+[dl] 67,180 Apple
+[dl] 14,236 •
+[dl] 49,236 ◦
+[dl] 94,236 Store
+[dl] 49,296 ◦
+[dl] 87,296 Mac
+[dl] 49,356 ◦
+[dl] 88,356 iPad
+[dl] 49,416 ◦
+[dl] 102,416 iPhone
+[dl] 49,476 ◦
+[dl] 99,476 Watch
+[dl] 49,536 ◦
+[dl] 101,536 Vision
+[dl] 49,596 ◦
+[dl] 107,596 AirPods
+[dl] ---8<--- end painted text
+[sock] connected www.apple.com via ipv4 ::ffff:198.18.0.115
+[net] rx path: frames 64 irq 47 softirq 21 inline 1 poll 3 idle 0/0 halt/skip
+[wm] perf t=21680 composites=198 ns=2526103269 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=199 cpx=70679336 fpx=70679336 presns=128362354 torn=0 defer=8 late=0 drawmax=29 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.apple.com (no chain, no signature), alpn=http/1.1
+[tls] ticket stored for www.apple.com (240 bytes, lifetime 900s, 2 cached)
+[time] tickloss +5/s worstgap=72302us missed=42 of 2198 expected (1.910% of the clock); uptime 22s
+[mm] low: 112424 frames free (439 MiB), 18613 used, 598 shared, 0 bugs
+[mm] low: 112168 frames free (438 MiB), 18869 used, 600 shared, 0 bugs
+[mm] low: 111912 frames free (437 MiB), 19125 used, 601 shared, 0 bugs
+[mm] low: 111656 frames free (436 MiB), 19381 used, 601 shared, 0 bugs
+[wm] perf t=22687 composites=215 ns=2717510309 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=216 cpx=76637716 fpx=76637716 presns=139036301 torn=0 defer=16 late=0 drawmax=29 evdrop=0
+[mm] low: 111400 frames free (435 MiB), 19637 used, 601 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 601 shared, 0 bugs
+[e1000] stats: rx 295 pkt / 325513 B, tx 219 pkt / 20691 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 149 (+149)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 110888 frames free (433 MiB), 20149 used, 624 shared, 0 bugs
+[browser] heap peak 13990K
+[dl] painted text: 17 run(s), 77 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 317,196 Surprise
+[dl] 543,196 and
+[dl] 654,196 shine.
+[dl] 218,261 Watch
+[dl] 303,261 a
+[dl] 324,261 special
+[dl] 418,261 Apple Event
+[dl] 575,261 online
+[dl] 660,261 on
+[dl] 699,261 9/9
+[dl] 745,261 at
+[dl] 776,261 10
+[dl] 812,261 a.m.
+[dl] 522,292 PT.
+[dl] 523,341 Add
+[dl] 556,341 to
+[dl] 575,341 calendar
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 9 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 9 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 691060 external = 691060 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 6010 declarations kept
+[css] dropped: 1889  (6 selector, 31 at-rule, 1802 unknown-prop, 50 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 33 at-rule, 1859 declaration (syntax-malformed; a different population from the drops above)
+[css]      287  unknown-prop margin-inline-start      | margin-inline-start
+[css]      283  unknown-prop margin-inline-end        | margin-inline-end
+[css]      182  unknown-prop grid-column              | grid-column
+[css]      120  unknown-prop transition               | transition
+[css]      115  unknown-prop -webkit-*                | -webkit-text-size-adjust
+[css]       76  unknown-prop transform                | transform
+[css]       56  unknown-prop pointer-events           | pointer-events
+[css]       44  unknown-prop animation                | animation
+[css]       38  unknown-prop backdrop-filter          | backdrop-filter
+[css]       35  unknown-prop padding-inline-end       | padding-inline-end
+[css]       33  unknown-prop outline-offset           | outline-offset
+[css]       32  unknown-prop padding-inline-start     | padding-inline-start
+[css]   ... 81 more reason(s); css_report_verbose=1 for all
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 2 verified for is1-ssl.mzstatic.com, alpn=http/1.1
+[net] rx path: frames 576 irq 279 softirq 140 inline 4 poll 4 idle 0/0 halt/skip
+[e1000] stats: rx 814 pkt / 963975 B, tx 555 pkt / 46525 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 320 (+171)
+[net] rx path: frames 1098 irq 441 softirq 217 inline 17 poll 5 idle 0/0 halt/skip
+[netlock] acq 112213 recursive 1513 maxdepth 3 violations 0
+[net] rx path: frames 1610 irq 628 softirq 304 inline 27 poll 8 idle 0/0 halt/skip
+[mm] low: 110632 frames free (432 MiB), 20405 used, 629 shared, 0 bugs
+[e1000] stats: rx 1882 pkt / 2179418 B, tx 1298 pkt / 95101 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 717 (+397)
+[time] tickloss +8/s worstgap=72302us missed=50 of 2498 expected (2.001% of the clock); uptime 25s
+[mm] low: 110376 frames free (431 MiB), 20661 used, 629 shared, 0 bugs
+[net] rx path: frames 2125 irq 794 softirq 388 inline 27 poll 12 idle 0/0 halt/skip
+[mm] low: 110120 frames free (430 MiB), 20917 used, 629 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 629 shared, 0 bugs
+[mm] low: 109608 frames free (428 MiB), 21429 used, 629 shared, 0 bugs
+[mm] low: 109352 frames free (427 MiB), 21685 used, 632 shared, 0 bugs
+[wm] perf t=25689 composites=250 ns=3213969814 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=251 cpx=91954876 fpx=91954876 presns=166683163 torn=0 defer=28 late=0 drawmax=31 evdrop=0
+[mm] low: 109096 frames free (426 MiB), 21941 used, 632 shared, 0 bugs
+[mm] low: 108840 frames free (425 MiB), 22197 used, 632 shared, 0 bugs
+[mm] low: 108584 frames free (424 MiB), 22453 used, 632 shared, 0 bugs
+[mm] low: 108328 frames free (423 MiB), 22709 used, 632 shared, 0 bugs
+[mm] low: 108072 frames free (422 MiB), 22965 used, 632 shared, 0 bugs
+[mm] low: 107816 frames free (421 MiB), 23221 used, 632 shared, 0 bugs
+[mm] low: 107560 frames free (420 MiB), 23477 used, 632 shared, 0 bugs
+[mm] low: 107304 frames free (419 MiB), 23733 used, 632 shared, 0 bugs
+[mm] low: 107048 frames free (418 MiB), 23989 used, 632 shared, 0 bugs
+[mm] low: 106792 frames free (417 MiB), 24245 used, 632 shared, 0 bugs
+[mm] low: 106536 frames free (416 MiB), 24501 used, 632 shared, 0 bugs
+[mm] low: 106280 frames free (415 MiB), 24757 used, 632 shared, 0 bugs
+[mm] low: 106024 frames free (414 MiB), 25013 used, 632 shared, 0 bugs
+[time] tickloss +11/s worstgap=72302us missed=61 of 2597 expected (2.348% of the clock); uptime 26s
+[e1000] stats: rx 2575 pkt / 2941239 B, tx 1752 pkt / 127230 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 953 (+236)
+[mm] low: 105768 frames free (413 MiB), 25269 used, 632 shared, 0 bugs
+[mm] low: 105512 frames free (412 MiB), 25525 used, 632 shared, 0 bugs
+[mm] low: 105256 frames free (411 MiB), 25781 used, 632 shared, 0 bugs
+[mm] low: 105000 frames free (410 MiB), 26037 used, 632 shared, 0 bugs
+[mm] low: 104744 frames free (409 MiB), 26293 used, 632 shared, 0 bugs
+[mm] low: 104488 frames free (408 MiB), 26549 used, 632 shared, 0 bugs
+[mm] low: 104232 frames free (407 MiB), 26805 used, 632 shared, 0 bugs
+[mm] low: 103976 frames free (406 MiB), 27061 used, 632 shared, 0 bugs
+[mm] low: 103720 frames free (405 MiB), 27317 used, 632 shared, 0 bugs
+[mm] low: 103464 frames free (404 MiB), 27573 used, 632 shared, 0 bugs
+[mm] low: 103208 frames free (403 MiB), 27829 used, 632 shared, 0 bugs
+[mm] low: 102952 frames free (402 MiB), 28085 used, 632 shared, 0 bugs
+[mm] low: 102696 frames free (401 MiB), 28341 used, 632 shared, 0 bugs
+[mm] low: 102440 frames free (400 MiB), 28597 used, 632 shared, 0 bugs
+[mm] low: 102184 frames free (399 MiB), 28853 used, 632 shared, 0 bugs
+[img] 18/18 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 18/256 ents 32855K]
+[browser] skipping <script type="application/json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] skipping <script type="application/ld+json"> (not executable)
+[browser] scripts collected: 10 external classic, 5 external module, 1 inline
+[net] rx path: frames 2639 irq 980 softirq 477 inline 33 poll 19 idle 0/0 halt/skip
+[mm] low: 101928 frames free (398 MiB), 29109 used, 632 shared, 0 bugs
+[mm] low: 101672 frames free (397 MiB), 29365 used, 632 shared, 0 bugs
+[mm] low: 101416 frames free (396 MiB), 29621 used, 632 shared, 0 bugs
+[e1000] stats: rx 2963 pkt / 3407315 B, tx 1998 pkt / 146390 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1121 (+168)
+[mm] low: 101160 frames free (395 MiB), 29877 used, 640 shared, 0 bugs
+[mm] low: 100904 frames free (394 MiB), 30133 used, 644 shared, 0 bugs
+[mm] low: 100648 frames free (393 MiB), 30389 used, 644 shared, 0 bugs
+[mm] low: 100392 frames free (392 MiB), 30645 used, 644 shared, 0 bugs
+[mm] low: 100136 frames free (391 MiB), 30901 used, 644 shared, 0 bugs
+[wm] perf t=28726 composites=274 ns=3652434600 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=275 cpx=105617916 fpx=105617916 presns=191605039 torn=0 defer=30 late=0 drawmax=31 evdrop=0
+[mm] low: 99880 frames free (390 MiB), 31157 used, 663 shared, 0 bugs
+[js] module loaded 4359 bytes: https://www.apple.com/v/home/a/scripts/ComponentMap-thvKzGgL.built.js
+[js] module loaded 779 bytes: https://www.apple.com/v/home/a/scripts/inlineMediaSource-9OnjO25M.built.js
+[js] module loaded 983 bytes: https://www.apple.com/v/home/a/scripts/HpViewport-DHyTaS-L.built.js
+[js] module loaded 635 bytes: https://www.apple.com/v/home/a/scripts/_commonjsHelpers-JypJ4tLA.built.js
+[js] module loaded 1921 bytes: https://www.apple.com/v/home/a/scripts/AnimSystemModel-CyyfEbM8.built.js
+[mm] low: 99624 frames free (389 MiB), 31413 used, 671 shared, 0 bugs
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at i (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at I (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js:1)
+
+[browser] module rejected https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js: TypeError: not a function
+[js] module loaded 258 bytes: https://www.apple.com/v/home/a/scripts/index-DSp7vY0t.built.js
+[mm] low: 99368 frames free (388 MiB), 31669 used, 675 shared, 0 bugs
+[browser] load done: 49 requests, 4 connections dialled, 45 reused, 6 modules loaded (0 failed)
+[browser] pool: 45 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 42 from network (tab 2 of 3)
+[js] uncaught in timer: TypeError: javaEnabled is not a function (it is undefined)
+[wm] perf t=38750 composites=300 ns=3814351793 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=301 cpx=108790296 fpx=108790296 presns=198431010 torn=0 defer=32 late=0 drawmax=31 evdrop=0
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] resumed session for www.apple.com (no chain, no signature), alpn=h2
+[tls] ticket stored for www.apple.com (224 bytes, lifetime 879s, 2 cached)
+[webapi] fetch: response exceeds limit
+[bxfer] h2 www.apple.com:443 closed: streams=3 peak=3 frames=17/10 hpack_in=46929
+[error] Uncaught (in promise) TypeError: not a function
+    at updateCachedValuesFromElement (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addKeyframe (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at addEvent (https://www.apple.com/v/home/a/built/scripts/endless-entertainment-gallery.built.js)
+    at setupLoadKeyframes (https://www.apple.com/v/home/a/scripts/inline-media.built.js)
+    at mounted (https://www.apple.com/v/home/a/scripts/inline-media.built.js)
+    at <anonymous> (https://www.apple.com/v/home/a/scripts/main.built.js)
+    at forEach (native)
+    at <anonymous> (https://www.apple.com/v/home/a/scripts/main.built.js)
+
+[browser] ctrl+L: address bar focused
+[time] tickloss +6/s worstgap=72302us missed=67 of 5397 expected (1.241% of the clock); uptime 54s
+[browser] load: about:text
+[dl] painted text: 17 run(s), 77 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 317,196 Surprise
+[dl] 543,196 and
+[dl] 654,196 shine.
+[dl] 218,261 Watch
+[dl] 303,261 a
+[dl] 324,261 special
+[dl] 418,261 Apple Event
+[dl] 575,261 online
+[dl] 660,261 on
+[dl] 699,261 9/9
+[dl] 745,261 at
+[dl] 776,261 10
+[dl] 812,261 a.m.
+[dl] 522,292 PT.
+[dl] 523,341 Add
+[dl] 556,341 to
+[dl] 575,341 calendar
+[dl] ---8<--- end painted text
+[wm] perf t=54776 composites=361 ns=4497581360 max=49963750 motions=18 curmoves=11 curns=189999 full=14 rects=363 cpx=127771236 fpx=127771236 presns=235294825 torn=0 defer=32 late=0 drawmax=31 evdrop=0
+[time] tickloss +8/s worstgap=72302us missed=75 of 5496 expected (1.364% of the clock); uptime 55s

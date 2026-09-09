@@ -1,0 +1,297 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20676 composites=168 ns=2225485798 max=50255747 motions=18 curmoves=12 curns=169000 full=16 rects=172 cpx=62535484 fpx=62535484 presns=112742437 torn=0 defer=10 late=0 drawmax=25 evdrop=0
+[time] tickloss +12/s worstgap=83652us missed=54 of 2097 expected (2.575% of the clock); uptime 21s
+[browser] load: https://www.bilibili.com/
+[sock] connected www.bilibili.com via ipv4 ::ffff:198.18.0.75
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[wm] perf t=21676 composites=198 ns=2613194852 max=50255747 motions=18 curmoves=12 curns=169000 full=16 rects=202 cpx=75675424 fpx=75675424 presns=136298321 torn=0 defer=10 late=0 drawmax=25 evdrop=0
+[mm] low: 113192 frames free (442 MiB), 17845 used, 581 shared, 0 bugs
+[dl] painted text: 76 run(s), 516 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,84 •
+[dl] 54,84 首页
+[dl] 14,104 •
+[dl] 36,104 番剧
+[dl] 14,124 •
+[dl] 36,124 直播
+[dl] 14,144 •
+[dl] 36,144 游戏中心
+[dl] 14,164 •
+[dl] 36,164 会员购
+[dl] 14,184 •
+[dl] 36,184 漫画
+[dl] 14,204 •
+[dl] 36,204 赛事
+[dl] 14,224 •
+[dl] 52,224 下载客户端
+[dl] 8,360 动态
+[dl] 8,402 热门
+[dl] 8,422 番剧
+[dl] 40,422 电影
+[dl] 72,422 国创
+[dl] 104,422 电视剧
+[dl] 152,422 综艺
+[dl] 184,422 纪录片
+[dl] 232,422 动画
+[dl] 264,422 游戏
+[dl] 296,422 鬼畜
+[dl] 328,422 音乐
+[dl] 360,422 舞蹈
+[dl] 392,422 影视
+[dl] 424,422 娱乐
+[dl] 456,422 知识
+[dl] 488,422 科技数码
+[dl] 552,422 资讯
+[dl] 584,422 美食
+[dl] 616,422 小剧场
+[dl] 664,422 汽车
+[dl] 696,422 时尚美妆
+[dl] 760,422 体育运动
+[dl] 824,422 动物
+[dl] 856,422 vlog
+[dl] 886,422 绘画
+[dl] 918,422 人工智能
+[dl] 982,422 家装房产
+[dl] 1046,422 户外潮流
+[dl] 8,442 健身
+[dl] 40,442 手工
+[dl] 72,442 旅游出行
+[dl] 136,442 三农
+[dl] 168,442 亲子
+[dl] 200,442 健康
+[dl] 232,442 情感
+[dl] 264,442 生活兴趣
+[dl] 328,442 生活经验
+[dl] 392,442 公益
+[dl] 424,442 超高清
+[dl] 472,442 视频播客
+[dl] 8,462 更多
+[dl] 32,482 专栏
+[dl] 88,482 直播
+[dl] 144,482 活动
+[dl] 200,482 课堂
+[dl] 256,482 社区中心
+[dl] 344,482 新歌热榜
+[dl] 8,562 正在直播LPL：TES
+[dl] 144,562 vs
+[dl] 162,562 LGD！
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] 14,582 •
+[dl] ---8<--- end painted text
+[sock] connected s1.hdslb.com via ipv4 ::ffff:198.18.0.76
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (s1.hdslb.com)
+[net] rx path: frames 70 irq 57 softirq 26 inline 0 poll 3 idle 0/0 halt/skip
+[time] tickloss +8/s worstgap=83652us missed=62 of 2197 expected (2.822% of the clock); uptime 22s
+[mm] low: 112936 frames free (441 MiB), 18101 used, 606 shared, 0 bugs
+[mm] low: 112680 frames free (440 MiB), 18357 used, 606 shared, 0 bugs
+[mm] low: 112424 frames free (439 MiB), 18613 used, 606 shared, 0 bugs
+[browser] heap peak 9627K
+[dl] painted text: 65 run(s), 472 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 70,279 动态
+[dl] 106,279 热门
+[dl] 478,233 番剧
+[dl] 478,271 电影
+[dl] 1154,233 国创
+[dl] 1147,271 电视剧
+[dl] 1830,233 综艺
+[dl] 1823,271 纪录片
+[dl] 2506,233 动画
+[dl] 2506,271 游戏
+[dl] 3182,233 鬼畜
+[dl] 3182,271 音乐
+[dl] 3858,233 舞蹈
+[dl] 3858,271 影视
+[dl] 4534,233 娱乐
+[dl] 4534,271 知识
+[dl] 5197,233 科技数码
+[dl] 5210,271 资讯
+[dl] 5886,233 美食
+[dl] 5878,271 更多
+[dl] 1044,236 专栏
+[dl] 1044,274 直播
+[dl] 1274,236 活动
+[dl] 1274,274 课堂
+[dl] 1478,236 社区中心
+[dl] 1478,274 新歌热榜
+[dl] 313,458 "师傅...这也是修行的一部分
+[dl] 313,480 吗？！"
+[dl] 330,506 汐汐不想睡大街
+[dl] 425,506 ·
+[dl] 440,506 08-27
+[dl] 573,458 正赛大屠杀-11名角色无缘决
+[dl] 573,480 赛！
+[dl] 590,506 电趣
+[dl] 620,506 ·
+[dl] 635,506 9小时前
+[dl] 833,458 《
+[dl] 851,458 广
+[dl] 869,458 东
+[dl] 887,458 炒
+[dl] 905,458 排
+[dl] 923,458 骨
+[dl] 941,458 指
+[dl] 959,458 南
+[dl] 977,458 》
+[dl] 850,506 马蹄厨房
+[dl] 906,506 ·
+[dl] 921,506 08-27
+[dl] 340,330 22.8万
+[dl] 412,330 237
+[dl] 511,330 04:38
+[dl] 600,330 3.5万
+[dl] 665,330 1495
+[dl] 771,330 23:00
+[dl] 860,330 12.8万
+[dl] 932,330 278
+[dl] 1031,330 05:57
+[dl] 42,60 首页
+[dl] 89,60 番剧
+[dl] 130,60 直播
+[dl] 171,60 游戏中心
+[dl] 240,60 会员购
+[dl] 295,60 漫画
+[dl] 336,60 赛事
+[dl] 393,60 下载客户端
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 1 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 1 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 363101 external = 363101 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 5084 declarations kept
+[css] dropped: 1304  (22 selector, 16 at-rule, 1184 unknown-prop, 82 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 16 at-rule, 1374 declaration (syntax-malformed; a different population from the drops above)
+[css]      214  unknown-prop border-radius            | border-radius
+[css]      145  unknown-prop -webkit-*                | -webkit-box-sizing
+[css]      112  unknown-prop transition               | transition
+[css]       87  unknown-prop transform                | transform
+[css]       78  unknown-prop text-overflow            | text-overflow
+[css]       71  unknown-prop grid-template-columns    | grid-template-columns
+[css]       71  unknown-prop word-break               | word-break
+[css]       62  unknown-prop grid-column              | grid-column
+[css]       52  bad-value    display                  | display
+[css]       37  unknown-prop pointer-events           | pointer-events
+[css]       33  unknown-prop line-break               | line-break
+[css]       26  unknown-prop box-shadow               | box-shadow
+[css]   ... 66 more reason(s); css_report_verbose=1 for all
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group x25519
+[tls] chain of 3 verified for i0.hdslb.com, alpn=http/1.1
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 1 cached)
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 2 cached)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for i2.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i2.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 3 cached)
+[tls] ticket stored for i0.hdslb.com (240 bytes, lifetime 900s, 4 cached)
+[tls] chain of 4 verified for i1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (i1.hdslb.com)
+[time] tickloss +5/s worstgap=83652us missed=67 of 2299 expected (2.914% of the clock); uptime 23s
+[e1000] stats: rx 341 pkt / 361607 B, tx 261 pkt / 29356 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 197 (+197)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 112168 frames free (438 MiB), 18869 used, 640 shared, 0 bugs
+[mm] low: 111912 frames free (437 MiB), 19125 used, 640 shared, 0 bugs
+[mm] low: 111656 frames free (436 MiB), 19381 used, 640 shared, 0 bugs
+[mm] low: 111400 frames free (435 MiB), 19637 used, 640 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 640 shared, 0 bugs
+[mm] low: 110888 frames free (433 MiB), 20149 used, 640 shared, 0 bugs
+[mm] low: 110632 frames free (432 MiB), 20405 used, 640 shared, 0 bugs
+[img] 7/7 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 7/256 ents 6945K]
+[mm] low: 110376 frames free (431 MiB), 20661 used, 640 shared, 0 bugs
+[wm] perf t=23677 composites=223 ns=2947764172 max=50255747 motions=18 curmoves=12 curns=169000 full=16 rects=227 cpx=85907344 fpx=85907344 presns=154734229 torn=0 defer=19 late=0 drawmax=42 evdrop=0
+[browser] scripts collected: 5 external classic, 1 external module, 12 inline
+[time] tickloss +8/s worstgap=83652us missed=75 of 2396 expected (3.130% of the clock); uptime 24s
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for s1.hdslb.com, alpn=http/1.1
+[tls] OCSP staple: good (s1.hdslb.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for www.bilibili.com, alpn=http/1.1
+[net] rx path: frames 585 irq 267 softirq 134 inline 0 poll 6 idle 0/0 halt/skip
+[mm] low: 110120 frames free (430 MiB), 20917 used, 640 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 640 shared, 0 bugs
+[netlock] acq 112762 recursive 1093 maxdepth 3 violations 0
+[mm] low: 109608 frames free (428 MiB), 21429 used, 640 shared, 0 bugs
+[mm] low: 109352 frames free (427 MiB), 21685 used, 640 shared, 0 bugs
+[mm] low: 109096 frames free (426 MiB), 21941 used, 643 shared, 0 bugs
+[mm] low: 108840 frames free (425 MiB), 22197 used, 645 shared, 0 bugs
+[time] tickloss +9/s worstgap=83652us missed=84 of 2496 expected (3.365% of the clock); uptime 25s
+[e1000] stats: rx 1038 pkt / 1251359 B, tx 703 pkt / 62529 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 397 (+200)
+[mm] low: 108584 frames free (424 MiB), 22453 used, 672 shared, 0 bugs
+[mm] low: 108328 frames free (423 MiB), 22709 used, 672 shared, 0 bugs
+[mm] low: 108072 frames free (422 MiB), 22965 used, 672 shared, 0 bugs
+[js] bare module specifier '_' (imported from https://www.bilibili.com/#inline-module-1) -- no import map, so this cannot be resolved
+[mm] low: 107816 frames free (421 MiB), 23221 used, 673 shared, 0 bugs
+[mm] low: 107560 frames free (420 MiB), 23477 used, 673 shared, 0 bugs
+[mm] low: 107304 frames free (419 MiB), 23733 used, 673 shared, 0 bugs
+[mm] low: 107048 frames free (418 MiB), 23989 used, 673 shared, 0 bugs
+[mm] low: 106792 frames free (417 MiB), 24245 used, 674 shared, 0 bugs
+[mm] low: 106536 frames free (416 MiB), 24501 used, 674 shared, 0 bugs
+[mm] low: 106280 frames free (415 MiB), 24757 used, 674 shared, 0 bugs
+[iframe] cross-origin navigation refused: https://s1.hdslb.com (top is https://www.bilibili.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for api.bilibili.com, alpn=h2
+[mm] low: 106024 frames free (414 MiB), 25013 used, 684 shared, 0 bugs
+[mm] low: 105768 frames free (413 MiB), 25269 used, 684 shared, 0 bugs
+[mm] low: 105512 frames free (412 MiB), 25525 used, 684 shared, 0 bugs
+[mm] low: 105256 frames free (411 MiB), 25781 used, 685 shared, 0 bugs
+[mm] low: 105000 frames free (410 MiB), 26037 used, 689 shared, 0 bugs
+[tls] ticket for i0.hdslb.com not accepted -- full handshake
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for i0.hdslb.com, alpn=h2
+[tls] OCSP staple: good (i0.hdslb.com)
+[mm] low: 104744 frames free (409 MiB), 26293 used, 689 shared, 0 bugs
+[mm] low: 104488 frames free (408 MiB), 26549 used, 693 shared, 0 bugs
+[net] rx path: frames 1100 irq 456 softirq 224 inline 2 poll 10 idle 0/0 halt/skip
+[mm] low: 104232 frames free (407 MiB), 26805 used, 696 shared, 0 bugs
+[browser] load done: 20 requests, 8 connections dialled, 12 reused, 0 modules loaded (0 failed)
+[browser] pool: 12 hits, 4 evicted, 5 closed
+[browser] resources: 0 from tab, 14 from network (tab 2 of 3)
+[iframe] cross-origin navigation refused: https://s1.hdslb.com (top is https://www.bilibili.com)
+[mm] low: 103976 frames free (406 MiB), 27061 used, 708 shared, 0 bugs
+[mm] low: 103720 frames free (405 MiB), 27317 used, 711 shared, 0 bugs
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] global errorHandler:  SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[mm] low: 103464 frames free (404 MiB), 27573 used, 713 shared, 0 bugs
+[mm] low: 103208 frames free (403 MiB), 27829 used, 713 shared, 0 bugs
+[mm] low: 102952 frames free (402 MiB), 28085 used, 713 shared, 0 bugs
+[mm] low: 102696 frames free (401 MiB), 28341 used, 713 shared, 0 bugs
+[time] tickloss +6/s worstgap=83652us missed=90 of 4696 expected (1.916% of the clock); uptime 47s
+[time] tickloss +8/s worstgap=83652us missed=98 of 6494 expected (1.509% of the clock); uptime 65s

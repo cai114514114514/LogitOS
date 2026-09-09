@@ -1,0 +1,63 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21658 composites=180 ns=2372577057 max=51507742 motions=18 curmoves=11 curns=190999 full=14 rects=181 cpx=65422136 fpx=65422136 presns=120484399 torn=0 defer=2 late=0 drawmax=28 evdrop=0
+[browser] load: http://10.0.2.2:8747/
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[dl] painted text: 1 run(s), 4 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 16,76 boot
+[dl] ---8<--- end painted text
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 70 inline + 0 external = 70 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 4 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+[error] Uncaught (in promise) NotAllowedError: Reading the clipboard is not permitted on this browser.
+[error] Uncaught (in promise) Error: boom
+    at pull (http://10.0.2.2:8747/#inline-script-1)
+    at rsPull (<webapi>:191)
+    at <anonymous> (<webapi>)
+    at Promise (native)
+    at rsRead (<webapi>:200)
+    at read (<webapi>:250)
+    at <eval> (http://10.0.2.2:8747/#inline-script-1:55)
+
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[dl] painted text: 13 run(s), 185 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 16,76 PO=function
+[dl] 167,76 SET=mark+measure
+[dl] 410,76 UNSUP=noop
+[dl] 575,76 TAGRSP=Response
+[dl] 802,76 TAGRS=ReadableStream
+[dl] 16,114 TAGHDR=Headers
+[dl] 231,114 TAGREQ=Request
+[dl] 443,114 AXIOS=yes
+[dl] 571,114 CLIP=function
+[dl] 740,114 FIRE=mark-mark-measure
+[dl] 16,152 READ=NotAllowedError
+[dl] 294,152 WRITE=ok
+[dl] 417,152 PULL=rejected
+[dl] ---8<--- end painted text
+[browser] ctrl+L: address bar focused
+[time] tickloss +5/s worstgap=69397us missed=49 of 3899 expected (1.256% of the clock); uptime 39s
+[browser] load: about:text
+[dl] painted text: 13 run(s), 185 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 16,76 PO=function
+[dl] 167,76 SET=mark+measure
+[dl] 410,76 UNSUP=noop
+[dl] 575,76 TAGRSP=Response
+[dl] 802,76 TAGRS=ReadableStream
+[dl] 16,114 TAGHDR=Headers
+[dl] 231,114 TAGREQ=Request
+[dl] 443,114 AXIOS=yes
+[dl] 571,114 CLIP=function
+[dl] 740,114 FIRE=mark-mark-measure
+[dl] 16,152 READ=NotAllowedError
+[dl] 294,152 WRITE=ok
+[dl] 417,152 PULL=rejected
+[dl] ---8<--- end painted text

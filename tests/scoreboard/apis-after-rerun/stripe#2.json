@@ -1,0 +1,93 @@
+{
+ "name": "stripe#2",
+ "url": "https://stripe.com/",
+ "started": "2026-08-29T23:32:05",
+ "verdict": "ERRORS",
+ "why": "painted 20568 changed px in 59.2s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://stripe.com/jp",
+  "bytes": 741414,
+  "redirects": [
+   "307 -> https://stripe.com/jp"
+  ],
+  "script_tags": 76,
+  "script_src": 73,
+  "img_tags": 30,
+  "inventory": {
+   "stylesheets": 5,
+   "script_src": 72,
+   "inline_scripts": 0,
+   "images": 30,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 78
+  },
+  "elapsed": 4.8
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "SyntaxError: expecting ';'",
+    "stack": [
+     "at https://stripe.com/:1"
+    ],
+    "count": 2
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 3,
+  "requests": 78,
+  "dials": 3,
+  "reused": 76,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 15318,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 59.2,
+  "paint_seconds": 20.1,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 20568,
+  "changed_bbox": [
+   152,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 10241,
+  "ink_px_blank": 4256,
+  "colours": 698,
+  "rich_tiles_proxy": 11
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/stripe#2.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/stripe#2.serial.txt",
+ "url_confirmed": "https://stripe.com/",
+ "url_attempts": 1,
+ "about_text_arrived": false,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/apis-after-rerun/stripe#2.host.html",
+ "text_runs": 37,
+ "text_bytes": 181,
+ "text": "109,192 事\n109,247 業\n109,302 成\n109,357 長\n109,412 を\n109,467 支\n109,522 え\n109,577 る\n811,86 サインイン\n942,88 営業にお問い合わせ\n16,192 Stripe\n55,192 上の\n16,209 決済額が全\n16,226 世界の\n61,226 GDP\n90,226 に\n16,243 占める割合:\n16,470 1\n16,487 .\n16,504 7\n16,521 0\n16,538 6\n16,555 4\n16,572 8\n16,589 3\n16,606 3\n202,192 事\n202,247 業\n202,302 成\n202,357 長\n202,412 を\n202,467 支\n202,522 え\n202,577 る\n295,192 始める\n295,208 Google\n348,208 で登録",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 5,
+   "script_src": 72,
+   "inline_scripts": 0,
+   "images": 30,
+   "preloads": 13,
+   "fonts": 2,
+   "mandatory": 78
+  },
+  "gap": null
+ },
+ "finished": "2026-08-29T23:34:12"
+}

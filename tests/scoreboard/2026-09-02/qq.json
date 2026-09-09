@@ -1,0 +1,83 @@
+{
+ "name": "qq",
+ "url": "https://www.qq.com/",
+ "started": "2026-09-02T11:07:55",
+ "verdict": "PAINTED",
+ "why": "painted 241984 changed px in 13.4s, no JS exceptions, no subresource gap",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.qq.com/",
+  "bytes": 129563,
+  "redirects": [],
+  "script_tags": 13,
+  "script_src": 7,
+  "img_tags": 17,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "elapsed": 0.2
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 16,
+  "dials": 7,
+  "reused": 9,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 9490,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 13.4,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 241984,
+  "changed_bbox": [
+   140,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 147878,
+  "ink_px_blank": 4256,
+  "colours": 1010,
+  "rich_tiles_proxy": 45
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/qq.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/qq.serial.txt",
+ "url_confirmed": "https://www.qq.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/2026-09-02/qq.host.html",
+ "text_runs": 69,
+ "text_bytes": 1079,
+ "text": "565,87 邮箱\n565,137 最新游戏\n667,96 网页设置\n759,88 快捷访问\n875,86 登录\n988,81 安装电脑版\n-175,219 要闻\n-139,219 科技\n-69,219 财经\n11,219 AI\n52,219 热问\n122,219 教育\n192,219 国际\n262,219 军事\n332,219 娱乐\n394,219 电视剧\n488,219 体育\n559,219 NBA\n626,219 汽车\n696,219 房产\n766,219 游戏\n836,219 健康\n895,219 QQ游戏\n974,219 小游戏中心\n1134,213 更多\n-156,294 ‍‍一见·“中国之治”的时代回响\n74,294 |\n84,294 习近平主席的比什凯克时间\n-156,344 比什凯克再聚首，共赴上合新征程\n90,344 |\n100,344 习近平再谈上合“初心”\n-156,422 近闻·“样板”和“典范”，中埃关系如何迈向新征程\n-156,444 叮！请查收您的健康“小瓶子”\n71,444 |\n78,444 全民健康生活方式日\n-156,488 着力打通科技加速向生产力转化通道\n-156,532 “中埃合作为全球南方国家树立示范性样板”\n300,422 从“出行”到“体验”——透视暑期消费新变化\n300,444 数智赋能黔山田：从“云端”算力到“田间”丰收\n300,488 不断书写两国人民世代友好篇章\n300,532 81年前的今天，日本签署投降书！\n812,389 产品推荐\n772,387 更多\n812,423 腾讯新闻\n907,423 腾讯视频\n1014,423 腾讯体育\n1120,423 腾讯公益\n812,464 微信\n843,464 QQ\n882,464 元宝\n929,464 QQ音乐\n996,464 QQ浏览器\n1077,464 搜狗输入法\n812,490 应用宝\n812,498 企微\n843,498 WorkBuddy\n934,498 ima\n975,498 腾讯文档\n1050,498 腾讯会议\n1125,498 电脑管家\n812,542 QQ游戏\n863,542 棋牌赛事\n938,542 斗地主\n999,542 仙逆本尊\n1074,542 腾讯电子签\n812,568 软件中心\n791,622 今日热播\n287,86 搜索\n372,95 问AI",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 6,
+   "inline_scripts": 6,
+   "images": 16,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 8
+  },
+  "gap": null
+ },
+ "finished": "2026-09-02T11:09:08"
+}

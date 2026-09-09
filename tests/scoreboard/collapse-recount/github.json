@@ -1,0 +1,85 @@
+{
+ "name": "github",
+ "url": "https://github.com/",
+ "started": "2026-08-30T00:52:56",
+ "verdict": "ERRORS",
+ "why": "painted 221312 changed px in 95.0s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://github.com/",
+  "bytes": 573816,
+  "redirects": [],
+  "script_tags": 15,
+  "script_src": 9,
+  "img_tags": 24,
+  "inventory": {
+   "stylesheets": 18,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 77,
+   "fonts": 1,
+   "mandatory": 28
+  },
+  "elapsed": 1.3
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [],
+  "module_exceptions": [
+   "https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js: TypeError: not an object"
+  ],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 6,
+  "requests": 94,
+  "dials": 5,
+  "reused": 89,
+  "modules": 59,
+  "modules_failed": 0,
+  "heap_peak_k": 35774,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 95.0,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 221312,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 83024,
+  "ink_px_blank": 4256,
+  "colours": 2022,
+  "rich_tiles_proxy": 25
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/github.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/github.serial.txt",
+ "url_confirmed": "https://github.com/",
+ "url_attempts": 1,
+ "about_text_arrived": false,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/github.host.html",
+ "text_runs": 71,
+ "text_bytes": 271,
+ "text": "199,316 The\n276,316 future\n397,316 of\n442,316 building\n601,316 happens\n767,316 together\n308,381 Tools\n355,381 and\n390,381 trends\n444,381 evolve,\n504,381 but\n535,381 collaboration\n645,381 endures.\n717,381 With\n756,381 GitHub,\n320,408 developers,\n416,408 agents,\n478,408 and\n513,408 code\n556,408 come\n604,408 together\n674,408 on\n698,408 one\n731,408 platform.\n392,573 E\n392,590 n\n392,607 t\n430,571 Sign\n464,571 up\n485,571 for\n430,595 GitHub\n609,567 Try\n635,567 GitHub\n609,591 Copilot\n0,300 G\n0,336 i\n0,372 t\n0,408 H\n0,444 u\n0,480 b\n0,516 f\n0,552 e\n0,588 a\n10,313 A\n10,335 d\n10,357 e\n10,379 m\n10,401 o\n10,423 n\n10,445 s\n10,467 t\n10,489 r\n10,511 a\n10,533 t\n10,556 i\n10,578 o\n10,600 n\n10,622 a\n1083,77 Sign\n1112,77 in\n-6,176 Platform\n-6,209 Solutions\n-6,242 Resources\n-6,275 Open\n47,275 Source\n-6,308 Enterprise\n-12,349 Pricing\n-6,411 Search\n45,416 /\n527,472 Sign\n556,472 up",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 18,
+   "script_src": 9,
+   "inline_scripts": 0,
+   "images": 22,
+   "preloads": 77,
+   "fonts": 1,
+   "mandatory": 28
+  },
+  "gap": null
+ },
+ "finished": "2026-08-30T00:55:35"
+}

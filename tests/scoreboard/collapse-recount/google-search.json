@@ -1,0 +1,85 @@
+{
+ "name": "google-search",
+ "url": "https://www.google.com/search?q=python",
+ "started": "2026-08-30T00:54:46",
+ "verdict": "ERRORS",
+ "why": "painted 17432 changed px in 2.5s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://www.google.com/search?q=python",
+  "bytes": 91637,
+  "redirects": [],
+  "script_tags": 5,
+  "script_src": 0,
+  "img_tags": 0,
+  "inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 5,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "elapsed": 1.4
+ },
+ "guest": {
+  "exceptions": [],
+  "timer_exceptions": [
+   "event listener: ReferenceError: 'solveSimpleChallenge' is not defined"
+  ],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 0,
+  "requests": 3,
+  "dials": 2,
+  "reused": 2,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": null,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 2.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 17432,
+  "changed_bbox": [
+   152,
+   16,
+   1264,
+   764
+  ],
+  "ink_px": 11998,
+  "ink_px_blank": 4256,
+  "colours": 646,
+  "rich_tiles_proxy": 20
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/google-search.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/google-search.serial.txt",
+ "url_confirmed": "https://www.google.com/search?q=python",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/google-search.host.html",
+ "text_runs": 41,
+ "text_bytes": 273,
+ "text": "28,130 About\n67,130 this\n91,130 page\n28,146 Our\n51,146 systems\n100,146 have\n129,146 detected\n182,146 unusual\n228,146 traffic\n263,146 from\n293,146 your\n320,146 computer\n378,146 network.\n28,162 This\n53,162 page\n84,162 checks\n125,162 to\n138,162 see\n160,162 if\n169,162 it's\n187,162 really\n220,162 you\n242,162 sending\n289,162 the\n309,162 requests,\n364,162 and\n388,162 not\n408,162 a\n28,178 robot.\n64,178 Why\n90,178 did\n111,178 this\n133,178 happen?\n28,194 IP\n41,194 address:\n93,194 52.8.244.108\n28,210 Time:\n62,210 2026-08-29T16:55:13Z\n28,226 URL:\n57,226 https://www.google.com/search?\n28,242 q=python&sei=7g6TaqyMFbWa0PEPwNSnqAg",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 0,
+   "script_src": 0,
+   "inline_scripts": 5,
+   "images": 0,
+   "preloads": 0,
+   "fonts": 0,
+   "mandatory": 1
+  },
+  "gap": null
+ },
+ "finished": "2026-08-30T00:55:32"
+}

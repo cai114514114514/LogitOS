@@ -1,0 +1,267 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20889 composites=134 ns=2084349503 max=115709415 motions=18 curmoves=12 curns=281999 full=10 rects=135 cpx=41491252 fpx=41491252 presns=128901349 torn=0 defer=36 late=0 drawmax=138 evdrop=0
+[browser] load: https://openai.com/
+[wm] perf t=21910 composites=164 ns=2450567662 max=115709415 motions=18 curmoves=12 curns=281999 full=10 rects=165 cpx=50957492 fpx=50957492 presns=158599200 torn=0 defer=49 late=0 drawmax=138 evdrop=0
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.69
+[time] tickloss +26/s worstgap=239716us missed=167 of 2190 expected (7.625% of the clock); uptime 22s
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[netlock] acq 112966 recursive 41 maxdepth 3 violations 0
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 590 inline + 0 external = 590 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 16 declarations kept
+[css] dropped: 3  (0 selector, 1 at-rule, 2 unknown-prop, 0 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 1 at-rule, 0 declaration (syntax-malformed; a different population from the drops above)
+[css]        1  unknown-prop gap                      | gap
+[css]        1  at-rule      @keyframes               | @keyframes
+[css]        1  unknown-prop animation                | animation
+[browser] scripts collected: 0 external classic, 0 external module, 2 inline
+[mm] low: 113190 frames free (442 MiB), 17847 used, 609 shared, 0 bugs
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.69
+[time] tickloss +8/s worstgap=239716us missed=175 of 2490 expected (7.028% of the clock); uptime 25s
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[net] rx path: frames 67 irq 66 softirq 27 inline 4 poll 2 idle 0/0 halt/skip
+[netlock] acq 903894 recursive 109 maxdepth 3 violations 0
+[time] tickloss +6/s worstgap=239716us missed=181 of 2890 expected (6.262% of the clock); uptime 29s
+[mm] low: 112934 frames free (441 MiB), 18103 used, 610 shared, 0 bugs
+[mm] low: 112678 frames free (440 MiB), 18359 used, 610 shared, 0 bugs
+[browser] load done: 2 requests, 2 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 0 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: createElement is not a function (it is undefined)
+[time] tickloss +36/s worstgap=239716us missed=217 of 2989 expected (7.259% of the clock); uptime 30s
+[dl] painted text: 111 run(s), 574 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 431,140 Browser
+[dl] 531,140 not
+[dl] 576,140 supported
+[dl] 17,182 Your
+[dl] 52,182 browser
+[dl] 112,182 does
+[dl] 148,182 not
+[dl] 175,182 support
+[dl] 233,182 the
+[dl] 259,182 security
+[dl] 318,182 verification
+[dl] 401,182 required
+[dl] 463,182 by
+[dl] 483,182 openai.com.
+[dl] 573,182 This
+[dl] 605,182 can
+[dl] 634,182 happen
+[dl] 690,182 if
+[dl] 702,182 your
+[dl] 737,182 browser
+[dl] 797,182 is
+[dl] 811,182 either
+[dl] 855,182 too
+[dl] 882,182 old
+[dl] 907,182 to
+[dl] 925,182 support
+[dl] 983,182 the
+[dl] 1009,182 latest
+[dl] 1052,182 security
+[dl] 416,202 features
+[dl] 477,202 or
+[dl] 495,202 too
+[dl] 522,202 new
+[dl] 554,202 to
+[dl] 572,202 be
+[dl] 592,202 fully
+[dl] 625,202 compatible.
+[dl] 18,230 1.
+[dl] 171,230 Switch
+[dl] 224,230 your
+[dl] 262,230 browser
+[dl] 323,230 .
+[dl] 330,230 If
+[dl] 342,230 you
+[dl] 371,230 have
+[dl] 408,230 access
+[dl] 458,230 to
+[dl] 476,230 multiple
+[dl] 537,230 browsers,
+[dl] 608,230 try
+[dl] 631,230 accessing
+[dl] 703,230 the
+[dl] 729,230 website
+[dl] 786,230 through
+[dl] 846,230 a
+[dl] 858,230 different
+[dl] 921,230 browser.
+[dl] 18,250 2.
+[dl] 350,250 Update
+[dl] 408,250 your
+[dl] 446,250 browser
+[dl] 507,250 .
+[dl] 514,250 Make
+[dl] 554,250 sure
+[dl] 587,250 that
+[dl] 620,250 your
+[dl] 655,250 browser
+[dl] 715,250 is
+[dl] 729,250 up
+[dl] 750,250 to
+[dl] 768,250 date.
+[dl] 18,270 3.
+[dl] 59,270 If
+[dl] 71,270 this
+[dl] 100,270 error
+[dl] 138,270 persists
+[dl] 195,270 after
+[dl] 232,270 you
+[dl] 261,270 have
+[dl] 298,270 followed
+[dl] 361,270 the
+[dl] 387,270 previous
+[dl] 450,270 steps,
+[dl] 494,270 refer
+[dl] 530,270 to
+[dl] 548,270 Cloudflare’s
+[dl] 647,270 troubleshooting
+[dl] 763,270 documentation
+[dl] 875,270 for
+[dl] 898,270 a
+[dl] 910,270 list
+[dl] 934,270 of
+[dl] 951,270 supported
+[dl] 1026,270 browsers.
+[dl] 171,298 For
+[dl] 197,298 detailed
+[dl] 257,298 guidance
+[dl] 325,298 on
+[dl] 346,298 how
+[dl] 379,298 to
+[dl] 397,298 update
+[dl] 450,298 your
+[dl] 485,298 browser,
+[dl] 549,298 refer
+[dl] 585,298 to
+[dl] 603,298 your
+[dl] 638,298 browser's
+[dl] 709,298 documentation
+[dl] 821,298 or
+[dl] 839,298 support
+[dl] 897,298 website.
+[dl] ---8<--- end painted text
+[time] tickloss +17/s worstgap=239716us missed=234 of 3090 expected (7.572% of the clock); uptime 31s
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 111 run(s), 574 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 431,140 Browser
+[dl] 531,140 not
+[dl] 576,140 supported
+[dl] 17,182 Your
+[dl] 52,182 browser
+[dl] 112,182 does
+[dl] 148,182 not
+[dl] 175,182 support
+[dl] 233,182 the
+[dl] 259,182 security
+[dl] 318,182 verification
+[dl] 401,182 required
+[dl] 463,182 by
+[dl] 483,182 openai.com.
+[dl] 573,182 This
+[dl] 605,182 can
+[dl] 634,182 happen
+[dl] 690,182 if
+[dl] 702,182 your
+[dl] 737,182 browser
+[dl] 797,182 is
+[dl] 811,182 either
+[dl] 855,182 too
+[dl] 882,182 old
+[dl] 907,182 to
+[dl] 925,182 support
+[dl] 983,182 the
+[dl] 1009,182 latest
+[dl] 1052,182 security
+[dl] 416,202 features
+[dl] 477,202 or
+[dl] 495,202 too
+[dl] 522,202 new
+[dl] 554,202 to
+[dl] 572,202 be
+[dl] 592,202 fully
+[dl] 625,202 compatible.
+[dl] 18,230 1.
+[dl] 171,230 Switch
+[dl] 224,230 your
+[dl] 262,230 browser
+[dl] 323,230 .
+[dl] 330,230 If
+[dl] 342,230 you
+[dl] 371,230 have
+[dl] 408,230 access
+[dl] 458,230 to
+[dl] 476,230 multiple
+[dl] 537,230 browsers,
+[dl] 608,230 try
+[dl] 631,230 accessing
+[dl] 703,230 the
+[dl] 729,230 website
+[dl] 786,230 through
+[dl] 846,230 a
+[dl] 858,230 different
+[dl] 921,230 browser.
+[dl] 18,250 2.
+[dl] 350,250 Update
+[dl] 408,250 your
+[dl] 446,250 browser
+[dl] 507,250 .
+[dl] 514,250 Make
+[dl] 554,250 sure
+[dl] 587,250 that
+[dl] 620,250 your
+[dl] 655,250 browser
+[dl] 715,250 is
+[dl] 729,250 up
+[dl] 750,250 to
+[dl] 768,250 date.
+[dl] 18,270 3.
+[dl] 59,270 If
+[dl] 71,270 this
+[dl] 100,270 error
+[dl] 138,270 persists
+[dl] 195,270 after
+[dl] 232,270 you
+[dl] 261,270 have
+[dl] 298,270 followed
+[dl] 361,270 the
+[dl] 387,270 previous
+[dl] 450,270 steps,
+[dl] 494,270 refer
+[dl] 530,270 to
+[dl] 548,270 Cloudflare’s
+[dl] 647,270 troubleshooting
+[dl] 763,270 documentation
+[[dl] 875,270 for
+[dtl] 898,270 a
+[dl] i910,270 list
+[dl] 934,270 of
+[dl] 951,270 supported
+[dl] 1026,270 browsers.
+[dl] 171,298 For
+[dl] 197,298 detailed
+[dl] 257,298 guidance
+[dl] 325,298 on
+[dl] me] tickloss +346,298 how
+[dl] 15/s379,298 to
+[dl] 397,298 updat worse
+[dl] tgap=23450,298 your
+[dl] 9716us 485,298 browser,missed=249 of 4788 expected (5.200% of the clock); uptime 48s
+
+[dl] 549,298 refer
+[dl] 585,298 to
+[dl] 603,298 your
+[dl] 638,298 browser's
+[dl] 709,298 documentation
+[dl] 821,298 or
+[dl] 839,298 support
+[dl] 897,298 website.
+[dl] ---8<--- end painted text
+[wm] perf t=48041 composites=240 ns=3336145212 max=115709415 motions=18 curmoves=12 curns=281999 full=11 rects=241 cpx=67063772 fpx=67063772 presns=233693824 torn=0 defer=56 late=0 drawmax=139 evdrop=0

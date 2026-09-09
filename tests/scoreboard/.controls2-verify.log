@@ -1,0 +1,73 @@
+check-asops: ok (asc.as region regenerated+identical; opcodes, opnames, dispatch, bc-version, const-tags, tokens x2, keywords, builtins, sysconsts, methods)
+python3 tests/qmp/sites_run.py --iso build-cache/logit.iso --disk build-cache/disk.img \
+	    --only control-wikipedia --jobs 1 --repeat 1 --label 2026-09-02 
+scoreboard 2026-09-02: 1 sites x 1 run(s), 1 boots at a time, into tests/scoreboard/2026-09-02
+  ISO build-cache/logit.iso sha256:b2cf3dd947fd73aa, staged in /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/scoreboard_img_54vebrbp (a concurrent build cannot swap it)
+  control-wikipedia  PAINTED     painted 82048 changed px in 10.4s, no JS exceptions, no subresource gap
+
+# Site scoreboard 2026-09-02
+
+commit fe748e31e, ISO build-cache/logit.iso (sha256:b2cf3dd947fd73aa), 0 sites (+1 controls), 1 run(s) each, 55 s wall
+
+
+
+WHAT THIS TABLE IS NOT. `changed px` counts pixels that differ from an empty tab
+photographed in the same boot. It cannot tell a rendered page from a flat dark
+block: bing scores 625,312 changed pixels and is exactly the "一坨黑黑的" that was
+reported by hand. Nothing here checks whether the RIGHT pixels changed -- that is
+what reftests are for, and none of WPT's 17,155 of them run on this machine. The
+top verdict is `PAINTED`, which means pixels changed, no script threw, and the
+guest asked for everything the document requires. It does not mean correct.
+
+The two `control-` rows are NOT results. They exist to prove the harness, the
+network and the build were working during the pass; if either fails, no other row
+in the snapshot means anything. They say nothing about the browser.
+
+| site               | verdict    | load s |  reqs | asked/got | exc | changed px |  text run/B | host     |
+|--------------------|------------|--------|-------|----------|-----|------------|-------------|----------|
+
+CONTROLS -- harness health, not results:
+| control            | verdict    | load s |  reqs | asked/got | exc | changed px |  text run/B | host     |
+|--------------------|------------|--------|-------|----------|-----|------------|-------------|----------|
+| control-wikipedia  | PAINTED    |   10.4 |    37 |     4/37 |   0 |      82048 |    207/1176 | HTTP 200 |
+
+snapshot: tests/scoreboard/2026-09-02.json
+table:    tests/scoreboard/2026-09-02.md
+shots:    tests/scoreboard/2026-09-02
+check-asops: ok (asc.as region regenerated+identical; opcodes, opnames, dispatch, bc-version, const-tags, tokens x2, keywords, builtins, sysconsts, methods)
+python3 tests/qmp/sites_run.py --iso build-cache/logit.iso --disk build-cache/disk.img \
+	    --only control-example --jobs 1 --repeat 1 --label 2026-09-02 
+scoreboard 2026-09-02: 1 sites x 1 run(s), 1 boots at a time, into tests/scoreboard/2026-09-02
+  ISO build-cache/logit.iso sha256:b2cf3dd947fd73aa, staged in /var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/scoreboard_img_3ige8hq4 (a concurrent build cannot swap it)
+  control-example    PAINTED     painted 8792 changed px in 0.7s, no JS exceptions, no subresource gap
+
+# Site scoreboard 2026-09-02
+
+commit fe748e31e, ISO build-cache/logit.iso (sha256:b2cf3dd947fd73aa), 0 sites (+1 controls), 1 run(s) each, 43 s wall
+
+
+
+WHAT THIS TABLE IS NOT. `changed px` counts pixels that differ from an empty tab
+photographed in the same boot. It cannot tell a rendered page from a flat dark
+block: bing scores 625,312 changed pixels and is exactly the "一坨黑黑的" that was
+reported by hand. Nothing here checks whether the RIGHT pixels changed -- that is
+what reftests are for, and none of WPT's 17,155 of them run on this machine. The
+top verdict is `PAINTED`, which means pixels changed, no script threw, and the
+guest asked for everything the document requires. It does not mean correct.
+
+The two `control-` rows are NOT results. They exist to prove the harness, the
+network and the build were working during the pass; if either fails, no other row
+in the snapshot means anything. They say nothing about the browser.
+
+| site               | verdict    | load s |  reqs | asked/got | exc | changed px |  text run/B | host     |
+|--------------------|------------|--------|-------|----------|-----|------------|-------------|----------|
+
+CONTROLS -- harness health, not results:
+| control            | verdict    | load s |  reqs | asked/got | exc | changed px |  text run/B | host     |
+|--------------------|------------|--------|-------|----------|-----|------------|-------------|----------|
+| control-example    | PAINTED    |    0.7 |     1 |      1/1 |   0 |       8792 |      19/109 | HTTP 200 |
+
+snapshot: tests/scoreboard/2026-09-02.json
+table:    tests/scoreboard/2026-09-02.md
+shots:    tests/scoreboard/2026-09-02
+DONE_0

@@ -1,0 +1,679 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=21662 composites=181 ns=2530017392 max=51671623 motions=18 curmoves=11 curns=172007 full=18 rects=183 cpx=69809848 fpx=69809848 presns=126609972 torn=0 defer=3 late=0 drawmax=30 evdrop=0
+[browser] load: https://www.qq.com/
+[wa] t=20950 (+6510) nav
+[sock] connected www.qq.com via ipv4 ::ffff:198.18.0.169
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for www.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wa] t=21140 (+190) idle reqs=1 dials=1 reuses=0
+[wa] t=21140 (+0) docdone status=200 len=129559
+[mm] low: 112921 frames free (441 MiB), 18116 used, 612 shared, 0 bugs
+[dl] painted text: 45 run(s), 249 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 14,117 搜索
+[dl] 68,100 问AI
+[dl] 8,124 邮箱
+[dl] 8,144 网页设置
+[dl] 8,164 快捷访问
+[dl] 8,184 安装电脑版
+[dl] 8,204 内容更精彩
+[dl] 14,232 •
+[dl] 36,232 要闻
+[dl] 14,252 •
+[dl] 36,252 科技
+[dl] 14,272 •
+[dl] 36,272 财经
+[dl] 14,292 •
+[dl] 36,292 AI
+[dl] 14,312 •
+[dl] 36,312 热问
+[dl] 14,332 •
+[dl] 36,332 教育
+[dl] 14,352 •
+[dl] 36,352 国际
+[dl] 14,372 •
+[dl] 36,372 军事
+[dl] 14,392 •
+[dl] 36,392 娱乐
+[dl] 14,412 •
+[dl] 36,412 电视剧
+[dl] 14,432 •
+[dl] 36,432 体育
+[dl] 14,452 •
+[dl] 36,452 NBA
+[dl] 14,472 •
+[dl] 36,472 汽车
+[dl] 14,492 •
+[dl] 36,492 房产
+[dl] 14,512 •
+[dl] 36,512 游戏
+[dl] 14,532 •
+[dl] 36,532 健康
+[dl] 14,552 •
+[dl] 36,552 QQ游戏
+[dl] 14,572 •
+[dl] 36,572 小游戏中心
+[dl] 14,592 •
+[dl] 36,592 更多
+[dl] ---8<--- end painted text
+[sock] connected mat1.gtimg.com via ipv4 ::ffff:198.18.0.170
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[net] rx path: frames 66 irq 56 softirq 23 inline 2 poll 2 idle 0/0 halt/skip
+[wa] t=21380 (+240) idle reqs=2 dials=2 reuses=0
+[mm] low: 112665 frames free (440 MiB), 18372 used, 644 shared, 0 bugs
+[css] @keyframes: kept 64 rule(s); dropped 32 rule(s), 0 stop(s) for want of table space
+[mm] low: 112409 frames free (439 MiB), 18628 used, 646 shared, 0 bugs
+[browser] heap peak 9490K
+[dl] painted text: 68 run(s), 1073 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 707,112 邮箱
+[dl] 743,96 网页设置
+[dl] 835,88 快捷访问
+[dl] 976,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 ‍‍一见·“中国之治”的时代回响
+[dl] 74,294 |
+[dl] 84,294 习近平主席的比什凯克时间
+[dl] -156,344 比什凯克再聚首，共赴上合新征程
+[dl] 90,344 |
+[dl] 100,344 习近平再谈上合“初心”
+[dl] -156,422 近闻·“样板”和“典范”，中埃关系如何迈向新征程
+[dl] -156,444 叮！请查收您的健康“小瓶子”
+[dl] 71,444 |
+[dl] 78,444 全民健康生活方式日
+[dl] -156,488 着力打通科技加速向生产力转化通道
+[dl] -156,532 “中埃合作为全球南方国家树立示范性样板”
+[dl] 300,422 从“出行”到“体验”——透视暑期消费新变化
+[dl] 300,444 数智赋能黔山田：从“云端”算力到“田间”丰收
+[dl] 300,488 不断书写两国人民世代友好篇章
+[dl] 300,532 81年前的今天，日本签署投降书！
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,464 微信
+[dl] 843,464 QQ
+[dl] 882,464 元宝
+[dl] 929,464 QQ音乐
+[dl] 996,464 QQ浏览器
+[dl] 1077,464 搜狗输入法
+[dl] 812,490 应用宝
+[dl] 812,498 企微
+[dl] 843,498 WorkBuddy
+[dl] 934,498 ima
+[dl] 975,498 腾讯文档
+[dl] 1050,498 腾讯会议
+[dl] 1125,498 电脑管家
+[dl] 812,542 QQ游戏[wm] perf t=22662 composites=189 ns=2616090090 max=51671623 motions=18 curmoves=11 curns=172007 full=18 rects=191 cpx=72432328 fpx=72432328 presns=131469123 torn=0 defer=5 late=0 drawmax=32 evdrop=0
+
+[dl] 863,542 棋牌赛事
+[dl] 938,542 斗地主
+[dl] 999,542 仙逆本尊
+[dl] 1074,542 腾讯电子签
+[dl] 812,568 软件中心
+[dl] -157,622 热点精选
+[dl] 791,622 今日热播
+[dl] 287,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 1 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 1 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 519293 external = 519293 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 5229 declarations kept
+[css] dropped: 1896  (58 selector, 48 at-rule, 1545 unknown-prop, 245 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 48 at-rule, 204 declaration (syntax-malformed; a different population from the drops above)
+[css]      529  unknown-prop -ms-*                    | -ms-flex-pack
+[css]      401  unknown-prop -webkit-*                | -webkit-box-orient
+[css]      223  bad-value    display                  | display
+[css]       76  unknown-prop transition               | transition
+[css]       72  unknown-prop transform                | transform
+[css]       50  unknown-prop text-overflow            | text-overflow
+[css]       48  selector     selector-syntax          | @-webkit-keyframes JwD1jAWrm0RrQuY8cb5g
+[css]       48  at-rule      @keyframes               | @keyframes
+[css]       43  unknown-prop box-shadow               | box-shadow
+[css]       39  unknown-prop animation                | animation
+[css]       36  unknown-prop background-size          | background-size
+[css]       33  unknown-prop scrollbar-width          | scrollbar-width
+[css]   ... 60 more reason(s); css_report_verbose=1 for all
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[wa] t=22070 (+690) idle reqs=5 dials=4 reuses=1
+[mm] low: 112153 frames free (438 MiB), 18884 used, 676 shared, 0 bugs
+[mm] low: 111897 frames free (437 MiB), 19140 used, 676 shared, 0 bugs
+[mm] low: 111641 frames free (436 MiB), 19396 used, 676 shared, 0 bugs
+[mm] low: 111385 frames free (435 MiB), 19652 used, 676 shared, 0 bugs
+[img] 3/3 decoded (0 failed, cap 128) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 3/256 ents 3695K]
+[time] tickloss +7/s worstgap=71377us missed=77 of 2297 expected (3.352% of the clock); uptime 23s
+[mm] low: 111129 frames free (434 MiB), 19908 used, 678 shared, 0 bugs
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[mm] low: 110873 frames free (433 MiB), 20164 used, 680 shared, 0 bugs
+[browser] scripts collected: 6 external classic, 0 external module, 6 inline
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for mat1.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wm] perf t=23664 composites=206 ns=2810777203 max=51671623 motions=18 curmoves=11 curns=172007 full=18 rects=208 cpx=78390708 fpx=78390708 presns=142728477 torn=0 defer=13 late=0 drawmax=65 evdrop=0
+[mm] low: 110617 frames free (432 MiB), 20420 used, 680 shared, 0 bugs
+[net] rx path: frames 621 irq 156 softirq 70 inline 2 poll 4 idle 0/0 halt/skip
+[mm] low: 110361 frames free (431 MiB), 20676 used, 680 shared, 0 bugs
+[mm] low: 110105 frames free (430 MiB), 20932 used, 680 shared, 0 bugs
+[mm] low: 109849 frames free (429 MiB), 21188 used, 680 shared, 0 bugs
+[wa] t=23060 (+990) idle reqs=11 dials=5 reuses=6
+[mm] low: 109593 frames free (428 MiB), 21444 used, 680 shared, 0 bugs
+[mm] low: 109337 frames free (427 MiB), 21700 used, 680 shared, 0 bugs
+[mm] low: 109081 frames free (426 MiB), 21956 used, 680 shared, 0 bugs
+[time] tickloss +8/s worstgap=71377us missed=85 of 2396 expected (3.547% of the clock); uptime 24s
+[e1000] stats: rx 696 pkt / 929296 B, tx 436 pkt / 39634 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 162 (+162)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[mm] low: 108825 frames free (425 MiB), 22212 used, 694 shared, 0 bugs
+[error] Uncaught (in promise) undefined
+[mm] low: 108569 frames free (424 MiB), 22468 used, 711 shared, 0 bugs
+[mm] low: 108313 frames free (423 MiB), 22724 used, 711 shared, 0 bugs
+[mm] low: 108057 frames free (422 MiB), 22980 used, 711 shared, 0 bugs
+[mm] low: 107801 frames free (421 MiB), 23236 used, 718 shared, 0 bugs
+[mm] low: 107545 frames free (420 MiB), 23492 used, 720 shared, 0 bugs
+[mm] low: 107289 frames free (419 MiB), 23748 used, 720 shared, 0 bugs
+[mm] low: 107033 frames free (418 MiB), 24004 used, 720 shared, 0 bugs
+[mm] low: 106777 frames free (417 MiB), 24260 used, 720 shared, 0 bugs
+[mm] low: 106521 frames free (416 MiB), 24516 used, 720 shared, 0 bugs
+[mm] low: 106265 frames free (415 MiB), 24772 used, 720 shared, 0 bugs
+[mm] low: 106009 frames free (414 MiB), 25028 used, 720 shared, 0 bugs
+[mm] low: 105753 frames free (413 MiB), 25284 used, 720 shared, 0 bugs
+[mm] low: 105497 frames free (412 MiB), 25540 used, 720 shared, 0 bugs
+[mm] low: 105241 frames free (411 MiB), 25796 used, 720 shared, 0 bugs
+[mm] low: 104985 frames free (410 MiB), 26052 used, 720 shared, 0 bugs
+[mm] low: 104729 frames free (409 MiB), 26308 used, 721 shared, 0 bugs
+[mm] low: 104473 frames free (408 MiB), 26564 used, 721 shared, 0 bugs
+[mm] low: 104217 frames free (407 MiB), 26820 used, 721 shared, 0 bugs
+[mm] low: 103961 frames free (406 MiB), 27076 used, 721 shared, 0 bugs
+[mm] low: 103705 frames free (405 MiB), 27332 used, 721 shared, 0 bugs
+[mm] low: 103449 frames free (404 MiB), 27588 used, 721 shared, 0 bugs
+[mm] low: 103193 frames free (403 MiB), 27844 used, 721 shared, 0 bugs
+[mm] low: 102937 frames free (402 MiB), 28100 used, 721 shared, 0 bugs
+[mm] low: 102681 frames free (401 MiB), 28356 used, 721 shared, 0 bugs
+[mm] low: 102425 frames free (400 MiB), 28612 used, 721 shared, 0 bugs
+[mm] low: 102169 frames free (399 MiB), 28868 used, 721 shared, 0 bugs
+[mm] low: 101913 frames free (398 MiB), 29124 used, 721 shared, 0 bugs
+[mm] low: 101657 frames free (397 MiB), 29380 used, 721 shared, 0 bugs
+[mm] low: 101401 frames free (396 MiB), 29636 used, 721 shared, 0 bugs
+[mm] low: 101145 frames free (395 MiB), 29892 used, 724 shared, 0 bugs
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for news.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for i.news.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for staticfile.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wa] t=31050 (+7990) idle reqs=12 dials=6 reuses=6
+[wa] t=31400 (+350) idle reqs=13 dials=6 reuses=7
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 4 verified for vm.gtimg.cn, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wa] t=32000 (+600) idle reqs=14 dials=7 reuses=7
+[mm] low: 100889 frames free (394 MiB), 30148 used, 742 shared, 0 bugs
+[mm] low: 100633 frames free (393 MiB), 30404 used, 742 shared, 0 bugs
+[e1000] stats: rx 1042 pkt / 1353944 B, tx 678 pkt / 63909 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 324 (+162)
+[media] isTypeSupported("video/mp4; codecs="avc1.42E01E"") -> true
+[mm] low: 100377 frames free (392 MiB), 30660 used, 743 shared, 0 bugs
+[netlock] acq 112571 recursive 1328 maxdepth 3 violations 0
+[net] rx path: frames 1134 irq 349 softirq 160 inline 7 poll 8 idle 0/0 halt/skip
+[wa] t=33730 (+1730) idle reqs=15 dials=7 reuses=8
+[wa] t=34060 (+330) idle reqs=16 dials=7 reuses=9
+[wa] t=34090 loadend reqs=16 dials=7 reuses=9 cache ents=4 1067K hits=0 rvs=0
+[browser] load done: 16 requests, 7 connections dialled, 9 reused, 0 modules loaded (0 failed)
+[browser] pool: 9 hits, 5 evicted, 6 closed
+[browser] resources: 0 from tab, 10 from network (tab 2 of 3)
+[css-anim] cap 32 reached: 6 element(s) keep their cascade base value (no animation)
+[dl] painted text: 68 run(s), 1067 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 625,112 邮箱
+[dl] 661,96 网页设置
+[dl] 753,88 快捷访问
+[dl] 870,86 登录
+[dl] 985,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 ‍‍一见·“中国之治”的时代回响
+[dl] 74,294 |
+[dl] 84,294 习近平主席的比什凯克时间
+[dl] -156,344 比什凯克再聚首，共赴上合新征程
+[dl] 90,344 |
+[dl] 100,344 习近平再谈上合“初心”
+[dl] -156,422 近闻·“样板”和“典范”，中埃关系如何迈向新征程
+[dl] -156,444 叮！请查收您的健康“小瓶子”
+[dl] 71,444 |
+[dl] 78,444 全民健康生活方式日
+[dl] -156,488 着力打通科技加速向生产力转化通道
+[dl] -156,532 “中埃合作为全球南方国家树立示范性样板”
+[dl] 300,422 从“出行”到“体验”——透视暑期消费新变化
+[dl] 300,444 数智赋能黔山田：从“云端”算力到“田间”丰收
+[dl] 300,488 不断书写两国人民世代友好篇章
+[dl] 300,532 81年前的今天，日本签署投降书！
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,464 微信
+[dl] 843,464 QQ
+[dl] 882,464 元宝
+[dl] 929,464 QQ音乐
+[dl] 996,464 QQ浏览器
+[dl] 1077,464 搜狗输入法
+[dl] 812,490 应用宝
+[dl] 812,498 企微
+[dl] 843,498 WorkBuddy
+[dl] 934,498 ima
+[dl] 975,498 腾讯文档
+[dl] 1050,498 腾讯会议
+[dl] 1125,498 电脑管家
+[dl] 812,542 QQ游戏
+[dl] 863,542 棋牌赛事
+[dl] 938,542 斗地主
+[dl] 999,542 仙逆本尊
+[dl] 1074,542 腾讯电子签
+[dl] 812,568 软件中心
+[dl] 791,622 今日热播
+[dl] 287,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for op.ssp.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[error] Uncaught (in promise) [object Object]
+[error] Uncaught (in promise) [object Object]
+[webapi] fetch: connection failed
+[bxfer] h2 i.news.qq.com:443 closed: streams=1 peak=1 frames=27/5 hpack_in=20532
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for i.news.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[mm] low: 100121 frames free (391 MiB), 30916 used, 758 shared, 0 bugs
+[mm] low: 99865 frames free (390 MiB), 31172 used, 758 shared, 0 bugs
+[mm] low: 99609 frames free (389 MiB), 31428 used, 758 shared, 0 bugs
+[mm] low: 99353 frames free (388 MiB), 31684 used, 758 shared, 0 bugs
+[mm] low: 99097 frames free (387 MiB), 31940 used, 758 shared, 0 bugs
+[mm] low: 98841 frames free (386 MiB), 32196 used, 758 shared, 0 bugs
+[mm] low: 98585 frames free (385 MiB), 32452 used, 758 shared, 0 bugs
+[mm] low: 98329 frames free (384 MiB), 32708 used, 758 shared, 0 bugs
+[mm] low: 98073 frames free (383 MiB), 32964 used, 758 shared, 0 bugs
+[mm] low: 97817 frames free (382 MiB), 33220 used, 758 shared, 0 bugs
+[mm] low: 97561 frames free (381 MiB), 33476 used, 758 shared, 0 bugs
+[mm] low: 97305 frames free (380 MiB), 33732 used, 758 shared, 0 bugs
+[mm] low: 97049 frames free (379 MiB), 33988 used, 758 shared, 0 bugs
+[mm] low: 96793 frames free (378 MiB), 34244 used, 758 shared, 0 bugs
+[mm] low: 96537 frames free (377 MiB), 34500 used, 758 shared, 0 bugs
+[mm] low: 96281 frames free (376 MiB), 34756 used, 758 shared, 0 bugs
+[mm] low: 96025 frames free (375 MiB), 35012 used, 758 shared, 0 bugs
+[error] Uncaught (in promise) AxiosError: Network Error
+Error
+    at H (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/2026831171911/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/2026831171911/static/js/index.js)
+    at call (native)
+    at _fire (<webapi>:1587)
+    at <anonymous> (<webapi>:1628)
+
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[e1000] stats: rx 1360 pkt / 1674042 B, tx 906 pkt / 93912 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 515 (+191)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for inews.gtimg.com, alpn=http/1.1
+[wa] t=40920 (+6860) idle reqs=24 dials=12 reuses=12
+[img] 8/18 decoded (0 failed, cap 8) [+12 from cache, 0 unfetchable, 10 deferred, 0 refused; cache 11/256 ents 5729K]
+[time] tickloss +9/s worstgap=71377us missed=94 of 4197 expected (2.239% of the clock); uptime 42s
+[bxfer] h2 sqt.gtimg.cn:443 closed: streams=1 peak=1 frames=6/5 hpack_in=484
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[warn] Swiper Loop Warning: The number of slides is not enough for loop mode, it will be disabled and not function properly. You need to add more slides (or make duplicates) or lower the values of slidesPerView and slidesPerGroup parameters
+[wm] perf t=42697 composites=269 ns=3333613618 max=51671623 motions=18 curmoves=11 curns=172007 full=18 rects=271 cpx=91351948 fpx=91351948 presns=168428282 torn=0 defer=24 late=0 drawmax=65 evdrop=0
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 3 verified for res.wx.qq.com, alpn=http/1.1
+[wa] t=42620 (+1700) idle reqs=25 dials=13 reuses=12
+[iframe] cross-origin navigation refused: https://open.weixin.qq.com (top is https://www.qq.com)
+[net] rx path: frames 1662 irq 626 softirq 293 inline 7 poll 18 idle 0/0 halt/skip
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for h5.ssp.qq.com, alpn=http/1.1
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] ServerHello: TLS 1.3, suite 0x1302 (AES-256-GCM-SHA384), group x25519
+[tls] chain of 4 verified for h5.ssp.qq.com, alpn=http/1.1
+[tls] chain of 4 verified for tnfe.gtimg.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[wm] perf t=44723 composites=286 ns=3431547691 max=51671623 motions=18 curmoves=11 curns=172007 full=19 rects=288 cpx=94152948 fpx=94152948 presns=173358438 torn=0 defer=35 late=0 drawmax=2475 evdrop=0
+[wa] t=43820 (+1200) idle reqs=33 dials=17 reuses=16
+[mm] low: 95769 frames free (374 MiB), 35268 used, 771 shared, 0 bugs
+[mm] low: 95513 frames free (373 MiB), 35524 used, 771 shared, 0 bugs
+[mm] low: 95257 frames free (372 MiB), 35780 used, 771 shared, 0 bugs
+[mm] low: 95001 frames free (371 MiB), 36036 used, 771 shared, 0 bugs
+[mm] low: 94745 frames free (370 MiB), 36292 used, 771 shared, 0 bugs
+[mm] low: 94489 frames free (369 MiB), 36548 used, 771 shared, 0 bugs
+[mm] low: 94233 frames free (368 MiB), 36804 used, 771 shared, 0 bugs
+[mm] low: 93977 frames free (367 MiB), 37060 used, 771 shared, 0 bugs
+[img] 8/22 decoded (0 failed, cap 8) [+4 from cache, 0 unfetchable, 14 deferred, 0 refused; cache 19/256 ents 20377K]
+[e1000] stats: rx 2094 pkt / 2604336 B, tx 1387 pkt / 138630 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 738 (+223)
+[time] tickloss +6/s worstgap=71377us missed=100 of 5295 expected (1.888% of the clock); uptime 53s
+[error] Uncaught (in promise) SecurityError: Blocked a frame from accessing a cross-origin frame.
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[net] rx path: frames 2206 irq 770 softirq 325 inline 37 poll 20 idle 0/0 halt/skip
+[mm] low: 93721 frames free (366 MiB), 37316 used, 771 shared, 0 bugs
+[net] rx path: frames 2782 irq 891 softirq 340 inline 75 poll 20 idle 0/0 halt/skip
+[wm] perf t=59759 composites=340 ns=4086166234 max=51671623 motions=18 curmoves=11 curns=172007 full=19 rects=342 cpx=111922948 fpx=111922948 presns=206815488 torn=0 defer=39 late=0 drawmax=2475 evdrop=0
+[mm] low: 93465 frames free (365 MiB), 37572 used, 771 shared, 0 bugs
+[wa] t=58810 (+14990) idle reqs=41 dials=17 reuses=24
+[mm] low: 93209 frames free (364 MiB), 37828 used, 771 shared, 0 bugs
+[mm] low: 92953 frames free (363 MiB), 38084 used, 771 shared, 0 bugs
+[mm] low: 92697 frames free (362 MiB), 38340 used, 771 shared, 0 bugs
+[mm] low: 92441 frames free (361 MiB), 38596 used, 771 shared, 0 bugs
+[mm] low: 92185 frames free (360 MiB), 38852 used, 771 shared, 0 bugs
+[mm] low: 91929 frames free (359 MiB), 39108 used, 771 shared, 0 bugs
+[mm] low: 91673 frames free (358 MiB), 39364 used, 771 shared, 0 bugs
+[mm] low: 91417 frames free (357 MiB), 39620 used, 771 shared, 0 bugs
+[mm] low: 91161 frames free (356 MiB), 39876 used, 771 shared, 0 bugs
+[mm] low: 90905 frames free (355 MiB), 40132 used, 771 shared, 0 bugs
+[mm] low: 90649 frames free (354 MiB), 40388 used, 771 shared, 0 bugs
+[mm] low: 90393 frames free (353 MiB), 40644 used, 771 shared, 0 bugs
+[mm] low: 90137 frames free (352 MiB), 40900 used, 771 shared, 0 bugs
+[mm] low: 89881 frames free (351 MiB), 41156 used, 771 shared, 0 bugs
+[mm] low: 89625 frames free (350 MiB), 41412 used, 771 shared, 0 bugs
+[mm] low: 89369 frames free (349 MiB), 41668 used, 771 shared, 0 bugs
+[mm] low: 89113 frames free (348 MiB), 41924 used, 771 shared, 0 bugs
+[mm] low: 88857 frames free (347 MiB), 42180 used, 771 shared, 0 bugs
+[mm] low: 88601 frames free (346 MiB), 42436 used, 771 shared, 0 bugs
+[mm] low: 88345 frames free (345 MiB), 42692 used, 771 shared, 0 bugs
+[mm] low: 88089 frames free (344 MiB), 42948 used, 771 shared, 0 bugs
+[img] 8/14 decoded (0 failed, cap 8) [+0 from cache, 0 unfetchable, 6 deferred, 0 refused; cache 27/256 ents 40318K]
+[e1000] stats: rx 2971 pkt / 3836432 B, tx 1882 pkt / 172109 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 920 (+182)
+[net] rx path: frames 3360 irq 950 softirq 364 inline 81 poll 21 idle 0/0 halt/skip
+[mm] low: 87833 frames free (343 MiB), 43204 used, 771 shared, 0 bugs
+[mm] low: 87577 frames free (342 MiB), 43460 used, 771 shared, 0 bugs
+[net] rx path: frames 3877 irq 1014 softirq 396 inline 81 poll 23 idle 0/0 halt/skip
+[wm] perf t=60761 composites=373 ns=4403120178 max=51671623 motions=18 curmoves=11 curns=172007 full=19 rects=375 cpx=122093428 fpx=122093428 presns=224936056 torn=0 defer=58 late=0 drawmax=2475 evdrop=0
+[wa] t=59690 (+880) idle reqs=47 dials=17 reuses=30
+[mm] low: 87321 frames free (341 MiB), 43716 used, 771 shared, 0 bugs
+[mm] low: 87065 frames free (340 MiB), 43972 used, 771 shared, 0 bugs
+[mm] low: 86809 frames free (339 MiB), 44228 used, 771 shared, 0 bugs
+[mm] low: 86553 frames free (338 MiB), 44484 used, 771 shared, 0 bugs
+[mm] low: 86297 frames free (337 MiB), 44740 used, 771 shared, 0 bugs
+[time] tickloss +7/s worstgap=71377us missed=107 of 6093 expected (1.756% of the clock); uptime 61s
+[mm] low: 86041 frames free (336 MiB), 44996 used, 771 shared, 0 bugs
+[mm] low: 85785 frames free (335 MiB), 45252 used, 771 shared, 0 bugs
+[mm] low: 85529 frames free (334 MiB), 45508 used, 771 shared, 0 bugs
+[mm] low: 85273 frames free (333 MiB), 45764 used, 771 shared, 0 bugs
+[mm] low: 85017 frames free (332 MiB), 46020 used, 771 shared, 0 bugs
+[mm] low: 84761 frames free (331 MiB), 46276 used, 771 shared, 0 bugs
+[mm] low: 84505 frames free (330 MiB), 46532 used, 771 shared, 0 bugs
+[mm] low: 84249 frames free (329 MiB), 46788 used, 771 shared, 0 bugs
+[mm] low: 83993 frames free (328 MiB), 47044 used, 771 shared, 0 bugs
+[mm] low: 83737 frames free (327 MiB), 47300 used, 771 shared, 0 bugs
+[mm] low: 83481 frames free (326 MiB), 47556 used, 771 shared, 0 bugs
+[mm] low: 83225 frames free (325 MiB), 47812 used, 771 shared, 0 bugs
+[mm] low: 82969 frames free (324 MiB), 48068 used, 771 shared, 0 bugs
+[mm] low: 82713 frames free (323 MiB), 48324 used, 771 shared, 0 bugs
+[img] 6/6 decoded (0 failed, cap 8) [+0 from cache, 0 unfetchable, 0 deferred, 0 refused; cache 33/256 ents 56399K]
+[e1000] stats: rx 3958 pkt / 5233006 B, tx 2424 pkt / 208825 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1030 (+110)
+[wm] perf t=61762 composites=383 ns=4565280268 max=51671623 motions=18 curmoves=11 curns=172007 full=19 rects=385 cpx=127178668 fpx=127178668 presns=234173346 torn=0 defer=61 late=0 drawmax=2475 evdrop=0
+[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=7 peak=3 frames=24/21 hpack_in=584
+[webapi] fetch: connection failed
+[webapi] fetch: connection failed
+[error] Uncaught (in promise) AxiosError: Network Error
+Error
+    at H (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/2026831171911/static/js/index.js)
+    at <anonymous> (https://mat1.gtimg.com/qqcdn/qqindex2021/common-static/pc-home/2026831171911/static/js/index.js)
+    at call (native)
+    at _fire (<webapi>:1587)
+    at <anonymous> (<webapi>:1628)
+
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=1 peak=1 frames=8/6 hpack_in=95
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 3 verified for bon.qq.com, alpn=http/1.1
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 sqt.gtimg.cn:443 closed: streams=2 peak=2 frames=9/7 hpack_in=978
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[dl] painted text: 69 run(s), 1079 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 565,87 邮箱
+[dl] 565,137 最新游戏
+[dl] 667,96 网页设置
+[dl] 759,88 快捷访问
+[dl] 875,86 登录
+[dl] 988,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 ‍‍一见·“中国之治”的时代回响
+[dl] 74,294 |
+[dl] 84,294 习近平主席的比什凯克时间
+[dl] -156,344 比什凯克再聚首，共赴上合新征程
+[dl] 90,344 |
+[dl] 100,344 习近平再谈上合“初心”
+[dl] -156,422 近闻·“样板”和“典范”，中埃关系如何迈向新征程
+[dl] -156,444 叮！请查收您的健康“小瓶子”
+[dl] 71,444 |
+[dl] 78,444 全民健康生活方式日
+[dl] -156,488 着力打通科技加速向生产力转化通道
+[dl] -156,532 “中埃合作为全球南方国家树立示范性样板”
+[dl] 300,422 从“出行”到“体验”——透视暑期消费新变化
+[dl] 300,444 数智赋能黔山田：从“云端”算力到“田间”丰收
+[dl] 300,488 不断书写两国人民世代友好篇章
+[dl] 300,532 81年前的今天，日本签署投降书！
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,464 微信
+[dl] 843,464 QQ
+[dl] 882,464 元宝
+[dl] 929,464 QQ音乐
+[dl] 996,464 QQ浏览器
+[dl] 1077,464 搜狗输入法
+[dl] 812,490 应用宝
+[dl] 812,498 企微
+[dl] 843,498 WorkBuddy
+[dl] 934,498 ima
+[dl] 975,498 腾讯文档
+[dl] 1050,498 腾讯会议
+[dl] 1125,498 电脑管家
+[dl] 812,542 QQ游戏
+[dl] 863,542 棋牌赛事
+[dl] 938,542 斗地主
+[dl] 999,542 仙逆本尊
+[dl] 1074,542 腾讯电子签
+[dl] 812,568 软件中心
+[dl] 791,622 今日热播
+[dl] 287,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for otheve.beacon.qq.com, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 otheve.beacon.qq.com:443 closed: streams=2 peak=2 frames=16/9 hpack_in=244
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[browser] ctrl+L: address bar focused
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)[time] tickloss +11/s worstgap=71377us missed=118 of 6894 expected (1.711% of the clock); uptime 69s
+
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[browser] load: about:text
+[dl] painted text: 69 run(s), 1079 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 565,87 邮箱
+[dl] 565,137 最新游戏
+[dl] 667,96 网页设置
+[dl] 759,88 快捷访问
+[dl] 875,86 登录
+[dl] 988,81 安装电脑版
+[dl] -175,219 要闻
+[dl] -139,219 科技
+[dl] -69,219 财经
+[dl] 11,219 AI
+[dl] 52,219 热问
+[dl] 122,219 教育
+[dl] 192,219 国际
+[dl] 262,219 军事
+[dl] 332,219 娱乐
+[dl] 394,219 电视剧
+[dl] 488,219 体育
+[dl] 559,219 NBA
+[dl] 626,219 汽车
+[dl] 696,219 房产
+[dl] 766,219 游戏
+[dl] 836,219 健康
+[dl] 895,219 QQ游戏
+[dl] 974,219 小游戏中心
+[dl] 1134,213 更多
+[dl] -156,294 ‍‍一见·“中国之治”的时代回响
+[dl] 74,294 |
+[dl] 84,294 习近平主席的比什凯克时间
+[dl] -156,344 比什凯克再聚首，共赴上合新征程
+[dl] 90,344 |
+[dl] 100,344 习近平再谈上合“初心”
+[dl] -156,422 近闻·“样板”和“典范”，中埃关系如何迈向新征程
+[dl] -156,444 叮！请查收您的健康“小瓶子”
+[dl] 71,444 |
+[dl] 78,444 全民健康生活方式日
+[dl] -156,488 着力打通科技加速向生产力转化通道
+[dl] -156,532 “中埃合作为全球南方国家树立示范性样板”
+[dl] 300,422 从“出行”到“体验”——透视暑期消费新变化
+[dl] 300,444 数智赋能黔山田：从“云端”算力到“田间”丰收
+[dl] 300,488 不断书写两国人民世代友好篇章
+[dl] 300,532 81年前的今天，日本签署投降书！
+[dl] 812,389 产品推荐
+[dl] 772,387 更多
+[dl] 812,423 腾讯新闻
+[dl] 907,423 腾讯视频
+[dl] 1014,423 腾讯体育
+[dl] 1120,423 腾讯公益
+[dl] 812,464 微信
+[dl] 843,464 QQ
+[dl] 882,464 元宝
+[dl] 929,464 QQ音乐
+[dl] 996,464 QQ浏览器
+[dl] 1077,464 搜狗输入法
+[dl] 812,490 应用宝
+[dl] 812,498 企微
+[dl] 843,498 WorkBuddy
+[dl] 934,498 ima
+[dl] 975,498 腾讯文档
+[dl] 1050,498 腾讯会议
+[dl] 1125,498 电脑管家
+[dl] 812,542 QQ游戏
+[dl] 863,542 棋牌赛事
+[dl] 938,542 斗地主
+[dl] 999,542 仙逆本尊
+[dl] 1074,542 腾讯电子签
+[dl] 812,568 软件中心
+[dl] 791,622 今日热播
+[dl] 287,86 搜索
+[dl] 372,95 问AI
+[dl] ---8<--- end painted text
+[wm] perf t=69793 composites=429 ns=5135991185 max=51671623 motions=18 curmoves=11 curns=172007 full=19 rects=431 cpx=143985854 fpx=143985854 presns=265900339 torn=0 defer=67 late=0 drawmax=2475 evdrop=0
+[time] tickloss +6/s worstgap=71377us missed=124 of 6994 expected (1.772% of the clock); uptime 70s
+[iframe] cross-origin navigation refused: https://i.news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://news.qq.com (top is https://www.qq.com)
+[iframe] cross-origin navigation refused: https://video.qq.com (top is https://www.qq.com)
+[tls] ServerHello: TLS 1.2, suite 0xc02f ECDHE-RSA-AES128-GCM-SHA256, ems=yes
+[tls] chain of 2 verified for sqt.gtimg.cn, alpn=h2
+[tls] ServerKeyExchange: group x25519, signature verified (hash 8 alg 4)
+[bxfer] h2 sqt.gtimg.cn:443 closed: streams=1 peak=1 frames=6/5 hpack_in=485

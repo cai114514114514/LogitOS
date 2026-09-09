@@ -1,0 +1,578 @@
+{
+ "date": "collapse-after",
+ "generated": "2026-08-29T23:09:11",
+ "iso": "build-collapse/logit.iso",
+ "iso_sha256_16": "4e5082b7393da6de",
+ "commit": "9ba575e93",
+ "wall_seconds": 222.3,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "deepseek",
+   "url": "https://www.deepseek.com/",
+   "started": "2026-08-29T23:05:29",
+   "verdict": "PAINTED",
+   "why": "painted 10852 changed px in 4.9s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.deepseek.com/",
+    "bytes": 86879,
+    "redirects": [],
+    "script_tags": 42,
+    "script_src": 19,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 23,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "elapsed": 0.2
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 22,
+    "dials": 2,
+    "reused": 20,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 15769,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 4.9,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 10852,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     768
+    ],
+    "ink_px": 13958,
+    "ink_px_blank": 4256,
+    "colours": 630,
+    "rich_tiles_proxy": 14
+   },
+   "shot": "tests/scoreboard/collapse-after/deepseek.png",
+   "serial_log": "tests/scoreboard/collapse-after/deepseek.serial.txt",
+   "url_confirmed": "https://www.deepseek.com/",
+   "url_attempts": 1,
+   "about_text_arrived": true,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-after/deepseek.host.html",
+   "text_runs": 22,
+   "text_bytes": 95,
+   "text": "938,76 Get\n938,76 App\n944,117 Scan\n973,117 to\n986,117 get\n1006,117 DeepSeek\n1066,117 App\n1053,77 中\n1053,95 文\n1094,77 EN\n24,212 DeepSeek\n106,212 Web\n24,288 Download\n110,288 App\n24,364 API\n54,364 Platform\n24,440 DeepSeek\n106,440 Harness\n24,516 API\n54,516 Docs\n24,592 Join\n61,592 Us",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 18,
+     "inline_scripts": 23,
+     "images": 2,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:06:17",
+   "reported": "blank; needs Worker",
+   "wall_seconds": 48.4,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "jd",
+   "url": "https://www.jd.com/",
+   "started": "2026-08-29T23:05:29",
+   "verdict": "ERRORS",
+   "why": "painted 8660 changed px in 11.5s but 7 JS exception(s) -- and the document asked for 18 subresources (3 stylesheets, 14 script srcs) against 17 requests issued, short by 1",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.jd.com/",
+    "bytes": 190878,
+    "redirects": [],
+    "script_tags": 35,
+    "script_src": 14,
+    "img_tags": 12,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "ReferenceError: 'jQuery' is not defined",
+      "stack": [
+       "at <eval> (https://wl.jd.com/wl.js:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at clickReport (https://www.jd.com/#inline-script-16:3)",
+       "at <eval> (https://www.jd.com/#inline-script-16:18)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at getClstagPrefix (https://www.jd.com/#inline-script-17:4)",
+       "at footerRender (https://www.jd.com/#inline-script-17:20)",
+       "at <eval> (https://www.jd.com/#inline-script-17:24)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'length' of undefined",
+      "stack": [
+       "at _$f6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)",
+       "at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: not a function",
+      "stack": [
+       "at <anonymous> (https://www.jd.com/#inline-script-20:31)",
+       "at <eval> (https://www.jd.com/#inline-script-20:32)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: '$' is not defined",
+      "stack": [
+       "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:111)",
+       "at <anonymous> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)",
+       "at <eval> (https://storage.360buyimg.com/retail-mall/mall-common-component/prod/1.0.19/js/index.d0da118c.js:115)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'eventCenter' of undefined",
+      "stack": [
+       "at BatchQueue (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at tLPg (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at n5if (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at pAZN (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at Qpzn (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at /KoI (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at 6OU5 (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at zPjE (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at yEBl (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at pLYI (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)",
+       "at call (native)",
+       "at __webpack_require__ (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at checkDeferredModules (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at webpackJsonpCallback (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/runtime.js)",
+       "at <eval> (https://storage.360buyimg.com/channel2022/jd_home/0.0.184/static/js/index.chunk.js)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [
+     "fetch failed (status 0[tls] chain of 3 verified for wl.jd.com, alpn=http/1.1",
+     "fetch failed (status 0) //misc.360buyimg.com/??mtd/pc/common/js/o2_ua.js,mtd/pc/base/1.0.0/event.js?v=20240117: TLS refused: handshake or certificate verification failed",
+     "fetch failed (status 0) //static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952: TLS refused: handshake or certificate verification failed"
+    ],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 17,
+    "dials": 8,
+    "reused": 9,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 14028,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 11.5,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8660,
+    "changed_bbox": [
+     140,
+     16,
+     1256,
+     764
+    ],
+    "ink_px": 4256,
+    "ink_px_blank": 4256,
+    "colours": 410,
+    "rich_tiles_proxy": 9
+   },
+   "shot": "tests/scoreboard/collapse-after/jd.png",
+   "serial_log": "tests/scoreboard/collapse-after/jd.serial.txt",
+   "url_confirmed": "https://www.jd.com/",
+   "url_attempts": 1,
+   "about_text_arrived": true,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-after/jd.host.html",
+   "text_runs": 2,
+   "text_bytes": 12,
+   "text": "615,109 搜索\n-85,92 京东",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "gap": {
+     "mandatory": 18,
+     "requested": 17,
+     "short_by": 1,
+     "stylesheets": 3,
+     "script_src": 14
+    }
+   },
+   "finished": "2026-08-29T23:06:24",
+   "reported": "jQuery is not defined",
+   "wall_seconds": 54.9,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "openai",
+   "url": "https://openai.com/",
+   "started": "2026-08-29T23:05:29",
+   "verdict": "ERRORS",
+   "why": "painted 25944 changed px in 8.5s but 1 JS exception(s) -- and the document asked for 118 subresources (26 stylesheets, 91 script srcs) against 2 requests issued, short by 116",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://openai.com/",
+    "bytes": 450047,
+    "redirects": [],
+    "script_tags": 100,
+    "script_src": 92,
+    "img_tags": 18,
+    "inventory": {
+     "stylesheets": 26,
+     "script_src": 91,
+     "inline_scripts": 8,
+     "images": 17,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 118
+    },
+    "elapsed": 1.3
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "event listener: TypeError: createElement is not a function (it is undefined)"
+    ],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 2,
+    "dials": 2,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": null,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 8.5,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 25944,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 5094,
+    "ink_px_blank": 4256,
+    "colours": 675,
+    "rich_tiles_proxy": 11
+   },
+   "shot": "tests/scoreboard/collapse-after/openai.png",
+   "serial_log": "tests/scoreboard/collapse-after/openai.serial.txt",
+   "url_confirmed": "https://openai.com/",
+   "url_attempts": 1,
+   "about_text_arrived": true,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-after/openai.host.html",
+   "text_runs": 111,
+   "text_bytes": 574,
+   "text": "431,140 Browser\n531,140 not\n576,140 supported\n17,182 Your\n52,182 browser\n112,182 does\n148,182 not\n175,182 support\n233,182 the\n259,182 security\n318,182 verification\n401,182 required\n463,182 by\n483,182 openai.com.\n573,182 This\n605,182 can\n634,182 happen\n690,182 if\n702,182 your\n737,182 browser\n797,182 is\n811,182 either\n855,182 too\n882,182 old\n907,182 to\n925,182 support\n983,182 the\n1009,182 latest\n1052,182 security\n416,202 features\n477,202 or\n495,202 too\n522,202 new\n554,202 to\n572,202 be\n592,202 fully\n625,202 compatible.\n18,230 1.\n171,230 Switch\n224,230 your\n262,230 browser\n323,230 .\n330,230 If\n342,230 you\n371,230 have\n408,230 access\n458,230 to\n476,230 multiple\n537,230 browsers,\n608,230 try\n631,230 accessing\n703,230 the\n729,230 website\n786,230 through\n846,230 a\n858,230 different\n921,230 browser.\n18,250 2.\n350,250 Update\n408,250 your\n446,250 browser\n507,250 .\n514,250 Make\n554,250 sure\n587,250 that\n620,250 your\n655,250 browser\n715,250 is\n729,250 up\n750,250 to\n768,250 date.\n18,270 3.\n59,270 If\n71,270 this\n100,270 error\n138,270 persists\n195,270 after\n232,270 you\n261,270 have\n298,270 followed\n361,270 the\n387,270 previous\n450,270 steps,\n494,270 refer\n530,270 to\n548,270 Cloudflare’s\n647,270 troubleshooting\n763,270 documentation\n875,270 for\n898,270 a\n910,270 list\n934,270 of\n951,270 supported\n1026,270 browsers.\n171,298 For\n197,298 detailed\n257,298 guidance\n325,298 on\n346,298 how\n379,298 to\n397,298 update\n450,298 your\n485,298 browser,\n549,298 refer\n585,298 to\n603,298 your\n638,298 browser's\n709,298 documentation\n821,298 or\n839,298 support\n897,298 website.",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 26,
+     "script_src": 91,
+     "inline_scripts": 8,
+     "images": 17,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 118
+    },
+    "gap": {
+     "mandatory": 118,
+     "requested": 2,
+     "short_by": 116,
+     "stylesheets": 26,
+     "script_src": 91
+    }
+   },
+   "finished": "2026-08-29T23:06:21",
+   "reported": "an icon and nothing else",
+   "wall_seconds": 51.9,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "github",
+   "url": "https://github.com/",
+   "started": "2026-08-29T23:05:29",
+   "verdict": "ERRORS",
+   "why": "painted 203536 changed px in 157.5s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://github.com/",
+    "bytes": 573825,
+    "redirects": [],
+    "script_tags": 15,
+    "script_src": 9,
+    "img_tags": 24,
+    "inventory": {
+     "stylesheets": 18,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 77,
+     "fonts": 1,
+     "mandatory": 28
+    },
+    "elapsed": 1.7
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [
+     "https://github.githubassets.com/assets/behaviors-bed88b5675d50f9e.js: TypeError: not an object"
+    ],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 6,
+    "requests": 94,
+    "dials": 5,
+    "reused": 89,
+    "modules": 59,
+    "modules_failed": 0,
+    "heap_peak_k": 35774,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 157.5,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 203536,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 186130,
+    "ink_px_blank": 4256,
+    "colours": 401,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "tests/scoreboard/collapse-after/github.png",
+   "serial_log": "tests/scoreboard/collapse-after/github.serial.txt",
+   "url_confirmed": "https://github.com/",
+   "url_attempts": 1,
+   "about_text_arrived": false,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-after/github.host.html",
+   "text_runs": 3,
+   "text_bytes": 14,
+   "text": "1083,135 Sign\n1112,135 in\n-6,234 Platform",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 18,
+     "script_src": 9,
+     "inline_scripts": 0,
+     "images": 22,
+     "preloads": 77,
+     "fonts": 1,
+     "mandatory": 28
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:09:11",
+   "reported": "\"很奇怪\"",
+   "wall_seconds": 222.2,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "kimi",
+   "url": "https://www.kimi.com/",
+   "started": "2026-08-29T23:05:29",
+   "verdict": "ERRORS",
+   "why": "painted 11372 changed px in 47.1s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.kimi.com/",
+    "bytes": 483424,
+    "redirects": [],
+    "script_tags": 4,
+    "script_src": 2,
+    "img_tags": 2,
+    "inventory": {
+     "stylesheets": 29,
+     "script_src": 2,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 81,
+     "fonts": 0,
+     "mandatory": 32
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'caller' of undefined",
+      "stack": [
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671)",
+       "at <anonymous> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671)",
+       "at <eval> (https://static.trustdecision.com/tdfp/cn/1adb3bba719793fb6874417a286e900d/fm.js?t=496671:4)"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "fetch_failed": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 112,
+    "dials": 5,
+    "reused": 107,
+    "modules": 78,
+    "modules_failed": 0,
+    "heap_peak_k": 31629,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_seconds": 47.1,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 11372,
+    "changed_bbox": [
+     144,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 8624,
+    "ink_px_blank": 4256,
+    "colours": 580,
+    "rich_tiles_proxy": 14
+   },
+   "shot": "tests/scoreboard/collapse-after/kimi.png",
+   "serial_log": "tests/scoreboard/collapse-after/kimi.serial.txt",
+   "url_confirmed": "https://www.kimi.com/",
+   "url_attempts": 1,
+   "about_text_arrived": true,
+   "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-after/kimi.host.html",
+   "text_runs": 5,
+   "text_bytes": 59,
+   "text": "489,311 探索灵感\n475,341 滑动探索\n196,140 尽管问，或做个\n311,140 Agent\n355,140 任务...",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 29,
+     "script_src": 2,
+     "inline_scripts": 2,
+     "images": 2,
+     "preloads": 81,
+     "fonts": 0,
+     "mandatory": 32
+    },
+    "gap": null
+   },
+   "finished": "2026-08-29T23:06:59",
+   "reported": "the one the whole browser arc was aimed at -- an LLM chat page: React, streaming fetch, and a text input that has to accept keystrokes",
+   "wall_seconds": 90.5,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  }
+ ]
+}

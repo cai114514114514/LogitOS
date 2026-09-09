@@ -1,0 +1,93 @@
+{
+ "name": "bing",
+ "url": "https://www.bing.com/",
+ "started": "2026-08-30T00:51:24",
+ "verdict": "ERRORS",
+ "why": "painted 597724 changed px in 2.5s but 1 JS exception(s)",
+ "host": {
+  "ok": true,
+  "status": 200,
+  "final_url": "https://cn.bing.com/",
+  "bytes": 185454,
+  "redirects": [
+   "302 -> https://cn.bing.com/"
+  ],
+  "script_tags": 22,
+  "script_src": 4,
+  "img_tags": 3,
+  "inventory": {
+   "stylesheets": 1,
+   "script_src": 4,
+   "inline_scripts": 9,
+   "images": 1,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "elapsed": 0.4
+ },
+ "guest": {
+  "exceptions": [
+   {
+    "message": "ReferenceError: '_w' is not defined",
+    "stack": [
+     "at <eval> (https://cn.bing.com/#inline-script-2:3)"
+    ],
+    "count": 1
+   }
+  ],
+  "timer_exceptions": [],
+  "module_exceptions": [],
+  "fetch_failed": [],
+  "cannot_fetch": [],
+  "skipped_scripts": 9,
+  "requests": 6,
+  "dials": 3,
+  "reused": 4,
+  "modules": 0,
+  "modules_failed": 0,
+  "heap_peak_k": 7711,
+  "load_done": true,
+  "page_fetch_failed": null,
+  "app_fault": null,
+  "panic": false,
+  "load_seconds": 2.5,
+  "paint_seconds": 16.2,
+  "settled": true
+ },
+ "pixels": {
+  "changed_px": 597724,
+  "changed_bbox": [
+   140,
+   12,
+   1264,
+   764
+  ],
+  "ink_px": 501170,
+  "ink_px_blank": 4256,
+  "colours": 491,
+  "rich_tiles_proxy": 16
+ },
+ "shot": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/bing.png",
+ "serial_log": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/bing.serial.txt",
+ "url_confirmed": "https://www.bing.com/",
+ "url_attempts": 1,
+ "about_text_arrived": true,
+ "host_document": "/Users/wangzhe/system/LogitOS/tests/scoreboard/collapse-recount/bing.host.html",
+ "text_runs": 10,
+ "text_bytes": 54,
+ "text": "1012,60  \n113,60 国内版\n113,80 国际版\n297,60  \n297,60  \n233,60 图片\n233,99 视频\n233,138 翻译\n233,177 地图\n233,216 学术",
+ "subresources": {
+  "host_inventory": {
+   "stylesheets": 1,
+   "script_src": 4,
+   "inline_scripts": 9,
+   "images": 1,
+   "preloads": 2,
+   "fonts": 0,
+   "mandatory": 6
+  },
+  "gap": null
+ },
+ "finished": "2026-08-30T00:52:09"
+}

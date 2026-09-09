@@ -1,0 +1,249 @@
+[browser] ctrl+L: address bar focused
+[wm] perf t=20656 composites=164 ns=2135895229 max=47233760 motions=18 curmoves=11 curns=247000 full=12 rects=166 cpx=58055496 fpx=58055496 presns=106180454 torn=0 defer=3 late=0 drawmax=31 evdrop=0
+[browser] load: https://openai.com/
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.69
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[netlock] acq 112686 recursive 43 maxdepth 3 violations 0
+[net] rx path: frames 64 irq 42 softirq 16 inline 2 poll 2 idle 0/0 halt/skip
+[mm] low: 113192 frames free (442 MiB), 17845 used, 581 shared, 0 bugs
+[mm] low: 112936 frames free (441 MiB), 18101 used, 585 shared, 0 bugs
+[dl] painted text: 55 run(s), 261 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Skip
+[dl] 41,68 to
+[dl] 59,68 main
+[dl] 98,68 content
+[dl] 14,120 •
+[dl] 36,120 Research
+[dl] 14,148 •
+[dl] 42,152 Products
+[dl] 14,176 •
+[dl] 36,176 Business
+[dl] 14,204 •
+[dl] 36,204 Developers
+[dl] 14,232 •
+[dl] 36,232 Company
+[dl] 14,260 •
+[dl] 36,260 Foundation
+[dl] 117,260 (opens
+[dl] 167,260 in
+[dl] 183,260 a
+[dl] 195,260 new
+[dl] 227,260 window)
+[dl] 14,356 Log
+[dl] 43,356 in
+[dl] 72,352 Try
+[dl] 98,352 ChatGPT
+[dl] 173,352 (opens
+[dl] 223,352 in
+[dl] 239,352 a
+[dl] 251,352 new
+[dl] 283,352 window)
+[dl] 14,416 •
+[dl] 42,420 Research
+[dl] 14,444 •
+[dl] 42,448 Products
+[dl] 14,472 •
+[dl] 42,476 Business
+[dl] 14,500 •
+[dl] 42,504 Developers
+[dl] 14,528 •
+[dl] 42,532 Company
+[dl] 14,556 •
+[dl] 36,556 Foundation
+[dl] 126,556 (opens
+[dl] 176,556 in
+[dl] 192,556 a
+[dl] 204,556 new
+[dl] 236,556 window)
+[dl] 8,584 Try
+[dl] 34,584 ChatGPT
+[dl] 107,584 (opens
+[dl] 157,584 in
+[dl] 173,584 a
+[dl] 185,584 new
+[dl] 217,584 window)
+[dl] 283,588 Login
+[dl] ---8<--- end painted text
+[sock] connected openai.com via ipv4 ::ffff:198.18.0.69
+[tls] ServerHello: TLS 1.3, suite 0x1301 (AES-128-GCM-SHA256), group X25519MLKEM768
+[tls] chain of 4 verified for openai.com, alpn=http/1.1
+[time] tickloss +16/s worstgap=171143us missed=48 of 2307 expected (2.080% of the clock); uptime 23s
+[time] tickloss   worst gap: bkl held by cpu 2 ra=0x117afe via=irqsave(kernel entry, IF=0); tick on cpu 0, pid 2, not in kernel
+[mm] low: 112680 frames free (440 MiB), 18357 used, 602 shared, 0 bugs
+[time] tickloss +6/s worstgap=171143us missed=54 of 2497 expected (2.162% of the clock); uptime 25s
+[time] tickloss +5/s worstgap=171143us missed=59 of 2698 expected (2.186% of the clock); uptime 27s
+[mm] low: 112424 frames free (439 MiB), 18613 used, 602 shared, 0 bugs
+[mm] low: 112168 frames free (438 MiB), 18869 used, 602 shared, 0 bugs
+[mm] low: 111912 frames free (437 MiB), 19125 used, 602 shared, 0 bugs
+[mm] low: 111656 frames free (436 MiB), 19381 used, 603 shared, 0 bugs
+[mm] low: 111400 frames free (435 MiB), 19637 used, 603 shared, 0 bugs
+[mm] low: 111144 frames free (434 MiB), 19893 used, 603 shared, 0 bugs
+[browser] heap peak 13722K
+[dl] painted text: 10 run(s), 66 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 90,68 Research
+[dl] 159,68 Products
+[dl] 227,68 Business
+[dl] 292,68 Developers
+[dl] 374,68 Company
+[dl] 446,68 Foundation
+[dl] 571,72 Log
+[dl] 600,72 in
+[dl] 630,72 Try
+[dl] 656,72 ChatGPT
+[dl] ---8<--- end painted text
+[css] linked: 1 <style>, 26 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 26 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 34042 inline + 895488 external = 929530 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 6458 declarations kept
+[css] dropped: 5542  (49 selector, 208 at-rule, 3960 unknown-prop, 1325 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 210 at-rule, 2490 declaration (syntax-malformed; a different population from the drops above)
+[css]      284  bad-value    background-color         | background-color
+[css]      231  unknown-prop gap                      | gap
+[css]      194  unknown-prop aspect-ratio             | aspect-ratio
+[css]      168  unknown-prop -webkit-*                | -webkit-mask-image
+[css]      160  unknown-prop border-radius            | border-radius
+[css]      140  bad-value    color                    | color
+[css]      132  unknown-prop grid-template-columns    | grid-template-columns
+[css]      129  unknown-prop animation                | animation
+[css]      125  unknown-prop transform                | transform
+[css]      120  bad-value    font-size                | font-size
+[css]      116  unknown-prop inset-inline-start       | inset-inline-start
+[css]      114  at-rule      @property                | @property
+[css]   ... 116 more reason(s); css_report_verbose=1 for all
+[css]   ... 693 drop(s) past 128 distinct reasons, not bucketed
+[mm] low: 110888 frames free (433 MiB), 20149 used, 627 shared, 0 bugs
+[mm] low: 110632 frames free (432 MiB), 20405 used, 627 shared, 0 bugs
+[browser] scripts collected: 91 external classic, 0 external module, 8 inline
+[mm] low: 110376 frames free (431 MiB), 20661 used, 627 shared, 0 bugs
+[e1000] stats: rx 358 pkt / 406994 B, tx 267 pkt / 41719 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 242 (+242)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[netlock] acq 902601 recursive 579 maxdepth 3 violations 0
+[time] tickloss +6/s worstgap=171143us missed=65 of 3197 expected (2.033% of the clock); uptime 32s
+[mm] low: 110120 frames free (430 MiB), 20917 used, 627 shared, 0 bugs
+[mm] low: 109864 frames free (429 MiB), 21173 used, 627 shared, 0 bugs
+[net] rx path: frames 580 irq 364 softirq 168 inline 10 poll 3 idle 0/0 halt/skip
+[e1000] stats: rx 694 pkt / 845901 B, tx 491 pkt / 69963 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 400 (+158)
+[mm] low: 109608 frames free (428 MiB), 21429 used, 627 shared, 0 bugs
+[time] tickloss +6/s worstgap=171143us missed=71 of 3596 expected (1.974% of the clock); uptime 36s
+[mm] low: 109352 frames free (427 MiB), 21685 used, 627 shared, 0 bugs
+[e1000] stats: rx 1016 pkt / 1255230 B, tx 728 pkt / 102520 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 600 (+200)
+[mm] low: 109096 frames free (426 MiB), 21941 used, 627 shared, 0 bugs
+[net] rx path: frames 1117 irq 613 softirq 286 inline 18 poll 4 idle 0/0 halt/skip
+[mm] low: 108840 frames free (425 MiB), 22197 used, 627 shared, 0 bugs
+[time] tickloss +5/s worstgap=171143us missed=76 of 4196 expected (1.811% of the clock); uptime 42s
+[mm] low: 108584 frames free (424 MiB), 22453 used, 627 shared, 0 bugs
+[e1000] stats: rx 1375 pkt / 1746533 B, tx 951 pkt / 121675 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 695 (+95)
+[mm] low: 108328 frames free (423 MiB), 22709 used, 627 shared, 0 bugs
+[net] rx path: frames 1644 irq 749 softirq 357 inline 18 poll 9 idle 0/0 halt/skip
+[mm] low: 108072 frames free (422 MiB), 22965 used, 627 shared, 0 bugs
+[mm] low: 107816 frames free (421 MiB), 23221 used, 627 shared, 0 bugs
+[e1000] stats: rx 1774 pkt / 2302625 B, tx 1201 pkt / 141849 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 808 (+113)
+[mm] low: 107560 frames free (420 MiB), 23477 used, 627 shared, 0 bugs
+[mm] low: 107304 frames free (419 MiB), 23733 used, 627 shared, 0 bugs
+[mm] low: 107048 frames free (418 MiB), 23989 used, 627 shared, 0 bugs
+[time] tickloss +6/s worstgap=171143us missed=82 of 4596 expected (1.784% of the clock); uptime 46s
+[net] rx path: frames 2172 irq 920 softirq 437 inline 26 poll 12 idle 0/0 halt/skip
+[mm] low: 106792 frames free (417 MiB), 24245 used, 627 shared, 0 bugs
+[mm] low: 106536 frames free (416 MiB), 24501 used, 627 shared, 0 bugs
+[e1000] stats: rx 2304 pkt / 3036681 B, tx 1529 pkt / 167692 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 952 (+144)
+[time] tickloss +5/s worstgap=171143us missed=87 of 4794 expected (1.814% of the clock); uptime 48s
+[mm] low: 106280 frames free (415 MiB), 24757 used, 627 shared, 0 bugs
+[mm] low: 106024 frames free (414 MiB), 25013 used, 627 shared, 0 bugs
+[net] rx path: frames 2709 irq 1052 softirq 501 inline 28 poll 14 idle 0/0 halt/skip
+[mm] low: 105768 frames free (413 MiB), 25269 used, 627 shared, 0 bugs
+[mm] low: 105512 frames free (412 MiB), 25525 used, 627 shared, 0 bugs
+[e1000] stats: rx 2850 pkt / 3794015 B, tx 1855 pkt / 196211 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 1072 (+120)
+[time] tickloss +6/s worstgap=171143us missed=93 of 5094 expected (1.825% of the clock); uptime 51s
+[mm] low: 105256 frames free (411 MiB), 25781 used, 627 shared, 0 bugs
+[mm] low: 105000 frames free (410 MiB), 26037 used, 627 shared, 0 bugs
+[mm] low: 104744 frames free (409 MiB), 26293 used, 627 shared, 0 bugs
+[mm] low: 104488 frames free (408 MiB), 26549 used, 628 shared, 0 bugs
+[mm] low: 104232 frames free (407 MiB), 26805 used, 628 shared, 0 bugs
+[mm] low: 103976 frames free (406 MiB), 27061 used, 634 shared, 0 bugs
+[mm] low: 103720 frames free (405 MiB), 27317 used, 634 shared, 0 bugs
+[mm] low: 103464 frames free (404 MiB), 27573 used, 634 shared, 0 bugs
+[mm] low: 103208 frames free (403 MiB), 27829 used, 634 shared, 0 bugs
+[mm] low: 102952 frames free (402 MiB), 28085 used, 634 shared, 0 bugs
+[mm] low: 102696 frames free (401 MiB), 28341 used, 634 shared, 0 bugs
+[mm] low: 102440 frames free (400 MiB), 28597 used, 634 shared, 0 bugs
+[mm] low: 102184 frames free (399 MiB), 28853 used, 639 shared, 0 bugs
+[mm] low: 101928 frames free (398 MiB), 29109 used, 639 shared, 0 bugs
+[mm] low: 101672 frames free (397 MiB), 29365 used, 639 shared, 0 bugs
+[mm] low: 101416 frames free (396 MiB), 29621 used, 639 shared, 0 bugs
+[mm] low: 101160 frames free (395 MiB), 29877 used, 639 shared, 0 bugs
+[mm] low: 100904 frames free (394 MiB), 30133 used, 639 shared, 0 bugs
+[mm] low: 100648 frames free (393 MiB), 30389 used, 639 shared, 0 bugs
+[mm] low: 100392 frames free (392 MiB), 30645 used, 640 shared, 0 bugs
+[mm] low: 100136 frames free (391 MiB), 30901 used, 640 shared, 0 bugs
+[mm] low: 99880 frames free (390 MiB), 31157 used, 640 shared, 0 bugs
+[mm] low: 99624 frames free (389 MiB), 31413 used, 640 shared, 0 bugs
+[mm] low: 99368 frames free (388 MiB), 31669 used, 640 shared, 0 bugs
+[mm] low: 99112 frames free (387 MiB), 31925 used, 640 shared, 0 bugs
+[mm] low: 98856 frames free (386 MiB), 32181 used, 640 shared, 0 bugs
+[mm] low: 98600 frames free (385 MiB), 32437 used, 640 shared, 0 bugs
+[mm] low: 98344 frames free (384 MiB), 32693 used, 640 shared, 0 bugs
+[mm] low: 98088 frames free (383 MiB), 32949 used, 640 shared, 0 bugs
+[mm] low: 97832 frames free (382 MiB), 33205 used, 640 shared, 0 bugs
+[mm] low: 97576 frames free (381 MiB), 33461 used, 640 shared, 0 bugs
+[mm] low: 97320 frames free (380 MiB), 33717 used, 640 shared, 0 bugs
+[mm] low: 97064 frames free (379 MiB), 33973 used, 640 shared, 0 bugs
+[mm] low: 96808 frames free (378 MiB), 34229 used, 640 shared, 0 bugs
+[mm] low: 96552 frames free (377 MiB), 34485 used, 640 shared, 0 bugs
+[mm] low: 96296 frames free (376 MiB), 34741 used, 640 shared, 0 bugs
+[mm] low: 96040 frames free (375 MiB), 34997 used, 640 shared, 0 bugs
+[mm] low: 95784 frames free (374 MiB), 35253 used, 640 shared, 0 bugs
+[mm] low: 95528 frames free (373 MiB), 35509 used, 640 shared, 0 bugs
+[mm] low: 95272 frames free (372 MiB), 35765 used, 640 shared, 0 bugs
+[mm] low: 95016 frames free (371 MiB), 36021 used, 640 shared, 0 bugs
+[mm] low: 94760 frames free (370 MiB), 36277 used, 640 shared, 0 bugs
+[mm] low: 94504 frames free (369 MiB), 36533 used, 640 shared, 0 bugs
+[mm] low: 94248 frames free (368 MiB), 36789 used, 640 shared, 0 bugs
+[mm] low: 93992 frames free (367 MiB), 37045 used, 640 shared, 0 bugs
+[mm] low: 93736 frames free (366 MiB), 37301 used, 640 shared, 0 bugs
+[mm] low: 93480 frames free (365 MiB), 37557 used, 640 shared, 0 bugs
+[mm] low: 93224 frames free (364 MiB), 37813 used, 640 shared, 0 bugs
+[mm] low: 92968 frames free (363 MiB), 38069 used, 640 shared, 0 bugs
+[mm] low: 92712 frames free (362 MiB), 38325 used, 640 shared, 0 bugs
+[mm] low: 92456 frames free (361 MiB), 38581 used, 640 shared, 0 bugs
+[mm] low: 92200 frames free (360 MiB), 38837 used, 640 shared, 0 bugs
+[mm] low: 91944 frames free (359 MiB), 39093 used, 640 shared, 0 bugs
+[mm] low: 91688 frames free (358 MiB), 39349 used, 640 shared, 0 bugs
+[mm] low: 91432 frames free (357 MiB), 39605 used, 640 shared, 0 bugs
+[mm] low: 91176 frames free (356 MiB), 39861 used, 640 shared, 0 bugs
+[mm] low: 90920 frames free (355 MiB), 40117 used, 640 shared, 0 bugs
+[mm] low: 90664 frames free (354 MiB), 40373 used, 640 shared, 0 bugs
+[error] Uncaught (in promise) InvariantError: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+Error: Invariant: Expected document.currentScript to be a <script> element. Received null instead. This is a bug in Next.js.
+    at n (https://openai.com/_next/static/immutable/chunks/2af6nky2-ozjs.js)
+    at l (https://openai.com/_next/static/immutable/chunks/0r9322ozigv-n.js)
+    at a (https://openai.com/_next/static/immutable/chunks/0r9322ozigv-n.js)
+    at module evaluation (https://openai.com/_next/static/immutable/chunks/0r9322ozigv-n.js)
+    at H (https://openai.com/_next/static/immutable/chunks/turbopack-1nmznk29gbmt1.js)
+    at <anonymous> (https://openai.com/_next/static/immutable/chunks/turbopack-1nmznk29gbmt1.js)
+    at registerChunk (https://openai.com/_next/static/immutable/chunks/turbopack-1nmznk29gbmt1.js)
+
+[mm] low: 90408 frames free (353 MiB), 40629 used, 641 shared, 0 bugs
+[browser] load done: 118 requests, 2 connections dialled, 116 reused, 0 modules loaded (0 failed)
+[browser] pool: 116 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 117 from network (tab 2 of 3)
+[js] uncaught in event listener: TypeError: createElement is not a function (it is undefined)
+[browser] ctrl+L: address bar focused
+[browser] load: about:text
+[dl] painted text: 10 run(s), 66 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 90,68 Research
+[dl] 159,68 Products
+[dl] 227,68 Business
+[dl] 292,68 Developers
+[dl] 374,68 Company
+[dl] 446,68 Foundation
+[dl] 571,72 Log
+[dl] 600,72 in
+[dl] 630,72 Try
+[dl] 656,72 ChatGPT
+[dl] ---8<--- end painted text
+[wm] perf t=88817 composites=461 ns=6380986860 max=47233760 motions=18 curmoves=11 curns=247000 full=12 rects=463 cpx=184119216 fpx=184119216 presns=336610286 torn=0 defer=3 late=0 drawmax=31 evdrop=0
+[time] tickloss +5/s worstgap=171143us missed=98 of 8895 expected (1.101% of the clock); uptime 89s
