@@ -188,6 +188,20 @@ endif
 ifeq ($(GLASSSLOW),1)
 CFLAGS += -DGLASS_FIELD_SLOW
 endif
+#   make DOCKNEGCTL=1  build dock_publish() (c/kernel/gui/wm.c) to print ONE
+#                  APP FEWER than nreg actually holds -- the printed line is
+#                  still perfectly well-formed (N tokens for a header of N),
+#                  it is just a self-consistent LIE, dropping the last real app
+#                  from the list while scan_apps() still finds it, draws it and
+#                  makes it fully clickable. The NEGATIVE CONTROL for
+#                  test-dock-map's count check: a harness that trusts the
+#                  guest's own header number without confirming there is
+#                  nothing real one slot past it gets fooled exactly the way
+#                  NAPPS used to fool every driver before dock_publish()
+#                  existed -- see tests/dock.mk and qmp_dock_negctl.py.
+ifeq ($(DOCKNEGCTL),1)
+CFLAGS += -DDOCK_NEGCTL_PUBLISH_STALE
+endif
 ASFLAGS := -f elf64 -g -F dwarf
 LDFLAGS := -n -nostdlib -T linker.ld
 
@@ -230,6 +244,25 @@ UCFLAGS := --target=$(ARCH)-elf -ffreestanding -nostdlib \
 #                  roughly a viewport height below it.
 ifeq ($(OOFCTL),1)
 UCFLAGS += -DLAYOUT_NEGCTL_FLEX_OOF_DROP -DLAYOUT_NEGCTL_FIXED_INFLOW
+endif
+
+#   make PAINTDIRTYCTL=1  build the browser (browser.c's redraw_page(),
+#                  UCFLAGS not CFLAGS -- browser.c is a ring-3 TU) reporting a
+#                  gui_flush_rect() rectangle deliberately SMALLER than the
+#                  one browser_paint_dirty_rect() actually computed: half the
+#                  height, floored at 1px. The NEGATIVE CONTROL for the
+#                  scroll/keystroke/hover/mutate narrow-flush mechanism
+#                  (browser_paint.c's pd_finish()/pd_item_sig(), CLAUDE.md
+#                  "the desktop is slow" section): if the compositor is
+#                  honouring the rectangle this app reports rather than
+#                  quietly recompositing more than it was told, scrolling with
+#                  this flag on must leave a visible band of stale pixels on
+#                  screen, watchable in a screendump. Off by default because
+#                  an under-report is exactly the bug the real mechanism must
+#                  never ship with -- this exists to prove the compositor
+#                  would show it if it happened, not to be left on.
+ifeq ($(PAINTDIRTYCTL),1)
+UCFLAGS += -DPAINT_DIRTY_NEGCTL_SHRINK
 endif
 
 # Kernel sources. The browser render pipeline lives in c/apps/browser, not here.
@@ -458,42 +491,58 @@ $(eval $(call APP_RULE,monitor, 0x42000000,Monitor,-,M,255,100,100))
 # Terminal is NOT built by APP_RULE any more -- it links the H.264/H.265
 # decoders and mini-libc so a video frame can play inside the scrollback. Its
 # rule lives with the VID_OBJ definitions further down, next to Preview's.
+#
+# WIDGETS IS NO LONGER PACKED (Task E, 2026-09-02): a second immediate-mode-UI
+# showcase sitting in the Dock next to Gallery was the same absurdity the owner
+# had already named about Gallery ("这动画也实在太少了点... 把UI应用拿掉降级"),
+# just not yet applied to this one. grep confirms nothing #includes or links
+# widgets.c -- clock/textedit/monitor/... don't call into it, aui.c (the actual
+# shared toolkit) owes it nothing -- so "abstract it into underlying software"
+# has no library half to preserve; the deletion IS just the app. The RULE stays
+# (harmless, and it is what "underlying software you could still build" means
+# now that nothing packs the output) but the app no longer appears in $(APPS)
+# below, so scan_apps() never finds widgets.aex and it has no Dock tile at all.
 $(eval $(call APP_RULE,widgets, 0x46000000,Widgets,-,W,150,120,230))
 $(eval $(call APP_RULE,files,   0x47000000,Finder,-,F,120,190,140))
 # Gallery: every aui widget in every state. It is the toolkit's demo AND its
 # regression test (tests/qmp/qmp_gallery.py asserts against its pixels), which is
-# why it ships on the disk rather than living behind a build flag -- a visual
-# test you have to opt into is a visual test nobody runs. THIS RULE STILL
-# PRODUCES THE ORDINARY, VISIBLE .aex -- test-aui, test-aui-negctl, bench-aui
-# and bench-gfx-frame all still launch it by clicking the Dock, on their OWN
-# disk images, exactly as before. See $(BUILD)/gallery_hidden.aex below for
-# what actually ships on $(DISK).
+# why THIS RULE STILL EXISTS and still produces the ordinary, visible .aex --
+# test-aui, test-aui-negctl, bench-aui and bench-gfx-frame all still build and
+# launch it by clicking the Dock, on their OWN disk images
+# ($(MAKE) DISK=... GALLERY_AEX=$(BUILD)/gallery.aex, untouched by anything
+# below). grep confirms nothing #includes or links gallery.c either -- like
+# Widgets, its only "library" consumers are these pixel-regression harnesses
+# that build and run it as a whole app on their own disk, not callers of a
+# gallery.h. So on $(DISK) -- the product -- the deletion is also just the
+# app: GALLERY_AEX is empty by default (below) and ROOT_AEX_PACK skips the
+# pack entry entirely when it is, so scan_apps() never sees a gallery.aex on
+# the shipped disk and it has no Dock tile, hidden or otherwise.
 $(eval $(call APP_RULE,gallery, 0x4A000000,Gallery,-,G,120,140,250))
-# THE PRODUCT NO LONGER LAUNCHES GALLERY FROM THE DOCK. It demonstrates
-# effects the toolkit now applies everywhere else, and shipping it as a
-# clickable app is the exact absurdity the owner named ("这动画也实在太少了点
-# ... 把UI应用拿掉降级"). --category test tags the SAME elf/binary as
-# AEX_CAT_TEST ("built for a harness, not for a person", aex.h:150); wm.c's
-# scan_apps reads that byte back and makes the tile un-hoverable and
-# un-clickable -- see the comment on `struct regent`. The tile is still
-# PAINTED (same colour, same position): blanking it would read as a
-# structural dock defect to qmp_desktop_look.py's pixel-precision checks,
-# which count on eleven evenly pitched, filled icons. "Not launchable" only
-# needs interaction removed, not the pixel.
-#
-# It KEEPS its slot in the pack list (immediately below), which is the part
-# that must not move: dock_geom() centres the whole strip on nreg, so this
-# costs nothing to BROWSER_SLOT/GALLERY_SLOT/SETTINGS_SLOT and every driver
-# that clicks one of them by index. Dropping the entry instead -- the
-# "APPS-list change" this was tempted to be -- would have shifted all three
-# and broken tests/ch.mk, qmp_repaint.py's Settings window and every other
-# driver on this disk that has nothing to do with Gallery.
+# STATUS, DATED. Until 2026-09-02 the product shipped Gallery PAINTED but
+# uninteractable: $(BUILD)/gallery_hidden.aex below tags the elf AEX_CAT_TEST
+# ("built for a harness, not for a person", aex.h:150) and wm.c's scan_apps()
+# reads that byte back and makes the tile un-hoverable/un-clickable while still
+# drawing it, specifically so qmp_desktop_look.py's pixel-precision dock_pitch/
+# rim checks (which counted the row as N evenly-pitched FILLED icons) would not
+# read a blanked slot as a structural defect. Task E's owner asked for more
+# than that ("delete its UI, keep only the underlying library") -- an icon
+# nobody can click but everybody can see is still an icon in the Dock. So the
+# product now doesn't pack gallery.aex AT ALL: qmp_desktop_look.py counts
+# whatever scan_apps() actually finds (DOCK_N, read off the guest's own [wm]
+# dock line -- see its header), not a constant, so one fewer real slot is one
+# fewer measured slot and nothing there needed to change. The rule and the
+# AEX_CAT_TEST machinery below are KEPT, unused by default, because a future
+# harness that wants a non-interactive test tile still has a one-line way to
+# ask for it (GALLERY_AEX=$(BUILD)/gallery_hidden.aex) without reinventing the
+# category plumbing.
 $(BUILD)/gallery_hidden.aex: $(BUILD)/gallery.elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/gallery.elf $@ 'Gallery' - 'G' 120 140 250 \
 	    --category test --id os.logit.gallery
 # Settings: the window where the machine's memory of its user is editable.
-# Packed AFTER gallery for the same reason gallery is packed after browser --
-# see the APPS note below.
+# Packed AFTER gallery's PACK ENTRY for the same reason it always was -- see
+# the APPS note below -- even though that entry is empty on the product disk
+# now; a future GALLERY_AEX override still lands in the same place in the
+# order.
 $(eval $(call APP_RULE,settings,0x4B000000,Settings,-,S,140,150,165))
 # Preview is NOT built by APP_RULE -- it links the H.264 decoder and mini-libc,
 # so its rule lives with the VID_OBJ definitions further down.
@@ -511,7 +560,9 @@ $(BUILD)/studio.aex: $(BUILD)/studio.elf tools/mkaex.py
 
 # browser is multi-file (links QuickJS) -- defined below, not via APP_RULE.
 # (Network app removed -- its ping/dns/ifconfig moved to the `net` coreutil.)
-APPS := clock textedit monitor terminal widgets files preview studio
+# (Widgets removed 2026-09-02, Task E -- see the APP_RULE comment above: no
+# code links it, so it is not on this disk as an application any more.)
+APPS := clock textedit monitor terminal files preview studio
 
 # EVERY .aex PACKED AT THE LOGITFS ROOT, in one place, host path first.
 #
@@ -543,24 +594,38 @@ APPS := clock textedit monitor terminal widgets files preview studio
 #   * `make -n` prints nothing when the target is already up to date, so -B.
 #
 # What works: `make -Bn build/disk.img | sed -n '/mkfs\.py/,/^$/p'`, then count
-# entries matching `:[a-z]+\.aex$` (expect 11) and entries starting with `:`
-# (expect 0).
-ROOT_AEX_PACK = $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex)                  $(BROWSER_AEX):browser.aex                  $(GALLERY_AEX):gallery.aex $(SETTINGS_AEX):settings.aex
-# Gallery is packed AFTER browser, not appended to APPS, and that placement is
-# load-bearing: the Dock's order is the order the .aex files land in the LogitFS
-# root, and tests/qmp/qmp_ui.py's BROWSER_SLOT names browser's index in it.
-# Appending to APPS would insert gallery BEFORE browser and silently move the
-# icon every existing driver clicks. (NAPPS there still has to go 9 -> 10: the
-# dock is centred, so one more app shifts every icon.)
+# entries matching `:[a-z]+\.aex$` (expect 9 -- was 11 before Task E dropped
+# Widgets from $(APPS) and stopped packing Gallery at all, 2026-09-02) and
+# entries starting with `:` (expect 0, and see the $(if ...) immediately below
+# for why an EMPTY $(GALLERY_AEX) does not itself produce one of those).
+ROOT_AEX_PACK = $(foreach a,$(APPS),$(if $(filter monitor,$(a)),$(MONITOR_AEX),$(BUILD)/$(a).aex):$(a).aex)                  $(BROWSER_AEX):browser.aex                  $(if $(GALLERY_AEX),$(GALLERY_AEX):gallery.aex) $(SETTINGS_AEX):settings.aex
+# The $(if ...) around the Gallery entry is the whole mechanism: $(GALLERY_AEX)
+# is empty by default (below), and a bare `$(GALLERY_AEX):gallery.aex` with an
+# empty LHS is exactly the empty-host-path bug this block's own history section
+# warns about (broke build/disk_thrneg.img for an hour) -- so the pack entry
+# has to disappear ENTIRELY, not degrade to one. Anything that wants Gallery
+# back overrides GALLERY_AEX to a real path on its own `$(MAKE)` line (below),
+# which makes the $(if ...) true again and the entry reappear in the same slot.
 #
-# DEFAULT IS THE HIDDEN BUILD -- $(DISK) (the product) gets the
-# AEX_CAT_TEST .aex, so Gallery keeps its slot in the pack list (same file
-# NAME, "gallery.aex", same position) but wm.c never draws or hit-tests it.
-# Anything that still wants the ORDINARY visible Gallery -- test-aui,
-# test-aui-negctl, bench-aui, bench-gfx-frame -- overrides this on its own
-# `$(MAKE) DISK=... GALLERY_AEX=...` line, exactly the mechanism
-# test-aui-negctl already used for GALLERY_AEX=$(BUILD)/gallery_noaa.aex.
-GALLERY_AEX := $(BUILD)/gallery_hidden.aex
+# Gallery's ENTRY stays positioned AFTER browser, not appended to APPS, even
+# though it usually contributes nothing now: the Dock's order is the order the
+# .aex files land in the LogitFS root, and the day something DOES set
+# GALLERY_AEX (test-aui and friends, below), it must land where every driver
+# that has ever clicked Browser or Settings by name still expects them relative
+# to it -- moving this line would only matter on that day, which is exactly
+# when nobody would be looking at this line.
+#
+# DEFAULT IS NO GALLERY AT ALL -- $(DISK) (the product) does not pack a
+# gallery.aex, so scan_apps() never finds one and there is no Dock tile,
+# painted or otherwise (STATUS, DATED: until 2026-09-02 the default packed the
+# AEX_CAT_TEST build instead, keeping a painted-but-uninteractable tile; see
+# $(BUILD)/gallery_hidden.aex's comment above for why that changed and what is
+# kept for anyone who still wants it). Anything that still wants the ORDINARY
+# visible Gallery -- test-aui, test-aui-negctl, bench-aui, bench-gfx-frame --
+# overrides this on its own `$(MAKE) DISK=... GALLERY_AEX=...` line, exactly
+# the mechanism test-aui-negctl already uses for
+# GALLERY_AEX=$(BUILD)/gallery_noaa.aex.
+GALLERY_AEX :=
 
 # Which Activity Monitor goes on the disk. Overridable for the same reason
 # BROWSER_AEX is: test-monitor-negctl packs a deliberately crippled build (one
@@ -3393,6 +3458,13 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # is the defect on a -D switch. Own fragment; see the file.
 -include tests/currentscript.mk
 
+# The module-graph prefetch control: js_module.c's mod_compile_and_prefetch()
+# turns each level of a page's static import graph into one concurrent wave
+# instead of a chain of round trips, measured off the guest's own [wa] clock
+# against a 3-origin fixture with a fixed per-request delay. Control is the
+# pre-prefetch code path on -DJS_MODULE_NO_PREFETCH. Own fragment; see the file.
+-include tests/jsmodpf.mk
+
 # The TYPE of every member on every interface prototype, taken in the guest and
 # ratcheted against a committed baseline. The three fixes above this line were
 # all ABSENCE; a member with the wrong type is strictly worse, because a page
@@ -4611,10 +4683,10 @@ test-glass-negctl:
 # anti-aliased" is demonstrated rather than asserted. The target succeeds when
 # the test fails.
 #
-# $(DISK) -- the product -- ships Gallery as AEX_CAT_TEST now (see GALLERY_AEX
-# above), so it is not a Dock icon a click can find. The gate still needs the
-# ordinary, clickable build, so it packs its own disk with GALLERY_AEX
-# overridden back to $(BUILD)/gallery.aex -- the SAME mechanism
+# $(DISK) -- the product -- does not pack a gallery.aex at all now (GALLERY_AEX
+# is empty by default, above), so it is not a Dock icon a click can find. The
+# gate still needs the ordinary, clickable build, so it packs its own disk with
+# GALLERY_AEX overridden to $(BUILD)/gallery.aex -- the SAME mechanism
 # test-aui-negctl already used for gallery_noaa.aex, just without the -DAUI_NO_AA
 # rebuild. Same elf either way; only the mkaex metadata byte differs from what
 # $(DISK) carries.
@@ -5086,3 +5158,7 @@ test-mk-wired:
 -include tests/intlseg.mk
 -include tests/biliplay.mk
 -include tests/firsttoken.mk
+
+# bfetch's first-byte deadline (browser_rt.c: BF_FIRSTBYTE_MS). See
+# tests/fetchdl.mk for what it gates and why.
+-include tests/fetchdl.mk

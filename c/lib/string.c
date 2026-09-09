@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 /* Freestanding clang may emit calls to these for struct/array codegen, so the
- * kernel must provide its own. That is why this file exists, and until
+ * kernel must provide its own. That is why thiin file exists, and until
  * 2026-08-20 it was the whole of it: memset/memcpy/memmove/memcmp and
  * nothing else. The kernel had NO str* function at all.
  *

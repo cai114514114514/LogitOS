@@ -101,9 +101,25 @@ extern volatile int g_kb_stat;
 
 static inline uint64_t kb_rdtsc(void)
 {
+#if defined(__x86_64__) || defined(__i386__)
     uint32_t lo, hi;
     __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
+#else
+    /* HOST BUILDS ONLY (arm64 macOS is where this tree's gates run). The real
+     * kernel is x86-64 and takes the branch above; this arm exists so a host
+     * test can compile a TU that includes this header -- file.c, for
+     * tests/unit/storage_test.c -- without the rdtsc constraint killing the
+     * build. On the host this is a nanosecond clock, not cycles: nothing host-
+     * side reads the value as anything but "later than before" (file.c's tty
+     * wait accounting, which the host test never drives), so a different unit
+     * changes no measured claim. Added by the storage wave with the host gate
+     * in the same commit, per the same-commit rule. */
+#include <time.h>              /* host only; the kernel branch needs nothing */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
 }
 
 void kbench_start(void);          /* spawn the benchmark thread (sched_init) */

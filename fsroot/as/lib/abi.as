@@ -452,6 +452,9 @@ def fd_setnb(fd):
 def fd_fsync(fd):
     return syscall(SYS_FSYNC, fd)
 
+def fd_ftruncate(fd, len):
+    return syscall(SYS_FTRUNCATE, fd, len)
+
 def open_path(path):
     return syscall(SYS_OPEN_PATH, addr(path))
 
