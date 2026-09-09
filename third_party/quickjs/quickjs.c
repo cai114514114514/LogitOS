@@ -14990,8 +14990,110 @@ static JSValue js_throw_type_error(JSContext *ctx, JSValueConst this_val,
 /* XXX: not 100% compatible, but mozilla seems to use a similar
    implementation to ensure that caller in non strict mode does not
    throw (ES5 compatibility) */
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * Stock QuickJS answered .caller with JS_UNDEFINED, unconditionally, for
+ * every non-strict function -- an ES5-compatibility stub, not the legacy
+ * behaviour every real browser still ships: a non-strict function's .caller
+ * is the function that called it, or null once it is at the top of the call
+ * chain. The kimi.com fingerprinting SDK (trustdecision-fm.js) walks
+ * fn.caller.caller... expecting exactly that and crashes on the FIRST hop
+ * with "cannot read property 'caller' of undefined". See
+ * reports/2026-08-30-wave1-state.md and tests/fixtures/crashfix/
+ * CALLER-BASELINE, which recorded this file's gap rather than the goal and
+ * goes red on purpose the moment this patch lands (flip its expectation in
+ * the same commit).
+ *
+ * WHY A LIVE STACK WALK AND NOT A STORED BACK-POINTER: QuickJS keeps no
+ * per-function "who called me last" field, and one stored pointer could not
+ * survive re-entrancy anyway (a function calling itself, or being called
+ * from two places in the same tick, needs a different answer each time), so
+ * the answer is read off the live JSStackFrame chain at the moment .caller
+ * is read: walk ctx->rt->current_stack_frame->prev_frame looking for the
+ * frame whose cur_func IS this_val, by the same object-identity rule
+ * js_build_backtrace already uses at :6753-6766 (JS_VALUE_GET_TAG ==
+ * JS_TAG_OBJECT && JS_VALUE_GET_OBJ matches) -- that frame's PREVIOUS frame
+ * is the caller. this_val is NOT assumed to be the top frame's function:
+ * .caller can be read several C-call-levels away from the activation itself
+ * (a getter, Reflect.get, a debugger-shaped read), so the walk searches for
+ * the matching frame instead.
+ *
+ * TRAP: a detached frame's cur_func is JS_UNDEFINED (the struct's own
+ * comment, :341), so the tag check must run before JS_VALUE_GET_OBJ or the
+ * compare reads a non-object value as an object pointer.
+ *
+ * SECOND TRAP, FOUND BY RUNNING CALLER-BASELINE'S OWN "walk" PROBE, NOT
+ * GUESSED: an IIFE called directly at top level (`(function(){...})()`) has
+ * ITS caller be QuickJS's own internal frame for the compiled top-level
+ * program -- JS_EvalFunctionInternal (:35262) runs the whole script through
+ * js_closure()+JS_CallFree exactly like calling an ordinary function, so it
+ * gets a normal JSStackFrame with cur_func of JS_TAG_OBJECT. The naive walk
+ * (dup and return that object unconditionally) makes the FIRST hop of the
+ * probe return this pseudo-function instead of null, and the SECOND hop --
+ * reading ITS .caller -- then hits the pre-existing has_prototype gate two
+ * lines up (top-level/eval/module code is parsed without
+ * JS_PARSE_FUNC_STATEMENT/VAR/EXPR, so js_parse_program never sets
+ * has_prototype, confirmed at :34763 and :35208-35219) and throws
+ * "invalid property access" instead of terminating the chain. Measured
+ * directly: before this gate, `make test-crashfix-caller` printed
+ * `{"walk":"THROW:invalid property access", ...}` against a baseline
+ * expecting `"null-at-top"`. A real browser has no such pseudo-function on
+ * the chain at all (there is no user-reachable function value for "the top
+ * of the script"), so the fix is to apply THE SAME has_prototype eligibility
+ * test to the CALLER we are about to hand back: a candidate caller that is
+ * not itself a normal function (no bytecode, or has_prototype false --
+ * top-level/eval/module code, arrows, methods, class-field inits, and
+ * generators, which this parser also marks has_prototype=FALSE per the same
+ * :34763 condition) terminates the chain as null instead of being exposed.
+ *
+ * NOT DONE: a real caller that legitimately IS a normal function but is
+ * itself STRICT should, per the spec's "poison pill" semantics, make this
+ * read throw a TypeError rather than terminate quietly -- has_prototype does
+ * not encode strictness, so this gate does not distinguish that case, and a
+ * strict-mode caller is returned like any other. Nothing in the kimi
+ * specimen or CALLER-BASELINE's three probes exercises it, so the walk does
+ * not guess at a case this tree's corpus does not check.
+ * -------------------------------------------------------------------- */
 static JSValue js_function_proto_caller(JSContext *ctx, JSValueConst this_val,
                                         int argc, JSValueConst *argv)
+{
+    JSFunctionBytecode *b = JS_GetFunctionBytecode(this_val);
+    JSStackFrame *sf;
+    JSObject *this_p;
+
+    if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype) {
+        return js_throw_type_error(ctx, this_val, 0, NULL);
+    }
+    this_p = JS_VALUE_GET_OBJ(this_val);
+    for (sf = ctx->rt->current_stack_frame; sf; sf = sf->prev_frame) {
+        if (JS_VALUE_GET_TAG(sf->cur_func) == JS_TAG_OBJECT &&
+            JS_VALUE_GET_OBJ(sf->cur_func) == this_p) {
+            JSStackFrame *caller = sf->prev_frame;
+            JSFunctionBytecode *cb;
+            if (!caller || JS_VALUE_GET_TAG(caller->cur_func) != JS_TAG_OBJECT)
+                return JS_NULL;
+            cb = JS_GetFunctionBytecode(caller->cur_func);
+            if (!cb || !cb->has_prototype)
+                return JS_NULL;
+            return JS_DupValue(ctx, caller->cur_func);
+        }
+    }
+    /* this_val is not anywhere on the live call chain (read after the call
+       returned, or never called) -- null, matching what a browser answers
+       once the activation has ended, not undefined. */
+    return JS_NULL;
+}
+
+/* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ----------------------
+ * Split out of js_function_proto_caller. Stock QuickJS installed ONE C
+ * function as the getter for BOTH .caller and .arguments (see the
+ * installation below, pre-patch :54075-54083) -- harmless only because both
+ * answered JS_UNDEFINED unconditionally. Once .caller does a real stack
+ * walk, sharing the getter would make `fn.arguments` return a function
+ * object instead of undefined. .arguments is not part of this fix (no
+ * specimen in the crash cluster reads it) and keeps the EXACT pre-patch
+ * body, under its own name, installed separately. -------------------- */
+static JSValue js_function_proto_arguments(JSContext *ctx, JSValueConst this_val,
+                                           int argc, JSValueConst *argv)
 {
     JSFunctionBytecode *b = JS_GetFunctionBytecode(this_val);
     if (!b || (b->js_mode & JS_MODE_STRICT) || !b->has_prototype) {
@@ -29307,6 +29409,23 @@ JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m)
     return JS_DupAtom(ctx, m->module_name);
 }
 
+/* LOGIT: see the declaration in quickjs.h. req_module_entries is filled by
+   the parser (add_req_module_entry, called from js_parse_import and the
+   export-from forms) before js_resolve_module ever runs, so this is valid
+   reading a module compiled with JS_EVAL_FLAG_COMPILE_NO_RESOLVE just as
+   much as one compiled the ordinary way. */
+int JS_GetModuleReqEntriesCount(JSModuleDef *m)
+{
+    return m->req_module_entries_count;
+}
+
+JSAtom JS_GetModuleReqEntryName(JSContext *ctx, JSModuleDef *m, int idx)
+{
+    if (idx < 0 || idx >= m->req_module_entries_count)
+        return JS_ATOM_NULL;
+    return JS_DupAtom(ctx, m->req_module_entries[idx].module_name);
+}
+
 JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m)
 {
     JSValue obj;
@@ -35320,11 +35439,19 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     fun_obj = js_create_function(ctx, fd);
     if (JS_IsException(fun_obj))
         goto fail1;
-    /* Could add a flag to avoid resolution if necessary */
+    /* LOGIT: the flag this comment used to ask for. With
+       JS_EVAL_FLAG_COMPILE_NO_RESOLVE the caller gets the compiled module
+       back with req_module_entries populated (see JS_GetModuleReqEntries*)
+       and NOTHING resolved -- no loader call has happened for a single
+       child yet. They must call JS_ResolveModule() themselves before the
+       result is usable for anything but reading that list. Default
+       (flag unset) is byte-for-byte the historical behaviour below. */
     if (m) {
         m->func_obj = fun_obj;
-        if (js_resolve_module(ctx, m) < 0)
-            goto fail1;
+        if (!(flags & JS_EVAL_FLAG_COMPILE_NO_RESOLVE)) {
+            if (js_resolve_module(ctx, m) < 0)
+                goto fail1;
+        }
         fun_obj = JS_NewModuleValue(ctx, m);
     }
     if (flags & JS_EVAL_FLAG_COMPILE_ONLY) {
@@ -48116,14 +48243,143 @@ static uint32_t map_hash_key(JSContext *ctx, JSValueConst key)
     return h;
 }
 
+/* LOGIT DIAG (deepseek.com idle-tab crash, [fault] page fault rip in
+ * js_map_get, cr2=0x10): map_find_record's list_for_each(&s->hash_table[h])
+ * reads hash_table[h].next unconditionally. hash_table==NULL with
+ * hash_size>=2 cannot come from js_map_constructor (hash_size=1, table
+ * allocated before it is stored) or map_hash_resize (js_realloc2 into a
+ * LOCAL new_hash_table, only assigned to s->hash_table/s->hash_size AFTER a
+ * successful allocation, with an early `return` on failure that touches
+ * neither field) -- so a JSMapState in that state was read after js_free_rt
+ * already ran on it (js_map_finalizer frees s->hash_table then s itself).
+ * That makes this a routine "print then bail instead of crash" instrument,
+ * not a fix: it turns one crash into one serial line naming which Map and
+ * where JS was when it got there, kept behind a compile flag (`#define`
+ * just below, flip to build the diagnostic) so it never ships live -- rule
+ * 3, absent beats present-and-wrong; a return-NULL-on-freed-state branch is
+ * exactly the "silent NULL-check band-aid" that rule forbids in shipped
+ * code, so this must not survive past the investigation.
+ *
+ * STATUS 2026-09-02: turned ON for three live captures against
+ * chat.deepseek.com (is_weak=1 every time; JS backtrace
+ * get<-...<-dispatchEvent<-dispatchAt<-finishTransaction; the corrupted
+ * bucket's hash_link chain shows a NULL forward pointer while the SAME
+ * bucket's records, walked in parallel via the .link list, are fully
+ * self-consistent -- the offending node is not live in .records, i.e. it was
+ * already correctly unlinked+freed elsewhere and something in the hash chain
+ * still held its old address). Two independent host+ASan repro attempts
+ * (plain refcount-zero key churn; self-cyclic keys forcing JS_RunGC) did NOT
+ * reproduce it, so the exact write site is NOT identified -- left OFF
+ * (#undef) so nothing here silently changes shipped behaviour; flip to
+ * `#define LOGIT_MAP_UAF_DIAG 1` and see the report for how to reproduce. */
+#undef LOGIT_MAP_UAF_DIAG
+#ifdef LOGIT_MAP_UAF_DIAG
+static void map_uaf_diag_dump(JSContext *ctx, const char *why)
+{
+    JSStackFrame *sf;
+    int depth = 0;
+    fprintf(stderr, "[map-uaf-diag] %s -- JS backtrace:\n", why);
+    for (sf = ctx->rt->current_stack_frame; sf != NULL && depth < 16;
+         sf = sf->prev_frame, depth++) {
+        const char *nm = get_func_name(ctx, sf->cur_func);
+        fprintf(stderr, "[map-uaf-diag]   #%d %s\n",
+                depth, (nm && nm[0]) ? nm : "<anonymous>");
+        if (nm)
+            JS_FreeCString(ctx, nm);
+    }
+}
+
+static BOOL map_uaf_diag_check(JSContext *ctx, JSMapState *s, const char *site)
+{
+    if (s->hash_table)
+        return FALSE;
+    fprintf(stderr,
+            "[map-uaf-diag] %s: s=%p hash_table=NULL hash_size=%u "
+            "record_count=%u is_weak=%d record_count_threshold=%u "
+            "records.next=%p records.prev=%p\n",
+            site, (void *)s, s->hash_size, s->record_count, s->is_weak,
+            s->record_count_threshold,
+            (void *)s->records.next, (void *)s->records.prev);
+    map_uaf_diag_dump(ctx, site);
+    return TRUE;
+}
+
+/* Second choke point: hash_table itself is non-NULL (the check above did not
+ * fire) but a BUCKET SENTINEL's ->next reads back NULL instead of either a
+ * real hash_link or a self-pointer (empty bucket). init_list_head() -- called
+ * on every bucket by both js_map_constructor and map_hash_resize -- makes
+ * self-pointing the only legal "empty" state; NULL there is memory that
+ * belongs to a hash_table array which is no longer this Map's, read after the
+ * fact. See the long LOGIT DIAG comment above map_find_record. */
+static BOOL map_uaf_diag_check_bucket(JSContext *ctx, JSMapState *s,
+                                      uint32_t h, struct list_head *el)
+{
+    struct list_head *sent, *bel;
+    struct list_head *arr_lo, *arr_hi;
+    JSMapRecord *mr;
+    int n;
+    if (el != NULL)
+        return FALSE;
+    sent = &s->hash_table[h];
+    arr_lo = s->hash_table;
+    arr_hi = s->hash_table + s->hash_size;
+    fprintf(stderr,
+            "[map-uaf-diag] map_find_record: bucket h=%u sentinel=%p "
+            "->next=%p ->prev=%p (both NULL == list_del()'s fail-safe ran ON "
+            "THE SENTINEL, not on a record -- see list.h) s=%p hash_table=%p "
+            "hash_size=%u record_count=%u is_weak=%d\n",
+            h, (void *)sent, (void *)sent->next, (void *)sent->prev,
+            (void *)s, (void *)s->hash_table, s->hash_size, s->record_count,
+            s->is_weak);
+    /* Walk records (NOT the hash chain -- that is what is broken) and name
+     * whichever one owns a hash_link outside [hash_table, hash_table+size):
+     * a stale link left over from a PRIOR hash_table array (map_hash_resize
+     * moved on but this record's hash_link.prev/next was never relinked into
+     * the new one) is exactly what would make list_del() on THAT record's
+     * hash_link write through an old, no-longer-this-map pointer instead of
+     * updating today's sentinel -- and if that old address now aliases a
+     * live allocation (this one, by reuse), the "fail safe" NULL lands here
+     * instead of where it was meant to. */
+    n = 0;
+    for (bel = s->records.next; bel != NULL && bel != &s->records; bel = bel->next) {
+        mr = list_entry(bel, JSMapRecord, link);
+        int in_range = (mr->hash_link.prev >= arr_lo && mr->hash_link.prev < arr_hi)
+                     || (mr->hash_link.next >= arr_lo && mr->hash_link.next < arr_hi);
+        fprintf(stderr,
+                "[map-uaf-diag]   record[%d] mr=%p empty=%d ref_count=%d "
+                "hash_link.next=%p hash_link.prev=%p in_current_table=%d\n",
+                n, (void *)mr, mr->empty, mr->ref_count,
+                (void *)mr->hash_link.next, (void *)mr->hash_link.prev, in_range);
+        if (++n >= 32) {
+            fprintf(stderr, "[map-uaf-diag]   ...(truncated at 32)\n");
+            break;
+        }
+    }
+    map_uaf_diag_dump(ctx, "map_find_record/bucket");
+    return TRUE;
+}
+#endif
+
 static JSMapRecord *map_find_record(JSContext *ctx, JSMapState *s,
                                     JSValueConst key)
 {
     struct list_head *el;
     JSMapRecord *mr;
     uint32_t h;
+#ifdef LOGIT_MAP_UAF_DIAG
+    if (map_uaf_diag_check(ctx, s, "map_find_record"))
+        return NULL;
+#endif
     h = map_hash_key(ctx, key) & (s->hash_size - 1);
+#ifdef LOGIT_MAP_UAF_DIAG
+    if (map_uaf_diag_check_bucket(ctx, s, h, s->hash_table[h].next))
+        return NULL;
+#endif
     list_for_each(el, &s->hash_table[h]) {
+#ifdef LOGIT_MAP_UAF_DIAG
+        if (map_uaf_diag_check_bucket(ctx, s, h, el))
+            return NULL;
+#endif
         mr = list_entry(el, JSMapRecord, hash_link);
         if (js_same_value_zero(ctx, mr->key, key))
             return mr;
@@ -54072,11 +54328,21 @@ void JS_AddIntrinsicBaseObjects(JSContext *ctx)
     ctx->throw_type_error = JS_NewCFunction(ctx, js_throw_type_error, NULL, 0);
 
     /* add caller and arguments properties to throw a TypeError */
+    /* ---- LOGIT PATCH (vs upstream QuickJS 2024-01-13) ------------------
+     * Upstream shared ONE getter (js_function_proto_caller) between .caller
+     * and .arguments -- fine while both returned JS_UNDEFINED unconditionally.
+     * js_function_proto_caller now does a real stack walk for .caller (see
+     * its own comment above), so .arguments must be installed with its own,
+     * unpatched getter (js_function_proto_arguments) or it would start
+     * returning a function object instead of undefined. Two JSCFunction
+     * objects now, each freed after its own JS_DefineProperty. -------- */
     obj1 = JS_NewCFunction(ctx, js_function_proto_caller, NULL, 0);
     JS_DefineProperty(ctx, ctx->function_proto, JS_ATOM_caller, JS_UNDEFINED,
                       obj1, ctx->throw_type_error,
                       JS_PROP_HAS_GET | JS_PROP_HAS_SET |
                       JS_PROP_HAS_CONFIGURABLE | JS_PROP_CONFIGURABLE);
+    JS_FreeValue(ctx, obj1);
+    obj1 = JS_NewCFunction(ctx, js_function_proto_arguments, NULL, 0);
     JS_DefineProperty(ctx, ctx->function_proto, JS_ATOM_arguments, JS_UNDEFINED,
                       obj1, ctx->throw_type_error,
                       JS_PROP_HAS_GET | JS_PROP_HAS_SET |

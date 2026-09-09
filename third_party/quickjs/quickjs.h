@@ -309,7 +309,24 @@ static inline JS_BOOL JS_VALUE_IS_NAN(JSValue v)
 #define JS_EVAL_FLAG_BACKTRACE_BARRIER (1 << 6)
 /* allow top-level await in normal script. JS_Eval() returns a
    promise. Only allowed with JS_EVAL_TYPE_GLOBAL */
-#define JS_EVAL_FLAG_ASYNC (1 << 7) 
+#define JS_EVAL_FLAG_ASYNC (1 << 7)
+/* LOGIT: with JS_EVAL_TYPE_MODULE, compile the module and populate its
+   requested-module list (JS_GetModuleReqEntry* below) WITHOUT walking that
+   list to load/resolve each entry -- js_resolve_module() is skipped. Only
+   meaningful together with JS_EVAL_FLAG_COMPILE_ONLY (the returned
+   JS_TAG_MODULE value is otherwise unusable: JS_EvalFunction on an
+   unresolved module fails to link). The caller is responsible for calling
+   JS_ResolveModule() itself before ever evaluating the result.
+   THIS IS THE FLAG UPSTREAM'S OWN COMMENT ASKED FOR: the line immediately
+   above the js_resolve_module() call in __JS_EvalInternal has read "Could
+   add a flag to avoid resolution if necessary" since before this fork
+   existed. c/apps/browser/js_module.c is why it exists now: without a way to
+   see one module's import list before its children are fetched, a page's
+   whole static import graph loads one HTTP round trip at a time, because
+   js_resolve_module() is the thing that calls the loader for each entry, and
+   it does so depth-first, synchronously, with no seam to insert concurrency
+   into. */
+#define JS_EVAL_FLAG_COMPILE_NO_RESOLVE (1 << 8)
 
 typedef JSValue JSCFunction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 typedef JSValue JSCFunctionMagic(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);
@@ -929,6 +946,17 @@ void JS_SetModuleLoaderFunc(JSRuntime *rt,
 /* return the import.meta object of a module */
 JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m);
 JSAtom JS_GetModuleName(JSContext *ctx, JSModuleDef *m);
+/* LOGIT: the requested-module list a module's static imports/re-exports
+   populated at PARSE time -- valid the moment JS_Eval (COMPILE_ONLY) returns
+   a JS_TAG_MODULE value, whether or not JS_EVAL_FLAG_COMPILE_NO_RESOLVE was
+   set. Each entry is the RAW specifier text as written in the source (e.g.
+   "./chunk.js"), not yet normalized against the module's own URL -- the
+   caller runs it through the same JSModuleNormalizeFunc the loader itself
+   uses, which is the one-jar requirement: this is a read of what the parser
+   already decided, not a second import grammar guessing at it. The returned
+   atom is a new reference (JS_DupAtom); the caller must JS_FreeAtom it. */
+int JS_GetModuleReqEntriesCount(JSModuleDef *m);
+JSAtom JS_GetModuleReqEntryName(JSContext *ctx, JSModuleDef *m, int idx);
 
 /* JS Job support */
 
