@@ -58,8 +58,10 @@
  *
  * The instrumentation itself costs a syscall per drawing call, so the buckets
  * are to be read as a RATIO and the uninstrumented total comes from bench-aui.
- * A build without AUI_COST compiles to exactly what it did before: the macros
- * are absent, not empty. */
+ * A build without AUI_COST compiles to exactly what it did before modulo the
+ * flush-rectangle tracking directly below -- which is unconditional now (it
+ * is the mechanism, not a bench), so the macros below are never simply
+ * absent, only the TIMING half of them is. */
 #ifdef AUI_COST
 static unsigned long long ck_clear, ck_text, ck_shape, ck_other, ck_frames;
 static unsigned long long ck_t0, ck_fstart, ck_wall;
@@ -71,16 +73,45 @@ static void t1_(unsigned long long *b) { *b += monotonic_ns() - ck_t0; }
  * real inline syscall rather than recursing. */
 static int tm_(const char *s, int n, int px, int mono)
 { t0_(); int r = (text_measure_px)(s, n, px, mono); t1_(&ck_text); return r; }
-#define gui_clear(a)                 (t0_(), (gui_clear)(a), t1_(&ck_clear))
-#define gui_rect(a,b,c,d,e)          (t0_(), (gui_rect)(a,b,c,d,e), t1_(&ck_shape))
-#define gui_rrect(a,b,c,d,e,f)       (t0_(), (gui_rrect)(a,b,c,d,e,f), t1_(&ck_shape))
-#define gui_blit(a,b,c,d,e,f,g)      (t0_(), (gui_blit)(a,b,c,d,e,f,g), t1_(&ck_shape))
-#define gui_glass(a,b,c,d,e,f,g,h,i) (t0_(), (gui_glass)(a,b,c,d,e,f,g,h,i), t1_(&ck_shape))
-#define gui_icon(a,b,c,d,e)          (t0_(), (gui_icon)(a,b,c,d,e), t1_(&ck_shape))
-#define gui_text_run(a,b,c,d,e,f,g)  (t0_(), (gui_text_run)(a,b,c,d,e,f,g), t1_(&ck_text))
+/* ad_note_*() are the flush-rectangle recorders, section 5a-flush below --
+ * declared by use here (C does not require the callee to exist yet at a
+ * macro's #define, only at its later EXPANSION, and every ad_note_* is fully
+ * defined before this file's first actual gui_rect()/gui_clear()/etc. call
+ * site) so AUI_COST and the flush tracking compose instead of one silently
+ * replacing the other's macro of the same name. */
+#define gui_clear(a)                 (ad_note_clear(a), t0_(), (gui_clear)(a), t1_(&ck_clear))
+#define gui_rect(a,b,c,d,e)          (ad_note_rect(a,b,c,d,e), t0_(), (gui_rect)(a,b,c,d,e), t1_(&ck_shape))
+#define gui_rrect(a,b,c,d,e,f)       (ad_note_rrect(a,b,c,d,e,f), t0_(), (gui_rrect)(a,b,c,d,e,f), t1_(&ck_shape))
+#define gui_blit(a,b,c,d,e,f,g)      (ad_note_blit(a,b,c,d,e,f,g), t0_(), (gui_blit)(a,b,c,d,e,f,g), t1_(&ck_shape))
+#define gui_glass(a,b,c,d,e,f,g,h,i) (ad_note_glass(a,b,c,d,e,f,g,h,i), t0_(), (gui_glass)(a,b,c,d,e,f,g,h,i), t1_(&ck_shape))
+#define gui_icon(a,b,c,d,e)          (ad_note_icon(a,b,c,d,e), t0_(), (gui_icon)(a,b,c,d,e), t1_(&ck_shape))
+#define gui_text_run(a,b,c,d,e,f,g)  (ad_note_text(a,b,c,d,e,f,g), t0_(), (gui_text_run)(a,b,c,d,e,f,g), t1_(&ck_text))
 #define gui_clip(a,b,c,d)            (t0_(), (gui_clip)(a,b,c,d), t1_(&ck_other))
 #define gui_flush()                  (t0_(), (gui_flush)(), t1_(&ck_other))
 #define text_measure_px(a,b,c,d)     tm_(a,b,c,d)
+#else
+/* THE UNCONDITIONAL HALF -- every build, not just -DAUI_COST, routes these
+ * seven raw syscalls through the flush-rectangle recorders (section
+ * 5a-flush). This is the ONE place that can see every pixel this file (or an
+ * app built on it, since these are the ONLY seven primitives Open Logit's
+ * masks and every widget bottom out to -- gui_rect for a fill, gui_blit for a
+ * rounded corner/gradient/shadow tile, gui_glass, gui_icon, gui_text_run for
+ * every label, gui_rrect for the AUI_NO_AA fallback, gui_clear for the
+ * per-frame background) ever actually asks the compositor to change, so
+ * hooking it here rather than in each of the ~20 widget entry points is what
+ * makes the tracking complete BY CONSTRUCTION rather than by enumeration: a
+ * widget that reaches outside its own nominal rect (a focus ring, a shadow, a
+ * popup) is caught because its OWN pixels are recorded at their OWN
+ * geometry, not because someone remembered to pad a box to guess at the
+ * bleed. See the "cannot be seen by reading the widget's own code" trap this
+ * guards against, spelled out on ad_note_text() below. */
+#define gui_clear(a)                 (ad_note_clear(a), (gui_clear)(a))
+#define gui_rect(a,b,c,d,e)          (ad_note_rect(a,b,c,d,e), (gui_rect)(a,b,c,d,e))
+#define gui_rrect(a,b,c,d,e,f)       (ad_note_rrect(a,b,c,d,e,f), (gui_rrect)(a,b,c,d,e,f))
+#define gui_blit(a,b,c,d,e,f,g)      (ad_note_blit(a,b,c,d,e,f,g), (gui_blit)(a,b,c,d,e,f,g))
+#define gui_glass(a,b,c,d,e,f,g,h,i) (ad_note_glass(a,b,c,d,e,f,g,h,i), (gui_glass)(a,b,c,d,e,f,g,h,i))
+#define gui_icon(a,b,c,d,e)          (ad_note_icon(a,b,c,d,e), (gui_icon)(a,b,c,d,e))
+#define gui_text_run(a,b,c,d,e,f,g)  (ad_note_text(a,b,c,d,e,f,g), (gui_text_run)(a,b,c,d,e,f,g))
 #endif
 
 /* ------------------------------------------------------------ 1. utilities */
@@ -90,6 +121,283 @@ static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 static int imin(int a, int b) { return a < b ? a : b; }
 static int imax(int a, int b) { return a > b ? a : b; }
 static int iclamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+static int win_w = 640, win_h = 480;
+
+/* ============================================================================
+ * 5a-flush. THE FLUSH RECTANGLE -- what changed this frame, in ONE place.
+ *
+ * Until this section existed, aui_end() called gui_flush() unconditionally --
+ * every widget's draw call ran every frame (this is immediate mode: there is
+ * no retained tree to diff against, see the file header), and the ONLY
+ * question this file ever asked the compositor was "recomposite my whole
+ * canvas". CLAUDE.md's own measurement of that: a keystroke into TextEdit,
+ * 93.9 ms/composite, 1.57M px (68% of a 1920x1200 screen) for one character.
+ *
+ * THE METHOD IS THE SAME ONE c/apps/browser/browser_paint.c's pd_finish()
+ * uses (that file's header comment is the fuller argument; this is the same
+ * idea moved one layer down): a POSITIONAL diff against last frame, not a
+ * second render or a retained tree. The browser diffs LAYOUT ITEMS, one per
+ * DOM node; this diffs DRAW CALLS, one per gui_rect/gui_blit/gui_glass/
+ * gui_icon/gui_text_run/gui_rrect/gui_clear -- the seven raw primitives
+ * EVERYTHING in this file and everything built on it (every widget, every
+ * app's own direct aui_fill()/aui_round()/gui_text_run() call, draw_popup(),
+ * draw_tip()) ultimately issues, hooked once each via the macros directly
+ * above this section rather than instrumented at each of the ~20 widget
+ * entry points separately.
+ *
+ * WHY THE PRIMITIVE LEVEL AND NOT THE WIDGET LEVEL -- THE TRAP THE TASK NAMED
+ * BY NAME: a widget whose paint reaches outside its own nominal (x,y,w,h) --
+ * focus_ring()'s stroke at -4/-6px, aui_shadow_ex()'s blur bleeding past the
+ * box it shadows, a popup or the candidate/tooltip layer drawn nowhere near
+ * the widget that owns it -- would silently under-report if this diffed "the
+ * button's rect" the way a first-draft version of this might. It cannot,
+ * because it never reasons about "the widget's rect" AT ALL: it reasons about
+ * the ACTUAL (x,y,w,h) each raw syscall actually touches, wherever that is.
+ * A focus ring is just three more gui_blit() calls at their own real
+ * geometry, recorded and diffed exactly like the button's fill. This is also
+ * why textedit.c's raw gui_text_run() calls (it does not route its paragraph
+ * text through any aui_* wrapper) are the one thing this mechanism CANNOT
+ * see -- they never pass through these seven macros, because textedit.c's
+ * call is textually a different call site in a different translation unit,
+ * where these #defines are not in scope. That gap is textedit.c's own
+ * problem to close (aui_end_rect(), below, plus that file's own damage
+ * computation) precisely because it is invisible from here.
+ *
+ * ORDER IS THE ONLY IDENTITY. Like pd_finish, entry i of this frame is
+ * compared against entry i of last frame by INDEX, not by any notion of "the
+ * same widget" -- id_ctr already gives widgets that, but a static aui_label()
+ * or aui_fill() in the middle of a widget's body never gets an id, and
+ * inventing a second identity scheme for those would be the very "two doors"
+ * CLAUDE.md warns about. The same consequence follows as in the browser: an
+ * insertion in the middle of a frame's draw sequence (a conditional widget
+ * appearing) makes everything AFTER it compare unequal to last frame's entry
+ * at that index, which over-reports (safe -- WIDEN BEFORE YOU NARROW) rather
+ * than missing anything, because whatever comes after a real content change
+ * differs at its own index too. */
+
+#define AD_MAX 3072            /* see g_ad_overflow: past this, "no rect" */
+
+struct ad_ent { int x, y, w, h; unsigned sig; };
+/* Two FIXED buffers, swapped by pointer at frame end -- never realloc'd.
+ * aui.c links no libc (the file header: clock.aex is crt0 + this file + gfx,
+ * nothing else), so the browser's pd_ensure_cap()/realloc() growth strategy
+ * is not available here; a compile-time ceiling plus "past it, flush the
+ * whole canvas" is the honest equivalent of that function's own OOM handling
+ * (fails toward gui_flush(), never toward a silently truncated diff). */
+static struct ad_ent ad_bufA[AD_MAX], ad_bufB[AD_MAX];
+static struct ad_ent *g_ad_prev = ad_bufA, *g_ad_cur = ad_bufB;
+static int g_ad_prev_n, g_ad_cur_n;
+static int g_ad_have_prev, g_ad_overflow;
+static int g_ad_prev_w, g_ad_prev_h;   /* canvas size the PREV array was built at */
+/* aui_end_rect()'s caller-supplied extra rect (textedit.c's own computed
+ * damage) -- unioned in alongside whatever this frame's diff found, never
+ * instead of it, so an app's own hint can never make aui's chrome (a status
+ * bar redrawn via aui_fill, say) go unreported. */
+static int g_ad_extra_have, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1;
+
+/* FNV-1a, 32-bit -- the same hash browser_paint.c's pd_item_sig() uses, for
+ * the same reason: cheap, and collisions only ever make the diff report a
+ * position UNCHANGED when it was not (a mismatch is caught by (x,y,w,h)
+ * differing in the overwhelming majority of real edits, since almost nothing
+ * repaints identical geometry with different content); it does not need to be
+ * cryptographic, it needs to be fast enough to run on every draw call. */
+static unsigned ad_hash_bytes(const void *p, long n, unsigned h)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    for (long i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+#define AD_MIX(h, v) ((h) = ((h) ^ (unsigned)(v)) * 16777619u)
+
+/* The one place an entry actually lands in this frame's array. w<=0||h<=0
+ * is a no-op draw (every real primitive already refuses these before it
+ * would reach the syscall -- aui_fill/round_impl/aui_stroke all `if (w <= 0
+ * || h <= 0) return;` first) so recording it would just be a zero-area union
+ * member forever, never contributing to any rect. */
+static void ad_record(int x, int y, int w, int h, unsigned sig)
+{
+    if (w <= 0 || h <= 0) return;
+    if (g_ad_cur_n >= AD_MAX) { g_ad_overflow = 1; return; }
+    struct ad_ent *e = &g_ad_cur[g_ad_cur_n++];
+    e->x = x; e->y = y; e->w = w; e->h = h; e->sig = sig;
+}
+
+static void ad_note_clear(unsigned color)
+{
+    unsigned h = 2166136261u; AD_MIX(h, color);
+    ad_record(0, 0, win_w, win_h, h);       /* gui_clear has no extent of its own: it IS the canvas */
+}
+static void ad_note_rect(int x, int y, int w, int h, unsigned color)
+{
+    unsigned s = 2166136261u; AD_MIX(s, color);
+    ad_record(x, y, w, h, s);
+}
+/* unused in an ordinary build: gui_rrect() itself is only ever called from the
+ * AUI_NO_AA fallback paths in round_impl()/aui_stroke() (a DIFFERENT negative
+ * control, for anti-aliasing, not this one), so a build without -DAUI_NO_AA
+ * never expands the gui_rrect macro and this is dead by construction, not by
+ * omission -- kept anyway so an AUI_NO_AA build's flush-rect tracking is
+ * exactly as complete as an ordinary build's, rather than silently losing
+ * coverage of the one shape kind that build draws differently. */
+static void ad_note_rrect(int x, int y, int w, int h, int r, unsigned color) __attribute__((unused));
+static void ad_note_rrect(int x, int y, int w, int h, int r, unsigned color)
+{
+    unsigned s = 2166136261u; AD_MIX(s, r); AD_MIX(s, color);
+    ad_record(x, y, w, h, s);
+}
+static void ad_note_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
+{
+    /* The FULL buffer, not a sample of it -- a stride-sampled hash could miss
+     * a change confined to the sampled-over bytes, which is an UNDER-report
+     * (the dangerous direction; see the "widen before you narrow" rule). Cost
+     * is bounded by BIG_MASK (256x256x4 = 256 KiB) and reached only on the
+     * rare past-both-mask-ceilings path corner_mask()'s own comments already
+     * name as rare; the common case is a cached corner tile a few KiB across,
+     * a rounding error next to the rasterization that same call already
+     * pays for. */
+    unsigned s = 2166136261u; AD_MIX(s, sw); AD_MIX(s, sh);
+    if (rgba && sw > 0 && sh > 0) s = ad_hash_bytes(rgba, (long)sw * sh * 4, s);
+    ad_record(x, y, w, h, s);
+}
+static void ad_note_glass(int x, int y, int w, int h, int radius, int tr, int tg, int tb, int ta)
+{
+    /* gui_glass reads its OWN backdrop (frost + refraction over whatever is
+     * already drawn beneath it) so its true visual result can change even
+     * when these call parameters do not -- but c/kernel/gui/wm.c's own
+     * dmg_expand ALREADY grows any damage rectangle touching a glass panel to
+     * the whole panel (CLAUDE.md: "the compositor grows any damage touching a
+     * glass panel until it contains the whole panel"), at the kernel level,
+     * unconditionally. That is the existing safety net for exactly this
+     * problem; this function only needs to report ITS OWN nominal geometry
+     * so a glass call that is byte-identical to last frame's does not, on its
+     * own, force a wider flush than the panel it already sits in. */
+    unsigned s = 2166136261u;
+    AD_MIX(s, radius); AD_MIX(s, tr); AD_MIX(s, tg); AD_MIX(s, tb); AD_MIX(s, ta);
+    ad_record(x, y, w, h, s);
+}
+static void ad_note_icon(int icon, int x, int y, int size, unsigned color)
+{
+    unsigned s = 2166136261u; AD_MIX(s, icon); AD_MIX(s, color);
+    ad_record(x, y, size, size, s);
+}
+/* THE TRAP NAMED IN THE SECTION HEADER, IN CONCRETE FORM: a text run's true
+ * ink extends past its own nominal (px-tall) box -- descenders, italic
+ * overhang (none in this tree yet, but the box should not assume it stays
+ * that way), antialiasing bleed a pixel or two past the glyph's hinted edge.
+ * Measuring the real extent would mean a second SYS_TEXT_MEASURE per draw
+ * call, doubling the syscall count of every label in the system for a few
+ * pixels of tightness. Padding vertically by a quarter of the point size
+ * (floor 4px) and running the box to the window's own right edge -- rather
+ * than trying to also learn the string's rendered WIDTH here -- is the
+ * WIDEN-BEFORE-YOU-NARROW answer: always safe, costs nothing extra to
+ * compute, and is clamped back down to whatever the real union turns out to
+ * be by ad_finish()'s viewport clamp below regardless. */
+static void ad_note_text(int x, int y, int px, int mono, unsigned color, const char *s, int len)
+{
+    unsigned h = 2166136261u; AD_MIX(h, px); AD_MIX(h, mono); AD_MIX(h, color); AD_MIX(h, len);
+    if (s && len > 0) h = ad_hash_bytes(s, len, h);
+    int pad = px / 4; if (pad < 4) pad = 4;
+    int w = win_w - x; if (w < 1) w = 1;
+    ad_record(x, y - pad, w, px + 2 * pad, h);
+}
+
+static void ad_union(int *dx0, int *dy0, int *dx1, int *dy1, int *any,
+                     int x0, int y0, int x1, int y1)
+{
+    if (!*any) { *dx0 = x0; *dy0 = y0; *dx1 = x1; *dy1 = y1; *any = 1; return; }
+    if (x0 < *dx0) *dx0 = x0; if (y0 < *dy0) *dy0 = y0;
+    if (x1 > *dx1) *dx1 = x1; if (y1 > *dy1) *dy1 = y1;
+}
+
+/* -1: no honest diff (first frame, resize, or this frame's array overflowed)
+ * -- caller must gui_flush() the whole canvas. 0: a rect was computed and it
+ * is EMPTY -- nothing to flush at all. 1: g_ad_r{x,y,w,h} holds a real,
+ * nonempty, canvas-clamped rect. Same three-way contract as
+ * browser_paint_dirty_rect(), deliberately -- one jar, and now two doors that
+ * agree on its shape instead of two that could drift. */
+static int g_ad_result_valid;
+static int g_ad_rx, g_ad_ry, g_ad_rw, g_ad_rh;
+
+static void ad_finish(void)
+{
+    int can_diff = g_ad_have_prev && !g_ad_overflow &&
+                   g_ad_prev_w == win_w && g_ad_prev_h == win_h;
+    int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0, any = 0;
+    if (can_diff) {
+        int n = g_ad_prev_n > g_ad_cur_n ? g_ad_prev_n : g_ad_cur_n;
+        for (int i = 0; i < n; i++) {
+            int inp = i < g_ad_prev_n, inc = i < g_ad_cur_n;
+            if (inp && inc) {
+                const struct ad_ent *a = &g_ad_prev[i], *b = &g_ad_cur[i];
+                if (a->x == b->x && a->y == b->y && a->w == b->w && a->h == b->h && a->sig == b->sig)
+                    continue;                          /* byte-identical to last pass */
+                int ux0 = imin(a->x, b->x), uy0 = imin(a->y, b->y);
+                int ux1 = imax(a->x + a->w, b->x + b->w), uy1 = imax(a->y + a->h, b->y + b->h);
+                ad_union(&dx0, &dy0, &dx1, &dy1, &any, ux0, uy0, ux1, uy1);
+            } else {
+                const struct ad_ent *e = inc ? &g_ad_cur[i] : &g_ad_prev[i];
+                ad_union(&dx0, &dy0, &dx1, &dy1, &any, e->x, e->y, e->x + e->w, e->y + e->h);
+            }
+        }
+    }
+    if (g_ad_extra_have)
+        ad_union(&dx0, &dy0, &dx1, &dy1, &any, g_ad_ex0, g_ad_ey0, g_ad_ex1, g_ad_ey1);
+
+    if (!can_diff) {
+        g_ad_result_valid = -1;
+    } else if (!any) {
+        g_ad_result_valid = 0;
+    } else {
+        if (dx0 < 0) dx0 = 0; if (dy0 < 0) dy0 = 0;
+        if (dx1 > win_w) dx1 = win_w; if (dy1 > win_h) dy1 = win_h;
+        if (dx1 <= dx0 || dy1 <= dy0) g_ad_result_valid = 0;
+        else { g_ad_result_valid = 1; g_ad_rx = dx0; g_ad_ry = dy0; g_ad_rw = dx1 - dx0; g_ad_rh = dy1 - dy0; }
+    }
+    /* Pointer swap, not a copy -- the browser's pd_finish() does the same
+     * with realloc'd buffers; these are fixed, so the swap is simpler still
+     * and (see the section-open comment on why no libc) sidesteps ever
+     * needing a memcpy-shaped loop that -O2's loop-idiom pass could rewrite
+     * into an actual memcpy() call this file cannot link. */
+    struct ad_ent *t = g_ad_prev; g_ad_prev = g_ad_cur; g_ad_cur = t;
+    g_ad_prev_n = g_ad_cur_n; g_ad_cur_n = 0;
+    g_ad_prev_w = win_w; g_ad_prev_h = win_h;
+    g_ad_have_prev = 1;
+    g_ad_overflow = 0;
+    g_ad_extra_have = 0;
+}
+
+/* Decide what to hand the compositor for THIS frame and hand it: gui_flush()
+ * (ad_finish() could not prove a smaller extent honest), nothing at all (a
+ * real rect was computed and it is empty), or gui_flush_rect() of the union
+ * this frame's diff actually found -- browser.c's redraw_page() three-way
+ * dispatch, restated for this file's own ad_finish(). */
+static void ad_flush(void)
+{
+    ad_finish();
+    if (g_ad_result_valid == -1) { gui_flush(); return; }
+    if (g_ad_result_valid == 0) return;
+    int x = g_ad_rx, y = g_ad_ry, w = g_ad_rw, h = g_ad_rh;
+#ifdef AUI_FLUSH_NEGCTL_SHRINK
+    /* THE NEGATIVE CONTROL for this whole mechanism (make AUIFLUSHCTL=1;
+     * tests/appflush.mk's test-appflush-negctl). Deliberately reports a
+     * rectangle SMALLER than what ad_finish() actually computed -- 3px
+     * inward on every side, floored at 1px so a thin change never collapses
+     * to w<=0||h<=0 and gets read as "whole canvas" by SYS_GUI_FLUSH_RECT's
+     * own contract (logit_abi.h says so explicitly; c/apps/logit.h's
+     * gui_flush_rect comment repeats it). If the compositor is honouring the
+     * rectangle this app reports rather than quietly recompositing more than
+     * it was told, this MUST leave a visible border of stale pixels on
+     * screen after any narrow-flushed edit -- watching that happen is what
+     * earns the right to trust any table measured with this flag off
+     * (AGENTS.md rule 5: a control that cannot be watched failing is worse
+     * than no control). */
+    x += 3; y += 3; w -= 6; h -= 6;
+    if (w < 1) w = 1; if (h < 1) h = 1;
+#endif
+    gui_flush_rect(x, y, w, h);
+}
+
 
 /* ---------------------------------------------------------------- 2. theme */
 
@@ -358,11 +666,11 @@ static const unsigned char *corner_mask(int kind, int cw, int ch, int param,
 
 /* --------------------------------------------- 5a. frame state (globals) */
 
-static int win_w = 640, win_h = 480;
 static int id_ctr;
 static int focus_id, focus_vis;
 static int ox_, oy_;                          /* current translation, points */
 static unsigned frame_ms;
+
 
 /* clip stack (the kernel has one clip rect per surface, so aui keeps the stack
  * and pushes the intersection) */
@@ -1309,6 +1617,10 @@ void aui_begin(unsigned bg)
     in.hot = 0;
     wbb_next = aui_r(0, 0, 0, 0);
     tip_text = 0;
+    /* Reset THIS frame's flush-diff recording (section 5a-flush). g_ad_prev /
+     * g_ad_prev_n are last frame's data and must survive into this frame's
+     * ad_finish() -- only the CUR side resets. */
+    g_ad_cur_n = 0; g_ad_overflow = 0; g_ad_extra_have = 0;
     gui_clip(0, 0, 0, 0);
     gui_clear(bg);
 #ifdef AUI_COST
@@ -1388,7 +1700,14 @@ static void ck_report(void)
 }
 #endif
 
-void aui_end(void)
+/* Shared tail of aui_end()/aui_end_rect(): popups and tooltips are drawn LAST
+ * (see the comment on draw_popup's forward declaration above) so they sit
+ * over everything, then the frame's bookkeeping (modal state, the widget
+ * bounding box the NEXT frame's input tests against, the radio range) is
+ * committed. Neither the flush decision nor anim_schedule() lives here --
+ * the two callers below need different things done between "the frame is
+ * fully drawn" and "hand it to the compositor". */
+static void ae_common(void)
 {
     ox_ = oy_ = 0; clipn = 0; gui_clip(0, 0, 0, 0);
     in_popup = 1;
@@ -1398,10 +1717,40 @@ void aui_end(void)
     modal_prev = dlg_open_now;
     wbb = wbb_next; wbb_any = wbb.w > 0;
     rg_lo = rg_lo_a; rg_hi = rg_hi_a;      /* the radio range this frame observed */
-    gui_flush();
+}
+
+void aui_end(void)
+{
+    ae_common();
+    ad_flush();
     /* AFTER the flush, deliberately: see anim_schedule(). This is also the only
      * place the deadline is set, so an app that never calls aui_end() -- there
      * is none -- would simply never animate rather than animate wrongly. */
+    anim_schedule();
+#ifdef AUI_COST
+    ck_wall += monotonic_ns() - ck_fstart;
+    ck_report();
+#endif
+}
+
+/* aui_end() for a caller that has ALREADY computed its own damage rect this
+ * frame -- textedit.c's line/cursor/wrap-cascade math, terminal.c would use
+ * the equivalent if it linked this file (it does not; see terminal.c's own
+ * gui_flush_rect call). (x,y,w,h) is UNIONED with whatever this frame's own
+ * primitive-level diff found, never SUBSTITUTED for it: aui's own tracked
+ * drawing (a status bar redrawn via aui_fill/aui_text_ellipsis, say) must
+ * still be accounted, or a caller's narrower hint would silently swallow it.
+ * w<=0||h<=0 means "no hint this frame" -- identical to aui_end() -- so a
+ * caller unsure whether anything narrower is provable can always pass
+ * (0,0,0,0) and get exactly aui_end()'s behaviour. */
+void aui_end_rect(int x, int y, int w, int h)
+{
+    ae_common();
+    if (w > 0 && h > 0) {
+        g_ad_extra_have = 1;
+        g_ad_ex0 = x; g_ad_ey0 = y; g_ad_ex1 = x + w; g_ad_ey1 = y + h;
+    }
+    ad_flush();
     anim_schedule();
 #ifdef AUI_COST
     ck_wall += monotonic_ns() - ck_fstart;

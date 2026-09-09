@@ -50,7 +50,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 # The dock's layout is read from the guest (ui.dock(), below); WIDGETS_SLOT = 4
 # used to live here and was correct only while scan_apps packed exactly five
-# apps ahead of widgets.aex.
+# apps ahead of widgets.aex. Widgets itself is gone as of Task E (2026-09-02,
+# see the Makefile's APPS list) -- part 3 below now opens TextEdit instead,
+# chosen for the same reason Widgets was: an ordinary app window with real
+# content, nothing more.
 
 
 def perf_samples(text):
@@ -229,7 +232,7 @@ def main(argv):
         # comes from the guest's own dock line, and the click is verified: a
         # driver that measures the cursor over the WRONG window would still
         # produce numbers.
-        ui.launch_app("widgets")
+        ui.launch_app("textedit")
         dock = ui.dock()
         n_apps = len(dock)
         time.sleep(8 * slow)

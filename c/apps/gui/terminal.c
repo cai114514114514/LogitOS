@@ -350,6 +350,218 @@ static void scopy(char *d, const char *s, int max)
 static int imin(int a, int b) { return a < b ? a : b; }
 static int imax(int a, int b) { return a > b ? a : b; }
 
+/* ============================================================================
+ * THE FLUSH RECTANGLE -- what paint() actually changed, in ONE place.
+ *
+ * paint() (further down) is a full top-to-bottom redraw: it always clears the
+ * whole window and always walks every visible scrollback row, unconditionally
+ * -- that part is UNCHANGED by this section, on purpose (see
+ * c/apps/browser/browser_paint.c's own header comment for the same choice:
+ * "browser_paint() itself is NOT repeated ... only the FLUSH is narrowed").
+ * What follows is the SAME positional diff c/apps/gui/aui.c's own section
+ * 5a-flush uses (that file's header is the fuller argument for the method;
+ * this is an independent copy of it rather than a shared include, because
+ * this file links no aui.c -- it does not even include aui.h, see the file
+ * header -- so aui.c's own macros, scoped to aui.c's own translation unit,
+ * are simply not visible here; AGENTS.md's "one jar, two doors" is about a
+ * CONSTANT spelled twice disagreeing, not a technique reused on purpose in
+ * two places that cannot share a TU): every draw call this frame is recorded
+ * (position + a content hash) and compared BY CALL ORDER against last frame's
+ * recording. Hooked at the SIX raw primitives this file actually calls
+ * (gui_clear/gui_rect/gui_rrect/gui_text/gui_text_mono/gui_blit -- verified
+ * by grep, this file uses no others), so it is complete by construction for
+ * anything paint() draws, the same argument aui.c's own section makes: a
+ * selection highlight, a command-status dot, a rich object's border colour
+ * flipping, all just become more gui_rect()/gui_rrect() calls at their own
+ * real geometry, with nothing here needing to know which KIND of content
+ * changed.
+ *
+ * THIS SUBSUMES "a scroll damages the text area" AND "a single line damages
+ * one cell row" as the SAME mechanism rather than two special cases: on a
+ * pure scroll, every visible row's CONTENT differs from last frame's (it is
+ * now showing a different scrollback line), so the diff unions the whole
+ * text area -- correctly, because that IS what changed -- while the top bar
+ * and input line strip's draw calls are byte-identical and correctly stay
+ * out of it. On one streamed line, only that row's gui_text_mono() call(s)
+ * differ; everything else -- every OTHER row, the top bar, the scrollbar,
+ * the input line -- collapses to "byte-identical to last pass" and the union
+ * is one row.
+ *
+ * present_videos() (below, after paint()) does NOT use this: it never redraws
+ * anything but the video blits themselves, so its damage is already exactly
+ * known (the blit's own extent) without diffing anything -- see that
+ * function's own comment. */
+
+#define TD_MAX 4096                /* see td_overflow: past this, "no rect" */
+
+struct td_ent { int x, y, w, h; unsigned sig; };
+/* Two fixed buffers, swapped by pointer at frame end -- this file links real
+ * libc (LIBC_OBJS, unlike aui.c/clock.aex) so realloc growth was available,
+ * but a compile-time ceiling is simpler and the failure mode is identical
+ * either way: past it, flush the whole canvas rather than trust a truncated
+ * diff. */
+static struct td_ent td_bufA[TD_MAX], td_bufB[TD_MAX];
+static struct td_ent *td_prev = td_bufA, *td_cur = td_bufB;
+static int td_prev_n, td_cur_n;
+static int td_have_prev, td_overflow;
+static int td_prev_w, td_prev_h;
+
+static unsigned td_hash_bytes(const void *p, long n, unsigned h)
+{
+    const unsigned char *b = (const unsigned char *)p;
+    for (long i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+#define TD_MIX(h, v) ((h) = ((h) ^ (unsigned)(v)) * 16777619u)
+
+static void td_record(int x, int y, int w, int h, unsigned sig)
+{
+    if (w <= 0 || h <= 0) return;
+    if (td_cur_n >= TD_MAX) { td_overflow = 1; return; }
+    struct td_ent *e = &td_cur[td_cur_n++];
+    e->x = x; e->y = y; e->w = w; e->h = h; e->sig = sig;
+}
+
+static void td_note_clear(unsigned color)
+{
+    unsigned h = 2166136261u; TD_MIX(h, color);
+    td_record(0, 0, win_w, win_h, h);
+}
+static void td_note_rect(int x, int y, int w, int h, unsigned color)
+{
+    unsigned s = 2166136261u; TD_MIX(s, color);
+    td_record(x, y, w, h, s);
+}
+static void td_note_rrect(int x, int y, int w, int h, int r, unsigned color)
+{
+    unsigned s = 2166136261u; TD_MIX(s, r); TD_MIX(s, color);
+    td_record(x, y, w, h, s);
+}
+static void td_note_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
+{
+    unsigned s = 2166136261u; TD_MIX(s, sw); TD_MIX(s, sh);
+    if (rgba && sw > 0 && sh > 0) s = td_hash_bytes(rgba, (long)sw * sh * 4, s);
+    td_record(x, y, w, h, s);
+}
+/* gui_text/gui_text_mono have no explicit length -- both are NUL-terminated,
+ * so the hash reads up to a bound rather than trusting an unmeasured strlen
+ * on content this file did not itself just size (defensive; every real
+ * caller here already bounds its own buffers, e.g. draw_span's tmp[]). Extent
+ * padding mirrors aui.c's ad_note_text() and for the same reason: this file's
+ * own `lh` is the line pitch actually used to place the NEXT row, which is
+ * already a safe vertical bound, so text height uses that where a caller
+ * ambiently has it (gui_text_mono, always drawn at `lh` spacing here) and a
+ * fixed pad otherwise (gui_text, used once, for the top-bar hint line). */
+#define TD_TEXT_MAX 512
+static void td_note_text(int x, int y, unsigned color, const char *s, int texth)
+{
+    unsigned h = 2166136261u; TD_MIX(h, color);
+    int n = 0; if (s) while (s[n] && n < TD_TEXT_MAX) n++;
+    if (n) h = td_hash_bytes(s, n, h);
+    TD_MIX(h, n);
+    int w = win_w - x; if (w < 1) w = 1;
+    td_record(x, y, w, texth, h);
+}
+
+static void td_union(int *dx0, int *dy0, int *dx1, int *dy1, int *any,
+                     int x0, int y0, int x1, int y1)
+{
+    if (!*any) { *dx0 = x0; *dy0 = y0; *dx1 = x1; *dy1 = y1; *any = 1; return; }
+    if (x0 < *dx0) *dx0 = x0; if (y0 < *dy0) *dy0 = y0;
+    if (x1 > *dx1) *dx1 = x1; if (y1 > *dy1) *dy1 = y1;
+}
+
+/* -1 no honest diff (first frame, resize, or overflow) -- whole canvas. 0 a
+ * rect was computed and is EMPTY. 1 a real, canvas-clamped rect in
+ * td_r{x,y,w,h}. Same three-way contract as aui.c's ad_finish() and
+ * browser_paint_dirty_rect() -- one jar, three doors now, all agreeing on
+ * its shape. */
+static int td_result_valid;
+static int td_rx, td_ry, td_rw, td_rh;
+
+static void td_finish(void)
+{
+    int can_diff = td_have_prev && !td_overflow && td_prev_w == win_w && td_prev_h == win_h;
+    int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0, any = 0;
+    if (can_diff) {
+        int n = td_prev_n > td_cur_n ? td_prev_n : td_cur_n;
+        for (int i = 0; i < n; i++) {
+            int inp = i < td_prev_n, inc = i < td_cur_n;
+            if (inp && inc) {
+                const struct td_ent *a = &td_prev[i], *b = &td_cur[i];
+                if (a->x == b->x && a->y == b->y && a->w == b->w && a->h == b->h && a->sig == b->sig)
+                    continue;
+                int ux0 = imin(a->x, b->x), uy0 = imin(a->y, b->y);
+                int ux1 = imax(a->x + a->w, b->x + b->w), uy1 = imax(a->y + a->h, b->y + b->h);
+                td_union(&dx0, &dy0, &dx1, &dy1, &any, ux0, uy0, ux1, uy1);
+            } else {
+                const struct td_ent *e = inc ? &td_cur[i] : &td_prev[i];
+                td_union(&dx0, &dy0, &dx1, &dy1, &any, e->x, e->y, e->x + e->w, e->y + e->h);
+            }
+        }
+    }
+    if (!can_diff) {
+        td_result_valid = -1;
+    } else if (!any) {
+        td_result_valid = 0;
+    } else {
+        if (dx0 < 0) dx0 = 0; if (dy0 < 0) dy0 = 0;
+        if (dx1 > win_w) dx1 = win_w; if (dy1 > win_h) dy1 = win_h;
+        if (dx1 <= dx0 || dy1 <= dy0) td_result_valid = 0;
+        else { td_result_valid = 1; td_rx = dx0; td_ry = dy0; td_rw = dx1 - dx0; td_rh = dy1 - dy0; }
+    }
+    struct td_ent *t = td_prev; td_prev = td_cur; td_cur = t;
+    td_prev_n = td_cur_n; td_cur_n = 0;
+    td_prev_w = win_w; td_prev_h = win_h;
+    td_have_prev = 1;
+    td_overflow = 0;
+}
+
+/* Called at the end of paint() in place of the old unconditional gui_flush().
+ * gui_flush()/gui_flush_rect() are called directly here (NOT through the
+ * macros below -- td_flush ITSELF runs after paint()'s own drawing is done,
+ * so there is nothing left to record) and the parenthesised form is not
+ * needed for the same reason: this function is defined BEFORE the macro
+ * block, so gui_flush_rect (never hooked) and gui_flush (hooked only inside
+ * paint()'s own body, textually below this point) resolve to the plain
+ * logit.h inline calls here regardless. */
+static void td_flush(void)
+{
+    td_finish();
+    if (td_result_valid == -1) { gui_flush(); return; }
+    if (td_result_valid == 0) return;
+    int x = td_rx, y = td_ry, w = td_rw, h = td_rh;
+#ifdef AUI_FLUSH_NEGCTL_SHRINK
+    /* THE NEGATIVE CONTROL, same flag and same shape as aui.c's own (section
+     * 5a-flush there) and textedit.c's -- one macro, three call sites, all
+     * shrinking their own computed rect by 3px a side so
+     * tests/appflush.mk's single negctl build exercises every flush-rect
+     * producer in this task at once. See aui.c's ad_flush() for the full
+     * argument; it is not repeated here. */
+    x += 3; y += 3; w -= 6; h -= 6;
+    if (w < 1) w = 1; if (h < 1) h = 1;
+#endif
+    gui_flush_rect(x, y, w, h);
+}
+
+/* THE HOOK. Every one of this file's six draw primitives (verified by grep,
+ * see the section comment above) routed through the recorders above from
+ * this point in the file onward -- paint() and present_videos(), both well
+ * below, are the only real call sites. The parenthesised callee is the same
+ * trick c/apps/gui/aui.c's own AUI_COST block uses: `(gui_rect)(...)` is not
+ * followed by `(` where the preprocessor is looking for it (the identifier is
+ * followed by `)` first), so it does not re-expand the macro and calls the
+ * real logit.h inline function. text_h below (gui_text_mono's height) is
+ * `lh`, this file's line pitch -- always in scope at every real call site,
+ * all of which are inside paint()'s per-row loop or its fixed-position
+ * chrome, both running at a known `lh`. */
+#define gui_clear(a)                 (td_note_clear(a), (gui_clear)(a))
+#define gui_rect(a,b,c,d,e)          (td_note_rect(a,b,c,d,e), (gui_rect)(a,b,c,d,e))
+#define gui_rrect(a,b,c,d,e,f)       (td_note_rrect(a,b,c,d,e,f), (gui_rrect)(a,b,c,d,e,f))
+#define gui_blit(a,b,c,d,e,f,g)      (td_note_blit(a,b,c,d,e,f,g), (gui_blit)(a,b,c,d,e,f,g))
+#define gui_text(a,b,c,d)            (td_note_text(a,b,c,d,lh), (gui_text)(a,b,c,d))
+#define gui_text_mono(a,b,c,d,e)     (td_note_text(a,b,c,e,lh), (gui_text_mono)(a,b,c,d,e))
+
 static void utoa(unsigned v, char *o)
 { char t[12]; int i = 0; if (!v) { o[0] = '0'; o[1] = 0; return; }
   while (v) { t[i++] = (char)('0' + v % 10); v /= 10; }
@@ -1662,6 +1874,18 @@ static void draw_scrollbar(int total, int view)
 
 static void paint(void)
 {
+    /* Reset THIS frame's flush-diff recording. td_prev/td_prev_n are last
+     * frame's -- built by the LAST paint() call, via td_finish() at the very
+     * end of this function -- and must survive into this frame's diff; only
+     * the CUR side resets. This also throws away any entries present_videos()
+     * recorded (its gui_blit calls are hooked by the same macros, since a
+     * macro cannot tell which function is calling it) since the LAST time
+     * paint() ran: present_videos() computes and flushes its own exact rect
+     * directly rather than through td_finish() (see its own comment), so
+     * those recordings were never going to be consumed by anything -- this is
+     * where they get discarded, before they could misalign THIS call's real
+     * diff against td_prev by however many stray entries accumulated. */
+    td_cur_n = 0;
     /* A video that is scrolled out of view must not keep a stale position: the
      * in-place update blits at (px,py) without repainting anything around it,
      * so a position left over from the last frame would paint a picture over
@@ -1796,27 +2020,65 @@ static void paint(void)
         const char *s = "^ scrolled back -- End to follow";
         draw_text(win_w - PAD - SBW - (slen(s) + 1) * cell, iy, P.dim, s);
     }
-    gui_flush();
+    /* WHAT CHANGED THIS FRAME -- see the flush-rectangle section above
+     * (imin/imax) for the mechanism. paint() itself is unchanged above this
+     * line: it always redraws everything, unconditionally, exactly as
+     * before -- only WHAT GETS PRESENTED to the compositor is narrowed. */
+    td_flush();
 }
 
 /* Re-blit only the regions the videos own, and present. This is the whole point
  * of a video frame type: the scrollback around it is untouched, so the cost of
  * a played frame is one blit rather than one full repaint of every line, rule
  * and glyph in the window. The clip is the same one paint() uses -- a video
- * taller than the viewport must not spill over the chrome. */
+ * taller than the viewport must not spill over the chrome.
+ *
+ * THIS DOES NOT GO THROUGH td_finish()/td_flush() -- it computes its own
+ * exact rect instead of diffing, and that is not a missed opportunity, it is
+ * the honest answer for what this function does: unlike paint(), it never
+ * redraws anything but the blits below, so the union of what it is ABOUT to
+ * blit already IS exactly what changed -- diffing would only add cost to
+ * reach the same number. (Its gui_blit() calls are still recorded by the
+ * hooked macro above, same as any other call in this file -- there is no way
+ * for a macro to tell which function is calling it -- but those recordings
+ * are simply discarded, unread, the next time paint() runs and resets
+ * td_cur_n to 0; see paint()'s own comment on that reset.) */
 static unsigned long long ms_present_total, n_present;
 
 static void present_videos(void)
 {
     unsigned long long t0 = monotonic_ms();
     gui_clip(PAD, text_y, win_w - 2 * PAD, text_h);
+    int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0, any = 0;
     for (int i = 0; i < MAXVID; i++) {
         struct vidobj *v = &vids[i];
-        if (v->ok && v->have && v->px >= 0)
+        if (v->ok && v->have && v->px >= 0) {
             gui_blit(v->px, v->py, v->dw, v->dh, v->rgba, v->dw, v->dh);
+            int x0 = v->px, y0 = v->py, x1 = v->px + v->dw, y1 = v->py + v->dh;
+            if (!any) { dx0 = x0; dy0 = y0; dx1 = x1; dy1 = y1; any = 1; }
+            else {
+                if (x0 < dx0) dx0 = x0; if (y0 < dy0) dy0 = y0;
+                if (x1 > dx1) dx1 = x1; if (y1 > dy1) dy1 = y1;
+            }
+        }
     }
     gui_clip(0, 0, 0, 0);
-    gui_flush();
+    /* No video actually blitted this call -- nothing changed, nothing to
+     * present. The old code called gui_flush() unconditionally here, which
+     * on a frame with zero active videos recomposited the whole window for
+     * no reason at all; that was always wasted, not merely un-narrowed. */
+    if (any) {
+        if (dx0 < 0) dx0 = 0; if (dy0 < 0) dy0 = 0;
+        if (dx1 > win_w) dx1 = win_w; if (dy1 > win_h) dy1 = win_h;
+        if (dx1 > dx0 && dy1 > dy0) {
+            int x = dx0, y = dy0, w = dx1 - dx0, h = dy1 - dy0;
+#ifdef AUI_FLUSH_NEGCTL_SHRINK
+            x += 3; y += 3; w -= 6; h -= 6;
+            if (w < 1) w = 1; if (h < 1) h = 1;
+#endif
+            gui_flush_rect(x, y, w, h);
+        }
+    }
     ms_present_total += monotonic_ms() - t0;
     n_present++;
 }

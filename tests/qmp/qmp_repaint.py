@@ -18,6 +18,26 @@ table, per EVENT CLASS, at three display modes:
     theme   the menu-bar dark-mode switch (every window must repaint)
     scroll  wheel notches over the Terminal's scrollback
     anim    a widget animation: the Settings toggle, flipped six times
+    b-scroll   BROWSER: wheel notches over a real fetched page's body
+    b-type     BROWSER: keystrokes into a page <input>, not the address bar
+    b-hover    BROWSER: a :hover-style change (a JS mouseover/mouseout pair --
+               see the b-hover note below for why not a CSS :hover rule)
+    b-mutate   BROWSER: the page's own setInterval mutating one element
+
+The `b-*` classes exist because the five above measure the OS repainting an
+OS-owned window, and CLAUDE.md's actual complaint -- a keystroke, a scroll --
+is the BROWSER repainting its own canvas through a separate call path
+(redraw() at c/apps/browser/browser.c:2974, not anything in c/kernel/gui).
+They fetch one real page over a host HTTP server reached at 10.0.2.2 (same
+SLIRP mechanism as qmp_css_repaint.py) so the guest's real parser, layout and
+paint run -- a DOM built by this driver directly would not be measuring what
+the table claims to measure (AGENTS.md section 5, "measure in the guest").
+b-hover uses a JS listener rather than a CSS `:hover` rule because nothing in
+this driver has independently confirmed this engine recomputes cascade state
+on the dynamic :hover pseudo-class (fire_hover_transition() in browser.c only
+shows mouseover/mouseout DOM dispatch); a listener writing .style directly is
+the mechanism this file COULD confirm, and claiming more would be exactly the
+kind of guessed-OK rule 5 above warns against.
 
 The last one is a different question from the other five and arrived later. They
 measure a repaint somebody else provoked; `anim` measures the toolkit's own
@@ -45,9 +65,14 @@ from a shared host is how a line reports a regression that was its own
 neighbour's build.
 
 Usage:
-    tests/qmp/qmp_repaint.py [--xres W] [--yres H] [--iso PATH]
+    tests/qmp/qmp_repaint.py [--xres W] [--yres H] [--iso PATH] [--disk PATH]
                              [--reps N] [--only NAME[,NAME...]] [--json PATH]
                              [--assert] [--expect-off N]
+
+--disk defaults to a `disk.img` sibling of --iso (i.e. the same BUILD=
+tree) -- NOT build/disk.img unconditionally, so a run against
+BUILD=build-<yours>/logit.iso boots that tree's own apps rather than
+whatever (or nothing) happens to sit in build/.
 
 --assert turns the `anim` class into a gate (see assert_anim at the bottom).
 --expect-off carries the composite count from a -DAUI_ANIM_OFF build; without
@@ -55,11 +80,13 @@ it the positive assertion is a thermometer rather than a control, and the gate
 says so out loud rather than passing quietly. `make test-anim` runs both sides.
 """
 
+import http.server
 import json as _json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -102,7 +129,27 @@ CLOSE_RGB = (255, 95, 86)
 # the compositor's counters
 
 def perf_samples(text):
-    """Every `[wm] perf ...` line in a serial log, as dicts of ints."""
+    """Every `[wm] perf ...` line in a serial log, as dicts of ints.
+
+    REQUIRES THE FULL FIELD SET, not just "composites" and "t" -- found by
+    running the b-* classes added to this file: a `_read()` landing mid-write
+    of wm_perf_report()'s own kprintf can catch the log with a later token
+    (here, `ns=`) not yet flushed, and `text.splitlines()` happily returns
+    that partial trailing line as if it were complete. The old filter let it
+    through (composites and t both land before ns in the format string, so
+    both parse fine off a truncated line) and Meter.run() built a `d` missing
+    `ns` from it, which summarize() then read unconditionally and crashed
+    on -- losing every rep collected before the crash, mid-suite, on a run
+    that had already spent several real minutes getting there. A silently
+    torn READ of this log is exactly the shape rule 1 (AGENTS.md section 2)
+    warns about: the fix is not a wider except, it is refusing the partial
+    sample the same way `wm_perf_report()`'s own `hcrc`/hbcrc reasoning
+    refuses a torn write on the filesystem side -- see logitfs.c's commit
+    record comment for the same argument one layer down. `ns` is the LAST
+    field wm_perf_report can be counted on to have started printing before
+    every field this file actually reads (cpx/fpx/presns all come after it
+    in the format string), so requiring it is the cheapest complete check. */
+    """
     out = []
     for line in text.splitlines():
         i = line.find("[wm] perf ")
@@ -116,7 +163,7 @@ def perf_samples(text):
                     d[k] = int(v)
                 except ValueError:
                     pass
-        if "composites" in d and "t" in d:
+        if "composites" in d and "t" in d and "ns" in d and "presns" in d:
             out.append(d)
     return out
 
@@ -177,10 +224,14 @@ def summarize(rows):
     """Median (min..max) of the per-rep derived numbers."""
     per = []
     for d in rows:
-        comp = d["composites"]
+        comp = d.get("composites", 0)
         per.append({
             "composites": comp,
-            "ms": (d["ns"] / comp / 1e6) if comp else 0.0,
+            # .get, not [] -- belt-and-suspenders alongside perf_samples()'s
+            # stricter filter above: this function has no way to tell a
+            # legitimately-zero interval from one built off a sample the
+            # filter should have rejected, so it must not crash either way.
+            "ms": (d.get("ns", 0) / comp / 1e6) if comp else 0.0,
             "presms": (d.get("presns", 0) / comp / 1e6) if comp else 0.0,
             "cps": comp / d["secs"] if d["secs"] else 0.0,
             # cpx/fpx exist only on a kernel that tracks damage. Absent means
@@ -487,14 +538,311 @@ WORKLOADS = [
 
 
 # ---------------------------------------------------------------------------
+# the `b-*` classes: what the BROWSER's OWN repaints cost -- scroll, a
+# keystroke into a page <input>, a hover that changes a style, and a script
+# that mutates one element. These are the rows CLAUDE.md asks for and the
+# five WORKLOADS above cannot produce them: every one of them is the OS
+# repainting an OS-owned window, and the browser's redraw() path
+# (c/apps/browser/browser.c:2974, called from the EV_* switch) is a separate
+# call site from anything above.
+#
+# CORRECTED, KEPT BESIDE THE OLD CLAIM (AGENTS.md section 1: "where that
+# happened the correction is kept beside the old claim rather than quietly
+# overwritten, because somebody is going to arrive holding the old
+# sentence"). This block used to end here: "the ONE THING every class below
+# shares is that none of them takes the redraw_chrome()/gui_flush_rect()
+# path ... so every class below is redraw()'s gui_flush() at browser.c:2988,
+# whole canvas, by construction of the dispatch, not by something this
+# driver measured." That was true when it was written -- redraw_chrome()
+# was the ONLY narrow-flush door browser.c had, and it is address-bar-text-
+# only by construction, so every b-* class genuinely could only reach the
+# whole-canvas path.
+#
+# It no longer is. browser.c gained a THIRD door, redraw_page() (alongside
+# redraw()/gui_flush() and redraw_chrome()/gui_flush_rect()), taken instead
+# of redraw() whenever the burst that produced `need` was proven to touch
+# only the page viewport -- a single EV_WHEEL, a single keystroke into a
+# focused page control, a single EV_MOUSE_MOVE (covers hover), or a page
+# timer firing with NO other event that same pass -- and no selection/
+# contenteditable-caret/<select>-popup/side-panel overlay is live
+# (overlays_active(), browser.c). redraw_page() flushes exactly the
+# rectangle browser_paint_dirty_rect() computed (browser_paint.c's pd_
+# finish()/pd_item_sig(): a positional diff against the LAST painted frame,
+# not a second DOM walk), or skips the flush altogether if nothing actually
+# changed, or falls back to the whole canvas itself when no honest diff was
+# available. So each b-* class below now reaches ONE of TWO doors depending
+# on what the fixture's own JS/layout did that pass -- not one door by
+# construction. `_BFLUSH` below states the STILL-TRUE half (which two doors
+# are reachable and why the address-bar band never is) and the run's own
+# `composited px/frame` number is what says which door a given rep actually
+# took: something well under the ~1.5-1.7M px a whole VIEW_Y..win_h canvas
+# costs at this resolution is the narrow door; something in that range is
+# the wide one (a multi-event burst, an active overlay, or the first frame
+# after navigation, all of which fall back on purpose -- see
+# browser.c's own comment above the CHROME-ONLY / PAGE-ONLY DISPATCH). A
+# single ms/px number can no longer be read off `_BFLUSH` alone; it has to
+# be read off the result this driver just printed.
+_BFLUSH = {
+    "b-scroll": "redraw()->gui_flush() [browser.c:2988] OR redraw_page()->"
+                "gui_flush_rect() [browser.c, page_only_repaint] (never "
+                "redraw_chrome(): EV_WHEEL is never the single chrome-only "
+                "edit that path requires)",
+    "b-type":   "redraw()->gui_flush() [browser.c:2988] OR redraw_page()->"
+                "gui_flush_rect() [browser.c, page_only_repaint] (never "
+                "redraw_chrome(): the input is a page node, not the address "
+                "bar -- that path is address-bar-text-only, see "
+                "browser.c's draw_address_bar()/redraw_chrome())",
+    "b-hover":  "redraw()->gui_flush() [browser.c:2988] OR redraw_page()->"
+                "gui_flush_rect() [browser.c, page_only_repaint] (fire_hover_"
+                "transition dispatches mouseover/mouseout, browser.c:3079; a "
+                "listener mutating style is what browser_paint_dirty_rect()'s "
+                "item diff actually catches -- see pd_item_sig()'s comment on "
+                "why it also reads box-shadow/transform/gradient, which are "
+                "NOT copied into struct item)",
+    "b-mutate": "redraw()->gui_flush() [browser.c:2988] OR redraw_page()->"
+                "gui_flush_rect() [browser.c, timer_page_only] (a fired "
+                "setInterval callback runs on the SAME pass as every other "
+                "due-timer check; timer_page_only requires nev==0 -- no other "
+                "UI event landed the same tick, and the status line was not "
+                "also rewritten by the same JS output)",
+}
 
-def boot(iso, xres, yres, tmp):
+# A unique, deliberately ugly RGB with no plausible match in the browser's own
+# chrome (glass tints, the wallpaper gradient, favicon colours) -- the same
+# argument PPM.find_color's own docstring makes for CLOSE_RGB/SETTINGS_PROBE
+# above, and it must be its OWN colour: SETTINGS_PROBE already claims
+# (0xFF,0x00,0x80) and a collision would make this probe silently resolve to
+# whichever the scanner reaches by row order.
+BPROBE_RGB = (0x12, 0xE2, 0x9A)
+
+# Layout, in CSS PIXELS -- which this engine treats 1:1 with the WM's
+# "points" (browser_resize passes win_w straight to css_viewport, and win_w
+# is what the WM told the app in points, not device px), so pt() converts
+# these the same way it converts every dock/menu-bar constant above. Kept as
+# one block so the fixture HTML and the click targets below cannot drift --
+# the "one jar, two doors" trap AGENTS.md section 2.3 names by name.
+B_PROBE_WH = 8
+B_INP  = (20, 20, 260, 24)     # x, y, w, h
+B_HOVER = (20, 60, 220, 70)
+B_MUT   = (20, 146, 220, 70)
+B_FILL_TOP = 232               # where the scrollable filler rows start
+
+BROWSER_PAGE = """<!doctype html><html><head><style>
+body{margin:0;padding:0;font-family:sans-serif;background:#f4f4f6}
+#probe{position:absolute;top:0;left:0;width:%(pw)dpx;height:%(pw)dpx;background:#12e29a}
+#binp{position:absolute;top:%(iy)dpx;left:%(ix)dpx;width:%(iw)dpx;height:%(ih)dpx;font-size:15px}
+#bhover{position:absolute;top:%(hy)dpx;left:%(hx)dpx;width:%(hw)dpx;height:%(hh)dpx;background:#204080}
+#bmut{position:absolute;top:%(my)dpx;left:%(mx)dpx;width:%(mw)dpx;height:%(mh)dpx;background:#204080}
+.filler{height:56px;line-height:56px;padding:0 12px;border-bottom:1px solid #dcdce0}
+</style></head><body>
+<div id="probe"></div>
+<input id="binp" type="text">
+<div id="bhover"></div>
+<div id="bmut"></div>
+<!-- fillwrap is IN-FLOW, not position:absolute like the four markers above
+     it -- found the hard way (rule 1, suspect the apparatus first) while
+     building the negative control for redraw_page()'s narrow flush: with
+     every child of <body> absolutely positioned, <body>'s own flow height is
+     0 (an out-of-flow descendant contributes nothing to its containing
+     block's auto height, which is correct CSS, not a browser bug), so
+     browser.c's `ph` (page height, read via layout_height() and used to
+     clamp `scroll`) stayed 0 no matter how many rows this script inserted
+     below -- EVERY wheel notch clamped straight back to scroll=0 and the
+     b-scroll class was measuring the cost of a scroll that never moved a
+     pixel. A spacer div (height fy, the same offset the four markers above
+     already reserve by their own top: values) keeps this in-flow div
+     starting at the same visual y the old `top:%(fy)dpx` did, so nothing
+     else in this file (B_FILL_TOP, the bscroll click target) needed to
+     change. -->
+<div style="height:%(fy)dpx"></div>
+<div id="fillwrap" style="width:100%%"></div>
+<script>
+var hv = document.getElementById('bhover');
+hv.addEventListener('mouseover', function(){ hv.style.background = '#ffcc33'; });
+hv.addEventListener('mouseout',  function(){ hv.style.background = '#204080'; });
+var mn = 0, mb = document.getElementById('bmut');
+setInterval(function(){ mn++; mb.style.background = (mn %% 2) ? '#ffcc33' : '#204080'; }, 60);
+var rows = '';
+for (var i = 0; i < 500; i++) rows += '<div class="filler">scroll row ' + i + '</div>';
+document.getElementById('fillwrap').innerHTML = rows;
+</script>
+</body></html>
+"""
+
+
+class _BrowserFixture(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def do_GET(self):
+        raw = (BROWSER_PAGE % {
+            "pw": B_PROBE_WH,
+            "ix": B_INP[1], "iy": B_INP[1], "iw": B_INP[2], "ih": B_INP[3],
+            "hx": B_HOVER[0], "hy": B_HOVER[1], "hw": B_HOVER[2], "hh": B_HOVER[3],
+            "mx": B_MUT[0], "my": B_MUT[1], "mw": B_MUT[2], "mh": B_MUT[3],
+            "fy": B_FILL_TOP,
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *_a):
+        pass
+
+
+def start_browser_fixture():
+    """A one-page host HTTP server the guest reaches over SLIRP at
+    10.0.2.2:<port>, same mechanism as qmp_css_repaint.py -- the guest's own
+    fetch path is exercised (not a synthetic DOM built in the harness), which
+    is the whole point: CLAUDE.md's rule 5 says measure in the guest, and a
+    page this driver never sent through browser.c's real parser/layout/paint
+    would not be measuring what the table claims."""
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0", 0), _BrowserFixture)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv.server_port
+
+
+def bprobe(ui, tmp, name="bprobe.ppm"):
+    """Top-left of the page content area, in DEVICE px -- confirmed against
+    the guest's own paint, not dead-reckoned from window chrome constants
+    that would have to reproduce TABH+BARH+the host titlebar height. Same
+    method as settings_probe() above, and for the same reason: a probe pixel
+    the harness can find is worth more than an offset this file computed."""
+    p = ui.screendump(os.path.join(tmp, name), settle=0.5)
+    box = PPM(p).find_color(BPROBE_RGB)
+    if box is None:
+        return None
+    x0, y0, _, _ = box
+    return (x0, y0)
+
+
+def browser_setup(ui, tmp, serial, port):
+    """Launch the browser, navigate to the fixture, and return the geometry
+    the b-* workloads need -- or None (loudly), same contract as anim_setup:
+    a row that could not aim is not a row that measured zero."""
+    ui.launch_app("browser")
+    time.sleep(2.0)
+    mark = len(ui.serial_text())
+    ui.key_mods(("ctrl",), "t")
+    url = "http://10.0.2.2:%d/repaint-fixture.html" % port
+    ui.typ(url)
+    ui.key("ret")
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        text = ui.serial_text()[mark:]
+        if "[browser] load done" in text or "[browser] page fetch failed" in text:
+            break
+        time.sleep(0.3)
+    else:
+        print("     b-*: the fixture navigation never finished (no load-done "
+              "line within 60s). NOT a measurement.")
+        return None
+    if "[browser] page fetch failed" in ui.serial_text()[mark:]:
+        print("     b-*: [browser] page fetch failed -- the fixture never "
+              "loaded. NOT a measurement.")
+        return None
+    time.sleep(0.5)
+    got = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        got = bprobe(ui, tmp)
+        if got is not None:
+            break
+        time.sleep(0.5)
+    if got is None:
+        print("     b-*: no probe pixel on screen -- the fixture did not "
+              "paint (or painted somewhere this driver did not look). NOT a "
+              "measurement.")
+        return None
+    ox, oy = got
+    return {
+        "ppm": os.path.join(tmp, "baim.ppm"),
+        "origin": (ox, oy),
+        "binp":   (ox + pt(B_INP[0] + B_INP[2] // 2), oy + pt(B_INP[1] + B_INP[3] // 2)),
+        "bhover": (ox + pt(B_HOVER[0] + B_HOVER[2] // 2), oy + pt(B_HOVER[1] + B_HOVER[3] // 2)),
+        "bhover_out": (ox + pt(B_HOVER[0] + B_HOVER[2] + 30), oy + pt(B_HOVER[1] + B_HOVER[3] // 2)),
+        "bscroll": (ox + pt(300), oy + pt(B_FILL_TOP + 200)),
+    }
+
+
+def w_bscroll(ui, geo, steps=48):
+    """Wheel notches over the fixture's 500-row filler -- the browser's own
+    scroll path (browser.c EV_SCROLL -> scroll +=/-=, then redraw_page() if
+    this burst was a single wheel event and no overlay is live, else
+    redraw() -- see _BFLUSH['b-scroll'])."""
+    x, y = geo["bscroll"]
+    got = ui.settle_pointer(geo["ppm"], x, y)
+    if got != (x, y):
+        print("     warning: pointer would not settle over the page body "
+              "(%r, wanted %r) -- this row is not a measurement" % (got, (x, y)))
+    for i in range(steps):
+        btn = "wheel-up" if (i // 8) % 2 else "wheel-down"
+        ui._input([{"type": "btn", "data": {"button": btn, "down": True}},
+                   {"type": "btn", "data": {"button": btn, "down": False}}])
+        time.sleep(0.02)
+    time.sleep(0.3)
+
+
+def w_btype(ui, geo, steps=48):
+    """Keystrokes into the fixture's <input>, NOT the address bar -- clicked
+    into first so the caret is inside the page node, which is what keeps
+    this class off redraw_chrome()'s address-bar band no matter what (that
+    path is unreachable here by construction); whether it takes redraw()'s
+    whole canvas or redraw_page()'s narrow rect instead now depends on the
+    burst shape -- see _BFLUSH['b-type']."""
+    x, y = geo["binp"]
+    ui.click_at(x, y, settle=0.3)
+    for i in range(steps):
+        ui.key(("abcdefghijklmnopqrstuvwxyz"[i % 26]), settle=0.02)
+    time.sleep(0.3)
+
+
+def w_bhover(ui, geo, steps=40):
+    """Sweep the pointer on and off #bhover, each crossing firing one
+    mouseover or mouseout -> one style write -> one redraw()."""
+    xin, y = geo["bhover"]
+    xout, _ = geo["bhover_out"]
+    got = ui.settle_pointer(geo["ppm"], xin, y)
+    if got != (xin, y):
+        print("     warning: pointer would not settle on #bhover (%r, wanted "
+              "%r) -- this row is not a measurement" % (got, (xin, y)))
+    for i in range(steps):
+        tx = xout if i % 2 else xin
+        ui.goto(tx, y, settle=0.08)
+    time.sleep(0.3)
+
+
+def w_bmutate(ui, geo, secs=2.5):
+    """Do nothing at the INPUT level -- the fixture's own setInterval(60ms)
+    is already mutating #bmut's background in the guest. This measures what
+    an unattended timer-driven single-element mutation costs per frame, the
+    same shape of question the top-level docstring calls out as `anim`'s
+    sibling for the browser rather than the toolkit."""
+    time.sleep(secs)
+
+
+# ---------------------------------------------------------------------------
+
+def boot(iso, xres, yres, tmp, disk=None):
+    # DEFAULT IS A SIBLING OF `iso`, NOT A HARDCODED ROOT/build/disk.img.
+    # AGENTS.md section 4: `BUILD=` is how several agents build this tree at
+    # once without manufacturing each other's failures, and this file's own
+    # `--iso` flag already lets a caller point at BUILD=<theirs>/logit.iso --
+    # a disk path that ignored that and always read build/disk.img would boot
+    # a KERNEL from one tree against APPS from a different (possibly absent)
+    # one, which is exactly the "make alone does not rebuild a ring-3
+    # program" trap AGENTS.md section 4 names, one layer up. Found here by
+    # running it: `qemu exited early` against a BUILD=build-flush tree with
+    # no build/disk.img at all -- rule 1, suspect the apparatus first.
+    if disk is None:
+        disk = os.path.join(os.path.dirname(iso), "disk.img")
     sock, serial = os.path.join(tmp, "qmp.sock"), os.path.join(tmp, "serial.log")
     qemu = subprocess.Popen(
         ["qemu-system-x86_64",
          "-cdrom", iso,
          "-drive", "file=%s,format=raw,if=none,id=hd0,file.locking=off"
-                   % os.path.join(ROOT, "build", "disk.img"),
+                   % disk,
          "-device", "virtio-blk-pci,drive=hd0", "-boot", "d", "-snapshot",
          "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi", "-cpu", "max",
          "-rtc", "base=localtime",
@@ -515,7 +863,7 @@ def boot(iso, xres, yres, tmp):
 
 def main(argv):
     xres, yres, reps = 1920, 1200, 3
-    iso, only, jpath = None, None, None
+    iso, disk, only, jpath = None, None, None, None
     do_assert, expect_off = False, None
     i = 1
     while i < len(argv):
@@ -523,6 +871,7 @@ def main(argv):
         elif argv[i] == "--yres":  yres = int(argv[i + 1]); i += 2
         elif argv[i] == "--reps":  reps = int(argv[i + 1]); i += 2
         elif argv[i] == "--iso":   iso = argv[i + 1]; i += 2
+        elif argv[i] == "--disk":  disk = argv[i + 1]; i += 2
         elif argv[i] == "--only":  only = argv[i + 1].split(","); i += 2
         elif argv[i] == "--json":  jpath = argv[i + 1]; i += 2
         elif argv[i] == "--assert":     do_assert = True; i += 1
@@ -538,7 +887,12 @@ def main(argv):
     print("=== %dx%d device px (scale %d%%), %s ===  [all timings are TCG]"
           % (xres, yres, scale, os.path.relpath(iso, ROOT)))
 
-    qemu, sock, serial = boot(iso, xres, yres, tmp)
+    # Started unconditionally and cheaply (a thread, not a process) so the
+    # `b-*` phase below never blocks main() waiting for a server that should
+    # already be up -- the same ordering qmp_css_repaint.py uses.
+    bport = start_browser_fixture()
+
+    qemu, sock, serial = boot(iso, xres, yres, tmp, disk)
     result = {}
     try:
         time.sleep(4 * slow)
@@ -661,6 +1015,34 @@ def main(argv):
                     print("     anim-dock: could not reposition the window over "
                           "the dock -- the glass penalty is UNMEASURED here, "
                           "not zero.")
+
+        # PHASE 4: the BROWSER's own repaints -- CLAUDE.md's actual complaint.
+        # Last, for the same reason PHASE 3 is last: it opens a fourth window
+        # and would change every geometry above it.
+        if not only or any(n.startswith("b-") for n in (only or [])):
+            bgeo = browser_setup(ui, tmp, serial, bport)
+            if bgeo is not None:
+                print("     browser fixture at 10.0.2.2:%d, probe origin %r"
+                      % (bport, bgeo["origin"]))
+                b_workloads = [
+                    ("b-scroll", w_bscroll, "wheel notches over the page body"),
+                    ("b-type",   w_btype,   "keystrokes into a page <input> "
+                                             "(not the address bar)"),
+                    ("b-hover",  w_bhover,  "pointer crossing a :hover-style "
+                                             "element's boundary"),
+                    ("b-mutate", w_bmutate, "the page's own 60ms setInterval "
+                                             "mutating one element's style"),
+                ]
+                for name, fn, what in b_workloads:
+                    if only and name not in only:
+                        continue
+                    measure(name, fn, what, bgeo)
+                    if name in result:
+                        print("     %s goes through: %s" % (name, _BFLUSH[name]))
+            else:
+                print("     b-*: browser setup failed -- see the reason "
+                      "printed above. The browser rows are UNMEASURED, not "
+                      "zero.")
     finally:
         qemu.kill()
         qemu.wait()

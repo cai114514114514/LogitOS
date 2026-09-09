@@ -36,11 +36,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
-from qmp_ui import PPM, Session, dock_icon
+from qmp_ui import PPM, Session
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 PREFIX = sys.argv[3] if len(sys.argv) > 3 else "/tmp/lmstream"
-TERMINAL_SLOT = 3
+# TERMINAL_SLOT = 3 used to live here; the tile comes from the guest's own
+# [wm] dock line now -- see the launch below.
 
 # terminal.c's light palette (the default boot theme -- g_ui_dark starts 0).
 # C_ACC is P.accent, the colour handle_frame's RT_T_LM_* cases paint S_LM in;
@@ -122,7 +123,7 @@ time.sleep(2.0)
 
 chk(b"/model.lm" in log or True, "boot reached LOGIT_BOOT_OK")  # apparatus sanity
 
-s = Session(sock)
+s = Session(sock, serial_text_fn=lambda: bytes(log).decode("utf-8", "replace"))
 
 # ------------------------------------------------------------- typing ------
 SHIFTED = {">": "dot", "|": "backslash", ":": "semicolon", "_": "minus",
@@ -181,13 +182,12 @@ def accent_px(ppm):
 
 
 print("launching the Terminal from the dock")
-launched = False
-for n in (qmp_ui.NAPPS, qmp_ui.NAPPS + 1, qmp_ui.NAPPS + 2, qmp_ui.NAPPS + 3, qmp_ui.NAPPS - 1):
-    s.click_at(*dock_icon(TERMINAL_SLOT, n))
-    time.sleep(2.5)
-    if b"launched Terminal" in log:
-        launched = True
-        break
+try:
+    s.launch_app("terminal")
+    launched = True
+except AssertionError as e:
+    print("       " + str(e))
+    launched = False
 chk(launched, "Terminal launched from the dock")
 if not launched:
     bail("terminal never launched -- everything below would be noise")

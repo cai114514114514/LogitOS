@@ -42,14 +42,17 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
-from qmp_ui import PPM, Session, dock_icon
+from qmp_ui import PPM, Session
 
 ISO = sys.argv[1]
 DISK = sys.argv[2]
 MODE = sys.argv[3] if len(sys.argv) > 3 else "device"
 OUT = sys.argv[4] if len(sys.argv) > 4 else f"/tmp/audioterm.{MODE}.ppm"
 
-TERMINAL_SLOT = 3            # clock textedit monitor terminal ...
+# TERMINAL_SLOT = 3 used to live here -- scan_apps order as a bare integer,
+# absorbed by a retry loop over guessed app counts for the day the count moved.
+# The guest's own [wm] dock line (launch_app, below) is the fact; the guess loop
+# is gone.
 C_OK  = (0x1E, 0x90, 0x50)   # the Play button's fill (P.ok, light theme)
 
 fails = []
@@ -192,7 +195,7 @@ if not ok:
     sys.exit(1)
 time.sleep(2.0)
 
-s = Session(sock)
+s = Session(sock, serial_text_fn=lambda: bytes(log).decode("utf-8", "replace"))
 
 SHIFTED = {">": "dot", "|": "backslash", ":": "semicolon", "_": "minus", "?": "slash"}
 
@@ -219,13 +222,19 @@ def shot(tag):
 
 
 def launch_terminal():
-    for n in (qmp_ui.NAPPS, qmp_ui.NAPPS + 1, qmp_ui.NAPPS + 2,
-              qmp_ui.NAPPS + 3, qmp_ui.NAPPS - 1):
-        s.click_at(*dock_icon(TERMINAL_SLOT, n))
-        time.sleep(2.5)
-        if b"launched Terminal" in log:
-            return True
-    return False
+    """Click the Terminal tile and let launch_app verify the result.
+
+    The old loop grepped the whole log for b"launched Terminal" -- which cannot
+    tell THIS click's launch from any earlier line, and aimed at
+    dock_icon(TERMINAL_SLOT, guessed_count), a guess per retry. launch_app
+    marks the log, clicks the tile the GUEST names for terminal.aex, and
+    refuses unless the guest reports Terminal launched after the mark."""
+    try:
+        s.launch_app("terminal")
+        return True
+    except AssertionError as e:
+        print("     " + str(e))
+        return False
 
 
 print(f"=== mode={MODE} ===")

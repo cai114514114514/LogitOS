@@ -383,6 +383,28 @@ static void te_walk(int avail, int px, int x0, int y0, int lh,
     *cx = dl > 0 ? text_measure_px(text + start, dl, px, 1) : 0;
 }
 
+/* ---- what changed this frame, in terms ONLY this file can compute ----
+ *
+ * aui.c's own generic per-primitive diff (aui.c section 5a-flush) already
+ * tracks every call this file makes THROUGH aui.c -- aui_round (the page
+ * surface), aui_fill (the cursor, the status strip), aui_hairline,
+ * aui_text_ellipsis, aui_text_sz -- automatically and correctly, because
+ * every one of those bottoms out to a gui_rect/gui_blit/gui_text_run call
+ * aui.c's own macros already intercept. The ONE thing that mechanism cannot
+ * see is te_walk()'s raw gui_text_run() calls for the paragraph text below:
+ * that call is textually inside THIS translation unit (this file includes
+ * aui.h, which includes logit.h, and calls logit.h's gui_text_run directly),
+ * where aui.c's interception macros are simply not in scope -- they are
+ * #define'd inside aui.c and apply only to that file's own text. te_prev_*
+ * below is what lets this file compute that ONE gap itself and hand it to
+ * aui_end_rect() as an extra hint, unioned with whatever aui's own tracking
+ * already found -- never instead of it. */
+static int te_prev_valid;
+static int te_prev_scroll, te_prev_cl, te_prev_nlines, te_prev_w, te_prev_h, te_prev_dark;
+
+static int te_imin(int a, int b) { return a < b ? a : b; }
+static int te_imax(int a, int b) { return a > b ? a : b; }
+
 static void draw(void)
 {
     int W = aui_width(), H = aui_height();
@@ -409,6 +431,7 @@ static void draw(void)
      * function, so there is no second wrap to disagree with the first. */
     int nlines, cl, cx;
     te_walk(avail, px, 0, 0, lh, 0, 0, 0, &nlines, &cl, &cx);
+    int prev_scroll = scroll;
     if (cl < scroll)            scroll = cl;
     if (cl >= scroll + rows)    scroll = cl - rows + 1;
     if (scroll > nlines - 1)    scroll = nlines - 1;
@@ -441,7 +464,58 @@ static void draw(void)
         aui_round(W - AUI_SP(4) - hw - d, by + (bar - d) / 2, d, d, d / 2, AUI_WARNING);
     }
 
-    aui_end();
+    /* THE ARGUMENT FOR WHY [min(prev_cl,cl) .. max(prev_nlines-1,nlines-1)]
+     * IS THE WHOLE STORY, and it rests on this app's own shape: te_apply_key
+     * only ever appends at the tail or removes from the tail (te_is_nav_key
+     * makes every navigation key a no-op -- see that function's own comment;
+     * there is no caret to move mid-buffer). te_fit()/te_line_break() process
+     * the buffer strictly left to right, so every wrap decision BEFORE the
+     * byte range an edit touched is a pure function of bytes that did not
+     * change -- byte-identical to last frame's walk. The only display lines
+     * whose wrap CAN differ are therefore the ones covering the last
+     * paragraph's tail: from wherever the caret WAS (te_prev_cl) or IS (cl),
+     * whichever is EARLIER, through wherever the walk now ENDS (nlines-1) or
+     * used to end (te_prev_nlines-1), whichever is LATER. A line that
+     * disappeared entirely (backspace un-wrapping two lines back into one)
+     * is covered by the max() reaching its OLD position -- which is what
+     * makes the page-background aui_round() above (it repaints its whole
+     * area every frame, unconditionally, well before this point) actually
+     * get COMPOSITED once it has erased that line, not just drawn into a
+     * surface nobody was told to show. */
+    int W_changed = !te_prev_valid || W != te_prev_w || H != te_prev_h;
+    int dark_changed = aui_is_dark() != te_prev_dark;
+    int scroll_changed = scroll != prev_scroll;
+
+    if (W_changed || dark_changed) {
+        aui_end();                    /* geometry or theme moved: whole canvas, honestly */
+    } else if (scroll_changed) {
+        /* Every visible line's IDENTITY changed (a wheel notch, or the caret
+         * walking off the bottom of a long paste) -- the text viewport is a
+         * different window into the buffer, but the chrome below it (the
+         * status bar) provably is not, so only the page needs flushing. */
+        aui_end_rect(0, pad - AUI_SP(1), W, viewh + AUI_SP(2));
+    } else {
+        int lo = te_imin(te_prev_cl, cl);
+        int hi = te_imax(te_prev_nlines - 1, nlines - 1);
+        if (lo < scroll) lo = scroll;
+        if (hi > scroll + rows - 1) hi = scroll + rows - 1;
+        if (lo > hi) {
+            /* Nothing in the visible TEXT changed by this file's own
+             * accounting (e.g. Ctrl+S alone landed with no new keystroke) --
+             * still let aui's own generic diff decide: it independently
+             * covers the status bar's "saved"/"Ctrl+S" swap, which this
+             * file's own line-range math knows nothing about. */
+            aui_end_rect(0, 0, 0, 0);
+        } else {
+            int y0 = pad + (lo - scroll) * lh;
+            int y1 = pad + (hi - scroll + 1) * lh;
+            aui_end_rect(0, y0, W, y1 - y0);
+        }
+    }
+
+    te_prev_valid = 1;
+    te_prev_scroll = scroll; te_prev_cl = cl; te_prev_nlines = nlines;
+    te_prev_w = W; te_prev_h = H; te_prev_dark = aui_is_dark();
 }
 
 void app_main(void)

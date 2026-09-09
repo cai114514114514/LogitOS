@@ -58,14 +58,14 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import PPM, Session, configure, dock_icon, pt   # noqa: E402
+from qmp_ui import PPM, Session, configure, dock_icon_of, pt  # noqa: E402
 from qmp_repaint import CLOSE_RGB, boot, perf_samples       # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-TEXTEDIT_SLOT = 1
-TERMINAL_SLOT = 3
-
+# TEXTEDIT_SLOT = 1 / TERMINAL_SLOT = 3 used to live here. The two windows this
+# driver damages are opened by name now (see the launch below), and the dock
+# sweep hovers named tiles, so no integer here depends on the pack list.
 
 def diff_pixels(a, b, skip_top):
     """Count and bound the pixels that differ between two frames below `skip_top`."""
@@ -204,9 +204,14 @@ def main(argv):
         time.sleep(5 * slow)
         ui = Session(sock, serial=serial)
 
-        ui.click_at(*dock_icon(TEXTEDIT_SLOT))
+        # Both windows are opened through launch_app, which clicks the tile the
+        # GUEST names and refuses unless the guest reports that app launched:
+        # the damage measurements below are about THIS desktop's repaint, and a
+        # click that silently opened the neighbouring app would have measured
+        # the wrong windows -- green, all nineteen checks, wrong subject.
+        ui.launch_app("textedit")
         time.sleep(6 * slow)
-        ui.click_at(*dock_icon(TERMINAL_SLOT))
+        ui.launch_app("terminal")
         time.sleep(12 * slow)
 
         p = os.path.join(tmp, "p.ppm")
@@ -275,8 +280,11 @@ def main(argv):
             time.sleep(0.6 * slow)
 
         def i_dock():
-            for k in (0, 4, 8, 3, 6, 0):
-                ui.goto(*dock_icon(k), settle=0.12)
+            # Named tiles, not indices: a sweep over the dock band should cross
+            # icons, and an index past the app count silently hovers wallpaper.
+            for name in ("clock", "widgets", "browser", "terminal", "preview",
+                         "clock"):
+                ui.goto(*ui.dock_icon_of(name), settle=0.12)
             time.sleep(0.4 * slow)
 
         def i_scroll():

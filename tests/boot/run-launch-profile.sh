@@ -65,7 +65,19 @@ printf 'echo reset > /dev/kprof\n' > "$FIFO"
 printf 'echo start > /dev/kprof\n' > "$FIFO"
 sleep 1
 
-python3 "$ROOT/tests/qmp/qmp_launch_click.py" "$SOCK" "$SLOT" "$SETTLE" || true
+# QMP_SERIAL_LOG gives the driver the same serial this script already writes to
+# $LOG, so it can (a) look the app's tile up on the guest's [wm] dock line and
+# (b) verify the [wm] launched line -- a profile of the wrong app, delivered
+# because a coordinate went stale, reads as a profile of the named one. The
+# click must happen exactly once, so this REPLACED the old bare invocation
+# rather than joining it.
+QMP_SERIAL_LOG="$LOG" python3 "$ROOT/tests/qmp/qmp_launch_click.py" "$SOCK" "$SLOT" "$SETTLE"
+DRIVER_RC=$?
+# The driver's verdict IS part of this script's verdict: it printed FAIL and
+# exited 1 on a wrong-app launch while the harness went on to print a profile
+# and exit 0 -- which is the launch-profile version of "green while clicking
+# the wrong app". The profile is still printed (it diagnoses what actually
+# ran), but the exit code reports the driver's, not the printer's.
 
 printf 'echo stop > /dev/kprof\n' > "$FIFO"
 sleep 1
@@ -149,3 +161,4 @@ print()
 print("non-idle samples: %d of %d (%.1f%%)" % (work, tot, 100.0 * work / tot if tot else 0))
 PY
 echo "================================="
+exit "$DRIVER_RC"

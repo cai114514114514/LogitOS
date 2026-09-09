@@ -76,7 +76,10 @@ XRES, YRES = 1280, 800
 # a grid of four identically sized rectangles would let a broken aspect fit pass
 # unnoticed. Clock is small and nearly square, Terminal is wide, TextEdit is
 # tall-ish, and the Finder is the largest of the four.
-LAUNCH_SLOTS = [0, 1, 3]        # clock, textedit, terminal (qmp_ui's dock order)
+# The four windows are named apps, not slots: LAUNCH_SLOTS = [0, 1, 3] held
+# scan_apps indices that moved under it the day the pack list grew. The tiles
+# come off the guest's [wm] dock line now (launch_app / dock_icon_of).
+LAUNCH_APPS = ["clock", "textedit", "terminal"]
 
 
 # ---------------------------------------------------------------------------
@@ -396,9 +399,13 @@ def main(argv):
             return {k: v for k, v in windows(read(serial)).items() if v[2] > 0}
 
         live = wait_windows(1)
-        for k, slot in enumerate(LAUNCH_SLOTS):
-            x, y = qmp_ui.dock_icon(slot)
-            ses.click_at(x, y, settle=0.4)
+        for k, name in enumerate(LAUNCH_APPS):
+            # Clock is already live (wm_run launches it at boot), so its dock
+            # click is the single-instance re-raise and the guest prints the
+            # focus line, not a launch line -- allow_focus. A click aimed at
+            # the WRONG tile would launch that app and name it, failing here,
+            # before the four-window geometry below could measure nonsense.
+            ses.launch_app(name, allow_focus=(name == "clock"))
             live = wait_windows(k + 2)
         time.sleep(2.0)                       # let the last open pop settle
         wins = windows(read(serial))
@@ -568,8 +575,9 @@ def main(argv):
             g.check(last["alpha"] < 128 <= first["alpha"],
                     "and faded out over the second half of the flight",
                     "alpha %d -> %d" % (first["alpha"], last["alpha"]))
-            # It has to land ON the dock icon, not near it.
-            dx, dy = qmp_ui.dock_icon(0)     # any icon: the y band is shared
+            # It has to land ON the dock icon, not near it. The y band is
+            # shared, but "icon 0" is a coordinate only the guest knows now.
+            dx, dy = ses.dock_icon_of("clock")
             g.check(abs((last["rect"][1] + last["rect"][3] // 2) - dy) < 40,
                     "the flight lands in the dock's icon row",
                     "y %d vs dock row %d" % (last["rect"][1] + last["rect"][3] // 2, dy))
@@ -580,8 +588,8 @@ def main(argv):
         # RESTORE: the dock icon flies it back out.
         mark4 = len(read(serial))
         # Which dock slot did it fly to? Read it off the flight itself.
-        slot_x = mf[-1]["rect"][0] + mf[-1]["rect"][2] // 2 if mf else qmp_ui.dock_icon(0)[0]
-        ses.goto(slot_x, qmp_ui.dock_icon(0)[1], settle=0.2)
+        slot_x = mf[-1]["rect"][0] + mf[-1]["rect"][2] // 2 if mf else ses.dock_icon_of("clock")[0]
+        ses.goto(slot_x, ses.dock_icon_of("clock")[1], settle=0.2)
         ses.click(hold=0.02)
         rshots = burst(ses, outdir, "restore_shot", n=12)
         time.sleep(2.5)

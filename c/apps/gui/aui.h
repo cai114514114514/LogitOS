@@ -222,7 +222,16 @@ void aui_feed_done(void);                    /* clear it after the frame */
 int  aui_want_repaint(void);
 
 void aui_begin(unsigned bg);                 /* reset widget ids + clear the window */
-void aui_end(void);                          /* present */
+void aui_end(void);                          /* present: gui_flush() or gui_flush_rect(), whichever this frame's own draw-call diff proved honest -- see aui.c section 5a-flush */
+/* Same as aui_end(), plus ONE caller-supplied damage rect (window-local
+ * points, same origin as gui_rect's) UNIONED into that frame's own diff --
+ * for a caller who has already computed narrower damage than aui's generic
+ * per-primitive tracking can see on its own, because it paints outside any
+ * aui_* wrapper (textedit.c's raw gui_text_run() calls for its paragraph
+ * text are the reason this exists). w<=0||h<=0 is "no extra hint": behaves
+ * exactly like aui_end(). Never narrows what aui_end() alone would have
+ * flushed, only ever widens it. */
+void aui_end_rect(int x, int y, int w, int h);
 /* The window size aui lays out against. Set it once after gui_create() and
  * aui_end() can size scrollbars, centre dialogs and place tooltips; without it
  * those fall back to a 640x480 assumption. */

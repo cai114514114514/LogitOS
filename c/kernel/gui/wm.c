@@ -881,18 +881,34 @@ static int cascade;
 /* app registry built by scanning the disk for *.aex
  *
  * `hidden` is AEX_CAT_TEST, and only that -- "built for a harness, not for a
- * person" (aex.h). It still gets a slot (scan_apps still counts it into
- * nreg) and it is still PAINTED (draw_dock does not consult `hidden` at all):
- * dock_geom() centres the whole strip on nreg and every other icon's x is
- * `slot * (isz + gap)` from that centre, so dropping the slot -- or leaving a
- * blank gap where it was -- would shift BROWSER_SLOT/GALLERY_SLOT/
- * SETTINGS_SLOT and read as a structural defect to the pixel-precision dock
- * gates (qmp_desktop_look.py's dock_pitch/rim checks expect ELEVEN evenly
- * spaced, filled tiles), on a disk that never changed which apps are ON it.
- * What `hidden` removes is INTERACTION: dock_hover_at() will never return
- * this slot (no magnify, no tooltip) and the click test below will never
- * launch it. A tile nothing can hover or click is exactly as unlaunchable as
- * a missing one, without moving a pixel anything else measures. */
+ * person" (aex.h). An app tagged this way still gets a slot (scan_apps still
+ * counts it into nreg) and is still PAINTED (draw_dock does not consult
+ * `hidden` at all): dock_geom() centres the whole strip on nreg and every
+ * other icon's x is `slot * (isz + gap)` from that centre, so on a disk that
+ * packs one, dropping the slot -- or leaving a blank gap where it was --
+ * would shift every OTHER icon's position. What `hidden` removes is
+ * INTERACTION: dock_hover_at() will never return this slot (no magnify, no
+ * tooltip) and the click test below will never launch it. A tile nothing can
+ * hover or click is exactly as unlaunchable as a missing one, without moving
+ * a pixel anything else measures.
+ *
+ * STATUS, DATED. This used to matter on $(DISK) itself: until 2026-09-02
+ * Gallery shipped AEX_CAT_TEST specifically so BROWSER_SLOT/GALLERY_SLOT/
+ * SETTINGS_SLOT (three hand-maintained constants that lived in qmp_ui.py at
+ * the time) would not have to move and qmp_desktop_look.py's dock_pitch/rim
+ * checks -- which back then counted a hardcoded ELEVEN evenly spaced, filled
+ * tiles -- would not read a blanked slot as a structural defect. Both of
+ * those reasons are gone now: qmp_ui.py derives every slot and the app count
+ * from THIS file's own dock_publish() line rather than restating them, and
+ * qmp_desktop_look.py counts whatever that line says (DOCK_N) rather than a
+ * constant. So Task E's Widgets and Gallery removal (see the APPS/APP_RULE
+ * comments in the Makefile) could just DROP both apps from the pack list
+ * outright, and did -- the product disk carries no AEX_CAT_TEST app and no
+ * `hidden` token at all today. This field and the mechanism above it are kept
+ * because they are still correct, general machinery: anything that DOES want
+ * a Dock tile a harness can see but nothing can click still has a one-line
+ * way to ask for it (mkaex.py --category test), unrelated to whether it is
+ * also on $(DISK) by default. */
 struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; int hidden; };
 static struct regent reg[MAXWIN];
 static int nreg;
@@ -5448,7 +5464,7 @@ static void wm_process_mouse(const struct inev *in)
  * THE FORMAT IS CHOSEN FOR THE READER, and the reader is Python in
  * tests/qmp/ (qmp_ui.py:parse_dock -- keep the two in step):
  *
- *   [wm] dock 11 apps: 0=clock.aex,shown 1=textedit.aex,shown ... 9=gallery.aex,hidden
+ *   [wm] dock 9 apps: 0=clock.aex,shown 1=textedit.aex,shown ... 8=settings.aex,shown
  *
  * one line; one whitespace-separated token per slot; each token is
  * `slot=file,visibility` in that fixed order; no field can contain a space
@@ -5457,13 +5473,37 @@ static void wm_process_mouse(const struct inev *in)
  * by people on a serial log as well as by a parser, and because it answers a
  * question a driver otherwise diagnoses as a slow launch: an AEX_CAT_TEST tile
  * is painted but can never be hovered or clicked, so a click on it does
- * nothing, forever, and looks identical to an app that is merely slow. */
+ * nothing, forever, and looks identical to an app that is merely slow.
+ * (Nothing ships AEX_CAT_TEST on $(DISK) as of Task E, 2026-09-02 -- see
+ * struct regent's comment below -- so `hidden` is expected to read `shown` on
+ * every token of the product's own line; the field stays general for any
+ * disk that packs one.) */
 static void dock_publish(void)
 {
+#ifdef DOCK_NEGCTL_PUBLISH_STALE
+    /* NEGATIVE CONTROL for test-dock-map (tests/dock.mk: test-dock-map-negctl,
+     * driven by tests/qmp/qmp_dock_negctl.py). Print ONE APP FEWER than nreg
+     * actually holds: the header number and the token count still agree with
+     * EACH OTHER (n, not nreg), so the line parses as a perfectly ordinary,
+     * self-consistent dock -- it is simply short by exactly the kind of lie a
+     * hand-maintained NAPPS used to tell. scan_apps() is untouched, so the
+     * dropped app is still in reg[], still drawn by draw_dock() at its real,
+     * nreg-wide centred position, and still fully clickable -- only the
+     * REPORT is wrong. A harness that clicks every slot the line names and
+     * calls it done never notices; one that also checks whether a REAL tile
+     * exists one slot past the line's own count catches it. That is exactly
+     * what the count check has to do, and this is how it is proven to. */
+    int n = nreg > 0 ? nreg - 1 : 0;
+    kprintf("[wm] dock %d apps:", n);
+    for (int i = 0; i < n; i++)
+        kprintf(" %d=%s,%s", i, reg[i].file, reg[i].hidden ? "hidden" : "shown");
+    kprintf("\n");
+#else
     kprintf("[wm] dock %d apps:", nreg);
     for (int i = 0; i < nreg; i++)
         kprintf(" %d=%s,%s", i, reg[i].file, reg[i].hidden ? "hidden" : "shown");
     kprintf("\n");
+#endif
 }
 
 static void scan_apps(void)
@@ -5504,11 +5544,14 @@ static void scan_apps(void)
             reg[nreg].color = (h->icon_r || h->icon_g || h->icon_b)
                 ? rgb(h->icon_r, h->icon_g, h->icon_b)
                 : rgb(pal[nreg % 7][0], pal[nreg % 7][1], pal[nreg % 7][2]);
-            /* AEX_CAT_TEST apps (Gallery on the shipped disk) keep their slot
-             * and their tile's ink but lose the ability to be hovered or
-             * clicked -- see the comment on `struct regent`. h->category is
-             * read straight off the raw header already sitting in `hb`;
-             * aex_info() does not surface it. */
+            /* AEX_CAT_TEST apps keep their slot and their tile's ink but lose
+             * the ability to be hovered or clicked -- see the comment on
+             * `struct regent`. Nothing on the shipped disk is tagged this way
+             * as of Task E (2026-09-02: Gallery no longer ships at all rather
+             * than shipping hidden -- see the Makefile); the mechanism stays
+             * general for whatever next asks for a harness-only tile.
+             * h->category is read straight off the raw header already sitting
+             * in `hb`; aex_info() does not surface it. */
             reg[nreg].hidden = (h->category == AEX_CAT_TEST);
             nreg++;
         }

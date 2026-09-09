@@ -196,7 +196,13 @@ int icon_for_app(const char *name, const char *ext)
     if (seq(name, "clock.aex"))    return ICON_CLOCK;
     if (seq(name, "textedit.aex")) return ICON_DOC;
     if (seq(name, "monitor.aex"))  return ICON_CHART;
-    if (seq(name, "widgets.aex"))  return ICON_GRID;
+    /* widgets.aex -> ICON_GRID removed 2026-09-02 (Task E): Widgets no longer
+     * ships as an app (see the Makefile's APPS list), so nothing scan_apps()
+     * finds can ever match this name any more. ICON_GRID itself (the icon
+     * table entry two lines below, `ic_grid`) is left in place -- it is
+     * vector geometry, not app-specific, and Finder's own GICON_GRID (a
+     * different, ring-3 enum in logit.h) still uses a same-shaped icon for
+     * generic .aex files and the volume icon, unrelated to this lookup. */
     if (seq(name, "preview.aex"))  return ICON_IMAGE;
     if (seq(name, "studio.aex"))   return ICON_CODE;
     if (seq(name, "browser.aex"))  return ICON_GLOBE;

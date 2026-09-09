@@ -52,10 +52,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
-from qmp_ui import PPM, Session, dock_icon
+from qmp_ui import PPM, Session
 
 ISO, DISK, PREFIX = sys.argv[1], sys.argv[2], sys.argv[3]
-TERMINAL_SLOT = 3                 # clock textedit monitor terminal ...
+# TERMINAL_SLOT = 3 used to live here; the tile now comes from the guest's own
+# [wm] dock line -- see the launch below.
 
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)
 ser = tempfile.mktemp(suffix=".ser")
@@ -122,7 +123,8 @@ if b"LOGIT_BOOT_OK" not in log:
     bail("never booted")
 time.sleep(2.0)
 
-s = Session(sock, serial=serlog)
+s = Session(sock, serial=serlog,
+            serial_text_fn=lambda: bytes(log).decode("utf-8", "replace"))
 
 # The dictionary line first: without it the IME types nothing and the Terminal
 # would show `nihao `, which is the ASCII control's expected output, not this
@@ -135,14 +137,18 @@ for line in bytes(log).decode("utf-8", "replace").splitlines():
     if "[text] /fonts/" in line:
         print("       " + line.strip())
 
-launched = False
-for count in (11, 10, 12, 9, 13, 8):
-    x, y = dock_icon(TERMINAL_SLOT, count)
-    s.goto(x, y); s.click()
-    time.sleep(4.0)
-    if b"launched Terminal" in log or b"terminal" in log.lower():
-        launched = True
-        break
+# The old loop accepted b"terminal" in log.lower() as its oracle -- and the
+# [wm] dock line printed at BOOT contains terminal.aex, so the oracle was
+# satisfied before the click happened and the check could not fail. It also
+# re-guessed the app count per retry (11, 10, 12, ...). launch_app marks the
+# log, clicks the tile the guest names for terminal.aex, and requires a
+# launched line naming Terminal AFTER the mark.
+try:
+    s.launch_app("terminal")
+    launched = True
+except AssertionError as e:
+    print("       " + str(e))
+    launched = False
 chk(launched, "Terminal launched from the dock")
 time.sleep(3.0)
 s.screendump(PREFIX + "-0-open.ppm")

@@ -30,13 +30,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qmp_ui
-from qmp_ui import PPM, Session, dock_icon
+from qmp_ui import PPM, Session
 
 ISO = sys.argv[1]
 DISK = sys.argv[2]
 OUT = sys.argv[3] if len(sys.argv) > 3 else "/tmp/richterm.ppm"
 
-TERMINAL_SLOT = 3            # clock textedit monitor terminal ...
+# TERMINAL_SLOT = 3 used to live here; the tile now comes from the guest's own
+# [wm] dock line -- see launch_terminal() below.
 
 # The terminal's LIGHT palette, from c/apps/gui/terminal.c. g_ui_dark defaults to
 # 0, so this is what boots. Every colour used below is a SOLID fill (rects and
@@ -206,7 +207,7 @@ if not ok:
     sys.exit(1)
 pump(2.0)
 
-s = Session(sock)
+s = Session(sock, serial_text_fn=lambda: bytes(log).decode("utf-8", "replace"))
 
 # ------------------------------------------------------------- typing ------
 # PS/2 has a one-byte buffer, so key injection has to be paced or characters go
@@ -253,22 +254,19 @@ print("launching the Terminal from the dock")
 def launch_terminal():
     """Click the Terminal's dock icon, and CHECK that it launched.
 
-    The dock is centred on the icon count, so every icon moves the day somebody
-    adds an app -- which is exactly what happened: a tenth icon shifted the
-    whole row 32 px left, the click landed in a gap, and nineteen pixel
-    assertions failed one after another saying nothing about the terminal. The
-    guest announces `[wm] launched Terminal` on the serial console, so the
-    launch is verifiable rather than assumed; if the first geometry misses, try
-    the neighbouring icon counts."""
-    for n in (qmp_ui.NAPPS, qmp_ui.NAPPS + 1, qmp_ui.NAPPS + 2,
-              qmp_ui.NAPPS + 3, qmp_ui.NAPPS - 1):
-        s.click_at(*dock_icon(TERMINAL_SLOT, n))
-        time.sleep(2.5)
-        if b"launched Terminal" in log:
-            if n != qmp_ui.NAPPS:
-                print(f"  (the dock holds {n} icons, not qmp_ui.NAPPS={qmp_ui.NAPPS})")
-            return True
-    return False
+    the guest announces `[wm] launched Terminal` on the serial console, so the
+    launch is verified rather than assumed -- launch_app marks the log, clicks
+    the tile the GUEST names for terminal.aex, and refuses unless Terminal is
+    what came up after the mark. (The guessed-count retry loop this replaced
+    existed because the icon count was a constant in Python and the dock is
+    centred: a tenth icon moved the whole row 32 px and every miss landed in a
+    gap that looks exactly like a slow launch.)"""
+    try:
+        s.launch_app("terminal")
+        return True
+    except AssertionError as e:
+        print("  " + str(e))
+        return False
 
 
 if not launch_terminal():
