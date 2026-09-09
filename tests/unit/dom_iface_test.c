@@ -47,6 +47,21 @@ int bfetch_resolve(const char *base, const char *ref, char *out, int max)
 { (void)base; if (!ref || !out || max <= 0) return 0; snprintf(out, (size_t)max, "%s", ref); return 1; }
 int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
 { (void)ref; (void)out; (void)outlen; return 0; }
+/* BASELINE MERGE FIX (2026-09-02): js_module.c's mod_loader() used to call
+ * bfetch_sync() alone (stubbed above); the same-day module-graph-prefetch
+ * change (js_module.c's mod_compile_and_prefetch()) made it call res_fetch()
+ * instead and added a call to bfetch_prefetch()/bfetch_prefetch_wait() ahead
+ * of it -- all three only ever defined in browser_rt.c, which this harness
+ * does not link (same reason it never linked bfetch_sync's real body: no
+ * network off the machine). Without these three this test does not fail an
+ * assertion, it fails to LINK -- undefined symbols, caught by baseline. No
+ * case here drives a JS module import, so "always report not found" (the
+ * same answer bfetch_sync above already gave, and the same one
+ * tests/unit/wpt_test.c's res_fetch() gives) is a real answer, not a lie. */
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) { }
+int  res_fetch(const char *src, unsigned char **buf, int *len)
+{ (void)src; (void)buf; (void)len; return -1; }
 
 static int fails, checks;
 

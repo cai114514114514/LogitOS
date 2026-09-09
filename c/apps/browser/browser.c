@@ -3884,6 +3884,86 @@ static void draw_select_popup(void)
     gui_clip(0, 0, 0, 0);
 }
 
+/* Is any overlay active that browser_paint()'s item diff does NOT know
+ * about? draw_doc_selection/draw_ce_overlay/draw_select_popup and the
+ * DevTools/History/Bookmarks/Downloads side panel are all drawn by THIS
+ * file, straight over browser_paint()'s output, from state browser_paint.c
+ * never sees (psel_bounds, ce_caret_box, popup_live, g_panel) -- so its
+ * dirty-rect diff cannot account for any of them changing. redraw_page()
+ * below calls this FIRST and falls back to the full redraw() whenever it is
+ * true, rather than computing a second rectangle for whichever overlay is
+ * live: that second rectangle would be exactly the one-jar-two-doors trap
+ * (AGENTS.md rule 3) this whole mechanism exists to avoid. These three
+ * states are rare on the events redraw_page() is offered for (a scroll, a
+ * page keystroke, a hover) -- falling back to the wide path on them costs
+ * nothing worth measuring. */
+static int overlays_active(void)
+{
+    int a, b, c, d;
+    if (psel_bounds(&a, &b, &c, &d)) return 1;
+    if (FOCUS_ROUTING) { int cx, cy, ch; if (ce_caret_box(&cx, &cy, &ch)) return 1; }
+    if (popup_live()) return 1;
+    if (g_panel) return 1;
+    return 0;
+}
+
+/* THE THIRD NARROW CASE, alongside redraw_chrome() above: the caller (the
+ * event loop below) has already proven -- via page_only_repaint /
+ * timer_page_only, checked together with overlays_active() -- that this
+ * frame can only have changed the PAGE VIEWPORT: a scroll, a keystroke into
+ * a focused page control, a hover-driven style/DOM change, or the page's own
+ * timer mutating itself. Never the tab strip, the address bar or the status
+ * line. Those stay exactly the pixels they already are, so this function
+ * does not touch them in the common case, and reports to the compositor
+ * only what browser_paint_dirty_rect() -- the ONE place that decides what
+ * changed, see its own header in browser_paint.h -- says actually differs. */
+static void redraw_page(int editing)
+{
+    browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    draw_doc_selection();
+    draw_ce_overlay();
+    draw_select_popup();
+    int x, y, w, h;
+    int r = browser_paint_dirty_rect(&x, &y, &w, &h);
+    if (r == -1) {
+        /* NO HONEST DIFF WAS AVAILABLE (the first pass since a resize, or
+         * the snapshot buffers failed to grow) -- browser_paint() above
+         * already drew the page correctly, but nothing upstream of this
+         * call has proven the CHROME (tab strip, address bar, status line)
+         * unchanged, only that the triggering event's classification made
+         * it eligible to TRY the narrow path. Draw the chrome now rather
+         * than assume, then report the whole canvas -- exactly what a
+         * page-only frame always got before this mechanism existed.
+         * browser_paint() itself is NOT repeated; only the cheap chrome
+         * draws are. This path is rare by construction: EV_RESIZE always
+         * takes the general redraw(), never this function, so the only way
+         * here is the very first frame after this app starts drawing. */
+        draw_tab_strip();
+        draw_address_bar(editing);
+        gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
+        gui_text(10, win_h - 16, rgb(110, 110, 120), status);
+        gui_flush();
+        return;
+    }
+    if (r == 0) return;   /* a rect WAS computed and it is empty: nothing changed, nothing to flush */
+#ifdef PAINT_DIRTY_NEGCTL_SHRINK
+    /* THE NEGATIVE CONTROL for this whole mechanism, built with
+     * -DPAINT_DIRTY_NEGCTL_SHRINK: deliberately reports a rectangle SMALLER
+     * than what browser_paint_dirty_rect() actually computed -- half the
+     * height, floored at 1px so a thin change does not collapse to h<=0 and
+     * get read as "whole canvas" by SYS_GUI_FLUSH_RECT's own contract
+     * (logit_abi.h says so explicitly). If the compositor is honouring the
+     * rectangle this app reports rather than quietly recompositing more than
+     * it was told, an under-report here MUST leave a visible band of stale
+     * pixels on screen after a scroll -- watching that happen, with this
+     * flag ON, is what earns the right to trust any number measured with it
+     * OFF (AGENTS.md rule 5: a control that cannot be watched failing is
+     * worse than no control). */
+    h = h / 2; if (h < 1) h = 1;
+#endif
+    gui_flush_rect(x, y, w, h);
+}
+
 /* Activate a control the way a click or Space/Enter does. */
 static int control_activate(struct node *n, int *navigated)
 {
@@ -4266,10 +4346,22 @@ void app_main(void)
          * trusted under; a multi-event burst always falls back to redraw(),
          * because proving every event in it was chrome-only would mean
          * auditing this whole loop instead of two branches in it. */
-        int nev = 0, chrome_edit_only = 0;
+        /* PAGE-ONLY REPAINT TRACKING, the sibling of chrome_edit_only just
+         * above and held to the SAME discipline: reset at the top of every
+         * iteration, set true by exactly the branches proven below to touch
+         * nothing outside the page viewport (scroll, a keystroke into a
+         * focused page form control, a hover-driven style/DOM change), so
+         * after the loop it holds only the LAST event's classification and
+         * is trusted only when nev == 1 -- a multi-event burst always falls
+         * back to redraw(), for the same reason chrome_edit_only does: an
+         * event that disqualifies the narrow path (a click, a resize, a
+         * navigation) does not clear a flag some EARLIER event in the same
+         * burst had already set. */
+        int nev = 0, chrome_edit_only = 0, page_only_repaint = 0;
         while (!navigated && poll_event(&e)) {
             nev++;
             chrome_edit_only = 0;
+            page_only_repaint = 0;
             sync_scroll();
             if (e.type == EV_CLOSE) {
                 /* Record where the user was BEFORE tearing anything down: the
@@ -4670,11 +4762,21 @@ void app_main(void)
                     if (!allow) need = 1;
                 }
 
-                /* The focused control gets first refusal on everything else. */
+                /* The focused control gets first refusal on everything else.
+                 * THE "keystroke into a page input" CASE the task names: a
+                 * character (or Backspace/Delete/arrow) landing in a text
+                 * field/textarea changes only that control's own painted box
+                 * -- no chrome, no other page content -- so this is eligible
+                 * for the narrow repaint. Left unconditional on `navigated`
+                 * here on purpose: the dispatch below already re-checks
+                 * `!navigated`, and duplicating that guard in every branch
+                 * that sets this flag is the two-doors trap the flag itself
+                 * exists to avoid (one gate, read once, at the bottom). */
                 if (FOCUS_ROUTING && allow && !editing && fnode && fc_kind(fnode) != FC_NONE) {
                     if (control_key(fnode, k, &e, &navigated)) {
                         allow = 0;
                         need = 1;
+                        page_only_repaint = 1;
                     }
                 }
 
@@ -5112,6 +5214,21 @@ void app_main(void)
                     need = 1;
                 }
             } else if (e.type == EV_MOUSE_MOVE) {
+                /* THE "hover style change" CASE the task names, plus plain
+                 * mousemove dispatch and drag-selection extension below --
+                 * all three can only touch the page viewport (a mouseover/
+                 * mouseout handler restyling elements, or the page-text
+                 * selection overlay), never the tab strip, address bar or
+                 * status line, so this whole branch qualifies for the narrow
+                 * repaint. The one thing it does NOT know here is whether a
+                 * selection/contenteditable/dropdown overlay is active --
+                 * those are drawn by browser.c, not tracked by browser_
+                 * paint.c's item diff, and marking them dirty by hand here
+                 * would be computing the rectangle a SECOND way (one jar, two
+                 * doors). redraw_page() below checks overlays_active() itself
+                 * and falls back to a full redraw() when any of them are, so
+                 * this flag can stay unconditional. */
+                page_only_repaint = 1;
                 /* Motion is the one event that arrives continuously, so it is
                  * the one worth not paying for: with no listeners registered
                  * anywhere, building an Event per sample is pure waste. Inline
@@ -5185,10 +5302,26 @@ void app_main(void)
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
                 sync_scroll();
                 need = 1;
+                /* THE "scroll" CASE the task names. A wheel event never
+                 * touches the tab strip, address bar or status line -- only
+                 * `scroll`, which only moves what browser_paint() draws. */
+                page_only_repaint = 1;
             }
             if (!navigated && settle_frame()) need = 1;   /* a handler rewrote the DOM */
         }
 
+        /* THE "mutate" CASE the task names: `timer_page_only` tracks whether
+         * whatever this timer pass did to `need` can ONLY have changed the
+         * page viewport. Unlike page_only_repaint above, this is not reset
+         * per-event (nothing here IS an event -- `nev` can be 0, a purely
+         * idle tick with the desktop otherwise untouched, which is exactly
+         * the b-mutate scenario CLAUDE.md's own table measures) -- it is
+         * local to this one pass and combined with `nev == 0` at the
+         * dispatch below, the same way page_only_repaint is combined with
+         * `nev == 1`: two flags, two disjoint preconditions, one shared
+         * reading at the bottom (rule 3's "one door" applied to WHEN the
+         * narrow path may run, not just to the rectangle itself). */
+        int timer_page_only = 0, timer_chrome_touched = 0;
         /* Due timers + animation frames. `js_page_pending()` is a pointer test,
          * so an idle page does not even read the clock -- the loop is exactly as
          * hot as it was before timers existed. */
@@ -5197,8 +5330,19 @@ void app_main(void)
                 /* A timer/rAF callback can inject a <script> too -- drain the
                  * queue on the frame loop, never on the callback's own stack. */
                 if (g_pending_n > 0) run_pending_inserted_scripts(url);
-                if (settle_frame()) need = 1;
-                if (js_page_output_len() != js_out_shown) { status_from_js("loaded"); need = 1; }
+                if (settle_frame()) { need = 1; timer_page_only = 1; }
+                /* status_from_js() rewrites the STATUS LINE (chrome, not page
+                 * content) AND, as a side effect, resets js_out_shown to make
+                 * its own trigger condition false again -- so
+                 * `timer_chrome_touched` is a separate flag rather than a
+                 * second read of that same now-satisfied condition below;
+                 * re-deriving "did chrome change" from js_page_output_len()
+                 * after calling status_from_js would read NO every time,
+                 * silently re-admitting a pass that touched chrome only a few
+                 * lines above. */
+                if (js_page_output_len() != js_out_shown) {
+                    status_from_js("loaded"); need = 1; timer_chrome_touched = 1;
+                }
                 /* The CSS animation tick ran inside run_due and overlayed
                  * values on cstyle; the frame it is owed depends on WHAT
                  * moved. opacity is snapshotted into the display list at
@@ -5206,17 +5350,19 @@ void app_main(void)
                  * transform-only frame is read live by the painter and
                  * costs only the repaint. css_anim_needs_layout() answers
                  * 2 / 1 / 0 and clears itself, so a pass where nothing
-                 * animated buys neither. */
+                 * animated buys neither. A CSS animation frame cannot touch
+                 * chrome either way, so it is also page-only. */
                 if (LOGIT_HAVE(css_anim_needs_layout)) {
                     int fk = css_anim_needs_layout();
                     if (fk == 2 && g_root) {
                         layout_page(g_root, win_w);
                         ph = layout_height();
                     }
-                    if (fk) need = 1;
+                    if (fk) { need = 1; timer_page_only = 1; }
                 }
             }
         }
+        if (timer_chrome_touched) timer_page_only = 0;
 
         /* A navigation the LIVE page asked for -- a click handler setting
          * location.href, a timer calling location.replace, a router. Taken
@@ -5239,19 +5385,37 @@ void app_main(void)
             }
         }
 
-        /* CHROME-ONLY DISPATCH. nev == 1 && chrome_edit_only means the single
-         * event this burst processed was proven (by the two branches above)
-         * to have touched nothing but the address bar's text and caret; the
-         * take_script_nav() check just above this line is the only other
-         * thing that can set `need` or `navigated` between the burst and
-         * here, so `!navigated` covers it too. Anything else -- a multi-event
-         * burst, a scroll, a click, a resize, a DOM mutation, a navigation --
-         * takes the full redraw() it always has, unchanged. This is a
-         * PERFORMANCE choice, never a correctness one: when the classification
-         * is not airtight, the fallback is the whole canvas, exactly as
-         * before this change existed. */
+        /* CHROME-ONLY / PAGE-ONLY DISPATCH. nev == 1 && chrome_edit_only means
+         * the single event this burst processed was proven (by the two
+         * branches above it) to have touched nothing but the address bar's
+         * text and caret. nev == 1 && page_only_repaint means the single
+         * event was one of the three UI-driven page-only cases (scroll, a
+         * page control keystroke, a hover-driven change); nev == 0 &&
+         * timer_page_only means NO event fired this pass at all and the only
+         * thing that set `need` was the page's own timer, which cannot touch
+         * chrome either. The take_script_nav() check just above this line is
+         * the only other thing that can set `need` or `navigated` between the
+         * burst and here, so `!navigated` covers all three branches.
+         *
+         * overlays_active() is checked ONLY for the page-only branch: the
+         * chrome branch draws exactly the address bar and nothing browser_
+         * paint.c's item diff was ever asked about, so an active selection/
+         * caret/popup/panel is irrelevant to it, and calling the check there
+         * too would be pure waste on the hot path (typing in the address
+         * bar) this file's very first comment on redraw_chrome() explains.
+         *
+         * Anything else -- a multi-event burst, a click, a resize, a
+         * navigation, or a page-only event with an overlay live -- takes the
+         * full redraw() it always has, unchanged. This is a PERFORMANCE
+         * choice, never a correctness one: when the classification is not
+         * airtight, the fallback is the whole canvas, exactly as before this
+         * change existed. */
         if (need) {
             if (nev == 1 && chrome_edit_only && !navigated) redraw_chrome(editing);
+            else if (!navigated &&
+                     ((nev == 1 && page_only_repaint) || (nev == 0 && timer_page_only)) &&
+                     !overlays_active())
+                redraw_page(editing);
             else redraw(editing);
         }
 

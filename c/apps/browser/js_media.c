@@ -39,6 +39,7 @@
 #include "logit.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 int printf(const char *, ...);
 
@@ -311,6 +312,25 @@ static JSValue js_ms_ctor(JSContext *ctx, JSValueConst nt, int argc, JSValueCons
     return obj;
 }
 
+/* ---- measurement breadcrumbs ------------------------------------------------
+ * Every line the serial console carries here answers a question a page's player
+ * stack asked: WHAT it asked (the type string, the URL, the byte count) and
+ * WHAT this browser answered. They are kept rather than stripped after the
+ * first debug session because the questions are exactly the ones a field report
+ * cannot answer after the fact -- "did the site ever ask whether AV1 decodes?"
+ * is the difference between a codec bug and a negotiation bug, and the two are
+ * fixed in different files. One line per call, no per-pixel noise: the rate is
+ * bounded by what a page does, not by the pump. */
+static void mlog(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    printf("[media] ");
+    vprintf(fmt, ap);
+    printf("\n");
+    va_end(ap);
+}
+
 static JSValue js_ms_isTypeSupported(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
@@ -318,6 +338,7 @@ static JSValue js_ms_isTypeSupported(JSContext *ctx, JSValueConst t, int argc, J
     const char *s = JS_ToCString(ctx, argv[0]);
     if (!s) return JS_FALSE;
     int ok = mse_type_supported(s);
+    mlog("isTypeSupported(\"%s\") -> %s", s, ok ? "true" : "false");
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, ok);
 }
@@ -331,6 +352,7 @@ static JSValue js_ms_addSourceBuffer(JSContext *ctx, JSValueConst t, int argc, J
     if (!type) return JS_EXCEPTION;
     int err = 0;
     sbuf *sb = mse_add_source_buffer(ms, type, &err);
+    mlog("addSourceBuffer(\"%s\") -> %s (err %d)", type, sb ? "ok" : "refused", err);
     JS_FreeCString(ctx, type);
     if (!sb) return throw_mse(ctx, err);
 
@@ -450,6 +472,7 @@ static JSValue js_sb_appendBuffer(JSContext *ctx, JSValueConst t, int argc, JSVa
     }
     int rc = sb_append(sb, p, (long)len);
     JS_FreeValue(ctx, held);
+    mlog("appendBuffer %lu bytes -> %d", (unsigned long)len, rc);
     if (rc != MSE_OK) {
         fire(t, "error");
         return throw_mse(ctx, rc);
@@ -613,6 +636,7 @@ static JSValue js_m_src(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
     int rc;
     if (direct) {
         rc = mse_attach(direct, el);
+        mlog("srcObject = <MediaSource> -> attach %d", rc);
     } else {
         const char *u = JS_ToCString(ctx, argv[1]);
         if (!u) return JS_EXCEPTION;
@@ -624,6 +648,9 @@ static JSValue js_m_src(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
          * cookies and the event loop. Note what is NOT done here: no error is
          * set. A src that is about to be fetched has not failed. */
         rc = mse_from_object_url(u) ? mel_attach_url(el, u) : SRC_NEEDS_FETCH;
+        mlog("src = \"%s\" -> %d (%s)", u, rc,
+             rc == SRC_NEEDS_FETCH ? "fetching" :
+             rc == MSE_OK ? "attached" : "refused");
         JS_FreeCString(ctx, u);
         if (rc == SRC_NEEDS_FETCH) return JS_NewInt32(ctx, rc);
     }
@@ -674,6 +701,7 @@ static JSValue js_m_loadbytes(JSContext *ctx, JSValueConst t, int argc, JSValueC
     }
     int rc = mel_load_bytes(el, p, (long)len);
     JS_FreeValue(ctx, held);
+    mlog("loadBytes %lu bytes -> %d", (unsigned long)len, rc);
     /* Whatever happened -- a decoded first frame or a MediaError -- the pump
      * is what turns it into events on the element. Arming it on the failure
      * path too is the difference between a page's onerror running and a
@@ -802,7 +830,8 @@ static JSValue js_m_call(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     melem *el = el_of(key, 0);
     if (!el) return JS_UNDEFINED;
     switch (m) {
-    case M_PLAY:  mel_play(el); arm_pump(); break;
+    case M_PLAY:  mel_play(el); arm_pump();
+                  mlog("play() [key %d]", key); break;
     case M_PAUSE: mel_pause(el); break;
     case M_LOAD:  mel_load(el); arm_pump(); break;
     }
@@ -856,11 +885,20 @@ static JSValue js_create_object_url(JSContext *ctx, JSValueConst t, int argc, JS
     (void)t;
     if (argc < 1) return JS_ThrowTypeError(ctx, "createObjectURL needs an object");
     msource *ms = JS_GetOpaque(argv[0], g_ms_cid);
-    if (!ms) return JS_ThrowTypeError(ctx,
-        "createObjectURL: only a MediaSource is supported here (no Blob/File)");
+    if (!ms) {
+        /* Named, not silent: a player that hands a Blob here is telling us it
+         * wanted a fetch-able URL for bytes it already holds, and the
+         * TypeError below is what tells the page. The breadcrumb is for the
+         * field report -- "why is there no video" with this line in it is
+         * answered before the question is asked. */
+        mlog("createObjectURL refused: not a MediaSource");
+        return JS_ThrowTypeError(ctx,
+            "createObjectURL: only a MediaSource is supported here (no Blob/File)");
+    }
     char url[64];
     if (!mse_object_url(ms, url, sizeof url))
         return JS_ThrowInternalError(ctx, "too many object URLs");
+    mlog("createObjectURL -> %s", url);
     return JS_NewString(ctx, url);
 }
 static JSValue js_revoke_object_url(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -925,6 +963,29 @@ int js_media_pump(JSContext *ctx)
     if (!ctx) return 0;
     int did = 0;
 
+    /* ONE STATUS LINE PER SECOND PER ELEMENT, and the reason it exists is that
+     * "is there video" cannot be answered from outside the process: a
+     * screendump cannot tell a stall from a black frame, and the serial console
+     * is the only channel a harness on the host can read that the page cannot
+     * write to. The counters are the engine's own (the same ones the host unit
+     * gates assert on), so guest and host numbers are commensurable. Suppressed
+     * while nothing has happened yet -- an idle <video> is not news. */
+    static long long last_stats_ns;
+    long long now = (long long)monotonic_ns();
+    int do_stats = now - last_stats_ns >= 1000000000LL;
+    if (do_stats) last_stats_ns = now;
+    for (int i = 0; do_stats && i < MAXWRAP; i++) {
+        melem *el = mel_at(i);
+        if (!el) continue;
+        struct mel_stats st;
+        mel_get_stats(el, &st);
+        if (!st.frames_decoded && !st.audio_frames_written && !mel_error(el)) continue;
+        mlog("stats key=%d shown=%lld decoded=%lld audio=%lld t=%.3f rs=%d err=%d",
+             mel_key(el), st.frames_shown, st.frames_decoded,
+             st.audio_frames_written, mel_current_time(el),
+             mel_ready_state(el), mel_error(el));
+    }
+
     /* The queued `sourceopen`. FIRST in the pump, before any append event: a
      * player's sourceopen handler is where addSourceBuffer and the first
      * appendBuffer happen, so delivering it after this pump's other events
@@ -973,6 +1034,9 @@ int js_media_pump(JSContext *ctx)
         if (!el) continue;
         unsigned ev = mel_take_events(el);
         if (!ev) continue;
+        if (ev & MEV_ERROR)
+            mlog("element error code=%d msg=\"%s\"", mel_error(el),
+                 mel_error_message(el));
         struct { unsigned bit; const char *name; } tab[] = {
             { MEV_LOADEDMETADATA, "loadedmetadata" },
             { MEV_DURATIONCHANGE, "durationchange" },

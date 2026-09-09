@@ -152,6 +152,8 @@ long     sb_bytes(const sbuf *sb);          /* what it is holding, for the UI */
  * carries in a data- attribute (see the note on struct melem). */
 melem *mel_for_key(int key, int create);
 void   mel_free_all(void);                  /* on navigation, with the DOM */
+/* The integer key back, for logging on the C side of the bindings. */
+int    mel_key(const melem *el);
 
 int    mel_play(melem *el);
 void   mel_pause(melem *el);

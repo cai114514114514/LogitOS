@@ -27,6 +27,7 @@
 #include "dom_serialize.h"
 #include "html_tree.h"
 #include "js_dom.h"
+#include "js_page.h"          /* js_page_slice_begin/end -- see js_dom_dispatch() */
 #include "layout.h"
 #include "../../../include/weaksym.h"   /* the weak layout_* declarations below */
 /* THE SAME SPLIT js_platform.c ALREADY CARRIES, AND ITS COMMENT SAYS WHY IT
@@ -3555,6 +3556,10 @@ void js_dom_note_activation(void) { g_last_activation_ms = 1; }
 int  js_dom_has_activation(void) { return g_last_activation_ms != 0; }
 #endif
 
+/* Nesting depth of js_dom_dispatch() itself -- see the bracket at the bottom
+ * of this function for why it exists and what it guards. */
+static int g_dispatch_depth;
+
 int js_dom_dispatch(struct node *target, const char *type,
                     const struct js_event_init *init)
 {
@@ -3629,9 +3634,73 @@ int js_dom_dispatch(struct node *target, const char *type,
      * isIntersecting:true. */
     if (!strcmp(type, "pageshow") || !strcmp(type, "pagehide"))
         JS_SetPropertyStr(ctx, evobj, "persisted", JS_FALSE);
+    /* THE INERT-PAGE FIX. Measured on the device serial log, two independently
+     * built images: chat.deepseek.com went dead after load with
+     *   [js] watchdog: script exceeded its CPU slice (wall time) -- interrupted
+     *   fuel=13 (=130000 branches+calls) since_begin_ms=55070
+     * -- fuel at 13 of a 2,000,000 budget, 0.00065%. The 45 s were not spent
+     * running script. js_page_slice_begin() arms the deadline at the last
+     * <script> (js_page_eval) or the last timer callback (js_page_run_due);
+     * this function -- every click, keydown, load, scroll -- brackets NOTHING,
+     * so it inherits whatever deadline the last script/timer left standing.
+     * Past 45 s of the page sitting idle (no timer, no rAF to re-arm it -- a
+     * chat UI waiting for input is exactly this shape), the first event
+     * handler is killed at its first poll point, having run at most 10,000
+     * branches. slice_interrupt() then clears g_slice_armed, so the NEXT
+     * event works -- which is why this looked like a one-off glitch rather
+     * than every idle page's first click.
+     *
+     * THE TRADE, made by the owner and not reopened here: a runaway HANDLER
+     * now gets its own full 45 s slice instead of being cut off by whatever
+     * of the previous deadline happened to remain -- previously a handler
+     * fired 44.9 s after the deadline was armed got 100 ms before the kill;
+     * now it gets 45 s like every other entry. The instruction-fuel rail
+     * (2,000,000 calls) is unchanged and still catches a spin regardless of
+     * wall time, so "does this handler ever return" is still bounded.
+     *
+     * NESTING: a handler can itself trigger a synchronous native dispatch --
+     * the concrete case is window.scrollTo()/scrollBy()/scrollIntoView()
+     * inside a click handler, which drives win_scroll_set() in js_cssom.c,
+     * which calls back into js_dom_dispatch() for "scroll" before the click
+     * handler returns. js_page_slice_begin()/_end() are not themselves
+     * nesting-safe: begin() unconditionally zeroes g_slice_fuel and pushes
+     * g_slice_due forward (a nested call would silently extend the outer
+     * handler's deadline every time it dispatches), and end() unconditionally
+     * clears g_prof_in_js (a nested call would flip the profiler's in-JS flag
+     * off while the outer handler is still running, mischarging its own
+     * remaining time to out_ms as if it were idle). Depth-gating so only the
+     * OUTERMOST js_dom_dispatch() call arms/disarms keeps one slice, and one
+     * profiler attribution, for the whole nested call tree -- which is also
+     * the correct semantics: the nested dispatch is still the same user
+     * interaction, not a second independent entry.
+     *
+     * #ifndef JS_DOM_NO_SLICE_BRACKET: THE NEGATIVE CONTROL (tests/jsprof.mk
+     * test-jsslice-negctl, browser-noslice.aex), and it is the defect itself
+     * on a switch rather than a lookalike -- with this defined, js_dom_dispatch
+     * calls neither js_page_slice_begin() nor js_page_slice_end(), which is
+     * BYTE-FOR-BYTE the state described three paragraphs up: every click,
+     * keydown, load and scroll brackets nothing, so an event handler inherits
+     * whatever deadline the last <script> or timer left standing, and a click
+     * more than 45s after load with no timer to re-arm it is killed at its
+     * first poll point. BOTH halves -- begin and end -- are under the SAME
+     * macro on purpose: the MSE no-card control took five attempts because
+     * only one half was guarded (see tests/mse.mk), which left the guarded
+     * half's effect asymmetric with the unguarded half still running. Here,
+     * leaving either half unguarded would either (a) still arm a fresh
+     * deadline every dispatch (begin guarded, end not -- the bug would not
+     * reproduce) or (b) arm once at page load like the real bug but then also
+     * clear g_prof_in_js on every dispatch it should not touch (end guarded,
+     * begin not -- a different, uninteresting defect). Only "neither call
+     * happens, ever" is the shape the owner's original bug report was. */
+#ifndef JS_DOM_NO_SLICE_BRACKET
+    if (g_dispatch_depth++ == 0) js_page_slice_begin();
+#endif
     int ok = dispatch_event(ctx, target, evobj, ev);
     JS_FreeValue(ctx, evobj);
     js_dom_run_jobs(ctx);
+#ifndef JS_DOM_NO_SLICE_BRACKET
+    if (--g_dispatch_depth == 0) js_page_slice_end();
+#endif
     return ok;
 }
 

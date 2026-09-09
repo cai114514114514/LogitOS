@@ -271,3 +271,58 @@ write("rv.html", """<!doctype html>
 <script>console.log('WA-END ' + performance.now());</script>
 </body></html>
 """)
+
+# ---- chl: the CHALLENGE-AND-RELOAD specimen (webaccel, 2026-09-02) ---------
+# The douyin shape (CLAUDE.md's "the loop, measured on the guest"): a page
+# with NO Cookie header answers with a challenge that sets a cookie -- BOTH
+# ways a real WAF does it, a Set-Cookie header AND document.cookie from
+# script, so the fixture exercises whichever path a browser implements -- and
+# re-navigates to the SAME url via location.href. The re-navigation carries
+# the cookie the challenge just set.
+#
+# ONE url, TWO bodies: qmp_webaccel.py's Serve.do_GET branches THIS path on
+# the REQUEST'S Cookie header alone (mirroring the rv- server-side branch
+# above), choosing between the two bodies below. That is what makes the
+# corner meaningful for the cache-key fix: a url-only key cannot serve the
+# right body here, because the same url must legitimately answer two
+# different requests two different ways.
+#
+# WHY location.reload() AND NOT location.href = location.href (SUSPECT THE
+# APPARATUS FIRST, AGENTS.md rule 1): the first draft of this fixture used
+# href-reassignment, and it reproduced NOTHING -- js_webapi.c's loc_set()
+# treats an href write that differs from the current document only in ways
+# same_document() cannot see (i.e. not at all, since the string is byte-
+# identical) as a same-document fragment change and returns without ever
+# setting g_have_pending_nav, so the "reload" silently no-oped and the driver
+# hung waiting for a second navigation that could never come. location.reload()
+# (loc_reload in js_webapi.c) has no such shortcut -- it unconditionally
+# schedules g_loc_raw as a pending navigation -- and it is also the more
+# faithful reproduction: a JS PoW shell calls reload() (or an equivalent
+# self-navigation), not a same-value href write, to ask the browser to ask
+# the server again now that the proof cookie is set.
+#
+# THE MARKERS (WA-CHL-PAGE A / B) are what the driver counts, not WA-END --
+# page A deliberately does NOT stamp WA-END: reload() is a navigation and
+# this engine's load() does not promise a script survives past requesting
+# one (real browsers do not either). Waiting on a stamp that could race the
+# navigation is exactly the kind of instrument this tree has been burned by
+# -- the marker line, printed BEFORE reload(), has no such race.
+write("chl-shell.html", """<!doctype html>
+<html><head><meta charset="utf-8"><title>wa-chl-a</title>
+<script>
+console.log('WA-T0 ' + performance.now());
+console.log('WA-CHL-PAGE A');
+document.cookie = 'chl=1';
+location.reload();
+</script>
+</head><body><h1>challenge</h1></body></html>
+""")
+write("chl-real.html", """<!doctype html>
+<html><head><meta charset="utf-8"><title>wa-chl-b</title>
+<script>
+console.log('WA-T0 ' + performance.now());
+console.log('WA-CHL-PAGE B');
+console.log('WA-END ' + performance.now());
+</script>
+</head><body><h1>real page</h1></body></html>
+""")

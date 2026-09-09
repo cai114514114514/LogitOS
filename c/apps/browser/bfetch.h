@@ -168,6 +168,13 @@ int  bfetch_sync(const char *ref, unsigned char **out, int *outlen);
 void bfetch_prefetch(const char *ref);
 /* Drive every queued prefetch to completion, then stop. */
 void bfetch_prefetch_wait(void);
+/* Resolve `src` against the document base, take it from the prefetch cache if
+ * it is there, else fall back to a fresh synchronous fetch. Declared here
+ * (browser_rt.c defines it) so a second caller -- js_module.c's module
+ * loader, added for the same reason layout.c's image loop uses it -- gets
+ * the SAME prototype rather than typing its own that could drift from this
+ * one. layout.c's own extern predates this and is left alone. */
+int  res_fetch(const char *src, unsigned char **buf, int *len);
 /* Drop anything still held. Called on navigation. */
 void bfetch_cache_clear(void);
 /* Put bytes the caller already has into the cache, so the next res_fetch() for

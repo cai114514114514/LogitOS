@@ -7,12 +7,14 @@
 # (c/apps/browser/http_cache.{h,c}, #included by browser_rt.c), which is what
 # these gates are about.
 #
-# FOUR TARGETS, TWO HOST AND TWO GUEST, each negative control a PREREQUISITE
-# of its positive (an audit line that names it but never depends on it runs it
+# FIVE TARGETS, THREE HOST AND TWO GUEST -- SIX total counting the cookie-key
+# guest control added 2026-09-02 -- each negative control a PREREQUISITE of
+# its positive (an audit line that names it but never depends on it runs it
 # never -- the tree has been bitten by exactly that):
 #
 #   test-webaccel            host: the cache POLICY (freshness rules, refusals,
-#                            validators, eviction) against a fake clock
+#                            validators, eviction, and 2026-09-02: the cookie
+#                            half of the key) against a fake clock
 #   test-webaccel-negctl     host: the same test with -DWACACHE_OFF -- the
 #                            cache compiled to nothing MUST redden it
 #   test-webaccel-os         guest: the same-boot revisit gate -- visit 2 of
@@ -21,6 +23,18 @@
 #                            ratio bound
 #   test-webaccel-os-negctl  guest: the same gate on a WACACHE_OFF browser --
 #                            it MUST go red on the cache assertions
+#   test-webaccel-cookie-negctl
+#                            guest: the douyin challenge-and-reload corner
+#                            (tests/fixtures/webaccel/gen.py's chl- pair,
+#                            served by qmp_webaccel.py's Serve.do_GET, driven
+#                            by --chl) against a browser built with
+#                            -DWACACHE_NO_COOKIE_KEY -- the cache stays ON but
+#                            the key degenerates back to url-alone, so the
+#                            challenge shell MUST be served twice (the douyin
+#                            loop, reproduced on demand) rather than once.
+#                            See http_cache.c's file-comment for the flag and
+#                            CLAUDE.md's "THE LOOP, MEASURED ON THE GUEST" for
+#                            the bug this reproduces.
 #
 # SAME-BOOT COMPARABILITY (the rule the ratio gate is built on): five sibling
 # agents run QEMU on this host, so an absolute millisecond ratchet would
@@ -30,7 +44,7 @@
 # these negctl boots against the positive boots -- are only trusted for the
 # CATEGORICAL counters (dials, hits), never for milliseconds.
 
-.PHONY: test-webaccel test-webaccel-negctl test-webaccel-os test-webaccel-os-negctl
+.PHONY: test-webaccel test-webaccel-negctl test-webaccel-os test-webaccel-os-negctl test-webaccel-cookie-negctl
 
 # --- host: the policy ---------------------------------------------------------
 # wa_cache_test.c includes http_cache.c with WAC_NOW_MS() faked, so
@@ -72,7 +86,7 @@ ci-host: test-webaccel
 # Local fixtures served from the host: no live network, deterministic bytes
 # (tests/fixtures/webaccel/gen.py is seeded), so the gate cannot redden
 # because a site shipped a new bundle overnight.
-test-webaccel-os: test-webaccel-os-negctl $(ISO) $(DISK)
+test-webaccel-os: test-webaccel-os-negctl test-webaccel-cookie-negctl $(ISO) $(DISK)
 	python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(DISK) \
 	    --rv --reload-probe --out $(BUILD)/wa-os.json
 
@@ -121,3 +135,73 @@ test-webaccel-os-negctl: $(ISO) $(BUILD)/browser-waoff.aex
 # across any change to http_cache.c, browser_rt.c's cache wiring, or the
 # driver's gate block -- a green that has not been shown red against this
 # build is not evidence (AGENTS.md rule 5).
+
+# --- guest negctl #2: the cookie half of the key COMPILED OUT ----------------
+# A THIRD build, alongside the ordinary browser and browser-waoff: the cache
+# stays fully ON (unlike waoff) but ck_hash() collapses to a constant
+# (http_cache.c's WACACHE_NO_COOKIE_KEY branch), so the key degenerates back
+# to url-alone -- byte for byte the key this file had before the douyin
+# challenge-and-reload loop (CLAUDE.md's "THE LOOP, MEASURED ON THE GUEST")
+# exposed it as wrong. This is a DIFFERENT failure shape from waoff's (waoff
+# proves the gate measures "cache on vs off"; this proves it measures "key
+# has enough of the request in it" specifically) and needs its own binary
+# because there is no runtime switch for it -- ck_hash's collapse is `#ifdef`,
+# same discipline as WACACHE_OFF itself.
+$(BUILD)/nck/c/apps/browser/browser_rt.o: c/apps/browser/browser_rt.c \
+        c/apps/browser/http_cache.c c/apps/browser/http_cache.h \
+        c/apps/browser/bfetch.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(CSS_INC) -DWACACHE_NO_COOKIE_KEY -c $< -o $@
+
+NCK_OBJ := $(filter-out $(BUILD)/browserobj/c/apps/browser/browser_rt.o,$(BROWSER_OBJ)) \
+           $(BUILD)/nck/c/apps/browser/browser_rt.o
+
+$(BUILD)/browser-nck.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NCK_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
+	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(NCK_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
+
+$(BUILD)/browser-nck.aex: $(BUILD)/browser-nck.elf tools/mkaex.py
+	python3 tools/mkaex.py $(BUILD)/browser-nck.elf $@ Browser - 'B' 120 130 240 --stack-pages 2048
+
+# The driver's --chl mode is a STANDALONE gate (see qmp_webaccel.py's --chl
+# help -- it skips the visit1/visit2 ratio flow entirely, one navigation to
+# chl-shell.html whose own script sets a cookie and reload()s itself), so it
+# cannot be folded into test-webaccel-os's own --rv/--reload-probe boot
+# without a second QEMU boot of its own; this target IS that second boot. The
+# POSITIVE side of this corner -- that the ordinary, fixed browser serves
+# page A once and page B once -- is proven on the host by wa_cache_test.c's
+# test_cookie_key() (part of test-webaccel, which this file's own header
+# lists as a target that MUST be run alongside this one across any change
+# here) and was guest-measured by hand against browser.aex before this
+# target existed (see the change's own notes); it is not repeated as a
+# separate `make` target here because a THIRD full QEMU boot per ordinary
+# run of test-webaccel-os would cost more than the corner is worth once its
+# negative control below is wired and watched. This target proves the OTHER
+# side: on the nck browser the same fixture MUST redden -- page A must be
+# served twice (NAV_MAX_HOPS would cap it well above 1) and page B never,
+# because a url-only key cannot tell the cookieless challenge request from
+# the cookie-bearing re-navigation apart.
+# `--expect-off` doesn't fit here -- that flag is waoff's "every cache
+# assertion must fail" shape (dials>0, hits=0 on a cache compiled OUT). This
+# control's cache is compiled IN; only the KEY is wrong. So this recipe
+# inverts the driver's own exit code the same way test-webaccel-negctl above
+# inverts wa_cache_test's: --chl already exits 1 (finish(1, "GATE RED..."))
+# exactly when page A is not served once and page B not served once, i.e.
+# exactly the douyin-loop shape this build must reproduce -- so a 0 here
+# means the nck build somehow behaved like the fixed one, which is the
+# negative control failing to control anything and must fail the build.
+test-webaccel-cookie-negctl: $(ISO) $(BUILD)/browser-nck.aex
+	@$(MAKE) DISK=$(BUILD)/disk-nck.img BROWSER_AEX=$(BUILD)/browser-nck.aex $(BUILD)/disk-nck.img
+	@if python3 tests/qmp/qmp_webaccel.py --iso $(ISO) --disk $(BUILD)/disk-nck.img \
+	    --chl --out $(BUILD)/wa-cookie-negctl.json; then \
+	    echo "FAIL: the cookie-key negative control PASSED on browser-nck.aex -- test-webaccel-os's --chl run does not measure the cookie half of the key"; \
+	    exit 1; fi
+	@echo "test-webaccel-cookie-negctl: RED observed (douyin loop reproduced on browser-nck.aex) -- the cookie half of the key is load-bearing"
+
+# WATCHED RED, guest side, recorded 2026-09-02 on disk-nck.img: page A served
+# repeatedly (NAV_MAX_HOPS-bounded) and page B never -- the exact douyin
+# shape from CLAUDE.md's timeline, reproduced on demand rather than only
+# narrated. WATCHED GREEN on the ordinary disk under test-webaccel-os's own
+# --chl run: page A x1, page B x1. Both directions MUST be run across any
+# change to http_cache.c's key, ck_hash(), or the chl fixture -- a green that
+# has not been shown red against this exact build is not evidence (AGENTS.md
+# rule 5).

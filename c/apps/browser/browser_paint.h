@@ -7,6 +7,29 @@ struct node;
  * at the given pixel scroll, using the GUI render syscalls. */
 void browser_paint(int vx, int vy, int vw, int vh, int scroll);
 
+/* ---- WHAT CHANGED, for gui_flush_rect --------------------------------------
+ *
+ * The union of every item whose on-screen appearance differed from the LAST
+ * browser_paint() pass, in WINDOW coordinates -- ready to hand straight to
+ * gui_flush_rect(). See the block comment above pd_item_sig() in
+ * browser_paint.c for the method (a positional diff against the previous
+ * pass, not a second DOM walk) and why it is the one place this decision is
+ * made: a caller that recomputed its own idea of "what moved" would be
+ * exactly the one-jar-two-doors trap CLAUDE.md warns about, applied to
+ * pixels.
+ *
+ * Returns -1 if no honest answer is available (first paint, the viewport
+ * itself moved/resized since the last pass, or the snapshot buffers could
+ * not grow) -- the caller must gui_flush() the whole canvas. Returns 0 if a
+ * rect WAS computed and it is empty -- nothing actually changed, and the
+ * caller may skip flushing entirely. Returns 1 and fills *x,*y,*w,*h with a
+ * real, nonempty, viewport-clamped rectangle otherwise.
+ *
+ * Valid only immediately after a browser_paint() call for the SAME viewport
+ * the caller is about to flush -- it answers for the pass that just ran, not
+ * a general "what is dirty right now" query. */
+int browser_paint_dirty_rect(int *x, int *y, int *w, int *h);
+
 /* ---- WHAT WORDS REACHED THE SCREEN --------------------------------------
  *
  * The site scoreboard's own header states the gap this closes, and states it

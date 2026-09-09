@@ -573,6 +573,30 @@ int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
     return 0;
 }
 
+/* BASELINE MERGE FIX (2026-09-02): js_module.c's mod_loader() used to call
+ * bfetch_sync() alone (defined above); the same-day module-graph-prefetch
+ * change (js_module.c's mod_compile_and_prefetch()) made it call res_fetch()
+ * instead and added a call to bfetch_prefetch()/bfetch_prefetch_wait() ahead
+ * of it -- all three only ever defined in browser_rt.c, which this probe does
+ * not link (it is its own bfetch_resolve/bfetch_sync/fs_map fetcher, not the
+ * shipping one). Without these three PROBE_SRC fails to LINK, not to run --
+ * undefined symbols, caught by baseline. Unlike dom_iface_test.c's res_fetch
+ * (which never needs to actually resolve a module -- no case there imports
+ * one), this probe DOES load real ES modules out of framework fixtures
+ * (jsfb's compiled bundles), so a stub that always answers "not found" would
+ * silently zero every module-graph row in the jsfb/webapi matrices instead of
+ * failing loudly at link time. res_fetch() is therefore not a new fetcher: it
+ * is bfetch_sync() under its new name, keeping this file's one real fetch
+ * path instead of growing a second one that could disagree with it (the
+ * one-jar-two-doors trap). There is no prefetch cache here to fill, so
+ * bfetch_prefetch() is a no-op and mod_loader's res_fetch() call -- the one
+ * path that matters -- is an unconditional cache miss, exactly the plain
+ * synchronous fetch this probe always did. */
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) { }
+int  res_fetch(const char *src, unsigned char **buf, int *len)
+{ return bfetch_sync(src, buf, len); }
+
 static void load_manifest(const char *dir)
 {
     g_nman = 0;
@@ -1780,7 +1804,24 @@ static int prof_selftest(void)
      * out of it.
      *
      * Both halves are asserted, because the positive one alone would pass on a
-     * browser that bit every dispatch. */
+     * browser that bit every dispatch.
+     *
+     * CORRECTED 2026-09-02, kept beside the original rather than overwritten
+     * (CLAUDE.md's rule for a claim that moved): js_dom_dispatch() now
+     * brackets every OUTERMOST call with js_page_slice_begin()/_end() (depth-
+     * gated by g_dispatch_depth in js_dom.c, tests/jsprof.mk's test-jsslice).
+     * The paragraph above is no longer true of the shipped browser -- grep
+     * DOES find a slice_begin on that path now -- so a click 5 s after a
+     * stale deadline gets ITS OWN fresh slice instead of inheriting the old
+     * one. THE OLD NUMBERS, so a reader holding them recognises the shape:
+     * before this fix, hits1->hits2 went 0->1 (the click WAS bitten), the
+     * bitten slice's label read "<listener install>" (dispatch never called
+     * js_prof_label either, so it inherited the install's), fuel=12-13 of a
+     * 2,000,000 budget, and out_ms swamped js_ms (~10x) because the "work"
+     * measured was the stale wall-clock gap, not the loop. The checks below
+     * now assert the opposite of each of those four numbers, for the same
+     * reason both halves were asserted before: a browser that no longer bites
+     * ANY dispatch would also pass a single positive check. */
     js_page_set_slice_fuel(0);
     js_page_set_slice_ms(1000);
     js_prof_reset();
@@ -1838,15 +1879,34 @@ static int prof_selftest(void)
         js_dom_dispatch(btn, "click", &ji);
         int hits2 = js_page_slice_hits();
         const struct js_prof_slice *s = js_prof_at(js_prof_count() - 1);
-        snprintf(det, sizeof det, "hits %d -> %d, the bitten slice is \"%s\" "
-                 "fuel=%lld js_ms=%lld out_ms=%lld resumed=%d",
+        snprintf(det, sizeof det, "hits %d -> %d, the click's own slice is \"%s\" "
+                 "fuel=%lld js_ms=%lld out_ms=%lld resumed=%d (bug-era: hits +1, "
+                 "fuel=12-13, out_ms>>js_ms, resumed>0)",
                  hits1, hits2, s ? s->what : "?", s ? s->fuel : -1,
                  s ? s->js_ms : -1, s ? s->out_ms : -1, s ? s->resumed : -1);
-        st_check(hits2 == hits1 + 1,
-                 "REPRODUCED: the same click 5 s later IS interrupted", det);
+        st_check(hits2 == hits1,
+                 "FIXED: the same click 5 s later is NOT interrupted", det);
+        /* The handler itself must have run to completion, not merely have
+         * dodged the watchdog for an unrelated reason (e.g. a driver that
+         * silently drops the second click would also show hits2==hits1). */
+        {
+            JSValue nv = JS_Eval(ctx, "globalThis.__n", 14, "<check-n>", JS_EVAL_TYPE_GLOBAL);
+            int n = -1;
+            JS_ToInt32(ctx, &n, nv);
+            JS_FreeValue(ctx, nv);
+            snprintf(det, sizeof det, "globalThis.__n = %d (want 2: click1 and click2 both ran)", n);
+            st_check(n == 2, "and the handler body actually completed twice", det);
+        }
         if (s)
-            st_check(s->out_ms > s->js_ms * 10 && s->resumed > 0,
-                     "and the profiler shows the budget went to out_ms, not to the script",
+            /* fuel==12 is not a magic number: check 2 above measured 2.0000
+             * polls per loop iteration, and the handler loops 60,000 times --
+             * 120,000 branches+calls / 10,000 per interrupt-poll = 12 exactly.
+             * resumed==0 is the direct negation of the bug-era reading: this
+             * slice was armed by its OWN js_page_slice_begin() call (from the
+             * dispatch bracket), not inherited from an entry that never
+             * called it. */
+            st_check(s->fuel == 12 && s->resumed == 0,
+                     "and the profiler shows a fresh, self-armed slice, not a stale one",
                      "");
     }
 

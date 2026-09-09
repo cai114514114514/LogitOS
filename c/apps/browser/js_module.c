@@ -36,6 +36,17 @@
  *      to install a stub loader for exactly this reason -- without one, a real
  *      1.55 MB module fixture cannot be compiled at all.
  *
+ *      THAT MOMENT ARRIVED (2026-09-02, the webaccel line's module-graph
+ *      measurement: x.com's 405 modules, one 170ms-apart [wa]-adjacent round
+ *      trip each). See mod_compile_and_prefetch() below for the fix -- it
+ *      needed one small addition to quickjs.c itself, because the recursion
+ *      this comment describes is not interruptible from outside: compiling a
+ *      module and resolving (=loading) its children happen inside the SAME
+ *      JS_Eval call with no seam the loader can insert concurrency into. The
+ *      seam is JS_EVAL_FLAG_COMPILE_NO_RESOLVE, which is the flag upstream's
+ *      own comment at that call site asked for ("Could add a flag to avoid
+ *      resolution if necessary") and never added.
+ *
  *   3. BARE SPECIFIERS ARE REFUSED, LOUDLY. `import "react"` has no meaning
  *      without an import map, and resolving it as a relative path would turn a
  *      diagnosable "bare specifier" into an undiagnosable 404 three hops into
@@ -169,12 +180,132 @@ static void set_import_meta(JSContext *ctx, JSValueConst func_val, const char *u
     JS_FreeValue(ctx, meta);
 }
 
+/* ---- module-graph prefetch --------------------------------------------
+ *
+ * Compile `src` as a module and, before letting QuickJS resolve (= fetch)
+ * ITS OWN static imports, queue every one of them as a non-blocking prefetch
+ * and drain that whole batch CONCURRENTLY -- bfetch_prefetch()/
+ * bfetch_prefetch_wait(), the identical mechanism layout.c's <img> loop
+ * already uses (see bfetch.h's "prefetch, for callers that fetch one
+ * resource at a time"). Only THEN does JS_ResolveModule() run, and its
+ * depth-first walk of req_module_entries finds every child already sitting
+ * in the prefetch cache (or already in flight against the connection pool),
+ * so mod_loader()'s res_fetch() call below takes it with zero additional
+ * round trips instead of dialling one at a time.
+ *
+ * THE ONE-JAR RULE DECIDES WHERE THE SPECIFIER LIST COMES FROM: not a
+ * second import parser (a regex would disagree with QuickJS about strings,
+ * comments, export-from and dynamic import() -- see the file header), but
+ * JS_GetModuleReqEntries*(), reading the exact list js_resolve_module()
+ * itself is about to walk. That required one addition to quickjs.c
+ * (JS_EVAL_FLAG_COMPILE_NO_RESOLVE) because there is no public way to stop
+ * JS_Eval from resolving a module's children before it returns -- the
+ * upstream code has said "Could add a flag to avoid resolution if
+ * necessary" at that exact call site for longer than this fork has existed.
+ *
+ * BREADTH-FIRST LAYERED UNDER A DEPTH-FIRST LOADER, not a replacement for
+ * it: this only ever sees ONE module's DIRECT children (its own
+ * req_module_entries), because that is the deepest point at which the list
+ * is knowable without patching further into the parser. Applied at every
+ * level of the recursion, it turns each level's fan-out into one concurrent
+ * wave (bounded by hpool's 6-total/2-per-origin caps) instead of a chain --
+ * still O(depth) waves rather than O(1), but a page whose import graph is
+ * wide and shallow (the common shape: an entry chunk pulling in dozens of
+ * route/vendor chunks) gets most of the win.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO: dedupe a specifier that TWO DIFFERENT
+ * modules both request before either has been resolved. bfetch_prefetch()
+ * dedupes WITHIN one call's own list (a module importing the same specifier
+ * twice costs one fetch), and a shared chunk already fully loaded by an
+ * earlier sibling is caught for free by QuickJS's own js_find_loaded_module
+ * (mod_loader/mod_normalize are simply never re-invoked for an already-
+ * resolved URL). What slips through is the narrow window where two not-yet-
+ * resolved branches both prefetch the same not-yet-cached URL: one of the
+ * two prefetch-cache entries is consumed by the real load, the other sits
+ * unclaimed until bfetch_cache_clear() on the next navigation. Bounded
+ * (single page load, cache capped at BF_NCACHE=32) and never wrong -- it
+ * costs a duplicate fetch and some memory, never a corrupted module -- so it
+ * is left as a known, named trade rather than solved with a global
+ * in-flight-URL registry this file does not own. */
+static JSValue mod_compile_and_prefetch(JSContext *ctx, const unsigned char *src,
+                                        int len, const char *url)
+{
+#ifdef JS_MODULE_NO_PREFETCH
+    /* THE CONTROL (tests/jsmodpf.mk test-jsmodpf-negctl): byte-identical to
+     * this file before 2026-09-02, one request in flight at a time. Against
+     * qmp_modprefetch.py's fixture (18 static imports split across 3 origins,
+     * a fixed per-request delay) this build must take roughly N x delay; the
+     * default build should take roughly ceil(N / 6) x delay, because hpool's
+     * cap is 2 connections PER ORIGIN and the fixture spans 3 origins for
+     * exactly that reason -- a single-origin graph would cap at 2x, not 6x.
+     * If the two builds print the same guest-clock elapsed time, prefetch is
+     * not happening. */
+    return JS_Eval(ctx, (const char *)src, (size_t)len, url,
+                   JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+#else
+    JSValue v = JS_Eval(ctx, (const char *)src, (size_t)len, url,
+                        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY |
+                        JS_EVAL_FLAG_COMPILE_NO_RESOLVE);
+    if (JS_IsException(v)) return v;
+    if (JS_VALUE_GET_TAG(v) != JS_TAG_MODULE) return v;   /* classic script: nothing to walk */
+
+    JSModuleDef *m = (JSModuleDef *)JS_VALUE_GET_PTR(v);
+    int n = JS_GetModuleReqEntriesCount(m);
+    int queued = 0;
+    for (int i = 0; i < n; i++) {
+        JSAtom a = JS_GetModuleReqEntryName(ctx, m, i);
+        if (a == JS_ATOM_NULL) continue;
+        const char *spec = JS_AtomToCString(ctx, a);
+        if (spec) {
+            /* Same refusal mod_normalize applies, checked here too: a bare
+             * specifier is not a URL bfetch_resolve can do anything with,
+             * and starting a doomed prefetch for it would only cost a
+             * table slot -- the real failure (and its diagnostic message)
+             * still happens exactly where it does today, in mod_normalize,
+             * when QuickJS actually asks for this entry below. */
+            if (!is_bare_specifier(spec)) {
+                char abs[MOD_URLMAX];
+                if (bfetch_resolve(url, spec, abs, sizeof abs) == 0) {
+                    bfetch_prefetch(abs);      /* queues, or silently does not
+                                                 * if BF_NCACHE is full -- see
+                                                 * bfetch_prefetch's own
+                                                 * "table full" comment. Either
+                                                 * way this is best-effort:
+                                                 * mod_loader's res_fetch()
+                                                 * falls straight back to a
+                                                 * plain bfetch_sync() on a
+                                                 * cache miss, which is
+                                                 * exactly today's path. */
+                    queued = 1;
+                }
+            }
+            JS_FreeCString(ctx, spec);
+        }
+        JS_FreeAtom(ctx, a);
+    }
+    /* Only block here if something was actually queued: an empty page
+     * (n==0, a leaf module) must not pay a pump-loop yield for nothing. */
+    if (queued) bfetch_prefetch_wait();
+
+    if (JS_ResolveModule(ctx, v) < 0) { JS_FreeValue(ctx, v); return JS_EXCEPTION; }
+    return v;
+#endif
+}
+
 static JSModuleDef *mod_loader(JSContext *ctx, const char *module_name, void *opaque)
 {
     (void)opaque;
     unsigned char *src = 0;
     int len = 0;
-    if (bfetch_sync(module_name, &src, &len) != 0 || !src) {
+    /* res_fetch(), not bfetch_sync(): a child prefetched by ITS PARENT's own
+     * mod_compile_and_prefetch() call is sitting in the prefetch cache under
+     * this exact absolute URL (mod_normalize already resolved module_name
+     * against the parent, the same resolution bfetch_resolve inside res_fetch
+     * repeats and is idempotent on an already-absolute URL) -- res_fetch()
+     * takes it with no network call. A cache miss (the page's very first
+     * module, or the prefetch table was full) falls back to bfetch_sync()
+     * unchanged. */
+    if (res_fetch(module_name, &src, &len) != 0 || !src) {
         g_failed++;
         printf("[js] module fetch FAILED: %s\n", module_name);
         JS_ThrowReferenceError(ctx, "could not load module '%s'", module_name);
@@ -182,8 +313,7 @@ static JSModuleDef *mod_loader(JSContext *ctx, const char *module_name, void *op
     }
     printf("[js] module loaded %d bytes: %s\n", len, module_name);
     g_loaded++;
-    JSValue v = JS_Eval(ctx, (const char *)src, (size_t)len, module_name,
-                        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    JSValue v = mod_compile_and_prefetch(ctx, src, len, module_name);
     free(src);
     if (JS_IsException(v)) { g_failed++; return NULL; }
     set_import_meta(ctx, v, module_name);
@@ -257,7 +387,7 @@ int js_module_eval(const char *src, int len, const char *url)
      * with this switch and the control reads 0/7, which cannot be told apart
      * from a broken driver. */
     (void)ensure_installed; (void)mod_normalize; (void)mod_loader;
-    (void)set_import_meta; (void)report;
+    (void)set_import_meta; (void)report; (void)mod_compile_and_prefetch;
     return 0;
 #endif
     js_page_slice_begin();           /* a module body is one CPU slice too */
@@ -266,9 +396,12 @@ int js_module_eval(const char *src, int len, const char *url)
     /* Compile first so import.meta.url exists before the body runs. The compile
      * step is also where LINKING happens (JS_EvalFunction below resolves the
      * imports), so a missing dependency surfaces here rather than as a
-     * mysterious undefined. */
-    JSValue fn = JS_Eval(ctx, src, (size_t)len, url,
-                         JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+     * mysterious undefined. The root document's own top-level imports go
+     * through the SAME prefetch-then-resolve path as every module mod_loader
+     * fetches -- see mod_compile_and_prefetch()'s comment -- so a page whose
+     * entry chunk fans out into a dozen route chunks gets the concurrency win
+     * at the outermost level too, not just inside child modules. */
+    JSValue fn = mod_compile_and_prefetch(ctx, (const unsigned char *)src, len, url);
     if (JS_IsException(fn)) { report(ctx, url); JS_FreeValue(ctx, fn); return 0; }
     set_import_meta(ctx, fn, url);
 

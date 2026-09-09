@@ -95,6 +95,22 @@ class Serve(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].lstrip("/")
         if not path or path.endswith("/"):
             path += "heavy.html"
+        # ---- the challenge-and-reload corner (chl-shell.html) ----------------
+        # THE ONE PLACE THIS SERVER BRANCHES ON THE REQUEST'S COOKIE HEADER
+        # rather than on the path: the douyin shape (CLAUDE.md's "the loop,
+        # measured on the guest") is a SINGLE url answering two different
+        # bodies to two different requests, and the whole point of the
+        # cache-key fix under test is that a url-only key cannot tell those
+        # requests apart. See gen.py's write("chl-shell.html", ...) for why
+        # the two bodies look the way they do.
+        if path == "chl-shell.html":
+            cookie = self.headers.get("Cookie", "") or ""
+            fname = "chl-real.html" if "chl=1" in cookie else "chl-shell.html"
+            with open(os.path.join(FIXDIR, fname), "rb") as fh:
+                body = fh.read()
+            extra = () if "chl=1" in cookie else (("Set-Cookie", "chl=1"),)
+            self._send(body, "text/html; charset=utf-8", 200, extra=extra)
+            return
         full = os.path.normpath(os.path.join(FIXDIR, path))
         # Path escape refusal: the fixture dir is the whole server.
         if not full.startswith(os.path.abspath(FIXDIR)) or not os.path.isfile(full):
@@ -259,6 +275,16 @@ def main():
                          ">1 s between (its resources are max-age=1), gating "
                          "that visit 2 revalidated (304s, rvs>0) and still "
                          "rendered")
+    ap.add_argument("--chl", action="store_true",
+                    help="STANDALONE MODE (skips the visit1/visit2 ratio "
+                         "gate): the challenge-and-reload corner. Types "
+                         "chl-shell.html ONCE; the page's own script sets a "
+                         "cookie and reassigns location.href to the SAME "
+                         "url. Gate: the challenge shell (page A) must be "
+                         "served exactly once and the real page (page B) "
+                         "exactly once -- a url-only cache key serves page A "
+                         "twice, forever (the douyin loop). See "
+                         "http_cache.h's key paragraph for the mechanism.")
     ap.add_argument("--reload-probe", action="store_true",
                     help="after the visits, Ctrl+R the page and require that "
                          "the loadend line shows dials>0 and hits=0 -- the "
@@ -308,6 +334,20 @@ def main():
         end = time.time() + secs
         while time.time() < end:
             if needle in serial()[frm:]:
+                return True
+            if proc.poll() is not None:
+                return False
+            time.sleep(0.4)
+        return False
+
+    def wait_for_nth(needle, n, secs, frm=0):
+        """Like wait_for, but for 'this needle has appeared N times' -- the
+        chl probe needs to know a SECOND navigation started (the shell's own
+        script re-navigating), which a single wait_for cannot distinguish
+        from the first."""
+        end = time.time() + secs
+        while time.time() < end:
+            if serial()[frm:].count(needle) >= n:
                 return True
             if proc.poll() is not None:
                 return False
@@ -368,6 +408,56 @@ def main():
             finish(2, str(e))
         time.sleep(7)
         ui.goto(*PARK)
+
+        # ---- --chl: the challenge-and-reload corner, standalone -------------
+        # ONE typed navigation; the SECOND navigation is the shell page's own
+        # script (location.reload() -- see gen.py's write("chl-shell.html",
+        # ...) for why reload() and not an href reassignment), never the
+        # driver. What settles the gate is a COUNT of markers, not a timing
+        # race: a url-only cache key serves the challenge shell to BOTH
+        # requests (the douyin loop), so "page A exactly once, page B exactly
+        # once" is the whole assertion -- and it is exactly the assertion the
+        # douyin symptom violated (CLAUDE.md: 3 re-navigations, 0 painted
+        # text runs).
+        #
+        # WAITING ON "[browser] load done", TWICE, NOT ON A SECOND
+        # "[browser] load: " LINE (suspect the apparatus first, AGENTS.md
+        # rule 1 -- the first draft of this probe waited on the latter and
+        # hung every time): browser.c's load() prints "[browser] load: "
+        # exactly ONCE per user-initiated call and then loops internally over
+        # every script-requested navigation (take_script_nav) WITHOUT
+        # reprinting it -- the loop's own comment states this ("a redirect
+        # chain of n hops must cost one stack frame, not n"). "load done" is
+        # printed once per load_once(), i.e. once per hop, so its SECOND
+        # occurrence is the signal a script-driven reload actually happened.
+        if args.chl:
+            mark = len(serial())
+            ui.key_mods(["ctrl"], "l")
+            time.sleep(0.3)
+            ui.typ("http://10.0.2.2:%d/chl-shell.html" % port)
+            ui.key("ret")
+            if not wait_for("[browser] load: ", 20.0, mark):
+                finish(2, "chl: the first navigation never started")
+            if not wait_for_nth("[browser] load done", 2, LOAD_BUDGET, mark):
+                finish(2, "chl: the shell's reload() never produced a second "
+                          "load_once() -- either reload() itself is broken "
+                          "(a different bug, unrelated to this fix) or the "
+                          "second load is still in flight past the budget")
+            time.sleep(SETTLE)
+            sl = serial()[mark:]
+            rec["chl_serial"] = sl[-6000:]
+            a_n, b_n = sl.count("WA-CHL-PAGE A"), sl.count("WA-CHL-PAGE B")
+            ok_chl = (a_n == 1 and b_n == 1)
+            rec["gate"] = {"chl_page_a": a_n, "chl_page_b": b_n, "ok_chl": ok_chl}
+            print("chl corner: page A served %d time(s), page B served %d "
+                  "time(s)" % (a_n, b_n))
+            if not ok_chl:
+                finish(1, "GATE RED: chl corner -- page A x%d, page B x%d "
+                          "(expected 1/1: the re-navigation's Cookie header "
+                          "must miss the challenge's cache entry and fetch "
+                          "the real page for real)" % (a_n, b_n))
+            finish(0, "GATE GREEN: chl corner closed -- shell served once, "
+                      "real page served once, no infinite challenge loop")
 
         if args.control:
             sl = navigate_and_capture(args.control, "control")

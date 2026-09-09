@@ -980,6 +980,8 @@ melem *mel_for_key(int key, int create)
     return 0;
 }
 
+int mel_key(const melem *el) { return el ? el->key : 0; }
+
 static void mel_teardown_decoders(melem *el)
 {
     if (el->d4) { h264_close(el->d4); el->d4 = 0; }

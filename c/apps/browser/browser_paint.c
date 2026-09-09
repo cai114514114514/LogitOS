@@ -26,6 +26,8 @@
 #include "css.h"                   /* struct cstyle + the XR_* raw spans */
 #include "css_interp.h"            /* struct ci_xform, for `transform` */
 #include "../../../include/weaksym.h"   /* every weak extern below; read it first */
+#include <stdlib.h>                 /* malloc/realloc/free -- the dirty-rect snapshot buffers */
+#include <stdint.h>                 /* uintptr_t -- pointers folded into pd_item_sig()'s hash */
 
 /* The media engine, weakly: a <video> box is painted by whoever owns the
  * decoded frame (c/apps/browser/js_media.c), and this file must keep linking in
@@ -2164,10 +2166,224 @@ void browser_paint_text_counts(int *runs, int *chars)
     if (chars) *chars = g_ptx_chars;
 }
 
+/* ============================================================================
+ * WHAT TO REPORT TO gui_flush_rect -- the union of every item whose on-screen
+ * appearance differs from what the LAST browser_paint() pass put there.
+ *
+ * ONE ACCUMULATOR, ONE DOOR (AGENTS.md rule 3 / CLAUDE.md "one jar, two
+ * doors" applied to pixels instead of a constant): this is the only place
+ * that decides what changed. browser.c's narrow-repaint call sites do
+ * nothing but ask browser_paint_dirty_rect() for the answer and hand it
+ * straight to gui_flush_rect -- none of them recomputes a rectangle of its
+ * own, because a second computation of "what moved" is exactly the trap that
+ * has cost this tree a day three times already, and the two doors would
+ * disagree about which pixels are safe to skip compositing.
+ *
+ * THE METHOD is a positional diff, not a second DOM walk: browser_paint()
+ * already visits every item that survives the viewport cull, in a stable
+ * document order that does not change unless the DOM itself does, so
+ * comparing item[i] of this pass against item[i] of the LAST pass -- by
+ * geometry and by a content signature -- is cheap (no lookup structure) and
+ * gets a real property for free: an item whose SIZE changed shifts every
+ * later item's window-Y, so every later item's geometry differs too, and the
+ * diff marks it dirty without this file having to know "layout moved
+ * everything below" as a separate rule (the task's own example case).
+ *
+ * WIDEN BEFORE YOU NARROW (rule 3): whenever the two passes cannot be
+ * honestly compared -- the first paint, a viewport whose origin/size moved
+ * since the last pass (a resize invalidates "item i is still the same
+ * pixels"), or a snapshot buffer that failed to grow -- this reports "no
+ * rect available", which every caller in browser.c reads as "call
+ * gui_flush(), not gui_flush_rect". That is the only failure mode: under a
+ * doubt, wider, never narrower.
+ *
+ * WHAT THE SIGNATURE COVERS, and why it has to reach past struct item: most
+ * of what changes paint (background, border, radius, text, colour...) is
+ * copied into struct item at layout time and is covered by hashing the
+ * struct fields directly. Four properties are NOT copied -- transform,
+ * transform-origin, the gradient background-image and box-shadow all stay as
+ * RAW SPANS on the live cstyle (css.h's XR_* array, read by sty() above) and
+ * are re-read from the DOM node at PAINT time, specifically so a style
+ * recalculation on hover does not require a second layout pass. That means an
+ * item whose box and text are byte-identical across two passes can still
+ * have a different box-shadow on its hovered/unhovered state, invisible to a
+ * struct-item-only hash -- a real, common `:hover { box-shadow: ... }`
+ * pattern would silently under-report. The XR__COUNT spans are mixed into
+ * the signature for exactly that gap. */
+struct pdent { struct node *node; int x, y, w, h; uint32_t sig; };
+static struct pdent *g_pd_prev, *g_pd_cur;
+static int g_pd_prev_n, g_pd_cur_n, g_pd_cap;
+static int g_pd_prev_vx, g_pd_prev_vy, g_pd_prev_vw, g_pd_prev_vh, g_pd_have_prev;
+static int g_pd_prev_pbg_has, g_pd_prev_pbg, g_pd_have_prev_bg;
+/* -1 = no rect (caller must gui_flush() the whole canvas); 0 = a rect was
+ * computed and it is EMPTY (nothing changed -- caller may skip flushing
+ * entirely); 1 = g_pd_r{x,y,w,h} holds a real, nonempty rect. Never handed to
+ * gui_flush_rect as (x,y,0,0): that degenerate call is SYS_GUI_FLUSH_RECT's
+ * OWN spelling of "whole canvas" (logit_abi.h), the opposite of "nothing
+ * changed" -- collapsing the two would turn a quiet frame into the most
+ * expensive one. */
+static int g_pd_result_valid;
+static int g_pd_rx, g_pd_ry, g_pd_rw, g_pd_rh;
+
+static uint32_t pd_item_sig(const struct item *e)
+{
+    uint32_t h = 2166136261u;                 /* FNV-1a, 32-bit */
+#define PD_MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    PD_MIX(e->type); PD_MIX(e->z); PD_MIX(e->has_bg); PD_MIX(e->bg); PD_MIX(e->bg_alpha);
+    for (int k = 0; k < 4; k++) {
+        PD_MIX(e->border_w[k]); PD_MIX(e->border_color[k]);
+        PD_MIX(e->border_style[k]); PD_MIX(e->radius[k]); PD_MIX(e->radius_pct[k]);
+    }
+    PD_MIX(e->font_px); PD_MIX(e->bold); PD_MIX(e->italic); PD_MIX(e->mono);
+    PD_MIX(e->underline); PD_MIX(e->color); PD_MIX(e->strike); PD_MIX(e->overline);
+    PD_MIX(e->len);
+    /* Full content, not a pointer or a first/last-byte digest: a text input's
+     * on-screen value lives in a buffer that gets edited IN PLACE (the same
+     * trap the address bar's own `url` buffer has -- CLAUDE.md, "one jar, two
+     * doors"), so comparing the pointer alone would call an edited field
+     * unchanged. Bounded by the text this file is already about to draw, so
+     * the cost is the same order as drawing it. */
+    for (int i = 0; i < e->len; i++) PD_MIX((unsigned char)e->text[i]);
+    PD_MIX((uintptr_t)e->img); PD_MIX((uintptr_t)e->imgsrc); PD_MIX(e->h_auto);
+    PD_MIX((uintptr_t)e->href); PD_MIX(e->hidden); PD_MIX(e->opacity);
+    PD_MIX(e->has_clip); PD_MIX(e->clip_x); PD_MIX(e->clip_y); PD_MIX(e->clip_w); PD_MIX(e->clip_h);
+    PD_MIX(e->is_float); PD_MIX(e->ctl); PD_MIX(e->ctl_mono); PD_MIX(e->ctl_font);
+    /* The four live-read style spans -- see the block comment above. */
+    const struct cstyle *st = sty(e);
+    if (st) for (int k = 0; k < XR__COUNT; k++) {
+        PD_MIX((uintptr_t)st->xraw[k]); PD_MIX(st->xrawlen[k]);
+    }
+#undef PD_MIX
+    return h;
+}
+
+/* Grow both snapshot buffers together so they are always the same capacity --
+ * a diff between a prev[] and cur[] of different sizes is not the bug this
+ * guards; the bug it guards is a PARTIAL grow, where one buffer moved and the
+ * other did not and the "same index means the same slot" assumption this
+ * whole scheme rests on quietly stops being true. Returns 0 on OOM, and
+ * degrades the WHOLE mechanism to "no rect" rather than leaving it running on
+ * a truncated buffer that would silently drop items past the old capacity
+ * out of the diff -- i.e. an OOM here fails toward gui_flush(), never toward
+ * under-reporting. */
+static int pd_ensure_cap(int need)
+{
+    if (need <= g_pd_cap) return 1;
+    int ncap = g_pd_cap ? g_pd_cap : 256;
+    while (ncap < need) ncap *= 2;
+    struct pdent *np = realloc(g_pd_prev, (size_t)ncap * sizeof *np);
+    if (!np) return 0;
+    g_pd_prev = np;                    /* committed: g_pd_prev is never dangling from here on */
+    struct pdent *nc = realloc(g_pd_cur, (size_t)ncap * sizeof *nc);
+    if (!nc) {
+        /* g_pd_prev already grew; wipe both rather than run one grown and one
+         * not -- see the function comment. */
+        free(g_pd_prev); g_pd_prev = 0;
+        g_pd_cap = g_pd_prev_n = g_pd_cur_n = 0; g_pd_have_prev = 0;
+        return 0;
+    }
+    g_pd_cur = nc; g_pd_cap = ncap;
+    return 1;
+}
+
+static void pd_record(struct node *node, int x, int y, int w, int h, uint32_t sig)
+{
+    if (!pd_ensure_cap(g_pd_cur_n + 1)) return;  /* pd_finish() sees g_pd_cap==0 -> "no rect" */
+    struct pdent *p = &g_pd_cur[g_pd_cur_n++];
+    p->node = node; p->x = x; p->y = y; p->w = w; p->h = h; p->sig = sig;
+}
+
+static void pd_union(int *dx0, int *dy0, int *dx1, int *dy1, int *any,
+                      int x0, int y0, int x1, int y1)
+{
+    if (!*any) { *dx0 = x0; *dy0 = y0; *dx1 = x1; *dy1 = y1; *any = 1; return; }
+    if (x0 < *dx0) *dx0 = x0; if (y0 < *dy0) *dy0 = y0;
+    if (x1 > *dx1) *dx1 = x1; if (y1 > *dy1) *dy1 = y1;
+}
+
+/* Called once, at the end of browser_paint(). `bg_changed` says the page's
+ * base fill (the `if (layout_page_bg(...)) fill(...)` call below, which
+ * paints unconditionally every pass and is not an item) differs from last
+ * pass's -- when it does, nothing narrower than the whole viewport is honest,
+ * because that fill sits under literally everything else browser_paint drew. */
+static void pd_finish(int vx, int vy, int vw, int vh, int bg_changed)
+{
+    int can_diff = g_pd_have_prev && g_pd_have_prev_bg &&
+                    g_pd_prev_vx == vx && g_pd_prev_vy == vy &&
+                    g_pd_prev_vw == vw && g_pd_prev_vh == vh &&
+                    g_pd_cap > 0;
+    int dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0, any = 0;
+    if (can_diff) {
+        if (bg_changed) {
+            pd_union(&dx0, &dy0, &dx1, &dy1, &any, vx, vy, vx + vw, vy + vh);
+        }
+        int n = g_pd_prev_n > g_pd_cur_n ? g_pd_prev_n : g_pd_cur_n;
+        for (int i = 0; i < n; i++) {
+            int in_prev = i < g_pd_prev_n, in_cur = i < g_pd_cur_n;
+            if (in_prev && in_cur) {
+                const struct pdent *a = &g_pd_prev[i], *b = &g_pd_cur[i];
+                if (a->node == b->node && a->x == b->x && a->y == b->y &&
+                    a->w == b->w && a->h == b->h && a->sig == b->sig)
+                    continue;                  /* byte-identical to last pass */
+                /* Union of BOTH extents: a box that shrank or moved must
+                 * clear its old footprint too, not just paint its new one. */
+                int ux0 = a->x < b->x ? a->x : b->x, uy0 = a->y < b->y ? a->y : b->y;
+                int ux1 = (a->x + a->w) > (b->x + b->w) ? (a->x + a->w) : (b->x + b->w);
+                int uy1 = (a->y + a->h) > (b->y + b->h) ? (a->y + a->h) : (b->y + b->h);
+                pd_union(&dx0, &dy0, &dx1, &dy1, &any, ux0, uy0, ux1, uy1);
+            } else {
+                /* Present in only one pass: an item that appeared or vanished
+                 * (a node added/removed, or scrolled/hidden across the cull
+                 * boundary). Its OWN extent is the honest report either way. */
+                const struct pdent *e2 = in_cur ? &g_pd_cur[i] : &g_pd_prev[i];
+                pd_union(&dx0, &dy0, &dx1, &dy1, &any, e2->x, e2->y,
+                         e2->x + e2->w, e2->y + e2->h);
+            }
+        }
+    }
+    if (!can_diff) {
+        g_pd_result_valid = -1;
+    } else if (!any) {
+        g_pd_result_valid = 0;
+    } else {
+        /* Clamp to the viewport this pass actually painted: the cull test
+         * above (`top + e->h < 0 || top > vh`) admits an item that only
+         * PARTLY overlaps the viewport, so its full box can straddle the
+         * edge -- a caller must never be told to flush past what it asked
+         * browser_paint to draw. */
+        if (dx0 < vx) dx0 = vx; if (dy0 < vy) dy0 = vy;
+        if (dx1 > vx + vw) dx1 = vx + vw; if (dy1 > vy + vh) dy1 = vy + vh;
+        if (dx1 <= dx0 || dy1 <= dy0) g_pd_result_valid = 0;
+        else {
+            g_pd_result_valid = 1;
+            g_pd_rx = dx0; g_pd_ry = dy0; g_pd_rw = dx1 - dx0; g_pd_rh = dy1 - dy0;
+        }
+    }
+    /* This pass's items become the next pass's baseline. A pointer swap, not
+     * a copy: g_pd_cur already holds exactly this pass's snapshot. */
+    struct pdent *t = g_pd_prev; g_pd_prev = g_pd_cur; g_pd_cur = t;
+    g_pd_prev_n = g_pd_cur_n; g_pd_cur_n = 0;
+    g_pd_prev_vx = vx; g_pd_prev_vy = vy; g_pd_prev_vw = vw; g_pd_prev_vh = vh;
+    g_pd_have_prev = 1;
+}
+
+/* The public door. Returns -1 (no rect -- gui_flush() the whole canvas), 0
+ * (a rect was computed and it is empty -- nothing changed, the caller may
+ * skip flushing) or 1 (*x,*y,*w,*h hold a real rect for gui_flush_rect).
+ * Answers strictly from the LAST completed browser_paint() call; it does not
+ * recompute anything -- see the block comment above pd_item_sig(). */
+int browser_paint_dirty_rect(int *x, int *y, int *w, int *h)
+{
+    if (g_pd_result_valid != 1) return g_pd_result_valid;
+    *x = g_pd_rx; *y = g_pd_ry; *w = g_pd_rw; *h = g_pd_rh;
+    return 1;
+}
+
 void browser_paint(int vx, int vy, int vw, int vh, int scroll)
 {
     const struct item *it = layout_items();
     int n = layout_count();
+    g_pd_cur_n = 0;
     /* Whole-pass, so the last paint wins: a repaint that covers half the
      * viewport must not leave the other half's runs from the pass before it
      * standing beside the new ones. */
@@ -2179,8 +2395,15 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
      * looks like a compositor bug. */
     g_xf_key = 0; g_xf_hit = 0;
     set_clip(vx, vy, vx + vw, vy + vh);
-    uint32_t pbg;
-    if (layout_page_bg(&pbg)) fill(vx, vy, vw, vh, pbg, 255);  /* themed background */
+    uint32_t pbg; int has_pbg = layout_page_bg(&pbg);
+    /* This fill is not an item -- it paints unconditionally, under
+     * everything else this function draws -- so pd_finish() needs to be told
+     * about it separately rather than missing it entirely (see the comment
+     * on pd_finish's `bg_changed` parameter). */
+    int pd_bg_changed = !g_pd_have_prev_bg || has_pbg != g_pd_prev_pbg_has ||
+                         (has_pbg && pbg != (uint32_t)g_pd_prev_pbg);
+    g_pd_prev_pbg_has = has_pbg; g_pd_prev_pbg = (int)pbg; g_pd_have_prev_bg = 1;
+    if (has_pbg) fill(vx, vy, vw, vh, pbg, 255);  /* themed background */
     for (int i = 0; i < n; i++) {
         const struct item *e0 = &it[i], *e = e0;
         if (e->hidden) continue;                  /* visibility:hidden / opacity:0 */
@@ -2277,6 +2500,13 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
         if ((e->type == IT_RECT || e->type == IT_IMAGE) &&
             rclip_of(e, vx, vy, scroll, &rcbuf)) rc = &rcbuf;
 #endif
+        /* Every `continue` above this line means "not painted" -- reaching
+         * here means this item WILL put ink on screen, which is exactly what
+         * the dirty-rect diff needs to see. Recorded at the item's own box
+         * (sx, sy, e->w, e->h), not the post-clip intersection: a clipped
+         * item's full box can be a slight OVER-report of what actually
+         * changed, which is the safe direction (rule 3), never the reverse. */
+        pd_record(e->node, sx, sy, e->w, e->h, pd_item_sig(e));
 
         int op = e->opacity;                      /* 0..255 */
 
@@ -2587,6 +2817,7 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             printf("[dl] ---8<--- end painted text\n");
         }
     }
+    pd_finish(vx, vy, vw, vh, pd_bg_changed);
 }
 
 /* Does the point (doc coords) land on `e`, honouring its overflow clip? An

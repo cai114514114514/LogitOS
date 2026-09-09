@@ -78,6 +78,45 @@ int text_measure(const char *s, int len, int px, int mono)
  * load() is not reentrant and answers only its close button meanwhile. */
 #define BF_TOTAL_MS 90000
 
+/* ---- the FIRST-BYTE deadline: a separate clock from BF_REQ_MS, not a third
+ * multiplying factor ----
+ *
+ * BF_REQ_MS's 60 s is an IDLE deadline and its comment right above defends a
+ * real case: a load has long gaps in it between phases, and a request that
+ * has already received part of a response should not be killed for a slow
+ * remainder. That defence has nothing to do with a request that has sent its
+ * headers and received not ONE response byte -- a server that accepted the
+ * TCP/TLS handshake and then never writes (a proxy with no live backend, a
+ * firewall's black hole, a load balancer's default route). qwen.ai's split is
+ * the specimen, not the target: 17 of its 23 requests never got a response
+ * byte and each one held its slot -- one of the origin's TWO -- for the full
+ * 60 s idle timeout while the other 6 live requests queued behind them.
+ *
+ * WHY 12000: chosen from the two ends of the evidence this investigation
+ * already has, not from taste. The floor: this tree's own fast loads answer
+ * their first byte in well under a second (the [wa] timeline's per-module
+ * stamps, ~170 ms apart on x.com, are round trips on a connection already
+ * proven live). The ceiling: a subresource fetched against a host whose
+ * document just answered has no plausible reason to still be silent at
+ * 10-15 s -- DNS, TCP and (for https) the TLS handshake are already proven to
+ * work against that exact host, because req_begin_exchange only runs after
+ * SOCK_P_CONNECTED, which per sock.c's own comment means "the transport is up
+ * INCLUDING the TLS handshake". 12 s splits that range and leaves an order of
+ * magnitude of margin over the floor.
+ *
+ * NOT A THIRD FACTOR IN THE BF_HOPS x BF_REQ_MS TRAP (see t0's comment on
+ * struct breq below): this clock only ever fires EARLIER than BF_REQ_MS's
+ * existing idle check (12 s < 60 s), so on a dead request it can only
+ * SHORTEN the time req_expired would eventually have spent anyway -- it
+ * cannot lengthen anything, and every hop and retry is still bounded by the
+ * same t_start / BF_TOTAL_MS check that already caps the product. A
+ * _Static_assert says so rather than leaving it as a claim nobody re-checks
+ * when either number moves. */
+#define BF_FIRSTBYTE_MS 12000
+_Static_assert(BF_FIRSTBYTE_MS < BF_REQ_MS,
+              "the first-byte deadline must fire strictly before the idle "
+              "deadline, or it adds a case req_expired did not already cover");
+
 enum { RQ_FREE = 0, RQ_QUEUED, RQ_DIAL, RQ_XFER, RQ_DONE, RQ_FAIL };
 
 struct breq {
@@ -105,6 +144,36 @@ struct breq {
      * cache in req_step_xfer(). Both empty = an ordinary unconditional GET. */
     char  wv_etag[256];
     char  wv_lmod[64];
+    /* THE COOKIE LINE THIS EXCHANGE ACTUALLY PUT ON THE WIRE, captured by
+     * build_get() at the instant it built the Cookie header -- see
+     * req_cookie_line's comment for why NOT caching it once for the whole
+     * request (a hop retargets r->u). This is separate from that: it is
+     * captured EVERY time build_get runs (once per attempt), and read back
+     * by the STORE and 304 sites in req_step_xfer, which must NEVER call
+     * req_cookie_line() fresh at response time.
+     *
+     * THE TRAP THIS FIELD EXISTS TO CLOSE, found on the guest (2026-09-02),
+     * SILENT, and it is why "recompute fresh, it's just a function call" is
+     * the wrong instinct here: req_step_xfer ingests a response's Set-Cookie
+     * header into the jar BEFORE the store call runs (a few lines above --
+     * ingesting a login/challenge cookie before following its own redirect
+     * is the whole point of that ordering). A store site that called
+     * req_cookie_line() fresh at that point would therefore read the JAR
+     * AFTER this response's own Set-Cookie had already been folded into it
+     * -- storing the challenge page under the cookie it is ABOUT TO CAUSE,
+     * not the cookie the request that fetched it actually carried. That is
+     * exactly the wrong key by one response: it makes the cache key equal
+     * the NEXT request's cookie line, so the cookie-bearing re-navigation
+     * hits the challenge's own entry again -- the douyin loop, reintroduced
+     * one layer down from the bug this whole file exists to fix, and only
+     * on the FIRST navigation of a session (every later store, where the
+     * jar was not just mutated by this exact response, recomputes to the
+     * same answer either way -- which is why this shipped once, in a unit
+     * test that never involves a live Set-Cookie response, and only showed
+     * up driving the real fixture server through QEMU). sent_ck is what
+     * removes the ambiguity: it is fixed at send time, before any response
+     * -- let alone this one -- can mutate the jar. */
+    char  sent_ck[CK_HEADER_MAX];
     int   c_live;                    /* h1_conn needs freeing */
     struct h1_conn c;
     unsigned char *body;
@@ -124,6 +193,18 @@ struct breq {
      * reentrant, so every one of those minutes is a browser that answers its
      * close button and drops every other keystroke. */
     unsigned long long t_start;
+    /* When THIS ATTEMPT's exchange was handed to h1_conn_start -- i.e. the
+     * instant its headers were about to go out. Reset exactly where t0 is
+     * (a fresh dial, a hop, a retry): BF_FIRSTBYTE_MS's clock, like t0's, has
+     * to restart for each new connection, because a redirect target or a
+     * fresh-connection retry is a different exchange and the silence-so-far
+     * of the old one does not belong to it. Kept separate from t0 rather than
+     * reusing it: t0 also covers DIAL (TCP connect + TLS handshake), which
+     * bfetch_init's comment measures as costing real SECONDS on this host,
+     * and folding that into a 12 s first-byte budget would fail slow-but-live
+     * handshakes along with the dead servers it exists to catch. See
+     * BF_FIRSTBYTE_MS's comment above for the rest of the argument. */
+    unsigned long long t_xfer;
 
     /* ---- byte range (see bfetch.h) ----
      * rq_first < 0 means "no range asked", which is the memset-0 case only
@@ -132,6 +213,30 @@ struct breq {
     int       rres;                   /* BF_R_* */
     long long got_first, got_last, got_total;   /* what arrived; -1 unknown */
 };
+
+/* ONE FUNCTION for the wire and the http_cache key -- one jar, two doors
+ * (AGENTS.md section 1). Every place that needs "the Cookie header for r's
+ * current request" -- build_get's actual header, the cache lookup before a
+ * connection exists, the cache store after a response arrives, the 304
+ * re-arm -- calls THIS, never webapi_cookie_line() directly, so the bytes
+ * that decide the cache key and the bytes that go out on the wire cannot
+ * drift apart by one of them being computed a different way.
+ *
+ * DELIBERATELY NOT cached once on `r`: r->u (host/path/scheme) can change
+ * mid-request -- a redirect hop retargets it (see the hop handling below,
+ * which for the identical reason clears r->wv_etag/r->wv_lmod rather than
+ * letting a stale validator survive a hop) -- and a cookie line computed for
+ * hop A's host would be both the WRONG Cookie header for hop B's origin and
+ * the wrong cache key for it. Computing fresh from r->u at each call site
+ * costs one jar walk on cache-relevant paths only (never per poll pass), and
+ * is what makes "same bytes, same function" true after a hop as well as
+ * before one. */
+static void req_cookie_line(const struct breq *r, char *out, int cap)
+{
+    out[0] = 0;
+    if (LOGIT_HAVE(webapi_cookie_line))
+        webapi_cookie_line(r->u.host, r->u.path, r->u.https, r->nav, out, cap);
+}
 
 static struct breq g_req[BF_NREQ];
 static struct hpool g_pool;
@@ -452,17 +557,17 @@ static char *build_get(struct breq *r, int *outlen)
      * subresource -- not only the JS fetch()/XHR path. The jar lives in
      * js_webapi.c and is reached through a weak symbol so builds without
      * that TU (the loader host tests) link and run cookieless. See the
-     * export comment in js_webapi.c for the WAF loop this closes. */
-    if (LOGIT_HAVE(webapi_cookie_line)) {
-        /* static, not automatic: CK_HEADER_MAX is 8 KiB and this file's own
-         * history is a redirect chain that overflowed a stack into the page
-         * tables. build_get() runs to completion synchronously and nothing
-         * here is reentrant, so one buffer is one buffer. */
-        static char ck[CK_HEADER_MAX];
-        if (webapi_cookie_line(r->u.host, r->u.path, r->u.https, r->nav,
-                               ck, (int)sizeof ck) > 0 && ck[0])
-            h1_request_set_header(&q, "Cookie", ck);
-    }
+     * export comment in js_webapi.c for the WAF loop this closes, and
+     * req_cookie_line's own comment for why THIS is the one call site for
+     * it rather than webapi_cookie_line() called inline.
+     *
+     * INTO r->sent_ck, NOT A LOCAL BUFFER: this is the one place the bytes
+     * that go on the wire are decided, so this is the one place that gets
+     * to freeze them. req_step_xfer's store/304 sites read r->sent_ck back
+     * rather than recomputing -- see that field's own comment for the
+     * silent wrong-key bug recomputing there caused. */
+    req_cookie_line(r, r->sent_ck, (int)sizeof r->sent_ck);
+    if (r->sent_ck[0]) h1_request_set_header(&q, "Cookie", r->sent_ck);
     char *buf = 0; int len = 0;
     int rc = h1_request_build(&q, &buf, &len);
     h1_request_free(&q);
@@ -484,6 +589,7 @@ static int req_begin_exchange(struct breq *r)
     }
     r->c_live = 1;
     r->state = RQ_XFER;
+    r->t_xfer = monotonic_ms();     /* the first-byte deadline's own clock */
     return 1;
 }
 
@@ -799,6 +905,32 @@ static void req_step_xfer(struct breq *r)
         if (h1_conn_progress(&r->c) == before) break;      /* nothing moved */
     }
     if (st == H1_C_SEND || st == H1_C_RECV) {
+#ifndef BFETCH_NO_FIRSTBYTE_DEADLINE
+        /* THE FIRST-BYTE DEADLINE (see BF_FIRSTBYTE_MS above for why 12 s and
+         * why this cannot become a third multiplying factor). rx_bytes is
+         * http1.c's own count of bytes this exchange has pulled off the
+         * transport (h1_conn_pump: "c->rx_bytes += n" happens only on a real
+         * read) -- zero means literally nothing has come back, not "nothing
+         * interesting yet". A response that has started (even one header
+         * byte) makes rx_bytes nonzero forever, which disarms this check for
+         * the rest of the attempt: a slow-but-alive server that answers late
+         * is exactly the case BF_REQ_MS's 60 s already exists to protect.
+         *
+         * THIS IS THE NEGATIVE CONTROL'S SWITCH (tests/fetchdl.mk,
+         * -DBFETCH_NO_FIRSTBYTE_DEADLINE): compiled out, a request that never
+         * gets a single byte falls through to the idle check below and lives
+         * the full BF_REQ_MS -- which is the state that let 17 of qwen.ai's
+         * 23 requests hold one of their origin's two connection slots in
+         * total silence for a full minute apiece, with the six requests that
+         * COULD have answered queued behind them. */
+        if (r->c.rx_bytes == 0 &&
+            monotonic_ms() - r->t_xfer > BF_FIRSTBYTE_MS) {
+            printf("[browser] fetch stalled: no response after %d s: %s\n",
+                   BF_FIRSTBYTE_MS / 1000, r->url);
+            req_fail(r, "stalled: no response");
+            return;
+        }
+#endif
         if (req_expired(r)) req_fail(r, "timed out");
         return;
     }
@@ -877,10 +1009,20 @@ static void req_step_xfer(struct breq *r)
      * and is failed BY NAME rather than handed to the caller as a bodyless
      * 2xx-looking success. */
     if (resp->code == 304) {
+        /* r->sent_ck, NOT a fresh req_cookie_line() call: this response's own
+         * headers have not been ingested into the jar yet at this point in
+         * the function (Set-Cookie ingestion is below, past the redirect
+         * branch), so a recompute would still be safe on THIS response --
+         * but sent_ck is what build_get() actually put on the wire for the
+         * conditional GET that produced this 304, which is the only bytes
+         * that can be right by definition, and using it here rather than
+         * "recompute, it should agree" is the same discipline the store
+         * site below needs for real (see r->sent_ck's own comment for the
+         * case where recomputing silently does NOT agree). */
         unsigned char *b = 0; int bl = 0;
-        if ((r->wv_etag[0] || r->wv_lmod[0]) &&
-            wacache_body(r->url, &b, &bl) == 0) {
-            wacache_refresh(r->url,
+        int have_val = r->wv_etag[0] || r->wv_lmod[0];
+        if (have_val && wacache_body(r->url, r->sent_ck, &b, &bl) == 0) {
+            wacache_refresh(r->url, r->sent_ck,
                             h1_headers_get(&resp->hdr, "cache-control"),
                             h1_headers_get(&resp->hdr, "expires"),
                             h1_headers_get(&resp->hdr, "date"));
@@ -924,13 +1066,32 @@ static void req_step_xfer(struct breq *r)
      * GETs only: rq_first < 0 says no range was ASKED (a 206 or a
      * range-ignored 200 never reaches here with rq_first >= 0, and
      * range_check has already refused the malformed ones), and the cache is
-     * keyed by URL alone so a slice under a plain URL is corruption
-     * (bfetch.h's invariant). Store REFUSALS are silent to the page: the
-     * entry is simply not cached and the next visit refetches, which is
-     * exactly what a browser with no cache does. */
+     * keyed by (URL, Cookie header) so a slice under a plain URL is still
+     * corruption regardless of cookie (bfetch.h's invariant). Store
+     * REFUSALS are silent to the page: the entry is simply not cached and
+     * the next visit refetches, which is exactly what a browser with no
+     * cache does.
+     *
+     * THE KEY IS r->sent_ck, NOT A FRESH req_cookie_line() CALL, AND THAT
+     * IS LOAD-BEARING, NOT STYLE: storing under the request's own header
+     * (rather than the response's Set-Cookie) is what makes the very next
+     * re-navigation -- now carrying that cookie -- miss this entry and
+     * fetch for real (see http_cache.h's Set-Cookie paragraph). But "the
+     * request's own header" means what build_get() PUT ON THE WIRE, and by
+     * the time this line runs, the Set-Cookie ingestion a few lines above
+     * (BEFORE the redirect branch, so a login/challenge cookie is captured
+     * before its own redirect is followed) may have ALREADY folded THIS
+     * response's Set-Cookie into the jar -- so a fresh req_cookie_line()
+     * call right here would read the POST-ingestion jar and silently key
+     * the challenge page to the cookie it is ABOUT to cause, reintroducing
+     * the douyin loop one layer down on the very first navigation of a
+     * session (found on the guest, 2026-09-02, invisible to the host unit
+     * test because that test never ingests a live Set-Cookie response --
+     * see r->sent_ck's own comment). r->sent_ck was frozen by build_get()
+     * before this response, let alone its Set-Cookie, existed. */
     if (r->rq_first < 0 && r->status / 100 == 2 && r->body && r->blen > 0 &&
         !g_wa_bypass) {
-        wacache_store(r->url, r->body, r->blen,
+        wacache_store(r->url, r->sent_ck, r->body, r->blen,
                       h1_headers_get(&resp->hdr, "cache-control"),
                       h1_headers_get(&resp->hdr, "expires"),
                       h1_headers_get(&resp->hdr, "date"),
@@ -1057,10 +1218,35 @@ static int bfetch_start_range_impl(const char *base, const char *ref,
          *             a 304 is answered from the cache in req_step_xfer().
          *   MISS   -> an ordinary GET, byte-identical to before this existed.
          * Reload-bypass (g_wa_bypass) skips both -- the caller asked for the
-         * network and gets it, stores included. */
+         * network and gets it, stores included.
+         *
+         * THE KEY, and why no second bypass flag is needed for the script-
+         * navigation case (douyin's challenge-and-reload): `ck` below is
+         * THIS request's Cookie header, computed from r->u/r->nav which are
+         * already set for THIS specific navigation -- a script-driven
+         * re-navigation (location.reload(), or an href write to a new URL;
+         * see js_webapi.c's loc_reload/loc_set) reaches here through the
+         * ordinary bfetch_start_nav -> bfetch_start_range_impl path with a
+         * freshly built r, so the re-navigation that follows a Set-Cookie
+         * carries the new cookie and therefore computes a DIFFERENT `ck`,
+         * therefore a different (url, ck) key, therefore a MISS against the
+         * challenge page's entry -- correctly falling through to
+         * req_connect below and dialling for real. GUEST-MEASURED, twice:
+         * with the key change compiled out (-DWACACHE_NO_COOKIE_KEY,
+         * tests/qmp/qmp_webaccel.py --chl) the challenge shell is served 11
+         * times in a row (NAV_MAX_HOPS) and the real page never arrives;
+         * with it, the shell serves exactly once and the real page exactly
+         * once. The bug this closes was never "scripted navigations need a
+         * bypass"; it was "the key could not see the one header value that
+         * changed between the two navigations". Fixing the key fixes every
+         * caller of this function, script-driven or not, which is the
+         * general fix AGENTS.md's "never fit a site" rule asks for -- no
+         * branch here knows or cares that douyin exists. */
         if (first < 0 && !g_wa_bypass) {
+            static char ck[CK_HEADER_MAX];
+            req_cookie_line(r, ck, (int)sizeof ck);
             unsigned char *cbody = 0; int clen = 0;
-            if (wacache_lookup(abs, &cbody, &clen) == 0) {
+            if (wacache_lookup(abs, ck, &cbody, &clen) == 0) {
                 r->body = cbody;
                 r->blen = clen;
                 r->status = 200;
@@ -1071,7 +1257,7 @@ static int bfetch_start_range_impl(const char *base, const char *ref,
                  * reuses are what show the network never ran. */
                 return i;
             }
-            (void)wacache_validators(abs, r->wv_etag, (int)sizeof r->wv_etag,
+            (void)wacache_validators(abs, ck, r->wv_etag, (int)sizeof r->wv_etag,
                                      r->wv_lmod, (int)sizeof r->wv_lmod);
         }
 

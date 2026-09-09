@@ -13,7 +13,17 @@
  * -DWACACHE_OFF is the negative control: every public function returns its
  * refusal/-1 and stores nothing, so the same binary shape runs with the
  * cache compiled out to nothing (tests/webaccel.mk builds it and the gate
- * must go RED there -- that build is the proof the gate measures the cache). */
+ * must go RED there -- that build is the proof the gate measures the cache).
+ *
+ * -DWACACHE_NO_COOKIE_KEY is the SECOND control, added 2026-09-02 alongside
+ * the cookie key: the cache stays fully on, but ck_hash() collapses to a
+ * constant, so the key degenerates to url-alone -- byte-for-byte the key
+ * this file had before douyin's challenge-and-reload loop exposed it as
+ * wrong (CLAUDE.md's "the loop, measured on the guest"). With it, a
+ * chl-cookie-setting response served to a first request must ALSO be served
+ * to the re-navigation that follows it (the bug); without it, the
+ * re-navigation's different Cookie header must miss and re-fetch (the fix).
+ * See tests/webaccel.mk for where this is driven and watched both ways. */
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -47,6 +57,18 @@ struct wac_ent {
     int    used;
     char   url[768];                 /* BF_URLMAX; duplicated deliberately so
                                       * this TU does not depend on bfetch.h */
+    unsigned long long ckh;          /* hash of the request Cookie header that
+                                      * fetched this entry -- see ck_hash()
+                                      * below and http_cache.h's key paragraph.
+                                      * ck_hash("") == ck_hash(NULL) == the
+                                      * FNV-1a offset basis (a fixed constant,
+                                      * not 0), so every cookieless request
+                                      * to a given url hashes identically and
+                                      * the key degenerates to url-alone --
+                                      * exactly the pre-fix key, which is what
+                                      * keeps a cookieless build (weaksym
+                                      * stub, LOGIT_HAVE false) behaviourally
+                                      * unchanged. */
     unsigned char *body;
     int    len;
     long long stored_ms;             /* receipt, monotonic */
@@ -59,6 +81,50 @@ struct wac_ent {
 static struct wac_ent wac[WAC_N];
 static long long wac_bytes;
 static int wac_hits, wac_revalidations;
+
+/* ---- the cookie half of the key ------------------------------------------
+ *
+ * WHY A HASH AND NOT THE BYTES: cookie_line can run to CK_HEADER_MAX (8 KiB,
+ * cookies.h) and WAC_N is 64 -- storing it verbatim per entry would put
+ * 512 KiB into KEYS, a sixteenth of WAC_MAX_BYTES, to hold a value only ever
+ * used for equality. A hash buys the same equality test (modulo collision)
+ * in 8 bytes.
+ *
+ * FNV-1a 64-bit, the same algorithm this tree already trusts for a
+ * non-adversarial equality check (tools/ uses it for content hashes
+ * elsewhere) -- not a cryptographic hash, because the threat model does not
+ * need one: nobody controls both (a) the bytes of their own Cookie header
+ * AND (b) another cache entry's stored URL well enough to engineer a
+ * collision that serves THEM someone else's cookie-scoped response, because
+ * the cookie line is built by webapi_cookie_line() from the browser's own
+ * jar, not from attacker-supplied input reaching this function directly.
+ * What has to be argued is accidental collision, not chosen preimage:
+ * WAC_N=64 live entries means at most 64 x 63 / 2 = 2016 pairs at risk, and
+ * at 2^-64 per pair the union bound is under 2^-53 per boot -- smaller than
+ * the odds this machine's own crypto self-test (genroots.py) accepts for a
+ * SHA-256 collision, on a table four orders of magnitude larger. A collision
+ * would be a false HIT (the one outcome that matters -- see the header); a
+ * hash MISS from two different cookie lines is certain by construction and
+ * costs exactly one avoidable fetch, the cache's ordinary cold-entry cost. */
+#ifdef WACACHE_NO_COOKIE_KEY
+/* CONTROL SWITCH (see the file's WACACHE_OFF comment for the sibling
+ * control): compiled with this, every cookie line hashes to the same
+ * constant, so find_ent's (url, ckh) match degenerates back to url-alone --
+ * byte-for-byte the pre-fix key. tests/webaccel.mk's chl- fixture drives both
+ * builds and the control is watched RED here: A must be served TWICE. */
+static unsigned long long ck_hash(const char *s) { (void)s; return 0; }
+#else
+static unsigned long long ck_hash(const char *s)
+{
+    /* FNV-1a 64: offset basis 0xcbf29ce484222325, prime 0x100000001b3. */
+    unsigned long long h = 0xcbf29ce484222325ULL;
+    if (s) for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= (unsigned long long)*p;
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+#endif
 
 /* ---- small helpers (this TU has no libc printf dependency on purpose) ---- */
 
@@ -262,7 +328,23 @@ static long long compute_lifetime(const char *cache_control, const char *expires
 
 /* ---- the table ------------------------------------------------------------ */
 
-static struct wac_ent *find_ent(const char *url)
+/* THE KEY: (url, cookie hash). Both must match. `ckh` is the caller's
+ * ck_hash(cookie_line), computed once by each public entry point below --
+ * never recomputed here, so this function has no way to see a cookie_line
+ * that disagrees with its own hash. */
+static struct wac_ent *find_ent_h(const char *url, unsigned long long ckh)
+{
+    for (int i = 0; i < WAC_N; i++)
+        if (wac[i].used && wac[i].ckh == ckh && strcmp(wac[i].url, url) == 0)
+            return &wac[i];
+    return 0;
+}
+
+/* url-only match, EVERY cookie variant -- wacache_invalidate's contract
+ * (see http_cache.h) is "poison this url", not "poison this url for this
+ * request", so it has no ckh to filter on and must be able to find (and the
+ * caller loop below, drop) more than one entry. */
+static struct wac_ent *find_ent_any(const char *url)
 {
     for (int i = 0; i < WAC_N; i++)
         if (wac[i].used && strcmp(wac[i].url, url) == 0) return &wac[i];
@@ -299,16 +381,18 @@ static struct wac_ent *alloc_ent(void)
 #ifdef WACACHE_OFF
 /* NEGATIVE CONTROL: the cache is compiled to nothing. See the file comment. */
 void wacache_reset(void) {}
-int  wacache_lookup(const char *u, unsigned char **b, int *l) { (void)u; (void)b; (void)l; return -1; }
-int  wacache_validators(const char *u, char *e, int ec, char *m, int mc)
-{ (void)u; (void)e; (void)ec; (void)m; (void)mc; return -1; }
-int  wacache_body(const char *u, unsigned char **b, int *l) { (void)u; (void)b; (void)l; return -1; }
-int  wacache_store(const char *u, const unsigned char *b, int l, const char *cc,
-                   const char *ex, const char *d, const char *lm, const char *et,
-                   const char *v, int ck)
-{ (void)u; (void)b; (void)l; (void)cc; (void)ex; (void)d; (void)lm; (void)et; (void)v; (void)ck; return -1; }
-void wacache_refresh(const char *u, const char *cc, const char *ex, const char *d)
-{ (void)u; (void)cc; (void)ex; (void)d; }
+int  wacache_lookup(const char *u, const char *ckl, unsigned char **b, int *l)
+{ (void)u; (void)ckl; (void)b; (void)l; return -1; }
+int  wacache_validators(const char *u, const char *ckl, char *e, int ec, char *m, int mc)
+{ (void)u; (void)ckl; (void)e; (void)ec; (void)m; (void)mc; return -1; }
+int  wacache_body(const char *u, const char *ckl, unsigned char **b, int *l)
+{ (void)u; (void)ckl; (void)b; (void)l; return -1; }
+int  wacache_store(const char *u, const char *ckl, const unsigned char *b, int l,
+                   const char *cc, const char *ex, const char *d, const char *lm,
+                   const char *et, const char *v, int ck)
+{ (void)u; (void)ckl; (void)b; (void)l; (void)cc; (void)ex; (void)d; (void)lm; (void)et; (void)v; (void)ck; return -1; }
+void wacache_refresh(const char *u, const char *ckl, const char *cc, const char *ex, const char *d)
+{ (void)u; (void)ckl; (void)cc; (void)ex; (void)d; }
 void wacache_invalidate(const char *u) { (void)u; }
 void wacache_stats(int *en, int *by, int *h, int *rv)
 { if (en) *en = 0; if (by) *by = 0; if (h) *h = 0; if (rv) *rv = 0; }
@@ -320,18 +404,19 @@ void wacache_reset(void)
     wac_bytes = 0;
 }
 
-static struct wac_ent *find_fresh(const char *url)
+static struct wac_ent *find_fresh(const char *url, unsigned long long ckh)
 {
-    struct wac_ent *e = find_ent(url);
+    struct wac_ent *e = find_ent_h(url, ckh);
     if (!e) return 0;
     long long now = WAC_NOW_MS();
     if (now - e->stored_ms < e->lifetime_ms) return e;
     return 0;
 }
 
-int wacache_lookup(const char *url, unsigned char **body, int *len)
+int wacache_lookup(const char *url, const char *cookie_line,
+                   unsigned char **body, int *len)
 {
-    struct wac_ent *e = find_fresh(url);
+    struct wac_ent *e = find_fresh(url, ck_hash(cookie_line));
     if (!e) return -1;
     unsigned char *copy = (unsigned char *)malloc((size_t)e->len + 1);
     if (!copy) return -1;
@@ -343,10 +428,10 @@ int wacache_lookup(const char *url, unsigned char **body, int *len)
     return 0;
 }
 
-int wacache_validators(const char *url, char *etag, int etagcap,
-                       char *lmod, int lmodcap)
+int wacache_validators(const char *url, const char *cookie_line,
+                       char *etag, int etagcap, char *lmod, int lmodcap)
 {
-    struct wac_ent *e = find_ent(url);
+    struct wac_ent *e = find_ent_h(url, ck_hash(cookie_line));
     if (!e) return -1;
     long long now = WAC_NOW_MS();
     if (now - e->stored_ms < e->lifetime_ms) return -1;   /* fresh: no request at all */
@@ -365,9 +450,10 @@ int wacache_validators(const char *url, char *etag, int etagcap,
     return 0;
 }
 
-int wacache_body(const char *url, unsigned char **body, int *len)
+int wacache_body(const char *url, const char *cookie_line,
+                 unsigned char **body, int *len)
 {
-    struct wac_ent *e = find_ent(url);
+    struct wac_ent *e = find_ent_h(url, ck_hash(cookie_line));
     if (!e || !e->body) return -1;
     unsigned char *copy = (unsigned char *)malloc((size_t)e->len + 1);
     if (!copy) return -1;
@@ -378,16 +464,24 @@ int wacache_body(const char *url, unsigned char **body, int *len)
     return 0;
 }
 
-int wacache_store(const char *url, const unsigned char *body, int len,
+int wacache_store(const char *url, const char *cookie_line,
+                  const unsigned char *body, int len,
                   const char *cache_control, const char *expires,
                   const char *date, const char *last_modified,
                   const char *etag, const char *vary, int had_setcookie)
 {
     if (!url || !url[0] || !body || len <= 0) return -1;
     if ((int)strlen(url) >= (int)sizeof wac[0].url) return -1;
-    /* Vary: only Accept-Encoding (or an empty value) may be stored -- see the
-     * header. Anything else names a request dimension this cache cannot tell
-     * apart, which makes every hit a potential wrong-variant serve. */
+    /* Vary: Accept-Encoding (or an empty value) is always safe to ignore --
+     * see the header. Cookie is now ALSO storable: the key below already
+     * carries the exact request Cookie header, which is a strictly finer
+     * partition than Vary: Cookie asks for (it also distinguishes requests
+     * a server would have called "the same" cookie-wise if it ever varied on
+     * a normalised subset -- this cache does not normalise, so it never
+     * over-shares, only occasionally under-shares into a cache miss). Any
+     * OTHER Vary still refuses the store: it names a request dimension this
+     * cache genuinely cannot tell apart (Accept-Language, User-Agent, ...),
+     * and serving to the wrong variant is worse than not serving. */
     if (vary && vary[0]) {
         int ok = 0;
         for (const char *p = vary; *p; ) {
@@ -398,6 +492,7 @@ int wacache_store(const char *url, const unsigned char *body, int len,
             int tl = (int)(p - tok);
             while (tl > 0 && (tok[tl-1] == ' ')) tl--;
             if (tl == 15 && ci_eq(tok, "accept-encoding", 16)) { ok = 1; continue; }
+            if (tl == 6 && ci_eq(tok, "cookie", 7)) { ok = 1; continue; }
             if (tl == 1 && tok[0] == '*') return -1;    /* Vary: * -- never */
             return -1;                                  /* any other field */
         }
@@ -414,7 +509,8 @@ int wacache_store(const char *url, const unsigned char *body, int len,
      * bigger than the whole cap -- refuse; a caller holding 9 MiB wants the
      * network path, not a cache that thrashes itself for it. */
     if (len > WAC_MAX_BYTES) return -1;
-    struct wac_ent *e = find_ent(url);
+    unsigned long long ckh = ck_hash(cookie_line);
+    struct wac_ent *e = find_ent_h(url, ckh);
     if (e) { wac_bytes -= e->len; free(e->body); e->body = 0; }
     else {
         while (wac_bytes + len > WAC_MAX_BYTES) {
@@ -434,6 +530,7 @@ int wacache_store(const char *url, const unsigned char *body, int len,
         int i = 0;
         while (url[i]) { e->url[i] = url[i]; i++; }
         e->url[i] = 0;
+        e->ckh = ckh;
         e->used = 1;
     }
     unsigned char *copy = (unsigned char *)malloc((size_t)len + 1);
@@ -459,10 +556,11 @@ int wacache_store(const char *url, const unsigned char *body, int len,
     return 0;
 }
 
-void wacache_refresh(const char *url, const char *cache_control,
-                     const char *expires, const char *date)
+void wacache_refresh(const char *url, const char *cookie_line,
+                     const char *cache_control, const char *expires,
+                     const char *date)
 {
-    struct wac_ent *e = find_ent(url);
+    struct wac_ent *e = find_ent_h(url, ck_hash(cookie_line));
     if (!e) return;
     long long life = compute_lifetime(cache_control, expires, date, 0, 0);
     if (life < 0) { drop_ent(e); return; }         /* a 304 carrying no-store */
@@ -473,8 +571,15 @@ void wacache_refresh(const char *url, const char *cache_control,
 
 void wacache_invalidate(const char *url)
 {
-    struct wac_ent *e = find_ent(url);
-    if (e) drop_ent(e);
+    /* ALL cookie variants of `url` -- find_ent_any has no ckh to filter on
+     * and there may be more than one live entry sharing this url (a
+     * cookieless fetch and a cookie-bearing one can both be stored for the
+     * same address), so this drops in a loop rather than once. */
+    for (;;) {
+        struct wac_ent *e = find_ent_any(url);
+        if (!e) break;
+        drop_ent(e);
+    }
 }
 
 void wacache_stats(int *entries, int *bytes, int *hits, int *revalidations)

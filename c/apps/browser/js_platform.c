@@ -633,6 +633,117 @@ static const char *PLATFORM_PRELUDE =
 "    this.port1._peer = this.port2; this.port2._peer = this.port1;\n"
 "  };\n"
 "}\n"
+/* ==== BroadcastChannel ==================================================
+ * MEASURED, 2026-08-30, in the guest, on the z.ai specimen (the zaiblank
+ * package): the page's 3.2 MB entry module rejects at evaluation with
+ *   [browser] module rejected .../index-B9hfiqvt.js:
+ *     ReferenceError: 'BroadcastChannel' is not defined
+ * and the SPA never mounts -- the whole BLANK. The exact usage in the
+ * bundle, verbatim:
+ *   const l = new BroadcastChannel("active-tab-channel"), ...
+ *   l.onmessage = O => { O.data === "active" && kP.set(!1) };
+ *   const w = () => { document.visibilityState === "visible" &&
+ *                     (kP.set(!0), l.postMessage("active")) };
+ * -- the multi-tab "which tab is active" lock idiom (post "active" on
+ * visibilitychange; peers stand down). Any SPA that runs this idiom at
+ * module init dies on statement one without this class.
+ *
+ * WHY THIS IS HERE AND NOT ON THE DELIBERATELY-ABSENT LIST: the API is
+ * small, spec'd (HTML "The BroadcastChannel interface"), and builds on the
+ * two things this file already owns -- MessageEvent and structuredClone.
+ * "Absent beats present-and-wrong" applies when the wrong half is what a
+ * stub would ship; everything below is implementable exactly, so absence
+ * was costing a whole page for nothing. The doubao/weixin BLANK siblings
+ * were checked and do NOT reference BroadcastChannel in the bundles their
+ * shells ship today -- this fix is general in engine vocabulary (any page
+ * using the idiom), not "the fix for the class".
+ *
+ * SEMANTICS, and the two that are choices rather than quotes:
+ *   - Delivery targets are the OTHER same-name channels in THIS context.
+ *     The spec broadcasts across an agent cluster; with one browsing
+ *     context, the cluster's BroadcastChannel population IS this context's
+ *     (two same-document channels of one name DO exchange messages in real
+ *     browsers -- the cluster is not per-document). A lone channel's
+ *     postMessage therefore delivers nowhere and throws nothing, which is
+ *     exactly what a one-tab "active-tab" lock expects: no peers, no event.
+ *   - The clone happens at CALL time, one independent copy per receiver,
+ *     so a clone failure (function in the payload) throws out of
+ *     postMessage itself -- same rule as window.postMessage above, for the
+ *     same reason: a deferred clone failure is an unhandledrejection the
+ *     page cannot attribute to anything.
+ *   - Delivery is a setTimeout(0) task, like MessagePort's, because that
+ *     is the only macrotask source this runtime has; FIFO after the
+ *     microtask queue is the part message code depends on.
+ *   - close() is idempotent and postMessage after close is a SILENT no-op
+ *     (spec: "closed flag" then "return") -- a browser does not throw
+ *     there, and code that posts after closing is common enough that
+ *     throwing here would be a present-and-wrong of our own manufacture.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: the worker global (js_worker.c's second
+ * runtime has no BroadcastChannel -- `typeof BroadcastChannel ===
+ * 'undefined'` inside a Worker is the correct feature-detect answer there,
+ * same rule as indexedDB in that file's header, because a per-worker
+ * channel registry that silently did not reach the page's channels would
+ * be present-and-wrong); onmessageerror (structuredClone never fails
+ * asynchronously here -- there is no deserialization step to fail late);
+ * and EventTarget inheritance (addEventListener('message') is handled the
+ * same way Port does it, which is observationally identical for this API:
+ * 'message' is its only event). */
+#ifndef ZAIBLANK_BC_ABSENT
+/* ZAIBLANK_BC_ABSENT: test-zaiblank-bc-negctl's control build, the same idiom
+ * as JS_DOCWRITE_NO_INSTALL / JS_IFRAME_NO_INSTALL further down. Compiling
+ * the block out reproduces the pre-feature engine exactly -- BroadcastChannel
+ * absent, everything else identical -- so the gates are known to measure THIS
+ * feature and not some other reason a mount happens to succeed. */
+"if (!G.BroadcastChannel) {\n"
+"  var BC_REGISTRY = [];   /* live channels, registration order */\n"
+"  G.BroadcastChannel = function BroadcastChannel(name) {\n"
+"    if (arguments.length < 1)\n"
+"      throw new TypeError(\"Failed to execute 'BroadcastChannel': 1 argument required, but only 0 present.\");\n"
+"    this._name = String(name);\n"
+"    this._l = []; this.onmessage = null; this._closed = false;\n"
+"    BC_REGISTRY.push(this);\n"
+"  };\n"
+"  Object.defineProperty(G.BroadcastChannel.prototype, 'name', {\n"
+"    configurable: true, enumerable: true,\n"
+"    get: function () { return this._name; }\n"
+"  });\n"
+"  G.BroadcastChannel.prototype.addEventListener = function (t, f) {\n"
+"    if (t === 'message' && typeof f === 'function' && this._l.indexOf(f) < 0) this._l.push(f);\n"
+"  };\n"
+"  G.BroadcastChannel.prototype.removeEventListener = function (t, f) {\n"
+"    if (t !== 'message') return;\n"
+"    var i = this._l.indexOf(f); if (i >= 0) this._l.splice(i, 1);\n"
+"  };\n"
+"  G.BroadcastChannel.prototype.postMessage = function (message) {\n"
+"    if (this._closed) return;\n"
+/* One clone per receiver, made NOW -- see the header. The sender's own
+   object is never handed to a receiver, so a page that posts and mutates
+   cannot observe its own mutation coming back. */
+"    var peers = BC_REGISTRY.filter(function (c) {\n"
+"      return c !== this && !c._closed && c._name === this._name;\n"
+"    }, this);\n"
+"    var cloned = peers.map(function () { return G.structuredClone(message); });\n"
+"    var org = (G.location && G.location.origin) || '';\n"
+"    var self = this;\n"
+"    setTimeout(function () {\n"
+"      for (var i = 0; i < peers.length; i++) {\n"
+"        var c = peers[i];\n"
+"        if (c._closed) continue;   /* closed between post and delivery */\n"
+"        var ev = new G.MessageEvent('message', { data: cloned[i], origin: org, source: null });\n"
+"        if (typeof c.onmessage === 'function')\n"
+"          { try { c.onmessage(ev); } catch (e) { G.reportError(e); } }\n"
+"        c._l.slice().forEach(function (f) { try { f(ev); } catch (e) { G.reportError(e); } });\n"
+"      }\n"
+"    }, 0);\n"
+"  };\n"
+"  G.BroadcastChannel.prototype.close = function () {\n"
+"    if (this._closed) return;\n"
+"    this._closed = true; this._l = []; this.onmessage = null;\n"
+"    var i = BC_REGISTRY.indexOf(this); if (i >= 0) BC_REGISTRY.splice(i, 1);\n"
+"  };\n"
+"}\n"
+#endif /* !ZAIBLANK_BC_ABSENT */
 /* window.postMessage to ourselves. One window, so the only meaningful TARGET
  * is this one -- there is no second browsing context a message could reach
  * (js_dom.c's document/context statics are a hard singleton; see the comment

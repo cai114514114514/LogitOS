@@ -44,7 +44,11 @@ DOMPARSER_SRC := tests/unit/domparser_test.c \
 
 $(BUILD)/domparser_test: $(DOMPARSER_SRC) $(HTML_PARSER_SRC) $(BUILD)/libcss_host.a
 	@mkdir -p $(BUILD)
-	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' \
+# -DWEBAPI_HOST on the host lines below (2026-08-30, testdebt): js_dom.c's
+# logit.h include -- its transient-activation clock -- is kernel-only and
+# guarded by exactly this define; a fresh link without it dies at js_dom.c:46.
+# The guard is the designed host seam (see that file's own comment).
+	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -DWEBAPI_HOST \
 	    -o $@ $(DOMPARSER_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
 
 test-domparser: $(BUILD)/domparser_test

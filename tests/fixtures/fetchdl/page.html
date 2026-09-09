@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>fetchdl</title>
+<script>console.log('SF-T0 ' + performance.now());</script>
+</head><body>
+<h1>fetchdl specimen</h1>
+<!-- stall.js: the server accepts the connection and never writes a byte.
+     slow5.js: the server writes its first byte at 5 s, well inside
+     BF_FIRSTBYTE_MS (12 s) and BF_REQ_MS (60 s) alike -- it must NOT be cut.
+     Both share one origin (hpool's 2-per-host cap), which is the shape that
+     matters: on the real specimen (qwen.ai) a dead request held one of an
+     origin's two slots for the full idle timeout while a live one queued
+     behind it. Here there are exactly two slots and exactly one dead
+     request, so the live one can only get through if the dead one is cut
+     loose in time. -->
+<script src="stall.js"></script>
+<script src="slow5.js"></script>
+<script>console.log('SF-END ' + performance.now());</script>
+</body></html>

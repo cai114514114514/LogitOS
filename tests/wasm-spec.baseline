@@ -1,0 +1,94 @@
+# Spec-suite modules that ARE valid and that c/lib/wasm refuses -- the ratchet
+# for `make test-wasm`.  A new entry is a FAILURE; an entry here is a debt with
+# a name.
+#
+# WHY THERE IS A LIST AT ALL, AND WHY IT IS NOT A BUG LIST.  The corpus is the
+# LIVE spec suite, which is several proposals ahead of the MVP this decoder
+# implements, so a module can be valid WebAssembly today and correctly refused
+# by an MVP validator.  Everything below was read, and every one of the 51 is
+# one of four post-MVP features:
+#
+#   multiple memories       the multi-memory proposal.  MVP allows one memory,
+#                           counting imports, and refusing a second is the MVP
+#                           rule rather than a limitation of this code.
+#   multiple tables         same, for tables (reference types).
+#   zero byte expected      memory.size / memory.grow / memory.copy carrying a
+#                           NON-ZERO memory index.  In MVP that byte is
+#                           reserved and must be 0x00; multi-memory redefines
+#                           it as an index.  Accepting a non-zero value would
+#                           silently address the wrong memory, which is exactly
+#                           the "present and wrong" failure this project refuses.
+#   constant expression required / unknown index
+#                           extended-const (i32.add inside an initialiser) and
+#                           the 2.0/GC relaxation that lets an initialiser read
+#                           a global DEFINED in the same module.  MVP restricts
+#                           constant expressions to one const instruction or a
+#                           global.get of an IMPORTED immutable global.
+#
+# A FIFTH CATEGORY USED TO BE HERE AND IT WAS A BUG IN THIS DECODER, NOT A
+# DEBT: seven `malformed value type` entries for elem.wast's `(table 1 (ref
+# func) (ref.func 0))`.  The byte is 0x40 -- the GC proposal's
+# table-with-initialiser form, not an element type at all -- and reading it as
+# an element type produced a REJECTION of a well-formed module, which this
+# ratchet then recorded as expected.  A baseline is where a wrong verdict goes
+# to look permanent.  wasm_parse.c now refuses 0x40, 0x63/0x64 and the GC
+# heap-type shorthands BY NAME, so those cases moved to the out-of-scope
+# column where they can be counted rather than excused.
+#
+# Origins are `file.wast:LINE` at the testsuite revision in
+# tools/wasm_revision.txt.  Both corpus modes appear here: wast2json and the
+# no-dependency binary-only extractor cover different halves of the suite, so
+# the file is the UNION and each mode leaves the other's entries unmatched --
+# the harness reports that as a COUNT, not as "stale", because calling a live
+# entry stale is how one gets deleted.
+align0.wast:3	multiple memories
+binary0.wast:16	multiple memories
+binary0.wast:2	multiple memories
+binary0.wast:8	multiple memories
+data.wast:178	constant expression required
+data.wast:183	constant expression required
+data.wast:188	constant expression required
+data.wast:195	constant expression required
+data.wast:89	unknown index
+data.wast:90	unknown index
+exports.wast:137	multiple tables
+exports0.wast:32	multiple memories
+exports0.wast:40	multiple memories
+exports0.wast:5	multiple memories
+exports0.wast:6	multiple memories
+float_exprs0.wast:1	multiple memories
+global.wast:373	unknown index
+global.wast:374	unknown index
+imports0.wast:1	multiple tables
+imports2.wast:1	multiple memories
+imports2.wast:33	multiple memories
+imports2.wast:39	multiple memories
+imports3.wast:1	multiple tables
+imports3.wast:20	multiple memories
+imports3.wast:27	multiple memories
+imports3.wast:34	multiple memories
+imports3.wast:41	multiple memories
+imports3.wast:48	multiple memories
+imports3.wast:55	multiple memories
+imports3.wast:63	multiple memories
+imports3.wast:70	multiple memories
+imports4.wast:1	multiple memories
+imports4.wast:19	zero byte expected
+imports4.wast:28	zero byte expected
+imports4.wast:39	zero byte expected
+imports4.wast:8	zero byte expected
+linking0.wast:17	multiple memories
+linking0.wast:31	multiple memories
+load2.wast:1	zero byte expected
+memory_grow.wast:1	multiple memories
+memory_grow.wast:7	zero byte expected
+memory_grow.wast:81	zero byte expected
+memory_size0.wast:1	zero byte expected
+memory_size1.wast:1	zero byte expected
+memory_size2.wast:1	zero byte expected
+memory_size_import.wast:1	multiple memories
+memory_size_import.wast:7	zero byte expected
+memory_trap0.wast:1	zero byte expected
+store0.wast:3	multiple memories
+store1.wast:30	multiple memories
+traps0.wast:1	multiple memories

@@ -723,6 +723,11 @@ static int pfc_hit(const char *origin, const char *method, int creds,
  * every few seconds.  A total budget would cut the conversation off mid-answer
  * at exactly the 30-second mark and look like a server fault. */
 #define WF_TIMEOUT 30000ull        /* ms since the last byte; connect included */
+/* A gap between successive fetch_steps longer than this is loop-blocked time,
+ * not connection idleness -- see the block comment in fetch_step. 250 ms is
+ * between the 16 ms frame the pump runs on and the multi-second script/module
+ * compiles that actually block. */
+#define WF_STEP_GAP 250ull
 #define WF_STEPS      8            /* h1_conn_pump calls per frame: 8 x 4 KiB */
 /* An SSE response never completes, so there is no "finished" moment at which
  * to stop reading -- the only thing that keeps a fast producer from growing the
@@ -762,6 +767,9 @@ struct wfetch {
     char *body; int body_len;      /* request body, owned */
     int   hops, redirected;
     unsigned long long deadline;
+    /* When fetch_step last ran for this request.  The idle deadline above is
+     * charged for SERVICED time only -- see fetch_step. */
+    unsigned long long last_step;
     JSValue resolve, reject;
     JSContext *ctx;                /* the sink runs inside js_webapi_pump(ctx) */
 
@@ -1064,6 +1072,7 @@ static int fetch_dial(struct wfetch *f)
     f->state = WF_DIAL;
     f->started = 0;
     f->deadline = now_ms() + WF_TIMEOUT;
+    f->last_step = 0;               /* first step establishes the baseline */
     return 0;
 }
 
@@ -1352,7 +1361,48 @@ static int fetch_step(JSContext *ctx, struct wfetch *f)
 {
     f->ctx = ctx;
     f->js_work = 0;
+    /* THE IDLE CLOCK ONLY TICKS WHILE WE CAN OBSERVE THE CONNECTION.
+     *
+     * MEASURED, 2026-08-30, in the guest, on the z.ai specimen: the page's
+     * entry module is 3.2 MB; js_module.c's loader compiles the whole static
+     * graph inside ONE JS_Eval (its own header documents why), which on TCG
+     * blocked the page loop for ~50 s. The /api/config fetch this page's
+     * inline script had started BEFORE the compile had a 30 s WF_TIMEOUT and
+     * a socket that never got dialed -- fetch_step could not run, the wall
+     * clock ran anyway, and the first step after the loop unblocked failed
+     * the deadline check below: "fetch: timed out" for a request whose
+     * server was 1 ms away and never consulted. The SPA then took its
+     * config-missing branch and rendered /error instead of the app. A
+     * network-fault report for a condition the network caused none of.
+     *
+     * The fix is to charge the deadline only for time the loop was actually
+     * servicing requests: a gap between successive steps longer than
+     * WF_STEP_GAP means the loop was BLOCKED (a synchronous script/module
+     * compile, a long layout -- anything that owns the single thread), and
+     * the connection cannot have idled during it because nobody polled it.
+     * 250 ms sits two orders below the 45 s+ blocks this exists for and one
+     * order above the 16 ms frame the pump normally runs on, so a merely
+     * slow frame is never forgiven and a genuine block always is.
+     *
+     * What this deliberately does NOT do: pause the clock for DNS/TCP/TLS
+     * handshakes on a live-but-dead peer. Those make progress returns of
+     * `poll == not-connected` every frame with TINY gaps -- the loop is
+     * servicing them -- so they still time out on schedule, which is the
+     * behaviour the timeout exists for.
+     *
+     * ZAIBLANK_FETCH_DEADLINE_OLD compiles just this compensation out, which
+     * is byte-for-byte the pre-fix behaviour; test-zaiblank-fetch-negctl
+     * links it to watch check 2a go red (the fetch fails for blocked time)
+     * while check 2b stays green -- proof the control measures this fix. */
+#ifndef ZAIBLANK_FETCH_DEADLINE_OLD
+    unsigned long long now = now_ms();
+    if (f->last_step && now > f->last_step + WF_STEP_GAP)
+        f->deadline += now - f->last_step;
+    f->last_step = now;
+    if (now > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
+#else
     if (now_ms() > f->deadline) { fetch_fail(ctx, f, "timed out", "TypeError"); return 1; }
+#endif
 
     /* Backpressure: while the page is behind, stop reading.  The socket buffer
      * fills, the window closes, and the producer slows down.
