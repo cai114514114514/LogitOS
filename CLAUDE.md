@@ -633,11 +633,32 @@ anchor."*
   Cookie, no POST body, no conditional GET."
 - **SSH-2 server** — `c/net/ssh/` (7 files) + `/bin/sshd`. curve25519-sha256,
   ssh-ed25519, aes128-ctr, hmac-sha2-256, argued against a **captured
-  OpenSSH_10.2p1 KEXINIT**, and a real OpenSSH client logs in. Two
+  OpenSSH_10.2p1 KEXINIT** (the capture notes file that comment once cited
+  was never committed — corrected here rather than left dangling), and a real
+  OpenSSH client logs in. Two
   pseudo-algorithms are **refused by name**, and the reason is that naming one is
   an opt-in: `kex-strict-s-v00@openssh.com` (Terrapin) — "half-implementing it is
   worse than not offering it, because the client believes the stricter contract is
   in force". **`sshd` has never run on the product image** — nothing spawns it.
+  **Attack-tested (2026-08-30)**, by `tests/ssh_attack.mk` + the raw-socket
+  hostile client `tests/boot/ssh_attack_client.py` (26 attacks, every one
+  followed by a clean-login survival control) + the on-path tamper proxy
+  `tests/boot/ssh_tamper_proxy.py`: the low-order-point table COMPUTED by an
+  independent Edwards-subgroup generator (`ssh_attack_kex_gen.py`), an ASAN
+  fuzzer with a sabotage negative control, and in-guest batteries. Found and
+  fixed: password/username/exec **silent truncation** (a 200-byte password
+  authenticated against its 127-byte prefix; two usernames sharing 63 bytes
+  were one account), **CRLF authorized_keys parsing to zero keys**, a second
+  CHANNEL_OPEN **silently ignored** (conforming client hangs forever; now
+  OPEN_FAILURE in both loops that can see one), CHANNEL_DATA **relayed
+  regardless of recipient channel**, **no receive-window enforcement** (now
+  DISCONNECT on overrun of the 2 MiB we advertise), and **no pre-auth
+  deadline** (eight idle connections held every slot forever; now a
+  30-second watchdog reaps them — post-auth idle stays unbounded on
+  purpose). The tamper proxy's measured Terrapin characterization: injected
+  mid-handshake packets die fail-closed at the first post-NEWKEYS MAC, and
+  with one kex/cipher/MAC there is nothing to downgrade — the missing
+  strict-kex costs handshake availability only.
 - **AF_UNIX** — stream + datagram + **seqpacket** (which fell out: datagram
   already needs a record-length ring, so seqpacket is the stream path with that
   ring on). Bindings live in `unix.c`, **not as VFS nodes**, and the cost is

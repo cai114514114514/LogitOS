@@ -7,8 +7,17 @@ int ssh_authreq_parse(const uint8_t *payload, int len, struct ssh_authreq *out)
 {
     if (len < 1 || payload[0] != SSH_MSG_USERAUTH_REQUEST) return -1;
     int off = 1;
-    off = ssh_r_string_cpy(payload, off, len, out->user, (int)sizeof out->user, 0);
-    if (off < 0) return -1;
+    /* Over-long USER is refused rather than truncated (dlen is the TRUE wire
+     * length; ssh_r_string_cpy clamps the copy). Two wire usernames sharing
+     * a 63-byte prefix used to collapse into one account -- identity
+     * confusion with the attacker choosing the suffix, found by the attack
+     * battery's unit leg. service/method are NOT given this check: their
+     * truncations are fail-closed (the clamped string never equals the one
+     * literal each must equal), and an over-long method simply counts as an
+     * unknown method, which fail_or_disconnect already handles. */
+    int ulen;
+    off = ssh_r_string_cpy(payload, off, len, out->user, (int)sizeof out->user, &ulen);
+    if (off < 0 || ulen > (int)sizeof out->user - 1) return -1;
     off = ssh_r_string_cpy(payload, off, len, out->service, (int)sizeof out->service, 0);
     if (off < 0) return -1;
     off = ssh_r_string_cpy(payload, off, len, out->method, (int)sizeof out->method, 0);
@@ -27,6 +36,15 @@ int ssh_auth_parse_password(const uint8_t *rest, int restlen, char *pw, int pwma
     int dlen;
     off = ssh_r_string_cpy(rest, off, restlen, pw, pwmax, &dlen);
     if (off < 0) return -1;
+    /* Over-long is REFUSED, never silently truncated. Found by the attack
+     * battery's unit leg: ssh_r_string_cpy used to clamp a 200-byte password
+     * to pwmax-1 bytes and return success, so a client sending
+     * <stored-password> || <any suffix> authenticated AS the stored password
+     * -- auth under a string the user never chose. Service and method names
+     * above truncate the other way (fail-CLOSED: the truncated string simply
+     * never equals "ssh-connection"/"password"), but the password is the
+     * secret itself, so a prefix match is an accept. */
+    if (dlen > pwmax - 1) return -1;
     return dlen;
 }
 
@@ -64,6 +82,16 @@ int ssh_authkeys_match(const char *authkeys_text, int len,
         int j = 0;
         while (j < linelen && (line[j] == ' ' || line[j] == '\t')) j++;
         if (i < len) i++; /* skip the '\n' for next round */
+        /* CRLF endings: strip the '\r' BEFORE any field scanning. Without
+         * this, the base64-field scan below (which stops only at ' '/'\t')
+         * lets the '\r' ride into b64_decode, which rejects it, and the
+         * line is skipped -- so a Windows-authored authorized_keys parsed
+         * to zero keys and every publickey login failed closed with no
+         * diagnostic (found by the attack battery's authorized_keys leg:
+         * the hostile-surroundings case failed while the plain line
+         * passed, and the difference between those two lines was only
+         * the line ending). */
+        while (linelen > j && line[linelen - 1] == '\r') linelen--;
 
         if (linelen - j < plen || line[j] == '#') continue;
         int match_prefix = 1;

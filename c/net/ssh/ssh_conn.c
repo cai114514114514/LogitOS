@@ -66,7 +66,15 @@ int ssh_build_channel_failure(uint32_t chan, uint8_t *out, int outmax)
 
 int ssh_parse_exec_command(const uint8_t *data, int datalen, char *cmd, int cmdmax)
 {
-    return ssh_r_string_cpy(data, 0, datalen, cmd, cmdmax, 0) < 0 ? -1 : 0;
+    /* Over-long is refused, never silently truncated: running HALF a command
+     * the client did not send is the classic injection-shaped hazard
+     * ("rm -rf /tmp/x; echo done" clamped at cmdmax-1 becomes "rm -rf /tmp").
+     * ssh_r_string_cpy's clamping copy is what makes the TRUE length visible
+     * in dlen while the refusal decision stays here. */
+    int dlen;
+    if (ssh_r_string_cpy(data, 0, datalen, cmd, cmdmax, &dlen) < 0) return -1;
+    if (dlen > cmdmax - 1) return -1;
+    return 0;
 }
 
 int ssh_build_channel_data(uint32_t chan, const uint8_t *data, int datalen, uint8_t *out, int outmax)

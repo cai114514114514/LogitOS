@@ -94,8 +94,21 @@ int ssh_r_string(const uint8_t *buf, int off, int len, const uint8_t **data, int
     if (off < 0) return -1;
     /* n is attacker-controlled; refuse anything that would overrun before
      * ever indexing with it. SSH_MAX_PAYLOAD-scale strings are the largest
-     * anything here legitimately sends. */
+     * anything here legitimately sends.
+     *
+     * This is the bound make test-ssh-attack-host removes: under
+     * -DSSH_FUZZ_SABOTAGE the over-run half of the refusal is skipped, so
+     * every string consumer downstream (ssh_auth_parse_password's copy loop,
+     * the channel-data relay, the authorized_keys compare) reads past the
+     * buffer by four attacker-chosen bytes' worth. That build is REQUIRED to
+     * be caught by AddressSanitizer; if it is not, the fuzzer's clean runs
+     * are proving nothing. One bound, deliberately chosen because it is the
+     * single most load-bearing check on the pre-auth parse surface. */
+#ifdef SSH_FUZZ_SABOTAGE
+    if ((int)n < 0) return -1;
+#else
     if ((int)n < 0 || off + (int)n > len) return -1;
+#endif
     *data = buf + off;
     *dlen = (int)n;
     return off + (int)n;

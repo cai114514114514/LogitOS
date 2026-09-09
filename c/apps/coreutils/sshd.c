@@ -266,12 +266,28 @@ static int sock_write_all(void *ctx, uint8_t *buf, int len)
 #define SSHD_MAX_CONN   8
 #define CONN_STACK_SIZE (256 * 1024)
 #define PUMP_STACK_SIZE (192 * 1024)
+#define WATCHDOG_STACK_SIZE (32 * 1024)
 #define MAX_AUTH_TRIES  6        /* OpenSSH's own MaxAuthTries default */
 #define OUR_INIT_WINDOW (2u * 1024 * 1024)
 #define OUR_MAX_PACKET  32768u
 
+/* Pre-auth deadline. A connection that has not AUTHENTICATED within this is
+ * reaped by the watchdog below: without it, eight sockets that connect and
+ * then send nothing hold every slot forever (blocking reads, no timeout
+ * anywhere on the path), which is a pre-auth denial of service one
+ * slowloris loop away -- the attack battery holds all eight and watches the
+ * ninth get CONN_REFUSED. 30 s because a REAL client finishes pre-auth in
+ * under 2 s here (QEMU TCG, measured by the boot test's own timings), and
+ * there is no interactive pre-auth prompting to wait patiently for.
+ *
+ * POST-auth idle is deliberately NOT bounded: a long silent session is
+ * legitimate SSH usage (an open shell somebody went to lunch on), and
+ * OpenSSH itself ships no idle timeout by default. */
+#define SSHD_PREAUTH_TIMEOUT_MS 30000
+
 static uint8_t g_conn_stack[SSHD_MAX_CONN][CONN_STACK_SIZE] __attribute__((aligned(16)));
 static uint8_t g_pump_stack[SSHD_MAX_CONN][PUMP_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t g_watchdog_stack[WATCHDOG_STACK_SIZE] __attribute__((aligned(16)));
 static volatile int g_slot_busy[SSHD_MAX_CONN];
 
 struct conn_ctx {
@@ -300,6 +316,24 @@ struct conn_ctx {
     uint32_t peer_maxpkt;
     volatile int lock;
 
+    /* Receive-window accounting: CHANNEL_DATA the client sends, charged
+     * against OUR_INIT_WINDOW (the window WE advertised). RFC 4254 5.2 says
+     * a client MUST NOT send past the window; a server that relays it anyway
+     * has no receive-side flow control at all -- which was the state here
+     * until the attack battery's flood probe: the input thread just wrote
+     * everything to the child, and OUR_INIT_WINDOW governed only the
+     * sending direction. */
+    uint32_t recv_used;
+
+    /* Pre-auth reap state, for the watchdog thread (see
+     * SSHD_PREAUTH_TIMEOUT_MS above). `gen` is bumped by the accept loop at
+     * slot assignment AND by handle_connection's cleanup before the close,
+     * so the watchdog can tell "this slot was recycled under me" from "my
+     * reap is still aimed at the connection I decided on". */
+    unsigned long long connected_ns;
+    volatile unsigned gen;
+    volatile int preauth_reaped;
+
     int child_pid;
     int child_in_w;
     int child_out_r;
@@ -310,6 +344,54 @@ struct conn_ctx {
 static struct conn_ctx g_conn[SSHD_MAX_CONN];
 static uint8_t g_hostpub[32], g_hostseed[32];
 static volatile int g_active_conns; /* diagnostics only */
+static struct sshd_thread_arg g_watchdog_targ;
+
+/* The pre-auth reaper (see SSHD_PREAUTH_TIMEOUT_MS for the deadline's own
+ * argument). Every read on the pre-auth path is BLOCKING with no timeout,
+ * so an unauthenticated connection that goes silent is otherwise
+ * unreclaimable -- the slot it holds is gone until process restart, and
+ * eight of them are the whole budget. The reap itself is the same trick
+ * output_pump uses at the other end of a connection's life:
+ * sys_shutdown(SHUT_RD) turns the owner thread's pending read into an EOF,
+ * and the ordinary cleanup path does the rest (close, slot free).
+ *
+ * The recycle race, and why it is bounded rather than closed: for a reap to
+ * hit the WRONG connection, the slot's connection must tear down, the fd
+ * close, the accept loop reassign that fd, AND a fresh connection take the
+ * slot -- all between this thread's volatile gen re-read and the shutdown
+ * call, a handful of instructions. Cleanup bumps `gen` BEFORE closing the
+ * fd precisely so the re-read catches every one of those paths; if the
+ * microsecond window ever loses, the damage is one freshly-connected client
+ * seeing an immediate clean EOF (retryable, and PREAUTH_TIMEOUT names the
+ * slot on the serial line) -- never corruption, never a cross-connection
+ * byte leak, because shutdown() touches no data of its own. */
+static void preauth_watchdog(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        sys_sleep_ms(1000);
+        unsigned long long now = monotonic_ns();
+        for (int i = 0; i < SSHD_MAX_CONN; i++) {
+            if (!g_slot_busy[i]) continue;
+            struct conn_ctx *cc = &g_conn[i];
+            if (cc->authenticated) continue; /* post-auth idle is legitimate */
+            unsigned gen_snapshot;
+            int fd, expired;
+            spin_lock(&cc->lock);
+            gen_snapshot = cc->gen;
+            fd = cc->sockfd;
+            expired = !cc->preauth_reaped && cc->connected_ns != 0 &&
+                      now > cc->connected_ns +
+                                (unsigned long long)SSHD_PREAUTH_TIMEOUT_MS * 1000000ull;
+            if (expired) cc->preauth_reaped = 1;
+            spin_unlock(&cc->lock);
+            if (!expired) continue;
+            if (cc->gen != gen_snapshot) continue; /* recycled under us */
+            outs("sshd: PREAUTH_TIMEOUT slot="); outn(i); outc('\n');
+            sys_shutdown(fd, LOGIT_SHUT_RD);
+        }
+    }
+}
 
 static int send_msg(struct conn_ctx *cc, const uint8_t *payload, int len)
 {
@@ -582,6 +664,7 @@ static int do_userauth(struct conn_ctx *cc)
                                                  alg, blob, bloblen, signdata, (int)sizeof signdata);
             if (sdlen < 0) return -1;
 
+
             if (ed25519_verify(rawsig, signdata, (unsigned long)sdlen, pubk)) {
                 uint8_t rep[16];
                 int rl = ssh_build_userauth_success(rep, (int)sizeof rep);
@@ -753,6 +836,27 @@ static int run_channel_setup(struct conn_ctx *cc)
 
         if (buf[0] == SSH_MSG_CHANNEL_CLOSE) return -1;
 
+        /* A second CHANNEL_OPEN after ours was confirmed: ssh_conn.h's
+         * one-session-channel-per-connection policy, ENFORCED rather than
+         * assumed. The first version of this loop fell into the
+         * not-a-CHANNEL_REQUEST continue below, i.e. silence -- and RFC
+         * 4254 5.1 says a client MUST wait for OPEN_CONFIRMATION or
+         * OPEN_FAILURE before proceeding, so a conforming client (OpenSSH
+         * included) hangs forever on our policy. Found by the attack
+         * battery: its second-open probe timed out waiting for any reply.
+         * Refused by name, not by silence -- the same honesty rule as the
+         * rekey refusal in recv_msg(). */
+        if (buf[0] == SSH_MSG_CHANNEL_OPEN) {
+            uint32_t refused_chan;
+            if (ssh_r_u32(buf, 1, n, &refused_chan) < 0) return -1;
+            uint8_t rep[64];
+            int rl = ssh_build_channel_open_failure(refused_chan,
+                                                    SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                                    rep, (int)sizeof rep);
+            if (rl > 0) send_msg(cc, rep, rl);
+            continue;
+        }
+
         if (buf[0] != SSH_MSG_CHANNEL_REQUEST) continue;
 
         uint32_t chan; char type[32]; int want_reply;
@@ -812,6 +916,31 @@ static void input_relay(struct conn_ctx *cc)
         case SSH_MSG_CHANNEL_DATA: {
             uint32_t chan; const uint8_t *data; int datalen;
             if (ssh_parse_channel_data(buf, n, &chan, &data, &datalen) < 0) { n = -1; break; }
+            /* Recipient-channel check: our sender channel is 0 (the open
+             * confirmation says so), and data addressed anywhere else is for
+             * a channel this connection never opened. Until the attack
+             * battery's wrong-recipient probe, the recipient number was
+             * parsed and then IGNORED -- data for channel 0xDEAD reached the
+             * shell's stdin exactly like data for channel 0. RFC 4254 5.3:
+             * data on a channel that is not open is silently ignored (the
+             * alternative, an error, would let a hostile client kill the
+             * session with one mistyped u32). */
+            if (chan != 0) break;
+            /* Receive-window enforcement: the client is allowed exactly
+             * OUR_INIT_WINDOW bytes of CHANNEL_DATA past our open
+             * confirmation before it must hear from us again. A client that
+             * overruns it is violating flow control on purpose; the honest
+             * answer is a DISCONNECT, because "ignore the excess" would
+             * train a hostile sender that the window is decorative. */
+            spin_lock(&cc->lock);
+            cc->recv_used += (uint32_t)datalen;
+            uint32_t used = cc->recv_used;
+            spin_unlock(&cc->lock);
+            if (used > OUR_INIT_WINDOW) {
+                disconnect(cc, SSH_DISCONNECT_PROTOCOL_ERROR, "flow-control window exceeded");
+                n = -1;
+                break;
+            }
             int off = 0;
             while (off < datalen) {
                 int w = sys_write(cc->child_in_w, data + off, datalen - off);
@@ -830,9 +959,41 @@ static void input_relay(struct conn_ctx *cc)
             break;
         }
         case SSH_MSG_CHANNEL_EOF:
-            sys_close(cc->child_in_w);
-            cc->child_in_w = -1;
+            /* Guarded: a client MAY send EOF twice, and the second close
+             * used to run sys_close(-1). The kernel happens to refuse
+             * fd<0 cleanly (c/kernel/exec/syscall.c's SYS_CLOSE guard:
+             * fd<0 || fd>=NFD -> -1), so this was never memory-unsafe --
+             * but an unguarded close of a not-open descriptor is a bug
+             * wearing a lucky kernel, and the guard costs one line. */
+            if (cc->child_in_w >= 0) {
+                sys_close(cc->child_in_w);
+                cc->child_in_w = -1;
+            }
             break;
+        case SSH_MSG_CHANNEL_OPEN: {
+            /* The SECOND half of the one-channel policy: run_channel_setup
+             * refuses extra opens while the session is being set up (see
+             * its own comment); THIS loop is where an open arrives after a
+             * shell is already running, and it used to fall through to the
+             * default case -- silently ignored, client hung. Same refusal,
+             * same reason, second location, because recv_msg() cannot own
+             * it: pre-auth an unsolicited CHANNEL_OPEN must simply be
+             * dropped, and only the loops that have a session to protect
+             * know which is which. */
+            uint32_t refused_chan;
+            /* `>= 0`, not `== 0`: ssh_r_u32 returns the NEXT OFFSET (5
+             * here), never 0 -- an `== 0` guard made this reply unreachable
+             * and the second-open attack timed out on the FIXED server,
+             * which is how the wrong comparison was found. */
+            if (ssh_r_u32(buf, 1, n, &refused_chan) >= 0) {
+                uint8_t rep[64];
+                int rl = ssh_build_channel_open_failure(refused_chan,
+                                                        SSH_OPEN_ADMINISTRATIVELY_PROHIBITED,
+                                                        rep, (int)sizeof rep);
+                if (rl > 0) send_msg(cc, rep, rl);
+            }
+            break;
+        }
         case SSH_MSG_CHANNEL_CLOSE:
             n = -1;
             break;
@@ -880,6 +1041,10 @@ static void handle_connection(void *arg)
     }
 
     if (cc->child_in_w >= 0) sys_close(cc->child_in_w);
+    /* gen BEFORE the close: the pre-auth watchdog re-verifies `gen` around
+     * its shutdown() precisely so a torn-down-and-reused fd cannot be shut
+     * down by a stale decision -- see that function's race note. */
+    cc->gen++;
     sys_close(cc->sockfd);
     g_active_conns--;
     g_slot_busy[cc->slot] = 0;
@@ -911,6 +1076,26 @@ int main(int argc, char **argv)
     for (int i = 0; i < SSHD_MAX_CONN; i++) g_conn[i].child_in_w = -1;
 
     outs("SSHD_READY port="); outn(me.port); outc('\n');
+
+    /* The pre-auth reaper -- started once, before the first accept, so no
+     * connection can slip in under a watchdog that does not exist yet (the
+     * same "gate exists before the thing it guards" rule as SSHD_READY
+     * itself: a harness watching for PREAUTH_TIMEOUT lines must be able to
+     * rely on the reaper being live for EVERY connection, not just the ones
+     * that arrived after some later point). */
+    g_watchdog_targ.fn = preauth_watchdog;
+    g_watchdog_targ.ctx = 0;
+    {
+        struct logit_thread_spec spec;
+        spec.entry = (unsigned long)(long)&sshd_thread_entry;
+        spec.stack_top = (unsigned long)(long)(g_watchdog_stack + WATCHDOG_STACK_SIZE);
+        spec.stack_base = 0;
+        spec.stack_len = 0;
+        spec.tls = 0;
+        spec.arg = (unsigned long)(long)&g_watchdog_targ;
+        if (sys_thread_create(&spec) <= 0)
+            errs("sshd: could not start the pre-auth watchdog (no deadlines will fire)\n");
+    }
 
     for (;;) {
         struct logit_sockaddr peer;
@@ -951,6 +1136,10 @@ int main(int argc, char **argv)
         cc->kex_done = 0; /* a REUSED slot's prior connection may have left
                            * this 1 -- a fresh connection's first KEXINIT
                            * must not be mistaken for a rekey ask */
+        cc->recv_used = 0;
+        cc->preauth_reaped = 0;
+        cc->gen++;                 /* also bumped at cleanup: see the watchdog */
+        cc->connected_ns = monotonic_ns();
 
         g_slot_busy[slot] = 1;
         g_active_conns++;

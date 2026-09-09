@@ -5,16 +5,17 @@
 # concurrent line has silently deleted other people's targets before. A
 # separate file cannot be clobbered that way.
 #
-# THIS FRAGMENT IS NOT YET REACHABLE FROM `make`. Two lines are needed in the
-# main Makefile and neither is added here, because the Makefile itself was
-# out of scope for the session that wrote this (see the task's final report
-# for the exact lines and why):
-#   1. `-include tests/ssh.mk`                         (beside the other -includes)
-#   2. sshd added to the coreutils APPS list, the way ping/syslogd were
-# Until both land, every target below still works when invoked directly with
-# the commands the report gives (`gcc ... -o build/ssh_wire_test ...`, or
-# `python3 tests/unit/ssh_kex_gen.py ...`) -- this file records the SHAPE of
-# the eventual `make` targets and is exercised that way, not through `make`.
+# THIS FRAGMENT IS NOW INCLUDED BY THE MAIN MAKEFILE (`-include tests/ssh.mk`
+# beside the other fragment includes). The header below long claimed it was
+# NOT reachable from `make` -- that was true when written and went stale when
+# the include line landed; the correction is kept beside the old claim rather
+# than quietly overwriting it, because a session arriving with the old
+# sentence would otherwise re-add the include. Of the two lines the old
+# comment said were needed, this is #1, landed. #2 -- sshd in the coreutils
+# APPS list, so /bin/sshd ships on the PRODUCT disk -- is still deliberately
+# absent: putting sshd on the product image is a product-surface decision
+# (something must also SPAWN it), and until it lands the device gate below
+# builds its own disk with mk_ssh_disk.py, which is why that target exists.
 #
 #   make test-ssh-wire     RFC 4251 primitives (mpint/string/namelist/negotiate)
 #   make test-ssh-packet   binary packet protocol, plaintext + aes128-ctr/

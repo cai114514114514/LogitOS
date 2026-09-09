@@ -13,8 +13,12 @@
  * are c/apps/coreutils/sshd.c's job, not this directory's.
  *
  * Algorithm set, and why, argued against a REAL OpenSSH_10.2p1 client's
- * default KEXINIT (captured off the wire, not guessed from `-Q`; see
- * ssh_algorithm_notes.txt alongside the host tests for the raw capture):
+ * default KEXINIT (captured off the wire, not guessed from `-Q`; the raw
+ * capture once lived in an ssh_algorithm_notes.txt "alongside the host
+ * tests" -- that file was never committed, and the citation is corrected
+ * here rather than left pointing at nothing. The claims it supported are
+ * re-verified independently by tests/unit/ssh_kex_gen.py's oracle and the
+ * boot test's real-client login, which is where that argument now lives):
  *
  *   kex       curve25519-sha256 (+ the @libssh.org alias). The client offers
  *             two post-quantum hybrids FIRST (mlkem768x25519-sha256,

@@ -48,7 +48,28 @@ ssh-keygen -q -t ed25519 -N '' -C sshtest -f "$KEY" </dev/null
 chmod 600 "$KEY"
 PUBLINE="$(cat "$KEY.pub")"
 
+# The askpass helper is committed mode 100644 (it came out of a WSL/DrvFs
+# checkout -- the same host family the key note above describes), and OpenSSH
+# exec()s the SSH_ASKPASS path, so a checkout without the exec bit makes every
+# password leg die with "ssh_askpass: exec(...): Permission denied" -- while
+# the wrong-password NEGATIVE CONTROL false-passes, because a client that
+# never sent a password still prints "Permission denied" (found exactly that
+# way on the macOS host). Copying to $WORK and chmodding HERE keeps the gate
+# independent of whatever mode any particular checkout preserved.
+ASKPASS="$WORK/ssh_askpass.sh"
+cp "$(dirname "$0")/ssh_askpass.sh" "$ASKPASS"
+chmod 700 "$ASKPASS"
+
 NET="-netdev user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-10.0.2.15:22 -device e1000,netdev=n0"
+
+# setsid(1) detaches the client from this script's controlling terminal so
+# SSH_ASKPASS fires -- belt and braces on the WSL host this script was born
+# on. SSH_ASKPASS_REQUIRE=force (OpenSSH 8.4+) already removes the TTY
+# dependency on its own, and macOS ships no setsid at all, where the plain
+# invocation below is what actually runs (found standing this gate up on the
+# macOS host: both password legs died with "setsid: command not found" while
+# the server side had never seen a password attempt at all).
+SETSID="$(command -v setsid || true)"
 
 # -snapshot: guest-side writes (the new account, the host key, the pubkey
 # file) never touch the disk image on the host, so re-running this script
@@ -122,8 +143,8 @@ echo "--- password auth, interactive shell, real OpenSSH client ---"
 # makes OpenSSH use it even with a real stdin attached), so this process's
 # own stdin is still free for the shell's channel data, same as the
 # publickey leg above.
-PW_OUT="$(printf 'echo SSH_PASSWORD_OK\nexit\n' | SSHTEST_PW="$PW" SSH_ASKPASS="$(dirname "$0")/ssh_askpass.sh" SSH_ASKPASS_REQUIRE=force \
-    setsid "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+PW_OUT="$(printf 'echo SSH_PASSWORD_OK\nexit\n' | SSHTEST_PW="$PW" SSH_ASKPASS="$ASKPASS" SSH_ASKPASS_REQUIRE=force \
+    ${SETSID} "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=10 \
     "$USER@127.0.0.1" 2>&1)"
 if echo "$PW_OUT" | grep -q "SSH_PASSWORD_OK"; then
@@ -133,8 +154,8 @@ else
 fi
 
 echo "--- NEGATIVE CONTROL: wrong password must be refused ---"
-BAD_OUT="$(SSHTEST_PW="not-the-password" SSH_ASKPASS="$(dirname "$0")/ssh_askpass.sh" SSH_ASKPASS_REQUIRE=force \
-    setsid "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+BAD_OUT="$(SSHTEST_PW="not-the-password" SSH_ASKPASS="$ASKPASS" SSH_ASKPASS_REQUIRE=force \
+    ${SETSID} "$SSH" -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10 \
     "$USER@127.0.0.1" 'echo SHOULD_NOT_RUN' </dev/null 2>&1)"
 if echo "$BAD_OUT" | grep -q "SHOULD_NOT_RUN"; then
