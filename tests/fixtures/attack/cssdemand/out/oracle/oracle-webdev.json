@@ -1,0 +1,43 @@
+{
+ "site": "webdev",
+ "rules": 5763,
+ "decls": 25365,
+ "lost_rules": 28,
+ "lost_decls": 47,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-placeholder": [
+   6,
+   11
+  ],
+  "unknown pseudo-class :-ms-input-placeholder": [
+   6,
+   11
+  ],
+  "unknown pseudo-element ::-ms-input-placeholder": [
+   6,
+   11
+  ],
+  "UNATTRIBUTED": [
+   3,
+   6
+  ],
+  "unknown pseudo-class :host-context()": [
+   3,
+   4
+  ],
+  "unknown pseudo-class :indeterminate": [
+   3,
+   3
+  ],
+  "unknown pseudo-class :valid": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  "[theme=web-theme] .devsite-landing-row-header-text h2:not(.devsite-landing-row-4-up h2,.devsite-landing-row-3-up h2)",
+  "devsite-code-tutorial code:not(pre>code)",
+  ".color-scheme--dark devsite-code-tutorial code:not(pre>code)"
+ ]
+}

@@ -1,0 +1,52 @@
+bing           200      html=209424   sheets=1   css=1194     inline<style>=4   ok
+google         200      html=87393    sheets=0   css=0        inline<style>=2   ok
+youtube        200      html=877325   sheets=5   css=3583474  inline<style>=5   ok
+wikipedia      200      html=258036   sheets=2   css=210341   inline<style>=6   ok
+amazon         200      html=864336   sheets=7   css=916751   inline<style>=17  ok
+reddit         403      html=190240   sheets=0   css=0        inline<style>=0   REFUSED status=403 bytes=190240
+x              200      html=32741    sheets=1   css=322607   inline<style>=3   ok
+facebook       200      html=433148   sheets=1   css=1335278  inline<style>=2   ok
+instagram      200      html=488513   sheets=1   css=709772   inline<style>=4   ok
+netflix        200      html=3215853  sheets=1   css=5634     inline<style>=128 ok
+microsoft      200      html=174582   sheets=8   css=552021   inline<style>=1   ok
+apple          200      html=254738   sheets=9   css=691060   inline<style>=0   ok
+github         200      html=573463   sheets=19  css=2407370  inline<style>=1   ok
+stackoverflow  403      html=5145     sheets=0   css=0        inline<style>=0   REFUSED status=403 bytes=5145 pattern=Just a moment
+nytimes        200      html=1371923  sheets=40  css=497227   inline<style>=3   ok
+cnn            200      html=5461376  sheets=0   css=0        inline<style>=5   ok
+bbc            200      html=628440   sheets=0   css=0        inline<style>=3   ok
+yahoo          200      html=583516   sheets=10  css=592064   inline<style>=7   ok
+zhihu          200      html=46376    sheets=3   css=492910   inline<style>=25  ok
+bilibili       200      html=117408   sheets=1   css=363101   inline<style>=0   ok
+taobao         200      html=93856    sheets=5   css=378728   inline<style>=14  ok
+jd             200      html=191804   sheets=3   css=1454849  inline<style>=2   ok
+weibo          200      html=9486     sheets=0   css=0        inline<style>=0   ok
+baidu          200      html=227      sheets=0   css=0        inline<style>=0   REFUSED status=200 bytes=227
+qq             200      html=133249   sheets=1   css=519293   inline<style>=0   ok
+163            200      html=277240   sheets=2   css=84051    inline<style>=5   ok
+sina           200      html=403007   sheets=1   css=88128    inline<style>=15  ok
+linkedin       200      html=121706   sheets=1   css=2295420  inline<style>=24  ok
+ebay           403      html=1832     sheets=0   css=0        inline<style>=0   REFUSED status=403 bytes=1832
+medium         403      html=5370     sheets=0   css=0        inline<style>=0   REFUSED status=403 bytes=5370 pattern=Attention Required
+twitch         200      html=199339   sheets=1   css=64008    inline<style>=1   ok
+openai         403      html=9723     sheets=0   css=0        inline<style>=0   REFUSED status=403 bytes=9723 pattern=Enable JavaScript and cookies
+mozilla        200      html=115873   sheets=6   css=174642   inline<style>=0   ok
+cloudflare     200      html=1316748  sheets=3   css=632533   inline<style>=4   ok
+wordpress      200      html=368288   sheets=3   css=362094   inline<style>=17  ok
+ddg            200      html=176851   sheets=7   css=478059   inline<style>=3   ok
+tailwind       200      html=900762   sheets=2   css=692588   inline<style>=0   ok
+mdn            200      html=117827   sheets=20  css=55354    inline<style>=17  ok
+pydocs         200      html=19434    sheets=6   css=50589    inline<style>=2   ok
+hn             200      html=33906    sheets=1   css=7350     inline<style>=0   ok
+webdev         200      html=133267   sheets=4   css=1267637  inline<style>=1   ok
+apnews         200      html=2068898  sheets=1   css=1040666  inline<style>=19  ok
+douyin         200      html=72914    sheets=0   css=0        inline<style>=0   ok
+espn           200      html=229485   sheets=3   css=2208798  inline<style>=0   ok
+imdb           202      html=1997     sheets=0   css=0        inline<style>=0   REFUSED status=202 bytes=1997
+booking        202      html=2015     sheets=0   css=0        inline<style>=0   REFUSED status=202 bytes=2015
+airbnb         200      html=606759   sheets=1   css=1554163  inline<style>=3   ok
+spotify        200      html=300320   sheets=1   css=342976   inline<style>=2   ok
+wired          200      html=1537226  sheets=0   css=0        inline<style>=5   ok
+theguardian    200      html=1237224  sheets=1   css=75       inline<style>=18  ok
+stripe         200      html=690998   sheets=5   css=478070   inline<style>=0   ok
+vercel         200      html=524435   sheets=4   css=897757   inline<style>=2   ok

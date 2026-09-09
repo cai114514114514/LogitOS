@@ -1,0 +1,37 @@
+{
+ "site": "stripe",
+ "rules": 2892,
+ "decls": 10580,
+ "lost_rules": 68,
+ "lost_decls": 133,
+ "by_reason": {
+  ":is()/:where() with a combinator inside": [
+   56,
+   116
+  ],
+  "unknown pseudo-element ::details-content": [
+   6,
+   10
+  ],
+  "unknown pseudo-element ::-moz-placeholder": [
+   3,
+   3
+  ],
+  "unknown pseudo-element ::file-selector-button": [
+   1,
+   2
+  ],
+  "unknown pseudo-class :scope": [
+   1,
+   1
+  ],
+  "UNATTRIBUTED": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ":is(:scope:lang(es),:scope:lang(fr),:scope:lang(pt),:scope:lang(th)) .stats-menu__stat-value"
+ ]
+}

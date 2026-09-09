@@ -1,0 +1,33 @@
+{
+ "site": "wired",
+ "rules": 2386,
+ "decls": 8638,
+ "lost_rules": 19,
+ "lost_decls": 99,
+ "by_reason": {
+  ":is()/:where() with a combinator inside": [
+   13,
+   88
+  ],
+  "unknown pseudo-class :invalid": [
+   3,
+   7
+  ],
+  "unknown pseudo-class :horizontal": [
+   1,
+   2
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   1,
+   2
+  ],
+  "UNATTRIBUTED": [
+   1,
+   0
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".jFtHoK .homepage__newsletter-row ({ theme, hasConsistentSpacing }) => if (hasConsistentSpacing .jFtHoK.jFtHoK\n            (0, get_spacing_tokens_1.ge"
+ ]
+}

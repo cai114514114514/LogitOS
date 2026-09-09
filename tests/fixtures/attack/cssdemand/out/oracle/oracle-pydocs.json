@@ -1,0 +1,15 @@
+{
+ "site": "pydocs",
+ "rules": 578,
+ "decls": 1069,
+ "lost_rules": 5,
+ "lost_decls": 6,
+ "by_reason": {
+  "CSS nesting (rule nested in a style rule)": [
+   5,
+   6
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

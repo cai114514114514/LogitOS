@@ -1,0 +1,78 @@
+{
+ "site": "airbnb",
+ "rules": 19982,
+ "decls": 22048,
+ "lost_rules": 870,
+ "lost_decls": 944,
+ "by_reason": {
+  "unknown pseudo-element ::view-transition-old": [
+   288,
+   321
+  ],
+  "unknown pseudo-element ::view-transition-new": [
+   260,
+   296
+  ],
+  "unknown pseudo-element ::view-transition-group": [
+   197,
+   197
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   57,
+   57
+  ],
+  "unknown pseudo-element ::-moz-range-thumb": [
+   27,
+   29
+  ],
+  "unknown pseudo-class :-moz-focusring": [
+   18,
+   18
+  ],
+  "unknown pseudo-element ::view-transition-image-pair": [
+   2,
+   5
+  ],
+  "unknown pseudo-class :-webkit-autofill": [
+   4,
+   4
+  ],
+  "unknown pseudo-element ::view-transition": [
+   4,
+   4
+  ],
+  "unknown pseudo-class :valid": [
+   3,
+   3
+  ],
+  "unknown pseudo-element ::-ms-clear": [
+   2,
+   2
+  ],
+  "UNATTRIBUTED": [
+   2,
+   2
+  ],
+  "unknown pseudo-class :start": [
+   2,
+   2
+  ],
+  "unknown pseudo-class :end": [
+   2,
+   2
+  ],
+  "unknown pseudo-class :popover-open": [
+   1,
+   1
+  ],
+  "unknown pseudo-element ::-ms-expand": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".atm_j6_1cm3os7_17cs3b 744",
+  ".atm_mk_stnw88_17cs3b 744"
+ ]
+}

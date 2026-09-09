@@ -1,0 +1,490 @@
+CSS DEMAND vs SUPPORT -- 42 served sites (of 52 fetched, 8 refused our UA), 229817 rules, 578808 declarations (tinycss2)
+Chrome oracle on the same bytes: 228962 style rules (tinycss2 229817; delta 0.37%) -- see chrome/chrome_counts.json
+
+== DEMAND vs SUPPORT, sorted by sites-using x severity (4 sheet/block lost, 3 rule lost, 2 decl lost or parsed-but-ignored, 1 partial, 0 ok/not a defect) ==
+feature                                                                                          sites    count   sev  verdict  |  anchor
+:has()                                                                                              30     1089     3  PARSED, NEVER MATCHES (rule inert)  |  language.c:2014 skipParenArgument; select.c:2807 `*match = false`  |  Chrome accepts
+vertical-align                                                                                      42     1659     2  PARSED-BUT-IGNORED  |  css_extra.c:2263 ignored list  |  text-misalignment class
+::before/::after generated content                                                                  41    28249     2  PARSED-BUT-IGNORED (rule accepted; pseudo-element never generated)  |  css_engine.c:2507 reads only styles[CSS_PSEUDO_ELEMENT_NONE]; css_extra.c:2261 lists `content` as ignored
+content (on ::before/::after)                                                                       41     6645     2  PARSED-BUT-IGNORED  |  css_extra.c:2263
+transition (shorthand)                                                                              38     4031     2  captured raw; the clock runs opacity and transform ONLY  |  css_extra.c:2372; css.h:341-352; js_anim.c:2013-2019,2064
+text-overflow: ellipsis                                                                             38     1424     2  DROPS-THE-DECLARATION  |  language.c:2768
+word-break / overflow-wrap / word-wrap / hyphens / text-wrap                                        38     1072     2  DROPS-THE-DECLARATION (cstyle has fields, 'no producer')  |  css.h:311-316; language.c:2768
+@keyframes / @-webkit-keyframes                                                                     37     2034     2  LibCSS discards the block; css_extra captures up to 64 rules x 16 stops per sheet; clock animates opacity+transform ONLY  |  language.c:1033-1047; css_extra.c:1390-1440; css.h:673 CSS_KF_MAXRULE; js_anim.c:2013-2019
+background-size / background-clip / background-origin                                               37     1198     2  DROPS-THE-DECLARATION  |  language.c:2768
+width/height: fit-content / min-content / max-content / -webkit-fill-available / stretch            37      976     2  DROPS-THE-DECLARATION  |  utils.c length parser; synth BAD-VALUE
+justify-content/align-items: start / end / stretch / safe                                           37      935     2  DROPS-THE-DECLARATION  |  properties.gen keyword sets; synth BAD-VALUE
+object-fit / object-position                                                                        36      699     2  DROPS-THE-DECLARATION  |  language.c:2768
+animation-* longhands                                                                               34     2553     2  DROPS-THE-DECLARATION (only animation-name is looked at, for the anim flag)  |  css_extra.c:2372; language.c:2768  |  2071 rules declare animation-* with no `animation` shorthand
+animation (shorthand)                                                                               34     1249     2  captured raw; keyframes on opacity/transform only; 64-rule cap per sheet  |  css_extra.c:2372, :1425; js_anim.c:2194-2208
+@font-face                                                                                          34     1057     2  PARSED-BUT-IGNORED (no web-font loader; only /fonts/{ui,mono,text}.ttf exist)  |  language.c:957-975 CSS_RULE_FONT_FACE; grep woff c/apps/browser -> only tabs.c  |  icon fonts render as nothing
+filter                                                                                              34      767     2  DROPS-THE-DECLARATION  |  language.c:2768
+url() images in background                                                                          32     1585     2  PARSED-BUT-IGNORED (background-image is in the engine's ignored list; only gradients paint)  |  css_extra.c:2261 `background-image` ignored
+flex: <grow> 0 <basis>  (e.g. `flex:0 0 auto`, `flex:1 0 auto`)                                     32      779     2  SILENT DROP (no report; flex item keeps default sizing)  |  flex.c:150-200 error overwritten; language.c:2810 css__parse_important path has no report_drop
+transition-* longhands                                                                              31     4005     2  DROPS-THE-DECLARATION (longhands deliberately not captured)  |  css.h:341-345; language.c:2768 UNKNOWN_PROP  |  1984 rules declare transition-* with no `transition` shorthand
+display: contents                                                                                   29      140     2  DROPS-THE-DECLARATION (box stays a block)  |  properties.gen:26 keyword set; synth BAD-VALUE
+clamp()/min()/max()                                                                                 28      722     2  DROPS-THE-DECLARATION  |  propstrings.c:521 (only `calc` is a known function)
+mask / mask-image / -webkit-mask-*                                                                  27     2054     2  DROPS-THE-DECLARATION; mask-image != none HIDES the element's background instead  |  css_extra.c:108-140 decls_masked
+radial/conic/repeating/-webkit- gradients                                                           27      633     2  DROPS-THE-DECLARATION  |  css_extra.c:656-664 (whole-name match `linear-gradient` only)
+-webkit-line-clamp / line-clamp / -webkit-box-orient                                                25     4391     2  DROPS-THE-DECLARATION  |  language.c:2768
+clip-path                                                                                           25      320     2  DROPS-THE-DECLARATION; the visually-hidden idiom inset(50%) becomes display:none  |  css_extra.c:76-88 decls_vish
+:is()/:where() with a combinator inside                                                             16     3097     3  DROPS-THE-RULE (whole selector list)  |  language.c:2301-2323 parseIsWhereList -> CSS_INVALID  |  Chrome accepts
+aspect-ratio                                                                                        24      593     2  DROPS-THE-DECLARATION  |  language.c:2768; synth UNKNOWN-PROP
+backdrop-filter / -webkit-backdrop-filter                                                           24      547     2  DROPS-THE-DECLARATION  |  language.c:2768
+background shorthand with `/ size`                                                                  24      505     2  SILENT DROP (whole shorthand lost)  |  background.c shorthand predates background-size; language.c:2810
+font-family (web fonts)                                                                             42     7625     1  PARSED; only 3 faces exist (ui/mono/text), @font-face never loaded  |  fsroot/fonts; no loader
+form-state pseudos :required/:valid/:invalid/:indeterminate/:default/:autofill/:read-only/:in-ra    14      113     3  DROPS-THE-RULE  |  language.c:1874-1877 unknown pseudo -> CSS_INVALID  |  Chrome accepts
+font-weight                                                                                         41    10021     1  SUPPORTED (bold at >=700 only; 500/600 render regular)  |  css_engine.c font_weight collapse (CLAUDE.md)
+pointer-events / user-select / touch-action / appearance                                            41     2598     1  DROPS-THE-DECLARATION  |  language.c:2768
+inline-size / block-size / min-max-inline-size, border-inline-*, border-start-*-radius              20     6864     2  DROPS-THE-DECLARATION  |  language.c:2768; synth UNKNOWN-PROP
+position: fixed                                                                                     40      546     1  SUPPORTED (out of flow; anchored to nearest positioned ancestor, does not track scroll)  |  css_engine.c:1483-1527
+font-style: italic                                                                                  39      634     1  PARSED; no italic face on disk  |  CLAUDE.md text section
+var()                                                                                               38    83024     1  RESOLVED by css_vars.c pre-pass (one document-wide table; LibCSS itself refuses every var())  |  css_vars.c:1-60; language.c:2805 BAD_VALUE  |  measured rescue: bad-value drops 75910 -> 27650 after the pre-pass
+fill / stroke (SVG presentation)                                                                    38     1981     1  DROPS-THE-DECLARATION  |  language.c:2768
+custom property definitions (--x: ...)                                                              37    83790     1  SUPPORTED by css_vars.c (document-wide, media-aware, specificity-ranked; NOT per-element inheritance)  |  css_vars.c:1-60
+calc()                                                                                              37     9300     1  SUPPORTED in longhands; REFUSED inside shorthands (padding/margin) and font-size:clamp  |  select/calc.c; padding.c shorthand
+linear-gradient()                                                                                   37     1761     1  LibCSS refuses; css_extra rescues into cstyle.xraw[XR_BG_IMAGE] (linear only)  |  css_extra.c:652-670, 780-784; css.h:97
+background-position / background-repeat / background-attachment                                     36     2236     1  PARSED-BUT-IGNORED  |  css_extra.c:2261-2262
+border-collapse / border-spacing / table-layout / caption-side / empty-cells                        33      209     1  PARSED-BUT-IGNORED  |  css_extra.c:2265-2270
+:popover-open/:open/:state()/:scope/:fullscreen/:host-context()/:-webkit-any()                      11       29     3  DROPS-THE-RULE  |  language.c:1874-1877  |  Chrome accepts
+oklch()/oklab()/lab()/lch()/color()/color-mix()/light-dark()                                        16     2550     2  DROPS-THE-DECLARATION  |  propstrings.c:472-476 (no such function names)
+translate / rotate / scale (individual)                                                             16      697     2  DROPS-THE-DECLARATION  |  language.c:2768
+::placeholder/::marker/::selection/::backdrop/::part()/::slotted()                                  32      387     1  PARSED, NEVER MATCHES  |  select.c:2810-2823 only first-line/first-letter/before/after set a pseudo
+position: sticky                                                                                    32      186     1  PARSED; laid out as RELATIVE (never sticks)  |  css_engine.c:1513-1528; layout.c:2774,3175
+text-decoration-* longhands / text-underline-offset                                                 29      692     1  DROPS-THE-DECLARATION  |  language.c:2768
+display: -webkit-box / -ms-flexbox / -webkit-flex (prefixed flex)                                   28    14006     1  DROPS-THE-DECLARATION (element keeps its previous display)  |  properties.gen:26
+place-items / place-content / justify-items / justify-self                                          28      425     1  place-*: DROPPED; justify-items/self: css_extra (grid only)  |  css_extra.c:2371
+env()                                                                                               14      176     2  DROPS-THE-DECLARATION  |  propstrings.c (no `env`)
+::file-selector-button/::details-content/::view-transition*/::cue                                    9      876     3  DROPS-THE-RULE  |  language.c:1874-1877  |  Chrome accepts
+@media (prefers-reduced-motion)                                                                     25      385     1  ENTERED; evaluation UNMEASURED  |  mq.c
+@media (hover)/(pointer)/(any-hover)                                                                24      569     1  ENTERED; evaluation UNMEASURED  |  mq.c
+@property                                                                                           11      817     2  DROPS-THE-RULE (registration lost; initial-value never reaches var())  |  language.c:1033-1047 else-branch  |  css_drop_probe: RULE LOST
+text-align: start / end                                                                             22      183     1  DROPS-THE-DECLARATION  |  synth BAD-VALUE
+container-type / container / contain / content-visibility                                           21      204     1  DROPS-THE-DECLARATION  |  language.c:2768
+isolation / mix-blend-mode                                                                          21      172     1  DROPS-THE-DECLARATION  |  language.c:2768
+text-shadow                                                                                         20      215     1  DROPS-THE-DECLARATION  |  language.c:2768
+cqw / cqi / cqb                                                                                     10      141     2  DROPS-THE-DECLARATION  |  utils.c (no cq units); synth `width:50cqw` BAD-VALUE
+writing-mode / direction / unicode-bidi                                                             18      129     1  direction+writing-mode read; unicode-bidi ignored; `isolate` refused  |  css_engine.c writing_mode/direction getters
+display: flow-root                                                                                   9       10     2  DROPS-THE-DECLARATION  |  properties.gen:26
+@media (prefers-color-scheme)                                                                       17      515     1  ENTERED; evaluation UNMEASURED  |  mq.c
+@container                                                                                          17      339     1  ALWAYS TRUE (never evaluated)  |  language.c:398-400  |  css_drop_probe: ALWAYS-TRUE
+attr()                                                                                              15       51     1  PARSED (content only) -- content never rendered  |  propstrings.c:440; css_extra.c:2261
+CSS nesting (& / nested rules)                                                                       5       26     3  DROPS-THE-RULE (nested rule AND the declarations after it in the block)  |  parse.c:2313 parseMalformedDeclaration; language.c:2502 parseSimpleSelector refuses `&`  |  Chrome accepts
+all: unset/initial                                                                                  15       25     1  DROPS-THE-DECLARATION  |  language.c:2768
+attribute selector [x=y i]                                                                           4       15     3  DROPS-THE-RULE  |  language.c:1381 parseAttrib expects ']' after the value  |  Chrome accepts `i`
+@starting-style                                                                                      6       10     2  DROPS-THE-BLOCK  |  language.c:1033-1047
+columns / column-count / column-width / column-rule                                                 11       56     1  PARSED-BUT-IGNORED  |  css_extra.c:2268
+overflow: clip                                                                                      11       11     1  DROPS-THE-DECLARATION  |  properties.gen overflow keywords
+@import                                                                                              2        2     4  DROPS-THE-SHEET (rule parsed; browser never fetches it)  |  language.c:797-880; css_engine.c sets no `import` callback (grep p.import = 0 hits)
+@layer                                                                                               7       99     1  ENTERED; layer ORDER ignored (source order wins)  |  language.c:387-396  |  css_drop_probe: WRONG WINNER
+@counter-style/@font-feature-values/@view-transition/@position-try                                   5       12     1  DROPS-THE-BLOCK  |  language.c:1033-1047
+:nth-child(An+B of S)                                                                                1        4     3  DROPS-THE-RULE  |  language.c:1483 parseNth (an+b only); :1931  |  Chrome accepts
+image-set()                                                                                          2        8     1  DROPS-THE-DECLARATION  |  value handler refuses
+@scope                                                                                               1        1     1  ENTERED; scope not confined  |  language.c:429
+rem / em / % / px                                                                                   42   163594     0  SUPPORTED  |  utils.c:1477 rem
+border / border-radius / margin / padding / width / height / min-max                                42    89236     0  SUPPORTED  |  css_engine.c convert()
+vendor-prefixed duplicates (-webkit-box-*, -ms-flex-*, -webkit-transform, -webkit-transition, ..    41    44185     0  DROPS-THE-DECLARATION (mostly twinned by an unprefixed declaration; twin-ness not measured)  |  language.c:2768
+flex / flex-direction / flex-wrap / order / align-* / justify-content (flex keywords)               41    24286     0  SUPPORTED  |  css_engine.c; layout_flex.c
+selector list (comma) with one refused selector                                                     42    23802     0  DROPS-THE-RULE (whole list, both here and in Chrome for non-forgiving lists)  |  language.c parseSelectorList  |  demand = all comma lists; the loss is in the per-site table
+letter-spacing / word-spacing / text-indent / text-transform / line-height / white-space            42    18778     0  SUPPORTED  |  css_engine.c getters
+opacity / visibility / z-index / overflow / float / clear / box-sizing                              42    17426     0  SUPPORTED  |  css_engine.c getters
+::-webkit-* compatibility pseudo-elements                                                           35    17068     0  PARSED, NEVER MATCHES (correct per Selectors 4)  |  language.c:1866-1879
+@media (any feature)                                                                                42    16289     0  ENTERED (evaluated by mq.c; non-width features UNMEASURED)  |  language.c:923-956; mq.c:262 range syntax
+:hover / :focus / :active                                                                           42    14168     0  PARSED, FALSE AT REST (deliberate)  |  css_engine.c:324-340 h_false  |  same as a static render; no re-style on state change
+!important                                                                                          40    12356     0  SUPPORTED  |  important.c
+::-moz-* / :-moz-* / ::-ms-* / :-ms-* pseudos                                                       36    10922     0  DROPS-THE-RULE -- Chrome refuses too (not a defect)  |  language.c:1874-1877
+rgb()/rgba()/hsl()/hsla()/hwb() incl. space+slash syntax, #rrggbbaa                                 37    10911     0  SUPPORTED  |  propstrings.c:472-476; synth probe
+display: flex / inline-flex / grid / inline-grid                                                    41    10840     0  SUPPORTED  |  properties.gen:26; layout_flex.c; layout_grid.c
+margin-inline/-block, padding-inline/-block (logical box)                                           31     9794     0  SUPPORTED via css_extra (ltr only)  |  css_extra.c:2376-2378 logical_one/pair
+:is()/:where() simple list                                                                          22     5459     0  SUPPORTED  |  language.c:2220 parseIsWhereList; select.c:2607
+transform / transform-origin                                                                        42     4959     0  SUPPORTED via css_extra raw capture + css_interp + painter  |  css_extra.c:713-716; css.h:95-96; css_interp.c:385-397
+:first-child/:last-child/:nth-*/:only-child/:empty                                                  40     4737     0  SUPPORTED  |  language.c:1743-1763
+box-shadow                                                                                          39     4490     0  SUPPORTED via css_extra raw capture  |  css_extra.c:717; css.h:98
+grid-template-* / grid-area / grid-column / grid-row / grid-auto-*                                  33     4388     0  SUPPORTED via css_extra raw text + layout_grid.c (no subgrid/masonry)  |  css.h:56-60,338; layout_grid.c:2231
+gap / row-gap / column-gap                                                                          37     4220     0  SUPPORTED via css_extra  |  css_extra.c:814, 2365
+cursor                                                                                              42     3292     0  PARSED-BUT-IGNORED; CSS3 keywords refused  |  css_extra.c:2263
+@supports                                                                                           31     3094     0  EVALUATED (supports_decl); @supports selector() answers NO  |  language.c:387-560
+outline / outline-offset                                                                            39     3077     0  PARSED-BUT-IGNORED / DROPPED  |  css_extra.c:2264
+cubic-bezier()/steps()                                                                              31     2561     0  captured raw for the animation clock  |  css_extra.c:2372; js_anim.c
+vw / vh / vmin / vmax                                                                               37     2453     0  SUPPORTED  |  utils.c:1464-1551
+inset / inset-inline / inset-block                                                                  28     2065     0  SUPPORTED via css_extra  |  css_extra.c:1950, 2373-2375
+:focus-visible / :focus-within                                                                      31     1684     0  PARSED, NEVER MATCHES (state; deliberate)  |  language.c:1778-1779; select.c:2807  |  same as a static Chrome render
+fr (grid tracks)                                                                                    32     1665     0  SUPPORTED via css_extra raw grid text  |  layout_grid.c grid_parse_template
+@media range syntax (width >= N)                                                                    10     1627     0  ENTERED (measured accepted)  |  mq.c:262-300 mq_parse_range
+:root                                                                                               33     1623     0  SUPPORTED  |  language.c:1753 ROOT; select.c node_is_root
+:checked/:disabled/:enabled/:target                                                                 32     1517     0  SUPPORTED  |  css_engine.c:324-420
+attribute operators ^= $= *= ~= |=                                                                  27     1056     0  SUPPORTED  |  language.c:1381 parseAttrib
+font-feature-settings / font-variation-settings / font-stretch / font-display / -webkit-font-smo    35      937     0  DROPS-THE-DECLARATION (harmless)  |  language.c:2768
+list-style / list-style-type                                                                        39      646     0  SUPPORTED (type); list-style-image/position ignored  |  css_engine.c list_style_type
+scroll-snap-* / scroll-margin / scroll-padding / overscroll-behavior / scroll-behavior              31      322     0  DROPS-THE-DECLARATION  |  language.c:2768
+dvh / svh / lvh / dvw                                                                               22      313     0  SUPPORTED (parsed as vh/vw)  |  utils.c:1493-1495
+:not() with a list                                                                                  12      248     0  SUPPORTED  |  language.c:1939-1978
+ch / ex / lh                                                                                        18      204     0  SUPPORTED  |  utils.c:1531-1547
+will-change                                                                                         23      195     0  DROPS-THE-DECLARATION (harmless)  |  language.c:2768
+color-scheme / accent-color / caret-color                                                           20      176     0  DROPS-THE-DECLARATION  |  language.c:2768
+@charset/@namespace/@page                                                                           11       32     0  SUPPORTED  |  language.c:754-1000
+@-moz-document/@document                                                                             4        6     0  DROPS-THE-BLOCK -- Chrome refuses too  |  language.c:1033-1047
+
+== DROPS-THE-RULE per site: style rules the tree's LibCSS refuses (per-rule oracle, any nesting depth) ==
+site            rules   decls | lost_r lost_r% lost_d lost_d% |  chr_r  chr_d |  has_r  has_d |   pe_r   pe_d | @lost  @imp   @ff
+163               805    2137 |      1  0.12%      1  0.05% |      0      0 |      0      0 |     25     98 |     3     0     0
+airbnb          19982   22048 |    870  4.35%    944  4.28% |    765    837 |     54     58 |    976   1005 |     0     0     9
+amazon           8923   25441 |     30  0.34%     55  0.22% |     19     42 |     59    132 |    242    922 |     0     0    21
+apnews           7108   21334 |     15  0.21%     34  0.16% |     14     30 |    176    247 |    322   1381 |     0     1    12
+apple            4963   10031 |      6  0.12%     15  0.15% |      2      7 |     25     27 |    627   1083 |     0     0    63
+bbc               863    2228 |      3  0.35%      6  0.27% |      3      6 |      0      0 |      8     53 |     0     0    35
+bilibili         1790    7699 |      2  0.11%      3  0.04% |      1      2 |      0      0 |     20    122 |     0     0   108
+bing              602    2044 |      2  0.33%      5  0.24% |      0      0 |      3      4 |     25     98 |     0     0     0
+cloudflare       6050    9220 |    375  6.20%    514  5.57% |    373    512 |     40     42 |    105    324 |     0     0     6
+cnn              6119   18846 |     19  0.31%     23  0.12% |     18     22 |    233    590 |    664   1850 |     0     0    17
+ddg              2427    9327 |     13  0.54%     25  0.27% |      1      3 |     18     31 |     22     75 |     0     0    12
+espn            11048   27198 |     40  0.36%    133  0.49% |      1      1 |     13     66 |   1790   4367 |   126     0    10
+facebook        28408   31092 |     81  0.29%     85  0.27% |     78     82 |      1      1 |   1408   1414 |     0     0    84
+github          15407   40751 |    172  1.12%    349  0.86% |    157    331 |     72    133 |    610   2249 |     0     0     7
+google            209     551 |      1  0.48%      1  0.18% |      1      1 |      0      0 |      5     28 |     1     0     0
+hn                 96     175 |      0  0.00%      0  0.00% |      0      0 |      0      0 |      0      0 |     0     0     0
+instagram       14026   16730 |     36  0.26%     37  0.22% |     33     34 |      0      0 |    715    722 |     0     0    78
+jd               3825   17552 |      8  0.21%      8  0.05% |      1      0 |      0      0 |     46    285 |    22     0    11
+linkedin         8853   37062 |     73  0.82%    162  0.44% |     11     29 |      0      0 |   1589   6294 |     0     0     0
+mdn               458    1313 |     29  6.33%     52  3.96% |     29     52 |      1      1 |     45    137 |     0     0    13
+microsoft        3555    5399 |      3  0.08%      8  0.15% |      0      0 |      7     11 |   2114   2139 |     0     0    12
+mozilla          1395    3693 |      4  0.29%      4  0.11% |      0      0 |      7      8 |     74    228 |     0     0    10
+netflix           892    4453 |     16  1.79%     50  1.12% |     15     48 |      0      0 |     56    213 |     0     0    17
+nytimes          4010   12808 |    428 10.67%    980  7.65% |     63    254 |      6      7 |     75    328 |     0     0   227
+pydocs            578    1069 |      5  0.87%      6  0.56% |      5      6 |      1      1 |     10     26 |     0     1     0
+qq               1741    7137 |     10  0.57%     15  0.21% |      5      9 |      2      2 |     43    247 |     0     0     2
+sina             1218    3544 |      1  0.08%      2  0.06% |      0      0 |      0      0 |     10     62 |     5     0     0
+spotify          2689    8034 |     26  0.97%     33  0.41% |     22     29 |     23     52 |    111    434 |     0     0    46
+stripe           2892   10580 |     68  2.35%    133  1.26% |     65    130 |     46     77 |     63    279 |     0     0     3
+tailwind         6178    9586 |   1417 22.94%   1696 17.69% |   1415   1694 |     34     39 |    142    374 |     0     0    14
+taobao           4782   11259 |      4  0.08%     10  0.09% |      0      0 |      0      0 |     31    106 |     0     0     3
+theguardian      1111   16251 |      6  0.54%      9  0.06% |      2      5 |      3      6 |     97    629 |     0     0    30
+twitch            628    1412 |      1  0.16%      1  0.07% |      1      1 |      1      1 |     21     49 |     0     0    31
+vercel          10105   17120 |    692  6.85%    988  5.77% |    690    986 |    110    141 |    388    896 |     0     0     8
+webdev           5763   25365 |     28  0.49%     47  0.19% |     10     14 |      6      7 |    286   1023 |     0     0    13
+wikipedia        1162    3078 |     11  0.95%     23  0.75% |      8     18 |      1      4 |     82    288 |     0     0     0
+wired            2386    8638 |     19  0.80%     99  1.15% |     18     97 |      6      6 |     62    270 |     0     0    37
+wordpress        3871    8099 |    274  7.08%    574  7.09% |    259    541 |     18     42 |    142    530 |     0     0    22
+x                3728    5578 |    226  6.06%    310  5.56% |    223    307 |     10     15 |     53    106 |     0     0    35
+yahoo            6142   10504 |     14  0.23%     20  0.19% |      4      5 |     34     51 |    184    476 |     0     0    45
+youtube         19024   87082 |     88  0.46%    149  0.17% |     34     60 |     10     23 |    248   1135 |     0     0    11
+zhihu            4005   15340 |     22  0.55%     44  0.29% |      1      1 |      1      1 |    164    784 |     0     0     5
+TOTAL          229817  578808 |   5139  2.24%   7653  1.32% |   4347   6196 |   1021   1826 |  13700  33129 |   157
+  lost_r/lost_d = rules/declarations refused by LibCSS's selector parser (whole list); chr_* = the subset whose refusal reason Chrome ACCEPTS (engine defect);
+  has_* = accepted rules whose every selector carries :has() (never match here); pe_* = accepted rules whose every selector is ::before/::after (pseudo-element never generated);
+  @lost = style rules inside at-rule blocks LibCSS discards (@property/@starting-style/@font-feature-values/...; @keyframes excluded, css_extra captures those); @imp = @import rules (sheet never fetched); @ff = @font-face rules (never loaded)
+
+== DROPS-THE-RULE by cause (rules / declarations carried / sites) ==
+  :is()/:where() with a complex selector (combinator) inside                                             3013 rules    4381 decls  16 sites
+  vendor/obsolete pseudo (-moz-/-ms-/:matches) -- Chrome refuses too                                      792 rules    1457 decls  36 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :view-transition-old                                   304 rules     347 decls   4 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :view-transition-new                                   280 rules     337 decls   4 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :view-transition-group                                 198 rules     199 decls   2 sites
+  :not() with a complex selector (combinator) inside                                                       80 rules     175 decls  11 sites
+  CSS nesting (& / nested rule inside a style rule)                                                        87 rules     146 decls   8 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :file-selector-button                                   69 rules     121 decls   5 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :-webkit-autofill                                       51 rules      69 decls   7 sites
+  empty :is()/:where()                                                                                     21 rules      54 decls   4 sites
+  vendor pseudo inside :is()/:where() (forgiving list in Chrome, refused whole here)                       51 rules      51 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :indeterminate                                          24 rules      45 decls   4 sites
+  UNATTRIBUTED                                                                                             21 rules      34 decls   9 sites
+  unknown pseudo inside :is()/:where() (forgiving in Chrome): :popover-open                                25 rules      32 decls   3 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :details-content                                        18 rules      28 decls   3 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :popover-open                                            9 rules      27 decls   3 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :autofill                                                8 rules      24 decls   2 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :invalid                                                14 rules      22 decls   7 sites
+  attribute selector `i` flag                                                                              10 rules      13 decls   2 sites
+  `*|` universal namespace                                                                                  6 rules       9 decls   2 sites
+  :not(<unknown pseudo>): :read-only                                                                        4 rules       8 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :none                                                    2 rules       7 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :-webkit-full-screen                                     2 rules       6 decls   2 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :valid                                                   5 rules       5 decls   3 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :view-transition-image-pair                              2 rules       5 decls   1 sites
+  :nth-child(An+B of S)                                                                                     5 rules       5 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :read-only                                               4 rules       5 decls   3 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :view-transition                                         4 rules       4 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :host-context                                            3 rules       4 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :global                                                  1 rules       3 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :fullscreen                                              2 rules       3 decls   2 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :scope                                                   3 rules       3 decls   2 sites
+  unknown pseudo inside :is()/:where() (forgiving in Chrome): :invalid                                      3 rules       3 decls   2 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :start                                                   2 rules       2 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :end                                                     2 rules       2 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :-webkit-autofill-strong-password                        1 rules       2 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :default                                                 1 rules       2 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :horizontal                                              1 rules       2 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :future                                                  2 rules       2 decls   1 sites
+  :not(<unknown pseudo>): :popover-open                                                                     1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :-o-prefocus                                             1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :visted                                                  1 rules       1 decls   1 sites
+  unknown pseudo inside :is()/:where() (forgiving in Chrome): :scope                                        1 rules       1 decls   1 sites
+  unknown pseudo inside :is()/:where() (forgiving in Chrome): :optional                                     1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :optional                                                1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :user-valid                                              1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :in-range                                                1 rules       1 decls   1 sites
+  Selectors-4/HTML pseudo missing from pseudo_lut: :out-of-range                                            1 rules       1 decls   1 sites
+  UNATTRIBUTED examples:
+     airbnb      .atm_j6_1cm3os7_17cs3b 744
+     airbnb      .atm_mk_stnw88_17cs3b 744
+     apnews      [data-module-overhang]>.Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoardAd-Mobile
+     apnews      [data-module-overhang]>.FourColumnContainer .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoardAd-
+     apnews      [data-module-overhang]>.OneColumnContainer .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoardAd-M
+     apnews      [data-module-overhang]>.ThreeColumnContainer .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoardAd
+     apnews      [data-module-overhang]>.TwoColumnContainer3070 .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoard
+     apnews      [data-module-overhang]>.TwoColumnContainer5050 .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoard
+     apnews      [data-module-overhang]>.TwoColumnContainer7030 .Container-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoard
+     apnews      [data-module-overhang]>.PageList-header:before [data-module-overhang] .SectionPage[data-page-overhang] .LeaderBoardAd-Mobile
+     apnews      .PageListRightRailA .PageList-items:not([data-no-numbers])-item .PagePromo-content .PagePromoContentIcons-eyebrow
+     apnews      .PageListRightRailA .PageList-items:not([data-no-numbers])-item .PagePromo-content .PagePromo-byline-live
+     apnews      >h2:not(.PageList-header-title,.PagePromo-title) .RichTextBody:not(.HtmlModule):not(.Infobox-items)
+     apnews      >h3:not(.PageList-header-title,.PagePromo-title) .RichTextBody:not(.HtmlModule):not(.Infobox-items),[data-size=small]>h2:not(.PageList-heade
+     bbc         .eVtzmJ::after *
+     cloudflare  [data-vaul-handle-hitarea]:
+     espn        .grid-row:after .clearfix
+     jd          // .mod_copyright_license
+     nytimes     (p) => !p.theme.isIntlHomepage .hasLinks .css-1aouwco.hasLinks .css-1aouwco !p.theme.homepage .hasLinks .css-1aouwco.hasLinks .css-1aouwco
+     wired       .jFtHoK .homepage__newsletter-row ({ theme, hasConsistentSpacing }) => if (hasConsistentSpacing .jFtHoK.jFtHoK
+            (0, get_spacing_t
+     youtube     ytd-tabbed-page-header(:not([guide-persistent-and-visible]:not([is-constrained-list]))) #page-header-container.ytd-tabbed-page-header
+
+== DROPS-THE-DECLARATION: what reached LibCSS's parseProperty over the corpus ==
+  LibCSS alone           : accepted 295143  unknown-prop 108784  bad-value 75910  trailing 0
+  behind css_vars pre-pass: accepted 340482  unknown-prop 105561  bad-value 27650  trailing 0   (the browser's real pipeline order; var() resolved)
+  SILENT drops (no report at all, language.c css__parse_important path) are invisible to both counts; measured per value below.
+
+== refused/silent VALUES by class (declarations, sites) -- LibCSS alone, from the per-value oracle ==
+  var() (LibCSS alone; the browser's css_vars.c pre-pass resolves DEFINED ones -- see rescue row)                  63375 decls  38 sites   e.g. position:var(--aspect_ratio_wrapper-position_fallback,unset); position:var(--contentscroller_controls_position); positio
+  vendor-prefixed property (-webkit-/-moz-/-ms-)                                                                   43634 decls  41 sites   e.g. -moz-border-radius-bottomright:0; -moz-border-radius:0px; -moz-border-radius:10px; -moz-border-radius:12px
+  unknown to LibCSS, RESCUED by css_extra raw scan (grid/gap/inset/logical)                                        20246 decls  37 sites   e.g. gap:12px; gap:2px; gap:var(--card-content-grid_gap,2px); gap:var(--contentscroller_gap,16px)
+  logical sizing/border (inline-size, border-inline-*, border-start-*-radius)                                       7161 decls  20 sites   e.g. border-start-start-radius:32px; border-start-start-radius:var(--dls-comboelement-background-border-top-left-radius,); bo
+  display keyword outside LibCSS's set: -webkit-box                                                                 5718 decls  28 sites   e.g. display:-webkit-box
+  transition-*/animation-* LONGHANDS (not captured; only the shorthand is)                                          4610 decls  35 sites   e.g. animation-delay:.2s; animation-duration:.8s; animation-fill-mode:both; animation-timing-function:ease
+  unknown to LibCSS, RESCUED by css_extra raw scan (box-shadow)                                                     4490 decls  39 sites   e.g. box-shadow:0 0 2px 3px rgba(4,0,0,.08); box-shadow:0 0 8px #cdcdcd; box-shadow:0 1px 4px 0 rgba(0,0,0,.07); box-shadow:n
+  unknown to LibCSS, RESCUED by css_extra raw scan (transform)                                                      4407 decls  42 sites   e.g. transform:rotate(180deg); transform:scale(1.1); transform:translate(0,-2px); transform:translate(0,2px)
+  display keyword outside LibCSS's set: -webkit-flex                                                                4266 decls  13 sites   e.g. display:-webkit-flex
+  unknown to LibCSS, RESCUED by css_extra raw scan (transition)                                                     4031 decls  38 sites   e.g. transition:all .25s ease 0s; transition:all .3s; transition:background .3s; transition:transform .4s
+  interaction props (pointer-events/user-select/appearance/will-change/...)                                         2634 decls  41 sites   e.g. pointer-events:all; pointer-events:auto; pointer-events:none; pointer-events:var(--contentscroller_controls_pointer-even
+  text-overflow/word-break/overflow-wrap/hyphens/text-wrap/line-clamp                                               2576 decls  42 sites   e.g. text-overflow:ellipsis; text-overflow:inherit; text-overflow:var(--pricing-guest-primary-line-qualifier-text-overflow,in
+  display keyword outside LibCSS's set: -ms-flexbox                                                                 2247 decls  16 sites   e.g. display:-ms-flexbox
+  SVG presentation properties (fill/stroke)                                                                         2009 decls  38 sites   e.g. fill:transparent; fill:var(--palette-grey0); fill:var(--palette-icon-primary-hover); fill:var(--palette-icon-primary-inv
+  background-size/clip/origin, object-fit, border-image                                                             1914 decls  40 sites   e.g. background-size:497px 83px; background-size:50px 50px; background-size:860px 169px; background-size:contain
+  other CSS3+ properties (place-*, contain, container-type, translate/rotate/scale, all, ...)                       1878 decls  40 sites   e.g. backface-visibility:hidden; scrollbar-width:none; scrollbar-width:thin; scrollbar-width:unset
+  filter/backdrop-filter/mask/blend/clip-path                                                                       1686 decls  37 sites   e.g. backdrop-filter:blur(var(--capture-preview-blur-amount,0)); backdrop-filter:var(--dls-button_backdrop-filter); backdrop-
+  text-shadow/outline-offset/font-feature-settings/font-stretch                                                     1559 decls  35 sites   e.g. outline-offset:0; outline-offset:2px; outline-offset:4px; outline-offset:calc(-1 * (var(--overlay-outline-width) / 2))
+  unknown to LibCSS, RESCUED by css_extra raw scan (animation)                                                      1227 decls  34 sites   e.g. animation:menu .8s ease .16s 2; animation:menu .8s ease .32s 2; animation:menu .8s ease 0s 2; animation:movemenu .3s ste
+  unknown to LibCSS, RESCUED by css_extra raw scan (transition-property)                                            1137 decls  27 sites   e.g. transition-property:opacity; transition-property:outline,outline-offset; transition-property:transform,background-color,
+  display keyword outside LibCSS's set: flexbox                                                                     1058 decls   2 sites   e.g. display:flexbox
+  other unknown property                                                                                            1055 decls  32 sites   e.g. contain-intrinsic-size:auto 0 var(--card_natural-size); contain-intrinsic-size:calc(var(--vw) - 48px) 100px; contain-int
+  intrinsic sizing keywords (fit-content/min-content/max-content/-webkit-fill-available)                             974 decls  37 sites   e.g. width:-moz-fit-content; width:-webkit-fit-content; width:fit-content; width:max-content
+  background shorthand with `/size`, gradient or var() (SILENT drop)                                                 897 decls  31 sites   e.g. background:-webkit-gradient(linear,left top,left bottom,from(transparen; background:linear-gradient(180deg,transparent,#
+  unknown to LibCSS, RESCUED by css_extra raw scan (animation-name)                                                  835 decls  23 sites   e.g. animation-name:kf-1hiimcm; animation-name:none; animation-name:shake; animation-name:var(--dls-shimmer-animation,kf-ng66
+  box-alignment keywords (start/end/stretch/safe/... in justify-*/align-*/text-align)                                808 decls  36 sites   e.g. justify-content:end; justify-content:start; text-align:end; text-align:start
+  display keyword outside LibCSS's set: -moz-box                                                                     760 decls   5 sites   e.g. display:-moz-box
+  calc() inside a shorthand or a refusing handler (padding/margin/font-size/...)                                     745 decls  18 sites   e.g. border-radius:calc(4px / 2); border-radius:calc(infinity * 1px); padding:calc(14px + 0.75rem) 12px 10px; padding:calc(4 
+  flex: <grow> 0 <basis> shorthand (SILENT drop, flex.c error overwritten)                                           740 decls  33 sites   e.g. flex:0 0 20px; flex:0 0 auto; flex:1 0 100%; flex:1 0 auto
+  text-decoration-* longhands / text-underline-offset                                                                715 decls  29 sites   e.g. text-underline-offset:20%; text-underline-offset:2px; text-underline-offset:var(--dls-text-link_text-underline-offset); 
+  aspect-ratio                                                                                                       593 decls  24 sites   e.g. aspect-ratio:1/1; aspect-ratio:20/19; aspect-ratio:var(--AirImage-aspect-ratio,var(--dls-liteimage-aspect-ratio; aspect-
+  unknown to LibCSS, RESCUED by css_extra raw scan (transform-origin)                                                552 decls  30 sites   e.g. transform-origin:0% 0%; transform-origin:top; transform-origin:var(--slide-up-from-bottom_transform-origin,top); transfo
+  cursor keywords beyond CSS 2.1                                                                                     539 decls  31 sites   e.g. cursor:grab; cursor:grabbing; cursor:not-allowed; cursor:ns-resize
+  unknown to LibCSS, RESCUED by css_extra raw scan (-webkit-mask-image)                                              526 decls  19 sites   e.g. -webkit-mask-image:-webkit-radial-gradient(var(--palette-grey0),var(--palette-g; -webkit-mask-image:linear-gradient(to r
+  display keyword outside LibCSS's set: box                                                                          427 decls   1 sites   e.g. display:box
+  clamp()/min()/max()                                                                                                413 decls  25 sites   e.g. width:calc(min(850px,100vw) * 0.75 - 48px); width:clamp(24px,1.5rem,32px); width:min(280px,100%); width:min(293px,calc(1
+  scroll-snap/scroll-margin/scroll-padding                                                                           396 decls  28 sites   e.g. overscroll-behavior-inline:contain; scroll-padding-inline:calc(var(--calendar-horizontal-spacing,0) + var(--safe-area-; 
+  unknown to LibCSS, RESCUED by css_extra raw scan (mask-image)                                                      390 decls  23 sites   e.g. mask-image:-webkit-radial-gradient(var(--palette-grey0),var(--palette-g; mask-image:linear-gradient(to right,transparent
+  other refused value (font-weight)                                                                                  294 decls  13 sites   e.g. font-weight:450; font-weight:550; font-weight:724; font-weight:regular
+  display keyword outside LibCSS's set: -moz-flex                                                                    284 decls   1 sites   e.g. display:-moz-flex
+  linear-gradient (LibCSS refuses; css_extra rescues into xraw)                                                      281 decls  26 sites   e.g. background-image:linear-gradient(top,#5eba6d,#3ca051); background-image:linear-gradient(top,#cd0c0c,#a20000); background
+  unknown to LibCSS, RESCUED by css_extra raw scan (clip-path)                                                       275 decls  25 sites   e.g. clip-path:inset(-100px -100px 0 -100px); clip-path:inset(100%); clip-path:unset; clip-path:var(--microphone_clip-path,no
+  display keyword outside LibCSS's set: -webkit-inline-box                                                           242 decls  13 sites   e.g. display:-webkit-inline-box
+  display keyword outside LibCSS's set: -ms-inline-flexbox                                                           181 decls  13 sites   e.g. display:-ms-inline-flexbox
+  display keyword outside LibCSS's set: -webkit-inline-flex                                                          173 decls  11 sites   e.g. display:-webkit-inline-flex
+  overflow: clip / overlay                                                                                           172 decls  24 sites   e.g. overflow-y:clip; overflow:clip; overflow:clip auto; overflow:hidden scroll
+  display keyword outside LibCSS's set: contents                                                                     140 decls  29 sites   e.g. display:contents
+  silent drop, other (content)                                                                                       113 decls   5 sites   e.g. content:""/""; content:""/""; content:""/""; content:""/""
+  radial/conic/repeating/-webkit- gradients                                                                          104 decls  14 sites   e.g. background-image:-moz-linear-gradient(top,#f59ca0,#cb0003); background-image:-o-linear-gradient(top,#f59ca0,#cb0003); ba
+  env()                                                                                                               97 decls  14 sites   e.g. height:calc(100vh - calc(env(safe-area-inset-bottom))); height:calc(80px + env(safe-area-inset-top)); height:calc(96px +
+  system colors                                                                                                       92 decls  14 sites   e.g. background-color:Highlight; border:1px solid Highlight; color:buttontext; color:graytext
+  display keyword outside LibCSS's set: -ms-grid                                                                      69 decls   1 sites   e.g. display:-ms-grid
+  other refused value (height)                                                                                        65 decls   9 sites   e.g. height:-webkit-fill-available; height:56; height:80; height:none
+  font-family value refused (escapes/quotes)                                                                          61 decls   7 sites   e.g. font-family:"Amazon Ember",Arial,san serif; font-family:600; font-family:BBC Reith Serif,BBCReithSerif-fallback,serif; f
+  display keyword outside LibCSS's set: -moz-inline-box                                                               56 decls   4 sites   e.g. display:-moz-inline-box
+  CSS Color 4/5 (oklch/oklab/lab/lch/color()/color-mix/light-dark)                                                    53 decls   8 sites   e.g. background-color:color-mix(in oklab,currentcolor 8%,transparent); background-color:color-mix(in srgb,currentColor 30%,tr
+  misc CSS3 keywords (unicode-bidi isolate, float inline-start, position -webkit-sticky)                              52 decls  17 sites   e.g. float:inline-end; float:inline-start; position:none; unicode-bidi:isolate
+  silent drop, other (outline)                                                                                        52 decls  17 sites   e.g. outline:-webkit-focus-ring-color auto 1px; outline:5px auto #f90; outline:5px auto -webkit-focus-ring-color; outline:5px
+  silent drop, other (background-position)                                                                            37 decls  10 sites   e.g. background-position:0 0,0 5px,5px -5px,-5px 0; background-position:0,100%,0,100%; background-position:150% 0,15px 15px,0
+  display keyword outside LibCSS's set: inline-flexbox                                                                33 decls   1 sites   e.g. display:inline-flexbox
+  silent drop, other (border-radius)                                                                                  24 decls   2 sites   e.g. border-radius:0\; border-radius:inherit inherit 0 0
+  silent drop, other (background-image)                                                                               22 decls   2 sites   e.g. background-image:url("data:image/svg+xml,%3Csvg width='24' height='24' fill='; background-image:url(../images/products_s
+  other refused value (max-height)                                                                                    22 decls   6 sites   e.g. max-height:-moz-available; max-height:-webkit-fill-available; max-height:15.04cqh; max-height:attr(data-original-height)
+  other refused value (width)                                                                                         20 decls   9 sites   e.g. width:--sidebar-width; width:100; width:256; width:intrinsic
+  other refused value (color)                                                                                         20 decls   8 sites   e.g. color:#xxx; color:Helvetica; color:hof; color:vafr(--txtInputPlaceholderFontColor)
+  other refused value (max-width)                                                                                     20 decls   5 sites   e.g. max-width:"75.75rem"; max-width:25cqw; max-width:<value>; max-width:auto
+  other refused value (opacity)                                                                                       19 decls   5 sites   e.g. opacity:100%; opacity:15%; opacity:20%; opacity:60%
+  other refused value (white-space)                                                                                   17 decls   7 sites   e.g. white-space:balance; white-space:break-spaces; white-space:prewrap; white-space:wrap
+  other refused value (font-size)                                                                                     17 decls   9 sites   e.g. font-size:(--text-body-size-small); font-size:1.5; font-size:12; font-size:helveticaneue
+  other refused value (background-color)                                                                              16 decls   8 sites   e.g. background-color:#xxx; background-color:-moz-combobox; background-color:highlighttext; background-color:none
+  other refused value (text-decoration)                                                                               15 decls  13 sites   e.g. text-decoration:initial; text-decoration:underline dotted; text-decoration:underline wavy
+  other refused value (list-style-type)                                                                               14 decls   8 sites   e.g. list-style-type:"*"; list-style-type:"-"; list-style-type:auto; list-style-type:number
+  display: two-value syntax (silent)                                                                                  13 decls   2 sites   e.g. display:block ruby; display:none\; display:run-in flow-root; display:run-in table
+  other refused value (letter-spacing)                                                                                13 decls   4 sites   e.g. letter-spacing:-1%; letter-spacing:0%; letter-spacing:<value>; letter-spacing:Arial
+  other refused value (padding-bottom)                                                                                12 decls   4 sites   e.g. padding-bottom:-12px; padding-bottom:-16px; padding-bottom:-8px; padding-bottom:auto
+  other refused value (text-align)                                                                                    12 decls   3 sites   e.g. text-align:justify-all; text-align:match-parent; text-align:none
+  other refused value (font)                                                                                          11 decls   5 sites   e.g. font:-apple-system-body; font:1.2rem; font:12px inherit; font:13px inherit
+  other refused value (border-radius)                                                                                 11 decls   4 sites   e.g. border-radius:0 0 inherit inherit; border-radius:1.5cqw; border-radius:15cqw; border-radius:3.40282e38px
+  silent drop, other (background-repeat)                                                                              11 decls   7 sites   e.g. background-repeat:no-repeat, repeat-x, no-repeat; background-repeat:no-repeat,padding-box; background-repeat:no-repeat,r
+  other refused value (padding-top)                                                                                   11 decls   3 sites   e.g. padding-top:-12px; padding-top:-16px; padding-top:-4px; padding-top:-8px
+  display keyword outside LibCSS's set: flow-root                                                                     10 decls   9 sites   e.g. display:flow-root
+  other refused value (line-height)                                                                                    9 decls   2 sites   e.g. line-height:<value>; line-height:Utkal
+  other refused value (background-position)                                                                            9 decls   2 sites   e.g. background-position:top -311px left 7px; background-position:top -311px right 1px; background-position:top -335px left 7
+  other refused value (min-width)                                                                                      8 decls   5 sites   e.g. min-width:--ytd-rich-grid-item-min-width; min-width:<value>; min-width:none
+  other refused value (align-items)                                                                                    6 decls   5 sites   e.g. align-items:"center"; align-items:items-center; align-items:space-between; align-items:top
+  other refused value (margin-bottom)                                                                                  6 decls   3 sites   e.g. margin-bottom:-12; margin-bottom:18.6; margin-bottom:2; margin-bottom:none
+  silent drop, other (border-top)                                                                                      6 decls   3 sites   e.g. border-top:#dcdddf 1 px solid; border-top:1 solid #000; border-top:1px solid buttontext
+  silent drop, other (border)                                                                                          5 decls   3 sites   e.g. border:1px solid ButtonBorder; border:1px solid none; border:2px solid ButtonBorder; border:8px/2 solid transparent
+  other refused value (border-color)                                                                                   5 decls   4 sites   e.g. border-color:-webkit-focus-ring-color; border-color:<value>; border-color:none
+  other refused value (outline-style)                                                                                  5 decls   4 sites   e.g. outline-style:auto
+  silent drop, other (left)                                                                                            5 decls   1 sites   e.g. left:24px * .6
+  other refused value (vertical-align)                                                                                 5 decls   5 sites   e.g. vertical-align:<value>; vertical-align:center
+  other refused value (background-attachment)                                                                          5 decls   3 sites   e.g. background-attachment:local; background-attachment:local,local,scroll,scroll
+  other refused value (left)                                                                                           5 decls   2 sites   e.g. left:anchor(center); left:anchor(left); left:anchor(right)
+  other refused value (min-height)                                                                                     5 decls   2 sites   e.g. min-height:16.6667cqi; min-height:25cqi; min-height:50cqi; min-height:<value>
+  silent drop, other (text-decoration)                                                                                 4 decls   4 sites   e.g. text-decoration:underline #ff322e 1px; text-decoration:underline .075em rgba(0,0,0,0); text-decoration:underline 1px
+  other refused value (column-gap)                                                                                     4 decls   3 sites   e.g. column-gap:-2px; column-gap:10%; column-gap:8.333333333333334%; column-gap:<value>
+  other refused value (top)                                                                                            4 decls   3 sites   e.g. top:0�; top:anchor(center); top:anchor(top); top:expression( iequirk = (document.body.scrollTop) + "px" )
+  display keyword outside LibCSS's set: -moz-inline-flex                                                               4 decls   1 sites   e.g. display:-moz-inline-flex
+  other refused value (border-bottom-width)                                                                            4 decls   2 sites   e.g. border-bottom-width:none
+  other refused value (border-top-width)                                                                               4 decls   2 sites   e.g. border-top-width:none
+  other refused value (border-bottom-color)                                                                            4 decls   3 sites   e.g. border-bottom-color:1px solid #e0e4e9; border-bottom-color:<value>; border-bottom-color:rgbs(255,255,255,.7); border-bot
+  other refused value (text-transform)                                                                                 4 decls   1 sites   e.g. text-transform:normal
+  other refused value (margin-right)                                                                                   3 decls   2 sites   e.g. margin-right:none
+  other refused value (outline-color)                                                                                  3 decls   3 sites   e.g. outline-color:-webkit-focus-ring-color; outline-color:<value>
+  other refused value (right)                                                                                          3 decls   2 sites   e.g. right:anchor(left); right:anchor(right)
+  other refused value (border-top-color)                                                                               3 decls   2 sites   e.g. border-top-color:<value>; border-top-color:rgbs(255,255,255,.7); border-top-color:solid transparent
+  display keyword outside LibCSS's set: auto                                                                           3 decls   1 sites   e.g. display:auto
+  other refused value (margin)                                                                                         3 decls   2 sites   e.g. margin:"none", position:"absolute", right:"20px"; margin:10 0 -6; margin:none
+  silent drop, other (border-bottom)                                                                                   3 decls   1 sites   e.g. border-bottom:1px solid CanvasText
+  display keyword outside LibCSS's set: relative                                                                       2 decls   2 sites   e.g. display:relative
+  other refused value (margin-left)                                                                                    2 decls   1 sites   e.g. margin-left:none
+  other refused value (visibility)                                                                                     2 decls   2 sites   e.g. visibility:"hidden"; visibility:none
+  other refused value (justify-content)                                                                                2 decls   1 sites   e.g. justify-content:between
+  silent drop, other (width)                                                                                           2 decls   2 sites   e.g. width:100%,; width:100%-32px
+  other refused value (bottom)                                                                                         2 decls   2 sites   e.g. bottom:anchor(bottom); bottom:anchor(top)
+  display keyword outside LibCSS's set: ruby                                                                           2 decls   1 sites   e.g. display:ruby
+  display keyword outside LibCSS's set: flow-root list-item                                                            2 decls   1 sites   e.g. display:flow-root list-item
+  other refused value (background-repeat)                                                                              2 decls   1 sites   e.g. background-repeat:round; background-repeat:space
+  display keyword outside LibCSS's set: -webkit-list-item                                                              2 decls   1 sites   e.g. display:-webkit-list-item
+  display keyword outside LibCSS's set: -ms-list-itembox                                                               2 decls   1 sites   e.g. display:-ms-list-itembox
+  display keyword outside LibCSS's set: -ms-flex                                                                       2 decls   1 sites   e.g. display:-ms-flex
+  display keyword outside LibCSS's set: hidden                                                                         2 decls   1 sites   e.g. display:hidden
+  silent drop, other (line-height)                                                                                     1 decls   1 sites   e.g. line-height:28px\
+  display keyword outside LibCSS's set: inline-list-item                                                               1 decls   1 sites   e.g. display:inline-list-item
+  other refused value (margin-top)                                                                                     1 decls   1 sites   e.g. margin-top:-4
+  silent drop, other (padding-top)                                                                                     1 decls   1 sites   e.g. padding-top:16px 24px
+  silent drop, other (border-color)                                                                                    1 decls   1 sites   e.g. border-color:#e9d1bb/40
+  display keyword outside LibCSS's set: content                                                                        1 decls   1 sites   e.g. display:content
+  other refused value (font-variant)                                                                                   1 decls   1 sites   e.g. font-variant:tabular-nums
+  display keyword outside LibCSS's set: inline-box                                                                     1 decls   1 sites   e.g. display:inline-box
+  other refused value (flex-direction)                                                                                 1 decls   1 sites   e.g. flex-direction:center
+  display keyword outside LibCSS's set: ruby-base                                                                      1 decls   1 sites   e.g. display:ruby-base
+  display keyword outside LibCSS's set: ruby-text                                                                      1 decls   1 sites   e.g. display:ruby-text
+  display keyword outside LibCSS's set: ruby-base-container                                                            1 decls   1 sites   e.g. display:ruby-base-container
+  display keyword outside LibCSS's set: ruby-text-container                                                            1 decls   1 sites   e.g. display:ruby-text-container
+  other refused value (font-style)                                                                                     1 decls   1 sites   e.g. font-style:none
+  image-set()                                                                                                          1 decls   1 sites   e.g. background-image:-webkit-image-set(url(//i1.sinaimg.cn/dy/deco/2013/0329/logo
+  display keyword outside LibCSS's set: revert-layer                                                                   1 decls   1 sites   e.g. display:revert-layer
+  other refused value (text-indent)                                                                                    1 decls   1 sites   e.g. text-indent:<value>
+  other refused value (z-index)                                                                                        1 decls   1 sites   e.g. z-index:<value>
+  other refused value (order)                                                                                          1 decls   1 sites   e.g. order:<value>
+  other refused value (flex-shrink)                                                                                    1 decls   1 sites   e.g. flex-shrink:<value>
+  other refused value (flex-grow)                                                                                      1 decls   1 sites   e.g. flex-grow:<value>
+  other refused value (flex-basis)                                                                                     1 decls   1 sites   e.g. flex-basis:<value>
+  other refused value (list-style-image)                                                                               1 decls   1 sites   e.g. list-style-image:<value>
+  silent drop, other (columns)                                                                                         1 decls   1 sites   e.g. columns:<value>
+  other refused value (break-before)                                                                                   1 decls   1 sites   e.g. break-before:all
+  other refused value (break-after)                                                                                    1 decls   1 sites   e.g. break-after:all
+  other refused value (border-right-color)                                                                             1 decls   1 sites   e.g. border-right-color:<value>
+  other refused value (border-left-color)                                                                              1 decls   1 sites   e.g. border-left-color:<value>
+  other refused value (clip)                                                                                           1 decls   1 sites   e.g. clip:rect(0)
+  container units (cqw/cqi/...)                                                                                        1 decls   1 sites   e.g. font-size:40cqmin
+  silent drop, other (margin)                                                                                          1 decls   1 sites   e.g. margin:unset -16px
+  other refused value (box-sizing)                                                                                     1 decls   1 sites   e.g. box-sizing:"border-box"
+
+== top dropped properties after the var() pre-pass (unknown+bad, accepted, sites) ==
+  display                              unknown=     0 bad= 15700 accepted= 26318 sites=42
+  transform                            unknown=  4363 bad=     0 accepted=     0 sites=42
+  box-shadow                           unknown=  4300 bad=     0 accepted=     0 sites=39
+  transition                           unknown=  3984 bad=     0 accepted=     0 sites=38
+  -webkit-box-orient                   unknown=  3483 bad=     0 accepted=     0 sites=23
+  gap                                  unknown=  2797 bad=     0 accepted=     0 sites=35
+  -webkit-box-direction                unknown=  2711 bad=     0 accepted=     0 sites=10
+  -webkit-box-align                    unknown=  2654 bad=     0 accepted=     0 sites=17
+  -webkit-flex-direction               unknown=  2592 bad=     0 accepted=     0 sites=10
+  -webkit-align-items                  unknown=  2155 bad=     0 accepted=     0 sites=13
+  -webkit-box-pack                     unknown=  2113 bad=     0 accepted=     0 sites=17
+  background-color                     unknown=     0 bad=  2011 accepted= 12225 sites=41
+  -webkit-justify-content              unknown=  1792 bad=     0 accepted=     0 sites=13
+  grid-template-columns                unknown=  1638 bad=     0 accepted=     0 sites=33
+  margin-inline-start                  unknown=  1587 bad=     0 accepted=     0 sites=23
+  -webkit-transform                    unknown=  1562 bad=     0 accepted=     0 sites=20
+  -ms-flex-align                       unknown=  1535 bad=     0 accepted=     0 sites=16
+  color                                unknown=     0 bad=  1518 accepted= 21584 sites=42
+  -webkit-box-flex                     unknown=  1456 bad=     0 accepted=     0 sites=13
+  transition-duration                  unknown=  1432 bad=     0 accepted=     0 sites=25
+  text-overflow                        unknown=  1419 bad=     0 accepted=     0 sites=38
+  margin-inline-end                    unknown=  1400 bad=     0 accepted=     0 sites=22
+  pointer-events                       unknown=  1368 bad=     0 accepted=     0 sites=38
+  fill                                 unknown=  1306 bad=     0 accepted=     0 sites=38
+  transition-timing-function           unknown=  1177 bad=     0 accepted=     0 sites=24
+  padding-inline-start                 unknown=  1163 bad=     0 accepted=     0 sites=22
+  -ms-flex-pack                        unknown=  1155 bad=     0 accepted=     0 sites=16
+  padding-inline-end                   unknown=  1127 bad=     0 accepted=     0 sites=20
+  transition-property                  unknown=  1114 bad=     0 accepted=     0 sites=27
+  -webkit-transition                   unknown=  1113 bad=     0 accepted=     0 sites=19
+  grid-column                          unknown=  1099 bad=     0 accepted=     0 sites=25
+  animation                            unknown=  1093 bad=     0 accepted=     0 sites=34
+  -webkit-flex                         unknown=  1057 bad=     0 accepted=     0 sites=11
+  -webkit-box-sizing                   unknown=  1007 bad=     0 accepted=     0 sites=13
+  width                                unknown=     0 bad=   994 accepted= 21256 sites=42
+  background-size                      unknown=   990 bad=     0 accepted=     0 sites=37
+  -webkit-box-shadow                   unknown=   910 bad=     0 accepted=     0 sites=14
+  -webkit-line-clamp                   unknown=   875 bad=     0 accepted=     0 sites=22
+  padding-inline                       unknown=   867 bad=     0 accepted=     0 sites=20
+  inset-inline-start                   unknown=   849 bad=     0 accepted=     0 sites=20
+  background-image                     unknown=     0 bad=   817 accepted=  1199 sites=36
+  animation-name                       unknown=   817 bad=     0 accepted=     0 sites=23
+  border-inline-start-color            unknown=   749 bad=     0 accepted=     0 sites= 5
+  font-family                          unknown=     0 bad=   742 accepted=  6765 sites=42
+  border-inline-end-color              unknown=   718 bad=     0 accepted=     0 sites= 4
+  padding-block                        unknown=   697 bad=     0 accepted=     0 sites=18
+  padding                              unknown=     0 bad=   694 accepted= 11881 sites=42
+  filter                               unknown=   691 bad=     0 accepted=     0 sites=34
+  -webkit-transition-duration          unknown=   688 bad=     0 accepted=     0 sites= 5
+  -ms-flex-direction                   unknown=   647 bad=     0 accepted=     0 sites=15
+  -webkit-transition-timing-function   unknown=   614 bad=     0 accepted=     0 sites= 5
+  border-start-end-radius              unknown=   594 bad=     0 accepted=     0 sites=12
+  border-start-start-radius            unknown=   591 bad=     0 accepted=     0 sites=12
+  -ms-transform                        unknown=   588 bad=     0 accepted=     0 sites=15
+  border-end-start-radius              unknown=   587 bad=     0 accepted=     0 sites=12
+  border-end-end-radius                unknown=   586 bad=     0 accepted=     0 sites=12
+  aspect-ratio                         unknown=   574 bad=     0 accepted=     0 sites=24
+  outline-offset                       unknown=   556 bad=     0 accepted=     0 sites=29
+  inset-inline-end                     unknown=   544 bad=     0 accepted=     0 sites=16
+  -webkit-mask-image                   unknown=   540 bad=     0 accepted=     0 sites=21
+  cursor                               unknown=     0 bad=   530 accepted=  2729 sites=42
+  height                               unknown=     0 bad=   506 accepted= 17158 sites=42
+  grid-area                            unknown=   504 bad=     0 accepted=     0 sites=21
+  border-color                         unknown=     0 bad=   483 accepted=  3180 sites=41
+  -webkit-text-decoration              unknown=   478 bad=     0 accepted=     0 sites=21
+  -ms-flex                             unknown=   474 bad=     0 accepted=     0 sites=12
+  -webkit-flex-basis                   unknown=   471 bad=     0 accepted=     0 sites= 7
+  object-fit                           unknown=   464 bad=     0 accepted=     0 sites=36
+  row-gap                              unknown=   461 bad=     0 accepted=     0 sites=22
+  margin-inline                        unknown=   441 bad=     0 accepted=     0 sites=19
+
+== ANIMATION demand ==
+  @keyframes rules: 2073 over 37 sites; properties animated in keyframes (stops): {'transform': 2591, 'opacity': 2360, '-webkit-transform': 804, 'stroke-dashoffset': 212, 'height': 165, 'scale': 143, 'translate': 131, 'background-color': 125, 'top': 115, 'filter': 107, '-moz-transform': 96, 'animation-timing-function': 79, 'box-shadow': 77, 'width': 76, '-o-transform': 72}
+  sites whose keyframes animate something other than opacity/transform: 35 of 42 (the clock interpolates only those two: js_anim.c:2013-2019)
+  transition-property first idents: {'transform': 987, 'opacity': 870, 'background-color': 764, 'all': 291, 'none': 287, '-webkit-transform': 263, 'color': 259, 'box-shadow': 175, 'padding': 154, 'background': 149, 'width': 125, 'height': 106}
+  rules with animation-* longhands and no `animation` shorthand: 2071; transition-* longhands only: 1984
+  sites with > 64 @keyframes in one sheet (css_extra cap CSS_KF_MAXRULE): airbnb(376), espn(83), facebook(367), github(74), instagram(177), jd(101), qq(96), youtube(210)
+  display values: {'flex': 9183, 'block': 6292, '-webkit-box': 5718, 'none': 5717, '-webkit-flex': 4266, 'inline-block': 2429, '-ms-flexbox': 2247, 'flexbox': 1058, 'grid': 884, '-moz-box': 760, 'inline-flex': 738, 'inline': 530, 'box': 427, '-moz-flex': 284, 'table': 253, '-webkit-inline-box': 242}

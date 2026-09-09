@@ -1,0 +1,25 @@
+{
+ "site": "ddg",
+ "rules": 2427,
+ "decls": 9327,
+ "lost_rules": 13,
+ "lost_decls": 25,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-placeholder": [
+   6,
+   11
+  ],
+  "unknown pseudo-element ::-ms-input-placeholder": [
+   6,
+   11
+  ],
+  "unknown pseudo-class :global()": [
+   1,
+   3
+  ]
+ },
+ "model_only": {
+  ":not(<unknown pseudo>)": 4
+ },
+ "unattributed_examples": []
+}

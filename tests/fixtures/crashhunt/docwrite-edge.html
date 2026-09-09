@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- crashhunt: document.write edge shapes on a loop.
+
+     The write revival landed 2026-08-30 (48a2ebd96): mid-parse writes insert
+     at the insertion point, nested writes execute in place, after-load
+     writes are IGNORED per spec. All of that is days old at the time of this
+     fixture, and the parse-time half of it is re-entered below by writing a
+     script that writes a script -- the detached-scratch revival path -- once
+     per round, plus the loader idiom (createElement('script') + .text +
+     append, whose execution crash-cluster fixed the same day) and a
+     dynamically inserted data-block (type=application/json), which
+     3b22e3b68 made execute-or-classify.
+
+     The MID-PARSE half can only run during parse, i.e. right here in this
+     inline script; the loop-shaped half runs from timers, each round a fresh
+     execution of the fresh code. Rounds are paced by setTimeout so each
+     round is its own slice. ?rounds=N is the dial. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ch-dw</title>
+<style>
+body { background:#2a2430; color:#eee; margin:20px; font-size:16px; }
+.r { padding:1px 0; }
+#c { font-size:20px; }
+</style>
+</head>
+<body>
+<div id="c">docwrite-edge starting</div>
+<div id="host"></div>
+<script>
+  // MID-PARSE, NESTED: this script writes a script, and that written script
+  // writes markup containing ANOTHER script. The revival must execute both,
+  // in order, in place. The marker proves the innermost ran at parse time.
+  document.write('<div class="r" id="w1">written-1</div>'
+    + '<script id="w2">document.write(\'<div class="r" id="w3">written-3</div>'
+    + '<script>console.log("CH-DW-PARSE-NESTED-INNER");<\\\/script>\');'
+    + 'console.log("CH-DW-PARSE-NESTED-OUTER");<\/script>');
+</script>
+<script>
+(function () {
+  var q = /rounds=(\d+)/.exec(location.search || "");
+  var ROUNDS = q ? parseInt(q[1], 10) : 300;
+  var host = document.getElementById('host');
+  var c = document.getElementById('c');
+  var r = 0;
+
+  // the counter the loader-idiom scripts bump. window-scoped on purpose: the
+  // generated scripts run in GLOBAL scope, so a closure variable would be a
+  // ReferenceError in every round -- an exception storm this fixture is not
+  // trying to measure.
+  window.__dwcount = 0;
+  window.__dwcb = function () { window.__dwcount++; };
+
+  function round() {
+    if (r >= ROUNDS) {
+      console.log('CH-DW-DONE rounds=' + ROUNDS + ' loader_ran=' + window.__dwcount);
+      c.textContent = 'done ' + ROUNDS;
+      return;
+    }
+    // (a) the loader idiom: createElement + .text + append. Silent no-op was
+    //     the bug crash-cluster fixed; execution is now the contract.
+    var s = document.createElement('script');
+    s.text = 'window.__dwcb();';
+    host.appendChild(s);
+    // (b) a dynamically inserted data-block script: must be classified as
+    //     data (NOT executed), silently, without a crash.
+    var d = document.createElement('script');
+    d.type = 'application/json';
+    d.text = '{"r":' + r + '}';
+    host.appendChild(d);
+    // (c) innerHTML with a script inside: innerHTML semantics say scripts do
+    //     NOT run, and the written-script revival must not leak into it.
+    var w = document.createElement('div');
+    w.innerHTML = '<div class="r">ih-' + r + '</div>'
+      + '<script>window.__should_not_run = 1;<\/script>';
+    host.appendChild(w);
+    // (d) after-load document.write: per spec IGNORED, never wipes the page.
+    //     The page surviving this loop with its nodes intact is the check.
+    document.write('<div class="r">after-load-' + r + '</div>');
+    r++;
+    console.log('CH-DW-ITER ' + r + ' host=' + host.childNodes.length);
+    c.textContent = r + '/' + ROUNDS;
+    setTimeout(round, 25);
+  }
+  round();
+})();
+</script>
+</body>
+</html>

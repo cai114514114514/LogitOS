@@ -1,0 +1,242 @@
+[css] @keyframes: kept 64 rule(s); dropped 303 rule(s), 0 stop(s) for want of table space
+[css] @keyframes: kept 64 rule(s); dropped 113 rule(s), 0 stop(s) for want of table space
+[css] @keyframes: kept 64 rule(s); dropped 20 rule(s), 0 stop(s) for want of table space
+[css] @keyframes: kept 64 rule(s); dropped 32 rule(s), 0 stop(s) for want of table space
+[css] @keyframes: kept 64 rule(s); dropped 146 rule(s), 0 stop(s) for want of table space
+
+=== per page ===
+page       elems  rects flexC gridC govFlex govGrid absfix  clip  cols  fullW full% declared reach
+163         2007     79     2     0     107       0     75   437    16      6    7%    2206   85%
+airbnb       743    112    56    33     335     361     56    24    27      7    6%   19274   53%
+amazon      1781    191   121     0    1514       0    147   390    26     15    7%   25470   76%
+apnews      9830      8    13     0      24       0      0     1     4      3   37%     363   44%
+apple       1168     97   140    29     917     454     98    79    11     16   16%    8380   71%
+bbc         2463    200   211   289     951    2069    104    11    25     95   47%    2385   74%
+bilibili     625     76   103     4     415     502     69    57    16      6    7%    7064   74%
+bing         274      7     3     0     118       0     26     6     2      6   85%    1524   84%
+cloudflare   2700    303   441    31    2611    1803    221   118    63     46   15%    5091   94%
+cnn         3588     97   459     7    3362     240    103   151     9     69   71%   15975   78%
+ddg          275     16    35     0     129       0     15    14     8      3   18%    6092   83%
+douyin         6      0     0     0       0       0      0     0     0      0    0%       0  100%
+espn        1152     63   134     0     907       0     36   162     9      5    7%   28476   73%
+facebook     352     10   106     0     232       0      6     6     3      4   40%   31263   39%
+github      1772    214   328    31    1345     466     84   123    25    120   56%   30640   75%
+google        85      3     1     0      16       0      0     1     2      0    0%     577   83%
+hn           804      1     0     0       0       0      0    61     1      0    0%     207   93%
+instagram    509      0    91     0     246       0     13     7     0      0    0%   15860   45%
+jd           650      8     6     0     182       0     17    66     3      3   37%   18087   70%
+linkedin     687     34    41     0     249       0     65    67    11     18   52%   30750   70%
+mdn          825      1    53    67     129     772      5    10     1      1  100%    1120   51%
+microsoft    625      2    42     0      86       0      1     1     1      0    0%    4321   90%
+mozilla     1148     49    52    24     736     243     15    16     7     34   69%    3472   84%
+netflix      880     42   122     0     827       0     65    42     9      1    2%    3169   64%
+nytimes     3516     23   390   126    3201    2594     84    27     3      8   34%   13114   69%
+pydocs       382      5     9     4     204     105      4     2     3      4   80%     847  112%
+qq           510     19    70     0     451       0     17    45     6      3   15%    7556   68%
+sina        2754    166    12     0     108       0     41   673    22      5    3%    3881   98%
+spotify      809      0   266     0     736       0    170   174     0      0    0%    7129   61%
+stripe      2458     59   278    33    2115     798    152    89    25     18   30%    8919   74%
+tailwind    2542    141   151    72    1762    2234     94    57    13    100   70%    1849  134%
+taobao       235     71    12     0     100       0      1     3    22      1    1%   11841   88%
+theguardian   4605    116   907    63    3783    4323    980   179    32     41   35%    5885   62%
+twitch       179      1    13     0     178       0      1     4     1      0    0%    1568   64%
+vercel      1072     12   335    11     952     356     51    42     6      7   58%    2108  355%
+webdev       886    141   232    56     507     447     14   106    21     35   24%   22428   52%
+weibo          9      0     0     0       0       0      0     0     0      0    0%       0  100%
+wikipedia   2323     39   454     0    1092       0     28    43    17     14   35%    2771   76%
+wired       1833    154   311   136    1719    1223     95   221    10     65   42%    7262   55%
+wordpress   1327     75   117     9     853     479     87   163    12     15   20%    6425   79%
+x            215      0    32     0     118       0      7     5     0      0    0%    2003  100%
+yahoo       1014     39   214    13     707     357     91    58    10      4   10%     243 2531%
+youtube      415    103    71     0     317       0      3     3     9      3    2%   84614   63%
+zhihu        188     16    15     0     120       0      9     9    13      1    6%   14962   74%
+TOTAL      62221   2793                 55%     31%                       782   27%  467171   70%
+
+=== declarations the cascade DROPS, ranked (the work order) ===
+property                       unknown  badvalue  trailing  pages  note
+display                              0     15699         0     42  
+transform                         4371         0         0     41  
+box-shadow                        4261         0         0     38  
+transition                        3916         0         0     37  
+-webkit-box-orient                3483         0         0     23  
+-webkit-box-direction             2711         0         0     10  
+-webkit-box-align                 2654         0         0     17  
+gap                               2612         0         0     35  
+-webkit-flex-direction            2592         0         0     10  
+-webkit-align-items               2155         0         0     13  
+background-color                     0      2151         0     41  
+-webkit-box-pack                  2113         0         0     17  
+color                                0      1887         0     42  
+-webkit-justify-content           1792         0         0     13  
+@keyframes                        1726         0         0     35  AT-RULE: whole block lost
+margin-inline-start               1589         0         0     25  
+-webkit-transform                 1562         0         0     21  
+-ms-flex-align                    1535         0         0     16  
+grid-template-columns             1520         0         0     32  
+-webkit-box-flex                  1456         0         0     13  
+transition-duration               1430         0         0     24  
+text-overflow                     1422         0         0     37  
+margin-inline-end                 1400         0         0     24  
+pointer-events                    1339         0         0     37  
+fill                              1298         0         0     39  
+grid-column                       1215         0         0     24  
+transition-timing-function        1177         0         0     23  
+padding-inline-start              1163         0         0     22  
+-ms-flex-pack                     1155         0         0     16  
+padding-inline-end                1127         0         0     20  
+transition-property               1112         0         0     26  
+-webkit-transition                1112         0         0     18  
+animation                         1086         0         0     33  
+-webkit-flex                      1057         0         0     11  
+-webkit-box-sizing                1007         0         0     13  
+background-size                   1001         0         0     36  
+width                                0       990         0     42  
+-webkit-box-shadow                 910         0         0     14  
+-webkit-line-clamp                 875         0         0     22  
+padding-inline                     863         0         0     19  
+inset-inline-start                 849         0         0     20  
+animation-name                     817         0         0     23  
+@property                          817         0         0     11  AT-RULE: whole block lost
+background-image                     0       801         0     36  
+border-inline-start-color          749         0         0      6  
+border-inline-end-color            718         0         0      5  
+filter                             703         0         0     33  
+padding-block                      697         0         0     18  
+padding                              0       691         0     42  
+-webkit-transition-duration        688         0         0      5  
+font-family                          0       678         0     42  
+-ms-flex-direction                 647         0         0     15  
+-webkit-transition-timing-function       614         0         0      5  
+border-start-end-radius            594         0         0     12  
+border-start-start-radius          591         0         0     12  
+-ms-transform                      588         0         0     15  
+border-end-start-radius            587         0         0     12  
+border-end-end-radius              586         0         0     12  
+animation-delay                    570         0         0     28  
+aspect-ratio                       552         0         0     23  
+row-gap                            551         0         0     21  
+outline-offset                     545         0         0     28  
+inset-inline-end                   544         0         0     16  
+-webkit-mask-image                 542         0         0     21  
+height                               0       527         0     42  
+grid-area                          508         0         0     20  
+cursor                               0       502         0     41  
+border-color                         0       488         0     40  
+-webkit-text-decoration            475         0         0     20  
+-ms-flex                           474         0         0     12  
+-webkit-flex-basis                 471         0         0      7  
+margin-inline                      441         0         0     19  
+object-fit                         432         0         0     36  
+-moz-box-align                     421         0         0      5  
+transform-origin                   413         0         0     29  
+inset                              410         0         0     23  
+mask-image                         405         0         0     25  
+stroke                             384         0         0     25  
+animation-duration                 383         0         0     26  
+-webkit-mask-composite             372         0         0      6  
+
+=== parsed but NEVER READ into struct cstyle (silent drops) ===
+property                       declared  pages
+outline                            1416     38
+outline-width                       245     13
+direction                           106     16
+border-collapse                      87     32
+border-spacing                       55     26
+quotes                               46     11
+table-layout                         32     16
+counter-increment                    29     10
+counter-reset                        26     11
+column-count                         20      7
+caption-side                          8      6
+word-spacing                          4      5
+page-break-after                      4      2
+page-break-before                     3      3
+column-rule                           3      1
+widows                                2      2
+orphans                               2      2
+writing-mode                          1      2
+empty-cells                           1      1
+
+=== most-declared properties overall (context for the ranking) ===
+property                       declared  pages   dropped
+display                           40335     42     15699
+color                             22180     42      1887
+width                             20987     42       990
+height                            16948     42       527
+background-color                  13383     41      2151
+font-size                         12692     42        98
+padding                           12275     42       691
+line-height                       10668     42        28
+position                          10489     41        30
+font-weight                        9590     41       143
+font-family                        7983     42       678
+background                         7514     41        13
+margin                             6953     42        48
+border-radius                      6897     41       150
+transform                          6707     41      4371
+margin-top                         6521     42        49
+top                                6292     41        76
+margin-bottom                      6123     42        40
+left                               5871     39        41
+content                            5672     41         8
+align-items                        5567     40       175
+max-width                          5448     42       257
+opacity                            5360     40        36
+border                             4938     42         0
+overflow                           4761     42        50
+right                              4511     39        41
+flex-direction                     4490     37         1
+justify-content                    4394     41       274
+margin-left                        4298     41        48
+transition                         3842     37      3916
+margin-right                       3801     40        17
+box-shadow                         3801     38      4261
+padding-bottom                     3788     39        96
+padding-top                        3691     41        82
+-webkit-box-orient                 3462     23      3483
+z-index                            3334     41        13
+max-height                         3332     39       184
+text-align                         3081     42       196
+border-color                       3081     40       488
+cursor                             2998     41       502
+bottom                             2797     38        35
+-webkit-box-direction              2711     10      2711
+-webkit-box-align                  2656     17      2654
+min-width                          2628     42       184
+-webkit-flex-direction             2591     10      2592
+flex                               2525     37         1
+padding-left                       2516     38        33
+-webkit-transform                  2435     21      1562
+padding-right                      2383     39        42
+min-height                         2346     38        89
+white-space                        2344     42        17
+text-decoration                    2335     42        15
+gap                                2286     35      2612
+letter-spacing                     2279     35        18
+-webkit-align-items                2157     13      2155
+-webkit-box-pack                   2115     17      2113
+background-image                   1900     36       801
+-webkit-justify-content            1794     13      1792
+box-sizing                         1702     41         1
+margin-inline-start                1701     25      1589
+vertical-align                     1649     41         5
+background-position                1608     35        18
+-ms-flex-align                     1537     16      1535
+margin-inline-end                  1492     24      1400
+-webkit-box-flex                   1456     13      1456
+border-bottom                      1456     36         2
+outline                            1416     38         0
+text-overflow                      1404     37      1422
+padding-inline-start               1380     22      1163
+padding-inline-end                 1352     20      1127
+pointer-events                     1281     37      1339
+font-style                         1262     41         1
+order                              1253     28         1
+border-top-color                   1241     22       114
+border-bottom-color                1219     24       123
+grid-template-columns              1216     32      1520
+float                              1193     35        11
+-ms-flex-pack                      1157     16      1155
+fill                               1153     39      1298
+body                               1151     18         0
+./build-atk-cssdemand/css_audit --top=80 $(cat $S/served_dirs.txt)  3.84s user 0.03s system 99% cpu 3.869 total

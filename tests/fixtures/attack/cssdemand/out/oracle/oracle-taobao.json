@@ -1,0 +1,19 @@
+{
+ "site": "taobao",
+ "rules": 4782,
+ "decls": 11259,
+ "lost_rules": 4,
+ "lost_decls": 10,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-placeholder": [
+   2,
+   5
+  ],
+  "unknown pseudo-class :-ms-input-placeholder": [
+   2,
+   5
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

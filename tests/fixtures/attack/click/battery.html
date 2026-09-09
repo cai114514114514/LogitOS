@@ -1,0 +1,241 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>click battery</title>
+<!--
+  THE CLICK BATTERY (tests/fixtures/attack/click/, driven by
+  tests/qmp/qmp_attack_click.py; same file, same click points, in headless
+  Chrome as the oracle).
+
+  Every target logs `CLK-<tag>` through console.log when it is hit -- the
+  browser prints console.log lines RAW on the serial console (js_page.c
+  con_out), so the tag is the whole line. After load the page prints its own
+  geometry: `CLK-RECT <id> <x> <y> <w> <h>` (getBoundingClientRect, client
+  coords), `CLK-VIEW <innerWidth> <innerHeight>`, `CLK-SCROLLY <scrollY>
+  <documentElement.scrollTop>`, and `CLK-HIT <id> <elementFromPoint at the
+  rect centre>` -- the CSSOM's own opinion of what a click there would target.
+  The driver derives every click point from those lines; it never guesses a
+  pixel. The same block is re-printed as CLK-RECT2/CLK-HIT2 after every
+  `scroll` event (debounced), so a click after the user scrolled is still
+  aimed by the page.
+
+  Positions are ABSOLUTE and in document px on purpose: two engines lay flow
+  out differently, and the point of the battery is the click chain, not the
+  layout. The flex and grid targets are the deliberate exception.
+
+  Colours on the pixel-located targets (#fe0102 xf, #01fe02 after_scroll,
+  #fe01fe fixed_covered, #0102fe sc_hidden, #102030 hdr) are chosen to collide
+  with nothing in the chrome or the wallpaper, so a screendump can find where
+  the box was PAINTED without OCR -- the third channel, beside "where the page
+  says it is" and "what the hit test picked".
+-->
+<style>
+html,body{margin:0;padding:0;background:#ffffff;color:#000000;font:14px sans-serif}
+body{min-height:1600px;position:relative}
+.t{position:absolute;width:100px;height:40px;line-height:40px;text-align:center;
+   background:#dddddd;color:#000000;overflow:hidden}
+button.t{border:1px solid #444444;padding:0;font:14px sans-serif}
+a.t{text-decoration:none;color:#000000;display:block}
+#hdr{position:fixed;top:0;left:0;width:100%;height:50px;background:#102030;color:#ffffff;
+     line-height:50px;text-align:center;z-index:50}
+#bubble_outer{width:150px;background:#c8e0ff}
+#bubble_inner{background:#80b0ff;padding:2px 6px}
+#noink{background:transparent}          /* no bg, no border, no text: NO INK */
+#svgbtn{background:transparent;line-height:0}
+#mdmut{background:#ffd080}
+#txt{position:absolute;left:120px;top:130px;width:150px;height:34px;font-size:16px;
+     border:2px solid #444444;background:#ffffff;color:#000000}
+#chk{position:absolute;left:300px;top:140px;width:20px;height:20px}
+#sel{position:absolute;left:340px;top:130px;width:120px;height:36px;font-size:16px}
+#ce{position:absolute;left:480px;top:130px;width:150px;height:36px;border:2px solid #444444;
+    background:#ffffff;color:#000000;line-height:36px;padding:0 4px}
+#xf{background:#fe0102;transform:translate(200px,0)}
+#pe_overlay,#blocker,#blocker_clear{position:absolute;width:100px;height:40px;z-index:5}
+#pe_overlay{background:rgba(255,0,0,0.3);pointer-events:none}
+#blocker{background:rgba(0,0,255,0.3)}
+#blocker_clear{background:transparent}   /* an INVISIBLE overlay must still block */
+#z_high{background:#ffb0b0;z-index:5}
+#z_low{background:#b0ffb0;z-index:1}
+#scroller{position:absolute;left:660px;top:200px;width:150px;height:80px;overflow:auto;
+          border:1px solid #444444;background:#f4f4f4}
+#sc_inner{height:300px;position:relative}
+#sc_top{position:absolute;left:5px;top:0;width:100px;height:40px;background:#c0c0ff}
+#sc_hidden{position:absolute;left:5px;top:200px;width:100px;height:40px;background:#0102fe;color:#fff}
+#flexbox{position:absolute;left:10px;top:300px;width:400px;height:40px;display:flex}
+#flex_a{flex:1;background:#eeeeee}
+#flex_item{flex:2;background:#ffe0a0;text-align:center;line-height:40px}
+#gridbox{position:absolute;left:450px;top:300px;width:400px;height:40px;display:grid;
+         grid-template-columns:1fr 2fr}
+#grid_a{background:#eeeeee}
+#grid_item{background:#a0ffe0;text-align:center;line-height:40px}
+#fixed_covered{left:900px;top:320px;background:#fe01fe}
+#bare{position:absolute;left:900px;top:380px;width:200px;height:40px}   /* no ink at all */
+form{position:absolute;top:450px;margin:0}
+#f1{left:10px} #f2{left:400px}
+#fq,#fq2{width:150px;height:30px;font-size:16px;border:2px solid #444444;background:#ffffff}
+#fsubmit{width:100px;height:36px;font:14px sans-serif;border:1px solid #444444}
+#ablock_a{position:absolute;left:800px;top:450px;display:block;width:120px;height:60px;
+          text-decoration:none}
+#ablock{width:120px;height:60px;background:#d0ffd0;line-height:60px;text-align:center;color:#000}
+#after_scroll{left:10px;top:800px;width:200px;background:#01fe02}
+#body_probe{position:absolute;left:1000px;top:520px;width:10px;height:10px;background:#eee}
+#flowrow{position:absolute;left:10px;top:505px;width:500px;height:40px;font-size:16px}
+#chk2{width:20px;height:20px;vertical-align:middle}
+#sel2{width:120px;height:36px;font-size:16px}
+#btn2{width:100px;height:36px;font:14px sans-serif;border:1px solid #444444}
+#para{position:absolute;left:230px;top:380px;width:400px;margin:0;font-size:18px;line-height:40px}
+#a_inline{color:#0000cc;text-decoration:underline}
+</style></head>
+<body>
+<div id="hdr" onclick="log('hdr')">FIXED HEADER</div>
+
+<!-- row 1: y=70 -->
+<a id="a_plain" class="t" style="left:10px;top:70px" href="page2.html?via=link">link</a>
+<a id="a_prevent" class="t" style="left:120px;top:70px" href="page2.html?via=aprev"
+   onclick="log('a_prevent');return false">a prevent</a>
+<button id="btn_attr" class="t" style="left:230px;top:70px" onclick="log('btn_attr')">btn attr</button>
+<button id="btn_listener" class="t" style="left:340px;top:70px">btn listener</button>
+<div id="bubble_outer" class="t" style="left:450px;top:70px"><span id="bubble_inner">inner</span></div>
+<div id="noink" class="t" style="left:620px;top:70px"></div>
+<div id="svgbtn" class="t" style="left:730px;top:70px"><svg width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#3060c0"/></svg></div>
+<div id="mdmut" class="t" style="left:840px;top:70px"><span id="mdmut_in">mutate</span></div>
+<div id="order" class="t" style="left:950px;top:70px">order</div>
+<div id="dbl" class="t" style="left:1060px;top:70px">dbl</div>
+
+<!-- row 2: y=130 -->
+<label id="lbl" class="t" for="txt" style="left:10px;top:130px">label</label>
+<input id="txt" type="text" value="">
+<input id="chk" type="checkbox">
+<select id="sel"><option value="one">one</option><option value="two">two</option><option value="three">three</option></select>
+<div id="ce" contenteditable="true">edit me</div>
+<div id="xf" class="t" style="left:650px;top:130px">xf</div>
+<div id="deferred" class="t" style="left:1000px;top:130px">deferred</div>
+
+<!-- row 3: y=200 -->
+<div id="modtarget" class="t" style="left:10px;top:200px">module</div>
+<div id="under_pe" class="t" style="left:120px;top:200px">under pe</div>
+<div id="pe_overlay" style="left:120px;top:200px"></div>
+<div id="behind" class="t" style="left:230px;top:200px">behind</div>
+<div id="blocker" style="left:230px;top:200px"></div>
+<div id="behind2" class="t" style="left:340px;top:200px">behind2</div>
+<div id="blocker_clear" style="left:340px;top:200px"></div>
+<div id="z_high" class="t" style="left:450px;top:200px">z high</div>
+<div id="z_low" class="t" style="left:450px;top:200px">z low</div>
+<div id="scroller"><div id="sc_inner"><div id="sc_top">top</div><div id="sc_hidden">hidden</div></div></div>
+
+<!-- row 4: y=300 -->
+<div id="flexbox"><div id="flex_a"></div><div id="flex_item">flex</div></div>
+<div id="gridbox"><div id="grid_a"></div><div id="grid_item">grid</div></div>
+<div id="fixed_covered" class="t">cov</div>
+<div id="bare"></div>
+
+<!-- row 5: y=450 -->
+<form id="f1" action="page2.html" method="get">
+  <input id="fq" name="q" value="hi"><input type="hidden" name="via" value="btn">
+  <button id="fsubmit" type="submit">submit</button>
+</form>
+<form id="f2" action="page2.html" method="get">
+  <input id="fq2" name="q2" value="yo"><input type="hidden" name="via" value="enter">
+</form>
+<a id="ablock_a" href="page2.html?via=ablock"><div id="ablock">CARD</div></a>
+<div id="body_probe"></div>
+<div id="flowrow"><input id="chk2" type="checkbox"> <select id="sel2"><option value="one">one</option><option value="two">two</option><option value="three">three</option></select> <button id="btn2">btn2</button></div>
+<p id="para">Read <a id="a_inline" href="#">more here</a> now</p>
+
+<!-- below the fold -->
+<div id="after_scroll" class="t">after scroll</div>
+
+<script>
+function log(t) { console.log('CLK-' + t); }
+function tid(e) { var t = e && e.target; return t ? (t.id || t.tagName) : '?'; }
+var $ = function (i) { return document.getElementById(i); };
+
+/* every click, at the document and at the window: names the TARGET */
+document.addEventListener('click', function (e) { log('doc:' + tid(e)); });
+/* the two halves of a click, so a missing `click` says WHICH half went astray
+   (qmp_forms.py paid a QEMU cycle to learn this the hard way) */
+document.addEventListener('mousedown', function (e) { log('md:' + tid(e)); });
+document.addEventListener('mouseup', function (e) { log('mu:' + tid(e)); });
+window.addEventListener('click', function (e) { log('win:' + tid(e)); });
+
+$('btn_listener').addEventListener('click', function () { log('btn_listener'); });
+$('bubble_outer').addEventListener('click', function (e) { log('bubble_outer:' + tid(e)); });
+$('noink').addEventListener('click', function () { log('noink'); });
+$('svgbtn').addEventListener('click', function () { log('svgbtn'); });
+$('mdmut').addEventListener('mousedown', function () {
+  $('mdmut').innerHTML = '<span id="mdmut_in2">mutated</span>';
+});
+$('mdmut').addEventListener('click', function () { log('mdmut'); });
+['mousedown', 'mouseup', 'click'].forEach(function (ty) {
+  $('order').addEventListener(ty, function () { log('order:' + ty); });
+});
+$('dbl').addEventListener('click', function (e) { log('dbl:click:' + e.detail); });
+$('dbl').addEventListener('dblclick', function () { log('dbl:dblclick'); });
+$('txt').addEventListener('focus', function () { log('focus:txt'); });
+$('lbl').addEventListener('click', function () { log('lbl'); });
+$('chk').addEventListener('change', function () { log('chk:' + $('chk').checked); });
+$('sel').addEventListener('change', function () { log('sel:' + $('sel').value); });
+$('ce').addEventListener('focus', function () { log('focus:ce'); });
+$('ce').addEventListener('click', function () { log('ce'); });
+$('xf').addEventListener('click', function () { log('xf'); });
+$('under_pe').addEventListener('click', function () { log('under_pe'); });
+$('behind').addEventListener('click', function () { log('behind'); });
+$('behind2').addEventListener('click', function () { log('behind2'); });
+$('z_high').addEventListener('click', function () { log('z_high'); });
+$('z_low').addEventListener('click', function () { log('z_low'); });
+$('sc_top').addEventListener('click', function () { log('sc_top'); });
+$('sc_hidden').addEventListener('click', function () { log('sc_hidden'); });
+$('flex_item').addEventListener('click', function () { log('flex_item'); });
+$('grid_item').addEventListener('click', function () { log('grid_item'); });
+$('fixed_covered').addEventListener('click', function () { log('fixed_covered'); });
+$('bare').addEventListener('click', function () { log('bare'); });
+$('after_scroll').addEventListener('click', function () { log('after_scroll'); });
+$('f1').addEventListener('submit', function (e) { log('submit:f1:' + (e.submitter ? e.submitter.id : '-')); });
+$('f2').addEventListener('submit', function () { log('submit:f2'); });
+$('fq2').addEventListener('focus', function () { log('focus:fq2'); });
+$('ablock').addEventListener('click', function () { log('ablock'); });
+$('chk2').addEventListener('change', function () { log('chk2:' + $('chk2').checked); });
+$('sel2').addEventListener('change', function () { log('sel2:' + $('sel2').value); });
+$('btn2').addEventListener('click', function () { log('btn2'); });
+$('a_inline').addEventListener('click', function (e) { e.preventDefault(); log('a_inline'); });
+
+/* the scroller starts scrolled: sc_hidden must be the visible one */
+$('scroller').scrollTop = 200;
+
+var IDS = ['hdr','a_plain','a_prevent','btn_attr','btn_listener','bubble_inner','noink',
+  'svgbtn','mdmut_in','order','dbl','lbl','txt','chk','sel','ce','xf','deferred','modtarget',
+  'under_pe','behind','behind2','z_high','scroller','sc_top','sc_hidden','flex_item',
+  'grid_item','fixed_covered','bare','fq','fsubmit','fq2','ablock','after_scroll','body_probe',
+  'chk2','sel2','btn2','a_inline','para'];
+
+function report(suffix) {
+  console.log('CLK-VIEW' + suffix + ' ' + window.innerWidth + ' ' + window.innerHeight);
+  console.log('CLK-SCROLLY' + suffix + ' ' + window.scrollY + ' ' +
+              document.documentElement.scrollTop + ' ' + $('scroller').scrollTop);
+  for (var i = 0; i < IDS.length; i++) {
+    var el = $(IDS[i]);
+    if (!el) { console.log('CLK-RECT' + suffix + ' ' + IDS[i] + ' MISSING'); continue; }
+    var r = el.getBoundingClientRect();
+    var x = Math.round(r.left), y = Math.round(r.top), w = Math.round(r.width), h = Math.round(r.height);
+    console.log('CLK-RECT' + suffix + ' ' + IDS[i] + ' ' + x + ' ' + y + ' ' + w + ' ' + h);
+    var hit = '-';
+    try {
+      var e2 = document.elementFromPoint(x + Math.floor(w / 2), y + Math.floor(h / 2));
+      hit = e2 ? (e2.id || e2.tagName) : 'null';
+    } catch (err) { hit = 'ERR:' + err; }
+    console.log('CLK-HIT' + suffix + ' ' + IDS[i] + ' ' + hit);
+  }
+  console.log('CLK-READY' + suffix);
+}
+var scrollTimer = 0;
+window.addEventListener('scroll', function () {
+  console.log('CLK-SCROLLED ' + window.scrollY);
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(function () { report('2'); }, 400);
+});
+window.addEventListener('load', function () { setTimeout(function () { report(''); }, 300); });
+</script>
+<script type="module">
+document.getElementById('modtarget').addEventListener('click', function () { console.log('CLK-modtarget'); });
+console.log('CLK-MODULE-RAN');
+</script>
+<script defer src="deferred.js"></script>
+</body></html>

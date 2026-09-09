@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><title>atk-anim-waapi</title>
+<style>
+/* ATTACK FIXTURE (d): the Web Animations API -- element.animate() -- driven
+ * from js_anim.c's WAAPI half. Trigger at T0 = 1500 ms like trans.html. */
+html, body { background: #ffffff; margin: 0; padding: 0; }
+#anchor { position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; background: rgb(99,7,201); }
+#clk    { position: absolute; left: 40px; top: 10px; width: 0px;  height: 20px; background: rgb(7,99,201); }
+#clkt   { position: absolute; left: 40px; top: 34px; font: 12px monospace; color: #000; }
+.bx     { position: absolute; width: 60px; height: 60px; }
+#w1 { left: 10px;  top: 70px;  background: rgb(254,1,3); }
+#w2 { left: 10px;  top: 140px; background: rgb(3,1,254); opacity: .2; }
+#w3 { left: 10px;  top: 210px; background: rgb(1,254,3); }
+#w4 { left: 560px; top: 70px;  background: rgb(254,201,1); }
+#w5 { left: 560px; top: 140px; background: rgb(201,1,254); }
+</style></head>
+<body>
+<div id="anchor"></div><div id="clk"></div><span id="clkt">0</span>
+<div id="w1" class="bx"></div>
+<div id="w2" class="bx"></div>
+<div id="w3" class="bx"></div>
+<div id="w4" class="bx"></div>
+<div id="w5" class="bx"></div>
+<script>window.__P = 'WA';</script>
+<script src="stamp.js"></script>
+<script>
+var BOXES = [
+  {id:'w1', rgb:[254,1,3],   x:10,  y:70,  kind:'xf_lin',      why:'animate() transform 0->200px 1s fill forwards'},
+  {id:'w2', rgb:[3,1,254],   x:10,  y:140, kind:'op_lin',      why:'animate() opacity .2->1 1s fill forwards'},
+  {id:'w3', rgb:[1,254,3],   x:10,  y:210, kind:'xf_seek500',  why:'animate() paused, currentTime=500 (manual seek)'},
+  {id:'w4', rgb:[254,201,1], x:560, y:70,  kind:'left_lin',    why:'animate() left 560->760 1s fill forwards'},
+  {id:'w5', rgb:[201,1,254], x:560, y:140, kind:'xf_lin',      why:'new Animation(new KeyframeEffect(...)).play()'}
+];
+window.__say('ANIM-WA-BOXES ' + JSON.stringify(BOXES));
+var has = { animate: typeof Element.prototype.animate, KeyframeEffect: typeof KeyframeEffect, Animation: typeof Animation, timeline: typeof document.timeline };
+window.__say('ANIM-WA-HAS ' + JSON.stringify(has));
+var W = {};
+function cs(tag) {
+  ['w1','w2','w3','w4','w5'].forEach(function (id) {
+    var el = document.getElementById(id), c = getComputedStyle(el), a = W[id];
+    window.__say('ANIM-WA-CS ' + tag + ' ' + id + ' tf=' + c.transform + ' op=' + c.opacity + ' left=' + c.left +
+                 (a ? ' cur=' + a.currentTime + ' st=' + a.playState : ' cur=- st=-') +
+                 ' tl=' + (document.timeline ? document.timeline.currentTime : '-'));
+  });
+}
+window.__say('ANIM-WA-READY t=' + performance.now().toFixed(0));
+setTimeout(function () {
+  try {
+    W.w1 = document.getElementById('w1').animate([{transform:'translateX(0)'},{transform:'translateX(200px)'}], {duration:1000, fill:'forwards'});
+    W.w2 = document.getElementById('w2').animate([{opacity:.2},{opacity:1}], {duration:1000, fill:'forwards'});
+    W.w3 = document.getElementById('w3').animate([{transform:'translateX(0)'},{transform:'translateX(200px)'}], {duration:1000, fill:'forwards'});
+    W.w3.pause(); W.w3.currentTime = 500;
+    W.w4 = document.getElementById('w4').animate([{left:'560px'},{left:'760px'}], {duration:1000, fill:'forwards'});
+    if (typeof KeyframeEffect === 'function' && typeof Animation === 'function') {
+      var ef = new KeyframeEffect(document.getElementById('w5'), [{transform:'translateX(0)'},{transform:'translateX(200px)'}], {duration:1000, fill:'forwards'});
+      W.w5 = new Animation(ef, document.timeline); W.w5.play();
+    }
+    if (W.w1.finished && W.w1.finished.then) W.w1.finished.then(function () { window.__say('ANIM-WA-FINISHED w1 t=' + performance.now().toFixed(0)); });
+    W.w1.onfinish = function () { window.__say('ANIM-WA-ONFINISH w1 t=' + performance.now().toFixed(0)); };
+  } catch (e) { window.__say('ANIM-WA-ERR ' + e); }
+  window.__T0 = performance.now();
+  window.__say('ANIM-WA-GO t=' + window.__T0.toFixed(0));
+  cs('GO');
+  [250, 600, 1200, 2500].forEach(function (d) {
+    setTimeout(function () {
+      window.__say('ANIM-WA-T' + d + ' t=' + performance.now().toFixed(0) + ' rel=' + (performance.now() - window.__T0).toFixed(0));
+      cs('T' + d);
+    }, d);
+  });
+}, 1500);
+</script>
+</body></html>

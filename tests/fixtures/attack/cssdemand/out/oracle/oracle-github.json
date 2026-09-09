@@ -1,0 +1,93 @@
+{
+ "site": "github",
+ "rules": 15407,
+ "decls": 40751,
+ "lost_rules": 172,
+ "lost_decls": 349,
+ "by_reason": {
+  ":is()/:where() with a combinator inside": [
+   117,
+   215
+  ],
+  "UNATTRIBUTED": [
+   22,
+   75
+  ],
+  "unknown pseudo-class :popover-open": [
+   6,
+   22
+  ],
+  "unknown pseudo-class :indeterminate": [
+   8,
+   14
+  ],
+  "unknown pseudo-element ::-moz-selection": [
+   5,
+   5
+  ],
+  "unknown pseudo-element ::-ms-fill-lower": [
+   2,
+   3
+  ],
+  "unknown pseudo-element ::-ms-fill-upper": [
+   2,
+   3
+  ],
+  "unknown pseudo-class :-webkit-autofill": [
+   2,
+   3
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   2,
+   2
+  ],
+  "unknown pseudo-element ::-moz-range-track": [
+   1,
+   2
+  ],
+  "unknown pseudo-element ::-moz-progress-bar": [
+   2,
+   2
+  ],
+  "unknown pseudo-element ::-ms-expand": [
+   1,
+   1
+  ],
+  ":not(<unknown pseudo>)": [
+   1,
+   1
+  ],
+  "unknown pseudo-class :invalid": [
+   1,
+   1
+  ]
+ },
+ "model_only": {
+  "attribute selector i/s flag": 4,
+  ":not(<unknown pseudo>)": 2
+ },
+ "unattributed_examples": [
+  ".Primer_Brand__Label-module__Label__text___YCBde:not(.Primer_Brand__Label-module__Label--gradient___r4d_A .Primer_Brand__Label-module__Label__text___Y",
+  ".Primer_Brand__Accordion-module__Accordion--emphasis___V_1VT:not(.Primer_Brand__Accordion-module__Accordion___RSoMC .Primer_Brand__Accordion-module__A",
+  ".Primer_Brand__Accordion-module__Accordion--emphasis___V_1VT:not(.Primer_Brand__Accordion-module__Accordion___RSoMC .Primer_Brand__Accordion-module__A",
+  ".Primer_Brand__Accordion-module__Accordion--emphasis___V_1VT:not(.Primer_Brand__Accordion-module__Accordion___RSoMC .Primer_Brand__Accordion-module__A",
+  ".Primer_Brand__Accordion-module__Accordion--emphasis___V_1VT:not(.Primer_Brand__Accordion-module__Accordion___RSoMC .Primer_Brand__Accordion-module__A",
+  ".Primer_Brand__Accordion-module__Accordion--emphasis___V_1VT:not(.Primer_Brand__Accordion-module__Accordion___RSoMC .Primer_Brand__Accordion-module__A",
+  ".Primer_Brand__Pillar-module__Pillar__description___WhErW:not(.Primer_Brand__Pillar-module__Pillar--has-border___h8dLv .Primer_Brand__Pillar-module__P",
+  ".Primer_Brand__LogoSuite-module__LogoSuite--default___mbLiN:not(.Primer_Brand__LogoSuite-module__LogoSuite___bHvbJ+.Primer_Brand__LogoSuite-module__Lo",
+  ".Primer_Brand__LogoSuite-module__LogoSuite___bHvbJ:not(.Primer_Brand__LogoSuite-module__LogoSuite___bHvbJ+.Primer_Brand__LogoSuite-module__LogoSuite__",
+  ":is(.Primer_Brand__Tooltip-module__Tooltip___0Eipx[popover]:popover-open,.Primer_Brand__Tooltip-module__Tooltip___0Eipx[popover].Primer_Brand__Tooltip",
+  "[data-direction=left] :is()",
+  "[data-direction=right] :is()",
+  "[data-direction=left] :is()",
+  "[data-direction=right] :is()",
+  ":is()",
+  ":is()",
+  ":is()",
+  ":is()",
+  ".AppHeader .AppHeader-globalBar .AppHeader-logo:not(.SidePanel .AppHeader-logo):hover,.AppHeader .AppHeader-globalBar .AppHeader-logo:not(.SidePanel .",
+  ".business-content h1:not(dialog h1)",
+  ".business-content h2:not(dialog h2)",
+  ".business-content h3:not(dialog h3),.business-content h4:not(dialog h4),.business-content h5:not(dialog h5),.business-content h6:not(dialog h6)"
+ ]
+}

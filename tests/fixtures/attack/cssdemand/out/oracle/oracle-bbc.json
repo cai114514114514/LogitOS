@@ -1,0 +1,19 @@
+{
+ "site": "bbc",
+ "rules": 863,
+ "decls": 2228,
+ "lost_rules": 3,
+ "lost_decls": 6,
+ "by_reason": {
+  "UNATTRIBUTED": [
+   3,
+   6
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".eVtzmJ::after *",
+  ".dmFbl a:not(.Westminster-styles__IndexCardLinksWrapperStyled-sc-348bb4b5-3 a)::before",
+  ".dmFbl a:not(.Westminster-styles__IndexCardLinksWrapperStyled-sc-348bb4b5-3 a)::before *"
+ ]
+}

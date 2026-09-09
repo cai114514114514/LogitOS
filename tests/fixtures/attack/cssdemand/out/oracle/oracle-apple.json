@@ -1,0 +1,19 @@
+{
+ "site": "apple",
+ "rules": 4963,
+ "decls": 10031,
+ "lost_rules": 6,
+ "lost_decls": 15,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-focus-inner": [
+   4,
+   8
+  ],
+  "unknown pseudo-element ::none": [
+   2,
+   7
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

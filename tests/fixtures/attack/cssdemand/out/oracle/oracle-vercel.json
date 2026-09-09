@@ -1,0 +1,56 @@
+{
+ "site": "vercel",
+ "rules": 10105,
+ "decls": 17120,
+ "lost_rules": 692,
+ "lost_decls": 988,
+ "by_reason": {
+  ":is()/:where() with a combinator inside": [
+   640,
+   905
+  ],
+  "unknown pseudo-element ::file-selector-button": [
+   24,
+   38
+  ],
+  "UNATTRIBUTED": [
+   12,
+   18
+  ],
+  "unknown pseudo-element ::details-content": [
+   9,
+   15
+  ],
+  "unknown pseudo-element ::-moz-progress-bar": [
+   4,
+   6
+  ],
+  "unknown pseudo-class :-webkit-full-screen": [
+   1,
+   4
+  ],
+  "unknown pseudo-class :-moz-focusring": [
+   1,
+   1
+  ],
+  "unknown pseudo-class :-moz-ui-invalid": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".not-dark-theme\\:before\\:bg-\\[\\#404040\\]:not(:where(.dark-theme,.dark-theme *)):before",
+  ".open\\:opacity-100:is([open],:popover-open,:open)",
+  ".open\\:duration-100:is([open],:popover-open,:open)",
+  ".starting\\:open\\:opacity-0:is([open],:popover-open,:open)",
+  ".\\[\\:\\:-webkit-full-screen\\]\\:z-\\[99999999\\]:is()",
+  ".\\[\\:\\:-webkit-full-screen\\]\\:h-full:is()",
+  ".\\[\\:\\:-webkit-full-screen\\]\\:max-h-full:is()",
+  ".\\[\\:\\:-webkit-full-screen\\]\\:w-full:is()",
+  ".\\[data-pristine\\=\\'false\\'\\]\\:transition-\\[height\\]:is()",
+  ".\\[data-pristine\\=\\'false\\'\\]\\:duration-100:is()",
+  ".\\[data-pristine\\=\\'false\\'\\]\\:ease-in-out:is()",
+  ".\\[\\&\\>summary_svg\\]\\:open\\:-rotate-180>summary svg:is([open],:popover-open,:open)"
+ ]
+}

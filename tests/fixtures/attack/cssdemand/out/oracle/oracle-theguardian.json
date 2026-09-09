@@ -1,0 +1,23 @@
+{
+ "site": "theguardian",
+ "rules": 1111,
+ "decls": 16251,
+ "lost_rules": 6,
+ "lost_decls": 9,
+ "by_reason": {
+  "unknown pseudo-class :invalid": [
+   2,
+   5
+  ],
+  "unknown pseudo-element ::-moz-placeholder": [
+   2,
+   2
+  ],
+  "unknown pseudo-class :-ms-input-placeholder": [
+   2,
+   2
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

@@ -1,0 +1,61 @@
+{
+ "site": "espn",
+ "rules": 11048,
+ "decls": 27198,
+ "lost_rules": 40,
+ "lost_decls": 133,
+ "by_reason": {
+  "unknown pseudo-class :-ms-input-placeholder": [
+   8,
+   24
+  ],
+  "unknown pseudo-class :-moz-placeholder": [
+   8,
+   24
+  ],
+  "unknown pseudo-element ::-moz-range-thumb": [
+   2,
+   16
+  ],
+  "unknown pseudo-element ::-ms-thumb": [
+   2,
+   14
+  ],
+  "unknown pseudo-element ::-ms-track": [
+   2,
+   12
+  ],
+  "unknown pseudo-element ::-moz-placeholder": [
+   2,
+   10
+  ],
+  "unknown pseudo-element ::-moz-range-track": [
+   2,
+   10
+  ],
+  "unknown pseudo-element ::-ms-fill-lower": [
+   4,
+   8
+  ],
+  "unknown pseudo-element ::-ms-fill-upper": [
+   4,
+   8
+  ],
+  "unknown pseudo-element ::-ms-expand": [
+   4,
+   4
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   1,
+   2
+  ],
+  "UNATTRIBUTED": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".grid-row:after .clearfix"
+ ]
+}

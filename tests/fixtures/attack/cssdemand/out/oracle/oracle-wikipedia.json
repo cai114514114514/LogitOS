@@ -1,0 +1,34 @@
+{
+ "site": "wikipedia",
+ "rules": 1162,
+ "decls": 3078,
+ "lost_rules": 11,
+ "lost_decls": 23,
+ "by_reason": {
+  ":not(<unknown pseudo>)": [
+   4,
+   8
+  ],
+  "UNATTRIBUTED": [
+   2,
+   7
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   3,
+   5
+  ],
+  "unknown pseudo-class :read-only": [
+   1,
+   2
+  ],
+  ":is()/:where() with a combinator inside": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".cdx-radio--status-error .cdx-radio__input:enabled:checked:focus:not(.cdx-radio--status-error .cdx-radio__input:enabled:checked:active)+.cdx-radio__ic",
+  ".cdx-radio--status-error .cdx-radio__input:enabled:checked:focus:not(.cdx-radio--status-error .cdx-radio__input:enabled:checked:active)+.cdx-radio__ic"
+ ]
+}

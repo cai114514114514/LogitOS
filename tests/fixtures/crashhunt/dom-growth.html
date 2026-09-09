@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- crashhunt: DOM growth. Appends N text divs in paced batches and forces a
+     layout read between batches (offsetWidth), so the run measures dom.c slot
+     allocation + cascade + layout at growing document sizes -- the shape of a
+     feed page left scrolling for an hour. ?nodes=N is the dial. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ch-dom</title>
+<style>
+body { background:#f4f2ec; color:#222; margin:16px; }
+div.r { padding:2px 0; border-bottom:1px solid #ddd; font-size:14px; }
+#c { font-size:20px; font-weight:bold; }
+</style>
+</head>
+<body>
+<div id="c">dom-growth starting</div>
+<div id="host"></div>
+<script>
+(function () {
+  var q = /nodes=(\d+)/.exec(location.search || "");
+  var WANT = q ? parseInt(q[1], 10) : 80000;
+  var host = document.getElementById('host');
+  var c = document.getElementById('c');
+  var made = 0, batch = 0;
+
+  function step() {
+    if (made >= WANT) {
+      console.log('CH-DOM-DONE nodes=' + made + ' w=' + host.offsetWidth);
+      c.textContent = 'done ' + made;
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    for (var k = 0; k < 500 && made < WANT; k++, made++) {
+      var d = document.createElement('div');
+      d.className = 'r';
+      d.appendChild(document.createTextNode(
+        'node ' + made + ' -- the quick brown fox jumps over the lazy dog'));
+      frag.appendChild(d);
+    }
+    host.appendChild(frag);
+    batch++;
+    // reading a geometry property forces the recalc/layout path, which a
+    // merely-appending loop would skip until the next paint
+    var w = host.offsetWidth;
+    if (batch % 10 === 0) {
+      console.log('CH-DOM-ITER ' + made + ' w=' + w);
+      c.textContent = made + '/' + WANT;
+    }
+    setTimeout(step, 20);
+  }
+  step();
+})();
+</script>
+</body>
+</html>

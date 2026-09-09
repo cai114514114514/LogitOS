@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- crashhunt: the canvas allocation loop.
+
+     WHY THIS SHAPE. The canvas text trio landed 2026-08-30 (268e92bac) and a
+     real FingerprintJS run now completes, allocating a 2000x2000 RGBA surface
+     (16 MiB) per canvas plus a ~2.1 MB data-URL encode on readback. One pass
+     is gated; what is NOT gated is the LOOP -- a challenge or ad script that
+     re-rasterises on a timer, which turns 16 MiB transient into hundreds of
+     MiB of churn through the browser's 320 MiB-commit arena and the kernel's
+     frame allocator.
+
+     ITERATIONS ARE PACED BY setTimeout, deliberately: a tight for(;;) loop is
+     one script slice (the js_page watchdog interrupts it), while a timer
+     chain is many slices and is the shape real pages actually use. The
+     markers CH-CANVAS-ITER / CH-CANVAS-DONE are read by the driver from the
+     serial console (console.log lands there bare, js_page.c con_out).
+
+     ?iters=N on the query is the dial: the same bytes are the light run and
+     the heavy run, so a crash at N=200 and survival at N=24 is a number
+     rather than a mood. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ch-canvas</title>
+<style>
+body { background:#202430; color:#e8e8f0; font-size:18px; margin:24px; }
+#s { font-size:22px; }
+</style>
+</head>
+<body>
+<div id="s">canvas-alloc starting</div>
+<script>
+(function () {
+  var q = /iters=(\d+)/.exec(location.search || "");
+  var ITERS = q ? parseInt(q[1], 10) : 24;
+  var el = document.getElementById('s');
+  var i = 0;
+
+  function step() {
+    if (i >= ITERS) {
+      console.log('CH-CANVAS-DONE iters=' + ITERS);
+      el.textContent = 'done ' + ITERS;
+      return;
+    }
+    var c = document.createElement('canvas');
+    c.width = 2000; c.height = 2000;
+    var g = c.getContext('2d');
+    if (!g) { console.log('CH-CANVAS-NOCTX i=' + i); }
+    else {
+      g.fillStyle = '#f60';
+      g.fillRect(0, 0, 2000, 200);
+      g.fillStyle = '#069';
+      g.font = '30px Arial';
+      g.fillText('Cwm fjordbank glyphs vext quiz, \ud83d\ude03 ' + i, 2, 150);
+      g.fillRect(0, 1800, 2000, 200);
+      // every 8th iteration, the readback: ~2.1 MB of data URL through the
+      // PNG encoder, then dropped. The fingerprint page does exactly one of
+      // these; a loop is what a challenge script does.
+      if (i % 8 === 7) {
+        var u = c.toDataURL('image/png');
+        console.log('CH-CANVAS-URL i=' + i + ' len=' + u.length);
+      }
+    }
+    // drop the surface: the next iteration re-allocates from freed space.
+    c = null; g = null;
+    i++;
+    console.log('CH-CANVAS-ITER ' + i);
+    el.textContent = 'iter ' + i + '/' + ITERS;
+    setTimeout(step, 30);
+  }
+  step();
+})();
+</script>
+</body>
+</html>

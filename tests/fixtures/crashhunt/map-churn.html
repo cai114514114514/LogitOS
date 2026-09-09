@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- crashhunt: the Map-corruption hunt, built from the owner's real crash.
+
+     THE CRASH THIS TARGETS (2026-08-30, the owner's own session, /core.1):
+       [fault] app exception: page fault (vector 14) rip=0x4504eb50 err=5
+               cr2=0x10 rsp=0x477fdda0 -- terminating app
+     rip = js_map_get+0x90 (Map/WeakMap.prototype.get, shared by magic). The
+     faulting instruction is the bucket-walk's first read, `mr->key` at
+     JSMapRecord+0x10, with mr == NULL: a bucket head whose `next` was NULL
+     where QuickJS's invariant (every bucket self-points when empty) forbids
+     NULL. The core's captured stack tail shows what the session was doing
+     at the time: dense browser-arena malloc/realloc/free + commit_ok churn
+     under JS execution, string ops (toLowerCase), DOM tagname queries, array
+     iteration -- a telemetry-bundle-shaped workload -- and js_strict_eq_slow,
+     i.e. a Map key compare, as the last captured activity.
+
+     SO THE INGREDIENTS THIS FIXTURE COMBINES, in one page, paced by timers:
+       - Maps and WeakMaps with STRING keys (toLowerCase-normalised, matching
+         the stack) and OBJECT keys (the weak path this tree patched locally),
+         built and queried and deleted and re-built, big enough to force
+         map_hash_resize's js_realloc2 path repeatedly;
+       - canvas surface churn (16 MiB browser-arena blocks, the biggest
+         allocator pressure a page can make) interleaved with the map work;
+       - large transient JS strings (the 21 MB toDataURL shape) to force GC
+         mid-stream -- the GC that runs finalizers while maps are live;
+       - DOM reads (tagName lookups) so the C boundary is crossed the way the
+         telemetry bundle crossed it.
+     Any single ingredient alone is a normal page. The COMBINATION is the
+     owner's page, and if a list_head gets corrupted anywhere in that churn,
+     a Map.get is where it will fault. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ch-map</title>
+<style>
+body { background:#202838; color:#e8e8f0; margin:16px; font-size:15px; }
+#c { font-size:19px; }
+#host div { padding:1px 0; }
+</style>
+</head>
+<body>
+<div id="c">map-churn starting</div>
+<div id="host"></div>
+<script>
+(function () {
+  var q = /rounds=(\d+)/.exec(location.search || "");
+  var ROUNDS = q ? parseInt(q[1], 10) : 400;
+  var c = document.getElementById('c');
+  var host = document.getElementById('host');
+  var r = 0, gets = 0;
+
+  var STRONG = new Map();      /* string keys -> big values */
+  var WEAK = new WeakMap();    /* object keys: the locally-patched path */
+  var keys = [];
+
+  function mkstr(n) {
+    var s = 'k';
+    while (s.length < n) s += s;
+    return s;
+  }
+
+  function round() {
+    if (r >= ROUNDS) {
+      console.log('CH-MAP-DONE rounds=' + r + ' gets=' + gets);
+      c.textContent = 'done';
+      return;
+    }
+    var phase = r % 4;
+    if (phase === 0) {
+      /* grow: force map_hash_resize repeatedly (table reallocs) */
+      for (var i = 0; i < 300; i++) {
+        var k = mkstr(64 + (r * 7 + i) % 512) + ':' + r + ':' + i;
+        STRONG.set(k, mkstr(1024));
+        if ((i & 15) === 0) keys.push(k);
+        var o = { tag: 'el-' + r + '-' + i, name: ('N' + i).toLowerCase() };
+        WEAK.set(o, i);
+        gets += WEAK.has(o) ? 1 : 0;
+      }
+    } else if (phase === 1) {
+      /* query + delete: bucket surgery (map_delete_record, zombies) */
+      for (var j = 0; j < keys.length; j += 3) {
+        if (STRONG.get(keys[j]) === undefined) gets++;
+        if ((j & 7) === 0) STRONG.delete(keys[j]);
+      }
+    } else if (phase === 2) {
+      /* canvas churn: 16 MiB arena blocks in and out */
+      for (var ci = 0; ci < 2; ci++) {
+        var cv = document.createElement('canvas');
+        cv.width = 2000; cv.height = 2000;
+        var g = cv.getContext('2d');
+        if (g) {
+          g.fillStyle = '#123';
+          g.fillRect(0, 0, 2000, 2000);
+          g.font = '20px sans-serif';
+          g.fillText('r' + r, 10, 30);
+        }
+        cv = null; g = null;
+      }
+    } else {
+      /* GC pressure + DOM reads: force collection while maps are live */
+      var big = [];
+      for (var b = 0; b < 6; b++) big.push(mkstr(1 << 15));
+      var t = '';
+      for (var d = 0; d < 40 && d < host.childNodes.length; d++)
+        t += (host.childNodes[d].tagName || '?').toLowerCase();
+      var row = document.createElement('div');
+      row.appendChild(document.createTextNode(t + ' r' + r));
+      host.appendChild(row);
+      if (host.childNodes.length > 400)
+        while (host.childNodes.length > 200) host.removeChild(host.firstChild);
+    }
+    /* every round: the exact operation that crashed for the owner */
+    for (var w = 0; w < keys.length; w += 5) gets += STRONG.has(keys[w]) ? 1 : 0;
+    if (STRONG.get('no-such-key-' + r) === undefined) gets++;
+    r++;
+    if (r % 10 === 0) {
+      console.log('CH-MAP-ITER ' + r + ' size=' + STRONG.size + ' gets=' + gets);
+      c.textContent = r + '/' + ROUNDS;
+    }
+    setTimeout(round, 10);
+  }
+  round();
+})();
+</script>
+</body>
+</html>

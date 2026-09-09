@@ -1,0 +1,51 @@
+{
+ "site": "amazon",
+ "rules": 8923,
+ "decls": 25441,
+ "lost_rules": 30,
+ "lost_decls": 55,
+ "by_reason": {
+  "CSS nesting (rule nested in a style rule)": [
+   12,
+   35
+  ],
+  "UNATTRIBUTED": [
+   5,
+   5
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   2,
+   4
+  ],
+  "unknown pseudo-element ::-moz-placeholder": [
+   3,
+   3
+  ],
+  "unknown pseudo-class :-ms-input-placeholder": [
+   3,
+   3
+  ],
+  "unknown pseudo-class :-moz-placeholder": [
+   2,
+   2
+  ],
+  ":is()/:where() with a combinator inside": [
+   2,
+   2
+  ],
+  "unknown pseudo-element ::-ms-clear": [
+   1,
+   1
+  ]
+ },
+ "model_only": {
+  "attribute selector i/s flag": 1
+ },
+ "unattributed_examples": [
+  "._cropped-image-link_style_desktop-video-card-double-border-focus__3XEgW[*|\\:has\\(\\.video-js\\%20]:after,._cropped-image-link_style_mobile-video-card-d",
+  "._Zmx1a_desktop-video-card-double-border-focus_3XEgW[*|\\:has\\(\\.video-js\\%20]:after,._Zmx1a_mobile-video-card-double-border-focus_3PNkX[*|\\:has\\(\\.vid",
+  "._Zmx1a_desktop-video-card-double-border-focus_3XEgW[*|\\:has\\(\\.video-js\\%20]:after,._Zmx1a_mobile-video-card-double-border-focus_3PNkX[*|\\:has\\(\\.vid",
+  "._quad-category-card_style_desktop-video-card-double-border-focus__3XEgW[*|\\:has\\(\\.video-js\\%20]:after,._quad-category-card_style_mobile-video-card-d",
+  "._ameyal-product-shoveler_style_desktop-video-card-double-border-focus__3XEgW[*|\\:has\\(\\.video-js\\%20]:after,._ameyal-product-shoveler_style_mobile-vi"
+ ]
+}

@@ -1,0 +1,36 @@
+{
+ "site": "cloudflare",
+ "rules": 6050,
+ "decls": 9220,
+ "lost_rules": 375,
+ "lost_decls": 514,
+ "by_reason": {
+  ":is()/:where() with a combinator inside": [
+   350,
+   467
+  ],
+  "unknown pseudo-element ::file-selector-button": [
+   19,
+   33
+  ],
+  "UNATTRIBUTED": [
+   4,
+   12
+  ],
+  "unknown pseudo-class :-moz-focusring": [
+   1,
+   1
+  ],
+  "unknown pseudo-class :-moz-ui-invalid": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  "#onetrust-pc-sdk:has([role=tablist]) :not(#onetrust-pc-sdk):not([role=tab]):not(#ot-pc-lst):not(#ot-pc-lst *)",
+  "#onetrust-pc-sdk:has([role=tablist]) div:not([role=tab]):not([role=tablist]):not(.ot-pc-scrollbar):not(#ot-pc-lst *),#onetrust-pc-sdk:has([role=tablis",
+  "#onetrust-pc-sdk [role=tabpanel],#onetrust-pc-sdk [role=region]:not(#ot-pc-lst [role=region])",
+  "[data-vaul-handle-hitarea]:"
+ ]
+}

@@ -1,0 +1,37 @@
+{
+ "site": "yahoo",
+ "rules": 6142,
+ "decls": 10504,
+ "lost_rules": 14,
+ "lost_decls": 20,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-placeholder": [
+   8,
+   13
+  ],
+  "unknown pseudo-element ::-moz-range-thumb": [
+   2,
+   3
+  ],
+  "unknown pseudo-class :-moz-focusring": [
+   1,
+   1
+  ],
+  "unknown pseudo-class :-moz-ui-invalid": [
+   1,
+   1
+  ],
+  "CSS nesting (rule nested in a style rule)": [
+   1,
+   1
+  ],
+  "UNATTRIBUTED": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": [
+  ".lg\\:\\[\\&\\:nth-child\\(n-4\\)\\]\\:flex:nth-child(n-4)"
+ ]
+}

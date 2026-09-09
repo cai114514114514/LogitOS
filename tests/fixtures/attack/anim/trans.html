@@ -1,0 +1,149 @@
+<!doctype html>
+<html><head><title>atk-anim-trans</title>
+<style>
+/* ATTACK FIXTURE (a): CSS transitions, one trigger, twelve spellings.
+ *
+ * Every box is 60x60 with a unique odd colour, sits at a declared (left, top)
+ * and, when its transition fires, moves 200 px right and/or fades .2 -> 1
+ * over 1 s. The trigger is ONE setTimeout at T0 = 1500 ms after the script
+ * starts; the driver screendumps at the GO/T250/T600/T1200/T2500 markers and
+ * reads each box's position/alpha off the picture. What differs between the
+ * boxes is only the SPELLING of the same intent -- shorthand vs longhand, the
+ * selector the end value sits behind, which property moves -- so a box that
+ * does not move names the spelling this engine drops.
+ *
+ * Column A: left 10 -> 210.   Column B: left 560 -> 760. Rows every 70 px. */
+html, body { background: #ffffff; margin: 0; padding: 0; }
+#anchor { position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; background: rgb(99,7,201); }
+#clk    { position: absolute; left: 40px; top: 10px; width: 0px;  height: 20px; background: rgb(7,99,201); }
+#clkt   { position: absolute; left: 40px; top: 34px; font: 12px monospace; color: #000; }
+.bx     { position: absolute; width: 60px; height: 60px; }
+
+/* b1  shorthand, opacity + transform, class on the element itself */
+#b1 { left: 10px; top: 70px; background: rgb(254,1,3); opacity: .2;
+      transition: opacity 1s linear, transform 1s linear; }
+#b1.go { opacity: 1; transform: translateX(200px); }
+
+/* b2  transition on the box; end value behind a DESCENDANT selector, class on the parent */
+.b2 { left: 10px; top: 140px; background: rgb(3,1,254); transition: transform 1s linear; }
+.go .b2 { transform: translateX(200px); }
+
+/* b3  LONGHAND transition-* properties */
+#b3 { left: 10px; top: 210px; background: rgb(1,254,3);
+      transition-property: transform; transition-duration: 1s; transition-timing-function: linear; }
+#b3.go { transform: translateX(200px); }
+
+/* b4  a LAYOUT property: left */
+#b4 { left: 10px; top: 280px; background: rgb(254,201,1); transition: left 1s linear; }
+#b4.go { left: 210px; }
+
+/* b5  a PAINT property: background-color */
+#b5 { left: 10px; top: 350px; background: rgb(201,1,254); transition: background-color 1s linear; }
+#b5.go { background: rgb(1,201,254); }
+
+/* b6  transition: all */
+#b6 { left: 10px; top: 420px; background: rgb(254,101,1); opacity: .2; transition: all 1s linear; }
+#b6.go { opacity: 1; transform: translateX(200px); }
+
+/* b7  trigger is an INLINE STYLE write (el.style.transform = ...) */
+#b7 { left: 560px; top: 70px; background: rgb(101,1,254); transition: transform 1s linear; }
+
+/* b8  ease-in-out */
+#b8 { left: 560px; top: 140px; background: rgb(1,254,201); transition: transform 1s ease-in-out; }
+#b8.go { transform: translateX(200px); }
+
+/* b9  500 ms delay */
+#b9 { left: 560px; top: 210px; background: rgb(254,1,201); transition: transform 1s linear 500ms; }
+#b9.go { transform: translateX(200px); }
+
+/* b10 end value behind an ATTRIBUTE selector, set via setAttribute */
+#b10 { left: 560px; top: 280px; background: rgb(151,254,1); transition: transform 1s linear; }
+#b10[data-on] { transform: translateX(200px); }
+
+/* b11 end value behind :hover -- NO trigger fires; measured for where it sits at t=0 */
+#b11 { left: 560px; top: 350px; background: rgb(1,101,254); transition: transform 1s linear; }
+#b11:hover { transform: translateX(200px); }
+
+/* b12 two-class compound .b12.go */
+.b12 { left: 560px; top: 420px; background: rgb(254,51,101); transition: transform 1s linear; }
+.b12.go { transform: translateX(200px); }
+</style></head>
+<body>
+<div id="anchor"></div><div id="clk"></div><span id="clkt">0</span>
+<div id="b1" class="bx"></div>
+<div id="w2"><div id="b2" class="bx b2"></div></div>
+<div id="b3" class="bx"></div>
+<div id="b4" class="bx"></div>
+<div id="b5" class="bx"></div>
+<div id="b6" class="bx"></div>
+<div id="b7" class="bx"></div>
+<div id="b8" class="bx"></div>
+<div id="b9" class="bx"></div>
+<div id="b10" class="bx"></div>
+<div id="b11" class="bx"></div>
+<div id="b12" class="bx b12"></div>
+<script>window.__P = 'TR';</script>
+<script src="stamp.js"></script>
+<script>
+/* The box table, printed ONCE so the driver reads geometry from the page
+ * rather than from a second copy of it (one jar, one door). `kind` is the
+ * driver's analytic-oracle key; `col` is the base left. */
+var BOXES = [
+  {id:'b1', rgb:[254,1,3],   x:10,  y:70,  kind:'xf_lin+op_lin', why:'shorthand opacity+transform, class on self'},
+  {id:'b2', rgb:[3,1,254],   x:10,  y:140, kind:'xf_lin',        why:'end value behind descendant selector .go .b2'},
+  {id:'b3', rgb:[1,254,3],   x:10,  y:210, kind:'xf_lin',        why:'LONGHAND transition-property/duration'},
+  {id:'b4', rgb:[254,201,1], x:10,  y:280, kind:'left_lin',      why:'layout property: left'},
+  {id:'b5', rgb:[201,1,254], x:10,  y:350, kind:'bg_lin',        why:'paint property: background-color'},
+  {id:'b6', rgb:[254,101,1], x:10,  y:420, kind:'xf_lin+op_lin', why:'transition: all'},
+  {id:'b7', rgb:[101,1,254], x:560, y:70,  kind:'xf_lin',        why:'trigger = inline style.transform write'},
+  {id:'b8', rgb:[1,254,201], x:560, y:140, kind:'xf_eio',        why:'ease-in-out'},
+  {id:'b9', rgb:[254,1,201], x:560, y:210, kind:'xf_delay500',   why:'500 ms delay'},
+  {id:'b10',rgb:[151,254,1], x:560, y:280, kind:'xf_lin',        why:'end value behind attribute selector [data-on]'},
+  {id:'b11',rgb:[1,101,254], x:560, y:350, kind:'never',         why:'end value behind :hover, no trigger'},
+  {id:'b12',rgb:[254,51,101],x:560, y:420, kind:'xf_lin',        why:'two-class compound .b12.go'}
+];
+var T0 = 1500;
+function cs(tag) {
+  ['b1','b2','b3','b4','b5','b7','b8'].forEach(function (id) {
+    var el = document.getElementById(id), c = getComputedStyle(el);
+    window.__say('ANIM-TR-CS ' + tag + ' ' + id + ' tf=' + c.transform + ' op=' + c.opacity + ' left=' + c.left + ' bg=' + c.backgroundColor);
+  });
+}
+window.__say('ANIM-TR-BOXES ' + JSON.stringify(BOXES));
+window.__say('ANIM-TR-READY t=' + performance.now().toFixed(0));
+if (!window.__QUIET) cs('PRE');
+/* ?n=K toggles only the first K of these twelve triggers (document order),
+ * so K=8 vs K=9 straddles js_dom.c's JS_DOM_MAX_DIRTY (8): past it the
+ * invalidation record gives up on scopes and the restyle takes the
+ * whole-document path. */
+var NTOG = parseInt((/[?&]n=(\d+)/.exec(window.__Q || location.search) || [0, '99'])[1], 10);
+var TOGGLES = [
+  function () { document.getElementById('b1').className = 'bx go'; },
+  function () { document.getElementById('w2').className = 'go'; },
+  function () { document.getElementById('b3').className = 'bx go'; },
+  function () { document.getElementById('b4').className = 'bx go'; },
+  function () { document.getElementById('b5').className = 'bx go'; },
+  function () { document.getElementById('b6').className = 'bx go'; },
+  function () { document.getElementById('b7').style.transform = 'translateX(200px)'; },
+  function () { document.getElementById('b8').className = 'bx go'; },
+  function () { document.getElementById('b9').className = 'bx go'; },
+  function () { document.getElementById('b10').setAttribute('data-on', ''); },
+  function () { document.getElementById('b12').className = 'bx b12 go'; }
+];
+setTimeout(function () {
+  for (var i = 0; i < TOGGLES.length && i < NTOG; i++) TOGGLES[i]();
+  window.__T0 = performance.now();
+  window.__say('ANIM-TR-GO t=' + window.__T0.toFixed(0));
+  if (window.__QUIET) {
+    setTimeout(function () { window.__say('ANIM-TR-DONE t=' + performance.now().toFixed(0)); }, 3000);
+    return;
+  }
+  [250, 600, 1200, 2500].forEach(function (d) {
+    setTimeout(function () {
+      window.__say('ANIM-TR-T' + d + ' t=' + performance.now().toFixed(0) + ' rel=' + (performance.now() - window.__T0).toFixed(0));
+      cs('T' + d);
+    }, d);
+  });
+}, T0);
+</script>
+</body></html>

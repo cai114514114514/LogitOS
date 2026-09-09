@@ -1,0 +1,15 @@
+{
+ "site": "163",
+ "rules": 805,
+ "decls": 2137,
+ "lost_rules": 1,
+ "lost_decls": 1,
+ "by_reason": {
+  "unknown pseudo-element ::-moz-placeholder": [
+   1,
+   1
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

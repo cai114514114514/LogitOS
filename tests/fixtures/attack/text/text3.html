@@ -1,0 +1,146 @@
+<!doctype html>
+<!-- GENERATED-BY-HAND for the text-alignment differential (tests/qmp/qmp_attack_text.py).
+     The <style> and the measurement <script> are INLINE on purpose: an external
+     stylesheet or script that arrives late in one engine and on time in the other
+     would be a second experiment riding on this one. -->
+<html><head><meta charset="utf-8"><title>txm p3 wrap</title>
+<style>
+/* Shared by text1/2/3.html -- the text-alignment differential fixtures.
+ *
+ * The four @font-face rules hand Chrome the SAME FONT BYTES the guest draws
+ * with (the driver serves /fonts/ out of fsroot/fonts/), so a difference in a
+ * rect is an ENGINE difference, not a font-metric one. LogitOS ignores
+ * @font-face and picks its face from the generic keyword alone (css_engine.c:
+ * CSS_FONT_FAMILY_MONOSPACE -> mono, anything else -> ui.ttf), which is why
+ * every family list below ends in the generic that names the guest face.
+ *
+ * Every UA default that differs between the two browsers is pinned here
+ * (p/table/td margins, padding, border-spacing), so a y difference cannot be
+ * a stylesheet difference. */
+@font-face{font-family:LogitUI;src:url(/fonts/ui.ttf);font-weight:400}
+@font-face{font-family:LogitUI;src:url(/fonts/ui-bold.ttf);font-weight:700}
+@font-face{font-family:LogitMono;src:url(/fonts/mono.ttf);font-weight:400}
+@font-face{font-family:LogitMono;src:url(/fonts/mono-bold.ttf);font-weight:700}
+html{background:#fff;color:#000;scrollbar-width:none}
+body{margin:8px;font-family:LogitUI,sans-serif;font-size:16px;line-height:normal;font-weight:400}
+p,div,table,tr,td,th,h1,h2,h3,ul,ol,li{margin:0;padding:0}
+table{border-collapse:collapse;border-spacing:0}
+td,th{padding:0;font-weight:400;text-align:left}
+code,kbd,pre,.mono{font-family:LogitMono,monospace}
+b,strong{font-weight:700}
+.bg{background:#ffe680}
+.sec{background:#eef3ff;margin:0 0 6px 0}
+.ib{display:inline-block;width:24px;height:24px;background:#7fd8c0;margin:0;padding:0;border:0}
+#txm-out{display:none}
+
+</style></head><body>
+
+<!-- (m) wrapping: Latin with hyphen / slash / URL / dash break opportunities, 600px -->
+<div class="sec"><p id="m1" class="m bl w" style="width:600px">The quick brown fox jumps over the lazy dog while a state-of-the-art read/write cache keeps every https://example.com/path/to/some/resource warm and ready - the em dash here — divides two clauses, e.g. this one, and a fairly long compound word like antidisestablishmentarianism is left to wrap on its own; numbers such as 1,234,567.89 and 3.14159 follow, then more plain words to reach a fifth line of text for the measure.</p></div>
+
+<!-- CJK paragraph with punctuation (kinsoku), 400px -->
+<div class="sec"><p id="m2" class="m bl w" style="width:400px">这是一个用于测量换行位置的中文段落，其中包含标点符号、括号（例如这样）和「引号」，以及英文单词 mixed 和数字 2026 年 9 月，行首不应出现句号。行尾不应出现开括号（也不应拆开）。</p></div>
+
+<!-- justify with an inline bold in the middle of a word -->
+<div class="sec"><p id="m3" class="m bl w" style="width:500px;text-align:justify">Justified text with hel<b>lo</b> split inside a word and <span class="bg">a span</span> touching punctuation, then enough further words that this paragraph wraps onto a second and a third line before it ends here.</p></div>
+
+<!-- pre-wrap and nowrap -->
+<div class="sec"><p id="m4" class="m bl w" style="width:300px;white-space:nowrap">nowrap line that is longer than three hundred pixels and must not wrap</p></div>
+
+<pre id="txm-out"></pre>
+<script>
+var TXM_PAGE = 'p3';
+/* The measurement half of the text-alignment differential fixtures.
+ *
+ * Prints one line per measured element (class "m"):
+ *   TXM <page> <phase> <id> <x> <y> <w> <h> base=<baseline-y | - | ERR>
+ * and one per word of every "w" element, from a Range (Chrome only; LogitOS
+ * has no createRange and prints NORANGE -- its word positions come from the
+ * browser's own [dl] painted-text dump on the serial console instead):
+ *   TXW <page> <phase> <id> <n> <word> <x> <y> <w> <h>
+ *
+ * base= is measured with a 0x0 inline-block probe appended to the element,
+ * whose bottom edge sits on the baseline in a conforming engine. In LogitOS
+ * an inline-block is a block (layout.c is_block) and getBoundingClientRect
+ * reads the last COMPLETED layout, so the probe measures 0 there; the driver
+ * derives the guest baseline from the [dl] run top + hhea.ascent instead and
+ * checks that against the ink. The probe is removed synchronously, so the
+ * guest's later relayout sees the original DOM.
+ *
+ * Two phases: t0 at load, t1 after document.fonts.ready + 1500 ms. The diff
+ * uses t1 and reports t0 != t1 as its own finding. The same lines land in
+ * #txm-out (display:none) so headless Chrome's --dump-dom carries them. */
+function txmNum(v) { return Math.round(v * 100) / 100; }
+function txmRect(e) {
+  var r = e.getBoundingClientRect();
+  return [txmNum(r.left), txmNum(r.top), txmNum(r.width), txmNum(r.height)];
+}
+function txmBaseline(e) {
+  try {
+    var p = document.createElement('span');
+    p.setAttribute('style', 'display:inline-block;width:0;height:0;vertical-align:baseline;padding:0;margin:0;border:0;line-height:0');
+    e.appendChild(p);
+    var b = p.getBoundingClientRect().bottom;
+    e.removeChild(p);
+    return txmNum(b);
+  } catch (x) { return 'ERR'; }
+}
+var TXM_OUT = [];
+function txmEmit(s) { TXM_OUT.push(s); try { console.log(s); } catch (x) {} }
+function txmWords(e, phase) {
+  if (!document.createRange) { txmEmit('TXW ' + TXM_PAGE + ' ' + phase + ' ' + e.id + ' NORANGE'); return; }
+  var n = 0;
+  function walk(node) {
+    if (node.nodeType === 3) {
+      var s = node.nodeValue, i = 0;
+      while (i < s.length) {
+        while (i < s.length && /\s/.test(s.charAt(i))) i++;
+        var j = i;
+        while (j < s.length && !/\s/.test(s.charAt(j))) j++;
+        if (j > i) {
+          var rg = document.createRange();
+          rg.setStart(node, i); rg.setEnd(node, j);
+          var rs = rg.getClientRects();
+          for (var k = 0; k < rs.length; k++) {
+            var r = rs[k];
+            txmEmit('TXW ' + TXM_PAGE + ' ' + phase + ' ' + e.id + ' ' + n + ' ' + s.substring(i, j) +
+                    ' ' + txmNum(r.left) + ' ' + txmNum(r.top) + ' ' + txmNum(r.width) + ' ' + txmNum(r.height));
+          }
+          n++;
+        }
+        i = j;
+      }
+    } else {
+      for (var c = node.firstChild; c; c = c.nextSibling) walk(c);
+    }
+  }
+  /* LogitOS has createRange but no Range.getClientRects (measured: the first
+     guest run died here with "getClientRects is not a function" and never
+     reached its END line); a throw must not take the whole measurement down. */
+  try { walk(e); } catch (x) { txmEmit('TXW ' + TXM_PAGE + ' ' + phase + ' ' + e.id + ' NORANGE ' + x); }
+}
+function txmMeasure(phase) {
+  var els = document.querySelectorAll('.m');
+  for (var i = 0; i < els.length; i++) {
+    var e = els[i], r = txmRect(e);
+    var b = (' ' + e.className + ' ').indexOf(' bl ') >= 0 ? txmBaseline(e) : '-';
+    txmEmit('TXM ' + TXM_PAGE + ' ' + phase + ' ' + e.id + ' ' + r.join(' ') + ' base=' + b);
+  }
+  var ws = document.querySelectorAll('.w');
+  for (var i = 0; i < ws.length; i++) txmWords(ws[i], phase);
+  txmEmit('TXM ' + TXM_PAGE + ' ' + phase + ' END vw=' + window.innerWidth + ' vh=' + window.innerHeight +
+          ' dpr=' + window.devicePixelRatio + ' ua=' + navigator.userAgent);
+  var o = document.getElementById('txm-out');
+  if (o) o.textContent = TXM_OUT.join('\n');
+}
+window.addEventListener('load', function () {
+  txmMeasure('t0');
+  var go = function () { setTimeout(function () { txmMeasure('t1'); }, 1500); };
+  try {
+    if (document.fonts && document.fonts.ready && document.fonts.ready.then) document.fonts.ready.then(go, go);
+    else go();
+  } catch (x) { go(); }
+});
+
+</script>
+</body></html>

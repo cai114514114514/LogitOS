@@ -1,0 +1,23 @@
+{
+ "site": "microsoft",
+ "rules": 3555,
+ "decls": 5399,
+ "lost_rules": 3,
+ "lost_decls": 8,
+ "by_reason": {
+  "unknown pseudo-element ::-ms-clear": [
+   1,
+   3
+  ],
+  "unknown pseudo-element ::-ms-reveal": [
+   1,
+   3
+  ],
+  "unknown pseudo-element ::-moz-focus-inner": [
+   1,
+   2
+  ]
+ },
+ "model_only": {},
+ "unattributed_examples": []
+}

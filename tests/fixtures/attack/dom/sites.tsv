@@ -1,0 +1,18 @@
+# DOM-deficit census subjects. name<TAB>url. The two control- rows must come
+# out near parity against headless Chrome or the instrument is wrong.
+control-example	http://example.com/
+control-wikipedia	https://en.wikipedia.org/wiki/Operating_system
+bing	https://www.bing.com/
+deepseek-chat	https://chat.deepseek.com/
+bilibili	https://www.bilibili.com/
+jd	https://www.jd.com/
+zhihu	https://www.zhihu.com/
+taobao	https://www.taobao.com/
+github	https://github.com/
+x	https://x.com/
+baidu	https://www.baidu.com/
+python	https://www.python.org/
+apple	https://www.apple.com/
+stripe	https://stripe.com/
+qq	https://www.qq.com/
+kimi	https://www.kimi.com/
