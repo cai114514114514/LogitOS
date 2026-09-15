@@ -296,6 +296,55 @@ static void t_convert(void)
         CHK(lc_cells(s, 9) != 9, "the byte count and the cell count are the same number "
                                  "-- this string cannot show the bug");
     }
+
+    /* The actual Terminal consumer boundary: RT_T_INPUT carries a CELL cursor,
+     * but horizontal scrolling must turn its left edge back into a UTF-8 BYTE
+     * boundary. Short input never exercises that conversion, which is why the
+     * old shell/terminal mismatch survived the existing `ab你好cd` smoke. */
+    {
+        char ascii[101];
+        memset(ascii, 'a', 100); ascii[100] = 0;
+        struct lc_viewport v = lc_view(ascii, 100, 100, 10);
+        CHK(v.first_byte == 90 && v.nbytes == 10 && v.first_cell == 90 && v.caret_cell == 10,
+            "ASCII viewport = bytes %d+%d, cells %d+%d; want 90+10 / 90+10",
+            v.first_byte, v.nbytes, v.first_cell, v.caret_cell);
+    }
+    {
+        char cjk[91];
+        for (int i = 0; i < 30; i++) memcpy(cjk + i * 3, "\xE4\xB8\xAD", 3);
+        cjk[90] = 0;
+        struct lc_viewport v = lc_view(cjk, 90, 60, 10);
+        CHK(v.first_byte == 75 && v.nbytes == 15 && v.first_cell == 50 && v.caret_cell == 10,
+            "CJK viewport = bytes %d+%d, cells %d+%d; want 75+15 / 50+10",
+            v.first_byte, v.nbytes, v.first_cell, v.caret_cell);
+        CHK(((unsigned char)cjk[v.first_byte] & 0xC0u) != 0x80u,
+            "CJK viewport starts on continuation byte 0x%02X", (unsigned char)cjk[v.first_byte]);
+    }
+    {
+        char mixed[81];
+        for (int i = 0; i < 20; i++) {
+            mixed[i * 4] = 'a';
+            memcpy(mixed + i * 4 + 1, "\xE4\xB8\xAD", 3);
+        }
+        mixed[80] = 0;
+        struct lc_viewport v = lc_view(mixed, 80, 60, 10);
+        int visible_cells = lc_cells(mixed + v.first_byte, v.nbytes);
+        CHK(v.first_cell + v.caret_cell == 60 && v.caret_cell <= 10,
+            "mixed caret lost its coordinate: first=%d caret=%d", v.first_cell, v.caret_cell);
+        CHK(visible_cells <= 10,
+            "mixed viewport draws %d cells into a 10-cell box", visible_cells);
+        CHK(((unsigned char)mixed[v.first_byte] & 0xC0u) != 0x80u &&
+            (v.first_byte + v.nbytes == 80 ||
+             ((unsigned char)mixed[v.first_byte + v.nbytes] & 0xC0u) != 0x80u),
+            "mixed viewport cut through a UTF-8 character at %d+%d",
+            v.first_byte, v.nbytes);
+    }
+    {
+        const char *prompt = "/tmp/\xE4\xB8\xAD\xE6\x96\x87 $ ";
+        CHK(lc_cells(prompt, (int)strlen(prompt)) == 12,
+            "non-ASCII prompt width is %d cells, not 12 (strlen=%d)",
+            lc_cells(prompt, (int)strlen(prompt)), (int)strlen(prompt));
+    }
 }
 
 /* ------------------------------------------------------------------------- */

@@ -1,0 +1,1246 @@
+{
+ "date": "complete-0913-after",
+ "generated": "2026-09-13T12:59:40",
+ "iso": "build-browser-complete-0913/after/logit.iso",
+ "iso_sha256_16": "8cb72e1276ff6065",
+ "commit": "41d7a74e8",
+ "wall_seconds": 601.1,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "doubao",
+   "url": "https://www.doubao.com/",
+   "started": "2026-09-13T12:49:39",
+   "verdict": "PAINTED",
+   "why": "painted 12092 changed px in 7.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.doubao.com/chat/",
+    "bytes": 536406,
+    "redirects": [
+     "302 -> https://www.doubao.com/chat/"
+    ],
+    "script_tags": 15,
+    "script_src": 4,
+    "img_tags": 1,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 0.8
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 2,
+    "requests": 8,
+    "dials": 3,
+    "reused": 6,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 12708,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 6800,
+      "teardown": 900,
+      "document": 0,
+      "first_style_layout_paint": 40,
+      "styles_fetch": 180,
+      "full_style_layout_paint": 540,
+      "images": 0,
+      "runtime_init": 380,
+      "scripts_fetch": 250,
+      "scripts_execute": 4480,
+      "lifecycle_settle": 30
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 7.3,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 12092,
+    "changed_bbox": [
+     140,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 10215,
+    "ink_px_blank": 4256,
+    "colours": 565,
+    "rich_tiles_proxy": 12
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/doubao.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/doubao.serial.txt",
+   "url_confirmed": "https://www.doubao.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 9,
+    "text_bytes": 87,
+    "text": "569,192 有什么我能帮你的吗？\n543,257 对话\n703,257 工作\n23,73 豆包\n47,122 新工作任务\n47,154 新对话\n47,186 API\n70,186 服务\n47,220 更多",
+    "shot": "build-browser-complete-0913/evidence/live-after/doubao.late.png",
+    "changed_px": 11584,
+    "initial_to_late_changed_px": 1784,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/doubao.host.html",
+   "paint_text_history": [
+    {
+     "runs": 7,
+     "bytes": 78
+    },
+    {
+     "runs": 9,
+     "bytes": 87
+    }
+   ],
+   "text_runs": 9,
+   "text_bytes": 87,
+   "text": "569,192 有什么我能帮你的吗？\n543,257 对话\n703,257 工作\n23,73 豆包\n47,122 新工作任务\n47,154 新对话\n47,186 API\n70,186 服务\n47,220 更多",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 4,
+     "inline_scripts": 9,
+     "images": 1,
+     "preloads": 3,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:50:58",
+   "reported": "TypeError charAt of undefined, localised to webpack module 3454",
+   "wall_seconds": 79.9,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "jd",
+   "url": "https://www.jd.com/",
+   "started": "2026-09-13T12:49:39",
+   "verdict": "ERRORS",
+   "why": "painted 27096 changed px in 52.6s but 7 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.jd.com/",
+    "bytes": 192299,
+    "redirects": [],
+    "script_tags": 35,
+    "script_src": 14,
+    "img_tags": 12,
+    "inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [
+     {
+      "message": "TypeError: cannot read property 'replace' of undefined",
+      "stack": [
+       "at s (https://wl.jd.com/wl.js)",
+       "at Ie (https://wl.jd.com/wl.js)",
+       "at bloading (https://wl.jd.com/wl.js)",
+       "at <anonymous> (https://wl.jd.com/wl.js)",
+       "at <eval> (https://wl.jd.com/wl.js:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "InternalError: interrupted",
+      "stack": [
+       "at C (https://gias.jd.com/js/pc-tk.js?v=20240117)",
+       "at hash128 (https://gias.jd.com/js/pc-tk.js?v=20240117)",
+       "at getFp (https://gias.jd.com/js/pc-tk.js?v=20240117)",
+       "at <anonymous> (https://gias.jd.com/js/pc-tk.js?v=20240117)",
+       "at <eval> (https://gias.jd.com/js/pc-tk.js?v=20240117:1)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "ReferenceError: 'getJsToken' is not defined",
+      "stack": [
+       "at <eval> (https://www.jd.com/#inline-script-19:2)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'length' of undefined",
+      "stack": [
+       "at _$P6 (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:4)",
+       "at cNsQP (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117)",
+       "at <anonymous> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)",
+       "at <eval> (https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.4.js?v=20240117:5)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: ParamsSign is not a function (it is undefined)",
+      "stack": [
+       "at <anonymous> (https://www.jd.com/#inline-script-20:31)",
+       "at <eval> (https://www.jd.com/#inline-script-20:32)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "TypeError: cannot read property 'replace' of undefined",
+      "stack": [
+       "at getBrowserInfo (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)",
+       "at check (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)",
+       "at 1019 (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)",
+       "at call (native)",
+       "at o (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)",
+       "at <anonymous> (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)",
+       "at <eval> (https://static.360buyimg.com/item/assets/oldman/wza1/aria.js?appid=bfeaebea192374ec1f220455f8d5f952)"
+      ],
+      "count": 1
+     },
+     {
+      "message": "SyntaxError: invalid UTF-8 sequence",
+      "stack": [
+       "at https://dc.3.cn/category/get?&callback=getCategoryCallback:1"
+      ],
+      "count": 1
+     }
+    ],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [
+     "[spmPV] error: TypeError: cannot read property 'replace' of undefined",
+     "Uncaught (in promise) TypeError: cannot read property 'sign' of undefined",
+     "Uncaught (in promise) TypeError: cannot read property 'sign' of undefined",
+     "Uncaught (in promise) TypeError: cannot read property 'sign' of undefined",
+     "Uncaught (in promise) TypeError: cannot read property 'sign' of undefined",
+     "Uncaught (in promise) Error: Loading chunk 1 failed.",
+     "Uncaught (in promise) Error: Loading chunk 4 failed.",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "公共组件捕获到请求失败 jsonpLogin [object Object]",
+     "网络或服务器错误: Request failed with status code 403",
+     "网络或服务器错误: Request failed with status code 403",
+     "[spmPV] error: TypeError: cannot read property 'replace' of undefined",
+     "网络或服务器错误: Request failed with status code 403",
+     "Uncaught (in promise) AxiosError: Request failed with status code 403"
+    ],
+    "webapi_errors": [
+     "fetch: connection failed"
+    ],
+    "fetch_failed": [
+     "[img] fetch failed (status 0): //api.m.jd.com?functionId=pchome_cookie_check&appid=www-jd-com&cthr=1&source=pc-home: cookie header exceeds capacity",
+     "[img] fetch failed (status 0): https://mercury.jd.com/log.gif?t=exp_log.100000&m=UA-J2011-1&pin=-&uid=null&sid=null|null&cul=https%3A%2F%2Fwww.jd.com%2F&v=%7B%22t1%22%3A%22pc_homepage%22%2C%22t2%22%3A%22basic%22: the kernel socket table is full"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "skipped_scripts": 0,
+    "requests": 18,
+    "dials": 7,
+    "reused": 11,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 22426,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 52270,
+      "teardown": 100,
+      "document": 0,
+      "first_style_layout_paint": 190,
+      "styles_fetch": 530,
+      "full_style_layout_paint": 1320,
+      "images": 10,
+      "runtime_init": 480,
+      "scripts_fetch": 620,
+      "scripts_execute": 48920,
+      "lifecycle_settle": 100
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 52.6,
+    "paint_seconds": 20.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 27096,
+    "changed_bbox": [
+     140,
+     12,
+     1260,
+     764
+    ],
+    "ink_px": 6501,
+    "ink_px_blank": 4256,
+    "colours": 1113,
+    "rich_tiles_proxy": 66
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/jd.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/jd.serial.txt",
+   "url_confirmed": "https://www.jd.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 6,
+    "text_bytes": 114,
+    "text": "1150,85 全部频道\n1241,409 内容太火爆了，请稍后再试\n502,367 当前页面异常\n487,412 请刷新或切换账户试试\n472,480 刷新\n572,480 切换账号",
+    "shot": "build-browser-complete-0913/evidence/live-after/jd.late.png",
+    "changed_px": 26776,
+    "initial_to_late_changed_px": 1700,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/jd.host.html",
+   "paint_text_history": [
+    {
+     "runs": 95,
+     "bytes": 490
+    },
+    {
+     "runs": 2,
+     "bytes": 12
+    },
+    {
+     "runs": 12,
+     "bytes": 147
+    },
+    {
+     "runs": 20,
+     "bytes": 240
+    },
+    {
+     "runs": 6,
+     "bytes": 114
+    }
+   ],
+   "text_runs": 6,
+   "text_bytes": 114,
+   "text": "1150,85 全部频道\n1241,409 内容太火爆了，请稍后再试\n502,367 当前页面异常\n487,412 请刷新或切换账户试试\n472,480 刷新\n572,480 切换账号",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 3,
+     "script_src": 14,
+     "inline_scripts": 21,
+     "images": 12,
+     "preloads": 4,
+     "fonts": 0,
+     "mandatory": 18
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:51:22",
+   "reported": "jQuery is not defined",
+   "wall_seconds": 103.9,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "anthropic",
+   "url": "https://www.anthropic.com/",
+   "started": "2026-09-13T12:50:59",
+   "verdict": "ERRORS",
+   "why": "painted 323948 changed px in 16.9s but 1 JS exception(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.anthropic.com/",
+    "bytes": 174476,
+    "redirects": [],
+    "script_tags": 19,
+    "script_src": 10,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 1,
+     "script_src": 10,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 12
+    },
+    "elapsed": 2.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [
+     "timer: ReferenceError: 'CSSStyleDeclaration' is not defined"
+    ],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [],
+    "load_complete_ms": [
+     30020
+    ],
+    "image_state": {
+     "total": 1505,
+     "img": 18,
+     "src_nonempty": 0,
+     "decoded": 18,
+     "cache_positive": 0,
+     "cache_negative": 0,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 0
+    },
+    "load_event_pending": false,
+    "skipped_scripts": 0,
+    "requests": 13,
+    "dials": 6,
+    "reused": 7,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 12602,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 24580,
+      "teardown": 1200,
+      "document": 0,
+      "first_style_layout_paint": 300,
+      "styles_fetch": 2590,
+      "full_style_layout_paint": 3010,
+      "images": 0,
+      "runtime_init": 390,
+      "scripts_fetch": 2440,
+      "scripts_execute": 6400,
+      "lifecycle_settle": 8250
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 16.9,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 323948,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 261388,
+    "ink_px_blank": 4256,
+    "colours": 796,
+    "rich_tiles_proxy": 11
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/anthropic.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/anthropic.serial.txt",
+   "url_confirmed": "https://www.anthropic.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 68,
+    "text_bytes": 337,
+    "text": "658,148 AI\n679,148 will\n714,148 have\n762,148 a\n777,148 vast\n818,148 impact\n885,148 on\n913,148 the\n658,176 world.\n719,176 Anthropic\n812,176 is\n830,176 a\n845,176 public\n905,176 benefit\n658,204 corporation\n769,204 dedicated\n864,204 to\n887,204 securing\n658,232 its\n683,232 benefits\n760,232 and\n799,232 mitigating\n895,232 its\n920,232 risks.\n0,148 AI\n21,148 research\n103,148 and\n142,148 products\n227,148 that\n268,148 put\n303,148 safety\n361,148 at\n383,148 the\n417,148 frontier\n0,529 Latest\n59,529 releases\n0,557 Introducing\n109,557 Fable\n163,557 5.1\n194,557 and\n0,585 Mythos\n70,585 5.1\n376,557 Introducing\n485,557 Opus\n536,557 5\n376,601 Opus\n427,601 5\n442,601 is\n460,601 a\n475,601 step\n518,601 change\n589,601 for\n618,601 the\n752,557 Introducing\n861,557 Sonnet\n930,557 5\n752,601 Our\n789,601 most\n839,601 agentic\n910,601 Sonnet\n979,601 yet,\n262,83 Research\n455,83 Policy\n519,83 Commitments\n746,83 Learn\n916,83 News\n977,86 Try\n1000,86 Claude",
+    "shot": "build-browser-complete-0913/evidence/live-after/anthropic.late.png",
+    "changed_px": 330324,
+    "initial_to_late_changed_px": 13476,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/anthropic.host.html",
+   "paint_text_history": [
+    {
+     "runs": 119,
+     "bytes": 625
+    },
+    {
+     "runs": 86,
+     "bytes": 429
+    },
+    {
+     "runs": 76,
+     "bytes": 382
+    }
+   ],
+   "text_runs": 76,
+   "text_bytes": 382,
+   "text": "658,148 AI\n679,148 will\n714,148 have\n762,148 a\n777,148 vast\n818,148 impact\n885,148 on\n913,148 the\n658,176 world.\n719,176 Anthropic\n812,176 is\n830,176 a\n845,176 public\n905,176 benefit\n658,204 corporation\n769,204 dedicated\n864,204 to\n887,204 securing\n658,232 its\n683,232 benefits\n760,232 and\n799,232 mitigating\n895,232 its\n920,232 risks.\n0,529 Latest\n59,529 releases\n471,285 :Claude:\n548,285 Fable\n602,285 5.1\n519,313 and\n558,313 Mythos\n628,313 5.1\n345,373 The\n391,373 world’s\n493,373 most\n554,373 advanced\n664,373 models\n749,373 for\n408,407 coding\n486,407 and\n532,407 knowledge\n656,407 work.\n527,483 Read\n564,483 more\n0,557 Introducing\n109,557 Fable\n163,557 5.1\n194,557 and\n0,585 Mythos\n70,585 5.1\n376,557 Introducing\n485,557 Opus\n536,557 5\n376,601 Opus\n427,601 5\n442,601 is\n460,601 a\n475,601 step\n518,601 change\n589,601 for\n618,601 the\n752,557 Introducing\n861,557 Sonnet\n930,557 5\n752,601 Our\n789,601 most\n839,601 agentic\n910,601 Sonnet\n979,601 yet,\n262,83 Research\n455,83 Policy\n519,83 Commitments\n746,83 Learn\n916,83 News\n977,86 Try\n1000,86 Claude",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 1,
+     "script_src": 10,
+     "inline_scripts": 9,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 12
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:52:14",
+   "reported": "\"is not a function\"",
+   "wall_seconds": 75.7,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "douyin",
+   "url": "https://www.douyin.com/",
+   "started": "2026-09-13T12:51:23",
+   "verdict": "ERRORS",
+   "why": "painted 18468 changed px, with 1 page-reported error(s) and 0 fetch error(s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.douyin.com/",
+    "bytes": 72914,
+    "redirects": [],
+    "script_tags": 2,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [
+     "Uncaught (in promise) InternalError: interrupted"
+    ],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [
+     "fetch stalled: no response after 12 s: https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/ies/douyin_web/36529.73e372f0.js"
+    ],
+    "cannot_fetch": [],
+    "loader_errors": [
+     "[browser] inserted script LOST: https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/ies/douyin_web/36529.73e372f0.js: stalled: no response (status 0)"
+    ],
+    "load_complete_ms": [
+     920
+    ],
+    "image_state": {
+     "total": 1040,
+     "img": 29,
+     "src_nonempty": 20,
+     "decoded": 29,
+     "cache_positive": 20,
+     "cache_negative": 0,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 10
+    },
+    "load_event_pending": true,
+    "skipped_scripts": 3,
+    "requests": 34,
+    "dials": 13,
+    "reused": 22,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 59159,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 920,
+      "teardown": 160,
+      "document": 0,
+      "first_style_layout_paint": 20,
+      "styles_fetch": 0,
+      "full_style_layout_paint": 40,
+      "images": 0,
+      "runtime_init": 410,
+      "scripts_fetch": 0,
+      "scripts_execute": 270,
+      "lifecycle_settle": 20
+     },
+     {
+      "total_ms": 14990,
+      "teardown": 2570,
+      "document": 0,
+      "first_style_layout_paint": 130,
+      "styles_fetch": 1160,
+      "full_style_layout_paint": 3640,
+      "images": 10,
+      "runtime_init": 400,
+      "scripts_fetch": 510,
+      "scripts_execute": 1910,
+      "lifecycle_settle": 4660
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     },
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 1.3,
+    "paint_seconds": 20.1,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 18468,
+    "changed_bbox": [
+     140,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 12323,
+    "ink_px_blank": 4256,
+    "colours": 701,
+    "rich_tiles_proxy": 17
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/douyin.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/douyin.serial.txt",
+   "url_confirmed": "https://www.douyin.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 31,
+    "text_bytes": 213,
+    "text": "96,128 全部\n218,128 公开课\n298,128 游戏\n362,128 二次元\n442,128 音乐\n506,128 影视\n570,128 美食\n634,128 知识\n698,128 小剧场\n778,128 生活vlog\n872,128 体育\n936,128 旅行\n1000,128 亲子\n1064,128 动物\n1128,128 三农\n1192,128 汽车\n1256,128 美妆穿搭\n24,98 精选\n24,174 推荐\n19,250 AI抖音\n24,326 关注\n24,402 朋友\n24,478 我的\n24,578 直播\n843,90 充钻石\n883,90 客户端\n925,90 通知\n957,90 消息\n989,83 投稿\n623,87 搜索\n1044,75 登录",
+    "shot": "build-browser-complete-0913/evidence/live-after/douyin.late.png",
+    "changed_px": 18032,
+    "initial_to_late_changed_px": 1724,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/douyin.host.html",
+   "paint_text_history": [
+    {
+     "runs": 1,
+     "bytes": 9
+    },
+    {
+     "runs": 31,
+     "bytes": 213
+    }
+   ],
+   "text_runs": 31,
+   "text_bytes": 213,
+   "text": "96,128 全部\n218,128 公开课\n298,128 游戏\n362,128 二次元\n442,128 音乐\n506,128 影视\n570,128 美食\n634,128 知识\n698,128 小剧场\n778,128 生活vlog\n872,128 体育\n936,128 旅行\n1000,128 亲子\n1064,128 动物\n1128,128 三农\n1192,128 汽车\n1256,128 美妆穿搭\n24,98 精选\n24,174 推荐\n19,250 AI抖音\n24,326 关注\n24,402 朋友\n24,478 我的\n24,578 直播\n843,90 充钻石\n883,90 客户端\n925,90 通知\n957,90 消息\n989,83 投稿\n623,87 搜索\n1044,75 登录",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 2,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:52:59",
+   "reported": "nothing renders at all",
+   "wall_seconds": 95.9,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "qwen",
+   "url": "https://chat.qwen.ai/",
+   "started": "2026-09-13T12:52:15",
+   "verdict": "TIMEOUT",
+   "why": "no `load done` in 240s (host fetched it in 0.3s)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://chat.qwen.ai/",
+    "bytes": 101120,
+    "redirects": [],
+    "script_tags": 17,
+    "script_src": 3,
+    "img_tags": 6,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 14,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [],
+    "load_complete_ms": [],
+    "image_state": null,
+    "load_event_pending": null,
+    "skipped_scripts": 0,
+    "requests": null,
+    "dials": null,
+    "reused": null,
+    "modules": null,
+    "modules_failed": null,
+    "heap_peak_k": 18530,
+    "load_done": false,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [],
+    "module_phases_ms": [],
+    "module_fetch_observations": [
+     {
+      "bytes": 9129,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/react-vendor.js"
+     },
+     {
+      "bytes": 182575,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/react-dom-vendor.js"
+     },
+     {
+      "bytes": 735128,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/antd-vendor.js"
+     },
+     {
+      "bytes": 17127,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dayjs-vendor.js"
+     },
+     {
+      "bytes": 69376,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/i18next-vendor.js"
+     },
+     {
+      "bytes": 1341,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/vite-helpers.js"
+     },
+     {
+      "bytes": 3016774,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/mermaid-vendor.js"
+     },
+     {
+      "bytes": 28629,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dompurify-vendor.js"
+     },
+     {
+      "bytes": 9456,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/es-toolkit-vendor.js"
+     },
+     {
+      "bytes": 126761,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/lodash-vendor.js"
+     },
+     {
+      "bytes": 41303,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/marked-vendor.js"
+     },
+     {
+      "bytes": 37199,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/axios-vendor.js"
+     },
+     {
+      "bytes": 18246,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/router-vendor.js"
+     },
+     {
+      "bytes": 47990,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dnd-vendor.js"
+     },
+     {
+      "bytes": 3854316,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/monaco-vendor.js"
+     }
+    ],
+    "load_seconds": 240.3,
+    "paint_seconds": 16.4,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 1596,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 4322,
+    "ink_px_blank": 4256,
+    "colours": 385,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/qwen.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/qwen.serial.txt",
+   "url_confirmed": "https://chat.qwen.ai/",
+   "url_attempts": 1,
+   "about_text_completed": false,
+   "about_text_arrived": false,
+   "about_images_completed": false,
+   "about_images_arrived": false,
+   "late_observation": {
+    "text_runs": null,
+    "shot": "build-browser-complete-0913/evidence/live-after/qwen.late.png",
+    "changed_px": 1520,
+    "initial_to_late_changed_px": 156,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/qwen.host.html",
+   "paint_text_history": [],
+   "text_runs": null,
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 14,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:59:40",
+   "reported": "hangs",
+   "wall_seconds": 445.5,
+   "runs": 1,
+   "all_verdicts": [
+    "TIMEOUT"
+   ]
+  },
+  {
+   "name": "control-example",
+   "url": "http://example.com/",
+   "started": "2026-09-13T12:52:59",
+   "verdict": "PAINTED",
+   "why": "painted 8720 changed px in 1.3s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "http://example.com/",
+    "bytes": 559,
+    "redirects": [],
+    "script_tags": 0,
+    "script_src": 0,
+    "img_tags": 0,
+    "inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "elapsed": 2.0
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [],
+    "load_complete_ms": [
+     930
+    ],
+    "image_state": {
+     "total": 38,
+     "img": 0,
+     "src_nonempty": 0,
+     "decoded": 0,
+     "cache_positive": 0,
+     "cache_negative": 0,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 0
+    },
+    "load_event_pending": false,
+    "skipped_scripts": 0,
+    "requests": 1,
+    "dials": 1,
+    "reused": 0,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 8211,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 930,
+      "teardown": 480,
+      "document": 0,
+      "first_style_layout_paint": 30,
+      "styles_fetch": 0,
+      "full_style_layout_paint": 40,
+      "images": 0,
+      "runtime_init": 380,
+      "scripts_fetch": 0,
+      "scripts_execute": 0,
+      "lifecycle_settle": 0
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 1.3,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 8720,
+    "changed_bbox": [
+     152,
+     12,
+     1256,
+     764
+    ],
+    "ink_px": 9184,
+    "ink_px_blank": 4256,
+    "colours": 545,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/control-example.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/control-example.serial.txt",
+   "url_confirmed": "http://example.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 19,
+    "text_bytes": 109,
+    "text": "225,158 Example\n329,158 Domain\n225,202 This\n257,202 domain\n314,202 is\n328,202 for\n351,202 use\n378,202 in\n394,202 documentation\n506,202 examples\n575,202 without\n633,202 needing\n692,202 permission.\n776,202 Avoid\n818,202 use\n845,202 in\n225,222 operations.\n225,250 Learn\n268,250 more",
+    "shot": "build-browser-complete-0913/evidence/live-after/control-example.late.png",
+    "changed_px": 8440,
+    "initial_to_late_changed_px": 1572,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/control-example.host.html",
+   "paint_text_history": [
+    {
+     "runs": 19,
+     "bytes": 109
+    }
+   ],
+   "text_runs": 19,
+   "text_bytes": 109,
+   "text": "225,158 Example\n329,158 Domain\n225,202 This\n257,202 domain\n314,202 is\n328,202 for\n351,202 use\n378,202 in\n394,202 documentation\n506,202 examples\n575,202 without\n633,202 needing\n692,202 permission.\n776,202 Avoid\n818,202 use\n845,202 in\n225,222 operations.\n225,250 Learn\n268,250 more",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 0,
+     "script_src": 0,
+     "inline_scripts": 0,
+     "images": 0,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 1
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:53:48",
+   "reported": "CONTROL: the simplest page on the web, no JS, no CSS worth the name",
+   "wall_seconds": 49.4,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  },
+  {
+   "name": "control-wikipedia",
+   "url": "https://en.wikipedia.org/wiki/Operating_system",
+   "started": "2026-09-13T12:53:48",
+   "verdict": "PAINTED",
+   "why": "painted 79044 changed px in 12.1s, no JS exceptions, no subresource gap",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://en.wikipedia.org/wiki/Operating_system",
+    "bytes": 676107,
+    "redirects": [],
+    "script_tags": 5,
+    "script_src": 1,
+    "img_tags": 26,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "elapsed": 1.6
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [],
+    "load_complete_ms": [
+     30320
+    ],
+    "image_state": {
+     "total": 16384,
+     "img": 15,
+     "src_nonempty": 15,
+     "decoded": 15,
+     "cache_positive": 15,
+     "cache_negative": 0,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 23
+    },
+    "load_event_pending": false,
+    "skipped_scripts": 1,
+    "requests": 7,
+    "dials": 2,
+    "reused": 5,
+    "modules": 0,
+    "modules_failed": 0,
+    "heap_peak_k": 24936,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 14600,
+      "teardown": 3700,
+      "document": 0,
+      "first_style_layout_paint": 920,
+      "styles_fetch": 2670,
+      "full_style_layout_paint": 3380,
+      "images": 0,
+      "runtime_init": 430,
+      "scripts_fetch": 470,
+      "scripts_execute": 100,
+      "lifecycle_settle": 2930
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 0,
+      "prefetch_ms": 0,
+      "fetch_ms": 0,
+      "link_ms": 0,
+      "eval_jobs_ms": 0,
+      "compile_bytes": 0,
+      "compiles": 0,
+      "fetches": 0,
+      "prefetch_batches": 0
+     }
+    ],
+    "module_fetch_observations": [],
+    "load_seconds": 12.1,
+    "paint_seconds": 16.2,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 79044,
+    "changed_bbox": [
+     152,
+     16,
+     1264,
+     764
+    ],
+    "ink_px": 20262,
+    "ink_px_blank": 4256,
+    "colours": 1389,
+    "rich_tiles_proxy": 39
+   },
+   "shot": "build-browser-complete-0913/evidence/live-after/control-wikipedia.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-after/control-wikipedia.serial.txt",
+   "url_confirmed": "https://en.wikipedia.org/wiki/Operating_system",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 186,
+    "text_bytes": 1040,
+    "text": "60,220 Contents\n133,224 hide\n82,262 (Top)\n82,291 Definition\n143,291 and\n169,291 purpose\n82,320 Types\n121,320 of\n136,320 operating\n82,337 systems\n82,366 History\n82,395 Components\n82,424 Operating\n145,424 system\n82,441 development\n165,441 as\n181,441 a\n82,458 hobby\n82,487 Diversity\n137,487 of\n152,487 operating\n82,504 systems\n134,504 and\n160,504 portability\n82,533 Popular\n132,533 operating\n82,550 systems\n82,579 See\n107,579 also\n82,608 Notes\n264,150 Operating\n401,150 system\n739,161 164\n766,161 languages\n286,198 Article\n340,198 Talk\n633,198 Read\n679,198 View\n711,198 source\n768,198 View\n800,198 history\n902,220 Appearance\n997,224 hide\n609,292 Operating\n697,292 systems\n601,569 Common\n663,569 features\n620,587 Process\n662,587 management\n734,587 Interrupts\n785,587  ·\n801,587 Memory\n846,587 management\n620,604  ·\n636,604 File\n656,604 system\n693,604  ·\n709,604 Device\n746,604 drivers\n781,604  ·\n797,604 Networking\n620,621  ·\n636,621 Security\n679,621  ·\n695,621 Input/output\n763,621  ·\n264,233 From\n299,233 Wikipedia,\n363,233 the\n386,233 free\n412,233 encyclopedia\n264,286 An\n283,286 operating\n350,286 system\n399,286 (\n403,286 OS\n421,286 )\n428,286 is\n440,286 system\n486,286 software\n542,286 that\n264,308 manages\n321,308 computer\n384,308 hardware\n445,308 and\n471,308 software\n264,330 resources,\n329,330 and\n355,330 provides\n410,330 common\n468,330 services\n519,330 for\n264,352 computer\n327,352 programs\n385,352 .\n388,352 [\n391,352 1\n397,352 ]\n264,395 Time-sharing\n345,395 operating\n406,395 systems\n458,395 schedule\n515,395 tasks\n549,395 for\n264,417 efficient\n315,417 use\n339,417 of\n354,417 the\n377,417 system\n423,417 and\n449,417 may\n478,417 also\n505,417 include\n264,439 accounting\n335,439 software\n391,439 for\n411,439 cost\n440,439 allocation\n502,439 of\n517,439 processor\n264,461 time\n291,461 ,\n297,461 mass\n331,461 storage\n376,461 ,\n382,461 peripherals,\n455,461 and\n481,461 other\n517,461 resources.\n264,504 For\n287,504 hardware\n348,504 functions\n408,504 such\n440,504 as\n456,504 input\n491,504 and\n517,504 output\n264,526 and\n290,526 memory\n344,526 allocation\n403,526 ,\n409,526 the\n432,526 operating\n493,526 system\n539,526 acts\n567,526 as\n264,548 an\n282,548 intermediary\n362,548 between\n418,548 programs\n479,548 and\n505,548 the\n264,570 computer\n327,570 hardware,\n388,570 [\n391,570 2\n397,570 ]\n400,570 [\n403,570 3\n409,570 ]\n415,570 although\n472,570 the\n495,570 application\n264,592 code\n297,592 is\n309,592 usually\n354,592 executed\n412,592 directly\n460,592 by\n478,592 the\n501,592 hardware\n264,614 and\n290,614 frequently\n355,614 makes\n397,614 system\n443,614 calls\n472,614 to\n488,614 an\n506,614 OS\n527,614 function\n688,80 Search\n890,84 Donate\n942,84 Create\n984,84 account\n1042,84 Log\n1067,84 in",
+    "shot": "build-browser-complete-0913/evidence/live-after/control-wikipedia.late.png",
+    "changed_px": 77860,
+    "initial_to_late_changed_px": 2472,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-after/control-wikipedia.host.html",
+   "paint_text_history": [
+    {
+     "runs": 50,
+     "bytes": 244
+    },
+    {
+     "runs": 174,
+     "bytes": 997
+    },
+    {
+     "runs": 186,
+     "bytes": 1040
+    }
+   ],
+   "text_runs": 186,
+   "text_bytes": 1040,
+   "text": "60,220 Contents\n133,224 hide\n82,262 (Top)\n82,291 Definition\n143,291 and\n169,291 purpose\n82,320 Types\n121,320 of\n136,320 operating\n82,337 systems\n82,366 History\n82,395 Components\n82,424 Operating\n145,424 system\n82,441 development\n165,441 as\n181,441 a\n82,458 hobby\n82,487 Diversity\n137,487 of\n152,487 operating\n82,504 systems\n134,504 and\n160,504 portability\n82,533 Popular\n132,533 operating\n82,550 systems\n82,579 See\n107,579 also\n82,608 Notes\n264,150 Operating\n401,150 system\n739,161 164\n766,161 languages\n286,198 Article\n340,198 Talk\n633,198 Read\n679,198 View\n711,198 source\n768,198 View\n800,198 history\n902,220 Appearance\n997,224 hide\n609,292 Operating\n697,292 systems\n601,569 Common\n663,569 features\n620,587 Process\n662,587 management\n734,587 Interrupts\n785,587  ·\n801,587 Memory\n846,587 management\n620,604  ·\n636,604 File\n656,604 system\n693,604  ·\n709,604 Device\n746,604 drivers\n781,604  ·\n797,604 Networking\n620,621  ·\n636,621 Security\n679,621  ·\n695,621 Input/output\n763,621  ·\n264,233 From\n299,233 Wikipedia,\n363,233 the\n386,233 free\n412,233 encyclopedia\n264,286 An\n283,286 operating\n350,286 system\n399,286 (\n403,286 OS\n421,286 )\n428,286 is\n440,286 system\n486,286 software\n542,286 that\n264,308 manages\n321,308 computer\n384,308 hardware\n445,308 and\n471,308 software\n264,330 resources,\n329,330 and\n355,330 provides\n410,330 common\n468,330 services\n519,330 for\n264,352 computer\n327,352 programs\n385,352 .\n388,352 [\n391,352 1\n397,352 ]\n264,395 Time-sharing\n345,395 operating\n406,395 systems\n458,395 schedule\n515,395 tasks\n549,395 for\n264,417 efficient\n315,417 use\n339,417 of\n354,417 the\n377,417 system\n423,417 and\n449,417 may\n478,417 also\n505,417 include\n264,439 accounting\n335,439 software\n391,439 for\n411,439 cost\n440,439 allocation\n502,439 of\n517,439 processor\n264,461 time\n291,461 ,\n297,461 mass\n331,461 storage\n376,461 ,\n382,461 peripherals,\n455,461 and\n481,461 other\n517,461 resources.\n264,504 For\n287,504 hardware\n348,504 functions\n408,504 such\n440,504 as\n456,504 input\n491,504 and\n517,504 output\n264,526 and\n290,526 memory\n344,526 allocation\n403,526 ,\n409,526 the\n432,526 operating\n493,526 system\n539,526 acts\n567,526 as\n264,548 an\n282,548 intermediary\n362,548 between\n418,548 programs\n479,548 and\n505,548 the\n264,570 computer\n327,570 hardware,\n388,570 [\n391,570 2\n397,570 ]\n400,570 [\n403,570 3\n409,570 ]\n415,570 although\n472,570 the\n495,570 application\n264,592 code\n297,592 is\n309,592 usually\n354,592 executed\n412,592 directly\n460,592 by\n478,592 the\n501,592 hardware\n264,614 and\n290,614 frequently\n355,614 makes\n397,614 system\n443,614 calls\n472,614 to\n488,614 an\n506,614 OS\n527,614 function\n688,80 Search\n890,84 Donate\n942,84 Create\n984,84 account\n1042,84 Log\n1067,84 in",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 1,
+     "inline_scripts": 3,
+     "images": 24,
+     "preloads": 2,
+     "fonts": 0,
+     "mandatory": 4
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T12:54:49",
+   "reported": "CONTROL: known to render since M13",
+   "wall_seconds": 61.7,
+   "runs": 1,
+   "all_verdicts": [
+    "PAINTED"
+   ]
+  }
+ ]
+}

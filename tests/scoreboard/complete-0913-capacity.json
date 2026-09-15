@@ -1,0 +1,465 @@
+{
+ "date": "complete-0913-capacity",
+ "generated": "2026-09-13T13:28:50",
+ "iso": "build-browser-complete-0913/capacity/logit.iso",
+ "iso_sha256_16": "8cb72e1276ff6065",
+ "commit": "41d7a74e8",
+ "wall_seconds": 135.6,
+ "repeat": 1,
+ "sites": [
+  {
+   "name": "apple",
+   "url": "https://www.apple.com/",
+   "started": "2026-09-13T13:26:35",
+   "verdict": "ERRORS",
+   "why": "painted 516388 changed px, with 5 resource failure diagnostics",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://www.apple.com/",
+    "bytes": 312779,
+    "redirects": [],
+    "script_tags": 17,
+    "script_src": 12,
+    "img_tags": 100,
+    "inventory": {
+     "stylesheets": 9,
+     "script_src": 12,
+     "inline_scripts": 1,
+     "images": 43,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "elapsed": 0.1
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [
+     "[browser] fetch failed (status 404) /wss/fonts?families=SF+Pro,v3|SF+Pro+Icons,v3: no error"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [
+     "[img] REFUSED: 3261K decoded would take the image cache past 65536K (holding 64002K in 27) : https://is1-ssl.mzstatic.com/image/thumb/Features/v4/33/9e/cf/339ecfe7-f515-8594-2e48-d991803409ea/5a944fdc-acd7-47a8-89e7-274d84cf4276.png/1250x668sr",
+     "[img] REFUSED: 3261K decoded would take the image cache past 65536K (holding 64069K in 30) : https://is1-ssl.mzstatic.com/image/thumb/JtVQR0x0f4EX3vFy1yWxaQ/1250x668sr.jpg",
+     "[img] REFUSED: 3261K decoded would take the image cache past 65536K (holding 64069K in 31) : https://is1-ssl.mzstatic.com/image/thumb/hRaOrIKahRFcNlKt6UV4Ow/1250x668sr.jpg",
+     "[img] REFUSED: 483K decoded would take the image cache past 65536K (holding 65468K in 37) : https://is1-ssl.mzstatic.com/image/thumb/Features211/v4/53/55/d7/5355d758-e5b7-b406-f004-bb98d03ecb38/9388d284-2a0b-43e8-86e0-5852e8559d18.png/470x264"
+    ],
+    "load_complete_ms": [
+     38510
+    ],
+    "image_state": {
+     "total": 19065,
+     "img": 57,
+     "src_nonempty": 31,
+     "decoded": 48,
+     "cache_positive": 22,
+     "cache_negative": 9,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 44
+    },
+    "load_event_pending": false,
+    "skipped_scripts": 4,
+    "requests": 28,
+    "dials": 2,
+    "reused": 26,
+    "modules": 6,
+    "modules_failed": 0,
+    "heap_peak_k": 29580,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 12130,
+      "teardown": 100,
+      "document": 0,
+      "first_style_layout_paint": 520,
+      "styles_fetch": 360,
+      "full_style_layout_paint": 1180,
+      "images": 10,
+      "runtime_init": 360,
+      "scripts_fetch": 290,
+      "scripts_execute": 8850,
+      "t": 3,
+      "lifecycle_settle": 460
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 270,
+      "prefetch_ms": 110,
+      "fetch_ms": 0,
+      "link_ms": 30,
+      "eval_jobs_ms": 7540,
+      "compile_bytes": 266096,
+      "compiles": 10,
+      "fetches": 6,
+      "prefetch_batches": 4
+     }
+    ],
+    "module_fetch_observations": [
+     {
+      "bytes": 4359,
+      "url": "https://www.apple.com/v/homepage/a/scripts/ComponentMap-thvKzGgL.built.js"
+     },
+     {
+      "bytes": 823,
+      "url": "https://www.apple.com/v/homepage/a/scripts/inlineMediaSource-CPCc_KTS.built.js"
+     },
+     {
+      "bytes": 983,
+      "url": "https://www.apple.com/v/homepage/a/scripts/HpViewport-DHyTaS-L.built.js"
+     },
+     {
+      "bytes": 635,
+      "url": "https://www.apple.com/v/homepage/a/scripts/_commonjsHelpers-JypJ4tLA.built.js"
+     },
+     {
+      "bytes": 1921,
+      "url": "https://www.apple.com/v/homepage/a/scripts/AnimSystemModel-CyyfEbM8.built.js"
+     },
+     {
+      "bytes": 258,
+      "url": "https://www.apple.com/v/homepage/a/scripts/index-DSp7vY0t.built.js"
+     }
+    ],
+    "load_seconds": 12.1,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 516388,
+    "changed_bbox": [
+     140,
+     16,
+     1260,
+     764
+    ],
+    "ink_px": 416674,
+    "ink_px_blank": 4256,
+    "colours": 697,
+    "rich_tiles_proxy": 12
+   },
+   "shot": "build-browser-complete-0913/evidence/live-capacity/apple.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-capacity/apple.serial.txt",
+   "url_confirmed": "https://www.apple.com/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_boxes_completed": true,
+   "about_boxes_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 33,
+    "text_bytes": 150,
+    "text": "157,144 For\n180,144 a\n190,144 limited\n234,144 time,\n267,144 get\n289,144 a\n299,144 gift\n321,144 card\n351,144 up\n370,144 to\n386,144 $150\n423,144 when you\n486,144 buy\n512,144 Mac\n540,144 or\n556,144 iPad\n585,144 with\n615,144 education savings.\n729,144 Shop\n414,144 *\n761,144 \n385,236 iPhone\n578,236 18\n652,236 Pro\n492,302 Pro\n541,302 further.\n471,343 Available\n551,343 starting\n620,343 9.18\n520,389 Learn\n566,389 more\n527,427 Pre-order\n1088,80 0",
+    "shot": "build-browser-complete-0913/evidence/live-capacity/apple.late.png",
+    "changed_px": 515476,
+    "initial_to_late_changed_px": 2512,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-capacity/apple.host.html",
+   "paint_text_history": [
+    {
+     "runs": 18,
+     "bytes": 73
+    },
+    {
+     "runs": 33,
+     "bytes": 150
+    }
+   ],
+   "text_runs": 33,
+   "text_bytes": 150,
+   "text": "157,144 For\n180,144 a\n190,144 limited\n234,144 time,\n267,144 get\n289,144 a\n299,144 gift\n321,144 card\n351,144 up\n370,144 to\n386,144 $150\n423,144 when you\n486,144 buy\n512,144 Mac\n540,144 or\n556,144 iPad\n585,144 with\n615,144 education savings.\n729,144 Shop\n414,144 *\n761,144 \n385,236 iPhone\n578,236 18\n652,236 Pro\n492,302 Pro\n541,302 further.\n471,343 Available\n551,343 starting\n620,343 9.18\n520,389 Learn\n566,389 more\n527,427 Pre-order\n1088,80 0",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 9,
+     "script_src": 12,
+     "inline_scripts": 1,
+     "images": 43,
+     "preloads": 0,
+     "fonts": 0,
+     "mandatory": 22
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T13:27:49",
+   "reported": "0 images; TypeError split of undefined",
+   "wall_seconds": 74.2,
+   "runs": 1,
+   "all_verdicts": [
+    "ERRORS"
+   ]
+  },
+  {
+   "name": "qwen",
+   "url": "https://chat.qwen.ai/",
+   "started": "2026-09-13T13:26:35",
+   "verdict": "BLANK",
+   "why": "loaded in 40.5s and painted 2768 changed pixels (0 exceptions)",
+   "host": {
+    "ok": true,
+    "status": 200,
+    "final_url": "https://chat.qwen.ai/",
+    "bytes": 101120,
+    "redirects": [],
+    "script_tags": 17,
+    "script_src": 3,
+    "img_tags": 6,
+    "inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 14,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "elapsed": 0.3
+   },
+   "guest": {
+    "exceptions": [],
+    "timer_exceptions": [],
+    "module_exceptions": [],
+    "console_errors": [],
+    "webapi_errors": [],
+    "fetch_failed": [
+     "[img] fetch failed (status 0): http://127.0.0.1:31460/favicon.png: the connection was refused or the network is down"
+    ],
+    "fetch_stalled": [],
+    "cannot_fetch": [],
+    "loader_errors": [],
+    "load_complete_ms": [
+     41950
+    ],
+    "image_state": {
+     "total": 41,
+     "img": 1,
+     "src_nonempty": 1,
+     "decoded": 1,
+     "cache_positive": 1,
+     "cache_negative": 0,
+     "unanswered": 0,
+     "pending": 0,
+     "cache_entries": 20
+    },
+    "load_event_pending": false,
+    "skipped_scripts": 0,
+    "requests": 24,
+    "dials": 6,
+    "reused": 18,
+    "modules": 16,
+    "modules_failed": 0,
+    "heap_peak_k": 18578,
+    "load_done": true,
+    "page_fetch_failed": null,
+    "app_fault": null,
+    "panic": false,
+    "load_phases_ms": [
+     {
+      "total_ms": 39330,
+      "teardown": 300,
+      "document": 0,
+      "first_style_layout_paint": 120,
+      "styles_fetch": 350,
+      "full_style_layout_paint": 890,
+      "images": 0,
+      "runtime_init": 410,
+      "scripts_fetch": 500,
+      "scripts_execute": 36380,
+      "lifecycle_settle": 380
+     }
+    ],
+    "module_phases_ms": [
+     {
+      "compile_ms": 17390,
+      "prefetch_ms": 1190,
+      "fetch_ms": 20,
+      "link_ms": 160,
+      "eval_jobs_ms": 5900,
+      "compile_bytes": 9993373,
+      "compiles": 17,
+      "fetches": 16,
+      "prefetch_batches": 3
+     }
+    ],
+    "module_fetch_observations": [
+     {
+      "bytes": 9129,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/react-vendor.js"
+     },
+     {
+      "bytes": 182575,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/react-dom-vendor.js"
+     },
+     {
+      "bytes": 735128,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/antd-vendor.js"
+     },
+     {
+      "bytes": 17127,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dayjs-vendor.js"
+     },
+     {
+      "bytes": 69376,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/i18next-vendor.js"
+     },
+     {
+      "bytes": 1341,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/vite-helpers.js"
+     },
+     {
+      "bytes": 3016774,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/mermaid-vendor.js"
+     },
+     {
+      "bytes": 28629,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dompurify-vendor.js"
+     },
+     {
+      "bytes": 9456,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/es-toolkit-vendor.js"
+     },
+     {
+      "bytes": 126761,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/lodash-vendor.js"
+     },
+     {
+      "bytes": 41303,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/marked-vendor.js"
+     },
+     {
+      "bytes": 37199,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/axios-vendor.js"
+     },
+     {
+      "bytes": 18246,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/router-vendor.js"
+     },
+     {
+      "bytes": 47990,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/dnd-vendor.js"
+     },
+     {
+      "bytes": 3854316,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/monaco-vendor.js"
+     },
+     {
+      "bytes": 767,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/languages.js"
+     },
+     {
+      "bytes": 448127,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/translation3.js"
+     },
+     {
+      "bytes": 603,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index13.js"
+     },
+     {
+      "bytes": 7730,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/MemoryUpdatedDetailPopup.js"
+     },
+     {
+      "bytes": 1250,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index18.js"
+     },
+     {
+      "bytes": 607,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index5.js"
+     },
+     {
+      "bytes": 2554,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/MemoryPersonalizationConfig.js"
+     },
+     {
+      "bytes": 2976,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index14.js"
+     },
+     {
+      "bytes": 17069,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index58.js"
+     },
+     {
+      "bytes": 1744,
+      "url": "https://assets.alicdn.com/g/qwenweb/qwen-chat-fe/0.2.91/js/index17.js"
+     }
+    ],
+    "load_seconds": 40.5,
+    "paint_seconds": 16.3,
+    "settled": true
+   },
+   "pixels": {
+    "changed_px": 2768,
+    "changed_bbox": [
+     152,
+     12,
+     1264,
+     764
+    ],
+    "ink_px": 4698,
+    "ink_px_blank": 4256,
+    "colours": 430,
+    "rich_tiles_proxy": 8
+   },
+   "shot": "build-browser-complete-0913/evidence/live-capacity/qwen.png",
+   "serial_log": "build-browser-complete-0913/evidence/live-capacity/qwen.serial.txt",
+   "url_confirmed": "https://chat.qwen.ai/",
+   "url_attempts": 1,
+   "about_text_completed": true,
+   "about_text_arrived": true,
+   "about_boxes_completed": true,
+   "about_boxes_arrived": true,
+   "about_images_completed": true,
+   "about_images_arrived": true,
+   "late_observation": {
+    "text_runs": 18,
+    "text_bytes": 122,
+    "text": "421,328 Oops!\n465,328 Something\n545,328 unexpected\n629,328 happened.\n375,356 Try\n398,356 refreshing,\n464,356 and\n490,356 if\n500,356 the\n523,356 issue\n556,356 persists,\n608,356 please\n649,356 contact\n699,356 support.\n477,381 Failure\n520,381 code:\n556,381 1789277295850\n540,438 Refresh",
+    "shot": "build-browser-complete-0913/evidence/live-capacity/qwen.late.png",
+    "changed_px": 619980,
+    "initial_to_late_changed_px": 619672,
+    "basis": "after diagnostic turns; not a completion or usability guarantee"
+   },
+   "host_document": "build-browser-complete-0913/evidence/live-capacity/qwen.host.html",
+   "paint_text_history": [
+    {
+     "runs": 26,
+     "bytes": 103
+    }
+   ],
+   "text_runs": 26,
+   "text_bytes": 103,
+   "text": "47,77 Model\n92,77 loading...\n984,75 Log\n1009,75 in\n1054,75 Sign\n1083,75 up\n394,592 By\n407,592 using\n432,592 Qwen\n460,592 Studio,\n492,592 you\n511,592 agree\n536,592 to\n547,592 our\n568,592 Terms\n596,592 of\n607,592 Service\n643,592 and\n666,592 Privacy\n699,592 Policy\n729,592 .\n456,190 How\n511,190 can\n555,190 I\n567,190 help\n619,190 you?",
+   "subresources": {
+    "host_inventory": {
+     "stylesheets": 2,
+     "script_src": 3,
+     "inline_scripts": 14,
+     "images": 6,
+     "preloads": 7,
+     "fonts": 0,
+     "mandatory": 6
+    },
+    "gap": null
+   },
+   "finished": "2026-09-13T13:28:50",
+   "reported": "hangs",
+   "wall_seconds": 135.5,
+   "runs": 1,
+   "all_verdicts": [
+    "BLANK"
+   ]
+  }
+ ]
+}

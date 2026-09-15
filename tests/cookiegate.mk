@@ -25,11 +25,11 @@
 #   COOKIE_NO_EVICT_PREFERENCE  pure LRU, the old evict_lru
 #                               -> the HttpOnly-survives cell fails, alone
 #   COOKIE_NOFIT_IS_EMPTY       "nothing fit" reported as "no cookies", the
-#                               old fold -> the two CK_E_NOFIT cells fail
+#                               old fold -> the three CK_E_NOFIT cells fail
 #
 # The last one is the exception to "alone" and says so: the ambiguity it
 # restores is asserted from both ends deliberately -- once where nothing fits
-# and once at the transport cap that used to be 1024 -- so it reddens two.
+# and once at the transport cap that used to be 1024 -- so it reddens three after the all-or-nothing correction.
 #
 # "Alone" is checked, not assumed: each control's failure count must be exactly
 # 1. A control that reddens the whole file proves the file runs, not that the
@@ -49,6 +49,7 @@ COOKIE_JAR_SRC := tests/unit/cookie_test.c c/net/http/cookies.c
 # landed: six controls in that state, mine among them. The prerequisite is
 # what makes the assumption true here.
 ci-host: test-cookie-jar test-cookie-cors
+-include tests/response_boundary.mk
 test-cookie-jar: test-cookie-jar-negctl
 test-cookie-cors: test-cookie-cors-negctl
 
@@ -60,7 +61,7 @@ test-cookie-jar:
 test-cookie-jar-negctl:
 	@mkdir -p $(BUILD)
 	@rc=0; for spec in COOKIE_NAV_IS_SAME_SITE:1 COOKIE_NAV_IS_CROSS_SITE:1 \
-	                   COOKIE_NO_EVICT_PREFERENCE:1 COOKIE_NOFIT_IS_EMPTY:2; do \
+	                   COOKIE_NO_EVICT_PREFERENCE:1 COOKIE_NOFIT_IS_EMPTY:3; do \
 	    d=$${spec%%:*}; want=$${spec##*:}; \
 	    $(CC) -O2 -w $(BTEST_INC) -D$$d -o $(BUILD)/cookie_jar_negctl $(COOKIE_JAR_SRC) || exit 1; \
 	    out=`$(BUILD)/cookie_jar_negctl 2>&1`; \
@@ -97,3 +98,30 @@ test-cookie-cors-negctl: $(RUST_LIB_HOST)
 	 fi
 	@echo "test-cookie-cors-negctl: OK -- the shipped wiring reddens:"
 	@grep '^FAIL' $(BUILD)/cookie_cors_negctl.log | sed 's/^/    /'
+
+# 2026-09-10 audit corrections. These are prerequisites of the ordinary jar
+# gate so the expanded boundary does not depend on remembering a new target.
+# Full PSL checks use the raw upstream source and official fixture; controls
+# require an ordinary test failure in exactly the disabled rule's group.
+COOKIE_HARDENING_SRC := tests/unit/cookie_hardening_test.c c/net/http/cookies.c
+.PHONY: test-cookie-hardening test-cookie-hardening-negctl test-cookie-psl test-cookie-hardening-sanitize
+ci-host: test-cookie-hardening
+test-cookie-jar: test-cookie-hardening
+test-cookie-hardening: test-cookie-hardening-negctl test-cookie-psl
+	@$(CC) -O2 -Wall -Wextra -Ic/net/http -o $(BUILD)/cookie_hardening_test $(COOKIE_HARDENING_SRC)
+	@$(BUILD)/cookie_hardening_test
+
+test-cookie-hardening-negctl:
+	@python3 tests/unit/cookie_hardening_negcontrols.py --cc '$(CC)' --build '$(BUILD)'
+
+test-cookie-psl:
+	@mkdir -p $(BUILD)
+	@python3 tools/psl/generate.py --check
+	@$(CC) -shared -fPIC -O2 -Ic/net/http tests/unit/cookie_psl_probe.c -o $(BUILD)/cookie_psl_test.so
+	@python3 tools/psl/verify.py $(BUILD)/cookie_psl_test.so
+
+test-cookie-hardening-sanitize:
+	@mkdir -p $(BUILD)
+	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
+	    -Ic/net/http -o $(BUILD)/cookie_hardening_sanitize $(COOKIE_HARDENING_SRC)
+	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/cookie_hardening_sanitize

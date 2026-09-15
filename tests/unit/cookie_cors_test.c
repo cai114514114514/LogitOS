@@ -18,6 +18,7 @@
  */
 
 #include "stream_net.h"
+#include "cookies.h"
 
 /* ---- the routes -------------------------------------------------------
  * Each route decides its own CORS headers, because "which header did the
@@ -448,8 +449,12 @@ static void test_transport_samesite(void)
 
     n = webapi_cookie_line("page.example", "/", 1, 0, line, (int)sizeof line);
     if (n <= 0) line[0] = 0;
-    ck(strstr(line, "own=1") != NULL,
-       "a SAME-site subresource carries the Strict cookie -- the rule refuses, it does not block");
+    ck(strstr(line, "own=1") == NULL,
+       "a scheme change on the same host is cross-site and suppresses Strict");
+    struct cookie_request same = { "page.example", 1, 0, 1, 0 };
+    n = webapi_cookie_line_request("page.example", "/", 1, &same, line, (int)sizeof line);
+    ck(n > 0 && strstr(line, "own=1") != NULL,
+       "a same-scheme same-site subresource carries the Strict cookie");
 }
 
 int main(void)

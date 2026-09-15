@@ -225,8 +225,8 @@ static void t_domain_attribute(void)
 
 static void t_public_suffix(void)
 {
-    /* No PSL, so the conservative rule: >= 2 labels and not in the built-in
-     * table. See the comment at the top of cookies.c for the residual gap. */
+    /* Full vendored PSL; wildcard/private/exception coverage is also exercised
+     * in the dedicated hardening gate. */
     OK(cookie_domain_is_public_suffix("com"));
     OK(cookie_domain_is_public_suffix("uk"));
     OK(cookie_domain_is_public_suffix("localhost"));
@@ -402,7 +402,7 @@ static void t_expiry(void)
     OK(set_from(&j, "example.com", "/", 0, "e=1; Max-Age=99999999999999999999999") == 0);
     OK(strstr(hdr_for(&j, "example.com", "/", 0, 1), "e=1") != NULL);
     OK(cookie_jar_gc(&j, NOW + 1000000000) >= 0);
-    OK(strstr(hdr_for(&j, "example.com", "/", 0, 1), "e=1") != NULL);
+    OK(strstr(hdr_for(&j, "example.com", "/", 0, 1), "e=1") == NULL);
 
     /* Expired cookies are not served even before gc runs. */
     OK(set_from(&j, "example.com", "/", 0, "f=1; Max-Age=10") == 0);
@@ -642,8 +642,9 @@ static void t_header_buffer(void)
     struct cookie_ctx c = CTX("example.com", "/", 0, 1);
     char small[16];
     int n = cookie_header(&j, &c, NOW, small, (int)sizeof small);
-    /* Truncation is by whole cookies: half a "name=val" is a corrupt header. */
-    OK(n >= 0 && n < (int)sizeof small && !strcmp(small, "aaaa=1111"));
+    /* Correction: whole-cookie truncation still lost session state silently.
+     * Any omitted applicable cookie must fail the entire serialization. */
+    OK(n == CK_E_NOFIT && small[0] == 0);
     /* NOTHING fit. This line used to assert == 0 and so PINNED AS CORRECT the
      * one thing wrong with the contract: 0 also means "the user has no cookies
      * for this request", and out[0] is 0 either way, so no caller could tell a

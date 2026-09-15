@@ -28,7 +28,7 @@
  *      short initializer list, so a name added without a parser is otherwise
  *      silent -- and upstream's only guard was an assert(), compiled out of
  *      the shipped browser by -DNDEBUG (Makefile, UCFLAGS).
- *   2. THE APPENDED TAIL.  The five LogitOS names must be the LAST five, in
+ *   2. THE APPENDED TAIL.  The appended LogitOS names must remain at the tail, in
  *      order. (A sortedness check over the upstream block was written first
  *      and REMOVED: that block is not sorted -- `columns` precedes
  *      `column-count`, `pitch` follows `pitch-range`, `speak` follows
@@ -171,14 +171,17 @@ int main(void)
         ck(bad < 0, "every property name in the table has a live handler");
     }
 
-    /* ---- 2. THE APPENDED TAIL is the last five, in order. */
+    /* ---- 2. Original claim: the radius family was the last five.
+     * pointer-events is now the sixth append; keep all five old anchors so
+     * extending support cannot conceal a shear in the established tail. */
     {
         static const char *const tail[] = {
             "border-radius",
             "border-top-left-radius",
             "border-top-right-radius",
             "border-bottom-right-radius",
-            "border-bottom-left-radius"
+            "border-bottom-left-radius",
+            "pointer-events"
         };
         const unsigned int ntail = sizeof tail / sizeof tail[0];
         int tail_ok = 1;
@@ -191,7 +194,7 @@ int main(void)
                 tail_ok = 0;
             }
         }
-        ck(tail_ok, "the five appended LogitOS names are the LAST five, in order");
+        ck(tail_ok, "the appended LogitOS names remain at the tail in order");
     }
 
     /* ---- 3. ALIGNMENT: anchors spread across the range.
@@ -213,6 +216,7 @@ int main(void)
             { 147, "8px 8px 0 0",              "border-radius"             },
             { 148, "9px",                      "border-top-left-radius"    },
             { 151, "1px 2px",                  "border-bottom-left-radius" },
+            { 152, "auto",                     "pointer-events"            },
         };
         const unsigned int na = sizeof a / sizeof a[0];
         char what[224];
