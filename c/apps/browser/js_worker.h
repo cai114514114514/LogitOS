@@ -49,6 +49,16 @@ WORKER_FN void js_worker_install(JSContext *ctx);
 WORKER_FN int       js_worker_pending(void);
 WORKER_FN long long js_worker_next_due(void);
 WORKER_FN int       js_worker_run_due(void);
+/* Same dispatch with the page's shared turn deadline. A yield keeps queued
+ * tasks and worker microtasks live in pending/next_due. Never re-enters the
+ * browser from inside a synchronous worker/native call. */
+WORKER_FN int       js_worker_run_due_until(unsigned long long deadline_ms);
+/* Page integration: after a batch of parent notifications, return before
+ * another worker enters JS and set *parent_handoff. The page must service
+ * its network checkpoint and yield to input/paint before calling again.
+ * The standalone pumps above have no page phase to hand work back to. */
+WORKER_FN int       js_worker_run_due_for_page(unsigned long long deadline_ms,
+                                               int *parent_handoff);
 
 /* Terminate every live worker and free both runtimes. MUST be called from
  * js_page_close() BEFORE the page context itself is freed: every worker
@@ -64,6 +74,8 @@ LOGIT_WEAK_STUB(js_worker_install);
 LOGIT_WEAK_STUB(js_worker_pending);
 LOGIT_WEAK_STUB(js_worker_next_due);
 LOGIT_WEAK_STUB(js_worker_run_due);
+LOGIT_WEAK_STUB(js_worker_run_due_until);
+LOGIT_WEAK_STUB(js_worker_run_due_for_page);
 LOGIT_WEAK_STUB(js_worker_close_all);
 #endif
 

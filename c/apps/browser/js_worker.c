@@ -73,11 +73,56 @@
 #include "quickjs.h"
 #include "js_worker.h"
 #include "js_page.h"
+#include "js_task_budget.h"
+#define JS_WEBAPI_OPTIONAL
+#include "js_webapi.h"
+#undef JS_WEBAPI_OPTIONAL
+#define JS_URL_OPTIONAL
+#include "js_url.h"
+#undef JS_URL_OPTIONAL
+#define JS_WASM_OPTIONAL
+#include "js_wasm.h"
+#undef JS_WASM_OPTIONAL
 #include "bfetch.h"
 #include "url.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+int js_page_pump(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_page_pump);
+#ifdef JS_WORKER_BLOB_ALLOC_AUDIT
+/* Host-only observation of actual frees, including the direct close-all
+ * path. Counting state transitions alone would miss a discarded pointer. */
+extern void worker_blob_test_allocated(void *);
+extern void worker_blob_test_free(void *);
+#define free worker_blob_test_free
+#endif
+
+/* Diagnostic builds observe browser-owned decisions even when page code
+ * handles the resulting error event. Only these fixed labels and a local id
+ * may cross this boundary: never URLs, thrown text, or message payloads. The
+ * default build adds no hook and changes no worker scheduling/policy. */
+#ifdef JS_RUNTIME_DIAGNOSTICS
+static unsigned worker_diag_lines;
+static void worker_diag(int id, const char *phase, const char *kind)
+{
+    if (worker_diag_lines++ < 256)
+        printf("[runtime-diag] worker id=%d phase=%s kind=%s\n", id, phase, kind);
+}
+static JSValue js_worker_diag_ctor(JSContext *ctx, JSValueConst self,
+                                   int argc, JSValueConst *argv)
+{
+    (void)ctx; (void)self;
+    if (argc && JS_VALUE_GET_TAG(argv[0]) == JS_TAG_INT) {
+        int code = JS_VALUE_GET_INT(argv[0]);
+        if (code == 1) worker_diag(0, "constructor", "module-unsupported");
+    }
+    return JS_UNDEFINED;
+}
+#include "js_worker_promise_diagnostics.inc"
+#else
+#define worker_diag(id, phase, kind) ((void)0)
+#endif
 
 /* -------------------------------------------------------------------------
  * one small helper this file needs everywhere: a DOMException, thrown from
@@ -161,10 +206,22 @@ struct jsworker {
     int state;
     JSRuntime *rt;
     JSContext *wctx;             /* the worker's own context; NULL until started */
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    struct worker_promise_diag promise_diag;
+#endif
     JSValue self_obj;             /* worker's globalThis, dup'd */
     JSContext *pctx;               /* the page context this worker belongs to */
     JSValue worker_obj;             /* the Worker instance in pctx, dup'd */
     char url[600];
+    /* Capture the creator before deferred startup. Blob URLs are capabilities
+     * in that realm's object-URL table, not HTTP URLs (strstr("://") used to
+     * reject every blob:http(s) URL before allocating even a worker id).
+     * The owned copy survives revokeObjectURL and is freed after eval/reap. */
+    char creator_origin[URL_HOST_MAX + 16];
+    struct url creator_url;
+    int creator_valid, is_blob;
+    unsigned char *blob_source;
+    int blob_length;
     struct pending_msg *inbound_head, *inbound_tail;  /* posted while STARTING */
     /* this worker's OWN watchdog -- see the file header, point 1. Deliberately
      * separate state from js_page.c's g_slice_*, so a lower per-worker budget
@@ -177,6 +234,27 @@ struct jsworker {
 
 static struct jsworker g_workers[JSW_MAX_WORKERS];
 static int g_next_worker_id = 1;
+
+/* The owner sweep and task snapshot survive a boundary yield. Starting the
+ * sweep at owner zero on every return would let that owner's ready reactions
+ * consume every budget forever. The old sequence snapshot still excludes
+ * tasks appended during the task phase, including self-rearming intervals. */
+static unsigned g_worker_owner_cursor;
+static int g_worker_task_phase;
+static int g_worker_task_snapshot_active;
+static unsigned long long g_worker_task_limit;
+static long long g_worker_task_now;
+static unsigned long long g_worker_deadline;
+static int g_worker_in_turn;
+static int worker_turn_expired(void)
+{
+    return g_worker_in_turn &&
+        js_task_budget_expired(js_page_now_ms(), g_worker_deadline);
+}
+static int worker_jobs_pending(const struct jsworker *w)
+{
+    return w->rt && w->state != WK_DEAD && JS_IsJobPending(w->rt);
+}
 
 /* Lower than js_page.c's 45 s page default on purpose (see the risk this was
  * written against: Worker-creation-happens-in-parallel.https.html spins on
@@ -222,6 +300,13 @@ static void worker_slice_begin(struct jsworker *w)
  * the task queue -- ONE JAR, ONE DOOR (see the file header)
  * ========================================================================= */
 enum { WTK_CALL = 0, WTK_START = 1 };
+#ifdef JS_RUNTIME_DIAGNOSTICS
+/* Still dispatched as an ordinary call; the diagnostic tag distinguishes
+ * inbound messages from timers without reading any JS function properties. */
+#define WTK_MESSAGE 2
+#else
+#define WTK_MESSAGE WTK_CALL
+#endif
 
 struct wtask {
     struct wtask *next;
@@ -252,23 +337,29 @@ static void task_free(struct wtask *t)
     free(t);
 }
 
-static void task_add(int wid, int kind, JSContext *ctx, JSValue callee, JSValue thisArg,
+static int task_add(int wid, int kind, JSContext *ctx, JSValue callee, JSValue thisArg,
                      JSValue *argv, int argc, long long due, int interval_ms, int timer_id)
 {
-    struct wtask *t = calloc(1, sizeof *t);
+    struct wtask *t;
+#ifdef JS_WORKER_TEST_START_OOM
+    t = kind==WTK_START?NULL:calloc(1,sizeof *t);
+#else
+    t = calloc(1, sizeof *t);
+#endif
     if (!t) {
         if (ctx) {
             JS_FreeValue(ctx, callee); JS_FreeValue(ctx, thisArg);
             for (int i = 0; i < argc; i++) JS_FreeValue(ctx, argv[i]);
         }
         free(argv);
-        return;
+        return 0;
     }
     t->wid = wid; t->kind = kind; t->ctx = ctx; t->callee = callee; t->thisArg = thisArg;
     t->argv = argv; t->argc = argc; t->due = due; t->interval_ms = interval_ms;
     t->timer_id = timer_id; t->seq = ++g_wseq;
     t->next = g_tasks;
     g_tasks = t;
+    return 1;
 }
 
 /* `keep_parent_notify`: skip tasks BOUND FOR THE PARENT (ctx == w->pctx) --
@@ -311,8 +402,12 @@ static void cancel_worker_tasks(struct jsworker *w, int keep_parent_notify)
 static void mark_dead_ex(struct jsworker *w, int keep_parent_notify)
 {
     if (!w->used || w->state == WK_DEAD) return;
+    worker_diag(w->id, "exit", keep_parent_notify ? "internal-failure" : "requested");
     w->state = WK_DEAD;
     w->free_pending = 1;
+    /* self.close can run inside a network reaction. Stop admission now;
+     * actual socket/JSValue destruction waits for reap after it unwinds. */
+    if(w->wctx&&LOGIT_HAVE(js_webapi_fetch_stop))js_webapi_fetch_stop(w->wctx);
 #ifndef JS_WORKER_NO_TERMINATE
     cancel_worker_tasks(w, keep_parent_notify);
 #endif
@@ -365,6 +460,13 @@ static void reap_dead(void)
          * about the worker-bound leftover task this purge exists for. */
         cancel_worker_tasks(w, 1);
         if (w->wctx) {
+            if(LOGIT_HAVE(js_webapi_fetch_close))js_webapi_fetch_close(w->wctx);
+#ifndef WORKER_NO_WASM_REALM
+            if(LOGIT_HAVE(js_wasm_reset))js_wasm_reset(w->wctx);
+#endif
+#ifdef JS_RUNTIME_DIAGNOSTICS
+            worker_promise_diag_close(w->wctx, &w->promise_diag);
+#endif
             JS_FreeValue(w->wctx, w->self_obj);
             JS_FreeContext(w->wctx);
         }
@@ -372,6 +474,7 @@ static void reap_dead(void)
         if (w->pctx && !JS_IsUndefined(w->worker_obj)) JS_FreeValue(w->pctx, w->worker_obj);
         struct pending_msg *m = w->inbound_head;
         while (m) { struct pending_msg *n = m->next; free(m->buf); free(m); m = n; }
+        free(w->blob_source);
         memset(w, 0, sizeof *w);
     }
 }
@@ -433,24 +536,25 @@ static void deliver_error_to_parent(struct jsworker *w, const char *message,
  * worker's own runtime -- the top-level script eval in worker_start(), each
  * buffered-message flush in worker_start()'s drain loop, and every
  * JS_Call into a worker context inside js_worker_run_due() -- so that by the
- * time control returns to js_page.c's idle check, a worker's job queue is
- * always EITHER empty OR the reactions still pending are ones nothing has
- * scheduled a wake for yet (impossible: a `.then()` job is runnable the
- * instant its promise settles, so "pending after drain" cannot happen for a
- * runtime with no other thread feeding it). js_worker_pending() therefore
- * needed no change: it already reports "idle" correctly once this function
- * is called at every entry, because by construction there is nothing left
- * in w->rt's queue when this returns.
+ * time control returns to js_page.c's idle check, a worker's job queue was
+ * historically always empty. Correction: a finite but long reaction must
+ * now return to input/painting before the next reaction. pending/next_due
+ * explicitly observe JS_IsJobPending, and dispatch resumes those jobs before
+ * another task in the SAME worker. Page and worker are separate event loops;
+ * this does not split a page checkpoint to run a new page JS event within it.
  *
  * Same liveness cap as js_dom_run_jobs, same reason: a job that requeues
  * itself (`function f(){ Promise.resolve().then(f) } f()`, inside a
  * worker) must not wedge the one thread the whole browser runs on. */
 #define WORKER_MAX_JOBS_PER_PUMP 100000
-static void worker_drain_jobs(struct jsworker *w)
+static int worker_drain_jobs(struct jsworker *w)
 {
-    if (!w || !w->rt) return;
+    if (!w || !w->rt) return 0;
     int n = 0;
     for (; n < WORKER_MAX_JOBS_PER_PUMP; n++) {
+        /* A fetch reaction may call close(). Do not then execute a second
+         * reaction or manufacture a new parent delivery from that dead realm. */
+        if(w->state==WK_DEAD || worker_turn_expired())break;
         JSContext *jc = 0;
         int r = JS_ExecutePendingJob(w->rt, &jc);
         if (r == 0) break;               /* queue empty */
@@ -470,12 +574,14 @@ static void worker_drain_jobs(struct jsworker *w)
     if (n >= WORKER_MAX_JOBS_PER_PUMP)
         printf("[worker %d] microtask queue did not drain in %d jobs -- giving up this turn\n",
                w->id, WORKER_MAX_JOBS_PER_PUMP);
+    return n;
 }
 
 static void worker_report_uncaught(struct jsworker *w, JSValueConst e)
 {
     JSContext *ctx = w->wctx;
     if (w->wd_hit) {
+        worker_diag(w->id, "execution", "watchdog");
         /* item 12: silent, by design -- a forcibly-terminated script reports
          * no exception. Marked dead HERE, not left to the caller: a watchdog
          * hit during an ordinary message/timer callback (not just the
@@ -490,6 +596,7 @@ static void worker_report_uncaught(struct jsworker *w, JSValueConst e)
         return;
     }
 
+    worker_diag(w->id, "execution", "uncaught-exception");
     const char *m = JS_ToCString(ctx, e);
     printf("[worker %d] uncaught: %s\n", w->id, m ? m : "?");
 
@@ -537,6 +644,7 @@ static void deliver_message_to_worker_now(struct jsworker *w, const unsigned cha
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue callee = get_method(ctx, g, "__deliverMessage");
     if (JS_IsFunction(ctx, callee)) {
+        worker_diag(w->id, "inbound-message-dispatch", "message");
         worker_slice_begin(w);
         JSValueConst args[1]; args[0] = v;
         JSValue r = JS_Call(ctx, callee, g, 1, args);
@@ -554,6 +662,23 @@ static void deliver_message_to_worker_now(struct jsworker *w, const unsigned cha
     worker_drain_jobs(w);   /* see worker_drain_jobs's header -- a message callback is exactly the kind of entry point that can enqueue a promise reaction */
 }
 
+/* Startup messages used to be detached and drained as one unbounded batch.
+ * Keep them owned by the worker until individually dispatched. New incoming
+ * messages append behind a surviving startup buffer, never overtake it. */
+static int worker_flush_inbound(struct jsworker *w)
+{
+    int ran = 0;
+    while (w->state == WK_RUNNING && w->inbound_head &&
+           !worker_jobs_pending(w) && !worker_turn_expired()) {
+        struct pending_msg *m = w->inbound_head;
+        w->inbound_head = m->next;
+        if (!w->inbound_head) w->inbound_tail = NULL;
+        deliver_message_to_worker_now(w, m->buf, m->len);
+        free(m->buf); free(m); ran++;
+    }
+    return ran;
+}
+
 /* =========================================================================
  * the worker's own global scope
  * ========================================================================= */
@@ -561,6 +686,7 @@ static JSValue js__wPostMessage(JSContext *ctx, JSValueConst t, int argc, JSValu
 {
     (void)t;
     struct jsworker *w = find_worker(wid);
+    if(!w||w->state==WK_DEAD)return JS_UNDEFINED;
     JSValueConst data = argc > 0 ? argv[0] : JS_UNDEFINED;
     size_t len = 0;
     unsigned char *buf = clone_write(ctx, data, &len);
@@ -577,8 +703,9 @@ static JSValue js__wPostMessage(JSContext *ctx, JSValueConst t, int argc, JSValu
     JSValue *args = malloc(sizeof(JSValue));
     if (!args) { JS_FreeValue(w->pctx, callee); JS_FreeValue(w->pctx, v); return JS_UNDEFINED; }
     args[0] = v;
-    task_add(w->id, WTK_CALL, w->pctx, callee, JS_DupValue(w->pctx, w->worker_obj), args, 1,
-             (long long)js_page_now_ms(), 0, 0);
+    if (task_add(w->id, WTK_CALL, w->pctx, callee, JS_DupValue(w->pctx, w->worker_obj), args, 1,
+                 (long long)js_page_now_ms(), 0, 0))
+        worker_diag(w->id, "outbound-message-enqueue", "message");
     return JS_UNDEFINED;
 }
 
@@ -675,6 +802,20 @@ static JSValue wcon_out(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 static JSValue wperf_now(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int wid)
 { (void)t; (void)argc; (void)argv; (void)wid; return JS_NewFloat64(ctx, (double)js_page_now_ms()); }
 
+static JSValue wlocation_string(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int wid)
+{
+    (void)t;(void)argc;(void)argv;
+    struct jsworker *w=find_worker(wid);
+    return JS_NewString(ctx,w?w->url:"");
+}
+
+static int blob_reference(const char *s)
+{
+    const char *scheme="blob:";
+    for(int i=0;i<5;i++){unsigned char c=(unsigned char)s[i];if(c>='A'&&c<='Z')c+='a'-'A';if(c!=scheme[i])return 0;}
+    return 1;
+}
+
 /* The purely-JS half of the worker's global scope: a minimal, self-contained
  * DOMException (the worker context has no js_dom.c, so js_platform.c's own
  * copy is not reachable from here -- duplicating a dozen lines beats reaching
@@ -737,10 +878,16 @@ static const char WORKER_SELF_JS[] =
 "return 'ok';\n"
 "})();\n";
 
-static void worker_install_globals(struct jsworker *w)
+static int worker_install_globals(struct jsworker *w)
 {
     JSContext *ctx = w->wctx;
     int wid = w->id;
+#ifndef WORKER_NO_PURE_GLOBALS
+    /* Pure per-runtime constructors only. Installing window Web APIs here
+     * would overwrite the parent's fetch/location/Blob registry singleton. */
+    if(LOGIT_HAVE(js_url_install_core)&&js_url_install_core(ctx)<0)return -1;
+    if(LOGIT_HAVE(js_webapi_install_encoding)&&js_webapi_install_encoding(ctx)<0)return -1;
+#endif
     JSValue g = JS_GetGlobalObject(ctx);
     w->self_obj = JS_DupValue(ctx, g);
     JS_SetPropertyStr(ctx, g, "self", JS_DupValue(ctx, g));
@@ -779,19 +926,35 @@ static void worker_install_globals(struct jsworker *w)
     JS_SetPropertyStr(ctx, nav, "userAgent", JS_NewString(ctx, "Mozilla/5.0 (LogitOS; x86_64) Logit/1.0"));
     JS_SetPropertyStr(ctx, g, "navigator", nav);
     JSValue loc = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, loc, "href", JS_NewString(ctx, w->url));
+    /* WorkerLocation is a URL stringifier, not [object Object]. Adapters
+     * legitimately pass location itself as the base argument to new URL. */
+    JS_DefinePropertyValueStr(ctx, loc, "href", JS_NewString(ctx, w->url), JS_PROP_ENUMERABLE);
+    JS_DefinePropertyValueStr(ctx, loc, "origin", JS_NewString(ctx, w->creator_origin), JS_PROP_ENUMERABLE);
+    JS_SetPropertyStr(ctx,loc,"toString",JS_NewCFunctionMagic(ctx,(JSCFunctionMagic*)wlocation_string,"toString",0,JS_CFUNC_generic_magic,wid));
     JS_SetPropertyStr(ctx, g, "location", loc);
+    JS_SetPropertyStr(ctx, g, "origin", JS_NewString(ctx, w->creator_origin));
     JS_FreeValue(ctx, g);
 
     JSValue r = JS_Eval(ctx, WORKER_SELF_JS, sizeof WORKER_SELF_JS - 1, "<js_worker self>", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(r)) {
+        worker_diag(w->id, "install", "exception");
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
         fprintf(stderr, "js_worker: self-scope install failed: %s\n", m ? m : "?");
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, e);
+        JS_FreeValue(ctx, r);
+        return -1;
     }
     JS_FreeValue(ctx, r);
+#ifndef WORKER_NO_FETCH
+    if(LOGIT_HAVE(js_webapi_fetch_install)&&
+       js_webapi_fetch_install(ctx,w->url,w->creator_origin,w->creator_origin)<0)return -1;
+#endif
+#ifndef WORKER_NO_WASM_REALM
+    if(LOGIT_HAVE(js_wasm_install))js_wasm_install(ctx);
+#endif
+    return 0;
 }
 
 /* =========================================================================
@@ -808,12 +971,14 @@ static void worker_install_globals(struct jsworker *w)
  * Never returns leaving the worker in WK_STARTING. */
 static void worker_start(struct jsworker *w)
 {
-    struct url docu;
-    int have_doc = (url_parse(js_page_location(), &docu) == 0);
+    worker_diag(w->id, "start", "begin");
+    struct url docu=w->creator_url;
+    int have_doc = w->creator_valid;
     struct url wu;
-    if (have_doc && url_parse(w->url, &wu) == 0) {
+    if (!w->is_blob && have_doc && url_parse(w->url, &wu) == 0) {
         int cross = (wu.https != docu.https) || wu.port != docu.port || strcmp(wu.host, docu.host);
         if (cross) {
+            worker_diag(w->id, "start", "origin-rejected");
             deliver_error_to_parent(w, "cross-origin script URL for Worker", w->url, 0, 0);
             mark_dead_keep_notify(w);
             return;
@@ -827,14 +992,21 @@ static void worker_start(struct jsworker *w)
      * already gets from every other same-origin check in this tree. */
 
     unsigned char *src = 0; int srclen = 0;
-    if (bfetch_sync(w->url, &src, &srclen) != 0) {
+    worker_diag(w->id, "fetch", "begin");
+    int fetched;
+    if(w->is_blob){src=w->blob_source;srclen=w->blob_length;w->blob_source=0;fetched=src?0:-1;}
+    else fetched=bfetch_sync(w->url, &src, &srclen);
+    if (fetched != 0) {
+        worker_diag(w->id, "fetch", "failed");
         deliver_error_to_parent(w, "could not fetch the worker script", w->url, 0, 0);
         mark_dead_keep_notify(w);
         return;
     }
+    worker_diag(w->id, "fetch", "complete");
 
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
+        worker_diag(w->id, "start", "runtime-allocation");
         free(src);
         deliver_error_to_parent(w, "out of memory starting the worker", w->url, 0, 0);
         mark_dead_keep_notify(w);
@@ -848,6 +1020,7 @@ static void worker_start(struct jsworker *w)
     JS_SetInterruptHandler(rt, worker_slice_interrupt, w);
     JSContext *wctx = JS_NewContext(rt);
     if (!wctx) {
+        worker_diag(w->id, "start", "context-allocation");
         JS_FreeRuntime(rt);
         w->rt = 0;
         free(src);
@@ -856,12 +1029,23 @@ static void worker_start(struct jsworker *w)
         return;
     }
     w->wctx = wctx;
-    worker_install_globals(w);
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    worker_promise_diag_install(wctx, &w->promise_diag, w->id);
+#endif
+    if(worker_install_globals(w)<0){
+        free(src);
+        /* Pure-global installation has no parent/worker JS callbacks yet. */
+        JS_FreeValue(wctx,JS_GetException(wctx));
+        deliver_error_to_parent(w,"could not initialize worker globals",w->url,0,0);
+        mark_dead_keep_notify(w);return;
+    }
 
+    worker_diag(w->id, "eval", "begin");
     worker_slice_begin(w);
     JSValue r = JS_Eval(wctx, (const char *)src, (size_t)srclen, w->url, JS_EVAL_TYPE_GLOBAL);
     free(src);
     if (JS_IsException(r)) {
+        worker_diag(w->id, "eval", w->wd_hit ? "watchdog" : "exception");
         JS_FreeValue(wctx, r);
         JSValue e = JS_GetException(wctx);
         worker_report_uncaught(w, e);   /* items 10-12: handles the watchdog case too */
@@ -869,6 +1053,7 @@ static void worker_start(struct jsworker *w)
         mark_dead_keep_notify(w);       /* idempotent if worker_report_uncaught already marked it */
         return;
     }
+    worker_diag(w->id, "eval", "complete");
     JS_FreeValue(wctx, r);
     worker_drain_jobs(w);   /* the top-level script itself can enqueue a job, e.g. `Promise.resolve().then(f)` at global scope -- drain before the WK_DEAD check below, since a drained job can itself call close() */
     /* BUG FOUND BY tests/unit/worker_test.c's quiescence gate, fixed here:
@@ -888,17 +1073,9 @@ static void worker_start(struct jsworker *w)
      * was not what caught it: this reproduced on the PLAIN build. */
     if (w->state == WK_DEAD) return;
     w->state = WK_RUNNING;
+    worker_diag(w->id, "start", "running");
 
-    struct pending_msg *m = w->inbound_head;
-    w->inbound_head = w->inbound_tail = NULL;
-    while (m) {
-        struct pending_msg *n = m->next;
-        deliver_message_to_worker_now(w, m->buf, m->len);
-        free(m->buf); free(m);
-        m = n;
-        if (w->state == WK_DEAD) break;   /* the message itself could close() it */
-    }
-    while (m) { struct pending_msg *n = m->next; free(m->buf); free(m); m = n; }
+    worker_flush_inbound(w);
 }
 
 /* =========================================================================
@@ -911,6 +1088,10 @@ static JSValue js__workerCreate(JSContext *ctx, JSValueConst t, int argc, JSValu
     if (argc < 1) return JS_ThrowTypeError(ctx, "Worker requires a URL");
     const char *href = JS_ToCString(ctx, argv[0]);
     if (!href) return JS_EXCEPTION;
+    int is_blob=0;
+#ifndef JS_WORKER_NO_BLOB
+    is_blob=blob_reference(href);
+#endif
 
     /* A directly-absolute reference is validated with THIS tree's own URL
      * parser before ever reaching bfetch_resolve. That extra step matters
@@ -932,7 +1113,7 @@ static JSValue js__workerCreate(JSContext *ctx, JSValueConst t, int argc, JSValu
      * authority (the "://" up to the next '/') and requires the WHOLE of it
      * to be host/port grammar; anything else is the SyntaxError url_parse
      * missed. General URL hygiene, not a rule about this one string. */
-    if (strstr(href, "://")) {
+    if (!is_blob && strstr(href, "://")) {
         struct url probe;
         int bad = (url_parse(href, &probe) != 0);
         if (!bad) {
@@ -948,29 +1129,56 @@ static JSValue js__workerCreate(JSContext *ctx, JSValueConst t, int argc, JSValu
             }
         }
         if (bad) {
+            worker_diag(0, "constructor", "invalid-url");
             JS_FreeCString(ctx, href);
             return throw_dom_exception(ctx, "SyntaxError", "Worker: the script URL could not be parsed");
         }
     }
 
     char abs[600];
-    int ok = (bfetch_resolve(0, href, abs, sizeof abs) == 0);
+    int ok;
+    if(is_blob){size_t n=strlen(href);ok=n<sizeof abs;if(ok){memcpy(abs,href,n+1);memcpy(abs,"blob:",5);}}
+    else ok=(bfetch_resolve(0, href, abs, sizeof abs) == 0);
     JS_FreeCString(ctx, href);
-    if (!ok) return throw_dom_exception(ctx, "SyntaxError", "Worker: the script URL could not be parsed");
+    if (!ok) {
+        worker_diag(0, "constructor", "unresolved-url");
+        return throw_dom_exception(ctx, "SyntaxError", "Worker: the script URL could not be parsed");
+    }
 
     int slot = -1;
     for (int i = 0; i < JSW_MAX_WORKERS; i++) if (!g_workers[i].used) { slot = i; break; }
-    if (slot < 0)
+    if (slot < 0) {
+        worker_diag(0, "constructor", "capacity");
         return throw_dom_exception(ctx, "NotSupportedError", "Worker: too many workers are already running");
+    }
 
     struct jsworker *w = &g_workers[slot];
     memset(w, 0, sizeof *w);
     w->used = 1;
     w->id = g_next_worker_id++;
+    worker_diag(w->id, "constructor", "created");
     w->state = WK_STARTING;
     w->pctx = ctx;
     w->worker_obj = JS_UNDEFINED;
     w->self_obj = JS_UNDEFINED;
+    w->is_blob=is_blob;
+    w->creator_valid=url_parse(js_page_location(),&w->creator_url)==0;
+    if(w->creator_valid){
+        const struct url *u=&w->creator_url;
+        if(u->port==(u->https?443:80))snprintf(w->creator_origin,sizeof w->creator_origin,"%s://%s",u->https?"https":"http",u->host);
+        else snprintf(w->creator_origin,sizeof w->creator_origin,"%s://%s:%u",u->https?"https":"http",u->host,(unsigned)u->port);
+    }else strcpy(w->creator_origin,"null");
+    if(is_blob&&LOGIT_HAVE(js_webapi_blob_snapshot)){
+        /* Eight workers already bound the registry. A separate 8 MiB source
+         * cap bounds pinned copies even if a caller revokes and reuses its
+         * object-URL quota before these deferred startups are dispatched. */
+        int found=js_webapi_blob_snapshot(ctx,abs,&w->blob_source,&w->blob_length,
+            8*1024*1024,w->creator_origin,sizeof w->creator_origin);
+#ifdef JS_WORKER_BLOB_ALLOC_AUDIT
+        if(found==1)worker_blob_test_allocated(w->blob_source);
+#endif
+        if(found!=1)worker_diag(w->id,"constructor","blob-unavailable");
+    }
     { size_t n = strlen(abs); if (n >= sizeof w->url) n = sizeof w->url - 1;
       memcpy(w->url, abs, n); w->url[n] = 0; }
 
@@ -979,8 +1187,14 @@ static JSValue js__workerCreate(JSContext *ctx, JSValueConst t, int argc, JSValu
      * constructor's contract is "never a Worker whose fate is undecided AT
      * RETURN", and a script set to run synchronously right here could not be
      * un-run if `w.onerror = fn` was the very next statement. */
-    task_add(w->id, WTK_START, NULL, JS_UNDEFINED, JS_UNDEFINED, NULL, 0,
-             (long long)js_page_now_ms(), 0, 0);
+    if(!task_add(w->id, WTK_START, NULL, JS_UNDEFINED, JS_UNDEFINED, NULL, 0,
+             (long long)js_page_now_ms(), 0, 0)){
+        /* Returning a live id without its only startup task strands the
+         * worker forever. No instance has been registered yet, so roll back
+         * the slot/source now and report the constructor allocation error. */
+        free(w->blob_source);memset(w,0,sizeof *w);
+        return JS_ThrowOutOfMemory(ctx);
+    }
     return JS_NewInt32(ctx, w->id);
 }
 
@@ -1019,7 +1233,7 @@ static JSValue js__workerPostToWorker(JSContext *ctx, JSValueConst t, int argc, 
     if (!w) { free(buf); return JS_UNDEFINED; }
 #endif
 
-    if (w->state == WK_STARTING) {
+    if (w->state == WK_STARTING || w->inbound_head) {
         struct pending_msg *m = malloc(sizeof *m);
         if (!m) { free(buf); return JS_UNDEFINED; }
         m->buf = buf; m->len = len; m->next = NULL;
@@ -1038,7 +1252,7 @@ static JSValue js__workerPostToWorker(JSContext *ctx, JSValueConst t, int argc, 
     JSValue *args = malloc(sizeof(JSValue));
     if (!args) { JS_FreeValue(w->wctx, callee); JS_FreeValue(w->wctx, v); return JS_UNDEFINED; }
     args[0] = v;
-    task_add(w->id, WTK_CALL, w->wctx, callee, JS_UNDEFINED, args, 1,
+    task_add(w->id, WTK_MESSAGE, w->wctx, callee, JS_UNDEFINED, args, 1,
              (long long)js_page_now_ms(), 0, 0);
     return JS_UNDEFINED;
 }
@@ -1049,7 +1263,16 @@ static JSValue js__workerTerminate(JSContext *ctx, JSValueConst t, int argc, JSV
     if (argc < 1) return JS_UNDEFINED;
     int32_t id = 0; JS_ToInt32(ctx, &id, argv[0]);
     struct jsworker *w = find_worker(id);
-    if (w) mark_dead(w);   /* item 16: idempotent, reaped on the next run_due pass */
+    if (w && w->pctx==ctx) {
+        mark_dead(w);   /* Previously always reaped on the next run_due pass. */
+#ifndef JS_WORKER_NO_TERMINATE
+        /* This entry executes in the parent, so no child JS_Call is active.
+         * Reap now: terminate must release its last network resource without
+         * keeping js_worker_pending true just for cleanup. self.close still
+         * uses the deferred path because its own runtime IS on the stack. */
+        reap_dead();
+#endif
+    }
     return JS_UNDEFINED;
 }
 
@@ -1064,7 +1287,11 @@ static JSValue js__workerTerminate(JSContext *ctx, JSValueConst t, int argc, JSV
  * installed real ones (both are DOM-independent), with a duck-typed fallback
  * otherwise -- see __deliverMessage/__deliverError below. */
 static const char WORKER_PARENT_JS[] =
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"(function (__workerDiag) {\n"
+#else
 "(function () {\n"
+#endif
 "var G = globalThis;\n"
 "if (G.Worker) return 'skip';\n"
 "function DE(msg, name) {\n"
@@ -1076,7 +1303,11 @@ static const char WORKER_PARENT_JS[] =
 "  if (arguments.length < 1) throw new TypeError('Worker requires 1 argument');\n"
 "  var href = String(url);\n"
 "  var opts = (options && typeof options === 'object') ? options : {};\n"
-"  if (opts.type === 'module') throw DE('module workers are not supported', 'NotSupportedError');\n"
+"  if (opts.type === 'module') {\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"    __workerDiag(1);\n"
+#endif
+"    throw DE('module workers are not supported', 'NotSupportedError'); }\n"
 "  var id = __workerCreate(href);\n"
 "  this._wid = id;\n"
 "  this._listeners = Object.create(null);\n"
@@ -1133,11 +1364,18 @@ static const char WORKER_PARENT_JS[] =
 "};\n"
 "G.Worker = Worker;\n"
 "return 'ok';\n"
+#ifdef JS_RUNTIME_DIAGNOSTICS
+"})\n";
+#else
 "})();\n";
+#endif
 
 void js_worker_install(JSContext *ctx)
 {
     if (!ctx) return;
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    worker_diag_lines = 0;
+#endif
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, g, "__workerCreate", JS_NewCFunction(ctx, js__workerCreate, "__workerCreate", 1));
     JS_SetPropertyStr(ctx, g, "__workerRegister", JS_NewCFunction(ctx, js__workerRegister, "__workerRegister", 2));
@@ -1146,6 +1384,13 @@ void js_worker_install(JSContext *ctx)
     JS_FreeValue(ctx, g);
 
     JSValue r = JS_Eval(ctx, WORKER_PARENT_JS, sizeof WORKER_PARENT_JS - 1, "<js_worker>", JS_EVAL_TYPE_GLOBAL);
+#ifdef JS_RUNTIME_DIAGNOSTICS
+    if (!JS_IsException(r)) {
+        JSValue hook = JS_NewCFunction(ctx, js_worker_diag_ctor, "workerDiagnostic", 1);
+        JSValue result = JS_Call(ctx, r, JS_UNDEFINED, 1, (JSValueConst *)&hook);
+        JS_FreeValue(ctx, hook); JS_FreeValue(ctx, r); r = result;
+    }
+#endif
     if (JS_IsException(r)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
@@ -1159,37 +1404,71 @@ void js_worker_install(JSContext *ctx)
 /* =========================================================================
  * the door js_page.c calls through -- see js_worker.h
  * ========================================================================= */
-int js_worker_pending(void) { return g_tasks != 0; }
+int js_worker_pending(void)
+{
+    if(g_tasks)return 1;
+    for(int i=0;i<JSW_MAX_WORKERS;i++)if(g_workers[i].used&&g_workers[i].free_pending)return 1;
+    for(int i=0;i<JSW_MAX_WORKERS;i++){
+        struct jsworker *w=&g_workers[i];
+        if(!w->used||w->state!=WK_RUNNING)continue;
+        if(w->inbound_head)return 1;
+#ifndef JS_TASK_HIDE_PENDING_JOBS
+        if(worker_jobs_pending(w))return 1;
+#endif
+    }
+    if(LOGIT_HAVE(js_webapi_fetch_pending))for(int i=0;i<JSW_MAX_WORKERS;i++){
+        struct jsworker *w=&g_workers[i];
+        if(w->used&&w->state==WK_RUNNING&&js_webapi_fetch_pending(w->wctx))return 1;
+    }
+    g_worker_owner_cursor=0;g_worker_task_phase=0;g_worker_task_snapshot_active=0;
+    return 0;
+}
 
 long long js_worker_next_due(void)
 {
     long long best = -1;
+    /* Termination can remove the last timer and stop the last socket. Keep
+     * one scheduler turn alive so deferred destruction itself still runs. */
+    for(int i=0;i<JSW_MAX_WORKERS;i++)if(g_workers[i].used&&g_workers[i].free_pending)return (long long)js_page_now_ms();
+    for(int i=0;i<JSW_MAX_WORKERS;i++){
+        struct jsworker *w=&g_workers[i];
+        if(!w->used||w->state!=WK_RUNNING)continue;
+        if(w->inbound_head)return (long long)js_page_now_ms();
+#ifndef JS_TASK_HIDE_PENDING_JOBS
+        if(worker_jobs_pending(w))return (long long)js_page_now_ms();
+#endif
+    }
     for (struct wtask *t = g_tasks; t; t = t->next)
         if (best < 0 || t->due < best) best = t->due;
+    if(LOGIT_HAVE(js_webapi_fetch_next_due))for(int i=0;i<JSW_MAX_WORKERS;i++){
+        struct jsworker *w=&g_workers[i];
+        if(w->used&&w->state==WK_RUNNING){
+            long long due=js_webapi_fetch_next_due(w->wctx);
+            if(due>=0&&(best<0||due<best))best=due;
+        }
+    }
     return best;
 }
 
-int js_worker_run_due(void)
+static int worker_task_is_parent(const struct wtask *t)
 {
-    reap_dead();
-    int ran = 0;
-    long long now = (long long)js_page_now_ms();
-    /* Snapshot, exactly like js_page.c's own timer loop: a task scheduled
-     * DURING this pass (a re-armed interval, a message a callback just
-     * posted) waits for the next call rather than spinning this loop --
-     * which is what keeps a worker's own `setInterval(f, 0)` from starving
-     * the browser's repaint. */
-    unsigned long long limit = g_wseq;
+    if(t->kind==WTK_START)return 0;
+    struct jsworker *w=find_worker(t->wid);
+    return !w||!w->wctx||t->ctx!=w->wctx;
+}
 
-    for (;;) {
-        struct wtask *best = NULL;
-        for (struct wtask *t = g_tasks; t; t = t->next) {
-            if (t->due > now || t->seq > limit) continue;
-            if (!best || t->due < best->due || (t->due == best->due && t->seq < best->seq))
-                best = t;
-        }
-        if (!best) break;
+static struct wtask *worker_ready(long long now,unsigned long long limit,int parent_only)
+{
+    struct wtask *best=NULL;
+    for(struct wtask *t=g_tasks;t;t=t->next){
+        if(t->due>now||t->seq>limit||(parent_only&&!worker_task_is_parent(t)))continue;
+        if(!best||t->due<best->due||(t->due==best->due&&t->seq<best->seq))best=t;
+    }
+    return best;
+}
 
+static void worker_dispatch_task(struct wtask *best,long long now)
+{
         struct wtask **pp = &g_tasks;
         while (*pp && *pp != best) pp = &(*pp)->next;
         if (*pp == best) *pp = best->next;
@@ -1198,8 +1477,7 @@ int js_worker_run_due(void)
             struct jsworker *w = find_worker(best->wid);
             task_free(best);
             if (w && w->state == WK_STARTING) worker_start(w);
-            ran++;
-            continue;
+            return;
         }
 
         struct jsworker *w = find_worker(best->wid);
@@ -1232,11 +1510,15 @@ int js_worker_run_due(void)
          * point: cancel_worker_tasks() removes every task with `ctx ==
          * w->wctx` unconditionally, keep_parent_notify or not -- so
          * `is_worker_call` alone is the correct and sufficient guard. */
-        if (is_worker_call && w->state == WK_DEAD) { task_free(best); ran++; continue; }
+        if (is_worker_call && w->state == WK_DEAD) { task_free(best); return; }
 
         if (is_worker_call) worker_slice_begin(w);
         else js_page_slice_begin();   /* a delivery INTO the parent gets the page's own watchdog */
 
+#ifdef JS_RUNTIME_DIAGNOSTICS
+        if (is_worker_call && best->kind == WTK_MESSAGE)
+            worker_diag(w->id, "inbound-message-dispatch", "message");
+#endif
         JSValue r = JS_Call(best->ctx, best->callee, best->thisArg, best->argc, (JSValueConst *)best->argv);
         if (JS_IsException(r)) {
             JSValue e = JS_GetException(best->ctx);
@@ -1252,14 +1534,117 @@ int js_worker_run_due(void)
         }
         JS_FreeValue(best->ctx, r);
         if (is_worker_call) worker_drain_jobs(w);   /* the call just made can enqueue a promise reaction in w->rt; see worker_drain_jobs's header */
+        else if(LOGIT_HAVE(js_page_pump))js_page_pump();
         task_free(best);
-        ran++;
+}
+
+static int worker_run_due_until(unsigned long long deadline_ms,int *parent_handoff)
+{
+    if(parent_handoff)*parent_handoff=0;
+    reap_dead();
+    int ran=0,was_in_turn=g_worker_in_turn;
+    unsigned long long previous_deadline=g_worker_deadline;
+    g_worker_in_turn=1;g_worker_deadline=deadline_ms;
+
+    /* A completed worker may have posted its result just before yielding.
+     * Deliver already-due parent notifications before entering a different
+     * owner's next long reaction. Ordering remains due/sequence FIFO within
+     * this parent task source; worker agents have independent event loops. */
+#ifndef JS_TASK_NO_PARENT_SWEEP
+    long long parent_now=(long long)js_page_now_ms();
+    unsigned long long parent_limit=g_wseq;
+    for(;;){
+        if(worker_turn_expired())goto out;
+        struct wtask *best=worker_ready(parent_now,parent_limit,1);
+        if(!best)break;
+        worker_dispatch_task(best,parent_now);ran++;
+#ifndef JS_TASK_NO_PARENT_FETCH_HANDOFF
+        if(parent_handoff)*parent_handoff=1;
+#endif
     }
+#ifndef JS_TASK_NO_PARENT_FETCH_HANDOFF
+    /* A parent callback can open a fetch without sending its HTTP request:
+     * the page's network phase ran before this worker phase. Return to that
+     * owner now, even when the callback used less than the time budget. A
+     * different worker's next native call may otherwise block the send. */
+    if(parent_handoff&&*parent_handoff)goto out;
+#endif
+#endif
+
+    if(!g_worker_task_phase){
+        while(g_worker_owner_cursor<JSW_MAX_WORKERS){
+            if(worker_turn_expired())goto out;
+            struct jsworker *w=&g_workers[g_worker_owner_cursor++];
+            if(!w->used||w->state!=WK_RUNNING)continue;
+            worker_slice_begin(w);
+            ran+=worker_drain_jobs(w);
+            if(w->state==WK_DEAD||worker_jobs_pending(w)||worker_turn_expired())continue;
+            ran+=worker_flush_inbound(w);
+            if(w->state==WK_DEAD||worker_jobs_pending(w)||w->inbound_head||worker_turn_expired())continue;
+#ifndef WORKER_FETCH_NO_PUMP
+            if(LOGIT_HAVE(js_webapi_fetch_pump)){
+                int work=js_webapi_fetch_pump(w->wctx);
+                ran+=work;
+                if(work)ran+=worker_drain_jobs(w);
+            }
+#endif
+        }
+        g_worker_task_phase=1;
+        if(!g_worker_task_snapshot_active){
+            g_worker_task_now=(long long)js_page_now_ms();
+            g_worker_task_limit=g_wseq;
+            g_worker_task_snapshot_active=1;
+        }
+    }
+
+    for(;;){
+        if(worker_turn_expired())goto out;
+        struct wtask *best=worker_ready(g_worker_task_now,g_worker_task_limit,0);
+        if(!best)break;
+        struct jsworker *w=find_worker(best->wid);
+        if(best->kind!=WTK_START&&w&&best->ctx==w->wctx&&
+           (worker_jobs_pending(w)||w->inbound_head)){
+            worker_slice_begin(w);
+            ran+=worker_drain_jobs(w);
+            if(w->state!=WK_DEAD)ran+=worker_flush_inbound(w);
+            /* Either callback may close the worker and free 'best'. Select
+             * again rather than retaining a queued-task pointer across JS. */
+            if(worker_jobs_pending(w)||w->inbound_head)goto out;
+            continue;
+        }
+        int parent_call=worker_task_is_parent(best);
+        worker_dispatch_task(best,g_worker_task_now);ran++;
+#ifndef JS_TASK_NO_PARENT_FETCH_HANDOFF
+        if(parent_handoff&&parent_call){*parent_handoff=1;goto out;}
+#else
+        (void)parent_call;
+#endif
+    }
+    g_worker_owner_cursor=0;g_worker_task_phase=0;g_worker_task_snapshot_active=0;
+out:
+    /* A task can create a live worker or suspend its startup buffer after
+     * the owner sweep already passed that slot. Resume owners on the next
+     * UI turn, not only after every old task in the snapshot is exhausted.
+     * Keep the task snapshot itself: this is fairness between agents, not
+     * admission of this turn's newly queued timers into its old batch. */
+    if(g_worker_task_phase){g_worker_task_phase=0;g_worker_owner_cursor=0;}
+    g_worker_in_turn=was_in_turn;g_worker_deadline=previous_deadline;
+    (void)js_worker_pending(); /* reset a completed, now-empty sweep */
     return ran;
 }
 
+int js_worker_run_due_until(unsigned long long deadline_ms)
+{return worker_run_due_until(deadline_ms,NULL);}
+
+int js_worker_run_due_for_page(unsigned long long deadline_ms,int *parent_handoff)
+{return worker_run_due_until(deadline_ms,parent_handoff);}
+
+int js_worker_run_due(void)
+{return js_worker_run_due_until(js_page_now_ms()+JS_TASK_TURN_MS);}
+
 void js_worker_close_all(void)
 {
+    g_worker_owner_cursor=0;g_worker_task_phase=0;g_worker_task_snapshot_active=0;
     for (int i = 0; i < JSW_MAX_WORKERS; i++)
         if (g_workers[i].used) mark_dead(&g_workers[i]);
     /* Reap unconditionally, bypassing free_pending: js_page_close() calls
@@ -1271,11 +1656,23 @@ void js_worker_close_all(void)
     for (int i = 0; i < JSW_MAX_WORKERS; i++) {
         struct jsworker *w = &g_workers[i];
         if (!w->used) continue;
-        if (w->wctx) { JS_FreeValue(w->wctx, w->self_obj); JS_FreeContext(w->wctx); }
+        if (w->wctx) {
+            if(LOGIT_HAVE(js_webapi_fetch_close))js_webapi_fetch_close(w->wctx);
+#ifndef WORKER_NO_WASM_REALM
+            if(LOGIT_HAVE(js_wasm_reset))js_wasm_reset(w->wctx);
+#endif
+#ifdef JS_RUNTIME_DIAGNOSTICS
+            worker_promise_diag_close(w->wctx, &w->promise_diag);
+#endif
+            JS_FreeValue(w->wctx, w->self_obj); JS_FreeContext(w->wctx);
+        }
         if (w->rt) JS_FreeRuntime(w->rt);
         if (w->pctx && !JS_IsUndefined(w->worker_obj)) JS_FreeValue(w->pctx, w->worker_obj);
         struct pending_msg *m = w->inbound_head;
         while (m) { struct pending_msg *n = m->next; free(m->buf); free(m); m = n; }
+        /* Navigation can happen before the deferred task transfers the
+         * constructor's source snapshot into worker_start's local owner. */
+        free(w->blob_source);
         memset(w, 0, sizeof *w);
     }
     while (g_tasks) { struct wtask *t = g_tasks; g_tasks = t->next; task_free(t); }
