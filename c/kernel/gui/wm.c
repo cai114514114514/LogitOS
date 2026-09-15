@@ -243,7 +243,12 @@ struct app {
  * rather than disguising this remaining GUI serialization as parallel draw. */
 static struct gui_mutex wm_lock = GUI_MUTEX_INIT;
 static uint64_t wm_lock_ns, wm_lock_max_ns, wm_lock_calls;
-static unsigned external_dirty;
+/* Cross-thread requests for a full repaint carry their cause all the way to
+ * the compositor.  This used to be a boolean named external_dirty, shared by
+ * damage-ring overflow AND process exit, so the only measurement available
+ * called both of them "overflow".  That is worse than no attribution: it
+ * points an optimization at the queue when the caller was proc_exit(). */
+static unsigned external_full_reasons;
 static uint64_t wm_lock_started;
 static void wm_state_lock(void) {
     gui_mutex_lock(&wm_lock);
@@ -444,6 +449,37 @@ static struct drect dmg[NDMG];
 static int ndmg;
 static int dirty_all = 1;                      /* next frame is the whole screen */
 
+/* WHY A FULL FRAME HAPPENED, retained until that frame is consumed.  The
+ * compositor's old `full` counter answered only how many; it could not tell a
+ * necessary theme flip from an accidental escalation, so the expensive tail
+ * was unactionable.  Bits are used rather than one last-writer string because
+ * several requests can coalesce before the WM gets the graphics mutex, and
+ * losing the earlier request would make the trace confidently wrong.
+ *
+ * The initial bit is seeded beside dirty_all above.  FULL_EMPTY is not passed
+ * by a caller: wm_render_locked records it if `dirty` was somehow armed with
+ * neither dirty_all nor a rectangle, the apparatus failure dirty_rect's empty
+ * rectangle guard is specifically written to prevent. */
+enum full_reason {
+    FULL_INITIAL           = 1u << 0,
+    FULL_DAMAGE_THRESHOLD  = 1u << 1,
+    FULL_EXTERNAL_OVERFLOW = 1u << 2,
+    FULL_EXPOSE_ENTER      = 1u << 3,
+    FULL_EXPOSE_LEAVE      = 1u << 4,
+    FULL_FOCUS_EXISTING    = 1u << 5,
+    FULL_WINDOW_CREATE     = 1u << 6,
+    FULL_FLUSH_NO_WINDOW   = 1u << 7,
+    FULL_THEME             = 1u << 8,
+    FULL_EXPOSE_TERMINAL   = 1u << 9,
+    FULL_ZORDER_SYSTEM     = 1u << 10,
+    FULL_ZORDER_APP        = 1u << 11,
+    FULL_LOCKED_CURSOR     = 1u << 12,
+    FULL_UNLOCK            = 1u << 13,
+    FULL_EMPTY             = 1u << 14,
+    FULL_APP_EXIT          = 1u << 15,
+};
+static unsigned dirty_full_reasons = FULL_INITIAL;
+
 static int rect_hit(const struct drect *a, const struct drect *b)
 { return a->x0 < b->x1 && b->x0 < a->x1 && a->y0 < b->y1 && b->y0 < a->y1; }
 static int rect_in(const struct drect *inner, const struct drect *outer)
@@ -459,7 +495,13 @@ static void rect_or(struct drect *a, const struct drect *b)
 static long rect_area(const struct drect *r)
 { return (long)(r->x1 - r->x0) * (long)(r->y1 - r->y0); }
 
-static void dirty_full(void) { dirty_all = 1; ndmg = 0; dirty = 1; }
+static void dirty_full(enum full_reason why)
+{
+    dirty_full_reasons |= (unsigned)why;
+    dirty_all = 1;
+    ndmg = 0;
+    dirty = 1;
+}
 
 /* Fold a rectangle into the list. Ones that touch are unioned -- and unioning
  * two can bring the result into contact with a third, hence the loop. When the
@@ -510,7 +552,8 @@ static void dmg_add(struct drect n)
      * threshold with no shadow margin anywhere near it. */
     long total = 0;
     for (int i = 0; i < ndmg; i++) total += rect_area(&dmg[i]);
-    if (ndmg > 1 && total * 4 > (long)W * (long)H * 3) dirty_full();
+    if (ndmg > 1 && total * 4 > (long)W * (long)H * 3)
+        dirty_full(FULL_DAMAGE_THRESHOLD);
 }
 
 static void dirty_rect(int x, int y, int w, int h)
@@ -544,7 +587,8 @@ void wm_damage(int x, int y, int w, int h)
     uint64_t f = spin_lock_irqsave(&ext_damage_lock);
     if (ext_damage_n < EXT_DAMAGE_N)
         ext_damage[ext_damage_n++] = (struct drect){x,y,x+w,y+h};
-    else __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
+    else __atomic_fetch_or(&external_full_reasons,
+                           FULL_EXTERNAL_OVERFLOW, __ATOMIC_RELEASE);
     spin_unlock_irqrestore(&ext_damage_lock, f);
 }
 static void wm_external_damage(void)
@@ -554,9 +598,10 @@ static void wm_external_damage(void)
     unsigned n = ext_damage_n;
     for (unsigned i=0; i<n; i++) local[i] = ext_damage[i];
     ext_damage_n = 0;
-    unsigned full = __atomic_exchange_n(&external_dirty, 0, __ATOMIC_ACQ_REL);
+    unsigned full = __atomic_exchange_n(&external_full_reasons, 0,
+                                        __ATOMIC_ACQ_REL);
     spin_unlock_irqrestore(&ext_damage_lock, f);
-    if (full) dirty_full();
+    if (full) dirty_full((enum full_reason)full);
     else for (unsigned i=0; i<n; i++)
         dirty_rect(local[i].x0, local[i].y0, local[i].x1-local[i].x0, local[i].y1-local[i].y0);
 }
@@ -943,6 +988,24 @@ static uint64_t perf_cursor_moves, perf_cursor_ns;   /* host-plane cursor update
  * anything ON ITS OWN, separately from compositing less -- a question the
  * composite total cannot answer and which was asked directly. */
 static uint64_t perf_cpx, perf_present_ns, perf_full, perf_rects;
+/* Exact phase attribution for the rare full frame.  Timing the compositor's
+ * glass calls here avoids fb.c's app-surface calls and therefore answers the
+ * question being asked: live-backdrop glass during this frame, not every use
+ * of the drawing API in the machine.  `glass_px` is work pixels (one panel
+ * drawn twice counts twice), deliberately: that is the quantity proportional
+ * to CPU cost.  The base and present pixel counts remain W*H for a full frame.
+ *
+ * The trace is printed only after wm_render drops graphics_lock.  Printing it
+ * inside wm_render_locked would add serial latency to the very hold time this
+ * instrument exists to measure, a silent self-measurement failure. */
+static uint64_t frame_glass_ns, frame_glass_px;
+struct full_frame_trace {
+    int pending;
+    uint64_t seq, total_ns, ordinary_px, glass_ns, glass_px;
+    uint64_t present_ns, present_px;
+    unsigned reasons;
+};
+static struct full_frame_trace full_trace;
 /* ---- and whether a frame was a PICTURE ------------------------------------
  *
  * `torn` is the number of times the compositor has blitted a window whose
@@ -1554,7 +1617,7 @@ static void ex_enter(void)
     /* ONE full-screen frame, for the dim -- which lands everywhere at once and
      * is honestly whole-screen damage. Everything after this frame pays only
      * for the windows that move; see wm_anim_tick. */
-    dirty_full();
+    dirty_full(FULL_EXPOSE_ENTER);
     /* The grid itself, once: a harness can then assert that a mid-flight rect
      * lies strictly BETWEEN the window's own frame and the cell it is aimed at,
      * which is the actual claim "it animated" makes. Without the destination
@@ -1586,7 +1649,7 @@ static void ex_leave(int pick)
     ex_wait_release = 0;
     ex_hov = -1;
     for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
-    dirty_full();          /* the raise re-stacks every overlap on screen */
+    dirty_full(FULL_EXPOSE_LEAVE); /* the raise re-stacks every overlap on screen */
     kprintf("[wm] expose off pick=%d\n", pick);
 }
 
@@ -1812,7 +1875,7 @@ void wm_launch_locked(const char *aex_file, const char *arg)
          * screen. That is the only way back for a minimised window besides
          * Cmd+Tab, so it is not an optional nicety. */
         if (exist->win >= 0) { win_set_min(&wins[exist->win], 0); raise_win(exist->win); }
-        dirty_full();
+        dirty_full(FULL_FOCUS_EXISTING);
         kfree(img);                         /* image not needed -- app already running */
         return;
     }
@@ -2424,16 +2487,35 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         w->anim_prev.x0 = w->anim_prev.y0 = w->anim_prev.x1 = w->anim_prev.y1 = 0;
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
         w->open_t0 = anim_stamp();       /* trigger open pop */
-        /* The first open frame is deliberately still a full repaint below:
-         * adding a topmost window also changes the previous focus chrome. The
-         * FOLLOWING frames change only this growing box, though, and need a
-         * real previous extent just like minimise and Expose. Seeding after
-         * open_t0 matters because win_box() must describe the 0.84x picture
-         * that is actually on screen first, not the settled frame. */
+        /* The following open frames need a real previous extent just like
+         * minimise and Expose. Seeding after open_t0 matters because win_box()
+         * must describe the 0.84x picture actually on screen first, not the
+         * settled frame. */
         win_box(w, &w->anim_prev);
         ap->win = wi;
+#ifdef WM_SPURIOUS_FULL_NEGCTL
         raise_win(wi);
-        dirty_full();
+        dirty_full(FULL_WINDOW_CREATE);
+#else
+        int prev_top = top_visible();
+        raise_win(wi);
+        /* Creating a topmost window changes TWO bounded footprints: the new
+         * window, and the old top window whose focused chrome turns inactive.
+         * The old code used a full screen for the second fact.  Measured on
+         * the 1920x1200 reproduction: Finder's create frame held composition
+         * for 81,371,589 ns -- 56,067,718 ordinary, 23,826,879 live glass and
+         * 1,476,992 present -- and was the worst of the first six frames.
+         *
+         * Use the same two-footprint rule as the click-to-raise path. win_box
+         * includes the focused shadow and the current open-pop scale; its
+         * anim_prev seed above makes subsequent growth damage old|new. What is
+         * deliberately NOT changed is z-order locking or mid-frame exclusion:
+         * render_region still rebuilds each damaged pixel wallpaper-up, so no
+         * app flush can interleave and no new tearing mechanism is needed. */
+        dirty_win(w);
+        if (prev_top >= 0 && prev_top != wi && wins[prev_top].used)
+            dirty_win(&wins[prev_top]);
+#endif
         return 0;
     }
     case SYS_GUI_CLEAR: {
@@ -2531,7 +2613,7 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
          * move the window, resize it or change its focus, so it cannot have
          * changed one pixel of the shadow. See dirty_win_content(). */
         struct win *w = app_window(ap);
-        if (w) dirty_win_content(w); else dirty_full();
+        if (w) dirty_win_content(w); else dirty_full(FULL_FLUSH_NO_WINDOW);
         return 0;
     }
     case SYS_GUI_FLUSH_RECT: {
@@ -2933,7 +3015,8 @@ static long wm_event_syscall(long num, long a, long b)
     if (a && got && user_copy_to((void *)a, &event, sizeof event) < 0) result = -1;
     int dead = !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE);
     __atomic_sub_fetch(&w->wait_refs, 1, __ATOMIC_RELEASE);
-    if (dead) __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
+    if (dead) __atomic_fetch_or(&external_full_reasons,
+                                FULL_APP_EXIT, __ATOMIC_RELEASE);
     return result;
 }
 long wm_gui_syscall(long num, long a, long b, long c)
@@ -2962,7 +3045,22 @@ void wm_app_exit(void)
         int wi = __atomic_load_n(&ap->win, __ATOMIC_ACQUIRE);
         if (wi >= 0 && wi < MAXWIN) waitq_wake_all(&wins[wi].evwq);
     }
-    __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
+    /* A CLI/forked process has ap == NULL and changed no desktop pixel.  The
+     * old unconditional store nevertheless forced W*H composition plus every
+     * live-backdrop glass panel on every such exit.  On the measured desktop
+     * that was one otherwise-idle full frame per second.  Keep the request for
+     * every GUI app, including one that died before SYS_GUI_CREATE: wm_render's
+     * reap() is also what releases its app slot, so suppressing that case would
+     * trade the repaint for a silent slot leak.  WM_SPURIOUS_FULL_NEGCTL
+     * restores the old unconditional request; the guest gate boots that build
+     * first and must observe its extra full frames on the same workload. */
+#ifdef WM_SPURIOUS_FULL_NEGCTL
+    __atomic_fetch_or(&external_full_reasons, FULL_APP_EXIT, __ATOMIC_RELEASE);
+#else
+    if (ap)
+        __atomic_fetch_or(&external_full_reasons,
+                          FULL_APP_EXIT, __ATOMIC_RELEASE);
+#endif
 }
 
 /* The plain form: a window-level event with no button and no wheel (EV_KEY,
@@ -3003,7 +3101,7 @@ static void wm_set_dark(int on)
     /* Every pixel of chrome changes colour and every app is about to repaint:
      * a full-screen repaint is the CORRECT answer here, and this is the case
      * the damage tracking has to be shown still producing one. */
-    dirty_full();
+    dirty_full(FULL_THEME);
 }
 
 /* ---------- reaping dead apps ---------- */
@@ -3159,6 +3257,25 @@ static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y
 /* The clock is the only thing on an idle desktop that changes, and it changes
  * twice a second. That used to be a full-screen recomposite; it is now this. */
 static void dirty_menubar(void) { dirty_rect(0, 0, W, MBH); }
+
+static void profiled_glass(int x, int y, int w, int h, int radius,
+                           uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta)
+{
+    uint64_t t = time_mono_ns();
+    fb_liquid_glass(x, y, w, h, radius, tr, tg, tb, ta);
+    frame_glass_ns += time_mono_ns() - t;
+    frame_glass_px += (uint64_t)w * (uint64_t)h;
+}
+
+static void profiled_glass_cut(int x, int y, int w, int h, int radius,
+                               uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
+                               unsigned cut)
+{
+    uint64_t t = time_mono_ns();
+    fb_liquid_glass_cut(x, y, w, h, radius, tr, tg, tb, ta, cut);
+    frame_glass_ns += time_mono_ns() - t;
+    frame_glass_px += (uint64_t)w * (uint64_t)h;
+}
 /* WM-HOOK (out): see wm.h. The IME's indicator lives in the bar and ime_ui.c
  * must be able to say "it changed" without knowing MBH. */
 void wm_damage_menubar(void) { wm_damage(0, 0, W, MBH); }
@@ -3240,8 +3357,8 @@ static void draw_menubar(void)
      * The bottom edge keeps its rim: that hairline is the menu bar's only
      * separation from the wallpaper below it. */
     unsigned mbcut = GLASS_CUT_TOP | GLASS_CUT_LEFT | GLASS_CUT_RIGHT;
-    if (g_ui_dark) fb_liquid_glass_cut(0, 0, W, MBH, S(2), 24, 24, 32, 150, mbcut);
-    else           fb_liquid_glass_cut(0, 0, W, MBH, S(2), 255, 255, 255, 110, mbcut);
+    if (g_ui_dark) profiled_glass_cut(0, 0, W, MBH, S(2), 24, 24, 32, 150, mbcut);
+    else           profiled_glass_cut(0, 0, W, MBH, S(2), 255, 255, 255, 110, mbcut);
     fb_blend_rect(0, MBH - S(1), W, S(1), 0, 0, 0, g_ui_dark ? 70 : 28);  /* hairline */
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     fb_fill_circle(S(16), MBH / 2, S(6), ink);
@@ -3458,8 +3575,8 @@ static void draw_dock(void)
      * edge all the way round, under a panel translucent enough to show it. */
     fb_shadow(dock_x0, dock_y0, dw, dh, S(28), DOCKSH_DY, DOCKSH_BLUR, 56);
     /* Liquid Glass: frost + rim refraction + specular highlight + body tint */
-    if (g_ui_dark) fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
-    else           fb_liquid_glass(dock_x0, dock_y0, dw, dh, S(28), 255, 255, 255, 44);
+    if (g_ui_dark) profiled_glass(dock_x0, dock_y0, dw, dh, S(28), 26, 26, 34, 104);
+    else           profiled_glass(dock_x0, dock_y0, dw, dh, S(28), 255, 255, 255, 44);
 
     /* Live hover magnification: the icon under the cursor grows in place (kept
      * inside the panel + gap so it never overlaps a neighbour) and shows its name
@@ -3760,8 +3877,8 @@ static void draw_menu_dropdown(void)
     struct drect p; menu_dropdown_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
     fb_shadow(p.x0, p.y0, w, h, S(10), S(6), S(16), g_ui_dark ? 150 : 70);
-    if (g_ui_dark) fb_liquid_glass(p.x0, p.y0, w, h, S(10), 30, 30, 38, 165);
-    else           fb_liquid_glass(p.x0, p.y0, w, h, S(10), 250, 250, 255, 190);
+    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(10), 30, 30, 38, 165);
+    else           profiled_glass(p.x0, p.y0, w, h, S(10), 250, 250, 255, 190);
 
     unsigned ac = settings_get_color("ui.accent", 0x5E96FF);
     uint8_t ar = (uint8_t)(ac >> 16), ag = (uint8_t)(ac >> 8), ab = (uint8_t)ac;
@@ -3806,8 +3923,8 @@ static void draw_overlay_panel(void)
     struct drect p; overlay_box(&p);
     int w = p.x1 - p.x0, h = p.y1 - p.y0;
     fb_shadow(p.x0, p.y0, w, h, S(14), S(10), S(28), g_ui_dark ? 170 : 90);
-    if (g_ui_dark) fb_liquid_glass(p.x0, p.y0, w, h, S(14), 28, 28, 36, 195);
-    else           fb_liquid_glass(p.x0, p.y0, w, h, S(14), 250, 250, 255, 210);
+    if (g_ui_dark) profiled_glass(p.x0, p.y0, w, h, S(14), 28, 28, 36, 195);
+    else           profiled_glass(p.x0, p.y0, w, h, S(14), 250, 250, 255, 210);
     uint32_t ink = g_ui_dark ? rgb(232, 233, 238) : rgb(40, 40, 48);
     uint32_t dim = g_ui_dark ? rgb(172, 173, 182) : rgb(96, 96, 104);
 
@@ -3912,8 +4029,8 @@ static void draw_frame(struct win *w, int focused)
     int x = w->x, y = w->y, ww = w->w, wh = w->h;
     fb_shadow(x, y, ww, wh, S(10), WSH_DY(focused), WSH_BLUR(focused), WSH_ALPHA(focused));
     uint8_t a = focused ? (g_ui_dark ? 150 : 104) : (g_ui_dark ? 180 : 140);
-    if (g_ui_dark) fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
-    else           fb_liquid_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);
+    if (g_ui_dark) profiled_glass(x, y, ww, TBH + S(10), S(10), 30, 30, 40, a);
+    else           profiled_glass(x, y, ww, TBH + S(10), S(10), 250, 250, 255, a);
     /* NOT the separator -- see draw_titlebar_sep above; the caller draws it
      * after blit_content, or it is covered before it is ever seen. */
     uint32_t off = g_ui_dark ? rgb(80, 80, 90) : rgb(205, 205, 210);
@@ -4834,12 +4951,12 @@ static void wm_anim_tick(void)
                  * clears the mode below. */
                 if (!ex_wait_release) {
                     ex_wait_release = 1;
-                    dirty_full();
+                    dirty_full(FULL_EXPOSE_TERMINAL);
                 }
             } else {
                 ex_t0 = 0;
                 ex_wait_release = 0;
-                dirty_full();      /* entering: the swept area. leaving: the dim. */
+                dirty_full(FULL_EXPOSE_TERMINAL); /* entering: the swept area. leaving: the dim. */
             }
         } else {
             for (int k = 0; k < ex_n; k++) {
@@ -4886,6 +5003,8 @@ static void wm_render_locked(void)
 
     struct drect r[NDMG];
     int nr = 0, full = dirty_all || ndmg == 0;
+    unsigned full_reasons = dirty_full_reasons;
+    if (!dirty_all && ndmg == 0) full_reasons |= FULL_EMPTY;
     if (!full) {
         for (int i = 0; i < ndmg; i++) r[i] = dmg[i];
         nr = dmg_expand(r, ndmg);
@@ -4895,9 +5014,14 @@ static void wm_render_locked(void)
     /* Clear BEFORE drawing: damage recorded from here on (a dock bounce still
      * running, an app flushing from another thread) belongs to the NEXT frame,
      * not to the one being composited. */
-    dirty_all = 0; ndmg = 0;
+    dirty_all = 0; ndmg = 0; dirty_full_reasons = 0;
 
     uint64_t t_start = time_mono_ns();
+    uint64_t cpx_start = perf_cpx;
+    uint64_t present_start = perf_present_ns;
+    uint64_t present_px_start = fb_present_px();
+    frame_glass_ns = 0;
+    frame_glass_px = 0;
     /* ---- ORIGIN/MAIN PEELED THE BKL HERE. THIS BRANCH HAS NO BKL TO PEEL. ----
      *
      * The merge of 2026-09-15 brought in ~95 lines from origin/main that
@@ -4965,13 +5089,44 @@ static void wm_render_locked(void)
     perf_rects += (uint64_t)nr;
     if (full) perf_full++;
     if (dt > perf_comp_ns_max) perf_comp_ns_max = dt;
+    if (full) {
+        full_trace.pending = 1;
+        full_trace.seq++;
+        full_trace.total_ns = dt;
+        full_trace.ordinary_px = perf_cpx - cpx_start;
+        full_trace.glass_ns = frame_glass_ns;
+        full_trace.glass_px = frame_glass_px;
+        full_trace.present_ns = perf_present_ns - present_start;
+        full_trace.present_px = fb_present_px() - present_px_start;
+        full_trace.reasons = full_reasons;
+    }
 }
 
 void wm_render(void)
 {
+    /* Copy and clear the trace while graphics_lock still excludes another
+     * compositor.  Printing after unlock is required to keep serial I/O out of
+     * the measured hold, but reading the shared record after unlock let a
+     * second renderer overwrite a pending frame; seq=2 disappeared in the
+     * first attribution run.  A stack copy preserves both properties. */
+    struct full_frame_trace trace = {0};
     fb_graphics_lock();
     wm_render_locked();
+    trace = full_trace;
+    full_trace.pending = 0;
     fb_graphics_unlock();
+    if (trace.pending) {
+        uint64_t accounted = trace.glass_ns + trace.present_ns;
+        uint64_t ordinary = trace.total_ns > accounted ?
+                            trace.total_ns - accounted : 0;
+        kprintf("[wm] fullframe seq=%lu reasons=0x%x total_ns=%lu ordinary_px=%lu "
+                "ordinary_ns=%lu glass_px=%lu glass_ns=%lu present_px=%lu present_ns=%lu\n",
+                (unsigned long)trace.seq, trace.reasons,
+                (unsigned long)trace.total_ns, (unsigned long)trace.ordinary_px,
+                (unsigned long)ordinary, (unsigned long)trace.glass_px,
+                (unsigned long)trace.glass_ns, (unsigned long)trace.present_px,
+                (unsigned long)trace.present_ns);
+    }
 }
 
 /* ---------- input ---------- */
@@ -5066,7 +5221,7 @@ static int wm_shortcut(int c, int mods)
             }
             if (bot >= 0) { win_set_min(&wins[bot], 0); raise_win(bot); }
         }
-        dirty_full();      /* a z-order change re-stacks every overlap on screen */
+        dirty_full(FULL_ZORDER_SYSTEM); /* a z-order change re-stacks every overlap on screen */
         return 1;
     }
     case '`':
@@ -5083,7 +5238,7 @@ static int wm_shortcut(int c, int mods)
                 if (cw->used && cw->app == ap && order[i] != wi) {
                     win_set_min(cw, 0);
                     raise_win(order[i]);
-                    dirty_full();
+                    dirty_full(FULL_ZORDER_APP);
                     return 1;
                 }
             }
@@ -5248,7 +5403,7 @@ static void wm_locked_mouse(const struct inputq_event *in)
     set_cursor(CUR_ARROW);
     /* Without a cursor plane the arrow lives in the composite, so a moved
      * pointer is damage -- exactly as on the unlocked path. */
-    if (moved && !hw_cursor) dirty_full();
+    if (moved && !hw_cursor) dirty_full(FULL_LOCKED_CURSOR);
 }
 
 /* EXPOSE: the pointer belongs to the picker and to nothing else.
@@ -6148,7 +6303,7 @@ static void wm_check_unlock(void)
     { int count = W * H; blit(bg, back, count); }
 
     wm_desktop_start();
-    dirty_full();
+    dirty_full(FULL_UNLOCK);
 }
 
 void wm_run(void)

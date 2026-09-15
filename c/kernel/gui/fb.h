@@ -15,6 +15,14 @@ uint32_t fb_height(void);
  * Passive display drivers use the range to verify ownership against PCI BARs. */
 int fb_boot_lfb_range(uint64_t *addr, uint64_t *bytes);
 
+/* A synchronous native present borrows the complete RAM back buffer. Return
+ * 0 only after the GPU and its destination cache are idle; -1 permits CPU
+ * fallback; -2 means a write may still be in flight and freezes ALL front
+ * writers until reboot. Registration and calls share the graphics mutex. */
+typedef int (*fb_native_present_fn)(const uint32_t *, uint32_t,
+                                    uint32_t, uint32_t, uint32_t, uint32_t);
+void fb_set_native_present(fb_native_present_fn fn);
+
 /* ---- UI scale: points vs device pixels ---------------------------------
  *
  * The desktop is authored in POINTS -- a resolution-independent unit -- and the

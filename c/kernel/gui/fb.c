@@ -50,10 +50,21 @@ static uint64_t boot_lfb_addr, boot_lfb_bytes;
  * revoke the pointer first, then wait for old leases to retire. A late worker
  * obtains NULL and never touches released backing. */
 static unsigned fb_front_writers;
+static unsigned fb_front_blocked, fb_front_quarantined;
+static fb_native_present_fn native_present;
+void fb_set_native_present(fb_native_present_fn fn)
+{
+    fb_graphics_lock();
+    native_present = fn;
+    /* Unregistering is not a hardware reset: never clear quarantine here. */
+    fb_graphics_unlock();
+}
 static volatile uint8_t *fb_front_acquire(void)
 {
     __atomic_add_fetch(&fb_front_writers, 1, __ATOMIC_SEQ_CST);
     volatile uint8_t *mem = __atomic_load_n(&fb_mem, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&fb_front_blocked, __ATOMIC_SEQ_CST) ||
+        __atomic_load_n(&fb_front_quarantined, __ATOMIC_SEQ_CST)) mem = NULL;
     if (!mem) __atomic_sub_fetch(&fb_front_writers, 1, __ATOMIC_SEQ_CST);
     return mem;
 }
@@ -357,16 +368,50 @@ uint64_t fb_present_calls(void) { return present_calls; }
  * credited with pixels no one copied. */
 void fb_present_rect(int x, int y, int w, int h)
 {
+    fb_graphics_lock();
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (x + w > (int)fb_w) w = (int)fb_w - x;
     if (y + h > (int)fb_h) h = (int)fb_h - y;
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0 || !screen.px ||
+        __atomic_load_n(&fb_front_quarantined, __ATOMIC_SEQ_CST)) {
+        fb_graphics_unlock();
+        return;
+    }
+    if (!using_gpu && native_present) {
+        /* AP band copies do not take the graphics mutex. Revoke admission
+         * first and drain acquired leases before the GPU can touch scanout.
+         * A timed-out AP drain has submitted no GPU work, so CPU fallback is
+         * safe; a GPU timeout is different and must latch quarantine. */
+        __atomic_store_n(&fb_front_blocked, 1, __ATOMIC_SEQ_CST);
+        unsigned spins = 100000;
+        while (__atomic_load_n(&fb_front_writers, __ATOMIC_SEQ_CST) && spins)
+            --spins;
+        int rc = -1;
+        if (!__atomic_load_n(&fb_front_writers, __ATOMIC_SEQ_CST))
+            rc = native_present(screen.px, fb_w, (uint32_t)x, (uint32_t)y,
+                                (uint32_t)w, (uint32_t)h);
+#ifdef FB_NATIVE_PRESENT_NEGCTL_CPU_FALLBACK
+        if (rc == 0) rc = -1; /* Watched mutation: overwrite a completed GPU frame. */
+#endif
+        if (rc < -1)
+            __atomic_store_n(&fb_front_quarantined, 1, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&fb_front_blocked, 0, __ATOMIC_SEQ_CST);
+        if (rc != -1) {
+            if (!rc) {
+                present_px += (uint64_t)w * (uint64_t)h;
+                present_calls++;
+            }
+            fb_graphics_unlock();
+            return;
+        }
+    }
     present_px += (uint64_t)w * (uint64_t)h;
     present_calls++;
     if (g_par_present && h >= 128) g_par_present(x, y, w, h);   /* RAM-to-RAM now (fast) */
     else fb_copy_rect(x, y, w, h);
     if (using_gpu) virtio_gpu_flush(x, y, w, h);               /* DMA the rect to the host */
+    fb_graphics_unlock();
 }
 
 /* Flush a rect that was drawn straight into fb_mem (e.g. the cursor overlay):
@@ -402,11 +447,13 @@ void fb_cursor_move(int x, int y)
 void fb_fb_put(int x, int y, uint32_t color)
 {
     if (x < 0 || y < 0 || x >= (int)fb_w || y >= (int)fb_h) return;
+    fb_graphics_lock();
     volatile uint8_t *mem = fb_front_acquire();
-    if (!mem) return;
+    if (!mem) { fb_graphics_unlock(); return; }
     volatile uint32_t *dst = (volatile uint32_t *)(mem + (uint32_t)y * fb_pitch);
     dst[x] = color;
     fb_front_release();
+    fb_graphics_unlock();
 }
 
 /* Text now goes through the anti-aliased Unicode engine (kernel/text.c). These
