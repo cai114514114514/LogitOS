@@ -7,8 +7,8 @@ this, and a non-static array would put 40 KB of bytecode in the global symbol
 table of every binary that links it.
 
 Used for exactly one thing today: embedding build/asboot.la (the compiled
-bridge module, c/apps/as/asboot.as) into /bin/as. See the header of
-c/apps/as/asboot.as for why the bridge exists at all.
+bridge module, c/apps/as/legacy/bootstrap.as) into /bin/as. See the header of
+c/apps/as/legacy/bootstrap.as for why the bridge exists at all.
 
 Deterministic: the output is a pure function of the input bytes, so a
 rebuild with an unchanged input produces a byte-identical header and does not

@@ -123,9 +123,12 @@ EXPECTED = {
 def makefiles():
     out = [os.path.join(ROOT, "Makefile")]
     td = os.path.join(ROOT, "tests")
-    for f in sorted(os.listdir(td)):
-        if f.endswith(".mk"):
-            out.append(os.path.join(td, f))
+    # Keep controls visible when a subsystem moves into nested directories.
+    for base, dirs, files in os.walk(td):
+        dirs.sort()
+        for f in sorted(files):
+            if f.endswith(".mk"):
+                out.append(os.path.join(base, f))
     return out
 
 

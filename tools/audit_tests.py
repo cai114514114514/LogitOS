@@ -117,9 +117,14 @@ def makefile_texts():
     if os.path.exists(mk):
         out["Makefile"] = read(mk)
     d = os.path.join(ROOT, "tests")
-    for n in sorted(os.listdir(d)):
-        if n.endswith(".mk"):
-            out["tests/" + n] = read(os.path.join(d, n))
+    # Nested subsystem fragments still define CI roots and prerequisites.
+    # A top-level listdir silently drops their targets after a directory move.
+    for base, dirs, files in os.walk(d):
+        dirs.sort()
+        for n in sorted(files):
+            if n.endswith(".mk"):
+                path = os.path.join(base, n)
+                out[os.path.relpath(path, ROOT)] = read(path)
     return out
 
 

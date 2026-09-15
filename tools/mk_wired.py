@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every tests/*.mk must be reachable from the Makefile, transitively.
+"""Every tests/**/*.mk must be reachable from the Makefile, transitively.
 
 WHY THIS EXISTS.  Each feature or porting line owns its own fragment and
 deliberately does not touch the shared Makefile, so nobody ever adds the
@@ -23,7 +23,8 @@ about -- the instrument, not the system:
 And the rule this tree already writes down for anything that parses make:
 join the continuations FIRST.  A '#' line is not an include.
 """
-import glob, os, re, sys
+import re, sys
+from pathlib import Path
 
 # Fragments that are deliberately NOT included, with the reason.  Declared
 # rather than silently skipped: a list of one with a reason is readable, and
@@ -35,36 +36,47 @@ ALLOW_UNWIRED = {
 
 def includes_of(path):
     try:
-        text = open(path, encoding="utf-8", errors="replace").read()
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return set()
-    text = re.sub(r"\\r?\n[ \t]*", " ", text)          # join continuations
+    text = re.sub(r"\\\r?\n[ \t]*", " ", text)          # join continuations
     found = set()
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("#"):
             continue
-        m = re.match(r"-?include\s+tests/([A-Za-z0-9_-]+)\.mk", s)
-        if m:
-            found.add(m.group(1))
+        # Make resolves includes from the invocation directory, even inside a
+        # nested fragment. Keep its tests-relative path, not the basename:
+        # polaris/smu/stage.mk and another family's stage.mk are distinct gates.
+        # Only literal includes are modeled; computed make expressions remain
+        # outside this static check's original contract.
+        m = re.match(r"(?:-?include|sinclude)\s+(.+)$", s)
+        if m and not line.startswith("\t"):
+            for token in m.group(1).split("#", 1)[0].split():
+                path = re.fullmatch(r"tests/((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+)\.mk", token)
+                if path:
+                    found.add(path.group(1))
     return found
 
-def main():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    os.chdir(root)
-    every = {os.path.basename(p)[:-3] for p in glob.glob("tests/*.mk")}
-    seen, stack = set(), list(includes_of("Makefile"))
+def main(root=None):
+    root = Path(root) if root is not None else Path(__file__).resolve().parent.parent
+    # Previously only tests/*.mk was inventoried. That silently accepted a
+    # nested fragment with no include at all, so both inventory and graph must
+    # preserve paths when a subsystem is reorganized into directories.
+    every = {p.relative_to(root / "tests").with_suffix("").as_posix()
+             for p in (root / "tests").rglob("*.mk")}
+    seen, stack = set(), list(includes_of(root / "Makefile"))
     while stack:
         n = stack.pop()
         if n in seen:
             continue
         seen.add(n)
-        stack += [x for x in includes_of(f"tests/{n}.mk") if x not in seen]
+        stack += [x for x in includes_of(root / f"tests/{n}.mk") if x not in seen]
     dead = sorted(every - seen - set(ALLOW_UNWIRED))
     if not dead:
         print(f"mk-wired: ok ({len(every)} fragments, "
-              f"{len(every) - len(ALLOW_UNWIRED)} reachable from the Makefile, "
-              f"{len(ALLOW_UNWIRED)} declared)")
+              f"{len(every & seen)} reachable from the Makefile, "
+              f"{len(every & set(ALLOW_UNWIRED))} declared)")
         for k, why in sorted(ALLOW_UNWIRED.items()):
             print(f"  declared: tests/{k}.mk -- {why}")
         return 0
@@ -72,8 +84,8 @@ def main():
     print(f"mk-wired: {len(dead)} of {len(every)} fragments are UNREACHABLE.")
     print("Every target below is defined and cannot be run by name:")
     for m in dead:
-        body = open(f"tests/{m}.mk", encoding="utf-8", errors="replace").read()
-        body = re.sub(r"\\r?\n[ \t]*", " ", body)
+        body = (root / f"tests/{m}.mk").read_text(encoding="utf-8", errors="replace")
+        body = re.sub(r"\\\r?\n[ \t]*", " ", body)
         tg = sorted(set(re.findall(r"^(test-[A-Za-z0-9_-]+)\s*:", body, re.M)))
         gates += len(tg)
         print(f"  tests/{m}.mk  {len(tg)} gate(s): {' '.join(tg) or '(none)'}")

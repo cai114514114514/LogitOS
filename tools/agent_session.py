@@ -8,6 +8,7 @@ broker and its two configuration files are replaced, under the existing disk
 guard. The provider key never crosses into the guest or command line.
 """
 import argparse
+import os
 from pathlib import Path
 import signal
 import struct
@@ -74,6 +75,8 @@ def main():
     parser.add_argument('--textedit', type=Path, help='install the native document workspace with its matching broker')
     parser.add_argument('--snapshot-helper', type=Path, required=True)
     parser.add_argument('--env', type=Path, required=True)
+    parser.add_argument('--optional-env', action='store_true',
+                        help='boot without a host model when the env file is absent')
     parser.add_argument('--state-dir', type=Path, required=True)
     parser.add_argument('--limit', type=int, default=32)
     parser.add_argument('qemu', nargs=argparse.REMAINDER)
@@ -81,6 +84,15 @@ def main():
     command = args.qemu[1:] if args.qemu[:1] == ['--'] else args.qemu
     if not command: parser.error('QEMU command is required after --')
     if args.limit < 1: parser.error('limit must be positive')
+    # Ordinary `make run` used to skip this launcher entirely, leaving a
+    # working task UI with no model transport. Auto-enable the same session
+    # when .env exists; a checkout without credentials can still boot. An
+    # existing but invalid configuration must fail visibly, not silently turn
+    # an intended online session into an offline desktop.
+    if args.optional_env and not args.env.exists() and not args.env.is_symlink():
+        print('MODEL_SESSION_OFFLINE: '+str(args.env)+' is absent; model requests are unavailable.', flush=True)
+        os.execv(sys.executable, [sys.executable, str(ROOT/'tools/disk_guard.py'),
+                                 str(args.disk.absolute()), '--', *command])
     # Do not resolve disk symlinks before the shared guard can reject them.
     disk = args.disk.absolute()
     if not disk.is_file(): raise RuntimeError('build the initial disk before starting an agent session')

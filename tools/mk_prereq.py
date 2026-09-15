@@ -137,7 +137,8 @@ def check(rules, defs=None):
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(root)
-    files = ["Makefile"] + sorted(glob.glob("tests/*.mk"))
+    # Nested driver fragments own link rules too; do not lose their checks.
+    files = ["Makefile"] + sorted(glob.glob("tests/**/*.mk", recursive=True))
     rules = []
     for f in files:
         rules += rules_of(f)
