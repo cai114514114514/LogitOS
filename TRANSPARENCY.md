@@ -11,7 +11,11 @@ commit `3973dec`; uncommitted working-tree changes are not counted.
 
 - LogitOS is a standalone experimental x86_64 kernel, not a Linux distribution,
   a Linux fork, or a compatibility skin over a host OS.
-- The project is human-directed and heavily AI-assisted.
+- The project is human-directed, and its first-party production code is written
+  by AI coding agents as a matter of policy rather than convenience. Humans set
+  goals, design architecture, review, test, verify and integrate. See
+  `CONTRIBUTING.md`, "Authorship: who writes the implementation". The older
+  wording here was "heavily AI-assisted", which understates it.
 - The first-party operating-system core is GPL-3.0-or-later; project-authored
   outer components are MIT. Vendored, adapted, and data dependencies retain
   their upstream terms and are listed in `THIRD_PARTY.md`.
@@ -25,12 +29,29 @@ commit `3973dec`; uncommitted working-tree changes are not counted.
 
 ## Human and AI authorship
 
-Git metadata through `3973dec` contains 267 commits. All 267 name `hzm` as the
-commit author; 247 commit messages contain a `Co-Authored-By` trailer naming
-Claude or Anthropic. This is strong evidence that AI assistance was material to
-most of the recorded development history.
+`CONTRIBUTING.md` now states the policy: first-party production code is written
+by AI coding agents, and humans set goals, design architecture, review, test,
+verify and integrate rather than hand-writing implementations. What follows is
+the evidence for what actually happened, which is a different question from
+what the policy says.
 
-These numbers have limits:
+Measured 2026-09-15 at `87c84b1`: 1,219 commits, of which 1,073 carry a
+`Co-Authored-By` trailer naming a model. The models named, by commit count:
+Claude Opus 5 (708), Claude Opus 4.8 (184), Claude Opus 5 1M (75), Claude Opus
+4.8 1M (61), Claude Fable 5 (45). Commit authorship is `hzm` and
+`cai114514114514`.
+
+The previous paragraph here read "Git metadata through `3973dec` contains 267
+commits ... 247 commit messages contain a `Co-Authored-By` trailer", and is kept
+in this sentence because somebody will arrive holding it. That snapshot is 952
+commits behind.
+
+These numbers have limits, and the first one is now the important one:
+
+- **A trailer is a record, not a check.** Nothing in this repository verifies
+  the authorship policy. A hand-written change carrying a model trailer would
+  pass unnoticed, and 146 commits carry no trailer at all. Read the count as
+  evidence that agents did most of the recorded work, not as enforcement.
 
 - A commit trailer does not measure who supplied an idea, reviewed a change, or
   typed each line.

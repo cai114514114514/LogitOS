@@ -1,9 +1,21 @@
 # LogitOS — notes for Claude
 
-A from-scratch x86_64 OS kernel (C + nasm + a little Rust), booted two ways —
-GRUB/Multiboot2 and its **own UEFI loader** (`c/boot/efi/`) — aiming toward a
-macOS-style desktop that runs software not written for it. Real kernel, not a
-simulation.
+A from-scratch x86_64 OS kernel (C + nasm + a little Rust), booted two ways — its
+**own BIOS bootloader** (`c/boot/bios/`) and its **own UEFI loader**
+(`c/boot/efi/`) — over its **own boot protocol** (`include/abi/logit_boot.h`),
+aiming toward a macOS-style desktop that runs software not written for it. Real
+kernel, not a simulation.
+
+> **Correction 2026-09-15.** This sentence read "booted two ways — GRUB/Multiboot2
+> and its own UEFI loader", and it was true until that day. GRUB, xorriso and
+> Multiboot2 are gone from the shipped path: `tools/mkiso.py` writes the ISO,
+> `c/boot/bios/preload.asm` + `loader.asm` bring the machine up from the El Torito
+> boot sector, and both loaders now enter the kernel in 64-bit long mode, which
+> deleted `c/boot/boot.asm` (158 lines), `c/boot/multiboot2.asm` (37) and
+> `c/boot/efi/trampoline.S` (409). `make iso-grub` survives one release as a
+> bisection hatch, and a Multiboot2 kernel survives ONLY as the independent test
+> oracle in `tests/fixtures/bootoracle/`. Firmware is still third-party: the
+> honest sentence is "self-hosted from the boot sector up".
 
 **This file was rewritten on 2026-08-28** after every falsifiable claim in the
 previous version was checked against the tree: **482 claims, 173 of them stale or
@@ -112,7 +124,10 @@ manufacturing each other's failures — see "a sweep that manufactures bugs" bel
 - Compile: `clang --target=x86_64-elf -ffreestanding` (clang cross-compiles natively)
 - Link: **`ld.lld`** — Apple `ld` only emits Mach-O, so the LLVM linker is required (`brew install lld`)
 - Assemble: `nasm -f elf64` (32-bit boot code lives in elf64 objects via `bits 32`)
-- ISO: `i686-elf-grub-mkrescue` + `xorriso`; ESP: `tools/mkesp.py` (+ OVMF for `test-uefi`)
+- ISO: **`tools/mkiso.py`**, this project's own ISO9660 + El Torito writer. ESP:
+  `tools/mkesp.py` (+ OVMF for `test-uefi`). `i686-elf-grub-mkrescue` and `xorriso`
+  are needed ONLY by `make iso-grub` and the Multiboot2 oracle now, not to build
+  the product ISO -- this line used to name them as the ISO builder.
 - Run: `qemu-system-x86_64` — **TCG only.** An x86_64 guest on an arm64 host has
   no hardware acceleration; `QEMU_SMP ?= -smp 4 -accel tcg,thread=multi`. Every
   timing in this file is under emulation and says so.
@@ -337,10 +352,17 @@ thin section concludes the subsystem does not exist.
 
 ### Boot and CPU
 
-- **UEFI loader** — `c/boot/efi/loader.c` (1,238 lines), `trampoline.S`, its own
-  `build.sh`, `tools/mkesp.py`. **Its thesis is that it impersonates GRUB**: it
-  forges a Multiboot2 info block so *the kernel does not change*. One kernel, two
-  loaders. `make test-uefi` boots it under OVMF; `test-uefi-negctl` is a loader
+- **Two loaders, both ours** — `c/boot/bios/{preload,loader}.asm` for BIOS and
+  `c/boot/efi/loader.c` for UEFI, over one native protocol
+  (`include/abi/logit_boot.h`): entry in 64-bit long mode, a TLV tag list, and a
+  version field the kernel refuses when it does not recognise it. The BIOS side
+  reads the kernel's PT_LOAD segments through a protected-mode copy stub that
+  returns to real mode for each INT 13h read -- and INT 13h on a CD reads
+  2,048-byte sectors, which is the standard way this lands in noise.
+  **The UEFI loader's old thesis was that it impersonates GRUB**: it forged a
+  Multiboot2 block so the kernel did not change, and `trampoline.S` spent 409
+  lines giving back the long mode the firmware handed it. Both are gone; the
+  firmware's long mode is now kept. `make test-uefi` boots it under OVMF; `test-uefi-negctl` is a loader
   built with `-DEFI_BAD_MAGIC` whose one wrong bit must make `LOGIT_BOOT_OK`
   never appear. The ESP is a **superfloppy, not GPT** — decided by experiment,
   because it was not obvious which this repo's OVMF honours.

@@ -1,10 +1,23 @@
 # LogitOS
 
-LogitOS OS is an experimental, AI-assisted x86_64 operating-system project. It
-contains a standalone kernel that boots through GRUB/Multiboot2 into a graphical
-desktop; it is not a Linux distribution or a renamed Linux kernel. The kernel,
-drivers, LogitFS, network stack, window system, and applications are maintained
-in this repository, alongside explicitly identified ports and adapted code.
+LogitOS OS is an experimental x86_64 operating-system project whose first-party
+production code is written by AI coding agents, with humans setting goals,
+designing the architecture, reviewing, testing and integrating — see
+`CONTRIBUTING.md`. It contains a standalone kernel that boots through **its own
+bootloader**, on BIOS and on UEFI, using its own boot protocol; it is not a Linux
+distribution or a renamed Linux kernel. The kernel, drivers, LogitFS, network
+stack, window system, and applications are maintained in this repository,
+alongside explicitly identified ports and adapted code.
+
+> This sentence read "boots through GRUB/Multiboot2" until 2026-09-15, and the
+> old wording is kept here because it was true for most of this project's life.
+> GRUB and Multiboot2 are gone from the shipped path: `tools/mkiso.py` writes the
+> ISO, `c/boot/bios/` brings the machine up from the El Torito boot sector, and
+> `c/boot/efi/loader.c` does the same under UEFI without descending out of the
+> long mode the firmware hands it. `make iso-grub` still builds the old image for
+> one release so a regression has something to bisect against, and a Multiboot2
+> kernel survives as a test-only oracle. Firmware is still third-party: the
+> honest sentence is "self-hosted from the boot sector up".
 
 In its tested QEMU configuration it boots to a frosted-glass desktop, fetches and
 renders selected public HTTP and HTTPS pages through a from-scratch HTML5 parser
@@ -262,8 +275,10 @@ Bash's `/tmp` and WSL's `/tmp` are different directories, so a clean-clone check
 clones on one side and builds on the other verifies nothing.
 
 Required tools include LLVM/Clang + LLD, NASM, Rustup with the
-`x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, QEMU, xorriso,
-and GRUB's `grub-mkrescue` (named `i686-elf-grub-mkrescue` by the Makefile).
+`x86_64-unknown-none` target, Python 3, GNU Make and Unix utilities, and QEMU.
+`xorriso` and GRUB's `grub-mkrescue` are NO LONGER NEEDED to build the product
+ISO -- `tools/mkiso.py` writes it -- and are required only by `make iso-grub`,
+the one-release escape hatch, and by the Multiboot2 test oracle.
 
 LogitOS now vendors OFL-licensed Noto Sans SC and Noto Sans Mono source fonts and
 checked-in, distinctly named runtime subsets. A normal build does not read host
@@ -348,7 +363,9 @@ names are unique, so every `#include "foo.h"` resolves via the Makefile's `INCDI
 `include/` holds only the cross-cutting kernel↔user ABI.
 
 ```text
-c/boot/                                       Multiboot2 + long-mode entry, ISR stubs, ring-3 entry (nasm)
+c/boot/bios/                                  our BIOS bootloader: El Torito preload + loader (nasm)
+c/boot/efi/                                   our UEFI loader (C) -- enters the kernel in long mode
+c/boot/                                       long-mode entry, ISR stubs, ring-3 entry (nasm)
 c/kernel/{core,cpu,mm,sched,exec,gui,pci,audio}/  kernel by subsystem (wm = window manager + GUI syscalls, SMP, reclaim/swap/rmap)
 c/drivers/{char,timer,block,net,virtio,usb,audio,core}/  PS/2, PIT/RTC, ATA/AHCI/NVMe/virtio-blk, e1000/rtl8169/virtio-net, virtio-gpu, xHCI+HID, Intel HDA
 c/fs/                                          VFS + LogitFS (journalled read-write inode FS) + fsck, bcache, ramfs, credentials
@@ -374,9 +391,14 @@ docs/superpowers/specs/                          design specs (spec → plan →
 
 - **Compile:** `clang --target=x86_64-elf -ffreestanding` (clang cross-compiles natively).
 - **Link:** `ld.lld` — Apple's `ld` only emits Mach-O, so the LLVM linker is required.
-- **Assemble:** `nasm -f elf64`. **ISO:** `i686-elf-grub-mkrescue` + `xorriso`.
+- **Assemble:** `nasm -f elf64` for the kernel, `nasm -f bin` for the bootloader.
+  **ISO:** `tools/mkiso.py`, this project's own ISO9660 + El Torito writer.
 - **Run:** `qemu-system-x86_64` (full x86_64 emulation on the arm64 host).
-- The kernel loads at 1 MiB; `linker.ld` forces the Multiboot2 header first. SSE is
+- The kernel loads at **32 MiB** and its ELF entry is `logit_native_start`, entered
+  in 64-bit long mode. (This line said "loads at 1 MiB; `linker.ld` forces the
+  Multiboot2 header first" -- both halves are gone: `linker.ld` records why 1 MiB
+  crossed firmware-owned ranges on real UEFI machines, and the scanned header died
+  with Multiboot2 because both loaders read ELF program headers instead.) SSE is
   enabled at boot, so kernel and userland use hardware floating point.
 
 ## AetherScript
