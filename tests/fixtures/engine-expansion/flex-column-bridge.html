@@ -1,0 +1,32 @@
+<!doctype html><meta charset="utf-8"><title>Column flex bridge</title>
+<style>
+body{margin:0;font:16px sans-serif}
+#menu{position:fixed;left:20px;top:20px;width:240px;height:200px;display:flex;flex-direction:column;background:#eee}
+#head{flex:none;height:40px;background:#8bd}
+#body{flex:1;overflow-y:auto;background:#ddd}
+#long{height:400px;background:#fca}
+#ratios{position:absolute;left:300px;top:20px;width:200px;height:200px;display:flex;flex-direction:column}
+#first{flex-grow:1;flex-shrink:1;flex-basis:0%;min-height:0;background:#ada}
+#second{flex-grow:3;flex-shrink:1;flex-basis:0%;min-height:0;background:#acf}
+#half{height:50%;background:#ca8}
+#status{position:absolute;top:250px;left:20px}
+</style>
+<div id="menu"><div id="head">Fixed header</div><div id="body"><div id="long">Scrollable content<br><input id="native" value="COLUMN" style="width:150px;height:28px"></div></div></div>
+<div id="ratios"><div id="first"><div style="height:100px"></div></div><div id="second"><div id="half"></div></div></div>
+<p id="status">Waiting for layout</p>
+<script>
+window.addEventListener('load',function(){
+ var b=document.getElementById('body').getBoundingClientRect();
+ var a=document.getElementById('first').getBoundingClientRect();
+ var c=document.getElementById('second').getBoundingClientRect();
+ var h=document.getElementById('half').getBoundingClientRect();
+ var ok=b.height===160&&b.top===60&&a.height===50&&c.height===150&&h.height===75;
+ var control=document.getElementById('native').getBoundingClientRect();
+ var px=Math.floor(control.left+control.width/2),py=Math.floor(control.top+control.height/2);
+ var point=document.elementFromPoint(px,py);
+ ok=ok&&point&&point.id==='native';
+ var msg='FLEX-COLUMN-BRIDGE '+(ok?'PASS':'FAIL')+' body='+b.height+' ratios='+a.height+','+c.height+' half='+h.height+' hit='+(point&&point.id)+' native='+px+','+py;
+ document.getElementById('status').textContent=msg;console.log(msg);
+ document.getElementById('native').addEventListener('input',function(){console.log('FLEX-COLUMN-NATIVE '+this.value);});
+});
+</script>

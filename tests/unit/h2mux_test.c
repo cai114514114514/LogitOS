@@ -112,6 +112,11 @@ struct h2srv {
     int      streams_seen;            /* distinct client streams ever */
 };
 
+/* Most tests model an unconstrained peer.  The low-cap test changes this
+ * before opening its socket so the SETTINGS frame, rather than a test-only
+ * client hook, is what constrains production h2_request(). */
+static uint32_t g_peer_max_conc = 100;
+
 static int sidx(uint32_t id) { return (id && (id & 1)) ? (int)((id - 1) / 2) : -1; }
 
 static void srv_init(struct h2srv *s, struct pipebuf *out)
@@ -230,7 +235,11 @@ static void srv_poll(struct h2srv *s, struct pipebuf *in)
         if (memcmp(in->b + in->off, H2_PREFACE, H2_PREFACE_LEN)) { s->preface_ok = -1; return; }
         s->preface_ok = 1;
         in->off += H2_PREFACE_LEN;
-        uint8_t st[6] = { 0, H2_SET_MAX_CONCURRENT_STREAMS, 0, 0, 0, 100 };
+        uint8_t st[6] = {
+            0, H2_SET_MAX_CONCURRENT_STREAMS,
+            (uint8_t)(g_peer_max_conc >> 24), (uint8_t)(g_peer_max_conc >> 16),
+            (uint8_t)(g_peer_max_conc >> 8), (uint8_t)g_peer_max_conc
+        };
         srv_send(s, H2_F_SETTINGS, 0, 0, st, 6);
     }
     for (;;) {
@@ -364,7 +373,7 @@ static void h1_serve(struct h1srv *s, struct pipebuf *in, struct pipebuf *out)
 #define NSOCK 32
 
 struct hsock {
-    int  used, closed;
+    int  used, closed, error, handshake_held;
     int  h2;
     char host[128];
     int  port;
@@ -376,12 +385,13 @@ struct hsock {
 static struct hsock g_sk[NSOCK];
 static int g_accepts;                  /* connections the network saw */
 static int g_offer_h2_seen;            /* ALPN offers that included h2 */
+static int g_hold_new_handshake;
 static unsigned long long g_clock = 1000;
 
 /* Which origins speak HTTP/2. A single run therefore covers both an h2 origin
  * and an http/1.1 one, which no live server pair can be relied on to do. */
 static int origin_speaks_h2(const char *host)
-{ return strncmp(host, "h2.", 3) == 0; }
+{ return (host[0]=='h'||host[0]=='H') && host[1]=='2' && host[2]=='.'; }
 
 int hstub_open(const char *host, int port, int flags)
 {
@@ -391,6 +401,7 @@ int hstub_open(const char *host, int port, int flags)
         struct hsock *s = &g_sk[i];
         memset(s, 0, sizeof *s);
         s->used = 1;
+        s->handshake_held=g_hold_new_handshake;
         s->port = port;
         snprintf(s->host, sizeof s->host, "%s", host ? host : "");
         s->h2 = (flags & SOCK_F_ALPN_H2) && origin_speaks_h2(s->host);
@@ -408,6 +419,8 @@ int hstub_poll(int fd)
 {
     struct hsock *s = sk(fd);
     if (!s) return -1;
+    if (s->error) return SOCK_P_ERROR;
+    if (s->handshake_held)return 0;
     int bits = SOCK_P_CONNECTED | SOCK_P_WRITABLE;
     if (pb_avail(&s->s2c) > 0) bits |= SOCK_P_READABLE;
     return bits;
@@ -445,6 +458,7 @@ int hstub_alpn(int fd, char *buf, int max)
 {
     struct hsock *s = sk(fd);
     if (!s) return 0;
+    if(s->handshake_held)return 0;
     const char *p = s->h2 ? "h2" : "http/1.1";
     int n = (int)strlen(p);
     if (n >= max) n = max - 1;
@@ -502,11 +516,9 @@ static char *build_req(const char *method, const char *path, const char *host,
     return raw;
 }
 
-static int x_start(struct xfer *x, const char *method, const char *path,
+static int x_begin(struct xfer *x, const char *method, const char *path,
                    const char *host, int port, const uint8_t *body, int blen, int sink)
 {
-    memset(x, 0, sizeof *x);
-    x->fd = bxfer_open(host, port, 1);
     if (x->fd < 0) return -1;
     int rawlen = 0;
     char *raw = build_req(method, path, host, body, blen, &rawlen);
@@ -517,10 +529,18 @@ static int x_start(struct xfer *x, const char *method, const char *path,
     extern int h2mux_tr_read(void *, void *, int);
     extern int h2mux_tr_write(void *, const void *, int);
     t.read = h2mux_tr_read; t.write = h2mux_tr_write; t.ctx = (void *)(long)x->fd;
-    if (bxfer_start(&x->c, &t, raw, rawlen, &x->fd, host, port, 1) != H1_OK) { free(raw); return -1; }
+    int rc=bxfer_start(&x->c, &t, raw, rawlen, &x->fd, host, port, 1);
+    if (rc != H1_OK) { free(raw); return rc==BXFER_START_WAIT?1:-1; }
     x->started = 1;
     if (sink) h1_response_sink(&x->c.resp, x_sink, x);
     return 0;
+}
+
+static int x_start(struct xfer *x, const char *method, const char *path,
+                   const char *host, int port, const uint8_t *body, int blen, int sink)
+{
+    memset(x,0,sizeof *x);x->fd=bxfer_open(host,port,1);
+    return x_begin(x,method,path,host,port,body,blen,sink);
 }
 
 int h2mux_tr_read(void *ctx, void *buf, int len)
@@ -565,11 +585,14 @@ static void x_spin(struct xfer **v, int n, int budget)
 
 static void reset_world(void)
 {
-    bxfer_close_all();
     bfetch_close_all();
+    bxfer_close_all();
+    bfetch_cache_clear();
+    bfetch_http_cache_clear();
     for (int i = 0; i < NSOCK; i++) if (g_sk[i].used) hstub_close(i);
     g_accepts = 0;
     g_offer_h2_seen = 0;
+    g_peer_max_conc = 100;
     bxfer_reset_stats();
 }
 
@@ -644,11 +667,321 @@ static void t_multiplex(void)
     for (int i = 0; i < 4; i++) x_free(&x[i]);
 }
 
+/* bfetch is the document/style/script/image loader, and it does not call
+ * bxfer_open until AFTER asking hpool_may_open whether another connection may
+ * be dialled.  Once an origin has an h2 connection that answer is deliberately
+ * "no" -- one h2 connection is enough -- so the existing direct-bxfer test
+ * above cannot catch the deadlock where bfetch waits forever instead of taking
+ * a stream on that connection.  Keep a direct exchange alive, then start the
+ * page loader through its public door.  The server, below both consumers, must
+ * see two streams on one connection and both responses must finish. */
+static void t_bfetch_joins_active_h2(void)
+{
+    reset_world();
+    printf("-- bfetch joins an already-active h2 connection\n");
+
+    struct xfer anchor;
+    OK(x_start(&anchor, "GET", "/anchor", "h2.example", 443, 0, 0, 0) == 0);
+    int id = bfetch_start("https://h2.example/card-image");
+    OKM(id >= 0, "bfetch refused the resource request (%d)", id);
+
+    for (int i = 0; i < 4000; i++) {
+        if (anchor.started && anchor.c.state != H1_C_DONE && anchor.c.state != H1_C_ERROR) {
+            anchor.pumps++;
+            bxfer_pump(&anchor.c);
+        }
+        bfetch_pump();
+        g_clock += 5;
+        if (anchor.c.state == H1_C_DONE && id >= 0 && bfetch_state(id) != BF_PENDING) break;
+    }
+
+    OKM(anchor.c.state == H1_C_DONE,
+        "the original h2 exchange was lost (state %d err %d)", anchor.c.state, anchor.c.err);
+    OKM(id >= 0 && bfetch_state(id) == BF_DONE,
+        "bfetch stayed queued behind the h2 connection (state %d, %s)",
+        id >= 0 ? bfetch_state(id) : BF_FAILED, id >= 0 ? bfetch_error(id) : "no id");
+    OKM(g_accepts == 1, "active h2 join opened %d network connections, expected 1", g_accepts);
+
+    struct hsock *s = sk(anchor.fd);
+    OKM(s && s->h2, "the shared socket is not h2");
+    if (s && s->h2) {
+        OKM(s->h2s.streams_seen == 2,
+            "active h2 connection saw %d streams, expected 2", s->h2s.streams_seen);
+        OKM(s->h2s.max_streams_seen >= 2,
+            "bfetch never overlapped the existing stream (peak %d)", s->h2s.max_streams_seen);
+    }
+
+    if (id >= 0) {
+        unsigned char *body = 0;
+        int n = bfetch_take(id, &body);
+        OKM(n > 0 && body && !strncmp((char *)body, "REPLY(/card-image):", 19),
+            "bfetch got the wrong h2 stream body (%d bytes)", n);
+        free(body);
+    }
+    x_free(&anchor);
+}
+
+/* The last request handle is not the owner of an HTTP/2 connection: the
+ * origin is.  Real pages fetch styles, execute/layout for seconds, then fetch
+ * scripts and images.  Closing the socket whenever one batch reaches zero
+ * handles turns those phases into fresh TLS handshakes and, on this kernel's
+ * eight-slot socket table, eventually into lost resources.  Two sequential
+ * bfetch requests therefore have to become stream 1 and stream 3 on the SAME
+ * server-side connection.  -DBXFER_DROP_IDLE_H2 is the negative control for
+ * precisely this lifetime decision. */
+static void t_bfetch_reuses_idle_h2(void)
+{
+    reset_world();
+    printf("-- sequential bfetch requests reuse an idle h2 connection\n");
+
+    int first = bfetch_start("https://h2.example/style-a.css");
+    OKM(first >= 0, "first bfetch request was refused (%d)", first);
+    for (int i = 0; i < 4000 && first >= 0 && bfetch_state(first) == BF_PENDING; i++) {
+        bfetch_pump();
+        g_clock += 5;
+    }
+    OKM(first >= 0 && bfetch_state(first) == BF_DONE,
+        "first bfetch request did not finish (state %d)",
+        first >= 0 ? bfetch_state(first) : BF_FAILED);
+    if (first >= 0) {
+        unsigned char *body = 0;
+        int n = bfetch_take(first, &body);
+        OKM(n > 0 && body, "first bfetch body is absent (%d bytes)", n);
+        free(body);
+    }
+
+    int second = bfetch_start("https://h2.example/script-b.js");
+    OKM(second >= 0, "second bfetch request was refused (%d)", second);
+    for (int i = 0; i < 4000 && second >= 0 && bfetch_state(second) == BF_PENDING; i++) {
+        bfetch_pump();
+        g_clock += 5;
+    }
+    OKM(second >= 0 && bfetch_state(second) == BF_DONE,
+        "second bfetch request did not finish (state %d)",
+        second >= 0 ? bfetch_state(second) : BF_FAILED);
+    if (second >= 0) {
+        unsigned char *body = 0;
+        int n = bfetch_take(second, &body);
+        OKM(n > 0 && body && !strncmp((char *)body, "REPLY(/script-b.js):", 20),
+            "second bfetch got the wrong body (%d bytes)", n);
+        free(body);
+    }
+
+    int live_h2 = 0, seen = 0;
+    for (int i = 0; i < NSOCK; i++) {
+        if (!g_sk[i].used || !g_sk[i].h2) continue;
+        live_h2++;
+        seen += g_sk[i].h2s.streams_seen;
+    }
+    OKM(g_accepts == 1,
+        "two sequential h2 resources opened %d network connections, expected 1", g_accepts);
+    OKM(live_h2 == 1 && seen == 2,
+        "idle reuse left %d h2 connection(s) containing %d stream(s), expected 1/2",
+        live_h2, seen);
+}
+
+/* A usable connection can temporarily have no stream slot.  That is
+ * back-pressure, not a broken transport and not permission to burn another
+ * TCP/TLS socket.  Hold stream 1 open after the peer advertises a cap of one;
+ * bfetch's second resource must remain pending, then become stream 3 on the
+ * same connection once stream 1 completes.  BXFER_IGNORE_H2_STREAM_CAP is the
+ * old decision: it joins anyway, h2_request returns NOSLOT, and the resource
+ * fails immediately. */
+static void t_bfetch_waits_for_peer_stream_slot(void)
+{
+    reset_world();
+    g_peer_max_conc = 1;
+    printf("-- bfetch waits for a peer-limited h2 stream slot\n");
+
+    struct xfer anchor;
+    OK(x_start(&anchor, "GET", "/held", "h2.example", 443, 0, 0, 0) == 0);
+    struct hsock *s = sk(anchor.fd);
+    OK(s && s->h2);
+    if (s && s->h2) s->h2s.hold_body = 1;
+
+    /* Pump through the peer SETTINGS and response HEADERS while retaining the
+     * body, so the client knows cap=1 and stream 1 is observably still live. */
+    for (int i = 0; i < 200 && !h1_response_headers_done(&anchor.c.resp); i++) {
+        anchor.pumps++;
+        bxfer_pump(&anchor.c);
+        g_clock += 5;
+    }
+    OKM(h1_response_headers_done(&anchor.c.resp), "held stream never reached response headers");
+    OKM(anchor.c.state != H1_C_DONE, "held stream completed before the cap was tested");
+
+    int waiting = bfetch_start("https://h2.example/after-slot");
+    OKM(waiting >= 0, "second bfetch request was refused (%d)", waiting);
+    for (int i = 0; i < 20 && waiting >= 0; i++) { bfetch_pump(); g_clock += 5; }
+    OKM(waiting >= 0 && bfetch_state(waiting) == BF_PENDING,
+        "peer-cap request failed instead of waiting for the stream slot (state %d, %s)",
+        waiting >= 0 ? bfetch_state(waiting) : BF_FAILED,
+        waiting >= 0 ? bfetch_error(waiting) : "no id");
+    OKM(g_accepts == 1, "waiting for one stream slot opened %d connections", g_accepts);
+
+    if (s && s->h2) s->h2s.hold_body = 0;
+    for (int i = 0; i < 4000; i++) {
+        if (anchor.c.state != H1_C_DONE && anchor.c.state != H1_C_ERROR) {
+            anchor.pumps++;
+            bxfer_pump(&anchor.c);
+        }
+        bfetch_pump();
+        g_clock += 5;
+        if (anchor.c.state == H1_C_DONE && waiting >= 0 &&
+            bfetch_state(waiting) != BF_PENDING) break;
+    }
+    OKM(anchor.c.state == H1_C_DONE, "held stream did not complete (state %d)", anchor.c.state);
+    OKM(waiting >= 0 && bfetch_state(waiting) == BF_DONE,
+        "queued request did not take the released stream slot (state %d, %s)",
+        waiting >= 0 ? bfetch_state(waiting) : BF_FAILED,
+        waiting >= 0 ? bfetch_error(waiting) : "no id");
+    OKM(g_accepts == 1, "released slot used %d connections, expected the existing one", g_accepts);
+    if (s && s->h2) {
+        OKM(s->h2s.streams_seen == 2, "peer-cap connection saw %d streams, expected 2",
+            s->h2s.streams_seen);
+        OKM(s->h2s.max_streams_seen == 1, "peer cap 1 was exceeded (peak %d)",
+            s->h2s.max_streams_seen);
+    }
+    if (waiting >= 0) {
+        unsigned char *body = 0;
+        int n = bfetch_take(waiting, &body);
+        OKM(n > 0 && body && !strncmp((char *)body, "REPLY(/after-slot):", 19),
+            "released-slot response is wrong (%d bytes)", n);
+        free(body);
+    }
+    x_free(&anchor);
+}
+
 /* A binary request body must reach the wire byte for byte, with a byte-counted
  * Content-Length -- over HTTP/2 as over HTTP/1.1. The payload carries 0x00,
  * 0xFF and a lone 0xC3: a NUL truncates a C string, 0xFF is not valid UTF-8 at
  * all, and a lone 0xC3 is a two-byte lead with nothing after it, so any round
  * trip through text turns it into U+FFFD and cannot turn it back. */
+/* Unlike the ready-bfetch cap case, BOTH handles exist before ALPN. This
+ * crosses the reservation/SETTINGS boundary a direct fetch caller uses. */
+static void t_pending_peer_cap(void)
+{
+    reset_world();g_peer_max_conc=1;
+    printf("-- speculative pending handles wait after peer SETTINGS\n");
+    struct xfer a={0},b={0};
+    a.fd=bxfer_open("h2.example",443,1);b.fd=bxfer_open("h2.example",443,1);
+    OKM(a.fd>=0&&a.fd==b.fd,"pending handles did not share a socket");
+    OK(x_begin(&a,"GET","/pending-a","h2.example",443,0,0,0)==0);
+    struct hsock *s=sk(a.fd);if(s&&s->h2)s->h2s.hold_body=1;
+    struct xfer *av[]={&a};x_spin(av,1,50);
+    OK(h1_response_headers_done(&a.c.resp));
+    int rc=x_begin(&b,"GET","/pending-b","h2.example",443,0,0,1);
+    OKM(rc==0,"pending peer-cap handle rejected instead of waiting (%d)",rc);
+    struct xfer *both[]={&a,&b};x_spin(both,2,20);
+    OKM(b.started&&b.c.state==H1_C_SEND,"pending peer-cap waiter did not remain unsent");
+    OKM(g_accepts==1,"pending cap opened %d sockets",g_accepts);
+    if(s&&s->h2)s->h2s.hold_body=0;
+    x_spin(both,2,4000);
+    OKM(a.c.state==H1_C_DONE&&b.started&&b.c.state==H1_C_DONE,"pending cap did not complete both exchanges");
+    OKM(b.sunk_len>0&&!memcmp(b.sunk,"REPLY(/pending-b):",18),"deferred start lost the installed response sink");
+    OKM(s&&s->h2&&s->h2s.streams_seen==2&&s->h2s.max_streams_seen==1,"pending cap violated server concurrency");
+    x_free(&a);x_free(&b);
+}
+
+static void t_draining_and_failed_sessions(void)
+{
+    for(int broken=0;broken<2;broken++){
+        reset_world();printf("-- %s session permits replacement without recycling active handles\n",broken?"failed":"GOAWAY");
+        struct xfer a;
+        OK(x_start(&a,"GET","/old","h2.example",443,0,0,0)==0);
+        struct hsock *old=sk(a.fd);if(old&&old->h2)old->h2s.hold_body=1;
+        struct xfer *one[]={&a};x_spin(one,1,50);
+        int oldfd=a.fd;
+        if(old&&old->h2){
+            if(broken)old->error=1;
+            else {const uint8_t last1[]={0,0,0,1,0,0,0,0};srv_send(&old->h2s,H2_F_GOAWAY,0,0,last1,8);bxfer_pump(&a.c);}
+        }
+        int id=bfetch_start("https://h2.example/replacement");
+        OK(id>=0);
+        for(int i=0;i<200&&id>=0&&bfetch_state(id)==BF_PENDING;i++){bfetch_pump();g_clock+=5;}
+        OKM(id>=0&&bfetch_state(id)==BF_DONE,"draining origin blocked replacement (broken=%d state=%d)",broken,id>=0?bfetch_state(id):-99);
+        OKM(g_accepts==2,"draining origin accepted %d connections, expected 2",g_accepts);
+        const char *oldpath=old&&old->used&&old->h2?hpack_list_get(&old->h2s.req[0],":path"):0;
+        OKM(sk(oldfd)&&sk(oldfd)==old&&old->h2s.streams_seen==1&&oldpath&&!strcmp(oldpath,"/old"),
+            "active session was recycled before its owner released it (broken=%d)",broken);
+        if(!broken&&old&&old->used&&old->h2)old->h2s.hold_body=0;
+        x_spin(one,1,100);
+        OKM(a.c.state==(broken?H1_C_ERROR:H1_C_DONE),"old response lifetime is wrong (broken=%d state=%d)",broken,a.c.state);
+        x_free(&a);
+        if(id>=0){unsigned char *data=0;int n=bfetch_take(id,&data);
+            OKM(n>0&&data&&!memcmp(data,"REPLY(/replacement):",20),"old cleanup corrupted replacement body");free(data);}
+    }
+}
+
+static void t_host_case_and_idle_goaway(void)
+{
+    reset_world();printf("-- mixed-case origin and unread idle GOAWAY\n");
+    struct xfer a;OK(x_start(&a,"GET","/case","H2.Example",443,0,0,0)==0);
+    int id=bfetch_start("https://h2.example/lowercase");
+    struct xfer *one[]={&a};x_spin(one,1,100);
+    for(int i=0;i<100&&id>=0&&bfetch_state(id)==BF_PENDING;i++){bfetch_pump();g_clock+=5;}
+    OKM(id>=0&&bfetch_state(id)==BF_DONE&&g_accepts==1,"mixed-case origin failed shared-session admission");
+    if(id>=0)bfetch_release(id);
+    int oldfd=a.fd;x_free(&a);
+    struct hsock *old=sk(oldfd);
+    if(old&&old->h2){const uint8_t last3[]={0,0,0,3,0,0,0,0};srv_send(&old->h2s,H2_F_GOAWAY,0,0,last3,8);}
+    id=bfetch_start("https://h2.example/after-idle-goaway");
+    for(int i=0;i<100&&id>=0&&bfetch_state(id)==BF_PENDING;i++){bfetch_pump();g_clock+=5;}
+    OKM(id>=0&&bfetch_state(id)==BF_DONE&&g_accepts==2,"unread idle GOAWAY was reused before control-frame processing");
+    if(id>=0)bfetch_release(id);
+}
+
+/* Put GOAWAY precisely BETWEEN borrowing a handle and sending HEADERS. The
+ * replacement TLS handshake is held, so resolving absent ALPN as H1 (or
+ * blocking here until handshake completion) cannot accidentally pass. POST
+ * bytes are counted at the server, not inferred from the client's success. */
+static void t_presend_replacement(void)
+{
+    for(int loader=0;loader<2;loader++){
+        reset_world();printf("-- pre-send GOAWAY replacement (%s)\n",loader?"bfetch":"POST");
+        struct xfer a,b;
+        OK(x_start(&a,"GET","/accepted","h2.example",443,0,0,0)==0);
+        struct hsock *old=sk(a.fd);
+        if(!old||!old->h2){x_free(&a);continue;} /* H1 control has no GOAWAY */
+        old->h2s.hold_body=1;
+        struct xfer *one[]={&a};x_spin(one,1,50);
+        memset(&b,0,sizeof b);b.fd=-1;
+        if(!loader)b.fd=bxfer_open("h2.example",443,1);
+        const uint8_t last1[]={0,0,0,1,0,0,0,0};
+        srv_send(&old->h2s,H2_F_GOAWAY,0,0,last1,8);
+        g_hold_new_handshake=1;
+        const uint8_t payload[]={0x41,0,0xff,0xc3,0x42};
+        int id=-1,rc=0;
+        if(loader)id=bfetch_start("https://h2.example/unsent-image");
+        else rc=x_begin(&b,"POST","/unsent","h2.example",443,payload,sizeof payload,1);
+        g_hold_new_handshake=0;
+        if(loader){for(int k=0;k<20;k++)bfetch_pump();
+            OKM(id>=0&&bfetch_state(id)==BF_PENDING,"pre-send loader failed instead of waiting for replacement TLS");}
+        else OKM(rc==1&&!b.started,"pre-send POST failed instead of waiting for replacement TLS (rc=%d)",rc);
+        OKM(g_accepts==2&&old->h2s.streams_seen==1,"pre-send request reached old connection or failed to replace it");
+        for(int k=0;k<NSOCK;k++)if(g_sk[k].used && &g_sk[k]!=old){
+            OKM(g_sk[k].h2s.streams_seen==0,"request was sent before replacement TLS completed");
+            g_sk[k].handshake_held=0;
+        }
+        if(loader){
+            for(int k=0;k<200&&id>=0&&bfetch_state(id)==BF_PENDING;k++){bfetch_pump();g_clock+=5;}
+            OKM(id>=0&&bfetch_state(id)==BF_DONE,"pre-send loader did not complete on replacement");
+            if(id>=0)bfetch_release(id);
+        }else if(rc==1){
+            OK(x_begin(&b,"POST","/unsent","h2.example",443,payload,sizeof payload,1)==0);
+            struct xfer *v[]={&b};x_spin(v,1,200);
+            struct hsock *ns=sk(b.fd);
+            OKM(b.c.state==H1_C_DONE&&b.sunk_len>0,"replacement POST did not deliver its response sink");
+            OKM(ns&&ns!=old&&ns->h2&&ns->h2s.streams_seen==1&&
+                ns->h2s.data_len[0]==sizeof payload&&!memcmp(ns->h2s.data_in[0],payload,sizeof payload),
+                "replacement POST did not arrive exactly once with intact binary bytes");
+        }
+        if(!loader)x_free(&b);
+        old->h2s.hold_body=0;x_spin(one,1,100);
+        OKM(a.c.state==H1_C_DONE,"pre-send replacement destroyed the accepted old response");
+        x_free(&a);
+    }
+}
+
 static void t_binary_body(void)
 {
     reset_world();
@@ -906,6 +1239,13 @@ int main(void)
            "*** multiplexing assertions are REQUIRED to fail.\n");
 #endif
     t_multiplex();
+    t_bfetch_joins_active_h2();
+    t_bfetch_reuses_idle_h2();
+    t_bfetch_waits_for_peer_stream_slot();
+    t_pending_peer_cap();
+    t_draining_and_failed_sessions();
+    t_presend_replacement();
+    t_host_case_and_idle_goaway();
     t_binary_body();
     t_streaming();
     t_binary_response();

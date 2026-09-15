@@ -1,0 +1,18 @@
+{
+  "build/browser.elf": {
+    "size": 5911488,
+    "sha256": "8ab9eef35e2818358995d5ea1445fdec720f3ec97093577116c13af2f64e89cf"
+  },
+  "build/browser.aex": {
+    "size": 5915584,
+    "sha256": "e372d5ef0e57b7b6eaed8a5a450d04f4de438e8cf2b56f284887ee6a38bea89d"
+  },
+  "build/logit.iso": {
+    "size": 14430208,
+    "sha256": "157511cacfa5ddf4e9aeb46934c2f1ad13a7caed292d37440a94b79fa183f48d"
+  },
+  "build/disk.img": {
+    "size": 536870912,
+    "sha256": "4cf726f3d02c3011d20827a6be1a5182d3b23b25a9dfff49723b1346e0949cca"
+  }
+}

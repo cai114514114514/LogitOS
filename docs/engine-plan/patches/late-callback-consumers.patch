@@ -1,0 +1,94 @@
+--- a/c/apps/browser/browser.c
++++ b/c/apps/browser/browser.c
+@@ -5901,27 +5901,6 @@
+         }
+         if (timer_chrome_touched) timer_page_only = 0;
+ 
+-        /* A navigation the LIVE page asked for -- a click handler setting
+-         * location.href, a timer calling location.replace, a router. Taken
+-         * here, at the top of the loop, because this is the first point after
+-         * the callback returned at which tearing the document down is safe.
+-         *
+-         * This one PUSHES history: a page that moves seconds or minutes after
+-         * it loaded is acting on the user, and Back must come back here. The
+-         * redirect chain inside load() replaces instead -- see hist_replace. */
+-        if (!navigated) {
+-            char want[600];
+-            if (take_script_nav(want, sizeof want)) {
+-                editing = 0;
+-                int i = 0;
+-                while (want[i] && i < (int)sizeof url - 1) { url[i] = want[i]; i++; }
+-                url[i] = 0; ulen = i; addr_sync();
+-                hist_push(url);
+-                load(url);
+-                navigated = 1; need = 1;
+-            }
+-        }
+-
+         /* CHROME-ONLY / PAGE-ONLY DISPATCH. nev == 1 && chrome_edit_only means
+          * the single event this burst processed was proven (by the two
+          * branches above it) to have touched nothing but the address bar's
+@@ -5930,9 +5909,11 @@
+          * page control keystroke, a hover-driven change); nev == 0 &&
+          * timer_page_only means NO event fired this pass at all and the only
+          * thing that set `need` was the page's own timer, which cannot touch
+-         * chrome either. The take_script_nav() check just above this line is
+-         * the only other thing that can set `need` or `navigated` between the
+-         * burst and here, so `!navigated` covers all three branches.
++         * chrome either. The old claim was that the earlier navigation check
++         * was the only later work. Correction: scroll/load listeners and their
++         * inserted scripts run below too. The final consumer clears narrow
++         * repaint flags for scripts or new console output; navigation then
++         * forces a full redraw through `navigated`.
+          *
+          * overlays_active() is checked ONLY for the page-only branch: the
+          * chrome branch draws exactly the address bar and nothing browser_
+@@ -5963,6 +5944,48 @@
+         if (g_scroll_repaint) {
+             g_scroll_repaint = 0; need = 1; chrome_edit_only = 0;
+         }
++        /* The old consumer ran before scroll and delayed load/pageshow.
++         * Those callbacks can insert scripts or request navigation too. A
++         * pending navigation is not a timer/fetch wake source, and the host
++         * wait_idle no-op used to hide the resulting indefinite guest park.
++         * Drain inserted scripts first: they may themselves request navigation.
++         * Keep this on the outer loop, after JS dispatch has unwound, so loading
++         * the destination cannot destroy a context still executing a callback. */
++        if (g_pending_n > 0) {
++            run_pending_inserted_scripts(url);
++            settle_frame();
++            need = 1; chrome_edit_only = 0;
++            page_only_repaint = timer_page_only = 0;
++        }
++        if (js_page_output_len() != js_out_shown) {
++            status_from_js("loaded"); need = 1; chrome_edit_only = 0;
++            page_only_repaint = timer_page_only = 0;
++        }
++
++        /* A navigation the LIVE page asked for -- a click handler setting
++         * location.href, a timer calling location.replace, a router. Taken
++         * here, after every callback phase, because this is the first point after
++         * the callback returned at which tearing the document down is safe.
++         *
++         * This one PUSHES history: a page that moves seconds or minutes after
++         * it loaded is acting on the user, and Back must come back here. The
++         * redirect chain inside load() replaces instead -- see hist_replace. */
++        /* Do not suppress this when a native navigation happened earlier in
++         * the turn: the new page's late listener may request another URL.
++         * This outer consumer runs once; load() bounds its own redirect chain. */
++        {
++            char want[600];
++            if (take_script_nav(want, sizeof want)) {
++                editing = 0;
++                int i = 0;
++                while (want[i] && i < (int)sizeof url - 1) { url[i] = want[i]; i++; }
++                url[i] = 0; ulen = i; addr_sync();
++                hist_push(url);
++                load(url);
++                navigated = 1; need = 1;
++            }
++        }
++
+         if (need) {
+             if (nev == 1 && chrome_edit_only && !navigated) redraw_chrome(editing);
+             else if (!navigated &&

@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>Native text formatter wiring</title>
+<style>
+body{margin:24px;font-size:20px;line-height:28px;color:#183040;background:#fff}
+h1{font-size:25px} .sample{width:420px;margin:16px 0;padding:12px;border:2px solid #698697;background:#eef5ff}
+#format{text-transform:uppercase;letter-spacing:3px;word-spacing:12px;text-indent:40px}
+#capital{text-transform:capitalize}#lower{text-transform:lowercase}
+#words{word-spacing:24px}#tight{letter-spacing:-1px}
+#mixed span{background:#ffe6ac;letter-spacing:3px;text-transform:uppercase}
+</style>
+<h1>Text formatter: native layout and paint</h1>
+<p>Each sample below uses ordinary CSS and DOM text.</p>
+<div class="sample" id="format">alpha beta gamma delta epsilon zeta eta theta iota kappa</div>
+<p>The first line above starts 40px inward. Later lines return to the left. Letters and words have visible spacing.</p>
+<div class="sample" id="capital">h<span>ello</span> world — two inline nodes, one word</div>
+<div class="sample" id="lower">LOWER CASE: HELLO WORLD</div>
+<div class="sample" id="words">wide word spacing</div>
+<div class="sample" id="tight">Tight letter spacing</div>
+<div class="sample" id="mixed">Decorated fallback: <span>abc def</span> end</div>
+<p id="status">Checking authored text…</p>
+<script>document.getElementById('status').textContent=document.getElementById('format').textContent.indexOf('alpha')===0?'PASS: uppercase painting preserves lowercase authored DOM.':'FAIL: DOM text changed';</script>

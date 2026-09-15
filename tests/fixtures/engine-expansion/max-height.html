@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Automatic height with max-height</title>
+<style>
+body{margin:20px;font:18px sans-serif;color:#17334b;background:white}h1{font-size:24px}.panel{width:320px;max-height:100px;overflow:auto;border:2px solid #17334b;background:#eaf4ff}.row{height:50px;padding-left:8px}.red{background:#dd3344;color:white}.reference{height:100px;max-height:none}p{margin:10px 0}.short{margin-top:12px}#result{white-space:pre-wrap}
+</style>
+<h1>Auto height + max-height: ordinary CSS</h1>
+<p>The first box is limited by max-height. The reference uses height.</p>
+<div id="limited" class="panel"><div class="row">One: first line</div><div class="row">Two: second line</div><div class="row red" id="target">Three: scroll to reveal this red row</div><div class="row">Four: last line</div></div>
+<p>Fixed-height reference:</p>
+<div class="panel reference"><div class="row">One: first line</div><div class="row">Two: second line</div><div class="row red">Three: scroll to reveal this red row</div><div class="row">Four: last line</div></div>
+<div id="short" class="panel short"><div class="row">Short content keeps its natural height</div></div>
+<p><button id="scroll">Reveal red row in first panel</button> <button id="reset">Reset</button></p>
+<p id="result">Checking geometry...</p>
+<script>
+var s=document.getElementById('limited'),shortPanel=document.getElementById('short'),target=document.getElementById('target'),result=document.getElementById('result');
+function report(){var ok=s.clientHeight===100&&s.scrollHeight===200&&shortPanel.clientHeight===50;result.textContent=(ok?'PASS':'FAIL')+': viewport='+s.clientHeight+', content='+s.scrollHeight+', short='+shortPanel.clientHeight+', scrollTop='+s.scrollTop;console.log('MAX-HEIGHT '+result.textContent)}
+document.getElementById('scroll').onclick=function(){s.scrollTop=100;report()};document.getElementById('reset').onclick=function(){s.scrollTop=0;report()};report();
+</script>

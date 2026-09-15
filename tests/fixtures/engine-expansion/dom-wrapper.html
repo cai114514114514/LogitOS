@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>DOM wrapper identity and delegated events</title>
+<style>body{margin:24px;font:20px sans-serif;color:#17344b}button{padding:16px 28px;font-size:24px;background:#dcecff;border:2px solid #315d92}#status{padding:12px;background:#e4f5ea}</style>
+<h1>DOM identity: delegated event counter</h1>
+<p>The button stores its handler on a Symbol. The document reads it from composedPath after the local variable has gone away.</p>
+<button id="counter">0</button>
+<p id="status">Checking retained node state…</p>
+<script>
+(function(){
+ class Counter { constructor(){this.value=0} next(){return ++this.value} }
+ var button=document.getElementById('counter');button.state=new Counter();
+ button[Symbol.for('counter-handler')]=function(){this.textContent=String(this.state.next());document.getElementById('status').textContent='PASS: delegated click count '+this.state.value;console.log('DOM-WRAPPER-CLICK count='+this.state.value)};
+})();
+document.addEventListener('click',function(event){var path=event.composedPath();for(var i=0;i<path.length;i++){var handler=path[i][Symbol.for('counter-handler')];if(typeof handler==='function'){handler.call(path[i]);break}}});
+var retained=typeof document.getElementById('counter')[Symbol.for('counter-handler')]==='function';document.getElementById('status').textContent=retained?'PASS: Symbol handler retained. Click the counter.':'FAIL: Symbol handler was lost.';console.log('DOM-WRAPPER-STATE '+(retained?'PASS':'FAIL'));
+</script>

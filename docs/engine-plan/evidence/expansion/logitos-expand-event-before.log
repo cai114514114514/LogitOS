@@ -1,0 +1,16 @@
+FAIL path frozen across reparent
+     expr: (function(){var p=document.createElement('div'),c=document.createElement('b'),q=document.createElement('div');document.body.appendChild(p);document.body.appendChild(q);p.appendChild(c);var a,b,e=new Event('path',{bubbles:true});p.addEventListener('path',function(e){a=e.composedPath();q.appendChild(c);b=e.composedPath()},true);c.dispatchEvent(e);return a.length===b.length&&a.every(function(n,i){return n===b[i]})&&a.indexOf(p)>=0&&b.indexOf(q)<0})()
+FAIL path empty outside dispatch
+     expr: (function(){var c=document.createElement('b'),e=new Event('path');if(e.composedPath().length)return false;c.dispatchEvent(e);return e.composedPath().length===0})()
+FAIL target capture precedes bubble regardless registration
+     expr: (function(){var c=document.createElement('b'),a=[];c.addEventListener('x',function(){a.push('bubble')});c.addEventListener('x',function(){a.push('capture')},true);c.dispatchEvent(new Event('x'));return a.join(',')==='capture,bubble'})()
+FAIL dispatch preserves canceled flag
+     expr: (function(){var c=document.createElement('b'),e=new Event('x',{cancelable:true});e.preventDefault();return c.dispatchEvent(e)===false&&e.defaultPrevented})()
+FAIL noncomposed event stops at shadow root
+     expr: (function(){var h=document.createElement('div');document.body.appendChild(h);var r=h.attachShadow({mode:'open'}),c=document.createElement('b');r.appendChild(c);var seen=0,inside=0;h.addEventListener('x',function(){seen++});r.addEventListener('x',function(){inside++});c.dispatchEvent(new Event('x',{bubbles:true}));return seen===0&&inside===1})()
+FAIL open shadow retarget retains visible path
+     expr: (function(){var h=document.createElement('div');document.body.appendChild(h);var r=h.attachShadow({mode:'open'}),c=document.createElement('b');r.appendChild(c);var target,path;h.addEventListener('x',function(e){target=e.target;path=e.composedPath()});c.dispatchEvent(new Event('x',{bubbles:true,composed:true}));return target===h&&path.indexOf(c)>=0&&path.indexOf(r)>=0})()
+FAIL closed shadow path visibility follows listener
+     expr: (function(){var h=document.createElement('div');document.body.appendChild(h);var r=h.attachShadow({mode:'closed'}),c=document.createElement('b');r.appendChild(c);var out,inside;h.addEventListener('x',function(e){out=e.composedPath()});r.addEventListener('x',function(e){inside=e.composedPath()});c.dispatchEvent(new Event('x',{bubbles:true,composed:true}));return out.indexOf(c)<0&&out.indexOf(r)<0&&out[0]===h&&inside.indexOf(c)>=0})()
+ok: detachment preserves captured ancestor invocation
+event-path: 8 checks, 7 failures

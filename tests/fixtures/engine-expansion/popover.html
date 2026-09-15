@@ -1,0 +1,20 @@
+<!doctype html><meta charset=utf-8><title>Native Popover wiring</title>
+<style>body{margin:20px;font:18px sans-serif}button{padding:12px;margin:8px}#panel{width:280px;height:140px;padding:20px;background:#ffe080;border:3px solid #152744}#later{position:relative;z-index:2147483647;background:#cfe9ff;height:60px}#popover-result{white-space:pre-wrap}</style>
+<h1>Native Popover</h1>
+<button id=opener popovertarget=panel>Toggle popover</button><button id=outside>Outside click</button>
+<div id=panel popover><strong>POPOVER ABOVE PAGE</strong><p>Outside click and Escape close this.</p><button id=closer popovertarget=panel popovertargetaction=hide>Close</button></div>
+<div id=later>Ordinary page with maximum z-index</div><pre id=popover-result>Running…</pre>
+<script>
+var panel=document.getElementById('panel'),opener=document.getElementById('opener'),outside=document.getElementById('outside'),result=document.getElementById('popover-result'),checks=0,failures=[];
+function check(ok,name){checks++;if(!ok)failures.push(name)}
+check(panel.getBoundingClientRect().height===0,'closed popover has no box');
+opener.click();check(panel.matches(':popover-open'),'invoker opens native state');
+check(panel.getBoundingClientRect().height>=140,'open popover has native geometry');
+outside.focus();check(document.activeElement===outside,'background focus remains enabled');
+panel.hidePopover();check(!panel.matches(':popover-open'),'hide clears state');
+check(panel.getBoundingClientRect().height===0,'hide removes geometry');
+panel.togglePopover(true);check(panel.matches(':popover-open'),'toggle true shows');
+panel.togglePopover(false);check(!panel.matches(':popover-open'),'toggle false hides');
+result.textContent='Popover checks: '+checks+', failures: '+failures.length+(failures.length?'\n'+failures.join('\n'):'\nClick Toggle, then test Outside click and Escape.');
+console.log('POPOVER-WIRING checks='+checks+' failures='+failures.length);
+</script>

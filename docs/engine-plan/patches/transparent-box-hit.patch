@@ -1,0 +1,128 @@
+--- a/c/apps/browser/layout.c
++++ b/c/apps/browser/layout.c
+@@ -546,6 +546,7 @@
+ struct boxrec {
+     const struct node *n;
+     int x, y, w, h;          /* border box, document coordinates */
++    int hit_item;            /* transparent border box, or -1; never an inline union */
+     int i0, i1;              /* display-list range of everything INSIDE the box */
+     int b1;                  /* one past the last descendant record */
+     int ox1, oy1;            /* scrollable overflow extent (document coords),
+@@ -583,6 +584,7 @@
+ #endif
+     struct boxrec *b = &boxes[nbox];
+     b->n = n; b->x = x; b->y = y; b->w = w; b->h = h;
++    b->hit_item = -1;
+     b->i0 = nitem; b->i1 = nitem; b->b1 = nbox + 1;
+     return nbox++;
+ }
+@@ -593,6 +595,10 @@
+     struct boxrec *b = &boxes[bi];
+     b->x = x; b->y = y; b->w = w; b->h = h;
+     b->i1 = nitem; b->b1 = nbox;
++    if (b->hit_item >= 0 && b->hit_item < nitem) {
++        struct item *it = &items[b->hit_item];
++        it->x=x; it->y=y; it->w=w; it->h=h;
++    }
+     /* A direct flex/grid control is emitted before the parent finalizes its
+      * used height (stretch, min-height, percentage height). Its chrome and
+      * native hit/caret clip must use that final border box too. */
+@@ -966,6 +972,33 @@
+     for (int ri = 0; ri < 4; ri++) { bg->radius[ri] = st->radius[ri]; bg->radius_pct[ri] = st->radius_pct[ri]; }
+     bg->hidden = st->hidden;
+     bg->opacity = st->opacity;
++}
++
++/* Correction to the box-table's old "display list is ink" claim: a
++ * transparent real border box still owns pointer events. The reported native
++ * 180x40 block link had a CSSOM box, but its blank center emitted no item and
++ * could not receive a click. Keep this item at the usual background position,
++ * before children, so normal z order, clips and ancestor href resolution apply.
++ * Do NOT call this for a bare inline's union record or an after-the-children
++ * section record: those are geometry aggregates, not one frontmost hit region.
++ * IT_HIT is deliberately not reused: newline2 treats it as stretchable space. */
++static int box_open_hit(const struct node *n, int x, int y, int w, int h)
++{
++    int hit = -1;
++#ifndef LAYOUT_HIT_INK_ONLY
++    const struct cstyle *st = n ? n->style : 0;
++    if (st && !st_inked(st)) {
++        struct item *it = additem(IT_RECT, (struct node *)n);
++        if (it) {
++            hit = (int)(it-items);
++            fill_rect_item(it, st, x, y, w);
++            it->h = h;
++        }
++    }
++#endif
++    int bi = box_open(n, x, y, w, h);
++    if (bi >= 0) boxes[bi].hit_item = hit;
++    return bi;
+ }
+ 
+ static int sp(int c){ return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'; }
+@@ -2173,7 +2206,7 @@
+             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, bx, btop, bw); }
+         }
+         if (!atomic) resolve_pad(st, bw);          /* bw is c's containing block width */
+-        int bbi = box_open(c, bx, btop, bw, 0);
++        int bbi = box_open_hit(c, bx, btop, bw, 0);
+         int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+         if (st && st->position != POS_STATIC) {
+             g_cbx = bx + st->border_w[3]; g_cby = btop + st->border_w[0];
+@@ -2753,7 +2786,7 @@
+             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, fx, top, fw); }
+         }
+         if (st->list_item) emit_list_marker(c, st, fx + cx_off(st), top, bx0);
+-        int fbi = box_open(c, fx, top, fw, 0);
++        int fbi = box_open_hit(c, fx, top, fw, 0);
+         int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+         if (st->position != POS_STATIC) {
+             g_cbx = fx + st->border_w[3]; g_cby = top + st->border_w[0];
+@@ -3058,7 +3091,7 @@
+         struct item *bg = additem(IT_RECT, c);
+         if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, ox, oy, ow); }
+     }
+-    int obi = box_open(c, ox, oy, ow, 0);
++    int obi = box_open_hit(c, ox, oy, ow, 0);
+     int ovl_save = g_in_overlay;
+     /* An absolutely positioned box is itself positioned, so IT is the
+      * containing block for its own absolute descendants. */
+@@ -3462,7 +3495,7 @@
+             }
+             /* The record goes in whether or not the two lines above emitted
+              * anything -- that difference is the whole of the NOBOX class. */
+-            int bi = box_open(c, bx, top, bw, 0);
++            int bi = box_open_hit(c, bx, top, bw, 0);
+             resolve_pad(st, bw);
+             int inw = bw - hextra(st); if (inw < 0) inw = 0;
+             int lastc = m_is_last_inflow(c);
+@@ -4042,7 +4075,9 @@
+         struct item *bg = additem(IT_RECT, f->n);
+         if (bg) { f->bgidx = (int)(bg - items); fill_rect_item(bg, st, px, py, iw); }
+     }
+-    f->bi = box_open(f->n, px, py, iw, 0);
++    f->bi = box_open_hit(f->n, px, py, iw, 0);
++    /* Flex grow/stretch updates the existing background slot after close. */
++    if (f->bgidx < 0 && f->bi >= 0) f->bgidx = boxes[f->bi].hit_item;
+     int cbsx = g_cbx, cbsy = g_cby, cbsw = g_cbw, cbsh = g_cbh;
+     if (st->position != POS_STATIC) {
+         g_cbx = px + st->border_w[3]; g_cby = py + st->border_w[0];
+@@ -4929,7 +4964,7 @@
+             struct item *bg = additem(IT_RECT, c);
+             if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, cellx + ml, top, cw); }
+         }
+-        int gbi = box_open(c, cellx + ml, top, cw, 0);
++        int gbi = box_open_hit(c, cellx + ml, top, cw, 0);
+         resolve_pad(st, cw);
+         int inw = cw - hextra(st); if (inw < 0) inw = 0;
+         int nsave = g_nfloat, bsave = g_fbase;
+@@ -5058,7 +5093,7 @@
+                 struct item *bg = additem(IT_RECT, c);
+                 if (bg) { bgidx = (int)(bg - items); fill_rect_item(bg, st, rx, cy, cw[ci]); }
+             }
+-            int tbi = box_open(c, rx, cy, cw[ci], 0);
++            int tbi = box_open_hit(c, rx, cy, cw[ci], 0);
+             resolve_pad(st, cw[ci] - ml);
+             int inw = cw[ci] - ml - hextra(st); if (inw < 0) inw = 0;
+             int nsave = g_nfloat, bsave = g_fbase;

@@ -1,0 +1,24 @@
+<!doctype html><meta charset=utf-8><title>Range-query responsive cards</title>
+<style>
+body{margin:24px;font:18px sans-serif}:root{--space:8px}
+#menu{display:block;background:#dde8f4;padding:12px}#menu>span{display:block;width:140px;height:32px}
+#cards{display:block}article{width:240px;margin:16px 0}img{width:240px;height:100px;display:block}h2{font-size:20px;margin:12px 0}
+@media(width>=900px){:root{--space:20px}#menu,#cards{display:flex;gap:20px}}
+@media(width<900px){#menu{display:none}}
+#content{padding-top:var(--space)}
+</style>
+<nav id=menu><span>Platform</span><span>Resources</span><span>Projects</span></nav>
+<main id=content><h1>Responsive image cards</h1><section id=cards>
+<article id=a><img src=/range-cover.svg alt="Green sample"><h2>First image title</h2></article>
+<article id=b><img src=/range-cover.svg alt="Green sample"><h2>Second image title</h2></article>
+</section><p id=result>Waiting for actual layout</p></main>
+<script>
+function report(){
+ var wide=innerWidth>=900,nav=document.getElementById('menu'),a=document.getElementById('a').getBoundingClientRect(),b=document.getElementById('b').getBoundingClientRect();
+ var ok=matchMedia('(width>=900px)').matches===wide&&matchMedia('(900px<=width)').matches===wide&&matchMedia('(width='+innerWidth+'px)').matches;
+ ok=ok&&(wide?(getComputedStyle(nav).display==='flex'&&a.top===b.top&&b.left>a.left):(getComputedStyle(nav).display==='none'&&b.top>a.top));
+ var msg='MEDIA-RANGE '+(ok?'PASS':'FAIL')+' '+(wide?'wide':'narrow')+' '+JSON.stringify({vw:innerWidth,a:[a.left,a.top],b:[b.left,b.top]});
+ document.getElementById('result').textContent=msg;console.log(msg);
+}
+window.addEventListener('load',report);window.addEventListener('resize',report);
+</script>

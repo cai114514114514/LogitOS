@@ -1,0 +1,33 @@
+[browser] session restored 1 tabs (restore=1)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[browser] load: http://fixture.test/late.html
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+[style-perf] phase=first bytes=40 cascade_ms=0 extra_ms=0 layout_ms=0 items=1 pseudo_compose=0 pseudo_skip=0
+[dl] painted text: 1 run(s), 13 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 0,60 LATE-CALLBACK
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+[style-perf] phase=full bytes=41 cascade_ms=0 extra_ms=0 layout_ms=0 items=1 pseudo_compose=0 pseudo_skip=0
+[browser] heap peak 0K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 40 inline + 1 external = 41 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 6 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 0 closed
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+ok: real queued scroll listener executed before park
+FAIL: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=2 wait_ms=0 destination_requests=0 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=2: FAIL

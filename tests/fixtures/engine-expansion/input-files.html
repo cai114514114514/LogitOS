@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nullable file binding</title>
+<style>body{margin:28px;font:18px sans-serif}button{width:240px;height:48px}#result{white-space:pre-wrap}</style>
+<h1>File binding must not interrupt rendering</h1>
+<input id="f" type="file" value="not-a-selected-path">
+<input id="other" type="file">
+<input id="text" value="ordinary">
+<button id="check">Check binding</button>
+<p id="result">Waiting for binding</p>
+<script>
+'use strict';
+var fileChecks=0,fileFailures=0,fileRows=[];
+function checkFile(name,fn){
+  fileChecks++;
+  try{if(!fn())throw Error('false');fileRows.push('PASS '+name);}
+  catch(e){fileFailures++;fileRows.push('FAIL '+name+': '+e);}
+}
+function rejectsFile(fn,name){try{fn();return false;}catch(e){return e.name===name;}}
+var f=document.getElementById('f'),other=document.getElementById('other'),text=document.getElementById('text');
+var original=f.files;
+checkFile('empty real list',function(){return original instanceof FileList&&original.length===0&&original.item(0)===null&&Array.from(original).length===0;});
+checkFile('stable getter identity',function(){return original===f.files&&other.files!==original;});
+checkFile('strict undefined assignment continues',function(){f.files=undefined;return f.files===original;});
+checkFile('strict null assignment preserves list',function(){f.files=null;return f.files===original;});
+checkFile('assign another real list',function(){f.files=other.files;return f.files===other.files;});
+checkFile('self assignment',function(){f.files=f.files;return f.files===other.files;});
+checkFile('array refused',function(){return rejectsFile(function(){f.files=[];},'TypeError');});
+checkFile('forged prototype refused',function(){return rejectsFile(function(){f.files=Object.create(FileList.prototype);},'TypeError');});
+checkFile('primitive refused',function(){return rejectsFile(function(){f.files=7;},'TypeError');});
+checkFile('nonfile getter null',function(){return text.files===null;});
+checkFile('nonfile valid setter no-op',function(){text.files=other.files;text.files=null;text.files=undefined;return text.files===null&&text.value==='ordinary';});
+checkFile('nonfile validates before no-op',function(){return rejectsFile(function(){text.files=[];},'TypeError');});
+checkFile('files absent from other elements',function(){return !('files' in document.createElement('textarea'))&&!('files' in document.createElement('div'));});
+checkFile('illegal constructor',function(){return rejectsFile(function(){new FileList();},'TypeError');});
+checkFile('expando cannot replace selected list',function(){f.__fcFiles=['invented'];return f.files===other.files&&f.files.length===0;});
+checkFile('list length readonly',function(){return rejectsFile(function(){f.files.length=1;},'TypeError')&&f.files.length===0;});
+checkFile('detached binding survives insertion',function(){var d=document.createElement('input');d.type='file';d.files=other.files;document.body.appendChild(d);return d.files===other.files;});
+checkFile('case-insensitive file state',function(){var d=document.createElement('input');d.setAttribute('type','FILE');return d.files instanceof FileList;});
+checkFile('script assignment fires no input or change',function(){var n=0;f.addEventListener('input',function(){n++;});f.addEventListener('change',function(){n++;});f.files=other.files;f.files=null;return n===0;});
+checkFile('markup is not a selected filename',function(){return f.value==='';});
+checkFile('file path value refused',function(){return rejectsFile(function(){f.value='/tmp/not-selected';},'InvalidStateError')&&f.value==='';});
+checkFile('file value clear and null accepted',function(){var before=f.files;f.value='';f.value=null;return f.value===''&&f.files===before;});
+checkFile('undefined file value is not nullable FileList',function(){return rejectsFile(function(){f.value=undefined;},'InvalidStateError');});
+var fileSummary='INPUT-FILES '+(fileFailures?'FAIL':'PASS')+' checks='+fileChecks+' failures='+fileFailures;
+document.getElementById('result').textContent=fileSummary;
+for(var i=0;i<fileRows.length;i++)console.log(fileRows[i]);
+console.log(fileSummary);
+document.getElementById('check').addEventListener('click',function(){
+  f.files=undefined;
+  document.getElementById('result').textContent='INPUT-FILES-CLICK PASS';
+  console.log('INPUT-FILES-CLICK PASS');
+});
+var fileButton=document.getElementById('check').getBoundingClientRect();
+console.log('INPUT-FILES-POINT '+JSON.stringify({x:fileButton.left+fileButton.width/2,y:fileButton.top+fileButton.height/2}));
+</script>

@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><title>CSS production wiring</title>
+<style>
+body{font-family:sans-serif;margin:24px;background:#f4f7fb;color:#17253a}
+h1{font-size:24px}.row{padding:10px;background:white;margin-bottom:8px}
+#generated::before{content:'FAIL: supported content block was skipped';color:#ac1826}
+@supports(content:'string' attr(data-label)){#generated::before{content:'PASS: ' attr(data-label);color:#126c35}}
+@supports(content:counter(n)){#unsupported::before{content:'FAIL: counter() falsely supported';color:#ac1826}}
+@supports not (content:counter(n)){#unsupported::before{content:'PASS: counter() fallback retained';color:#126c35}}
+#box{height:12px;background:#2977cb;width:10px}#result{white-space:pre-wrap}
+</style></head><body><h1>CSS wiring: production page</h1>
+<div id="generated" class="row" data-label="string + attr() actually generated"></div>
+<div id="unsupported" class="row"></div><div id="box"></div>
+<pre id="result">Running synchronous geometry checks...</pre>
+<p>Resize the browser wider or narrower than 900 px. Both match state and change count should update.</p>
+<div id="media" class="row"></div>
+<script>
+var box=document.getElementById('box'),rows=[];
+function check(name,ok){rows.push((ok?'PASS: ':'FAIL: ')+name)}
+check('CSS.supports string',CSS.supports('content','"TEXT"'));
+check('CSS.supports attr',CSS.supports('content','attr(data-label)'));
+check('CSS.supports rejects counter',!CSS.supports('content','counter(n)'));
+box.style.width='31px';check('first style write/read',box.offsetWidth===31);
+box.style.width='47px';check('second consecutive style write/read',box.offsetWidth===47);
+var prior=document.createElement('button');prior.textContent='Focus check';document.body.appendChild(prior);prior.focus();
+var hiddenHost=document.createElement('div'),hiddenButton=document.createElement('button');
+hiddenHost.style.display='none';hiddenHost.appendChild(hiddenButton);document.body.appendChild(hiddenHost);
+hiddenButton.focus();check('synchronous hidden subtree refuses focus',document.activeElement===prior);
+hiddenHost.style.display='block';hiddenButton.focus();check('same-turn show allows focus',document.activeElement===hiddenButton);
+prior.focus();hiddenHost.style.display='none';hiddenButton.focus();check('same-turn hide refuses focus again',document.activeElement===prior);
+hiddenHost.remove();prior.remove();
+document.getElementById('result').textContent=rows.join('\n');
+var mq=matchMedia('(min-width: 900px)'),changes=0;
+function show(){document.getElementById('media').textContent='At least 900px: '+mq.matches+'; change events: '+changes}
+mq.addEventListener('change',function(){changes++;show()});show();
+</script></body></html>

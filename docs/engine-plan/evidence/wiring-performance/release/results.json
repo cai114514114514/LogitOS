@@ -1,0 +1,51 @@
+[
+  {
+    "total_ms": 1270,
+    "teardown": 10,
+    "document": 140,
+    "first_style_layout_paint": 170,
+    "styles_fetch": 10,
+    "full_style_layout_paint": 90,
+    "images": 20,
+    "runtime_init": 690,
+    "scripts_fetch": 0,
+    "scripts_execute": 40,
+    "lifecycle_settle": 100,
+    "case": "script",
+    "round": 0,
+    "script": true
+  },
+  {
+    "total_ms": 530,
+    "teardown": 0,
+    "document": 20,
+    "first_style_layout_paint": 30,
+    "styles_fetch": 30,
+    "full_style_layout_paint": 60,
+    "images": 0,
+    "runtime_init": 370,
+    "scripts_fetch": 0,
+    "scripts_execute": 0,
+    "lifecycle_settle": 20,
+    "case": "slow",
+    "round": 0,
+    "script": true,
+    "input_timer_before_load": true
+  },
+  {
+    "total_ms": 530,
+    "teardown": 0,
+    "document": 10,
+    "first_style_layout_paint": 30,
+    "styles_fetch": 0,
+    "full_style_layout_paint": 40,
+    "images": 20,
+    "runtime_init": 360,
+    "scripts_fetch": 0,
+    "scripts_execute": 20,
+    "lifecycle_settle": 50,
+    "case": "css-wiring",
+    "round": 0,
+    "script": true
+  }
+]

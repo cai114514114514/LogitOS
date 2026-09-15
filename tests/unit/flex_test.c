@@ -763,7 +763,7 @@ static void t_justify(void)
      * justify-content sees any of it -- this is `margin-left:auto` pushing one
      * item to the right, the standard navigation-bar idiom. */
     group = "9.5 auto margins";
-    struct cstyle am; st_init(&am); st_flex(&am, 0, 0, 100); am.ml = -1;   /* auto */
+    struct cstyle am; st_init(&am); st_flex(&am, 0, 0, 100); am.margin_auto = 8;   /* auto left; -1px is now a genuine length */
     cs.justify = JC_START;
     mk_item(&in[0], &a,  0, 0, 0);
     mk_item(&in[1], &am, 0, 0, 0);
@@ -774,7 +774,7 @@ static void t_justify(void)
 
     /* Two auto margins on one item centre it, and justify-content is again
      * left with nothing. */
-    st_init(&am); st_flex(&am, 0, 0, 100); am.ml = -1; am.mr = -1;
+    st_init(&am); st_flex(&am, 0, 0, 100); am.margin_auto = 8 | 2;
     cs.justify = JC_END;
     mk_item(&in[0], &am, 0, 0, 0);
     layout_flex_run(&ct, in, 1, &MET, &out);

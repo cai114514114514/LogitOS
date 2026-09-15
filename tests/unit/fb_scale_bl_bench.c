@@ -1,10 +1,9 @@
-/* fb_blit_surface_scaled vs. fb_blit_surface_scaled_bl -- cost and a picture.
+/* fb_blit_surface_scaled vs. fb_blit_surface_scaled_bl -- pixels, cost and a picture.
  *
- * This is not a pass/fail gate (there is no oracle for "looks less cheap");
- * it is the demonstration the bilinear path's CLAUDE.md unit asked for:
- * price both paths on a representative window-sized blit, and produce a
- * frame a human can look at that shows nearest's aliasing next to bilinear's
- * smoothing at the same scale. tests/unit/fb_clip_test.c established the
+ * The frozen four-weight implementation below is the pixel oracle: every
+ * scale must remain bit exact. The timing and PPMs then price both paths and
+ * show nearest's aliasing next to bilinear smoothing at the same scale.
+ * tests/unit/fb_clip_test.c established the
  * pattern this follows -- compile fb.c itself against host stubs for the six
  * externs it expects (virtio-gpu, kmalloc/kfree, text) so what is measured
  * and pictured is the REAL fb.c, not a reimplementation of it.
@@ -73,6 +72,7 @@ unsigned char glass_fres[GLASS_E_MAX + 1];
  * claims otherwise -- but the RATIO between two host-cycle counts of the same
  * two functions is exactly the number the unit asked for. */
 #if defined(__x86_64__) || defined(__i386__)
+#define CLOCK_UNIT "cycles"
 static inline uint64_t rdtsc(void)
 {
     uint32_t lo, hi;
@@ -80,6 +80,7 @@ static inline uint64_t rdtsc(void)
     return ((uint64_t)hi << 32) | lo;
 }
 #else
+#define CLOCK_UNIT "ns"
 static inline uint64_t rdtsc(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec; }
 #endif
 
@@ -133,7 +134,7 @@ static void write_ppm(const char *path, const uint32_t *px, int w, int h)
 
 /* A framebuffer big enough to hold the widest destination this file draws
  * into (the side-by-side comparison canvas). */
-#define FBW 1024
+#define FBW 2048
 #define FBH 1024
 static uint32_t fb_backing[FBW * FBH];
 static uint8_t mbi[128];
@@ -179,14 +180,80 @@ static uint64_t time_blit(void (*fn)(int, int, int, int, const struct surface *)
     return best;
 }
 
+/* Frozen four-weight form used before the separable production loop. Keep it
+ * here as an oracle: the optimisation is allowed to remove multiplications,
+ * not to move the sample centres or introduce an intermediate rounding. */
+static void blit_reference(int dw, int dh, const struct surface *src,
+                           uint32_t *out)
+{
+    uint32_t stepx = ((uint32_t)src->w << 16) / (uint32_t)dw;
+    uint32_t stepy = ((uint32_t)src->h << 16) / (uint32_t)dh;
+    int maxsx = src->w - 1, maxsy = src->h - 1;
+    for (int j = 0; j < dh; j++) {
+        int64_t sy16 = (int64_t)j * stepy + (int64_t)(stepy >> 1) - 0x8000;
+        if (sy16 < 0) sy16 = 0;
+        int sy0 = (int)(sy16 >> 16);
+        if (sy0 > maxsy) sy0 = maxsy;
+        int wy1 = (int)((sy16 >> 8) & 0xff), wy0 = 256 - wy1;
+        int sy1 = sy0 < maxsy ? sy0 + 1 : sy0;
+        for (int i = 0; i < dw; i++) {
+            int64_t sx16 = (int64_t)i * stepx + (int64_t)(stepx >> 1) - 0x8000;
+            if (sx16 < 0) sx16 = 0;
+            int sx0 = (int)(sx16 >> 16);
+            if (sx0 > maxsx) sx0 = maxsx;
+            int wx1 = (int)((sx16 >> 8) & 0xff), wx0 = 256 - wx1;
+            int sx1 = sx0 < maxsx ? sx0 + 1 : sx0;
+            uint32_t p[4] = { src->px[(size_t)sy0 * src->w + sx0],
+                              src->px[(size_t)sy0 * src->w + sx1],
+                              src->px[(size_t)sy1 * src->w + sx0],
+                              src->px[(size_t)sy1 * src->w + sx1] };
+            int r[4], g[4], b[4];
+            for (int k = 0; k < 4; k++) {
+                r[k] = (p[k] >> 16) & 0xff;
+                g[k] = (p[k] >> 8) & 0xff;
+                b[k] = p[k] & 0xff;
+            }
+            int w[4] = { wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1 };
+            int rr = (r[0]*w[0] + r[1]*w[1] + r[2]*w[2] + r[3]*w[3] + 32768) >> 16;
+            int gg = (g[0]*w[0] + g[1]*w[1] + g[2]*w[2] + g[3]*w[3] + 32768) >> 16;
+            int bb = (b[0]*w[0] + b[1]*w[1] + b[2]*w[2] + b[3]*w[3] + 32768) >> 16;
+            out[(size_t)j * dw + i] = (uint32_t)(rr << 16 | gg << 8 | bb);
+        }
+    }
+}
+
+static void assert_bit_exact(const struct surface *src)
+{
+    static uint32_t got[FBW * FBH], want[FBW * FBH];
+    const int cases[][2] = {{1,1}, {17,13}, {97,71}, {354,186}, {1009,509}};
+    struct surface got_s = { .px = got, .w = FBW, .h = FBH, .clip_on = 0 };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        int dw = cases[c][0], dh = cases[c][1];
+        memset(got, 0xa5, sizeof got);
+        memset(want, 0x5a, sizeof want);
+        fb_target(&got_s);
+        fb_blit_surface_scaled_bl(0, 0, dw, dh, src);
+        blit_reference(dw, dh, src, want);
+        for (int y = 0; y < dh; y++)
+            for (int x = 0; x < dw; x++)
+                if (got[(size_t)y * FBW + x] != want[(size_t)y * dw + x]) {
+                    fprintf(stderr, "bilinear mismatch %dx%d at %d,%d: got=%08x want=%08x\n",
+                            dw, dh, x, y, got[(size_t)y * FBW + x], want[(size_t)y * dw + x]);
+                    exit(1);
+                }
+    }
+    printf("BIT_EXACT: production separable loop matches frozen four-weight oracle in 5 scales\n");
+}
+
 int main(void)
 {
     init_fb();
     build_source();
     struct surface src = { .px = srcpx, .w = SW, .h = SH, .clip_on = 0 };
+    assert_bit_exact(&src);
 
-    printf("=== fb_blit_surface_scaled vs _bl: cost, %dx%d source, host rdtsc, min of %d ===\n",
-           SW, SH, REPS);
+    printf("=== fb_blit_surface_scaled vs _bl: cost, %dx%d source, host %s, min of %d ===\n",
+           SW, SH, CLOCK_UNIT, REPS);
 
     struct { const char *label; int dw, dh; } cases[] = {
         { "~0.3x (354x186)",  354,  186 },
@@ -196,8 +263,9 @@ int main(void)
         uint64_t cn = time_blit(fb_blit_surface_scaled,    cases[c].dw, cases[c].dh, &src);
         uint64_t cb = time_blit(fb_blit_surface_scaled_bl, cases[c].dw, cases[c].dh, &src);
         double ratio = cn ? (double)cb / (double)cn : 0.0;
-        printf("  %-18s nearest %10llu cyc   bilinear %10llu cyc   bilinear/nearest = %.2fx\n",
-               cases[c].label, (unsigned long long)cn, (unsigned long long)cb, ratio);
+        printf("  %-18s nearest %10llu %-6s bilinear %10llu %-6s bilinear/nearest = %.2fx\n",
+               cases[c].label, (unsigned long long)cn, CLOCK_UNIT,
+               (unsigned long long)cb, CLOCK_UNIT, ratio);
     }
 
     /* ---- the picture: same source, same ~0.4x scale, both paths, side by side */

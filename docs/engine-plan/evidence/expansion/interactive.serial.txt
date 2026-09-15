@@ -1,0 +1,759 @@
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 48/56 known features present: fpu tsc msr cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0 (AVX deliberately off -- see boot/long.asm)
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=749000 cycles, c=9682000 cycles, speedup x12.92
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 1000.114 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000369148 1000114250 1000005007 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (20 ticks) crypto_mismatch=0 kat=0 (706 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[mm] boot: 262109 frames total (1023 MiB), 258226 free, 3883 used, 0 shared, 3883 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[mm] boot: metadata 831 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 258225 frames free (1008 MiB), 3884 used, 0 shared, 0 bugs
+[mm] low: 257969 frames free (1007 MiB), 4140 used, 0 shared, 0 bugs
+[mm] low: 257713 frames free (1006 MiB), 4396 used, 0 shared, 0 bugs
+[mm] low: 257457 frames free (1005 MiB), 4652 used, 0 shared, 0 bugs
+[mm] low: 257201 frames free (1004 MiB), 4908 used, 0 shared, 0 bugs
+[mm] low: 256945 frames free (1003 MiB), 5164 used, 0 shared, 0 bugs
+[rmap] 262109 frames, 393163 nodes (5663 KiB total: 1023 KiB heads + 4607 KiB nodes)
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 256689 frames free (1002 MiB), 5420 used, 0 shared, 0 bugs
+[mm] low: 256433 frames free (1001 MiB), 5676 used, 0 shared, 0 bugs
+[mm] low: 256177 frames free (1000 MiB), 5932 used, 0 shared, 0 bugs
+[mm] low: 255921 frames free (999 MiB), 6188 used, 0 shared, 0 bugs
+[pcache] up: 131054 page slots (524216 KiB ceiling), 32 file slots, 32768 buckets; tables 4224 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[acpi] RSDP from the bootloader's multiboot2 tag
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 255665 frames free (998 MiB), 6444 used, 0 shared, 0 bugs
+[mm] low: 255409 frames free (997 MiB), 6700 used, 0 shared, 0 bugs
+[mm] low: 255153 frames free (996 MiB), 6956 used, 0 shared, 0 bugs
+[mm] low: 254897 frames free (995 MiB), 7212 used, 0 shared, 0 bugs
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:03.0, 2 queues)
+[mm] low: 254641 frames free (994 MiB), 7468 used, 0 shared, 0 bugs
+[mm] low: 254385 frames free (993 MiB), 7724 used, 0 shared, 0 bugs
+[mm] low: 254129 frames free (992 MiB), 7980 used, 0 shared, 0 bugs
+[mm] low: 253873 frames free (991 MiB), 8236 used, 0 shared, 0 bugs
+[virtio-gpu] 1280x800, RAM fb @ 0x1cdb000, cursor plane yes
+[virtio] 1001 up (0000:00:02.0, 4 queues)
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 1048576 sectors (512.0 MiB)
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=712 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:04.0
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfebc0000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[netlock] acq 3 recursive 0 maxdepth 1 violations 0
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[netlock] acq 27 recursive 2 maxdepth 2 violations 0
+[netlock] acq 219 recursive 2 maxdepth 2 violations 0
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (2038 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[net] tcp timers: 10 ms ktimer -> SOFTIRQ_NET (independent of the WM loop)
+[mm] low: 253617 frames free (990 MiB), 8492 used, 0 shared, 0 bugs
+[mm] low: 253361 frames free (989 MiB), 8748 used, 0 shared, 0 bugs
+[mm] low: 253105 frames free (988 MiB), 9004 used, 0 shared, 0 bugs
+[mm] low: 252849 frames free (987 MiB), 9260 used, 0 shared, 0 bugs
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 2338 KiB, free 5853 KiB, over-allocated 0 KiB
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 252593 frames free (986 MiB), 9516 used, 0 shared, 0 bugs
+[mm] low: 252337 frames free (985 MiB), 9772 used, 0 shared, 0 bugs
+[mm] low: 252081 frames free (984 MiB), 10028 used, 0 shared, 0 bugs
+[mm] low: 251825 frames free (983 MiB), 10284 used, 0 shared, 0 bugs
+[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 5259 KiB, free 7028 KiB, over-allocated 0 KiB
+[text] /fonts/ui-bold.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono-bold.ttf: 97 glyphs, upem=1000
+[mm] low: 251569 frames free (982 MiB), 10540 used, 0 shared, 0 bugs
+[mm] low: 251313 frames free (981 MiB), 10796 used, 0 shared, 0 bugs
+[mm] low: 251057 frames free (980 MiB), 11052 used, 0 shared, 0 bugs
+[mm] low: 250801 frames free (979 MiB), 11308 used, 0 shared, 0 bugs
+[mm] low: 250545 frames free (978 MiB), 11564 used, 0 shared, 0 bugs
+[mm] low: 250289 frames free (977 MiB), 11820 used, 0 shared, 0 bugs
+[mm] low: 250033 frames free (976 MiB), 12076 used, 0 shared, 0 bugs
+[mm] low: 249777 frames free (975 MiB), 12332 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[ime] /ime/pinyin.dat: 967663 bytes, 25945 pinyin keys -- Shift+Space toggles pinyin input
+[ime] learn: no /var/ime-learn.conf yet -- ranking is the dictionary's own frequency order until something is committed
+[wm] pointer: display cursor plane (motion does not composite)
+[wm] dock 9 apps: 0=clock.aex,shown 1=textedit.aex,shown 2=monitor.aex,shown 3=terminal.aex,shown 4=files.aex,shown 5=preview.aex,shown 6=studio.aex,shown 7=browser.aex,shown 8=settings.aex,shown
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC (NIC gsi=11)
+[smp] CPU 1 apic_id=1 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] 4/4 CPUs online
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=- caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfebe0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=- caps=msix,vndr, bar1=0xfebe1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 bar0=0xfebc0000/0x20000 bar1=io:0xc080/0x40
+[dev] 7 device(s), 1 bound, 6 unclaimed
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[aex] 'Finder' is unsigned: no AEX_T_SIG record. Loading anyway (log but allow) -- see the comment above the CRC check in aex.c for what a signature here would and would not mean.
+[mm] low: 249521 frames free (974 MiB), 12588 used, 0 shared, 0 bugs
+[exec] load files.aex: 21 pages file-backed in 1 areas, 196 copied
+[wm] launched Finder
+[aex] /bin/login: 35 KiB, container+crc 0 Mcyc, elf 0 Mcyc
+[exec] load /bin/login: 5 pages file-backed in 1 areas, 5 copied
+[sched] first-run tid 6 (login)
+[sched] first-run tid 5 (Finder)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 8190 frames (31 MiB free), stop at 16381 (63 MiB); swap OFF (drop tier only)
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[aex] /bin/sh: 44 KiB, container+crc 2 Mcyc, elf 2 Mcyc
+[exec] load /bin/sh: 7 pages file-backed in 1 areas, 25 copied
+LogitOS shell -- type 'help'
+/ $ [wm] ptr 640 400
+[wm] win 0 frame 110 70 640 474 content 640 444 pt zoom 0 min 0 Finder
+[time] tickloss +2/s worstgap=24659us missed=2 of 201 expected (0.995% of the clock); uptime 2s
+[time] tickloss   worst gap: bkl last held by cpu -1 ra=0x117afe via=irqsave(kernel entry, IF=0); tick on cpu 0, pid -1, not in kernel
+[time] accuracy n=32 late_us min=832 p50=5018 p90=8942 max=9841 (TCG; delivery is quantised to the 100Hz tick)
+[ip6] dad ok fec0::5054:ff:fe12:3456/64
+[wm] perf t=2607 composites=20 ns=218499030 max=26790938 motions=0 curmoves=1 curns=19998 full=8 rects=20 cpx=6882000 fpx=6882000 presns=12426580 torn=0 defer=2 late=0 drawmax=21 evdrop=0
+[netlock] acq 1759 recursive 5 maxdepth 2 violations 0
+[wm] ptr 832 753
+[mm] low: 249265 frames free (973 MiB), 12844 used, 10 shared, 0 bugs
+[mm] low: 249009 frames free (972 MiB), 13100 used, 10 shared, 0 bugs
+[mm] low: 248753 frames free (971 MiB), 13356 used, 10 shared, 0 bugs
+[mm] low: 248497 frames free (970 MiB), 13612 used, 10 shared, 0 bugs
+[mm] low: 248241 frames free (969 MiB), 13868 used, 10 shared, 0 bugs
+[mm] low: 247985 frames free (968 MiB), 14124 used, 10 shared, 0 bugs
+[mm] low: 247729 frames free (967 MiB), 14380 used, 10 shared, 0 bugs
+[mm] low: 247473 frames free (966 MiB), 14636 used, 10 shared, 0 bugs
+[kheap] grow #4: +8192 KiB -> arena 20480 KiB, live 10239 KiB, free 10237 KiB, over-allocated 1 KiB
+[mm] low: 247217 frames free (965 MiB), 14892 used, 10 shared, 0 bugs
+[mm] low: 246961 frames free (964 MiB), 15148 used, 10 shared, 0 bugs
+[mm] low: 246705 frames free (963 MiB), 15404 used, 10 shared, 0 bugs
+[mm] low: 246449 frames free (962 MiB), 15660 used, 10 shared, 0 bugs
+[mm] low: 246193 frames free (961 MiB), 15916 used, 10 shared, 0 bugs
+[mm] low: 245937 frames free (960 MiB), 16172 used, 10 shared, 0 bugs
+[mm] low: 245681 frames free (959 MiB), 16428 used, 10 shared, 0 bugs
+[mm] low: 245425 frames free (958 MiB), 16684 used, 10 shared, 0 bugs
+[mm] low: 245169 frames free (957 MiB), 16940 used, 10 shared, 0 bugs
+[mm] low: 244913 frames free (956 MiB), 17196 used, 10 shared, 0 bugs
+[mm] low: 244657 frames free (955 MiB), 17452 used, 10 shared, 0 bugs
+[mm] low: 244401 frames free (954 MiB), 17708 used, 10 shared, 0 bugs
+[mm] low: 244145 frames free (953 MiB), 17964 used, 10 shared, 0 bugs
+[exec] load browser.aex: 1138 pages file-backed in 2 areas, 3188 copied
+[wm] launched Browser
+[sched] first-run tid 20 (Browser)
+[wm] win 1 frame 138 98 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[wm] perf t=5648 composites=34 ns=565179417 max=44939865 motions=5 curmoves=4 curns=107988 full=15 rects=34 cpx=14363344 fpx=14363344 presns=26170009 torn=0 defer=2 late=0 drawmax=21 evdrop=0
+[browser] session restored 0 tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[mm] low: 243889 frames free (952 MiB), 18220 used, 148 shared, 0 bugs
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[waitq] 200 ms of waiting: bkl_hlt_wait spin re-tested 13 times / 1 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=384 work=1 blocked_now=3
+
+WAITQ_SELFTEST_OK (0 failures)
+[time] tickloss +31/s worstgap=114322us missed=33 of 600 expected (5.500% of the clock); uptime 6s
+[time] tickloss   worst gap: bkl held by cpu 2 ra=0x117afe via=irqsave(kernel entry, IF=0); tick on cpu 0, pid 2, not in kernel
+[time] xcheck src=tsc rtc=5s mono=4389ms tick=4070ms err=-122ppt OK lost=31/438 worstgap=114322us
+[time] negctl 2x-tick err=+755ppt -> REJECTED (guard works)
+[wm] perf t=6648 composites=61 ns=770717929 max=44939865 motions=5 curmoves=4 curns=107988 full=17 rects=61 cpx=18353540 fpx=18353540 presns=34138098 torn=0 defer=11 late=0 drawmax=24 evdrop=0
+[kbench] --- kernel entry cost, boot through desktop live (4 cores, TCG) ---
+[kbench] entry syscall: 319 entries, mean 20111818.181 ns each, 6415 ms total
+[kbench] entry timer: 9231 entries, mean 884966.634 ns each, 8169 ms total
+[kbench] entry fault: 199 entries, mean 2212331.658 ns each, 440 ms total
+[kbench] entry irq: 28 entries, mean 74821.428 ns each, 2 ms total
+[kbench] tty console wait: 2282 wakes, 384124 us awake in total (168.327 us each), 7932 ms uptime -- 48/1000 of ONE core
+[kbench] scheduler: 493 context switches, 3 threads parked now, 48 poll passes through bkl_hlt_wait
+[kbench]   poll 0x106b9c: 48 pass(es)
+[kbench] tlb: 0 shootdown(s) never acked
+[kbench] BKL holders: 603 samples, held in 274 (45%), 0 lost to collision
+[kbench]   bkl 0x117afe: 164 samples (59% of held)
+[kbench]   bkl 0x136a1e: 57 samples (20% of held)
+[kbench]   bkl 0x11afe7: 46 samples (16% of held)
+[kbench]   bkl 0x14f449: 4 samples (1% of held)
+[kbench]   bkl 0x13677e: 2 samples (0% of held)
+[kbench]   bkl 0x11c1b3: 1 samples (0% of held)
+[kbench] syscalls: 264 calls, 62 ms inside the dispatcher (BKL already held; blocking calls include time descheduled)
+[kbench]   SYS 8: 55 calls (20%), mean 14345.454 ns in handler, 0 ms total
+[kbench]   SYS 20: 43 calls (16%), mean 23000.000 ns in handler, 0 ms total
+[kbench]   SYS 37: 33 calls (12%), mean 8787.878 ns in handler, 0 ms total
+[kbench]   SYS 1: 25 calls (9%), mean 51840.000 ns in handler, 1 ms total
+[kbench]   SYS 38: 25 calls (9%), mean 129880.000 ns in handler, 3 ms total
+[kbench]   SYS 71: 19 calls (7%), mean 41105.263 ns in handler, 0 ms total
+[kbench]   SYS 72: 12 calls (4%), mean 2139250.000 ns in handler, 25 ms total
+[kbench]   SYS 41: 6 calls (2%), mean 12000.000 ns in handler, 0 ms total
+[kbench]   SYS 5: 5 calls (1%), mean 31600.000 ns in handler, 0 ms total
+[kbench]   SYS 6: 5 calls (1%), mean 136400.000 ns in handler, 0 ms total
+[kbench]   SYS 11: 5 calls (1%), mean 75800.000 ns in handler, 0 ms total
+[kbench]   SYS 102: 4 calls (1%), mean 11500.000 ns in handler, 0 ms total
+[kbench]   SYS 76: 3 calls (1%), mean 142000.000 ns in handler, 0 ms total
+[kbench]   SYS 81: 3 calls (1%), mean 51000.000 ns in handler, 0 ms total
+[kbench]   SYS 103: 3 calls (1%), mean 14333.333 ns in handler, 0 ms total
+[kbench]   SYS 3: 2 calls (0%), mean 8205500.000 ns in handler, 16 ms total
+[kbench] BKL: 18575 acquisitions, 10970 contended (59%); wait mean 158055.074 ns, hold mean 72168.990 ns
+[kbench] BKL: 2935 ms spent waiting, 1340 ms spent holding, across 4 cores
+[mm] kbench: 262109 frames total (1023 MiB), 243870 free, 18239 used, 164 shared, 18403 refs (+164 saved = 656 KiB), 0 pinned, 0 bugs
+[mm] kbench: metadata 831 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] kbench: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[kheap] kbench: arena 20480 KiB, live 13096 KiB (148 blocks), free 7380 KiB, over-allocated 1 KiB of 20733 KiB served, 217 allocs, 69 frees, 4 grows, 209 splits, 54 merges
+[mm] kbench: cow=on, 0 pages shared copy-on-write; faults: 0 copied, 0 reused, 34 anon, 0 declined; 3 address spaces with areas
+[mm] kbench: fault cost (kcycles total / cycles each): cow-copy 0/0, cow-reuse 0/0, anon 193/5676, swap-in 0/0
+[mm] kbench: file faults 165 (176096 kcycles total / 1067248 each); HIT 10 (8200 cyc each), MISS 155 (1135 kcyc each, 99% of the time)
+[mm] kbench: shm faults 0 (0 kcycles total / 0 each)
+[pcache] kbench: 195 pages resident (peak 195 of 131054 slots), 4 files; 10 hits, 155 misses, 0 shared
+[pcache] kbench: 0 dropped by reclaim, 0 evicted here, 0 invalidated by a write, 0 whole-file reads bypassed
+[pcache] kbench: pool 195/131054 slots used at peak (0%); 0 entries orphaned (pool full of mapped pages), 0 pages handed back UNCACHED AND LEAKED
+[pcache] kbench: readahead 11 batches, 40 pages ahead, 11 backend reads (4 pages/read), 0 short; K 4..32
+[pcache] kbench: backend 155 calls for 195 pages, 172 Mcyc total (1112 kcyc/call, 884 kcyc/page, worst 1680 kcyc)
+[shm] kbench: 0 segments, 0 pages (0 KiB unreclaimable), 0 bugs
+[reclaim] kbench: on, 0 passes, 0 frames scanned, 0 evicted (0 dropped free [0 zero + 0 cache] + 0 swapped), 0 second chances
+[reclaim] kbench: skipped 0 unmapped / 0 pinned / 0 partially-known / 0 too-shared / 0 running elsewhere; failed 0 no-slot / 0 io; 0 bugs
+[reclaim] kbench: page-cache frames met 0, dropped 0, UNACCOUNTED-FOR REFERENCE 0, too-shared 0
+[reclaim] kbench: 0 swap-ins (0 failed); 0 kcycles scanning (0 per frame evicted)
+[rmap] kbench: 3617/393163 nodes used (peak 3617), 0 overflows, 0 frames incomplete, 0 bugs
+[swap] kbench: OFF (no device)
+KBENCH_DONE
+[time] fallback pit ran 500ms (want ~500), switch back rc=0 continuity=3999ns monotonic
+[time] tickloss +6/s worstgap=114322us missed=39 of 900 expected (4.333% of the clock); uptime 9s
+[wm] perf t=9664 composites=92 ns=1089828610 max=44939865 motions=5 curmoves=4 curns=107988 full=17 rects=92 cpx=30703320 fpx=30703320 presns=55444663 torn=0 defer=11 late=0 drawmax=24 evdrop=0
+[time] smp-mono cores=4 seen=f reads=400000 observed-backsteps=0 clamped=0 max=0ns
+[wm] perf t=10672 composites=122 ns=1403848727 max=44939865 motions=5 curmoves=4 curns=107988 full=17 rects=122 cpx=43031560 fpx=43031560 presns=78396042 torn=0 defer=11 late=0 drawmax=24 evdrop=0
+[time] tickloss +9/s worstgap=114322us missed=48 of 1096 expected (4.379% of the clock); uptime 11s
+[browser] load: http://10.0.2.2:18769/storage.html
+[wa] t=10650 (+10650) nav
+[route] 127.0.0.0/8 onlink dev 1 src 127.0.0.1 metric 0 local
+[route] 10.0.2.0/24 onlink dev 2 src 10.0.2.15 metric 0
+[route] 0.0.0.0/0 via 10.0.2.2 dev 2 src 10.0.2.15 metric 0
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=10790 (+140) idle reqs=1 dials=1 reuses=0
+[wa] t=10790 (+0) docdone status=200 len=735
+[dl] painted text: 35 run(s), 191 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,114 Storage
+[dl] 167,114 across
+[dl] 271,114 browser
+[dl] 404,114 restart
+[dl] 40,176 Write
+[dl] 91,176 a
+[dl] 106,176 marker,
+[dl] 180,176 close
+[dl] 231,176 and
+[dl] 270,176 reopen
+[dl] 339,176 the
+[dl] 373,176 browser,
+[dl] 456,176 then
+[dl] 502,176 read
+[dl] 547,176 it
+[dl] 563,176 again.
+[dl] 622,176 The
+[dl] 660,176 local
+[dl] 707,176 marker
+[dl] 776,176 must
+[dl] 40,201 survive.
+[dl] 113,201 The
+[dl] 151,201 session
+[dl] 222,201 marker
+[dl] 291,201 must
+[dl] 341,201 disappear.
+[dl] 46,238 Write
+[dl] 97,238 marker
+[dl] 184,238 Read
+[dl] 234,238 marker
+[dl] 321,238 Clear
+[dl] 371,238 marker
+[dl] 61,296 Reading
+[dl] 145,296  saved
+[dl] 217,296  state...
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[mm] low: 243633 frames free (951 MiB), 18476 used, 300 shared, 0 bugs
+[browser] heap peak 5671K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 223 inline + 1 external = 224 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 24 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[mm] low: 243377 frames free (950 MiB), 18732 used, 394 shared, 0 bugs
+[wm] perf t=11677 composites=143 ns=1641261599 max=44939865 motions=5 curmoves=4 curns=107988 full=17 rects=144 cpx=52663640 fpx=52663640 presns=95862048 torn=0 defer=11 late=0 drawmax=33 evdrop=0
+[mm] low: 243121 frames free (949 MiB), 18988 used, 484 shared, 0 bugs
+[netlock] acq 14075 recursive 19 maxdepth 2 violations 0
+[mm] low: 242865 frames free (948 MiB), 19244 used, 563 shared, 0 bugs
+[browser] scripts collected: 1 external classic, 0 external module, 0 inline
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=11720 (+930) idle reqs=2 dials=2 reuses=0
+[mm] low: 242609 frames free (947 MiB), 19500 used, 635 shared, 0 bugs
+[wa] t=11760 loadend reqs=2 dials=2 reuses=0 cache ents=2 2K hits=0 rvs=0
+[browser] load done: 2 requests, 2 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 1 from network (tab 1 of 2)
+[dl] painted text: 40 run(s), 217 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,114 Storage
+[dl] 167,114 across
+[dl] 271,114 browser
+[dl] 404,114 restart
+[dl] 40,176 Write
+[dl] 91,176 a
+[dl] 106,176 marker,
+[dl] 180,176 close
+[dl] 231,176 and
+[dl] 270,176 reopen
+[dl] 339,176 the
+[dl] 373,176 browser,
+[dl] 456,176 then
+[dl] 502,176 read
+[dl] 547,176 it
+[dl] 563,176 again.
+[dl] 622,176 The
+[dl] 660,176 local
+[dl] 707,176 marker
+[dl] 776,176 must
+[dl] 40,201 survive.
+[dl] 113,201 The
+[dl] 151,201 session
+[dl] 222,201 marker
+[dl] 291,201 must
+[dl] 341,201 disappear.
+[dl] 46,238 Write
+[dl] 97,238 marker
+[dl] 184,238 Read
+[dl] 234,238 marker
+[dl] 321,238 Clear
+[dl] 371,238 marker
+[dl] 61,296 PAGE
+[dl] 109,296  OPEN:
+[dl] 181,296  READ
+[dl] 241,296  ONLY
+[dl] 61,321 LOCAL:
+[dl] 133,321  absent
+[dl] 61,346 SESSION:
+[dl] 157,346  absent
+[dl] ---8<--- end painted text
+[wm] ptr 242 378
+[dl] painted text: 38 run(s), 227 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,114 Storage
+[dl] 167,114 across
+[dl] 271,114 browser
+[dl] 404,114 restart
+[dl] 40,176 Write
+[dl] 91,176 a
+[dl] 106,176 marker,
+[dl] 180,176 close
+[dl] 231,176 and
+[dl] 270,176 reopen
+[dl] 339,176 the
+[dl] 373,176 browser,
+[dl] 456,176 then
+[dl] 502,176 read
+[dl] 547,176 it
+[dl] 563,176 again.
+[dl] 622,176 The
+[dl] 660,176 local
+[dl] 707,176 marker
+[dl] 776,176 must
+[dl] 40,201 survive.
+[dl] 113,201 The
+[dl] 151,201 session
+[dl] 222,201 marker
+[dl] 291,201 must
+[dl] 341,201 disappear.
+[dl] 46,238 Write
+[dl] 97,238 marker
+[dl] 184,238 Read
+[dl] 234,238 marker
+[dl] 321,238 Clear
+[dl] 371,238 marker
+[dl] 61,296 WRITE
+[dl] 121,296  COMMITTED
+[dl] 61,321 LOCAL:
+[dl] 133,321  guest-1788944252230
+[dl] 61,346 SESSION:
+[dl] 157,346  tab-only
+[dl] ---8<--- end painted text
+[wm] perf t=74837 composites=285 ns=2501217346 max=44939865 motions=14 curmoves=9 curns=199978 full=17 rects=286 cpx=61689957 fpx=61689957 presns=125768632 torn=0 defer=20 late=0 drawmax=276 evdrop=0
+[wm] ptr 155 114
+[wm] perf t=77844 composites=310 ns=2542837593 max=44939865 motions=19 curmoves=12 curns=284969 full=18 rects=311 cpx=62898277 fpx=62898277 presns=128241348 torn=0 defer=38 late=0 drawmax=276 evdrop=0
+[wm] win 1 gone
+[netlock] acq 112602 recursive 31 maxdepth 2 violations 0
+[wm] ptr 832 753
+[kheap] grow #5: +8192 KiB -> arena 28672 KiB, live 10251 KiB, free 18416 KiB, over-allocated 1 KiB
+[mm] low: 242353 frames free (946 MiB), 19756 used, 10 shared, 0 bugs
+[mm] low: 242097 frames free (945 MiB), 20012 used, 10 shared, 0 bugs
+[mm] low: 241841 frames free (944 MiB), 20268 used, 10 shared, 0 bugs
+[mm] low: 241585 frames free (943 MiB), 20524 used, 10 shared, 0 bugs
+[exec] load browser.aex: 1138 pages file-backed in 2 areas, 3188 copied
+[wm] launched Browser
+[sched] first-run tid 31 (Browser)
+[mm] low: 241329 frames free (942 MiB), 20780 used, 114 shared, 0 bugs
+[browser] session restored 1 tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] win 1 frame 154 126 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[wm] perf t=80846 composites=339 ns=2938915336 max=44939865 motions=30 curmoves=18 curns=421953 full=30 rects=340 cpx=71178341 fpx=71178341 presns=143135647 torn=7 defer=43 late=12 drawmax=276 evdrop=0
+[time] tickloss +25/s worstgap=114322us missed=73 of 8095 expected (0.901% of the clock); uptime 81s
+[browser] load: http://10.0.2.2:18769/storage.html
+[wa] t=133660 (+133660) nav
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=133680 (+20) idle reqs=1 dials=1 reuses=0
+[wa] t=133680 (+0) docdone status=200 len=735
+[dl] painted text: 35 run(s), 191 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,114 Storage
+[dl] 167,114 across
+[dl] 271,114 browser
+[dl] 404,114 restart
+[dl] 40,176 Write
+[dl] 91,176 a
+[dl] 106,176 marker,
+[dl] 180,176 close
+[dl] 231,176 and
+[dl] 270,176 reopen
+[dl] 339,176 the
+[dl] 373,176 browser,
+[dl] 456,176 then
+[dl] 502,176 read
+[dl] 547,176 it
+[dl] 563,176 again.
+[dl] 622,176 The
+[dl] 660,176 local
+[dl] 707,176 marker
+[dl] 776,176 must
+[dl] 40,201 survive.
+[dl] 113,201 The
+[dl] 151,201 session
+[dl] 222,201 marker
+[dl] 291,201 must
+[dl] 341,201 disappear.
+[dl] 46,238 Write
+[dl] 97,238 marker
+[dl] 184,238 Read
+[dl] 234,238 marker
+[dl] 321,238 Clear
+[dl] 371,238 marker
+[dl] 61,296 Reading
+[dl] 145,296  saved
+[dl] 217,296  state...
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[browser] heap peak 5671K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 223 inline + 1 external = 224 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 24 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[mm] low: 241073 frames free (941 MiB), 21036 used, 425 shared, 0 bugs
+[mm] low: 240817 frames free (940 MiB), 21292 used, 519 shared, 0 bugs
+[mm] low: 240561 frames free (939 MiB), 21548 used, 633 shared, 0 bugs
+[browser] scripts collected: 1 external classic, 0 external module, 0 inline
+[wa] t=134120 (+440) idle reqs=2 dials=2 reuses=0
+[wa] t=134150 loadend reqs=2 dials=2 reuses=0 cache ents=2 2K hits=0 rvs=0
+[browser] load done: 2 requests, 2 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 2 closed
+[browser] resources: 0 from tab, 1 from network (tab 0 of 1)
+[dl] painted text: 40 run(s), 217 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,114 Storage
+[dl] 167,114 across
+[dl] 271,114 browser
+[dl] 404,114 restart
+[dl] 40,176 Write
+[dl] 91,176 a
+[dl] 106,176 marker,
+[dl] 180,176 close
+[dl] 231,176 and
+[dl] 270,176 reopen
+[dl] 339,176 the
+[dl] 373,176 browser,
+[dl] 456,176 then
+[dl] 502,176 read
+[dl] 547,176 it
+[dl] 563,176 again.
+[dl] 622,176 The
+[dl] 660,176 local
+[dl] 707,176 marker
+[dl] 776,176 must
+[dl] 40,201 survive.
+[dl] 113,201 The
+[dl] 151,201 session
+[dl] 222,201 marker
+[dl] 291,201 must
+[dl] 341,201 disappear.
+[dl] 46,238 Write
+[dl] 97,238 marker
+[dl] 184,238 Read
+[dl] 234,238 marker
+[dl] 321,238 Clear
+[dl] 371,238 marker
+[dl] 61,296 PAGE
+[dl] 109,296  OPEN:
+[dl] 181,296  READ
+[dl] 241,296  ONLY
+[dl] 61,321 LOCAL:
+[dl] 133,321  absent
+[dl] 61,346 SESSION:
+[dl] 157,346  absent
+[dl] ---8<--- end painted text
+[wm] perf t=134955 composites=456 ns=3497307530 max=44939865 motions=30 curmoves=18 curns=421953 full=30 rects=457 cpx=77562517 fpx=77562517 presns=164639190 torn=11 defer=47 late=20 drawmax=276 evdrop=0
+[wm] perf t=135963 composites=461 ns=3520554872 max=44939865 motions=30 curmoves=18 curns=421953 full=30 rects=462 cpx=78382881 fpx=78382881 presns=166235008 torn=12 defer=49 late=23 drawmax=276 evdrop=0
+[browser] ctrl+L: address bar focused
+[wm] perf t=139982 composites=481 ns=3674582270 max=44939865 motions=30 curmoves=18 curns=421953 full=30 rects=482 cpx=84110009 fpx=84110009 presns=178135647 torn=24 defer=49 late=35 drawmax=276 evdrop=0
+[wm] perf t=140982 composites=508 ns=3908214568 max=44939865 motions=30 curmoves=18 curns=421953 full=31 rects=509 cpx=94710957 fpx=94710957 presns=198836280 torn=50 defer=49 late=61 drawmax=276 evdrop=0
+[browser] load: http://10.0.2.2:18769/modal.html
+[wa] t=141020 (+6900) nav
+[wa] t=141040 (+20) idle reqs=1 dials=1 reuses=0
+[wa] t=141040 (+0) docdone status=200 len=1921
+[dl] painted text: 36 run(s), 190 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 32,106 A
+[dl] 55,106 focused
+[dl] 166,106 conversation
+[dl] 59,266 Open
+[dl] 106,266 dialog
+[dl] 178,266 Background
+[dl] 278,266 action
+[dl] 53,300 Background
+[dl] 153,300 action
+[dl] 206,300 count:
+[dl] 260,300 0
+[dl] 32,379 Within
+[dl] 85,379 the
+[dl] 114,379 dialog,
+[dl] 173,379 Tab
+[dl] 208,379 moves
+[dl] 264,379 between
+[dl] 336,379 its
+[dl] 358,379 controls.
+[dl] 431,379 Escape
+[dl] 492,379 closes
+[dl] 545,379 it
+[dl] 559,379 and
+[dl] 594,379 returns
+[dl] 653,379 focus
+[dl] 699,379 to
+[dl] 719,379 Open
+[dl] 766,379 dialog.
+[dl] 46,177 This
+[dl] 82,177 page
+[dl] 126,177 banner
+[dl] 186,177 stays
+[dl] 231,177 below
+[dl] 284,177 an
+[dl] 308,177 open
+[dl] 352,177 modal.
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[browser] heap peak 7993K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 496 inline + 1 external = 497 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 52 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[wm] perf t=141982 composites=541 ns=4181844297 max=44939865 motions=30 curmoves=18 curns=421953 full=31 rects=542 cpx=108147025 fpx=108147025 presns=223172502 torn=81 defer=49 late=92 drawmax=276 evdrop=0
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+[wa] t=141460 loadend reqs=1 dials=1 reuses=0 cache ents=3 3K hits=0 rvs=0
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 3 closed
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+[dl] painted text: 50 run(s), 261 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 32,106 A
+[dl] 55,106 focused
+[dl] 166,106 conversation
+[dl] 59,266 Open
+[dl] 106,266 dialog
+[dl] 178,266 Background
+[dl] 278,266 action
+[dl] 53,300 Background
+[dl] 153,300 action
+[dl] 206,300 count:
+[dl] 260,300 0
+[dl] 32,379 Within
+[dl] 85,379 the
+[dl] 114,379 dialog,
+[dl] 173,379 Tab
+[dl] 208,379 moves
+[dl] 264,379 between
+[dl] 336,379 its
+[dl] 358,379 controls.
+[dl] 431,379 Escape
+[dl] 492,379 closes
+[dl] 545,379 it
+[dl] 559,379 and
+[dl] 594,379 returns
+[dl] 653,379 focus
+[dl] 699,379 to
+[dl] 719,379 Open
+[dl] 766,379 dialog.
+[dl] 46,177 This
+[dl] 82,177 page
+[dl] 126,177 banner
+[dl] 186,177 stays
+[dl] 231,177 below
+[dl] 284,177 an
+[dl] 308,177 open
+[dl] 352,177 modal.
+[dl] 353,324 Your
+[dl] 416,324 details
+[dl] 353,372 The
+[dl] 386,372 background
+[dl] 486,372 is
+[dl] 502,372 dimmed
+[dl] 573,372 and
+[dl] 608,372 cannot
+[dl] 667,372 be
+[dl] 691,372 activated.
+[dl] 551,410 Save
+[dl] 593,410 and
+[dl] 628,410 close
+[dl] 691,410 Cancel
+[dl] ---8<--- end painted text
+[wm] perf t=142983 composites=547 ns=4203595812 max=44939865 motions=30 curmoves=18 curns=421953 full=31 rects=548 cpx=108967389 fpx=108967389 presns=224747322 torn=82 defer=52 late=96 drawmax=276 evdrop=0
+[wm] ptr 448 432
+[wm] ptr 410 432
+[wm] perf t=275380 composites=818 ns=5668878394 max=44939865 motions=37 curmoves=21 curns=489945 full=31 rects=819 cpx=118042161 fpx=118042161 presns=267805403 torn=83 defer=56 late=101 drawmax=291 evdrop=0
+[time] tickloss +7/s worstgap=114322us missed=80 of 27599 expected (0.289% of the clock); uptime 276s
+[dl] painted text: 38 run(s), 203 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 32,106 A
+[dl] 55,106 focused
+[dl] 166,106 conversation
+[dl] 59,266 Open
+[dl] 106,266 dialog
+[dl] 178,266 Background
+[dl] 278,266 action
+[dl] 53,300 Dialog
+[dl] 108,300 closed.
+[dl] 169,300 Background
+[dl] 269,300 action
+[dl] 322,300 count:
+[dl] 376,300 0
+[dl] 32,379 Within
+[dl] 85,379 the
+[dl] 114,379 dialog,
+[dl] 173,379 Tab
+[dl] 208,379 moves
+[dl] 264,379 between
+[dl] 336,379 its
+[dl] 358,379 controls.
+[dl] 431,379 Escape
+[dl] 492,379 closes
+[dl] 545,379 it
+[dl] 559,379 and
+[dl] 594,379 returns
+[dl] 653,379 focus
+[dl] 699,379 to
+[dl] 719,379 Open
+[dl] 766,379 dialog.
+[dl] 46,177 This
+[dl] 82,177 page
+[dl] 126,177 banner
+[dl] 186,177 stays
+[dl] 231,177 below
+[dl] 284,177 an
+[dl] 308,177 open
+[dl] 352,177 modal.
+[dl] ---8<--- end painted text
+[wm] perf t=276388 composites=824 ns=5746554518 max=44939865 motions=37 curmoves=21 curns=489945 full=31 rects=825 cpx=121867501 fpx=121867501 presns=274390651 torn=88 defer=56 late=106 drawmax=291 evdrop=0

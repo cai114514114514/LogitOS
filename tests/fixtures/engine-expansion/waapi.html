@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>WAAPI native paint wiring</title>
+<style>body{font:20px sans-serif;background:white;color:black}#track{margin:20px;height:80px;width:380px;background:#ddd}#box{width:60px;height:60px;background:#0055dd}button{font:18px sans-serif;margin:8px}</style>
+<h1>WAAPI opacity and transform</h1><div id="track"><div id="box"></div></div>
+<p id="result">WAAPI-RUNNING: blue box moves 0 to 240 px and fades in</p>
+<button id="replay">Replay</button><button id="pause">Pause / resume</button><button id="reverse">Reverse</button><button id="cancel">Cancel</button>
+<script>
+var checks=0,failures=0;function check(ok){checks++;if(!ok)failures++;}
+var box=document.getElementById('box'), result=document.getElementById('result'), a;
+function say(s){result.textContent=s;console.log(s)}
+function replay(){
+ if(a)a.cancel();
+ a=box.animate([{opacity:.15,transform:'translateX(0px)'},{opacity:1,transform:'translateX(240px)'}],{duration:2400,fill:'both',easing:'linear'});
+ var current=a;
+ a.finished.then(function(){if(current===a){check(a.playState==='finished');check(a.currentTime===2400);say('WAAPI-FINISHED time='+a.currentTime+' state='+a.playState+' EXPECT blue box at track right');console.log('WAAPI-WIRING checks='+checks+' failures='+failures);}},function(){});
+ setTimeout(function(){if(current===a){check(a.currentTime>=1000);check(a.currentTime<=2400);say('WAAPI-MID time='+Math.round(a.currentTime)+' state='+a.playState+' EXPECT blue box between track ends');}},1200);
+}
+document.getElementById('replay').onclick=replay;
+document.getElementById('pause').onclick=function(){if(a.playState==='paused')a.play();else a.pause();say('WAAPI-PAUSE state='+a.playState+' time='+Math.round(a.currentTime));};
+document.getElementById('reverse').onclick=function(){a.reverse();say('WAAPI-REVERSE rate='+a.playbackRate);};
+document.getElementById('cancel').onclick=function(){a.cancel();say('WAAPI-CANCEL state='+a.playState+' EXPECT opaque blue box at track left');};
+replay();
+var r=document.getElementById('cancel').getBoundingClientRect();console.log('WAAPI-CANCEL-BUTTON clientX='+Math.round(r.left+r.width/2)+' clientY='+Math.round(r.top+r.height/2));
+</script>

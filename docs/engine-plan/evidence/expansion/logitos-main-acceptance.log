@@ -1,0 +1,1110 @@
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/lex/lex.c -o build/csshost/third_party/css/libcss/src/lex/lex.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/canon.c -o build/csshost/third_party/css/libcss/src/parse/canon.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/font_face.c -o build/csshost/third_party/css/libcss/src/parse/font_face.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/important.c -o build/csshost/third_party/css/libcss/src/parse/important.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/propstrings.c -o build/csshost/third_party/css/libcss/src/parse/propstrings.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/mq.c -o build/csshost/third_party/css/libcss/src/parse/mq.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/list_style_type.c -o build/csshost/third_party/css/libcss/src/parse/properties/list_style_type.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/play_during.c -o build/csshost/third_party/css/libcss/src/parse/properties/play_during.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/clip.c -o build/csshost/third_party/css/libcss/src/parse/properties/clip.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/list_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/list_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/overflow.c -o build/csshost/third_party/css/libcss/src/parse/properties/overflow.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/columns.c -o build/csshost/third_party/css/libcss/src/parse/properties/columns.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/text_decoration.c -o build/csshost/third_party/css/libcss/src/parse/properties/text_decoration.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/font_weight.c -o build/csshost/third_party/css/libcss/src/parse/properties/font_weight.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/font.c -o build/csshost/third_party/css/libcss/src/parse/properties/font.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/properties.c -o build/csshost/third_party/css/libcss/src/parse/properties/properties.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border_radius.c -o build/csshost/third_party/css/libcss/src/parse/properties/border_radius.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/padding.c -o build/csshost/third_party/css/libcss/src/parse/properties/padding.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border.c -o build/csshost/third_party/css/libcss/src/parse/properties/border.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/margin.c -o build/csshost/third_party/css/libcss/src/parse/properties/margin.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/background_position.c -o build/csshost/third_party/css/libcss/src/parse/properties/background_position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/utils.c -o build/csshost/third_party/css/libcss/src/parse/properties/utils.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/border_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/quotes.c -o build/csshost/third_party/css/libcss/src/parse/properties/quotes.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/content.c -o build/csshost/third_party/css/libcss/src/parse/properties/content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/border_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/flex.c -o build/csshost/third_party/css/libcss/src/parse/properties/flex.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/outline.c -o build/csshost/third_party/css/libcss/src/parse/properties/outline.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/cue.c -o build/csshost/third_party/css/libcss/src/parse/properties/cue.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/opacity.c -o build/csshost/third_party/css/libcss/src/parse/properties/opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/background.c -o build/csshost/third_party/css/libcss/src/parse/properties/background.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/font_family.c -o build/csshost/third_party/css/libcss/src/parse/properties/font_family.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/azimuth.c -o build/csshost/third_party/css/libcss/src/parse/properties/azimuth.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/fill_opacity.c -o build/csshost/third_party/css/libcss/src/parse/properties/fill_opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/stroke_opacity.c -o build/csshost/third_party/css/libcss/src/parse/properties/stroke_opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/elevation.c -o build/csshost/third_party/css/libcss/src/parse/properties/elevation.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/column_rule.c -o build/csshost/third_party/css/libcss/src/parse/properties/column_rule.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/pause.c -o build/csshost/third_party/css/libcss/src/parse/properties/pause.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/flex_flow.c -o build/csshost/third_party/css/libcss/src/parse/properties/flex_flow.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/cursor.c -o build/csshost/third_party/css/libcss/src/parse/properties/cursor.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/font_variant.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/font_variant.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/stress.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/stress.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/margin_side.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/margin_side.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/order.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/order.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/height.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/margin_left.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/margin_left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/margin_right.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/margin_right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/top.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_right_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_right_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/display.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/display.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/flex_grow.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/flex_grow.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/z_index.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/z_index.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/background_attachment.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/background_attachment.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/padding_side.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/padding_side.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_right_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_right_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/overflow_y.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/overflow_y.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/counter_reset.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/counter_reset.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/background_image.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/background_image.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/text_transform.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/text_transform.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/break_after.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/break_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_side_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_side_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/speak_numeral.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/speak_numeral.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/bottom.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/padding_left.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/padding_left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/caption_side.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/caption_side.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/orphans.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/orphans.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/align_self.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/align_self.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/visibility.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/visibility.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/align_items.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/align_items.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/speak.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/speak.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_side_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_side_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/list_style_image.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/list_style_image.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/max_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/max_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/volume.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/volume.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/side.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/side.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/break_inside.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/break_inside.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_collapse.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_collapse.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/text_indent.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/text_indent.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/left.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/cue_before.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/cue_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/white_space.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/white_space.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/break_before.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/break_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_right_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_right_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/margin_top.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/margin_top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/widows.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/widows.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/position.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_fill.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_fill.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/pause_before.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/pause_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/padding_bottom.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/padding_bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_side_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_side_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/speak_header.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/speak_header.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/outline_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/outline_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_count.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_count.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/padding_right.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/padding_right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_top_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_top_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_rule_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_rule_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/font_size.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/font_size.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_bottom_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_bottom_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/pause_after.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/pause_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_left.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/max_height.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/max_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/table_layout.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/table_layout.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/clear.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/clear.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/background_repeat.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/background_repeat.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/empty_cells.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/empty_cells.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/speech_rate.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/speech_rate.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_span.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_span.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/text_align.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/text_align.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/writing_mode.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/writing_mode.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/min_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/min_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/flex_shrink.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/flex_shrink.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/pitch.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/pitch.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/background_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/background_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/word_spacing.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/word_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/flex_direction.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/flex_direction.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/richness.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/richness.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_left_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_left_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/speak_punctuation.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/speak_punctuation.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/justify_content.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/justify_content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/float.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/float.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_top_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_top_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/flex_wrap.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/flex_wrap.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_bottom_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_bottom_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/align_content.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/align_content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/page_break_after.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/page_break_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/pitch_range.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/pitch_range.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_rule_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_rule_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_right.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/vertical_align.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/vertical_align.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/letter_spacing.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/letter_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_left_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_left_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/line_height.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/line_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/padding_top.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/padding_top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/right.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/counter_increment.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/counter_increment.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/outline_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/outline_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/box_sizing.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/box_sizing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_top.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/font_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/font_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_rule_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_rule_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_bottom_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_bottom_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/page_break_before.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/page_break_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/page_break_inside.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/page_break_inside.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_top_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_top_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/overflow_x.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/overflow_x.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/outline_width.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/outline_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/margin_bottom.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/margin_bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/cue_after.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/cue_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/list_style_position.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/list_style_position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_bottom.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/flex_basis.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/flex_basis.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/unicode_bidi.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/unicode_bidi.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/direction.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/direction.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/column_gap.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/column_gap.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/color.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/min_height.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/min_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/autogen/border_left_style.c -o build/csshost/third_party/css/libcss/src/parse/properties/autogen/border_left_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border_spacing.c -o build/csshost/third_party/css/libcss/src/parse/properties/border_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/voice_family.c -o build/csshost/third_party/css/libcss/src/parse/properties/voice_family.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/properties/border_color.c -o build/csshost/third_party/css/libcss/src/parse/properties/border_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/language.c -o build/csshost/third_party/css/libcss/src/parse/language.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/parse/parse.c -o build/csshost/third_party/css/libcss/src/parse/parse.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/stylesheet.c -o build/csshost/third_party/css/libcss/src/stylesheet.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/utils/utils.c -o build/csshost/third_party/css/libcss/src/utils/utils.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/utils/errors.c -o build/csshost/third_party/css/libcss/src/utils/errors.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/strings.c -o build/csshost/third_party/css/libcss/src/select/strings.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/dispatch.c -o build/csshost/third_party/css/libcss/src/select/dispatch.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/calc.c -o build/csshost/third_party/css/libcss/src/select/calc.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/select.c -o build/csshost/third_party/css/libcss/src/select/select.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/font_face.c -o build/csshost/third_party/css/libcss/src/select/font_face.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/hash.c -o build/csshost/third_party/css/libcss/src/select/hash.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/arena.c -o build/csshost/third_party/css/libcss/src/select/arena.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/font_variant.c -o build/csshost/third_party/css/libcss/src/select/properties/font_variant.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/stress.c -o build/csshost/third_party/css/libcss/src/select/properties/stress.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/list_style_type.c -o build/csshost/third_party/css/libcss/src/select/properties/list_style_type.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/play_during.c -o build/csshost/third_party/css/libcss/src/select/properties/play_during.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/clip.c -o build/csshost/third_party/css/libcss/src/select/properties/clip.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/order.c -o build/csshost/third_party/css/libcss/src/select/properties/order.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/height.c -o build/csshost/third_party/css/libcss/src/select/properties/height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/margin_left.c -o build/csshost/third_party/css/libcss/src/select/properties/margin_left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/margin_right.c -o build/csshost/third_party/css/libcss/src/select/properties/margin_right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/top.c -o build/csshost/third_party/css/libcss/src/select/properties/top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_right_width.c -o build/csshost/third_party/css/libcss/src/select/properties/border_right_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/display.c -o build/csshost/third_party/css/libcss/src/select/properties/display.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/flex_grow.c -o build/csshost/third_party/css/libcss/src/select/properties/flex_grow.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/z_index.c -o build/csshost/third_party/css/libcss/src/select/properties/z_index.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/background_attachment.c -o build/csshost/third_party/css/libcss/src/select/properties/background_attachment.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_right_style.c -o build/csshost/third_party/css/libcss/src/select/properties/border_right_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/overflow_y.c -o build/csshost/third_party/css/libcss/src/select/properties/overflow_y.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/counter_reset.c -o build/csshost/third_party/css/libcss/src/select/properties/counter_reset.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/background_image.c -o build/csshost/third_party/css/libcss/src/select/properties/background_image.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/text_transform.c -o build/csshost/third_party/css/libcss/src/select/properties/text_transform.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/break_after.c -o build/csshost/third_party/css/libcss/src/select/properties/break_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/speak_numeral.c -o build/csshost/third_party/css/libcss/src/select/properties/speak_numeral.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/bottom.c -o build/csshost/third_party/css/libcss/src/select/properties/bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/padding_left.c -o build/csshost/third_party/css/libcss/src/select/properties/padding_left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/caption_side.c -o build/csshost/third_party/css/libcss/src/select/properties/caption_side.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/orphans.c -o build/csshost/third_party/css/libcss/src/select/properties/orphans.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/align_self.c -o build/csshost/third_party/css/libcss/src/select/properties/align_self.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/visibility.c -o build/csshost/third_party/css/libcss/src/select/properties/visibility.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/align_items.c -o build/csshost/third_party/css/libcss/src/select/properties/align_items.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/speak.c -o build/csshost/third_party/css/libcss/src/select/properties/speak.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/text_decoration.c -o build/csshost/third_party/css/libcss/src/select/properties/text_decoration.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/font_weight.c -o build/csshost/third_party/css/libcss/src/select/properties/font_weight.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/list_style_image.c -o build/csshost/third_party/css/libcss/src/select/properties/list_style_image.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/max_width.c -o build/csshost/third_party/css/libcss/src/select/properties/max_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/volume.c -o build/csshost/third_party/css/libcss/src/select/properties/volume.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/break_inside.c -o build/csshost/third_party/css/libcss/src/select/properties/break_inside.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_collapse.c -o build/csshost/third_party/css/libcss/src/select/properties/border_collapse.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/text_indent.c -o build/csshost/third_party/css/libcss/src/select/properties/text_indent.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/left.c -o build/csshost/third_party/css/libcss/src/select/properties/left.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/cue_before.c -o build/csshost/third_party/css/libcss/src/select/properties/cue_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/white_space.c -o build/csshost/third_party/css/libcss/src/select/properties/white_space.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_radius.c -o build/csshost/third_party/css/libcss/src/select/properties/border_radius.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/break_before.c -o build/csshost/third_party/css/libcss/src/select/properties/break_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_right_color.c -o build/csshost/third_party/css/libcss/src/select/properties/border_right_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/margin_top.c -o build/csshost/third_party/css/libcss/src/select/properties/margin_top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/widows.c -o build/csshost/third_party/css/libcss/src/select/properties/widows.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/position.c -o build/csshost/third_party/css/libcss/src/select/properties/position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_fill.c -o build/csshost/third_party/css/libcss/src/select/properties/column_fill.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/helpers.c -o build/csshost/third_party/css/libcss/src/select/properties/helpers.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/pause_before.c -o build/csshost/third_party/css/libcss/src/select/properties/pause_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/padding_bottom.c -o build/csshost/third_party/css/libcss/src/select/properties/padding_bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/speak_header.c -o build/csshost/third_party/css/libcss/src/select/properties/speak_header.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/outline_color.c -o build/csshost/third_party/css/libcss/src/select/properties/outline_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/background_position.c -o build/csshost/third_party/css/libcss/src/select/properties/background_position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_count.c -o build/csshost/third_party/css/libcss/src/select/properties/column_count.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/padding_right.c -o build/csshost/third_party/css/libcss/src/select/properties/padding_right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_top_width.c -o build/csshost/third_party/css/libcss/src/select/properties/border_top_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_rule_style.c -o build/csshost/third_party/css/libcss/src/select/properties/column_rule_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/font_size.c -o build/csshost/third_party/css/libcss/src/select/properties/font_size.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_bottom_style.c -o build/csshost/third_party/css/libcss/src/select/properties/border_bottom_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/pause_after.c -o build/csshost/third_party/css/libcss/src/select/properties/pause_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/max_height.c -o build/csshost/third_party/css/libcss/src/select/properties/max_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/quotes.c -o build/csshost/third_party/css/libcss/src/select/properties/quotes.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/width.c -o build/csshost/third_party/css/libcss/src/select/properties/width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/content.c -o build/csshost/third_party/css/libcss/src/select/properties/content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/table_layout.c -o build/csshost/third_party/css/libcss/src/select/properties/table_layout.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/clear.c -o build/csshost/third_party/css/libcss/src/select/properties/clear.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/background_repeat.c -o build/csshost/third_party/css/libcss/src/select/properties/background_repeat.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/empty_cells.c -o build/csshost/third_party/css/libcss/src/select/properties/empty_cells.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/speech_rate.c -o build/csshost/third_party/css/libcss/src/select/properties/speech_rate.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_span.c -o build/csshost/third_party/css/libcss/src/select/properties/column_span.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/text_align.c -o build/csshost/third_party/css/libcss/src/select/properties/text_align.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/writing_mode.c -o build/csshost/third_party/css/libcss/src/select/properties/writing_mode.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/min_width.c -o build/csshost/third_party/css/libcss/src/select/properties/min_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/flex_shrink.c -o build/csshost/third_party/css/libcss/src/select/properties/flex_shrink.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/pitch.c -o build/csshost/third_party/css/libcss/src/select/properties/pitch.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/background_color.c -o build/csshost/third_party/css/libcss/src/select/properties/background_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/word_spacing.c -o build/csshost/third_party/css/libcss/src/select/properties/word_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/flex_direction.c -o build/csshost/third_party/css/libcss/src/select/properties/flex_direction.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/richness.c -o build/csshost/third_party/css/libcss/src/select/properties/richness.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_width.c -o build/csshost/third_party/css/libcss/src/select/properties/column_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_left_color.c -o build/csshost/third_party/css/libcss/src/select/properties/border_left_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/speak_punctuation.c -o build/csshost/third_party/css/libcss/src/select/properties/speak_punctuation.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/justify_content.c -o build/csshost/third_party/css/libcss/src/select/properties/justify_content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/float.c -o build/csshost/third_party/css/libcss/src/select/properties/float.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_top_style.c -o build/csshost/third_party/css/libcss/src/select/properties/border_top_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/flex_wrap.c -o build/csshost/third_party/css/libcss/src/select/properties/flex_wrap.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/opacity.c -o build/csshost/third_party/css/libcss/src/select/properties/opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_bottom_width.c -o build/csshost/third_party/css/libcss/src/select/properties/border_bottom_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/align_content.c -o build/csshost/third_party/css/libcss/src/select/properties/align_content.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/page_break_after.c -o build/csshost/third_party/css/libcss/src/select/properties/page_break_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/pitch_range.c -o build/csshost/third_party/css/libcss/src/select/properties/pitch_range.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_rule_width.c -o build/csshost/third_party/css/libcss/src/select/properties/column_rule_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/font_family.c -o build/csshost/third_party/css/libcss/src/select/properties/font_family.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/azimuth.c -o build/csshost/third_party/css/libcss/src/select/properties/azimuth.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/vertical_align.c -o build/csshost/third_party/css/libcss/src/select/properties/vertical_align.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/letter_spacing.c -o build/csshost/third_party/css/libcss/src/select/properties/letter_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/fill_opacity.c -o build/csshost/third_party/css/libcss/src/select/properties/fill_opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_left_width.c -o build/csshost/third_party/css/libcss/src/select/properties/border_left_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/line_height.c -o build/csshost/third_party/css/libcss/src/select/properties/line_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/padding_top.c -o build/csshost/third_party/css/libcss/src/select/properties/padding_top.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/right.c -o build/csshost/third_party/css/libcss/src/select/properties/right.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/stroke_opacity.c -o build/csshost/third_party/css/libcss/src/select/properties/stroke_opacity.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/counter_increment.c -o build/csshost/third_party/css/libcss/src/select/properties/counter_increment.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/outline_style.c -o build/csshost/third_party/css/libcss/src/select/properties/outline_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/box_sizing.c -o build/csshost/third_party/css/libcss/src/select/properties/box_sizing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/font_style.c -o build/csshost/third_party/css/libcss/src/select/properties/font_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/elevation.c -o build/csshost/third_party/css/libcss/src/select/properties/elevation.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_rule_color.c -o build/csshost/third_party/css/libcss/src/select/properties/column_rule_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_bottom_color.c -o build/csshost/third_party/css/libcss/src/select/properties/border_bottom_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/page_break_before.c -o build/csshost/third_party/css/libcss/src/select/properties/page_break_before.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/page_break_inside.c -o build/csshost/third_party/css/libcss/src/select/properties/page_break_inside.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_top_color.c -o build/csshost/third_party/css/libcss/src/select/properties/border_top_color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/overflow_x.c -o build/csshost/third_party/css/libcss/src/select/properties/overflow_x.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/cursor.c -o build/csshost/third_party/css/libcss/src/select/properties/cursor.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/outline_width.c -o build/csshost/third_party/css/libcss/src/select/properties/outline_width.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/margin_bottom.c -o build/csshost/third_party/css/libcss/src/select/properties/margin_bottom.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/cue_after.c -o build/csshost/third_party/css/libcss/src/select/properties/cue_after.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/list_style_position.c -o build/csshost/third_party/css/libcss/src/select/properties/list_style_position.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_spacing.c -o build/csshost/third_party/css/libcss/src/select/properties/border_spacing.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/voice_family.c -o build/csshost/third_party/css/libcss/src/select/properties/voice_family.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/flex_basis.c -o build/csshost/third_party/css/libcss/src/select/properties/flex_basis.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/unicode_bidi.c -o build/csshost/third_party/css/libcss/src/select/properties/unicode_bidi.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/direction.c -o build/csshost/third_party/css/libcss/src/select/properties/direction.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/column_gap.c -o build/csshost/third_party/css/libcss/src/select/properties/column_gap.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/color.c -o build/csshost/third_party/css/libcss/src/select/properties/color.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/min_height.c -o build/csshost/third_party/css/libcss/src/select/properties/min_height.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/properties/border_left_style.c -o build/csshost/third_party/css/libcss/src/select/properties/border_left_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/format_list_style.c -o build/csshost/third_party/css/libcss/src/select/format_list_style.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/computed.c -o build/csshost/third_party/css/libcss/src/select/computed.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/select/unit.c -o build/csshost/third_party/css/libcss/src/select/unit.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libcss/src/charset/detect.c -o build/csshost/third_party/css/libcss/src/charset/detect.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/input/inputstream.c -o build/csshost/third_party/css/libparserutils/src/input/inputstream.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/input/filter.c -o build/csshost/third_party/css/libparserutils/src/input/filter.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/utils/buffer.c -o build/csshost/third_party/css/libparserutils/src/utils/buffer.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/utils/stack.c -o build/csshost/third_party/css/libparserutils/src/utils/stack.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/utils/vector.c -o build/csshost/third_party/css/libparserutils/src/utils/vector.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/utils/errors.c -o build/csshost/third_party/css/libparserutils/src/utils/errors.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/encodings/utf8.c -o build/csshost/third_party/css/libparserutils/src/charset/encodings/utf8.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/encodings/utf16.c -o build/csshost/third_party/css/libparserutils/src/charset/encodings/utf16.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/aliases.c -o build/csshost/third_party/css/libparserutils/src/charset/aliases.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codec.c -o build/csshost/third_party/css/libparserutils/src/charset/codec.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codecs/codec_utf8.c -o build/csshost/third_party/css/libparserutils/src/charset/codecs/codec_utf8.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codecs/codec_ascii.c -o build/csshost/third_party/css/libparserutils/src/charset/codecs/codec_ascii.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codecs/codec_ext8.c -o build/csshost/third_party/css/libparserutils/src/charset/codecs/codec_ext8.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codecs/codec_utf16.c -o build/csshost/third_party/css/libparserutils/src/charset/codecs/codec_utf16.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libparserutils/src/charset/codecs/codec_8859.c -o build/csshost/third_party/css/libparserutils/src/charset/codecs/codec_8859.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c third_party/css/libwapcaplet/src/libwapcaplet.c -o build/csshost/third_party/css/libwapcaplet/src/libwapcaplet.o
+clang -O2 -w -fcommon -D_ALIGNED= -DWITHOUT_ICONV_FILTER -MMD -MP -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -c c/apps/browser/css_report.c -o build/csshost/c/apps/browser/css_report.o
+clang -O2 -Wall -Wextra -DSTORAGE_BACKEND_TEST -DSTORAGE_PERSIST_NO_WRITE -Ic/apps/browser -o build/storage_persistence_negctl tests/unit/storage_persistence_test.c c/apps/browser/storage_backend.c
+clang -O2 -Wall -Wextra -DSTORAGE_BACKEND_TEST -Ic/apps/browser -o build/storage_persistence_test tests/unit/storage_persistence_test.c c/apps/browser/storage_backend.c
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Iinclude/abi -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/storage_persistence_js_test c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/storage_persistence_js_test.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c rust/target/release/liblogit_rust.a -lm
+clang -O2 -Wall -Wextra -DSTORAGE_BACKEND_TEST -DSTORAGE_PERSIST_PREFIX_READ -Ic/apps/browser -o build/storage_persistence_prefix_negctl tests/unit/storage_persistence_test.c c/apps/browser/storage_backend.c
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Iinclude/abi -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DSTORAGE_BACKEND_TEST -DSTORAGE_NO_SESSION_PARTITION -o build/storage_backend_negctl c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/storage_backend_test.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Iinclude/abi -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DSTORAGE_BACKEND_TEST -o build/storage_backend_test c/apps/browser/js_webapi.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/storage_backend_test.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c rust/target/release/liblogit_rust.a -lm
+mk-wired: ok (184 fragments, 183 reachable from the Makefile, 1 declared)
+  declared: tests/schedneg.mk -- a `make -f` wrapper that includes the Makefile itself; including it back would recurse (see its own header)
+test-cssom-abi: ok -- image 16 item 264 node 256 (writer == readers);
+  control fired: with -include features.h           the readers say image 16 item 256 node 256 
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DSTORAGE_QUOTA_WRONG_CLASS -o build/storage_platform_negctl c/apps/browser/js_anim.c c/apps/browser/js_cache.c c/apps/browser/js_characterdata.c c/apps/browser/js_cssom.c c/apps/browser/js_devtools.c c/apps/browser/js_dom.c c/apps/browser/js_domparser.c c/apps/browser/js_frame.c c/apps/browser/js_idb.c c/apps/browser/js_page.c c/apps/browser/js_stall.c c/apps/browser/js_subtle.c c/apps/browser/js_swreg.c c/apps/browser/js_tokenlist.c c/apps/browser/js_url.c c/apps/browser/js_wasm.c c/apps/browser/js_webapi.c c/apps/browser/js_websocket.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_interp.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c tests/unit/rust_host_shim.c tests/unit/storage_platform_test.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+ok: disk store loads
+ok: real file write commits
+ok: session write stays local
+ok: disk store loads
+FAIL: new process restores exact local bytes
+ok: new process has no previous session
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/storage_platform_test c/apps/browser/js_anim.c c/apps/browser/js_cache.c c/apps/browser/js_characterdata.c c/apps/browser/js_cssom.c c/apps/browser/js_devtools.c c/apps/browser/js_dom.c c/apps/browser/js_domparser.c c/apps/browser/js_frame.c c/apps/browser/js_idb.c c/apps/browser/js_page.c c/apps/browser/js_stall.c c/apps/browser/js_subtle.c c/apps/browser/js_swreg.c c/apps/browser/js_tokenlist.c c/apps/browser/js_url.c c/apps/browser/js_wasm.c c/apps/browser/js_webapi.c c/apps/browser/js_websocket.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_interp.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c tests/unit/rust_host_shim.c tests/unit/storage_platform_test.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+ok: disk store loads
+ok: real file write commits
+ok: session write stays local
+ok: disk store loads
+FAIL: new process restores exact local bytes
+ok: new process has no previous session
+clang -O2 -w -DLOADER_POLL_HOOK -Itests/unit/loaderhost -Itests/unit -Iinclude/abi -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DCSS_NEGCTL_STATIC_INTERACTION -o build/interaction_runtime_negctl tests/unit/loader_fakebfetch.c c/apps/browser/browser.c c/apps/browser/browser_paint.c c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/js_webapi.c c/apps/browser/js_module.c c/apps/browser/tabs.c c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c c/apps/browser/js_cssom.c c/apps/browser/js_select.c c/apps/browser/js_tokenlist.c c/apps/browser/js_characterdata.c c/apps/browser/js_forms.c tests/unit/interaction_runtime_test.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -DLOADER_POLL_HOOK -Itests/unit/loaderhost -Itests/unit -Iinclude/abi -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/interaction_runtime_test tests/unit/loader_fakebfetch.c c/apps/browser/browser.c c/apps/browser/browser_paint.c c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/js_webapi.c c/apps/browser/js_module.c c/apps/browser/tabs.c c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c c/apps/browser/js_cssom.c c/apps/browser/js_select.c c/apps/browser/js_tokenlist.c c/apps/browser/js_characterdata.c c/apps/browser/js_forms.c tests/unit/interaction_runtime_test.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+ok  : embedded NUL values and keys survive
+ok  : NUL key does not alias prefix
+ok  : key enumeration preserves NUL
+ok  : removing NUL key preserves prefix
+ok  : key conversion exception propagates
+ok  : local storage shared by same origin
+      value was: false
+FAIL: different tab has independent session storage
+      value was: false
+FAIL: same tab survives runtime recreation
+ok  : scheme separates storage origin
+ok  : port separates storage origin
+      value was: false
+FAIL: closed tab session is cleared before identity reuse
+ok  : tab close preserves local storage
+ok  : closing one tab preserves another session
+ok  : quota rejects with named DOM error
+ok  : quota failure preserves previous value atomically
+ok  : backend accepts explicit key
+ok  : allocation failure is explicit
+ok  : allocation failure leaves old bytes intact
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only origins do not exhaust writable areas
+storage backend: 37 checks, 3 failures
+js_swreg: install failed: TypeError: Illegal constructor
+TypeError: Illegal constructor
+    at EventTarget (native)
+    at <anonymous> (<js_swreg>:49)
+    at <eval> (<js_swreg>:145)
+
+ok  : named Storage proxy consumes byte-preserving backend
+      value was: false
+FAIL: storage quota is a real DOMException
+ok  : failed named storage update preserves content
+storage platform: 3 checks, 1 failures
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DJS_EVENT_PATH_NEGCTL -o build/event_path_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/event_path_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/event_path_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/event_path_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DJS_REJECTION_IMMEDIATE_NEGCTL -o build/rejection_checkpoint_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/rejection_checkpoint_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/rejection_checkpoint_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/rejection_checkpoint_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DMO_NATIVE_CHAR_NEGCTL -o build/native_mo_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/native_mo_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/native_mo_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c tests/unit/native_mo_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DDOM_RANGE_NO_ADJUST -o build/live_range_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/live_range_test.c c/apps/browser/js_characterdata.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/live_range_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/live_range_test.c c/apps/browser/js_characterdata.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DFOCUS_NO_INERT -o build/inert_focus_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/inert_focus_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/inert_focus_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/inert_focus_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+ok: native modal stack accepts open connected dialog
+FAIL: modal is excluded from ordinary document flow
+modal box 0 28 340 222 items 15
+FAIL: modal box is centered against viewport
+modal painted 58 page 18 counts 2 1
+FAIL: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -Ic/crypto -DJS_DIGEST_NEGCTL -o build/web_digest_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_subtle.c c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c tests/unit/web_digest_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+FAIL inert ancestor removes native focusability
+FAIL Tab excludes inert positive tabindex subtree
+FAIL program focus cannot enter inert subtree
+FAIL rejected inert focus preserves previous holder
+FAIL quiet restoration cannot enter inert subtree
+FAIL negative tabindex cannot bypass inert
+FAIL inert mutation invalidates activeElement on read
+FAIL native holder clears when ancestor becomes inert
+FAIL removing inert does not resurrect old focus
+FAIL boolean inert false string still blocks
+FAIL nested child removal cannot override inert ancestor
+FAIL dynamic insertion inherits inert immediately
+FAIL moving focused node into inert clears active read
+FAIL self inert invalidates focus and removing allows explicit focus
+FAIL text hit target inherits inert from element ancestors
+inert focus: 23 checks, 15 failures
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -Ic/crypto -o build/web_digest_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_subtle.c c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c tests/unit/web_digest_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -Ic/crypto -Ic/kernel/cpu -DJS_CRYPTO_OPS_NEGCTL -DJS_CRYPTO_KDF_NEGCTL -DJS_CRYPTO_GCM_NEGCTL -o build/web_crypto_ops_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_subtle.c c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c c/crypto/aead/aesgcm.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aes_ni.c c/kernel/cpu/cpufeat.c tests/unit/web_crypto_ops_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -Ic/crypto -Ic/kernel/cpu -o build/web_crypto_ops_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_subtle.c c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c c/crypto/aead/aesgcm.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aes_ni.c c/kernel/cpu/cpufeat.c tests/unit/web_crypto_ops_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 19 page 54 counts 1 1
+ok: modal text paints exactly once
+FAIL: modal paints above maximum page z index
+FAIL: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+ok  : binding attaches persistent store
+ok  : binding reads committed bytes
+ok  : binding reopens store
+ok  : binding reopen restores local but not session
+ok  : failed persistent set throws and preserves old map
+ok  : failed persistent remove throws and preserves old map
+ok  : failed persistent clear throws and preserves old map
+ok  : disk failure leaves session storage usable
+ok  : reopen releases failed commit latch
+ok  : removed store reopens
+ok  : removed key remains absent after reopen
+ok  : binding reports corrupt snapshot state
+ok  : corrupt local get does not masquerade as empty state
+ok  : corrupt local length does not masquerade as empty state
+ok  : corrupt local key reports failure
+ok  : corrupt local snapshots do not block session
+storage-persistence-js: 16 checks, 0 failures
+build/storage_platform_test
+js_swreg: install failed: TypeError: Illegal constructor
+TypeError: Illegal constructor
+    at EventTarget (native)
+    at <anonymous> (<js_swreg>:49)
+    at <eval> (<js_swreg>:145)
+
+ok  : named Storage proxy consumes byte-preserving backend
+ok  : storage quota is a real DOMException
+ok  : failed named storage update preserves content
+storage platform: 3 checks, 0 failures
+[browser] session restored 1 tabs (restore=1)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[browser] load: http://fixture.test/interaction.html
+[dl] painted text: 41 run(s), 303 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,72 NATIVE-INTERACTION
+[dl] 40,110 HOVER-TO-OPEN
+[dl] 40,200 PRESS-AND-RELEASE
+[dl] 40,250 FIRST-TAB-STOP
+[dl] 40,300 INERT-CANNOT-ACTIVATE
+[dl] 40,350 AFTER-INERT-TAB-STOP
+[dl] 440,200 CLICK-TO-FOCUS-TARGET
+[dl] 440,250 PROGRAMMATIC-FOCUS-TARGET
+[dl] 440,350 NO-INERT-CLICK
+[dl] 40,410 Hover
+[dl] 94,410 opens
+[dl] 148,410 the
+[dl] 184,410 green
+[dl] 238,410 menu.
+[dl] 292,410 Hold
+[dl] 337,410 the
+[dl] 373,410 press
+[dl] 427,410 target
+[dl] 490,410 to
+[dl] 517,410 turn
+[dl] 562,410 its
+[dl] 598,410 text
+[dl] 643,410 red.
+[dl] 688,410 Tab
+[dl] 724,410 focus
+[dl] 778,410 turns
+[dl] 832,410 purple
+[dl] 895,410 and
+[dl] 40,432 skips
+[dl] 94,432 the
+[dl] 130,432 gray
+[dl] 175,432 inert
+[dl] 229,432 area.
+[dl] 283,432 The
+[dl] 319,432 right
+[dl] 373,432 button
+[dl] 436,432 focuses
+[dl] 508,432 the
+[dl] 544,432 target
+[dl] 607,432 below
+[dl] 661,432 it.
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[browser] heap peak 0K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 1161 inline + 1 external = 1162 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 132 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 0 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 0 closed
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+ok: hover element has no page hover handlers
+ok: CSS menu starts hidden
+ok: real painter supplies event coordinates
+FAIL: native hover opens menu without JS listeners
+ok: native pointer leave hides CSS menu
+FAIL: native mouse down paints active color
+ok: native mouse release restores normal color
+ok: mouse default action focuses press target
+ok: Tab moves to first ordinary focus target
+FAIL: native Tab paints focus selector
+ok: Tab skips the inert subtree
+FAIL: focus style follows target after inert subtree
+ok: native inert click never invokes its handler
+ok: native inert click cannot focus descendant
+ok: ordinary click action calls element.focus
+FAIL: element.focus reaches actual CSS focus paint
+ok: real interaction loop exits normally
+ok: all six native interaction phases were observed
+interaction-runtime: FAIL (46 polls)
+interaction-runtime-negctl: PASS -- static pseudo-classes fail visible native interaction assertions
+  FAIL: ID specificity beats later class
+  FAIL: compound specificity beats later type
+  FAIL: highest matched selector list arm contributes specificity
+  FAIL: important beats higher normal specificity
+  FAIL: important rules retain specificity
+  FAIL: stylesheet important beats normal inline
+  FAIL: same block important survives later normal
+  FAIL: important is per property
+  FAIL: inline declaration important survives later normal
+  FAIL: case insensitive important and trivia
+  FAIL: later shorthand overrides previous longhand -- got 3, want 7
+css-extra-cascade: 22 checks, 11 failures
+  FAIL: generated text reaches production display list
+  FAIL: before authored after share ordered inline flow
+  FAIL: pseudo own color font and weight reach text items
+  FAIL: pseudo inherits owner font without leaking sibling style
+  FAIL: generated hit provenance remains real owner
+  FAIL: attr content restyle requires fresh layout even if allocator reuses address
+  FAIL: attr mutation updates generated text
+  FAIL: missing attr is empty content not absent pseudo
+  FAIL: empty generated block paints specified background geometry
+  FAIL: generated block participates before real block child -- got 0, want 12
+  FAIL: generated before and after contribute block height -- got 10, want 46
+  FAIL: generated atomic box contributes padding border and width
+flex positions: before=-1 middle=0 after=-1
+  FAIL: generated flex items share real sizing and placement
+  FAIL: generated grid items use owner track solver
+  FAIL: CSS escapes concatenated strings attr and display none reach real text flow
+  FAIL: pseudo own percentage line height resolves against its font -- got 0, want 26
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+generated content: 54 checks, 48 failed
+flex positions: before=0 middle=40 after=72
+  FAIL: ordinary inline flex children remain distinct sized items
+  FAIL: generated grid items use owner track solver
+generated content: 54 checks, 2 failed
+build/inert_focus_test
+FAIL path frozen across reparent
+     expr: (function(){var p=document.createElement('div'),c=document.createElement('b'),q=document.createElement('div');document.body.appendChild(p);document.body.appendChild(q);p.appendChild(c);var a,b,e=new Event('path',{bubbles:true});p.addEventListener('path',function(e){a=e.composedPath();q.appendChild(c);b=e.composedPath()},true);c.dispatchEvent(e);return a.length===b.length&&a.every(function(n,i){return n===b[i]})&&a.indexOf(p)>=0&&b.indexOf(q)<0})()
+FAIL path empty outside dispatch
+     expr: (function(){var c=document.createElement('b'),e=new Event('path');if(e.composedPath().length)return false;c.dispatchEvent(e);return e.composedPath().length===0})()
+ok: target capture precedes bubble regardless registration
+ok: dispatch preserves canceled flag
+ok: noncomposed event stops at shadow root
+FAIL open shadow retarget retains visible path
+     expr: (function(){var h=document.createElement('div');document.body.appendChild(h);var r=h.attachShadow({mode:'open'}),c=document.createElement('b');r.appendChild(c);var target,path;h.addEventListener('x',function(e){target=e.target;path=e.composedPath()});c.dispatchEvent(new Event('x',{bubbles:true,composed:true}));return target===h&&path.indexOf(c)>=0&&path.indexOf(r)>=0})()
+ok: closed shadow path visibility follows listener
+ok: detachment preserves captured ancestor invocation
+event-path: 8 checks, 3 failures
+FAIL caught rejection is not synchronously reported
+     expr: var notices=[],handled=[];onunhandledrejection=function(e){notices.push(e);e.preventDefault()};onrejectionhandled=function(e){handled.push(e)};Promise.reject('caught').catch(function(){});notices.length===0
+FAIL catch before checkpoint suppresses report
+     expr: notices.length===0
+FAIL unhandled rejection waits for task boundary
+     expr: var late=Promise.reject('late');notices.length===0
+FAIL unhandled event carries real promise and cancelable reason
+     expr: notices.length===1&&notices[0].promise===late&&notices[0].reason==='late'&&notices[0].defaultPrevented
+ok: late handling is asynchronous
+FAIL late handler receives rejectionhandled once
+     expr: handled.length===1&&handled[0].promise===late&&handled[0].type==='rejectionhandled'&&!handled[0].cancelable
+FAIL notification does not repeat on idle poll
+     expr: notices.length===1&&handled.length===1
+ok: await fixture starts
+FAIL await catches rejection before notification
+     expr: notices.length===1
+ok: pending close fixture
+ok: new page opens
+ok: closed page cannot report into new page
+rejection-checkpoint: 12 checks, 7 failures
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 22 page 18 counts 1 1
+ok: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+FAIL: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+FAIL: modal rejects programmatic background focus
+FAIL: Tab advances inside modal
+FAIL: Tab wraps inside modal
+FAIL: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+ok: native text observers installed
+ok: native mutation does not synchronously call JS
+FAIL native text edit delivers one record
+     expr: records.length===1&&records[0].type==='characterData'&&records[0].target===text&&records[0].oldValue==='text'
+FAIL oldValue filtering creates independent observer records
+     expr: plain.length===1&&plain[0].oldValue===null&&plain[0]!==records[0]
+FAIL takeRecords flushes native setter exactly once
+     expr: text.data='assigned';var r=observer.takeRecords();r.length===1&&r[0].oldValue==='native'
+FAIL taken records do not also invoke callback
+     expr: records.length===1
+ok: disconnect fixture
+FAIL disconnect discards queued records
+     expr: records.length===1
+ok: new registration fixture
+ok: new observer cannot see earlier mutation
+ok: mutation then reparent fixture
+FAIL subtree eligibility follows mutation-time ancestry
+     expr: subtree.length===1&&subtree[0].target===text&&subtree[0].oldValue==='before'
+ok: invalid observe options reject
+ok: split observer installed
+FAIL splitText insertion and truncation each notify once in order
+     expr: var first=host.firstChild,tail=host.lastChild,sr=splitObserver.takeRecords();sr.length===2&&sr[0].type==='childList'&&sr[0].target===host&&sr[0].addedNodes[0]===tail&&sr[0].previousSibling===first&&sr[0].nextSibling===null&&sr[1].type==='characterData'&&sr[1].target===first&&sr[1].oldValue==='abcd'
+ok: mutation microtask order fixture
+FAIL native MO retains mutation-time microtask position
+     expr: order.join(',')==='P1,MO,P2'
+FAIL observer unions matching registrations by mutation type
+     expr: orderMO.disconnect();var unionMO=new MutationObserver(function(){});unionMO.observe(orderHost,{subtree:true,childList:true});unionMO.observe(orderText,{characterData:true});orderText.data='c';unionMO.takeRecords().length===1
+FAIL oldValue requested by any matching registration is retained
+     expr: unionMO.disconnect();var unionOld=new MutationObserver(function(){});unionOld.observe(orderHost,{subtree:true,characterData:true});unionOld.observe(orderText,{characterDataOldValue:true});orderText.data='d';var unionRecords=unionOld.takeRecords();unionRecords.length===1&&unionRecords[0].oldValue==='c'
+ok: mixed producer queue fixture
+ok: JS and native producers share one notification job
+ok: callback mutation fixture
+FAIL callback mutation schedules the next notification job
+     expr: rounds.join(',')==='e,f'
+native-mo: 23 checks, 11 failures
+build/storage_backend_test
+FAIL native insert shifts boundary
+FAIL native remove relocates descendant
+FAIL UTF16 replacement shifts boundary
+FAIL native editor updates JS live Range
+FAIL JS insertion shifts live parent boundary: 
+FAIL removal relocates text boundaries: 
+FAIL detached range remains live: 
+FAIL UTF16 insert and replace boundaries: 
+FAIL whole data replacement resets boundaries: 
+FAIL splitText transfers boundaries to tail: 
+FAIL splitText preserves parent boundary after text: 
+FAIL cloneRange is independently live: 
+live-range: 33 checks, 12 failed
+test-live-range-negctl: PASS -- disabled native updates fail semantic assertions
+inert focus: 23 checks, 0 failures
+ok: digest promises terminate
+ok: all vector and rejection cases ran
+FAIL real SHA digest bytes match independent vectors
+     expr: digestTestResults.every(function(x){return x[1]})
+mismatches: [["SHA-1/0",false],["SHA-1/3",false],["SHA-1/55",false],["SHA-1/56",false],["SHA-1/63",false],["SHA-1/64",false],["SHA-1/111",false],["SHA-1/112",false],["SHA-1/127",false],["SHA-1/128",false],["SHA-1/1000",false],["SHA-256/0",false],["SHA-256/3",false],["SHA-256/55",false],["SHA-256/56",false],["SHA-256/63",false],["SHA-256/64",false],["SHA-256/111",false],["SHA-256/112",false],["SHA-256/127",false],["SHA-256/128",false],["SHA-256/1000",false],["SHA-384/0",false],["SHA-384/3",false],["SHA-384/55",false],["SHA-384/56",false],["SHA-384/63",false],["SHA-384/64",false],["SHA-384/111",false],["SHA-384/112",false],["SHA-384/127",false],["SHA-384/128",false],["SHA-384/1000",false],["SHA-512/0",false],["SHA-512/3",false],["SHA-512/55",false],["SHA-512/56",false],["SHA-512/63",false],["SHA-512/64",false],["SHA-512/111",false],["SHA-512/112",false],["SHA-512/127",false],["SHA-512/128",false],["SHA-512/1000",false],["DataView offset",false],["input captured before promise settles",false]]
+web-digest: 3 checks, 1 failures
+ok: crypto promises terminate
+ok: all vector and rejection cases ran
+FAIL real crypto operations match independent vectors
+     expr: cryptoTestResults.every(function(x){return x[1]})
+mismatches: {"total":152,"failed":[["HMAC/SHA-256/3/0",false],["HMAC/SHA-256/3/0/verify",false],["HMAC/SHA-256/20/8",false],["HMAC/SHA-256/20/8/verify",false],["HMAC/SHA-256/64/63",false],["HMAC/SHA-256/64/63/verify",false],["HMAC/SHA-256/65/64",false],["HMAC/SHA-256/65/64/verify",false],["HMAC/SHA-256/128/128",false],["HMAC/SHA-256/128/128/verify",false],["HMAC/SHA-256/131/1000",false],["HMAC/SHA-256/131/1000/verify",false],["PBKDF2/SHA-256/0/1/1",false],["PBKDF2/SHA-256/8/2/32",false],["PBKDF2/SHA-256/257/3/80",false],["HKDF/SHA-256/0/0/42",false],["HKDF/SHA-256/13/10/82",false],["HKDF/SHA-256/257/300/129",false],["HMAC/SHA-384/3/0",false],["HMAC/SHA-384/3/0/verify",false],["HMAC/SHA-384/20/8",false],["HMAC/SHA-384/20/8/verify",false],["HMAC/SHA-384/64/63",false],["HMAC/SHA-384/64/63/verify",false],["HMAC/SHA-384/65/64",false],["HMAC/SHA-384/65/64/verify",false],["HMAC/SHA-384/128/128",false],["HMAC/SHA-384/128/128/verify",false],["HMAC/SHA-384/131/1000",false],["HMAC/SHA-384/131/1000/verify",false],["PBKDF2/SHA-384/0/1/1",false],["PBKDF2/SHA-384/8/2/32",false],["PBKDF2/SHA-384/257/3/80",false],["HKDF/SHA-384/0/0/42",false],["HKDF/SHA-384/13/10/82",false],["HKDF/SHA-384/257/300/129",false],["HMAC/SHA-512/3/0",false],["HMAC/SHA-512/3/0/verify",false],["HMAC/SHA-512/20/8",false],["HMAC/SHA-512/20/8/verify",false],["HMAC/SHA-512/64/63",false],["HMAC/SHA-512/64/63/verify",false],["HMAC/SHA-512/65/64",false],["HMAC/SHA-512/65/64/verify",false],["HMAC/SHA-512/128/128",false],["HMAC/SHA-512/128/128/verify",false],["HMAC/SHA-512/131/1000",false],["HMAC/SHA-512/131/1000/verify",false],["PBKDF2/SHA-512/0/1/1",false],["PBKDF2/SHA-512/8/2/32",false],["PBKDF2/SHA-512/257/3/80",false],["HKDF/SHA-512/0/0/42",false],["HKDF/SHA-512/13/10/82",false],["HKDF/SHA-512/257/300/129",false],["AES-GCM/16/12/0/0",false],["AES-GCM/16/12/20/60",false],["AES-GCM/16/8/17/33",false],["AES-GCM/16/16/1/1",false],["AES-GCM/24/12/0/0",false],["AES-GCM/24/12/20/60",false],["AES-GCM/24/8/17/33",false],["AES-GCM/24/16/1/1",false],["AES-GCM/32/12/0/0",false],["AES-GCM/32/12/20/60",false],["AES-GCM/32/8/17/33",false],["AES-GCM/32/16/1/1",false],["deriveKey AES bytes",false],["public hash mutation cannot select hash",false],["sign input captured",false],["DataView key and data offsets",false],["empty password works",false]]}
+web-crypto-ops: 3 checks, 1 failures
+ok: fresh store opens
+ok: seed commits
+ok: NUL key value commits
+ok: second origin commits
+ok: session mutation performs no disk IO
+ok: reopen succeeds
+ok: reopen restores persisted local value
+ok: reopen preserves embedded NUL bytes
+ok: reopen preserves separate origins
+ok: reopen discards all session areas
+ok: remove commits
+ok: remove survives reopen
+ok: remaining key order survives reopen
+ok: clear commits
+ok: clear survives reopen without losing other origin
+ok: fresh store opens
+ok: seed commits
+ok: second generation commits
+ok: corrupt newest slot falls back to previous valid generation
+ok: recovery writes damaged slot
+ok: recovery persists
+ok: fresh store opens
+ok: seed commits
+ok: negative write result is failure
+ok: write failure keeps old in-memory value
+ok: uncertain commit blocks later writes until reopen
+ok: disk failure does not disable session storage
+ok: failed write retained prior on-disk slot
+ok: fresh store opens
+ok: seed commits
+ok: short positive write is failure
+ok: torn slot recovers last valid value
+ok: fresh store opens
+ok: seed commits
+ok: readback detects lying successful write
+ok: readback corruption preserves old slot
+ok: fresh store opens
+ok: seed commits
+ok: success without bytes is rejected
+ok: silent no-write leaves old bytes
+ok: fresh store opens
+ok: seed commits
+ok: documented zero-success adapter accepted after readback
+ok: zero-success adapter persisted exact bytes
+ok: fresh store opens
+ok: seed commits
+ok: clear failure preserves memory
+ok: remove failure preserves memory
+ok: fresh store opens
+ok: seed commits
+ok: only corrupt snapshot refuses restore
+ok: corrupt store is not overwritten with empty state
+ok: fresh store opens
+ok: seed commits
+ok: restore allocation failure is explicit
+ok: allocation failure does not alter saved bytes
+ok: fresh store opens
+ok: seed commits
+ok: mutation allocation failure preserves value
+ok: quota enforced before persistence
+ok: quota failure preserves persisted old value
+storage-persistence: 61 checks, 0 failures
+ok: disk store loads
+ok: real file write commits
+ok: session write stays local
+ok: disk store loads
+ok: new process restores exact local bytes
+ok: new process has no previous session
+ok  : embedded NUL values and keys survive
+ok  : NUL key does not alias prefix
+ok  : key enumeration preserves NUL
+ok  : removing NUL key preserves prefix
+ok  : key conversion exception propagates
+ok  : local storage shared by same origin
+ok  : different tab has independent session storage
+ok  : same tab survives runtime recreation
+ok  : scheme separates storage origin
+ok  : port separates storage origin
+ok  : closed tab session is cleared before identity reuse
+ok  : tab close preserves local storage
+ok  : closing one tab preserves another session
+ok  : quota rejects with named DOM error
+ok  : quota failure preserves previous value atomically
+ok  : backend accepts explicit key
+ok  : allocation failure is explicit
+ok  : allocation failure leaves old bytes intact
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only lookup does not reserve an area
+ok  : read-only origins do not exhaust writable areas
+storage backend: 37 checks, 0 failures
+[browser] session restored 1 tabs (restore=1)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[browser] load: http://fixture.test/interaction.html
+[dl] painted text: 41 run(s), 303 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,72 NATIVE-INTERACTION
+[dl] 40,110 HOVER-TO-OPEN
+[dl] 40,200 PRESS-AND-RELEASE
+[dl] 40,250 FIRST-TAB-STOP
+[dl] 40,300 INERT-CANNOT-ACTIVATE
+[dl] 40,350 AFTER-INERT-TAB-STOP
+[dl] 440,200 CLICK-TO-FOCUS-TARGET
+[dl] 440,250 PROGRAMMATIC-FOCUS-TARGET
+[dl] 440,350 NO-INERT-CLICK
+[dl] 40,410 Hover
+[dl] 94,410 opens
+[dl] 148,410 the
+[dl] 184,410 green
+[dl] 238,410 menu.
+[dl] 292,410 Hold
+[dl] 337,410 the
+[dl] 373,410 press
+[dl] 427,410 target
+[dl] 490,410 to
+[dl] 517,410 turn
+[dl] 562,410 its
+[dl] 598,410 text
+[dl] 643,410 red.
+[dl] 688,410 Tab
+[dl] 724,410 focus
+[dl] 778,410 turns
+[dl] 832,410 purple
+[dl] 895,410 and
+[dl] 40,432 skips
+[dl] 94,432 the
+[dl] 130,432 gray
+[dl] 175,432 inert
+[dl] 229,432 area.
+[dl] 283,432 The
+[dl] 319,432 right
+[dl] 373,432 button
+[dl] 436,432 focuses
+[dl] 508,432 the
+[dl] 544,432 target
+[dl] 607,432 below
+[dl] 661,432 it.
+[dl] ---8<--- end painted text
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[browser] heap peak 0K
+[css] linked: 1 <style>, 0 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 0 ok, 0 empty, 0 http-error, 0 transport-error
+[css] bytes: 1161 inline + 1 external = 1162 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 132 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[browser] scripts collected: 0 external classic, 0 external module, 0 inline
+[browser] load done: 1 requests, 1 connections dialled, 0 reused, 0 modules loaded (0 failed)
+[browser] pool: 0 hits, 0 evicted, 0 closed
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+ok: hover element has no page hover handlers
+ok: CSS menu starts hidden
+ok: real painter supplies event coordinates
+[dl] painted text: 42 run(s), 316 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,72 NATIVE-INTERACTION
+[dl] 40,110 HOVER-TO-OPEN
+[dl] 40,148 CSS-MENU-OPEN
+[dl] 40,200 PRESS-AND-RELEASE
+[dl] 40,250 FIRST-TAB-STOP
+[dl] 40,300 INERT-CANNOT-ACTIVATE
+[dl] 40,350 AFTER-INERT-TAB-STOP
+[dl] 440,200 CLICK-TO-FOCUS-TARGET
+[dl] 440,250 PROGRAMMATIC-FOCUS-TARGET
+[dl] 440,350 NO-INERT-CLICK
+[dl] 40,410 Hover
+[dl] 94,410 opens
+[dl] 148,410 the
+[dl] 184,410 green
+[dl] 238,410 menu.
+[dl] 292,410 Hold
+[dl] 337,410 the
+[dl] 373,410 press
+[dl] 427,410 target
+[dl] 490,410 to
+[dl] 517,410 turn
+[dl] 562,410 its
+[dl] 598,410 text
+[dl] 643,410 red.
+[dl] 688,410 Tab
+[dl] 724,410 focus
+[dl] 778,410 turns
+[dl] 832,410 purple
+[dl] 895,410 and
+[dl] 40,432 skips
+[dl] 94,432 the
+[dl] 130,432 gray
+[dl] 175,432 inert
+[dl] 229,432 area.
+[dl] 283,432 The
+[dl] 319,432 right
+[dl] 373,432 button
+[dl] 436,432 focuses
+[dl] 508,432 the
+[dl] 544,432 target
+[dl] 607,432 below
+[dl] 661,432 it.
+[dl] ---8<--- end painted text
+ok: native hover opens menu without JS listeners
+[dl] painted text: 41 run(s), 303 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 40,72 NATIVE-INTERACTION
+[dl] 40,110 HOVER-TO-OPEN
+[dl] 40,200 PRESS-AND-RELEASE
+[dl] 40,250 FIRST-TAB-STOP
+[dl] 40,300 INERT-CANNOT-ACTIVATE
+[dl] 40,350 AFTER-INERT-TAB-STOP
+[dl] 440,200 CLICK-TO-FOCUS-TARGET
+[dl] 440,250 PROGRAMMATIC-FOCUS-TARGET
+[dl] 440,350 NO-INERT-CLICK
+[dl] 40,410 Hover
+[dl] 94,410 opens
+[dl] 148,410 the
+[dl] 184,410 green
+[dl] 238,410 menu.
+[dl] 292,410 Hold
+[dl] 337,410 the
+[dl] 373,410 press
+[dl] 427,410 target
+[dl] 490,410 to
+[dl] 517,410 turn
+[dl] 562,410 its
+[dl] 598,410 text
+[dl] 643,410 red.
+[dl] 688,410 Tab
+[dl] 724,410 focus
+[dl] 778,410 turns
+[dl] 832,410 purple
+[dl] 895,410 and
+[dl] 40,432 skips
+[dl] 94,432 the
+[dl] 130,432 gray
+[dl] 175,432 inert
+[dl] 229,432 area.
+[dl] 283,432 The
+[dl] 319,432 right
+[dl] 373,432 button
+[dl] 436,432 focuses
+[dl] 508,432 the
+[dl] 544,432 target
+[dl] 607,432 below
+[dl] 661,432 it.
+[dl] ---8<--- end painted text
+ok: native pointer leave hides CSS menu
+ok: native mouse down paints active color
+ok: native mouse release restores normal color
+ok: mouse default action focuses press target
+ok: Tab moves to first ordinary focus target
+ok: native Tab paints focus selector
+ok: Tab skips the inert subtree
+ok: focus style follows target after inert subtree
+ok: native inert click never invokes its handler
+ok: native inert click cannot focus descendant
+ok: ordinary click action calls element.focus
+ok: element.focus reaches actual CSS focus paint
+ok: real interaction loop exits normally
+ok: all six native interaction phases were observed
+interaction-runtime: PASS (46 polls)
+css-extra-cascade: 22 checks, 0 failures
+flex positions: before=0 middle=40 after=72
+generated content: 54 checks, 0 failed
+ok: path frozen across reparent
+ok: path empty outside dispatch
+ok: target capture precedes bubble regardless registration
+ok: dispatch preserves canceled flag
+ok: noncomposed event stops at shadow root
+ok: open shadow retarget retains visible path
+ok: closed shadow path visibility follows listener
+ok: detachment preserves captured ancestor invocation
+event-path: 8 checks, 0 failures
+ok: caught rejection is not synchronously reported
+ok: catch before checkpoint suppresses report
+ok: unhandled rejection waits for task boundary
+ok: unhandled event carries real promise and cancelable reason
+ok: late handling is asynchronous
+ok: late handler receives rejectionhandled once
+ok: notification does not repeat on idle poll
+ok: await fixture starts
+ok: await catches rejection before notification
+ok: pending close fixture
+ok: new page opens
+ok: closed page cannot report into new page
+rejection-checkpoint: 12 checks, 0 failures
+ok: native text observers installed
+ok: native mutation does not synchronously call JS
+ok: native text edit delivers one record
+ok: oldValue filtering creates independent observer records
+ok: takeRecords flushes native setter exactly once
+ok: taken records do not also invoke callback
+ok: disconnect fixture
+ok: disconnect discards queued records
+ok: new registration fixture
+ok: new observer cannot see earlier mutation
+ok: mutation then reparent fixture
+ok: subtree eligibility follows mutation-time ancestry
+ok: invalid observe options reject
+ok: split observer installed
+ok: splitText insertion and truncation each notify once in order
+ok: mutation microtask order fixture
+ok: native MO retains mutation-time microtask position
+ok: observer unions matching registrations by mutation type
+ok: oldValue requested by any matching registration is retained
+ok: mixed producer queue fixture
+ok: JS and native producers share one notification job
+ok: callback mutation fixture
+ok: callback mutation schedules the next notification job
+native-mo: 23 checks, 0 failures
+live-range: 33 checks, 0 failed
+modal runtime: 14 checks, 0 failures
+ok: digest promises terminate
+ok: all vector and rejection cases ran
+ok: real SHA digest bytes match independent vectors
+mismatches: []
+web-digest: 3 checks, 0 failures
+ok: crypto promises terminate
+ok: all vector and rejection cases ran
+ok: real crypto operations match independent vectors
+mismatches: {"total":152,"failed":[]}
+web-crypto-ops: 3 checks, 0 failures
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 22 page 18 counts 1 1
+ok: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint passed

@@ -1,0 +1,202 @@
+ok: native modal stack accepts open connected dialog
+FAIL: modal is excluded from ordinary document flow
+modal box 0 28 340 222 items 15
+FAIL: modal box is centered against viewport
+modal painted 58 page 18 counts 2 1
+FAIL: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 19 page 54 counts 1 1
+ok: modal text paints exactly once
+FAIL: modal paints above maximum page z index
+FAIL: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 22 page 18 counts 1 1
+ok: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+FAIL: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+FAIL: modal rejects programmatic background focus
+FAIL: Tab advances inside modal
+FAIL: Tab wraps inside modal
+FAIL: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint failed
+modal runtime: 14 checks, 0 failures
+ok: native modal stack accepts open connected dialog
+ok: modal is excluded from ordinary document flow
+modal box 160 150 180 100 items 9
+ok: modal box is centered against viewport
+modal painted 22 page 18 counts 1 1
+ok: modal text paints exactly once
+ok: modal paints above maximum page z index
+ok: modal backdrop is a real full viewport paint operation
+ok: backdrop consumes hit instead of targeting background
+ok: modal hit geometry stays fixed while page scrolls
+ok: modal rejects programmatic background focus
+ok: Tab advances inside modal
+ok: Tab wraps inside modal
+ok: Shift Tab wraps inside modal
+ok: close restores prior focused element
+ok: nonmodal open dialog remains in ordinary flow
+ok: oversized modal does not enlarge document scroll width
+modal paint passed
+  FAIL: generated text reaches production display list
+  FAIL: before authored after share ordered inline flow
+  FAIL: pseudo own color font and weight reach text items
+  FAIL: pseudo inherits owner font without leaking sibling style
+  FAIL: generated hit provenance remains real owner
+  FAIL: attr content restyle requires fresh layout even if allocator reuses address
+  FAIL: attr mutation updates generated text
+  FAIL: missing attr is empty content not absent pseudo
+  FAIL: empty generated block paints specified background geometry
+  FAIL: generated block participates before real block child -- got 0, want 12
+  FAIL: generated before and after contribute block height -- got 10, want 46
+  FAIL: generated atomic box contributes padding border and width
+flex positions: before=-1 middle=0 after=-1
+  FAIL: generated flex items share real sizing and placement
+  FAIL: generated grid items use owner track solver
+  FAIL: CSS escapes concatenated strings attr and display none reach real text flow
+  FAIL: pseudo own percentage line height resolves against its font -- got 0, want 26
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+  FAIL: repeated generated allocation replacement retains current text
+generated content: 54 checks, 48 failed
+flex positions: before=0 middle=40 after=72
+  FAIL: ordinary inline flex children remain distinct sized items
+  FAIL: generated grid items use owner track solver
+generated content: 54 checks, 2 failed
+flex positions: before=0 middle=40 after=72
+generated content: 54 checks, 0 failed
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -DFOCUS_NO_INERT -o build-modal/inert_focus_negctl c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/inert_focus_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build-modal/libcss_host.a rust/target/release/liblogit_rust.a -lm
+FAIL inert ancestor removes native focusability
+FAIL Tab excludes inert positive tabindex subtree
+FAIL program focus cannot enter inert subtree
+FAIL rejected inert focus preserves previous holder
+FAIL quiet restoration cannot enter inert subtree
+FAIL negative tabindex cannot bypass inert
+FAIL inert mutation invalidates activeElement on read
+FAIL native holder clears when ancestor becomes inert
+FAIL removing inert does not resurrect old focus
+FAIL boolean inert false string still blocks
+FAIL nested child removal cannot override inert ancestor
+FAIL dynamic insertion inherits inert immediately
+FAIL moving focused node into inert clears active read
+FAIL self inert invalidates focus and removing allows explicit focus
+FAIL text hit target inherits inert from element ancestors
+inert focus: 23 checks, 15 failures
+clang -O2 -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build-modal/inert_focus_test c/apps/browser/js_page.c c/apps/browser/js_dom.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/js_webapi.c c/apps/browser/js_platform.c c/apps/browser/js_select.c c/apps/browser/js_intl.c c/apps/browser/js_module.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/apps/browser/js_forms.c c/apps/browser/js_semantics.c c/apps/browser/forms.c c/apps/browser/focus.c tests/unit/inert_focus_test.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build-modal/libcss_host.a rust/target/release/liblogit_rust.a -lm
+build-modal/inert_focus_test
+inert focus: 23 checks, 0 failures
+clang -O2 -w -DLAYOUT_NO_INLINE_HIT -Itests/unit/painthost -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -o build-modal/inline_hit_negctl c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/lib/image/svg.c tests/unit/inline_hit_test.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c build-modal/libcss_host.a -lm
+ok: control: glyph navigates
+FAIL: plain collapsed space navigates
+FAIL: space after nested code navigates
+FAIL: unpainted nested span space navigates
+ok: collapsed leading space does not indent glyph
+ok: collapsed trailing space does not create a box
+ok: outside leading space stays outside anchor
+FAIL: inside space after external debt navigates
+FAIL: rendered trailing space keeps its source anchor
+FAIL: first wrapped line space navigates
+ok: wrapped line unused end is not clickable
+ok: last line unused end is not clickable
+ok: preserved space still navigates
+FAIL: preserved tab hit region navigates
+ok: clipped half of space is not clickable
+FAIL: visible half of clipped space navigates
+ok: higher nonlink overlay blocks link navigation
+ok: legacy link query also respects overlay
+ok: higher nonlink overlay blocks painted glyph too
+ok: hidden whitespace cannot navigate
+ok: hit regions leave actual text painting intact
+FAIL: center alignment moves the space with its words
+FAIL: justification expands actual space hit region
+inline-hit: FAIL
+clang -O2 -w -Itests/unit/painthost -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -o build-modal/inline_hit_test c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/browser_paint.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/lib/image/svg.c tests/unit/inline_hit_test.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c build-modal/libcss_host.a -lm
+build-modal/inline_hit_test
+ok: control: glyph navigates
+ok: plain collapsed space navigates
+ok: space after nested code navigates
+ok: unpainted nested span space navigates
+ok: collapsed leading space does not indent glyph
+ok: collapsed trailing space does not create a box
+ok: outside leading space stays outside anchor
+ok: inside space after external debt navigates
+ok: rendered trailing space keeps its source anchor
+ok: first wrapped line space navigates
+ok: wrapped line unused end is not clickable
+ok: last line unused end is not clickable
+ok: preserved space still navigates
+ok: preserved tab hit region navigates
+ok: clipped half of space is not clickable
+ok: visible half of clipped space navigates
+ok: higher nonlink overlay blocks link navigation
+ok: legacy link query also respects overlay
+ok: higher nonlink overlay blocks painted glyph too
+ok: hidden whitespace cannot navigate
+ok: hit regions leave actual text painting intact
+ok: center alignment moves the space with its words
+ok: justification expands actual space hit region
+inline-hit: PASS
+test-cssom-abi: ok -- image 16 item 264 node 256 (writer == readers);
+  control fired: with -include features.h           the readers say image 16 item 256 node 256 

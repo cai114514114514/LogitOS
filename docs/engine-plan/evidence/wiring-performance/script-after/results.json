@@ -1,0 +1,34 @@
+[
+  {
+    "total_ms": 1230,
+    "teardown": 10,
+    "document": 120,
+    "first_style_layout_paint": 170,
+    "styles_fetch": 0,
+    "full_style_layout_paint": 100,
+    "images": 20,
+    "runtime_init": 660,
+    "scripts_fetch": 10,
+    "scripts_execute": 40,
+    "lifecycle_settle": 100,
+    "case": "script",
+    "round": 0,
+    "script": true
+  },
+  {
+    "total_ms": 680,
+    "teardown": 0,
+    "document": 0,
+    "first_style_layout_paint": 80,
+    "styles_fetch": 0,
+    "full_style_layout_paint": 100,
+    "images": 0,
+    "runtime_init": 360,
+    "scripts_fetch": 0,
+    "scripts_execute": 40,
+    "lifecycle_settle": 100,
+    "case": "script",
+    "round": 1,
+    "script": true
+  }
+]

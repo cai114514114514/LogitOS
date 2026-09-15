@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Definite percentage height</title>
+<style>body{margin:20px;font:18px sans-serif;color:#17334b;background:white}h1{font-size:24px}.case{height:200px;width:320px;border:2px solid #17334b;margin:10px 0;background:#eaf4ff}.half{height:50%;background:#228855;color:white}.full{height:100%}.auto{height:auto}.natural{height:37px;background:#f4c84c;color:#17334b}#result{white-space:pre-wrap}</style>
+<h1>Definite percentage height</h1>
+<p>Green must occupy half of the 200px box. Its inner box is 100% of green.</p>
+<div class="case"><div class="half" id="half"><div class="full" id="full">100px green area</div></div></div>
+<p>An auto ancestor must stop the percentage chain. Yellow stays 37px.</p>
+<div class="case"><div class="auto"><div class="full" id="auto"><div class="natural">37px natural content</div></div></div></div>
+<p>Percentage image sizing overrides the 20x11 HTML dimensions.</p>
+<div class="case"><img id="photo" width="20" height="11" style="display:block;width:50%;height:50%" alt="160 by 100 image slot"></div>
+<p id="result">Checking...</p>
+<script>
+function h(id){return document.getElementById(id).getBoundingClientRect().height}
+var r=document.getElementById('photo').getBoundingClientRect();
+var ok=h('half')===100&&h('full')===100&&h('auto')===37&&r.width===160&&r.height===100;
+var message=(ok?'PASS':'FAIL')+' half='+h('half')+' full='+h('full')+' auto='+h('auto')+' image='+r.width+'x'+r.height;
+document.getElementById('result').textContent=message;console.log('PERCENTAGE-HEIGHT '+message);
+</script>

@@ -1,0 +1,7 @@
+<!doctype html><meta charset="utf-8"><title>Local Storage Persistence</title>
+<style>body{font:20px sans-serif;background:#eff4f8;color:#172437;margin:40px;max-width:850px}button{font-size:20px;margin:12px 12px 12px 0;padding:12px}pre{white-space:pre-wrap;background:white;padding:20px;border:1px solid #abc}</style>
+<h1>Storage across browser restart</h1>
+<p>Write a marker, close and reopen the browser, then read it again. The local marker must survive. The session marker must disappear.</p>
+<button id="storage-write">Write marker</button><button id="storage-read">Read marker</button><button id="storage-clear">Clear marker</button>
+<pre id="storage-result">Reading saved state...</pre>
+<script src="storage-checks.js"></script>

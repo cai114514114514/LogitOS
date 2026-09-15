@@ -1,0 +1,375 @@
+{
+  "native_enter_sent": true,
+  "capture_clock_is_not_performance_measurement": true,
+  "submission_observation_limit_seconds": 90,
+  "result_observation_limit_seconds": 30,
+  "navigation_observed_capture_seconds": 0.6367646250000689,
+  "loads": [
+    "https://cn.bing.com/search?q=Python&form=QBLH&sp=&lq=&pq=&sc=&qs=&sk=&cvid="
+  ],
+  "form_get": [
+    "/search?q=Python&form=QBLH&sp=&lq=&pq=&sc=&qs=&sk=&cvid="
+  ],
+  "guest_load_perf": [
+    {
+      "total_ms": 7490,
+      "teardown": 100,
+      "document": 310,
+      "first_style_layout_paint": 50,
+      "styles_fetch": 6270,
+      "full_style_layout_paint": 160,
+      "images": 20,
+      "runtime_init": 350,
+      "scripts_fetch": 140,
+      "scripts_execute": 50,
+      "lifecycle_settle": 40
+    }
+  ],
+  "errors": [
+    "[browser] fetch failed (status 0) /rp/5sn47uDLno44ZZeLF04bF8eMPCY.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/JoeLLc8dIShd0NMINFi7fIO7rno.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/r1Vu2S21h18Rj1_C7M_JAz0V3u4.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/UkuzTZ68WPIFBIrgMD5liKYZE7s.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/LGIh8a97HvZFfz3GHFb-2_1ZQtY.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/WGpYZYFKm-_xZVBoy1VGL0ZC3h8.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/YV7xX1RkMp662eq8XATfx4a9i_E.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/Lv8dxzaWipOuqw3H1TU2Lg9rPk4.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/FYBqxQC-mG1EeN-hiyBOdndOFoY.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/UdgSoSmwhnWDXAyKOtaP11_yOak.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/X1ce1O_OKP9gkiytuay64BFkKKE.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/A5qkpKny_mekI204M7w7PeocGrY.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/q8Asf8pu4XIM5W7spkF_UySGsNo.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/xySgY-LgGRuBwEQWZ00ohpMkwFo.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/hHsmX1pu5QkNAZbMlO8XfzqGFsU.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/0jmOryPLS6OQvizZ7tF9NXNDxE4.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/1ktC1F5jCZpj8Q0bWge-OAO6Fjw.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/JcnOU2PEd9sXWKDMAJxye8rKwVo.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/sDQtH2u1DPjgVBojG9J78w7YdHQ.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/dKsl23sRNyE90pF-2DsiYAS59Oo.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/zFLthHFKZgu4H_KOiXa31bItlbM.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/4LWYPCxVVEHfLEEAau_lq8c22AY.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/xW7VU5N8ZTuCpbkZx0o3qkmamLc.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/fYIR9OziuQO07wFYGDKzTA43OFU.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/sqAsHG0Y26Xb_d1JOvvF1SmuU3o.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/IB0Y1wqeADWAJvJHgJl7h22AC6U.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/auys0in9sWzt3EQQItQgqNENg6Q.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/fDujnxT_-3DmEEti1yGlMI9q23E.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/t68n7jV9uxTVwd8N23Pd82I8CoE.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/c5XJrDwm63ChOdaW6bOEyRHuMEc.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/KHlB1rok4zvZvMchMo2CBBMejpE.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/wkRoJAh60I1jW2eAvTrOLshz5NU.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/KVMR70jk69dJoYCzBuLAGt5O2zc.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/vlzlb9l5G2c23fVqamzc_M4u4oI.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/ufgzI1p61OVnYbMvwVWN-w1zK_M.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/mXfSQKU6hthMT_pL5SVpMQ6Naio.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/vKiNZKyECguPjPGgdNSnW8X7U1s.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/sxg9W89sQS7IDs1q9R4S4Dac0Fo.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/VTSueAlROYDObHZQplYjr1WLw1E.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/wsdESPLCxy1ZYSHNAdsGFqksXR4.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/sbJUeG0_k8Fd8woTqqL2gJ8a9hs.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/oMzHcKbdAuNdeGfDnIJoe7BKVno.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/GVxYNKB6AAZVXrgLI8itJ7jfEx0.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/JwO8973_vO41dbX3--08T1KG73g.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/r_5R8g82-_oZYxdUIbaXb8fwLLg.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/vp58XrHzBM_DzT7hRyFp0n9K38c.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/cUqY4W5FqZvXdTEW22IdkXy-RT4.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/1iEyBfvcHv73ao-LanKPvOjFXFA.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/HR6EOv-MPnoSToImfYAf4HLOTsE.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/XDFYXIqMDzFKCvOGL0cs9belLz0.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/6GAOeP4dfI8Ba8abhgdTgTU72Ws.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/G5RkRgdIoiND7fSxYfrijnJBnA8.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/3JT-GypYRRiYsGxeaoyj3SQssno.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) https://r.bing.com/rb/3V/cc,nc/r6KjdhIcY0vRnVja4Yojc7Y1VOI.css?bu=AqgC6gE&or=n: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/8Vv-vrRhatu_s9yuwzp6owcBC1Y.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/-KA72UpoZPXAn1sSAuHG_UZ4kno.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/A-x6ANZIhJiuMLDrYEy9ja0JwRg.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/666g-BwHb5I5v6WUwAmQcb4lRIk.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/PNhPt1mWsks2Ikzph796m8KR9Z8.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/b4PnXf2c8TsUvfJJaLng8yWdOlw.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/PU0QF5nwj3ofrc071HiSu5Pz6eA.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/CWVJzepUKaB3zgL7V2ZTlJ-Sg2w.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/opU9IA6eq1n3VpJuTkkfhNCXqUw.gz.css: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/zFuAKF-9bXFe6ayl-R5XG9BTJMw.gz.js: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/YK8uLbZEp9NCx4w0-d6FhjwCZxw.gz.js: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/LCNtyJMt5DKsCVXlLehsZN6w-2k.gz.js: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/Ov6kV3JaTc0Kr2ivm7aifUi62MI.gz.js: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/DNKqcxEKmgz3hIG7IJF6-A3joK4.gz.js: the kernel socket table is full",
+    "[browser] fetch failed (status 0) /rp/9G2lvBM7heiTySSUz5g5rVXO5RI.gz.js: the kernel socket table is full",
+    "[browser] script LOST: https://cn.bing.com/rp/zFuAKF-9bXFe6ayl-R5XG9BTJMw.gz.js: the kernel socket table is full (status 0)",
+    "[browser] script LOST: https://cn.bing.com/rp/YK8uLbZEp9NCx4w0-d6FhjwCZxw.gz.js: the kernel socket table is full (status 0)",
+    "[browser] script LOST: https://cn.bing.com/rp/LCNtyJMt5DKsCVXlLehsZN6w-2k.gz.js: the kernel socket table is full (status 0)",
+    "[browser] script LOST: https://cn.bing.com/rp/Ov6kV3JaTc0Kr2ivm7aifUi62MI.gz.js: the kernel socket table is full (status 0)",
+    "[browser] script LOST: https://cn.bing.com/rp/DNKqcxEKmgz3hIG7IJF6-A3joK4.gz.js: the kernel socket table is full (status 0)",
+    "[browser] script LOST: https://cn.bing.com/rp/9G2lvBM7heiTySSUz5g5rVXO5RI.gz.js: the kernel socket table is full (status 0)",
+    "[img] fetch failed (status 0): /rp/iHQfTi0EehsP4io4sHfua6J2vo4.svg: the kernel socket table is full",
+    "[img] fetch failed: /rp/iHQfTi0EehsP4io4sHfua6J2vo4.svg"
+  ],
+  "shots": [
+    {
+      "file": "typed-confirmed.png",
+      "capture_offset_seconds": 1.892
+    },
+    {
+      "file": "search-001.png",
+      "capture_offset_seconds": 0.0
+    },
+    {
+      "file": "search-002.png",
+      "capture_offset_seconds": 0.316
+    },
+    {
+      "file": "search-003.png",
+      "capture_offset_seconds": 0.637
+    },
+    {
+      "file": "search-004.png",
+      "capture_offset_seconds": 0.958
+    },
+    {
+      "file": "search-005.png",
+      "capture_offset_seconds": 1.274
+    },
+    {
+      "file": "search-006.png",
+      "capture_offset_seconds": 1.596
+    },
+    {
+      "file": "search-007.png",
+      "capture_offset_seconds": 1.918
+    },
+    {
+      "file": "search-008.png",
+      "capture_offset_seconds": 2.239
+    },
+    {
+      "file": "search-009.png",
+      "capture_offset_seconds": 2.56
+    },
+    {
+      "file": "search-010.png",
+      "capture_offset_seconds": 2.882
+    },
+    {
+      "file": "search-011.png",
+      "capture_offset_seconds": 3.2
+    },
+    {
+      "file": "search-012.png",
+      "capture_offset_seconds": 3.521
+    },
+    {
+      "file": "search-013.png",
+      "capture_offset_seconds": 3.839
+    },
+    {
+      "file": "search-014.png",
+      "capture_offset_seconds": 4.157
+    },
+    {
+      "file": "search-015.png",
+      "capture_offset_seconds": 4.474
+    },
+    {
+      "file": "search-016.png",
+      "capture_offset_seconds": 4.796
+    },
+    {
+      "file": "search-017.png",
+      "capture_offset_seconds": 5.117
+    },
+    {
+      "file": "search-018.png",
+      "capture_offset_seconds": 5.438
+    },
+    {
+      "file": "search-019.png",
+      "capture_offset_seconds": 5.756
+    },
+    {
+      "file": "search-020.png",
+      "capture_offset_seconds": 6.074
+    },
+    {
+      "file": "search-021.png",
+      "capture_offset_seconds": 6.395
+    },
+    {
+      "file": "search-022.png",
+      "capture_offset_seconds": 6.717
+    },
+    {
+      "file": "search-023.png",
+      "capture_offset_seconds": 7.038
+    },
+    {
+      "file": "search-024.png",
+      "capture_offset_seconds": 7.356
+    },
+    {
+      "file": "search-025.png",
+      "capture_offset_seconds": 7.677
+    },
+    {
+      "file": "search-026.png",
+      "capture_offset_seconds": 7.995
+    },
+    {
+      "file": "search-027.png",
+      "capture_offset_seconds": 8.316
+    },
+    {
+      "file": "search-028.png",
+      "capture_offset_seconds": 8.637
+    },
+    {
+      "file": "search-029.png",
+      "capture_offset_seconds": 8.957
+    },
+    {
+      "file": "search-030.png",
+      "capture_offset_seconds": 9.276
+    },
+    {
+      "file": "search-031.png",
+      "capture_offset_seconds": 9.598
+    },
+    {
+      "file": "search-032.png",
+      "capture_offset_seconds": 9.917
+    },
+    {
+      "file": "search-033.png",
+      "capture_offset_seconds": 10.237
+    },
+    {
+      "file": "search-034.png",
+      "capture_offset_seconds": 10.564
+    },
+    {
+      "file": "search-035.png",
+      "capture_offset_seconds": 10.896
+    },
+    {
+      "file": "search-036.png",
+      "capture_offset_seconds": 11.228
+    },
+    {
+      "file": "search-037.png",
+      "capture_offset_seconds": 11.558
+    },
+    {
+      "file": "search-038.png",
+      "capture_offset_seconds": 11.886
+    },
+    {
+      "file": "search-039.png",
+      "capture_offset_seconds": 12.215
+    },
+    {
+      "file": "search-040.png",
+      "capture_offset_seconds": 13.243
+    },
+    {
+      "file": "search-041.png",
+      "capture_offset_seconds": 14.268
+    },
+    {
+      "file": "search-042.png",
+      "capture_offset_seconds": 15.293
+    },
+    {
+      "file": "search-043.png",
+      "capture_offset_seconds": 16.313
+    },
+    {
+      "file": "search-044.png",
+      "capture_offset_seconds": 17.345
+    },
+    {
+      "file": "search-045.png",
+      "capture_offset_seconds": 18.38
+    },
+    {
+      "file": "search-046.png",
+      "capture_offset_seconds": 19.412
+    },
+    {
+      "file": "search-047.png",
+      "capture_offset_seconds": 20.433
+    },
+    {
+      "file": "search-048.png",
+      "capture_offset_seconds": 21.455
+    },
+    {
+      "file": "search-049.png",
+      "capture_offset_seconds": 22.476
+    },
+    {
+      "file": "search-050.png",
+      "capture_offset_seconds": 23.499
+    },
+    {
+      "file": "search-051.png",
+      "capture_offset_seconds": 24.516
+    },
+    {
+      "file": "search-052.png",
+      "capture_offset_seconds": 25.535
+    },
+    {
+      "file": "search-053.png",
+      "capture_offset_seconds": 26.555
+    },
+    {
+      "file": "search-054.png",
+      "capture_offset_seconds": 27.574
+    },
+    {
+      "file": "search-055.png",
+      "capture_offset_seconds": 28.592
+    },
+    {
+      "file": "search-056.png",
+      "capture_offset_seconds": 29.613
+    },
+    {
+      "file": "search-057.png",
+      "capture_offset_seconds": 30.634
+    },
+    {
+      "file": "final.png",
+      "capture_offset_seconds": 31.658
+    }
+  ],
+  "serial_start": 52594,
+  "verdict": "RESULTS_DISAPPEAR",
+  "no_crash_in_observation": true,
+  "native_submission_observed": true,
+  "styled_result_screenshot": "search-029.png",
+  "final_screenshot": "final.png",
+  "guest_home_load_perf": [
+    {
+      "total_ms": 3410,
+      "teardown": 10,
+      "document": 830,
+      "first_style_layout_paint": 390,
+      "styles_fetch": 290,
+      "full_style_layout_paint": 170,
+      "images": 0,
+      "runtime_init": 720,
+      "scripts_fetch": 640,
+      "scripts_execute": 280,
+      "lifecycle_settle": 80
+    }
+  ],
+  "painted_text_transitions": [
+    "0 run(s), 0 byte(s)",
+    "13 run(s), 57 byte(s)",
+    "14 run(s), 90 byte(s)",
+    "13 run(s), 57 byte(s)",
+    "29 run(s), 208 byte(s)",
+    "72 run(s), 423 byte(s)",
+    "9 run(s), 60 byte(s)"
+  ]
+}

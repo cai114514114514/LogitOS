@@ -1,0 +1,10 @@
+<!doctype html><title>Frame generic audit</title><body><script>
+function probe(name,run){try{console.log('FRAME-AUDIT '+name+' '+run())}catch(e){console.log('FRAME-AUDIT '+name+' THROW '+e.name)}}
+probe('empty-srcdoc-precedence',function(){var f=document.createElement('iframe');f.setAttribute('src','http://other.invalid/frame');f.setAttribute('srcdoc','');document.body.appendChild(f);return !!f.contentDocument});
+probe('src-change-overrides-srcdoc',function(){var f=document.createElement('iframe');f.srcdoc='<p id=held>held</p>';document.body.appendChild(f);f.src='http://other.invalid/frame';return !!f.contentDocument.getElementById('held')});
+probe('srcdoc-removal-retains-old-document',function(){var f=document.createElement('iframe');f.srcdoc='<p id=held>held</p>';document.body.appendChild(f);f.removeAttribute('srcdoc');return !!f.contentDocument.getElementById('held')});
+probe('child-location-is-parent-location',function(){var f=document.createElement('iframe');document.body.appendChild(f);return f.contentWindow.location===location});
+probe('sandbox-blank-readable',function(){var f=document.createElement('iframe');f.setAttribute('sandbox','');document.body.appendChild(f);var doc=f.contentDocument;var s=doc.createElement('script');s.textContent="console.log('AUDIT-SANDBOX-EMPTY-FRAME-SCRIPT-RAN')";doc.getElementsByTagName('head')[0].appendChild(s);return !!doc});
+probe('real-global-missing-on-contentWindow',function(){var f=document.createElement('iframe');f.srcdoc='<script>self.owned=73;console.log("AUDIT-CHILD-API document="+typeof document+" parent="+typeof parent+" postMessage="+typeof postMessage+" timer="+typeof setTimeout)</'+'script>';document.body.appendChild(f);return f.contentWindow.owned});
+console.log('FRAME-AUDIT done');var parentStable=true;window.frameAuditReady=true;
+</script>

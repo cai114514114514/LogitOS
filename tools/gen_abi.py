@@ -164,7 +164,14 @@ TYPE_WORDS = ("char", "signed", "unsigned", "short", "int", "long")
 
 
 def parse_members(struct_name, body, defines):
-    """-> [(field, size, align, kind)] in declaration order."""
+    """-> [(script_field, c_designator, size, align, kind)] in layout order.
+
+    AetherScript's layout slots are scalar values or byte spans; there is no
+    aggregate numeric-array slot.  Expand a fixed scalar array into one slot
+    per element (`words_0`, `words_1`, ...), while retaining `words[0]` etc. as
+    the C designators used by the generated offsetof/sizeof assertions.  Byte
+    arrays keep their existing fixed-span/string representation.
+    """
     out = []
     for decl in body.split(";"):
         decl = norm_type(decl)          # also drops const/volatile/struct
@@ -194,18 +201,24 @@ def parse_members(struct_name, body, defines):
                 n = array_bound(struct_name, name, am.group(2), defines)
                 if stars:
                     raise Unsupported("%s.%s: pointer arrays are not supported" % (struct_name, name))
-                if base not in ("char", "signed char", "unsigned char"):
-                    raise Unsupported("%s.%s: only byte arrays are supported (got %s[])"
-                                      % (struct_name, name, base))
-                out.append((name, n, 1, "s"))
-                continue
+                if base in ("char", "signed char", "unsigned char"):
+                    out.append((name, name, n, 1, "s"))
+                    continue
+                if base in SCALARS:
+                    sz, al, kind = SCALARS[base]
+                    for index in range(n):
+                        out.append(("%s_%d" % (name, index),
+                                    "%s[%d]" % (name, index), sz, al, kind))
+                    continue
+                raise Unsupported("%s.%s: unsupported array element type %r"
+                                  % (struct_name, name, base))
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", d):
                 raise Unsupported("%s: cannot parse declarator %r" % (struct_name, d))
             if stars:
-                out.append((d, PTR[0], PTR[1], PTR[2]))
+                out.append((d, d, PTR[0], PTR[1], PTR[2]))
             elif base in SCALARS:
                 sz, al, kind = SCALARS[base]
-                out.append((d, sz, al, kind))
+                out.append((d, d, sz, al, kind))
             else:
                 raise Unsupported("%s.%s: unsupported type %r" % (struct_name, d, base))
     return out
@@ -216,9 +229,9 @@ def lay_out(members):
     up to the widest member's alignment."""
     off, salign = 0, 1
     fields = []
-    for name, size, align, kind in members:
+    for name, c_designator, size, align, kind in members:
         off = (off + align - 1) // align * align
-        fields.append((name, off, size, kind))
+        fields.append((name, c_designator, off, size, kind))
         off += size
         salign = max(salign, align)
     return fields, (off + salign - 1) // salign * salign
@@ -504,7 +517,7 @@ def render():
     for cname, fields, size in structs:
         a.append("")
         a.append("%s = layout(\"%s\", %d, [" % (as_name(cname), cname, size))
-        for i, (fname, off, fsize, kind) in enumerate(fields):
+        for i, (fname, c_designator, off, fsize, kind) in enumerate(fields):
             comma = "," if i + 1 < len(fields) else ""
             a.append("    [\"%s\", %d, %d, \"%s\"]%s" % (fname, off, fsize, kind, comma))
         a.append("])")
@@ -551,13 +564,13 @@ def render():
         c.append("_Static_assert(sizeof(struct %s) == %d,\n"
                  "               \"abi.as is stale: sizeof(struct %s) changed -- run tools/gen_abi.py --write\");"
                  % (cname, size, cname))
-        for fname, off, fsize, kind in fields:
+        for fname, c_designator, off, fsize, kind in fields:
             c.append("_Static_assert(offsetof(struct %s, %s) == %d,\n"
                      "               \"abi.as is stale: %s.%s moved -- run tools/gen_abi.py --write\");"
-                     % (cname, fname, off, cname, fname))
+                     % (cname, c_designator, off, cname, c_designator))
             c.append("_Static_assert(sizeof(((struct %s *)0)->%s) == %d,\n"
                      "               \"abi.as is stale: %s.%s changed width -- run tools/gen_abi.py --write\");"
-                     % (cname, fname, fsize, cname, fname))
+                     % (cname, c_designator, fsize, cname, c_designator))
     c.append("")
     return "\n".join(a), "\n".join(c), render_pack(calls)
 

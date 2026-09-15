@@ -1,0 +1,5 @@
+# These three reviewed guest captures are referenced by foundation-status.md.
+# Keep routine screenshots ignored by the repository-wide *.png rule.
+!workbench.png
+!task-chain.png
+!storage-isolation.png

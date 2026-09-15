@@ -1,0 +1,63 @@
+clang -O2 -Wall -Wextra -DSTORAGE_BACKEND_TEST -Ic/apps/browser -o build-storage-persistence/storage_persistence_test tests/unit/storage_persistence_test.c c/apps/browser/storage_backend.c
+ok: fresh store opens
+ok: seed commits
+ok: NUL key value commits
+ok: second origin commits
+ok: session mutation performs no disk IO
+ok: reopen succeeds
+FAIL: reopen restores persisted local value
+FAIL: reopen preserves embedded NUL bytes
+FAIL: reopen preserves separate origins
+ok: reopen discards all session areas
+ok: remove commits
+FAIL: remove survives reopen
+FAIL: remaining key order survives reopen
+ok: clear commits
+FAIL: clear survives reopen without losing other origin
+ok: fresh store opens
+ok: seed commits
+ok: second generation commits
+FAIL: corrupt newest slot falls back to previous valid generation
+ok: recovery writes damaged slot
+FAIL: recovery persists
+ok: fresh store opens
+ok: seed commits
+ok: negative write result is failure
+ok: write failure keeps old in-memory value
+ok: uncertain commit blocks later writes until reopen
+ok: disk failure does not disable session storage
+FAIL: failed write retained prior on-disk slot
+ok: fresh store opens
+ok: seed commits
+ok: short positive write is failure
+FAIL: torn slot recovers last valid value
+ok: fresh store opens
+ok: seed commits
+ok: readback detects lying successful write
+FAIL: readback corruption preserves old slot
+ok: fresh store opens
+ok: seed commits
+ok: success without bytes is rejected
+FAIL: silent no-write leaves old bytes
+ok: fresh store opens
+ok: seed commits
+ok: documented zero-success adapter accepted after readback
+FAIL: zero-success adapter persisted exact bytes
+ok: fresh store opens
+ok: seed commits
+ok: clear failure preserves memory
+FAIL: remove failure preserves memory
+ok: fresh store opens
+ok: seed commits
+FAIL: only corrupt snapshot refuses restore
+FAIL: corrupt store is not overwritten with empty state
+ok: fresh store opens
+ok: seed commits
+FAIL: restore allocation failure is explicit
+FAIL: allocation failure does not alter saved bytes
+ok: fresh store opens
+ok: seed commits
+ok: mutation allocation failure preserves value
+ok: quota enforced before persistence
+FAIL: quota failure preserves persisted old value
+storage-persistence: 61 checks, 19 failures

@@ -317,7 +317,13 @@ static void rejection_matrix(void)
     b_good(&b); b.eh->e_ident[6] = 2;      expect(&b, ELF_E_IDENT,  "EI_VERSION from the future");
     b_good(&b); b.eh->e_ident[7] = 9;      expect(&b, ELF_E_IDENT,  "an OSABI we do not implement");
     b_good(&b); b.eh->e_ident[8] = 1;      expect(&b, ELF_E_IDENT,  "a nonzero EI_ABIVERSION");
-    b_good(&b); b.eh->e_type = 3;          expect(&b, ELF_E_TYPE,   "ET_DYN (a PIE needs relocation)");
+    /* Previously ET_DYN was always ELF_E_TYPE. Static PIE now accepts this
+     * header; full relocation/mapping coverage lives in test-pie, whose ASan
+     * placement avoids ASan's shadow gap instead of weakening this check. */
+    b_good(&b); b.eh->e_type = 3; g_checks++;
+    if (elf_check_header64(b.eh) != ELF_OK) {
+        g_fails++; puts("FAIL: static PIE header refused");
+    }
     b_good(&b); b.eh->e_type = 1;          expect(&b, ELF_E_TYPE,   "ET_REL");
     b_good(&b); b.eh->e_machine = 3;       expect(&b, ELF_E_MACHINE,"EM_386");
     b_good(&b); b.eh->e_machine = 183;     expect(&b, ELF_E_MACHINE,"EM_AARCH64");

@@ -26,7 +26,7 @@ main-*.js against the root and the fixture would stop being the committed
 bytes. Seven servers, one boot, one navigation each.
 
 THE REPORTER is injected server-side (the committed fixtures are never edited):
-a <script type="module"> appended before </body>, later in document order than
+a classic inline script appended before </body>, later in document order than
 every app script, which reads the DOM back at t=0 (module body), the microtask
 checkpoint, and 250/1000/2500/4000 ms. The LAST line a page prints is its
 settled verdict -- same rule framework_rank.py applies to the host _paint run,
@@ -52,6 +52,7 @@ import argparse
 import http.server
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -90,7 +91,7 @@ LADDER = [250, 1000, 2500, 4000]
 #      silenced" -- the same argument the corpus's own README makes for why
 #      per-cause tables beat per-framework ones.
 REPORTER = """(function () {
-var APP = %(app_json)s;
+var APP = %(app_json)s, BLOCK_CLICK = %(block_click)s;
 function snap(when) {
   try {
     var body = document.body;
@@ -107,10 +108,21 @@ function snap(when) {
       " body=" + html.length + found +
       " button=" + (btn ? JSON.stringify(btn.textContent || "") : "none") +
       " lazy=" + (lazy ? JSON.stringify(lazy.textContent || "") : "none"));
+    if (btn && when === 4000) {
+      var r=btn.getBoundingClientRect();
+      console.log('#GUEST-BUTTON '+APP+' x='+(r.left+r.width/2)+' y='+(r.top+r.height/2));
+    }
   } catch (e) {
     console.log("#GUEST " + APP + " t" + when + " REPORT-THREW " + e);
   }
 }
+document.addEventListener('click',function(e){
+  var b=document.getElementById('inc');
+  if(b && (e.target===b || b.contains(e.target))){
+    setTimeout(function(){snap('click')},100);
+    if(BLOCK_CLICK)e.stopImmediatePropagation();
+  }
+},true);
 snap(0);
 Promise.resolve().then(function () { snap(1); });
 %(ladder)s.forEach(function (ms) {
@@ -134,13 +146,13 @@ EXC_RES = [
 GUEST_RE = re.compile(r"^#GUEST (\S+) t(\S+) (.*)$")
 
 
-def load_app(name):
+def load_app(name, block_click=False):
     """(index.html with the reporter inlined, {url-path: bytes}) for `name`."""
     d = os.path.join(CORPUS, name)
     html = open(os.path.join(d, "index.html"), "rb").read()
     # Classic INLINE, before </body>: no fetch, no module machinery -- see the
     # comment on REPORTER for why a module-shaped reporter is the wrong shape.
-    tag = ("<script>" + reporter_js(name) + "</script>").encode()
+    tag = ("<script>" + reporter_js(name, block_click) + "</script>").encode()
     if b"</body>" not in html:
         raise SystemExit("guest_mount: %s/index.html has no </body>" % name)
     html = html.replace(b"</body>", tag + b"</body>", 1)
@@ -162,14 +174,14 @@ def load_app(name):
     return html, files
 
 
-def reporter_js(name):
+def reporter_js(name, block_click=False):
     return REPORTER % {"app_json": json.dumps(name),
-                       "ladder": json.dumps(LADDER)}
+                       "ladder": json.dumps(LADDER), "block_click": 'true' if block_click else 'false'}
 
 
-def start_server(name, log):
+def start_server(name, log, block_click=False):
     """One ThreadingHTTPServer per app, serving it as the only site at '/'."""
-    html, files = load_app(name)
+    html, files = load_app(name, block_click)
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -247,16 +259,21 @@ def main():
     ap.add_argument("--settle", type=int, default=75,
                     help="seconds to wait per app for its last #GUEST line")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--out", help="retain serial, screenshots and structured results")
+    ap.add_argument("--interact", action="store_true", help="click the mounted counter through QMP and record state change")
+    ap.add_argument("--min-interactive", type=int, default=0, help="fail unless N native clicks increment component state")
+    ap.add_argument("--block-click-control", action="store_true", help="negative control: stop trusted click before component handler")
     args = ap.parse_args()
     apps = [a for a in args.apps.split(",") if a]
 
     requested = []
     servers = {}
     for name in apps:
-        srv, port = start_server(name, requested)
+        srv, port = start_server(name, requested, args.block_click_control)
         servers[name] = "http://10.0.2.2:%d/" % port
 
-    tmp = tempfile.mkdtemp(prefix="qmp_frmw_")
+    tmp = os.path.abspath(args.out) if args.out else tempfile.mkdtemp(prefix="qmp_frmw_")
+    os.makedirs(tmp, exist_ok=True)
     qmp_path = os.path.join(tmp, "qmp.sock")
     serial_path = os.path.join(tmp, "serial.log")
     proc = subprocess.Popen(
@@ -350,12 +367,32 @@ def main():
                 "paint": paint[1] if paint else None,
                 "nonblank": nonblank(paint),
             }
+            if args.out: ui.screendump(os.path.join(tmp,name+'-mounted.ppm'))
+            if args.interact:
+                btn=re.search(r'#GUEST-BUTTON '+re.escape(name)+r' x=([\d.]+) y=([\d.]+)',chunk)
+                frames=re.findall(r'\[wm\] win \d+ frame (\d+) (\d+) (\d+) (\d+) content (\d+) (\d+) pt[^\n]*Browser',serial())
+                results[name]['native_click_increment']=False
+                if btn and frames:
+                    x,y,w,h,cw,ch=map(int,frames[-1]);cx,cy=map(float,btn.groups());scale=w/cw
+                    # Read logical content geometry from the machine. Titlebar
+                    # pixels are outside the app; its own toolbar is 60 points.
+                    ui.click_at(int(x+cx*scale+.5),int(y+h-ch*scale+(60+cy)*scale+.5))
+                    click_end=time.monotonic()+10
+                    while time.monotonic()<click_end:
+                        clicked=last_paint(ui.serial_text()[mark:],name)
+                        if clicked and clicked[0]=='click':break
+                        time.sleep(.2)
+                    results[name]['click_readback']=clicked[1] if clicked and clicked[0]=='click' else None
+                    results[name]['native_click_increment']=bool(clicked and clicked[0]=='click' and 'button="count is 1"' in clicked[1])
+                    if args.out:ui.screendump(os.path.join(tmp,name+'-clicked.ppm'))
+            if args.out: Path(tmp,'results.json').write_text(json.dumps(results,indent=2))
             time.sleep(1.0)
     finally:
         try:
             proc.kill()
         except OSError:
             pass
+        proc.wait()
 
     n_blank = sum(1 for r in results.values() if not r["nonblank"])
     print()
@@ -366,6 +403,7 @@ def main():
         print("%-9s %-4s exc: %s" % (name, "MOUNT" if r["nonblank"] else "----", exc))
         for extra in r["all_exceptions"][1:6]:
             print("%-9s      also: %s" % ("", extra))
+        if args.interact:print("%-9s      native counter click: %s" % ("", results[name].get('native_click_increment',False)))
         print("%-9s      paint[t%s]: %s" % ("", r["paint_t"] or "?", r["paint"] or "(no #GUEST line)"))
         got = [p for n, p in requested if n == name]
         print("%-9s      server saw %d request(s): %s"
@@ -375,6 +413,10 @@ def main():
     if args.json:
         print("#JSON " + json.dumps(results))
 
+    n_interactive=sum(1 for r in results.values() if r.get('native_click_increment'))
+    if args.min_interactive and n_interactive < args.min_interactive:
+        print("guest_mount: FAIL -- native click increment %d/%d, required %d" % (n_interactive,len(apps),args.min_interactive))
+        return 1
     if args.min_mounts and (len(apps) - n_blank) < args.min_mounts:
         print("guest_mount: FAIL -- %d of %d non-blank, the bar is %d"
               % (len(apps) - n_blank, len(apps), args.min_mounts))

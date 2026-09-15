@@ -1,0 +1,21 @@
+<!doctype html><meta charset=utf-8><title>Whitespace and positioned image layer</title>
+<style>
+body{margin:24px;font:18px sans-serif}
+#card{position:relative;display:flex;justify-content:center;width:640px;height:220px;background:#dae6f0}
+#copy{position:relative;padding-top:140px;z-index:1}
+#layer{position:absolute;inset:0;display:flex;justify-content:center;align-items:flex-start}
+picture,img{display:block;width:240px;height:100px}
+</style>
+<h1>Positioned image and title</h1>
+<div id=card><h2 id=copy>Title under the image</h2>
+ <!-- Formatting whitespace must not consume the positioned sibling. -->
+ <div id=layer><picture><img id=cover src=/range-cover.svg alt="Green sample"></picture></div>
+</div><p id=result>Waiting for decoded image</p>
+<script>
+window.addEventListener('load',function(){
+ var im=document.getElementById('cover'),r=im.getBoundingClientRect(),l=document.getElementById('layer').getBoundingClientRect();
+ var ok=im.complete&&im.naturalWidth===240&&im.naturalHeight===100&&r.width===240&&r.height===100&&l.width===640;
+ var line='ABSOLUTE-IMAGE '+(ok?'PASS':'FAIL')+' '+JSON.stringify({image:[r.x,r.y,r.width,r.height],layer:[l.x,l.y,l.width,l.height],decoded:[im.naturalWidth,im.naturalHeight]});
+ document.getElementById('result').textContent=line;console.log(line);
+});
+</script>

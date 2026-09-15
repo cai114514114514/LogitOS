@@ -1,0 +1,22 @@
+<!doctype html><meta charset="utf-8"><title>Late callback consumer reproduction</title>
+<style>body{margin:0;width:1800px;height:700px}#result{padding:20px}</style>
+<p>Shift-wheel once over this page. Stop all input afterward. No timers are used.</p>
+<p>Open this file with ?mode=0 for direct navigation, ?mode=1 for an inserted script,
+?mode=2 for navigation from an inserted script, or ?mode=3 for initial script scrolling.</p>
+<div id="result">WAITING</div>
+<script>
+var match=/mode=([0-3])/.exec(location.search);
+var mode=match?+match[1]:0;
+window.scrollCalls=0;
+document.addEventListener('scroll',function(){
+  if(++scrollCalls!==1)return;
+  document.getElementById('result').textContent='LISTENER-RAN';
+  if(mode===0||mode===3){location.href='late-callback-target.html';return;}
+  var s=document.createElement('script');
+  s.textContent=mode===1
+    ? "window.inserted=42;document.getElementById('result').textContent='SCRIPT-RAN'"
+    : "location.href='late-callback-target.html'";
+  document.body.appendChild(s);
+});
+if(mode===3)scrollTo(100,0);
+</script>

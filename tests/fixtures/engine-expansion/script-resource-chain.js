@@ -1,0 +1,1 @@
+resourceExecuted.push('chain');

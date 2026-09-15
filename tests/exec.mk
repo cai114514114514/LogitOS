@@ -396,3 +396,10 @@ ci-boot: test-argv-limits-os
 # OPENED, and until now the second question had the smaller answer. See the
 # header of tests/fdstream.mk.
 -include tests/fdstream.mk
+
+# Wide-memory and static-PIE acceptance share executable-loader integration.
+-include tests/wide_memory.mk
+-include tests/pie.mk
+
+# DMA shares the wide-memory boot matrix, with independent device gates.
+-include tests/dma.mk

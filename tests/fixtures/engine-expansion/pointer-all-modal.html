@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ordinary modal pointer targeting</title>
+<style>
+body{margin:0;font:18px sans-serif;background:#eef3f8;color:#172133}
+#under{position:absolute;left:28px;top:34px;width:140px;height:42px}
+#shade{position:fixed;inset:0;background:rgba(10,20,40,.45);z-index:10}
+#frame{position:fixed;inset:0;pointer-events:none;z-index:11}
+#dialog{position:absolute;left:200px;top:130px;width:360px;height:220px;pointer-events:all;background:white;border:2px solid #4477bb;border-radius:16px}
+h1{font-size:22px;margin:20px}p{margin:20px}
+#action{position:absolute;left:24px;top:130px;width:180px;height:48px;background:#226cba;color:white}
+#close{position:absolute;right:16px;top:16px;width:70px;height:32px}
+</style>
+<button id="under">Reopen</button>
+<div id="shade"></div>
+<div id="frame"><div id="dialog">
+<h1>Clickable dialog</h1><p id="result">Waiting for a real click</p>
+<button id="action">Click me</button><button id="close">Close</button>
+</div></div>
+<script>
+/* No injected click(), challenge content, network request, or timer does the
+ * work. The driver must click through the native hit-test/event dispatcher.
+ * Backdrop clicks are expected outside the dialog, never through its buttons. */
+var under=document.getElementById('under'),shade=document.getElementById('shade');
+var frame=document.getElementById('frame'),dialog=document.getElementById('dialog');
+var action=document.getElementById('action'),closeButton=document.getElementById('close');
+var result=document.getElementById('result');
+var actions=0,closes=0,reopens=0,outside=0,bubbles=0;
+function state(label){console.log('MODAL-ALL '+label+' action='+actions+' close='+closes+' reopen='+reopens+' outside='+outside+' bubble='+bubbles)}
+shade.addEventListener('click',function(){outside++;state('SHADE')});
+frame.addEventListener('click',function(){bubbles++;state('BUBBLE')});
+action.addEventListener('click',function(){actions++;action.textContent='CLICKED '+actions;result.textContent='Real button click '+actions;state('ACTION')});
+closeButton.addEventListener('click',function(){closes++;frame.style.display='none';shade.style.display='none';state('CLOSED')});
+under.addEventListener('click',function(){reopens++;frame.style.display='block';shade.style.display='block';state('REOPENED')});
+function point(n){var r=n.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2}}
+console.log('MODAL-ALL READY '+JSON.stringify({action:point(action),close:point(closeButton),under:point(under)}));
+console.log('MODAL-ALL COMPUTED '+getComputedStyle(dialog).pointerEvents);
+</script>

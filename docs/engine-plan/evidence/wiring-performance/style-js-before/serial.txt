@@ -1,0 +1,1476 @@
+[cpu] AuthenticAMD -- QEMU TCG CPU version 2.5+
+[cpu] 48/56 known features present: fpu tsc msr cmov clflush mmx fxsr sse sse2 htt sse3 pclmulqdq monitor ssse3 fma cx16 sse4.1 sse4.2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor fsgsbase bmi1 avx2 smep bmi2 erms rdseed adx smap clflushopt sha_ni umip pku vaes rdpid lzcnt prefetchw nx pdpe1gb rdtscp lm
+[cpu] xsave: 2696 B holds every supported state, xcr0 mask 0x21f, osxsave=0 (AVX deliberately off -- see boot/long.asm)
+[cpu] aes-gcm backend: aesni (constant-time); rdrand=1 rdseed=1
+[cpu] aes-gcm 16 KiB: aesni=757000 cycles, c=8682000 cycles, speedup x11.46
+
+[logitos] long mode, C kernel running
+[rust] inflate selftest OK
+[prot] bsp: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[time] source=tsc 1000.077 MHz res=1ns  (invariant-tsc=no hypervisor=yes calib=pit-ch2)
+[time] fallback=pit 100 Hz res=10000000ns  timers=heap/128  mono=64-bit ns (wraps in 584 years)
+[time] calib samples(Hz) 1000296320 999968593 1000077835 -> median chosen
+[cpu] simd selftest: backend=aesni xmm_corrupt=0 (20 ticks) crypto_mismatch=0 kat=0 (623 rounds, 6 ticks)
+CPU_SIMD_SELFTEST_OK
+[mm] boot: 262109 frames total (1023 MiB), 258226 free, 3883 used, 0 shared, 3883 refs (+0 saved = 0 KiB), 0 pinned, 0 bugs
+[mm] boot: metadata 831 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] boot: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[mm] low: 258225 frames free (1008 MiB), 3884 used, 0 shared, 0 bugs
+[mm] low: 257969 frames free (1007 MiB), 4140 used, 0 shared, 0 bugs
+[mm] low: 257713 frames free (1006 MiB), 4396 used, 0 shared, 0 bugs
+[mm] low: 257457 frames free (1005 MiB), 4652 used, 0 shared, 0 bugs
+[mm] low: 257201 frames free (1004 MiB), 4908 used, 0 shared, 0 bugs
+[mm] low: 256945 frames free (1003 MiB), 5164 used, 0 shared, 0 bugs
+[rmap] 262109 frames, 393163 nodes (5663 KiB total: 1023 KiB heads + 4607 KiB nodes)
+[logitos] interrupts + memory + gdt/tss online
+[mm] low: 256689 frames free (1002 MiB), 5420 used, 0 shared, 0 bugs
+[mm] low: 256433 frames free (1001 MiB), 5676 used, 0 shared, 0 bugs
+[mm] low: 256177 frames free (1000 MiB), 5932 used, 0 shared, 0 bugs
+[mm] low: 255921 frames free (999 MiB), 6188 used, 0 shared, 0 bugs
+[pcache] up: 131054 page slots (524216 KiB ceiling), 32 file slots, 32768 buckets; tables 4224 KiB from the PMM (16 B/frame of RAM)
+[klog] ring 512 lines x 112 bytes; `cat /dev/kmsg`, `cat /dev/kstat`
+[acpi] RSDP from the bootloader's multiboot2 tag
+[pci] no MCFG; legacy 0xCF8 config ports (no extended caps)
+[pci] 7 function(s) enumerated across all buses
+[mm] low: 255665 frames free (998 MiB), 6444 used, 0 shared, 0 bugs
+[mm] low: 255409 frames free (997 MiB), 6700 used, 0 shared, 0 bugs
+[mm] low: 255153 frames free (996 MiB), 6956 used, 0 shared, 0 bugs
+[mm] low: 254897 frames free (995 MiB), 7212 used, 0 shared, 0 bugs
+[kheap] grow #1: +4096 KiB -> arena 4096 KiB, live 0 KiB, free 4095 KiB, over-allocated 0 KiB
+[rust] png selftest OK
+[virtio] 1050 up (0000:00:03.0, 2 queues)
+[mm] low: 254641 frames free (994 MiB), 7468 used, 0 shared, 0 bugs
+[mm] low: 254385 frames free (993 MiB), 7724 used, 0 shared, 0 bugs
+[mm] low: 254129 frames free (992 MiB), 7980 used, 0 shared, 0 bugs
+[mm] low: 253873 frames free (991 MiB), 8236 used, 0 shared, 0 bugs
+[virtio-gpu] 1280x800, RAM fb @ 0x1cdb000, cursor plane yes
+[virtio] 1001 up (0000:00:02.0, 4 queues)
+[virtio-blk] ready, cache=writeback (barriers REQUIRED)
+[blk] vblk0: virtio-blk, 1048576 sectors (512.0 MiB)
+[part] vblk0: no partition table (raw filesystem image)
+[blk] 1 disk, 0 partitions; root = vblk0 (LogitFS superblock)
+[fsck] mount check: clean
+[fs] mounted
+[fs] /proc mounted
+[pcache] backend installed over c/fs/vfs.h (statx + vfs_pread, VFS-identity gated)
+[set] /etc/settings.conf: 0 keys, none stored (defaults)
+SETTINGS_READY diag=1 keys=0
+SETTINGS_SELFTEST offsets=712 failures=0
+[tls] trust store: 130 roots, 0 skipped
+[tls]   isrg_x1 isrg_x2 digicert_global_ca digicert_global_g2 digicert_global_g3
+[tls]   globalsign_r1 globalsign_r3 gts_r1 gts_r4 usertrust_rsa usertrust_ecc
+[tls]   amazon_root_1 amazon_root_3 dtrust_root3_2009 sslcom_ecc_2022
+[tls]   aaa_certificate_services accvraiz1 actalis_authentication_root_ca
+[tls]   affirmtrust_commercial affirmtrust_networking affirmtrust_premium
+[tls]   affirmtrust_premium_ecc amazon_root_ca_2 amazon_root_ca_4
+[tls]   atos_trustedroot_2011 autoridad_de_certificacion_firmaprofesional_cif_
+[tls]   baltimore_cybertrust_root buypass_class_2_root_ca buypass_class_3_root_ca
+[tls]   ca_disig_root_r2 certigna certigna_root_ca certsign certsign_sa
+[tls]   certum_trusted_network_ca cfca_ev_root chambers_of_commerce_root_2008
+[tls]   chunghwa_telecom_co comodo_certification_authority
+[tls]   comodo_ecc_certification_authority comodo_rsa_certification_authority
+[tls]   cybertrust_global_root d_trust_root_class_3_ca_2_ev_2009
+[tls]   digicert_assured_id_root_ca digicert_assured_id_root_g2
+[tls]   digicert_assured_id_root_g3 digicert_high_assurance_ev_root_ca
+[tls]   digicert_trusted_root_g4 e_szigno_root_ca_2017 e_tugra_certification_authority
+[tls]   ec_acc emsign_ecc_root_ca_c3 emsign_ecc_root_ca_g3 emsign_root_ca_c1
+[tls]   emsign_root_ca_g1 entrust_net_certification_authority_2048
+[tls]   entrust_root_certification_authority entrust_root_certification_authority_ec1
+[tls]   entrust_root_certification_authority_g2
+[tls]   entrust_root_certification_authority_g4 fnmt_rcm gdca_trustauth_r5_root
+[tls]   geotrust_global_ca geotrust_primary_certification_authority_g2
+[tls]   global_chambersign_root_2008 globalsign globalsign_1 globalsign_2 globalsign_3
+[tls]   go_daddy_root_certificate_authority_g2 gts_root_r2 gts_root_r3
+[tls]   hellenic_academic_and_research_institutions_ecc_
+[tls]   hellenic_academic_and_research_institutions_root
+[tls]   hellenic_academic_and_research_institutions_root_1 hongkong_post_root_ca_1
+[tls]   hongkong_post_root_ca_3 identrust_commercial_root_ca_1
+[tls]   identrust_public_sector_root_ca_1 izenpe_com microsec_e_szigno_root_ca_2009
+[tls]   microsoft_ecc_root_certificate_authority_2017
+[tls]   microsoft_rsa_root_certificate_authority_2017
+[tls]   naver_global_root_certification_authority
+[tls]   netlock_arany_class_gold_f_c5_91tan_c3_bas_c3_ad
+[tls]   network_solutions_certificate_authority oiste_wisekey_global_root_gb_ca
+[tls]   oiste_wisekey_global_root_gc_ca quovadis_root_ca_1_g3 quovadis_root_ca_2
+[tls]   quovadis_root_ca_2_g3 quovadis_root_ca_3 quovadis_root_ca_3_g3
+[tls]   quovadis_root_certification_authority secom_trust_net secom_trust_systems_co
+[tls]   secure_global_ca securesign_rootca11 securetrust_ca sonera_class2_ca
+[tls]   ssl_com_ev_root_certification_authority_ecc
+[tls]   ssl_com_ev_root_certification_authority_rsa_r2
+[tls]   ssl_com_root_certification_authority_ecc
+[tls]   ssl_com_root_certification_authority_rsa staat_der_nederlanden_ev_root_ca
+[tls]   staat_der_nederlanden_root_ca_g3 starfield_root_certificate_authority_g2
+[tls]   starfield_services_root_certificate_authority_g2 starfield_technologies
+[tls]   swisssign_gold_ca_g2 swisssign_silver_ca_g2 szafir_root_ca2
+[tls]   t_telesec_globalroot_class_2 t_telesec_globalroot_class_3
+[tls]   teliasonera_root_ca_v1 the_go_daddy_group trustcor_eca_1
+[tls]   trustcor_rootcert_ca_1 trustcor_rootcert_ca_2 trustis_limited
+[tls]   trustwave_global_certification_authority
+[tls]   trustwave_global_ecc_p256_certification_authorit
+[tls]   trustwave_global_ecc_p384_certification_authorit
+[tls]   tubitak_kamu_sm_ssl_kok_sertifikasi_surum_1 twca_global_root_ca
+[tls]   twca_root_certification_authority uca_extended_validation_root
+[tls]   uca_global_g2_root verisign_universal_root_certification_authority
+[tls]   xramp_global_certification_authority
+[net] e1000: found 8086:100e at 0000:00:04.0
+[e1000] link: UP 1000 Mb/s full duplex
+[e1000] up: mmio=0xfebc0000
+[net] NIC bound: eth0 = e1000  MAC 52:54:0:12:34:56  irq=11
+[net] if 1 lo flags up running loopback  127.0.0.1/8
+[net] if 2 eth0 flags up running broadcast  mac 52:54:0:12:34:56 drv e1000 irq=11  [primary]
+[netlock] acq 3 recursive 0 maxdepth 1 violations 0
+[ip6] link-local fe80::5054:ff:fe12:3456 tentative (dad)
+[netlock] acq 27 recursive 2 maxdepth 2 violations 0
+[netlock] acq 219 recursive 2 maxdepth 2 violations 0
+[ip6] dad ok fe80::5054:ff:fe12:3456/64
+[ip6] nd fe80::2 -> 52:56:00:00:00:02 stale
+[ip6] router fe80::2 lifetime 1800s
+[ip6] slaac fec0::5054:ff:fe12:3456/64 valid 86400s pref 14400s
+[dhcp] bound 10.0.2.15/24 gw 10.0.2.2 dns 10.0.2.3
+[eth] rx 5 (2038 B) arp 0 ip 3 ip6 2 vlan 0 bcast 3 mcast 2
+[eth] rx drops: runt 0 toolong 0 not-ours 0 vlan-bad 0 unhandled 0 (last type 0)
+[eth] tx 8 (1374 B) padded 1 toolong 0  loopback 0 dropped 0
+[arp] rx 0 (req 0 reply 0 grat 0 bad 0) tx (req 1 reply 0 ann 1)
+[arp] entries 0  evict 0 expire 0  queued 0 sent 0 dropped 0  unresolved 0 conflicts 0 poison-blocked 0
+[net] tcp timers: 10 ms ktimer -> SOFTIRQ_NET (independent of the WM loop)
+[mm] low: 253617 frames free (990 MiB), 8492 used, 0 shared, 0 bugs
+[mm] low: 253361 frames free (989 MiB), 8748 used, 0 shared, 0 bugs
+[mm] low: 253105 frames free (988 MiB), 9004 used, 0 shared, 0 bugs
+[mm] low: 252849 frames free (987 MiB), 9260 used, 0 shared, 0 bugs
+[kheap] grow #2: +4096 KiB -> arena 8192 KiB, live 2338 KiB, free 5853 KiB, over-allocated 0 KiB
+[text] /fonts/ui.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono.ttf: 97 glyphs, upem=1000
+[text] /fonts/text.ttf: 6253 glyphs, upem=2048
+[mm] low: 252593 frames free (986 MiB), 9516 used, 0 shared, 0 bugs
+[mm] low: 252337 frames free (985 MiB), 9772 used, 0 shared, 0 bugs
+[mm] low: 252081 frames free (984 MiB), 10028 used, 0 shared, 0 bugs
+[mm] low: 251825 frames free (983 MiB), 10284 used, 0 shared, 0 bugs
+[kheap] grow #3: +4096 KiB -> arena 12288 KiB, live 5259 KiB, free 7028 KiB, over-allocated 0 KiB
+[text] /fonts/ui-bold.ttf: 7655 glyphs, upem=1000
+[text] /fonts/mono-bold.ttf: 97 glyphs, upem=1000
+[mm] low: 251569 frames free (982 MiB), 10540 used, 0 shared, 0 bugs
+[mm] low: 251313 frames free (981 MiB), 10796 used, 0 shared, 0 bugs
+[mm] low: 251057 frames free (980 MiB), 11052 used, 0 shared, 0 bugs
+[mm] low: 250801 frames free (979 MiB), 11308 used, 0 shared, 0 bugs
+[mm] low: 250545 frames free (978 MiB), 11564 used, 0 shared, 0 bugs
+[mm] low: 250289 frames free (977 MiB), 11820 used, 0 shared, 0 bugs
+[mm] low: 250033 frames free (976 MiB), 12076 used, 0 shared, 0 bugs
+[mm] low: 249777 frames free (975 MiB), 12332 used, 0 shared, 0 bugs
+[wm] display 1280x800 px, scale 100%, desktop 1280x800 pt
+[ime] /ime/pinyin.dat: 967663 bytes, 25945 pinyin keys -- Shift+Space toggles pinyin input
+[ime] learn: no /var/ime-learn.conf yet -- ranking is the dictionary's own frequency order until something is committed
+[wm] pointer: display cursor plane (motion does not composite)
+[wm] dock 9 apps: 0=clock.aex,shown 1=textedit.aex,shown 2=monitor.aex,shown 3=terminal.aex,shown 4=files.aex,shown 5=preview.aex,shown 6=studio.aex,shown 7=browser.aex,shown 8=settings.aex,shown
+[wm] menu title 0 LogitOS x0 8 y0 0 x1 102 y1 24
+[wm] menu title 1 File x0 118 y0 0 x1 170 y1 24
+[wm] menu title 2 View x0 186 y0 0 x1 247 y1 24
+[logitos] desktop up; mouse + keyboard armed
+[smp] 4 CPU(s) detected, BSP apic_id=0
+[ioapic] device IRQs routed via I/O APIC (NIC gsi=11)
+[smp] CPU 1 apic_id=1 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 2 apic_id=2 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] CPU 3 apic_id=3 online
+[prot] ap: nx sup/ON  wxsplit ON  smep sup/ON  smap sup/off
+[smp] 4/4 CPUs online
+[smp] parallel present on 4 cores (IPI 241)
+[dev] 0000:00:00.0 8086:1237 class=06.00.00 host-bridge  driver=-
+[dev] 0000:00:01.0 8086:7000 class=06.01.00 isa-bridge   driver=-
+[dev] 0000:00:01.1 8086:7010 class=01.01.80 ide          driver=- bar4=io:0xc0c0/0x10
+[dev] 0000:00:01.3 8086:7113 class=06.80.00 bridge       driver=-
+[dev] 0000:00:02.0 1af4:1001 class=01.00.00 scsi         driver=- caps=msix,vndr, bar0=io:0xc000/0x80 bar1=0xfebe0000/0x1000 bar4=0xfebf8000/0x4000
+[dev] 0000:00:03.0 1af4:1050 class=03.80.00 display      driver=- caps=msix,vndr, bar1=0xfebe1000/0x1000 bar4=0xfebfc000/0x4000
+[dev] 0000:00:04.0 8086:100e class=02.00.00 ethernet     driver=e1000 bar0=0xfebc0000/0x20000 bar1=io:0xc080/0x40
+[dev] 7 device(s), 1 bound, 6 unclaimed
+
+LOGIT_BOOT_OK
+
+[wm] desktop live; launching apps as ring-3 processes
+[wm] no accounts on this machine: the desktop starts unauthenticated
+[aex] 'Finder' is unsigned: no AEX_T_SIG record. Loading anyway (log but allow) -- see the comment above the CRC check in aex.c for what a signature here would and would not mean.
+[mm] low: 249521 frames free (974 MiB), 12588 used, 0 shared, 0 bugs
+[exec] load files.aex: 21 pages file-backed in 1 areas, 196 copied
+[wm] launched Finder
+[aex] /bin/login: 35 KiB, container+crc 0 Mcyc, elf 0 Mcyc
+[exec] load /bin/login: 5 pages file-backed in 1 areas, 5 copied
+[sched] first-run tid 6 (login)
+[swap] no eligible device -- swap is OFF (reclaim keeps the drop tier)
+[reclaim] watermarks: start below 8190 frames (31 MiB free), stop at 16381 (63 MiB); swap OFF (drop tier only)
+[sched] first-run tid 5 (Finder)
+login: no accounts on this machine (`login -a NAME` to create one)
+[execve] pid 2: /bin/sh loading
+[aex] /bin/sh: 44 KiB, container+crc 0 Mcyc, elf 0 Mcyc
+[exec] load /bin/sh: 7 pages file-backed in 1 areas, 25 copied
+LogitOS shell -- type 'help'
+/ $ [wm] ptr 640 400
+[wm] win 0 frame 110 70 640 474 content 640 444 pt zoom 0 min 0 Finder
+[time] tickloss +2/s worstgap=25303us missed=2 of 201 expected (0.995% of the clock); uptime 2s
+[time] tickloss   worst gap: bkl last held by cpu -1 ra=0x117afe via=irqsave(kernel entry, IF=0); tick on cpu 0, pid -1, not in kernel
+[time] accuracy n=32 late_us min=560 p50=5898 p90=9549 max=10007 (TCG; delivery is quantised to the 100Hz tick)
+[ip6] dad ok fec0::5054:ff:fe12:3456/64
+[wm] perf t=2597 composites=20 ns=217447065 max=24695077 motions=0 curmoves=1 curns=34998 full=8 rects=20 cpx=6882000 fpx=6882000 presns=12408034 torn=0 defer=2 late=0 drawmax=20 evdrop=0
+[netlock] acq 1754 recursive 5 maxdepth 2 violations 0
+[wm] ptr 832 753
+[mm] low: 249265 frames free (973 MiB), 12844 used, 10 shared, 0 bugs
+[mm] low: 249009 frames free (972 MiB), 13100 used, 10 shared, 0 bugs
+[mm] low: 248753 frames free (971 MiB), 13356 used, 10 shared, 0 bugs
+[mm] low: 248497 frames free (970 MiB), 13612 used, 10 shared, 0 bugs
+[mm] low: 248241 frames free (969 MiB), 13868 used, 10 shared, 0 bugs
+[mm] low: 247985 frames free (968 MiB), 14124 used, 10 shared, 0 bugs
+[mm] low: 247729 frames free (967 MiB), 14380 used, 10 shared, 0 bugs
+[mm] low: 247473 frames free (966 MiB), 14636 used, 10 shared, 0 bugs
+[kheap] grow #4: +8192 KiB -> arena 20480 KiB, live 10239 KiB, free 10237 KiB, over-allocated 1 KiB
+[mm] low: 247217 frames free (965 MiB), 14892 used, 10 shared, 0 bugs
+[mm] low: 246961 frames free (964 MiB), 15148 used, 10 shared, 0 bugs
+[mm] low: 246705 frames free (963 MiB), 15404 used, 10 shared, 0 bugs
+[mm] low: 246449 frames free (962 MiB), 15660 used, 10 shared, 0 bugs
+[mm] low: 246193 frames free (961 MiB), 15916 used, 10 shared, 0 bugs
+[mm] low: 245937 frames free (960 MiB), 16172 used, 10 shared, 0 bugs
+[mm] low: 245681 frames free (959 MiB), 16428 used, 10 shared, 0 bugs
+[mm] low: 245425 frames free (958 MiB), 16684 used, 10 shared, 0 bugs
+[mm] low: 245169 frames free (957 MiB), 16940 used, 10 shared, 0 bugs
+[mm] low: 244913 frames free (956 MiB), 17196 used, 10 shared, 0 bugs
+[mm] low: 244657 frames free (955 MiB), 17452 used, 10 shared, 0 bugs
+[mm] low: 244401 frames free (954 MiB), 17708 used, 10 shared, 0 bugs
+[mm] low: 244145 frames free (953 MiB), 17964 used, 10 shared, 0 bugs
+[exec] load browser.aex: 1140 pages file-backed in 2 areas, 3190 copied
+[time] tickloss +9/s worstgap=103215us missed=11 of 501 expected (2.195% of the clock); uptime 5s
+[time] tickloss   worst gap: bkl held by cpu 0 ra=0x136a1e via=bare; tick on cpu 0, pid -1, in kernel
+[wm] launched Browser
+[sched] first-run tid 20 (Browser)
+[mm] low: 243889 frames free (952 MiB), 18220 used, 134 shared, 0 bugs
+[mm] low: 243633 frames free (951 MiB), 18476 used, 134 shared, 0 bugs
+[mm] low: 243377 frames free (950 MiB), 18732 used, 134 shared, 0 bugs
+[mm] low: 243121 frames free (949 MiB), 18988 used, 134 shared, 0 bugs
+[wm] win 1 frame 138 98 1126 670 content 1126 640 pt zoom 0 min 0 Browser
+[wm] perf t=5597 composites=52 ns=659133678 max=47918270 motions=5 curmoves=4 curns=132992 full=13 rects=53 cpx=13992656 fpx=13992656 presns=26678924 torn=0 defer=2 late=0 drawmax=20 evdrop=0
+[mm] low: 242865 frames free (948 MiB), 19244 used, 139 shared, 0 bugs
+[browser] session restored 0 tabs (restore=1)
+[browser] sock probe: rodata=0 stack=1 bss=2 caps=0x1f
+[waitq] 200 ms of waiting: bkl_hlt_wait spin re-tested 30 times / 2 dispatches; blocked sleeper 0 dispatches
+[waitq] sem items=192 mutex=1000/1000 softirqs=376 work=1 blocked_now=3
+
+WAITQ_SELFTEST_OK (0 failures)
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[time] tickloss +15/s worstgap=103215us missed=26 of 600 expected (4.333% of the clock); uptime 6s
+[time] xcheck src=tsc rtc=5s mono=4379ms tick=4130ms err=-124ppt OK lost=24/437 worstgap=103215us
+[time] negctl 2x-tick err=+751ppt -> REJECTED (guard works)
+[kbench] --- kernel entry cost, boot through desktop live (4 cores, TCG) ---
+[kbench] entry syscall: 633 entries, mean 13393908.372 ns each, 8478 ms total
+[kbench] entry timer: 9120 entries, mean 1192714.912 ns each, 10877 ms total
+[kbench] entry fault: 197 entries, mean 2218076.142 ns each, 436 ms total
+[kbench] entry irq: 28 entries, mean 22464.285 ns each, 0 ms total
+[kbench] tty console wait: 2010 wakes, 234938 us awake in total (116.884 us each), 7850 ms uptime -- 29/1000 of ONE core
+[kbench] scheduler: 715 context switches, 2 threads parked now, 54 poll passes through bkl_hlt_wait
+[kbench]   poll 0x106b9c: 54 pass(es)
+[kbench] tlb: 0 shootdown(s) never acked
+[kbench] BKL holders: 603 samples, held in 326 (54%), 0 lost to collision
+[kbench]   bkl 0x117afe: 198 samples (60% of held)
+[kbench]   bkl 0x136a1e: 79 samples (24% of held)
+[kbench]   bkl 0x11afe7: 44 samples (13% of held)
+[kbench]   bkl 0x14f449: 3 samples (0% of held)
+[kbench]   bkl 0x13677e: 2 samples (0% of held)
+[kbench] syscalls: 474 calls, 62 ms inside the dispatcher (BKL already held; blocking calls include time descheduled)
+[kbench]   SYS 8: 159 calls (33%), mean 10597.484 ns in handler, 1 ms total
+[kbench]   SYS 75: 106 calls (22%), mean 1462.264 ns in handler, 0 ms total
+[kbench]   SYS 20: 43 calls (9%), mean 20488.372 ns in handler, 0 ms total
+[kbench]   SYS 37: 33 calls (6%), mean 8666.666 ns in handler, 0 ms total
+[kbench]   SYS 1: 25 calls (5%), mean 52720.000 ns in handler, 1 ms total
+[kbench]   SYS 38: 25 calls (5%), mean 127080.000 ns in handler, 3 ms total
+[kbench]   SYS 71: 19 calls (4%), mean 39473.684 ns in handler, 0 ms total
+[kbench]   SYS 72: 12 calls (2%), mean 2182916.666 ns in handler, 26 ms total
+[kbench]   SYS 41: 6 calls (1%), mean 10833.333 ns in handler, 0 ms total
+[kbench]   SYS 5: 5 calls (1%), mean 26200.000 ns in handler, 0 ms total
+[kbench]   SYS 6: 5 calls (1%), mean 133000.000 ns in handler, 0 ms total
+[kbench]   SYS 11: 5 calls (1%), mean 1105600.000 ns in handler, 5 ms total
+[kbench]   SYS 102: 4 calls (0%), mean 8250.000 ns in handler, 0 ms total
+[kbench]   SYS 76: 3 calls (0%), mean 148666.666 ns in handler, 0 ms total
+[kbench]   SYS 81: 3 calls (0%), mean 31000.000 ns in handler, 0 ms total
+[kbench]   SYS 103: 3 calls (0%), mean 16000.000 ns in handler, 0 ms total
+[kbench] BKL: 18951 acquisitions, 11012 contended (58%); wait mean 152300.828 ns, hold mean 67321.355 ns
+[kbench] BKL: 2886 ms spent waiting, 1275 ms spent holding, across 4 cores
+[mm] kbench: 262109 frames total (1023 MiB), 242844 free, 19265 used, 161 shared, 19426 refs (+161 saved = 644 KiB), 0 pinned, 0 bugs
+[mm] kbench: metadata 831 KiB (bitmap + poison map + 2-byte refcounts + pins), poison level 1
+[mm] kbench: 0 frames pinned against reclaim, 128 reserve frames (0 dips), 0 allocations refused
+[kheap] kbench: arena 20480 KiB, live 13097 KiB (149 blocks), free 7380 KiB, over-allocated 1 KiB of 20741 KiB served, 218 allocs, 69 frees, 4 grows, 210 splits, 54 merges
+[mm] kbench: cow=on, 0 pages shared copy-on-write; faults: 0 copied, 0 reused, 1074 anon, 0 declined; 3 address spaces with areas
+[mm] kbench: fault cost (kcycles total / cycles each): cow-copy 0/0, cow-reuse 0/0, anon 4259/3965, swap-in 0/0
+[mm] kbench: file faults 162 (163754 kcycles total / 1010827 each); HIT 10 (9500 cyc each), MISS 152 (1076 kcyc each, 99% of the time)
+[mm] kbench: shm faults 0 (0 kcycles total / 0 each)
+[pcache] kbench: 177 pages resident (peak 177 of 131054 slots), 4 files; 10 hits, 152 misses, 0 shared
+[pcache] kbench: 0 dropped by reclaim, 0 evicted here, 0 invalidated by a write, 0 whole-file reads bypassed
+[pcache] kbench: pool 177/131054 slots used at peak (0%); 0 entries orphaned (pool full of mapped pages), 0 pages handed back UNCACHED AND LEAKED
+[pcache] kbench: readahead 8 batches, 25 pages ahead, 8 backend reads (4 pages/read), 0 short; K 4..32
+[pcache] kbench: backend 152 calls for 177 pages, 160 Mcyc total (1053 kcyc/call, 904 kcyc/page, worst 1600 kcyc)
+[shm] kbench: 0 segments, 0 pages (0 KiB unreclaimable), 0 bugs
+[reclaim] kbench: on, 0 passes, 0 frames scanned, 0 evicted (0 dropped free [0 zero + 0 cache] + 0 swapped), 0 second chances
+[reclaim] kbench: skipped 0 unmapped / 0 pinned / 0 partially-known / 0 too-shared / 0 running elsewhere; failed 0 no-slot / 0 io; 0 bugs
+[reclaim] kbench: page-cache frames met 0, dropped 0, UNACCOUNTED-FOR REFERENCE 0, too-shared 0
+[reclaim] kbench: 0 swap-ins (0 failed); 0 kcycles scanning (0 per frame evicted)
+[rmap] kbench: 4656/393163 nodes used (peak 4656), 0 overflows, 0 frames incomplete, 0 bugs
+[swap] kbench: OFF (no device)
+KBENCH_DONE
+[time] fallback pit ran 500ms (want ~500), switch back rc=0 continuity=50996ns monotonic
+[wm] perf t=9599 composites=91 ns=1106728611 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=92 cpx=30250368 fpx=30250368 presns=56622593 torn=0 defer=2 late=0 drawmax=25 evdrop=0
+[time] tickloss +16/s worstgap=103215us missed=42 of 1000 expected (4.200% of the clock); uptime 10s
+[time] smp-mono cores=4 seen=f reads=400000 observed-backsteps=0 clamped=0 max=0ns
+[wm] perf t=10607 composites=119 ns=1371329009 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=120 cpx=41702408 fpx=41702408 presns=77404978 torn=0 defer=2 late=0 drawmax=25 evdrop=0
+[netlock] acq 14036 recursive 5 maxdepth 2 violations 0
+[browser] load: http://10.0.2.2:61267/lean?round=0
+[wa] t=10810 (+10810) nav
+[route] 127.0.0.0/8 onlink dev 1 src 127.0.0.1 metric 0 local
+[route] 10.0.2.0/24 onlink dev 2 src 10.0.2.15 metric 0
+[route] 0.0.0.0/0 via 10.0.2.2 dev 2 src 10.0.2.15 metric 0
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=10930 (+120) idle reqs=1 dials=1 reuses=0
+[wa] t=10930 (+0) docdone status=200 len=584
+[style-perf] phase=first bytes=0 cascade_ms=40 extra_ms=0 layout_ms=20 items=13
+[dl] painted text: 7 run(s), 36 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 WAITING
+[dl] 149,82 FOR
+[dl] 219,82 SCRIPT
+[dl] 14,140 Click
+[dl] 51,140 while
+[dl] 91,140 image
+[dl] 138,140 loads
+[dl] ---8<--- end painted text
+[wa] t=11080 (+150) idle reqs=2 dials=1 reuses=1
+[wm] perf t=11608 composites=140 ns=1612320248 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=141 cpx=51300708 fpx=51300708 presns=95590564 torn=0 defer=2 late=0 drawmax=28 evdrop=0
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[style-perf] phase=full bytes=9548 cascade_ms=20 extra_ms=10 layout_ms=0 items=13
+[browser] heap peak 5780K
+[css] linked: 0 <style>, 1 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 1 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 9547 external = 9547 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 603 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[mm] low: 242609 frames free (947 MiB), 19500 used, 329 shared, 0 bugs
+[mm] low: 242353 frames free (946 MiB), 19756 used, 420 shared, 0 bugs
+[time] tickloss +11/s worstgap=103215us missed=53 of 1200 expected (4.416% of the clock); uptime 12s
+[mm] low: 242097 frames free (945 MiB), 20012 used, 512 shared, 0 bugs
+[mm] low: 241841 frames free (944 MiB), 20268 used, 584 shared, 0 bugs
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=30
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=30
+[js-install] stage=js_domparser_install ms=10
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=150
+[js-install] stage=js_select_install ms=40
+[js-install] stage=js_intl_install ms=10
+[js-install] stage=js_media_install ms=20
+[js-install] stage=js_platform_install ms=90
+[js-install] stage=js_subtle_install ms=20
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=30
+[js-install] stage=js_cache_install ms=10
+[js-install] stage=js_swreg_install ms=10
+[js-install] stage=js_cssom_install ms=50
+[js-install] stage=js_forms_install ms=30
+[js-install] stage=js_url_install ms=10
+[js-install] stage=js_websocket_install ms=0
+[js-install] stage=js_worker_install ms=10
+[js-install] stage=js_wasm_install ms=20
+[js-install] stage=js_semantics_install ms=40
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=670 stages_ms=650 other_ms=20 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=11840 loadend reqs=2 dials=1 reuses=1 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 2 requests, 1 connections dialled, 1 reused, 0 modules loaded (0 failed)
+[browser] pool: 1 hits, 0 evicted, 0 closed
+[browser] resources: 0 from tab, 1 from network (tab 1 of 2)
+[dl] painted text: 6 run(s), 28 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 24,98 APP
+[dl] 93,98 READY
+[dl] 30,156 Click
+[dl] 72,156 while
+[dl] 118,156 image
+[dl] 171,156 loads
+[dl] ---8<--- end painted text
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=1080
+[load-perf] total_ms=1080 teardown=10 document=120 first_style_layout_paint=120 styles_fetch=70 full_style_layout_paint=40 images=0 runtime_init=680 scripts_fetch=0 scripts_execute=0 lifecycle_settle=40
+LOAD-PROBE-TIMER
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=14618 composites=176 ns=2051626037 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=177 cpx=68674288 fpx=68674288 presns=127937047 torn=0 defer=2 late=0 drawmax=28 evdrop=0
+[wm] perf t=15620 composites=205 ns=2349795812 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=207 cpx=81002528 fpx=81002528 presns=150353303 torn=0 defer=2 late=0 drawmax=28 evdrop=0
+[browser] load: http://10.0.2.2:61267/deepseek?round=0
+[wa] t=16020 (+4940) nav
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[net] rx path: frames 70 irq 22 softirq 10 inline 0 poll 3 idle 0/0 halt/skip
+[wa] t=16040 (+20) idle reqs=1 dials=1 reuses=0
+[wa] t=16040 (+0) docdone status=200 len=67662
+[wm] perf t=16625 composites=233 ns=2601602199 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=235 cpx=92454568 fpx=92454568 presns=170671724 torn=0 defer=2 late=0 drawmax=28 evdrop=0
+[mm] low: 241585 frames free (943 MiB), 20524 used, 657 shared, 0 bugs
+[mm] low: 241329 frames free (942 MiB), 20780 used, 657 shared, 0 bugs
+[mm] low: 241073 frames free (941 MiB), 21036 used, 657 shared, 0 bugs
+[mm] low: 240817 frames free (940 MiB), 21292 used, 657 shared, 0 bugs
+[mm] low: 240561 frames free (939 MiB), 21548 used, 657 shared, 0 bugs
+[mm] low: 240305 frames free (938 MiB), 21804 used, 657 shared, 0 bugs
+[mm] low: 240049 frames free (937 MiB), 22060 used, 657 shared, 0 bugs
+[mm] low: 239793 frames free (936 MiB), 22316 used, 657 shared, 0 bugs
+[mm] low: 239537 frames free (935 MiB), 22572 used, 657 shared, 0 bugs
+[mm] low: 239281 frames free (934 MiB), 22828 used, 657 shared, 0 bugs
+[mm] low: 239025 frames free (933 MiB), 23084 used, 657 shared, 0 bugs
+[mm] low: 238769 frames free (932 MiB), 23340 used, 657 shared, 0 bugs
+[mm] low: 238513 frames free (931 MiB), 23596 used, 657 shared, 0 bugs
+[mm] low: 238257 frames free (930 MiB), 23852 used, 657 shared, 0 bugs
+[mm] low: 238001 frames free (929 MiB), 24108 used, 657 shared, 0 bugs
+[mm] low: 237745 frames free (928 MiB), 24364 used, 657 shared, 0 bugs
+[mm] low: 237489 frames free (927 MiB), 24620 used, 657 shared, 0 bugs
+[mm] low: 237233 frames free (926 MiB), 24876 used, 657 shared, 0 bugs
+[mm] low: 236977 frames free (925 MiB), 25132 used, 657 shared, 0 bugs
+[mm] low: 236721 frames free (924 MiB), 25388 used, 657 shared, 0 bugs
+[mm] low: 236465 frames free (923 MiB), 25644 used, 657 shared, 0 bugs
+[mm] low: 236209 frames free (922 MiB), 25900 used, 657 shared, 0 bugs
+[mm] low: 235953 frames free (921 MiB), 26156 used, 657 shared, 0 bugs
+[mm] low: 235697 frames free (920 MiB), 26412 used, 657 shared, 0 bugs
+[mm] low: 235441 frames free (919 MiB), 26668 used, 657 shared, 0 bugs
+[mm] low: 235185 frames free (918 MiB), 26924 used, 657 shared, 0 bugs
+[mm] low: 234929 frames free (917 MiB), 27180 used, 657 shared, 0 bugs
+[mm] low: 234673 frames free (916 MiB), 27436 used, 657 shared, 0 bugs
+[mm] low: 234417 frames free (915 MiB), 27692 used, 657 shared, 0 bugs
+[mm] low: 234161 frames free (914 MiB), 27948 used, 657 shared, 0 bugs
+[mm] low: 233905 frames free (913 MiB), 28204 used, 657 shared, 0 bugs
+[mm] low: 233649 frames free (912 MiB), 28460 used, 657 shared, 0 bugs
+[style-perf] phase=first bytes=0 cascade_ms=20 extra_ms=0 layout_ms=230 items=127
+[dl] painted text: 63 run(s), 681 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 欢迎加入我们，我们投身于探索
+[dl] 235,68 AGI
+[dl] 262,68 的本质，拥抱对
+[dl] 377,68 AI
+[dl] 393,68 有热情的你
+[dl] 473,68  
+[dl] 479,68  
+[dl] 482,68 查看职位
+[dl] 549,68 →
+[dl] 8,88 🎉
+[dl] 27,88 DeepSeek-V4-Flash
+[dl] 163,88 正式版
+[dl] 214,88 API
+[dl] 240,88 已上线公测，Agent
+[dl] 380,88 能力大幅增强；V4-Pro
+[dl] 542,88 暂未变动。点击查看详情。
+[dl] 8,179 探索未至之境
+[dl] 8,199 开始对话
+[dl] 8,219 与
+[dl] 26,219 DeepSeek
+[dl] 96,219 免费对话
+[dl] 8,237 体验全新旗舰模型
+[dl] 8,271 API
+[dl] 34,271 开放平台
+[dl] 8,291 调用
+[dl] 41,291 DeepSeek
+[dl] 111,291 最新模型
+[dl] 8,309 快速集成、流畅体验
+[dl] 8,343 加入
+[dl] 43,343 DeepSeek
+[dl] 8,363 共赴星辰大海
+[dl] 8,383 查看职位
+[dl] 75,383 →
+[dl] 8,403 API
+[dl] 34,403 文档
+[dl] 66,403 获取
+[dl] 101,403 App
+[dl] 128,403 English
+[dl] 8,566 ©
+[dl] 26,566 2026
+[dl] 61,566 杭州深度求索人工智能基础技术研究有限公司
+[dl] 364,566 版权所有
+[dl] 8,584 浙ICP备2023025841号
+[dl] 155,584 浙B2-20250178
+[dl] 256,584 浙公网安备33010502011812号
+[dl] 8,602 研究
+[dl] 8,620 DeepSeek
+[dl] 78,620 R1
+[dl] 95,620 DeepSeek
+[dl] 165,620 V3
+[dl] 181,620 DeepSeek
+[dl] 251,620 Coder
+[dl] 294,620 V2
+[dl] 310,620 DeepSeek
+[dl] 380,620 VL
+[dl] 396,620 DeepSeek
+[dl] 466,620 V2
+[dl] 482,620 DeepSeek
+[dl] 552,620 Coder
+[dl] 592,620 DeepSeek
+[dl] 662,620 Math
+[dl] 696,620 DeepSeek
+[dl] 766,620 LLM
+[dl] ---8<--- end painted text
+[sock] connected 10.0.2.2 via ipv4 ::ffff:10.0.2.2
+[wa] t=16430 (+390) idle reqs=4 dials=2 reuses=2
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[css] extra selectors: refused 4 of 69 rule(s) (unsupported syntax or pseudo target)
+[mm] low: 233393 frames free (911 MiB), 28716 used, 660 shared, 0 bugs
+[wm] perf t=17626 composites=242 ns=2662576451 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=244 cpx=95043268 fpx=95043268 presns=175250367 torn=0 defer=6 late=0 drawmax=30 evdrop=0
+[style-perf] phase=full bytes=56521 cascade_ms=80 extra_ms=30 layout_ms=2820 items=144
+[browser] heap peak 39529K
+[dl] painted text: 29 run(s), 336 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 80,188 🎉
+[dl] 97,188 DeepSeek-V4-Flash
+[dl] 214,188 正式版
+[dl] 259,188 API
+[dl] 282,188 已上线公测，Agent
+[dl] 404,188 能力大幅增强；V4-Pro
+[dl] 80,208 暂未变动。点击查看详情。
+[dl] 80,342 探索未至之境
+[dl] 112,482 开始对话
+[dl] 112,518 与
+[dl] 130,518 DeepSeek
+[dl] 200,518 免费对话
+[dl] 112,541 体验全新旗舰模型
+[dl] 388,482 API
+[dl] 421,482 开放平台
+[dl] 388,518 调用
+[dl] 421,518 DeepSeek
+[dl] 491,518 最新模型
+[dl] 388,541 快速集成、流畅体验
+[dl] 672,336 加入
+[dl] 725,336 DeepSeek
+[dl] 672,372 共赴星辰大海
+[dl] 672,432 查看职位
+[dl] 739,432 →
+[dl] -24,76 API
+[dl] -1,76 文档
+[dl] 27,76 获取
+[dl] 58,76 App
+[dl] 82,76 English
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 3 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 3 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 68206 external = 68206 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 875 declarations kept
+[css] dropped: 427  (3 selector, 2 at-rule, 406 unknown-prop, 16 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 2 at-rule, 776 declaration (syntax-malformed; a different population from the drops above)
+[css]       72  unknown-prop -webkit-*                | -webkit-user-select
+[css]       64  unknown-prop -moz-*                   | -moz-user-select
+[css]       63  unknown-prop user-select              | user-select
+[css]       60  unknown-prop -ms-*                    | -ms-user-select
+[css]       21  unknown-prop transform                | transform
+[css]       15  unknown-prop box-shadow               | box-shadow
+[css]       14  unknown-prop transition               | transition
+[css]       13  unknown-prop transform-origin         | transform-origin
+[css]       12  unknown-prop gap                      | gap
+[css]       10  unknown-prop pointer-events           | pointer-events
+[css]        8  unknown-prop grid-template-columns    | grid-template-columns
+[css]        7  unknown-prop transition-timing-function | transition-timing-function
+[css]   ... 35 more reason(s); css_report_verbose=1 for all
+[mm] low: 233137 frames free (910 MiB), 28972 used, 689 shared, 0 bugs
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=0
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=10
+[js-install] stage=js_domparser_install ms=0
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=60
+[js-install] stage=js_select_install ms=30
+[js-install] stage=js_intl_install ms=0
+[js-install] stage=js_media_install ms=10
+[js-install] stage=js_platform_install ms=80
+[js-install] stage=js_subtle_install ms=20
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=20
+[js-install] stage=js_cache_install ms=10
+[js-install] stage=js_swreg_install ms=0
+[js-install] stage=js_cssom_install ms=30
+[js-install] stage=js_forms_install ms=20
+[js-install] stage=js_url_install ms=0
+[js-install] stage=js_websocket_install ms=10
+[js-install] stage=js_worker_install ms=0
+[js-install] stage=js_wasm_install ms=10
+[js-install] stage=js_semantics_install ms=60
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=410 stages_ms=410 other_ms=0 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=19890 loadend reqs=4 dials=2 reuses=2 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 4 requests, 2 connections dialled, 2 reused, 0 modules loaded (0 failed)
+[browser] pool: 3 hits, 0 evicted, 1 closed
+[browser] resources: 0 from tab, 3 from network (tab 2 of 3)
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=3920
+[load-perf] total_ms=3920 teardown=0 document=20 first_style_layout_paint=300 styles_fetch=110 full_style_layout_paint=3000 images=20 runtime_init=410 scripts_fetch=10 scripts_execute=0 lifecycle_settle=50
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[time] tickloss +6/s worstgap=103215us missed=59 of 2199 expected (2.683% of the clock); uptime 22s
+[wm] perf t=22631 composites=278 ns=3025642187 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=280 cpx=109166988 fpx=109166988 presns=201905293 torn=0 defer=6 late=0 drawmax=41 evdrop=0
+[wm] perf t=23631 composites=308 ns=3327347699 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=310 cpx=121495228 fpx=121495228 presns=225083488 torn=0 defer=6 late=0 drawmax=41 evdrop=0
+[time] tickloss +7/s worstgap=103215us missed=66 of 2398 expected (2.752% of the clock); uptime 24s
+[wm] perf t=24642 composites=338 ns=3606060996 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=340 cpx=133823468 fpx=133823468 presns=247279757 torn=0 defer=6 late=0 drawmax=41 evdrop=0
+[browser] load: http://10.0.2.2:61267/wikipedia?round=0
+[wa] t=24020 (+7590) nav
+[wa] t=24050 (+30) idle reqs=1 dials=1 reuses=0
+[wa] t=24050 (+0) docdone status=200 len=610683
+[mm] low: 232881 frames free (909 MiB), 29228 used, 693 shared, 0 bugs
+[e1000] stats: rx 557 pkt / 796175 B, tx 374 pkt / 26150 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 69 (+69)
+[e1000] goct*: this register cannot be read on this device (MAC_ACCESS_FLAG_NEEDED, hw/net/e1000.c QEMU 11.0.0) -- 0 does NOT mean zero good bytes
+[style-perf] phase=first bytes=16475 cascade_ms=280 extra_ms=10 layout_ms=90 items=16384
+[dl] painted text: 50 run(s), 244 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Jump
+[dl] 51,68 to
+[dl] 69,68 content
+[dl] 24,88 Main
+[dl] 61,88 menu
+[dl] 8,108 Main
+[dl] 45,108 menu
+[dl] 14,132 move
+[dl] 56,132 to
+[dl] 74,132 sidebar
+[dl] 148,132 hide
+[dl] 8,156 Navigation
+[dl] 14,192 •
+[dl] 36,192 Main
+[dl] 73,192 page
+[dl] 14,212 •
+[dl] 36,212 Contents
+[dl] 14,232 •
+[dl] 36,232 Current
+[dl] 93,232 events
+[dl] 14,252 •
+[dl] 36,252 Random
+[dl] 99,252 article
+[dl] 14,272 •
+[dl] 36,272 About
+[dl] 81,272 Wikipedia
+[dl] 14,292 •
+[dl] 36,292 Contact
+[dl] 96,292 us
+[dl] 8,328 Contribute
+[dl] 14,364 •
+[dl] 36,364 Help
+[dl] 14,384 •
+[dl] 36,384 Learn
+[dl] 79,384 to
+[dl] 97,384 edit
+[dl] 14,404 •
+[dl] 36,404 Community
+[dl] 122,404 portal
+[dl] 14,424 •
+[dl] 36,424 Recent
+[dl] 88,424 changes
+[dl] 14,444 •
+[dl] 36,444 Upload
+[dl] 90,444 file
+[dl] 14,464 •
+[dl] 36,464 Special
+[dl] 90,464 pages
+[dl] 8,550 Search
+[dl] 14,602 Search
+[dl] ---8<--- end painted text
+[net] rx path: frames 652 irq 72 softirq 34 inline 1 poll 3 idle 0/0 halt/skip
+[wa] t=24830 (+780) idle reqs=3 dials=2 reuses=1
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[wm] perf t=25643 composites=351 ns=3695056069 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=353 cpx=137288368 fpx=137288368 presns=253627262 torn=0 defer=12 late=0 drawmax=41 evdrop=0
+[css] extra selectors: refused 10 of 168 rule(s) (unsupported syntax or pseudo target)
+[style-perf] phase=full bytes=225167 cascade_ms=740 extra_ms=150 layout_ms=1170 items=16384
+[browser] heap peak 41867K
+[dl] painted text: 175 run(s), 1007 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 60,220 Contents
+[dl] 60,261 (Top)
+[dl] 60,290 Definition
+[dl] 121,290 and
+[dl] 147,290 purpose
+[dl] 60,319 Types
+[dl] 99,319 of
+[dl] 114,319 operating
+[dl] 175,319 systems
+[dl] 72,348 Multicomputer
+[dl] 165,348 operating
+[dl] 72,365 systems
+[dl] 72,394 Distributed
+[dl] 142,394 systems
+[dl] 72,423 Embedded
+[dl] 72,452 Real-time
+[dl] 72,481 Hypervisor
+[dl] 72,510 Library
+[dl] 60,539 History
+[dl] 72,568 Microcomputers
+[dl] 60,597 Components
+[dl] 264,150 Operating
+[dl] 401,150 system
+[dl] 739,161 163
+[dl] 766,161 languages
+[dl] 264,197 Article
+[dl] 318,197 Talk
+[dl] 633,198 Read
+[dl] 679,198 View
+[dl] 711,198 source
+[dl] 768,198 View
+[dl] 800,198 history
+[dl] 264,233 From
+[dl] 299,233 Wikipedia,
+[dl] 363,233 the
+[dl] 386,233 free
+[dl] 412,233 encyclopedia
+[dl] 609,292 Operating
+[dl] 697,292 systems
+[dl] 601,569 Common
+[dl] 663,569 features
+[dl] 601,587 Process
+[dl] 643,587 management
+[dl] 715,587 Interrupts
+[dl] 766,587  ·
+[dl] 782,587 Memory
+[dl] 827,587 management
+[dl] 601,604  ·
+[dl] 617,604 File
+[dl] 637,604 system
+[dl] 674,604  ·
+[dl] 690,604 Device
+[dl] 727,604 drivers
+[dl] 762,604  ·
+[dl] 778,604 Networking
+[dl] 838,604  ·
+[dl] 854,604 Security
+[dl] 601,621  ·
+[dl] 617,621 Input/output
+[dl] 685,621  ·
+[dl] 264,286 An
+[dl] 283,286 operating
+[dl] 350,286 system
+[dl] 399,286 (
+[dl] 403,286 OS
+[dl] 421,286 )
+[dl] 428,286 is
+[dl] 440,286 system
+[dl] 486,286 software
+[dl] 542,286 that
+[dl] 264,308 manages
+[dl] 321,308 computer
+[dl] 384,308 hardware
+[dl] 445,308 and
+[dl] 471,308 software
+[dl] 264,330 resources,
+[dl] 329,330 and
+[dl] 355,330 provides
+[dl] 410,330 common
+[dl] 468,330 services
+[dl] 519,330 for
+[dl] 264,352 computer
+[dl] 327,352 programs
+[dl] 385,352 .
+[dl] 388,352 [
+[dl] 391,352 1
+[dl] 397,352 ]
+[dl] 264,395 Time-sharing
+[dl] 345,395 operating
+[dl] 406,395 systems
+[dl] 458,395 schedule
+[dl] 515,395 tasks
+[dl] 549,395 for
+[dl] 264,417 efficient
+[dl] 315,417 use
+[dl] 339,417 of
+[dl] 354,417 the
+[dl] 377,417 system
+[dl] 423,417 and
+[dl] 449,417 may
+[dl] 478,417 also
+[dl] 505,417 include
+[dl] 264,439 accounting
+[dl] 335,439 software
+[dl] 391,439 for
+[dl] 411,439 cost
+[dl] 440,439 allocation
+[dl] 502,439 of
+[dl] 517,439 processor
+[dl] 264,461 time
+[dl] 291,461 ,
+[dl] 297,461 mass
+[dl] 331,461 storage
+[dl] 376,461 ,
+[dl] 382,461 peripherals,
+[dl] 455,461 and
+[dl] 481,461 other
+[dl] 517,461 resources.
+[dl] 264,504 For
+[dl] 287,504 hardware
+[dl] 348,504 functions
+[dl] 408,504 such
+[dl] 440,504 as
+[dl] 456,504 input
+[dl] 491,504 and
+[dl] 517,504 output
+[dl] 264,526 and
+[dl] 290,526 memory
+[dl] 344,526 allocation
+[dl] 403,526 ,
+[dl] 409,526 the
+[dl] 432,526 operating
+[dl] 493,526 system
+[dl] 539,526 acts
+[dl] 567,526 as
+[dl] 264,548 an
+[dl] 282,548 intermediary
+[dl] 362,548 between
+[dl] 418,548 programs
+[dl] 479,548 and
+[dl] 505,548 the
+[dl] 264,570 computer
+[dl] 327,570 hardware,
+[dl] 388,570 [
+[dl] 391,570 2
+[dl] 397,570 ]
+[dl] 400,570 [
+[dl] 403,570 3
+[dl] 409,570 ]
+[dl] 415,570 although
+[dl] 472,570 the
+[dl] 495,570 application
+[dl] 264,592 code
+[dl] 297,592 is
+[dl] 309,592 usually
+[dl] 354,592 executed
+[dl] 412,592 directly
+[dl] 460,592 by
+[dl] 478,592 the
+[dl] 501,592 hardware
+[dl] 264,614 and
+[dl] 290,614 frequently
+[dl] 355,614 makes
+[dl] 397,614 system
+[dl] 443,614 calls
+[dl] 472,614 to
+[dl] 488,614 an
+[dl] 506,614 OS
+[dl] 527,614 function
+[dl] 687,83 Search
+[dl] 890,84 Donate
+[dl] 942,84 Create
+[dl] 984,84 account
+[dl] 1042,84 Log
+[dl] 1067,84 in
+[dl] ---8<--- end painted text
+[css] linked: 15 <style>, 2 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 2 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 16702 inline + 223978 external = 240680 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 2775 declarations kept
+[css] dropped: 593  (10 selector, 3 at-rule, 544 unknown-prop, 36 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 3 at-rule, 10 declaration (syntax-malformed; a different population from the drops above)
+[css]      172  unknown-prop -webkit-*                | -webkit-user-select
+[css]      113  unknown-prop mask-image               | mask-image
+[css]       29  unknown-prop background-size          | background-size
+[css]       27  unknown-prop mask-size                | mask-size
+[css]       26  unknown-prop filter                   | filter
+[css]       17  unknown-prop box-shadow               | box-shadow
+[css]       13  unknown-prop mask-position            | mask-position
+[css]       13  unknown-prop mask-repeat              | mask-repeat
+[css]       10  unknown-prop word-break               | word-break
+[css]       10  unknown-prop grid-area                | grid-area
+[css]        9  unknown-prop transition-duration      | transition-duration
+[css]        9  bad-value    width                    | width
+[css]   ... 52 more reason(s); css_report_verbose=1 for all
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=30
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=30
+[js-install] stage=js_domparser_install ms=0
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=50
+[js-install] stage=js_select_install ms=30
+[js-install] stage=js_intl_install ms=10
+[js-install] stage=js_media_install ms=0
+[js-install] stage=js_platform_install ms=940
+[js-install] stage=js_subtle_install ms=10
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=30
+[js-install] stage=js_cache_install ms=0
+[js-install] stage=js_swreg_install ms=10
+[js-install] stage=js_cssom_install ms=20
+[js-install] stage=js_forms_install ms=30
+[js-install] stage=js_url_install ms=0
+[js-install] stage=js_websocket_install ms=0
+[js-install] stage=js_worker_install ms=10
+[js-install] stage=js_wasm_install ms=10
+[js-install] stage=js_semantics_install ms=560
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=1810 stages_ms=1810 other_ms=0 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=29010 loadend reqs=3 dials=2 reuses=1 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 3 requests, 2 connections dialled, 1 reused, 0 modules loaded (0 failed)
+[browser] pool: 4 hits, 0 evicted, 3 closed
+[browser] resources: 0 from tab, 2 from network (tab 3 of 4)
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=5040
+[load-perf] total_ms=5040 teardown=0 document=30 first_style_layout_paint=710 styles_fetch=120 full_style_layout_paint=2310 images=0 runtime_init=1820 scripts_fetch=0 scripts_execute=0 lifecycle_settle=50
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=32674 composites=412 ns=4258703172 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=415 cpx=161173168 fpx=161173168 presns=296891887 torn=0 defer=12 late=0 drawmax=41 evdrop=0
+[browser] load: http://10.0.2.2:61267/lean?round=1
+[wa] t=32900 (+8070) nav
+[wa] t=32920 (+20) idle reqs=1 dials=1 reuses=0
+[wa] t=32920 (+0) docdone status=200 len=584
+[style-perf] phase=first bytes=0 cascade_ms=0 extra_ms=0 layout_ms=0 items=13
+[dl] painted text: 7 run(s), 36 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,82 WAITING
+[dl] 149,82 FOR
+[dl] 219,82 SCRIPT
+[dl] 14,140 Click
+[dl] 51,140 while
+[dl] 91,140 image
+[dl] 138,140 loads
+[dl] ---8<--- end painted text
+[wm] perf t=33675 composites=440 ns=4523139574 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=444 cpx=173467628 fpx=173467628 presns=318321214 torn=0 defer=12 late=0 drawmax=41 evdrop=0
+[wa] t=32970 (+50) idle reqs=2 dials=1 reuses=1
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[style-perf] phase=full bytes=9548 cascade_ms=20 extra_ms=10 layout_ms=0 items=13
+[browser] heap peak 41867K
+[css] linked: 0 <style>, 1 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 1 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 9547 external = 9547 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 603 declarations kept
+[css] dropped: 0  (0 selector, 0 at-rule, 0 unknown-prop, 0 bad-value, 0 trailing)
+[css] no rule or declaration was discarded
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=20
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=10
+[js-install] stage=js_domparser_install ms=0
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=50
+[js-install] stage=js_select_install ms=30
+[js-install] stage=js_intl_install ms=10
+[js-install] stage=js_media_install ms=0
+[js-install] stage=js_platform_install ms=60
+[js-install] stage=js_subtle_install ms=10
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=30
+[js-install] stage=js_cache_install ms=0
+[js-install] stage=js_swreg_install ms=10
+[js-install] stage=js_cssom_install ms=20
+[js-install] stage=js_forms_install ms=20
+[js-install] stage=js_url_install ms=10
+[js-install] stage=js_websocket_install ms=0
+[js-install] stage=js_worker_install ms=0
+[js-install] stage=js_wasm_install ms=10
+[js-install] stage=js_semantics_install ms=40
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=370 stages_ms=370 other_ms=0 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=33410 loadend reqs=2 dials=1 reuses=1 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 2 requests, 1 connections dialled, 1 reused, 0 modules loaded (0 failed)
+[browser] pool: 5 hits, 0 evicted, 5 closed
+[browser] resources: 0 from tab, 1 from network (tab 4 of 5)
+[dl] painted text: 6 run(s), 28 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 24,98 APP
+[dl] 93,98 READY
+[dl] 30,156 Click
+[dl] 72,156 while
+[dl] 118,156 image
+[dl] 171,156 loads
+[dl] ---8<--- end painted text
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=530
+[load-perf] total_ms=530 teardown=0 document=20 first_style_layout_paint=10 styles_fetch=50 full_style_layout_paint=60 images=0 runtime_init=370 scripts_fetch=0 scripts_execute=0 lifecycle_settle=20
+LOAD-PROBE-TIMER
+[wm] perf t=34675 composites=449 ns=4601648460 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=453 cpx=176898748 fpx=176898748 presns=324236753 torn=0 defer=15 late=0 drawmax=41 evdrop=0
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=36683 composites=487 ns=4984576639 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=491 cpx=192725668 fpx=192725668 presns=352919516 torn=0 defer=15 late=0 drawmax=41 evdrop=0
+[wm] perf t=37685 composites=517 ns=5298979153 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=522 cpx=205896328 fpx=205896328 presns=376583674 torn=0 defer=15 late=0 drawmax=41 evdrop=0
+[browser] load: http://10.0.2.2:61267/deepseek?round=1
+[wa] t=37580 (+4610) nav
+[wa] t=37590 (+10) idle reqs=1 dials=1 reuses=0
+[wa] t=37590 (+0) docdone status=200 len=67662
+[mm] low: 232625 frames free (908 MiB), 29484 used, 698 shared, 0 bugs
+[mm] low: 232369 frames free (907 MiB), 29740 used, 698 shared, 0 bugs
+[mm] low: 232113 frames free (906 MiB), 29996 used, 698 shared, 0 bugs
+[mm] low: 231857 frames free (905 MiB), 30252 used, 698 shared, 0 bugs
+[mm] low: 231601 frames free (904 MiB), 30508 used, 698 shared, 0 bugs
+[mm] low: 231345 frames free (903 MiB), 30764 used, 698 shared, 0 bugs
+[mm] low: 231089 frames free (902 MiB), 31020 used, 698 shared, 0 bugs
+[style-perf] phase=first bytes=0 cascade_ms=10 extra_ms=10 layout_ms=190 items=127
+[dl] painted text: 63 run(s), 681 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 欢迎加入我们，我们投身于探索
+[dl] 235,68 AGI
+[dl] 262,68 的本质，拥抱对
+[dl] 377,68 AI
+[dl] 393,68 有热情的你
+[dl] 473,68  
+[dl] 479,68  
+[dl] 482,68 查看职位
+[dl] 549,68 →
+[dl] 8,88 🎉
+[dl] 27,88 DeepSeek-V4-Flash
+[dl] 163,88 正式版
+[dl] 214,88 API
+[dl] 240,88 已上线公测，Agent
+[dl] 380,88 能力大幅增强；V4-Pro
+[dl] 542,88 暂未变动。点击查看详情。
+[dl] 8,179 探索未至之境
+[dl] 8,199 开始对话
+[dl] 8,219 与
+[dl] 26,219 DeepSeek
+[dl] 96,219 免费对话
+[dl] 8,237 体验全新旗舰模型
+[dl] 8,271 API
+[dl] 34,271 开放平台
+[dl] 8,291 调用
+[dl] 41,291 DeepSeek
+[dl] 111,291 最新模型
+[dl] 8,309 快速集成、流畅体验
+[dl] 8,343 加入
+[dl] 43,343 DeepSeek
+[dl] 8,363 共赴星辰大海
+[dl] 8,383 查看职位
+[dl] 75,383 →
+[dl] 8,403 API
+[dl] 34,403 文档
+[dl] 66,403 获取
+[dl] 101,403 App
+[dl] 128,403 English
+[dl] 8,566 ©
+[dl] 26,566 2026
+[dl] 61,566 杭州深度求索人工智能基础技术研究有限公司
+[dl] 364,566 版权所有
+[dl] 8,584 浙ICP备2023025841号
+[dl] 155,584 浙B2-20250178
+[dl] 256,584 浙公网安备33010502011812号
+[dl] 8,602 研究
+[dl] 8,620 DeepSeek
+[dl] 78,620 R1
+[dl] 95,620 DeepSeek
+[dl] 165,620 V3
+[dl] 181,620 DeepSeek
+[dl] 251,620 Coder
+[dl] 294,620 V2
+[dl] 310,620 DeepSeek
+[dl] 380,620 VL
+[dl] 396,620 DeepSeek
+[dl] 466,620 V2
+[dl] 482,620 DeepSeek
+[dl] 552,620 Coder
+[dl] 592,620 DeepSeek
+[dl] 662,620 Math
+[dl] 696,620 DeepSeek
+[dl] 766,620 LLM
+[dl] ---8<--- end painted text
+[wa] t=37920 (+330) idle reqs=4 dials=2 reuses=2
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[wm] perf t=38693 composites=539 ns=5528735262 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=544 cpx=216337048 fpx=216337048 presns=394987243 torn=0 defer=15 late=0 drawmax=41 evdrop=0
+[css] extra selectors: refused 4 of 69 rule(s) (unsupported syntax or pseudo target)
+[style-perf] phase=full bytes=56521 cascade_ms=70 extra_ms=30 layout_ms=2810 items=144
+[browser] heap peak 41867K
+[dl] painted text: 29 run(s), 336 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 80,188 🎉
+[dl] 97,188 DeepSeek-V4-Flash
+[dl] 214,188 正式版
+[dl] 259,188 API
+[dl] 282,188 已上线公测，Agent
+[dl] 404,188 能力大幅增强；V4-Pro
+[dl] 80,208 暂未变动。点击查看详情。
+[dl] 80,342 探索未至之境
+[dl] 112,482 开始对话
+[dl] 112,518 与
+[dl] 130,518 DeepSeek
+[dl] 200,518 免费对话
+[dl] 112,541 体验全新旗舰模型
+[dl] 388,482 API
+[dl] 421,482 开放平台
+[dl] 388,518 调用
+[dl] 421,518 DeepSeek
+[dl] 491,518 最新模型
+[dl] 388,541 快速集成、流畅体验
+[dl] 672,336 加入
+[dl] 725,336 DeepSeek
+[dl] 672,372 共赴星辰大海
+[dl] 672,432 查看职位
+[dl] 739,432 →
+[dl] -24,76 API
+[dl] -1,76 文档
+[dl] 27,76 获取
+[dl] 58,76 App
+[dl] 82,76 English
+[dl] ---8<--- end painted text
+[css] linked: 0 <style>, 3 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 3 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 0 inline + 68206 external = 68206 to the parser  (nothing truncated)
+[css] parsed: 1 sheet(s) accepted, 0 refused; 875 declarations kept
+[css] dropped: 427  (3 selector, 2 at-rule, 406 unknown-prop, 16 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 2 at-rule, 776 declaration (syntax-malformed; a different population from the drops above)
+[css]       72  unknown-prop -webkit-*                | -webkit-user-select
+[css]       64  unknown-prop -moz-*                   | -moz-user-select
+[css]       63  unknown-prop user-select              | user-select
+[css]       60  unknown-prop -ms-*                    | -ms-user-select
+[css]       21  unknown-prop transform                | transform
+[css]       15  unknown-prop box-shadow               | box-shadow
+[css]       14  unknown-prop transition               | transition
+[css]       13  unknown-prop transform-origin         | transform-origin
+[css]       12  unknown-prop gap                      | gap
+[css]       10  unknown-prop pointer-events           | pointer-events
+[css]        8  unknown-prop grid-template-columns    | grid-template-columns
+[css]        7  unknown-prop transition-timing-function | transition-timing-function
+[css]   ... 35 more reason(s); css_report_verbose=1 for all
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=0
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=30
+[js-install] stage=js_domparser_install ms=0
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=50
+[js-install] stage=js_select_install ms=30
+[js-install] stage=js_intl_install ms=10
+[js-install] stage=js_media_install ms=0
+[js-install] stage=js_platform_install ms=80
+[js-install] stage=js_subtle_install ms=10
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=30
+[js-install] stage=js_cache_install ms=10
+[js-install] stage=js_swreg_install ms=0
+[js-install] stage=js_cssom_install ms=20
+[js-install] stage=js_forms_install ms=30
+[js-install] stage=js_url_install ms=0
+[js-install] stage=js_websocket_install ms=0
+[js-install] stage=js_worker_install ms=0
+[js-install] stage=js_wasm_install ms=10
+[js-install] stage=js_semantics_install ms=60
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=410 stages_ms=410 other_ms=0 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=41330 loadend reqs=4 dials=2 reuses=2 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 4 requests, 2 connections dialled, 2 reused, 0 modules loaded (0 failed)
+[browser] pool: 7 hits, 0 evicted, 6 closed
+[browser] resources: 0 from tab, 3 from network (tab 5 of 6)
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=3800
+[load-perf] total_ms=3800 teardown=0 document=10 first_style_layout_paint=240 styles_fetch=140 full_style_layout_paint=2950 images=0 runtime_init=410 scripts_fetch=0 scripts_execute=0 lifecycle_settle=50
+[time] tickloss +5/s worstgap=103215us missed=71 of 4298 expected (1.651% of the clock); uptime 43s
+[dl] painted text: 0 run(s), 0 byte(s)
+[dl] ---8<--- begin painted text
+[dl] ---8<--- end painted text
+[wm] perf t=44712 composites=587 ns=6042976222 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=593 cpx=234835648 fpx=234835648 presns=432046353 torn=0 defer=18 late=0 drawmax=41 evdrop=0
+[wm] perf t=45722 composites=620 ns=6365877076 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=627 cpx=248916288 fpx=248916288 presns=457670356 torn=0 defer=18 late=0 drawmax=41 evdrop=0
+[browser] load: http://10.0.2.2:61267/wikipedia?round=1
+[wa] t=45510 (+7590) nav
+[net] rx path: frames 1204 irq 150 softirq 65 inline 6 poll 3 idle 0/0 halt/skip
+[wa] t=45540 (+30) idle reqs=1 dials=1 reuses=0
+[wa] t=45540 (+0) docdone status=200 len=610683
+[style-perf] phase=first bytes=16475 cascade_ms=380 extra_ms=10 layout_ms=90 items=16384
+[dl] painted text: 50 run(s), 244 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 8,68 Jump
+[dl] 51,68 to
+[dl] 69,68 content
+[dl] 24,88 Main
+[dl] 61,88 menu
+[dl] 8,108 Main
+[dl] 45,108 menu
+[dl] 14,132 move
+[dl] 56,132 to
+[dl] 74,132 sidebar
+[dl] 148,132 hide
+[dl] 8,156 Navigation
+[dl] 14,192 •
+[dl] 36,192 Main
+[dl] 73,192 page
+[dl] 14,212 •
+[dl] 36,212 Contents
+[dl] 14,232 •
+[dl] 36,232 Current
+[dl] 93,232 events
+[dl] 14,252 •
+[dl] 36,252 Random
+[dl] 99,252 article
+[dl] 14,272 •
+[dl] 36,272 About
+[dl] 81,272 Wikipedia
+[dl] 14,292 •
+[dl] 36,292 Contact
+[dl] 96,292 us
+[dl] 8,328 Contribute
+[dl] 14,364 •
+[dl] 36,364 Help
+[dl] 14,384 •
+[dl] 36,384 Learn
+[dl] 79,384 to
+[dl] 97,384 edit
+[dl] 14,404 •
+[dl] 36,404 Community
+[dl] 122,404 portal
+[dl] 14,424 •
+[dl] 36,424 Recent
+[dl] 88,424 changes
+[dl] 14,444 •
+[dl] 36,444 Upload
+[dl] 90,444 file
+[dl] 14,464 •
+[dl] 36,464 Special
+[dl] 90,464 pages
+[dl] 8,550 Search
+[dl] 14,602 Search
+[dl] ---8<--- end painted text
+[e1000] stats: rx 1427 pkt / 2051139 B, tx 937 pkt / 64055 B; drop rnbc 0 mpc 0; err crc 0 rlec 0; col 0 ecol 0 late 0; goct rx 0* tx 0*; irq 170 (+101)
+[wa] t=46440 (+900) idle reqs=3 dials=2 reuses=1
+[css-import] 0 loaded, 0 failed, 0 cycles, 0 limited, 0 unsupported; 0 requests, 0 bytes
+[wm] perf t=47732 composites=644 ns=6591365512 max=47918270 motions=5 curmoves=4 curns=132992 full=15 rects=651 cpx=258542248 fpx=258542248 presns=475174995 torn=0 defer=20 late=0 drawmax=41 evdrop=0
+[css] extra selectors: refused 10 of 168 rule(s) (unsupported syntax or pseudo target)
+[style-perf] phase=full bytes=225167 cascade_ms=730 extra_ms=160 layout_ms=1190 items=16384
+[browser] heap peak 43334K
+[dl] painted text: 175 run(s), 1007 byte(s)
+[dl] ---8<--- begin painted text
+[dl] 60,220 Contents
+[dl] 60,261 (Top)
+[dl] 60,290 Definition
+[dl] 121,290 and
+[dl] 147,290 purpose
+[dl] 60,319 Types
+[dl] 99,319 of
+[dl] 114,319 operating
+[dl] 175,319 systems
+[dl] 72,348 Multicomputer
+[dl] 165,348 operating
+[dl] 72,365 systems
+[dl] 72,394 Distributed
+[dl] 142,394 systems
+[dl] 72,423 Embedded
+[dl] 72,452 Real-time
+[dl] 72,481 Hypervisor
+[dl] 72,510 Library
+[dl] 60,539 History
+[dl] 72,568 Microcomputers
+[dl] 60,597 Components
+[dl] 264,150 Operating
+[dl] 401,150 system
+[dl] 739,161 163
+[dl] 766,161 languages
+[dl] 264,197 Article
+[dl] 318,197 Talk
+[dl] 633,198 Read
+[dl] 679,198 View
+[dl] 711,198 source
+[dl] 768,198 View
+[dl] 800,198 history
+[dl] 264,233 From
+[dl] 299,233 Wikipedia,
+[dl] 363,233 the
+[dl] 386,233 free
+[dl] 412,233 encyclopedia
+[dl] 609,292 Operating
+[dl] 697,292 systems
+[dl] 601,569 Common
+[dl] 663,569 features
+[dl] 601,587 Process
+[dl] 643,587 management
+[dl] 715,587 Interrupts
+[dl] 766,587  ·
+[dl] 782,587 Memory
+[dl] 827,587 management
+[dl] 601,604  ·
+[dl] 617,604 File
+[dl] 637,604 system
+[dl] 674,604  ·
+[dl] 690,604 Device
+[dl] 727,604 drivers
+[dl] 762,604  ·
+[dl] 778,604 Networking
+[dl] 838,604  ·
+[dl] 854,604 Security
+[dl] 601,621  ·
+[dl] 617,621 Input/output
+[dl] 685,621  ·
+[dl] 264,286 An
+[dl] 283,286 operating
+[dl] 350,286 system
+[dl] 399,286 (
+[dl] 403,286 OS
+[dl] 421,286 )
+[dl] 428,286 is
+[dl] 440,286 system
+[dl] 486,286 software
+[dl] 542,286 that
+[dl] 264,308 manages
+[dl] 321,308 computer
+[dl] 384,308 hardware
+[dl] 445,308 and
+[dl] 471,308 software
+[dl] 264,330 resources,
+[dl] 329,330 and
+[dl] 355,330 provides
+[dl] 410,330 common
+[dl] 468,330 services
+[dl] 519,330 for
+[dl] 264,352 computer
+[dl] 327,352 programs
+[dl] 385,352 .
+[dl] 388,352 [
+[dl] 391,352 1
+[dl] 397,352 ]
+[dl] 264,395 Time-sharing
+[dl] 345,395 operating
+[dl] 406,395 systems
+[dl] 458,395 schedule
+[dl] 515,395 tasks
+[dl] 549,395 for
+[dl] 264,417 efficient
+[dl] 315,417 use
+[dl] 339,417 of
+[dl] 354,417 the
+[dl] 377,417 system
+[dl] 423,417 and
+[dl] 449,417 may
+[dl] 478,417 also
+[dl] 505,417 include
+[dl] 264,439 accounting
+[dl] 335,439 software
+[dl] 391,439 for
+[dl] 411,439 cost
+[dl] 440,439 allocation
+[dl] 502,439 of
+[dl] 517,439 processor
+[dl] 264,461 time
+[dl] 291,461 ,
+[dl] 297,461 mass
+[dl] 331,461 storage
+[dl] 376,461 ,
+[dl] 382,461 peripherals,
+[dl] 455,461 and
+[dl] 481,461 other
+[dl] 517,461 resources.
+[dl] 264,504 For
+[dl] 287,504 hardware
+[dl] 348,504 functions
+[dl] 408,504 such
+[dl] 440,504 as
+[dl] 456,504 input
+[dl] 491,504 and
+[dl] 517,504 output
+[dl] 264,526 and
+[dl] 290,526 memory
+[dl] 344,526 allocation
+[dl] 403,526 ,
+[dl] 409,526 the
+[dl] 432,526 operating
+[dl] 493,526 system
+[dl] 539,526 acts
+[dl] 567,526 as
+[dl] 264,548 an
+[dl] 282,548 intermediary
+[dl] 362,548 between
+[dl] 418,548 programs
+[dl] 479,548 and
+[dl] 505,548 the
+[dl] 264,570 computer
+[dl] 327,570 hardware,
+[dl] 388,570 [
+[dl] 391,570 2
+[dl] 397,570 ]
+[dl] 400,570 [
+[dl] 403,570 3
+[dl] 409,570 ]
+[dl] 415,570 although
+[dl] 472,570 the
+[dl] 495,570 application
+[dl] 264,592 code
+[dl] 297,592 is
+[dl] 309,592 usually
+[dl] 354,592 executed
+[dl] 412,592 directly
+[dl] 460,592 by
+[dl] 478,592 the
+[dl] 501,592 hardware
+[dl] 264,614 and
+[dl] 290,614 frequently
+[dl] 355,614 makes
+[dl] 397,614 system
+[dl] 443,614 calls
+[dl] 472,614 to
+[dl] 488,614 an
+[dl] 506,614 OS
+[dl] 527,614 function
+[dl] 687,83 Search
+[dl] 890,84 Donate
+[dl] 942,84 Create
+[dl] 984,84 account
+[dl] 1042,84 Log
+[dl] 1067,84 in
+[dl] ---8<--- end painted text
+[css] linked: 15 <style>, 2 <link rel=stylesheet> (0 not fetched)
+[css] fetched: 2 ok, 0 empty, 0 http-error, 0 transport-error  (content-type: NOT CHECKED -- no MIME filter on <link>)
+[css] bytes: 16702 inline + 223978 external = 240680 to the parser  (nothing truncated)
+[css] parsed: 2 sheet(s) accepted, 0 refused; 2775 declarations kept
+[css] dropped: 593  (10 selector, 3 at-rule, 544 unknown-prop, 36 bad-value, 0 trailing)
+[css] parser resync: 0 selector, 3 at-rule, 10 declaration (syntax-malformed; a different population from the drops above)
+[css]      172  unknown-prop -webkit-*                | -webkit-user-select
+[css]      113  unknown-prop mask-image               | mask-image
+[css]       29  unknown-prop background-size          | background-size
+[css]       27  unknown-prop mask-size                | mask-size
+[css]       26  unknown-prop filter                   | filter
+[css]       17  unknown-prop box-shadow               | box-shadow
+[css]       13  unknown-prop mask-position            | mask-position
+[css]       13  unknown-prop mask-repeat              | mask-repeat
+[css]       10  unknown-prop word-break               | word-break
+[css]       10  unknown-prop grid-area                | grid-area
+[css]        9  unknown-prop transition-duration      | transition-duration
+[css]        9  bad-value    width                    | width
+[css]   ... 52 more reason(s); css_report_verbose=1 for all
+[js-install] stage=previous-close ms=0
+[js-install] stage=JS_NewRuntime ms=0
+[js-install] stage=JS_NewContext ms=0
+[js-install] stage=page_runtime_open ms=0
+[js-install] stage=js_dom_init ms=40
+[js-install] stage=js_domparser_install ms=0
+[js-install] stage=window-event-target ms=0
+[js-install] stage=js_webapi_install ms=50
+[js-install] stage=js_select_install ms=30
+[js-install] stage=js_intl_install ms=10
+[js-install] stage=js_media_install ms=0
+[js-install] stage=js_platform_install ms=890
+[js-install] stage=js_subtle_install ms=20
+[js-install] stage=js_events_install ms=20
+[js-install] stage=js_idb_install ms=20
+[js-install] stage=js_cache_install ms=10
+[js-install] stage=js_swreg_install ms=0
+[js-install] stage=js_cssom_install ms=30
+[js-install] stage=js_forms_install ms=20
+[js-install] stage=js_url_install ms=0
+[js-install] stage=js_websocket_install ms=10
+[js-install] stage=js_worker_install ms=0
+[js-install] stage=js_wasm_install ms=10
+[js-install] stage=js_semantics_install ms=560
+[js-install] stage=js_canvas_install ms=0
+[js-install] stage=js_anim_install ms=20
+[js-install] total_ms=1740 stages_ms=1740 other_ms=0 clock=guest-ms
+[browser] scripts collected: 0 external classic, 0 external module, 1 inline
+LOAD-PROBE-SCRIPT
+[wa] t=50590 loadend reqs=3 dials=2 reuses=1 cache ents=0 0K hits=0 rvs=0
+[browser] load done: 3 requests, 2 connections dialled, 1 reused, 0 modules loaded (0 failed)
+[browser] pool: 8 hits, 0 evicted, 8 closed
+[browser] resources: 0 from tab, 2 from network (tab 6 of 7)
+LOAD-PROBE-LOAD
+[load-complete] elapsed_ms=5130
+[load-perf] total_ms=5130 teardown=0 document=30 first_style_layout_paint=810 styles_fetch=140 full_style_layout_paint=2330 images=30 runtime_init=1740 scripts_fetch=0 scripts_execute=0 lifecycle_settle=50

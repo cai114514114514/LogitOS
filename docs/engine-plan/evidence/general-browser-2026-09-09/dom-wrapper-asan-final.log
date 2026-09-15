@@ -1,0 +1,16 @@
+FAIL connected Symbol expando survives wrapper release
+FAIL delegated composedPath preserves node expandos
+FAIL class instance expando survives reacquisition: TypeError: cannot read property 'get' of undefined
+FAIL remove keeps JS-retained node identity: TypeError: cannot read property 'get' of undefined
+FAIL reattach keeps Symbol and class state: TypeError: cannot read property 'get' of undefined
+FAIL retained descendant keeps sibling expando
+wrapper GC: baseline=1 before=601 after=1
+FAIL same-document adoption retains own state: TypeError: cannot read property 'get' of undefined
+DOM wrapper lifetime: 24 checks, 7 failures
+wrapper GC: baseline=9 before=609 after=609
+FAIL detached wrapper cycles are collected
+DOM wrapper lifetime: 24 checks, 1 failures
+wrapper GC: baseline=6 before=606 after=6
+DOM wrapper lifetime: 24 checks, 0 failures
+wrapper GC: baseline=6 before=606 after=6
+DOM wrapper lifetime: 24 checks, 0 failures

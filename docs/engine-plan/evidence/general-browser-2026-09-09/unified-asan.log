@@ -1,0 +1,114 @@
+clang -O1 -g -w -fsanitize=address -fno-omit-frame-pointer -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/lib/video -Ic/net/ssh -Ic/crypto -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -o build/wiring-next/message-port/address tests/unit/message_port_test.c c/apps/browser/js_anim.c c/apps/browser/js_cache.c c/apps/browser/js_canvas.c c/apps/browser/js_characterdata.c c/apps/browser/js_cssom.c c/apps/browser/js_devtools.c c/apps/browser/js_dom.c c/apps/browser/js_domparser.c c/apps/browser/js_events.c c/apps/browser/js_forms.c c/apps/browser/js_frame.c c/apps/browser/js_idb.c c/apps/browser/js_intl.c c/apps/browser/js_media.c c/apps/browser/js_media_src.c c/apps/browser/js_module.c c/apps/browser/js_page.c c/apps/browser/js_platform.c c/apps/browser/js_reflect.c c/apps/browser/js_select.c c/apps/browser/js_semantics.c c/apps/browser/js_stall.c c/apps/browser/js_subtle.c c/apps/browser/js_swreg.c c/apps/browser/js_tokenlist.c c/apps/browser/js_url.c c/apps/browser/js_urlbind.c c/apps/browser/js_wasm.c c/apps/browser/js_webapi.c c/apps/browser/js_websocket.c c/apps/browser/js_worker.c c/apps/browser/css_interp.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c c/lib/image/exif.c c/lib/media/avclock.c c/lib/media/demux.c c/lib/media/mkv.c c/lib/media/mp4.c c/lib/media/subs.c c/lib/video/h264.c c/lib/video/h264_cabac.c c/lib/video/h264_cavlc.c c/lib/video/h264_deblock.c c/lib/video/h264_dpb.c c/lib/video/h264_mb.c c/lib/video/h264_mc.c c/lib/video/h264_nal.c c/lib/video/h264_pred.c c/lib/video/h265.c c/lib/video/h265_cabac.c c/lib/video/h265_deblock.c c/lib/video/h265_mc.c c/lib/video/h265_nal.c c/lib/video/h265_pred.c c/lib/video/mjpeg.c c/lib/video/mpeg12.c c/lib/video/mpeg12_idct.c c/lib/video/mpeg12_mc.c c/lib/video/mpeg12_slice.c c/lib/video/mpeg12_tables.c c/lib/audio/aac.c c/lib/audio/afft.c c/lib/audio/amath.c c/lib/audio/amd5.c c/lib/audio/audio.c c/lib/audio/flac.c c/lib/audio/mp3.c c/lib/audio/ogg.c c/lib/audio/opus.c c/lib/audio/opus_celt.c c/lib/audio/opus_range.c c/lib/audio/vorbis.c c/lib/audio/wav.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c tests/unit/rust_host_shim.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+clang -O1 -g -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -DJS_WAAPI_NO_PAINT -o build/wiring-next/waapi/negctl tests/unit/waapi_paint_test.c c/apps/browser/css_engine.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/apps/browser/css_vars.c c/apps/browser/dom.c c/apps/browser/dom_serialize.c c/apps/browser/html_tokenizer.c c/apps/browser/html_tree.c c/apps/browser/js_anim.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/layout.c c/apps/browser/layout_text.c third_party/quickjs/cutils.c third_party/quickjs/libbf.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c build/libcss_host.a -lm
+ok: script setup
+FAIL message clone is taken before sender mutation
+     got:  false
+     expr: received.length===1&&received[0].nested.n===1&&received[0].bytes[0]===3&&received[0].self===received[0]&&received[0]!==data
+ok: script setup
+FAIL uncloneable payloads throw DataCloneError synchronously
+     got:  false
+     expr: cloneFailures===6
+ok: script setup
+ok: unsupported transfer cannot silently copy
+ok: script setup
+FAIL port uses captured clone implementation
+     got:  false
+     expr: received[1].safe===1
+ok: script setup
+ok: listener-only port waits for start
+ok: script setup
+ok: start never dispatches synchronously
+ok: queued messages retain FIFO order
+ok: script setup
+ok: closed destination never receives queued or new messages
+ok: script setup
+ok: sender close preserves already queued receiver message
+ok: script setup
+ok: clone preserves proto key as own data
+ok: script setup
+ok: navigation canceled old-page port delivery
+message-port: 21 checks, 3 failures
+ok: script setup
+ok: message clone is taken before sender mutation
+ok: script setup
+ok: uncloneable payloads throw DataCloneError synchronously
+ok: script setup
+ok: unsupported transfer cannot silently copy
+ok: script setup
+ok: port uses captured clone implementation
+ok: script setup
+ok: listener-only port waits for start
+ok: script setup
+ok: start never dispatches synchronously
+ok: queued messages retain FIFO order
+ok: script setup
+FAIL closed destination never receives queued or new messages
+     got:  false
+     expr: closeCount===0
+ok: script setup
+ok: sender close preserves already queued receiver message
+ok: script setup
+ok: clone preserves proto key as own data
+ok: script setup
+ok: navigation canceled old-page port delivery
+message-port: 21 checks, 1 failures
+clang -O1 -g -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -DJS_WAAPI_NO_CHECKPOINT -o build/wiring-next/waapi/checkpoint-negctl tests/unit/waapi_paint_test.c c/apps/browser/css_engine.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/apps/browser/css_vars.c c/apps/browser/dom.c c/apps/browser/dom_serialize.c c/apps/browser/html_tokenizer.c c/apps/browser/html_tree.c c/apps/browser/js_anim.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/layout.c c/apps/browser/layout_text.c third_party/quickjs/cutils.c third_party/quickjs/libbf.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c build/libcss_host.a -lm
+clang -O1 -g -w -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -o build/wiring-next/waapi/test tests/unit/waapi_paint_test.c c/apps/browser/css_engine.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/apps/browser/css_vars.c c/apps/browser/dom.c c/apps/browser/dom_serialize.c c/apps/browser/html_tokenizer.c c/apps/browser/html_tree.c c/apps/browser/js_anim.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/layout.c c/apps/browser/layout_text.c third_party/quickjs/cutils.c third_party/quickjs/libbf.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c build/libcss_host.a -lm
+clang -O1 -g -w -fsanitize=address -fno-omit-frame-pointer -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DWEBAPI_HOST -DCONFIG_VERSION='"host"' -o build/wiring-next/waapi/address tests/unit/waapi_paint_test.c c/apps/browser/css_engine.c c/apps/browser/css_extra.c c/apps/browser/css_interp.c c/apps/browser/css_vars.c c/apps/browser/dom.c c/apps/browser/dom_serialize.c c/apps/browser/html_tokenizer.c c/apps/browser/html_tree.c c/apps/browser/js_anim.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/layout.c c/apps/browser/layout_text.c third_party/quickjs/cutils.c third_party/quickjs/libbf.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/quickjs.c build/libcss_host.a -lm
+ok: script setup
+ok: message clone is taken before sender mutation
+ok: script setup
+ok: uncloneable payloads throw DataCloneError synchronously
+ok: script setup
+ok: unsupported transfer cannot silently copy
+ok: script setup
+ok: port uses captured clone implementation
+ok: script setup
+ok: listener-only port waits for start
+ok: script setup
+ok: start never dispatches synchronously
+ok: queued messages retain FIFO order
+ok: script setup
+ok: closed destination never receives queued or new messages
+ok: script setup
+ok: sender close preserves already queued receiver message
+ok: script setup
+ok: clone preserves proto key as own data
+ok: script setup
+ok: navigation canceled old-page port delivery
+message-port: 21 checks, 0 failures
+  FAIL: WAAPI midpoint reaches display-list opacity
+  FAIL: WAAPI midpoint reaches painter transform -- got 0, want 50
+  FAIL: pause holds painter transform -- got 0, want 50
+  FAIL: seek updates native transform -- got 0, want 25
+  FAIL: reverse advances backwards -- got 0, want 15
+  FAIL: play after cancel restores registration and finishes -- got 0, want 100
+  FAIL: held frame survives cascade replay -- got 0, want 100
+waapi-paint: 39 checks, 7 failures
+  FAIL: automatic finish reactions drain without timers or pixel changes
+  FAIL: microtask-only completion requests browser settlement
+waapi-paint: 39 checks, 2 failures
+waapi-paint: 39 checks, 0 failures
+waapi-paint: 39 checks, 0 failures
+ok: script setup
+ok: message clone is taken before sender mutation
+ok: script setup
+ok: uncloneable payloads throw DataCloneError synchronously
+ok: script setup
+ok: unsupported transfer cannot silently copy
+ok: script setup
+ok: port uses captured clone implementation
+ok: script setup
+ok: listener-only port waits for start
+ok: script setup
+ok: start never dispatches synchronously
+ok: queued messages retain FIFO order
+ok: script setup
+ok: closed destination never receives queued or new messages
+ok: script setup
+ok: sender close preserves already queued receiver message
+ok: script setup
+ok: clone preserves proto key as own data
+ok: script setup
+ok: navigation canceled old-page port delivery
+message-port: 21 checks, 0 failures

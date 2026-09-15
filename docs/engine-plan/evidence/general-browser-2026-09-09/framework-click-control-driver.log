@@ -1,0 +1,9 @@
+qmp_addrbar: caret found -- Browser client origin (138, 128), URL field click at (438, 173) (/var/folders/5n/cg5_2k414dj_mt1q9__6mx_r0000gn/T/qmp_addrbar-likt_ujp.ppm)
+
+== framework corpus IN THE GUEST: first exception + settled DOM ==
+react     MOUNT exc: (none)
+               native counter click: False
+               paint[t4000]: body=1629 #root=155 #app=135 button="count is 0" lazy="lazy route loaded"
+               server saw 3 request(s): / /assets/Lazy-BryBQQ5a.js /assets/index-BYxshc5p.js
+-- 1 of 1 settled non-blank
+guest_mount: FAIL -- native click increment 0/1, required 1

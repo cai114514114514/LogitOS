@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>JavaScript startup profile</title>
+<h1 id="result">Startup fixture</h1>
+<p>No external resources, frameworks, or page computation. Navigate here twice to compare the same browser process.</p>
+<script>
+(function () {
+  var ok = typeof fetch === 'function' && typeof URL === 'function' &&
+    typeof document.createElement === 'function' && typeof crypto.subtle.digest === 'function';
+  document.getElementById('result').textContent = ok ? 'STARTUP-FIXTURE READY' : 'STARTUP-FIXTURE MISSING API';
+  console.log(document.getElementById('result').textContent + ' page-script-ms=' + performance.now());
+}());
+</script>

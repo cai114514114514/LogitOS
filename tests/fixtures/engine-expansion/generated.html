@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8"><title>Generated content: strings and attributes</title>
+<style>
+body{margin:32px;font:18px sans-serif;color:#243447;background:#f5f7fa}
+h1{font-size:28px} .case{margin:18px 0;padding:16px;background:white;border:1px solid #b5c5d5}
+#inline::before{content:"BEFORE ";color:#17683d;font-size:24px;font-weight:bold}
+#inline::after{content:" " attr(data-tail);color:#8a3654;font-weight:bold}
+#hidden::before{content:"MUST NOT APPEAR"} #hidden::before{content:none}
+#hidden::after{content:normal}
+#block::before{content:"";display:block;width:160px;height:12px;background-color:#dd2211;margin-bottom:10px}
+#block::after{content:"BLOCK AFTER";display:block;height:30px;color:#17683d}
+#flex{display:flex} #flex::before{content:"FLEX";display:block;width:90px;color:#17683d}
+#flex::after{content:"TAIL";display:block;width:90px;color:#8a3654}
+</style>
+<h1>CSS generated content</h1>
+<p>Each colored label and the red bar below comes from CSS.</p>
+<div class="case" id="inline" data-tail="AFTER">AUTHORED</div>
+<div class="case" id="hidden">Only this authored sentence should appear.</div>
+<div class="case" id="block">CHILD: the red generated block is above; BLOCK AFTER is below.</div>
+<div class="case" id="flex"><div style="width:100px">MID</div></div>
+<p>Expected order: BEFORE AUTHORED AFTER, then FLEX MID TAIL.</p>

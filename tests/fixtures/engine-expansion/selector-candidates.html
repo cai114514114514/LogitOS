@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>Selector candidate workload</title>
+<h1 id="result">Checking compound queries</h1><section id="candidateRows" hidden></section>
+<script>
+// This is a fixed operation workload, not a live-site benchmark. Creation and
+// result validation are outside the guest query clock. The first candidate is
+// deliberately a nonmatch, so querySelector cannot return native candidates
+// without applying the complete selector.
+var candidateRoot=document.getElementById('candidateRows');
+for(var i=0;i<600;i++){
+  var row=document.createElement('div');row.className='row';row.id='row'+i;
+  if(i%100===0)row.setAttribute('data-pick',i===0?'no':'yes');
+  candidateRoot.appendChild(row);
+}
+var candidateCount=0;
+var candidateStart=performance.now();
+for(var j=0;j<30;j++)candidateCount+=candidateRoot.querySelectorAll('.row[data-pick="yes"]').length;
+var candidateEnd=performance.now();
+if(candidateCount!==150||candidateRoot.querySelector('.row[data-pick="yes"]').id!=='row100')throw Error('candidate results changed');
+var candidateStatic=candidateRoot.querySelectorAll('.row[data-pick="yes"]');
+candidateRoot.firstChild.setAttribute('data-pick','yes');
+if(candidateStatic.length!==5||candidateRoot.querySelectorAll('.row[data-pick="yes"]').length!==6)throw Error('stale candidate results');
+document.getElementById('result').textContent='SELECTOR-CANDIDATES PASS count='+candidateCount;
+console.log('SELECTOR-CANDIDATES PASS query_ms='+(candidateEnd-candidateStart)+' count='+candidateCount);
+console.log('LOAD-PROBE-SCRIPT');window.addEventListener('load',function(){console.log('LOAD-PROBE-LOAD')});
+</script>

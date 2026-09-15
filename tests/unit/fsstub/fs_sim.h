@@ -200,6 +200,14 @@ static void sim_mkfs(void)
     root->type  = LFS_T_DIR;
     root->size  = 0;
     root->atime = root->mtime = root->ctime = fsstub_clock;
+#ifdef LOGITFS_SIM_IDENTITIES
+    /* The same crash harness now runs the identity format and counter journal. */
+    uint32_t crc32(const void *, size_t);
+    ((struct lfs_super *)(void *)sim_media)->version=LFS_ID_VERSION;
+    struct lfs_identity_super ext={LFS_ID_MAGIC,{12345,67890},0};
+    ext.checksum=crc32(&ext,20);memcpy(sim_media+sizeof(struct lfs_super),&ext,sizeof ext);
+    root->object_id=1;root->revision=1;root->next_id=1;
+#endif
 
     sim_npend = 0;
 }

@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>MessagePort wiring</title>
+<style>body{font:20px sans-serif;background:white;color:#172554}button{font:20px sans-serif;padding:10px}#result{padding:20px;border:2px solid #2463eb}</style>
+<h1>MessagePort delivery checks</h1><p>Same-page channels: copied data, FIFO delivery, and closed endpoint cancellation.</p>
+<p id="result">MESSAGE-PORT-RUNNING</p><button onclick="location.reload()">Run again</button>
+<script>
+var checks=0, failures=0, snapshot=false, sender=false, closedCalls=0, order=[];
+function check(ok,name){checks++;if(!ok){failures++;console.log('MESSAGE-PORT-FAIL '+name)}}
+function refuses(data){try{c.port1.postMessage(data);return false}catch(e){return e.name==='DataCloneError'}}
+var c=new MessageChannel();c.port2.onmessage=function(e){snapshot=e.data.nested.n===1&&e.data.self===e.data&&e.data!==data;check(snapshot,'send-time clone')};
+var data={nested:{n:1}};data.self=data;c.port1.postMessage(data);data.nested.n=9;
+check(refuses({bad:function(){}}),'function refusal');check(refuses(Promise.resolve(1)),'promise refusal');check(refuses(document.body),'DOM refusal');
+var transferred=false;try{c.port1.postMessage(1,[new ArrayBuffer(8)])}catch(e){transferred=e.name==='DataCloneError'}check(transferred,'transfer refusal');
+var closed=new MessageChannel();closed.port2.onmessage=function(){closedCalls++};closed.port1.postMessage('before close');closed.port2.close();closed.port2.onmessage=function(){closedCalls++};closed.port2.start();closed.port1.postMessage('after close');
+var sent=new MessageChannel();sent.port2.onmessage=function(e){sender=e.data===7};sent.port1.postMessage(7);sent.port1.close();
+var q=new MessageChannel();q.port2.addEventListener('message',function(e){order.push(e.data);if(order.length===2){check(order.join(',')==='1,2','FIFO');check(closedCalls===0,'close fence');check(sender,'sender close keeps queued message');check(snapshot,'snapshot delivered');var s='MESSAGE-PORT-WIRING checks='+checks+' failures='+failures;document.getElementById('result').textContent=s;console.log(s);c.port1.close();c.port2.close();q.port1.close();q.port2.close();sent.port2.close();}});
+q.port1.postMessage(1);q.port1.postMessage(2);q.port2.start();check(order.length===0,'asynchronous start');
+</script>

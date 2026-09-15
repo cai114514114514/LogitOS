@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Native interaction checklist</title>
+<style>
+body { margin:0; background:white; color:#111111; font-size:18px; }
+#title { position:absolute; left:40px; top:12px; }
+#menu-parent { position:absolute; left:40px; top:50px; width:340px; height:42px; background:#eeeeee; }
+#menu { display:none; position:absolute; left:0; top:38px; width:340px; height:34px; background:#e2ffd9; }
+#menu-parent:hover #menu { display:block; }
+#press { position:absolute; left:40px; top:140px; width:340px; height:36px; color:#222222; background:#eeeeee; }
+#press:active { color:#cc2200; }
+#first { position:absolute; left:40px; top:190px; width:340px; height:32px; }
+#inert-area { position:absolute; left:40px; top:240px; width:340px; height:36px; background:#dddddd; }
+#after { position:absolute; left:40px; top:290px; width:340px; height:32px; }
+#program { position:absolute; left:440px; top:140px; width:400px; height:36px; background:#eeeeee; }
+#last { position:absolute; left:440px; top:190px; width:400px; height:32px; }
+#status { position:absolute; left:440px; top:290px; width:400px; height:32px; }
+#first:focus, #after:focus, #last:focus { color:#8800cc; }
+#help { position:absolute; left:40px; top:350px; width:900px; }
+</style>
+<div id="title">NATIVE-INTERACTION</div>
+<div id="menu-parent">HOVER-TO-OPEN<div id="menu">CSS-MENU-OPEN</div></div>
+<div id="press" tabindex="0" role="button">PRESS-AND-RELEASE</div>
+<div id="first" tabindex="0">FIRST-TAB-STOP</div>
+<div id="inert-area" inert><div id="blocked" tabindex="0" role="button" onclick="document.getElementById('status').textContent='BLOCKED-HANDLER-RAN'">INERT-CANNOT-ACTIVATE</div></div>
+<div id="after" tabindex="0">AFTER-INERT-TAB-STOP</div>
+<div id="program" tabindex="0" role="button" onclick="document.getElementById('last').focus()">CLICK-TO-FOCUS-TARGET</div>
+<div id="last" tabindex="0">PROGRAMMATIC-FOCUS-TARGET</div>
+<div id="status">NO-INERT-CLICK</div>
+<div id="help">Hover opens the green menu. Hold the press target to turn its text red. Tab focus turns purple and skips the gray inert area. The right button focuses the target below it.</div>

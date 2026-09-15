@@ -1,0 +1,57 @@
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+[webapi] navigation requested: http://fixture.test/target.html (the loader does not consume this yet)
+ok: real queued scroll listener executed before park
+FAIL: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=0 wait_ms=0 destination_requests=0 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=0: FAIL
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+ok: real queued scroll listener executed before park
+FAIL: late inserted script executed before indefinite park
+late-callback park evidence: mode=1 wait_ms=0 destination_requests=0 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=1: FAIL
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+ok: real queued scroll listener executed before park
+FAIL: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=2 wait_ms=0 destination_requests=0 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=2: FAIL
+clang -O2 -w -DLOADER_POLL_HOOK -Itests/unit/loaderhost -Itests/unit -Iinclude/abi -Ic/apps/browser -Ic/lib/image -Ic/net/http -Ic/lib/text -Ic/lib/gfx -Iinclude/abi -Ithird_party/css/libwapcaplet/include -Ithird_party/css/libparserutils/include -Ithird_party/css/libcss/include -Ithird_party/css/libcss/src -Ithird_party/css/libparserutils/src -Iinclude -Ithird_party/libm -Ithird_party/quickjs     -DCONFIG_VERSION='"host"' -DWEBAPI_HOST -Ic/apps/browser -Iinclude -o build/wiring-next/late-callback/patched build/wiring-next/late-callback/browser.patched.probe.c tests/unit/loader_fakebfetch.c c/apps/browser/browser_paint.c c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/browser/forms.c c/apps/browser/focus.c c/apps/browser/css_engine.c c/apps/browser/css_vars.c c/apps/browser/css_extra.c c/apps/browser/js_dom.c c/apps/browser/js_page.c c/apps/browser/js_webapi.c c/apps/browser/js_module.c c/apps/browser/tabs.c c/net/http/url.c c/net/http/http1.c c/net/http/cookies.c tests/unit/rust_host_shim.c c/lib/gfx/gfx_mask.c c/lib/gfx/gfx_math.c c/lib/gfx/gfx_paint.c c/lib/gfx/gfx_path.c c/lib/gfx/gfx_raster.c c/lib/gfx/gfx_stroke.c c/apps/browser/dom.c c/apps/browser/html_tree.c c/apps/browser/html_tokenizer.c c/apps/browser/dom_serialize.c c/apps/browser/js_cssom.c c/apps/browser/js_select.c c/apps/browser/js_tokenlist.c c/apps/browser/js_characterdata.c build/wiring-next/late-callback/probe.c third_party/quickjs/quickjs.c third_party/quickjs/cutils.c third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c third_party/quickjs/libbf.c build/libcss_host.a rust/target/release/liblogit_rust.a -lm
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+ok: real queued scroll listener executed before park
+ok: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=0 wait_ms=0 destination_requests=1 polls=5
+ok: observer intercepted actual indefinite park
+late-callback mode=0: PASS
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+[layout-perf] svg_decodes=0 svg_ms=0 trials=0 items=1
+ok: real queued scroll listener executed before park
+ok: late inserted script executed before indefinite park
+late-callback park evidence: mode=1 wait_ms=0 destination_requests=0 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=1: PASS
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+ok: real queued scroll listener executed before park
+ok: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=2 wait_ms=0 destination_requests=1 polls=5
+ok: observer intercepted actual indefinite park
+late-callback mode=2: PASS
+[browser] resources: 0 from tab, 0 from network (tab 0 of 1)
+[load-complete] elapsed_ms=5
+[load-perf] total_ms=5 teardown=0 document=5 first_style_layout_paint=0 styles_fetch=0 full_style_layout_paint=0 images=0 runtime_init=0 scripts_fetch=0 scripts_execute=0 lifecycle_settle=0
+ok: real queued scroll listener executed before park
+ok: late callback navigation consumed before indefinite park
+late-callback park evidence: mode=3 wait_ms=0 destination_requests=1 polls=4
+ok: observer intercepted actual indefinite park
+late-callback mode=3: PASS

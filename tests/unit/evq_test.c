@@ -46,13 +46,18 @@ static int depth(const struct evq *q) { return (q->tail - q->head + EVQ_N) % EVQ
 
 int main(void)
 {
-    struct evq q;
+    struct evq q = {0};
     struct logit_event e;
 
     /* --- basics: FIFO order, empty/one/many --- */
     evq_reset(&q);
     checki(evq_pop(&q, &e), 0, "pop on an empty ring");
-    for (int i = 0; i < 5; i++) { struct logit_event k = mk(EV_KEY, 'a' + i, 0); evq_push(&q, &k); }
+    for (int i = 0; i < 5; i++) {
+        struct logit_event k = mk(EV_KEY, 'a' + i, 0);
+        int result = evq_push(&q, &k);
+        checki(result, EVQ_PUSH_APPENDED,
+               "every new unread slot requests one waiter wake");
+    }
     for (int i = 0; i < 5; i++) {
         checki(evq_pop(&q, &e), 1, "pop returns an event");
         checki(e.a, 'a' + i, "FIFO order");
@@ -122,6 +127,33 @@ int main(void)
     checki(depth(&q), EVQ_N - 1, "a full ring keeps one slot free (head==tail means empty)");
     checki(evq_dropped() - drops_before, 101, "overflow is counted, not silent");
 
+    /* An app can be slow enough to fill its ring with alternating semantic
+     * events and moves, which defeats adjacent coalescing. Button-up/close/key
+     * cannot be dropped behind that backlog: losing button-up leaves a widget
+     * in permanent capture. One old absolute move is the safe pressure valve. */
+    evq_reset(&q);
+    for (int i = 0; i < 200; i++) {
+        struct logit_event k = mk(EV_KEY, i, 0);
+        evq_push(&q, &k);
+    }
+    for (int i = 0; i < 200; i++) evq_pop(&q, &e);
+    for (int i = 0; i < EVQ_N - 1; i++) {
+        struct logit_event x = mk((i & 1) ? EV_KEY : EV_MOUSE_MOVE, i, i);
+        evq_push(&q, &x);
+    }
+    unsigned long long evicted_before = evq_evicted_motion();
+    drops_before = evq_dropped();
+    { struct logit_event up = mk(EV_MOUSE_UP, 700, 701); up.button = EV_BTN_LEFT;
+      checki(evq_push(&q, &up), EVQ_PUSH_APPENDED, "full ring admits button-up"); }
+    checki(evq_evicted_motion() - evicted_before, 1,
+           "button-up evicts one stale motion");
+    checki(evq_dropped() - drops_before, 0,
+           "button-up is not counted as dropped");
+    int found_up = 0;
+    while (evq_pop(&q, &e))
+        if (e.type == EV_MOUSE_UP && e.a == 700) found_up++;
+    checki(found_up, 1, "button-up remains observable after overload");
+
     /* --- wraparound: the modulo arithmetic has to survive the tail passing the
      *     end of the buffer, which is where a coalescing off-by-one hides. --- */
     evq_reset(&q);
@@ -141,6 +173,6 @@ int main(void)
     check(evq_coalesced() > 100000, "the coalesced counter moved");
 
     if (failures) { printf("evq_test: %d FAILURE(S)\n", failures); return 1; }
-    printf("evq_test: ok (FIFO, flood coalescing, click survival, no cross-merge, wraparound, overflow accounting)\n");
+    printf("evq_test: ok (FIFO, flood coalescing, release priority, wraparound, overflow accounting)\n");
     return 0;
 }

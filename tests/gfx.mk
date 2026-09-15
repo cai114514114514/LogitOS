@@ -1,5 +1,6 @@
 # ============================================================================
 # Open Logit -- the 2D rendering engine (c/lib/gfx). Tests and cost.
+include tests/openlogit.mk
 #
 # THE BAR IS A NUMBER, NOT A PICTURE. Every filled shape is compared against a
 # 16x16 supersampled evaluation of its own analytic predicate, and every blend
