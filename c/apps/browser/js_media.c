@@ -832,7 +832,7 @@ static JSValue js_m_call(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     switch (m) {
     case M_PLAY:  mel_play(el); arm_pump();
                   mlog("play() [key %d]", key); break;
-    case M_PAUSE: mel_pause(el); break;
+    case M_PAUSE: mel_pause(el); mlog("pause() [key %d]", key); break;
     case M_LOAD:  mel_load(el); arm_pump(); break;
     }
     return JS_UNDEFINED;
@@ -980,10 +980,15 @@ int js_media_pump(JSContext *ctx)
         struct mel_stats st;
         mel_get_stats(el, &st);
         if (!st.frames_decoded && !st.audio_frames_written && !mel_error(el)) continue;
-        mlog("stats key=%d shown=%lld decoded=%lld audio=%lld t=%.3f rs=%d err=%d",
+        mlog("stats key=%d shown=%lld decoded=%lld audio=%lld t=%.3f rs=%d err=%d aq=%lld ap=%lld wait=%d wp=%.3f avail=%d frame=%dx%d rgb=%d box=%d,%d,%d,%d,%d blit=%lld",
              mel_key(el), st.frames_shown, st.frames_decoded,
              st.audio_frames_written, mel_current_time(el),
-             mel_ready_state(el), mel_error(el));
+             mel_ready_state(el), mel_error(el), st.audio_frames_queued,
+             st.audio_frames_played, st.pending_wait,
+             (double)st.wait_pts_ns / 1e9, st.sound_avail_bytes,
+             st.frame_width, st.frame_height, st.frame_rgb_mean,
+             st.box_valid, st.box_x, st.box_y, st.box_width, st.box_height,
+             st.frame_blits);
     }
 
     /* The queued `sourceopen`. FIRST in the pump, before any append event: a
@@ -1040,6 +1045,7 @@ int js_media_pump(JSContext *ctx)
         struct { unsigned bit; const char *name; } tab[] = {
             { MEV_LOADEDMETADATA, "loadedmetadata" },
             { MEV_DURATIONCHANGE, "durationchange" },
+            { MEV_LOADEDDATA,     "loadeddata" },
             { MEV_CANPLAY,        "canplay" },
             { MEV_PLAYING,        "playing" },
             { MEV_TIMEUPDATE,     "timeupdate" },
@@ -1050,6 +1056,7 @@ int js_media_pump(JSContext *ctx)
         };
         for (unsigned k = 0; k < sizeof tab / sizeof tab[0]; k++) {
             if (!(ev & tab[k].bit)) continue;
+            mlog("event key=%d %s", mel_key(el), tab[k].name);
             for (int w = 0; w < MAXWRAP; w++) {
                 if (!g_elwrap[w].key) continue;
                 JSValue f = JS_GetPropertyStr(ctx, g_elwrap[w].obj, "__mediaFire");

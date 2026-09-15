@@ -208,7 +208,8 @@ enum {
     MEV_SEEKED         = 1u << 5,
     MEV_ENDED          = 1u << 6,
     MEV_ERROR          = 1u << 7,
-    MEV_DURATIONCHANGE = 1u << 8
+    MEV_DURATIONCHANGE = 1u << 8,
+    MEV_LOADEDDATA     = 1u << 9
 };
 unsigned mel_take_events(melem *el);
 melem   *mel_at(int i);                     /* iterate live elements, NULL past the end */
@@ -217,6 +218,14 @@ struct mel_stats {
     long long frames_decoded, frames_shown, frames_dropped, resyncs;
     long long drift_mean_ns, drift_max_ns, drift_min_ns;
     long long audio_frames_written;
+    /* Live-clock diagnostics.  `audio_frames_written` above is cumulative;
+     * these describe the current stream after a seek and make a frozen audio
+     * master distinguishable from a decoder stall in guest serial evidence. */
+    long long audio_frames_queued, audio_frames_played, wait_pts_ns;
+    int pending_wait, sound_avail_bytes;
+    long long frame_blits;
+    int frame_width, frame_height, frame_rgb_mean;
+    int box_valid, box_x, box_y, box_width, box_height;
     long long appends, bytes_appended, reparses;
 };
 void mel_get_stats(const melem *el, struct mel_stats *out);

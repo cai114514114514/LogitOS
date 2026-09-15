@@ -941,6 +941,7 @@ struct melem {
     unsigned char *rgba;
     int    fw, fh, fcap;
     int    have_frame, frame_new;
+    long long frame_blits;
 
     /* where the painter last put us, in device pixels */
     int    bx, by, bw, bh, cx, cy, cw, ch, box_valid;
@@ -1203,6 +1204,29 @@ void mel_get_stats(const melem *el, struct mel_stats *out)
     out->drift_mean_ns = el->clk.drift_n ? el->clk.drift_sum_ns / el->clk.drift_n : 0;
     out->drift_max_ns = el->clk.drift_max_ns;
     out->drift_min_ns = el->clk.drift_min_ns;
+    out->audio_frames_queued = el->aframes_written;
+    out->audio_frames_played = (el->snd >= 0 && g_plat && g_plat->snd_played)
+        ? g_plat->snd_played(el->snd) : -1;
+    out->wait_pts_ns = el->wait_pts;
+    out->pending_wait = el->pending_wait;
+    out->sound_avail_bytes = (el->snd >= 0 && g_plat && g_plat->snd_avail)
+        ? g_plat->snd_avail(el->snd) : -1;
+    out->frame_blits = el->frame_blits;
+    out->frame_width = el->fw;
+    out->frame_height = el->fh;
+    out->box_valid = el->box_valid;
+    out->box_x = el->bx; out->box_y = el->by;
+    out->box_width = el->bw; out->box_height = el->bh;
+    if (el->rgba && el->fw > 0 && el->fh > 0) {
+        long pixels = (long)el->fw * el->fh;
+        long sum = 0;
+        int samples = pixels < 64 ? (int)pixels : 64;
+        for (int i = 0; i < samples; i++) {
+            long p = (long)i * pixels / samples;
+            sum += el->rgba[p * 4] + el->rgba[p * 4 + 1] + el->rgba[p * 4 + 2];
+        }
+        out->frame_rgb_mean = samples ? (int)(sum / (samples * 3)) : 0;
+    }
     if (el->ms) {
         for (int i = 0; i < el->ms->nsb; i++) {
             out->appends += el->ms->sb[i]->appends;
@@ -1594,6 +1618,7 @@ static void mel_present(melem *el)
     if (!el->box_valid || !el->have_frame || !g_plat->blit) return;
     if (g_plat->clip) g_plat->clip(el->cx, el->cy, el->cw, el->ch);
     g_plat->blit(el->bx, el->by, el->bw, el->bh, el->rgba, el->fw, el->fh);
+    el->frame_blits++;
     if (g_plat->clip) g_plat->clip(0, 0, 0, 0);
     if (g_plat->flush) g_plat->flush();
 }
@@ -1618,6 +1643,7 @@ void media_paint_key(int key, int x, int y, int w, int h,
         if (dh < 1) dh = 1;
         if (g_plat->fill && (dw < w || dh < h)) g_plat->fill(x, y, w, h, 0x000000);
         g_plat->blit(x + (w - dw) / 2, y + (h - dh) / 2, dw, dh, el->rgba, el->fw, el->fh);
+        el->frame_blits++;
     } else if (g_plat->fill) {
         g_plat->fill(x, y, w, h, 0x000000);
     }
@@ -2116,7 +2142,13 @@ int media_pump(void)
         }
         if (el->ready_state < HAVE_FUTURE_DATA && mel_has_future_data(el)) {
             el->ready_state = HAVE_FUTURE_DATA;
-            el->events |= MEV_CANPLAY;
+            /* HAVE_CURRENT_DATA was skipped because the demuxer exposes the
+             * complete first future sample in one step, but the observable
+             * event sequence may not skip with it.  `loadeddata` is the
+             * player's signal that a frame at the current position exists;
+             * production controls use it to remove their loading cover before
+             * accepting the click which starts playback. */
+            el->events |= MEV_LOADEDDATA | MEV_CANPLAY;
         }
         if (el->paused || el->ended) continue;
         if (!el->playing) { el->playing = 1; el->events |= MEV_PLAYING; }

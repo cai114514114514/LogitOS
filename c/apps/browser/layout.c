@@ -3577,6 +3577,44 @@ static int layout_block_contents(struct node *n, int x, int y, int w)
         }
     }
 #endif
+#ifndef LAYOUT_NEGCTL_REPLACED_SELF
+    /* A replaced element can arrive here as ITSELF instead of as a child in
+     * flow.  Absolute positioning and flex/grid allocation all do that: the
+     * parent has already chosen its border-box width, then calls layout_block
+     * for the allocated node.  Descending into a video/canvas's empty child
+     * list loses the replaced content, so no IT_VIDEO/IT_CANVAS ever reaches
+     * the painter even though the media decoder has real pixels ready.
+     *
+     * Keep the assigned width (the same contract as the img/control branches
+     * around this one) and resolve the height from CSS, the HTML attribute,
+     * or the CSS replaced-element default.  Returning the content bottom in
+     * layout_block's coordinate convention lets the absolute/flex/grid owner
+     * close the one border box it already opened; this branch must not open a
+     * duplicate box record. */
+    if (n->type==N_ELEM && n->style &&
+        (tag_eq(n->tag,"video") || tag_eq(n->tag,"audio") || tag_eq(n->tag,"canvas"))) {
+        struct cstyle *st=n->style;
+        int audio=tag_eq(n->tag,"audio");
+        int bh=spec_h(st,height_basis(n));
+        if (bh<0 && !st->has_h) {
+            const char *ha=dom_attr(n,"height");
+            if(ha&&*ha)bh=to_border_h(st,atoi_(ha));
+        }
+        if(audio && bh<0 && !st->has_w && !dom_attr(n,"width")) {
+            g_mhoist=0;
+            return y;                       /* an unstyled audio has no visual box */
+        }
+        if(bh<0)bh=to_border_h(st,REPLACED_DEFAULT_HEIGHT);
+        int bw=w+hextra(st);if(bw<0)bw=0;
+        struct item *it=additem(tag_eq(n->tag,"canvas")?IT_CANVAS:IT_VIDEO,n);
+        if(it) {
+            it->x=x-cx_off(st);it->y=y-cy_off(st);it->w=bw;it->h=bh;
+            it->hidden=st->hidden;it->opacity=st->opacity;
+        }
+        g_mhoist=0;
+        return y+bh-vextra(st);
+    }
+#endif
 #ifndef LAYOUT_NO_SELF_CONTROL
     /* The old flow_node/layout_flow control branches covered only CHILDREN.
      * Flex, grid and positioned items enter here as the node itself: the guest
