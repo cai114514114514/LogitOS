@@ -1,4 +1,0 @@
-{
- "gate": null,
- "why": "clicked the dock tile for browser (Browser) at (800,753): no [wm] launched line within 90s -- the click hit nothing (the wallpaper or the gap between icons) and looked exactly like a slow launch"
-}

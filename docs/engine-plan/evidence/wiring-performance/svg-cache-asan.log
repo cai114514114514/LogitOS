@@ -1,4 +1,0 @@
-FAIL: one SVG decode across nested flex measurement trials
-FAIL: new layout rechecks source instead of keeping stale pixels
-svg layout cache: 11 checks, 2 failures; 316 decodes
-svg layout cache: 11 checks, 0 failures; 174 decodes

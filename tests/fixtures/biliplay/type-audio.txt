@@ -1,1 +1,0 @@
-audio/mp4; codecs="mp4a.40.2"

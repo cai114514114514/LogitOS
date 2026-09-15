@@ -1,3 +1,0 @@
-# Font fixtures are binary: never let autocrlf touch them.
-*.otf binary
-*.ttf binary

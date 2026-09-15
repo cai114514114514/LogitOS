@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkwebpack_fixture=self.webpackChunkwebpack_fixture||[]).push([[480],{480(e,u,a){function c(){return"lazy chunk loaded"}a.d(u,{lazyMessage:()=>c})}}]);

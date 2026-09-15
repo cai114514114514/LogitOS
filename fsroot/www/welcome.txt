@@ -1,3 +1,0 @@
-LogitOS can serve this file over HTTP.
-Use GET for the whole file or Range: bytes=0-35 for a selected fragment.
-In the LogitOS browser, downloads go to /download.

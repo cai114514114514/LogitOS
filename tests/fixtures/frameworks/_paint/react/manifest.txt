@@ -1,3 +1,0 @@
-/assets/Lazy-BryBQQ5a.js	../../react/s001.js
-/assets/index-BYxshc5p.js	../../react/s002.js
-/_paint.js	../paint.js

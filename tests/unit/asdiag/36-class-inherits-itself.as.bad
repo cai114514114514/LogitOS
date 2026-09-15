@@ -1,3 +1,0 @@
-class A(A):
-    def f(self):
-        return 1

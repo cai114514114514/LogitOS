@@ -1,3 +1,0 @@
-/assets/Lazy-CHo_L64c.js	../../vue/s001.js
-/assets/index-Dakxvxl6.js	../../vue/s002.js
-/_paint.js	../paint.js

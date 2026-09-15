@@ -1,1 +1,0 @@
-function e(){return`lazy chunk loaded`}export{e as lazyMessage};

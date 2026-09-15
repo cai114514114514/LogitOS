@@ -1,1 +1,0 @@
-resourceExecuted.push('first');
