@@ -31,7 +31,10 @@ def main():
     ap.add_argument('--network-worker', action='store_true')
     ap.add_argument('--ports', action='store_true', help='transfer a real Window port and pump native Worker channels')
     ap.add_argument('--tab-roundtrip', action='store_true', help='recreate embedded runtime after visiting a differently restricted tab')
+    ap.add_argument('--focus', action='store_true', help='require real child element focus and subsequent native keyboard delivery')
     args = ap.parse_args()
+    if args.focus:
+        args.ports = True
     if args.ports:
         args.network_worker = True
     if args.network_worker:
@@ -150,6 +153,12 @@ else if(e.data==='clicked')channel.port1.postMessage('clicked');else throw Error
 fetch('/body.txt').then(r=>r.text()).then(function(s){if(s!=='owned-frame-response')throw Error('body');fetchReady=true;ready()});
 button.addEventListener('click',function(e){if(!e.isTrusted)throw Error('native click');
 button.textContent='FRAME-CLICKED';childWorker.postMessage('clicked')});""" % json.dumps(parent_origin)
+                if args.focus:
+                    text = text.replace("button.textContent='FRAME-CLICKED';childWorker.postMessage('clicked')",
+                                        "button.blur();button.focus();if(document.activeElement!==button)throw Error('focus owner');button.textContent='FRAME-CLICKED';childWorker.postMessage('clicked')")
+                    text = text.replace("button.textContent='FRAME-GUEST-PASS';console.log('FRAME-CHILD-MESSAGE-PASS')",
+                                        "if(document.activeElement!==button)throw Error('focus lost across message');button.textContent='FRAME-GUEST-PASS';console.log('FRAME-CHILD-MESSAGE-PASS')")
+                    text += "button.addEventListener('keydown',function(e){if(e.isTrusted&&e.key==='x'&&document.activeElement===button){button.textContent='FRAME-KEY-PASS';console.log('FRAME-FOCUS-KEY-PASS')}});"
                 if args.large_script:
                     text = '/*' + 'x' * (1024 * 1024) + '*/' + text
             elif path == '/worker-entry.js':
@@ -286,6 +295,13 @@ button.textContent='FRAME-CLICKED';childWorker.postMessage('clicked')});""" % js
         if args.ports:
             wait('FRAME-WINDOW-PORT-HANDOFF-PASS')
             result['window_port_transfer_and_worker_channel_passed'] = True
+        if args.focus:
+            since = len(log())
+            ui.key('x')
+            wait('FRAME-FOCUS-KEY-PASS', since=since)
+            wait(r'^\[dl\] \d+,\d+ FRAME-KEY-PASS\r?$', since=since)
+            capture(ui, 'focus-key-pass')
+            result['child_element_focus_and_native_key_passed'] = True
         if args.tab_roundtrip:
             # Do not let old painted lines satisfy the second load. The
             # separate log boundary is as important as clearing a host recorder.

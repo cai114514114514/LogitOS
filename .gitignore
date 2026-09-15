@@ -188,6 +188,13 @@ work-*/
 docs/reports/**/*.aex
 docs/reports/**/*.pcm
 docs/reports/**/*.wav
+# And the same three under the pre-move spelling. Writing only the docs/ form was
+# not enough: a report written at the old path after the move slipped 26.9 MB of
+# .pcm and .wav past the rule and into a commit, found by listing the objects a
+# push would carry rather than by the rule doing its job.
+reports/**/*.aex
+reports/**/*.pcm
+reports/**/*.wav
 
 # Playwright's CLI cache, written at the repo root by the website's test run.
 # website/.gitignore already excludes it inside that directory; this catches the

@@ -171,3 +171,28 @@ af61ced6a88e9b2c00850ca0e97b054e41ade84f6fbc2986065f4599c9daa242  disk.img
 第一次 `guest-tab-policy` 保留为失败：观察到其它页面首帧便发送切换按键，当时同步加载尚未完成，串口中没有出现恢复加载，最终缺少第二次 FRAME-READY，驱动超时并退出其 PID 66341。没有将超时当成成功或只凭等待超时重启尚活进程。驱动新增明确的 `load-complete` 围栏后，在同一二进制和磁盘上复测。
 
 `guest-tab-policy-final/results.json` 为 PASS，`restored-embedded-pass.png` 已目视核对：第二次父子端口回调及实际绘制文字均来自恢复后的串口区间；`/parent` **1 次**、`/other` **1 次**、`/child` **2 次**，证明顶层 HTML 真正复用且 child 重新载入。新 headless PID 70928 已由驱动正常收尾，人工演示窗口 PID 28565 仍运行。本轮未更换该人工窗口的磁盘或 JS 状态，未访问或操作公共验证服务，验证码人工结果和真实搜索结果仍未获得。
+
+## 第八阶段：子文档原生焦点、键盘目标与 CSS 焦点状态
+
+上段“未操作公共验证服务”描述的是第七阶段，不能套用于本阶段：随后在旧 PID 28565 的真实组件上只点击了一次启动复选框，未选择挑战答案、未提交验证。原生事件暴露 `focus is not a function (it is undefined)`；截图 `challenge-open-fuhnc1a9/after.png` 没有图像挑战。这是通用 HTMLElement 能力缺失：子页面不安装仍依赖全局编辑表的 js_forms，因而连 focus/blur 也缺失。
+
+焦点 holder、节点代次和事件派发器现由独立 `focus_context` 持有，随 `js_page_context` 切换，不把子节点泄漏给父文档。`embedded_focus.inc` 安装真实 `focus()`、`blur()`、`document.activeElement`，复用原生可聚焦性、焦点事件与销毁检查。同步样式变更先解析子页面自己的 CSS；已激活页面的 CSS 上下文启用交互代次。父文档的焦点在退出子页面 JS 栈后提交到 iframe 元素，后续原生键盘事件使用子页面 holder。重入焦点处理器切换目标时，不再对已失去焦点的旧目标发送后续 focusin。没有主机名分支、空操作 focus shim、伪造验证状态或复制第三方浏览器信号。
+
+边界：尚无完整的子页面原生文本编辑、焦点滚入视口、focus-visible、嵌套浏览上下文和各文档独立 modal/top-layer。此阶段不能称为完整 HTML 聚焦算法。
+
+`frame-focus-complete-gates.log`：`active-focus` 普通和 ASan/UBSan 通过，消费者检查事件顺序、activeElement、disabled/inert/隐藏/断开节点拒绝、负 tabindex、删除回退、事件重入，以及父子消息往返后的实际键盘目标和 `:focus` 绘制颜色。两个负对照都实际变红：去掉安装报 `blur is not a function`；强制共享 owner 报 `blur owner`；两者都失去点击后画面、父消息及键盘/CSS 消费者，共 3 项断言失败。负对照是正门禁的先决条件。既有 `active-ports-restore` 通过；focus-style-flush 正常 9/0，两个预期负对照各 9/3。
+
+`frame-focus-regression.log`：Page contexts 34/0，worker-context 31/0，test-mk-wired 378 fragments / 377 reachable / 1 declared。源码检查通过。构建显式更新 browser.aex，未重写旧客机持有的磁盘。复制后的私有磁盘第一次打包因共享 Makefile 新增但本隔离 BUILD 中不存在的 as-typed-capture.aex 而拒绝，失败记录保留；重试仅从临时打包命令移除此无关测试程序，不修改 Makefile，成功保留 5 个用户状态 inode。
+
+```text
+a5f85e3b776ba913973b3b19f54154653a923cfc56a93ed944521e045239195c  focus-work.stTdFk/browser.aex
+3adae602751da79281ad201e42427508765c2c73039cb0c7a033d32c4f03b7e1  focus-work.stTdFk/disk.img
+```
+
+客机驱动新增 `--focus`，本地消费者要求原生 click 触发 blur/focus、跨端口/Worker 往返后仍持有焦点，再用真实键盘 x 绘制 FRAME-KEY-PASS。`guest-frame-focus/focus-key-pass.png` 已目视核对；随后不同 CSP 标签往返也重新完成了消息和画面消费者。公共页面观察及启动控制的实测结果将在下文追加，以上本地门禁不代表公共验证或搜索成功。
+
+本阶段客机最终记录：`guest-frame-focus/results.json` 中五项消费者均 true，公共搜索验收仍为 false；`/parent` 1 次，`/other` 1 次，child/script/Worker/import 各 2 次，body 4 次。PID 75210 保持运行，QMP `/tmp/active-frame-z97m59kw/qmp.sock`，使用上述独立磁盘；旧 PID 28565 的磁盘与进程均未动。页面 `public-observation.png` 显示真实官方 demo 的内嵌复选框，而非挑战题。
+
+在驱动退出、释放 QMP 后，根据已检查截图，仅向新客机的启动框发送一次原生点击（198,542），没有选题或点击 Submit。串口边界为第 80894 字节之后；`public-after-start.png` 已目视核对：复选框仍在，尚未出现题目。新边界中未重现 `focus is not a function`，仍有 3 次 `cannot read property 'parse' of undefined`。这支持“焦点异常不再重现”，不支持“验证完成”或“已能人工做题”。启动前已经存在同类 parse 异常及超时，因此也不能仅凭点击后日志认定全部由本次点击引发。
+
+下一缺口尚未定位 receiver：源码确认旧同源 iframe 的 `makeWindow()` 仍返回不转发新 realm 内建对象的外观对象，而子页面的 legacy-frame installer 仍被隔离关闭；这是需要独立最小消费者验证的候选原因，不是 parse 异常的已证实根因。不能把父页面 JSON 塞入其中冒充独立 realm，也不能据此声称已支持同源跨文档访问。本阶段未改这些接口。
