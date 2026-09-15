@@ -2,5 +2,6 @@
 #define EXECHOST_PMM_H
 #include <stdint.h>
 uint64_t pmm_alloc(void);
+uint64_t pmm_alloc_any(void);
 void     pmm_free(uint64_t phys);
 #endif

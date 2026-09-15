@@ -36,13 +36,13 @@
    * High string bilibili offers, no to the AV1 string it offers alongside. */
   var YES = ['video/mp4; codecs="avc1.640033"',
              'video/mp4; codecs="avc1.4d401e"',
-             'video/mp4; codecs="hvc1.1.6.L120.90"',
-             'audio/mp4; codecs="mp4a.40.2"'];
+             'audio/mp4; codecs="mp4a.40.2"',
+             'audio/mp4; codecs="mp4a.40.5"'];
   var NO  = ['video/mp4; codecs="av01.0.08M.08.0.110.01.01.01.0"',
              'video/mp4; codecs="vp09.00.10.08"',
              'video/webm; codecs="vp9,opus"',
              'audio/mp4; codecs="opus"',
-             'audio/mp4; codecs="mp4a.40.5"'];
+             'video/mp4; codecs="hvc1.1.6.L120.90"'];
   if (typeof MediaSource === 'undefined') { log('FAIL no MediaSource'); return; }
   var bad = 0;
   for (var i = 0; i < YES.length; i++)

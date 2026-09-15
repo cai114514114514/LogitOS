@@ -17,6 +17,10 @@
 #        run-nic-test.sh build/logit.iso build/disk.img virtio-net-pci virtio-net
 
 set -u
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Exercise parser refusals before booting: only complete CLI records separated
+# by known kernel diagnostics may join, never arbitrary decimal fragments.
+python3 "$ROOT/tests/unit/dma_nic_parse_test.py" || exit 1
 
 ISO="${1:?usage: run-nic-test.sh <iso> <disk.img> <qemu-device> <driver-name>}"
 DISK="${2:?usage: run-nic-test.sh <iso> <disk.img> <qemu-device> <driver-name>}"
@@ -79,7 +83,7 @@ PORT="$(cat "$PORTFILE")"
 QPID=$!
 
 for _ in $(seq 1 400); do
-    grep -aq "http bytes 32768 fnv1a" "$LOG" && break
+    grep -aq "fnv1a" "$LOG" && break
     kill -0 "$QPID" 2>/dev/null || break
     sleep 0.1
 done
@@ -103,7 +107,11 @@ BOUND="$(grep -ao '\[net\] NIC bound: .*' "$LOG" | head -1 | \
 [ -n "$BOUND" ] || fail "no NIC was bound at all"
 [ "$BOUND" = "$DRV" ] || fail "expected driver '$DRV', the registry bound '$BOUND'"
 grep -aq "\[dhcp\] bound 10.0.2.15" "$LOG" || fail "driver '$DRV' bound but got no DHCP lease"
-grep -aq "http bytes 32768 fnv1a" "$LOG" || fail "DHCP lease taken but the 32768-byte HTTP body never completed"
+# Keep LOG untouched. The guest's separate write syscalls can be interleaved by
+# e.g. "[mm] fork...": the old one-line grep rejected a real 32768-byte reply.
+# The parser requires rc=0/status=2 AND exact length/hash, and only removes known
+# diagnostic records between complete write tokens (never inside a number).
+python3 "$ROOT/tests/boot/nic_http_result.py" "$LOG" || fail "DHCP lease taken but the exact HTTP body/checksum was not observed"
 
 # Every driver in the NIC line now reports link state once at probe (each
 # prints "[<drv>] link: UP" or "...DOWN" the first time its rx path runs,

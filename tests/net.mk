@@ -180,6 +180,14 @@ test-dns-negctl:
 
 .PHONY: test-unix test-unix-host test-unix-negctl
 
+# AEX authenticated channel lifecycle, using actual Unix and file/FD code.
+# Temporary negative fixtures precede the positive run even under make -j.
+.PHONY: test-agent-channel-host test-agent-channel-negctl
+test-agent-channel-negctl:
+	@python3 tests/unit/agent_channel_test.py --build $(BUILD)/agent-channel --negative
+test-agent-channel-host: test-agent-channel-negctl
+	@python3 tests/unit/agent_channel_test.py --build $(BUILD)/agent-channel --positive
+
 UNIX_INC := -Itests/unit/unixstub -Ic/net/core -Iinclude/abi -Ic/fs
 
 # -D_FORTIFY_SOURCE=0 IS NOT TIDINESS AND IT IS NOT OPTIONAL ON THIS HOST.
@@ -210,7 +218,7 @@ test-unix-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra $(UNIX_HOSTDEF) -o $(BUILD)/unix_test \
 		tests/unit/unix_test.c $(UNIX_INC)
-	@./$(BUILD)/unix_test
+	@$(BUILD)/unix_test
 
 # THREE CONTROLS, EACH WATCHED FAILING AND EACH ON ITS OWN EXACT COUNT.
 #
@@ -257,7 +265,7 @@ test-unix-negctl:
 	  set -- $$spec; d=$$1; want=$$2; shift 2; name="$$*"; \
 	  $(CC) -O2 -w $(UNIX_HOSTDEF) -D$$d -o $(BUILD)/unix_nc_$$d \
 	      tests/unit/unix_test.c $(UNIX_INC); \
-	  if ./$(BUILD)/unix_nc_$$d >$(BUILD)/unix_nc_$$d.log 2>&1; then \
+	  if $(BUILD)/unix_nc_$$d >$(BUILD)/unix_nc_$$d.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the suite passes with -D$$d"; fail=1; \
 	  else \
 	    got=`grep -c '^FAIL' $(BUILD)/unix_nc_$$d.log`; \
@@ -618,9 +626,63 @@ ci-boot: test-netlock
 # make test-net-video DELAY=0   -- the near-zero-RTT arm for comparison
 .PHONY: test-net-video
 
+# Actual /bin/net consumers, through the host's file/socket syscall adapter.
+# --gc-sections / -dead_strip is the same identity-only HTTP link contract as
+# the product; no fake inflater is linked. Sanitizers cover the shipped parser
+# and primitives here; BIOS/device evidence lives in the companion boot gate.
+NET_CONSUMER_SRC := c/apps/coreutils/net.c tests/unit/net_cli_host.c \
+                    $(filter-out c/apps/libc/%,$(NET_CLI_SRC))
+NET_CONSUMER_INC := -Ic/apps -Ic/crypto -Ic/crypto/hash -Ic/net/http -Iinclude/abi
+# Do not depend on another fragment defining a make comma helper.
+NET_CONSUMER_COMMA := ,
+NET_CONSUMER_GC := $(if $(filter Darwin,$(shell uname -s)),-Wl$(NET_CONSUMER_COMMA)-dead_strip,-Wl$(NET_CONSUMER_COMMA)--gc-sections)
+NET_CONSUMER_CF := -O1 -g -Wall -Wextra -fsanitize=address,undefined \
+    -fno-sanitize-recover=all -ffunction-sections -fdata-sections \
+    -DNET_FETCH_TIMEOUT_MS=5000 -include tests/unit/net_cli_host.h $(NET_CONSUMER_INC)
+NET_CONSUMER_DEPS := $(NET_CONSUMER_SRC) tests/unit/net_cli_host.h \
+    c/apps/coreutils/net_digest.inc c/apps/coreutils/net_fetch.inc c/apps/download_name.h \
+    c/crypto/crypto.h c/crypto/hash/blake3.h c/crypto/hash/blake2b.h c/net/http/http1.h
+
+$(BUILD)/net-consumer-host: $(NET_CONSUMER_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(NET_CONSUMER_CF) $(NET_CONSUMER_GC) $(NET_CONSUMER_SRC) -o $@
+$(BUILD)/net-consumer-negative: $(NET_CONSUMER_DEPS)
+	@mkdir -p $(BUILD)
+	$(CC) $(NET_CONSUMER_CF) $(NET_CONSUMER_GC) -DNET_DIGEST_NEGCTL $(NET_CONSUMER_SRC) -o $@
+
+.PHONY: test-net-consumers test-net-consumers-negctl test-net-consumers-os test-net-consumers-tls-os
+test-net-consumers: test-net-consumers-negctl
+test-net-consumers-negctl: $(BUILD)/net-consumer-host $(BUILD)/net-consumer-negative
+	python3 tests/unit/net_consumers_run.py --binary $(BUILD)/net-consumer-host
+	python3 tests/unit/net_consumers_run.py --binary $(BUILD)/net-consumer-negative --negative
+
+$(BUILD)/net-consumers-guest.elf: tests/unit/net_consumers_guest.c $(APPDIR)/clib.h $(APPDIR)/logit.h $(APPDIR)/crt0_cli.asm
+	@mkdir -p $(BUILD)/apps
+	$(CC) $(UCFLAGS) -c $< -o $(BUILD)/apps/net-consumers-guest.o
+	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/net-consumers-guest.crt.o
+	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $@ $(BUILD)/apps/net-consumers-guest.crt.o $(BUILD)/apps/net-consumers-guest.o
+
+test-net-consumers-os: test-net-consumers $(ISO) $(DISK) $(BUILD)/net-consumers-guest.elf
+	python3 tests/boot/run-net-consumers.py --build $(BUILD)
+test-net-consumers-tls-os: test-net-consumers $(ISO) $(DISK) $(BUILD)/net-consumers-guest.elf
+	python3 tests/boot/run-net-consumers.py --build $(BUILD) --tls
+ci-host: test-net-consumers
+ci-boot: test-net-consumers-os test-net-consumers-tls-os
+
 test-net-video: $(ISO) $(DISK)
 	@bash tests/boot/run-net-ab.sh --disk $(DISK) \
 	    --arm e1000:$(ISO):e1000 \
 	    --arm virtio:$(ISO):virtio-net-pci:virtio-net \
 	    --reps $(if $(REPS),$(REPS),5) --delay $(if $(DELAY),$(DELAY),15) \
 	    --bytes $(if $(BYTES),$(BYTES),917504)
+
+# The former absent lsock_file_poll weak hook returned NVAL for valid Unix
+# descriptors. Test real Unix/lsock/poll/wait code, including query-to-sleep
+# registration and named-datagram capacity wakes; each semantic control must
+# fail by its named assertion before the positive suite or agent gate runs.
+.PHONY: test-unix-poll test-unix-poll-negctl
+test-unix-poll-negctl:
+	python3 tests/unit/unix_poll_test.py --build $(BUILD)/unix-poll --negative
+test-unix-poll: test-unix-poll-negctl
+	python3 tests/unit/unix_poll_test.py --build $(BUILD)/unix-poll
+test-agent: test-unix-poll

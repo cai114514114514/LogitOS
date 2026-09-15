@@ -213,7 +213,10 @@ static void test_rtl8169_descriptors(void)
 static const struct { const char *name; const struct dev_match *ids; } nic_drivers[] = {
     { "virtio-net", virtio_net_ids },
     { "e1000",      e1000_ids      },
+    { "e1000e",     e1000e_ids     },
+    { "e1000-pch2", e1000_pch2_ids },
     { "rtl8139",    rtl8139_ids    },
+    { "pcnet",      pcnet_ids      },
     { "rtl8169",    rtl8169_ids    },
 };
 #define NDRV ((int)(sizeof nic_drivers / sizeof nic_drivers[0]))
@@ -241,6 +244,19 @@ static void test_match_tables(void)
           "82545EM binds the e1000 driver");
     CHECK(resolve(0x8086, 0x1004) && !strcmp(resolve(0x8086, 0x1004), "e1000"),
           "82544GC binds the e1000 driver");
+    /* Formerly both cards were unclaimed. Include the new real tables in
+     * this resolver too: merely #including net_ids.inc left these tests green
+     * while the production driver registry had already changed. */
+    CHECK(resolve(0x8086, 0x10D3) && !strcmp(resolve(0x8086, 0x10D3), "e1000e"),
+          "82574L binds its PCIe e1000e driver");
+    CHECK(resolve(0x8086, 0x10F6) && !strcmp(resolve(0x8086, 0x10F6), "e1000e"),
+          "82574LA binds the same 82574 family driver");
+    CHECK(resolve(0x8086, 0x1502) && !strcmp(resolve(0x8086, 0x1502), "e1000-pch2"),
+          "82579LM resolves to guarded PCH2 probe");
+    CHECK(resolve(0x8086, 0x1503) && !strcmp(resolve(0x8086, 0x1503), "e1000-pch2"),
+          "82579V resolves to guarded PCH2 probe");
+    CHECK(resolve(0x1022, 0x2000) && !strcmp(resolve(0x1022, 0x2000), "pcnet"),
+          "PCnet PCI binds the AMD style2 driver");
     CHECK(resolve(0x10EC, 0x8139) && !strcmp(resolve(0x10EC, 0x8139), "rtl8139"),
           "RTL8139 binds the rtl8139 driver");
     CHECK(resolve(0x10EC, 0x8169) && !strcmp(resolve(0x10EC, 0x8169), "rtl8169"),
@@ -256,13 +272,16 @@ static void test_match_tables(void)
      * matches too widely is worse than one that matches too narrowly: the card
      * enumerates, the link never comes up, and nothing says why. This is also
      * why none of these tables uses DEV_MATCH_CLASS(PCI_CLASS_NETWORK, 0). */
-    CHECK(!resolve(0x8086, 0x10D3), "82574L/e1000e is NOT claimed by the e1000 driver");
+    struct device newer = { .bus_type = DEV_BUS_PCI, .vendor = 0x8086, .device = 0x10D3 };
+    CHECK(!dev_match_table(e1000_ids, &newer), "82574L is NOT claimed by the legacy e1000 driver");
+    CHECK(!resolve(0x8086, 0x153B), "PCH I217-V is not claimed by the 82574 driver");
+    CHECK(!resolve(0x8086, 0x15B8), "PCH I219-V is not claimed by the 82574 driver");
+    CHECK(!resolve(0x8086, 0x1533), "igb I210 is not claimed by the 82574 driver");
     CHECK(!resolve(0x1AF4, 0x1001), "virtio-blk is not a NIC");
     CHECK(!resolve(0x1AF4, 0x1050), "virtio-gpu is not a NIC");
     CHECK(!resolve(0x10EC, 0x8129), "the RTL8129 is not claimed");
     CHECK(!resolve(0x1234, 0x1111), "QEMU's stdvga is not a NIC");
     CHECK(!resolve(0x10EC, 0x8029), "an ne2k_pci (10EC:8029) is left unclaimed");
-    CHECK(!resolve(0x1022, 0x2000), "a pcnet is left unclaimed");
     CHECK(!resolve(0xFFFF, 0xFFFF), "an absent PCI slot matches nothing");
     CHECK(!resolve(0x0000, 0x0000), "the terminator row is not a match");
 
@@ -330,4 +349,4 @@ uint16_t pci_cfg_read16(uint8_t b, uint8_t s, uint8_t f, uint16_t o)
 void pci_cfg_write16(uint8_t b, uint8_t s, uint8_t f, uint16_t o, uint16_t v)
 { (void)b; (void)s; (void)f; (void)o; (void)v; }
 const char *pci_class_name(uint8_t c, uint8_t s) { (void)c; (void)s; return "test"; }
-void dev_irq_release(struct device *d) { (void)d; }
+int dev_irq_release(struct device *d) { (void)d; return 0; }

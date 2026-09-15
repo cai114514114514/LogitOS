@@ -101,14 +101,15 @@ check_type() {
 check_type yes 'avc1.640033'
 check_type yes 'avc1.4d401e'
 check_type yes 'avc1.42E01E'
-check_type yes 'hvc1.1.6.L120.90'
+check_type no  'hvc1.1.6.L120.90'
 check_type yes 'mp4a.40.2'
 check_type yes 'mp4a.40.34'
 check_type no  'av01.0.08M.08'
 check_type no  'vp09.00.10.08'
 check_type no  'vp9,opus'
 check_type no  'codecs="opus"'
-check_type no  'mp4a.40.5'
+check_type yes 'mp4a.40.5'
+check_type no  'mp4a.40.29'
 check_type no  'avc1.6E0033'
 
 # --- 2. the refusal reaches addSourceBuffer -------------------------------

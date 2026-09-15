@@ -1,13 +1,23 @@
 #include "clib.h"
+#include <stdlib.h>
+#include <string.h>
+#include "net_digest.inc"
+#include "net_fetch.inc"
 
 /* `net` -- the networking CLI (replaces the old Network GUI app; runs in the
  * Terminal's shell). Subcommands:
  *   net [info]        show IP / mask / gateway / MAC
  *   net ping          ping the gateway, print the round-trip time
  *   net dns <host>    resolve a hostname to an IPv4 address
- *   net get <url>     fetch HTTP(S), print body length + FNV-1a checksum
- * Ping/DNS are non-blocking in the kernel; we poll + sys_yield so the WM loop
- * pumps net_poll (the RX path) between polls. */
+ *   net get <url> [algorithm hex]      fetch and optionally verify a digest
+ *   net save <url> <path> algorithm hex  verify then save (overwrites path)
+ *   net download <url> [algorithm hex]  save under /download, no clobber
+ *   net checksum algorithm <file|->    hash a file or stdin incrementally
+ *   net verify algorithm hex <file|->  compare with a published checksum
+ * Algorithms: sha256, sha512, blake2b (512 bits), blake3 (256 bits).
+ * The old global HTTP syscall / 128 KiB prefix was replaced by http1's
+ * per-process parser; net_fetch.inc owns the socket, framing and completion.
+ * IRQ/softirq advances the network while these CLI commands yield. */
 
 static void ip_print(unsigned ip)        /* host order: a.b.c.d */
 {
@@ -37,12 +47,8 @@ static int do_info(void)
     return 0;
 }
 
-/* Seconds-of-day, for coarse wall-clock timeouts (RTC has 1 s resolution). */
-static int now_secs(void)
-{
-    struct logit_time t; get_time(&t);
-    return t.hour * 3600 + t.minute * 60 + t.second;
-}
+/* Subtract uptime, not the adjustable RTC (or midnight looks like timeout). */
+static unsigned long long now_secs(void) { return monotonic_ms() / 1000; }
 
 static int do_ping(void)
 {
@@ -51,13 +57,13 @@ static int do_ping(void)
     outs("ping "); ip_print(ni.gw); outs(" ...\n");
     /* The first send returns -1 until ARP resolves, so (re)send once a second and
      * poll for the reply (net_poll runs on the WM thread while we yield). */
-    int t0 = now_secs(), last = -1;
+    unsigned long long t0 = now_secs(), last = t0 - 1;
     for (;;) {
         int rtt = net_ping_rtt();
         if (rtt >= 0) { outs("reply: "); outn(rtt); outs(" ms\n"); return 0; }
-        int now = now_secs();
+        unsigned long long now = now_secs();
         if (now != last) { net_ping(ni.gw); last = now; }
-        if (now - t0 < 0 || now - t0 >= 5) { outs("no reply\n"); return 1; }
+        if (now - t0 >= 5) { outs("no reply\n"); return 1; }
         sys_yield();
     }
 }
@@ -66,35 +72,17 @@ static int do_dns(const char *host)
 {
     outs("resolving "); outs(host); outs(" ...\n");
     net_dns(host);                          /* send first; polling before any query reads a stale state */
-    int t0 = now_secs(), last = t0;
+    unsigned long long t0 = now_secs(), last = t0;
     for (;;) {
         unsigned r = net_dns_result();
         if (r && r != 0xFFFFFFFFu) { ip_print(r); outc('\n'); return 0; }
-        int now = now_secs();
+        unsigned long long now = now_secs();
         /* re-send each second, or right away if the kernel reported a miss -- the
          * first query is dropped while the resolver's ARP entry is still cold. */
         if (now != last || r == 0xFFFFFFFFu) { net_dns(host); last = now; }
-        if (now - t0 < 0 || now - t0 >= 8) { outs("lookup failed\n"); return 1; }
+        if (now - t0 >= 8) { outs("lookup failed\n"); return 1; }
         sys_yield();
     }
-}
-
-#define GET_MAX (128 * 1024)
-static unsigned char get_buf[GET_MAX];
-
-static int do_get(const char *url)
-{
-    int rc = http_get(url);
-    if (rc < 0 || http_status() != 2) {
-        errs("net: fetch failed (rc="); outn_fd(2, rc); errs(")\n");
-        return 1;
-    }
-    int n = http_body((char *)get_buf, sizeof get_buf);
-    if (n < 0) { errs("net: could not read response body\n"); return 1; }
-    unsigned hash = 2166136261u;
-    for (int i = 0; i < n; i++) { hash ^= get_buf[i]; hash *= 16777619u; }
-    outs("http bytes "); outn(n); outs(" fnv1a "); outn(hash); outc('\n');
-    return 0;
 }
 
 int main(int argc, char **argv)
@@ -105,10 +93,34 @@ int main(int argc, char **argv)
         if (argc < 3) { errs("usage: net dns <host>\n"); return 1; }
         return do_dns(argv[2]);
     }
-    if (c_streq(argv[1], "get")) {
-        if (argc < 3) { errs("usage: net get <url>\n"); return 1; }
-        return do_get(argv[2]);
+    if (c_streq(argv[1], "get") && argc == 3) return do_get(argv[2], ND_SHA256, NULL, NULL, 0);
+    if(c_streq(argv[1],"download")&&(argc==3||argc==5)){
+        int alg=argc==5?nd_algorithm(argv[3]):ND_SHA256;uint8_t expected[64];
+        if(alg<0||(argc==5&&nd_expected(alg,argv[4],expected)<0)){errs("net: invalid algorithm or expected digest\n");return 1;}
+        return do_get(argv[2],alg,argc==5?expected:NULL,NULL,1);
     }
-    errs("usage: net [info | ping | dns <host> | get <url>]\n");
+    if (c_streq(argv[1], "checksum") && argc >= 4) {
+        int alg = nd_algorithm(argv[2]), rc = 0;
+        if (alg < 0) { errs("net: unsupported digest algorithm\n"); return 1; }
+        for (int i = 3; i < argc; i++) if (do_checksum(alg, argv[i], NULL)) rc = 1;
+        return rc;
+    }
+    int verify = c_streq(argv[1], "verify") && argc == 5;
+    int get = c_streq(argv[1], "get") && argc == 5;
+    int save = c_streq(argv[1], "save") && argc == 6;
+    if (verify || get || save) {
+        int pos = verify ? 2 : save ? 4 : 3;
+        int alg = nd_algorithm(argv[pos]); uint8_t expected[64];
+        if (alg < 0 || nd_expected(alg, argv[pos+1], expected) < 0) {
+            errs("net: invalid algorithm or expected digest\n"); return 1;
+        }
+        if (verify) return do_checksum(alg, argv[4], expected);
+        return do_get(argv[2], alg, expected, save ? argv[3] : NULL, 0);
+    }
+    errs("usage: net info | ping | dns HOST | get URL [ALG HEX]\n"
+         "       net download URL [ALG HEX] (saves in /download)\n"
+         "       net checksum ALG FILE... | verify ALG HEX FILE\n"
+         "       net save URL PATH ALG HEX (overwrites PATH after verification)\n"
+         "ALG: sha256, sha512, blake2b, blake3; '-' reads stdin\n");
     return 1;
 }

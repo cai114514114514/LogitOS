@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdint.h>
 
+#define LOGIT_NET_HOST 1 /* single-threaded protocol fixture; no privileged lock */
 #include "driver.h"
 #include "netdev.h"
 
@@ -50,7 +51,8 @@ static struct device devs[4] = {
 };
 static int ndev = 4;
 
-int dev_count(void) { return ndev; }
+static int device_scan_calls;
+int dev_count(void) { device_scan_calls++; return ndev; }
 struct device *dev_at(int i) { return (i >= 0 && i < ndev) ? &devs[i] : NULL; }
 
 /* The real dev_match_table lives in c/drivers/core/device.c and is covered by
@@ -110,9 +112,45 @@ static int bind_fake(struct device *dev, int which)
     return 0;
 }
 int e1000_probe(struct device *d)      { return bind_fake(d, 0); }
+void virtio_net_remove(struct device *d) { (void)d; }
+void e1000_remove(struct device *d) { (void)d; }
+void rtl8139_remove(struct device *d) { (void)d; }
+void rtl8169_remove(struct device *d) { (void)d; }
+void pcnet_remove(struct device *d) { (void)d; }
+/* This fixture has no PCnet device; a match here would be a registry bug. */
+int pcnet_probe(struct device *d) { (void)d; return -1; }
+void e1000e_remove(struct device *d) { (void)d; }
+int e1000e_probe(struct device *d) { (void)d; return -1; }
+void e1000_pch2_remove(struct device *d) { (void)d; }
+int e1000_pch2_probe(struct device *d) { (void)d; return -1; }
 int virtio_net_probe(struct device *d) { return bind_fake(d, 1); }
 int rtl8139_probe(struct device *d)    { return bind_fake(d, 2); }
 int rtl8169_probe(struct device *d)    { return bind_fake(d, 3); }
+
+/* Capture the actual production registration calls, then invoke their actual
+ * callback. Register state is synthetic; netdev_irq_route and its trampoline
+ * are included below without substitutes. One device can reject a request to
+ * verify polling fallback, retries, and restoration of the global preference. */
+static irq_handler_t irq_callbacks[NFAKE];
+static void *irq_args[NFAKE];
+static int irq_requests, irq_wrong_mode, irq_reject = 0;
+static int irq_preference = DEV_IRQ_MSIX;
+int dev_irq_prefer(int mode)
+{
+    int old = irq_preference;
+    if (mode >= DEV_IRQ_INTX && mode <= DEV_IRQ_MSIX) irq_preference = mode;
+    return old;
+}
+int dev_irq_request(struct device *d, irq_handler_t fn, void *arg, const char *name)
+{
+    int i = (int)(d - devs);
+    irq_requests++;
+    if (irq_preference != DEV_IRQ_INTX) irq_wrong_mode++;
+    if (i < 0 || i >= NFAKE || !fn || !name || i == irq_reject) return -1;
+    irq_callbacks[i] = fn; irq_args[i] = arg;
+    d->irq_mode = DEV_IRQ_INTX; d->irq_vec = (int16_t)(96 + i);
+    return d->irq_vec;
+}
 
 #include "route.c"
 #include "netdev.c"
@@ -134,6 +172,16 @@ int main(void)
 #endif
     int rc = netdev_init();
     CHECK(rc == 0, "netdev_init bound a NIC");
+
+    /* A late legacy init call must not bypass the runtime device owner. */
+    int before = netif_count();
+    int scans_before = device_scan_calls;
+    const struct driver *old_driver = devs[0].drv;
+    devs[0].drv = NULL;
+    CHECK(netdev_init() == rc && netif_count() == before && devs[0].drv == NULL
+          && device_scan_calls == scans_before,
+          "late init cannot repeat the raw boot probe or duplicate interfaces");
+    devs[0].drv = old_driver;
 
     /* ---- loopback is a real interface, and it is first ------------------ */
     struct netif *lo = netif_by_index(RT_OIF_LO);
@@ -199,10 +247,51 @@ int main(void)
     CHECK(counted[0].irq == 1 && counted[1].irq == 1 && counted[2].irq == 1,
           "netdev_irq acks every card -- PCI INTx lines are shared");
     netdev_irq_enable(NULL);
-    CHECK(counted[0].irq_en == 1 && counted[1].irq_en == 1 && counted[2].irq_en == 1,
-          "netdev_irq_enable arms every card");
+    CHECK(counted[0].irq_en == 0 && counted[1].irq_en == 0 && counted[2].irq_en == 0,
+          "early callback installation keeps all NIC interrupt sources masked");
     CHECK(netdev_irq_line() == 10,
-          "netdev_irq_line is still the primary's line (smp.c wires one entry)");
+          "legacy netdev_irq_line still reports the primary's firmware line");
+
+    int targets = 0;
+    for (int i = 0; i < NFAKE; i++) if (devs[i].drv) targets++;
+    int rejected = devs[0].drv != NULL;
+    CHECK(netdev_irq_route() == targets - rejected,
+          "failed IRQ registration leaves that NIC polled and routes the others");
+    CHECK(irq_requests == targets,
+          "every bound interrupt NIC uses device-model registration");
+    CHECK(irq_wrong_mode == 0 && irq_preference == DEV_IRQ_MSIX,
+          "NIC registration uses supported INTx and restores the global preference");
+    CHECK(devs[0].irq_mode == DEV_IRQ_NONE && irq_callbacks[0] == NULL,
+          "a rejected IRQ request does not publish a callback or mode");
+    CHECK(irq_callbacks[3] == NULL,
+          "unbound PCI cards and loopback do not acquire NIC interrupt handlers");
+    CHECK(counted[0].irq_en == 0 && counted[1].irq_en == 1 &&
+          counted[2].irq_en == (devs[2].drv != NULL) && counted[3].irq_en == 0,
+          "only successfully routed NICs unmask their interrupt sources");
+    irq_reject = -1;
+    int requests_before = irq_requests;
+    CHECK(netdev_irq_route() == targets && irq_requests == requests_before + rejected,
+          "retry wires only the failed NIC and reuses existing registrations");
+    requests_before = irq_requests;
+    CHECK(netdev_irq_route() == targets && irq_requests == requests_before,
+          "repeated NIC IRQ routing does not allocate duplicate handlers");
+    CHECK(counted[0].irq_en == rejected && counted[1].irq_en == 1 &&
+          counted[2].irq_en == (devs[2].drv != NULL),
+          "retry arms the failed NIC once and repeat routing does not rearm others");
+    int snapshot[NFAKE];
+    for (int i = 0; i < NFAKE; i++) snapshot[i] = counted[i].irq;
+    if (irq_callbacks[1]) irq_callbacks[1](irq_args[1]);
+    CHECK(counted[1].irq == snapshot[1] + 1 && counted[0].irq == snapshot[0] &&
+          counted[2].irq == snapshot[2] && counted[3].irq == snapshot[3],
+          "registered callback dispatches only its own PCI NIC");
+    void *old_data = devs[1].drvdata;
+    devs[1].drvdata = NULL;
+    if (irq_callbacks[1]) irq_callbacks[1](irq_args[1]);
+    devs[1].drvdata = old_data; devs[1].unbinding = 1;
+    if (irq_callbacks[1]) irq_callbacks[1](irq_args[1]);
+    devs[1].unbinding = 0;
+    CHECK(counted[1].irq == snapshot[1] + 1,
+          "detached or retiring PCI bindings do not enter stale NIC callbacks");
 
     /* ---- addresses are the INTERFACE's, plural --------------------------- */
     CHECK(netif_addr_add(RT_OIF_NIC0, IPV4T(10,0,2,15), IPV4T(255,255,255,0)) == 0,

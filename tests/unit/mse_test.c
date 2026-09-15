@@ -194,10 +194,14 @@ static const struct tcase g_types[] = {
     { "video/mp4; codecs=\"avc1.4d401e\"", 1, "H.264 Main -- profile_idc 77" },
     { "video/mp4; codecs=\"avc1.42E01E\"", 1, "H.264 Baseline -- profile_idc 66" },
     { "video/mp4; codecs=\"avc3.640028\"", 1, "avc3 is avc1 with inband SPS/PPS" },
-    { "video/mp4; codecs=\"hvc1.1.6.L120.90\"", 1,
-      "HEVC Main L4.0 -- bilibili's own string; h265_nal.c gates on 8..10 bit 4:2:0" },
-    { "video/mp4; codecs=\"hev1.2.4.L120.90\"", 1, "HEVC Main 10 -- the decoder does 10-bit" },
+    { "video/mp4; codecs=\"hvc1.1.6.L120.90\"", 0,
+      "HEVC Main L4.0 -- the browser decoder still rejects legal B-frame "
+      "patterns used by bilibili, so the profile cannot be advertised" },
+    { "video/mp4; codecs=\"hev1.2.4.L120.90\"", 0,
+      "HEVC Main 10 -- elementary-stream subsets decode, not the full profile" },
     { "audio/mp4; codecs=\"mp4a.40.2\"", 1, "AAC-LC -- aac.c's whole subject" },
+    { "audio/mp4; codecs=\"mp4a.40.5\"", 1,
+      "HE-AAC v1 -- AAC core plus SBR, 2048 output samples at the ASC output rate" },
     { "audio/mp4; codecs=\"mp4a.40.34\"", 1, "MP3 in MP4 -- mp3_decode is frame-incremental" },
     { "video/mp4; codecs=\"avc1.640033,mp4a.40.2\"", 1, "both codecs in one type" },
 
@@ -211,10 +215,8 @@ static const struct tcase g_types[] = {
     { "video/webm; codecs=\"vp8,vorbis\"", 0, "VP8 -- no decoder" },
     { "audio/mp4; codecs=\"opus\"", 0, "Opus -- no decoder" },
     { "audio/webm; codecs=\"vorbis\"", 0, "Vorbis: c/lib/audio has one, but never in fMP4" },
-    { "audio/mp4; codecs=\"mp4a.40.5\"", 0,
-      "HE-AAC v1 -- aac.c refuses object type 5 on purpose: the core alone is "
-      "the right samples at half the rate" },
-    { "audio/mp4; codecs=\"mp4a.40.29\"", 0, "HE-AAC v2 -- same refusal" },
+    { "audio/mp4; codecs=\"mp4a.40.29\"", 0,
+      "HE-AAC v2 -- Parametric Stereo is still refused" },
     { "audio/mp4; codecs=\"ac-3\"", 0, "AC-3 -- no decoder" },
     { "audio/mp4; codecs=\"flac\"", 0, "FLAC-in-MP4: a decoder exists, this combination has never been demuxed" },
     { "video/mp4; codecs=\"avc1.6E0033\"", 0,
@@ -256,8 +258,8 @@ static const struct dcase g_decode[] = {
     { "video/mp4; codecs=\"avc1.640033\"", "tests/fixtures/mse/whole-video.mp4", 1 },
     { "video/mp4; codecs=\"avc1.4d401e\"", "tests/fixtures/media/h264-mp3.mp4", 1 },
     { "video/mp4; codecs=\"avc1.42E01E\"", "tests/fixtures/media/h264-mp3-nobf.mp4", 1 },
-    { "video/mp4; codecs=\"hvc1.1.6.L120.90\"", "tests/fixtures/media/h265.mp4", 1 },
     { "audio/mp4; codecs=\"mp4a.40.2\"", "tests/fixtures/mse/whole-audio.mp4", 0 },
+    { "audio/mp4; codecs=\"mp4a.40.5\"", "tests/fixtures/mse/whole-he-audio.mp4", 0 },
     { "audio/mp4; codecs=\"mp4a.40.34\"", "tests/fixtures/media/h264-mp3-nobf.mp4", 0 },
 };
 
@@ -506,6 +508,119 @@ static void test_segmented(void)
     for (int i = 0; i < nv; i++) free(vseg[i].data);
     for (int i = 0; i < na; i++) free(aseg[i].data);
     mse_free(ms);
+}
+
+/* ================== 3a. audio metadata may arrive after video =========== */
+/* This is the order a network gives us, not a corner case: independent DASH
+ * SourceBuffers fetch concurrently. Bilibili's first-video specimen completed
+ * video segment 1 before audio segment 1; the first pump opened H.264 and
+ * moved readyState out of HAVE_NOTHING. The old one-shot open then ignored the
+ * AAC track forever -- 603 pictures and zero audio frames. Make that exact
+ * completion order deterministic here. */
+static void test_late_audio_track(void)
+{
+    printf("\n== an audio SourceBuffer becoming ready after video still opens ==\n");
+    world_reset();
+    long vin = 0, vsn = 0, ain = 0, asn = 0;
+    unsigned char *vi = slurp_fx("init-video.mp4", &vin);
+    unsigned char *vs = slurp_fx("video-1.m4s", &vsn);
+    unsigned char *ai = slurp_fx("init-audio.mp4", &ain);
+    unsigned char *as = slurp_fx("audio-1.m4s", &asn);
+    if (!vi || !vs || !ai || !as) {
+        CHECK(0, "late-track fixtures are present");
+        free(vi); free(vs); free(ai); free(as);
+        return;
+    }
+
+    melem *el = mel_for_key(1, 1);
+    msource *ms = mse_new();
+    char url[64];
+    int err = 0;
+    mse_object_url(ms, url, sizeof url);
+    mel_attach_url(el, url);
+    sbuf *vb = mse_add_source_buffer(ms,
+            "video/mp4; codecs=\"avc1.640033\"", &err);
+    sbuf *ab = mse_add_source_buffer(ms,
+            "audio/mp4; codecs=\"mp4a.40.2\"", &err);
+    CHECK(vb && ab, "the split video/audio SourceBuffers attach");
+    if (!vb || !ab) goto out;
+
+    sb_append(vb, vi, vin);
+    sb_append(vb, vs, vsn);
+    media_paint_key(1, 0, 0, 256, 192, 0, 0, 800, 600);
+    mel_play(el);
+    for (int i = 0; i < 200 && mel_ready_state(el) == 0; i++) {
+        media_pump();
+        advance(2000000LL);
+    }
+    CHECK(mel_ready_state(el) >= 1,
+          "video alone advanced readyState before audio media arrived");
+    struct mel_stats before;
+    mel_get_stats(el, &before);
+    CHECK(before.audio_frames_written == 0,
+          "the ordering point really precedes audio (%lld frames)",
+          before.audio_frames_written);
+
+    sb_append(ab, ai, ain);
+    sb_append(ab, as, asn);
+    mse_end_of_stream(ms, 0);
+    struct mel_stats after;
+    memset(&after, 0, sizeof after);
+    for (int i = 0; i < 20000 && after.audio_frames_written == 0; i++) {
+        media_pump();
+        advance(2000000LL);
+        mel_get_stats(el, &after);
+    }
+    CHECK(after.audio_frames_written > 0,
+          "late AAC track opened and wrote audio (%lld frames)",
+          after.audio_frames_written);
+
+out:
+    free(vi); free(vs); free(ai); free(as);
+    mse_free(ms);
+}
+
+/* A production MSE player waits for canplay while the media element is still
+ * paused, then calls play(). Requiring play first makes both sides wait for the
+ * other and leaves a fully buffered black rectangle forever. */
+static void test_paused_canplay(void)
+{
+    printf("\n== buffered MSE reaches canplay before play() ==\n");
+    world_reset();
+    long vin = 0, vsn = 0, ain = 0, asn = 0;
+    unsigned char *vi = slurp_fx("init-video.mp4", &vin);
+    unsigned char *vs = slurp_fx("video-1.m4s", &vsn);
+    unsigned char *ai = slurp_fx("init-audio.mp4", &ain);
+    unsigned char *as = slurp_fx("audio-1.m4s", &asn);
+    if (!vi || !vs || !ai || !as) {
+        CHECK(0, "paused-canplay fixtures are present");
+        goto out;
+    }
+
+    melem *el = mel_for_key(1, 1);
+    msource *ms = mse_new();
+    char url[64]; int err = 0;
+    mse_object_url(ms, url, sizeof url);
+    mel_attach_url(el, url);
+    sbuf *vb = mse_add_source_buffer(ms,
+            "video/mp4; codecs=\"avc1.640033\"", &err);
+    sbuf *ab = mse_add_source_buffer(ms,
+            "audio/mp4; codecs=\"mp4a.40.2\"", &err);
+    CHECK(vb && ab, "paused element has video and audio SourceBuffers");
+    if (!vb || !ab) { mse_free(ms); goto out; }
+    sb_append(vb, vi, vin); sb_append(vb, vs, vsn);
+    sb_append(ab, ai, ain); sb_append(ab, as, asn);
+    CHECK(mel_paused(el), "element is still paused before the player reacts");
+    media_pump();
+    unsigned ev = mel_take_events(el);
+    CHECK(mel_ready_state(el) >= 3,
+          "buffered future samples advance readyState while paused (%d)",
+          mel_ready_state(el));
+    CHECK((ev & MEV_LOADEDMETADATA) && (ev & MEV_CANPLAY),
+          "loadedmetadata and canplay are both observable before play()");
+    mse_free(ms);
+out:
+    free(vi); free(vs); free(ai); free(as);
 }
 
 /* ============== 3b. the same stream on a machine too slow for it ======== */
@@ -1014,6 +1129,8 @@ int main(int argc, char **argv)
     test_types();
     test_decodes();
     test_segmented();
+    test_late_audio_track();
+    test_paused_canplay();
     test_slow_machine();
     test_incremental_identity();
     test_modes();
