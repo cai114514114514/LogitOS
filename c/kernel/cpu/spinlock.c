@@ -1,50 +1,31 @@
 #include "spinlock.h"
-#include "percpu.h"      /* this_cpu (BKL owner tracking) */
-#include "kbench.h"      /* g_kb_stat: BKL wait/hold accounting, off by default */
-#include "tlb.h"         /* tlb_service(): a spin with IF=0 must still answer a shootdown */
-#include "serial.h"      /* the bad-release detector prints without taking a lock */
+#ifdef LOGIT_LOCK_HOST
+/* Architecture seam only: host tests execute the production ticket protocol. */
+extern int logit_lock_host_cpu(void);
+extern void tlb_service(void);
+extern void serial_putc(char);
+static int lock_cpu(void) { return logit_lock_host_cpu(); }
+#else
+#include "percpu.h"
+#include "tlb.h"
+#include "serial.h"
+static int lock_cpu(void) { return this_cpu()->index; }
+#endif
 
-/* Big Kernel Lock: a single lock taken on every entry into kernel code (P0). */
-spinlock_t g_bkl = SPINLOCK_INIT;
-
-/* The CPU index that currently holds g_bkl, or -1. Set the instant the lock is
- * acquired and cleared the instant before it is released -- always from inside
- * the lock primitive, where IF is already 0 (spin_lock_irqsave cli's; the bare
- * re-acquire/release sites cli around themselves). interrupt_handler keys its
- * "am I already in the kernel?" decision off THIS, not a separate in_kernel flag:
- * because the owner tracks true lock ownership (no wide window), a nested IRQ that
- * lands in any in_kernel transition gap still sees owner==me and won't try to
- * re-acquire the BKL this core holds (which would self-deadlock the ticket lock). */
-volatile int g_bkl_owner = -1;
-
-/* BKL ACCOUNTING (kbench.h). "The big kernel lock is the concurrency model" is
- * a design statement; "the four cores spent N ms waiting for it and M ms
- * holding it, and P% of acquisitions had to wait" is the thing that decides
- * whether removing it is the next piece of work. Nothing else in the tree could
- * answer that, so the lock counts itself.
- *
- * Only g_bkl, and only when armed: the disabled path adds one pointer compare
- * (which spin_lock already made below, so it is a reorder rather than a new
- * instruction) and one load of a global. No rdtsc, no call. */
-static inline void bkl_acquired(int idx, uint64_t t0, int waited)
-{
-    if (idx < 0 || idx >= KB_MAXCPU) return;
-    uint64_t t1 = kb_rdtsc();
-    g_kb[idx].bkl_acq++;
-    g_kb[idx].bkl_contended += (uint64_t)(waited != 0);
-    g_kb[idx].bkl_wait += t1 - t0;
-    g_kb[idx].bkl_t0 = t1;
-}
-
+/* Correction (2026-09-10): the global entry lock is gone. Each
+ * caller supplies the lock belonging to the object it protects. */
 void spin_lock(spinlock_t *l)
 {
-    unsigned int my = __atomic_fetch_add(&l->ticket, 1, __ATOMIC_SEQ_CST);
-    int stat = (l == &g_bkl) && g_kb_stat;
-    int waited = 0;
-    uint64_t t0 = stat ? kb_rdtsc() : 0;
-    while (__atomic_load_n(&l->serving, __ATOMIC_SEQ_CST) != my) {
-        waited = 1;
+    /* Tickets order contenders; observing our serving value is the acquire.
+     * There is only one writer of serving while owned, so releasing needs
+     * a store, not an extra locked read-modify-write/cache-line round trip. */
+    unsigned int my = __atomic_fetch_add(&l->ticket, 1, __ATOMIC_RELAXED);
+    while (__atomic_load_n(&l->serving, __ATOMIC_ACQUIRE) != my) {
+#if defined(__x86_64__) || defined(__i386__)
         __asm__ volatile ("pause");
+#else
+        __asm__ volatile ("" ::: "memory");
+#endif
         /* A core waiting here has IF=0 and cannot take an interrupt -- which is
          * precisely why tlb_flush_all() had to give up on it and why the real
          * TLB shootdown was never wired into vmm_free_space. It can still read
@@ -54,12 +35,8 @@ void spin_lock(spinlock_t *l)
         tlb_service();
     }
     l->owner_ra  = (unsigned long)__builtin_return_address(0);
-    l->owner_cpu = this_cpu()->index;
-    if (l == &g_bkl) {
-        int idx = l->owner_cpu;
-        g_bkl_owner = idx;
-        if (stat) bkl_acquired(idx, t0, waited);
-    }
+    l->owner_cpu = lock_cpu();
+
 }
 
 
@@ -82,68 +59,69 @@ void spin_lock(spinlock_t *l)
  * takes a lock could be the second half of the very deadlock it is reporting.
  * serial_putc is lock-free and bounded (it drops the byte on a wedged UART).
  * ========================================================================== */
-static void bkl_puts(const char *m) { while (m && *m) serial_putc(*m++); }
+static void lock_puts(const char *m) { while (m && *m) serial_putc(*m++); }
+
+/* The CPU table now has 32 slots.  Keep this diagnostic lock-free, but print
+ * the complete index so a bad release on CPU 30 cannot masquerade as CPU 6. */
+static void lock_put_uint(unsigned int value)
+{
+    char digits[10];
+    unsigned int used = 0;
+    do {
+        digits[used++] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value && used < sizeof digits);
+    while (used) serial_putc(digits[--used]);
+}
 
 /* serving is about to pass ticket -- see the call site. */
-static void bkl_desync(const spinlock_t *l, void *ra)
+static void lock_desync(const spinlock_t *l, void *ra)
 {
     static volatile int said;
     if (said) return;
     said = 1;
-    bkl_puts("[bkl] BUG: unlock with ticket==serving at ra=0x");
+    lock_puts("[lock] BUG: unlock with ticket==serving at ra=0x");
     for (int sh = 60; sh >= 0; sh -= 4) {
         int d = (int)(((unsigned long)ra >> sh) & 15);
         serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
     }
-    bkl_puts(" lock=0x");
+    lock_puts(" lock=0x");
     for (int sh = 60; sh >= 0; sh -= 4) {
         int d = (int)(((unsigned long)l >> sh) & 15);
         serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
     }
-    bkl_puts(" -- serving passes ticket; every later acquirer spins forever\r\n");
+    lock_puts(" -- serving passes ticket; every later acquirer spins forever\r\n");
 }
 
-static void bkl_bad_release(int me, int owner, void *ra)
+static void lock_bad_release(int me, int owner, void *ra)
 {
     static volatile int said;
     if (said) return;                 /* one line: the first one is the cause */
     said = 1;
-    bkl_puts("[bkl] BUG: cpu ");
-    serial_putc((char)('0' + (me & 7)));
-    bkl_puts(" released a BKL held by ");
-    if (owner < 0) bkl_puts("nobody"); else serial_putc((char)('0' + (owner & 7)));
-    bkl_puts(", ra=0x");
+    lock_puts("[lock] BUG: cpu ");
+    lock_put_uint((unsigned int)me);
+    lock_puts(" released a lock held by ");
+    if (owner < 0) lock_puts("nobody");
+    else lock_put_uint((unsigned int)owner);
+    lock_puts(", ra=0x");
     for (int sh = 60; sh >= 0; sh -= 4) {
         int d = (int)(((unsigned long)ra >> sh) & 15);
         serial_putc((char)(d < 10 ? '0' + d : 'a' + d - 10));
     }
-    bkl_puts(" -- a later acquirer will wait for a ticket that is never served\r\n");
+    lock_puts(" -- a later acquirer will wait for a ticket that is never served\r\n");
 }
 
 void spin_unlock(spinlock_t *l)
 {
-    if (l == &g_bkl) {
-        int idx = g_bkl_owner;
-        int me  = this_cpu()->index;
-        if (idx != me) bkl_bad_release(me, idx, __builtin_return_address(0));
-        /* bkl_t0 == 0 means the accounting was armed AFTER this acquisition, so
-         * there is no start timestamp to subtract. Skipping it loses one sample
-         * per core at arm time; using it would credit the lock with every cycle
-         * since boot. */
-        if (g_kb_stat && idx >= 0 && idx < KB_MAXCPU && g_kb[idx].bkl_t0) {
-            g_kb[idx].bkl_hold += kb_rdtsc() - g_kb[idx].bkl_t0;
-            g_kb[idx].bkl_t0 = 0;
-        }
-        g_bkl_owner = -1;
-    }
+
     /* EVERY lock, not just the BKL. A ticket lock released by a core that does
      * not hold it advances  past a ticket nobody has, and from then on
      * SOME LATER ACQUIRER WAITS FOR A NUMBER THAT WILL NEVER BE SERVED -- on a
      * lock whose ticket==serving reads as free. That is a freeze with no
      * evidence in it, arbitrarily far from the release that caused it, which is
      * why this check is here and not in a debug build. */
-    if (l->owner_cpu != this_cpu()->index)
-        bkl_bad_release(this_cpu()->index, l->owner_cpu, __builtin_return_address(0));
+    if (l->owner_cpu != lock_cpu())
+        lock_bad_release(lock_cpu(), l->owner_cpu, __builtin_return_address(0));
     /* AND THE DESYNC ITSELF, caught at the instant it is created. A releaser
      * necessarily holds a ticket -- its own -- so `ticket` is at least one
      * ahead of `serving` here, ALWAYS. If they are equal, this serving++ is
@@ -159,10 +137,10 @@ void spin_unlock(spinlock_t *l)
     {
         unsigned int sv = __atomic_load_n(&l->serving, __ATOMIC_SEQ_CST);
         unsigned int tk = __atomic_load_n(&l->ticket,  __ATOMIC_SEQ_CST);
-        if (sv == tk) bkl_desync(l, __builtin_return_address(0));
+        if (sv == tk) lock_desync(l, __builtin_return_address(0));
     }
     l->owner_cpu = -1;
-    __atomic_fetch_add(&l->serving, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&l->serving, __atomic_load_n(&l->serving, __ATOMIC_RELAXED) + 1, __ATOMIC_RELEASE);
 }
 
 /* Ticket-lock trylock: the lock is free iff ticket==serving; claim it by
@@ -177,19 +155,19 @@ int spin_trylock(spinlock_t *l)
                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
         return 0;
     l->owner_ra  = (unsigned long)__builtin_return_address(0);
-    l->owner_cpu = this_cpu()->index;
-    if (l == &g_bkl) {
-        int idx = l->owner_cpu;
-        g_bkl_owner = idx;
-        if (g_kb_stat) bkl_acquired(idx, kb_rdtsc(), 0);   /* never waits: wait == 0 */
-    }
+    l->owner_cpu = lock_cpu();
+
     return 1;
 }
 
 uint64_t spin_lock_irqsave(spinlock_t *l)
 {
     uint64_t flags;
+#ifdef LOGIT_LOCK_HOST
+    flags = 0;
+#else
     __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+#endif
     spin_lock(l);
     return flags;
 }
@@ -197,6 +175,10 @@ uint64_t spin_lock_irqsave(spinlock_t *l)
 void spin_unlock_irqrestore(spinlock_t *l, uint64_t flags)
 {
     spin_unlock(l);
+#ifndef LOGIT_LOCK_HOST
     if (flags & 0x200)              /* restore IF only if the caller had it set */
         __asm__ volatile ("sti");
+#else
+    (void)flags;
+#endif
 }

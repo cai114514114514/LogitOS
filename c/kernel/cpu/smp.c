@@ -1,3 +1,4 @@
+#include "tlb.h"
 /* SMP bring-up + a parallel framebuffer present.
  *
  * Stage 1: detect CPUs (ACPI) + enable the BSP's LAPIC.
@@ -11,19 +12,23 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "smp.h"
+#include "smp_boot_model.h"
+#include "smp_topology.h"
 #include "acpi.h"
 #include "lapic.h"
+#include "cpu_platform.h"
 #include "ioapic.h"
 #include "idt.h"
 #include "pic.h"
 #include "vmm.h"
 #include "fb.h"
-#include "e1000.h"
+#include "netdev.h"
 #include "kprintf.h"
 #include "percpu.h"
 #include "sched.h"
 #include "spinlock.h"
 #include "prot.h"       /* cpu_prot_report: EFER/CR4 are per-core, so this is too */
+#include "ktime.h"
 
 void *memcpy(void *, const void *, size_t);
 void *kmalloc(unsigned long);
@@ -32,7 +37,7 @@ void  kfree(void *);
 extern uint8_t ap_tramp_start[], ap_tramp_end[];
 
 #define TRAMP_PHYS 0x8000
-#define AP_ARGS    ((volatile uint64_t *)0x8F00)   /* cr3 @0, stack @1, entry @2 */
+#define AP_ARGS    ((volatile uint64_t *)0x8F00)   /* cr3, stack, entry, claimed slot */
 #define AP_STACK   (64 * 1024)
 #define MAXCPU     ACPI_MAX_CPUS
 
@@ -49,14 +54,177 @@ extern uint8_t ap_tramp_start[], ap_tramp_end[];
 static volatile int g_sched_ready = 0;
 void smp_mark_sched_ready(void) { __atomic_store_n(&g_sched_ready, 1, __ATOMIC_SEQ_CST); }
 
-static uint8_t  cpu_apicid[MAXCPU];     /* index -> APIC id; index 0 = BSP */
 static volatile int g_online = 1;       /* CPUs online (incl. BSP) */
-static volatile int ap_ack;             /* bringup handshake */
+static volatile int g_ap_state[MAXCPU]; /* fixed-slot bring-up handshakes */
 static volatile int g_via_apic;         /* device IRQs go through the I/O APIC */
+static struct smp_topology_record g_topology[MAXCPU];
+
+#ifndef SMP_AP_WAIT_STALL_SPINS
+#define SMP_AP_WAIT_STALL_SPINS 100000000L
+#endif
+
+static int wait_ap_terminal(int slot)
+{
+    uint64_t start = time_mono_raw_ns(), last = start;
+    long stalled = 0;
+    for (;;) {
+        int state = __atomic_load_n(&g_ap_state[slot], __ATOMIC_ACQUIRE);
+        if (state != SMP_AP_CLAIMED && state != SMP_AP_PUBLISHING) return state;
+        uint64_t now = time_mono_raw_ns();
+        if (now - start >= 1000000000ull) return state;
+        if (now == last) {
+            if (++stalled >= SMP_AP_WAIT_STALL_SPINS) return state;
+        } else {
+            last = now;
+            stalled = 0;
+        }
+        __asm__ volatile ("pause");
+    }
+}
 
 int smp_irq_via_apic(void) { return g_via_apic; }
 
-int smp_cpu_count(void) { return g_online; }
+int smp_cpu_count(void)
+{
+    return __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+}
+
+int smp_cpu_topology_get(int index, struct smp_topology_record *out)
+{
+    int online = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+    if (!out || index < 0 || index >= online || index >= MAXCPU ||
+        !g_topology[index].present)
+        return -1;
+    *out = g_topology[index];
+    return 0;
+}
+
+void smp_topology_get_summary(struct smp_topology_summary *out)
+{
+    int online = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+    if (online < 0) online = 0;
+    if (online > MAXCPU) online = MAXCPU;
+    smp_topology_summarize(g_topology, (size_t)online, out);
+}
+
+static void capture_topology(int slot, uint32_t apic_id)
+{
+    struct cpu_platform_core_info core = {0};
+    int decoded = cpu_platform_current_core(&core);
+    uint8_t source = core.topology.leaf_1f ? SMP_TOPOLOGY_LEAF_1F :
+                     core.topology.leaf_b ? SMP_TOPOLOGY_LEAF_B :
+                     core.topology.valid ? SMP_TOPOLOGY_LEGACY : SMP_TOPOLOGY_NONE;
+    struct smp_topology_sample sample = {
+        .valid = decoded == 0 && core.valid && core.topology.valid,
+        .hybrid = core.hybrid,
+        .native_model_valid = core.native_model_valid,
+        .madt_apic_id = apic_id,
+        .cpuid_apic_id = core.topology.x2apic_id,
+        .package_id = core.topology.package_id,
+        .core_id = core.topology.core_id,
+        .thread_id = core.topology.thread_id,
+        .native_model_id = core.native_model_id,
+        .core_class = (uint8_t)core.type,
+        .source = source,
+    };
+    int stored = smp_topology_store(g_topology, MAXCPU, (size_t)slot, &sample);
+    if (stored != 0) {
+        kprintf("[smp] CPU %d apic_id=%u topology record rejected rc=%d\n",
+                slot, (unsigned)apic_id, stored);
+        return;
+    }
+    const struct smp_topology_record *r = &g_topology[slot];
+    if (r->apic_mismatch) {
+        kprintf("[smp] CPU %d MADT/LAPIC apic_id=%u != CPUID apic_id=%u; topology isolated\n",
+                slot, (unsigned)r->madt_apic_id, (unsigned)r->cpuid_apic_id);
+        return;
+    }
+    kprintf("[smp] CPU %d apic_id=%u topology=%s pkg=%u core=%u thread=%u type=%s native-valid=%d native=%x hybrid=%d\n",
+            slot, (unsigned)r->madt_apic_id,
+            smp_topology_source_name(r->source), (unsigned)r->package_id,
+            (unsigned)r->core_id, (unsigned)r->thread_id,
+            smp_core_class_name(r->core_class),
+            r->native_model_valid,
+            r->native_model_valid ? (unsigned)r->native_model_id : 0u,
+            r->hybrid);
+}
+
+static void report_topology(void)
+{
+    struct smp_topology_summary s;
+    smp_topology_get_summary(&s);
+    kprintf("[smp] topology logical=%u cores=%u p=%u/%u e=%u/%u unknown=%u/%u mismatch=%u conflict=%u\n",
+            (unsigned)s.logical, (unsigned)s.cores,
+            (unsigned)s.performance_logical, (unsigned)s.performance_cores,
+            (unsigned)s.efficiency_logical, (unsigned)s.efficiency_cores,
+            (unsigned)s.unknown_logical, (unsigned)s.unknown_cores,
+            (unsigned)s.apic_mismatches, (unsigned)s.class_conflicts);
+    /* Scheduling correctness is keyed only by the dense online slot. P-core,
+     * E-core and unknown records all receive an idle thread and timer. Topology
+     * is currently diagnostic; capacity-aware placement is future policy. */
+    kprintf("[smp] scheduler topology policy=uniform-online-cpus\n");
+}
+
+#ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
+static volatile uint32_t g_test_ipi_mask;
+static volatile uint32_t g_test_timer_mask;
+static volatile uint32_t g_test_expected_mask;
+static volatile int g_test_timer_reported;
+
+static uint32_t online_mask(int n)
+{
+    return n >= 32 ? UINT32_MAX : n > 0 ? ((1u << n) - 1u) : 0;
+}
+
+void smp_test_ipi_interrupt(void)
+{
+    int index = this_cpu()->index;
+    if (index >= 0 && index < 32)
+        __atomic_fetch_or(&g_test_ipi_mask, 1u << index, __ATOMIC_RELEASE);
+}
+
+void smp_test_timer_interrupt(void)
+{
+    int index = this_cpu()->index;
+    if (index < 0 || index >= 32) return;
+    uint32_t seen = __atomic_fetch_or(&g_test_timer_mask, 1u << index,
+                                     __ATOMIC_ACQ_REL) | (1u << index);
+    uint32_t expected = __atomic_load_n(&g_test_expected_mask, __ATOMIC_ACQUIRE);
+    if (expected && (seen & expected) == expected &&
+        __atomic_exchange_n(&g_test_timer_reported, 1, __ATOMIC_ACQ_REL) == 0)
+        kprintf("[raptor-smp] timer vector32 all-online mask=%x\n", expected);
+}
+
+static void run_test_ipi_probe(void)
+{
+    int online = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+    uint32_t expected = online_mask(online);
+    __atomic_store_n(&g_test_expected_mask, expected, __ATOMIC_RELEASE);
+    /* The BSP runs this probe before normal interrupt delivery is established,
+     * so it cannot honestly self-IPI here.  Seed only its sender bit and state
+     * the AP-only proof in the marker consumed by the guest harness. */
+    __atomic_store_n(&g_test_ipi_mask, 1u, __ATOMIC_RELEASE);
+    int sends_ok = 1;
+    for (int i = 1; i < online; i++)
+        if (lapic_send_ipi(g_cpus[i].lapic_id, 242) != 0) sends_ok = 0;
+
+    uint64_t start = time_mono_raw_ns();
+    long stalls = 0;
+    while ((__atomic_load_n(&g_test_ipi_mask, __ATOMIC_ACQUIRE) & expected) != expected &&
+           stalls++ < 100000000L) {
+        uint64_t now = time_mono_raw_ns();
+        if (start && now - start >= 1000000000ull) break;
+        __asm__ volatile ("pause");
+    }
+    uint32_t seen = __atomic_load_n(&g_test_ipi_mask, __ATOMIC_ACQUIRE);
+    if (sends_ok && (seen & expected) == expected)
+        kprintf("[raptor-smp] fixed IPI APs %d/%d observed; BSP sender\n",
+                online - 1, online - 1);
+    else
+        kprintf("[raptor-smp] fixed IPI FAILED seen=%x expected=%x sends=%d\n",
+                seen, expected, sends_ok);
+}
+#endif
 
 /* M25 P4b: parallel framebuffer present, restored on vector 241 (240 now belongs
  * to the TLB shootdown). The presenting core splits a tall rect's rows into one
@@ -74,7 +242,9 @@ static volatile int g_band_ack[PERCPU_MAXCPU];
 void smp_present_ipi(void)               /* vector-241 handler body (interrupts.c) */
 {
     int i = this_cpu()->index;
-    if (!__atomic_load_n(&g_band_ack[i], __ATOMIC_SEQ_CST)) {
+    int pending = 0;
+    if (__atomic_compare_exchange_n(&g_band_ack[i], &pending, 2, 0,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         fb_copy_rect(g_band[i].x, g_band[i].y, g_band[i].w, g_band[i].h);
         __atomic_store_n(&g_band_ack[i], 1, __ATOMIC_SEQ_CST);
     }
@@ -82,22 +252,14 @@ void smp_present_ipi(void)               /* vector-241 handler body (interrupts.
 
 static void smp_present_par(int x, int y, int w, int h)
 {
-    int n = g_online;
+    int n = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
     if (n > PERCPU_MAXCPU) n = PERCPU_MAXCPU;
     int self = this_cpu()->index;
     if (n <= 1) { fb_copy_rect(x, y, w, h); return; }
 
-    /* Contention gate: if anyone is queued on the BKL, present solo. The queued
-     * cores spin with IF=0 (irqsave) and cannot service the band IPI until the
-     * presenter -- who HOLDS the BKL -- releases it: every parallel attempt would
-     * ride the full ack timeout while keeping the BKL, starving the whole system
-     * (observed: 3 cores BKL-queued, boot-to-shell fine but smptest crawling).
-     * Parallel present thus engages exactly when it helps: big composites while
-     * the other cores are idle or in ring 3. */
-    unsigned int t = __atomic_load_n(&g_bkl.ticket,  __ATOMIC_SEQ_CST);
-    unsigned int s = __atomic_load_n(&g_bkl.serving, __ATOMIC_SEQ_CST);
-    if (t - s > 1) { fb_copy_rect(x, y, w, h); return; }
-
+    /* Correction (2026-09-10): no BKL to inspect. Framebuffer ownership
+     * serialises presenters; per-band CAS below transfers work exactly once
+     * and distinguishes an executing copy from a completed one. */
     /* Row bands, top to bottom; the presenter takes band 0 (no IPI to self).
      * Presents are serialized by the BKL, so the band table has one writer. */
     int per = h / n, yy = y;
@@ -112,7 +274,7 @@ static void smp_present_par(int x, int y, int w, int h)
     }
     __sync_synchronize();
     for (int i = 0; i < nb; i++)
-        lapic_send_ipi((uint8_t)g_cpus[band_of[i]].lapic_id, 241);
+        (void)lapic_send_ipi(g_cpus[band_of[i]].lapic_id, 241);
 
     fb_copy_rect(g_band[self].x, g_band[self].y, g_band[self].w, g_band[self].h);
 
@@ -120,14 +282,25 @@ static void smp_present_par(int x, int y, int w, int h)
     for (volatile long spin = 0; spin < 500000L; spin++) {
         int done = 1;
         for (int i = 0; i < nb; i++)
-            if (!g_band_ack[band_of[i]]) { done = 0; break; }
+            if (__atomic_load_n(&g_band_ack[band_of[i]], __ATOMIC_ACQUIRE) != 1) { done = 0; break; }
         if (done) return;
         __asm__ volatile ("pause");
     }
     for (int i = 0; i < nb; i++) {
         int c = band_of[i];
-        if (!__atomic_exchange_n(&g_band_ack[c], 1, __ATOMIC_SEQ_CST))
+        int pending = 0;
+        if (__atomic_compare_exchange_n(&g_band_ack[c], &pending, 2, 0,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
             fb_copy_rect(g_band[c].x, g_band[c].y, g_band[c].w, g_band[c].h);
+            __atomic_store_n(&g_band_ack[c], 1, __ATOMIC_RELEASE);
+        } else {
+            /* A RUNNING reader still owns the backdrop. Do not recycle its
+             * band table or framebuffer until it publishes completion. */
+            while (__atomic_load_n(&g_band_ack[c], __ATOMIC_ACQUIRE) != 1) {
+                tlb_service();
+                __asm__ volatile ("pause");
+            }
+        }
     }
 }
 
@@ -135,23 +308,27 @@ static void smp_present_par(int x, int y, int w, int h)
  * arm a periodic preemption timer, then become a full scheduling core. */
 static void ap_entry(void)
 {
-    lapic_init();                              /* maps MMIO if needed; lapic_id() now valid */
+    int idx = (int)AP_ARGS[3];
+    if (idx <= 0 || idx >= PERCPU_MAXCPU ||
+        __atomic_load_n(&g_ap_state[idx], __ATOMIC_ACQUIRE) != SMP_AP_CLAIMED) {
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+    if (lapic_init() != 0) {                   /* handed-off APIC mode must match BSP */
+        __atomic_store_n(&g_ap_state[idx], SMP_AP_REJECTED, __ATOMIC_RELEASE);
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
     idt_load();
-    /* Resolve this AP's percpu slot by lapic_id. smp_init's SIPI loop already
-     * registered g_cpus[slot].lapic_id (percpu_register_id) BEFORE starting us, so
-     * this is correct and independent of g_online (which we haven't incremented).
-     * (this_index() is unusable here: it bounds its scan by g_online.) */
+    /* The BSP put the exact claimed slot in the trampoline mailbox before the
+     * SIPI and does not start another AP until this slot reaches a terminal
+     * state.  Never derive ownership from the concurrently changing online
+     * count: a late AP would otherwise clear or publish somebody else's slot. */
     uint32_t my_id = lapic_id();
-    int idx = -1;
-    for (int i = 1; i < PERCPU_MAXCPU; i++)
-        if (g_cpus[i].lapic_id == my_id) { idx = i; break; }
-    if (idx <= 0 || idx >= PERCPU_MAXCPU) {    /* slot 0 = BSP; not found -> park idle */
-        ap_ack = 1;                            /* do NOT g_online++ here: this CPU has no
-                                                * percpu slot / g_cpus[] entry, and counting
-                                                * it would overstate smp_cpu_count(). */
-        for (;;) __asm__ volatile ("sti; hlt");
+    if (g_cpus[idx].lapic_id != my_id) {
+        __atomic_store_n(&g_ap_state[idx], SMP_AP_REJECTED, __ATOMIC_RELEASE);
+        for (;;) __asm__ volatile ("cli; hlt");
     }
     percpu_ap_init(idx, lapic_id());           /* build + load this core's GDT/TSS */
+    capture_topology(idx, my_id);               /* CPUID.1A/1F are per logical CPU */
     /* Arm the periodic LAPIC timer NOW (before parking). It both (a) wakes this AP
      * from its park `hlt` so it can re-check g_sched_ready -- nothing else sends
      * the AP an interrupt -- and (b) becomes the preemption tick once scheduling
@@ -164,15 +341,16 @@ static void ap_entry(void)
      * M25 P4 per-CPU-runqueue experiment; see the P4 spec doc). Drifted phases
      * decorrelate both. */
     lapic_timer_init(32, LAPIC_AP_TIMER_COUNT + (uint32_t)idx * (LAPIC_AP_TIMER_COUNT / 8));
-    __atomic_add_fetch(&g_online, 1, __ATOMIC_SEQ_CST);
-    kprintf("[smp] CPU %d apic_id=%d online\n", idx, (int)lapic_id());
     /* EFER and CR4 are PER-CORE. An AP whose trampoline missed the NXE/SMEP
      * writes would run ring-3 code with no NX and no SMEP while the BSP's boot
      * line claimed both were on, and nothing would ever say so. Reported per
      * core so the claim is made once per core that has to honour it. */
     cpu_prot_report("ap");
-    ap_ack = 1;
-
+    /* ONLINE release-publishes every AP-local write above.  The AP never
+     * changes g_online: the BSP owns that dense prefix and commits this slot
+     * only after an acquire observation of ONLINE. */
+    if (smp_ap_publish_online(&g_ap_state[idx]) != 0)
+        for (;;) __asm__ volatile ("cli; hlt");
     /* Park until the BSP's sched_init() has built the global ring. The timer above
      * periodically wakes the hlt so this loop re-tests g_sched_ready. */
     while (!__atomic_load_n(&g_sched_ready, __ATOMIC_SEQ_CST))
@@ -184,7 +362,6 @@ static void ap_entry(void)
      * try to re-acquire the BKL this core holds -> self-deadlock. cli first, per
      * spinlock.c's "bare re-acquire sites cli around themselves" rule. */
     __asm__ volatile ("cli");
-    spin_lock(&g_bkl);                         /* enter the kernel before first schedule() */
     this_cpu()->in_kernel = 1;
     sched_become_idle();                       /* this AP stack BECOMES the idle thread; never returns */
 }
@@ -192,54 +369,111 @@ static void ap_entry(void)
 void smp_init(void)
 {
     int n = acpi_init();
-    lapic_init();
+    if (lapic_init() != 0) {
+        kprintf("[smp] no usable local APIC; uniprocessor\n");
+        return;
+    }
     percpu_register_id(0, lapic_id());     /* BSP's real lapic_id now available */
+    capture_topology(0, lapic_id());        /* sample the BSP on the BSP */
     if (n < 1) { kprintf("[smp] no CPUs via ACPI; uniprocessor\n"); return; }
-    kprintf("[smp] %d CPU(s) detected, BSP apic_id=%d\n", n, (int)lapic_id());
+    kprintf("[smp] %d CPU(s) detected, BSP apic_id=%u\n", n, (unsigned)lapic_id());
 
     /* Switch device IRQs from the legacy PIC to the I/O APIC: route the ISA
      * lines (timer/keyboard/mouse) to the BSP and mask the PIC. EOI then goes
      * to the LAPIC (see interrupts.c). */
-    ioapic_init();
-    if (ioapic_present()) {
-        uint8_t bspid = (uint8_t)lapic_id();
-        ioapic_route_isa(0,  32, bspid);     /* PIT timer  -> vec 32 */
-        ioapic_route_isa(1,  33, bspid);     /* keyboard   -> vec 33 */
-        ioapic_route_isa(12, 44, bspid);     /* PS/2 mouse -> vec 44 */
-        int nicg = e1000_irq_line();         /* e1000 NIC -> vec 65 */
-        /* EDGE-triggered (not level): QEMU's TCG IOAPIC doesn't clear a level
-         * RTE's remote-IRR on EOI (LAPIC broadcast or directed 0x40 both fail),
-         * so a level PCI line re-fires forever after its first IRQ (~2M/s, 88%
-         * CPU). Edge has no remote-IRR: each packet is one falling edge; e1000_irq
-         * drains the whole ring per call and net_poll backstops any coalesced miss. */
-        if (nicg > 0 && nicg < 24) ioapic_route((uint32_t)nicg, 65, bspid, 0, 1);
-        pic_disable();
-        g_via_apic = 1;
-        kprintf("[ioapic] device IRQs routed via I/O APIC (NIC gsi=%d)\n", nicg);
+    int ioapic_status = ioapic_init();
+    if (ioapic_status == IOAPIC_ROUTE_UNSAFE) {
+        kprintf("[ioapic] initial mask state unsafe; stopping before PIC fallback\n");
+        for (;;) __asm__ volatile ("cli; hlt");
     }
+    if (ioapic_present()) {
+        uint32_t bspid = lapic_id();
+        int route = ioapic_route_legacy_set(bspid);
+        if (route == IOAPIC_ROUTE_OK) {
+            pic_disable();
+            g_via_apic = 1;
+            kprintf("[ioapic] device IRQs routed via I/O APIC\n");
+        } else if (route == IOAPIC_ROUTE_UNSAFE) {
+            kprintf("[ioapic] unsafe partial legacy route; stopping before PIC fallback\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        } else {
+            kprintf("[ioapic] refusing BSP device routes apic_id=%u; PIC retained\n",
+                    (unsigned)bspid);
+        }
+    }
+    /* NICs were probed before LAPIC setup. Register them now, on the sole BSP,
+     * with the same shared INTx lifecycle USB/storage use. The removed direct
+     * vector-65 route overwrote any earlier/later device sharing its GSI. */
+    (void)netdev_irq_route();
 
     memcpy((void *)TRAMP_PHYS, ap_tramp_start, (size_t)(ap_tramp_end - ap_tramp_start));
     AP_ARGS[0] = vmm_kernel_cr3();
 
     uint32_t bsp = lapic_id();
-    cpu_apicid[0] = (uint8_t)bsp;
+    g_ap_state[0] = SMP_AP_ONLINE;
     for (int i = 0; i < n; i++) {
         if (g_online >= PERCPU_MAXCPU) break;  /* no percpu slot / g_cpus[] entry beyond this */
-        uint8_t aid = acpi_cpu_apic_id(i);
+        uint32_t aid = acpi_cpu_apic_id(i);
+        if (aid == UINT32_MAX) continue;
         if (aid == bsp) continue;
+        if (!lapic_ipi_destination_supported(aid)) {
+            kprintf("[smp] CPU apic_id=%u not addressable in %s mode\n",
+                    (unsigned)aid, lapic_mode_name());
+            continue;
+        }
+        int slot = __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+        if (slot <= 0 || slot >= PERCPU_MAXCPU) break;
         uint8_t *stk = kmalloc(AP_STACK);
         if (!stk) continue;
-        cpu_apicid[g_online] = aid;        /* claim the next CPU index */
-        if (g_online < PERCPU_MAXCPU)      /* register before SIPI so ap_entry finds its slot */
-            percpu_register_id(g_online, aid);
+        percpu_register_id(slot, aid);          /* publish ID before claimed state */
         AP_ARGS[1] = (uint64_t)(stk + AP_STACK) & ~(uint64_t)0xF;
         AP_ARGS[2] = (uint64_t)ap_entry;
-        ap_ack = 0;
-        lapic_start_ap(aid, TRAMP_PHYS >> 12);
-        for (volatile long w = 0; !ap_ack && w < 200000000L; w++) __asm__ volatile ("pause");
-        if (!ap_ack) { kfree(stk); cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }
+        AP_ARGS[3] = (uint64_t)slot;
+        __atomic_store_n(&g_ap_state[slot], SMP_AP_CLAIMED, __ATOMIC_RELEASE);
+        int start_rc = lapic_start_ap(aid, TRAMP_PHYS >> 12);
+        int observed = start_rc == 0 ? wait_ap_terminal(slot) :
+                       __atomic_load_n(&g_ap_state[slot], __ATOMIC_ACQUIRE);
+        int state = observed;
+        if (state != SMP_AP_ONLINE) {
+            /* A timeout or a failed startup call is only a snapshot: the AP
+             * may have completed after it.  CAS cancellation decides the race.
+             * If ONLINE won, continue with normal validation and admission;
+             * if REJECTED won, a late AP's final publish CAS must fail. */
+            state = smp_bsp_cancel_unpublished(&g_ap_state[slot]);
+        }
+        if (state != SMP_AP_ONLINE) {
+            if (smp_ap_stack_may_free((enum smp_ap_boot_state)state, 1))
+                kfree(stk);
+            if (start_rc != 0)
+                kprintf("[smp] CPU apic_id=%u startup failed; stack quarantined\n",
+                        (unsigned)aid);
+            else if (observed == SMP_AP_REJECTED)
+                kprintf("[smp] CPU apic_id=%u rejected initialization or APIC identity; stack quarantined\n",
+                        (unsigned)aid);
+            else
+                kprintf("[smp] CPU apic_id=%u late/timeout cancelled; stack quarantined\n",
+                        (unsigned)aid);
+            /* AP_ARGS and the claimed slot remain immutable.  Starting another
+             * AP here could let the late CPU consume a different stack/slot. */
+            break;
+        }
+        if (g_cpus[slot].lapic_id != aid) {
+            kprintf("[smp] fatal published CPU slot=%d changed APIC identity %u/%u\n",
+                    slot, (unsigned)g_cpus[slot].lapic_id, (unsigned)aid);
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+        if (smp_bsp_commit_online(&g_ap_state[slot], &g_online, slot) != 0) {
+            kprintf("[smp] fatal cannot commit published CPU slot=%d count=%d\n",
+                    slot, __atomic_load_n(&g_online, __ATOMIC_ACQUIRE));
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
+        kprintf("[smp] CPU %d apic_id=%u online\n", slot, (unsigned)aid);
     }
     kprintf("[smp] %d/%d CPUs online\n", g_online, n);
+    report_topology();
+#ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
+    run_test_ipi_probe();
+#endif
     if (g_online > 1) {
         fb_set_present_par(smp_present_par);   /* M25 P4b: band-parallel present */
         kprintf("[smp] parallel present on %d cores (IPI 241)\n", g_online);

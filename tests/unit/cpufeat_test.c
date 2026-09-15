@@ -116,6 +116,16 @@ static void test_basics(void)
     if (cpu_has(CPU_SSSE3)) ok(cpu_has(CPU_SSE3), "ssse3 implies sse3");
     if (cpu_has(CPU_AES))   ok(cpu_has(CPU_SSE2), "aes-ni implies sse2");
     if (cpu_has(CPU_VAES))  ok(cpu_has(CPU_AES), "vaes implies aes");
+    if (cpu_avx_usable()) {
+        ok(cpu_has(CPU_AVX) && cpu_has(CPU_XSAVE) && cpu_has(CPU_OSXSAVE),
+           "usable AVX has all architectural prerequisites");
+        ok((c->xcr0_enabled & 0x6u) == 0x6u,
+           "usable AVX has XMM and YMM state enabled in XCR0");
+    }
+    if (!cpu_has(CPU_OSXSAVE)) {
+        ok(c->xcr0_enabled == 0, "XGETBV is not executed without OSXSAVE");
+        ok(!cpu_avx_usable(), "AVX hardware alone is not OS-usable");
+    }
 
     /* XSAVE geometry: only meaningful when XSAVE exists, and then the area
      * must be at least the 512-byte legacy region plus the 64-byte header.
@@ -184,6 +194,7 @@ struct namemap { enum cpu_feat id; const char *proc_name; };
  * versions) and hypervisor (present but not always exported). */
 static const struct namemap procmap[] = {
     { CPU_FPU, "fpu" }, { CPU_TSC, "tsc" }, { CPU_MSR, "msr" },
+    { CPU_MCE, "mce" }, { CPU_APIC, "apic" }, { CPU_MCA, "mca" },
     { CPU_CMOV, "cmov" }, { CPU_CLFLUSH, "clflush" }, { CPU_MMX, "mmx" },
     { CPU_FXSR, "fxsr" }, { CPU_SSE, "sse" }, { CPU_SSE2, "sse2" },
     { CPU_SSE3, "pni" }, { CPU_PCLMULQDQ, "pclmulqdq" },
@@ -205,6 +216,7 @@ static const struct namemap procmap[] = {
     { CPU_LZCNT, "abm" }, { CPU_PREFETCHW, "3dnowprefetch" },
     { CPU_NX, "nx" }, { CPU_PDPE1GB, "pdpe1gb" }, { CPU_RDTSCP, "rdtscp" },
     { CPU_LM, "lm" },
+    { CPU_INVARIANT_TSC, "constant_tsc" },
 };
 
 static char *read_flags_line(void)

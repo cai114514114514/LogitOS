@@ -23,7 +23,8 @@
 
 enum cpu_feat {
     /* leaf 1, EDX */
-    CPU_FPU = 0, CPU_TSC, CPU_MSR, CPU_CMOV, CPU_CLFLUSH, CPU_MMX,
+    CPU_FPU = 0, CPU_TSC, CPU_MSR, CPU_MCE, CPU_APIC, CPU_MCA,
+    CPU_CMOV, CPU_CLFLUSH, CPU_MMX,
     CPU_FXSR, CPU_SSE, CPU_SSE2, CPU_HTT,
     /* leaf 1, ECX */
     CPU_SSE3, CPU_PCLMULQDQ, CPU_MONITOR, CPU_SSSE3, CPU_FMA, CPU_CX16,
@@ -37,6 +38,8 @@ enum cpu_feat {
     CPU_AVX512VBMI, CPU_UMIP, CPU_PKU, CPU_VAES, CPU_VPCLMULQDQ, CPU_RDPID,
     /* leaf 0x80000001 */
     CPU_LZCNT, CPU_PREFETCHW, CPU_NX, CPU_PDPE1GB, CPU_RDTSCP, CPU_LM,
+    /* leaf 0x80000007 */
+    CPU_INVARIANT_TSC,
 
     CPU_FEAT_COUNT
 };
@@ -58,6 +61,7 @@ struct cpu_features {
     uint32_t xsave_max_size;
     uint32_t xsave_enabled_size;
     uint64_t xcr0_supported;
+    uint64_t xcr0_enabled;       /* XGETBV(0), read only when OSXSAVE is set */
 
     char vendor[13];             /* "GenuineIntel" / "AuthenticAMD" / ... */
     char brand[49];              /* leaves 0x80000002..4, NUL-terminated */
@@ -73,6 +77,11 @@ const struct cpu_features *cpu_features(void);
 
 /* 1 / 0. Out-of-range feature ids answer 0. */
 int cpu_has(enum cpu_feat f);
+
+/* AVX is usable only when both hardware and the active OS state contract cover
+ * XMM and YMM state. This kernel deliberately returns 0 while its interrupt
+ * ABI remains FXSAVE/FXRSTOR. */
+int cpu_avx_usable(void);
 
 /* Short lowercase mnemonic ("sse4.2", "aes", ...) or "?" if out of range. */
 const char *cpu_feat_name(enum cpu_feat f);

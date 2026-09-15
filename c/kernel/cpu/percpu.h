@@ -4,10 +4,15 @@
 #include <stdint.h>
 #include "gdt.h"        /* struct tss, struct gdt_entry, struct gdt_ptr */
 
-/* Max cores the BKL scheduler tracks. Keep >= the -smp count (tests use 4).
- * (smp.c's cpu_apicid[] uses ACPI_MAX_CPUS=32 for ACPI enumeration; this is the
- * scheduler/percpu cap. Distinct name from smp.c's MAXCPU to avoid collision.) */
+/* Max logical CPUs the scheduler tracks. ACPI already enumerates 32; keep the
+ * per-CPU arrays at the same ceiling so a 12C/24T LGA2011 system is not
+ * silently truncated after CPU7. The test-only branch proves that the 8-CPU
+ * regression is visible to the high-core boot gate. */
+#ifdef LOGIT_CPU_CAP_NEGCTL
 #define PERCPU_MAXCPU 8
+#else
+#define PERCPU_MAXCPU 32
+#endif
 
 struct thread;     /* fwd: sched.c */
 
@@ -21,7 +26,7 @@ struct cpu {
     struct tss tss;           /* this core's TSS -> its own ring-0 rsp0 */
     struct gdt_entry gdt[7];  /* this core's GDT (null,kcode,kdata,ucode,udata,TSS) */
     struct gdt_ptr   gdtr;
-    int       in_kernel;      /* 1 while this core holds the BKL (re-entrancy guard) */
+    int       in_kernel;      /* CPU-local entry depth; NOT a cross-CPU lock */
     uint64_t  exit_discard;   /* per-cpu scratch for thread_exit's context_switch */
 };
 

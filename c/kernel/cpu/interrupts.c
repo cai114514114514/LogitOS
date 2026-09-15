@@ -10,6 +10,7 @@
 #include "syscall.h"
 #include "tlb.h"
 #include "lapic.h"
+#include "apic_model.h"
 #include "smp.h"
 #include "e1000.h"
 #include "proc.h"
@@ -23,6 +24,7 @@
 #include "kbench.h"      /* entry/exit accounting, off by default */
 #include "ksignal.h"     /* M31: faults become signals; delivery on the way out */
 #include "coredump.h"    /* the trap frame is the only register file there is  */
+#include "agent_policy.h"
 #include "logit_abi.h"   /* SYS_SIGRETURN, LOGIT_SIG* */
 
 static const char *const exception_names[32] = {
@@ -103,35 +105,17 @@ void interrupt_handler(struct registers *r, void *fxarea)
      * point of view that queueing IS the syscall. Not counted: entries that
      * never return here (proc_exit -> thread_exit), which is the right
      * direction to lose samples in -- a dying process is not a hot path. */
-    uint64_t kb_t0 = g_kb_stat ? kb_rdtsc() : 0;
+    /* NMI may interrupt even the short accounting CLI window: never record it. */
+    uint64_t kb_t0 = (kb_stat_enabled() && r->vector != 2) ? kb_rdtsc() : 0;
 
-    /* BKL: acquire on every kernel entry (P0: at most one core in the kernel at a
-     * time; ring 3 runs in parallel). `in_kernel` makes the deliberate `sti`
-     * windows (execve, SYS_HTTP_GET) safe: a nested IRQ on a core that already
-     * holds the BKL must NOT re-acquire (self-deadlock) and must NOT re-enter the
-     * scheduler. */
+    /* Correction (2026-09-10): entry no longer serialises CPUs. Objects
+     * have their own locks. This depth only suppresses timer preemption in
+     * kernel code; explicit sleeps still switch and migrate. Keep the depth
+     * on this stack and restore it on the CPU we actually resume on. */
     struct cpu *me = this_cpu();
-    /* "Nested" = this core already holds the BKL. Key off the lock's true owner,
-     * NOT a separate in_kernel flag: in_kernel has wide windows (it is set/cleared
-     * a few instructions away from the actual lock op), and a timer IRQ landing in
-     * one of those gaps used to read in_kernel=0 and re-acquire the BKL this core
-     * already holds -> the ticket lock self-deadlocks (every core then spins on a
-     * `serving` that never advances). g_bkl_owner is updated inside the lock under
-     * IF=0, so it has no such gap. */
-    int nested = (g_bkl_owner == me->index);
-    /* M25 P1: BKL-free syscalls run WITHOUT the BKL (self-locked via fine-grained
-     * locks), so multiple cores execute them in parallel. They are still safely
-     * preemptible: while holding a fine-grained lock IF=0 (irqsave) blocks the
-     * timer; between locks they hold nothing, so a timer preempt is as safe as
-     * preempting ring 3. Only the syscall vector can be bkl-free; IRQs/faults
-     * always take the BKL. */
-    /* vectors 240 (TLB shootdown) / 241 (parallel-present band): MUST be BKL-free
-     * -- the initiator may hold the BKL while waiting for this core to ack, so
-     * taking the BKL here would deadlock. Each handler touches only its own
-     * published work item + an ack word. */
-    int bkl_free = ((r->vector == 128) && syscall_is_bkl_free((int)r->rax))
-                   || r->vector == 240 || r->vector == 241;
-    uint64_t bf = 0;
+    int depth = me->in_kernel;
+    int nested = depth != 0;
+    me->in_kernel = depth + 1;
     /* BSP wall-clock tick MUST NOT wait for the BKL: the network stack's
      * timeouts/retransmits are driven by timer_ticks(), and a thread holding
      * the BKL in a blocking fetch may itself be waiting for those timeouts.
@@ -151,9 +135,7 @@ void interrupt_handler(struct registers *r, void *fxarea)
         sched_timer_expire();
         /* And sample the BKL's holder in the same pre-acquire window, for
          * the same reason: from here the observer is not itself a holder. */
-        kb_bkl_sample();
     }
-    if (!nested && !bkl_free) { bf = spin_lock_irqsave(&g_bkl); me->in_kernel = 1; }
 
     if (r->vector == 128) {        /* int 0x80 system call */
         sysnr = r->rax;
@@ -162,8 +144,29 @@ void interrupt_handler(struct registers *r, void *fxarea)
          * that is about to be iretq'd AND the FXSAVE area the epilogue will
          * FXRSTOR, and a syscall body in c/kernel/exec/syscall.c can reach
          * neither. This is the only frame in the kernel that holds both. */
-        if (__builtin_expect(sysnr == SYS_SIGRETURN, 0)) ksig_sigreturn(r, fxarea);
-        else                                             syscall_dispatch(r);
+        if (__builtin_expect(sysnr == SYS_SIGRETURN, 0)) {
+            /* Refusal is still a kernel entry: checking policy before the
+             * exit mark lets a cancelled worker keep its resources forever.
+             * Ordinary calls run these checks inside syscall_dispatch. */
+            syscall_entry_checks();
+            struct proc *agent = proc_current();
+            if (agent && agent->agent.mode==AEX_ACT_WORKER &&
+                !aex_agent_syscall_allowed(sysnr,r->rdi)) r->rax=(uint64_t)-1;
+            else ksig_sigreturn(r, fxarea);
+        }
+        else {
+            /* BKL removal also ends the inherited whole-syscall IRQ blackout.
+             * The unchanged heap workload exposed 117 ms masked chunks and
+             * ~20% lost BSP timer ticks. Object mutations use irqsave locks;
+             * the entry depth still prevents nested timer preemption/softirq.
+             * SIGRETURN and kernel-origin/nested entries keep interrupts off. */
+#ifndef BKL_VERIFY_IRQ_OFF
+            if (!nested && (r->cs & 3) == 3 && (r->rflags & 0x200))
+                __asm__ volatile ("sti" ::: "memory");
+#endif
+            syscall_dispatch(r, fxarea);
+            __asm__ volatile ("cli" ::: "memory");
+        }
         goto done;
     }
     if (r->vector == 240) {        /* M25 P2: TLB-shootdown IPI (BKL-free) */
@@ -176,6 +179,13 @@ void interrupt_handler(struct registers *r, void *fxarea)
         lapic_eoi();
         goto done;
     }
+#ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
+    if (r->vector == 242) {        /* synthetic all-destination fixed-IPI probe */
+        smp_test_ipi_interrupt();
+        lapic_eoi();
+        goto done;
+    }
+#endif
     if (r->vector == 65) {         /* e1000 NIC: drain RX into the stack */
         e1000_irq();
         lapic_eoi();
@@ -253,9 +263,16 @@ void interrupt_handler(struct registers *r, void *fxarea)
 
     {
         int irq = (int)r->vector - 32;
-        int apic = smp_irq_via_apic();      /* EOI to the LAPIC once IRQs go via I/O APIC */
+        /* AP vector 32 is always the per-CPU LAPIC timer. This remains true
+         * when a wide BSP APIC ID makes legacy IOAPIC/MSI destinations
+         * unrepresentable and the BSP consequently retains the 8259 PIC. */
+        int apic = apic_model_legacy_irq_uses_lapic(
+            me->index, irq, smp_irq_via_apic());
 
         if (irq == 0) {
+#ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
+            smp_test_timer_interrupt();
+#endif
             /* tick already done above (before the BKL acquire -- see comment) */
             if (apic) lapic_eoi(); else pic_eoi(0);
             /* M31: expire alarms, and DRAIN THE CONSOLE.
@@ -285,7 +302,7 @@ void interrupt_handler(struct registers *r, void *fxarea)
             }
             /* Don't preempt mid block-I/O, and never re-enter the scheduler from
              * a NESTED IRQ (the sti window inside an in-progress kernel op). */
-            if (!nested && !ata_busy() && !virtio_busy() && !nvme_busy())
+            if (!nested)
                 schedule();    /* preempt: round-robin to the next thread */
             goto done;
         }
@@ -309,7 +326,7 @@ done:
      * inside a device's non-preemptible poll window -- the same guard the timer
      * preempt uses, for the same reason. Softirq handlers must not sleep: there
      * is a live interrupt frame under them. */
-    if (!nested && !bkl_free && !ata_busy() && !virtio_busy() && !nvme_busy())
+    if (!nested)
         softirq_run_pending();
 
     /* ===================================================================
@@ -343,7 +360,7 @@ done:
      * all, and a BKL-free syscall must not run the teardown -- the same rule
      * syscall_dispatch applies to proc_kill_check).
      * =================================================================== */
-    if (__builtin_expect(ksig_armed(), 0) && !nested && !bkl_free && (r->cs & 3))
+    if (__builtin_expect(ksig_armed(), 0) && !nested && (r->cs & 3))
         ksig_deliver(r, fxarea, sysnr);
 
     /* schedule() (called above for timer preemption, or inside a blocking syscall)
@@ -359,7 +376,7 @@ done:
      * still hold -> self-deadlock. bf carries IF=0 (entry was via an int gate) so
      * irqrestore won't re-enable it here; the final iretq restores the caller's IF. */
     __asm__ volatile ("cli");
-    if (!nested && !bkl_free) { this_cpu()->in_kernel = 0; spin_unlock_irqrestore(&g_bkl, bf); }
+    this_cpu()->in_kernel = depth;
 
     if (__builtin_expect(kb_t0 != 0, 0)) {
         int cls = (r->vector == 128) ? KB_C_SYSCALL
@@ -371,9 +388,7 @@ done:
          * this thread on a different core, and charging another core's counters
          * would put the cost where the work did not happen. */
         int idx = this_cpu()->index;
-        if (idx >= 0 && idx < KB_MAXCPU) {
-            g_kb[idx].n[cls]++;
-            g_kb[idx].cyc[cls] += kb_rdtsc() - kb_t0;
-        }
+        /* IRQs are still off from the exit CLI above: one writer per shard. */
+        kb_entry_record((unsigned)idx, (unsigned)cls, kb_rdtsc() - kb_t0);
     }
 }

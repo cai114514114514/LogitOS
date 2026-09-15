@@ -15,7 +15,12 @@
  * subsystem that owns its own fine-grained lock, NOT from the BKL-serialized
  * free/unmap paths. (This is why vmm_free_space does not call it -- and under the
  * current BKL it isn't needed; see vmm_free_space.) Wired in P3+ when a peeled,
- * bkl-free subsystem first remaps/frees a frame another core may have cached. */
+ * bkl-free subsystem first remaps/frees a frame another core may have cached.
+ * Correction: the BKL is removed and free/unmap already use this protocol.
+ * g_tlb_send serializes shared request/ACK publication, while a contender's
+ * ticket-lock wait services incoming requests even with interrupts masked.
+ * A missing or excess ACK emits a raw UART diagnostic and fail-stops without
+ * releasing the sender lock or returning page ownership to the caller. */
 
 void tlb_flush_all(void);   /* initiator: flush self + all other cores; wait for ack */
 void tlb_ipi(void);         /* IPI-240 handler (BKL-free), called from interrupt_handler */
@@ -29,7 +34,9 @@ int tlb_service(void);
 
 /* Shootdowns that were never acknowledged, since boot. Normally 0; a non-zero
  * value means some core kept stale TLB entries until its next CR3 switch, and
- * says so instead of the old silent give-up. */
+ * says so instead of the old silent give-up.
+ * Correction: this counts missing ACKs at fatal stop; execution cannot return
+ * to the caller with a nonzero deficit and reuse its pages. */
 unsigned long tlb_late_count(void);
 
 #endif /* LOGIT_TLB_H */

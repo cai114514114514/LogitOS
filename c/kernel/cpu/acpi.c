@@ -3,6 +3,11 @@
  * overrides) and the MCFG (the PCIe ECAM window, used by c/kernel/pci).
  * Tables live in low RAM (< 512 MiB on our QEMU), which boot.asm identity-maps,
  * so physical == virtual here.
+ * Correction (2026-09-09): an 8 GiB BIOS guest places the RSDT at
+ * 0xbffe2430, in firmware-reserved memory above the 1 GiB identity window.
+ * Reading its length faulted at CR2=0xbffe2434. Reserved firmware tables must
+ * NOT be released to the PMM or added to the AVAILABLE-RAM physmap. Map only
+ * each bounded table through a separate supervisor alias before reading it.
  *
  * The (X)SDT walk is split out of acpi_init() into acpi_find_table() because
  * the PCI bus driver needs the MCFG *before* smp_init() runs -- enumeration has
@@ -11,7 +16,14 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "acpi.h"
+#include "apic_model.h"
 #include "serial.h"
+#include "kprintf.h"
+#include "../mm/vmm.h"
+#include "../mm/mm.h"
+#include "../mm/mmhost.h"
+#include "../mm/physmap.h"
+#include "prot.h"
 
 int  memcmp(const void *, const void *, size_t);
 
@@ -35,8 +47,47 @@ struct sdt_header {
     uint32_t oem_revision, creator_id, creator_revision;
 } __attribute__((packed));
 
+/* The high RAM physmap occupies the first 64 TiB of the canonical kernel
+ * half. Firmware aliases use the following window, never low identity VAs:
+ * tables can also sit physically inside the legacy user VA range, and such
+ * identity mappings would disappear when vmm_new_space isolates PDPT[1].
+ * Aliasing by physical offset makes repeated lookups idempotent and keeps
+ * already-created process spaces sharing the same kernel table subtree.
+ * 1 MiB is a hard bound per SDT, checked after mapping only its header; an
+ * invalid firmware length cannot make the kernel build an unbounded mapping. */
+#define ACPI_ALIAS_BASE (PHYSMAP_BASE + PHYSMAP_SIZE)
+#define ACPI_TABLE_MAX  (1u << 20)
+
+static const void *map_firmware(uint64_t phys, uint32_t bytes)
+{
+    if (!phys || !bytes || bytes > ACPI_TABLE_MAX ||
+        phys >= PHYSMAP_SIZE || bytes > PHYSMAP_SIZE - phys) return NULL;
+    uint64_t start = phys & ~0xfffull;
+    uint64_t end = (phys + bytes + 0xfffull) & ~0xfffull;
+    uint64_t flags = cpu_prot_nx_usable() ? MM_PTE_NX : 0;
+    for (uint64_t a = start; a < end; a += 4096) {
+        uint64_t va = ACPI_ALIAS_BASE + a;
+        uint64_t *pte = vmm_pte(mm_read_cr3(), va);
+        if (!pte || !(*pte & 1)) {
+            vmm_map_page(va, a, flags);       /* read-only, supervisor, WB */
+            pte = vmm_pte(mm_read_cr3(), va);
+        }
+        if (!pte || !(*pte & 1) || (*pte & MM_PTE_ADDR) != a ||
+            (*pte & VMM_USER)) return NULL;  /* allocation failure or alias conflict */
+    }
+    return (const void *)(uintptr_t)(ACPI_ALIAS_BASE + phys);
+}
+
+static const struct sdt_header *map_sdt(uint64_t phys)
+{
+    const struct sdt_header *h = map_firmware(phys, sizeof *h);
+    if (!h || h->length < sizeof *h || h->length > ACPI_TABLE_MAX) return NULL;
+    return map_firmware(phys, h->length);
+}
+
 static uint32_t g_lapic_base = 0xFEE00000;   /* default; MADT may override */
-static uint8_t  g_apic_ids[ACPI_MAX_CPUS];
+static uint32_t g_apic_ids[ACPI_MAX_CPUS];
+static uint32_t g_acpi_uids[ACPI_MAX_CPUS];
 static int      g_ncpu;
 
 static uint32_t g_ioapic_addr;               /* IOAPIC MMIO base (0 if none) */
@@ -46,7 +97,7 @@ static uint16_t g_irq_flags[16];             /* override polarity/trigger flags 
 
 uint32_t acpi_lapic_base(void) { return g_lapic_base; }
 int      acpi_cpu_count(void)  { return g_ncpu; }
-uint8_t  acpi_cpu_apic_id(int i){ return (i >= 0 && i < g_ncpu) ? g_apic_ids[i] : 0; }
+uint32_t acpi_cpu_apic_id(int i){ return (i >= 0 && i < g_ncpu) ? g_apic_ids[i] : UINT32_MAX; }
 uint32_t acpi_ioapic_addr(void){ return g_ioapic_addr; }
 uint32_t acpi_ioapic_gsibase(void){ return g_ioapic_gsibase; }
 uint32_t acpi_gsi_for_irq(int irq){ return (irq >= 0 && irq < 16) ? g_irq_gsi[irq] : (uint32_t)irq; }
@@ -119,18 +170,36 @@ static void parse_madt(const struct sdt_header *madt)
 {
     if (madt->length < 44) return;                       /* fixed MADT header must be present */
     const uint8_t *p = (const uint8_t *)madt;
+    g_ncpu = 0;
+    g_ioapic_addr = 0;
+    g_ioapic_gsibase = 0;
     g_lapic_base = *(const uint32_t *)(p + 36);          /* MADT local APIC address */
     for (int i = 0; i < 16; i++) { g_irq_gsi[i] = (uint32_t)i; g_irq_flags[i] = 0; }
+    int type0 = 0, type9 = 0, duplicate = 0, rejected = 0;
     const uint8_t *e = p + madt->length;
     p += 44;                                             /* skip MADT fixed header */
     while (p + 2 <= e) {
         uint8_t type = p[0], len = p[1];
         if (len < 2 || p + len > e) break;
-        if (type == 0 && len >= 8) {                     /* Processor Local APIC */
-            uint8_t apic_id = p[3];
-            uint32_t flags = *(const uint32_t *)(p + 4);
-            if ((flags & 1) && g_ncpu < ACPI_MAX_CPUS)   /* enabled */
-                g_apic_ids[g_ncpu++] = apic_id;
+        if (type == 0 || type == 9) {
+            struct apic_madt_cpu cpu;
+            int decoded = apic_model_madt_cpu(p, (size_t)(e - p), &cpu);
+            if (decoded > 0) {
+                size_t count = (size_t)g_ncpu;
+                int added = apic_model_add_madt_cpu(&cpu, g_apic_ids,
+                                                     g_acpi_uids, &count,
+                                                     ACPI_MAX_CPUS);
+                if (added == 0) {
+                    duplicate++;
+                } else if (added > 0) {
+                    g_ncpu = (int)count;
+                    if (cpu.source_type == 9) type9++; else type0++;
+                } else {
+                    rejected++;
+                }
+            } else if (decoded < 0) {
+                rejected++;
+            }
         } else if (type == 1 && len >= 12) {             /* I/O APIC */
             if (!g_ioapic_addr) {
                 g_ioapic_addr    = *(const uint32_t *)(p + 4);
@@ -149,6 +218,8 @@ static void parse_madt(const struct sdt_header *madt)
         }
         p += len;
     }
+    kprintf("[acpi] MADT CPUs type0=%d type9=%d duplicate=%d rejected=%d\n",
+            type0, type9, duplicate, rejected);
 }
 
 /* ------------------------------------------------------ (X)SDT table walk -- */
@@ -165,12 +236,12 @@ int acpi_tables_init(void)
     if (!r) { serial_puts("[acpi] no RSDP\n"); return -1; }
 
     if (r->revision >= 2 && r->xsdt_addr) {
-        const struct sdt_header *x = (const struct sdt_header *)r->xsdt_addr;
-        if (x->length < sizeof *x) { serial_puts("[acpi] bad XSDT length\n"); return -1; }
+        const struct sdt_header *x = map_sdt(r->xsdt_addr);
+        if (!x) { serial_puts("[acpi] cannot map bounded XSDT\n"); return -1; }
         g_xsdt = x;
     } else if (r->rsdt_addr) {
-        const struct sdt_header *t = (const struct sdt_header *)(uint64_t)r->rsdt_addr;
-        if (t->length < sizeof *t) { serial_puts("[acpi] bad RSDT length\n"); return -1; }
+        const struct sdt_header *t = map_sdt(r->rsdt_addr);
+        if (!t) { serial_puts("[acpi] cannot map bounded RSDT\n"); return -1; }
         g_rsdt = t;
     } else {
         return -1;
@@ -189,14 +260,14 @@ const void *acpi_find_table(const char *sig)
                                              * 4-byte aligned in practice */
             const uint8_t *p = e + i * 8;
             a = 0; for (int b = 0; b < 8; b++) a |= (uint64_t)p[b] << (b * 8);
-            const struct sdt_header *h = (const struct sdt_header *)a;
+            const struct sdt_header *h = map_sdt(a);
             if (h && memcmp(h->sig, sig, 4) == 0) return h;
         }
     } else if (g_rsdt) {
         int n = (int)((g_rsdt->length - sizeof *g_rsdt) / 4);
         const uint32_t *ent = (const uint32_t *)((const uint8_t *)g_rsdt + sizeof *g_rsdt);
         for (int i = 0; i < n; i++) {
-            const struct sdt_header *h = (const struct sdt_header *)(uint64_t)ent[i];
+            const struct sdt_header *h = map_sdt(ent[i]);
             if (h && memcmp(h->sig, sig, 4) == 0) return h;
         }
     }

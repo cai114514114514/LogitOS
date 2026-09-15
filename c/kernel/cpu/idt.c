@@ -31,6 +31,7 @@ extern void isr128(void);
 extern void isr65(void);
 extern void isr240(void);
 extern void isr241(void);
+extern void isr242(void);
 extern void isr255(void);
 
 static void idt_set(int vec, void *handler, uint8_t type)
@@ -55,6 +56,9 @@ void idt_init(void)
     idt_set(65,  (void *)isr65,  GATE_INT64);     /* e1000 NIC */
     idt_set(240, (void *)isr240, GATE_INT64);     /* TLB-shootdown IPI */
     idt_set(241, (void *)isr241, GATE_INT64);     /* parallel-present band IPI */
+#ifdef LOGIT_RAPTOR_SMP_QEMU_TEST
+    idt_set(242, (void *)isr242, GATE_INT64);     /* all-CPU delivery probe */
+#endif
     idt_set(255, (void *)isr255, GATE_INT64);     /* LAPIC spurious */
 
     idtp.limit = sizeof(idt) - 1;

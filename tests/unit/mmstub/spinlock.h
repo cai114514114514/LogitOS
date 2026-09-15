@@ -6,6 +6,9 @@
 
 #include <stdint.h>
 
+#ifdef MM_CONCURRENT
+#include "../../../c/kernel/cpu/spinlock.h"
+#else
 typedef int spinlock_t;
 #define SPINLOCK_INIT 0
 
@@ -14,4 +17,5 @@ static inline void     spin_unlock_irqrestore(spinlock_t *l, uint64_t f) { (void
 static inline void     spin_lock(spinlock_t *l)                          { (void)l; }
 static inline void     spin_unlock(spinlock_t *l)                        { (void)l; }
 
+#endif /* MM_CONCURRENT */
 #endif

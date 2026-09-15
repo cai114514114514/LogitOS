@@ -40,6 +40,9 @@ static const struct featdef featmap[CPU_FEAT_COUNT] = {
     { 1, 0, R_EDX,  0, "fpu"        },
     { 1, 0, R_EDX,  4, "tsc"        },
     { 1, 0, R_EDX,  5, "msr"        },
+    { 1, 0, R_EDX,  7, "mce"        },
+    { 1, 0, R_EDX,  9, "apic"       },
+    { 1, 0, R_EDX, 14, "mca"        },
     { 1, 0, R_EDX, 15, "cmov"       },
     { 1, 0, R_EDX, 19, "clflush"    },
     { 1, 0, R_EDX, 23, "mmx"        },
@@ -97,6 +100,8 @@ static const struct featdef featmap[CPU_FEAT_COUNT] = {
     { 0x80000001, 0, R_EDX, 26, "pdpe1gb"   },
     { 0x80000001, 0, R_EDX, 27, "rdtscp"    },
     { 0x80000001, 0, R_EDX, 29, "lm"        },
+    /* leaf 0x80000007 */
+    { 0x80000007, 0, R_EDX,  8, "invariant_tsc" },
 };
 
 static struct cpu_features g_cf;
@@ -125,6 +130,13 @@ static void copy4(char *dst, uint32_t v)
     dst[1] = (char)((v >> 8) & 0xff);
     dst[2] = (char)((v >> 16) & 0xff);
     dst[3] = (char)((v >> 24) & 0xff);
+}
+
+static uint64_t read_xcr0(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return ((uint64_t)hi << 32) | lo;
 }
 #endif
 
@@ -177,6 +189,10 @@ void cpu_features_init(void)
         g_cf.xsave_enabled_size = r[1];
         g_cf.xsave_max_size     = r[2];
     }
+    /* XGETBV itself #UDs until CR4.OSXSAVE is set. CPUID.1:ECX.OSXSAVE is the
+     * architectural readback of that live CR4 bit, so it is the guard rather
+     * than a guess based on XSAVE hardware support. */
+    if (g_cf.has[CPU_OSXSAVE]) g_cf.xcr0_enabled = read_xcr0();
 #endif
 
     g_cf.valid = 1;
@@ -193,6 +209,13 @@ int cpu_has(enum cpu_feat f)
     if ((int)f < 0 || (int)f >= CPU_FEAT_COUNT) return 0;
     if (!g_cf.valid) cpu_features_init();
     return g_cf.has[f] ? 1 : 0;
+}
+
+int cpu_avx_usable(void)
+{
+    const struct cpu_features *c = cpu_features();
+    return c->has[CPU_XSAVE] && c->has[CPU_OSXSAVE] && c->has[CPU_AVX] &&
+           (c->xcr0_enabled & 0x6u) == 0x6u;
 }
 
 const char *cpu_feat_name(enum cpu_feat f)

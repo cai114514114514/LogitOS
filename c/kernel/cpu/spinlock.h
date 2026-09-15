@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* Ticket spinlock with seq-cst acquire/release. Two layers:
+/* Ticket spinlock with acquire/release ordering. Two layers:
  *  - spin_lock/spin_unlock        : bare, for sections never entered from an IRQ.
  *  - spin_lock_irqsave/irqrestore : saves+clears IF, for any lock taken in both
  *    thread and IRQ context (a core holding such a lock must not be interrupted
@@ -38,7 +38,5 @@ int      spin_trylock(spinlock_t *l);   /* 1 = acquired, 0 = busy; never waits.
                                          * rq_lock probe another's without any
                                          * wait -> no AB-BA by construction. */
 
-extern spinlock_t g_bkl;            /* Big Kernel Lock (M25 P0) */
-extern volatile int g_bkl_owner;    /* cpu index holding g_bkl (-1 = free); for nested detection */
 
 #endif /* LOGIT_SPINLOCK_H */
