@@ -384,7 +384,10 @@ RING3_NET := c/net/http/cookies.c c/net/http/http1.c c/net/http/hpool.c \
 # nothing observable changes, but an .svg dropped at that exact path would
 # now be refused rather than decoded. See not_done for the one-line wm.c
 # consequence, which is not this unit's file to edit.
-C_SRC   := $(filter-out c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
+# c/lib/agent uses the POSIX user runtime, like the other ring-3 libraries.
+# OpenLogit custom shaders and software 3D execute in ring 3. Keep this entire
+# directory out of the kernel, including files added by later SDK revisions.
+C_SRC   := $(filter-out c/lib/gfx3d/% c/lib/image/inflate.c c/lib/image/png.c c/lib/image/svg.c $(wildcard c/lib/video/*.c) $(wildcard c/lib/audio/*.c) $(wildcard c/lib/media/*.c) $(wildcard c/lib/nn/*.c) $(wildcard c/lib/agent/*.c) $(RING3_NET),$(shell find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'))
 ASM_SRC := $(wildcard c/boot/*.asm)
 OBJ     := $(patsubst %.c,$(BUILD)/%.o,$(C_SRC)) \
            $(patsubst %.asm,$(BUILD)/%.o,$(ASM_SRC))
@@ -479,7 +482,7 @@ $(BUILD)/$(1).elf: $(GUIDIR)/$(1).c $(APPDIR)/crt0.asm $(APPDIR)/logit.h $(GUIDI
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/$(1).crt0.o
 	$(CC) $(UCFLAGS) -c $(GUIDIR)/$(1).c -o $(BUILD)/apps/$(1).o
-	$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
+	$$(LD) -nostdlib -e _start -Ttext=$(strip $(2)) -o $$@ $(BUILD)/apps/$(1).crt0.o $(BUILD)/apps/$(1).o $(BUILD)/apps/aui.o $(GFX_OBJ)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ '$(3)' $(4) '$(5)' $(6) $(7) $(8)
 endef
@@ -647,12 +650,25 @@ CH_AEX := $(BUILD)/ch.aex
 # --- CLI programs (sh + coreutils): exec'able ring-3 programs, all linked at a
 # common base inside the private user region (0x40000000..0x7FFFFFFF). They are
 # packed under /bin (not scanned by the Dock) and launched via fork+execve. ---
+# net now consumes the same HTTP parser and crypto primitives as the rest of
+# the system. It requests identity encoding; dead-section removal excludes
+# the unused one-shot inflater, rather than linking a fake decompressor.
+NET_CLI_SRC := c/net/http/http1.c c/net/http/url.c c/crypto/hash/sha256.c \
+               c/crypto/hash/sha384.c c/crypto/hash/blake2b.c c/crypto/hash/blake3.c \
+               c/apps/libc/src/malloc.c c/apps/libc/src/string.c
+NET_CLI_OBJ := $(patsubst %.c,$(BUILD)/netcliobj/%.o,$(NET_CLI_SRC))
+CLI_EXTRA_net := $(NET_CLI_OBJ)
+CLI_LINK_net := --gc-sections
+$(BUILD)/netcliobj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -ffunction-sections -fdata-sections -c $< -o $@
+
 define CLI_RULE
-$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h $(CLIDIR)/logit_cells.h
+$(BUILD)/$(1).elf: $(CLIDIR)/$(1).c $(APPDIR)/crt0_cli.asm $(APPDIR)/clib.h $(CLIDIR)/logit_rich.h $(CLIDIR)/logit_sniff.h $(CLIDIR)/logit_cells.h $(CLI_EXTRA_$(1))
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
 	$(CC) $(UCFLAGS) -c $(CLIDIR)/$(1).c -o $(BUILD)/apps/$(1).cli.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o
+	$$(LD) $(CLI_LINK_$(1)) -nostdlib -e _start -Ttext=0x50000000 -o $$@ $(BUILD)/apps/$(1).crt0c.o $(BUILD)/apps/$(1).cli.o $(CLI_EXTRA_$(1))
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
 endef
@@ -661,8 +677,11 @@ CLI := sh echo ls cat pwd wc head true false sleep mkdir rm touch clear uname ne
        show dir chart prog clip notify execinfo entropy httpd stat poweroff reboot pref ping syslogd
 $(foreach c,$(CLI),$(eval $(call CLI_RULE,$(c))))
 CLI_AEX := $(foreach c,$(CLI),$(BUILD)/$(c).aex)
+$(BUILD)/net.elf: $(CLIDIR)/net_digest.inc $(CLIDIR)/net_fetch.inc
 
 # --- /bin/pkgverify: the one CLI program that LINKS crypto -------------------
+# Historical wording above: since 2026-09-10 net also links crypto through
+# CLI_EXTRA_net. pkgverify keeps its distinct signer-trust build below.
 # CLI_RULE compiles exactly one .c, and this one needs pkgsig + ed25519 + the
 # two hashes, so it gets its own rule. It is the whole user-visible surface of
 # the trust model (see c/crypto/trust/pkgsig.h); the .lpk fixtures it is tested
@@ -973,17 +992,21 @@ $(BUILD)/apps/crt0.o: $(APPDIR)/crt0.asm
 # inflate + png are gone -- the ring-3 browser links the same Rust staticlib as the
 # kernel (rust/src/{inflate,png}.rs provide zlib_decompress + png_*; the crate only
 # calls kmalloc/kfree/img_register, which browser_rt.c shims into the ring-3 heap).
+BROWSER_DIGEST_SRC := c/crypto/hash/sha1.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c
+BROWSER_CRYPTO_OPS_SRC := c/crypto/hash/hmac_hkdf.c c/crypto/aead/aesgcm.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aes_ni.c c/kernel/cpu/cpufeat.c \
+                          c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/pubkey/ecdsa.c
 BROWSER_PIPE := c/apps/browser/dom.c c/apps/browser/html_tokenizer.c \
                 c/apps/browser/html_tree.c c/apps/browser/dom_serialize.c \
                 c/apps/browser/layout.c c/apps/browser/layout_text.c \
                 c/apps/browser/forms.c c/apps/browser/focus.c \
                 c/apps/browser/browser_rt.c c/apps/browser/browser_paint.c \
+                c/apps/browser/passive_frame.c c/apps/browser/iframe_policy.c \
                 c/apps/browser/tabs.c \
                 c/apps/browser/css_vars.c c/apps/browser/css_extra.c \
                 c/apps/browser/css_interp.c c/net/http/url.c \
                 c/net/http/http1.c c/net/http/hpool.c c/net/http/cookies.c \
                 c/net/http/http2.c c/net/http/hpack.c \
-                c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c \
+                c/net/http/ws.c c/net/ssh/base64.c $(BROWSER_DIGEST_SRC) $(BROWSER_CRYPTO_OPS_SRC) \
                 c/lib/image/gif.c c/lib/image/jpeg.c c/lib/image/svg.c \
                 c/lib/image/exif.c c/lib/image/img.c
 # c/lib/wasm (the WebAssembly decoder, validator and interpreter) is
@@ -1012,6 +1035,9 @@ BROWSER_OBJ  := $(patsubst %.c,$(BUILD)/browserobj/%.o,$(BROWSER_PIPE))
 # interning library, already linked), so this group needs CSS_INC. Only dom.c
 # actually does: dom.h forward-declares lwc_string, so every other consumer of
 # the DOM still compiles without the include path.
+# iframe_policy uses the URL API header, whose public declarations include JSValue.
+$(BUILD)/browserobj/c/apps/browser/iframe_policy.o: UCFLAGS += $(JS_INC)
+
 $(BUILD)/browserobj/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(CSS_INC) -c $< -o $@
@@ -1092,7 +1118,38 @@ BROWSER_JS_OBJ := $(patsubst %.c,$(BUILD)/jsobj/%.o,$(BROWSER_JS_SRC))
 # it compares recipes of paired targets, and this is one rule against another
 # rule's target-specific variable.
 BROWSER_JS_CF := $(filter-out -include features.h,$(JS_CF))
+ifeq ($(JS_INSTALL_PROFILE),1)
+BROWSER_JS_CF += -DJS_PAGE_INSTALL_PROFILE
+endif
+# Changing a diagnostic flag must rebuild its consumer even when source mtimes
+# are unchanged. Otherwise a normal release can retain the profiled object and
+# a requested profile can silently omit the measurements.
+.PHONY: browser-install-profile-force
+$(BUILD)/js-install-profile.flags: browser-install-profile-force
+	@mkdir -p $(dir $@)
+	@echo '$(if $(filter 1,$(JS_INSTALL_PROFILE)),on,off)' > $@.tmp
+	@cmp -s $@.tmp $@ || cp $@.tmp $@
+	@rm -f $@.tmp
+$(BUILD)/jsobj/c/apps/browser/js_page.o: $(BUILD)/js-install-profile.flags
 $(BROWSER_JS_OBJ): JS_CF := $(BROWSER_JS_CF)
+
+# Diagnostic provenance must not silently survive a release rebuild, nor be
+# omitted because the object was already current. Only this producer needs it.
+.PHONY: browser-visibility-trace-force
+$(BUILD)/browser-visibility-trace.flags: browser-visibility-trace-force
+	@mkdir -p $(dir $@)
+	@echo '$(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),on,off)' > $@.tmp
+	@cmp -s $@.tmp $@ || cp $@.tmp $@
+	@rm -f $@.tmp
+$(BUILD)/jsobj/c/apps/browser/js_dom.o: $(BUILD)/browser-visibility-trace.flags
+$(BUILD)/jsobj/c/apps/browser/js_dom.o: JS_CF += $(if $(filter 1,$(BROWSER_TRACE_VISIBILITY)),-DBROWSER_TRACE_VISIBILITY,)
+
+# Browser modules share DOM/display-list layouts and textually included native
+# backends. The old .c-only prerequisites could ship stale consumers after an
+# include edit (especially a changed struct item). Keep that seam authoritative
+# for the product too; host gates already name their corresponding includes.
+BROWSER_INTERFACE_DEPS := $(wildcard c/apps/browser/*.h c/apps/browser/*.inc)
+$(BROWSER_OBJ) $(BROWSER_JS_OBJ) $(BUILD)/cssobj/c/apps/browser/css_engine.o: $(BROWSER_INTERFACE_DEPS)
 
 $(BUILD)/browser.elf: $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/apps/crt0.o $(BUILD)/browserobj/malloc_big.o
 	$(LD) -nostdlib -e _start -Ttext=0x45000000 -o $@ --start-group $(BUILD)/apps/crt0.o $(ENGINE_OBJ) $(BROWSER_JS_OBJ) $(BROWSER_OBJ) $(CSS_OBJ) $(GFX_OBJ) $(RUST_LIB) $(BUILD)/browserobj/malloc_big.o --end-group
@@ -1201,10 +1258,22 @@ $(BUILD)/closefull.aex: $(BUILD)/closefull.elf tools/mkaex.py
 VID_SRC  := $(wildcard c/lib/video/*.c)
 VID_HDRS := $(wildcard c/lib/video/*.h)
 VID_OBJ  := $(patsubst %.c,$(BUILD)/vidobj/%.o,$(VID_SRC))
+# Codec loops dominate Preview/Terminal playback and are independently covered
+# by byte/differential gates. Keep the rest of userland at UCFLAGS' size/speed
+# balance, while letting every shipping codec object use the stronger optimizer.
+CODEC_OPT ?= -O3
+# The same image decoder sources have two additional shipping copies: the
+# SYS_IMG_DECODE kernel service and the browser's ring-3 image pipeline. Apply
+# the codec policy to those objects too, so performance does not depend on
+# which real consumer opened the file.
+KERNEL_IMG_CODEC_OBJ  := $(filter $(BUILD)/c/lib/image/%.o,$(OBJ))
+BROWSER_IMG_CODEC_OBJ := $(filter $(BUILD)/browserobj/c/lib/image/%.o,$(BROWSER_OBJ))
+$(KERNEL_IMG_CODEC_OBJ): CFLAGS += $(CODEC_OPT)
+$(BROWSER_IMG_CODEC_OBJ): UCFLAGS += $(CODEC_OPT)
 
 $(BUILD)/vidobj/%.o: %.c $(VID_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 # --- ring-3 HTTP client, built for the target -----------------------------
 # Same shape and same reasoning as VID_OBJ above: RING3_NET is filtered out of
@@ -1291,7 +1360,7 @@ IMGCHK_OBJ := $(patsubst %.c,$(BUILD)/imgobj/%.o,$(IMGCHK_SRC))
 
 $(BUILD)/imgobj/%.o: %.c c/lib/image/img.h
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 $(BUILD)/imgobj/imgcheck.o: tests/unit/imgcheck.c c/lib/image/img.h
 	@mkdir -p $(dir $@)
@@ -1319,7 +1388,7 @@ AUD_OBJ  := $(patsubst %.c,$(BUILD)/audobj/%.o,$(AUD_SRC))
 
 $(BUILD)/audobj/%.o: %.c $(AUD_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(UCFLAGS) -c $< -o $@
+	$(CC) $(UCFLAGS) $(CODEC_OPT) -c $< -o $@
 
 # musl's libm, given its own objects so an ordinary CLI program can link it:
 # `make test-libm-cli` asserts the freestanding cross-build is BIT-IDENTICAL to
@@ -1480,6 +1549,12 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # file that owns it, and the prerequisite is now a real file with a real
 # timestamp. A fragment adding prerequisites to a target defined elsewhere is
 # ordinary make, and it is how $(DISK) already grows its fixtures.
+# Repacking after an app edit used to erase the browser profile even when its
+# Cookie/localStorage writes had succeeded. Keep the existing disk path and
+# preserve the WHOLE /browser subtree, including future state files. New user
+# state outside it needs an explicit --preserve root here. The packer validates
+# and recovers a private copy, then replaces atomically; disk_guard rejects an
+# image held by QEMU. A same-image reboot test alone cannot catch this failure.
 $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
@@ -1488,11 +1563,13 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOT
 	else \
 	    echo "disk: build/model.lm not present -- packing without /model.lm (run build/lmtrain to add it, see tools/lmtrain.md)"; \
 	fi
-	python3 tools/mkfs.py $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
+	python3 tools/mkfs.py --preserve /browser --preserve /state --preserve-merge /etc --preserve /home --preserve /download --snapshot-helper $(BUILD)/lfs_snapshot $(DISK) $(FS_FILES) fsroot/readme.txt:/docs/readme.txt \
 	    $(BUILD)/hello.lpk:/pkg/hello.lpk $(BUILD)/tampered.lpk:/pkg/tampered.lpk \
 	    $(BUILD)/foreign.lpk:/pkg/foreign.lpk \
 	    $(BUILD)/pkgverify.aex:/bin/pkgverify \
 	    $(BUILD)/login.aex:/bin/login \
+	    $(BUILD)/sshd.aex:/bin/sshd \
+	    examples/browser/signed-report.html:/www/signed-report.html \
 	    $(GREETER_AEX):/sbin/greeter.aex \
 	    fsroot/fonts/ui.ttf:/fonts/ui.ttf fsroot/fonts/mono.ttf:/fonts/mono.ttf \
 	    fsroot/fonts/ui-bold.ttf:/fonts/ui-bold.ttf \
@@ -1685,7 +1762,7 @@ DISP ?=
 QEMU_DISP := $(if $(DISP),-display $(DISP),)
 
 run: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
+	python3 tools/disk_guard.py $(DISK) -- $(QEMU) -cdrom $(ISO) $(QEMU_DISK) $(QEMU_RAM) $(QEMU_SMP) $(QEMU_CPU) $(QEMU_RTC) $(QEMU_GPU) $(QEMU_NET) $(QEMU_DISP) $(QEMU_SND) -serial stdio -no-reboot -qmp unix:/tmp/logit-qmp.sock,server,nowait
 
 # What is the guest ACTUALLY drawing? Boots headless, screendumps over QMP and
 # writes a PNG. This is the check that separates "the OS is broken" from "the
@@ -2496,6 +2573,30 @@ test-bulkread-negctl:
 	    grep -E "COALESCING|carried|BYPASS" $(BUILD)/negctl.log || true; \
 	 fi
 
+# getattr sits under every vfs_pread permission check.  The result is checked
+# for correctness and the real buffer-cache lookup count is bounded, so this
+# catches an accidental return to one block-map lookup per file block without
+# relying on noisy host timing.  The control compiles the exact former loop.
+.PHONY: test-getattr-cost test-getattr-cost-negctl
+test-getattr-cost: test-getattr-cost-negctl
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -o $(BUILD)/fs_getattr_cost_test \
+	    tests/unit/fs_getattr_cost_test.c $(FS_CORE) $(FS_STUB)
+	@$(BUILD)/fs_getattr_cost_test
+
+test-getattr-cost-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) $(FS_CFLAGS) -DLOGITFS_GETATTR_LINEAR_NEGCTL \
+	    -o $(BUILD)/fs_getattr_cost_negctl \
+	    tests/unit/fs_getattr_cost_test.c $(FS_CORE) $(FS_STUB)
+	@if $(BUILD)/fs_getattr_cost_negctl > $(BUILD)/fs_getattr_cost_negctl.log 2>&1; then \
+	    echo "CONTROL FAILED: the per-block getattr loop passed the O(1) gate"; \
+	    cat $(BUILD)/fs_getattr_cost_negctl.log; exit 1; \
+	 else \
+	    echo "negative control OK -- the former per-block loop fails the cost gate:"; \
+	    grep "GETATTR O(1)" $(BUILD)/fs_getattr_cost_negctl.log; \
+	 fi
+
 # FILE METADATA: does a mode survive, or does it only look right?
 #
 # Every assertion that counts in this suite happens across a REMOUNT, and one
@@ -2528,7 +2629,7 @@ test-statmeta-negctl:
 	 fi
 
 test-fs-host: test-fs-cache test-fs-journal test-fs-crash test-fsck test-fs-format \
-              test-bulkread test-bulkread-negctl \
+              test-bulkread test-bulkread-negctl test-getattr-cost \
               test-statmeta test-statmeta-negctl
 
 # The durability harnesses as ONE name. Each of these was written as its own
@@ -2683,6 +2784,19 @@ test-nd-negctl:
 # IPv6 existed (one connection, no race, same order)?
 test-ip6-fallback:
 	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w -DLOGIT_NET_HOST -DSOCK_NEGCTL_PHASE_PER_POLL \
+		-o $(BUILD)/sock_phase_negctl tests/unit/ip6_fallback_test.c \
+		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
+		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
+		-Ic/kernel/core -Iinclude/abi
+	@if ./$(BUILD)/sock_phase_negctl >$(BUILD)/sock_phase_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: one-phase-per-poll still passed the warm-open gate"; \
+		exit 1; \
+	else \
+		grep -q "cached DNS + warm ARP reaches READY in one pump" $(BUILD)/sock_phase_negctl.log || \
+		{ echo "NEGATIVE CONTROL FAILED: the causal warm-open assertion did not fail"; exit 1; }; \
+		echo "negative control ok: cached DNS + warm ARP took two empty poll turns"; \
+	fi
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_fallback_test \
 		tests/unit/ip6_fallback_test.c -Itests/unit -Ic/net/core -Ic/net/ip \
 		-Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http \
@@ -3256,7 +3370,7 @@ test-klog-control:
 # pmm_alloc_contig failures (the grow() double-accounting bug class).
 test-kheap:
 	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
+	@$(CC) -O1 -g -DMM_HOSTTEST -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
 	    -Itests/unit/kheapstub -Ic/kernel/mm
 	@$(BUILD)/kheap_test
 
@@ -3428,6 +3542,7 @@ test-webapi-asan: $(RUST_LIB_HOST)
 # committed real-page corpus) and test-platform / -control / -asan for
 # js_platform.c + js_select.c. Own fragment; see the file.
 -include tests/webapi_platform.mk
+-include tests/storage_backend.mk
 # The silent-stall instrument -- what a page is still WAITING for once it has
 # settled. The other half of probe-webapi: that one finds what a page reached
 # for and did not FIND, this one finds what it is parked on when nothing threw
@@ -3668,12 +3783,16 @@ test-h2-os: $(ISO) $(DISK)
 # runtime and a listener can outlive its node, and neither of those shows up as a
 # wrong answer -- only as corrupted memory some events later. So it gets its own
 # instrumented run rather than riding on the -O2 build's silence.
+JSDOM_HOST_SRC = c/apps/browser/js_dom.c c/apps/browser/js_page.c \
+                 c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
+                 $(HTML_PARSER_SRC) $(QJS_SRC)
+# js_dom.c's host clock must not include the guest's syscall header on arm64.
+# Share this link/flag set with the timer regression rather than copying it.
+JSDOM_HOST_CF = $(BTEST_INC) $(CSS_INC) $(JS_INC) -DWEBAPI_HOST -DCONFIG_VERSION='"host"'
 test-js-dom-asan: $(BUILD)/libcss_host.a
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -w \
-	    $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_asan \
-	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
-	    c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
-	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a -lm
+	    $(JSDOM_HOST_CF) -o $(BUILD)/js_dom_asan \
+	    tests/unit/js_dom_test.c $(JSDOM_HOST_SRC) $(BUILD)/libcss_host.a -lm
 	@$(BUILD)/js_dom_asan
 
 # The CSS engine + layout under ASan/UBSan, and -- for the engine -- LeakSanitizer.
@@ -3933,7 +4052,7 @@ test-jpeg-negctl: $(RUST_LIB_HOST)
 # SVG rasterizer host test: embedded cases (real GitHub octicon mark path,
 # rect/circle/ellipse, g fill inheritance, fill-rule evenodd, opacity, xml
 # sniffing) plus truncation/garbage robustness checks. No asset generation.
-test-svg: $(RUST_LIB_HOST)
+test-svg: test-svg-scene $(RUST_LIB_HOST)
 	@$(CC) -O2 -o $(BUILD)/svg_test tests/unit/svg_test.c \
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
 	@$(BUILD)/svg_test
@@ -4031,7 +4150,7 @@ test-img-exif: $(RUST_LIB_HOST)
 # reports as clean. Seeds are the generated corpora; the harness mutates,
 # truncates and splices them. IMG_FUZZ_ITERS controls the budget.
 IMG_FUZZ_ITERS ?= 20000
-test-img-fuzz: $(RUST_LIB_HOST)
+test-img-fuzz: $(RUST_LIB_HOST) $(BUILD)/.asan-leaks
 	@mkdir -p $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest $(BUILD)/webpvp8
 	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
 	@python3 tests/unit/img_anim_gen.py $(BUILD)/imganim >/dev/null
@@ -4048,7 +4167,9 @@ test-img-fuzz: $(RUST_LIB_HOST)
 	@$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
 	    -o $(BUILD)/img_fuzz tests/unit/img_fuzz.c \
 	    $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC)
-	@ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+	@leaks=`cat $(BUILD)/.asan-leaks`; \
+	 if [ "$$leaks" = 0 ]; then echo "  [asan] image fuzz: leak detection unavailable; address/UB checks remain on"; fi; \
+	 ASAN_OPTIONS=detect_leaks=$$leaks:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 	    $(BUILD)/img_fuzz $(IMG_FUZZ_ITERS) $(BUILD)/imgstill $(BUILD)/imganim $(BUILD)/imgexif $(BUILD)/jpegtest $(BUILD)/webpvp8
 
 # The negative control for the fuzz harness ITSELF. A fuzz target that cannot
@@ -4062,14 +4183,14 @@ test-img-fuzz: $(RUST_LIB_HOST)
 #      is the one that silently passes when -fno-sanitize-recover=all is
 #      missing, because UBSan then prints the diagnostic, returns, and the
 #      process still exits 0 with the run reported clean.
-test-img-fuzz-negctl: $(RUST_LIB_HOST)
+test-img-fuzz-negctl: $(RUST_LIB_HOST) $(BUILD)/.asan-leaks
 	@mkdir -p $(BUILD)/imgstill
 	@python3 tests/unit/img_still_gen.py $(BUILD)/imgstill >/dev/null
-	@rc=0; for mode in 1 2; do \
+	@leaks=`cat $(BUILD)/.asan-leaks`; rc=0; for mode in 1 2; do \
 	    $(CC) -O1 -g -DIMG_SABOTAGE=$$mode -fsanitize=address,undefined -fno-sanitize-recover=all \
 	        -o $(BUILD)/img_fuzz_sab$$mode tests/unit/img_fuzz.c \
 	        $(IMG_HOST_SRC) $(RUST_LIB_HOST) $(IMG_HOST_INC); \
-	    if ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+	    if ASAN_OPTIONS=detect_leaks=$$leaks:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
 	          $(BUILD)/img_fuzz_sab$$mode 4000 $(BUILD)/imgstill >$(BUILD)/img_fuzz_sab$$mode.log 2>&1; then \
 	        echo "NEGATIVE CONTROL FAILED: sabotage $$mode fuzzed CLEAN"; rc=1; \
 	    else \
@@ -4550,6 +4671,7 @@ clean-scratch:
 # before/after that counts REVIVED harness files rather than a pass rate).
 # Own fragment for the same reason as every fragment above it.
 -include tests/cssom.mk
+-include tests/scroll_sync.mk
 
 # The computed-style FLUSH: getComputedStyle answered "" for every property
 # of every element whenever no embedder had run the cascade -- which is the
@@ -4567,6 +4689,11 @@ clean-scratch:
 # recipe above.
 -include tests/jsperf.mk
 -include tests/jsprof.mk
+
+# The WeakMap/FinalizationRegistry lifetime gate and its negative control
+# (test-weakmap-fin) -- the js_finreg_unregister reentrancy fix of
+# 2026-09-09. Own fragment for the same reason as every other one.
+-include tests/weakmap.mk
 
 # JS engine semantics differential against node (test-jssem, test-jssem-os).
 # Defines $(JSSEM_PACK), used in the $(DISK) recipe above.
@@ -4607,6 +4734,33 @@ clean-scratch:
 # targets were deleted by a whole-file overwrite from a concurrent line three
 # times in one afternoon, once by me.
 -include tests/loader.mk
+-include tests/session_restore.mk
+-include tests/runtime_scroll.mk
+-include tests/navigation_base.mk
+-include tests/frame_open.mk
+-include tests/passive_frame.mk
+-include tests/layout_stacking.mk
+-include tests/iframe_policy.mk
+-include tests/inserted_script_async.mk
+-include tests/parser_script_events.mk
+-include tests/dynamic_stylesheets.mk
+-include tests/css_buffer.mk
+-include tests/browser_body_limit.mk
+-include tests/fetch_fresh_retry.mk
+-include tests/fetch_diagnostics.mk
+-include tests/fetch_initial_deadline.mk
+-include tests/opcode_match.mk
+-include tests/input_files.mk
+-include tests/detached_images.mk
+-include tests/webapi_headers.mk
+-include tests/flex_column_bridge.mk
+-include tests/flex_used_height.mk
+-include tests/button_content_box.mk
+-include tests/button_auto_metrics.mk
+-include tests/foreign_attributes.mk
+-include tests/sock_closed_drain.mk
+-include tests/page_runtime.mk
+-include tests/importmap.mk
 
 # The EXECUTABLE loader -- c/kernel/exec/{elf,aex}.c: test-exec (every built
 # binary, byte for byte, with the permissions p_flags asked for), test-exec-fuzz
@@ -4654,13 +4808,13 @@ test-aui-mask:
 test-glass:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -Ic/kernel/gui \
-	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/kernel/gui/glass.c -lm
+	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
 	$(BUILD)/glass_lut_test
 
 test-glass-negctl:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION -Ic/kernel/gui \
-	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/kernel/gui/glass.c -lm
+	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
 	@if $(BUILD)/glass_lut_negctl > $(BUILD)/glass_negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the test passes without dispersion"; exit 1; \
 	else \
@@ -4779,6 +4933,8 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # negative control, and the cost. Own fragment for the same reason as every
 # other one above.
 -include tests/gfx.mk
+-include tests/inline_hit.mk
+-include tests/horizontal_scroll.mk
 
 # CSS Grid Layout: placement, the track sizing algorithm and alignment, checked
 # against the spec's own numeric outcomes rather than against a picture. Own
@@ -4809,6 +4965,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/frameworks.mk
 
 -include tests/http2.mk
+-include tests/fetch_header_order.mk
 
 # WebSocket (RFC 6455): the frame codec + the browser's `WebSocket`, host-
 # tested against an in-memory server. See tests/ws.mk's own header.
@@ -4824,7 +4981,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 -include tests/smpstorm.mk
 -include tests/sweep.mk
 
-# M30 threads: /bin/thrtest (the gate) and its four negative controls. Its own
+# M30 threads: /bin/thrtest (the gate) and its five negative controls. Its own
 # fragment for the reason every other one here is -- several lines edit this
 # file at once. The kernel side needs no rule at all: C_SRC globs c/kernel, so
 # c/kernel/sched/uthread.c links by existing, and mini-libc's pthread.c and
@@ -4904,6 +5061,8 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # termination-bar quiescence check and its negative control. Independent of
 # tests/events.mk's own source list -- see tests/idb.mk's header.
 -include tests/idb.mk
+-include tests/idb_upgrade_scope.mk
+-include tests/fetch_json_diagnostics.mk
 
 # The SITE SCOREBOARD: `make scoreboard`, `scoreboard-quick`, `scoreboard-1
 # SITE=<name>`, `scoreboard-diff FROM=... TO=...`. Eighteen live sites, one
@@ -4920,6 +5079,10 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # HTML*Element leaves, the prototype chain under them, and the constructors on
 # globalThis. Includes its own negative control. See the fragment header.
 -include tests/domiface.mk
+-include tests/page_lifecycle.mk
+-include tests/dom_id.mk
+-include tests/select_state.mk
+-include tests/page_timers.mk
 
 # The HTML element interfaces (js_semantics.c): <dialog>, <table>, <select>,
 # the popover and command/commandfor invokers, HTMLElement.click().
@@ -4947,6 +5110,13 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # taking no space, position:absolute anchored at its parent rather than at its
 # containing block) have their own controls in the same fragment.
 -include tests/layoutbox.mk
+-include tests/line_height.mk
+-include tests/atomic_inline.mk
+-include tests/intrinsic.mk
+-include tests/inline_flex.mk
+-include tests/margin.mk
+-include tests/css_import.mk
+-include tests/css_extra_selector.mk
 
 # CSS TEXT: inline layout and line breaking -- `make test-csstext` and its
 # negative control. The subsystem every page depends on unconditionally: a page
@@ -5070,6 +5240,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 
 # DOMParser: `make test-domparser`. See the fragment header.
 -include tests/domparser.mk
+-include tests/domparser_remove.mk
 
 # ---------------------------------------------------------------------------
 # Fragments written by parallel work that was told NOT to edit this file.
@@ -5120,6 +5291,7 @@ $(BUILD)/lm.aex: $(BUILD)/lm.elf tools/mkaex.py
 -include tests/fsgeom.mk
 -include tests/imelearn.mk
 -include tests/worker.mk
+-include tests/worker_blob.mk
 -include tests/framefetch.mk
 -include tests/cache.mk
 
@@ -5162,3 +5334,115 @@ test-mk-wired:
 # bfetch's first-byte deadline (browser_rt.c: BF_FIRSTBYTE_MS). See
 # tests/fetchdl.mk for what it gates and why.
 -include tests/fetchdl.mk
+
+# Browser expansion gates: controls are prerequisites of each positive gate.
+-include tests/css_extra_cascade.mk
+-include tests/css_spacing_math.mk
+-include tests/interaction_runtime.mk
+# Consumes INTERACTION_RUNTIME_DEPS at rule parse time: include after producer,
+# or an edited browser.c silently leaves the host input binary up to date.
+-include tests/input_delivery.mk
+-include tests/inert_focus.mk
+-include tests/event_path.mk
+-include tests/web_digest.mk
+-include tests/rejection_checkpoint.mk
+-include tests/generated_content.mk
+-include tests/live_range.mk
+-include tests/web_crypto_ops.mk
+-include tests/web_crypto_keys.mk
+-include tests/browser_downloads.mk
+-include tests/native_mo.mk
+
+-include tests/storage_persistence.mk
+-include tests/modal_top_layer.mk
+-include tests/browser_expansion.mk
+
+# Runtime wiring regressions; each positive target owns its negative control.
+-include tests/css_wiring.mk
+-include tests/wasm_lifecycle.mk
+-include tests/cache_invalidation.mk
+
+-include tests/browser_loading.mk
+-include tests/browser_close_during_load.mk
+-include tests/browser_wiring.mk
+
+-include tests/svg_layout_cache.mk
+-include tests/svg_dom_paint.mk
+
+-include tests/bootstrap_scan.mk
+
+-include tests/traversal_work.mk
+
+-include tests/simple_selector.mk
+
+# Native consumers for the previously number-only browser APIs.
+-include tests/popover_top_layer.mk
+-include tests/waapi_paint.mk
+-include tests/text_wiring.mk
+-include tests/element_scroll.mk
+
+# General component/runtime compatibility regressions.
+-include tests/max_height.mk
+-include tests/frame_bootstrap_wiring.mk
+-include tests/message_port.mk
+-include tests/dom_wrapper_lifetime.mk
+-include tests/address_geometry.mk
+-include tests/form_caret.mk
+-include tests/percentage_height.mk
+-include tests/custom_elements.mk
+-include tests/late_callbacks.mk
+-include tests/caret_advance.mk
+-include tests/opacity_group.mk
+-include tests/device_media.mk
+-include tests/display_contents.mk
+-include tests/grid_font_units.mk
+-include tests/form_selection_utf16.mk
+-include tests/module_budget.mk
+-include tests/grid_percentage_item.mk
+-include tests/dom_matrix.mk
+-include tests/absolute_auto_height.mk
+-include tests/positioned_insets.mk
+-include tests/transparent_box_hit.mk
+-include tests/pointer_events.mk
+-include tests/flex_parser.mk
+
+-include tests/bkl.mk
+-include tests/highheap.mk
+
+include tests/ptinterp.mk
+include tests/cookie_persistence.mk
+include tests/cookie_clock_rollback.mk
+include tests/cookie_clock_rewrite.mk
+include tests/xhr_progress.mk
+include tests/runtime_diagnostics.mk
+include tests/disk_profile.mk
+include tests/document_referrer.mk
+
+-include tests/browser_context.mk
+-include tests/passive_layout_context.mk
+-include tests/h2_header_copy.mk
+
+-include tests/servers.mk
+
+include tests/agent.mk
+
+include tests/svg_scene.mk
+include tests/xhr_constants.mk
+include tests/worker_globals.mk
+include tests/worker_wasm_normal.mk
+include tests/worker_fetch.mk
+include tests/worker_fairness.mk
+include tests/worker_parent_fetch.mk
+include tests/wasm_realms.mk
+include tests/wasm_finite_arithmetic.mk
+include tests/transform_lineheight.mk
+include tests/backface.mk
+include tests/svg_reflow_cache.mk
+
+include tests/text_vertical_metrics.mk
+
+include tests/physical_spacing_calc.mk
+include tests/physical_spacing_boundary.mk
+include tests/crc32_perf.mk
+
+include tests/svg_stylesheet.mk

@@ -367,6 +367,18 @@ thin section concludes the subsystem does not exist.
 `c/kernel/mm/`: pmm, vmm, vma, fault, kheap, rmap, reclaim, swap, pcache, shm,
 oom, mmsys, tlb.
 
+**Correction (2026-09-10): the ordinary kernel heap now uses the supervisor
+physmap, including on 512 MiB machines, and prefers physical pages above 4 GiB.**
+`kmalloc_low` is a separate <1 GiB identity domain for executable module images;
+its blocks never enter ordinary per-CPU magazines. Legacy low PMM/page-table
+interfaces remain. Arenas still require contiguous physical pages and remain
+owned by the heap after `kfree`. Low-alias readiness is distinct from complete
+high-map readiness, so panic can unwind a valid low-RAM physmap stack after a
+high-map failure. BIOS/UEFI x 512 MiB/2 GiB/8 GiB and 1.25 GiB actual heap data
+checks passed; see `docs/HIGH_KERNEL_HEAP_2026-09-10.md` for the exact artifacts,
+performance samples and limits. The older allocation descriptions below are
+historical where they imply ordinary `kmalloc` returns identity pointers.
+
 - **The reclaim invariant is THREE terms, not two.** This file said twice that a
   frame is evictable only if `rmap_count(f) == pmm_refcount(f)`, "the same number
   from two independently maintained structures". The live form is
@@ -433,6 +445,13 @@ ptrace, kpoll, syscall. **165 syscalls** in `include/abi/logit_abi.h`.
   `R_X86_64_RELATIVE` applied at its load base. Refusing is what makes the fixed
   link bases honest rather than accidental." Everything is static at a fixed base.
   **ASLR is therefore not absent, it is unrepresentable.**
+  **2026-09-10 correction:** wide user windows and static PIE superseded the
+  fixed-only statement. The kernel now supports `PT_INTERP` for LogitOS ELF/AEX:
+  it loads the main image and one bare ET_DYN interpreter, starts the latter,
+  and supplies separate `AT_BASE`/`AT_ENTRY`. The interpreter owns dynamic
+  relocation, TLS and RELRO. Placement is deterministic, not ASLR. A complete
+  userspace shared-library linker and Linux binary compatibility remain outside
+  this delivery. See `docs/PT_INTERP_2026-09-10.md` for the contract and evidence.
 - **The loader streams.** `exec.c` used to `kmalloc(whole file)`, which fell
   through kheap's `grow()` and asked `pmm_alloc_contig()` for the next power of
   two **in one piece**: 128 MiB of file took a 256 MiB arena, and a 256 MiB file
@@ -1311,6 +1330,14 @@ repeatable: two runs of the same binary read **19,871 µs and 12,707 µs**.
 
 ## The BKL: what it costs, measured
 
+**Correction (2026-09-10), retained beside the historical model below:** ordinary
+kernel entry and IRQ dispatch no longer acquire a BKL. Ownership is maintained
+by subsystem/object locks and per-CPU state. The current source/ELF gate and
+four-CPU simultaneous kernel-entry tests pass after the high-heap migration.
+See `docs/BKL_REMOVAL_2026-09-10.md`. This does not imply kernel preemption or
+parallel whole-frame GUI composition; their remaining constraints are recorded
+there. The acquisition counts below describe earlier binaries.
+
 **The concurrency model is one lock taken on kernel entry** — but there are **TWO
 acquisition sites now**, and the second is not in `interrupts.c`: the device
 model's `irq_isr_entry()` (`c/drivers/core/irq.c:186`) takes `g_bkl` itself under
@@ -1637,6 +1664,12 @@ mmap window, and every GUI app's link base is assigned by hand in the Makefile. 
 runtime that reserves a large address space first — V8, a JVM, Go, ASan — dies on
 the first reservation. That is **not** a RAM limit (a 64 MiB program loads fine);
 it is an address-space limit. ASLR is unrepresentable as a consequence.
+
+**2026-09-10 correction to item 2:** the legacy window remains, with a second
+`[1 TiB, 128 TiB)` window. Static PIE and the kernel PT_INTERP startup contract
+are implemented; deterministic load placement is still not ASLR. General shared
+library symbol resolution, a production runtime linker, `dlopen`, and a foreign
+syscall ABI have not thereby been implemented.
 
 **3. There is no write-at-an-offset contract.** The VFS op table has
 `write(path, buf, size)`, create-or-overwrite, and **no `->pwrite`**; no writable

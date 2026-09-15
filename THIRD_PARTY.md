@@ -28,6 +28,7 @@ subject to upstream terms where required.
 | Rust core and compiler support | Runtime code pulled into Rust `staticlib` outputs and linked into LogitOS binaries | Generated Rust archives and final kernel/browser binaries | Rust toolchain version is not pinned | Primarily MIT or Apache-2.0, with upstream-noted exceptions |
 | html5lib-tests and web-platform-tests HTML parser cases | Shared conformance test DATA for the HTML5 parser (no upstream code is used) | FETCHED, not vendored: `build/html5lib-tests/` via `tools/h5l_fetch.sh` at the pin in `tools/h5l_revision.txt`. Only the two licence texts stay in `third_party/html5lib-tests/`. | tokenizer cases from html5lib-tests, tree-construction cases out of the WPT checkout `tools/wpt_fetch.sh` already makes | MIT (html5lib-tests) and BSD-3-Clause (web-platform-tests) |
 | TinyCC (tcc) | On-device C compiler, ported as a LogitOS program (`tests/tcc.mk`) | `third_party/tcc/` | 0.9.27 (`third_party/tcc/VERSION:1`) | LGPL-2.1 for the compiler; a separate GPL-2.0-or-later grant with an explicit linking exception for the runtime-support object `lib/libtcc1.c` that is statically linked into every program `tcc` compiles on this OS -- see the dedicated section below |
+| FFmpeg AAC SBR core | HE-AAC v1 spectral-band replication only; LogitOS retains its own AAC-LC core | `third_party/ffmpeg-aacsbr/` | FFmpeg n4.4 commit `dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1` | LGPL-2.1-or-later |
 
 ## QuickJS
 
@@ -83,6 +84,35 @@ split; the authoritative list is the files themselves plus
 `third_party/libm/COPYRIGHT`, not a second copy of it here. The exact musl
 release or commit used for the import was not recorded and should not be
 inferred from this tree.
+
+## FFmpeg AAC SBR core
+
+- Upstream: <https://ffmpeg.org/>
+- Official source repository: <https://git.ffmpeg.org/ffmpeg.git>
+- Snapshot: tag n4.4, commit
+  `dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1`.
+- Location: `third_party/ffmpeg-aacsbr/`.
+- License: LGPL-2.1-or-later; the full LGPL 2.1 text is retained as
+  `COPYING.LGPLv2.1`, and every imported source retains its upstream notice.
+
+This is a narrow source import of `aacsbr.c`, `aacsbr.h`,
+`aacsbr_template.c`, `aacsbrdata.h`, `sbr.h`, `sbrdsp.c`, `sbrdsp.h`, and
+`sbrdsp_template.c`. It contains SBR synthesis only: no FFmpeg AAC core,
+container, I/O, or command-line code is used. Project-authored compatibility
+headers expose the small private types and scalar DSP surface the SBR files
+need; `c/lib/audio/aac_sbr.c` is the GPL-3.0-or-later adapter to LogitOS's own
+AAC-LC decoder and MDCT implementation.
+
+One upstream-covered source has a local safety patch:
+`aacsbr_template.c` propagates an exact-bound bit-reader over-read from its
+private reader copy to the caller and turns SBR off. The adapter otherwise
+keeps the upstream algorithm intact. Exact file origins, hashes and the local
+adaptation inventory are recorded in `third_party/ffmpeg-aacsbr/README.logitos.md`.
+
+Browser and ring-3 binaries statically link this code. The repository ships
+the complete corresponding sources and build rules, including the local
+changes, so downstream recipients can rebuild/relink the combined GPL-3.0-or-
+later application while retaining the FFmpeg files' LGPL terms.
 
 ## NetSurf CSS libraries
 
