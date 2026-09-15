@@ -7,7 +7,8 @@
  * arena, so a timed-out controller never retains a caller's stack/high heap.
  * ASS=0 is required before queue reuse; final release requires HCHalted. No
  * isochronous, high-bandwidth interrupt endpoints, companion UHCI/OHCI routing,
- * suspend or surprise hotplug. Periodic admission reserves whole frames: a
+ * suspend or downstream-hub hotplug. Root-port connect/disconnect is deferred
+ * to the USB core's kworker. Periodic admission reserves whole frames: a
  * conservative refusal is preferable to corrupting a shared TT's bandwidth.
  * Periodic rearming is deferred until PSS=0; an IRQ never spins for hardware.
  */
@@ -52,6 +53,7 @@ void *memcpy(void *, const void *, size_t);
 #define STS_ASS (1u<<15)
 #define STS_HSE (1u<<4)
 #define PORT_CCS 1u
+#define PORT_CSC (1u<<1)
 #define PORT_PE 4u
 #define PORT_RESET (1u<<8)
 #define PORT_POWER (1u<<12)
@@ -593,10 +595,29 @@ static int root_connected(struct usb_hc *h,int p)
     struct ehci *e=h->priv;
     return p>=1 && p<=(int)e->ports && (rd(e,OP_PORT(p))&PORT_CCS);
 }
+static int root_change_pending(struct usb_hc *h)
+{
+    struct ehci *e=h->priv;
+    if (!e || !e->up) return 0;
+    for (unsigned p=1;p<=e->ports;p++)
+        if (rd(e,OP_PORT(p))&PORT_CSC) return 1;
+    return 0;
+}
 static void port_write(struct ehci *e,int p,uint32_t clear,uint32_t set)
 {
     uint32_t v=rd(e,OP_PORT(p));
     wr(e,OP_PORT(p),(v&~(PORT_W1C|clear))|set);
+}
+static int root_changed(struct usb_hc *h,int p,int *connected)
+{
+    struct ehci *e=h->priv;
+    if (!e || !connected || p<1 || p>(int)e->ports) return -1;
+    IO_DOMAIN_GUARD(&e->owner);
+    uint32_t v=rd(e,OP_PORT(p));
+    if (!(v&PORT_CSC)) return 0;
+    *connected=!!(v&PORT_CCS);
+    port_write(e,p,0,PORT_CSC); /* acknowledge only CSC; PORT_PE is preserved */
+    return 1;
 }
 static int root_reset(struct usb_hc *h,int p,int *speed)
 {
@@ -638,7 +659,7 @@ static void timer_tick(struct ktimer *t)
 static void irq_enable(struct usb_hc *h)
 {
     struct ehci *e=h->priv;
-    wr(e,OP_INTR,0x13); /* completed qTD, transfer error, host system error */
+    wr(e,OP_INTR,0x17); /* qTD/error, root-port change, host system error */
     if (ktimer_add(&e->timer,NS_PER_MS,NS_PER_MS,timer_tick,e,"ehci-periodic"))
         kprintf("[ehci] periodic rearm timer unavailable; interrupt input may stall\n");
 }
@@ -655,7 +676,8 @@ static int shutdown(struct usb_hc *h)
 }
 static const struct usb_hc_ops ops={
     .name="ehci",.root_port_count=root_count,.root_port_connected=root_connected,
-    .root_port_reset=root_reset,.device_open=device_open,.device_close=device_close,
+    .root_port_reset=root_reset,.root_change_pending=root_change_pending,.root_port_changed=root_changed,
+    .device_open=device_open,.device_close=device_close,
     .set_ep0_packet=set_ep0,.configure=configure,.configure_hub=configure_hub,
     .control=ehci_control,.bulk=ehci_bulk,.int_in_arm=int_arm,.int_in_poll=int_poll,
     .clear_halt=clear_halt,.events=events,.irq_enable=irq_enable,.shutdown=shutdown,

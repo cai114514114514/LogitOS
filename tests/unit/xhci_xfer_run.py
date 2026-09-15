@@ -8,6 +8,11 @@ variants=[('',None)] if not a.negative_only else [('residual','short packet stop
 for name,marker in variants:
     b=a.build.resolve()/(name or 'positive');b.mkdir(parents=True,exist_ok=True)
     s=(r/'c/drivers/usb/xhci.c').read_text()
+    # This host model owns the register completions and ordering assertions.
+    # Preserve the full C driver while spelling its x86 mfence as a portable
+    # sequentially consistent fence, so the Apple Silicon host runs it natively.
+    s=s.replace('__asm__ volatile ("mfence" ::: "memory")',
+                '__atomic_thread_fence(__ATOMIC_SEQ_CST)')
     if name=='residual':s=s.replace('uint32_t got=chunk-(uint32_t)residual;','uint32_t got=chunk; /* negative: ignore short residual */')
     if name=='accounting':s=s.replace('{ IO_GUARD(&xhci_events_gate); ep->ring.pending=0; }','/* negative: leak Setup/Data TRB accounting */')
     if name=='dequeue':s=s.replace('TRB_SET_TYPE(16)|target,NULL)','TRB_SET_TYPE(TRB_NOOP_CMD),NULL)')
@@ -21,9 +26,9 @@ for name,marker in variants:
     fixture=fixture.replace('size_t o=(const unsigned char*)p-test_regs;','size_t o=(const unsigned char*)p-test_regs;\n    xhci_model_write(o,v);')
     fixture+='\n'+(r/'tests/unit/xhci_xfer_cases.c').read_text()
     (b/'test.c').write_text(fixture)
-    inc=['c/drivers/usb','c/drivers/core','c/kernel/pci','c/kernel/mm','c/kernel/core','c/kernel/cpu','c/kernel/sched','c/drivers/timer','include']
+    inc=['c/drivers/usb','c/drivers/core','c/kernel/pci','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/sched','c/drivers/timer','include']
     cmd=[os.environ.get('CC','clang'),'-O1','-g','-pthread','-DDRIVER_KIND=4','-DLOGIT_HOST_TEST','-ffunction-sections','-fdata-sections','-fsanitize=address,undefined','-I'+str(b),'-Itests/unit/dma_driver_stub']+['-I'+p for p in inc]+[str(b/'test.c'),'c/drivers/usb/xhci_ring.c','-o',str(b/'test')]
-    cmd+=['-arch','x86_64','-Wl,-dead_strip'] if platform.system()=='Darwin' else ['-Wl,--gc-sections']
+    cmd+=['-Wl,-dead_strip'] if platform.system()=='Darwin' else ['-Wl,--gc-sections']
     subprocess.run(cmd,cwd=r,check=True)
     p=subprocess.run([str(b/'test')],capture_output=True,text=True,timeout=30);(b/'result.log').write_text(p.stdout+p.stderr)
     if marker:assert p.returncode==1 and 'FAIL '+marker in p.stdout,(p.stdout,p.stderr)

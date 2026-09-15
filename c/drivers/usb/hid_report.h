@@ -41,24 +41,55 @@
 #define HID_PAGE_LED      0x08
 #define HID_PAGE_BUTTON   0x09
 #define HID_PAGE_CONSUMER 0x0C
+#define HID_PAGE_DIGITIZER 0x0D
 
 /* Generic Desktop usages we decode */
 #define HID_USAGE_POINTER 0x01
 #define HID_USAGE_MOUSE   0x02
+#define HID_USAGE_JOYSTICK 0x04
+#define HID_USAGE_GAMEPAD 0x05
 #define HID_USAGE_KEYBOARD 0x06
 #define HID_USAGE_X       0x30
 #define HID_USAGE_Y       0x31
+#define HID_USAGE_DIAL    0x37
 #define HID_USAGE_WHEEL   0x38
+#define HID_USAGE_HAT     0x39
+
+/* Digitizers page usages. A Finger collection groups repeated X/Y fields. */
+#define HID_USAGE_TOUCHPAD       0x05
+#define HID_USAGE_CONFIGURATION  0x0e
+#define HID_USAGE_FINGER         0x22
+#define HID_USAGE_TIP_SWITCH     0x42
+#define HID_USAGE_TOUCH_VALID    0x47
+#define HID_USAGE_CONTACT_ID     0x51
+#define HID_USAGE_INPUT_MODE     0x52
+#define HID_USAGE_CONTACT_COUNT  0x54
+#define HID_USAGE_CONTACT_MAX    0x55
+
+#define HID_FULL_USAGE(page, usage) (((uint32_t)(page) << 16) | (usage))
+#define HID_APP_POINTER  HID_FULL_USAGE(HID_PAGE_DESKTOP, HID_USAGE_POINTER)
+#define HID_APP_MOUSE    HID_FULL_USAGE(HID_PAGE_DESKTOP, HID_USAGE_MOUSE)
+#define HID_APP_JOYSTICK HID_FULL_USAGE(HID_PAGE_DESKTOP, HID_USAGE_JOYSTICK)
+#define HID_APP_GAMEPAD  HID_FULL_USAGE(HID_PAGE_DESKTOP, HID_USAGE_GAMEPAD)
+#define HID_APP_TOUCHPAD HID_FULL_USAGE(HID_PAGE_DIGITIZER, HID_USAGE_TOUCHPAD)
+#define HID_APP_CONFIGURATION HID_FULL_USAGE(HID_PAGE_DIGITIZER, HID_USAGE_CONFIGURATION)
+#define HID_COLLECTION_APPLICATION 1
 
 /* Main-item data bits (HID 1.11 6.2.2.5) */
 #define HID_MAIN_CONSTANT 0x001   /* padding: no usage, ignore */
 #define HID_MAIN_VARIABLE 0x002   /* 0 = array (a list of usage indices) */
 #define HID_MAIN_RELATIVE 0x004
+#define HID_MAIN_NULL_STATE 0x040
 
 #define HID_MAX_FIELDS 96
 #define HID_MAX_REPORTS 8
+#define HID_MAX_REPORT_BITS 4096
+#define HID_MAX_REPORT_BYTES ((HID_MAX_REPORT_BITS + 7) / 8 + 1)
+#define HID_MAX_COLLECTIONS 16
 
 struct hid_field {
+    uint32_t application;   /* full page:usage of enclosing Application */
+    uint16_t contact;       /* unique Finger collection, 0 if absent */
     uint8_t  report_id;     /* 0 when the descriptor uses no report IDs */
     uint16_t usage_page;
     uint32_t usage;         /* variable: the control's usage.
@@ -72,6 +103,7 @@ struct hid_field {
                              * report_count for an array */
     uint16_t flags;         /* HID_MAIN_* */
     uint8_t  is_input;
+    uint8_t  is_feature;
 };
 
 struct hid_desc {
@@ -79,7 +111,12 @@ struct hid_desc {
     struct hid_field f[HID_MAX_FIELDS];
     int uses_report_ids;
     int nreports;
-    struct { uint8_t id; uint16_t in_bits; } rep[HID_MAX_REPORTS];
+    struct {
+        uint8_t id;
+        uint16_t in_bits;
+        uint16_t out_bits;
+        uint16_t feature_bits;
+    } rep[HID_MAX_REPORTS];
 };
 
 /* -> 0 on success, -1 on a descriptor that is malformed, unbounded, or larger
@@ -89,6 +126,7 @@ int hid_parse_report_desc(const uint8_t *d, int len, struct hid_desc *out);
 
 /* Total INPUT bits for `report_id` (0 when the descriptor uses no IDs). */
 int hid_report_in_bits(const struct hid_desc *hd, uint8_t report_id);
+int hid_report_feature_bits(const struct hid_desc *descriptor, uint8_t report_id);
 
 /* Extract control `index` of `f` from a report body. `body_bits` bounds the
  * read: a field that runs past the end of what the device actually sent yields
@@ -97,6 +135,13 @@ uint32_t hid_extract(const uint8_t *body, int body_bits, const struct hid_field 
 int32_t  hid_extract_signed(const uint8_t *body, int body_bits, const struct hid_field *f, int index);
 
 /* --- the two decoders --- */
+
+enum hid_mouse_fields {
+    HID_MOUSE_HAS_X = 1,
+    HID_MOUSE_HAS_Y = 2,
+    HID_MOUSE_HAS_WHEEL = 4,
+    HID_MOUSE_HAS_BUTTONS = 8
+};
 
 struct hid_mouse_state {
     int dx, dy, wheel;
@@ -125,6 +170,8 @@ int hid_decode_keyboard(const struct hid_desc *hd, const uint8_t *rep, int len, 
  * from the descriptor range, relative axes are saturating deltas. */
 void hid_mouse_apply(const struct hid_mouse_state *, int width, int height,
                      int *x, int *y, uint32_t *buttons);
+
+int hid_field_is_pointer(const struct hid_field *f);
 
 /* Does this descriptor describe a pointer / a keyboard at all? Used to pick a
  * decoder when the interface protocol byte says nothing (report-protocol-only

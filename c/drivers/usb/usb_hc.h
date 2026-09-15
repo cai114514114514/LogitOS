@@ -17,7 +17,7 @@ struct usb_hc;
 #define USB_MAX_CONTROLLERS 8
 #define USB_MAX_DEPTH 5
 
-/* All operations except events/int_in_* run in thread context and may wait.
+/* All operations except events/root_change_pending/int_in_* run in thread context and may wait.
  * A backend owns addresses, endpoint toggles, DMA and completion lifetime.
  * device_open consumes the already reset topology in d and assigns d->addr
  * (and a backend slot if needed); failure must remain closeable. No backend
@@ -27,6 +27,14 @@ struct usb_hc_ops {
     int (*root_port_count)(struct usb_hc *);
     int (*root_port_connected)(struct usb_hc *, int port);
     int (*root_port_reset)(struct usb_hc *, int port, int *speed);
+    /* Port-change acknowledgement is deliberately split from the IRQ-side
+     * pending check.  The former reads/clears a per-port RW1C bit and may take
+     * the controller's sleepable owner; the latter must only report whether a
+     * kworker pass is needed.  Returning 0 from root_port_changed means the
+     * controller did not report a connection transition for that port, so the
+     * core must leave an already-bound device alone. */
+    int (*root_change_pending)(struct usb_hc *);
+    int (*root_port_changed)(struct usb_hc *, int port, int *connected);
     int (*device_open)(struct usb_device *);
     void (*device_close)(struct usb_device *);
     int (*set_ep0_packet)(struct usb_device *, int packet);

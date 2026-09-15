@@ -6,6 +6,8 @@
 #include <string.h>
 #include "usb.h"
 #include "driver.h"
+#include "ktime.h"
+#include "work.h"
 static int checks,failed,opened,closed,leaf_count,hub_configs,backend_bulk[2],polls[2];
 static unsigned address[2],reset_done[64][3],powered[64][3];
 static struct usb_device *leaves[8],*root_hub;
@@ -20,6 +22,12 @@ uint64_t timer_ms(void) { static uint64_t t; return ++t; }
 int time_ready(void) { return 1; }
 uint64_t time_mono_ns(void) { return timer_ms()*1000000; }
 void sched_poll_wait(void) {}
+void work_item_init(struct work *w,void (*fn)(void *),void *arg)
+{ w->fn=fn;w->arg=arg;w->next=NULL;w->queued=0; }
+int work_queue(struct work *w) { (void)w;return 1; }
+int ktimer_add(struct ktimer *t,uint64_t delay,uint64_t period,ktimer_fn fn,void *arg,const char *name)
+{ (void)delay;(void)period;(void)fn;(void)arg;(void)name;t->heap_idx=0;return 0; }
+int ktimer_cancel(struct ktimer *t) { t->heap_idx=-1;return 1; }
 int dev_irq_request(struct device *p,irq_handler_t fn,void *arg,const char *name)
 { (void)fn;(void)arg;(void)name;p->irq_mode=DEV_IRQ_INTX;p->irq_vec=96;return 96; }
 int dev_irq_release(struct device *p) { p->irq_mode=DEV_IRQ_NONE; return 0; }

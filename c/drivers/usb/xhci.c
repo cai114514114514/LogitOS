@@ -26,11 +26,10 @@ static io_lock_t xhci_events_gate = IO_LOCK_INIT;
  *    IRQ 12 all along.
  *
  *    What is NOT done in the handler: enumeration. Addressing a device and
- *    reading its descriptors means control transfers with real waits, so all of
- *    that happens once, synchronously, in probe() -- see usb_core.c. The
- *    consequence is that hot-plugging a device AFTER boot is not supported yet;
- *    the port-change events arrive and are counted, and acting on them needs a
- *    deferred-work tier that can sleep.
+ *    reading its descriptors means control transfers with real waits, so
+ *    usb_core.c defers root-port changes to its kworker.  Its bounded root
+ *    watcher also recovers a missed Port Status Change interrupt without
+ *    doing descriptor or transfer work in timer context.
  *
  * 2. WAS: DMA IS IDENTITY-MAPPED PHYSICAL MEMORY.
  *    NOW: coherent DMA allocations keep a physmap CPU pointer and an independent
@@ -431,13 +430,18 @@ static int xhci_cmd(struct xhci *x, uint64_t param, uint32_t status, uint32_t co
     uint64_t t0 = timer_ms(); long spins = 0;
     while (!__atomic_load_n(&x->cmd_ready, __ATOMIC_ACQUIRE)) {
         xhci_events();
-        if (r32(x->op, XOP_USBSTS) & STS_HSE) {
-            kprintf("[xhci] host system error during command\n");
+        uint32_t sts=r32(x->op,XOP_USBSTS);
+        if (sts & (STS_HSE|STS_HCE)) {
+            kprintf("[xhci] controller error during command usbsts=%x\n",sts);
             { IO_GUARD(&xhci_events_gate); x->cmd_want = 0; }
             return -1;
         }
         if (wait_ms_expired(t0, 1000, &spins)) {
-            kprintf("[xhci] command %d timed out\n", (int)TRB_TYPE(control));
+            kprintf("[xhci] command %d timed out usbcmd=%x usbsts=%x iman=%x crcr=%x "
+                    "events=%lu ports=%lu evdeq=%u evcycle=%u cmdpending=%u\n",
+                    (int)TRB_TYPE(control),r32(x->op,XOP_USBCMD),r32(x->op,XOP_USBSTS),
+                    r32(x->rt,XRT_IR0+XIR_IMAN),r32(x->op,XOP_CRCR),x->events,
+                    x->port_changes,x->ev.deq,x->ev.cycle,x->cmd.pending);
             { IO_GUARD(&xhci_events_gate); x->cmd_want = 0; }
             return -1;
         }
@@ -449,6 +453,8 @@ static int xhci_cmd(struct xhci *x, uint64_t param, uint32_t status, uint32_t co
 }
 
 /* ----------------------------------------------------------- init --- */
+
+static void portsc_write(struct xhci *x, int port, uint32_t set);
 
 int xhci_init(struct device *dev)
 {
@@ -571,8 +577,9 @@ int xhci_init(struct device *dev)
     w64(x->op, XOP_CRCR, xring_base_dcs(&x->cmd));
 
     /* 4.2 step 6: the event ring. One segment, described by a one-entry Event
-     * Ring Segment Table. ERSTSZ must be written BEFORE ERSTBA, and ERDP before
-     * ERSTBA too -- the controller latches the table when ERSTBA is written. */
+     * Ring Segment Table. ERSTSZ is published first. ERSTBA's high-dword write
+     * may make a controller fetch the table immediately, so PCI bus mastering
+     * must be enabled before that latch. */
     struct trb *evseg = ring_segment();
     if (!evseg) goto dma_fail;
     xring_init(&x->ev, evseg, dma_address(evseg), XHCI_RING_TRBS, 0);
@@ -583,8 +590,6 @@ int xhci_init(struct device *dev)
     *(volatile uint32_t *)(x->erst + 12) = 0;
 
     w32(x->rt, XRT_IR0 + XIR_ERSTSZ, 1);
-    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));
-    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));
     w32(x->rt, XRT_IR0 + XIR_IMOD, 0);
     /* Interrupter Enable stays CLEAR until a vector has actually been wired
      * (xhci_irq_enable below). Setting it first would let the controller raise
@@ -592,10 +597,27 @@ int xhci_init(struct device *dev)
     w32(x->rt, XRT_IR0 + XIR_IMAN, 0);
 
     /* BME is enabled only now: firmware released ownership, reset/halt were
-     * acknowledged, and every controller-visible ring address is ours. */
+     * acknowledged, and every controller-visible DMA object is initialized.
+     * ERSTBA is intentionally still unlatched: QEMU and physical controllers
+     * are allowed to fetch the segment table on its high-dword write. */
     dma_wmb();
     if (pci_command_set(x, (uint16_t)(x->pci_command_quiet | PCI_CMD_MASTER)) != 0) {
         kprintf("[xhci] bus-master enable was not acknowledged\n");
+        goto dma_fail;
+    }
+
+    /* Publish the ERST base before its dequeue pointer. This follows 4.2's
+     * initialization order and guarantees the immediate table fetch above can
+     * actually reach memory. */
+    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));
+    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));
+    /* A same-device USBSTS read is the posted-write flush and HCE/HSE
+     * observation point for the event-ring publication above. */
+    barrier();
+    uint32_t ring_sts=r32(x->op,XOP_USBSTS);
+    if (ring_sts & (STS_HSE|STS_HCE)) {
+        kprintf("[xhci] controller rejected event-ring publication usbsts=%x\n",
+                ring_sts);
         goto dma_fail;
     }
 
@@ -603,8 +625,15 @@ int xhci_init(struct device *dev)
     w32(x->op, XOP_USBCMD, CMD_RS);
     {
         uint64_t t0 = timer_ms(); long spins = 0;
-        while (r32(x->op, XOP_USBSTS) & STS_HCH)
+        for (;;) {
+            uint32_t sts=r32(x->op,XOP_USBSTS);
+            if (sts & (STS_HSE|STS_HCE)) {
+                kprintf("[xhci] controller error while starting usbsts=%x\n",sts);
+                goto dma_fail;
+            }
+            if (!(sts & STS_HCH)) break;
             if (wait_ms_expired(t0, 200, &spins)) { kprintf("[xhci] did not start\n"); goto dma_fail; }
+        }
     }
 
     x->up = 1;
@@ -639,6 +668,34 @@ int xhci_port_connected(int port)
     struct xhci *x = &g_xhci;
     if (!x->up || port < 1 || port > x->maxports) return 0;
     return (r32(x->op, XOP_PORTSC(port)) & PORTSC_CCS) ? 1 : 0;
+}
+
+/* A Port Status Change Event can also report reset/link changes caused by our
+ * own enumeration.  Only CSC authorizes detach/rebind; treating every port
+ * event as unplug would make the reset below recursively replace its device.
+ * This check runs at IRQ tail and intentionally only reads MMIO. */
+int xhci_root_change_pending(void)
+{
+    struct xhci *x=&g_xhci;
+    if (!x->up) return 0;
+    for (int p=1;p<=x->maxports;p++)
+        if (r32(x->op,XOP_PORTSC(p))&PORTSC_CSC) return 1;
+    return 0;
+}
+
+int xhci_port_changed(int port,int *connected)
+{
+    IO_DOMAIN_GUARD(&xhci_owner);
+    struct xhci *x=&g_xhci;
+    if (!connected || !x->up || port<1 || port>x->maxports) return -1;
+    uint32_t v=r32(x->op,XOP_PORTSC(port));
+    if (!(v&PORTSC_CSC)) return 0;
+    *connected=!!(v&PORTSC_CCS);
+    /* CSC is RW1C.  portsc_write also masks PED and all unrelated change bits,
+     * so acknowledging a cable transition cannot disable the port or consume
+     * a reset/link event another path still needs. */
+    portsc_write(x,port,PORTSC_CSC);
+    return 1;
 }
 
 /* Read-modify-write PORTSC without destroying it. PED and the seven change bits

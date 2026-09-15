@@ -202,6 +202,7 @@ static void remove_interface(struct usb_device *d,int ifno)
     for (int i=0;i<MSC_LUNS;i++) if (s->lun[i].disk) blk_dev_offline(s->lun[i].disk);
     { IO_DOMAIN_GUARD(&s->gate);s->usb=NULL; }
     d->binding[ifno].drvdata=NULL;
+    kprintf("[usb-msc] interface=%u offline\n",d->cfg.iface[ifno].num);
 }
 static const struct usb_match matches[]={{8,6,0x50},{0,0,0}};
 static const struct usb_driver driver={.name="usb-storage",.match=matches,.probe=probe,.remove=remove_interface};

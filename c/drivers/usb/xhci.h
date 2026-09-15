@@ -68,6 +68,7 @@
 #define STS_EINT  (1u << 3)
 #define STS_PCD   (1u << 4)   /* Port Change Detect */
 #define STS_CNR   (1u << 11)  /* Controller Not Ready */
+#define STS_HCE   (1u << 12)  /* Host Controller Error */
 
 /* --- PORTSC (5.4.8) --- */
 #define PORTSC_CCS  (1u << 0)    /* Current Connect Status */
@@ -214,6 +215,8 @@ void xhci_irq_enable(void);
 int  xhci_port_count(void);
 int  xhci_port_connected(int port);
 int  xhci_port_reset(int port, int *speed);
+int  xhci_root_change_pending(void); /* IRQ-safe: no waits or allocations */
+int  xhci_port_changed(int port, int *connected); /* thread context, acks CSC */
 
 /* Device setup, in the order 4.3 "USB Device Initialization" prescribes. */
 int  xhci_enable_slot(void);

@@ -30,7 +30,8 @@
  *
  * After that, xHCI is completion-interrupt driven. EHCI additionally uses a
  * bounded backend timer to advance its periodic schedule without waiting in
- * an IRQ. Hub enumeration remains boot-only; no hotplug thread is implied.
+ * an IRQ. Root-port cable changes queue the existing sleepable kworker; hub
+ * downstream changes still require a hub interrupt endpoint and remain absent.
  */
 
 #include <stdint.h>
@@ -46,6 +47,7 @@
 #include "kprintf.h"
 #include "pit.h"
 #include "ktime.h"
+#include "work.h"
 
 void *memset(void *, int, size_t);
 
@@ -59,6 +61,13 @@ static struct usb_device g_dev[USB_MAX_DEVICES];
 static const struct usb_driver *g_drv[USB_MAX_DRIVERS];
 static int g_ndrv;
 static struct usb_hc *g_hc[USB_MAX_CONTROLLERS];
+struct usb_hotplug {
+    struct usb_hc *hc;
+    struct work work;
+    struct ktimer timer;
+    int initialized;
+};
+static struct usb_hotplug g_hotplug[USB_MAX_CONTROLLERS];
 static struct io_domain usb_enumeration = IO_DOMAIN_INIT;
 static int classes_registered;
 /* A reference belongs to its controller. Removing EHCI must neither reject
@@ -170,7 +179,15 @@ static struct usb_device *dev_alloc(void)
 {
     for (int i = 0; i < USB_MAX_DEVICES; i++)
         if (!g_dev[i].used) {
-            memset(&g_dev[i], 0, sizeof g_dev[i]);
+            struct usb_device *d=&g_dev[i];
+            size_t ready=offsetof(struct usb_device,callback_ready);
+            /* IRQ reads callback_ready atomically before any ordinary field.
+             * Do not let a whole-struct memset race that atomic read, even
+             * while the byte is already zero. */
+            __atomic_store_n(&d->callback_ready,0,__ATOMIC_RELAXED);
+            memset(d,0,ready);
+            memset((uint8_t *)d+ready+sizeof d->callback_ready,0,
+                   sizeof *d-ready-sizeof d->callback_ready);
             g_dev[i].used = 1;
             return &g_dev[i];
         }
@@ -272,6 +289,7 @@ static int enumerate_device(struct usb_device *d)
     }
     if (!usb_bind_interfaces(d, g_drv, g_ndrv))
         kprintf("[usb] port %d: no driver for this device (it is enumerated, just idle)\n", port);
+    __atomic_store_n(&d->callback_ready,1,__ATOMIC_RELEASE);
     return 0;
 
 fail:
@@ -313,6 +331,104 @@ static int enumerate_port(struct usb_hc *hc,int port)
     return enumerate_device(d);
 }
 
+static struct usb_device *root_device(struct usb_hc *hc,int port)
+{
+    for (int i=0;i<USB_MAX_DEVICES;i++) {
+        struct usb_device *d=&g_dev[i];
+        if (d->used && d->hc==hc && !d->parent && d->port==port) return d;
+    }
+    return NULL;
+}
+
+/* Wait for the current IRQ/timer callback, then make the entire root subtree
+ * invisible to every future class poll.  The lock is intentionally released
+ * before class remove, block drain, endpoint close, or re-enumeration: those
+ * operations can sleep and hc->callbacks is a non-sleeping IRQ lock. */
+static void quiesce_root_callbacks(struct usb_hc *hc,int port)
+{
+#ifndef USB_HOTPLUG_NEGCTL_UNLOCKED_DETACH
+    IO_GUARD(&hc->callbacks);
+#endif
+    for (int i=0;i<USB_MAX_DEVICES;i++) {
+        struct usb_device *d=&g_dev[i];
+        if (d->used && d->hc==hc && d->port==port)
+            __atomic_store_n(&d->callback_ready,0,__ATOMIC_RELEASE);
+    }
+}
+
+/* Detach descendants before their hub/TT ancestor.  All descendants retain
+ * the same root-port number, so this also catches a whole hub tree without
+ * relying on parent pointers after the first child has been cleared. */
+static int detach_root_tree(struct usb_hc *hc,int port)
+{
+    int removed=0;
+    for (int depth=USB_MAX_DEPTH;depth>=0;depth--)
+        for (int i=0;i<USB_MAX_DEVICES;i++) {
+            struct usb_device *d=&g_dev[i];
+            if (!d->used || d->hc!=hc || d->port!=port || d->depth!=depth) continue;
+            usb_remove_interfaces(d);
+            hc->ops->device_close(d);
+            size_t ready=offsetof(struct usb_device,callback_ready);
+            memset(d,0,ready);
+            memset((uint8_t *)d+ready+sizeof d->callback_ready,0,
+                   sizeof *d-ready-sizeof d->callback_ready);
+            __atomic_store_n(&d->callback_ready,0,__ATOMIC_RELAXED);
+            removed++;
+            if (g_found) g_found--;
+        }
+    return removed;
+}
+
+static void hotplug_work(void *arg)
+{
+    struct usb_hotplug *hp=arg;
+    struct usb_hc *hc=hp?hp->hc:NULL;
+    /* Lock order matters: unregister holds usb_enumeration before it closes
+     * admission.  Taking an active reference first would let this worker wait
+     * for enumeration while unregister waited for this reference forever. */
+    IO_DOMAIN_GUARD(&usb_enumeration);
+    USB_REF(hc);
+    if (!ref.hc || !hc->ops->root_port_changed) return;
+    int n=hc->ops->root_port_count(hc);
+    for (int p=1;p<=n;p++) {
+        int connected=0;
+        int changed=hc->ops->root_port_changed(hc,p,&connected);
+#ifndef USB_HOTPLUG_NEGCTL_IGNORE_CSC
+        if (changed<=0) continue;
+#else
+        if (changed<0) continue;
+#endif
+        struct usb_device *old=root_device(hc,p);
+        if (!connected) {
+            if (old) quiesce_root_callbacks(hc,p);
+            int removed=old?detach_root_tree(hc,p):0;
+            kprintf("USB_HOTPLUG hc=%u port=%d disconnected removed=%d\n",hc->index,p,removed);
+            continue;
+        }
+        /* A real CSC while CCS stayed high is a replacement/bounce, not a
+         * reset-completion event: reset sets PRC, and each HCD reports CSC
+         * separately.  Retire stale endpoints before assigning a fresh USB
+         * address so the new device cannot inherit old class state. */
+        if (old) {
+            quiesce_root_callbacks(hc,p);
+            (void)detach_root_tree(hc,p);
+        }
+        int rc=hc->ops->root_port_connected(hc,p)?enumerate_port(hc,p):-1;
+        kprintf("USB_HOTPLUG hc=%u port=%d connected result=%s\n",hc->index,p,rc?"failed":"online");
+    }
+}
+
+/* Port Status Change interrupts are advisory: firmware routing mistakes and
+ * an already-asserted MSI edge can lose one.  A bounded timer reuses the same
+ * IRQ path so xHCI retires the corresponding event TRB/EHB before a deferred
+ * command is submitted.  It never enumerates, waits, or touches descriptors
+ * in interrupt context. */
+static void hotplug_watch(struct ktimer *timer)
+{
+    struct usb_hotplug *hp=timer?timer->arg:NULL;
+    if (hp && hp->hc) usb_hc_irq(hp->hc);
+}
+
 /* The reference spans class decoding of borrowed interrupt-IN DMA buffers.
  * events only records completions; no enumeration or synchronous bulk runs in
  * this IRQ entry. Hub discovery is a boot-only probe operation. */
@@ -326,7 +442,11 @@ void usb_hc_irq(void *arg)
     IO_GUARD(&hc->callbacks);
     hc->ops->events(hc);
     for (int i=0;i<USB_MAX_DEVICES;i++)
-        if (g_dev[i].used && g_dev[i].hc==hc) usb_poll_interfaces(&g_dev[i]);
+        if (__atomic_load_n(&g_dev[i].callback_ready,__ATOMIC_ACQUIRE) &&
+            g_dev[i].used && g_dev[i].hc==hc)
+            usb_poll_interfaces(&g_dev[i]);
+    if (hc->ops->root_change_pending && hc->ops->root_change_pending(hc))
+        work_queue(&g_hotplug[hc->index].work);
 }
 int usb_hc_register(struct usb_hc *hc,struct device *pci,const struct usb_hc_ops *ops,void *priv)
 {
@@ -341,6 +461,13 @@ int usb_hc_register(struct usb_hc *hc,struct device *pci,const struct usb_hc_ops
     hc->active=0;
     { IO_GUARD(&hc->admission); hc->online=1; }
     g_hc[index]=hc;
+    struct usb_hotplug *hp=&g_hotplug[index];
+    hp->hc=hc;
+    if (!hp->initialized) {
+        work_item_init(&hp->work,hotplug_work,hp);
+        hp->timer.heap_idx=-1;
+        hp->initialized=1;
+    }
     dev_set_drvdata(pci,hc);
     if (!classes_registered) {
         classes_registered=1;
@@ -349,11 +476,25 @@ int usb_hc_register(struct usb_hc *hc,struct device *pci,const struct usb_hc_ops
     int n=ops->root_port_count(hc);
     kprintf("[usb] %s hc=%d scanning %d root ports\n",ops->name,index,n);
     for (int p=1;p<=n;p++) if (ops->root_port_connected(hc,p)) enumerate_port(hc,p);
+    /* Controller reset/power-on can leave CSC set even on empty ports. Consume
+     * that startup state before enabling IRQ/watch, while still honoring a
+     * cable transition that raced the first connected snapshot. */
+    if (ops->root_port_changed) for (int p=1;p<=n;p++) {
+        int connected=0;
+        if (ops->root_port_changed(hc,p,&connected)>0) {
+            struct usb_device *old=root_device(hc,p);
+            if (connected && !old) (void)enumerate_port(hc,p);
+            else if (!connected && old) (void)detach_root_tree(hc,p);
+        }
+    }
     int vec=dev_irq_request(pci,usb_hc_irq,hc,ops->name);
     if (vec>=0 && ops->irq_enable) {
         ops->irq_enable(hc);
         kprintf("USB_IRQ vec=%d mode=%d\n",vec,pci->irq_mode);
     } else kprintf("[usb] %s has no IRQ; interrupt input unavailable\n",ops->name);
+    if (ops->root_change_pending && ops->root_port_changed &&
+        ktimer_add(&hp->timer,10*NS_PER_MS,10*NS_PER_MS,hotplug_watch,hp,"usb-root-watch"))
+        kprintf("[usb] %s root-port watcher unavailable; hotplug requires IRQ delivery\n",ops->name);
     kprintf("USB_READY devices=%d drivers=%d\n",(int)g_found,g_ndrv);
     return 0;
 }
@@ -361,6 +502,8 @@ void usb_hc_unregister(struct usb_hc *hc)
 {
     if (!hc) return;
     IO_DOMAIN_GUARD(&usb_enumeration);
+    struct usb_hotplug *hp=hc->index<USB_MAX_CONTROLLERS?&g_hotplug[hc->index]:NULL;
+    if (hp) (void)ktimer_cancel(&hp->timer);
     { IO_GUARD(&hc->admission); hc->online=0; }
     dev_irq_release(hc->pci);
     while (__atomic_load_n(&hc->active,__ATOMIC_ACQUIRE)) sched_poll_wait();
@@ -376,6 +519,7 @@ void usb_hc_unregister(struct usb_hc *hc)
         }
     hc->ops->shutdown(hc);
     if (hc->index<USB_MAX_CONTROLLERS && g_hc[hc->index]==hc) g_hc[hc->index]=NULL;
+    if (hp && hp->hc==hc) hp->hc=NULL;
     dev_set_drvdata(hc->pci,NULL);
 }
 
@@ -387,11 +531,14 @@ static void x_close(struct usb_device *d) { xhci_free_slot(d->slot); }
 static int x_ports(struct usb_hc *h) { (void)h; return xhci_port_count(); }
 static int x_connected(struct usb_hc *h,int p) { (void)h; return xhci_port_connected(p); }
 static int x_reset(struct usb_hc *h,int p,int *s) { (void)h; return xhci_port_reset(p,s); }
+static int x_change_pending(struct usb_hc *h) { (void)h;return xhci_root_change_pending(); }
+static int x_changed(struct usb_hc *h,int p,int *c) { (void)h;return xhci_port_changed(p,c); }
 static void x_events(struct usb_hc *h) { (void)h; xhci_events(); }
 static void x_irq(struct usb_hc *h) { (void)h; xhci_irq_enable(); }
 static int x_stop(struct usb_hc *h) { (void)h; return xhci_shutdown(); }
 static const struct usb_hc_ops x_ops={
     .name="xhci",.root_port_count=x_ports,.root_port_connected=x_connected,.root_port_reset=x_reset,
+    .root_change_pending=x_change_pending,.root_port_changed=x_changed,
     .device_open=x_open,.device_close=x_close,.set_ep0_packet=xhci_set_ep0_packet,
     .configure=xhci_configure_ep,.configure_hub=xhci_configure_hub,.control=xhci_control,
     .bulk=xhci_bulk,.clear_halt=xhci_clear_halt,.int_in_arm=xhci_int_in_arm,.int_in_poll=xhci_int_in_poll,

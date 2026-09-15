@@ -1,8 +1,10 @@
 # Generic physical USB HID support; QEMU proves emulated USB transport only.
 USB_INPUT_EXT_SRC := tests/unit/usb_input_extensions_test.c c/drivers/usb/usb_bind.c \
-    c/drivers/usb/usb_hid.c c/drivers/usb/hid_report.c c/drivers/usb/usb_desc.c
-USB_INPUT_EXT_INC := -Ic/drivers/usb -Ic/drivers/core -Ic/kernel/core -Ic/kernel/gui -Ic/kernel/mm \
-    -Ic/drivers/timer -Iinclude/abi
+    c/drivers/usb/usb_hid.c c/drivers/usb/hid_report.c c/drivers/usb/hid/generic.c \
+    c/drivers/usb/hid/feature.c \
+    c/drivers/usb/usb_desc.c
+USB_INPUT_EXT_INC := -Ic/drivers/usb -Ic/drivers/core $(KCORE_INC) $(KGUI_INC) $(KMM_INC) \
+    -Ic/drivers/timer -Iinclude/abi -Ic/lib/gfx/include
 .PHONY: test-usb-input-extensions test-usb-input-extensions-negctl test-usb-tablet-os
 ci-host: test-usb-input-extensions
 ci-boot: test-usb-tablet-os

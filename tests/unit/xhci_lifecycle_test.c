@@ -23,6 +23,8 @@ static unsigned bme_writes, early_bme, legacy_ctl_writes;
 static int bme_authorized;
 static int release_bios, legacy_complete, reset_complete;
 static int dcbaa_programmed, crcr_programmed, erst_programmed;
+static int erst_latched, erst_latched_with_bme, erdp_after_erst;
+static int reject_event_ring, hce_on_run;
 static int start_stuck, halt_stuck;
 enum pci_fault {
     PCI_OK,
@@ -81,6 +83,14 @@ void test_write(volatile void *p, unsigned n, uint64_t value)
     if ((pci_command & PCI_CMD_MASTER) && !bme_authorized) early_bme = 1;
     size_t off = (const volatile unsigned char *)p - regs;
     update_ring_milestones(off, value);
+    if (reset_complete && off == 0x1000 + XRT_IR0 + XIR_ERSTBA + 4) {
+        erst_latched = 1;
+        erst_latched_with_bme = !!(pci_command & PCI_CMD_MASTER);
+        if (reject_event_ring)
+            *(uint32_t *)(regs + 0x40 + XOP_USBSTS) |= STS_HCE;
+    }
+    if (reset_complete && off == 0x1000 + XRT_IR0 + XIR_ERDP && value)
+        erdp_after_erst = erst_latched;
 
     if (off == 0x100 && n == 4) {
         if ((value & (1u << 24)) && release_bios) {
@@ -98,7 +108,7 @@ void test_write(volatile void *p, unsigned n, uint64_t value)
             reset_complete = 1;
         } else if (command & CMD_RS) {
             *(uint32_t *)(regs + 0x40 + XOP_USBSTS) =
-                start_stuck ? STS_HCH : 0;
+                hce_on_run ? STS_HCE : (start_stuck ? STS_HCH : 0);
         } else if (!halt_stuck) {
             *(uint32_t *)(regs + 0x40 + XOP_USBSTS) = STS_HCH;
             *(uint32_t *)(regs + 0x40 + XOP_CRCR) &= ~CRCR_CRR;
@@ -142,7 +152,7 @@ void pci_cfg_write16(uint8_t bus, uint8_t slot, uint8_t func,
         uint32_t command = *(uint32_t *)(regs + 0x40 + XOP_USBCMD);
         uint32_t status = *(uint32_t *)(regs + 0x40 + XOP_USBSTS);
         if (!legacy_complete || !reset_complete || !dcbaa_programmed ||
-            !crcr_programmed || !erst_programmed || (command & CMD_RS) ||
+            !crcr_programmed || alloc_calls < 3 || (command & CMD_RS) ||
             !(status & STS_HCH))
             early_bme = 1;
         else
@@ -279,6 +289,8 @@ static void fresh_controller(int bios_owned)
     bme_authorized = 0;
     release_bios = legacy_complete = reset_complete = 0;
     dcbaa_programmed = crcr_programmed = erst_programmed = 0;
+    erst_latched = erst_latched_with_bme = erdp_after_erst = 0;
+    reject_event_ring = hce_on_run = 0;
     start_stuck = halt_stuck = saw_master = 0;
     pci_fault = PCI_OK;
     bar_present = 1;
@@ -302,9 +314,12 @@ static void happy_order(int compact)
     release_bios = 1;
     int rc = xhci_init(&device);
     int ordered = rc == 0 && !early_bme && bme_writes == 1 &&
-        legacy_complete && reset_complete && dcbaa_programmed &&
-        crcr_programmed && erst_programmed;
-    check(ordered, "BME stays clear until handoff reset and ring programming");
+        legacy_complete && reset_complete && dcbaa_programmed && crcr_programmed;
+    check(ordered, "BME starts only after handoff reset and base ring programming");
+    check(rc == 0 && erst_programmed && erst_latched_with_bme,
+          "event table is latched only while bus mastering is enabled");
+    check(rc == 0 && erdp_after_erst,
+          "ERSTBA is latched before ERDP is published");
     if (!compact) {
         check((*(uint32_t *)(regs + 0x104) & 0x1fffffffu) == 0,
               "legacy SMI enables clear only after ownership");
@@ -317,6 +332,30 @@ static void happy_order(int compact)
             check(stop == 0 && live == 0 && !(pci_command & PCI_CMD_MASTER),
                   "shutdown confirms stop and BME isolation before release");
     } else recover_if_owned();
+}
+
+static void event_ring_reject(void)
+{
+    fresh_controller(1);
+    release_bios = 1;
+    reject_event_ring = 1;
+    int rc=xhci_init(&device);
+    check(rc < 0 && erst_latched && bme_writes == 1 && live == 0 &&
+          !(pci_command & PCI_CMD_MASTER) && !g_xhci.cap,
+          "posted-write flush observes event-ring HCE before Run and isolates DMA");
+    recover_if_owned();
+}
+
+static void delayed_run_hce(void)
+{
+    fresh_controller(1);
+    release_bios = 1;
+    hce_on_run = 1;
+    int rc=xhci_init(&device);
+    check(rc < 0 && erst_latched && erdp_after_erst && bme_writes == 1 &&
+          live == 0 && !(pci_command & PCI_CMD_MASTER) && !g_xhci.cap,
+          "Run-time HCE refuses start and isolates DMA");
+    recover_if_owned();
 }
 
 static void bios_timeout(int compact)
@@ -420,6 +459,14 @@ int main(void)
     bios_timeout(1);
 #elif defined(TEST_NEG_EARLY_BME)
     happy_order(1);
+#elif defined(TEST_NEG_LATE_BME)
+    happy_order(1);
+#elif defined(TEST_NEG_ERDP_FIRST)
+    happy_order(1);
+#elif defined(TEST_NEG_EVENT_RING_READBACK)
+    event_ring_reject();
+#elif defined(TEST_NEG_RUN_HCE)
+    delayed_run_hce();
 #elif defined(TEST_NEG_COMMAND_READBACK)
     dropped_prepare(1);
 #elif defined(TEST_NEG_RESTORE_FAILURE)
@@ -428,6 +475,8 @@ int main(void)
     failed_usb_registration(1);
 #else
     happy_order(0);
+    event_ring_reject();
+    delayed_run_hce();
     bios_timeout(0);
     dropped_prepare(0);
     failed_restore();

@@ -55,6 +55,7 @@ struct usb_driver;
 
 struct usb_device {
     int      used;
+    uint8_t  callback_ready;  /* published only after bind; cleared before remove */
     uint8_t  slot;            /* xHCI slot id, 1-based */
     uint8_t  port;            /* root hub port, 1-based */
     uint8_t  speed;           /* XSPEED_* */

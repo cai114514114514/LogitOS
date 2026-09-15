@@ -18,7 +18,11 @@ build.mkdir(parents=True, exist_ok=True)
 
 controls = [
     ("IGNORE_BIOS", "BIOS ownership timeout refuses without SMI clear or re-probe"),
-    ("EARLY_BME", "BME stays clear until handoff reset and ring programming"),
+    ("EARLY_BME", "BME starts only after handoff reset and base ring programming"),
+    ("LATE_BME", "event table is latched only while bus mastering is enabled"),
+    ("ERDP_FIRST", "ERSTBA is latched before ERDP is published"),
+    ("EVENT_RING_READBACK", "posted-write flush observes event-ring HCE before Run and isolates DMA"),
+    ("RUN_HCE", "Run-time HCE refuses start and isolates DMA"),
     ("COMMAND_READBACK", "dropped MEM-only Command write refuses before BAR access"),
     ("RESTORE_FAILURE", "failed Command isolation retains unknown DMA and blocks re-probe"),
     ("REGISTER_FAILURE", "USB registration failure stops and isolates initialized xHCI"),
@@ -29,6 +33,8 @@ if not args.positive_only:
 
 for name, expected in variants:
     source = (repo / "c/drivers/usb/xhci.c").read_text()
+    source = source.replace('__asm__ volatile ("mfence" ::: "memory")',
+                            '__atomic_thread_fence(__ATOMIC_SEQ_CST)')
     if name == "IGNORE_BIOS":
         old = ('kprintf("[xhci] BIOS ownership did not release; refusing controller\\n");\n'
                '                return -1;')
@@ -43,6 +49,36 @@ for name, expected in variants:
                '                                      PCI_CMD_INTX_DIS | PCI_CMD_MASTER);')
         assert source.count(old) == 1
         source = source.replace(old, new)
+    elif name == "LATE_BME":
+        enable = ('    dma_wmb();\n'
+                  '    if (pci_command_set(x, (uint16_t)(x->pci_command_quiet | PCI_CMD_MASTER)) != 0) {')
+        assert source.count(enable) == 1
+        source = source.replace(enable,
+            '    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));\n' + enable)
+        publish = ('    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));\n'
+                   '    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));')
+        assert source.count(publish) == 1
+        source = source.replace(publish,
+            '    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));',1)
+    elif name == "ERDP_FIRST":
+        publish = ('    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));\n'
+                   '    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));')
+        assert source.count(publish) == 1
+        source = source.replace(publish,
+            '    w64(x->rt, XRT_IR0 + XIR_ERDP, dma_address(evseg));\n'
+            '    w64(x->rt, XRT_IR0 + XIR_ERSTBA, dma_address(x->erst));')
+    elif name == "EVENT_RING_READBACK":
+        old = 'if (ring_sts & (STS_HSE|STS_HCE)) {'
+        assert source.count(old) == 1
+        source = source.replace(old,
+            'if (0 && (ring_sts & (STS_HSE|STS_HCE))) {')
+    elif name == "RUN_HCE":
+        old = ('if (sts & (STS_HSE|STS_HCE)) {\n'
+               '                kprintf("[xhci] controller error while starting usbsts=%x\\n",sts);')
+        assert source.count(old) == 1
+        source = source.replace(old,
+            'if (0 && (sts & (STS_HSE|STS_HCE))) {\n'
+            '                kprintf("[xhci] controller error while starting usbsts=%x\\n",sts);')
     elif name == "COMMAND_READBACK":
         old = "if (pci_command_set(x, x->pci_command_quiet) != 0) {"
         new = "if ((void)pci_command_set(x, x->pci_command_quiet), 0) {"
@@ -87,9 +123,7 @@ for name, expected in variants:
     (variant_dir / "xhci_probe_driver.inc").write_text(adapter)
     exe = variant_dir / "test"
     include_dirs = [
-        "c/drivers/usb", "c/drivers/core", "c/kernel/pci", "c/kernel/mm",
-        "c/kernel/core", "c/kernel/cpu", "c/kernel/sched", "c/drivers/timer",
-        "include", "tests/unit/dma_driver_stub",
+        "c/drivers/usb", "c/drivers/core", "c/kernel/pci", "c/kernel/mm","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/core","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/cpu","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/sched","c/drivers/timer","include","tests/unit/dma_driver_stub",
     ]
     command = [
         os.environ.get("CC", "clang"), "-std=c11", "-O1", "-g", "-pthread",
@@ -104,7 +138,7 @@ for name, expected in variants:
     command += [str(repo / "tests/unit/xhci_lifecycle_test.c"),
                 str(repo / "c/drivers/usb/xhci_ring.c"), "-o", str(exe)]
     if platform.system() == "Darwin":
-        command += ["-arch", "x86_64", "-Wl,-dead_strip"]
+        command += ["-Wl,-dead_strip"]
     else:
         command += ["-Wl,--gc-sections"]
     subprocess.run(command, cwd=repo, check=True)
