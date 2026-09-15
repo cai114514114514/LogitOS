@@ -10,7 +10,7 @@
  *
  * Before this file every "wait" in the kernel was a spin or a poll: net_poll()
  * pumped from the window manager's main loop, device I/O run "interrupts on but
- * non-preemptible", blocking reads calling bkl_hlt_wait() in a loop. None of
+ * non-preemptible", blocking reads calling sched_poll_wait() in a loop. None of
  * those are waits; they are the absence of one.
  *
  * The stack is:

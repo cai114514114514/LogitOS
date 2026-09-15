@@ -323,6 +323,23 @@ static void part1_traps(void)
 	bin64(0x88, 0x8000000000000000ull, 65, 0, 0x4000000000000000ull, "i64.shr_u by 65 is a shift by 1");
 	bin64(0x89, 0x8000000000000000ull, 1, 0, 1ull, "i64.rotl wraps");
 
+	/* ---- sign-extension: only the selected low lane participates -------
+	 * These five opcodes are used by current wasm-bindgen output.  Include
+	 * high garbage in the i32 cases so a plain host cast of the whole input
+	 * cannot accidentally satisfy the check. */
+	un_v("i>i", 0xC0, 0x12340180ull, 0xFFFFFF80ull,
+	     "i32.extend8_s sign-extends the low byte");
+	un_v("i>i", 0xC0, 0x1234017Full, 0x0000007Full,
+	     "i32.extend8_s discards higher input bits");
+	un_v("i>i", 0xC1, 0x12348001ull, 0xFFFF8001ull,
+	     "i32.extend16_s sign-extends the low halfword");
+	un_v("I>I", 0xC2, 0x123456789ABCDE80ull, 0xFFFFFFFFFFFFFF80ull,
+	     "i64.extend8_s sign-extends the low byte");
+	un_v("I>I", 0xC3, 0x123456789ABC8001ull, 0xFFFFFFFFFFFF8001ull,
+	     "i64.extend16_s sign-extends the low halfword");
+	un_v("I>I", 0xC4, 0x1234567880000001ull, 0xFFFFFFFF80000001ull,
+	     "i64.extend32_s sign-extends the low word");
+
 	/* ---- 3. float to integer TRAPS, it does not clamp -----------------
 	 * And the two failure modes stay two answers: a NaN is "invalid
 	 * conversion to integer" and a finite out-of-range value is "integer

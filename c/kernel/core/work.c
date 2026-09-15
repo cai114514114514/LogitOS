@@ -51,7 +51,7 @@ void softirq_run_pending(void)
         unsigned int p = __atomic_exchange_n(&g_pending[cpu], 0, __ATOMIC_SEQ_CST);
         if (!p) break;
         for (int i = 0; i < NR_SOFTIRQ; i++)
-            if ((p & (1u << i)) && g_softirq[i]) { g_softirq[i](); g_softirq_runs++; }
+            if ((p & (1u << i)) && g_softirq[i]) { g_softirq[i](); __atomic_fetch_add(&g_softirq_runs, 1, __ATOMIC_RELAXED); }
     }
     g_in_softirq[cpu] = 0;
 }
@@ -86,7 +86,9 @@ void tasklet_schedule(struct tasklet *t)
 
 static void tasklet_action(void)
 {
-    for (;;) {
+    /* Eight outer softirq rounds did not bound a self-rescheduling inner
+     * callback. Limit each action, retaining pending work for a later IRQ. */
+    for (unsigned budget = 0; budget < 64; budget++) {
         uint64_t f = spin_lock_irqsave(&g_tasklet_lock);
         struct tasklet *t = g_tasklets;
         /* Skip (and re-queue behind) a tasklet another core is already running:
@@ -113,6 +115,10 @@ static void tasklet_action(void)
         t->running = 0;
         spin_unlock_irqrestore(&g_tasklet_lock, f);
     }
+    uint64_t f = spin_lock_irqsave(&g_tasklet_lock);
+    int pending = g_tasklets != NULL;
+    spin_unlock_irqrestore(&g_tasklet_lock, f);
+    if (pending) softirq_raise(SOFTIRQ_TASKLET);
 }
 
 /* --- workqueue ------------------------------------------------------------
@@ -166,7 +172,7 @@ static void kworker_main(void)
             }
             spin_unlock_irqrestore(&work_q.lock, f);
         }
-        if (w && w->fn) { w->fn(w->arg); g_work_run++; }
+        if (w && w->fn) { w->fn(w->arg); __atomic_fetch_add(&g_work_run, 1, __ATOMIC_RELAXED); }
     }
 }
 

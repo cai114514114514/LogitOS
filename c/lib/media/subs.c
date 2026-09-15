@@ -84,6 +84,20 @@
 #include <string.h>
 #include <math.h>
 
+/* The shipped ring-3 build has reallocarray in mini-libc.  The native oracle
+ * build deliberately uses the host C library, and Darwin has no such symbol,
+ * so keep that portability shim behind __STDC_HOSTED__: it is test apparatus,
+ * while every LogitOS consumer below resolves to libc's checked operation. */
+#if __STDC_HOSTED__
+static void *subs_reallocarray(void *ptr, size_t count, size_t size)
+{
+    if (size && count > (size_t)-1 / size) return NULL;
+    return realloc(ptr, count * size);
+}
+#else
+#define subs_reallocarray reallocarray
+#endif
+
 /* ---------------------------------------------------------------- ceilings */
 #define SUBS_MAX_FILE_LEN   (64L * 1024 * 1024)
 #define SUBS_MAX_LINES      (SUBS_MAX_FILE_LEN)   /* one line can be 1 byte */
@@ -158,7 +172,11 @@ static line_t *split_lines(const char *buf, long len, long *out_n)
         if (i == len || buf[i] == '\n') {
             if (n == cap) {
                 cap *= 2;
-                line_t *nl = (line_t *)realloc(lines, (size_t)cap * sizeof *nl);
+                /* The file owns the element count.  reallocarray keeps the
+                 * count-to-byte conversion checked at the libc boundary;
+                 * a wrapped realloc would return a valid undersized array
+                 * and turn the next line write into corruption. */
+                line_t *nl = (line_t *)subs_reallocarray(lines, (size_t)cap, sizeof *nl);
                 if (!nl) { free(lines); return NULL; }
                 lines = nl;
             }
@@ -511,7 +529,7 @@ static cue_slot *push_cue(subs_track *tr)
     if (tr->ncues >= SUBS_MAX_CUES) return NULL;
     if (tr->ncues == tr->capcues) {
         int nc = tr->capcues ? tr->capcues * 2 : 64;
-        cue_slot *ns = (cue_slot *)realloc(tr->slots, (size_t)nc * sizeof *ns);
+        cue_slot *ns = (cue_slot *)subs_reallocarray(tr->slots, (size_t)nc, sizeof *ns);
         if (!ns) return NULL;
         tr->slots = ns; tr->capcues = nc;
     }

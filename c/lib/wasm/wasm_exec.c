@@ -1109,7 +1109,7 @@ static int run_body(struct wasm_instance *in, uint32_t fidx)
 				}
 				break;
 			}
-			if (op >= 0x45 && op <= 0xBF) {
+			if (op >= 0x45 && op <= 0xC4) {
 				union wasm_val rv;
 				rv.bits = 0;
 				tr = WASM_TRAP_NONE;
@@ -1309,9 +1309,23 @@ static int run_body(struct wasm_instance *in, uint32_t fidx)
 				case 0xBD: { uint64_t a = POPV().i64; rv.i64 = a; break; }
 				case 0xBE: { uint32_t a = POPV().i32; rv.i32 = a; break; }
 				case 0xBF: { uint64_t a = POPV().i64; rv.i64 = a; break; }
+				/* Sign-extension is defined by the selected LOW bits.  Spell
+				 * the masks out instead of relying on an implementation-defined
+				 * unsigned-to-signed narrowing cast in the host C compiler. */
+				case 0xC0: { uint32_t a = POPV().i32;
+					     rv.i32 = (a & 0x80u) ? (a | 0xFFFFFF00u) : (a & 0xFFu); break; }
+				case 0xC1: { uint32_t a = POPV().i32;
+					     rv.i32 = (a & 0x8000u) ? (a | 0xFFFF0000u) : (a & 0xFFFFu); break; }
+				case 0xC2: { uint64_t a = POPV().i64;
+					     rv.i64 = (a & 0x80ull) ? (a | 0xFFFFFFFFFFFFFF00ull) : (a & 0xFFull); break; }
+				case 0xC3: { uint64_t a = POPV().i64;
+					     rv.i64 = (a & 0x8000ull) ? (a | 0xFFFFFFFFFFFF0000ull) : (a & 0xFFFFull); break; }
+				case 0xC4: { uint64_t a = POPV().i64;
+					     rv.i64 = (a & 0x80000000ull) ? (a | 0xFFFFFFFF00000000ull) : (a & 0xFFFFFFFFull); break; }
 
 				default:
-					/* Unreachable: g_num covers 0x45..0xBF and the
+					/* Unreachable: g_num plus the sign-extension cases
+					 * cover 0x45..0xC4 and the
 					 * decoder refused everything else.  Named anyway,
 					 * because "cannot happen" is how a silent
 					 * fallthrough gets argued for. */

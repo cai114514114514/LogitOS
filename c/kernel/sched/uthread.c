@@ -18,7 +18,7 @@
 /* See uthread.h for the model. This file is the thread TABLE, the join/detach
  * lifecycle, and the futex. */
 
-#define NUT 128     /* descriptors machine-wide. LOGIT_THREADS_MAX (64) bounds one
+#define NUT UTHREAD_TABLE_MAX     /* descriptors machine-wide. LOGIT_THREADS_MAX (64) bounds one
                      * PROCESS; this bounds the machine, and is deliberately larger
                      * than NPROC (32) but far short of 32*64 -- a table sized for
                      * every process to be maximally threaded would be 6 KiB of
@@ -28,6 +28,8 @@
 
 #define UT_FREE   0
 #define UT_LIVE   1
+#define UT_EXITING 3 /* stack teardown still owns the address space */
+#define UT_RESERVED 4 /* descriptor reserved before sleeping scheduler allocation */
 #define UT_EXITED 2   /* ended; the descriptor is held only for a joiner */
 
 struct uthread {
@@ -106,7 +108,7 @@ static int ut_proc_count_locked(int pid, int live_only)
     int n = 0;
     for (int i = 0; i < NUT; i++) {
         if (g_ut[i].state == UT_FREE || g_ut[i].pid != pid) continue;
-        if (live_only && g_ut[i].state != UT_LIVE) continue;
+        if (live_only && g_ut[i].state != UT_LIVE && g_ut[i].state != UT_EXITING && g_ut[i].state != UT_RESERVED) continue;
         n++;
     }
     return n;
@@ -203,9 +205,11 @@ int uthread_self(void)
 
 /* --- exit ---------------------------------------------------------------- */
 
-void uthread_release_self(uint64_t retval)
+int uthread_release_self(uint64_t retval)
 {
     int tid = sched_current_tid();
+    struct proc *p = proc_current();
+    if (!p) return 0;
     uint64_t base = 0, len = 0;
     int wake = 0;
 
@@ -213,11 +217,10 @@ void uthread_release_self(uint64_t retval)
     struct uthread *u = ut_by_tid_locked(tid);
     if (u && u->state == UT_LIVE) {
         u->retval = retval;
-        u->state  = UT_EXITED;
+        u->state  = UT_EXITING;
         base = u->stack_base; len = u->stack_len;
         u->stack_base = 0; u->stack_len = 0;
-        if (u->detached) ut_free_locked(u);       /* nobody will ever ask for retval */
-        else wake = 1;
+        /* Remains live until its user stack has finished unmapping. */
     }
     spin_unlock_irqrestore(&g_ut_lock, f);
 
@@ -241,6 +244,27 @@ void uthread_release_self(uint64_t retval)
         sched_tlb_gen_bump();
     }
 
+    f = spin_lock_irqsave(&g_ut_lock);
+    u = ut_by_tid_locked(tid);
+    if (u && u->state == UT_EXITING) {
+        u->state = UT_EXITED;
+        if (u->detached) ut_free_locked(u); else wake = 1;
+    }
+    int last = p->teardown == tid + 1;
+    if (!p->teardown && ut_proc_count_locked(p->pid, 1) == 0) {
+#ifndef BKL_NEGCTL_EXIT_ELECTION
+        __atomic_store_n(&p->teardown, tid + 1, __ATOMIC_RELEASE);
+#endif
+        last = 1;
+    }
+    /* EXITED is visible to another CPU's last-thread election as soon as this
+     * lock is released. Drop this non-owner's CR3/PCB before that can happen;
+     * otherwise the winner can reap its address space while thread_exit is
+     * still one instruction away on this CPU. detach does not sleep and the
+     * scheduler never takes g_ut_lock while holding g_sched_lock. */
+    if (!last) sched_detach_current_proc(p);
+    spin_unlock_irqrestore(&g_ut_lock, f);
+
     /* Outside the lock for the reason the g_join_wq comment gives: the joiner
      * holds g_join_wq.lock while it takes g_ut_lock, so waking with g_ut_lock
      * held would close an AB-BA cycle. It cannot be missed -- the joiner is
@@ -248,6 +272,7 @@ void uthread_release_self(uint64_t retval)
      * wake arriving in that window blocks on the queue lock instead of being
      * lost (c/kernel/core/wait.h rule 2). */
     if (wake) waitq_wake_all(&g_join_wq);
+    return last;
 }
 
 static void ut_exiting_clear(int pid)
@@ -257,6 +282,18 @@ static void ut_exiting_clear(int pid)
             g_exit_pid[i] = 0;
             if (g_exit_armed) g_exit_armed--;
         }
+}
+
+/* Process-directed signals may be consumed by any live thread. Wake the
+ * adopted workers too: the original main thread may already have exited. */
+void uthread_wake_process(int pid)
+{
+    int tids[NUT], n = 0;
+    uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    for (int i = 0; i < NUT; i++)
+        if (g_ut[i].state == UT_LIVE && g_ut[i].pid == pid) tids[n++] = g_ut[i].tid;
+    spin_unlock_irqrestore(&g_ut_lock, f);
+    for (int i = 0; i < n; i++) sched_wake_id(tids[i]);
 }
 
 int uthread_proc_kill(int pid, int code)
@@ -308,7 +345,20 @@ void uthread_proc_reap(int pid)
     spin_unlock_irqrestore(&g_ut_lock, f);
 }
 
-int uthread_exit_armed(void) { return g_exit_armed != 0; }
+int uthread_exit_armed(void) { return __atomic_load_n(&g_exit_armed, __ATOMIC_RELAXED) != 0; }
+/* Waiting predicates must observe process exit as EINTR. A mere wake followed
+ * by while (!data) used to park a sibling forever during process teardown. */
+int uthread_exit_pending(void)
+{
+    if (!uthread_exit_armed()) return 0;
+    struct proc *p = proc_current();
+    if (!p) return 0;
+    uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    int pending = 0;
+    for (int i = 0; i < NPROC; i++) if (g_exit_pid[i] == p->pid) { pending = 1; break; }
+    spin_unlock_irqrestore(&g_ut_lock, f);
+    return pending;
+}
 
 void uthread_exit_check(void)
 {
@@ -327,6 +377,28 @@ void uthread_exit_check(void)
      * either ends quietly or performs the whole process teardown -- never both,
      * and never neither. */
     proc_exit(0);                       /* never returns */
+}
+
+/* Serialize the single-threaded exec decision with thread publication. Merely
+ * testing the count before exec left a second core able to publish a sibling
+ * after the test, while exec was destroying its page tables. */
+int uthread_exec_begin(void)
+{
+    struct proc *p = proc_current();
+    if (!p) return 0;
+    uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    int ok = !p->execing && !p->teardown && ut_proc_count_locked(p->pid, 1) <= 1;
+    if (ok) p->execing = 1;
+    spin_unlock_irqrestore(&g_ut_lock, f);
+    return ok;
+}
+void uthread_exec_end(void)
+{
+    struct proc *p = proc_current();
+    if (!p) return;
+    uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    p->execing = 0;
+    spin_unlock_irqrestore(&g_ut_lock, f);
 }
 
 /* --- create -------------------------------------------------------------- */
@@ -391,6 +463,9 @@ static long ut_create(const struct logit_thread_spec *uspec)
      * kstack allocation), which is the direction everything else in the tree
      * takes them; nothing takes them the other way. */
     uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    int exiting = p->teardown || p->execing;
+    for (int i = 0; i < NPROC; i++) if (g_exit_pid[i] == p->pid) exiting = 1;
+    if (exiting) { spin_unlock_irqrestore(&g_ut_lock, f); return THR_E_ARG; }
     if (ut_proc_count_locked(p->pid, 0) >= LOGIT_THREADS_MAX) {
         spin_unlock_irqrestore(&g_ut_lock, f);
         return THR_E_FULL;
@@ -403,16 +478,29 @@ static long ut_create(const struct logit_thread_spec *uspec)
 
     /* Same struct proc, same cr3 -- that is what makes this a thread and not a
      * process. */
-    int tid = thread_create_user(p->name, s.entry, rsp, p, p->cr3);
+    /* Correction to the historical lock-across-create claim above: creation
+     * can allocate and reclaim, so it cannot hold g_ut_lock. RESERVED remains
+     * a live AS owner. Scheduler calls the hook after allocation and before
+     * enqueue, publishing the tid without running the child too early. */
+    u->state = UT_RESERVED;
+    spin_unlock_irqrestore(&g_ut_lock, f);
+    int tid = thread_create_user_prepared(p->name, s.entry, rsp, p, p->cr3,
+                                           uthread_publish_tid, u);
     if (tid < 0) {
+        f = spin_lock_irqsave(&g_ut_lock);
         ut_free_locked(u);
         spin_unlock_irqrestore(&g_ut_lock, f);
         return THR_E_NOMEM;
     }
-    u->tid = tid;
-    g_created++;
+    return tid; /* child may already have exited; do not touch u again */
+}
+
+void uthread_publish_tid(void *opaque, int tid)
+{
+    struct uthread *u = opaque;
+    uint64_t f = spin_lock_irqsave(&g_ut_lock);
+    u->tid = tid; u->state = UT_LIVE; g_created++;
     spin_unlock_irqrestore(&g_ut_lock, f);
-    return tid;
 }
 
 /* --- join / detach ------------------------------------------------------- */
@@ -562,6 +650,8 @@ static long ut_detach(int tid)
  *      kernel lock. Reclaim (c/kernel/mm/reclaim.c) is likewise a BKL path.
  * The second point is a dependency on the BKL, so it is stated rather than
  * assumed: the day a BKL-free munmap exists, this needs a pinned page.
+ * Correction: that day is now. user_pin_word retains the physical page and
+ * hands this comparison a supervisor alias, released before parking.
  */
 #define FBUCKETS 64
 
@@ -592,16 +682,27 @@ static long futex_wait(uint32_t *uaddr, uint32_t val, unsigned timeout_ms)
     struct fwaiter w;
 
     /* Resolve the page BEFORE the lock -- see the long note above. */
-    if (!user_range_ok(uaddr, sizeof *uaddr, 0)) return FUTEX_E_ARG;
+    uint64_t phys;
+    const void *word;
+    /* Range validation alone does not hold the mapping stable against sibling
+     * munmap. Pin before the bucket lock, then read only its physmap alias. */
+    if (user_pin_word(uaddr, &phys, &word)) return FUTEX_E_ARG;
 
     uint64_t f = spin_lock_irqsave(&b->lock);
-    if (*(volatile uint32_t *)uaddr != val) {
+#ifdef BKL_NEGCTL_FUTEX_UNPINNED
+    word = uaddr; /* restore the old raw-user-pointer comparison */
+#endif
+    if (*(const volatile uint32_t *)word != val) {
         spin_unlock_irqrestore(&b->lock, f);
+        user_unpin_word(phys);
         return FUTEX_E_AGAIN;
     }
     w.key = key; w.tid = sched_current_tid(); w.woken = 0;
     w.next = b->head; b->head = &w;
-    g_futex_waits++;
+    __atomic_fetch_add(&g_futex_waits, 1, __ATOMIC_RELAXED);
+    /* Once enqueued no pointer is dereferenced again: do not pin a page for an
+     * unbounded wait. PMM unpin cannot sleep and does not take futex locks. */
+    user_unpin_word(phys);
 
     int got;
     if (timeout_ms)
@@ -625,14 +726,14 @@ static long futex_wake(uint32_t *uaddr, uint32_t n)
     uint64_t key = (uint64_t)(uintptr_t)uaddr ^ (sched_current_cr3() << 1);
     struct fbucket *b = &g_fb[fhash(key)];
     int woke = 0;
-    int tids[32], nt = 0;
+    int tids[NUT], nt = 0;
 
     uint64_t f = spin_lock_irqsave(&b->lock);
     for (struct fwaiter *w = b->head; w && (uint32_t)woke < n; w = w->next) {
         if (w->key != key || w->woken) continue;
         w->woken = 1;                    /* marked under the bucket lock, so a second
                                           * wake in flight cannot count it twice */
-        if (nt < 32) tids[nt++] = w->tid;
+        tids[nt++] = w->tid;
         woke++;
     }
     spin_unlock_irqrestore(&b->lock, f);
@@ -645,7 +746,7 @@ static long futex_wake(uint32_t *uaddr, uint32_t n)
      * whose `woken` is set will return 0 whether or not it was still parked
      * when we got to it. */
     for (int i = 0; i < nt; i++) sched_wake_id(tids[i]);
-    g_futex_wakes += (unsigned)woke;
+    __atomic_fetch_add(&g_futex_wakes, (unsigned)woke, __ATOMIC_RELAXED);
     return woke;
 }
 
@@ -659,12 +760,11 @@ long uthread_syscall(long num, long a, long b, long c)
 
     case SYS_THREAD_EXIT: {
         uthread_self();
-        uthread_release_self((uint64_t)a);
-        struct proc *p = proc_current();
+        int last = uthread_release_self((uint64_t)a);
         /* THE LAST THREAD OUT RUNS THE PROCESS TEARDOWN. Not "the main thread"
          * -- POSIX is explicit that a process ends when its last thread does,
          * whichever that is, and main() returning is just the common case. */
-        if (p && uthread_proc_live(p->pid) == 0) proc_exit(0);   /* never returns */
+        if (last) proc_exit(0);   /* never returns */
         thread_exit();                                            /* never returns */
         return 0;
     }

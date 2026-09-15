@@ -1,12 +1,18 @@
+#include "openlogit_bitmap.h"
+#include "openlogit_draw.h"
+/* 2026-09-13: borrowed pixel targets render through the SDK. Parsing and
+ * layout stay here; the compatibility rasterizer is no longer a dependency. */
+/* SPDX-License-Identifier: MIT */
 /* SVG rasterizer, aimed at web icons (GitHub octicons are the reference
  * corpus). Supported subset:
  *   <svg width/height/viewBox>, <g>/<svg> nesting with inherited paint,
  *   <path d> commands M L H V C S Q T A Z (absolute + relative),
  *   <rect>, <circle>, <ellipse>;
  *   fill/stroke = #rgb/#rrggbb/#rgba/#rrggbbaa/rgb()/rgba()/keyword/
- *   currentColor(-> black)/none, fill-opacity/stroke-opacity/opacity,
+ *   currentColor/none, fill-opacity/stroke-opacity/opacity,
  *   fill-rule=evenodd (nonzero default), stroke-width. Anything unsupported
- *   (transform, style, defs, text, dasharray, ...) is skipped, never fatal;
+ *   (text, external resources, dasharray, ...) is skipped; local references,
+ *   affine transforms and clipPath are handled in svg_scene.inc;
  *   malformed input must never crash or overrun.
  *
  * GEOMETRY GOES THROUGH OPEN LOGIT (c/lib/gfx), NOT A HAND-ROLLED FILLER.
@@ -165,7 +171,7 @@ static int str_eq(const uint8_t *p, int n, const char *s)
  * it once. Stops at the first character that cannot extend the number, so
  * "1.2.3" reads as 1.2 then .3 and "10-3" as 10 then -3, matching SVG's
  * comma/sign-optional number list grammar. */
-static int pnum_fx(const uint8_t **pp, const uint8_t *end, int *out)
+static int pnum_scaled(const uint8_t **pp, const uint8_t *end, int *out, int scale, int limit)
 {
     const uint8_t *p = *pp;
     int sign = 1, any = 0;
@@ -186,7 +192,11 @@ static int pnum_fx(const uint8_t **pp, const uint8_t *end, int *out)
         }
     }
     if (!any) return -1;
-    long long val = ip * 256 + (frac_num * 256) / frac_den;
+    /* Delay division until after the exponent: truncating .001 before e3
+     * turned a valid unit into zero. The same lexer now supplies 24.8 path
+     * coordinates and 16.16 matrix coefficients; scale(.001) needs the latter. */
+    __int128 num = ((__int128)ip * frac_den + frac_num) * scale;
+    __int128 den = frac_den;
     if (p < end && (*p == 'e' || *p == 'E')) {
         const uint8_t *q = p + 1;
         int es = 1, eany = 0;
@@ -196,15 +206,20 @@ static int pnum_fx(const uint8_t **pp, const uint8_t *end, int *out)
         if (eany) {
             p = q;
             while (e-- > 0) {
-                if (es > 0) { if (val > 8000000) break; val *= 10; }
-                else val /= 10;
+                if (es > 0) { if (num > (__int128)limit * den) break; num *= 10; }
+                else { if (num < den) { num = 0; break; } den *= 10; }
             }
         }
     }
-    val = clampfx(val);
+    __int128 val = num / den; if (val > limit) val = limit;
     *out = (int)(sign < 0 ? -val : val);
     *pp = p;
     return 0;
+}
+
+static int pnum_fx(const uint8_t **pp, const uint8_t *end, int *out)
+{
+    return pnum_scaled(pp, end, out, 256, 8000000);
 }
 
 /* ---- XML tag scanning (pure byte-level parsing; no arithmetic below needs
@@ -294,48 +309,8 @@ static int attr_dim_fx(const struct tag *t, const char *name, int *out)
     return -1;
 }
 
-/* Skip the body of an unknown element (defs/style/title/text/...): count
- * open/close tags until the matching close. Never trusts the markup. */
-static void skip_subtree(const uint8_t **pp, const uint8_t *end)
-{
-    const uint8_t *p = *pp;
-    int depth = 1;
-    while (p < end && depth > 0) {
-        while (p < end && *p != '<') p++;
-        if (p >= end) break;
-        if (p + 3 < end && p[1] == '!' && p[2] == '-' && p[3] == '-') {   /* comment */
-            p += 4;
-            while (p + 2 < end && !(p[0] == '-' && p[1] == '-' && p[2] == '>')) p++;
-            p = p + 2 < end ? p + 3 : end;
-            continue;
-        }
-        if (p + 1 < end && p[1] == '?') {
-            p += 2;
-            while (p + 1 < end && !(p[0] == '?' && p[1] == '>')) p++;
-            p = p + 1 < end ? p + 2 : end;
-            continue;
-        }
-        if (p + 1 < end && p[1] == '!') {                                  /* doctype-ish */
-            while (p < end && *p != '>') p++;
-            if (p < end) p++;
-            continue;
-        }
-        struct tag t;
-        if (parse_tag(&p, end, &t)) break;
-        if (t.closing) depth--;
-        else if (!t.selfclose) depth++;
-    }
-    *pp = p;
-}
-
 /* ---- paint + style state ---- */
 struct paint { uint8_t r, g, b, a; int none, evenodd; };
-
-/* Inherited element state: fill AND stroke, plus stroke-width (24.8, USER
- * units -- scaled to device by DXY() at the point a shape is actually
- * painted, same as every other length in this file). SVG's stroke default
- * is none, so stroke.none starts at 1 unlike fill.none. */
-struct style { struct paint fill, stroke; int sw; };
 
 static int hexval(int c)
 {
@@ -448,33 +423,6 @@ int img_css_color(const char *s, int len, unsigned char *rgba)
     if (pc.none != 0) return 0;
     rgba[0] = pc.r; rgba[1] = pc.g; rgba[2] = pc.b; rgba[3] = pc.a;
     return 1;
-}
-
-static void apply_opacity(const uint8_t *v, int vl, struct paint *pc)
-{
-    const uint8_t *p = v;
-    while (p < v + vl && is_ws(*p)) p++;
-    int f;
-    if (pnum_fx(&p, v + vl, &f)) return;
-    if (f < 0) f = 0; if (f > 256) f = 256;
-    pc->a = (uint8_t)(((int)pc->a * f) >> 8);
-}
-
-/* Overlay an element's fill/stroke/opacity attributes onto inherited state. */
-static void apply_style(const struct tag *t, struct style *st)
-{
-    const uint8_t *v; int vl;
-    if (!attr_get(t, "fill", &v, &vl)) parse_color(v, vl, &st->fill);
-    if (!attr_get(t, "fill-opacity", &v, &vl)) apply_opacity(v, vl, &st->fill);
-    if (!attr_get(t, "fill-rule", &v, &vl)) {
-        if (str_eq(v, vl, "evenodd")) st->fill.evenodd = 1;
-        else if (str_eq(v, vl, "nonzero")) st->fill.evenodd = 0;
-    }
-    if (!attr_get(t, "stroke", &v, &vl)) parse_color(v, vl, &st->stroke);
-    if (!attr_get(t, "stroke-opacity", &v, &vl)) apply_opacity(v, vl, &st->stroke);
-    int sw;
-    if (attr_num(t, "stroke-width", &sw) && sw > 0) st->sw = sw;
-    if (!attr_get(t, "opacity", &v, &vl)) { apply_opacity(v, vl, &st->fill); apply_opacity(v, vl, &st->stroke); }
 }
 
 /* ---- viewBox transform: user coords -> device 24.8, uniform scale + translate --
@@ -617,6 +565,12 @@ static void parse_path(struct gfx_path *gp, const struct vbxform *vb, const uint
     int cmd = 0, last = 0;
     int v[7];
     for (;;) {
+        if (gp->overflow) break;
+        /* Accumulated relative commands must obey the same coordinate bound
+         * as a literal number; otherwise repeated small commands can overflow
+         * even though every parsed operand was individually clamped. */
+        if (gp->cx > 8000000 || gp->cx < -8000000 ||
+            gp->cy > 8000000 || gp->cy < -8000000) { gp->overflow = 1; break; }
         while (P.p < P.end && (is_ws(*P.p) || *P.p == ',')) P.p++;
         if (P.p >= P.end) break;
         int c = *P.p;
@@ -767,32 +721,7 @@ static int g_spt[SVG_SPTCAP * 2];
 static int g_ssub[SVG_SSUBCAP];
 static struct gfx_path g_spath;
 
-static void paint_shape(struct gfx_surface *surf, struct gfx_path *gp,
-                        const struct style *st, const struct vbxform *vb)
-{
-    if (!st->fill.none && st->fill.a) {
-        struct gfx_paint p;
-        gfx_paint_solid(&p, GFX_RGB(st->fill.r, st->fill.g, st->fill.b), st->fill.a);
-        gfx_fill(surf, gp, st->fill.evenodd ? GFX_EVENODD : GFX_NONZERO, &p, 0);
-    }
-    if (!st->stroke.none && st->stroke.a && st->sw > 0) {
-        int devw = DXY(vb, st->sw);
-        if (devw > 0) {
-            struct gfx_stroke sd;
-            sd.width = devw;
-            sd.cap = GFX_CAP_BUTT;
-            sd.join = GFX_JOIN_MITER;
-            sd.miter_limit = 4 << 16;                  /* SVG default miter-limit */
-            sd.dash = 0; sd.ndash = 0; sd.dash_phase = 0;
-            gfx_path_reset(&g_spath);
-            if (gfx_stroke_path(&g_spath, gp, &sd)) {
-                struct gfx_paint sp;
-                gfx_paint_solid(&sp, GFX_RGB(st->stroke.r, st->stroke.g, st->stroke.b), st->stroke.a);
-                gfx_fill(surf, &g_spath, GFX_NONZERO, &sp, 0);
-            }
-        }
-    }
-}
+#include "svg_scene.inc"
 
 /* ---- content sniffing (unchanged: pure byte-level, no coordinates) ---- */
 /* Everything before the root <svg must be whitespace, <?xml?>, comments or
@@ -845,6 +774,8 @@ static int svg_detect(const uint8_t *p, int n)
 /* ---- decoder ---- */
 static int svg_decode(const uint8_t *p, int n, struct image *out)
 {
+    /* Bound the entire source, including root attributes and XML prefix. */
+    if (n <= 0 || n > SV_INPUT_BYTES) return -1;
     if (!p || n <= 4) return -1;
     const uint8_t *cur = p, *end = p + n;
 
@@ -909,90 +840,9 @@ static int svg_decode(const uint8_t *p, int n, struct image *out)
 
     struct gfx_surface surf;
     gfx_surface_init(&surf, px, w, h, 0);
-    gfx_surface_clear(&surf);
+    ol_raster_clear(&surf);
 
-    struct vbxform vb;
-    if (has_vb) {
-        long long sx16 = imuldiv((long long)w << 8, 65536, vbw);
-        long long sy16 = imuldiv((long long)h << 8, 65536, vbh);
-        vb.s = sx16 < sy16 ? sx16 : sy16;                   /* xMidYMid meet */
-        vb.ox = (int)((((long long)w << 8) - imul_shr16(vbw, vb.s)) / 2 - imul_shr16(vbx, vb.s));
-        vb.oy = (int)((((long long)h << 8) - imul_shr16(vbh, vb.s)) / 2 - imul_shr16(vby, vb.s));
-    } else {
-        vb.s = 65536; vb.ox = 0; vb.oy = 0;
-    }
-
-    struct gfx_path path;
-    gfx_path_init(&path, g_pt, SVG_PTCAP, g_sub, SVG_SUBCAP);
-    gfx_path_init(&g_spath, g_spt, SVG_SPTCAP, g_ssub, SVG_SSUBCAP);
-
-    /* render walk over the root's content */
-    struct style stk[32];
-    int sp = 0;
-    stk[0].fill.r = stk[0].fill.g = stk[0].fill.b = 0; stk[0].fill.a = 255;
-    stk[0].fill.none = 0; stk[0].fill.evenodd = 0;
-    stk[0].stroke.r = stk[0].stroke.g = stk[0].stroke.b = 0; stk[0].stroke.a = 255;
-    stk[0].stroke.none = 1; stk[0].stroke.evenodd = 0;
-    stk[0].sw = 256;                                        /* SVG default stroke-width: 1 */
-    apply_style(&root, &stk[0]);
-
-    while (cur < end) {
-        while (cur < end && *cur != '<') cur++;
-        if (cur >= end) break;
-        if (cur + 3 < end && cur[1] == '!' && cur[2] == '-' && cur[3] == '-') {
-            cur += 4;
-            while (cur + 2 < end && !(cur[0] == '-' && cur[1] == '-' && cur[2] == '>')) cur++;
-            cur = cur + 2 < end ? cur + 3 : end;
-            continue;
-        }
-        if (cur + 1 < end && (cur[1] == '?' || cur[1] == '!')) {
-            while (cur < end && *cur != '>') cur++;
-            if (cur < end) cur++;
-            continue;
-        }
-        struct tag t;
-        if (parse_tag(&cur, end, &t)) break;
-        if (t.closing) {
-            if ((tag_is(&t, "g") || tag_is(&t, "svg")) && sp > 0) sp--;
-            continue;
-        }
-        if (tag_is(&t, "g") || tag_is(&t, "svg")) {
-            if (sp < 31) {
-                stk[sp + 1] = stk[sp];
-                sp++;
-                apply_style(&t, &stk[sp]);
-            }
-            if (t.selfclose && sp > 0) sp--;
-            continue;
-        }
-        if (tag_is(&t, "path")) {
-            struct style st = stk[sp];
-            apply_style(&t, &st);
-            if (!attr_get(&t, "d", &v, &vl)) {
-                gfx_path_reset(&path);
-                parse_path(&path, &vb, v, vl);
-                paint_shape(&surf, &path, &st, &vb);
-            }
-            continue;
-        }
-        if (tag_is(&t, "rect")) {
-            struct style st = stk[sp];
-            apply_style(&t, &st);
-            gfx_path_reset(&path);
-            build_rect(&path, &vb, &t);
-            paint_shape(&surf, &path, &st, &vb);
-            continue;
-        }
-        if (tag_is(&t, "circle") || tag_is(&t, "ellipse")) {
-            struct style st = stk[sp];
-            apply_style(&t, &st);
-            gfx_path_reset(&path);
-            build_ellipse(&path, &vb, &t, tag_is(&t, "ellipse"));
-            paint_shape(&surf, &path, &st, &vb);
-            continue;
-        }
-        if (!t.selfclose) skip_subtree(&cur, end);          /* defs/style/text/... */
-    }
+    if (!sv_render(&root, cur, end, &surf)) { kfree(px); return -1; }
 
     out->w = w; out->h = h; out->rgba = px;
     return 0;

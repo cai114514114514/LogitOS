@@ -16,8 +16,8 @@
  * shape unreached-invalid.wast exists to catch: 121 assert_invalid cases
  * every one of which is dead code.
  *
- * WHAT THIS FILE REFUSES BY NAME rather than approximating: sign-extension
- * operators (0xC0-0xC4), the 0xFC/0xFD/0xFE prefixes, reference types,
+ * WHAT THIS FILE REFUSES BY NAME rather than approximating: the
+ * 0xFC/0xFD/0xFE prefixes, reference types,
  * multi-value block types, more than one table, more than one memory.  All
  * WASM_E_UNSUPPORTED.  CLAUDE.md rule 3: a WebAssembly that instantiates a
  * module incorrectly is worse than no WebAssembly, because a page feature
@@ -452,8 +452,12 @@ int wasm_walk(struct rd *r, struct wasm_tc *tc, struct wasm_sink *sk)
 		case 0x43: { e = wasm_rd_skip(r, 4); if (e) return e; if (tc) push_val(tc, F); break; }
 		case 0x44: { e = wasm_rd_skip(r, 8); if (e) return e; if (tc) push_val(tc, D); break; }
 
-		case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4:
-			return WASM_E_UNSUPPORTED;    /* sign-extension operators */
+		case 0xC0: case 0xC1:           /* i32.extend8_s / extend16_s */
+			if (tc) { pop_expect(tc, I); push_val(tc, I); }
+			break;
+		case 0xC2: case 0xC3: case 0xC4: /* i64.extend8_s / extend16_s / extend32_s */
+			if (tc) { pop_expect(tc, J); push_val(tc, J); }
+			break;
 		case 0xD0: case 0xD1: case 0xD2:
 			return WASM_E_UNSUPPORTED;    /* ref.null / ref.is_null / ref.func */
 		case 0xFC: case 0xFD: case 0xFE:

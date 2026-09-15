@@ -16,4 +16,7 @@ void vga_set_color(enum vga_color fg, enum vga_color bg);
 void vga_putc(char c);
 void vga_puts(const char *s);
 
+/* Called only after panic stops peer CPUs; never waits for a failed owner. */
+void vga_panic_takeover(void);
+
 #endif /* LOGIT_VGA_H */

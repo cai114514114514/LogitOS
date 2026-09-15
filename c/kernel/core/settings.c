@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "settings.h"
+#include "../gui/gui_sync.h"
+/* Protect the table, serializer and destination together across sleeping I/O.
+ * Recursion is intentional: typed setters and syscall gates call these same
+ * public getters/commit operations; a second lock would split the transaction. */
+static struct gui_mutex settings_lock = GUI_MUTEX_INIT;
 #include "logit_abi.h"      /* SYS_SETTING_* / SETCTL_* / struct logit_setting */
 /* The portable spelling of the idiom the next paragraph describes. It has to
  * be a relative include for the same reason accounts.h below is one: the host
@@ -81,6 +86,8 @@ LOGIT_WEAK_STUB(user_copy_string);
 static const struct setting_def schema[] = {
  /* key                       label                       type         group             lo  hi          default            choices */
   { "ui.dark",               "Dark appearance",           SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
+  /* Shared SDK motion preference: AUI, WM and browser media queries. */
+  { "ui.reduce_motion",      "Reduce motion",             SET_T_BOOL,  SET_G_APPEARANCE,  0, 1,          "0",               NULL },
   { "ui.accent",             "Accent colour",             SET_T_COLOR, SET_G_APPEARANCE,  0, 0xFFFFFF,   "0x5E96FF",        NULL },
   { "ui.wallpaper",          "Wallpaper image",           SET_T_STR,   SET_G_DESKTOP,     0, 0,          "/wallpaper.png",  NULL },
   { "desktop.restore_session","Reopen windows on login",  SET_T_BOOL,  SET_G_DESKTOP,     0, 1,          "1",               NULL },
@@ -486,7 +493,7 @@ static struct kv systab[SET_MAXKV];
 static int      nsys;
 static int      sys_captured;
 
-int settings_load(void)
+int settings_load_locked(void)
 {
     ntab = 0;
     napp = 0;
@@ -540,11 +547,27 @@ int settings_load(void)
     return diag;
 }
 
+int settings_load(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_load_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
 /* ===========================================================================
  * WHICH USER'S SETTINGS -- see the two-store block in settings.h.
  * ======================================================================== */
-const char *settings_store_path(void)
+const char *settings_store_path_locked(void)
 { return user_path[0] ? user_path : SET_PATH; }
+
+const char *settings_store_path(void)
+{
+    gui_mutex_lock(&settings_lock);
+    const char * result = settings_store_path_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
 
 /* Does a write land in the MACHINE's store rather than some user's own file?
  * The permission gates in settings_syscall() key off this and nothing else:
@@ -565,7 +588,7 @@ static int store_is_system(void) { return user_path[0] == 0; }
  * not open that. */
 static int store_is_mine(unsigned uid) { return !store_is_system() && uid == user_uid; }
 
-int settings_prepare_user(unsigned uid)
+int settings_prepare_user_locked(unsigned uid)
 {
     pending_path[0] = 0;
 
@@ -673,9 +696,24 @@ int settings_prepare_user(unsigned uid)
     return 0;
 }
 
-void settings_discard_user(void) { pending_path[0] = 0; }
+int settings_prepare_user(unsigned uid)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_prepare_user_locked(uid);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
 
-void settings_adopt_user(void)
+void settings_discard_user_locked(void) { pending_path[0] = 0; }
+
+void settings_discard_user(void)
+{
+    gui_mutex_lock(&settings_lock);
+    settings_discard_user_locked();
+    gui_mutex_unlock(&settings_lock);
+}
+
+void settings_adopt_user_locked(void)
 {
     if (!pending_path[0]) return;
     s_cpy(user_path, pending_path, SET_PATHLEN);
@@ -688,6 +726,13 @@ void settings_adopt_user(void)
     int d = settings_load();
     kprintf("SETTINGS_USER uid=%u store=%s defaults=%s diag=%d keys=%d\n",
             user_uid, user_path, SET_PATH, d, ntab);
+}
+
+void settings_adopt_user(void)
+{
+    gui_mutex_lock(&settings_lock);
+    settings_adopt_user_locked();
+    gui_mutex_unlock(&settings_lock);
 }
 
 /* Serialise into `buf`.  Returns the length. */
@@ -744,7 +789,7 @@ static int serialise(void)
     return o;
 }
 
-int settings_commit(void)
+int settings_commit_locked(void)
 {
     int n = serialise();
 
@@ -766,7 +811,15 @@ int settings_commit(void)
     return 0;
 }
 
-int settings_reset(void)
+int settings_commit(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_commit_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+int settings_reset_locked(void)
 {
     /* Delete the store this machine WRITES, not the system one.  A user
      * resetting their settings must not be able to delete root's defaults --
@@ -795,7 +848,15 @@ int settings_reset(void)
     return 0;
 }
 
-void settings_init(void)
+int settings_reset(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_reset_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+void settings_init_locked(void)
 {
     int d = settings_load();
     kprintf("[set] %s: %d keys", settings_store_path(), ntab);
@@ -840,6 +901,13 @@ void settings_init(void)
     settings_selftest();
 }
 
+void settings_init(void)
+{
+    gui_mutex_lock(&settings_lock);
+    settings_init_locked();
+    gui_mutex_unlock(&settings_lock);
+}
+
 /* ===========================================================================
  * Reads -- range-checked HERE, on the way out, never on the way in.
  * ======================================================================== */
@@ -857,7 +925,7 @@ static const char *raw(const char *key)
     return e ? e->v : NULL;
 }
 
-int settings_get_int(const char *key, int def)
+int settings_get_int_locked(const char *key, int def)
 {
     const struct setting_def *d = settings_schema_find(key);
     const char *r = raw(key);
@@ -880,7 +948,15 @@ int settings_get_int(const char *key, int def)
     return def;
 }
 
-unsigned settings_get_color(const char *key, unsigned def)
+int settings_get_int(const char *key, int def)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_get_int_locked(key, def);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+unsigned settings_get_color_locked(const char *key, unsigned def)
 {
     const struct setting_def *d = settings_schema_find(key);
     const char *r = raw(key);
@@ -888,6 +964,14 @@ unsigned settings_get_color(const char *key, unsigned def)
     if (r && parse_long(r, &v) && v >= 0 && v <= 0xFFFFFF) return (unsigned)v;
     if (d && parse_long(d->dflt, &v)) return (unsigned)v;
     return def;
+}
+
+unsigned settings_get_color(const char *key, unsigned def)
+{
+    gui_mutex_lock(&settings_lock);
+    unsigned result = settings_get_color_locked(key, def);
+    gui_mutex_unlock(&settings_lock);
+    return result;
 }
 
 /* Does this stored string satisfy its schema? Used by settings_get_str so that
@@ -917,7 +1001,7 @@ static int value_ok(const struct setting_def *d, const char *v)
     }
 }
 
-const char *settings_get_str(const char *key, const char *def)
+const char *settings_get_str_locked(const char *key, const char *def)
 {
     const struct setting_def *d = settings_schema_find(key);
     const char *r = raw(key);
@@ -930,7 +1014,15 @@ const char *settings_get_str(const char *key, const char *def)
     return def;
 }
 
-unsigned settings_get_ip(const char *key, unsigned def)
+const char *settings_get_str(const char *key, const char *def)
+{
+    gui_mutex_lock(&settings_lock);
+    const char * result = settings_get_str_locked(key, def);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+unsigned settings_get_ip_locked(const char *key, unsigned def)
 {
     const struct setting_def *d = settings_schema_find(key);
     const char *r = raw(key);
@@ -938,6 +1030,14 @@ unsigned settings_get_ip(const char *key, unsigned def)
     if (r && parse_ip(r, &v)) return v;
     if (d && parse_ip(d->dflt, &v)) return v;
     return def;
+}
+
+unsigned settings_get_ip(const char *key, unsigned def)
+{
+    gui_mutex_lock(&settings_lock);
+    unsigned result = settings_get_ip_locked(key, def);
+    gui_mutex_unlock(&settings_lock);
+    return result;
 }
 
 /* ===========================================================================
@@ -956,16 +1056,32 @@ static int set_str_typed(const char *key, const char *val, int commit, unsigned 
     return commit ? settings_commit() : 0;
 }
 
-int settings_set_str(const char *key, const char *val, int commit)
+int settings_set_str_locked(const char *key, const char *val, int commit)
 { return set_str_typed(key, val, commit, SET_T_STR); }
 
-int settings_set_int(const char *key, long val, int commit)
+int settings_set_str(const char *key, const char *val, int commit)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_set_str_locked(key, val, commit);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+int settings_set_int_locked(const char *key, long val, int commit)
 {
     char v[24];
     const struct setting_def *d = settings_schema_find(key);
     if (d && d->type == SET_T_COLOR) fmt_hex6(v, (int)sizeof v, (unsigned)(val & 0xFFFFFF));
     else                             fmt_long(v, (int)sizeof v, val);
     return set_str_typed(key, v, commit, SET_T_INT);
+}
+
+int settings_set_int(const char *key, long val, int commit)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_set_int_locked(key, val, commit);
+    gui_mutex_unlock(&settings_lock);
+    return result;
 }
 
 /* ===========================================================================
@@ -979,8 +1095,16 @@ const struct setting_def *settings_schema(int i)
  * warns against, one layer up. tab[] first, then apptab[], as one indexed
  * sequence; a caller that already walks 0..settings_kv_count() sees every key
  * the store holds and needs to know nothing about there being two tables. */
-int settings_kv_count(void) { return ntab + napp; }
-int settings_kv_at(int i, const char **k, const char **v)
+int settings_kv_count_locked(void) { return ntab + napp; }
+
+int settings_kv_count(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_kv_count_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+int settings_kv_at_locked(int i, const char **k, const char **v)
 {
     if (i < 0 || i >= ntab + napp) return -1;
     const struct kv *e = (i < ntab) ? &tab[i] : &apptab[i - ntab];
@@ -988,9 +1112,41 @@ int settings_kv_at(int i, const char **k, const char **v)
     if (v) *v = e->v;
     return 0;
 }
-unsigned settings_gen(void) { return gen; }
-int settings_diag(void) { return diag; }
-unsigned settings_app_overflow(void) { return app_overflow; }
+
+int settings_kv_at(int i, const char **k, const char **v)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_kv_at_locked(i, k, v);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+unsigned settings_gen_locked(void) { return gen; }
+
+unsigned settings_gen(void)
+{
+    gui_mutex_lock(&settings_lock);
+    unsigned result = settings_gen_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+int settings_diag_locked(void) { return diag; }
+
+int settings_diag(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_diag_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+unsigned settings_app_overflow_locked(void) { return app_overflow; }
+
+unsigned settings_app_overflow(void)
+{
+    gui_mutex_lock(&settings_lock);
+    unsigned result = settings_app_overflow_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
 
 /* ===========================================================================
  * Window frames.  The format is documented in settings.h; the two call sites
@@ -1011,7 +1167,7 @@ static void frame_key(const char *app, char *out)
     out[o] = 0;
 }
 
-int settings_frame_load(const char *app, struct win_frame *f,
+int settings_frame_load_locked(const char *app, struct win_frame *f,
                         int screen_w, int screen_h)
 {
     char key[SET_KEYLEN];
@@ -1062,7 +1218,16 @@ int settings_frame_load(const char *app, struct win_frame *f,
     return 1;
 }
 
-int settings_frame_save(const char *app, const struct win_frame *f, int commit)
+int settings_frame_load(const char *app, struct win_frame *f,
+                        int screen_w, int screen_h)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_frame_load_locked(app, f, screen_w, screen_h);
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
+int settings_frame_save_locked(const char *app, const struct win_frame *f, int commit)
 {
     char key[SET_KEYLEN], v[SET_VALLEN];
     frame_key(app, key);
@@ -1076,6 +1241,14 @@ int settings_frame_save(const char *app, const struct win_frame *f, int commit)
     }
     v[o] = 0;
     return settings_set_str(key, v, commit);
+}
+
+int settings_frame_save(const char *app, const struct win_frame *f, int commit)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_frame_save_locked(app, f, commit);
+    gui_mutex_unlock(&settings_lock);
+    return result;
 }
 
 /* ===========================================================================
@@ -1093,7 +1266,7 @@ int settings_frame_save(const char *app, const struct win_frame *f, int commit)
  * parser that survived by leaving the store empty would pass a crash test and
  * fail this one.
  * ======================================================================== */
-int settings_selftest(void)
+int settings_selftest_locked(void)
 {
     /* Save the live table so the sweep cannot disturb the running machine.
      * apptab/napp too -- this runs on every real boot, after a session may
@@ -1262,10 +1435,18 @@ int settings_selftest(void)
     return failures;
 }
 
+int settings_selftest(void)
+{
+    gui_mutex_lock(&settings_lock);
+    int result = settings_selftest_locked();
+    gui_mutex_unlock(&settings_lock);
+    return result;
+}
+
 /* ===========================================================================
  * The syscall surface
  * ======================================================================== */
-long settings_syscall(long num, long a, long b, long c)
+long settings_syscall_locked(long num, long a, long b, long c)
 {
     switch (num) {
     case SYS_SETTING_GET: {
@@ -1387,7 +1568,7 @@ long settings_syscall(long num, long a, long b, long c)
          * raw table offset -- which is how a caller lists its own domain
          * ("app.textedit.") without knowing its keys in advance. */
         char pfx[SET_KEYLEN];
-        if (!LOGIT_HAVE(user_copy_string) || user_copy_string(pfx, (int)sizeof pfx, prefix) < 0) return -1;
+        s_cpy(pfx, prefix, (int)sizeof pfx);
         int pn = s_len(pfx);
         int idx = 0;
         for (int si = 0; si < NSCHEMA; si++) {
@@ -1503,6 +1684,68 @@ long settings_syscall(long num, long a, long b, long c)
     return -1;
 }
 
+/* Stage user strings before taking the sleeping store lock. Copy answers out
+ * after unlocking: a page fault/reclaim cannot observe an interior table
+ * pointer or hold up every preference reader while it waits for memory. */
+#if !__STDC_HOSTED__
+#include "usercopy.h"
+static int set_copyin(char *d, int cap, const char *p)
+{ return user_copy_string(d, cap, p); }
+static int set_copyout(void *d, const void *s, unsigned n)
+{ return user_copy_to(d, s, n); }
+#else
+static int set_copyin(char *d, int cap, const char *p)
+{
+    if (!p) return -1;
+    for (int i=0; i<cap; i++) { d[i]=p[i]; if (!p[i]) return i; }
+    return -1;
+}
+static int set_copyout(void *d, const void *s, unsigned n)
+{
+    if (!d) return -1;
+    for (unsigned i=0; i<n; i++) ((char *)d)[i]=((const char *)s)[i];
+    return 0;
+}
+#endif
+long settings_syscall(long num, long a, long b, long c)
+{
+    char key[SET_KEYLEN], value[SET_VALLEN], line[SET_KVLINE];
+    struct logit_setting item = {0};
+    void *destination = 0;
+    unsigned outsize = 0;
+    long aa=a, bb=b, cc=c;
+    if (num == SYS_SETTING_GET || num == SYS_SETTING_SET) {
+        if (set_copyin(key, sizeof key, (const char *)a) < 0) return -1;
+        aa=(long)key;
+        if (num == SYS_SETTING_SET) {
+            if (set_copyin(value, sizeof value, (const char *)b) < 0) return SET_E_TOOBIG;
+            bb=(long)value;
+        } else {
+            if (!b || (int)c <= 0) return -1;
+            destination=(void *)b; bb=(long)value;
+            if (cc > (long)sizeof value) cc=sizeof value;
+        }
+    } else if (num == SYS_SETTING_ENUM) {
+        if (!b) return -1;
+        destination=(void *)b; bb=(long)&item; outsize=sizeof item;
+        if (c) {
+            if (set_copyin(key, sizeof key, (const char *)c) < 0) return -1;
+            cc=(long)key;
+        }
+    } else if (num == SYS_SETTING_CTL && (int)a == SETCTL_KVAT) {
+        if (!b) return -1;
+        destination=(void *)b; bb=(long)line;
+    }
+    gui_mutex_lock(&settings_lock);
+    long result = settings_syscall_locked(num, aa, bb, cc);
+    gui_mutex_unlock(&settings_lock);
+    if (destination && result >= 0) {
+        if (!outsize) outsize=(unsigned)result+1;
+        if (set_copyout(destination, (void *)bb, outsize) < 0) return -1;
+    }
+    return result;
+}
+
 /* ===========================================================================
  * WHAT IS DELIBERATELY NOT A SETTING HERE, and why each is absent rather than
  * present-but-inert:
@@ -1526,3 +1769,22 @@ long settings_syscall(long num, long a, long b, long c)
  *     handler (aui_set_accent(sys_setting_color("ui.accent"))), and aui.c
  *     belongs to the toolkit line.  That is an ask, not an edit.
  * ======================================================================== */
+
+/* A pointer into tab[] is valid only while the settings domain is locked.
+ * Cross-subsystem readers use a copy; locking get_str alone cannot extend a
+ * returned pointer's lifetime through a later filesystem operation. */
+int settings_copy_str(const char *key, const char *def, char *out, int cap)
+{
+    if (!out || cap <= 0) return -1;
+    gui_mutex_lock(&settings_lock);
+    const char *v = settings_get_str_locked(key, def);
+    int n = v ? s_len(v) : -1;
+    if (v) s_cpy(out, v, cap); else out[0] = 0;
+    gui_mutex_unlock(&settings_lock);
+    return n;
+}
+
+/* SYS_SETSESSION holds this scope across prepare, credential publication and
+ * adopt/discard; otherwise two logins can exchange pending_path between calls. */
+void settings_session_lock(void) { gui_mutex_lock(&settings_lock); }
+void settings_session_unlock(void) { gui_mutex_unlock(&settings_lock); }

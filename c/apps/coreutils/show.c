@@ -156,7 +156,10 @@ int main(int argc, char **argv)
         rt_outn((const char *)head, keep);
     }
     if (!g.binary) {
-        char b[512];
+        /* Sequential text output: one full kernel I/O transfer per read.  BSS
+         * keeps this out of the user stack, and rt_outn still handles output in
+         * the terminal backend's own bounded chunks. */
+        static char b[64 * 1024];
         int n;
         while (!g.binary && (n = sys_read(fd, b, sizeof b)) > 0) {
             int keep = 0;

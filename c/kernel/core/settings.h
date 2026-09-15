@@ -412,4 +412,9 @@ long settings_syscall(long num, long a, long b, long c);
  * produce a usable configuration -- which must be zero.  See SETCTL_SELFTEST. */
 int settings_selftest(void);
 
+/* Copy a string snapshot for use after the settings lock has been released. */
+int settings_copy_str(const char *key, const char *def, char *out, int cap);
+
+void settings_session_lock(void);
+void settings_session_unlock(void);
 #endif /* LOGIT_SETTINGS_H */

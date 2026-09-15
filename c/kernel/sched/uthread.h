@@ -2,6 +2,7 @@
 #define LOGIT_UTHREAD_H
 
 #include <stdint.h>
+#define UTHREAD_TABLE_MAX 128
 
 /* ===========================================================================
  * M30 -- ring-3 threads. Two execution flows in ONE address space.
@@ -38,6 +39,9 @@
  * parallel, not syscall throughput, which does not. That is a property of the
  * BKL and not of threads; it is the same wall SYS_KHEAP_STRESS was made
  * BKL-free to get past, and the same fix would work here.
+ * Correction: entry no longer serializes syscalls globally. Descriptor state
+ * uses g_ut_lock, final AS ownership is elected there before ZOMBIE publication,
+ * and futex comparison retains a pinned physical page through enrollment.
  *
  * WHAT IS DELIBERATELY REFUSED, rather than stubbed to success:
  *   - pthread_kill and cancellation. There is no signal delivery in this kernel
@@ -68,7 +72,9 @@ int  uthread_proc_live(int pid);
  * unmap the stack the kernel owns, and free the descriptor outright if the
  * thread was detached. Idempotent -- proc_exit() and SYS_THREAD_EXIT both reach
  * it and either may be first. */
-void uthread_release_self(uint64_t retval);
+int uthread_release_self(uint64_t retval); /* 1: elected final teardown owner */
+int uthread_exec_begin(void);
+void uthread_exec_end(void);
 
 /* Mark every thread of `pid` for exit with `code` and wake the parked ones, so
  * that a thread which called exit() takes its siblings with it. The siblings
@@ -89,6 +95,9 @@ void uthread_proc_reap(int pid);
  * not-taken branch -- the same discipline as proc_kill_armed(). Does not return
  * if the caller is a doomed thread. */
 int  uthread_exit_armed(void);
+int  uthread_exit_pending(void);
+void uthread_wake_process(int pid);
+void uthread_publish_tid(void *opaque, int tid);
 void uthread_exit_check(void);
 
 /* SYS_THREAD_* / SYS_FUTEX. Forwarded whole from c/kernel/exec/syscall.c for

@@ -1,6 +1,7 @@
 #include "as.h"
 #include <stdio.h>      /* vsnprintf */
 #include <stdarg.h>
+#include <stdckdint.h>
 
 /* Stack bytecode VM. A1 uses a switch dispatch (correctness first); the design
  * earmarks computed-goto as a later speed pass. Locals live on the value stack
@@ -955,7 +956,7 @@ static int run_until(int floor)
             Value b = peek(0), a = peek(1);
             /* int+int promotes to float on i64 overflow (no silent two's-complement
              * wrap to a negative -- the "big number went negative" surprise). */
-            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_add_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) + (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (ckd_add(&r, AS_INT(a), AS_INT(b))) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) + (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) + AS_NUM(b))); }
             else if (IS_STR(a) && IS_STR(b)) { ObjStr *s = str_concat(AS_STR(a), AS_STR(b)); if (!s) goto err; sp -= 2; push(OBJ_VAL(s)); }
             else { runtime_error("operands of '+' must be numbers or strings"); goto err; }
@@ -963,14 +964,14 @@ static int run_until(int floor)
         }
         op_SUB: {
             Value b = peek(0), a = peek(1);
-            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_sub_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) - (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (ckd_sub(&r, AS_INT(a), AS_INT(b))) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) - (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) - AS_NUM(b))); }
             else { runtime_error("operands of '-' must be numbers"); goto err; }
             DISPATCH();
         }
         op_MUL: {
             Value b = peek(0), a = peek(1);
-            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (__builtin_mul_overflow(AS_INT(a), AS_INT(b), &r)) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) * (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
+            if (IS_INT(a) && IS_INT(b))      { int64_t r; if (ckd_mul(&r, AS_INT(a), AS_INT(b))) { sp -= 2; push(FLOAT_VAL((double)AS_INT(a) * (double)AS_INT(b))); } else { sp -= 2; push(INT_VAL(r)); } }
             else if (IS_NUM(a) && IS_NUM(b)) { sp -= 2; push(FLOAT_VAL(AS_NUM(a) * AS_NUM(b))); }
             else { runtime_error("operands of '*' must be numbers"); goto err; }
             DISPATCH();
@@ -1034,9 +1035,9 @@ static int run_until(int floor)
                 if (e < 0) { runtime_error("** with a negative int exponent (no float pow in /bin/as)"); goto err; }
                 int64_t r = 1, bb = base, ee = e; int ovf = 0;     /* promote to float on i64 overflow */
                 while (ee > 0 && !ovf) {
-                    if (ee & 1) { if (__builtin_mul_overflow(r, bb, &r)) ovf = 1; }
+                    if (ee & 1) { if (ckd_mul(&r, r, bb)) ovf = 1; }
                     ee >>= 1;
-                    if (ee > 0 && __builtin_mul_overflow(bb, bb, &bb)) ovf = 1;
+                    if (ee > 0 && ckd_mul(&bb, bb, bb)) ovf = 1;
                 }
                 if (ovf) { double fr = 1.0, fb = (double)base; int64_t fe = e; while (fe > 0) { if (fe & 1) fr *= fb; fb *= fb; fe >>= 1; } sp -= 2; push(FLOAT_VAL(fr)); }
                 else { sp -= 2; push(INT_VAL(r)); }

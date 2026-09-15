@@ -18,6 +18,11 @@
  *     AFTER both have written, with a barrier in between, so a build where all
  *     threads shared one copy fails rather than racing to look right.
  *
+ *  2b. THE ISO C11 THREADS ADAPTER IS USED, NOT MERELY LINKABLE. Four C11
+ *      threads exercise thrd_create/join/current/equal/yield, mtx, TSS and
+ *      call_once together. Their return values, identities, private TSS values,
+ *      once count and mutex-protected counter are all checked after the joins.
+ *
  *  3. A MUTEX THAT ACTUALLY EXCLUDES. Four threads increment a shared counter
  *     with a non-atomic read-modify-write under one mutex. The final value is
  *     exact if and only if the mutex worked; the read-modify-write is split by
@@ -30,16 +35,19 @@
  *     "it did not crash" is not a leak check, and a table that fills up is
  *     invisible until it does.
  *
- * NEGATIVE CONTROLS. Each of the four is built into this file behind a -D, and
+ * NEGATIVE CONTROLS. Each of the six is built into this file behind a -D, and
  * tests/boot/run-thread-negctl.sh REQUIRES the build to FAIL:
  *     THR_NEGCTL_SERIAL   threads created and joined one at a time -> no speedup
+ *     THR_NEGCTL_BARRIER  hides the barrier's one serial-thread return token
  *     THR_NEGCTL_TLS      the per-thread value read from a shared global
+ *     THR_NEGCTL_C11      the C11 mutex removed from a split counter update
  *     THR_NEGCTL_NOLOCK   the mutex removed from the counter
  *     THR_NEGCTL_LEAK     detach never called, so descriptors are never freed
  * An assertion nobody has watched fail is not a known-failing assertion.
  */
 
 #include <pthread.h>
+#include <threads.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -58,8 +66,9 @@ static long mono_ms(void)
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-#if defined(THR_NEGCTL_SERIAL) || defined(THR_NEGCTL_TLS) || \
-    defined(THR_NEGCTL_NOLOCK)  || defined(THR_NEGCTL_LEAK)
+#if defined(THR_NEGCTL_SERIAL)  || defined(THR_NEGCTL_BARRIER) || \
+    defined(THR_NEGCTL_TLS)     || defined(THR_NEGCTL_NOLOCK)  || \
+    defined(THR_NEGCTL_LEAK)    || defined(THR_NEGCTL_C11)
 #define THR_IS_NEGCTL 1
 #endif
 
@@ -72,7 +81,7 @@ static void check(int ok, const char *what)
     /* A negative control has exactly one thing to demonstrate: that the check
      * its -D disables comes out FALSE. Once that has happened there is nothing
      * left to learn from it, and running the remaining sections -- 2000
-     * create/join cycles among them -- costs minutes of QEMU per control, four
+     * create/join cycles among them -- costs minutes of QEMU per control, six
      * times over. So a control stops at its first failure. The real build has
      * no THR_IS_NEGCTL and runs every check to the end, which is the opposite
      * behaviour and the right one there: a gate should report all of what is
@@ -188,23 +197,10 @@ static __thread unsigned long tls_value;
 __thread unsigned long tls_initialised = 0xABCDEF01ul;
 static unsigned long tls_shared_impostor;
 
-static pthread_mutex_t bar_m = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  bar_c = PTHREAD_COND_INITIALIZER;
-static int             bar_count, bar_gen;
-
-/* A real barrier over the mutex+condvar pair, so this doubles as the condition
- * variable's own test: if cond_wait lost a wakeup, every thread would hang here
- * and the harness would time out rather than print a wrong answer. */
-static void barrier(int n)
-{
-    pthread_mutex_lock(&bar_m);
-    int gen = bar_gen;
-    if (++bar_count == n) { bar_count = 0; bar_gen++; pthread_cond_broadcast(&bar_c); }
-    else while (gen == bar_gen) pthread_cond_wait(&bar_c, &bar_m);
-    pthread_mutex_unlock(&bar_m);
-}
-
 #define NTLS 4
+static pthread_barrier_t tls_barrier;
+static volatile int barrier_serials;
+static volatile int barrier_errors;
 static unsigned long tls_seen[NTLS];
 static unsigned long tls_init_seen[NTLS];
 
@@ -219,7 +215,16 @@ static void *tls_worker(void *arg)
 
     /* EVERY thread writes BEFORE any thread reads. Without this the test would
      * pass on a broken build whenever the threads happened not to overlap. */
-    barrier(NTLS);
+    int br = pthread_barrier_wait(&tls_barrier);
+#ifdef THR_NEGCTL_BARRIER
+    /* The control removes the API's one distinguished return while preserving
+     * the rendezvous itself. The check in main must catch the lost contract. */
+    if (br == PTHREAD_BARRIER_SERIAL_THREAD) br = 0;
+#endif
+    if (br == PTHREAD_BARRIER_SERIAL_THREAD)
+        __atomic_add_fetch(&barrier_serials, 1, __ATOMIC_SEQ_CST);
+    else if (br != 0)
+        __atomic_add_fetch(&barrier_errors, 1, __ATOMIC_SEQ_CST);
 
 #ifdef THR_NEGCTL_TLS
     tls_seen[idx] = tls_shared_impostor;     /* the control: one shared copy */
@@ -227,6 +232,50 @@ static void *tls_worker(void *arg)
     tls_seen[idx] = tls_value;
 #endif
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * 2b. ISO C11 threads.h as an actual consumer of the pthread-backed adapter.
+ * ------------------------------------------------------------------------- */
+#define NC11 4
+#define C11_BUMPS 2000
+static once_flag c11_once = ONCE_FLAG_INIT;
+static mtx_t c11_mutex;
+static tss_t c11_key;
+static thrd_t c11_seen_self[NC11];
+static volatile long c11_counter;
+static volatile int c11_once_calls;
+static volatile int c11_api_errors;
+static int c11_tss_ok[NC11];
+
+static void c11_init_once(void)
+{
+    __atomic_add_fetch(&c11_once_calls, 1, __ATOMIC_SEQ_CST);
+}
+
+static int c11_worker(void *arg)
+{
+    int idx = (int)(intptr_t)arg;
+    call_once(&c11_once, c11_init_once);
+    c11_seen_self[idx] = thrd_current();
+    if (tss_set(c11_key, (void *)(intptr_t)(idx + 1)) != thrd_success)
+        __atomic_add_fetch(&c11_api_errors, 1, __ATOMIC_SEQ_CST);
+    c11_tss_ok[idx] = tss_get(c11_key) == (void *)(intptr_t)(idx + 1);
+
+    for (int i = 0; i < C11_BUMPS; i++) {
+#ifndef THR_NEGCTL_C11
+        if (mtx_lock(&c11_mutex) != thrd_success)
+            __atomic_add_fetch(&c11_api_errors, 1, __ATOMIC_SEQ_CST);
+#endif
+        long value = c11_counter;
+        thrd_yield();
+        c11_counter = value + 1;
+#ifndef THR_NEGCTL_C11
+        if (mtx_unlock(&c11_mutex) != thrd_success)
+            __atomic_add_fetch(&c11_api_errors, 1, __ATOMIC_SEQ_CST);
+#endif
+    }
+    return idx * 11 + 7;
 }
 
 /* ---------------------------------------------------------------------------
@@ -441,11 +490,21 @@ int main(int argc, char **argv)
     /* --- 2. TLS ---------------------------------------------------------- */
     {
         pthread_t th[NTLS];
+        barrier_serials = 0;
+        barrier_errors = 0;
+        if (pthread_barrier_init(&tls_barrier, 0, NTLS) != 0) {
+            printf("THREAD_TEST_FAIL: pthread_barrier_init\n"); return 1;
+        }
         for (int i = 0; i < NTLS; i++)
             if (pthread_create(&th[i], 0, tls_worker, (void *)(long)i) != 0) {
                 printf("THREAD_TEST_FAIL: pthread_create (tls)\n"); return 1;
             }
         for (int i = 0; i < NTLS; i++) pthread_join(th[i], 0);
+
+        check(barrier_errors == 0, "pthread_barrier_wait accepted all four arrivals");
+        check(barrier_serials == 1, "pthread barrier returned the serial token exactly once");
+        check(pthread_barrier_destroy(&tls_barrier) == 0,
+              "pthread barrier destroys cleanly after all waiters leave");
 
         int distinct = 1, initialised = 1;
         for (int i = 0; i < NTLS; i++) {
@@ -460,6 +519,40 @@ int main(int argc, char **argv)
         tls_initialised = 0;
         check(initialised, "__thread initialisers reached every thread (.tdata copied)");
         check(tls_value == 0, "the main thread's own copy was untouched by any of them");
+    }
+
+    /* --- 2b. ISO C11 threads adapter ------------------------------------ */
+    {
+        thrd_t th[NC11];
+        int result[NC11] = {0};
+        int created = 0, joined = 1, values = 1, identities = 1, private_tss = 1;
+        c11_counter = 0;
+        c11_once_calls = 0;
+        c11_api_errors = 0;
+        if (mtx_init(&c11_mutex, mtx_plain) == thrd_success &&
+            tss_create(&c11_key, 0) == thrd_success) {
+            for (int i = 0; i < NC11; i++) {
+                if (thrd_create(&th[i], c11_worker, (void *)(intptr_t)i) != thrd_success)
+                    break;
+                created++;
+            }
+            for (int i = 0; i < created; i++)
+                if (thrd_join(th[i], &result[i]) != thrd_success) joined = 0;
+            for (int i = 0; i < created; i++) {
+                if (result[i] != i * 11 + 7) values = 0;
+                if (!thrd_equal(th[i], c11_seen_self[i])) identities = 0;
+                if (!c11_tss_ok[i]) private_tss = 0;
+            }
+            tss_delete(c11_key);
+            mtx_destroy(&c11_mutex);
+        }
+        int main_identity = thrd_equal(thrd_current(), thrd_current());
+        printf("thrtest: C11 counter=%ld once=%d created=%d errors=%d\n",
+               c11_counter, c11_once_calls, created, c11_api_errors);
+        check(created == NC11 && joined && values && identities && private_tss &&
+              main_identity && c11_api_errors == 0 && c11_once_calls == 1 &&
+              c11_counter == (long)NC11 * C11_BUMPS,
+              "C11 threads adapters preserve identity, TSS, once, joins, and mutex exclusion");
     }
 
     /* --- 3. mutual exclusion --------------------------------------------- */

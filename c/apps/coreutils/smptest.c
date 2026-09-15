@@ -42,10 +42,13 @@ static long compute(unsigned long seed, unsigned *seen_mask)
 
 /* Crude wall-clock seconds from the RTC fields (monotonic enough over the test's
  * window; day rollover is irrelevant here). */
-static long now_secs(void)
+/* Correction (2026-09-10): a measured 5351/8396 ms run passes the unchanged
+ * TN < 1.6*T1 requirement, but RTC seconds can report 5/8 and reject it.
+ * Use the existing monotonic clock at millisecond resolution; keep the work,
+ * 2-second minimum baseline and strict speedup requirement unchanged. */
+static long now_ms(void)
 {
-    struct logit_time t; get_time(&t);
-    return ((long)t.hour * 60 + t.minute) * 60 + t.second;
+    return (long)(monotonic_ns() / 1000000ull);
 }
 
 /* Run a batch of `n` worker children. Returns the batch wall time (seconds);
@@ -56,7 +59,7 @@ static long run_batch(int n, int *ok, unsigned *seen_all, int *got)
     int fds[2];
     if (sys_pipe(fds) < 0) { outs("smptest: pipe failed\n"); *ok = 0; *got = 0; return 0; }
 
-    long t0 = now_secs();
+    long t0 = now_ms();
     int pids[NCHILD_MAX];
     for (int i = 0; i < n; i++) {
         int pid = sys_fork();
@@ -97,8 +100,8 @@ static long run_batch(int n, int *ok, unsigned *seen_all, int *got)
     sys_close(fds[0]);
 
     for (int i = 0; i < n; i++) { int st; sys_waitpid(pids[i], &st); }
-    long t1 = now_secs();
-    long wall = t1 - t0; if (wall < 0) wall += 86400;
+    long t1 = now_ms();
+    long wall = t1 - t0;
 
     int g = 0, okc = 1; unsigned smask = 0;
     const char *p = buf;
@@ -137,8 +140,8 @@ int main(void)
 
     int distinct = 0; for (int i = 0; i < 16; i++) if (seenN & (1u << i)) distinct++;
 
-    outs("smptest: T1="); outn(T1); outs("s TN="); outn(TN);
-    outs("s children="); outn(gotN); outs(" distinct_cpus="); outn(distinct);
+    outs("smptest: T1="); outn(T1); outs("ms TN="); outn(TN);
+    outs("ms children="); outn(gotN); outs(" distinct_cpus="); outn(distinct);
     outs(" corruption="); outn(okN ? 0 : 1);
     outs("\n");
 
@@ -147,7 +150,7 @@ int main(void)
     if (distinct < 2)              { outs("SMP_TEST_FAIL: children ran on <2 cores (no parallelism)\n"); return 1; }
     /* Genuine BKL-free concurrency: N children finished in well under N*T1. Require
      * TN < 1.6*T1 (i.e. 5*TN < 8*T1). Need a meaningful baseline (>=2s). */
-    if (T1 < 2)                    { outs("SMP_TEST_FAIL: baseline too short to time\n"); return 1; }
+    if (T1 < 2000)                 { outs("SMP_TEST_FAIL: baseline too short to time\n"); return 1; }
     /* The old text guessed "kmalloc still serialized by the BKL?" and the guess
      * was wrong by a factor of 834. Measured with tests/boot/run-smp-lockprobe.sh,
      * which samples every lock's ticket counter across exactly this workload:

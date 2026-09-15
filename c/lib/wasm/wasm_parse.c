@@ -101,6 +101,19 @@ void *wasm_arena_alloc(struct wasm_arena *a, uint32_t count, uint32_t elemsize)
 
 /* ---- readers --------------------------------------------------------- */
 
+/* The browser includes decoder and executor in one translation unit.  Force
+ * both levels of these hot readers inline there: annotating only the u32/s32
+ * wrappers merely moves their call overhead into leb_u/leb_s.  The finite
+ * arithmetic comparison (2026-09-11) reduced arm64 host CPU time for 1M sums
+ * from 42.018 to 23.925 ms, with 1,408 extra x86 text bytes; these are host
+ * selection measurements, not a claim about guest speed.  Bodies and checks
+ * remain identical, and independent decoder builds retain normal codegen. */
+#if defined(WASM_BROWSER_UNITY_READERS) && (defined(__GNUC__) || defined(__clang__))
+#define WASM_READER_INLINE __attribute__((always_inline))
+#else
+#define WASM_READER_INLINE
+#endif
+
 int wasm_rd_u8(struct rd *r, uint8_t *out)
 {
 	if (r->i >= r->n) return WASM_E_END;
@@ -116,7 +129,7 @@ int wasm_rd_skip(struct rd *r, uint32_t nbytes)
 }
 
 /* uN.  `bits` is N. */
-static int leb_u(struct rd *r, uint32_t bits, uint64_t *out)
+WASM_READER_INLINE static int leb_u(struct rd *r, uint32_t bits, uint64_t *out)
 {
 	uint64_t res = 0;
 	uint32_t shift = 0, k, maxb = (bits + 6) / 7;
@@ -144,7 +157,7 @@ static int leb_u(struct rd *r, uint32_t bits, uint64_t *out)
 }
 
 /* sN. */
-static int leb_s(struct rd *r, uint32_t bits, int64_t *out)
+WASM_READER_INLINE static int leb_s(struct rd *r, uint32_t bits, int64_t *out)
 {
 	uint64_t res = 0;
 	uint32_t shift = 0, k, maxb = (bits + 6) / 7;
@@ -182,7 +195,7 @@ static int leb_s(struct rd *r, uint32_t bits, int64_t *out)
 	}
 }
 
-int wasm_rd_u32(struct rd *r, uint32_t *out)
+WASM_READER_INLINE int wasm_rd_u32(struct rd *r, uint32_t *out)
 {
 	uint64_t v; int e = leb_u(r, 32, &v);
 	if (e) return e;
@@ -190,7 +203,7 @@ int wasm_rd_u32(struct rd *r, uint32_t *out)
 	return WASM_OK;
 }
 
-int wasm_rd_s32(struct rd *r, int32_t *out)
+WASM_READER_INLINE int wasm_rd_s32(struct rd *r, int32_t *out)
 {
 	int64_t v; int e = leb_s(r, 32, &v);
 	if (e) return e;
@@ -198,8 +211,10 @@ int wasm_rd_s32(struct rd *r, int32_t *out)
 	return WASM_OK;
 }
 
-int wasm_rd_s33(struct rd *r, int64_t *out) { return leb_s(r, 33, out); }
-int wasm_rd_s64(struct rd *r, int64_t *out) { return leb_s(r, 64, out); }
+WASM_READER_INLINE int wasm_rd_s33(struct rd *r, int64_t *out) { return leb_s(r, 33, out); }
+WASM_READER_INLINE int wasm_rd_s64(struct rd *r, int64_t *out) { return leb_s(r, 64, out); }
+
+#undef WASM_READER_INLINE
 
 /* ---- UTF-8 ------------------------------------------------------------
  * The spec suite spends 528 cases on this (utf8-invalid-encoding.wast,

@@ -1,10 +1,24 @@
 #include <stdint.h>
 #include "vga.h"
+#include "io_lock.h"
+
+/* Cursor, colour and scroll are one short transaction. This leaf never logs
+ * or sleeps. Only a stopped-machine panic bypasses it, since its owner may
+ * be the CPU that failed. */
+static io_lock_t vga_lock = IO_LOCK_INIT;
+static unsigned vga_panicking;
+void vga_panic_takeover(void)
+{ __atomic_store_n(&vga_panicking, 1, __ATOMIC_RELEASE); }
 
 #define VGA_WIDTH   80
 #define VGA_HEIGHT  25
 
+#ifdef VGA_HOST_TEST
+extern volatile uint16_t vga_host_cells[80 * 25];
+#define VGA vga_host_cells
+#else
 static volatile uint16_t *const VGA = (volatile uint16_t *)0xB8000;
+#endif
 static int cursor_row = 0;
 static int cursor_col = 0;
 static uint8_t color = (VGA_BLACK << 4) | VGA_LIGHT_GREY;
@@ -14,17 +28,33 @@ static inline uint16_t cell(char c, uint8_t attr)
     return (uint16_t)(unsigned char)c | ((uint16_t)attr << 8);
 }
 
-void vga_set_color(enum vga_color fg, enum vga_color bg)
+static void vga_set_color_locked(enum vga_color fg, enum vga_color bg)
 {
     color = (uint8_t)((bg << 4) | (fg & 0x0F));
 }
 
-void vga_clear(void)
+void vga_set_color(enum vga_color fg, enum vga_color bg)
+{
+    int panic = __atomic_load_n(&vga_panicking, __ATOMIC_ACQUIRE);
+    uint64_t flags = panic ? 0 : io_lock_enter(&vga_lock);
+    vga_set_color_locked(fg, bg);
+    if (!panic) io_lock_leave(&vga_lock, flags);
+}
+
+static void vga_clear_locked(void)
 {
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = cell(' ', color);
     cursor_row = 0;
     cursor_col = 0;
+}
+
+void vga_clear(void)
+{
+    int panic = __atomic_load_n(&vga_panicking, __ATOMIC_ACQUIRE);
+    uint64_t flags = panic ? 0 : io_lock_enter(&vga_lock);
+    vga_clear_locked();
+    if (!panic) io_lock_leave(&vga_lock, flags);
 }
 
 static void scroll(void)
@@ -39,7 +69,7 @@ static void scroll(void)
     cursor_row = VGA_HEIGHT - 1;
 }
 
-void vga_putc(char c)
+static void vga_putc_locked(char c)
 {
     switch (c) {
     case '\n':
@@ -64,6 +94,14 @@ void vga_putc(char c)
     }
     if (cursor_row >= VGA_HEIGHT)
         scroll();
+}
+
+void vga_putc(char c)
+{
+    int panic = __atomic_load_n(&vga_panicking, __ATOMIC_ACQUIRE);
+    uint64_t flags = panic ? 0 : io_lock_enter(&vga_lock);
+    vga_putc_locked(c);
+    if (!panic) io_lock_leave(&vga_lock, flags);
 }
 
 void vga_puts(const char *s)

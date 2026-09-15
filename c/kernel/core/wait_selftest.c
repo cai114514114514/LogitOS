@@ -177,7 +177,7 @@ static void p6_spinner(void)
     /* The kernel's PRE-M27 best available wait: drop the BKL, halt until any
      * interrupt, re-acquire, re-test. Correct, and it wakes on every interrupt
      * whether or not it has anything to do with this condition. */
-    while (!p6_flag) { p6_spin_iters++; bkl_hlt_wait(); }
+    while (!p6_flag) { p6_spin_iters++; sched_poll_wait(); }
     p6_spin_slices_1 = sched_slices_of(p6_spin_thread);
     __atomic_fetch_add(&p6_done, 1, __ATOMIC_SEQ_CST);
 }
@@ -270,7 +270,7 @@ static void selftest_main(void)
     /* %u/%d only: the console formatter's `l` length modifier is not portable
      * across every checkout of this tree right now, and every number here fits
      * an unsigned int. */
-    kprintf("[waitq] %u ms of waiting: bkl_hlt_wait spin re-tested %u times / "
+    kprintf("[waitq] %u ms of waiting: sched_poll_wait spin re-tested %u times / "
             "%u dispatches; blocked sleeper %u dispatches\n",
             (unsigned)MEAS_MS, (unsigned)spin_wakes, (unsigned)spin_disp,
             (unsigned)sleep_disp);
