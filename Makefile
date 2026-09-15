@@ -23,15 +23,6 @@ FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 # AetherScript layout: example scripts (source, run directly) vs library modules
 # (precompiled to .la). Packed to /usr/as/examples/ and /usr/as/lib/ respectively.
 AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
-# A3 source stays available for editing, with a native artifact beside it in
-# /usr/as/bin. A malformed declaration must fail the build rather than silently
-# producing an empty native inventory (GNU make ignores shell exit status).
-AS_NATIVE_EXAMPLES := $(shell python3 tools/as_examples.py sources $(AS_EXAMPLES) || echo AS_EXAMPLE_SELECTION_FAILED)
-ifneq ($(filter AS_EXAMPLE_SELECTION_FAILED,$(AS_NATIVE_EXAMPLES)),)
-$(error Could not classify AetherScript examples; see the declaration error above)
-endif
-AS_NATIVE_EXAMPLE_AEX := $(patsubst fsroot/as/examples/%.as,$(BUILD)/as-native/%.aex,$(AS_NATIVE_EXAMPLES))
-AS_NATIVE_EXAMPLE_PACK := $(foreach e,$(AS_NATIVE_EXAMPLE_AEX),$(e):/usr/as/bin/$(notdir $(e)))
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
 # Rewritten native library sources stay in the original directory. A2 callers
 # temporarily use frozen bytecode for these names; compiling A3 through the VM
@@ -1705,7 +1696,7 @@ MODEL_LM_ON_DISK := $(if $(MODEL_LM),$(MODEL_LM):/model.lm,)
 # added, and nested .studio recovery slots/empty folders retain their metadata.
 # The packer validates and recovers a private copy, then replaces atomically; disk_guard rejects an
 # image held by QEMU. A same-image reboot test alone cannot catch this failure.
-$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(AS_NATIVE_EXAMPLE_AEX) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/ash.aex $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
+$(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(FONTS) $(FONT_TEXT) $(RELEASE_NOTICES) $(AEX) $(BUILD)/libctest.aex $(BUILD)/closefull.aex $(BUILD)/vidcheck.aex $(BUILD)/audiocheck.aex $(BUILD)/h2check.aex $(BUILD)/dot.png tools/mkfs.py $(BUILD)/imgcheck.aex $(IMG_FIXTURES) $(BUILD)/asnative.aex $(LPK_FIXTURES) $(GREETER_AEX) $(CH_AEX) $(BUILD)/lm.aex $(MODEL_LM) $(BUILD)/tcc/tcc.aex
 	@mkdir -p $(BUILD)
 	@if [ -n "$(MODEL_LM)" ]; then \
 	    sz=$$(bash tools/filesize.sh $(MODEL_LM)); \
@@ -1756,8 +1747,7 @@ $(DISK): $(FS_FILES) $(AS_EXAMPLES) $(AS_LA) $(AS_NATIVE_EXAMPLE_AEX) $(FONTS) $
 	    tests/fixtures/audio/sample.mp3:/media/sample.mp3 \
 	    tests/fixtures/audio/sample.flac:/media/sample.flac \
 	    tests/fixtures/audio/sample.wav:/media/sample.wav \
-	    $(BUILD)/ash.aex:/bin/ash $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
-	    $(AS_NATIVE_EXAMPLE_PACK) \
+	    $(foreach e,$(AS_EXAMPLES),$(e):/usr/as/examples/$(notdir $(e))) \
 	    $(foreach l,$(AS_LA),$(l):/usr/as/lib/$(notdir $(l))) \
 	    $(foreach s,$(AS_LIB_SRCS),$(s):/usr/as/lib/$(notdir $(s))) \
 	    $(BUILD)/sysroot:/ $(BUILD)/tcc/tcc.aex:/bin/tcc
