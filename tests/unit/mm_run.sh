@@ -20,7 +20,7 @@ OUT="${1:-$ROOT/build}"
 CC="${CC:-cc}"
 mkdir -p "$OUT"
 
-INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm"
+INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim"
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 FLAGS="-std=c11 -O1 -g -Wall -Wextra -Werror -DMM_HOSTTEST $SAN $INC"
 
@@ -63,7 +63,7 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 #
 # The third symbol is not in c/kernel/mm at all: see tests/unit/mmstub/
 # mm_hoststub.c, which supplies vmm.c's cross-core shootdown for the host.
-MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
+MMSRC="$MM/phys/pmm.c $MM/virt/vmm.c $MM/virt/fault.c $MM/virt/vma.c $MM/reclaim/rmap.c $MM/reclaim/reclaim.c $MM/reclaim/swap.c $MM/cache/pcache.c $MM/shm.c $MM/reclaim/oom.c"
 STUB="$ROOT/tests/unit/mmstub/mm_hoststub.c"
 
 fail=0

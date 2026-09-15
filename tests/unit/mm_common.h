@@ -39,7 +39,7 @@ void    *mm_sim_ptr(uint64_t phys);
 uint64_t mm_sim_kernel_space(void);
 
 /* --- simulated swap device ----------------------------------------------
- * c/kernel/mm/swap.c is compiled with the two calls that touch hardware
+ * c/kernel/mm/reclaim/reclaim/swap.c is compiled with the two calls that touch hardware
  * replaced by these (see the MM_HOSTTEST block at the top of that file).
  * Everything above them -- the slot allocator, the refcounting, the header,
  * the queueing -- is the code the kernel runs.

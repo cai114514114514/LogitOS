@@ -26,7 +26,7 @@
  *
  * Build + run (no make target; this is a self-contained host test):
  *   cc -O1 -g -Wall -Wextra -o /tmp/fb_clip_test tests/unit/fb_clip_test.c \
- *      c/kernel/gui/fb.c -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm \
+ *      c/kernel/gui/fb/fb/fb.c -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm \
  *      -Ic/lib/text && /tmp/fb_clip_test
  * tests/qmp/qmp_damage.py runs it as its first step.
  */

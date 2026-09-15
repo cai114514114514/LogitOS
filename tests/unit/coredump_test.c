@@ -22,7 +22,7 @@
  *
  * THE MACHINE UNDER THE BUILDER IS MODELLED, and only the machine: the region
  * list, the "is this page resident" predicate and the page reader are this
- * file's, and c/kernel/exec/coredump.c is compiled UNMODIFIED. That is what
+ * file's, and c/kernel/exec/signal/coredump.c is compiled UNMODIFIED. That is what
  * lets the register file be checked against values chosen in advance -- on the
  * real machine no one chooses what is in r13.
  *
@@ -136,7 +136,7 @@ static void ck(int ok, const char *fmt, ...)
  * CLAUDE.md's rule is explicit: a gate that cannot run on this host must SKIP
  * LOUDLY -- one line naming the missing capability and the command that would
  * settle it -- and never silently pass or silently fail for a reason that has
- * nothing to do with c/kernel/exec/coredump.c.
+ * nothing to do with c/kernel/exec/signal/coredump.c.
  *
  * readelf specifically: GNU readelf reads ELF generically (it interprets the
  * file's own e_machine field; it does not need to have been built FOR x86-64
@@ -360,7 +360,7 @@ int main(void)
      * host (this one, most of the time) that type is the HOST's own signal
      * ABI, not Linux's -- e.g. Darwin's siginfo_t is a different, unrelated
      * layout, so comparing against it would silently check the wrong ABI
-     * instead of the one c/kernel/exec/coredump.c actually writes. This is
+     * instead of the one c/kernel/exec/signal/coredump.c actually writes. This is
      * what the ABI check means on Linux too: it was always testing the
      * Linux layout, not "whatever this compiler's libc happens to call
      * siginfo_t". */

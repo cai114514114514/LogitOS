@@ -22,7 +22,7 @@
 
 ### S1. execve 换地址空间不清 TLB —— ring-3 可经陈旧 TLB 项读写已释放物理帧 [已核实]
 
-- 位置：`c/kernel/mm/vmm.c:150-168`（`vmm_free_user`），调用点 `c/kernel/exec/exec.c:111`
+- 位置：`c/kernel/mm/virt/vmm.c:150-168`（`vmm_free_user`），调用点 `c/kernel/exec/load/exec.c:111`
 - 问题：`proc_execve` 在当前活跃的同一 CR3 上调用 `vmm_free_user`：释放全部用户帧、清零 `PDPT[1]`，但全程无 `invlpg`、无 CR3 reload。`boot.asm` 只启用了 PAE，未启用 PCID，TLB 项只能靠 CR3 写入或 invlpg 失效。新映像由 `aex_load` 经 `vmm_map_page` 逐页 invlpg（`vmm.c:47`）——只有被新映像覆盖的 VA 被失效；旧程序独有 VA 的陈旧 TLB 项仍指向已归还 PMM 的物理帧，这些帧可能随后被分配给内核堆 arena 或其他进程的页表。
 - 触发条件：本地 app 调用 execve 后探测旧映像曾映射的地址。
 - 后果：ring-3 任意内核物理内存读写（UAF 原语）。
@@ -30,7 +30,7 @@
 
 ### S2. ELF 加载器缺失用户区 VA 界限检查 —— 恶意 .aex 任意写内核内存 [已核实]
 
-- 位置：`c/kernel/exec/elf.c:50-57`（`elf_load`）
+- 位置：`c/kernel/exec/load/elf.c:50-57`（`elf_load`）
 - 问题：`elf.c:50-51` 注释声称 "the target VA range must lie wholly inside the private user region"，但代码只检查 `filesz<=memsz`、文件内偏移和 `end<start` 溢出，**没有任何对 `p_vaddr` 范围的检查**。`vmm_map_page` 会照常映射任意 VA，且 `next_table`（`vmm.c:31`）对已存在的中间页表项执行 `table[idx] |= USER`——若 `p_vaddr` 指向恒等映射的内核低内存（共享页表子树），会把共享内核 PD/PT 项标记为 USER 并覆盖其叶项；随后 `elf.c:67` 的 `memcpy((void*)p_vaddr, image+p_offset, p_filesz)` 把文件可控字节直接写进内核代码/数据。
 - 触发条件：`SYS_EXECVE`、`proc_spawn`、`wm_launch` 三条加载路径均可达；一个伪造的可执行文件即可。
 - 后果：内核任意地址写 → 内核代码执行（本地提权级）。
@@ -90,14 +90,14 @@
 
 ### H-1. `ap_entry` 持 IF=1 裸调 `spin_lock(&g_bkl)` —— 定时器 IRQ 落入窗口即 BKL 自死锁 [已核实]
 
-- 位置：`c/kernel/cpu/smp.c:174`（前置：`smp.c:170-171` 的 `sti; hlt` 使 IF=1，`smp.c:163` 已 armed 周期性 LAPIC 定时器）
+- 位置：`c/kernel/cpu/smp/smp.c:174`（前置：`smp.c:170-171` 的 `sti; hlt` 使 IF=1，`smp.c:163` 已 armed 周期性 LAPIC 定时器）
 - 问题：`spin_lock`（`c/kernel/cpu/spinlock.c:17-23`）在拿到 ticket 之后才写 `g_bkl_owner`，这中间 IF=1。AP 的 LAPIC 定时器 IRQ 若落入该窗口，`interrupt_handler` 读到 `g_bkl_owner != me` → 在 IRQ 里 `spin_lock_irqsave(&g_bkl)`，而 BKL 正被本核持有 → ticket 锁永不前进 → 该核死锁、BKL 永不释放 → 全系统挂起。`spinlock.c:9-14` 注释声称 "bare re-acquire sites cli around themselves"，但 `smp.c:174` 这个 bare site 前后没有 `cli`。
 - 后果：全系统挂死（启动期竞态）。
 - 修复建议：`smp.c:173-175` 改为 `cli` 后再 `spin_lock(&g_bkl)`（或直接用 `spin_lock_irqsave`），与注释承诺的不变量对齐。
 
 ### H-2. `file_write` 偏移整数溢出 → 野指针写 / BKL 死循环 [已核实]
 
-- 位置：`c/kernel/exec/file.c:222`（`vfs_ensure_cap(f, f->off + len)`）+ `file.c:234-247`（`file_lseek`）+ `file.c:163-167`（`vfs_ensure_cap` 加倍循环）
+- 位置：`c/kernel/exec/fd/file.c:222`（`vfs_ensure_cap(f, f->off + len)`）+ `file.c:234-247`（`file_lseek`）+ `file.c:163-167`（`vfs_ensure_cap` 加倍循环）
 - 问题：`file_lseek` 允许 `f->off` 为任意非负 long。之后 `SYS_WRITE` 时 `f->off + len` 有符号溢出回绕为负 → `vfs_ensure_cap` 中 `need <= f->cap` 直接放行 → `file.c:223` `memcpy((char*)f->backing + f->off, buf, len)` 以用户可控偏移、可控内容写内核内存（至少稳定触发内核 #PF panic）。变体：`need` 为巨大正值时 `while (ncap < need) ncap *= 2` 溢出后陷入死循环——持 BKL，整机冻结。
 - 触发条件：任何 ring-3 程序 open+lseek+write。
 - 后果：内核内存破坏或整机 DoS。
@@ -111,13 +111,13 @@
 
 ### H-4. `file_close` 锁外拆毁与槽位复用竞态（潜伏，BKL-free 化即引爆） [已核实]
 
-- 位置：`c/kernel/exec/file.c:272-301`
+- 位置：`c/kernel/exec/fd/file.c:272-301`
 - 问题：槽位在锁内就已 `refcount=0`（279 行，即可被另一核 `file_alloc` 认领），但拆毁（283-299 的 vfs flush、`kfree(f->backing)`、`f->backing=0; f->type=F_NONE;`）在锁外进行。并发复用时旧主人的 `f->backing=0; f->type=F_NONE` 会覆盖新主人已初始化的字段（泄漏 backing、文件变哑），或 `kfree` 错指。当前被 BKL 串行化掩盖，但 `file.c` 注释明确这套细粒度锁是为 BKL-free 准备的——按该设计它就是不正确的。
 - 修复建议：拆毁完成前不释放槽位（引入 freeing 状态，teardown 完再置 `refcount=0`/`F_NONE`），或最后引用的整个拆毁都在锁内标记、锁外只做无副作用的 kfree。
 
 ### H-5. `SYS_GUI_BLIT` 目标尺寸 dw/dh 完全未校验 → 永久系统冻结 [已核实]
 
-- 位置：`c/kernel/gui/wm.c:551-561` + `c/kernel/gui/fb.c:552-569`
+- 位置：`c/kernel/gui/wm.c:551-561` + `c/kernel/gui/fb/fb.c:552-569`
 - 问题：`bl.w`/`bl.h` 来自用户态 `struct logit_blit`，只校验了 `bl.sw/bl.sh ≤ 4096`（`wm.c:556`），随后直接 `fb_blit_rgba(bl.x, bl.y, bl.w, bl.h, ...)`。`fb_blit_rgba` 按 `dw*dh` 双重循环，每次 fb_put 越界即返回——不写内存，但循环次数可达 (2³¹-1)² ≈ 4.6e18。该循环在 int 0x80 上下文执行（IF=0、持有 BKL），时钟中断无法抢占。
 - 触发条件：任意 ring-3 app 发一次 SYS_GUI_BLIT 并设 `bl.w=bl.h=INT_MAX`。
 - 后果：整机永久挂死。
@@ -272,30 +272,30 @@
 ### 内核核心（core / cpu / mm）
 
 **中**
-- `c/kernel/cpu/smp.c:213-226` — 超过 `PERCPU_MAXCPU`(8) 的 CPU 仍被启动并计入 `g_online`：`percpu_register_id` 只在 `g_online < 8` 时注册（219 行）但 AP 照样 SIPI，找不到 slot 的 AP 在 park 分支仍 `g_online++`（147 行）。`smp_cpu_count()` 高估；`tlb_flush_all` 按 `g_online` 遍历 `g_cpus[8]` 会越界读（该函数目前无调用方，属待发引信）。修：SIPI 循环加 `if (g_online >= PERCPU_MAXCPU) break;`；park 分支不增加 `g_online`。
-- `c/kernel/mm/vmm.c:21-34` — `next_table` 不检查大页 PS 位：`boot.asm` 用 2 MiB 大页恒等映射 0–1 GiB，若 `vmm_map_page` 被用于 <1 GiB 地址，PD 项（PS=1）会被当 PT 指针，页表项直接写进该 2 MiB 物理页。当前调用方均 ≥1 GiB（潜在炸弹，LAPIC/IOAPIC 基址来自 ACPI、无防线保证 ≥1 GiB）。修：`next_table` 检测 PS 位拒绝/拆分；`vmm_map_page` 入口断言 `virt >= 0x40000000`。
+- `c/kernel/cpu/smp/smp.c:213-226` — 超过 `PERCPU_MAXCPU`(8) 的 CPU 仍被启动并计入 `g_online`：`percpu_register_id` 只在 `g_online < 8` 时注册（219 行）但 AP 照样 SIPI，找不到 slot 的 AP 在 park 分支仍 `g_online++`（147 行）。`smp_cpu_count()` 高估；`tlb_flush_all` 按 `g_online` 遍历 `g_cpus[8]` 会越界读（该函数目前无调用方，属待发引信）。修：SIPI 循环加 `if (g_online >= PERCPU_MAXCPU) break;`；park 分支不增加 `g_online`。
+- `c/kernel/mm/virt/vmm.c:21-34` — `next_table` 不检查大页 PS 位：`boot.asm` 用 2 MiB 大页恒等映射 0–1 GiB，若 `vmm_map_page` 被用于 <1 GiB 地址，PD 项（PS=1）会被当 PT 指针，页表项直接写进该 2 MiB 物理页。当前调用方均 ≥1 GiB（潜在炸弹，LAPIC/IOAPIC 基址来自 ACPI、无防线保证 ≥1 GiB）。修：`next_table` 检测 PS 位拒绝/拆分；`vmm_map_page` 入口断言 `virt >= 0x40000000`。
 - `c/kernel/core/rng.c:84-89` — RNG 熵源静默退化为 rdtsc：`rdseed`/`rdrand` 缺失或单次失败即退回 `rdtsc() ^ timer_ticks`，无告警；无 RDRAND 的 CPU 上 TLS 密钥材料可被远端预测。另 `rng_state` 等全局无锁（当前均在 BKL 下，潜在竞态）。修：rdseed 加重试、无硬件熵源时 kprintf 告警、加 irqsave 锁。
 
 **低**
-- `c/kernel/mm/kheap.c:23,64-65,104-106` — `kmalloc`/`grow` 缺尺寸溢出防护：`ALIGN16(SIZE_MAX-3)` 回绕为 0 冒充成功；`frames*FRAME_SIZE` 在 `need ≥ 2^63` 时回绕为 0 → 持锁死循环。调用方均为内核受信尺寸。
-- `c/kernel/cpu/acpi.c:94,108,116` — ACPI 表解析信任假设：MADT type-5 的 64 位 LAPIC 地址截断为 uint32；`xsdt->length`/`rsdt->length` 未校验 `< sizeof(header)` 即相减，无符号回绕 → 越界遍历。固件受信路径。
-- `c/kernel/cpu/lapic.c:42` — `ipi_wait` 无超时：delivery-status 卡住即永久自旋（持 BKL/IF=0 时拖死全机）。与 [已知 M20] 同类的新位置。
-- `c/kernel/cpu/ioapic.c:33-42` — `ioapic_route` 不校验 GSI 上限（只查 `gsi < gsi_base`），超出重定向表写越界 MMIO。
-- `c/kernel/mm/pmm.c:90,96` — `pmm_init` 信任 MB2 tag 尺寸：`tag->size==0` 或 `entry_size==0` 时 `p` 不前进而死循环（固件受信）。另 `pmm_alloc_contig`（202-217）逐位 O(total_frames) 扫描且持锁 IF=0，大内存机器上中断延迟可观（性能）。
-- `c/kernel/cpu/smp.c:226` — [已知 H11] AP 启动失败泄漏内核栈（缺 `kfree(stk)`）。
+- `c/kernel/mm/phys/kheap.c:23,64-65,104-106` — `kmalloc`/`grow` 缺尺寸溢出防护：`ALIGN16(SIZE_MAX-3)` 回绕为 0 冒充成功；`frames*FRAME_SIZE` 在 `need ≥ 2^63` 时回绕为 0 → 持锁死循环。调用方均为内核受信尺寸。
+- `c/kernel/cpu/acpi/acpi.c:94,108,116` — ACPI 表解析信任假设：MADT type-5 的 64 位 LAPIC 地址截断为 uint32；`xsdt->length`/`rsdt->length` 未校验 `< sizeof(header)` 即相减，无符号回绕 → 越界遍历。固件受信路径。
+- `c/kernel/cpu/irq/lapic.c:42` — `ipi_wait` 无超时：delivery-status 卡住即永久自旋（持 BKL/IF=0 时拖死全机）。与 [已知 M20] 同类的新位置。
+- `c/kernel/cpu/irq/ioapic.c:33-42` — `ioapic_route` 不校验 GSI 上限（只查 `gsi < gsi_base`），超出重定向表写越界 MMIO。
+- `c/kernel/mm/phys/pmm.c:90,96` — `pmm_init` 信任 MB2 tag 尺寸：`tag->size==0` 或 `entry_size==0` 时 `p` 不前进而死循环（固件受信）。另 `pmm_alloc_contig`（202-217）逐位 O(total_frames) 扫描且持锁 IF=0，大内存机器上中断延迟可观（性能）。
+- `c/kernel/cpu/smp/smp.c:226` — [已知 H11] AP 启动失败泄漏内核栈（缺 `kfree(stk)`）。
 
 ### 调度与进程（sched / exec / syscall）
 
 **中**
 - `c/kernel/sched/sched.c:102-103,49,69-70` — `thread_create`/`sched_init` 的 kmalloc 未检查返回值：`thread_create_user`/`thread_fork` 都检查了，`thread_create` 反而两次未查 → OOM 时 NULL 解引用。
 - `c/kernel/gui/wm.c:176,213-214` — `wm_launch` 失败路径资源泄漏：`vmm_new_space()` 失败时直接 return（`img` 泄漏）；app 槽位耗尽（`ai < 0`）时 `kfree(img)` 后返回但漏 `vmm_free_space(space)`——每次泄漏 PML4/PDPT + 全部用户页帧（4-8 MiB），16 个窗口槽满时反复 launch 可耗尽 PMM。（agent-1 与 agent-2 重复报告，已合并。）
-- `c/kernel/exec/exec.c:164-165`、`c/kernel/gui/wm.c:233` — `thread_create_user` 失败不检查：OOM 返回 -1 无人检查，proc 永远 `PROC_RUNNING` 但没有线程（NPROC 槽 + cr3 空间永久泄漏）；`proc_spawn` 还照常 `return p->pid`。
+- `c/kernel/exec/load/exec.c:164-165`、`c/kernel/gui/wm.c:233` — `thread_create_user` 失败不检查：OOM 返回 -1 无人检查，proc 永远 `PROC_RUNNING` 但没有线程（NPROC 槽 + cr3 空间永久泄漏）；`proc_spawn` 还照常 `return p->pid`。
 
 **低**
-- `c/kernel/exec/exec.c:50-51`、`c/kernel/gui/wm.c:195` — 用户栈顶地址无界限：`top = (entry & ~0xFFFFF) + 0x4000000`，entry 未校验可越出 PDPT[1]（与 S2 同源，修了 ELF 校验即收敛）。
+- `c/kernel/exec/load/exec.c:50-51`、`c/kernel/gui/wm.c:195` — 用户栈顶地址无界限：`top = (entry & ~0xFFFFF) + 0x4000000`，entry 未校验可越出 PDPT[1]（与 S2 同源，修了 ELF 校验即收敛）。
 - `c/kernel/exec/syscall.c:208-214` — `SYS_FILE_NAME` 缺索引上界检查（对照 `SYS_DIR_NAME` 199 行检查了 `i >= vfs_count(abs)`），仅靠 `dir_nth` 兜底，行为不一致。
-- `c/kernel/mm/vmm.c:210` — `vmm_user_range_ok` 对 `len==0, ptr==NULL` 返回 0：`write(fd, NULL, 0)` 返回 -1 而非 0（POSIX 兼容性）。
-- `c/kernel/exec/exec.c:102`、`c/kernel/gui/wm.c:150` — `sz+511` int 溢出：文件接近 2 GiB 时 `bytes` 变负 → 巨分配失败（健壮性）。
+- `c/kernel/mm/virt/vmm.c:210` — `vmm_user_range_ok` 对 `len==0, ptr==NULL` 返回 0：`write(fd, NULL, 0)` 返回 -1 而非 0（POSIX 兼容性）。
+- `c/kernel/exec/load/exec.c:102`、`c/kernel/gui/wm.c:150` — `sz+511` int 溢出：文件接近 2 GiB 时 `bytes` 变负 → 巨分配失败（健壮性）。
 
 ### 图形与窗口系统 / PCI（gui / pci）
 
@@ -309,7 +309,7 @@
 - `c/kernel/gui/wm.c:1067` → `c/apps/coreutils/.../aex.c:20-28` — `aex_info` 无 size 参数直接读 64 字节头：一个 <64 字节的 "x.aex" 导致最多 60 字节堆越界读（启动期 scan_apps 路径）。
 - `c/kernel/gui/text.c:120-130` — `text_measure`/`measure` 缺 font_ok 守卫：字体加载失败时 `glyph_get` 除零 #DE panic（打包缺陷触发）。
 - `c/kernel/gui/wm.c:1091-1093` — `wm_init` 的 `pmm_alloc_contig` 返回值未检查：OOM 时 `fb_set_backbuffer(NULL)` 后 wm_render NULL 解引用（与 [已知 H9] 同类）。
-- `c/kernel/gui/fb.c:79-88` — `fb_init` Multiboot2 tag 遍历无 size==0 守卫 → 死循环（GRUB 受信）。
+- `c/kernel/gui/fb/fb.c:79-88` — `fb_init` Multiboot2 tag 遍历无 size==0 守卫 → 死循环（GRUB 受信）。
 - `c/kernel/pci/pci.c:37-56` — `pci_find` 只扫 bus 0 / func 0：不遍历 secondary bus、不查 multifunction、未区分 32/64 位 BAR 与 I/O BAR；CF8/CFC 无锁（启动期尚无竞态）。
 - `c/kernel/gui/wm.c:452-471` — SYS_WRITE_FILE/DELETE/MKDIR 无权限模型（设计备忘）：任何 ring-3 app 可覆写 `/` 下任意文件，"app 沙箱"仅及于内存不及于磁盘，值得文档明示。
 - `c/kernel/gui/wm.c:484-512` — SYS_HTTP_GET/BODY 全局状态无归属：`g_net_busy` 仅在单次调用内置位，两个 app 的 HTTP 调用可交错，B 读到 A 的 body（数据混淆，非内存问题）。
@@ -483,7 +483,7 @@
 **低**
 - `c/boot/switch.asm:29-40` — `popfq` 与 `cli` 之间存在一条指令的中断窗口：当前所有手工构造的帧都用 IF=0（目前不可达），属仅靠调度器侧不变量维系的防御纵深。修：popfq 前 `and qword [rsp], ~0x200`。
 - `c/boot/ap_trampoline.asm:42-43` — AP 启动只读 CR3 的低 32 位：pmm 一旦返回 4 GiB 以上的 PML4 帧，所有 AP 加载截断 CR3 立即三fault（当前 512 MiB 下安全）。
-- `c/boot/isr.asm:40` + `c/kernel/cpu/idt.c:41` — 双重 fault 无 IST 栈：#DF 成因若是内核栈溢出，#DF 压栈再次失败 → triple fault，配 `-no-reboot` 表现为静默死机无诊断。修：TSS 给 IST1 配专用 #DF 栈。
+- `c/boot/isr.asm:40` + `c/kernel/cpu/irq/idt.c:41` — 双重 fault 无 IST 栈：#DF 成因若是内核栈溢出，#DF 压栈再次失败 → triple fault，配 `-no-reboot` 表现为静默死机无诊断。修：TSS 给 IST1 配专用 #DF 栈。
 - `tools/gen_libcss.sh:11,17` — 可预测 /tmp 路径 + properties.gen 键名未消毒（vendored 可信输入）。
 - `tools/mkaex.py:9-18,24,28` — 无参数校验：`r & 255` 静默回绕超范围颜色；`name.encode()[:31]` 可能在 UTF-8 多字节中间截断。
 - `tools/mkfs.py:190` — `partition(":")` 与 Windows 盘符路径冲突：`D:\foo` 被解析成 host=`D`（当前 Makefile 只传相对路径）。
@@ -606,7 +606,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 
 - `c/fs/logitfs.c` — `inode_write` 失败路径双重 `bfree`。
 - `c/kernel/sched/sched.c` — `thread_create_idle` 的 `kmalloc` 返回值未检查。
-- `c/kernel/cpu/smp.c` — `cpu_apicid` 数组越界写。
+- `c/kernel/cpu/smp/smp.c` — `cpu_apicid` 数组越界写。
 - `c/drivers/virtio/virtio.c` — descriptor `head` 恒为 0，使 used entry id 校验失效。
 - `c/kernel/gui/text.c` — 字体回退路径除零。
 - `c/apps/libc/src/stdio.c` — `%f` 第二处浮点强转 UB。
@@ -642,7 +642,7 @@ backlog 的 13 项已知 bug 全部在本次审计中再次出现，且经复核
 - `c/kernel/gui/wm.c` `wm_launch` — 入口处无条件 `cli`、出口处无条件 `sti`：从 int 0x80（SYS_OPEN_PATH，Finder 打开文件）进入时 IF=0，返回后 IF=1，系统调用出口路径全程 IF=1 + 持 BKL，嵌套 IRQ 窗口超出 int 门设计假设。修复：入口 pushfq 保存、出口按保存值恢复。
 - `c/kernel/cpu/tlb.c` `tlb_flush_all` — 无界等 ack：排队等 BKL 的核 IF=0 无法响应 IPI 240，任何未来调用方都会立刻死锁（`smp_present_par` 对此既有竞争闸门又有超时，此处两者皆无）。修复：有界等待，未 ack 核跳过（下次 CR3 切换自然 flush）。当前无调用方，属拆除引信。
 - `c/kernel/gui/wm.c` — `g_net_busy` 看门狗：线程死于 fetch 中途（关窗/fault）时标志永久卡 1，`net_poll` 永不再跑（重传/FIN 回收全停，后续所有 http_get 连环失败）。修复：100 秒超时自动失效。
-- `c/kernel/cpu/interrupts.c` — **偶发硬冻结（约 1/14）的根因，循环等待死锁**：`timer_tick()` 原先在 timer IRQ 拿到 BKL 之后才执行，而整个网络栈（dns/arp/tcp/tls/http）的超时与重传全部以 `timer_ticks()` 为时钟。当 fetch 线程被调度到 AP 核、持 BKL 阻塞等网络超时（`SYS_HTTP_GET` 全程持 BKL）时，BSP 的 timer IRQ 在 BKL 上自旋（IF=0）→ 全局 ticks 冻结 → fetch 的超时/重传永不触发 → fetch 永不结束 → BKL 永不释放，四方互锁。症状全部吻合：WM 秒级时钟停（BSP 卡在 timer ISR）、串口沉默（四核全灭）、QEMU 存活（guest 自旋）、低概率（需「fetch 在 AP 上」且「该次 fetch 丢包/停滞」同时成立）。修复：BSP 的 `timer_tick()` 移到 BKL 获取之前（ticks 是单写者 volatile 计数器，读者本无锁）。由全内核静态审查（排除法：其余轮询/自旋路径逐一核实有界）定位。
+- `c/kernel/cpu/irq/interrupts.c` — **偶发硬冻结（约 1/14）的根因，循环等待死锁**：`timer_tick()` 原先在 timer IRQ 拿到 BKL 之后才执行，而整个网络栈（dns/arp/tcp/tls/http）的超时与重传全部以 `timer_ticks()` 为时钟。当 fetch 线程被调度到 AP 核、持 BKL 阻塞等网络超时（`SYS_HTTP_GET` 全程持 BKL）时，BSP 的 timer IRQ 在 BKL 上自旋（IF=0）→ 全局 ticks 冻结 → fetch 的超时/重传永不触发 → fetch 永不结束 → BKL 永不释放，四方互锁。症状全部吻合：WM 秒级时钟停（BSP 卡在 timer ISR）、串口沉默（四核全灭）、QEMU 存活（guest 自旋）、低概率（需「fetch 在 AP 上」且「该次 fetch 丢包/停滞」同时成立）。修复：BSP 的 `timer_tick()` 移到 BKL 获取之前（ticks 是单写者 volatile 计数器，读者本无锁）。由全内核静态审查（排除法：其余轮询/自旋路径逐一核实有界）定位。
 
 **验证**：`tests/qmp/qmp_freeze.py`（Studio 编辑 → 开终端 → uname → 拖拽）与 `tests/qmp/qmp_freeze2.py`（Studio 编辑→关闭 → Monitor 开→关 → 终端 → uname）在 `make run` 全参数（-smp 4 TCG + virtio-gpu + e1000 + 真实显示窗口）下通过，终端正常启动并执行命令。tick/BKL 修复后，`tests/qmp/qmp_watch.py` 零扰动冻结猎手连跑 **30/30 轮无一冻结**（修复前基线约 1/14 轮冻结）。注：QEMU TCG 下从未复现出「发白+全系统冻结」的确切画面，已修复的 6 个 bug 覆盖该类症状的已知路径；wm_launch 的各失败分支已补全串口日志（此前 4 处静默返回），若现场再现有日志可查。
 

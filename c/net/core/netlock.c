@@ -57,7 +57,7 @@
  * the VFS or a block device. In particular it never takes an mm lock, which is
  * the inversion c/kernel/sched/uthread.c warns about (mm sits below everything).
  *
- * Nothing goes the other way: c/kernel/core/wait.c and sched.c contain no call
+ * Nothing goes the other way: c/kernel/sync/wait.c and sched.c contain no call
  * into c/net. The ONE place that took a waitq lock and then net_lock was
  * tcp_wait_readable()'s predicate (`wait_event_timeout(&rx_wq,
  * tcp_available(id) != 0, ...)`, where tcp_available takes net_lock under

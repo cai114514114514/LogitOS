@@ -5,7 +5,7 @@
  * ===========================================================================
  * WHY THIS AND NOT A KERNEL CHANGE
  *
- * The question being answered is "how far is c/kernel/mm/reclaim.c's clock
+ * The question being answered is "how far is c/kernel/mm/reclaim/reclaim/reclaim.c's clock
  * from the offline optimum", and the optimum is computable only from a
  * reference string. This machine cannot produce one from the inside. There is
  * no hardware reference notification -- that single sentence is what the whole

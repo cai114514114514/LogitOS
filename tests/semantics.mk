@@ -110,7 +110,7 @@ SEM_SRC := tests/unit/semantics_test.c $(SEM_JS_SRC) \
 # its own comment, reached on-device through the flat INCDIRS list. Host lists
 # must name the directory themselves, the same rider webapi_platform.mk carries
 # for ws.c. Without it every fresh link of this suite dies at js_canvas.c:222.
-SEM_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio \
+SEM_CF := $(BTEST_INC) -Ic/apps $(KMM_INC) -Ic/lib/media -Ic/lib/audio \
           -Ic/lib/video -Ic/net/ssh -Ic/crypto $(CSS_INC) $(JS_INC) -Iinclude/abi \
           -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 

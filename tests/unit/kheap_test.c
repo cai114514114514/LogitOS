@@ -1,4 +1,4 @@
-/* Host test for the kernel heap (c/kernel/mm/kheap.c, compiled against the
+/* Host test for the kernel heap (c/kernel/mm/phys/kheap.c, compiled against the
  * stub headers in kheapstub/). The one invariant that matters: NO TWO LIVE
  * ALLOCATIONS MAY OVERLAP (headers included) -- not even when pmm_alloc_contig
  * fails mid-grow. The deterministic scenario below reproduces the app-churn

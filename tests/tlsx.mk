@@ -194,7 +194,7 @@ bench-tls-selfcert:
 	  c/kernel/cpu/cpufeat.c \
 	  $(shell find c/crypto/aead c/crypto/hash c/crypto/pubkey c/crypto/kdf c/crypto/pq -name '*.c' 2>/dev/null) \
 	  -Ic/crypto -Ic/crypto/aead -Ic/crypto/trust -Ic/crypto/pq -Ic/net/tls \
-	  -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core -Ic/kernel/cpu
+	  -Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC) $(KCPU_INC)
 	@$(BUILD)/tlsx/tls_server_bench bench 100
 
 # The aggregate, and the CI wiring. `ci-host:` takes prerequisites from any

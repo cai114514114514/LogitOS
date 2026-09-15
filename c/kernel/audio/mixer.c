@@ -42,7 +42,7 @@ static struct io_domain snd_lifecycle = IO_DOMAIN_INIT;
  * userland one and every waitq here becomes an incomplete type. c/kernel/core's
  * own files get away with it only because a quoted include checks the including
  * file's own directory first. */
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 #include "sched.h"
 #include "spinlock.h"
 

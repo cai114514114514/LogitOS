@@ -13,7 +13,7 @@
 - **H5**：`c/net/ip/ip.c` — `ip_input` 加 `ip_checksum(h, ihl)!=0` 丢弃。
 - **H9**：`c/drivers/net/e1000.c` — `rx_init`/`tx_init` 改返回 int，`pmm_alloc` 逐次检查+回滚。
 - **M20**：`c/drivers/virtio/virtio.c` — reset 等待改 2 亿次有界循环。
-- **H11**：`c/kernel/cpu/smp.c` — AP 启动失败分支补 `kfree(stk)`。
+- **H11**：`c/kernel/cpu/smp/smp.c` — AP 启动失败分支补 `kfree(stk)`。
 - **H17**：`c/apps/as/vm.c` — `op_DIV`/`op_MOD` 加 INT64_MIN/-1 `runtime_error`。
 - **H18**：`c/apps/as/vm.c` — `op_NEG` 加 INT64_MIN 检查。
 - **M23**：`c/apps/libc/src/stdlib.c` — `strtod` 指数累积钳制（`strtoll` 原有 cutoff 防护核实无误，无需改）。
@@ -35,7 +35,7 @@ Deferred (user prioritised the SMP scheduler). Fix in a gated batch later; C2 is
 | H5 | low | remote | Incoming IP packets not checksum-verified in ip_input | In ip_input, immediately after the bounds checks (after line 86, where ihl>=20, ihl<=tot, and 14+tot<=len guarantee reading ihl bytes stays inside frame+len), add: if (ip_checksum(h, ihl) != 0) return; Use ihl (not sizeof *h) so IP options  |
 | H9 | low | trusted-only | e1000 rx_init/tx_init: pmm_alloc return value unchecked (NULL deref / fault on OOM) | Make rx_init/tx_init return int; after each pmm_alloc() check for 0 and return -1 (e.g. `ring = pmm_alloc(); if (!ring) return -1;` and `rx_buf[i] = (uint8_t*)pmm_alloc(); if (!rx_buf[i]) return -1;`). In e1000_init() propagate: `if (rx_ini |
 | M20 | low | trusted-only | virtio_init reset wait — unbounded busy-spin, no timeout | Bound the reset wait like virtio_request. Replace line 81 with a counted loop, e.g.: for (long i = 0; i < 200000000; i++) { if (r8(vd->common, C_STATUS) == 0) break; } if (r8(vd->common, C_STATUS) != 0) { kprintf("[virtio] %x: reset timeout |
-| H11 | low | trusted-only | smp.c: AP kernel stack leaked when an ACPI-listed AP fails to start | Add the missing kfree in the failure branch at src/kernel/cpu/smp.c:144: `if (!ap_ack) { kfree(stk); cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }`. (kfree is the matching deallocator for the kmalloc |
+| H11 | low | trusted-only | smp.c: AP kernel stack leaked when an ACPI-listed AP fails to start | Add the missing kfree in the failure branch at src/kernel/cpu/smp/smp.c:144: `if (!ap_ack) { kfree(stk); cpu_apicid[g_online] = 0; kprintf("[smp] CPU apic_id=%d did not start\n", (int)aid); }`. (kfree is the matching deallocator for the kmalloc |
 | H17 | low | local-script | op_DIV / op_MOD: INT64_MIN / -1 triggers #DE hardware fault instead of catchable runtime_e | In vm.c op_DIV, after the zero check at line 518 add: `if (AS_INT(a)==INT64_MIN && AS_INT(b)==-1) { runtime_error("integer overflow: INT64_MIN / -1"); goto err; }` and likewise in op_MOD after line 526: `if (AS_INT(a)==INT64_MIN && AS_INT(b |
 | H18 | low | local-script | op_NEG: negating INT64_MIN is signed integer overflow (UB / wrong result) | In op_NEG (vm.c:530-536), before the integer negate add: `if (IS_INT(a) && AS_INT(a) == INT64_MIN) { runtime_error("integer overflow: cannot negate INT64_MIN"); goto err; }`. This matches the adjacent op_DIV/op_MOD divide-by-zero idiom (vm. |
 | M23 | low | untrusted-file | strtoll signed-overflow UB + strtod exponent int-overflow UB on oversized numeric input | strtoll (stdlib.c:36): guard the accumulation, e.g. `if (v > (LLONG_MAX - d) / base) { errno = ERANGE; v = LLONG_MAX; /* consume remaining digits */ while (digit(*s,base)>=0) s++; break; }` before `v = v*base + d` (and return neg?LLONG_MIN: |

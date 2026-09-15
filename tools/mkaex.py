@@ -20,7 +20,7 @@ Two modes.
   a known-good one, and a private format cannot.
 
 The file:  [ 64-byte fixed header ][ TLV metadata ][ ELF64 image ]
-c/kernel/exec/aex.h is the definition site; this mirrors it, and
+c/kernel/exec/load/aex.h is the definition site; this mirrors it, and
 tests/unit/exec_test.c asserts the two agree against a real file.
 """
 import sys, struct, os, zlib, argparse, subprocess, json, re
@@ -110,7 +110,7 @@ T_APAD  = 0x44415041   # "APAD": the alignment pad, below
 # Cost, measured: +3976..+3992 bytes per file, 78 files, ~310 KiB, ~76 more
 # 4 KiB blocks on a 16384-block image that was using ~7136. No inode change.
 HDR_ALIGN = 4096
-HDR_MAX   = 16384      # c/kernel/exec/aex.h AEX_HDR_MAX; raised from 4096 when
+HDR_MAX   = 16384      # c/kernel/exec/load/aex.h AEX_HDR_MAX; raised from 4096 when
                        # the pad landed, so padding to 4096 is not padding ONTO
                        # the cap with no room for the next TLV.
 

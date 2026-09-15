@@ -1,11 +1,11 @@
 /* The machine underneath the storage host test -- the pollhost pattern
- * (tests/unit/pollhost/hostsched.c) applied to c/kernel/exec/file.c.
+ * (tests/unit/pollhost/hostsched.c) applied to c/kernel/exec/fd/file.c.
  *
  * WHAT IS REAL IN THIS BUILD AND WHAT IS NOT, because that is the only thing
  * that decides what the gate is worth:
  *
  *   REAL, compiled from the tree, unmodified:
- *       c/kernel/exec/file.c -- the F_VFS backend entire: open (read-only
+ *       c/kernel/exec/fd/file.c -- the F_VFS backend entire: open (read-only
  *       stream / writable slurp / O_TRUNC), read, write INCLUDING the
  *       zero-filled-hole rule, lseek, file_truncate (SYS_FTRUNCATE's body),
  *       fsync, and the close-time whole-file write-back with its 0/-1

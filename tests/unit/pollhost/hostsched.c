@@ -4,8 +4,8 @@
  * that decides what the gate is worth:
  *
  *   REAL, compiled from the tree, unmodified:
- *       c/kernel/core/wait.c   -- the wait queues, the poll hook, wake_waiter
- *       c/kernel/exec/kpoll.c  -- poll_wait, poll_core, the registration order
+ *       c/kernel/sync/wait.c   -- the wait queues, the poll hook, wake_waiter
+ *       c/kernel/exec/fd/kpoll.c  -- poll_wait, poll_core, the registration order
  *   REAL, the same algorithm rather than a stand-in:
  *       the ticket spinlock. spin_lock/spin_unlock here are the same
  *       fetch-add/compare loop c/kernel/cpu/spinlock.c runs, over the same

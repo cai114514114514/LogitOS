@@ -479,7 +479,7 @@ test-ime-dat-negctl: fsroot/ime/pinyin.dat tools/mkpinyin.py
 # is developed on, consumes Ctrl+Space itself as "select the previous input
 # source". The owner reported the IME "only types English"; the engine was
 # never the problem and no test here could have said so. The chord is
-# Shift+Space now (c/kernel/gui/ime_ui.h, IME_TOGGLE_NAME, defined once).
+# Shift+Space now (c/kernel/gui/ime/ime_ui.h, IME_TOGGLE_NAME, defined once).
 #
 # Green here means the guest works. It has never meant a person can type.
 test-ime-os: $(ISO) $(DISK) tests/boot/run-ime-test.sh tests/boot/ime_type.py \

@@ -6,7 +6,7 @@
 # (tests/unit/sh_edit_test.c) drives /bin/sh's own forwarding decision through a
 # model of the kernel, which proves the shell asks -- it cannot prove the kernel
 # delivers, because delivery is a frame pushed onto a ring-3 stack by
-# c/kernel/exec/ksignal.c. Both halves have to be real for ^C to work, and the
+# c/kernel/exec/signal/ksignal.c. Both halves have to be real for ^C to work, and the
 # gap between them is exactly what ksignal.c:316 documents:
 #
 #     "What it does NOT do is deliver to the child, so `sleep 100` is not
@@ -18,7 +18,7 @@
 # TWO TRAPS THIS HARNESS IS BUILT AROUND, both of which would make it pass on a
 # machine where ^C does nothing at all:
 #
-#   1. THE TTY ECHOES WHAT IS TYPED (c/kernel/exec/file.c, tty_read). Grepping
+#   1. THE TTY ECHOES WHAT IS TYPED (c/kernel/exec/fd/file.c, tty_read). Grepping
 #      the log for a string that also appears in the input finds the ECHO, not
 #      the output -- the shell need never have run the command. So the marker is
 #      the OUTPUT of `echo $?`, whose text ("130") does not appear in anything
@@ -103,7 +103,7 @@ if [ "$MODE" = "intr" ]; then
     if [ "$sawjob" = 1 ]; then
         echo "FAIL: the job is still listed as abandoned -- the shell took its"
         echo "      prompt back but never killed anything. That is the behaviour"
-        echo "      c/kernel/exec/ksignal.c:316 describes, not the fix for it."
+        echo "      c/kernel/exec/signal/ksignal.c:316 describes, not the fix for it."
     elif [ "$sawend" = 0 ]; then
         echo "FAIL: the console shell never reached the end of the script"
     else

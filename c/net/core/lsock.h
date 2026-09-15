@@ -18,7 +18,7 @@
  * written for it would be a program that only runs here.
  *
  * So this file is the F_SOCK backend: it owns the socket state, and
- * c/kernel/exec/file.c dispatches read/write/close into it by type. The three
+ * c/kernel/exec/fd/file.c dispatches read/write/close into it by type. The three
  * lsock_file_* entry points are what that dispatch calls; everything else is
  * what c/kernel/exec/syscall.c calls for SYS_SOCKET..SYS_SENDTO.
  *
@@ -29,7 +29,7 @@
 
 struct file;
 
-/* --- the F_SOCK backend, called from c/kernel/exec/file.c --------------- */
+/* --- the F_SOCK backend, called from c/kernel/exec/fd/file.c --------------- */
 long lsock_file_read(struct file *f, void *buf, long len);
 long lsock_file_write(struct file *f, const void *buf, long len);
 struct poll_table;

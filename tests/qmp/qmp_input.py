@@ -11,7 +11,7 @@ Two things are under test, and neither can be seen from inside the kernel.
    notches and a shifted click through QEMU's input layer, then checks the lines.
 
 2. THE RING DOES NOT OVERFLOW UNDER MOTION. The per-window ring is 256 entries
-   and drops silently when full. c/kernel/gui/evq.c coalesces a motion sample
+   and drops silently when full. c/kernel/gui/input/evq.c coalesces a motion sample
    onto an unread motion sample so motion occupies at most one slot. This floods
    the pointer and reads the kernel's own queued/merged/dropped counters back
    through SYS_SYSINFO -- a measurement, not an assertion. tests/unit/evq_test.c

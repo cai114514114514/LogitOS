@@ -1,7 +1,7 @@
 /* AF_UNIX, host-side and white-box.
  *
  * WHAT THIS GATE IS AIMED AT. Not "does a socket move bytes" -- a pipe moves
- * bytes and c/kernel/exec/file.c already gates that. Every case below is a
+ * bytes and c/kernel/exec/fd/file.c already gates that. Every case below is a
  * property a PIPE DOES NOT HAVE, because those are the properties that would
  * otherwise be assumed rather than checked:
  *

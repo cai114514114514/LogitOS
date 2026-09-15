@@ -12,11 +12,11 @@ XEON_HOST_BIN := $(BUILD)/xeon-e5-platform-test
 XEON_LOCK_DIAG_BIN := $(BUILD)/xeon-e5-lock-diag-test
 $(XEON_HOST_BIN): tests/unit/xeon_e5_platform_test.c c/kernel/cpu/cpu_platform.c c/kernel/cpu/cpu_platform.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu tests/unit/xeon_e5_platform_test.c c/kernel/cpu/cpu_platform.c -o $@
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) tests/unit/xeon_e5_platform_test.c c/kernel/cpu/cpu_platform.c -o $@
 
 $(XEON_LOCK_DIAG_BIN): tests/unit/xeon_e5_lock_diag_test.c c/kernel/cpu/spinlock.c c/kernel/cpu/spinlock.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -DLOGIT_LOCK_HOST -Ic/kernel/cpu tests/unit/xeon_e5_lock_diag_test.c c/kernel/cpu/spinlock.c -o $@
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -DLOGIT_LOCK_HOST $(KCPU_INC) tests/unit/xeon_e5_lock_diag_test.c c/kernel/cpu/spinlock.c -o $@
 
 .PHONY: test-xeon-e5-host test-xeon-e5-platform-control
 test-xeon-e5-host: test-xeon-e5-platform-control $(XEON_HOST_BIN) $(XEON_LOCK_DIAG_BIN)
@@ -27,7 +27,7 @@ test-xeon-e5-host: test-xeon-e5-platform-control $(XEON_HOST_BIN) $(XEON_LOCK_DI
 test-xeon-e5-platform-control:
 	@mkdir -p $(BUILD)/xeon-e5-control
 	@python3 tests/unit/xeon_e5_policy.py --write-platform-negctl $(BUILD)/xeon-e5-control/cpu_platform.c
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu tests/unit/xeon_e5_platform_test.c $(BUILD)/xeon-e5-control/cpu_platform.c -o $(BUILD)/xeon-e5-control/platform-negctl
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) tests/unit/xeon_e5_platform_test.c $(BUILD)/xeon-e5-control/cpu_platform.c -o $(BUILD)/xeon-e5-control/platform-negctl
 	@if $(BUILD)/xeon-e5-control/platform-negctl > $(BUILD)/xeon-e5-control/platform-negctl.log 2>&1; then cat $(BUILD)/xeon-e5-control/platform-negctl.log; echo "NEGCTL FAIL: ignoring CPUID.0B topology still passed"; exit 1; else echo "NEGCTL RED: ignoring CPUID.0B topology was rejected"; fi
 
 $(BUILD)/xeonobj/tests/unit/xeon_e5_guest.o: tests/unit/xeon_e5_guest.c

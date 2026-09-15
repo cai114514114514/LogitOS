@@ -7,7 +7,7 @@
 #   Events <queued> queued, <merged> merged, <dropped> dropped
 #
 # `dropped` is the number that has to stay 0 under that flood. Motion coalesces
-# onto motion at enqueue (c/kernel/gui/evq.c), so an unbounded stream of samples
+# onto motion at enqueue (c/kernel/gui/input/evq.c), so an unbounded stream of samples
 # occupies one slot and cannot evict a queued click.
 #
 # The rest of the block (uptime, memory, barriers, process list) comes along

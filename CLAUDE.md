@@ -1212,7 +1212,7 @@ picture. `-DJPEG_PROG_MCU_GRID` fails **only** at 23×17 and hides completely at
   race on one key, a total loss. There has to be exactly one writer."*
 
 **The Chinese input method.** `c/lib/ime/pinyin.c` (freestanding, no libc, no
-allocator, **compiled into the kernel**) + `c/kernel/gui/ime_ui.c` (the
+allocator, **compiled into the kernel**) + `c/kernel/gui/ime/ime_ui.c` (the
 composition state machine and candidate bar). Dictionary `/ime/pinyin.dat`,
 **572,983 bytes / 25,945 keys**, indexed in place at load and never copied.
 

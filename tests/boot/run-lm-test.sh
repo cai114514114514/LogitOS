@@ -31,7 +31,7 @@
 #
 # The kernel's kprintf writes COM1 through serial_putc() directly
 # (c/drivers/char/serial.c:23) and a ring-3 write reaches the SAME
-# serial_putc() through tty_write (c/kernel/exec/file.c:122). Nothing
+# serial_putc() through tty_write (c/kernel/exec/fd/file.c:122). Nothing
 # serialises the two, and serial_putc's wait for the transmitter is bounded
 # and DROPS the byte on timeout. In the transcript above the program had
 # written "the\r\n  the same" -- two spaces -- and exactly ONE of them reached
@@ -200,7 +200,7 @@ wire = open(sys.argv[2], "rb").read()
 # not by a list of prefixes that would rot: kprintf goes to serial_putc with no
 # newline translation, so it ends in a BARE LF, while every byte a program
 # writes passes through tty_write, which emits CR before every LF
-# (c/kernel/exec/file.c:122). So program output contains no bare LF at all, and
+# (c/kernel/exec/fd/file.c:122). So program output contains no bare LF at all, and
 # any match below necessarily ends inside a kernel message. Starting the match
 # at a '[' that has no '[' after it before the LF picks the INNERMOST opening
 # bracket, so a '[' the model itself generated (CLAUDE.md is full of "[mm]",

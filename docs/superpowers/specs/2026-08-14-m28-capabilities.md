@@ -44,7 +44,7 @@ when it can't: it silently hands every script whatever `/bin/as` itself holds,
 which is the entire per-script model defeated with no error anywhere.
 
 The obvious repair is worse. `execve`'s `argv` and `envp` are copied verbatim from
-the *calling* process's syscall registers (`c/kernel/exec/exec.c:59-74, 245-251`),
+the *calling* process's syscall registers (`c/kernel/exec/load/exec.c:59-74, 245-251`),
 so any grant riding on them is **caller-forgeable**, which is precisely the
 property a capability may not have. `auxv` is kernel-written and therefore not
 forgeable — but `crt0_cli.asm` never reads the 14 `AT_*` pairs the kernel already
@@ -59,7 +59,7 @@ own held set, narrowed at spawn time, and the kernel's only rule is:
 > **A child's set must be a subset of the caller's set. Never a superset. The
 > kernel checks the inclusion and nothing else.**
 
-- The chain's root is `proc_spawn` (`c/kernel/exec/exec.c:309`), where the kernel
+- The chain's root is `proc_spawn` (`c/kernel/exec/load/exec.c:309`), where the kernel
   itself launches init's shell. That process holds the full set **by
   construction** — it is the kernel granting, which is what the design document
   asked for, at the one place where the phrase is meaningful.

@@ -8,7 +8,7 @@ $(error USBMSCVERIFY and PCIINTXGUEST must use separate BUILD directories)
 endif
 OBJ += $(BUILD)/tests/unit/usb_storage_guest.o
 $(KERNEL): $(BUILD)/tests/unit/usb_storage_guest.o
-$(BUILD)/c/kernel/core/kmain.o: CFLAGS += -Ddev_dump=usb_msc_verify_dev_dump
+$(BUILD)/c/kernel/init/kmain.o: CFLAGS += -Ddev_dump=usb_msc_verify_dev_dump
 endif
 
 .PHONY: test-usb-storage-host test-usb-storage-negctl test-usb-storage-xhci test-usb-storage-ehci test-usb-storage-dual

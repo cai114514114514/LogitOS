@@ -2,7 +2,7 @@
 #define LOGIT_EXEC_ABI_H
 
 /* The argument-vector contract of SYS_EXECVE / SYS_CAP_SPAWN, shared by the
- * two programs that have to agree on it: c/kernel/exec/exec.c, which copies
+ * two programs that have to agree on it: c/kernel/exec/load/exec.c, which copies
  * the vectors into a fixed kernel buffer, and c/apps/coreutils/sh.c, which
  * builds them. It is a separate header rather than two #defines because the
  * two WERE two #defines -- sh.c said 32, exec.c said 48 -- and each end then

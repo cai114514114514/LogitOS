@@ -9,7 +9,7 @@
  * in c/crypto/pq/mlkem.c -- ML-KEM is the key-exchange half of the NIST PQC
  * suite, ML-DSA is the signature half, and until this file the tree had one
  * and not the other. It is A LIBRARY PRIMITIVE ONLY: nothing in c/crypto/trust,
- * c/net/tls, c/kernel/exec/aex.c or the login path calls it, and it must stay
+ * c/net/tls, c/kernel/exec/load/aex.c or the login path calls it, and it must stay
  * that way -- wiring a new signature scheme into a trust path is a decision
  * with its own review, not a side effect of shipping the primitive. See
  * CLAUDE.md's crypto-extension workflow note if that decision ever gets made.

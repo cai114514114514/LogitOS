@@ -10,7 +10,7 @@
  *
  * ------------------------------------------------------------------------
  * WIRING (one line, in a file this line does not own -- see the commit
- * message and the report). c/kernel/cpu/interrupts.c, at the top of the
+ * message and the report). c/kernel/cpu/irq/interrupts.c, at the top of the
  * `if (r->vector < 32)` exception block, BEFORE the ring-3 kill:
  *
  *     #include "mm.h"
@@ -148,7 +148,7 @@ enum mm_fault_kind {
     MM_FAULT_ANON,          /* first touch of an anonymous (mmap) page */
     MM_FAULT_SWAP,          /* the page is on the swap device; read it back */
     MM_FAULT_FILE,          /* first touch of a FILE-backed page; read it from
-                             * the page cache (c/kernel/mm/pcache.c) */
+                             * the page cache (c/kernel/mm/cache/pcache.c) */
     MM_FAULT_SHM,           /* first touch of a page in a SHARED segment; take a
                              * reference on the frame the segment already holds
                              * (c/kernel/mm/shm.c) */
@@ -203,7 +203,7 @@ uint64_t mm_oom_retries(void);     /* faults that ran out of memory and asked th
                                     * out-of-memory killer for one more chance */
 uint64_t mm_oom_saved(void);       /* ...and the ones that then SUCCEEDED, i.e.
                                     * processes that would have died before
-                                    * c/kernel/mm/oom.c existed */
+                                    * c/kernel/mm/reclaim/reclaim/oom.c existed */
 uint64_t mm_shm_faults(void);      /* first touches of a shared-segment page */
 uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
 

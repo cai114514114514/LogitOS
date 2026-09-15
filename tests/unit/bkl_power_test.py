@@ -13,7 +13,7 @@ s=(src/"power.c").read_text()
 s,n=re.subn(r'__asm__ volatile\s*\([^;]*\);','(void)0;',s)
 if n!=5:raise SystemExit('power privileged leaf count changed: '+str(n))
 base=[os.environ.get("CC","clang"),"-std=c11","-O1","-g","-pthread","-fsanitize=address,undefined","-I"+str(b)]
-for d in ("c/kernel/core","c/kernel/cpu","c/fs","c/drivers/block","include/abi"):base += ["-I"+str(r/d)]
+for d in ("c/kernel/core","c/kernel/cpu","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/fs","c/fs/vfs","c/fs/logitfs","c/fs/cache","c/fs/ramfs","c/fs/ctl","c/fs/procfs","c/fs/vfs","c/fs/logitfs","c/fs/cache","c/fs/ramfs","c/fs/ctl","c/fs/procfs","c/drivers/block","include/abi"):base += ["-I"+str(r/d)]
 def run(name,code,mode,defs=(),expect=None):
     source=b/(name+".c");source.write_text(code);exe=b/name
     subprocess.run(base+list(defs)+[str(r/"tests/unit/bkl_power_test.c"),str(source),"-o",str(exe)],check=True,cwd=r)

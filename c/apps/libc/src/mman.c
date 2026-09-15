@@ -116,7 +116,7 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset)
     /* ---- a real file ----------------------------------------------------
      * THIS BRANCH IS WHY THE HEADER'S "ANONYMOUS ONLY" NOTE IS GONE. The
      * kernel grew SYS_MMAP_FILE (162) against the page cache in
-     * c/kernel/mm/pcache.h, elf_load has been using it to map program text
+     * c/kernel/mm/cache/pcache.h, elf_load has been using it to map program text
      * since, and until now ring 3 could not reach it through mmap() at all --
      * this function returned ENODEV to every request naming an fd.
      *

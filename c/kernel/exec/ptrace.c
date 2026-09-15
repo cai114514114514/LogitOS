@@ -14,7 +14,7 @@
 #include "sched.h"
 #include "ksignal.h"
 #include "usercopy.h"
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 #include "mmguard.h"
 #include "vmm.h"
 #include "mmhost.h"     /* translate a tracee physical frame into a CPU RAM alias */
@@ -146,7 +146,7 @@ void ptrace_proc_free(int pid)
  * Reading another process's memory means reading a page that is not in the
  * CURRENT address space, so it cannot be done with a pointer: the tracee's
  * page table is walked by hand and the frame is reached through the kernel's
- * identity map of low physical memory, which is what c/kernel/mm/swap.c
+ * identity map of low physical memory, which is what c/kernel/mm/reclaim/reclaim/swap.c
  * already writes pages out through. That is sound here because this machine
  * boots with the first 1 GiB identity-mapped (c/boot/boot.asm) and has 512 MiB
  * of RAM, so every frame is addressable. If either ever stops being true this

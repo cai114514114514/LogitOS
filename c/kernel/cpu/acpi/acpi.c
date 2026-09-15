@@ -1,0 +1,389 @@
+/* Minimal ACPI: find the RSDP, walk the (X)SDT, and read out the tables the
+ * kernel needs -- the MADT (Local APIC IDs, LAPIC/IOAPIC bases, interrupt source
+ * overrides) and the MCFG (the PCIe ECAM window, used by c/kernel/pci).
+ * Tables live in low RAM (< 512 MiB on our QEMU), which boot.asm identity-maps,
+ * so physical == virtual here.
+ * Correction (2026-09-09): an 8 GiB BIOS guest places the RSDT at
+ * 0xbffe2430, in firmware-reserved memory above the 1 GiB identity window.
+ * Reading its length faulted at CR2=0xbffe2434. Reserved firmware tables must
+ * NOT be released to the PMM or added to the AVAILABLE-RAM physmap. Map only
+ * each bounded table through a separate supervisor alias before reading it.
+ *
+ * The (X)SDT walk is split out of acpi_init() into acpi_find_table() because
+ * the PCI bus driver needs the MCFG *before* smp_init() runs -- enumeration has
+ * to happen early, SMP does not. acpi_tables_init() is idempotent, so whoever
+ * gets there first pays for the RSDP search. */
+#include <stdint.h>
+#include <stddef.h>
+#include "acpi.h"
+#include "apic_model.h"
+#include "serial.h"
+#include "kprintf.h"
+#include "../../mm/virt/vmm.h"
+#include "../../mm/mm.h"
+#include "../../mm/mmhost.h"
+#include "../../mm/phys/physmap.h"
+#include "prot.h"
+
+int  memcmp(const void *, const void *, size_t);
+
+struct rsdp {
+    char     sig[8];          /* "RSD PTR " */
+    uint8_t  checksum;
+    char     oemid[6];
+    uint8_t  revision;        /* 0 = ACPI 1.0, >=2 = 2.0+ (has xsdt) */
+    uint32_t rsdt_addr;
+    uint32_t length;
+    uint64_t xsdt_addr;
+    uint8_t  ext_checksum;
+    uint8_t  reserved[3];
+} __attribute__((packed));
+
+struct sdt_header {
+    char     sig[4];
+    uint32_t length;
+    uint8_t  revision, checksum;
+    char     oemid[6], oem_table_id[8];
+    uint32_t oem_revision, creator_id, creator_revision;
+} __attribute__((packed));
+
+/* The high RAM physmap occupies the first 64 TiB of the canonical kernel
+ * half. Firmware aliases use the following window, never low identity VAs:
+ * tables can also sit physically inside the legacy user VA range, and such
+ * identity mappings would disappear when vmm_new_space isolates PDPT[1].
+ * Aliasing by physical offset makes repeated lookups idempotent and keeps
+ * already-created process spaces sharing the same kernel table subtree.
+ * 1 MiB is a hard bound per SDT, checked after mapping only its header; an
+ * invalid firmware length cannot make the kernel build an unbounded mapping. */
+#define ACPI_ALIAS_BASE (PHYSMAP_BASE + PHYSMAP_SIZE)
+#define ACPI_TABLE_MAX  (1u << 20)
+
+static const void *map_firmware(uint64_t phys, uint32_t bytes)
+{
+    if (!phys || !bytes || bytes > ACPI_TABLE_MAX ||
+        phys >= PHYSMAP_SIZE || bytes > PHYSMAP_SIZE - phys) return NULL;
+    uint64_t start = phys & ~0xfffull;
+    uint64_t end = (phys + bytes + 0xfffull) & ~0xfffull;
+    uint64_t flags = cpu_prot_nx_usable() ? MM_PTE_NX : 0;
+    for (uint64_t a = start; a < end; a += 4096) {
+        uint64_t va = ACPI_ALIAS_BASE + a;
+        uint64_t *pte = vmm_pte(mm_read_cr3(), va);
+        if (!pte || !(*pte & 1)) {
+            vmm_map_page(va, a, flags);       /* read-only, supervisor, WB */
+            pte = vmm_pte(mm_read_cr3(), va);
+        }
+        if (!pte || !(*pte & 1) || (*pte & MM_PTE_ADDR) != a ||
+            (*pte & VMM_USER)) return NULL;  /* allocation failure or alias conflict */
+    }
+    return (const void *)(uintptr_t)(ACPI_ALIAS_BASE + phys);
+}
+
+static const struct sdt_header *map_sdt(uint64_t phys)
+{
+    const struct sdt_header *h = map_firmware(phys, sizeof *h);
+    if (!h || h->length < sizeof *h || h->length > ACPI_TABLE_MAX) return NULL;
+    return map_firmware(phys, h->length);
+}
+
+static uint32_t g_lapic_base = 0xFEE00000;   /* default; MADT may override */
+static uint32_t g_apic_ids[ACPI_MAX_CPUS];
+static uint32_t g_acpi_uids[ACPI_MAX_CPUS];
+static int      g_ncpu;
+
+static uint32_t g_ioapic_addr;               /* IOAPIC MMIO base (0 if none) */
+static uint32_t g_ioapic_gsibase;
+static uint32_t g_irq_gsi[16];               /* ISA IRQ -> GSI (identity unless overridden) */
+static uint16_t g_irq_flags[16];             /* override polarity/trigger flags */
+
+uint32_t acpi_lapic_base(void) { return g_lapic_base; }
+int      acpi_cpu_count(void)  { return g_ncpu; }
+uint32_t acpi_cpu_apic_id(int i){ return (i >= 0 && i < g_ncpu) ? g_apic_ids[i] : UINT32_MAX; }
+uint32_t acpi_ioapic_addr(void){ return g_ioapic_addr; }
+uint32_t acpi_ioapic_gsibase(void){ return g_ioapic_gsibase; }
+uint32_t acpi_gsi_for_irq(int irq){ return (irq >= 0 && irq < 16) ? g_irq_gsi[irq] : (uint32_t)irq; }
+uint16_t acpi_gsi_flags(int irq){ return (irq >= 0 && irq < 16) ? g_irq_flags[irq] : 0; }
+
+static int sum_ok(const void *p, int len)
+{
+    const uint8_t *b = p; uint8_t s = 0;
+    for (int i = 0; i < len; i++) s += b[i];
+    return s == 0;
+}
+
+/* --- the Multiboot2 ACPI tags (spec sec 3.6.14/3.6.15) --------------------
+ * Tag 14 carries a 20-byte ACPI 1.0 RSDP, tag 15 a full ACPI 2.0+ one; both are
+ * the tag header followed by a verbatim copy of the structure. The tag list is
+ * walked exactly as pmm.c and fb.c walk it -- 8-byte aligned, terminated by a
+ * type-0 tag, and bailing on a zero size so that a malformed tag truncates the
+ * walk instead of looping forever. */
+static uint64_t g_mb2_info;
+
+void acpi_set_mb2_info(uint64_t mb_info) { g_mb2_info = mb_info; }
+
+static struct rsdp *rsdp_from_mb2(void)
+{
+    if (!g_mb2_info) return NULL;
+
+    uint32_t total = *(volatile uint32_t *)g_mb2_info;
+    uint8_t *p   = (uint8_t *)(g_mb2_info + 8);   /* skip total_size + reserved */
+    uint8_t *end = (uint8_t *)(g_mb2_info + total);
+
+    while (p + 8 <= end) {
+        uint32_t type = ((uint32_t *)p)[0], size = ((uint32_t *)p)[1];
+        if (type == 0 || size < 8) break;         /* end tag, or malformed */
+        if (type == 15 || type == 14) {           /* ACPI 2.0+ / ACPI 1.0 */
+            struct rsdp *r = (struct rsdp *)(p + 8);
+            /* Trust nothing unchecked: the tag is only as good as the loader
+             * that wrote it, and a bad RSDP here gets dereferenced as an XSDT
+             * pointer. Exactly the two checks the BIOS scan already makes. */
+            if (size >= 8 + 20 && memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
+                return r;
+        }
+        p += (size + 7) & ~7u;
+    }
+    return NULL;
+}
+
+static struct rsdp *scan_bios_area(void)
+{
+    /* RSDP is on a 16-byte boundary in the EBDA or the BIOS area 0xE0000-0xFFFFF. */
+    for (uint64_t a = 0x000E0000; a < 0x00100000; a += 16) {
+        struct rsdp *r = (struct rsdp *)a;
+        if (memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
+            return r;
+    }
+    return NULL;
+}
+
+/* The bootloader's tag WINS over the scan. It is what the firmware itself
+ * published, whereas the BIOS area on a machine with a CSM can hold a stale or
+ * shadowed copy -- and under UEFI it holds nothing at all, which is the whole
+ * reason this function now has two halves. */
+static struct rsdp *find_rsdp(void)
+{
+    struct rsdp *r = rsdp_from_mb2();
+    if (r) { serial_puts("[acpi] RSDP from the bootloader's multiboot2 tag\n"); return r; }
+    return scan_bios_area();
+}
+
+static void parse_madt(const struct sdt_header *madt)
+{
+    if (madt->length < 44) return;                       /* fixed MADT header must be present */
+    const uint8_t *p = (const uint8_t *)madt;
+    g_ncpu = 0;
+    g_ioapic_addr = 0;
+    g_ioapic_gsibase = 0;
+    g_lapic_base = *(const uint32_t *)(p + 36);          /* MADT local APIC address */
+    for (int i = 0; i < 16; i++) { g_irq_gsi[i] = (uint32_t)i; g_irq_flags[i] = 0; }
+    int type0 = 0, type9 = 0, duplicate = 0, rejected = 0;
+    const uint8_t *e = p + madt->length;
+    p += 44;                                             /* skip MADT fixed header */
+    while (p + 2 <= e) {
+        uint8_t type = p[0], len = p[1];
+        if (len < 2 || p + len > e) break;
+        if (type == 0 || type == 9) {
+            struct apic_madt_cpu cpu;
+            int decoded = apic_model_madt_cpu(p, (size_t)(e - p), &cpu);
+            if (decoded > 0) {
+                size_t count = (size_t)g_ncpu;
+                int added = apic_model_add_madt_cpu(&cpu, g_apic_ids,
+                                                     g_acpi_uids, &count,
+                                                     ACPI_MAX_CPUS);
+                if (added == 0) {
+                    duplicate++;
+                } else if (added > 0) {
+                    g_ncpu = (int)count;
+                    if (cpu.source_type == 9) type9++; else type0++;
+                } else {
+                    rejected++;
+                }
+            } else if (decoded < 0) {
+                rejected++;
+            }
+        } else if (type == 1 && len >= 12) {             /* I/O APIC */
+            if (!g_ioapic_addr) {
+                g_ioapic_addr    = *(const uint32_t *)(p + 4);
+                g_ioapic_gsibase = *(const uint32_t *)(p + 8);
+            }
+        } else if (type == 2 && len >= 10) {             /* Interrupt Source Override */
+            uint8_t src = p[3];
+            if (src < 16) {
+                g_irq_gsi[src]   = *(const uint32_t *)(p + 4);
+                g_irq_flags[src] = *(const uint16_t *)(p + 8);
+            }
+        } else if (type == 5 && len >= 12) {             /* LAPIC address override (64-bit) */
+            uint64_t la = *(const uint64_t *)(p + 4);
+            if ((la >> 32) == 0)                         /* only a 32-bit base is usable here */
+                g_lapic_base = (uint32_t)la;
+        }
+        p += len;
+    }
+    kprintf("[acpi] MADT CPUs type0=%d type9=%d duplicate=%d rejected=%d\n",
+            type0, type9, duplicate, rejected);
+}
+
+/* ------------------------------------------------------ (X)SDT table walk -- */
+static const struct sdt_header *g_xsdt;   /* 64-bit entry table (ACPI 2.0+) */
+static const struct sdt_header *g_rsdt;   /* 32-bit entry table (ACPI 1.0)  */
+static int g_tables_done;
+
+int acpi_tables_init(void)
+{
+    if (g_tables_done) return (g_xsdt || g_rsdt) ? 0 : -1;
+    g_tables_done = 1;
+
+    struct rsdp *r = find_rsdp();
+    if (!r) { serial_puts("[acpi] no RSDP\n"); return -1; }
+
+    if (r->revision >= 2 && r->xsdt_addr) {
+        const struct sdt_header *x = map_sdt(r->xsdt_addr);
+        if (!x) { serial_puts("[acpi] cannot map bounded XSDT\n"); return -1; }
+        g_xsdt = x;
+    } else if (r->rsdt_addr) {
+        const struct sdt_header *t = map_sdt(r->rsdt_addr);
+        if (!t) { serial_puts("[acpi] cannot map bounded RSDT\n"); return -1; }
+        g_rsdt = t;
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+const void *acpi_find_table(const char *sig)
+{
+    if (acpi_tables_init() != 0) return NULL;
+    if (g_xsdt) {
+        int n = (int)((g_xsdt->length - sizeof *g_xsdt) / 8);
+        const uint8_t *e = (const uint8_t *)g_xsdt + sizeof *g_xsdt;
+        for (int i = 0; i < n; i++) {
+            uint64_t a;                     /* the XSDT entry array is only
+                                             * 4-byte aligned in practice */
+            const uint8_t *p = e + i * 8;
+            a = 0; for (int b = 0; b < 8; b++) a |= (uint64_t)p[b] << (b * 8);
+            const struct sdt_header *h = map_sdt(a);
+            if (h && memcmp(h->sig, sig, 4) == 0) return h;
+        }
+    } else if (g_rsdt) {
+        int n = (int)((g_rsdt->length - sizeof *g_rsdt) / 4);
+        const uint32_t *ent = (const uint32_t *)((const uint8_t *)g_rsdt + sizeof *g_rsdt);
+        for (int i = 0; i < n; i++) {
+            const struct sdt_header *h = map_sdt(ent[i]);
+            if (h && memcmp(h->sig, sig, 4) == 0) return h;
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ MCFG --
+ * "PCI Express Memory Mapped Configuration" table: a 44-byte header (36-byte
+ * SDT header + 8 reserved) followed by 16-byte allocation entries
+ *   u64 base, u16 segment, u8 bus_start, u8 bus_end, u32 reserved
+ * Each entry is one ECAM window. We report them by index; the PCI bus driver
+ * takes segment 0 and maps it. */
+int acpi_mcfg_entry(int idx, uint64_t *base, uint16_t *seg, uint8_t *bus_lo, uint8_t *bus_hi)
+{
+    const struct sdt_header *h = acpi_find_table("MCFG");
+    if (!h || h->length < 44 || idx < 0) return -1;
+    int n = (int)((h->length - 44) / 16);
+    if (idx >= n) return -1;
+    const uint8_t *p = (const uint8_t *)h + 44 + idx * 16;
+    uint64_t b = 0; for (int i = 0; i < 8; i++) b |= (uint64_t)p[i] << (i * 8);
+    if (base)   *base   = b;
+    if (seg)    *seg    = (uint16_t)(p[8] | (p[9] << 8));
+    if (bus_lo) *bus_lo = p[10];
+    if (bus_hi) *bus_hi = p[11];
+    return 0;
+}
+
+int acpi_init(void)
+{
+    if (acpi_tables_init() != 0) return -1;
+    const struct sdt_header *madt = acpi_find_table("APIC");
+    if (!madt) { serial_puts("[acpi] no MADT\n"); return -1; }
+
+    parse_madt(madt);
+    return g_ncpu;
+}
+
+/* ------------------------------------------------------------------ FADT --
+ * "Fixed ACPI Description Table" ("FACP" signature) -- see the long comment
+ * in acpi.h for what is and is not read here and why. Offsets below are the
+ * ACPI spec's fixed FADT layout, counted from the start of the SDT header
+ * (so "offset 64" means byte 64 of the whole table, header included, exactly
+ * like parse_madt's `p + 36` above). Parsed lazily and cached the first time
+ * either accessor is called; nothing here runs at boot unless something asks. */
+static uint32_t g_pm1a_cnt, g_pm1b_cnt;
+static int      g_pm1_ok;
+static struct acpi_gas g_reset_reg;
+static uint8_t  g_reset_value;
+static int      g_reset_ok;
+static int      g_fadt_done;
+
+static void parse_fadt(void)
+{
+    if (g_fadt_done) return;
+    g_fadt_done = 1;
+
+    const struct sdt_header *h = acpi_find_table("FACP");
+    if (!h) { serial_puts("[acpi] no FADT\n"); return; }
+    const uint8_t *p = (const uint8_t *)h;
+
+    /* PM1a_CNT_BLK (u32 at offset 64), PM1b_CNT_BLK (u32 at offset 68). A
+     * table shorter than 68 bytes cannot carry PM1a at all; one shorter than
+     * 72 can carry PM1a but not PM1b, which is the common (single-PM1-block)
+     * case and not an error -- g_pm1b_cnt just stays 0, "none". */
+    if (h->length >= 68) {
+        g_pm1a_cnt = *(const uint32_t *)(p + 64);
+        g_pm1b_cnt = (h->length >= 72) ? *(const uint32_t *)(p + 68) : 0;
+        g_pm1_ok = (g_pm1a_cnt != 0);
+        if (!g_pm1_ok) serial_puts("[acpi] FADT PM1a_CNT_BLK is zero\n");
+    } else {
+        serial_puts("[acpi] FADT too short for PM1_CNT\n");
+    }
+
+    /* RESET_REG (12-byte Generic Address Structure at offset 116) +
+     * RESET_VALUE (u8 at offset 128): both ACPI-2.0+ additions, so a table
+     * that ends before byte 129 simply predates them -- refused the same way
+     * a too-short MADT entry is, not treated as "zero means memory space,
+     * address 0". */
+    if (h->length >= 129) {
+        const uint8_t *g = p + 116;
+        struct acpi_gas r;
+        r.space_id    = g[0];
+        r.bit_width   = g[1];
+        r.bit_offset  = g[2];
+        r.access_size = g[3];
+        uint64_t a = 0; for (int i = 0; i < 8; i++) a |= (uint64_t)g[4 + i] << (i * 8);
+        r.address = a;
+        uint8_t val = p[128];
+        /* Only system-memory (0) or system-I/O (1) space is one this kernel
+         * can honestly write; anything else (PCI config, EC, SMBus, ...) is
+         * reported as "no RESET_REG" rather than silently mis-decoded. A
+         * zero address is equally useless regardless of space. */
+        if (a != 0 && (r.space_id == 0 || r.space_id == 1)) {
+            g_reset_reg   = r;
+            g_reset_value = val;
+            g_reset_ok    = 1;
+        } else {
+            serial_puts("[acpi] FADT RESET_REG unusable (space/address)\n");
+        }
+    }
+}
+
+int acpi_pm1_cnt(uint32_t *pm1a, uint32_t *pm1b)
+{
+    parse_fadt();
+    if (!g_pm1_ok) return -1;
+    if (pm1a) *pm1a = g_pm1a_cnt;
+    if (pm1b) *pm1b = g_pm1b_cnt;
+    return 0;
+}
+
+int acpi_reset_reg(struct acpi_gas *reg, uint8_t *value)
+{
+    parse_fadt();
+    if (!g_reset_ok) return -1;
+    if (reg)   *reg   = g_reset_reg;
+    if (value) *value = g_reset_value;
+    return 0;
+}

@@ -61,7 +61,7 @@ else
 fi
 
 $CC -O2 -w -c "$WORK/raster.c" -o "$OUT.legacy.o" \
-    -I"$WORK" -Ic/lib/text -Ic/kernel/gui \
+    -I"$WORK" -Ic/lib/text -Ic/kernel/gui -Ic/kernel/gui/fb -Ic/kernel/gui/ime -Ic/kernel/gui/input \
     -Dtext_raster=raster_legacy \
     -Dtext_raster_at=raster_legacy_at \
     -Dtext_raster_extent=raster_legacy_extent

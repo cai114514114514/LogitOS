@@ -9,7 +9,7 @@
  *   cr2   was written down in fsroot/as/examples/crashme.as before the machine
  *         booted -- an oracle that existed before the fault did;
  *   rip
- *   rsp   were printed by c/kernel/cpu/interrupts.c's [fault] line, which
+ *   rsp   were printed by c/kernel/cpu/irq/interrupts.c's [fault] line, which
  *   err   quotes the TRAP FRAME. The dump quotes the FILE. Two paths.
  *
  * It then runs gdb on the same file, so a third reader that came from outside

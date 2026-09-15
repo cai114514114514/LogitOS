@@ -14,7 +14,7 @@ root = Path(__file__).resolve().parents[2]
 base = a.build.resolve()
 irq = (root / 'c/drivers/core/irq.c').read_text()
 irq = irq[irq.index('struct irq_slot {'):].replace('__asm__ volatile ("cli");', '/* host CLI leaf */')
-ioapic = (root / 'c/kernel/cpu/ioapic.c').read_text()
+ioapic = (root / 'c/kernel/cpu/irq/ioapic.c').read_text()
 ioapic = ioapic[ioapic.index('int ioapic_present(void)'):]
 variants = [('', None)] if not a.negative_only and not a.x2apic_only else [
     ('PCI_INTX_NEGCTL_FIRST_ONLY', 'one shared interrupt services both pending devices'),
@@ -50,9 +50,9 @@ for macro, expected in variants:
     (build / 'test.c').write_text(fixture)
     cmd = [os.environ.get('CC', 'clang'), '-std=gnu11', '-O1', '-g', '-Wall', '-Wextra',
            '-pthread', '-fsanitize=address,undefined', '-DLOGIT_HOST_TEST',
-           '-Itests/unit/pcistub', '-Ic/drivers/core', '-Ic/kernel/pci', '-Ic/kernel/cpu',
+           '-Itests/unit/pcistub', '-Ic/drivers/core', '-Ic/kernel/pci', '-Ic/kernel/cpu -Ic/kernel/cpu/acpi -Ic/kernel/cpu/irq -Ic/kernel/cpu/smp',
            str(build / 'test.c'), 'c/kernel/pci/pci_msi.c',
-           'c/kernel/cpu/apic_model.c', '-o', str(build / 'test')]
+           'c/kernel/cpu/irq/apic_model.c', '-o', str(build / 'test')]
     if macro.startswith('PCI_') or macro.startswith('LOGIT_'):
         cmd.insert(1, '-D' + macro)
     subprocess.run(cmd, cwd=root, check=True)

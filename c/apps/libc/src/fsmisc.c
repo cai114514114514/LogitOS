@@ -19,7 +19,7 @@
  *     it structured: SYS_SYSINFO (c/kernel/gui/wm.c sysinfo_text) prints
  *     free-form text about uptime/memory/processes, not disk space, and is
  *     not a committed binary ABI even where it overlaps.
- *   - utime family: SYS_STAT/SYS_LSTAT/SYS_FSTAT (c/kernel/exec/meta.c) read
+ *   - utime family: SYS_STAT/SYS_LSTAT/SYS_FSTAT (c/kernel/exec/load/meta.c) read
  *     atime/mtime/ctime off the inode, and SYS_CHMOD/SYS_CHOWN prove the
  *     pattern for "let ring 3 set an inode field" exists for mode and owner
  *     -- but no SYS_UTIME-shaped call exists for the three timestamps, and

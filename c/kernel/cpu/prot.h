@@ -21,7 +21,7 @@
 /* Bit 63 of a leaf page-table entry: no-execute.
  *
  * Defined here, beside the predicate that says whether it is legal to set it,
- * rather than in c/kernel/mm/vmm.h with the other VMM_* flags. Two reasons, one
+ * rather than in c/kernel/mm/virt/vmm.h with the other VMM_* flags. Two reasons, one
  * practical and one not: c/kernel/mm is owned by another line right now, and --
  * more to the point -- this bit is meaningless without EFER.NXE. Anywhere it is
  * used, cpu_prot_nx() has to be used too, so the two live together and a caller

@@ -26,10 +26,16 @@ def main():
     cc = os.environ.get('CC', 'cc')
     flags = ['-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
              '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+             # c/kernel/mm split into subdirectories on 2026-09-15; this gate passes
+             # its own narrow include path, so the subdirectories have to be named.
              '-I' + str(root / 'c/kernel/mm'),
+             '-I' + str(root / 'c/kernel/mm/phys'),
+             '-I' + str(root / 'c/kernel/mm/virt'),
+             '-I' + str(root / 'c/kernel/mm/cache'),
+             '-I' + str(root / 'c/kernel/mm/reclaim'),
              '-I' + str(root / 'tests/unit/mmstub')]
     src = root / 'tests/unit/physmap_test.c'
-    pmm = root / 'c/kernel/mm/pmm.c'
+    pmm = root / 'c/kernel/mm/phys/pmm.c'
     for name, defs in [('physmap', []), ('physmap_no_nx', ['-DPHYSMAP_TEST_NO_NX']),
                        ('physmap_no_high', ['-DPHYS_MAP_DISABLE_HIGH']),
                        ('physmap_low_control', ['-DPHYS_MAP_DISABLE_HIGH', '-DPHYSMAP_TEST_LOW_ONLY'])]:

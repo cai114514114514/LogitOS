@@ -1,5 +1,5 @@
 # AEX_T_SIG -- the OPTIONAL Ed25519 signature record on a .aex, and the LOG
-# BUT ALLOW policy around it. See c/kernel/exec/aex.c's comment above the CRC
+# BUT ALLOW policy around it. See c/kernel/exec/load/aex.c's comment above the CRC
 # check for the decision; c/crypto/trust/aexsig.h for the scheme, the domain
 # and why it must never be pkgsig.c's LPK_DOMAIN; tools/mkaex.py's
 # aex_sig_record() for how a file gets signed; tools/aexsign.c for the host
@@ -66,16 +66,16 @@ AEXSIG_FIXTURES := $(BUILD)/aexsig_ok.aex $(BUILD)/aexsig_tampered.aex \
 # is not weak). aex_parse() never touches the machine under elf.c (no ELF is
 # actually loaded here, only the container and its signature), so
 # tests/unit/exechost/space.c is not needed.
-AEXSIG_SRC := c/kernel/exec/elf.c c/kernel/exec/aex.c c/drivers/block/crc32.c \
+AEXSIG_SRC := c/kernel/exec/load/elf.c c/kernel/exec/load/aex.c c/drivers/block/crc32.c \
               c/crypto/trust/aexsig.c c/crypto/trust/pkgsig.c \
               c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c c/crypto/hash/sha384.c \
               tests/unit/aexsig_stub.c
-AEXSIG_INC := -Itests/unit/exechost -Ic/kernel/exec -Ic/drivers/block -Ic/crypto \
+AEXSIG_INC := -Itests/unit/exechost $(KEXEC_INC) -Ic/drivers/block -Ic/crypto \
               -Ic/crypto/trust -DLOGIT_HOSTTEST
 
 $(BUILD)/aexsig_test: c/crypto/trust/pkgroots.inc
-$(BUILD)/aexsig_test: tests/unit/aexsig_test.c $(AEXSIG_SRC) c/kernel/exec/elf.h \
-                      c/kernel/exec/aex.h c/crypto/trust/aexsig.h c/crypto/trust/pkgsig.h
+$(BUILD)/aexsig_test: tests/unit/aexsig_test.c $(AEXSIG_SRC) c/kernel/exec/load/elf.h \
+                      c/kernel/exec/load/aex.h c/crypto/trust/aexsig.h c/crypto/trust/pkgsig.h
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter $(AEXSIG_INC) \
 	   -o $@ tests/unit/aexsig_test.c $(AEXSIG_SRC)

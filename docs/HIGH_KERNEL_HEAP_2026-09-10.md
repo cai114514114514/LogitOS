@@ -53,4 +53,4 @@ make BUILD=/tmp/logitos-highheap-check \
 
 共享 `build/` 在本轮已不存在，因此该入口从上一轮验收磁盘恢复应用字节到新的私有目录，记录源磁盘及恢复文件的哈希，并复用仓库的文件系统读写工具。若已有完整应用构建，可省略 `HIGHHEAP_APPS_DISK` 并设置 `WIDE_BASE_BUILD=/path/to/apps-build`。`HIGHHEAP_BASELINE` 仅供性能比较；普通内核构建无须任何 HIGHHEAP 验证开关。
 
-实现集中在 `c/kernel/mm/kheap.c`、`kheap.h`、`pmm.c`、`physmap.h`、`c/kernel/core/panic.c` 和 `c/kernel/module/modload.c`。测试入口为 `tests/highheap.mk`，fixture 和控制留在 `tests/unit/`，客体驱动与报告留在 `tests/boot/`。下一阶段可在这些地址约束上实现内核 `PT_INTERP` 支持。
+实现集中在 `c/kernel/mm/phys/kheap.c`、`kheap.h`、`pmm.c`、`physmap.h`、`c/kernel/diag/panic.c` 和 `c/kernel/module/modload.c`。测试入口为 `tests/highheap.mk`，fixture 和控制留在 `tests/unit/`，客体驱动与报告留在 `tests/boot/`。下一阶段可在这些地址约束上实现内核 `PT_INTERP` 支持。

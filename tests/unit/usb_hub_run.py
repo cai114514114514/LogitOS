@@ -12,7 +12,7 @@ for macro,marker in variants:
     core=core.replace('#include "sched.h"','void sched_poll_wait(void);').replace('#include "xhci.h"','')
     (b/'core.c').write_text(core)
     cmd=[os.environ.get('CC','clang'),'-O1','-g','-Wall','-Wextra','-pthread','-fsanitize=address,undefined',
-        '-Ic/drivers/usb','-Ic/drivers/core','-Ic/kernel/pci','-Ic/kernel/core','-Ic/drivers/timer',
+        '-Ic/drivers/usb','-Ic/drivers/core','-Ic/kernel/pci','-Ic/kernel/core -Ic/kernel/init -Ic/kernel/diag -Ic/kernel/sync','-Ic/drivers/timer',
         'tests/unit/usb_hub_test.c',str(b/'core.c'),'c/drivers/usb/usb_hub.c','c/drivers/usb/usb_bind.c','c/drivers/usb/usb_desc.c','-o',str(b/'test')]
     if macro:cmd.insert(1,'-D'+macro)
     subprocess.run(cmd,cwd=r,check=True)

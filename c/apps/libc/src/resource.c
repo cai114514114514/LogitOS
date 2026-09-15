@@ -5,7 +5,7 @@
 #include <string.h>
 #include "logit_abi.h"
 
-#define USER_STACK_BYTES (256ul * 4096ul)   /* CLI_STACK_PAGES, c/kernel/exec/exec.c */
+#define USER_STACK_BYTES (256ul * 4096ul)   /* CLI_STACK_PAGES, c/kernel/exec/load/exec.c */
 
 static long sys(long n, long a, long b, long c)
 { long r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b), "d"(c) : "memory"); return r; }

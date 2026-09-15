@@ -41,9 +41,9 @@ surface, and it is why this project is tractable:
 
 | tag | what | consumer |
 |---|---|---|
-| 6 | memory map | `c/kernel/mm/pmm.c:408` walks it; `struct mb2_mmap_entry` at `:75` |
-| 8 | framebuffer | `c/kernel/gui/fb.c:210` — **optional**, see the trap in §4d |
-| 14 / 15 | ACPI RSDP (1.0 / 2.0+) | `c/kernel/cpu/acpi.c:123` `rsdp_from_mb2()`, set from `kmain.c:84` |
+| 6 | memory map | `c/kernel/mm/phys/pmm.c:408` walks it; `struct mb2_mmap_entry` at `:75` |
+| 8 | framebuffer | `c/kernel/gui/fb/fb.c:210` — **optional**, see the trap in §4d |
+| 14 / 15 | ACPI RSDP (1.0 / 2.0+) | `c/kernel/cpu/acpi/acpi.c:123` `rsdp_from_mb2()`, set from `kmain.c:84` |
 
 Entry state, from `c/boot/boot.asm:17-24`:
 

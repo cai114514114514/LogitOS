@@ -37,7 +37,7 @@
 #
 # WHAT THIS FILE DOES NOT DO: it does not rescale. SYS_GUI_BLIT already
 # rescales nearest-neighbour into whatever destination rect it is given
-# (fb_blit_rgba in c/kernel/gui/fb.c), so scaling an image to fit is arithmetic
+# (fb_blit_rgba in c/kernel/gui/fb/fb.c), so scaling an image to fit is arithmetic
 # on four integers, not a pixel loop -- fit() below is that arithmetic. A
 # resampler written in AetherScript would be a second, slower, worse copy of
 # something the compositor already does on the way to the screen.

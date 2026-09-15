@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-/* The surface the painter draws into. Mirrors c/kernel/gui/fb.h's struct
+/* The surface the painter draws into. Mirrors c/kernel/gui/fb/fb/fb.h's struct
  * surface field-for-field -- refhost.c casts to it. */
 extern int refhost_surf_w, refhost_surf_h;
 

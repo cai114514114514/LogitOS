@@ -5,7 +5,7 @@
  * was impossible here because the kernel's network surface was "DELIBERATELY
  * not a BSD sockets API" and because "there is no bind()/listen()/accept() on
  * ANY path -- the kernel is a client only". Both halves of that are now false:
- * the fd layer grew F_SOCK (c/kernel/exec/file.c), the server-socket family
+ * the fd layer grew F_SOCK (c/kernel/exec/fd/file.c), the server-socket family
  * landed (SYS_SOCKET..SYS_SOCKSTAT), and AF_UNIX landed on top of it
  * (c/net/core/unix.c). So the AF_UNIX half of this header is REAL.
  *

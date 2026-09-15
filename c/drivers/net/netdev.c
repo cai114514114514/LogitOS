@@ -460,8 +460,8 @@ void netdev_irq(void)
 /* ------------------------------------------------------------------------
  * Legacy facade.
  *
- * `c/net/link/eth.c`, `c/net/core/net.c`, `c/kernel/cpu/interrupts.c` and
- * `c/kernel/cpu/smp.c` all called the NIC by the name `e1000_*` -- that is the
+ * `c/net/link/eth.c`, `c/net/core/net.c`, `c/kernel/cpu/irq/interrupts.c` and
+ * `c/kernel/cpu/smp/smp/smp.c` all called the NIC by the name `e1000_*` -- that is the
  * seam this whole file exists to generalise. So the e1000_* symbols stay, and
  * now mean "the bound NIC, whatever it is". They are pure forwarding; nothing
  * below knows about Intel.

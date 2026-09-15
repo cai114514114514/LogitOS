@@ -111,7 +111,7 @@ int main(int argc, char **argv)
      *   - 2 MiB IS the browser's, but it is only safe because browser.aex asks
      *     for 2048 stack pages = 8 MiB (Makefile:1034) and the GUI launch path
      *     honours the request (wm.c:1752).  THIS program is a CLI .aex, and
-     *     c/kernel/exec/exec.c:30 hardcodes CLI_STACK_PAGES 256 = 1 MiB and
+     *     c/kernel/exec/load/exec.c:30 hardcodes CLI_STACK_PAGES 256 = 1 MiB and
      *     never calls aex_stack_pages() at all.  Setting a 2 MiB guard over a
      *     1 MiB stack means the guard can never fire: the first run of
      *     m53_async_recursion in the guest did not throw, it took a page fault

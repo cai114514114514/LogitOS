@@ -5,7 +5,7 @@
 # ===========================================================================
 # WHAT WAS WRONG, AND WHY NOTHING CAUGHT IT
 #
-# c/kernel/mm/pcache.c's pool is a fixed number of entries. When every entry is
+# c/kernel/mm/cache/pcache.c's pool is a fixed number of entries. When every entry is
 # taken and every page in them is MAPPED, the old code fell through, handed the
 # new page back with NO CACHE ENTRY BEHIND IT, and returned. fault.c's do_file()
 # then took its own reference on that frame and installed one PTE -- so the
@@ -233,7 +233,7 @@ UNC=$(printf '%s\n' "$CEIL" | sed -n 's/.*, \([0-9]*\) pages handed back UNCACHE
 [ "$UNC" = "0" ] || bad "$UNC page(s) were handed back UNCACHED -- each one is a leaked" \
     "4 KiB frame and a page-cache entry that never existed. This is the defect the" \
     "orphan pass exists to make impossible; a nonzero value here is a bug in" \
-    "c/kernel/mm/pcache.c, not a capacity report"
+    "c/kernel/mm/cache/pcache.c, not a capacity report"
 [ "$ORPH" = "0" ] || bad "$ORPH entr(ies) were orphaned: the pool ($SLOTS slots) was full of" \
     "pages something maps, with only $PAGES pages of workload. That is a capacity" \
     "finding -- the pool is too small for this machine -- and the sizing in pcache.h" \

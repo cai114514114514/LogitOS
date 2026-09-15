@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build + run the out-of-memory killer's host test (c/kernel/mm/oom.c).
+# Build + run the out-of-memory killer's host test (c/kernel/mm/reclaim/reclaim/oom.c).
 #
 # WHY THIS IS ITS OWN SCRIPT AND NOT THREE LINES IN mm_run.sh, which is where it
 # belongs: mm_run.sh and leak_run.sh compile the SAME source list and a comment
@@ -20,7 +20,7 @@ OUT="${1:-$ROOT/build}"
 CC="${CC:-cc}"
 mkdir -p "$OUT"
 
-INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm"
+INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim"
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 FLAGS="-std=c11 -O1 -g -Wall -Wextra -Werror -DMM_HOSTTEST $SAN $INC"
 
@@ -29,20 +29,20 @@ COMMON="$ROOT/tests/unit/mm_common.c"
 # The same set mm_run.sh links, plus oom.c. The whole of c/kernel/mm wired the
 # way the kernel wires it -- vmm.c and rmap.c are not optional here, they are
 # what produces the resident-set numbers the policy is judged on.
-MMSRC="$MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c $MM/rmap.c $MM/reclaim.c \
-       $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
+MMSRC="$MM/phys/pmm.c $MM/virt/vmm.c $MM/virt/fault.c $MM/virt/vma.c $MM/reclaim/rmap.c $MM/reclaim/reclaim.c \
+       $MM/reclaim/swap.c $MM/cache/pcache.c $MM/shm.c $MM/reclaim/oom.c"
 
 # swap.c IS BACK IN THAT LIST, and the four lines that used to stand here are
 # gone. They compiled it separately with -Wno-error=unused-function, because on
 # 2026-08-20 the block line had an in-flight edit that left dev_read() defined
 # and unreferenced:
 #
-#     c/kernel/mm/swap.c:101:12: error: 'dev_read' defined but not used
+#     c/kernel/mm/reclaim/reclaim/swap.c:101:12: error: 'dev_read' defined but not used
 #
-# The comment ended "delete these four lines and put $MM/swap.c back in MMSRC
+# The comment ended "delete these four lines and put $MM/reclaim/swap.c back in MMSRC
 # the day that edit settles". Measured 2026-08-28: it has settled -- dev_read()
 # is called at swap.c:137 and :161, and `cc -Wall -Wextra -Werror -DMM_HOSTTEST
-# -c c/kernel/mm/swap.c` is clean. Keeping the waiver would have left this
+# -c c/kernel/mm/reclaim/reclaim/swap.c` is clean. Keeping the waiver would have left this
 # script the only one of the three mm host scripts that cannot see an unused
 # static in that file, while tests/unit/mm_run.sh compiles the same TU -Werror
 # and would go red on it anyway -- a shield over one gate and not the other.

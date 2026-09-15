@@ -6,7 +6,7 @@ p=argparse.ArgumentParser();p.add_argument("--build",default="/tmp/logitos-bkl-g
 root=pathlib.Path(__file__).resolve().parents[2];build=pathlib.Path(a.build);build.mkdir(parents=True,exist_ok=True)
 gui=root/"c/kernel/gui"
 base=[os.environ.get("CC","clang"),"-std=c11","-O1","-g","-pthread","-fsanitize=address,undefined","-DIME_LEARN_HOST"]
-for d in ("c/kernel/gui","c/kernel/core","c/kernel/exec","c/kernel/mm","c/kernel/cpu","c/lib/ime","include","include/abi"):
+for d in ("c/kernel/gui","c/kernel/core","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/exec","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/mm","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/cpu","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/lib/ime","include","include/abi"):
     base+=["-I"+str(root/d)]
 fixture=root/"tests/unit/bkl_gui_test.c"
 def run(name,defs=(),ev=None,learn=None,expect=None):
@@ -91,7 +91,7 @@ for mutant in (True,False):
         code=code.replace("gui_mutex_lock(&settings_lock);","(void)settings_lock;").replace("gui_mutex_unlock(&settings_lock);","(void)settings_lock;")
     source.write_text(code)
     exe=build/("settings-no-lock" if mutant else "settings-positive")
-    cmd=base+["-Ic/fs","-Ic/drivers/block","-Wno-deprecated-declarations"]
+    cmd=base+["-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs","-Ic/drivers/block","-Wno-deprecated-declarations"]
     if mutant:cmd+=["-DBKL_SETTINGS_RACE"]
     subprocess.run(cmd+[str(fixture_settings),str(source),"c/drivers/block/crc32.c","-o",str(exe)],check=True,cwd=root)
     proc=subprocess.run([str(exe)],cwd=root,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=30)

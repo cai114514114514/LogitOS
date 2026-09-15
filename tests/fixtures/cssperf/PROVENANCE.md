@@ -88,7 +88,7 @@ SKIPPED, not FAILED. Directory moved back; `make bench-css` re-run: full
 build) — nonzero, matching the pre-removal run.
 
 **Not run**: `bench-repaint`'s device half — same `$(ISO)`/`$(DISK)` build
-failure (unrelated `c/kernel/mm/pcache.c` compile errors, out of scope) noted
+failure (unrelated `c/kernel/mm/cache/pcache.c` compile errors, out of scope) noted
 in the webapi and jsperf PROVENANCE.md files. The `qmp_css_repaint.py` check
 was written and reviewed but not exercised against a live boot.
 

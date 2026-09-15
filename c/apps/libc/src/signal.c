@@ -5,7 +5,7 @@
  * directly because that is a correct implementation of a synchronous signal,
  * kill() to anyone else returned ENOSYS, and sigprocmask manipulated a mask
  * nothing consulted. All of that was the best available answer to a kernel with
- * no mechanism. The mechanism now exists (c/kernel/exec/ksignal.c +
+ * no mechanism. The mechanism now exists (c/kernel/exec/signal/ksignal.c +
  * ksigframe.c), so every function here is a thin wrapper over it and the
  * table it used to keep is gone: there is exactly one copy of the dispositions
  * and it is the kernel's.

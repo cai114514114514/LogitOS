@@ -36,7 +36,7 @@ struct rlimit { rlim_t rlim_cur, rlim_max; };
 #define RLIMIT_FSIZE   1   /* no per-file size cap: RLIM_INFINITY */
 #define RLIMIT_DATA    2   /* the mmap arena reservation -- see <sys/mman.h> */
 #define RLIMIT_STACK   3   /* the fixed 1 MiB user stack execve() builds
-                            * (CLI_STACK_PAGES, c/kernel/exec/exec.c) -- fixed,
+                            * (CLI_STACK_PAGES, c/kernel/exec/load/exec.c) -- fixed,
                             * not a default that can be raised */
 #define RLIMIT_CORE    4   /* no core dumps exist: always 0 */
 #define RLIMIT_RSS     5   /* not tracked per process: RLIM_INFINITY */
@@ -60,7 +60,7 @@ struct rlimit { rlim_t rlim_cur, rlim_max; };
  * this change takes on. ru_stime is also zero, and for a narrower, stated
  * reason: this kernel does not yet split ring-3 from ring-0 time PER THREAD
  * (that needs instrumentation at every ring-0/ring-3 crossing in
- * c/kernel/cpu/interrupts.c, a file this change does not own), so the whole
+ * c/kernel/cpu/irq/interrupts.c, a file this change does not own), so the whole
  * measured total is reported as user time rather than a guessed split. */
 struct rusage {
     struct timeval ru_utime, ru_stime;

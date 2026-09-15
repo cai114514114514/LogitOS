@@ -83,7 +83,7 @@ $(eval $(call AS_M28_NEGCTL,cap,AS_CAP_NO_CHECK,the capability check))
 # --- on target: a script denied CAP_FS provably cannot read /etc --------------
 #
 # WRITTEN, AND IT CANNOT BE RUN TODAY. The tree cannot build an ISO:
-# c/kernel/mm/fault.c calls mm_fault_classify() with an eighth argument and a
+# c/kernel/mm/virt/fault.c calls mm_fault_classify() with an eighth argument and a
 # MM_FAULT_FILE class that mm.h does not declare -- uncommitted, half-finished
 # work belonging to the page-cache line, and (verified with make -k) the only
 # file in the whole kernel that fails to compile. Every other M28 claim in this

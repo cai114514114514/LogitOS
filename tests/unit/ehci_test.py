@@ -24,7 +24,7 @@ for name,expected in variants:
     exe=b/name
     cmd=[os.environ.get('CC','cc'),'-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function',
          '-fsanitize=address,undefined','-fno-sanitize-recover=all','-pthread']
-    for d in ['c/drivers/usb','c/drivers/core','c/kernel/core','c/kernel/pci']:cmd+=['-I'+str(r/d)]
+    for d in ['c/drivers/usb','c/drivers/core','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/pci']:cmd+=['-I'+str(r/d)]
     if expected:cmd+=['-DEHCI_NEGCTL_'+name]
     cmd+=[str(r/'tests/unit/ehci_test.c'),'-o',str(exe)]
     subprocess.run(cmd,check=True)

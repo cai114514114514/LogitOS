@@ -83,7 +83,7 @@ uint64_t timer_ns_per_tick(void);
  * because the interrupt cannot be taken and the controller keeps only one
  * pending edge. Programming the PIT differently cannot help that, and neither
  * can anything else in c/drivers/timer -- the length of the window is set by
- * c/kernel/cpu/interrupts.c and by whatever it is holding the lock for. */
+ * c/kernel/cpu/irq/interrupts.c and by whatever it is holding the lock for. */
 void timer_tick_loss(uint64_t *seen, uint64_t *missed, uint64_t *gap_max_ns);
 
 #endif /* LOGIT_PIT_H */

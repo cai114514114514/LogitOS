@@ -5,7 +5,7 @@
 # nothing on this machine ever put a page in the page cache, so its POOL had
 # never been approached by anything and its full-pool behaviour had never run.
 # That behaviour was: hand the page back with no entry behind it, silently, and
-# leak the frame -- see c/kernel/mm/pcache.h. Measuring it needs a workload that
+# leak the frame -- see c/kernel/mm/cache/pcache.h. Measuring it needs a workload that
 # maps a lot of file data at once and KEEPS it mapped, which is exactly what an
 # exec does not do (a program's text is demand-paged, so it only ever pulls in
 # the pages it runs).
@@ -16,9 +16,9 @@
 # request) needs nothing new on the disk to drive it.
 #
 # THE THREE CEILINGS IT RUNS INTO, all real and all reported:
-#   pcache pool     c/kernel/mm/pcache.c, sized from RAM
+#   pcache pool     c/kernel/mm/cache/pcache.c, sized from RAM
 #   pcache files    PCACHE_MAXFILE = 32 file slots, system-wide
-#   VMA_MAXAREA     32 areas per ADDRESS SPACE (c/kernel/mm/vma.h) -- and this
+#   VMA_MAXAREA     32 areas per ADDRESS SPACE (c/kernel/mm/virt/vma.h) -- and this
 #                   is the one that binds here, because /bin/as itself already
 #                   holds five (text, rodata, bss, stack, the malloc arena).
 #                   So this program maps as many files as it can and STOPS when
@@ -166,7 +166,7 @@ for p in PATHS:
         # working: vma_reserve_file() took its OWN reference on the cache entry
         # (c/kernel/mm/mmsys.c says so where it puts ours back). Closing matters
         # because an open fd on this machine costs the WHOLE FILE in kernel heap
-        # (c/kernel/exec/file.c:343) -- holding 26 of them open would be ~19 MiB
+        # (c/kernel/exec/fd/file.c:343) -- holding 26 of them open would be ~19 MiB
         # of kheap for nothing, and would charge this measurement to the wrong
         # subsystem.
         syscall(SYS_CLOSE, fd)

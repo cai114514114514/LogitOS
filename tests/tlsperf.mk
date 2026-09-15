@@ -60,11 +60,11 @@ test-tls-bench: $(ISO) $(DISK)
 # on the way out whether the control passed or not -- same shape as
 # tests/prof.mk's test-prof-control, for the same reason.
 test-tls-bench-control: $(DISK)
-	@touch c/net/tls/tls.c c/net/tls/tls12.c c/net/tls/x509.c c/kernel/core/kprof.c c/kernel/core/kdiag.c
+	@touch c/net/tls/tls.c c/net/tls/tls12.c c/net/tls/x509.c c/kernel/diag/kprof.c c/kernel/diag/kdiag.c
 	@$(MAKE) --no-print-directory KPROF_OFF=1 $(ISO) >/dev/null
 	@rc=0; bash tests/boot/run-tls-bench.sh $(ISO) $(DISK) $(TLS_BENCH_URLS) \
 	    > $(BUILD)/tls_bench_control.out 2>&1 || rc=$$?; \
-	 touch c/net/tls/tls.c c/net/tls/tls12.c c/net/tls/x509.c c/kernel/core/kprof.c c/kernel/core/kdiag.c; \
+	 touch c/net/tls/tls.c c/net/tls/tls12.c c/net/tls/x509.c c/kernel/diag/kprof.c c/kernel/diag/kdiag.c; \
 	 $(MAKE) --no-print-directory $(ISO) >/dev/null; \
 	 if [ "$$rc" = 0 ]; then \
 	    echo "CONTROL FAILED: the harness passed against a kernel with no spans in it"; \

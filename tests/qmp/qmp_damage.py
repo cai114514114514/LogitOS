@@ -102,8 +102,8 @@ def run_unit_test():
     cc = subprocess.run(
         ["cc", "-O1", "-g", "-Wall", "-Wextra", "-o", out,
          os.path.join(ROOT, "tests/unit/fb_clip_test.c"),
-         os.path.join(ROOT, "c/kernel/gui/fb.c"),
-         os.path.join(ROOT, "c/kernel/gui/glass.c")]
+         os.path.join(ROOT, "c/kernel/gui/fb/fb.c"),
+         os.path.join(ROOT, "c/kernel/gui/fb/glass.c")]
         + sorted(glob.glob(os.path.join(ROOT, "c/lib/gfx/*.c")))
         + ["-I" + os.path.join(ROOT, "c/kernel/gui"),
            "-I" + os.path.join(ROOT, "c/lib/gfx"),

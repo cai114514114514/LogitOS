@@ -108,8 +108,8 @@ SRC="$ROOT/tests/unit/tls_server_test.c \
      $(find "$ROOT/c/crypto/pq" -name '*.c' 2>/dev/null)"
 INCS="-I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/crypto/pq -I$ROOT/c/net/tls -I$ROOT/c/net/core \
-      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
-      -I$ROOT/c/kernel/cpu"
+      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core -I$ROOT/c/kernel/init -I$ROOT/c/kernel/diag -I$ROOT/c/kernel/sync \
+      -I$ROOT/c/kernel/cpu -I$ROOT/c/kernel/cpu/acpi -I$ROOT/c/kernel/cpu/irq -I$ROOT/c/kernel/cpu/smp"
 
 # shellcheck disable=SC2086
 $CC -O1 -g -Wall -Wextra $SAN $BREAKDEF -o "$BUILD/tls_server_test" $SRC $INCS || {

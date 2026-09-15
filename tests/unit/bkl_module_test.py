@@ -7,7 +7,7 @@ r=pathlib.Path(__file__).resolve().parents[2];b=pathlib.Path(a.build);b.mkdir(pa
 (b/"wait.h").write_text("#include <pthread.h>\nstruct mutex {pthread_mutex_t m;};\n#define MUTEX_INIT {PTHREAD_MUTEX_INITIALIZER}\nstatic inline void mutex_lock(struct mutex *m){pthread_mutex_lock(&m->m);}\nstatic inline void mutex_unlock(struct mutex *m){pthread_mutex_unlock(&m->m);}\n")
 s=(r/"c/kernel/module/modload.c").read_text()
 base=[os.environ.get("CC","clang"),"-std=c11","-O1","-g","-pthread","-fsanitize=address,undefined","-I"+str(b)]
-for d in ("c/kernel/module","c/drivers/core","c/kernel/core","c/kernel/mm","c/kernel/exec","c/kernel/cpu","c/fs","include/abi"):
+for d in ("c/kernel/module","c/drivers/core","c/kernel/core","c/kernel/init","c/kernel/diag","c/kernel/sync","c/kernel/mm","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/mm/phys","c/kernel/mm/virt","c/kernel/mm/cache","c/kernel/mm/reclaim","c/kernel/exec","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/exec/load","c/kernel/exec/signal","c/kernel/exec/fd","c/kernel/cpu","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/kernel/cpu/acpi","c/kernel/cpu/irq","c/kernel/cpu/smp","c/fs","c/fs/vfs","c/fs/logitfs","c/fs/cache","c/fs/ramfs","c/fs/ctl","c/fs/procfs","c/fs/vfs","c/fs/logitfs","c/fs/cache","c/fs/ramfs","c/fs/ctl","c/fs/procfs","include/abi"):
     base += ["-I"+str(r/d)]
 def run(name,src,mode,defs=(),expect=None):
     source=b/(name+".c");source.write_text(src);exe=b/name

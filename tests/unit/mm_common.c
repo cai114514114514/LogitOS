@@ -160,7 +160,7 @@ void mm_sim_done(void)
 
 /* ------------------------------------------------------------- swap device --
  * A RAM-backed block device, sector-addressed exactly as the real one is, so
- * c/kernel/mm/swap.c's slot arithmetic (header sectors, 8 sectors per slot) is
+ * c/kernel/mm/reclaim/reclaim/swap.c's slot arithmetic (header sectors, 8 sectors per slot) is
  * the thing being tested rather than being stubbed out. */
 static uint8_t  *swap_mem;
 static uint64_t  swap_sectors;
@@ -201,7 +201,7 @@ void *mm_sim_swap_slot_bytes(uint64_t slot)
     return swap_mem + (8 + (slot - 1) * 8) * 512;
 }
 
-/* The three entry points c/kernel/mm/swap.c declares under MM_HOSTTEST. */
+/* The three entry points c/kernel/mm/reclaim/reclaim/swap.c declares under MM_HOSTTEST. */
 int swap_host_dev(uint64_t *nsectors, const char **name);
 int swap_host_read(uint64_t lba, uint32_t n, void *buf);
 int swap_host_write(uint64_t lba, uint32_t n, const void *buf);

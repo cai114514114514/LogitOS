@@ -15,7 +15,7 @@ void tlb_flush_all(void);
 unsigned long mm_host_tlb_flushes(void);
 void          mm_host_tlb_reset(void);
 
-/* c/kernel/cpu/percpu.c on the machine; kheap.c's magazine layer calls it. */
+/* c/kernel/cpu/smp/smp/percpu.c on the machine; kheap.c's magazine layer calls it. */
 int kheap_cpu_index(void);
 
 #endif

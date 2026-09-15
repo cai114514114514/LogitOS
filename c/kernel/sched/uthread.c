@@ -13,7 +13,7 @@
 /* Path-qualified for the reason spelled out at the top of c/kernel/exec/
  * syscall.c: mini-libc ships a sys/wait.h and the bare form has resolved to the
  * wrong file before. */
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 
 /* See uthread.h for the model. This file is the thread TABLE, the join/detach
  * lifecycle, and the futex. */
@@ -270,7 +270,7 @@ int uthread_release_self(uint64_t retval)
      * held would close an AB-BA cycle. It cannot be missed -- the joiner is
      * enqueued under the queue lock and stays enqueued until it is parked, so a
      * wake arriving in that window blocks on the queue lock instead of being
-     * lost (c/kernel/core/wait.h rule 2). */
+     * lost (c/kernel/sync/wait.h rule 2). */
     if (wake) waitq_wake_all(&g_join_wq);
     return last;
 }
@@ -605,7 +605,7 @@ static long ut_detach(int tid)
  * swap."
  *
  * Every clause of that premise has since fallen. File-backed mappings landed
- * (c/kernel/mm/pcache.c keys pages on (dev, ino), so two processes mapping one
+ * (c/kernel/mm/cache/pcache.c keys pages on (dev, ino), so two processes mapping one
  * file share the frames), and SHARED ANONYMOUS MEMORY landed with it
  * (c/kernel/mm/shm.c + SYS_SHM_* 176-179): two processes CAN now hold the same
  * physical word at two different virtual addresses in two different address
@@ -647,7 +647,7 @@ static long ut_detach(int tid)
  *   2. Nothing can take it away again inside the window. Only this process can
  *      unmap its own memory, and its other threads cannot be in the kernel --
  *      SYS_FUTEX is not in syscall_is_bkl_free(), so this core holds the big
- *      kernel lock. Reclaim (c/kernel/mm/reclaim.c) is likewise a BKL path.
+ *      kernel lock. Reclaim (c/kernel/mm/reclaim/reclaim/reclaim.c) is likewise a BKL path.
  * The second point is a dependency on the BKL, so it is stated rather than
  * assumed: the day a BKL-free munmap exists, this needs a pinned page.
  * Correction: that day is now. user_pin_word retains the physical page and

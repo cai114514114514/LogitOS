@@ -13,7 +13,7 @@ RAPTOR_HFI_UNGATED_CONTROL := $(RAPTOR_CONTROL_DIR)/hfi-ungated
 $(RAPTOR_HOST_BIN): tests/unit/raptor_lake_platform_test.c \
                     c/kernel/cpu/cpu_platform.c c/kernel/cpu/cpu_platform.h
 	@mkdir -p $(dir $@)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    tests/unit/raptor_lake_platform_test.c c/kernel/cpu/cpu_platform.c -o $@
 
 .PHONY: test-raptor-lake-host test-raptor-lake-controls
@@ -24,7 +24,7 @@ test-raptor-lake-host: test-raptor-lake-controls $(RAPTOR_HOST_BIN)
 test-raptor-lake-controls:
 	@mkdir -p $(RAPTOR_CONTROL_DIR)
 	@python3 tests/unit/raptor_lake_policy.py uniform-smt $(RAPTOR_CONTROL_DIR)/uniform-smt.c
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    tests/unit/raptor_lake_platform_test.c $(RAPTOR_CONTROL_DIR)/uniform-smt.c \
 	    -o $(RAPTOR_CONTROL_DIR)/uniform-smt
 	@if $(RAPTOR_CONTROL_DIR)/uniform-smt > $(RAPTOR_CONTROL_DIR)/uniform-smt.log 2>&1; then \
@@ -36,7 +36,7 @@ test-raptor-lake-controls:
 	    echo "NEGCTL RED: uniform SMT inference rejected"; \
 	fi
 	@python3 tests/unit/raptor_lake_policy.py leaf-b-first $(RAPTOR_CONTROL_DIR)/leaf-b-first.c
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    tests/unit/raptor_lake_platform_test.c $(RAPTOR_CONTROL_DIR)/leaf-b-first.c \
 	    -o $(RAPTOR_CONTROL_DIR)/leaf-b-first
 	@if $(RAPTOR_CONTROL_DIR)/leaf-b-first > $(RAPTOR_CONTROL_DIR)/leaf-b-first.log 2>&1; then \
@@ -48,7 +48,7 @@ test-raptor-lake-controls:
 	    echo "NEGCTL RED: CPUID.0B preference rejected"; \
 	fi
 	@python3 tests/unit/raptor_lake_policy.py model-range $(RAPTOR_CONTROL_DIR)/model-range.c
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    tests/unit/raptor_lake_platform_test.c $(RAPTOR_CONTROL_DIR)/model-range.c \
 	    -o $(RAPTOR_CONTROL_DIR)/model-range
 	@if $(RAPTOR_CONTROL_DIR)/model-range > $(RAPTOR_CONTROL_DIR)/model-range.log 2>&1; then \
@@ -61,7 +61,7 @@ test-raptor-lake-controls:
 	fi
 	@python3 tests/unit/raptor_lake_policy.py malformed-topology \
 	    $(RAPTOR_CONTROL_DIR)/malformed-topology.c
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    tests/unit/raptor_lake_platform_test.c \
 	    $(RAPTOR_CONTROL_DIR)/malformed-topology.c \
 	    -o $(RAPTOR_CONTROL_DIR)/malformed-topology
@@ -74,7 +74,7 @@ test-raptor-lake-controls:
 	        $(RAPTOR_CONTROL_DIR)/malformed-topology.log >/dev/null || exit 1; \
 	    echo "NEGCTL RED: permissive malformed topology rejected"; \
 	fi
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    -DLOGIT_RAPTOR_NEGCTL_KEEP_HYBRID_LEGACY_TOPOLOGY \
 	    tests/unit/raptor_lake_platform_test.c c/kernel/cpu/cpu_platform.c \
 	    -o $(RAPTOR_HYBRID_LEGACY_CONTROL)
@@ -88,7 +88,7 @@ test-raptor-lake-controls:
 	    test "$$(grep -c '^FAIL:' $(RAPTOR_HYBRID_LEGACY_CONTROL).log)" -eq 1 || exit 1; \
 	    echo "NEGCTL RED: fabricated hybrid legacy topology rejected"; \
 	fi
-	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Ic/kernel/cpu \
+	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror $(KCPU_INC) \
 	    -DLOGIT_RAPTOR_NEGCTL_DECODE_HFI_WITHOUT_CAP \
 	    tests/unit/raptor_lake_platform_test.c c/kernel/cpu/cpu_platform.c \
 	    -o $(RAPTOR_HFI_UNGATED_CONTROL)

@@ -91,7 +91,7 @@ imaxdiv_t imaxdiv(intmax_t n, intmax_t d) { imaxdiv_t r; r.quot = n / d; r.rem =
  * interesting part.
  *
  * It used to be permanently empty. The kernel has always built a complete SysV
- * stack on execve -- argv, envp and fourteen auxv pairs (c/kernel/exec/exec.c)
+ * stack on execve -- argv, envp and fourteen auxv pairs (c/kernel/exec/load/exec.c)
  * -- and crt0 read argc and argv off it and threw the envp pointer away. So
  * getenv("HOME"), getenv("PATH") and getenv("TERM") returned NULL in every
  * program on this machine. That gap survived a long time because this file was

@@ -28,7 +28,7 @@ Two failure modes are being watched for.
   characters are typed and each must appear EXACTLY once, and one click must
   produce EXACTLY one press.
 
-Motion is not counted, on purpose: c/kernel/gui/evq.c coalesces consecutive
+Motion is not counted, on purpose: c/kernel/gui/input/evq.c coalesces consecutive
 motion samples, so the count is meaningfully not one-to-one and asserting on it
 would be asserting on the coalescer.
 

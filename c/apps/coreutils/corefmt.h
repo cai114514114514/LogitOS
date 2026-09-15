@@ -1,7 +1,7 @@
 #ifndef LOGIT_COREFMT_H
 #define LOGIT_COREFMT_H
 
-/* Reading an ELF64 ET_CORE file produced by c/kernel/exec/coredump.c.
+/* Reading an ELF64 ET_CORE file produced by c/kernel/exec/signal/coredump.c.
  *
  * A SECOND, INDEPENDENT PARSER, and that is the point rather than an accident
  * of where the code had to live. coredump.c already contains a walk of its own

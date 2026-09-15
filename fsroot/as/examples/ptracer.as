@@ -53,7 +53,7 @@ PT_E_PERM  = 0 - 3
 PT_E_FAULT = 0 - 6
 
 # Indices into the 27-register array. The SAME order a core dump's NT_PRSTATUS
-# uses (c/kernel/exec/coredump.h's CORE_* enum, which is glibc's
+# uses (c/kernel/exec/signal/coredump.h's CORE_* enum, which is glibc's
 # user_regs_struct order and is diffed against it host-side), so a register
 # named here and a register named by /bin/readcore are the same register.
 R_RIP = 16
@@ -63,7 +63,7 @@ R_RSP = 19
 NGREG = 27
 
 # The address map every CLI program on this machine has: text at the fixed link
-# base CLI_RULE gives them, stack placed by c/kernel/exec/exec.c just under it.
+# base CLI_RULE gives them, stack placed by c/kernel/exec/load/exec.c just under it.
 TEXT_LO  = 0x50000000
 TEXT_HI  = 0x50100000
 STACK_LO = 0x53f00000

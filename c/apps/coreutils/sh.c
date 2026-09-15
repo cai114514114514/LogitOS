@@ -170,7 +170,7 @@ static void outn_str(char *o, int v)
 
 /* ------------------------------------------------------------ ^C, for real --
  *
- * THE CONTRACT IS WRITTEN IN THE KERNEL, at c/kernel/exec/ksignal.c:316:
+ * THE CONTRACT IS WRITTEN IN THE KERNEL, at c/kernel/exec/signal/ksignal.c:316:
  *
  *     "THE FOREGROUND PID is whichever process most recently blocked reading
  *      the console. [...] the shell then forks a child and waits, and the
@@ -198,7 +198,7 @@ static void outn_str(char *o, int v)
  *    sys_read as end of input and returns -1 -- which main() reads as ^D and
  *    exits. Without SA_RESTART the FIRST ^C typed at the prompt would close the
  *    console shell. With it, the kernel rewinds rip over the `int 0x80` and the
- *    read resumes (c/kernel/exec/ksigframe.c:183).
+ *    read resumes (c/kernel/exec/signal/ksigframe.c:183).
  *
  *  - THE HANDLER ONLY SETS A FLAG. It runs on an ordinary ring-3 frame the
  *    kernel pushed at whatever instruction was executing; writing to the job
@@ -338,7 +338,7 @@ static char hstash[LINE];
 
 /* HISTORY IS A PACKED ARENA, not hist[HISTN][LINE]. At LINE 512 that array
  * was 32 KiB; at LINE 4096 it would be 256 KiB of .bss, and .bss is not free
- * here: c/kernel/exec/elf.c maps every page of p_memsz eagerly at load, so
+ * here: c/kernel/exec/load/elf.c maps every page of p_memsz eagerly at load, so
  * each 4 KiB is a frame zeroed on every exec of this shell and a page counted
  * against run-kbench.sh's "fork shares <= 100 pages" bound (31 today). A
  * history line is almost never 4 KiB, so the arena stores each entry at its
@@ -1003,7 +1003,7 @@ static struct job *start_pipeline(struct cmd *cmds, int ncmd, int background, co
  *   sig_intr   a real SIGINT from the kernel's console drain (serial mode),
  *              caught by sh_on_sigint above.
  * Both mean the same thing here, so they are handled in one place; the kernel's
- * half of the story is at c/kernel/exec/ksignal.c:316. */
+ * half of the story is at c/kernel/exec/signal/ksignal.c:316. */
 static int wait_foreground(struct job *j)
 {
     ctl_mode = CTL_JOB;

@@ -23,7 +23,7 @@
 #
 # What discriminates is the ABSOLUTE marginal cost of one more CONCURRENT copy
 # (P versus P + T), and the direct count of frames mapped more than once:
-# pcache_shared() in c/kernel/mm/pcache.c counts entries whose frame has
+# pcache_shared() in c/kernel/mm/cache/pcache.c counts entries whose frame has
 # refcount > 2 -- the cache's own reference plus MORE THAN ONE PTE. That number
 # is 0 by construction unless two page tables point at one frame. It is the
 # feature, counted, rather than inferred from free-frame arithmetic.
@@ -179,7 +179,7 @@ cp "$LOG" "$KEEP" 2>/dev/null && echo "  serial log kept at $KEEP"
 if grep -aq "permission denied (not executable)" "$LOG"; then
     appt "execve was REFUSED by the permission check:"
     grep -a "permission denied (not executable)" "$LOG" | sed 's/^/      /' | head -3
-    say "    c/kernel/exec/exec.c asks vfs_access(path, MAY_EXEC), and tools/mkfs.py"
+    say "    c/kernel/exec/load/exec.c asks vfs_access(path, MAY_EXEC), and tools/mkfs.py"
     say "    leaves every inode's xmode zero, which c/fs/logitfs.c reports as the"
     say "    0644 default. c/fs/vfs_meta.c gives root no MAY_EXEC bypass when no x"
     say "    bit is set anywhere, so NOTHING on the disk can be exec'd. That is an"

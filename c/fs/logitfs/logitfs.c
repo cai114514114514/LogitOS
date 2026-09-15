@@ -126,7 +126,7 @@ static char     namebuf[NAME_MAX];      /* ent_name return storage */
  * can preempt the holder of is a livelock on one core.
  *
  * IT COSTS NOTHING TODAY, and that is checkable rather than plausible: the BKL
- * is itself taken with spin_lock_irqsave (c/kernel/cpu/interrupts.c, at the
+ * is itself taken with spin_lock_irqsave (c/kernel/cpu/irq/interrupts.c, at the
  * `if (!nested && !bkl_free)` on kernel entry), so IF is ALREADY 0 when an op
  * gets here. The flags this saves have IF clear and the restore puts IF back to
  * clear. Zero new interrupt-off time; the same window the BKL imposes, scoped

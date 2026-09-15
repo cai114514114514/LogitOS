@@ -10,7 +10,14 @@
 #include "usercopy.h"
 #include "proc.h"
 #include "file.h"
-#include "pty.h"
+/* Path-qualified for the SAME reason as wait.h below, and this one was found by
+ * the build rather than by reading: there are THREE pty.h in this tree --
+ * c/apps/libc/include/pty.h, include/abi/pty.h and the kernel's own. The bare
+ * form worked only while pty.h sat in this file's own directory; the moment it
+ * moved to exec/fd/ the sorted INCDIRS handed over the mini-libc one and every
+ * SYS_PTY_* became an undeclared identifier. Colocation was hiding a collision,
+ * not preventing one. */
+#include "kernel/exec/fd/pty.h"
 #include "vfs.h"
 #include "rtc.h"
 #include "net.h"
@@ -32,7 +39,7 @@
  * userland one, and sched_sleep_ms below becomes an undeclared function. (Files
  * in c/kernel/core get away with the bare form only because a quoted include
  * searches the including file's own directory first.) */
-#include "kernel/core/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
+#include "kernel/sync/wait.h"   /* M27 sched_sleep_ms: the kernel's ONE sleeper */
 #include "snd.h"
 #include "mm.h"          /* mm_syscall: SYS_MMAP / SYS_MMAP_FILE / SYS_MPROTECT / SYS_MUNMAP / SYS_MEMINFO */
 #include "settings.h"    /* settings_syscall: SYS_SETTING_* */
@@ -691,7 +698,7 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
         uint64_t deadline = time_mono_ns() + want;
         uint64_t tick_ns  = timer_ns_per_tick();
         /* NOT a second blocking mechanism -- deliberately. sched_sleep_ms() in
-         * c/kernel/core/wait.c is the kernel's sleeper: it UNLINKS the thread
+         * c/kernel/sync/wait.c is the kernel's sleeper: it UNLINKS the thread
          * from the run ring, so a sleeper consumes no scheduler time at all, and
          * its deadline is expired from the timer IRQ ahead of the BKL acquire.
          * Building a rival here would give the kernel two sleepers, which is one
@@ -1362,7 +1369,7 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
         return;
 
     /* Waiting on several descriptors at once. Forwarded whole to
-     * c/kernel/exec/kpollsys.c for the reason mm_syscall() and uthread_syscall()
+     * c/kernel/exec/fd/kpollsys.c for the reason mm_syscall() and uthread_syscall()
      * are: which argument is a user pointer and what it means are facts about
      * this subsystem. Proc-level and not GUI -- a server has no window, and the
      * shell's own descriptors are exactly what this is for. */
@@ -1391,7 +1398,7 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
         r->rax = (uint64_t)proc_cap_spawn(r);
         return;
 
-    /* Signals (130-136). Forwarded whole to c/kernel/exec/ksignal.c for the
+    /* Signals (130-136). Forwarded whole to c/kernel/exec/signal/ksignal.c for the
      * reason mm_syscall() and uthread_syscall() give: which argument is a user
      * pointer and what it means are facts about signals, and they belong beside
      * the table that knows them. Proc-level and not GUI: /bin/sh, the coreutils
@@ -1415,7 +1422,7 @@ static void syscall_do(struct registers *r, const void *user_fxarea)
                                         (long)r->rsi, (long)r->rdx);
         return;
 
-    /* M31 file metadata (120-129). Forwarded whole to c/kernel/exec/meta.c for
+    /* M31 file metadata (120-129). Forwarded whole to c/kernel/exec/load/meta.c for
      * the reason mm_syscall() gives: which argument is a user pointer and what
      * it means are facts about this subsystem. Proc-level, not GUI: a CLI
      * program is the main caller and has no window. */

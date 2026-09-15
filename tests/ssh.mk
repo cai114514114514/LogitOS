@@ -73,7 +73,7 @@ $(BUILD)/ssh_wire_test: tests/unit/ssh_wire_test.c $(SSH_DIR)/ssh_wire.c $(SSH_D
 test-ssh-wire: $(BUILD)/ssh_wire_test
 	@$(BUILD)/ssh_wire_test
 
-SSH_HOST_MININC := -I$(SSH_DIR) -Ic/crypto -Ic/crypto/pubkey -Ic/crypto/hash -Ic/crypto/aead -Ic/kernel/cpu -Ic/crypto/kdf -Ic/apps/coreutils
+SSH_HOST_MININC := -I$(SSH_DIR) -Ic/crypto -Ic/crypto/pubkey -Ic/crypto/hash -Ic/crypto/aead $(KCPU_INC) -Ic/crypto/kdf -Ic/apps/coreutils
 
 $(BUILD)/ssh_packet_test: tests/unit/ssh_packet_test.c $(SSH_DIR)/ssh_wire.c $(SSH_DIR)/ssh_packet.c $(SSH_CRYPTO_SRC)
 	@mkdir -p $(BUILD)

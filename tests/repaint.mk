@@ -38,8 +38,8 @@
 # gate as a pixel oracle. The production loop may use fewer multiplies, but it
 # may not move a sample centre or round between axes. The mutation does exactly
 # that tempting intermediate round and must be caught by an actual pixel.
-FB_SCALE_BL_SRC := tests/unit/fb_scale_bl_bench.c c/kernel/gui/fb.c c/lib/gfx/openlogit_display.c
-FB_SCALE_BL_INC := -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm -Ic/lib/text -Ic/lib/gfx
+FB_SCALE_BL_SRC := tests/unit/fb_scale_bl_bench.c c/kernel/gui/fb/fb/fb.c c/lib/gfx/adapters/openlogit_display.c
+FB_SCALE_BL_INC := $(KGUI_INC) -Ic/drivers/virtio $(KMM_INC) -Ic/lib/text $(GFX_INC)
 
 $(BUILD)/fb_scale_bl_bench: $(FB_SCALE_BL_SRC) tests/repaint.mk
 	@mkdir -p $(BUILD)

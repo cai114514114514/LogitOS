@@ -7,7 +7,7 @@ SVG_RASTER_SRC := tests/unit/layout_svg_test.c c/apps/browser/layout.c \
 SVG_RASTER_DEP := $(SVG_RASTER_SRC) c/apps/browser/svg_dom_paint.inc \
                   c/apps/browser/svg_reflow_cache.inc $(BUILD)/libcss_host.a \
                   $(RUST_LIB_HOST)
-SVG_RASTER_INC := $(BTEST_INC) $(CSS_INC) -Ic/kernel/mm
+SVG_RASTER_INC := $(BTEST_INC) $(CSS_INC) $(KMM_INC)
 
 .PHONY: test-svg-raster-size-negctl test-svg-raster-size test-svg-raster-size-asan
 $(SVG_RASTER_DIR)/current: $(SVG_RASTER_DEP)

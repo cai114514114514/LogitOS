@@ -1568,7 +1568,7 @@ long sched_prio_syscall(long cmd, long a, long b)
  * written to close, for a feature this task explicitly says not to oversell.
  *
  * So the check runs from a DIFFERENT place with the SAME data: the timer IRQ,
- * BEFORE it calls schedule() at all (c/kernel/cpu/interrupts.c, right beside
+ * BEFORE it calls schedule() at all (c/kernel/cpu/irq/interrupts.c, right beside
  * the existing ksig_tick() call -- same non-nested, BKL-held context that
  * call already relies on). That is straight-line code with no switch in it,
  * runs on EVERY core (not gated to the BSP, unlike ktime.c's

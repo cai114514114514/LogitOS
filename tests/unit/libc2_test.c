@@ -343,7 +343,7 @@ static void t_syslog(void)
 
 /* The environment the kernel actually pushed.
  *
- * getenv() was internally consistent and permanently empty: c/kernel/exec/exec.c
+ * getenv() was internally consistent and permanently empty: c/kernel/exec/load/exec.c
  * builds a full SysV stack with argv, envp and 14 auxv pairs, and crt0 read
  * argc/argv and threw the envp pointer away. Every program on this machine saw
  * an environment of nothing -- getenv("HOME"), getenv("PATH"), getenv("TERM")

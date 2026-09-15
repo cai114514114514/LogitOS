@@ -15,7 +15,7 @@
  * from a file (LogitFS has no enforced, reboot-surviving ownership); that
  * argument is unchanged here.
  *
- * WHAT VERIFYING ONE OF THESE DOES NOT MEAN. c/kernel/exec/aex.c decided, and
+ * WHAT VERIFYING ONE OF THESE DOES NOT MEAN. c/kernel/exec/load/aex.c decided, and
  * argues at the TLV case for AEX_T_SIG and again above where it calls
  * aex_sig_verify(), to LOG the verdict and load the program ANYWAY --
  * unsigned, invalid, untrusted or verified all execute. That is a deliberate

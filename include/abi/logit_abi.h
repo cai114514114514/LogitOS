@@ -75,7 +75,7 @@
                              * and returned -1. M28 needed a capability-checked spawn/exec
                              * and, on finding this number unclaimed, deliberately did NOT
                              * claim it -- see SYS_CAP_SPAWN near the end of this file and the
-                             * comment above proc_cap_spawn() in c/kernel/exec/exec.c for why a
+                             * comment above proc_cap_spawn() in c/kernel/exec/load/exec.c for why a
                              * fresh number was safer than repurposing this one. Left exactly
                              * as declared. */
 #define SYS_SETNB       64 /* (fd) -> 0; mark the fd non-blocking (reads return -2/EAGAIN) */
@@ -128,7 +128,7 @@
  *
  * A socket handle is NOT a POSIX fd: sockets live in their own table, scoped to
  * the process that opened them, so that adding them could not perturb the
- * fork/exec/pipe fd semantics in c/kernel/exec/file.c. They are released when
+ * fork/exec/pipe fd semantics in c/kernel/exec/fd/file.c. They are released when
  * the owning process exits. */
 #define SYS_SOCK_OPEN   76 /* (host, (port<<16)|flags) -> handle >= 0, or SOCK_E_* */
 #define SYS_SOCK_POLL   77 /* (fd) -> SOCK_P_* bits, or SOCK_E_* (negative) */
@@ -218,7 +218,7 @@
  *
  * "a character" used to be the whole sentence, and on a machine whose only
  * text source was a scancode-to-ASCII table it meant the same thing. It does
- * not any more: c/kernel/gui/ime_ui.c commits Han characters through this
+ * not any more: c/kernel/gui/ime/ime_ui.c commits Han characters through this
  * event, one EV_KEY per character, mods = 0. An app that reads `a` as a byte
  * gets the low 8 bits of a codepoint, which is a different character.
  *
@@ -671,7 +671,7 @@ struct logit_meminfo {
 };
 
 /* --------------------------------------------------------------------------
- * File-backed mmap: a SECOND mmap form, added once c/kernel/mm/pcache.h had a
+ * File-backed mmap: a SECOND mmap form, added once c/kernel/mm/cache/pcache.h had a
  * real page cache to back it with. SYS_MMAP above stays exactly what it was --
  * anonymous, zero-filled, no fd -- and this is additive, not a replacement.
  *
@@ -692,7 +692,7 @@ struct logit_meminfo {
  * the same shape as fstat/fsync and stays out of that table for the same
  * reason -- gating it too would check one grant twice, not check a new one.
  *
- * READ-ONLY, ALWAYS. c/kernel/mm/pcache.h says why in full: there is no dirty
+ * READ-ONLY, ALWAYS. c/kernel/mm/cache/pcache.h says why in full: there is no dirty
  * page, no writeback and no msync anywhere in this kernel. A caller that asks
  * for a writable file mapping is REFUSED OUT LOUD (LOGIT_MMAP_FILE_E_WRITE)
  * rather than silently handed a private copy whose writes go nowhere. */
@@ -709,7 +709,7 @@ struct logit_mmap_file_req {
  *   0   a generic failure: bad/non-regular fd, a misaligned `off`, a zero or
  *       overflowing `len`, no VMA slot, or the file could not be opened by
  *       the page cache at all (not a LogitFS regular file -- see pcv_stat()
- *       in c/kernel/mm/pcache_vfs.c). The same "0 = failure" shape SYS_MMAP
+ *       in c/kernel/mm/cache/pcache_vfs.c). The same "0 = failure" shape SYS_MMAP
  *       already uses; the caller falls back to read().
  *   LOGIT_MMAP_FILE_E_WRITE (-1)  MMAP_PROT_WRITE was set. Distinguishable
  *       from the generic failure on purpose: this is not "out of resources,
@@ -1177,7 +1177,7 @@ struct logit_setting {
  * (-1) -> QUERY: the base currently installed, or 0 if there is none.
  *
  * The query exists because there are now TWO things that can install a thread
- * pointer and they must not fight. The ELF loader (c/kernel/exec/elf.c) lays
+ * pointer and they must not fight. The ELF loader (c/kernel/exec/load/elf.c) lays
  * out and installs one from PT_TLS for a program's MAIN thread -- it is the
  * only thing that can, since only the loader has the image -- and mini-libc
  * installs one for every thread it creates. A libc that could not ask would
@@ -1239,7 +1239,7 @@ struct logit_setting {
  * the lost-wakeup ordering wrong instead of one.
  *
  * The kernel side is c/kernel/sched/uthread.c and it does not invent a sleep:
- * it parks on c/kernel/core/wait.c's sched_block_self_unlock(), whose
+ * it parks on c/kernel/sync/wait.c's sched_block_self_unlock(), whose
  * lost-wakeup argument (sched.h) is the one this depends on. */
 #define SYS_FUTEX         113
 
@@ -1286,7 +1286,7 @@ struct logit_thread_spec {
  * A CLI program's stack is CLI_STACK_PAGES = 256 pages = 1 MiB (c/kernel/exec/
  * exec.c), of which TWO are mapped eagerly and the rest is a VMA reservation
  * faulted in on touch. A thread's stack is the same kind of object -- ordinary
- * SYS_MMAP anonymous memory, demand-paged by c/kernel/mm/fault.c -- so the
+ * SYS_MMAP anonymous memory, demand-paged by c/kernel/mm/virt/fault.c -- so the
  * DEFAULT below is a reservation, not an allocation: a thread that uses 8 KiB
  * of it costs 8 KiB of physical memory plus two page-table pages, whatever the
  * number says.
@@ -1308,7 +1308,7 @@ struct logit_thread_spec {
  * concerned (c/kernel/sched/uthread.c).
  *
  * IT IS NOT THE BINDING LIMIT, and the real one is lower and elsewhere: every
- * thread's stack is one mmap, and c/kernel/mm/vma.h caps an address space at
+ * thread's stack is one mmap, and c/kernel/mm/virt/vma.h caps an address space at
  * VMA_MAXAREA = 16 areas -- of which the program image's own stack and libc's
  * malloc arena already take some. So the practical ceiling is around THIRTEEN
  * concurrent threads per process, and a program that asks for more does not get
@@ -1337,7 +1337,7 @@ struct logit_thread_spec {
                          * value had already changed, FUTEX_E_TIMEDOUT on timeout.
                          * timeout_ms 0 = wait forever. SPURIOUS WAKES HAPPEN: every
                          * caller is a `while (!cond)` loop, exactly as the kernel's
-                         * own sleepers are (c/kernel/core/wait.h rule 2). */
+                         * own sleepers are (c/kernel/sync/wait.h rule 2). */
 #define FUTEX_WAKE  1   /* wake up to `val` waiters on uaddr -> the number woken.
                          * val = INT32_MAX is the broadcast. */
 
@@ -1499,7 +1499,7 @@ struct logit_dirreq {
  * the USER stack holding the interrupted register state, the FPU/SSE state and
  * the old mask; point rip at the handler; and when the handler returns, restore
  * every bit of that exactly. The three numbers below (SIGACTION / SIGPROCMASK /
- * SIGRETURN) are the doors; the mechanism is c/kernel/exec/ksignal.c.
+ * SIGRETURN) are the doors; the mechanism is c/kernel/exec/signal/ksignal.c.
  *
  * THE FPU/SSE STATE IS PART OF THE FRAME, and this is the piece that is easy to
  * omit and impossible to notice. c/boot/isr.asm FXSAVEs on every kernel entry
@@ -1757,7 +1757,7 @@ struct logit_sigctx {
  *   the data. It does not spin and it does not hold the big kernel lock.
  *
  *   SYS_SETNB on the fd makes both return LSK_E_AGAIN instead. That is the same
- *   O_NONBLOCK a pipe already honours in c/kernel/exec/file.c -- deliberately
+ *   O_NONBLOCK a pipe already honours in c/kernel/exec/fd/file.c -- deliberately
  *   the same word and the same code, because a second convention for "would
  *   block" is exactly the kind of thing that costs somebody an afternoon.
  *
@@ -2137,7 +2137,7 @@ struct logit_dgram {
  * question has no answer that distinguishes two scripts. It is granted by
  * PROCESS LINEAGE: a child's capability set must be a subset of its parent's,
  * checked by the kernel and by nothing else. proc_spawn() (the kernel
- * launching init's shell, c/kernel/exec/exec.c) is the one root where a grant
+ * launching init's shell, c/kernel/exec/load/exec.c) is the one root where a grant
  * exists "by construction" rather than by narrowing something held already.
  *
  * WHERE THE STATE LIVES. struct proc (c/kernel/exec/proc.h) carries `caps` (a
@@ -2181,7 +2181,7 @@ struct logit_dgram {
  * syscall_cap_class() (c/kernel/exec/syscall.c) mapping SYS_FORK/SYS_EXECVE and
  * the SYS_GUI_* family to them -- adding kernel enforcement that cannot be
  * booted and tested is how a machine ships broken, and this tree currently
- * cannot build an ISO (c/kernel/mm/fault.c, another line's half-finished work).
+ * cannot build an ISO (c/kernel/mm/virt/fault.c, another line's half-finished work).
  * That classification is the named follow-up, and it is additive: the bits it
  * would test already travel correctly. */
 #define CAP_PROC 0x08   /* fork/execve/spawn -- carried and narrowed here, enforced in as_port.c */
@@ -2230,7 +2230,7 @@ struct logit_capreq {
                            * carry one; the child's environment is empty, the
                            * same as SYS_SPAWN's original documented shape and
                            * the kernel's own proc_spawn()). See
-                           * proc_cap_spawn() in c/kernel/exec/exec.c. */
+                           * proc_cap_spawn() in c/kernel/exec/load/exec.c. */
 #define SYS_CAP_QUERY 161 /* (buf, max, 0) -> the CALLING process's own current
                            * CAP_* bitmap (the return value itself, like
                            * SYS_GETPID). If buf != NULL and max > 0, also
@@ -2266,7 +2266,7 @@ struct logit_capreq {
  * window closed, the power yanked). Durability survived that because the
  * filesystem journals, but "the only way to stop is to be killed" made every
  * shutdown a crash with good manners instead of an actual shutdown. See
- * c/kernel/core/power.c for the full order of operations (sync, THEN the
+ * c/kernel/init/power.c for the full order of operations (sync, THEN the
  * ACPI write, and why it is in that order).
  *
  * ROOT ONLY, refused with ID_E_PERM exactly as SYS_SETUID is -- see
@@ -2391,7 +2391,7 @@ struct logit_capreq {
  * and papers over it with errno; this ABI has no errno.
  *
  * The register array is in the SAME order NT_PRSTATUS uses in a core dump
- * (c/kernel/exec/coredump.h's CORE_R15..CORE_GS, which is glibc's
+ * (c/kernel/exec/signal/coredump.h's CORE_R15..CORE_GS, which is glibc's
  * user_regs_struct order and is diffed against it by
  * tests/unit/coredump_test.c). One order, so a tracer and a dump reader index
  * registers identically. */
@@ -2401,7 +2401,7 @@ struct logit_ptrace_word {
     unsigned long long addr;   /* in:  address in the TRACEE, 8-byte aligned */
     unsigned long long data;   /* PEEK: out. POKE: in. `unsigned long long` and
                                 * not uint64_t: this header is included by TUs
-                                * that do not pull <stdint.h> (c/kernel/gui/evq.c
+                                * that do not pull <stdint.h> (c/kernel/gui/input/evq.c
                                 * is one, measured), and every other 64-bit field
                                 * in it is spelled the same way. */
 };
@@ -2492,7 +2492,7 @@ struct logit_ptrace_word {
  * cookie, a cleared localStorage key) could not be written back shorter.
  *
  * THE PRIMITIVE CHOSEN: fd-level ftruncate, implemented in the buffer the
- * writable description already holds (c/kernel/exec/file.c), flushed by the
+ * writable description already holds (c/kernel/exec/fd/file.c), flushed by the
  * existing whole-file write-back at fsync/close. That rides the journaled
  * overwrite for free, which is why it was chosen over the alternative:
  *
@@ -2606,7 +2606,7 @@ struct logit_modinfo {
  *   eventfd/timerfd  their own queue (below).
  *   sockets          NOT YET. c/net/core/lsock.c belongs to another line of
  *                    work; the hook it needs is ONE function and its exact
- *                    signature is in c/kernel/exec/kpoll.h. Until it exists a
+ *                    signature is in c/kernel/exec/fd/kpoll.h. Until it exists a
  *                    socket fd polls as LPOLLNVAL rather than as never-ready,
  *                    because "this kernel cannot answer for that fd" and "that
  *                    fd will never be ready" are different findings and only
@@ -2728,7 +2728,7 @@ struct logit_itimer {
  * WHAT WAS MISSING, PLAINLY. Every non-file channel between two processes here
  * was a pipe, and a pipe is a COPY: the writer's bytes are memcpy'd into a ring
  * buffer and memcpy'd out again. File-backed sharing already existed and was
- * already real -- c/kernel/mm/pcache.c keys pages on (dev, ino), so two
+ * already real -- c/kernel/mm/cache/pcache.c keys pages on (dev, ino), so two
  * processes mapping one file share the frames -- but it is READ-ONLY, because
  * there is no writeback in this kernel. There was no way at all to share memory
  * that two processes could both WRITE.
@@ -2756,7 +2756,7 @@ struct logit_itimer {
  * WHAT THIS COSTS, said here because a caller should know: a segment's pages
  * are allocated when it is created and CANNOT BE RECLAIMED under memory
  * pressure. There is nowhere to evict them to -- swapping a shared page breaks
- * the sharing (c/kernel/mm/swap.h says the sharing is not restored on the way
+ * the sharing (c/kernel/mm/reclaim/reclaim/swap.h says the sharing is not restored on the way
  * back), and there is no file behind it to re-read. A segment is memory spent
  * until it is unlinked and unmapped. The ceiling is 8 segments of 2 MiB.
  *

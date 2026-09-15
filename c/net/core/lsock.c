@@ -12,8 +12,8 @@
 #include "net.h"
 #include "vfs.h"             /* vfs_may_create -- see lsock_bind_unix */
 #include "vfs_cred.h"            /* the privilege check SOCK_RAW needs -- see lsock_create() */
-#include "kernel/core/wait.h"   /* sched_sleep_ms -- the one wait here that is a sleep */
-#include "kernel/exec/ksignal.h"
+#include "kernel/sync/wait.h"   /* sched_sleep_ms -- the one wait here that is a sleep */
+#include "kernel/exec/signal/ksignal.h"
 
 void *memset(void *, int, size_t);
 
@@ -36,7 +36,7 @@ enum {
     S_RAW,         /* a raw.c ICMP socket (LOGIT_SOCK_RAW) */
     /* AF_UNIX. It is a kind here rather than a second `struct file` type
      * because F_SOCK already means "c/net/core owns this backing pointer", and
-     * a second type would mean a second dispatch arm in c/kernel/exec/file.c --
+     * a second type would mean a second dispatch arm in c/kernel/exec/fd/file.c --
      * a shared, actively-edited file this line has no reason to touch. The
      * state itself is entirely c/net/core/unix.c's; this struct holds only the
      * handle. */

@@ -3,7 +3,7 @@
 ifeq ($(PCIINTXGUEST),1)
 OBJ += $(BUILD)/tests/unit/pci_intx_guest_kernel.o
 $(KERNEL): $(BUILD)/tests/unit/pci_intx_guest_kernel.o
-$(BUILD)/c/kernel/core/kmain.o: CFLAGS += -Ddev_dump=pci_intx_guest_dev_dump
+$(BUILD)/c/kernel/init/kmain.o: CFLAGS += -Ddev_dump=pci_intx_guest_dev_dump
 ifeq ($(PCIINTXGUEST_NEG),first)
 $(BUILD)/c/kernel/pci/pci_msi.o: CFLAGS += -DPCI_INTX_NEGCTL_FIRST_ONLY
 endif

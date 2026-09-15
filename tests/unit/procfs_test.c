@@ -14,7 +14,7 @@
  *
  * THE NEGATIVE CONTROL is -DPROCFS_SNAPSHOT_AT_OPEN (tests/procfs.mk). It
  * makes pf_size() latch its render so the first read serves it -- and
- * pf_size() is what c/kernel/exec/file.c calls at open(). Under it every
+ * pf_size() is what c/kernel/exec/fd/file.c calls at open(). Under it every
  * FORMAT and NAMESPACE check still passes and exactly the five checks whose
  * names begin "LIVE:" must fail.
  *
@@ -366,7 +366,7 @@ int main(void)
     ok(fs->iops->mkdir == NULL,  "there is no mkdir op to call");
     ok(fs->iops->rename == NULL, "there is no rename op to call");
 
-    /* --- 8. the mount-point test c/kernel/exec/file.c uses at open() ------ */
+    /* --- 8. the mount-point test c/kernel/exec/fd/file.c uses at open() ------ */
     ok(procfs_owns_path("/proc") == 1,          "owns /proc itself");
     ok(procfs_owns_path("/proc/1/stat") == 1,   "owns a file under it");
     ok(procfs_owns_path("/procx") == 0,         "component boundary: /procx is not /proc");

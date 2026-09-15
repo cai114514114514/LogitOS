@@ -133,7 +133,7 @@ test-tls-chain-negctl: $(BUILD)
 # "RESULT: FAIL (connect)" for a DIAL failure and nothing else in that shape.
 test-tls-chain-live: $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -o $(BUILD)/tls_chain_live $(TLSFIX_LIVE_SRC) $(TLSFIX_INC) \
-	  -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core || { \
+	  -Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC) || { \
 	  echo "FAIL: could not build tls_chain_live"; exit 1; }
 	@if ! $(BUILD)/tls_chain_live www.bing.com 443 www.bing.com 2>&1 | grep -q "RESULT: PASS"; then \
 	  if $(BUILD)/tls_chain_live www.bing.com 443 www.bing.com 2>&1 | grep -q "(connect)"; then \

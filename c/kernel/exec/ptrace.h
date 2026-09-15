@@ -7,7 +7,7 @@
  * ptrace -- one process looking at another one that is still alive.
  *
  * THE HALF OF THE DEBUGGING QUESTION CORE DUMPS DO NOT ANSWER. A dump
- * (c/kernel/exec/coredump.h) says what a program looked like when it DIED. It
+ * (c/kernel/exec/signal/coredump.h) says what a program looked like when it DIED. It
  * says nothing about a program that is running and wrong -- spinning, wedged,
  * or about to do something you want to see first. Before this, the only
  * debugger on the machine was `make debug`, which attaches gdb to QEMU and
@@ -35,7 +35,7 @@
  *     stop protocol again.
  *
  * ------------------------------------------------------------ HOW IT STOPS
- * IT DOES NOT INVENT A STOP. c/kernel/exec/ksigframe.c's ksig_deliver()
+ * IT DOES NOT INVENT A STOP. c/kernel/exec/signal/ksigframe.c's ksig_deliver()
  * already has one: SIGSTOP sets `stopped` and the thread sits in a
  * sched_poll_wait() loop at the return-to-ring-3 boundary, which is the ONE place
  * a complete user register frame exists. ATTACH posts SIGSTOP through the
@@ -101,7 +101,7 @@
  * both. */
 #define PTRACE_NGREG 27
 
-struct registers;   /* c/kernel/cpu/interrupts.h */
+struct registers;   /* c/kernel/cpu/irq/interrupts.h */
 
 /* SYS_PTRACE. `arg` is a user pointer for the requests that take one and is
  * ignored otherwise. Returns PT_OK or a PT_E_*. */

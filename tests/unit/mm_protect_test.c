@@ -1,4 +1,4 @@
-/* Host test for mprotect: c/kernel/mm/vma.c vma_protect() + c/kernel/mm/vmm.c
+/* Host test for mprotect: c/kernel/mm/virt/vma.c vma_protect() + c/kernel/mm/virt/vmm.c
  * vmm_protect_range_in(), compiled -DMM_HOSTTEST alongside the rest of
  * c/kernel/mm over a simulated physical memory.
  *

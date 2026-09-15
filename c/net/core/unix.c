@@ -19,14 +19,14 @@ static unsigned long unix_change;
 #include "logit_abi.h"          /* LOGIT_SOCK_*, LSK_E_*, UNIXSTAT_*, O_*, SIG* */
 #include "vfs_meta.h"           /* struct vcred, VM_IW* -- the mode a name carries */
 #include "kheap.h"              /* kmalloc/kfree: the buffers, never the table */
-#include "kernel/core/wait.h"   /* path-qualified for the reason file.c gives:
+#include "kernel/sync/wait.h"   /* path-qualified for the reason file.c gives:
                                  * mini-libc ships a <wait.h> that sorts first */
 
 void *memset(void *, int, size_t);
 #include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 
 /* SIGPIPE on a write to a peer that is gone, and EINTR on a signalled wait --
- * declared WEAK for exactly the reason c/kernel/exec/file.c declares the lsock
+ * declared WEAK for exactly the reason c/kernel/exec/fd/file.c declares the lsock
  * hooks weak: this file is compiled into a host gate that has no signal
  * delivery and no process to deliver to, and a hard reference would make the
  * gate fail to link over machinery it never exercises. NULL means "this build

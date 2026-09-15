@@ -3,10 +3,10 @@
  *
  * WHY THIS FILE EXISTS, because both call sites say it should not:
  *
- *   c/kernel/mm/vmm.c:12   declares tlb_flush_all() weak and explains
+ *   c/kernel/mm/virt/vmm.c:12   declares tlb_flush_all() weak and explains
  *                          "Absent, the call is skipped, which is right: a host
  *                           test has no other core to shoot down."
- *   c/kernel/mm/kheap.c:365 declares kheap_cpu_index() weak and explains
+ *   c/kernel/mm/phys/kheap.c:365 declares kheap_cpu_index() weak and explains
  *                          "Absent, it answers 0: the host test then exercises
  *                           one magazine."
  *

@@ -12,7 +12,7 @@
 #
 # HOW IT WORKS
 # ------------
-# The instrument is kprof (c/kernel/core/kprof.c) driven from the guest's own
+# The instrument is kprof (c/kernel/diag/kprof.c) driven from the guest's own
 # serial shell -- no debugger, no host tooling, no second profiler:
 #
 #     echo spans 1 > /dev/kprof      turn span recording on

@@ -8,7 +8,7 @@
  * WHAT THIS COMMENT USED TO SAY, because a reader who remembers it should know
  * why it changed. It said "NOT A WORKING SOCKET LAYER -- every function below
  * FAILS at runtime", and it gave two reasons: that making a socket an fd would
- * mean "teaching the fd layer (c/kernel/exec/file.c) a new file kind", and that
+ * mean "teaching the fd layer (c/kernel/exec/fd/file.c) a new file kind", and that
  * "there is no bind()/listen()/accept() on ANY path -- the kernel is a client
  * only". Both were true when it was written and neither is true now. file.c has
  * F_SOCK; c/net/core/lsock.c is the server-socket family behind it; and

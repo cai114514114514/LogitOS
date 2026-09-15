@@ -30,12 +30,12 @@ for path in sorted(list((ROOT/'c').rglob('*'))+list((ROOT/'examples/openlogit').
     calls=sorted(set(entries.findall(src)))
     if calls:
         route='sdk-backend' if sdk else 'normal-consumer'
-        if rel in ('c/kernel/gui/fb.c','c/apps/logit.h','c/kernel/gui/glass.h'):route='compatibility-or-driver'
+        if rel in ('c/kernel/gui/fb/fb/fb.c','c/apps/logit.h','c/kernel/gui/fb/fb/glass.h'):route='compatibility-or-driver'
         inventory.append({'path':rel,'role':route,'entry_points':calls})
 # A framebuffer adapter can transfer final display pixels but its normal draw
 # entries must remain loop-free one-way calls. Braces parse enough of C here;
 # there are no strings/comments left to confuse nesting.
-fb=code((ROOT/'c/kernel/gui/fb.c').read_text())
+fb=code((ROOT/'c/kernel/gui/fb/fb/fb.c').read_text())
 for name in ('put','clear','fill_rect','fill_circle','round_rect','blit_glyph','blit_rgba',
              'blit_surface','blit_surface_scaled','blit_surface_scaled_bl','shadow','blur_rect',
              'blend_rect','blend_round_rect','fill_vgrad','round_rect_vgrad','liquid_glass','liquid_glass_cut'):

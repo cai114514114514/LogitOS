@@ -21,7 +21,7 @@
 #      not yet wired (c/kernel/mm/mm.h MM_COW_DEFAULT) the kernel reports
 #      cow=off and every page is copied; once it is wired the same harness
 #      additionally requires "copied" to collapse.
-#   5. THE PAGE CACHE (c/kernel/mm/pcache.h). fsroot/as/examples/pcachecheck.as
+#   5. THE PAGE CACHE (c/kernel/mm/cache/pcache.h). fsroot/as/examples/pcachecheck.as
 #      writes a file, opens it twice, and maps it twice through SYS_MMAP_FILE
 #      (162). The claim under test is the headline one from pcache.h: read()
 #      and mmap() of the same file return THE SAME MEMORY, not two copies --

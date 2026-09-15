@@ -1,6 +1,6 @@
 /* The ELF64 + AEX loader, tested against the real thing.
  *
- * c/kernel/exec/elf.c and c/kernel/exec/aex.c are compiled into this program
+ * c/kernel/exec/load/elf.c and c/kernel/exec/load/aex.c are compiled into this program
  * unmodified. What is replaced is the machine underneath them
  * (tests/unit/exechost/space.c), and it is replaced with the HOST's MMU rather
  * than with a table of integers -- so "text is not writable" is established by
@@ -603,7 +603,7 @@ static uint8_t *g_v2;  static long g_v2n;
 /* Copy the reference v2 file, hand the copy to a mutator, and require the given
  * code. Everything about the container is tested this way -- against a REAL
  * file the build produced, not a synthetic one -- because the thing most worth
- * catching is a disagreement between tools/mkaex.py and c/kernel/exec/aex.c,
+ * catching is a disagreement between tools/mkaex.py and c/kernel/exec/load/aex.c,
  * and two hand-written structures cannot disagree with each other. */
 typedef void (*mutate)(uint8_t *p, long *n);
 
@@ -684,7 +684,7 @@ static void container(void)
     if (!g_v2) { printf("FAIL: cannot read %s\n", v2); g_fails++; return; }
 
     /* The reference file, and what it says. This is also the assertion that
-     * tools/mkaex.py and c/kernel/exec/aex.c agree about the layout: the CRC
+     * tools/mkaex.py and c/kernel/exec/load/aex.c agree about the layout: the CRC
      * python computed over the ELF has to be the CRC the kernel computes. */
     struct aex_info in;
     space_quiet(1);

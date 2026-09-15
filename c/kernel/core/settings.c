@@ -1751,7 +1751,7 @@ long settings_syscall(long num, long a, long b, long c)
  * present-but-inert:
  *
  *   screen resolution -- SYS_SCREEN_INFO reports the mode; nothing SETS it.
- *     Changing it means a virtio-gpu mode set in c/kernel/gui/fb.c, which
+ *     Changing it means a virtio-gpu mode set in c/kernel/gui/fb/fb/fb.c, which
  *     belongs to the window-management line this round.  The store would hold
  *     the number happily; the machine would ignore it.
  *

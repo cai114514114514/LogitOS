@@ -1,5 +1,5 @@
-/* Host unit test for the kernel log ring (c/kernel/core/klog.c) and the
- * formatter it shares with kprintf (c/kernel/core/kprintf.c).
+/* Host unit test for the kernel log ring (c/kernel/diag/klog.c) and the
+ * formatter it shares with kprintf (c/kernel/diag/kprintf.c).
  *
  * The ring is the one part of the diagnostic subsystem whose logic is fully
  * isolable: it is static memory, a leaf lock and a per-CPU line buffer, with

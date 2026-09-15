@@ -599,7 +599,7 @@ int main(int argc, char **argv)
      * and so should be identical on every path. On this kernel it is not
      * apparatus:
      *
-     *   c/kernel/exec/file.c:759, file_open_vfs() --
+     *   c/kernel/exec/fd/file.c:759, file_open_vfs() --
      *       f->backing = kmalloc((size_t)cap);   cap == the whole file
      *
      * open(2) on LogitOS COPIES THE ENTIRE FILE INTO THE KERNEL HEAP. There

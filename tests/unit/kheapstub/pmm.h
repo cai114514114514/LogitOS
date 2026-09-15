@@ -1,6 +1,6 @@
 /* Host-test stub for the kernel pmm: kheap_test.c controls pmm_alloc_contig
  * (real aligned host allocations + on-demand failure injection). Shadows the
- * real c/kernel/mm/pmm.h via -I order. */
+ * real c/kernel/mm/phys/pmm.h via -I order. */
 #ifndef KHEAPSTUB_PMM_H
 #define KHEAPSTUB_PMM_H
 

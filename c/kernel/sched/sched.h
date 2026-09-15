@@ -45,7 +45,7 @@ uint64_t sched_current_cr3(void);                        /* active thread addres
 /* ------------------------------------------------------------------------
  * M27 blocking core: park/unpark.
  *
- * These are the ONLY two calls the sleep primitives in c/kernel/core/wait.c sit
+ * These are the ONLY two calls the sleep primitives in c/kernel/sync/wait.c sit
  * on. Everything else (waitqueue, mutex, semaphore, condvar, rwlock, workqueue)
  * is built out of them.
  *
@@ -157,7 +157,7 @@ int      sched_cpu_limit_set(long seconds);   /* <0 = clear; -> 0, or -1 (no cur
 long     sched_cpu_limit_get_s(void);         /* -> seconds, or -1 = unlimited */
 long     sched_rusage_syscall(long cmd, long a, long b);   /* SYS_RUSAGE dispatch */
 
-/* Timer-tick RLIMIT_CPU check. Called from c/kernel/cpu/interrupts.c, in the
+/* Timer-tick RLIMIT_CPU check. Called from c/kernel/cpu/irq/interrupts.c, in the
  * same non-nested/BKL-held window as ksig_tick(), BEFORE schedule() -- not
  * from inside schedule() itself; see the long comment above this function's
  * definition for why that placement is load-bearing and not a style choice.
@@ -226,7 +226,7 @@ int sched_cpu_tick_check(void);
  *      thread: schedule() does spin_unlock(&g_bkl) immediately before
  *      context_switch and the incoming thread re-takes it. So a preempted
  *      thread is not a BKL holder either.
- *   3. What IS left is a SLEEPING lock (c/kernel/core/wait.c's mutex/semaphore),
+ *   3. What IS left is a SLEEPING lock (c/kernel/sync/wait.c's mutex/semaphore),
  *      which a demoted thread can hold while descheduled. Nothing here does
  *      priority inheritance for it, deliberately: that is an edit to a file
  *      this line does not own, and a hand-off protocol nothing in the tree

@@ -1704,7 +1704,7 @@ static int step_recv_flight(struct tls_sess *s)
  * trust store that cannot enumerate itself can only be audited by rebuilding
  * it, which is not an operation a running machine can perform.
  *
- * Called from kernel_main (c/kernel/core/kmain.c, beside net_init) as well as
+ * Called from kernel_main (c/kernel/init/kmain.c, beside net_init) as well as
  * from tls_start below -- `done` makes the second call a no-op, so on an
  * ordinary boot this prints at boot and the handshake-time call finds it
  * already said. That relocation is only safe because tests/boot/run-test.sh

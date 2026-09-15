@@ -191,7 +191,7 @@ static inline int sniff_id(const unsigned char *b, int n)
     /* "AEX1" and nothing else. This used to also accept "LAEX", which nothing
      * has ever produced and no loader has ever accepted -- a magic number with
      * no writer and no reader, which is a claim the sniffer cannot back. The
-     * one real magic is the one c/kernel/exec/aex.c checks; the four bytes are
+     * one real magic is the one c/kernel/exec/load/aex.c checks; the four bytes are
      * the same in v1 and v2, and the version that follows them is the loader's
      * business, not the sniffer's. */
     if (sn_eq(b, n, 0, "AEX1", 4)) return SN_AEX;

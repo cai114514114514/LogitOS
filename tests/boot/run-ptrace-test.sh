@@ -4,7 +4,7 @@
 #
 # There is no host half of this and there cannot be a useful one. Every part of
 # ptrace that can be wrong is a property of the real machine: whether a ring-3
-# loop reaches the stop inside c/kernel/exec/ksigframe.c within a timer tick,
+# loop reaches the stop inside c/kernel/exec/signal/ksigframe.c within a timer tick,
 # whether the saved trap frame is the tracee's, and whether walking another
 # process's page table by hand lands on the right physical frame. A model of
 # those is a model of the answer.

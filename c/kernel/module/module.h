@@ -26,7 +26,7 @@
  *   misbehave. That is a real hole and it is named rather than papered over.
  *
  * WHAT elf.c COULD NOT BE REUSED FOR, since the question comes up
- *   c/kernel/exec/elf.c parses PROGRAM headers (PT_LOAD) of ET_EXEC/ET_DYN
+ *   c/kernel/exec/load/elf.c parses PROGRAM headers (PT_LOAD) of ET_EXEC/ET_DYN
  *   images. An ET_REL object has NO program headers at all -- e_phnum is 0 --
  *   and everything a module loader needs lives in the SECTION headers, which
  *   elf.c never looks at and has no types for (there is no Elf64_Shdr,

@@ -41,7 +41,7 @@
         test-netif test-netif-negctl test-route-all
 
 ROUTE_INC := -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/drivers/net \
-             -Ic/drivers/core -Ic/drivers/timer -Ic/kernel/core -Ic/kernel/pci
+             -Ic/drivers/core -Ic/drivers/timer $(KCORE_INC) -Ic/kernel/pci
 
 # The table itself: longest-prefix ranking, the metric tie-break, on-link
 # resolution, loopback as an ordinary row, prefix arithmetic at both ends of

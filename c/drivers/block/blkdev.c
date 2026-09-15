@@ -19,7 +19,7 @@
 #define kmalloc malloc
 #define kfree free
 #else
-#include "../../kernel/mm/kheap.h"
+#include "../../kernel/mm/phys/kheap.h"
 #include "../../kernel/exec/usercopy.h"
 #endif
 
@@ -205,7 +205,7 @@ static int copy_to_user(void *dst, const void *src, size_t n)
  * does, so an ordinary boot exercises it thousands of times before any swap
  * page is written.
  *
- * NON-PREEMPTION, AND WHY IT IS g_ata_busy. c/kernel/cpu/interrupts.c skips
+ * NON-PREEMPTION, AND WHY IT IS g_ata_busy. c/kernel/cpu/irq/interrupts.c skips
  * schedule() while ata_busy() || virtio_busy() || nvme_busy(), and ahci.c
  * already shared ata.c's flag rather than adding a third, arguing it is the
  * same claim. It is now the BLOCK LAYER's flag, raised in one place, for that

@@ -5,7 +5,7 @@ import argparse,json,pathlib,subprocess
 p=argparse.ArgumentParser();p.add_argument('--build',default='/tmp/logitos-bkl-20260910/proc/kernel-map');a=p.parse_args()
 root=pathlib.Path(__file__).resolve().parents[2];out=pathlib.Path(a.build).resolve();out.mkdir(parents=True,exist_ok=True)
 src=['tests/unit/bkl_kernel_map_test.c','tests/unit/mm_common.c']+['c/kernel/mm/'+s+'.c' for s in ['pmm','vmm','fault','vma','rmap','reclaim','swap','pcache','shm','oom']]+['c/kernel/cpu/spinlock.c']
-flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-pthread','-DMM_HOSTTEST','-DMM_CONCURRENT','-DLOGIT_LOCK_HOST','-DMM_KERNEL_MAP_TEST','-fsanitize=address,undefined','-fno-sanitize-recover=all','-Itests/unit','-Itests/unit/mmstub','-Ic/kernel/mm']
+flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-pthread','-DMM_HOSTTEST','-DMM_CONCURRENT','-DLOGIT_LOCK_HOST','-DMM_KERNEL_MAP_TEST','-fsanitize=address,undefined','-fno-sanitize-recover=all','-Itests/unit','-Itests/unit/mmstub','-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim']
 report=[]
 cases=[('no-kernel-owner','MM_NO_KERNEL_MAP_LOCK','concurrent kernel table publication preserves both leaf mappings'),('no-partial-publication','MM_NO_PARTIAL_KERNEL_PUBLISH','partial kernel table allocation failure publishes valid shared roots'),('positive',None,None)]
 for name,macro,assertion in cases:

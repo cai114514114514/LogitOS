@@ -134,7 +134,7 @@ int  tcp_get_info(int id, struct tcp_info *out);
  * says TCP_L_E_AGAIN. tcp_accept_wait parks the calling thread on the
  * listener's wait queue -- unlinked from the run ring, not spinning, not
  * holding the BKL -- until a handshake completes or the deadline passes. The
- * split matches what pipes already do in c/kernel/exec/file.c: O_NONBLOCK picks
+ * split matches what pipes already do in c/kernel/exec/fd/file.c: O_NONBLOCK picks
  * the first, an ordinary descriptor the second.
  *
  * WHAT THE LIMITS ARE, AND THAT THEY ARE ENFORCED OUT LOUD. Four listeners; a

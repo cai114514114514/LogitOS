@@ -49,9 +49,9 @@ ci-host: test-event-fairness
 # drives the production kernel source and checks the response bound BEFORE an
 # event reaches a window. Each positive depends on mutations that restore one
 # old failure at a time, so a green stress run cannot merely be a weak fixture.
-INPUT_QUEUE_SRC = tests/unit/input_queue_test.c c/kernel/gui/input_queue.c
-INPUT_QUEUE_DEPS = $(INPUT_QUEUE_SRC) c/kernel/gui/input_queue.h tests/input_delivery.mk
-INPUT_QUEUE_CF = -O2 -Wall -Wextra -Ic/kernel/gui
+INPUT_QUEUE_SRC = tests/unit/input_queue_test.c c/kernel/gui/input/input_queue.c
+INPUT_QUEUE_DEPS = $(INPUT_QUEUE_SRC) c/kernel/gui/input/input_queue.h tests/input_delivery.mk
+INPUT_QUEUE_CF = -O2 -Wall -Wextra $(KGUI_INC)
 .PHONY: test-input-queue test-input-queue-negctl test-evq-priority-negctl
 $(BUILD)/input_queue_test: $(INPUT_QUEUE_DEPS)
 	@mkdir -p $(BUILD)
@@ -79,10 +79,10 @@ test-input-queue-negctl: $(BUILD)/input_queue_no_coalesce $(BUILD)/input_queue_u
 	@rc=0; $(BUILD)/input_queue_ack_dropped_edge > $(BUILD)/input_queue_ack_dropped_edge.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL: admitted release remains semantic under renewed overload' $(BUILD)/input_queue_ack_dropped_edge.log && \
 	 grep -F 'FAIL: retried release remains observable after renewed overload' $(BUILD)/input_queue_ack_dropped_edge.log
-$(BUILD)/evq_priority_negctl: tests/unit/evq_test.c c/kernel/gui/evq.c c/kernel/gui/evq.h
+$(BUILD)/evq_priority_negctl: tests/unit/evq_test.c c/kernel/gui/input/evq.c c/kernel/gui/input/evq.h
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -Wextra -DEVQ_NEGCTL_DROP_SEMANTIC -o $@ \
-	 tests/unit/evq_test.c c/kernel/gui/evq.c -Ic/kernel/gui -Iinclude/abi
+	 tests/unit/evq_test.c c/kernel/gui/input/evq.c $(KGUI_INC) -Iinclude/abi
 test-evq-priority-negctl: $(BUILD)/evq_priority_negctl
 	@rc=0; $< > $(BUILD)/evq_priority_negctl.log 2>&1 || rc=$$?; \
 	 test $$rc -eq 1 && grep -F 'FAIL full ring admits button-up' $(BUILD)/evq_priority_negctl.log && \

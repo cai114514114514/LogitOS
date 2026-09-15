@@ -6,7 +6,7 @@
 # fail is not known to be capable of failing -- it may be measuring the wrong
 # counter, or asserting something that is true either way. So the same binary
 # is rebuilt with -DKHEAP_NO_SPLIT, which restores exactly the whole-block reuse
-# c/kernel/mm/kheap.c had before (see split_block()), and the script requires it
+# c/kernel/mm/phys/kheap.c had before (see split_block()), and the script requires it
 # to FAIL. If it passes, this suite is not testing anything and says so.
 #
 # Both builds run under ASan + UBSan, which is why the allocator is compiled for
@@ -20,7 +20,7 @@ OUT="${1:-$ROOT/build}"
 CC="${CC:-cc}"
 mkdir -p "$OUT"
 
-INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm"
+INC="-I$ROOT/tests/unit -I$ROOT/tests/unit/mmstub -I$ROOT/c/kernel/mm -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim -I$ROOT/c/kernel/mm/phys -I$ROOT/c/kernel/mm/virt -I$ROOT/c/kernel/mm/cache -I$ROOT/c/kernel/mm/reclaim"
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 FLAGS="-std=c11 -O1 -g -Wall -Wextra -Werror -DMM_HOSTTEST $SAN $INC"
 
@@ -36,8 +36,8 @@ MM="$ROOT/c/kernel/mm"
 # under test is c/kernel/mm wired the way the kernel wires it.
 SRC="$ROOT/tests/unit/leak_kheap_test.c $ROOT/tests/unit/mm_common.c \
      $ROOT/tests/unit/mmstub/mm_hoststub.c \
-     $MM/kheap.c $MM/pmm.c $MM/vmm.c $MM/fault.c $MM/vma.c \
-     $MM/rmap.c $MM/reclaim.c $MM/swap.c $MM/pcache.c $MM/shm.c $MM/oom.c"
+     $MM/phys/kheap.c $MM/phys/pmm.c $MM/virt/vmm.c $MM/virt/fault.c $MM/virt/vma.c \
+     $MM/reclaim/rmap.c $MM/reclaim/reclaim.c $MM/reclaim/swap.c $MM/cache/pcache.c $MM/shm.c $MM/reclaim/oom.c"
 # pcache.c: fault.c and vma.c call pcache_get/pcache_file_put/pcache_report
 # since the file-backed page cache landed, so this list stopped linking the
 # moment that happened. Nothing said so -- no suite reaches test-leak.
@@ -102,7 +102,7 @@ echo
 # build. GCC does not warn about an unused `static inline`; clang does, so on
 # the documented development host the control did not compile:
 #
-#     c/kernel/mm/kheap.c:143:30: error: unused function 'blk_prev'
+#     c/kernel/mm/phys/kheap.c:143:30: error: unused function 'blk_prev'
 #         [-Werror,-Wunused-function]
 #     FAIL: the negative control did not build
 #

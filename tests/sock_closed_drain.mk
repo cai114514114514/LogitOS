@@ -1,7 +1,7 @@
 # Real kernel sock.c with a controllable TCP sender. The negative build changes
 # only error cleanup after application close; every open queues actual bytes.
 SOCK_DRAIN_DIR = $(BUILD)/site-general/continue
-SOCK_DRAIN_INC = -Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char -Ic/kernel/core -Iinclude/abi
+SOCK_DRAIN_INC = -Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char $(KCORE_INC) -Iinclude/abi
 .PHONY: test-sock-closed-drain test-sock-closed-drain-negctl
 
 test-sock-closed-drain-negctl:

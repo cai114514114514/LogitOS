@@ -16,8 +16,8 @@ BUILD="${BUILD:-$ROOT/build}"
 CC="${CC:-cc}"
 mkdir -p "$BUILD"
 
-INC="-I$ROOT/tests/unit/waitstub -I$ROOT/c/kernel/core"
-SRC="$ROOT/tests/unit/wait_test.c $ROOT/c/kernel/core/wait.c"
+INC="-I$ROOT/tests/unit/waitstub -I$ROOT/c/kernel/core -I$ROOT/c/kernel/init -I$ROOT/c/kernel/diag -I$ROOT/c/kernel/sync"
+SRC="$ROOT/tests/unit/wait_test.c $ROOT/c/kernel/sync/wait.c"
 FLAGS="-O1 -g -Wall -Wextra -pthread -fsanitize=thread"
 
 # ThreadSanitizer is the point of the host build: this code is only interesting

@@ -5,7 +5,7 @@
  *
  * This header used to open by saying the kernel had no signal delivery, and
  * that was true: nothing could cause a handler registered here to run.
- * c/kernel/exec/ksignal.c and ksigframe.c are that mechanism now. A handler
+ * c/kernel/exec/signal/ksignal.c and ksigframe.c are that mechanism now. A handler
  * installed here really is entered on a frame the kernel pushes onto this
  * process's stack, with the interrupted registers AND the FPU/SSE state saved,
  * and sigreturn restores them exactly. So:

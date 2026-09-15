@@ -241,7 +241,7 @@ int virtio_balloon_poll(void)
  * actually left the pool) -- exactly the shape the RNG driver's own
  * self-test comment names as the thing to check for. Small (4 frames) and
  * fast: this runs unconditionally at every boot with the device present,
- * from dev_probe_all() (c/kernel/core/kmain.c), which runs after smp_init()
+ * from dev_probe_all() (c/kernel/init/kmain.c), which runs after smp_init()
  * -- the AP cores are up by then -- but before wm_run() starts the scheduler
  * proper and spawns the first app thread. Nothing else is runnable yet to
  * contend for pmm_lock, so the before/after free-frame arithmetic cannot be

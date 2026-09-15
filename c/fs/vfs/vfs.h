@@ -107,7 +107,7 @@ struct filesystem {
      * it by slurping the file and throwing the prefix away. That emulation is
      * O(off) per call, so a sequential walk of an n-page file costs O(n^2)
      * bytes of copying -- it is exactly the workaround that lived in
-     * c/kernel/mm/pcache_vfs.c until this op existed, and it is deleted rather
+     * c/kernel/mm/cache/pcache_vfs.c until this op existed, and it is deleted rather
      * than kept as a second path that can disagree with this one. */
     int  (*pread)(const char *path, void *buf, int max, long long off);
 

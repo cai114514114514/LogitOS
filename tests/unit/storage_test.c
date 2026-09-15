@@ -16,12 +16,12 @@
  *      convention SYS_CLOSE translates to -2.
  *
  * THE NEGATIVE CONTROL is -DSTORAGE_NEGCTL (test-storage-negctl): it restores
- * BOTH pre-fix behaviours in c/kernel/exec/file.c -- the hole is left as
+ * BOTH pre-fix behaviours in c/kernel/exec/fd/file.c -- the hole is left as
  * allocated, and file_truncate answers -1 -- and this suite then FAILS, for
  * exactly the two reasons above, which is the only honest proof the asserts
  * are attached to something. See poll.mk's negctl for the shape.
  *
- * Real code under test: c/kernel/exec/file.c, unmodified, per
+ * Real code under test: c/kernel/exec/fd/file.c, unmodified, per
  * tests/unit/storhost/hostmodel.c's header.
  */
 

@@ -3,7 +3,7 @@
 
 /* readcore [PATH]        print an ELF64 ET_CORE dump written by this kernel
  *
- * Default PATH is /core.1. c/kernel/exec/coredump.h explains why the slots are
+ * Default PATH is /core.1. c/kernel/exec/signal/coredump.h explains why the slots are
  * four fixed names and not one per pid; the kernel's [core] line on the serial
  * log names the one it just wrote.
  *

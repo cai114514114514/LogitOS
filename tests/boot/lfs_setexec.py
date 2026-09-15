@@ -2,7 +2,7 @@
 """Stamp the execute bit onto files already on a LogitFS v4 image.
 
 WHY THIS EXISTS, and it is a workaround for something that is not this file's
-bug. c/kernel/exec/exec.c now asks vfs_access(path, MAY_EXEC) before execve,
+bug. c/kernel/exec/load/exec.c now asks vfs_access(path, MAY_EXEC) before execve,
 and tools/mkfs.py deliberately leaves every inode's xmode ZERO ("nobody ever
 set a mode"), which c/fs/logitfs.c reports as the 0644 default with VA_STORED
 clear. c/fs/vfs_meta.c gives root no bypass for MAY_EXEC when no x bit is set

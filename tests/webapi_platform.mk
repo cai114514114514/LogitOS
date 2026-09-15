@@ -201,7 +201,7 @@ PROBE_SRC += $(wildcard c/lib/image/*.c) $(GFX_SRC)
 # ws.c itself calls ocsp_sha1 (c/crypto/hash/sha1.c) and includes base64.h
 # (c/net/ssh) -- same two riders tests/wpt.mk already carries for this file.
 PROBE_SRC += c/net/http/http1.c c/net/http/url.c c/net/http/cookies.c c/net/http/ws.c c/net/ssh/base64.c c/crypto/hash/sha1.c tests/unit/rust_host_shim.c
-PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -Ic/kernel/mm -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+PROBE_CF  := $(BTEST_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi $(KMM_INC) -Ic/net/ssh -Ic/crypto -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 # webapi_probe.c DEFINES printf so it can capture js_module.c's diagnostics.
 # gcc rewrites printf("%s\n", x) into puts/fputs, and a rewritten call goes
 # straight to libc and never reaches that definition -- so the tee would

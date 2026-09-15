@@ -27,7 +27,7 @@ LOGIT_WEAK_STUB(vfs_mount_at);
 /* --------------------------------------------------------------------------
  * Sizing, argued rather than rounded.
  *
- * The largest file here is /proc/<pid>/maps. c/kernel/mm/vma.h fixes
+ * The largest file here is /proc/<pid>/maps. c/kernel/mm/virt/vma.h fixes
  * VMA_MAXAREA at 32, and a line is
  *
  *     0000000040000000-0000000040002000 r-x anon 0000000000000000
@@ -49,7 +49,7 @@ LOGIT_WEAK_STUB(vfs_mount_at);
 /* THE NEGATIVE CONTROL, and it is the PLAUSIBLE wrong implementation rather
  * than a mutilation: size() and the first read() of a file render the same
  * bytes microseconds apart, so sharing one render between them is an obvious
- * saving, and c/kernel/exec/file.c calls vfs_size() at OPEN. Take the saving
+ * saving, and c/kernel/exec/fd/file.c calls vfs_size() at OPEN. Take the saving
  * and every /proc file silently becomes a snapshot taken at open() -- which
  * still formats correctly, still has the right length, still passes every
  * test that only checks shape, and is wrong in the one way this filesystem
@@ -194,7 +194,7 @@ static char state_letter(const struct procfs_task *t)
 /* /proc/<pid>/stat -- ONE LINE, for ps.
  *
  * NOT Linux's 52 fields. Linux's field 4 is the process group and field 5 the
- * session, and this kernel has neither (c/kernel/exec/file.c says so in as
+ * session, and this kernel has neither (c/kernel/exec/fd/file.c says so in as
  * many words: "there are no sessions and no process groups here"). Writing 0
  * into them would be a number nobody measured in a position every parser
  * believes. The fields below are the ones struct proc actually holds, in a
@@ -239,7 +239,7 @@ static int r_status(struct em *e, int pid)
 
 /* argv[0] and no more, NUL-terminated as Linux's is.
  *
- * This kernel does not retain argv: c/kernel/exec/exec.c builds the SysV stack
+ * This kernel does not retain argv: c/kernel/exec/load/exec.c builds the SysV stack
  * for the new image and copies only the program name into `p->name`
  * (exec.c:387), so the arguments exist in the process's own stack and nowhere
  * the kernel can find them again. Reporting the name is honest; inventing a
@@ -259,7 +259,7 @@ static int r_cmdline(struct em *e, int pid)
  * Format: start-end prot backing offset. `prot` renders PROT_NONE as "---"
  * and that is a real state on this machine, not a placeholder: pthread_create
  * mprotects a stack's lowest page to PROT_NONE for the guard, and
- * c/kernel/mm/vma.h's comment on vma_protect explains that 0 is deliberately
+ * c/kernel/mm/virt/vma.h's comment on vma_protect explains that 0 is deliberately
  * distinguishable there. A guard page is exactly the thing somebody opens
  * this file to look for. */
 static int r_maps(struct em *e, int pid)

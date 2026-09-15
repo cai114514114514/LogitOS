@@ -1,6 +1,6 @@
 #ifndef EXECHOST_VMM_H
 #define EXECHOST_VMM_H
-/* The slice of c/kernel/mm/vmm.h the loader uses. Deliberately a SLICE: if the
+/* The slice of c/kernel/mm/virt/vmm.h the loader uses. Deliberately a SLICE: if the
  * loader starts needing more of the memory manager, this test stops compiling,
  * which is the notification you want. */
 #include <stdint.h>

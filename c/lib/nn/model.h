@@ -15,7 +15,7 @@
  *
  *   - a 512 MiB machine cannot afford a copy of the weights on top of the
  *     weights;
- *   - and the mapping is not hypothetical. SYS_MMAP_FILE, c/kernel/mm/pcache.c
+ *   - and the mapping is not hypothetical. SYS_MMAP_FILE, c/kernel/mm/cache/pcache.c
  *     and MM_FAULT_FILE already exist and are wired into reclaim tier 1.
  *     (An earlier draft of this comment said the opposite, quoting a CLAUDE.md
  *     paragraph written before that work landed and never updated. Both are

@@ -96,7 +96,7 @@ extern char __logit_tls_end[]   LOGIT_WEAK;
  *
  * The x86-64 psABI's variant-II layout puts a self-pointer at %fs:0 and a dtv
  * slot at %fs:8, with thread-local data growing DOWNWARD from the thread
- * pointer. c/kernel/exec/elf.c's loader builds exactly that for a program's
+ * pointer. c/kernel/exec/load/elf.c's loader builds exactly that for a program's
  * main thread, from PT_TLS, and reserves TP_HEAD bytes above the thread pointer
  * for a control block -- so the shape is not this file's to choose, it is a
  * shape this file has to MATCH.
@@ -113,7 +113,7 @@ extern char __logit_tls_end[]   LOGIT_WEAK;
  * discard whatever `__thread` values main() had already written, at whatever
  * moment the program first touched pthreads -- which is exactly the kind of bug
  * that gets blamed on the program. */
-#define TP_HEAD 256              /* must match `tcb` in c/kernel/exec/elf.c */
+#define TP_HEAD 256              /* must match `tcb` in c/kernel/exec/load/elf.c */
 
 struct tcb;
 
@@ -218,7 +218,7 @@ static struct tcb main_ext;
  * TWO CASES, and asking which one applies is the whole reason SYS_SET_TLS has a
  * query:
  *
- *   THE LOADER ALREADY INSTALLED A THREAD POINTER. c/kernel/exec/elf.c builds
+ *   THE LOADER ALREADY INSTALLED A THREAD POINTER. c/kernel/exec/load/elf.c builds
  *   one from the program's PT_TLS and exec.c installs it, so a program launched
  *   through execve arrives with `__thread` ALREADY WORKING. All this has to do
  *   then is hang its own block off %fs:16, inside the area the loader reserved
@@ -691,7 +691,7 @@ int pthread_mutexattr_getpshared(const pthread_mutexattr_t *a, int *pshared)
  * window between releasing the mutex and parking has already incremented seq,
  * so the futex's own value compare fails and the wait returns immediately
  * instead of sleeping on an event that already happened. That is the same
- * argument the kernel's wait queues make (c/kernel/core/wait.h rule 2), moved
+ * argument the kernel's wait queues make (c/kernel/sync/wait.h rule 2), moved
  * into userland: the predicate is read under the lock the waker must take.
  *
  * WHAT IT COSTS, stated rather than hidden: there is no requeue operation, so

@@ -51,7 +51,7 @@
  * =========================================================================
  * PASSWORD ECHO
  * =========================================================================
- * The kernel's tty echoes each byte as it is read (c/kernel/exec/file.c
+ * The kernel's tty echoes each byte as it is read (c/kernel/exec/fd/file.c
  * tty_read), and there is no termios here to turn that off. Rather than add a
  * kernel knob for one program, this OVERWRITES: after the tty has echoed a
  * character, login writes backspace + '*'. On a serial terminal that is

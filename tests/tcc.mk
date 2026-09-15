@@ -76,7 +76,7 @@ $(TCC_OUT)/config.h:
 
 # -I$(TCC_SRCDIR) -I$(TCC_OUT) come BEFORE $(UCFLAGS) so tcc's own elf.h,
 # stab.h and the empty config.h win over anything of the same basename in
-# the flat $(INCDIRS) scan (c/kernel/exec/elf.h is the one that collides).
+# the flat $(INCDIRS) scan (c/kernel/exec/load/elf.h is the one that collides).
 # -std=gnu11 -w after UCFLAGS overrides its -std=c11 -Wall -Wextra: this is
 # 2017 GNU C and its warnings are upstream's to fix.
 $(TCC_OUT)/obj/%.o: $(TCC_SRCDIR)/%.c $(TCC_HDRS) $(TCC_OUT)/config.h

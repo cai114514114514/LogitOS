@@ -1,8 +1,8 @@
-/* poll() on the host: the real c/kernel/exec/kpoll.c and the real
- * c/kernel/core/wait.c, driven by a model object, on a modelled scheduler
+/* poll() on the host: the real c/kernel/exec/fd/kpoll.c and the real
+ * c/kernel/sync/wait.c, driven by a model object, on a modelled scheduler
  * (tests/unit/pollhost/hostsched.c -- read its header for what is real).
  *
- * WHY A MODEL OBJECT RATHER THAN A REAL PIPE. c/kernel/exec/file.c cannot be
+ * WHY A MODEL OBJECT RATHER THAN A REAL PIPE. c/kernel/exec/fd/file.c cannot be
  * compiled for the host: kheap, vfs, serial, percpu and the big kernel lock all
  * sit behind it. A poll gate that could only run through file.c would have to
  * boot QEMU, and the one property that matters here -- that an event arriving
@@ -32,7 +32,7 @@
 #include <time.h>
 
 #include "kpoll.h"
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 
 void hostsched_init(void);
 
@@ -53,7 +53,7 @@ static uint64_t now_ms(void)
 
 /* ==========================================================================
  * The model object: a pipe with a count, a writer refcount and one wait queue,
- * which is the shape c/kernel/exec/file.c's struct pipe has. Its readiness
+ * which is the shape c/kernel/exec/fd/file.c's struct pipe has. Its readiness
  * function obeys the two contracts kpoll.h states -- poll_wait() first, and
  * every state change wakes the queue with wake_ALL.
  * ======================================================================== */

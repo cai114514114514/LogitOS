@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # WHAT ONE READ-ONLY DESCRIPTOR COSTS, and proof it still reads the file.
 #
-# c/kernel/exec/file.c's F_VFS backend used to hold the WHOLE file in one
+# c/kernel/exec/fd/file.c's F_VFS backend used to hold the WHOLE file in one
 # kmalloc for every open, read-only or not. This gate is the measurement that
 # the read-only half no longer does, and it is deliberately made of numbers a
 # person can read rather than a pass/fail:
@@ -184,7 +184,7 @@ done
 # guards the regular-file branch only, and vfs_streamable() refuses a synthetic
 # node at offset 1 in the shipped one. So 80 and 0 are the same code path, and
 # the 0 is the allocator, not the file: kmalloc(23) is ALIGN16'd to 32, which is
-# an exact per-core magazine class (c/kernel/mm/kheap.c, mag_class runs AFTER
+# an exact per-core magazine class (c/kernel/mm/phys/kheap.c, mag_class runs AFTER
 # the align), and a kfree into a magazine deliberately does NOT decrement
 # st_live -- the block is still ALLOCATED, which that file argues for at length.
 # fsbench's reference read does kmalloc(sz)/kfree immediately before the

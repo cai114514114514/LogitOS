@@ -461,7 +461,7 @@ void q4_wrap(struct nn_tensor *out, uint8_t *packed, float *scale, float *minv,
  * ordinary kernel thread a 16 KiB stack, so a 32 KiB frame in a function
  * called nine times per layer is a number that has to be checked against the
  * machine rather than chosen for comfort. /bin/lm is a CLI program and gets a
- * 1 MiB stack (c/kernel/exec/exec.c:24, faulted in on touch), so 32 KiB would
+ * 1 MiB stack (c/kernel/exec/load/exec.c:24, faulted in on touch), so 32 KiB would
  * in fact have been safe there -- but "safe in the one caller that exists
  * today" is not the property a bound in a shared kernel file should have. */
 #define Q4_MV_MAX_BLOCKS 1024

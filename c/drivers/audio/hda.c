@@ -53,7 +53,7 @@ static io_lock_t hda_gate = IO_LOCK_INIT;
 #include "pit.h"
 #ifdef HDA_DMA_CAPTURE_CANARY
 #include "sched.h"
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 void hda_capture_stop_check(void);
 #endif
 

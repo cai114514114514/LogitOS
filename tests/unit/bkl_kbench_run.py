@@ -42,7 +42,7 @@ for name, source in [('shared-cpu0-negative', control), ('positive', header)]:
 # Integration contracts around the real tested helper, not timing measurements.
 report = (root / 'c/kernel/sched/kbench.c').read_text()
 dispatch = (root / 'c/kernel/exec/syscall.c').read_text()
-entry = (root / 'c/kernel/cpu/interrupts.c').read_text()
+entry = (root / 'c/kernel/cpu/irq/interrupts.c').read_text()
 assert 'snapshot.n[best] = 0' in report
 assert 'g_kb_sys_n' not in report and 'g_kb_sys_cyc' not in report
 assert '__atomic_store_n(&g_kb_stat' in report

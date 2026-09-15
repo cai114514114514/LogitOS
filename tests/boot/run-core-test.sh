@@ -2,9 +2,9 @@
 # ON THE MACHINE: make a real ring-3 program fault, and then read the core dump
 # the kernel wrote for it -- with gdb, on the host, out of the real disk image.
 #
-# The host gate (make test-coredump) drives c/kernel/exec/coredump.c's builder
+# The host gate (make test-coredump) drives c/kernel/exec/signal/coredump.c's builder
 # against a MODELLED address space. This is the other half: the region list
-# comes from c/kernel/mm/vma.c, "is this page resident" comes from a real page
+# comes from c/kernel/mm/virt/vma.c, "is this page resident" comes from a real page
 # table, the bytes come from a real process, and the file goes through LogitFS
 # onto a real disk -- from inside a page-fault handler, with the BKL held.
 # None of that is exercised by the host gate and all of it can fail on its own.
@@ -16,7 +16,7 @@
 #
 # THE TWO CHANNELS THE GATE COMPARES:
 #   [fault] ... rip=... err=... cr2=... rsp=...   the TRAP FRAME, printed by
-#                                                 c/kernel/cpu/interrupts.c
+#                                                 c/kernel/cpu/irq/interrupts.c
 #   the FILE, parsed by tests/unit/corecheck.c (c/apps/coreutils/corefmt.h, the
 #   same parser /bin/readcore uses) and independently by gdb.
 # Plus cr2, which was written down in fsroot/as/examples/crashme.as before the

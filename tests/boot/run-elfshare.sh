@@ -13,7 +13,7 @@
 #               that one also pays for whatever the first load warms.
 #
 #   G2 RECLAIM. reclaim's tier-1 SECOND producer (try_drop_cached,
-#               c/kernel/mm/reclaim.c:281) has never fired in this tree, because
+#               c/kernel/mm/reclaim/reclaim/reclaim.c:281) has never fired in this tree, because
 #               until now nothing produced a VMM_PTE_FILE page -- SYS_MMAP_FILE's
 #               only caller is a one-page script written to exercise it. Forced
 #               here with MMCTL_RECLAIM so that a zero is a statement about the

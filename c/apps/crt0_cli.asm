@@ -6,7 +6,7 @@
 ; WHY __libc_environ_hook IS DEFINED HERE AND NOT IN THE LIBC.
 ; It used to live in c/apps/libc/src/stdlib.c, which meant nothing ever set it
 ; and getenv() found an empty environment in every program on this machine --
-; the kernel builds a complete envp (c/kernel/exec/exec.c) and crt0 threw the
+; the kernel builds a complete envp (c/kernel/exec/load/exec.c) and crt0 threw the
 ; pointer away. The obvious fix, `extern __libc_environ_hook` here, does not
 ; work: this crt0 is linked by ~30 coreutils through CLI_RULE, and those
 ; programs do NOT link mini-libc at all (they use c/apps/clib.h inline

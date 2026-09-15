@@ -73,7 +73,7 @@ def unix_gate(build, name, control=None):
             source = replace_once(source, '            if (!owner_valid(s)) return sent > 0 ? sent : LSK_E_PERM;', '')
         (directory / 'unix.c').write_text(relocated(source, original))
         flags += ['-I' + str(directory)]
-    flags += ['-Itests/unit/unixstub', '-Ic/net/core', '-Iinclude/abi', '-Ic/fs']
+    flags += ['-Itests/unit/unixstub', '-Ic/net/core', '-Iinclude/abi', '-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs']
     exe = directory / name
     command(flags + ['tests/unit/agent_unix_test.c', '-o', exe])
     labels = {'peer': 'identity: changed peer uid refused',
@@ -110,7 +110,7 @@ int ksig_post_current(int signo) { (void)signo; return 0; }
 ''' + model[end:]
     model_path = directory / 'model.c'
     model_path.write_text(model)
-    file_source = ROOT / 'c/kernel/exec/file.c'
+    file_source = ROOT / 'c/kernel/exec/fd/file.c'
     if control == 'lock':
         source = file_source.read_text()
         original = body(source, 'file_refs_equal')
@@ -123,16 +123,14 @@ int ksig_post_current(int signo) { (void)signo; return 0; }
     flags = ['clang', '-std=c11', '-O1', '-g', '-Wall', '-Wextra',
              '-Wno-unused-function', '-Wno-unused-variable', '-pthread',
              '-fsanitize=address,undefined']
-    for include in ['c', 'c/kernel/exec', 'c/kernel/mm', 'c/kernel/core',
-                    'c/kernel/cpu', 'c/kernel/sched', 'c/fs', 'c/drivers/char',
-                    'c/drivers/timer', 'include/abi']:
+    for include in ['c', 'c/kernel/exec','c/kernel/exec/load','c/kernel/exec/signal','c/kernel/exec/fd','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/sched','c/fs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/drivers/char','c/drivers/timer','include/abi']:
         flags += ['-iquote', str(ROOT / include)]
     file_object = directory / 'file.o'
     command(flags + ['-Dspin_lock_irqsave=agent_file_lock', '-c', file_source, '-o', file_object])
     exe = directory / name
     command(flags + ['tests/unit/agent_fd_test.c', model_path, fd,
-                     'tests/unit/pollhost/hostsched.c', 'c/kernel/core/wait.c',
-                     'c/kernel/exec/kpoll.c', file_object, '-o', exe])
+                     'tests/unit/pollhost/hostsched.c', 'c/kernel/sync/wait.c',
+                     'c/kernel/exec/fd/kpoll.c', file_object, '-o', exe])
     labels = {'lock': 'references: query participates in file lock',
               'alias': 'handoff: temporary reference keeps parent descriptor'}
     check(exe, labels.get(control))

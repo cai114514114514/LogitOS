@@ -26,7 +26,7 @@ The comparison itself:
   * the aspect-fit rect is recomputed exactly as blit_fit_src() in
     c/apps/gui/preview.c computes it,
   * the nearest-neighbour source lookup is recomputed exactly as
-    fb_blit_rgba() in c/kernel/gui/fb.c computes it (i*sw/dw, integer),
+    fb_blit_rgba() in c/kernel/gui/fb/fb/fb.c computes it (i*sw/dw, integer),
   * and alpha is composited over the window background with the same integer
     formula the kernel uses, (p*a + b*(255-a))/255.
 

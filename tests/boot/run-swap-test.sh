@@ -31,11 +31,11 @@
 # submit-and-poll command per 4 KiB, and a thrashing run moves tens of thousands
 # of pages, which took longer than the harness was willing to wait. NVMe is a
 # real DMA submission queue and the same workload finishes. Both are accepted by
-# c/kernel/mm/swap.c -- it takes any registered block device that is not the
+# c/kernel/mm/reclaim/reclaim/swap.c -- it takes any registered block device that is not the
 # root and is blank -- so SWAPBUS=ahci still works and is worth keeping for
 # testing the slow path.
 #
-# The image is zeroed before every run. c/kernel/mm/swap.c refuses any device
+# The image is zeroed before every run. c/kernel/mm/reclaim/reclaim/swap.c refuses any device
 # whose first sector is neither blank nor its own header, so a disk with
 # anything at all on it is left alone -- which is the behaviour to preserve, and
 # the reason this script creates its own image rather than pointing swap at

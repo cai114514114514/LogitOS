@@ -5,7 +5,7 @@
 
 /* A HOST ADDRESS SPACE FOR THE KERNEL LOADER.
  *
- * c/kernel/exec/elf.c is compiled unmodified into this test. It allocates
+ * c/kernel/exec/load/elf.c is compiled unmodified into this test. It allocates
  * frames from pmm_alloc(), maps them with vmm_map_page(), reads them back with
  * vmm_pte(), and then -- this is the part a table of integers cannot stand in
  * for -- memcpy()s the file bytes to the USER VIRTUAL ADDRESS, because in the

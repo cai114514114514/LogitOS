@@ -10,7 +10,7 @@
  * Comparing two C strings is something this kernel needs, and every site
  * that needed it wrote its own private copy:
  *
- *     c/kernel/core/kdiag.c:38      static int streq
+ *     c/kernel/diag/kdiag.c:38      static int streq
  *     c/kernel/gui/wm.c:731         static int streq
  *     c/kernel/module/ksyms.c:158   static int streq
  *     c/kernel/module/modelf.c:51   static int m_streq

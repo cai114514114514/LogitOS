@@ -35,7 +35,7 @@ flowchart TD
 | `c/apps/libc/src/pthread.c:165`；`Makefile:1153` | pthread TCB/key 路径存在 | 当前 browser 链接未使用 `logit_tls.ld`；已有 browser.elf 的 TLS 边界符号为未定义弱符号，`tls_size()` 得到 0。不能简单把浏览器静态变量改为 `__thread` 就宣布隔离完成 |
 | `include/abi/logit_abi.h:2635`；`c/apps/libc/src/poll.c` | eventfd、poll、cond/futex 可以唤醒等待线程 | UI 当前用 `SYS_WAIT_EVENT` 等窗口事件，写 eventfd 不会自动唤醒这个不同的等待源 |
 
-默认线程栈是 8 MiB，需保留现有 Worker 的 2 MiB QuickJS 栈检查配置并在实际线程上初始化。线程表上限 64 不代表能创建 64 个浏览器 Worker；栈及其他映射还消耗 VMA。当前 `c/kernel/mm/vma.h:44` 为 32 个区域，ABI 注释中旧的 16/约 13 线程估计已过时。保持现有最多 8 个 Worker 也仍需要普通资源容量验证，不能按表上限直接扩容。
+默认线程栈是 8 MiB，需保留现有 Worker 的 2 MiB QuickJS 栈检查配置并在实际线程上初始化。线程表上限 64 不代表能创建 64 个浏览器 Worker；栈及其他映射还消耗 VMA。当前 `c/kernel/mm/virt/vma.h:44` 为 32 个区域，ABI 注释中旧的 16/约 13 线程估计已过时。保持现有最多 8 个 Worker 也仍需要普通资源容量验证，不能按表上限直接扩容。
 
 建议的文件/所有权图（`worker_channel`、`worker_runner`、`fetch_service` 是拟新增模块名）：
 

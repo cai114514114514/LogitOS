@@ -58,7 +58,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # plan's steps 2 and 3 touch. c/kernel/mm and c/kernel/sched are excluded on
 # purpose: they have their own locks (pmm_lock, kheap_lock, g_sched_lock) and
 # are not waiting on this work.
-DEFAULT = ["c/net", "c/fs", "c/kernel/gui", "c/drivers"]
+DEFAULT = ["c/net", "c/fs","c/fs/vfs","c/fs/logitfs","c/fs/cache","c/fs/ramfs","c/fs/ctl","c/fs/procfs","c/kernel/gui","c/kernel/gui/fb","c/kernel/gui/ime","c/kernel/gui/input","c/kernel/gui/fb","c/kernel/gui/ime","c/kernel/gui/input","c/drivers"]
 
 # `static` at column 0 through the terminating `;`, not const, not a function.
 # The whole statement is taken and the DECLARATOR LIST is split afterwards --

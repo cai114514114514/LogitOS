@@ -72,7 +72,7 @@ test-kbench-micro: $(DISK)
 	 $(MAKE) --no-print-directory $(ISO) >/dev/null; \
 	 exit $$rc
 
-KBENCH_NEGCTL_SRC := c/kernel/exec/syscall.c c/kernel/exec/exec.c c/kernel/exec/proc.c
+KBENCH_NEGCTL_SRC := c/kernel/exec/syscall.c c/kernel/exec/load/exec.c c/kernel/exec/proc.c
 
 test-kbench-negctl: $(DISK)
 	@touch $(KBENCH_NEGCTL_SRC)

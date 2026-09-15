@@ -1,5 +1,5 @@
 /* AEX_T_SIG -- the OPTIONAL Ed25519 signature record, tested against the real
- * loader (c/kernel/exec/aex.c, unmodified) and the real crypto (aexsig.c,
+ * loader (c/kernel/exec/load/aex.c, unmodified) and the real crypto (aexsig.c,
  * pkgsig.c, ed25519.c, sha256.c, unmodified).
  *
  * Four things this exists to WATCH FAIL, per CLAUDE.md's rule 5 -- a control

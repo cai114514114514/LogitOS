@@ -258,7 +258,7 @@ static void bench_cache(void)
 /* --- openmax: the largest file this machine can put behind a descriptor -----
  *
  * The question is not academic and it is not about the filesystem. An F_VFS
- * descriptor holds the WHOLE file in one kmalloc (c/kernel/exec/file.c: "the
+ * descriptor holds the WHOLE file in one kmalloc (c/kernel/exec/fd/file.c: "the
  * whole file lives in a kmalloc buffer with an offset"), so "the largest file
  * that can be opened" is exactly "the largest kmalloc that succeeds". Nothing
  * else in the open path has a smaller ceiling on this machine: vfs_size's int

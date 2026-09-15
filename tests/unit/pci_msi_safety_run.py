@@ -37,7 +37,7 @@ for macro, expected in variants:
         os.environ.get("CC", "clang"), "-std=gnu11", "-O1", "-g",
         "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
         "-DLOGIT_HOST_TEST", "-Itests/unit/pcistub", "-Ic/drivers/core",
-        "-Ic/kernel/pci", "-Ic/kernel/cpu", "tests/unit/pci_msi_test.c",
+        "-Ic/kernel/pci", "-Ic/kernel/cpu -Ic/kernel/cpu/acpi -Ic/kernel/cpu/irq -Ic/kernel/cpu/smp", "tests/unit/pci_msi_test.c",
         "c/kernel/pci/pci_msi.c", "c/kernel/pci/pci.c",
         "c/drivers/core/device.c", "-o", str(binary),
     ]

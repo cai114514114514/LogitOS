@@ -523,7 +523,7 @@ test-aes-gcm-siv: test-aes-gcm-siv-negctl
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/aes_gcm_siv_test tests/unit/aes_gcm_siv_test.c \
 	    c/crypto/aead/aes_gcm_siv.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aes_ni.c \
 	    c/crypto/aead/aesgcm.c c/kernel/cpu/cpufeat.c \
-	    -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu -Itests/unit
+	    -Ic/crypto -Ic/crypto/aead $(KCPU_INC) -Itests/unit
 	$(BUILD)/aes_gcm_siv_test
 
 test-aes-gcm-siv-negctl:

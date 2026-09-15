@@ -14,7 +14,7 @@
 #                       measured through mini-libc's own allocator.
 
 # --- test-arena --------------------------------------------------------------
-# The browser's arena was a 96 MiB .bss array, and elf_load (c/kernel/exec/elf.c)
+# The browser's arena was a 96 MiB .bss array, and elf_load (c/kernel/exec/load/elf.c)
 # does pmm_alloc() + memset(0) for every page of p_memsz -- so it was resident
 # from launch, whatever the page did. It is now SYS_MMAP'd, so frames appear on
 # first touch. This asserts both halves of that change:
@@ -91,7 +91,7 @@ bench-arena-js: $(BUILD)/arena_js_mem
 # here instead because adding a fragment costs one `-include` line in the
 # Makefile and the Makefile is contended by several live lines. They sit beside
 # the memory gates rather than anywhere else for a reason that is not only
-# convenience: c/kernel/mm/swap.c is the CONSUMER this interface was built for,
+# convenience: c/kernel/mm/reclaim/reclaim/reclaim/swap.c is the CONSUMER this interface was built for,
 # and `make test-swap` is the gate that measures whether it did anything.
 #
 # What it covers and why nothing else does: `make test-fs-host` compiles
@@ -100,7 +100,11 @@ bench-arena-js: $(BUILD)/arena_js_mem
 # below blk_read() was device-only until this target existed.
 BLKREQ_CFLAGS := -O1 -g -Wall -Wextra -Wno-unused-parameter \
                  -fsanitize=address,undefined -fno-omit-frame-pointer \
-                 -DBLK_HOSTTEST -Ic/drivers/block -Ic/drivers/virtio -Ic/kernel/core
+                 -DBLK_HOSTTEST -Ic/drivers/block -Ic/drivers/virtio $(KCORE_INC) \
+                 -Ic/fs/logitfs
+# The -Ic/fs/logitfs above is not decoration: blkdev.c includes logitfs_fmt.h, and
+# the c/fs split moved that header out of c/fs into c/fs/logitfs/. This gate passes
+# its own narrow include path rather than INCDIRS, so nothing else supplies it.
 
 .PHONY: test-blk-async test-blk-async-negctl
 
@@ -160,10 +164,10 @@ ci-host: test-blk-async
 # `-include` line in the Makefile and the Makefile is contended by several live
 # lines. They sit beside the memory gates because that is what they are.
 #
-# c/kernel/mm/fault.c used to return 0 when memory was gone even after a forced
+# c/kernel/mm/virt/fault.c used to return 0 when memory was gone even after a forced
 # reclaim, so the process that DIED was whoever touched memory next -- which on
 # a machine one program has emptied is essentially never that program. The
-# killer chooses instead. See c/kernel/mm/oom.h for the policy and why "kill the
+# killer chooses instead. See c/kernel/mm/reclaim/reclaim/reclaim/oom.h for the policy and why "kill the
 # biggest" is wrong on this machine specifically.
 #
 #   test-oom        HOST, seconds, ASan+UBSan. The real oom.c over the real

@@ -363,7 +363,7 @@ def main() -> int:
     parser.add_argument("--header", default="include/abi/logit_boot.h")
     parser.add_argument("--asm", default="c/boot/bios/loader.asm")
     parser.add_argument("--efi", default="c/boot/efi/loader.c")
-    parser.add_argument("--kernel", default="c/kernel/core/bootinfo.c")
+    parser.add_argument("--kernel", default="c/kernel/init/bootinfo.c")
     args = parser.parse_args()
 
     header = read_source(args.header)

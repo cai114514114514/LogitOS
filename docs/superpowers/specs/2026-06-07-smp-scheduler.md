@@ -55,7 +55,7 @@ Two layers:
 Held-lock invariant: never sleep/yield while holding a spinlock except the
 scheduler's own documented hand-off (below).
 
-### Per-CPU state (`src/kernel/cpu/percpu.{h,c}`)
+### Per-CPU state (`src/kernel/cpu/smp/percpu.{h,c}`)
 ```
 struct cpu {
     int       index;          /* 0 = BSP */
@@ -73,7 +73,7 @@ The running core finds its own `struct cpu` via its LAPIC id (`this_cpu()`).
 `current` and `tss` move from single globals into `struct cpu`; `tss_set_rsp0`,
 `sched_current_*` become per-core.
 
-### AP scheduler entry (`src/kernel/cpu/smp.c`)
+### AP scheduler entry (`src/kernel/cpu/smp/smp.c`)
 `ap_entry` changes from the hlt-loop to: load this core's GDT + its own TSS,
 `lapic_init` + `lapic_timer_init` (per-core preemption tick), create this core's
 idle thread, then enter `schedule()`. Each AP now pulls runnable threads and

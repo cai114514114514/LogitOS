@@ -214,8 +214,8 @@ cp "$ROOT/c/crypto/trust/roots.c" "$TMP/roots_test.c"
 INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/crypto/pq \
       -I$ROOT/c/net/tls -I$ROOT/c/net/core \
-      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core \
-      -I$ROOT/c/kernel/cpu"
+      -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core -I$ROOT/c/kernel/init -I$ROOT/c/kernel/diag -I$ROOT/c/kernel/sync \
+      -I$ROOT/c/kernel/cpu -I$ROOT/c/kernel/cpu/acpi -I$ROOT/c/kernel/cpu/irq -I$ROOT/c/kernel/cpu/smp"
 # Everything EXCEPT the trust-store TU. The fail-closed block at the bottom
 # builds a second client from exactly this list plus a roots.c compiled against
 # an EMPTY bundle -- so "identical in every respect except which anchors are

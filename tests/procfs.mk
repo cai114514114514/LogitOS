@@ -46,7 +46,7 @@ PROCFS_DEP := c/fs/procfs/procfs.h c/fs/vfs/vfs.h c/fs/vfs/vfs_path.h
 # this same side. -iquote applies only to "quoted" includes, so the tree's own
 # `#include "procfs.h"` resolves and glibc's `#include <stdio.h>` does not go
 # looking in c/apps/libc/include.
-PROCFS_INC := -iquote c/fs -iquote include/abi
+PROCFS_INC := -iquote c/fs $(FS_IQ) -iquote include/abi
 # ASan + UBSan: this file does offset arithmetic into a fixed buffer for a
 # living, and every one of its bounds is a candidate for an off-by-one that a
 # correctness check cannot see (a render one byte short still parses).
@@ -67,7 +67,7 @@ test-procfs: $(BUILD)/procfs_test
 # THE NEGATIVE CONTROL, and it is the PLAUSIBLE wrong implementation rather
 # than a mutilation. pf_size() and the first pf_pread() of a file render the
 # same bytes microseconds apart, so sharing one render between them is an
-# obvious saving -- and c/kernel/exec/file.c calls vfs_size() at open(). Take
+# obvious saving -- and c/kernel/exec/fd/file.c calls vfs_size() at open(). Take
 # the saving and every /proc file silently becomes a snapshot taken at open:
 # correctly formatted, right length, and wrong in the one way this filesystem
 # exists to be right about.

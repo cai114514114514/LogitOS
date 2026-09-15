@@ -8,7 +8,7 @@
 #     -include tests/prof.mk
 #
 # Nothing else is needed to BUILD the profiler: C_SRC globs c/kernel, so
-# c/kernel/core/kprof.c links with no Makefile change at all.
+# c/kernel/diag/kprof.c links with no Makefile change at all.
 #
 #   test-prof-host     the accumulator, the spans and the report on the host,
 #                      including four pthreads hammering one histogram
@@ -35,8 +35,8 @@ endif
 
 .PHONY: test-prof test-prof-host test-prof-negctl test-prof-control test-prof-all
 
-PROF_TEST_SRC := tests/unit/prof_test.c c/kernel/core/kprof.c
-PROF_TEST_INC := -Ic/kernel/core
+PROF_TEST_SRC := tests/unit/prof_test.c c/kernel/diag/kprof.c
+PROF_TEST_INC := $(KCORE_INC)
 
 test-prof-host:
 	@mkdir -p $(BUILD)
@@ -69,11 +69,11 @@ test-prof: $(ISO) $(DISK)
 # this is a two-object rebuild and a relink, not a clean build -- and the tree is
 # put back on the way out whether the control passed or not.
 test-prof-control: $(DISK)
-	@touch c/kernel/core/kprof.c c/kernel/core/kdiag.c
+	@touch c/kernel/diag/kprof.c c/kernel/diag/kdiag.c
 	@$(MAKE) --no-print-directory KPROF_OFF=1 $(ISO) >/dev/null
 	@rc=0; bash tests/boot/run-prof-test.sh $(ISO) $(DISK) \
 	    > $(BUILD)/prof_control.out 2>&1 || rc=$$?; \
-	 touch c/kernel/core/kprof.c c/kernel/core/kdiag.c; \
+	 touch c/kernel/diag/kprof.c c/kernel/diag/kdiag.c; \
 	 $(MAKE) --no-print-directory $(ISO) >/dev/null; \
 	 if [ "$$rc" = 0 ]; then \
 	    echo "CONTROL FAILED: the harness passed against a kernel with no profiler in it"; \

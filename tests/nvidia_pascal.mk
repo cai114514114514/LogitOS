@@ -7,8 +7,8 @@ NV_PASCAL_SRC := tests/unit/nvidia_pascal_test.c c/drivers/gpu/nvidia_pascal.c \
                  c/drivers/gpu/nvidia_pascal_accel.c c/crypto/hash/sha256.c
 NV_ACCEL_SRC := tests/unit/nvidia_pascal_accel_test.c \
                 c/drivers/gpu/nvidia_pascal_accel.c c/crypto/hash/sha256.c
-NV_PASCAL_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/gui \
-                 -Ic/kernel/core -Ic/kernel/mm $(FS_INC) -Ic/crypto
+NV_PASCAL_INC := -Ic/drivers/gpu -Ic/drivers/core -Ic/kernel/pci $(KGUI_INC) \
+                 $(KCORE_INC) $(KMM_INC) $(FS_INC) -Ic/crypto
 NV_PASCAL_ESP := $(BUILD)/esp.img
 
 ifeq ($(PASCALVERIFY),1)

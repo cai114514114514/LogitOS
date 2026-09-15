@@ -19,7 +19,7 @@ for unit,source,marker in [('unix','c/net/core/unix.c','FAIL: 32000 duplex recor
     t=(r/('tests/unit/bkl_'+unit+'_test.c')).read_text().replace('#include "'+unit+'_test.c"','#include "'+str(d/(unit+'_test.c'))+'"');(d/'parallel.c').write_text(t)
     cmd=[os.environ.get('CC','clang'),'-std=gnu11','-O1','-g','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all','-Wno-ignored-attributes']
     if a.negative_only and unit=='route':cmd+=['-DIO_NO_LOCK']
-    cmd+=['-I'+str(r/p) for p in ['tests/unit','tests/unit/unixstub','c/net/core','include/abi','c/fs']]
+    cmd+=['-I'+str(r/p) for p in ['tests/unit','tests/unit/unixstub','c/net/core','include/abi','c/fs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs']]
     exe=d/'parallel';subprocess.run(cmd+[str(d/'parallel.c'),'-o',str(exe)],check=True)
     p=subprocess.run([str(exe)],capture_output=True,text=True,timeout=30);(d/'result.log').write_text(p.stdout+p.stderr)
     if a.negative_only:assert p.returncode==1 and marker in p.stdout,(p.stdout,p.stderr)

@@ -55,7 +55,7 @@ typedef long off_t;
  *       semaphore that never wakes anybody.
  *
  *   a real fd, PROT_READ (and/or PROT_EXEC), any offset that is page aligned
- *       a FILE-BACKED mapping through c/kernel/mm/pcache.h. Pages are keyed on
+ *       a FILE-BACKED mapping through c/kernel/mm/cache/pcache.h. Pages are keyed on
  *       (dev, ino), so two processes mapping one file share the frames, and a
  *       page nobody is using can be dropped and re-read rather than swapped.
  *       MAP_SHARED and MAP_PRIVATE both succeed and both give the same thing,

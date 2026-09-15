@@ -20,7 +20,7 @@
  * a font could be reached from a host process.  Both halves of that premise
  * turned out to be false, and this file is the rewrite:
  *
- *   - c/kernel/gui/fb.c COMPILES AND LINKS ON THE HOST unmodified.  Its only
+ *   - c/kernel/gui/fb/fb/fb.c COMPILES AND LINKS ON THE HOST unmodified.  Its only
  *     undefined symbols are kmalloc/kfree, text_*, vmm_map_range and the
  *     virtio_gpu_* probe -- and drawing into a `struct surface` via fb_target()
  *     never touches the last two.  So the harness links the REAL painter
@@ -37,7 +37,7 @@
  *     the pipeline   dom.c html_tokenizer.c html_tree.c dom_serialize.c
  *                    css_engine.c css_vars.c css_extra.c layout.c
  *                    browser_paint.c, LibCSS, c/lib/gfx
- *     the raster     c/kernel/gui/fb.c      (fill/round-rect/blit/clip/glyph)
+ *     the raster     c/kernel/gui/fb/fb/fb.c      (fill/round-rect/blit/clip/glyph)
  *                    c/kernel/gui/raster.c  (the AA coverage rasterizer)
  *                    c/lib/text/*           (ttf, cff, shape, script, bidi)
  *                    c/kernel/gui/text.c    (text_measure + text_draw_run)
@@ -84,7 +84,7 @@
 /* The real primitives, forward-declared rather than via fb.h/text.h so that
  * this header can be included by browser_paint.c without dragging the kernel's
  * include tree into the app's translation unit. Signatures are copied from
- * c/kernel/gui/fb.h and c/kernel/gui/text.h; a mismatch is a link error, not a
+ * c/kernel/gui/fb/fb/fb.h and c/kernel/gui/text.h; a mismatch is a link error, not a
  * silent divergence. */
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color);
 void fb_round_rect(int x, int y, int w, int h, int radius, uint32_t color);

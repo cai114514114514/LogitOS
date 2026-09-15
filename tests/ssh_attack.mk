@@ -69,7 +69,7 @@ SSH_ATK_CRYPTO_SRC := c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/has
                        c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/kdf/pbkdf2.c
 
 SSH_ATK_MININC := -I$(SSH_ATK_DIR) -Ic/crypto -Ic/crypto/pubkey -Ic/crypto/hash \
-                  -Ic/crypto/aead -Ic/kernel/cpu -Ic/crypto/kdf -Ic/apps/coreutils
+                  -Ic/crypto/aead $(KCPU_INC) -Ic/crypto/kdf -Ic/apps/coreutils
 
 SSH_ATK_SRC := $(SSH_ATK_DIR)/ssh_wire.c $(SSH_ATK_DIR)/ssh_packet.c $(SSH_ATK_DIR)/ssh_kex.c \
                $(SSH_ATK_DIR)/ssh_auth.c $(SSH_ATK_DIR)/ssh_conn.c $(SSH_ATK_DIR)/ssh_hostkey.c \

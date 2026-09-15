@@ -1,4 +1,4 @@
-# WHAT AN OPEN FILE DESCRIPTION COSTS -- c/kernel/exec/file.c's F_VFS backend.
+# WHAT AN OPEN FILE DESCRIPTION COSTS -- c/kernel/exec/fd/file.c's F_VFS backend.
 #
 # Its own fragment, included from tests/exec.mk rather than from the top-level
 # Makefile, for the reason tests/poll.mk, tests/procfs.mk, tests/coredump.mk and

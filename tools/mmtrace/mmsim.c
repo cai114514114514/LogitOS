@@ -4,7 +4,7 @@
  * ===========================================================================
  * THE QUESTION
  *
- * c/kernel/mm/reclaim.c chooses its victim with a clock (second chance) over
+ * c/kernel/mm/reclaim/reclaim/reclaim.c chooses its victim with a clock (second chance) over
  * physical frames. reclaim.h argues for that choice against an active/inactive
  * LRU and gives the reason -- with no hardware reference notification, a
  * recency list can only be built by the same accessed-bit sampling the clock's
@@ -53,7 +53,7 @@
  *           a persistent hand position, one reference bit per frame set on
  *           every access and cleared only by the hand. Frames are handed out
  *           by a next-fit scan from a rotating hint, which is what
- *           c/kernel/mm/pmm.c does -- so allocation order and sweep order are
+ *           c/kernel/mm/phys/pmm.c does -- so allocation order and sweep order are
  *           correlated exactly as they are on the machine, and the model is
  *           not a textbook clock that happens to share a name.
  *   clockwm The same clock plus reclaim.c's WATERMARKS: nothing is evicted
@@ -385,7 +385,7 @@ static void run_rand(struct result *r, uint32_t nframes)
     free(seen); mem_done(&m);
 }
 
-/* --- the clock, as c/kernel/mm/reclaim.c runs it -------------------------
+/* --- the clock, as c/kernel/mm/reclaim/reclaim/reclaim.c runs it -------------------------
  *
  * `batch` selects between the two shapes:
  *   0  demand: evict exactly one frame at the moment one is needed. This

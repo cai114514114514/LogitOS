@@ -1,7 +1,7 @@
 /* /bin/closefull -- THE GATE for "make close() able to report a failed
  * write" (audit item 3 / CLAUDE.md structural gap #3's tail).
  *
- * file_close() (c/kernel/exec/file.c) used to be void and SYS_CLOSE
+ * file_close() (c/kernel/exec/fd/file.c) used to be void and SYS_CLOSE
  * (c/kernel/exec/syscall.c) returned 0 unconditionally, so the ONLY symptom
  * of a write that never made it to disk was that the file quietly was not
  * there -- exactly the shape this tree refuses for flock() returning 0 when

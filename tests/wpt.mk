@@ -230,7 +230,7 @@ test-wpt-link:
 # basename collision two directories deep is invisible until a clean clone
 # proves it -- scoping the addition to the one runner that needs it is
 # cheaper than auditing every other consumer of BTEST_INC for a clash.
-WPT_CF := $(BTEST_INC) -Ic/apps -Ic/kernel/mm -Ic/lib/media -Ic/lib/audio -Ic/lib/video -Ic/net/ssh -Ic/crypto -Ic/kernel/cpu $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
+WPT_CF := $(BTEST_INC) -Ic/apps $(KMM_INC) -Ic/lib/media -Ic/lib/audio -Ic/lib/video -Ic/net/ssh -Ic/crypto $(KCPU_INC) $(CSS_INC) $(JS_INC) -Iinclude/abi -DCONFIG_VERSION='"host"' -DWEBAPI_HOST
 
 # These runners compile textually included browser backends in one command.
 # Include edits must invalidate the binary just as .c edits do.

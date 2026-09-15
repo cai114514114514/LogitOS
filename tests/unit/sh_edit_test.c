@@ -400,7 +400,7 @@ static void t_jobs(void)
     /* THE HANDLER IS INSTALLED AT ALL, checked through the real call before
      * anything drives the flag by hand. On the serial console the kernel
      * REFUSES a default-terminate signal to the protected console process while
-     * it has no handler (c/kernel/exec/ksignal.c, above ksig_kill), so a shell
+     * it has no handler (c/kernel/exec/signal/ksignal.c, above ksig_kill), so a shell
      * that never installed one would never see a ^C -- and every other
      * assertion below would still pass, because they set the flag directly. */
     stub_sigint_handler_set = 0;
@@ -430,7 +430,7 @@ static void t_jobs(void)
      *
      *    This assertion used to read "the job should still be RUNNING -- there
      *    is no kill(2)", which was true when it was written and is the exact
-     *    gap c/kernel/exec/ksignal.c:316 names. There is a kill(2) now, so the
+     *    gap c/kernel/exec/signal/ksignal.c:316 names. There is a kill(2) now, so the
      *    test asserts the delivery rather than recording its absence. */
     stub_child_status = 0;
     stub_kill_calls = 0; stub_sig_ignored = 0;

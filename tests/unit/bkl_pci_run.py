@@ -14,7 +14,7 @@ else:
  variants=[('port',0,'CF8/CFC address-data pairs'),('rmw',1,'8-bit writes preserve'),('rmw16',2,'16-bit writes preserve'),('map',3,'one mapper publishes'),('publish',3,'ECAM pointers are published'),('ioapic',4,'IOAPIC selector-window')] if a.negative_only else [('positive',i,'') for i in range(5)]
 for name,mode,marker in variants:
  d=b/(name+str(mode));d.mkdir(exist_ok=True)
- pci=(r/'c/kernel/pci/pci.c').read_text();io=(r/'c/kernel/cpu/ioapic.c').read_text()
+ pci=(r/'c/kernel/pci/pci.c').read_text();io=(r/'c/kernel/cpu/irq/ioapic.c').read_text()
  for old,new in [('"../../drivers/core/io_lock.h"',r/'c/drivers/core/io_lock.h'),('"../../drivers/core/io_domain.h"',r/'c/drivers/core/io_domain.h')]:
   pci=pci.replace(old,'"'+str(new)+'"');io=io.replace(old,'"'+str(new)+'"')
  if name=='port':
@@ -48,9 +48,9 @@ for name,mode,marker in variants:
  pci+='\nint test_ecam_ready(unsigned bus) { return __atomic_load_n(&g_ecam_mapped[bus], __ATOMIC_ACQUIRE); }\n'
  (d/'pci.c').write_text(pci);(d/'ioapic.c').write_text(io)
  (d/'vmm.h').write_text('#include <stdint.h>\n#define VMM_WRITABLE 2\n#define VMM_NOCACHE 24\nvoid vmm_map_page(uint64_t,uint64_t,uint64_t);\nvoid vmm_map_range(uint64_t,uint64_t,uint64_t,uint64_t);\n')
- exe=d/'test';cmd=[os.environ.get('CC','clang'),'-std=gnu11','-O1','-g','-pthread','-fsanitize=address,undefined','-DLOGIT_HOST_TEST','-I'+str(d)]+['-I'+str(r/p) for p in ['tests/unit/pcistub','c/drivers/core','c/kernel/pci','c/kernel/cpu']]
+ exe=d/'test';cmd=[os.environ.get('CC','clang'),'-std=gnu11','-O1','-g','-pthread','-fsanitize=address,undefined','-DLOGIT_HOST_TEST','-I'+str(d)]+['-I'+str(r/p) for p in ['tests/unit/pcistub','c/drivers/core','c/kernel/pci','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp']]
  subprocess.run(cmd+[str(test),str(d/'pci.c'),str(d/'ioapic.c'),
-                     str(r/'c/kernel/cpu/apic_model.c'),'-o',str(exe)],check=True)
+                     str(r/'c/kernel/cpu/irq/apic_model.c'),'-o',str(exe)],check=True)
  p=subprocess.run([str(exe),str(mode)],capture_output=True,text=True,timeout=25);(d/'result.log').write_text(p.stdout+p.stderr)
  if marker:
   assert p.returncode==1 and 'FAIL: '+marker in p.stdout,(name,p.stdout,p.stderr)

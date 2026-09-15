@@ -24,7 +24,7 @@
  * NOT ring-3-only, despite what this comment used to say. c/lib/gfx is filtered
  * out of C_SRC (kernel translation units) for c/lib/video, c/lib/audio,
  * c/lib/media and the image codecs -- but NOT for this directory. fb.c
- * (c/kernel/gui/fb.c) includes gfx.h and calls into gfx_mask_corner/
+ * (c/kernel/gui/fb/fb.c) includes gfx.h and calls into gfx_mask_corner/
  * gfx_fill_mask for the window manager's own rounded corners, so this whole
  * file set is compiled into the KERNEL as well as into every ring-3 GUI
  * binary. That means every byte added to a static here is a byte of kernel

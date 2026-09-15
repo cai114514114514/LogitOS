@@ -105,7 +105,7 @@ long mm_syscall(long num, long a, long b, long c)
         return (long)vma_reserve(cr3, hint, len, p);
     }
 
-    /* File-backed mmap. Connection #2 of the page cache (c/kernel/mm/pcache.h):
+    /* File-backed mmap. Connection #2 of the page cache (c/kernel/mm/cache/pcache.h):
      * vma_reserve_file() is the ONLY producer of a file-backed VMA, and until
      * this case existed nothing ever called it, so MM_FAULT_FILE (fault.c) was
      * dead code -- reachable in the classifier's table, never in a real fault.
@@ -115,7 +115,7 @@ long mm_syscall(long num, long a, long b, long c)
      * already made, once, at SYS_OPEN -- re-deciding it here from a bare path
      * would be a second, independent copy of that check with its own chance to
      * disagree. An fd is also already resolved to a canonical, absolute path:
-     * file_open_vfs() (c/kernel/exec/file.c) stores exactly the string
+     * file_open_vfs() (c/kernel/exec/fd/file.c) stores exactly the string
      * SYS_OPEN's proc_resolve() produced, in f->path -- the very thing
      * pcache_file_open() needs to stat and, on a miss, read. */
     case SYS_MMAP_FILE: {

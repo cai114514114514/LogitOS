@@ -17,9 +17,9 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     sources = [
         root / "tests/unit/raptor_smp_test.c",
-        root / "c/kernel/cpu/smp_topology.c",
-        root / "c/kernel/cpu/apic_model.c",
-        root / "c/kernel/cpu/smp_boot_model.c",
+        root / "c/kernel/cpu/smp/smp/smp_topology.c",
+        root / "c/kernel/cpu/irq/apic_model.c",
+        root / "c/kernel/cpu/smp/smp/smp_boot_model.c",
     ]
     common = [
         os.environ.get("CC", "clang"), "-std=c11", "-O1", "-g",

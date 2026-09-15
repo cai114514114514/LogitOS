@@ -1,6 +1,6 @@
 # ===================== how far is the clock from optimal? =====================
 #
-# c/kernel/mm/reclaim.c picks its victim with a clock. reclaim.h defends that
+# c/kernel/mm/reclaim/reclaim/reclaim/reclaim.c picks its victim with a clock. reclaim.h defends that
 # choice against an active/inactive LRU and the defence is sound, but it is an
 # argument about mechanism, not a measurement of quality: nothing in this tree
 # says how many of the page faults this machine takes were AVOIDABLE.

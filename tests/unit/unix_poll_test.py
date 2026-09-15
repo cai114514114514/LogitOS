@@ -15,7 +15,7 @@ def run(command):
 def variant(build,name,control=None):
  out=build/name;out.mkdir(parents=True,exist_ok=True)
  flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-D_FORTIFY_SOURCE=0','-pthread','-fsanitize=address,undefined']
- for d in ['c','c/kernel/core','c/kernel/cpu','c/kernel/sched','c/kernel/exec','c/kernel/mm','c/drivers/timer','c/net/core','c/net/transport','c/net/ip','c/fs','include/abi']:
+ for d in ['c','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/sched','c/kernel/exec','c/kernel/exec/load','c/kernel/exec/signal','c/kernel/exec/fd','c/kernel/exec/load','c/kernel/exec/signal','c/kernel/exec/fd','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/drivers/timer','c/net/core','c/net/transport','c/net/ip','c/fs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','include/abi']:
   flags+=['-iquote',str(ROOT/d)]
  source=ROOT/'c/net/core/unix.c';unix=source.read_text()
  if control=='register':
@@ -29,7 +29,7 @@ def variant(build,name,control=None):
   source=out/'unix.c';source.write_text(unix)
  config=out/'net-config.c';config.write_text('#include "net.h"\nstruct net_config net_cfg;\n')
  objects=[]
- for label,path,extra in [('config',config,[]),('unix',source,[]),('lsock',ROOT/'c/net/core/lsock.c',['-DUNIX_POLL_NEGCTL_NVAL'] if control=='nval' else []),('sched',ROOT/'tests/unit/pollhost/hostsched.c',['-Dsched_block_self_unlock_until=unix_host_block_until']),('wait',ROOT/'c/kernel/core/wait.c',[]),('poll',ROOT/'c/kernel/exec/kpoll.c',[])]:
+ for label,path,extra in [('config',config,[]),('unix',source,[]),('lsock',ROOT/'c/net/core/lsock.c',['-DUNIX_POLL_NEGCTL_NVAL'] if control=='nval' else []),('sched',ROOT/'tests/unit/pollhost/hostsched.c',['-Dsched_block_self_unlock_until=unix_host_block_until']),('wait',ROOT/'c/kernel/sync/wait.c',[]),('poll',ROOT/'c/kernel/exec/fd/kpoll.c',[])]:
   obj=out/(label+'.o');run(flags+extra+['-c',path,'-o',obj]);objects.append(obj)
  stubs=out/'unused-inet.c';stubs.write_text('#include <stdio.h>\n#include <stdlib.h>\n'+''.join('long '+fn+'(void){fprintf(stderr,"UNEXPECTED INET: '+fn+'\\n");abort();}\n' for fn in UNUSED))
  exe=out/'test';run(flags+[ROOT/'tests/unit/unix_poll_test.c',stubs,*objects,'-o',exe])
@@ -43,7 +43,7 @@ def variant(build,name,control=None):
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.add_argument('--negative',action='store_true');a=p.parse_args();b=a.build.resolve();b.mkdir(parents=True,exist_ok=True)
- paths=['c/net/core/unix.c','c/net/core/lsock.c','c/kernel/exec/kpoll.c','c/kernel/core/wait.c','tests/unit/unix_poll_test.c','tests/unit/unix_poll_test.py']
+ paths=['c/net/core/unix.c','c/net/core/lsock.c','c/kernel/exec/fd/kpoll.c','c/kernel/sync/wait.c','tests/unit/unix_poll_test.c','tests/unit/unix_poll_test.py']
  (b/'sources.json').write_text(json.dumps({s:hashlib.sha256((ROOT/s).read_bytes()).hexdigest() for s in paths},indent=2)+'\n')
  if a.negative:
   for control in ['nval','register','datagram-wake','peer-shutdown']:variant(b,control,control)

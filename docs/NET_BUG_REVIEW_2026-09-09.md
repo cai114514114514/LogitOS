@@ -45,7 +45,7 @@ DELAYED_ACK timeout=1 queued=4380 original_sent=4380 next_before=1460 accepted=0
 
 ## N03 — UNIX record socket 的写入条件与等待条件不一致
 
-位置：[unix.c:275](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:275)、[unix.c:600](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:600)、[unix.c:620](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:620)、[wait.h:132](/Users/wangzhe/system/LogitOS/c/kernel/core/wait.h:132)。
+位置：[unix.c:275](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:275)、[unix.c:600](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:600)、[unix.c:620](/Users/wangzhe/system/LogitOS/c/net/core/unix.c:620)、[wait.h:132](/Users/wangzhe/system/LogitOS/c/kernel/sync/wait.h:132)。
 
 record 写入要求同时满足记录槽未满、剩余字节足够容纳整个 record。连接式 DGRAM/SEQPACKET 的等待谓词却只检查还有任意字节空间；按路径发送的 DGRAM 则只检查记录槽。正常生产者快于消费者即可触发“不允许写，但等待条件已满足”，循环立即重试。
 

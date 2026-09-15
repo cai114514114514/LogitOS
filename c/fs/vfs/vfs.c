@@ -22,7 +22,7 @@
  * nodes (/dev/vfsctl, /dev/vfsmounts, /dev/vfsmeta) follow the same protocol
  * for the same reason -- see vfsctl.h.
  *
- * kdiag is declared WEAK here rather than through c/kernel/core/kdiag.h. It is
+ * kdiag is declared WEAK here rather than through c/kernel/diag/kdiag.h. It is
  * a facility owned by another line and its files are not always present; a
  * hard #include makes this file -- which every path in the kernel goes through
  * -- fail to compile whenever that line is mid-landing. Weak symbols say what
@@ -126,7 +126,7 @@ int vfs_cred_pid(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(vfs_cred_pid);
 static int cur_pid(void) { return LOGIT_HAVE(vfs_cred_pid) ? vfs_cred_pid() : 0; }
 
-/* The page cache's write barrier (c/kernel/mm/pcache.c, c/kernel/mm/pcache.h).
+/* The page cache's write barrier (c/kernel/mm/cache/pcache.c, c/kernel/mm/cache/pcache.h).
  * Weak for the same reason kdiag and vfs_cred_pid are: tests/unit/vfs_mount_test.c
  * and friends link the REAL c/fs/vfs.c with no kernel headers at all, to keep
  * the path-resolution and permission code under test exactly the code that

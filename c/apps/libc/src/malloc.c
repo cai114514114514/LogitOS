@@ -60,7 +60,7 @@
  * arena[ARENA_SIZE]` -- a plain .bss array. That is why browser.aex shipped a
  * 104.9 MiB .bss of which this array was 96 MiB (91.5%); `nm --size-sort` put
  * the next symbol two orders of magnitude down. And .bss is not free here:
- * elf_load (c/kernel/exec/elf.c) walks [p_vaddr, p_vaddr+p_memsz) and does
+ * elf_load (c/kernel/exec/load/elf.c) walks [p_vaddr, p_vaddr+p_memsz) and does
  * pmm_alloc() + memset(0) for EVERY page, so the whole array was resident
  * before main() ran, against a measured heap peak of a few MiB on real pages.
  *

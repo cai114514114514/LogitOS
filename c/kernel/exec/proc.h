@@ -48,7 +48,7 @@ struct proc {
      * scopes CAP_FS to paths under this subtree ("" = unscoped -- CAP_FS then
      * covers every path). Neither field is ever WIDENED after a process is
      * created: SYS_FORK copies both unchanged, SYS_EXECVE touches neither (see
-     * the comment in proc_execve(), c/kernel/exec/exec.c), and the only way
+     * the comment in proc_execve(), c/kernel/exec/load/exec.c), and the only way
      * either narrows is SYS_CAP_SPAWN creating a NEW process with its own,
      * separately ceiling-checked values (proc_cap_subset() in proc.c). There
      * is deliberately no "grant myself more" operation anywhere in this file.

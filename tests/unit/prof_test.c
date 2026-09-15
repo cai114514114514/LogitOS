@@ -1,4 +1,4 @@
-/* Host unit tests for c/kernel/core/kprof.c -- the REAL accumulator, not a copy.
+/* Host unit tests for c/kernel/diag/kprof.c -- the REAL accumulator, not a copy.
  *
  * WHAT THIS FILE IS FOR, AND WHY IT IS NOT A QEMU TEST.
  *

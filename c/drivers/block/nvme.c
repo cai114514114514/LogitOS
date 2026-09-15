@@ -190,7 +190,7 @@ static int nvme_namespace_format(const uint8_t *id, uint64_t *sectors, uint32_t 
  *
  * This used to be one function that wrote the SQE, rang the doorbell and then
  * spun on the CQ until the phase bit flipped -- and that spin is precisely the
- * BKL-held time c/kernel/mm/swap.c measures and blkdev.h now exists to give
+ * BKL-held time c/kernel/mm/reclaim/reclaim/swap.c measures and blkdev.h now exists to give
  * back. The two halves are separate calls; nvme_run() below re-composes them
  * for the callers that genuinely have nowhere to go (controller bring-up, with
  * IF=0 and no scheduler yet).

@@ -41,8 +41,8 @@ if a.fixtures_only:
 if platform.system() != 'Darwin' and platform.machine() not in ('x86_64', 'AMD64'):
     raise SystemExit('SKIP: mapped x86 execution requires an x86_64 host; run test-pie on x86_64 or Darwin/Rosetta')
 flags = ['-arch', 'x86_64'] if platform.system() == 'Darwin' else []
-base = [cc, *flags, '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-DLOGIT_HOSTTEST', '-Ic/kernel/exec', '-Itests/unit/exechost', '-Ic/crypto', '-Ic/crypto/trust', '-Ic/drivers/block']
-src = ['tests/unit/pie_host.c', 'tests/unit/pie_space.c', 'c/kernel/exec/elf.c', 'c/drivers/block/crc32.c', 'c/crypto/hash/sha256.c']
+base = [cc, *flags, '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-DLOGIT_HOSTTEST', '-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd', '-Itests/unit/exechost', '-Ic/crypto', '-Ic/crypto/trust', '-Ic/drivers/block']
+src = ['tests/unit/pie_host.c', 'tests/unit/pie_space.c', 'c/kernel/exec/load/elf.c', 'c/drivers/block/crc32.c', 'c/crypto/hash/sha256.c']
 for name, more in ([] if a.negative_only else [('host', []), ('asan', ['-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-DELF_PIE_BASE=0x200000000000ull'])]):
     exe=b/('pie_'+name)
     run([*base, *more, *src, '-o', exe])

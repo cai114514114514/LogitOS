@@ -22,7 +22,7 @@
 # USB stack that does not co-operate with an 8042 produces on real hardware.
 #
 # The mouse half of that is checked by clicking once and requiring exactly one
-# press event: motion is coalesced by c/kernel/gui/evq.c on purpose and so
+# press event: motion is coalesced by c/kernel/gui/input/evq.c on purpose and so
 # cannot be counted, but a click is never merged.
 
 set -u

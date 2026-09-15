@@ -24,8 +24,8 @@
  * distinguished from an AF_INET one inside that single backing type.
  *
  * CONCURRENCY. Everything below runs under the big kernel lock, like the pipe
- * ring in c/kernel/exec/file.c and like lsock.c's own table -- there is one
- * acquisition site for kernel entry (c/kernel/cpu/interrupts.c) and none of
+ * ring in c/kernel/exec/fd/file.c and like lsock.c's own table -- there is one
+ * acquisition site for kernel entry (c/kernel/cpu/irq/interrupts.c) and none of
  * these calls is on syscall_is_bkl_free()'s allow-list. The waits DROP the BKL
  * across the park (sched_block_self_unlock does), which is why a blocked
  * reader does not wedge the machine. No lock of this file's own would add

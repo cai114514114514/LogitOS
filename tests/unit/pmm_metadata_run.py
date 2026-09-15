@@ -11,8 +11,8 @@ for macro, marker in variants:
     binary = a.build / (macro.lower() or 'positive')
     cmd = [os.environ.get('CC', 'cc'), '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
            '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-DMM_HOSTTEST',
-           '-Ic/kernel/mm', '-Itests/unit/mmstub', 'tests/unit/pmm_metadata_test.c',
-           'c/kernel/mm/pmm.c', '-o', str(binary)]
+           '-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim', '-Itests/unit/mmstub', 'tests/unit/pmm_metadata_test.c',
+           'c/kernel/mm/phys/pmm.c', '-o', str(binary)]
     if macro: cmd.insert(1, '-D' + macro)
     subprocess.run(cmd, check=True)
     result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)

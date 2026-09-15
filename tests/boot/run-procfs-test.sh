@@ -38,7 +38,7 @@ CLI_ALL="$CLI_BASE ps free uptime"
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     # MAKE is a variable so a tree whose kernel does not link for an unrelated
     # reason can point this at a wrapper that drops the offending object. It
-    # was needed on the day this landed -- c/kernel/mm/oom.c was untracked and
+    # was needed on the day this landed -- c/kernel/mm/reclaim/reclaim/oom.c was untracked and
     # mid-flight, referencing three symbols nothing defined -- and the wrapper
     # is four lines. Nothing about /proc depends on it.
     "${MAKE:-make}" CLI="$CLI_ALL" "$ISO" "$DISK" || { echo "FAIL: build"; exit 1; }
@@ -55,7 +55,7 @@ done
 # It did: this gate reported "/bin/ps: permission denied (not executable)" for
 # a disk that had been rebuilt, 19 seconds after ours, from a CLI list without
 # ps in it -- and that message is what execve prints for a file that IS NOT
-# THERE (c/kernel/exec/exec.c:308 calls vfs_access, whose ENOENT and EACCES
+# THERE (c/kernel/exec/load/exec.c:308 calls vfs_access, whose ENOENT and EACCES
 # both land on that one line), so the symptom named the wrong problem entirely.
 # The copy costs 78 MB and one second and makes the run reproducible.
 RUNISO="$(dirname "$ISO")/procfs-run.iso"
@@ -83,7 +83,7 @@ for _ in $(seq 1 400); do
 done
 
 # THE CARRIAGE RETURNS COME OFF FIRST, and this is not tidiness: tty_write in
-# c/kernel/exec/file.c expands LF to CRLF for a serial terminal, so every line
+# c/kernel/exec/fd/file.c expands LF to CRLF for a serial terminal, so every line
 # the guest printed ends "\r\n" and a `$`-anchored pattern matches NOTHING. The
 # first run of this gate reported eight failures for output that was, in the
 # log printed underneath them, exactly right -- which is precisely the shape
@@ -120,7 +120,7 @@ need "version came from the kernel"           'LogitOS version'
 # seconds WITHOUT reading, then reads it beside a fresh open. Two `cat`s cannot
 # ask this: they are two OPENS, so they differ even if every /proc file were
 # rendered at open() and cached for the life of the fd -- which is exactly the
-# implementation c/kernel/exec/file.c had for every other file and had to be
+# implementation c/kernel/exec/fd/file.c had for every other file and had to be
 # taught not to use here (`live`, file.h).
 need "a HELD descriptor reads live"           '^held=[0-9]+\.[0-9][0-9] fresh=[0-9]+\.[0-9][0-9] delta=[0-9]+\.[0-9][0-9] LIVE$'
 

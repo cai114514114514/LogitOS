@@ -33,10 +33,10 @@ int ksig_tty_avail(void) { return 0; }
 int ksig_post_current(int signo) { (void)signo; return 0; }
 '''+model[end:]
 modelpath=build/'model.c';modelpath.write_text(model)
-incs=['c','c/kernel/exec','c/kernel/mm','c/kernel/core','c/kernel/cpu','c/kernel/sched','c/fs','c/drivers/char','c/drivers/timer','include/abi']
+incs=['c','c/kernel/exec','c/kernel/exec/load','c/kernel/exec/signal','c/kernel/exec/fd','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/sched','c/fs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/drivers/char','c/drivers/timer','include/abi']
 flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Wno-unused-function','-Wno-unused-variable','-pthread','-fsanitize=address,undefined']
 for inc in incs:flags+=['-iquote',str(root/inc)]
-src=[root/'tests/unit/bkl_proc_test.c',modelpath,fd,root/'tests/unit/pollhost/hostsched.c',root/'c/kernel/core/wait.c',root/'c/kernel/exec/kpoll.c',root/'c/kernel/exec/file.c']
+src=[root/'tests/unit/bkl_proc_test.c',modelpath,fd,root/'tests/unit/pollhost/hostsched.c',root/'c/kernel/sync/wait.c',root/'c/kernel/exec/fd/kpoll.c',root/'c/kernel/exec/fd/file.c']
 for name,extra,args in [('fd-borrow',['-DBKL_NEGCTL_FD_BORROW'],['control']),('positive',[],[])]:
     exe=build/name
     subprocess.run(flags+extra+[str(x) for x in src]+['-o',str(exe)],check=True)
@@ -64,7 +64,7 @@ for name,extra in [('exit-no-owner',['-DBKL_NEGCTL_EXIT_ELECTION']),('exit-posit
 
 # Synchronous fault ownership and futex physical aliases are exercised with
 # deterministic interleavings, each preceded by its former-behavior control.
-sig=(root/'c/kernel/exec/ksignal.c').read_text()
+sig=(root/'c/kernel/exec/signal/ksignal.c').read_text()
 signal_src=build/'signal.c'
 signal_src.write_text(sig[:sig.index('static void reset_locked(')]+'\n'+function('ksig_fault',sig)+'\n'+(root/'tests/unit/bkl_signal_test.c').read_text())
 futex_src=build/'futex.c'
@@ -83,7 +83,7 @@ for tag,source,define,assertion in [
         elif r.returncode:raise SystemExit(r.returncode)
 
 argv_src=build/'argv.c'
-argv_src.write_text('#define _POSIX_C_SOURCE 200112L\n#include <stdint.h>\nint user_copy_from(void *,const void *,uint64_t);\n'+function('user_strnlen',(root/'c/kernel/exec/exec.c').read_text())+'\n'+(root/'tests/unit/bkl_argv_test.c').read_text())
+argv_src.write_text('#define _POSIX_C_SOURCE 200112L\n#include <stdint.h>\nint user_copy_from(void *,const void *,uint64_t);\n'+function('user_strnlen',(root/'c/kernel/exec/load/exec.c').read_text())+'\n'+(root/'tests/unit/bkl_argv_test.c').read_text())
 for control in [True,False]:
     name='argv-'+('control' if control else 'positive');exe=build/name
     subprocess.run(flags+(['-DBKL_NEGCTL_ARGV_BYTEWISE'] if control else [])+[str(argv_src),'-o',str(exe)],check=True)

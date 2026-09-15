@@ -53,7 +53,7 @@
  *   /proc/<pid>/stat       one line, machine-readable, for ps
  *   /proc/<pid>/status     key/value, for a person
  *   /proc/<pid>/cmdline    argv[0]. See procfs_src_task() on why only that.
- *   /proc/<pid>/maps       the address space, from c/kernel/mm/vma.c
+ *   /proc/<pid>/maps       the address space, from c/kernel/mm/virt/vma.c
  *
  * ===========================================================================
  * LIFETIME -- the hard part, and the part that is an argument rather than a
@@ -68,7 +68,7 @@
  *     impossible rather than carefully avoided.
  *
  *  2. THE NAME IS THE REFERENCE. An open fd on /proc/7/stat carries a PATH and
- *     nothing else (c/kernel/exec/file.c's `char path[128]`), so every read
+ *     nothing else (c/kernel/exec/fd/file.c's `char path[128]`), so every read
  *     re-asks the question. When pid 7 is gone the answer is VFS_ENOENT, which
  *     surfaces as read() == -1. That is chosen over the two alternatives:
  *       - a STALE SNAPSHOT presents a dead process as alive, and a monitor
@@ -201,7 +201,7 @@ const char *procfs_src_version(void);
 struct filesystem *procfs_get(void);
 
 /* Does `abs` (an ABSOLUTE, already-resolved path) name something this
- * filesystem generates? c/kernel/exec/file.c asks at open() so that it does
+ * filesystem generates? c/kernel/exec/fd/file.c asks at open() so that it does
  * NOT slurp the file into a buffer -- see the comment at that call site, and
  * point 4 above for what would otherwise be a snapshot taken at open. Answers
  * against the path this filesystem was actually mounted at, so it is a fact

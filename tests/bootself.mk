@@ -205,7 +205,7 @@ $(BOOT_CONTRACT_BAD_ASM): c/boot/bios/loader.asm tests/bootself.mk
 	@sed 's/LOGIT_BOOT_HEADER_VERSION_OFFSET\], LOGIT_BOOT_VERSION/LOGIT_BOOT_HEADER_HEADER_SIZE_OFFSET], LOGIT_BOOT_VERSION/' \
 	    $< >$@
 
-$(BOOT_CONTRACT_BAD_VERSION): c/kernel/core/bootinfo.c tests/bootself.mk
+$(BOOT_CONTRACT_BAD_VERSION): c/kernel/init/bootinfo.c tests/bootself.mk
 	@mkdir -p $(BOOT_CONTRACT_DIR)
 	@sed 's/header->version != LOGIT_BOOT_VERSION/header->version != LOGIT_BOOT_VERSION + 1/' \
 	    $< >$@
@@ -242,7 +242,7 @@ test-boot-contract-negctl: $(BOOT_CONTRACT_TEST) $(BOOT_CONTRACT_BAD_HEADER) \
 
 test-boot-contract: test-boot-contract-negctl $(BOOT_CONTRACT_TEST) \
     include/abi/logit_boot.h c/boot/bios/loader.asm c/boot/efi/loader.c \
-    c/kernel/core/bootinfo.c
+    c/kernel/init/bootinfo.c
 	@python3 $(BOOT_CONTRACT_TEST)
 
 # Shipping and test loaders now speak only native v1. The sole retired-protocol
@@ -301,18 +301,18 @@ $(BIOS_NATIVE_SHORT_MAP_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) t
 # Build the dump sibling after explicitly installing dump objects.  The normal
 # sibling reverses those two objects before relinking, preserving the same
 # apparatus guard already paid for by test-bios-boot above.
-$(BIOS_NATIVE_DUMP_KERNEL): $(OBJ) $(RUST_LIB) linker.ld c/kernel/core/mb2dump.c \
-    c/kernel/core/kmain.c c/kernel/core/bootinfo.c c/boot/long.asm \
+$(BIOS_NATIVE_DUMP_KERNEL): $(OBJ) $(RUST_LIB) linker.ld c/kernel/init/mb2dump.c \
+    c/kernel/init/kmain.c c/kernel/init/bootinfo.c c/boot/long.asm \
     include/abi/logit_boot.h tests/bootself.mk
-	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
-	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/init/mb2dump.c -o $(BUILD)/c/kernel/init/mb2dump.o
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/init/kmain.c -o $(BUILD)/c/kernel/init/kmain.o
 	$(LD) $(LDFLAGS) -e logit_native_start -Map=$(BIOS_NATIVE_DIR)/kernel-dump.map \
 	    -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
 
-$(BIOS_NATIVE_KERNEL_STAMP): $(BIOS_NATIVE_DUMP_IMAGE) c/kernel/core/mb2dump.c \
-    c/kernel/core/kmain.c tests/bootself.mk
-	$(CC) $(CFLAGS) -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
-	$(CC) $(CFLAGS) -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+$(BIOS_NATIVE_KERNEL_STAMP): $(BIOS_NATIVE_DUMP_IMAGE) c/kernel/init/mb2dump.c \
+    c/kernel/init/kmain.c tests/bootself.mk
+	$(CC) $(CFLAGS) -c c/kernel/init/mb2dump.c -o $(BUILD)/c/kernel/init/mb2dump.o
+	$(CC) $(CFLAGS) -c c/kernel/init/kmain.c -o $(BUILD)/c/kernel/init/kmain.o
 	$(LD) $(LDFLAGS) -e logit_native_start -Map=$(BIOS_NATIVE_DIR)/kernel.map \
 	    -o $(BIOS_NATIVE_KERNEL) --start-group $(OBJ) $(RUST_LIB) --end-group
 	@touch $@

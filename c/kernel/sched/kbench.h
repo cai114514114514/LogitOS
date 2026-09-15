@@ -8,7 +8,7 @@
  *
  * WHY THIS IS NOT kprof
  * ---------------------
- * kprof (c/kernel/core/kprof.c) answers "where is the machine right now?" and
+ * kprof (c/kernel/diag/kprof.c) answers "where is the machine right now?" and
  * "how long did ONE page load spend in TLS?". Both are questions about a
  * workload. This file answers a different one: "what does ONE syscall entry,
  * ONE context switch, ONE frame allocation cost, as a distribution, on a
@@ -32,7 +32,7 @@
  *
  *   PATH COUNTERS    per-CPU accounting written by the two hot paths this line
  *                    owns: the BKL (c/kernel/cpu/spinlock.c) and the interrupt
- *                    entry (c/kernel/cpu/interrupts.c). These measure the REAL
+ *                    entry (c/kernel/cpu/irq/interrupts.c). These measure the REAL
  *                    workload -- boot, desktop bring-up, the shell's forks --
  *                    which no synthetic loop can imitate.
  *

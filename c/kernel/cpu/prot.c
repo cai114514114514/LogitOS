@@ -5,7 +5,7 @@
  * WHAT IS ON, WHAT IS OFF, AND WHY
  *
  * W^X, read-only half -- ON.
- *     c/kernel/exec/elf.c maps each PT_LOAD with the permissions the ELF
+ *     c/kernel/exec/load/elf.c maps each PT_LOAD with the permissions the ELF
  *     actually asks for, instead of VMM_WRITABLE|VMM_USER for every segment.
  *     A program's text and rodata are now read-only to ring 3; before this,
  *     every executable page in every process was also writable, and a program

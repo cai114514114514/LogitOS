@@ -3,7 +3,7 @@
 import argparse,os,pathlib,subprocess
 p=argparse.ArgumentParser();p.add_argument("--build",default="/tmp/logitos-bkl-printf");a=p.parse_args()
 r=pathlib.Path(__file__).resolve().parents[2];b=pathlib.Path(a.build);b.mkdir(parents=True,exist_ok=True)
-s=(r/"c/kernel/core/kprintf.c").read_text().replace('#include "../../drivers/core/io_lock.h"','#include "'+str(r/"c/drivers/core/io_lock.h")+'"')
+s=(r/"c/kernel/diag/kprintf.c").read_text().replace('#include "../../drivers/core/io_lock.h"','#include "'+str(r/"c/drivers/core/io_lock.h")+'"')
 source=b/"kprintf.c";source.write_text(s)
 base=[os.environ.get("CC","clang"),"-std=c11","-O1","-g","-pthread","-fsanitize=address,undefined","-I"+str(r/"c/kernel/core"),"-I"+str(r/"c/drivers/char")]
 (b/"io.h").write_text("#include <stdint.h>\nuint8_t inb(uint16_t);\nvoid outb(uint16_t,uint8_t);\n")

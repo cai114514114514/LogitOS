@@ -28,7 +28,7 @@
  * a rename cannot leave a stale entry behind, and it needs no central file to
  * edit. It is not that today for one reason worth writing down rather than
  * hiding: emitting from the macro requires editing c/drivers/core/device.c,
- * c/kernel/core/kprintf.c and files under c/kernel/mm, which belong to other
+ * c/kernel/diag/kprintf.c and files under c/kernel/mm, which belong to other
  * lines of work right now. The migration is mechanical -- add the macro, add
  * a bracketed section to linker.ld beside the `logit_drivers` one (bracketed
  * EXPLICITLY, per that file's own note about orphan placement landing past
@@ -81,7 +81,7 @@
 #include "module.h"
 #include "driver.h"      /* dev_*        -- c/drivers/core/driver.h */
 #include "virtio.h"      /* virtio_*     -- c/drivers/virtio/virtio.h */
-#include "pmm.h"         /* pmm_*        -- c/kernel/mm/pmm.h */
+#include "pmm.h"         /* pmm_*        -- c/kernel/mm/phys/pmm.h */
 #include "kheap.h"       /* kmalloc/kfree */
 #include "kprintf.h"     /* kprintf */
 #include "ktime.h"       /* time_mono_ms */

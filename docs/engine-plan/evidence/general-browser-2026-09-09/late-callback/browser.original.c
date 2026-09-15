@@ -3909,7 +3909,7 @@ static void draw_ce_overlay(void)
         int x1 = it[i].x - scroll_x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
         int sy = VIEW_Y + it[i].y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
-        /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb.c) reads
+        /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb/fb/fb.c) reads
          * "radius < 1" as "nothing to draw" and returns before touching a
          * single pixel -- a guard written for a genuinely empty w<=0/h<=0
          * call that also silently swallows a caller asking for a SQUARE
@@ -4175,7 +4175,7 @@ static void draw_doc_selection(void)
         int x1 = it[i].x - scroll_x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
         int sy = VIEW_Y + it[i].y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
-        /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb.c) has
+        /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb/fb/fb.c) has
          * `if (w <= 0 || h <= 0 || radius < 1) return` -- a radius of 0 is
          * silently a NO-OP, not a square-cornered glass panel. Measured: the
          * selection bookkeeping (psel_bounds/psel_copy) was already correct

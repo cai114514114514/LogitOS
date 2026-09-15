@@ -15,7 +15,7 @@
 #include "logit_abi.h"   /* struct logit_procinfo, LOGIT_KILL_* */
 /* Path-qualified: see the note in syscall.c -- mini-libc's sys/wait.h sorts
  * first in INCDIRS and silently wins the bare form. */
-#include "kernel/core/wait.h"   /* M27: a parent waits for a child, it does not poll */
+#include "kernel/sync/wait.h"   /* M27: a parent waits for a child, it does not poll */
 #include "uthread.h"            /* M30: a process is a set of threads */
 #include "ksignal.h"            /* M31: signals -- lifecycle, SIGCHLD, EINTR, kill */
 #include "ptrace.h"             /* a dying process is either end of a trace link */
@@ -713,7 +713,7 @@ void proc_exit(int code)
          * WHAT THIS COSTS, stated rather than hidden: a sibling in a pure
          * compute loop that never enters the kernel keeps the process alive
          * until it does. Closing that needs the same check on the timer
-         * interrupt's return-to-ring-3 path, in c/kernel/cpu/interrupts.c,
+         * interrupt's return-to-ring-3 path, in c/kernel/cpu/irq/interrupts.c,
          * which is another line's file -- exactly the gap proc_kill() already
          * documents for a killed process, now reachable one more way.
          * =================================================================== */
@@ -1024,7 +1024,7 @@ static int proc_list(struct logit_procinfo *out, int max)
  * neither is silently wrong:
  *   - a pure compute loop that never enters the kernel is not killed until it
  *     does. Closing that needs the same check on the timer-interrupt return
- *     path, in c/kernel/cpu/interrupts.c.
+ *     path, in c/kernel/cpu/irq/interrupts.c.
  *   - a thread PARKED on a wait queue (a shell blocked in waitpid) is not
  *     running to notice. Waking it needs sched_wake(), which takes a
  *     struct thread * that nothing outside sched.c can obtain.
@@ -1245,7 +1245,7 @@ int procfs_src_self(void)
 }
 
 /* ======================================================================
- * THE OUT-OF-MEMORY KILLER'S SEAM  (c/kernel/mm/oom.h)
+ * THE OUT-OF-MEMORY KILLER'S SEAM  (c/kernel/mm/reclaim/reclaim/oom.h)
  *
  * c/kernel/mm must not include this header: mm is UNDERNEATH exec -- the fault
  * path is reached from the scheduler, and pulling the process table down into

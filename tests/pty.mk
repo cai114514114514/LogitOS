@@ -12,14 +12,14 @@ ifeq ($(PTY_GATE_BUILD),1)
 # pci.c's quoted "io.h" resolve there instead of c/kernel/cpu/io.h; the compile
 # then failed on outl/inl/outw/outb. -iquote restores the kernel's intended
 # header only for these isolated gate images, without editing either live tree.
-CFLAGS := -iquote c/kernel/cpu $(CFLAGS)
+CFLAGS := $(KCPU_IQ) $(CFLAGS)
 endif
 
 ifeq ($(PTY_CONTROL),echo-stuck)
 # A separate BUILD receives this target-specific flag. The control leaves
 # tcsetattr returning success but prevents ECHO from clearing, so only an
 # observed byte on the master can satisfy the expected failure.
-$(BUILD)/c/kernel/exec/pty.o: CFLAGS += -DPTY_NEGCTL_ECHO_STUCK
+$(BUILD)/c/kernel/exec/fd/pty.o: CFLAGS += -DPTY_NEGCTL_ECHO_STUCK
 endif
 
 $(PTY_DISK): $(BUILD)/pty_probe.elf $(BUILD)/login.aex $(BUILD)/sh.aex $(FONTS) tools/mkfs.py tests/pty.mk

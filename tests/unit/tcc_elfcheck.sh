@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Is this ELF a program the LogitOS kernel will load? Judged with readelf,
-# which shares no code with c/kernel/exec/elf.c -- so this is a second opinion
+# which shares no code with c/kernel/exec/load/elf.c -- so this is a second opinion
 # on the file, not the loader agreeing with itself.
 #
 # Six checks, one line each, so a control can be required to fail EXACTLY the
@@ -31,7 +31,7 @@ else
 fi
 
 # readelf -lW prints one LOAD per line: LOAD offset vaddr paddr filesz memsz flg align
-# The rule is the kernel's (c/kernel/exec/elf.c, the PT_LOAD pass): a segment
+# The rule is the kernel's (c/kernel/exec/load/elf.c, the PT_LOAD pass): a segment
 # that ends at or below 0x40000000 is SKIPPED, not mapped -- lld emits a
 # read-only headers segment at 0x200000 in every .aex this tree builds -- and
 # one that straddles or sits above the region is refused. At least one LOAD

@@ -2,7 +2,7 @@
 #define LOGIT_DEV_IRQ_H
 /* Dynamic interrupt vectors for the device model.
  *
- * The kernel's static IDT (c/kernel/cpu/idt.c) only installs vectors 0..47 plus
+ * The kernel's static IDT (c/kernel/cpu/irq/idt.c) only installs vectors 0..47 plus
  * a handful of hard-coded ones (65 = e1000, 128 = syscall, 240/241 = IPIs, 255
  * = spurious). A device model cannot hard-code a vector per driver, so this
  * module owns a pool of vectors 0x60..0x7F, their assembly stubs, and their IDT

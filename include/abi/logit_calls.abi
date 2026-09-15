@@ -82,7 +82,7 @@ call dir_name       SYS_DIR_NAME       str(dir) int(i) buf(b)
 call getcwd         SYS_GETCWD         buf(b) int(max)
 call chdir          SYS_CHDIR          str(path)
 # stat's third argument is the SIZE OF THE STRUCT THE CALLER BROUGHT, not a
-# count or a flag -- c/kernel/exec/meta.c emit() copies min(len, sizeof) bytes
+# count or a flag -- c/kernel/exec/load/meta.c emit() copies min(len, sizeof) bytes
 # and stamps st.len with what it actually wrote. That is the forward-
 # compatibility contract, and it only works if the caller passes its own
 # sizeof; a wrapper that hardcoded 88 here would silently over-read the day the

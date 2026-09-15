@@ -69,14 +69,14 @@ QEMU        := qemu-system-x86_64
 #  1. `find` emits directories in filesystem traversal order, and this repo is
 #     built from an NTFS working tree AND from ext4 clones. The two orders
 #     differ, so `-Ic/apps/libc/include/sys` sorted before or after
-#     `-Ic/kernel/core` depending on where you stood. $(sort) makes the command
+#     `$(KCORE_INC)` depending on where you stood. $(sort) makes the command
 #     line a function of the tree. (Same failure as tools/genroots.py's sort
 #     key, fixed in 912175a: a build input that depended on the filesystem.)
 #
 #  2. c/apps/libc/include/sys must NOT be on the include path. Its headers are
 #     reached as <sys/wait.h> through -Ic/apps/libc/include, exactly as C code
 #     expects; adding the directory itself also makes them reachable as bare
-#     "wait.h", which collides with c/kernel/core/wait.h -- the kernel's wait
+#     "wait.h", which collides with c/kernel/sync/wait.h -- the kernel's wait
 #     queues. Combined with (1) the symptom was a kernel file including
 #     "wait.h", getting POSIX waitpid instead, and failing with `call to
 #     undeclared function 'sched_sleep_ms'` -- on some machines and not others,
@@ -172,7 +172,7 @@ endif
 ifeq ($(NETNOTXLOCK),1)
 CFLAGS += -DNETLOCK_NEGCTL_NO_TX_LOCK
 endif
-#   make FILECLOSEOK=1  build file_close() (c/kernel/exec/file.c) back to its
+#   make FILECLOSEOK=1  build file_close() (c/kernel/exec/fd/file.c) back to its
 #                  pre-fix behaviour: the last close's write-back to the
 #                  backend can fail and SYS_CLOSE still reports 0. The
 #                  NEGATIVE CONTROL for tests/boot/run-closefull-test.sh: on
@@ -183,7 +183,7 @@ endif
 ifeq ($(FILECLOSEOK),1)
 CFLAGS += -DFILE_CLOSE_ALWAYS_OK
 endif
-#   make GLASSSLOW=1  build fb_liquid_glass_cut (c/kernel/gui/fb.c) with the
+#   make GLASSSLOW=1  build fb_liquid_glass_cut (c/kernel/gui/fb/fb/fb.c) with the
 #                  binary-search row-dominant run collapsed out, i.e. every
 #                  pixel of a glass panel re-walks the general per-pixel path
 #                  (isqrt + SDF + normal) that the row/column hoisting in this
@@ -1891,7 +1891,7 @@ test: test-crypto test-net $(ISO) $(DISK)
 CRYPTO_SRC := $(shell find c/crypto/aead c/crypto/hash c/crypto/kdf c/crypto/pubkey -name '*.c') \
               c/crypto/pq/keccak.c \
               c/kernel/cpu/cpufeat.c
-CRYPTO_INC := -Ic/crypto -Ic/crypto/aead -Ic/kernel/cpu -Ic/crypto/pq
+CRYPTO_INC := -Ic/crypto -Ic/crypto/aead $(KCPU_INC) -Ic/crypto/pq
 test-crypto: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/crypto_vec_test tests/unit/crypto_vec_test.c $(CRYPTO_SRC) $(CRYPTO_INC) -Itests/unit
 	$(BUILD)/crypto_vec_test
@@ -1905,7 +1905,7 @@ test-crypto: $(BUILD)
 	@# cpufeat.h from c/kernel/cpu, and that directory also holds the REAL
 	@# spinlock.h/kprintf.h. Listed after, they shadow the stubs and the link
 	@# fails on spin_lock_irqsave.
-	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c -Itests/unit/rngstub -Ic/crypto -Ic/kernel/core -Ic/kernel/cpu
+	$(CC) -O2 -Wall -Wextra -o $(BUILD)/rng_test tests/unit/rng_test.c c/kernel/core/rng.c c/crypto/hash/sha256.c c/kernel/cpu/cpufeat.c -Itests/unit/rngstub -Ic/crypto $(KCORE_INC) $(KCPU_INC)
 	$(BUILD)/rng_test
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/ecdh_test tests/unit/ecdh_test.c c/crypto/pubkey/ecdsa.c -Ic/crypto
 	$(BUILD)/ecdh_test
@@ -1993,7 +1993,7 @@ test-p521-control: $(BUILD)
 # are asserted on the bytes we emit and the state of the cache instead.
 PSK_TEST_SRC := tests/unit/tls_psk_test.c c/net/tls/tls_psk.c \
                 c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c
-PSK_TEST_INC := -Ic/crypto -Ic/net/tls -Ic/drivers/timer -Ic/kernel/core
+PSK_TEST_INC := -Ic/crypto -Ic/net/tls -Ic/drivers/timer $(KCORE_INC)
 
 test-tls-psk: $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all \
@@ -2046,7 +2046,7 @@ test-crypto-diff: $(BUILD)
 # decode. The bit tuples are UNMEASURED on such a host; run this on x86-64.
 test-cpufeat: $(BUILD)
 	$(CC) -O2 -Wall -Wextra -o $(BUILD)/cpufeat_test tests/unit/cpufeat_test.c \
-	    c/kernel/cpu/cpufeat.c -Ic/kernel/cpu
+	    c/kernel/cpu/cpufeat.c $(KCPU_INC)
 	$(BUILD)/cpufeat_test
 
 # test-aes-ni proves the three things the accelerated crypto path needs: the
@@ -2125,14 +2125,14 @@ VFS_TEST_SRC := c/fs/vfs/vfs.c c/fs/vfs/vfs_meta.c c/fs/vfs/vfs_path.c c/fs/ramf
 test-vfs-mount:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/vfs_mount_test tests/unit/vfs_mount_test.c \
-	    $(VFS_TEST_SRC) $(FS_INC) -Ic/kernel/core
+	    $(VFS_TEST_SRC) $(FS_INC) $(KCORE_INC)
 	@$(BUILD)/vfs_mount_test
 
 test-vfs-mount-asan:
 	@mkdir -p $(BUILD)
 	@$(CC) -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
 	    -o $(BUILD)/vfs_mount_asan tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) \
-	    $(FS_INC) -Ic/kernel/core
+	    $(FS_INC) $(KCORE_INC)
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD)/vfs_mount_asan
 
 # THE NEGATIVE CONTROL. The same suite against a build where the mode, the
@@ -2145,7 +2145,7 @@ test-vfs-mount-asan:
 test-vfs-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DVFS_NEGCTL_STORE_ONLY -o $(BUILD)/vfs_negctl \
-	    tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) $(FS_INC) -Ic/kernel/core
+	    tests/unit/vfs_mount_test.c $(VFS_TEST_SRC) $(FS_INC) $(KCORE_INC)
 	@if $(BUILD)/vfs_negctl > $(BUILD)/vfs_negctl.log 2>&1; then \
 	    echo "CONTROL FAILED: a build that never checks the mode passed the suite"; \
 	    exit 1; \
@@ -2327,7 +2327,7 @@ test-swap-negctl: $(ISO) $(DISK)
 # PMM invariant holds and pmm_audit() stays clean. That is a leak no frame-level
 # test can see, and these two are where it is measured.
 #
-#   test-leak     host, under ASan/UBSan: the real c/kernel/mm/kheap.c driven
+#   test-leak     host, under ASan/UBSan: the real c/kernel/mm/phys/kheap.c driven
 #                 through app open/close cycles, asserting the arena stops
 #                 growing -- plus TWO negative controls, each a compiled build
 #                 with one half of the fix removed, both required to FAIL.
@@ -2385,7 +2385,7 @@ test-shell: $(ISO) $(DISK)
 # Ctrl+C, on the machine. The host suite proves /bin/sh forwards SIGINT to the
 # foreground job; only a boot proves the kernel then delivers it, and both
 # halves have to be real (see the header of the script and
-# c/kernel/exec/ksignal.c:316). Its negative control runs the identical script
+# c/kernel/exec/signal/ksignal.c:316). Its negative control runs the identical script
 # with the ^C removed and requires the job to still be running.
 test-sigint: $(ISO) $(DISK)
 	@sh tests/boot/run-sigint-test.sh $(ISO) $(DISK)
@@ -2521,7 +2521,7 @@ test-perf-gate: $(ISO) $(DISK)
 test-evq:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/evq_test tests/unit/evq_test.c \
-	    c/kernel/gui/evq.c -Ic/kernel/gui -Iinclude/abi
+	    c/kernel/gui/input/evq.c $(KGUI_INC) -Iinclude/abi
 	@$(BUILD)/evq_test
 
 # Does the monotonic clock actually advance, at the rate it claims? Cross-checked
@@ -2811,7 +2811,7 @@ test-net-proto:
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/net_proto_test tests/unit/net_proto_test.c \
 		c/net/ip/ip6_addr.c \
 		-Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
-		-Ic/drivers/timer -Ic/kernel/core
+		-Ic/drivers/timer $(KCORE_INC)
 	@./$(BUILD)/net_proto_test
 
 # ---- IPv6 -----------------------------------------------------------------
@@ -2852,7 +2852,7 @@ test-nd-host:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/nd_test tests/unit/nd_test.c \
 		-Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport -Ic/net/dns \
-		-Ic/drivers/timer -Ic/kernel/core
+		-Ic/drivers/timer $(KCORE_INC)
 	@./$(BUILD)/nd_test
 
 # Negative control for Duplicate Address Detection. The easy way to write DAD
@@ -2863,7 +2863,7 @@ test-nd-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_NO_DAD -o $(BUILD)/nd_negctl \
 		tests/unit/nd_test.c -Ic/net/ip -Ic/net/link -Ic/net/core \
-		-Ic/net/transport -Ic/net/dns -Ic/drivers/timer -Ic/kernel/core
+		-Ic/net/transport -Ic/net/dns -Ic/drivers/timer $(KCORE_INC)
 	@if ./$(BUILD)/nd_negctl >$(BUILD)/nd_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with DAD ignoring a defence"; \
 		exit 1; \
@@ -2881,7 +2881,7 @@ test-ip6-fallback:
 		-o $(BUILD)/sock_phase_negctl tests/unit/ip6_fallback_test.c \
 		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
 		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
-		-Ic/kernel/core -Iinclude/abi
+		$(KCORE_INC) -Iinclude/abi
 	@if ./$(BUILD)/sock_phase_negctl >$(BUILD)/sock_phase_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: one-phase-per-poll still passed the warm-open gate"; \
 		exit 1; \
@@ -2893,7 +2893,7 @@ test-ip6-fallback:
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_fallback_test \
 		tests/unit/ip6_fallback_test.c -Itests/unit -Ic/net/core -Ic/net/ip \
 		-Ic/net/link -Ic/net/transport -Ic/net/dns -Ic/net/tls -Ic/net/http \
-		-Ic/drivers/timer -Ic/drivers/char -Ic/kernel/core -Iinclude/abi
+		-Ic/drivers/timer -Ic/drivers/char $(KCORE_INC) -Iinclude/abi
 	@./$(BUILD)/ip6_fallback_test
 
 # Negative control for the fallback itself: SOCK_NEGCTL_NO_FALLBACK makes a
@@ -2906,7 +2906,7 @@ test-ip6-fallback-negctl:
 		-o $(BUILD)/ip6_fallback_negctl tests/unit/ip6_fallback_test.c \
 		-Itests/unit -Ic/net/core -Ic/net/ip -Ic/net/link -Ic/net/transport \
 		-Ic/net/dns -Ic/net/tls -Ic/net/http -Ic/drivers/timer -Ic/drivers/char \
-		-Ic/kernel/core -Iinclude/abi
+		$(KCORE_INC) -Iinclude/abi
 	@if ./$(BUILD)/ip6_fallback_negctl >$(BUILD)/ip6_fb_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with no fallback at all"; \
 		exit 1; \
@@ -2923,7 +2923,7 @@ test-ip6-dns:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/ip6_dns_test \
 		tests/unit/ip6_dns_test.c -Ic/net/dns -Ic/net/ip -Ic/net/link \
-		-Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
+		-Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC)
 	@./$(BUILD)/ip6_dns_test
 
 # Negative control for the one claim that protects every existing IPv4 test in
@@ -2934,7 +2934,7 @@ test-ip6-dns-negctl:
 	@$(CC) -O2 -w -DLOGIT_NET_HOST -DIP6_NEGCTL_ALWAYS_AAAA \
 		-o $(BUILD)/ip6_dns_negctl tests/unit/ip6_dns_test.c -Ic/net/dns \
 		-Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport \
-		-Ic/drivers/timer -Ic/kernel/core
+		-Ic/drivers/timer $(KCORE_INC)
 	@if ./$(BUILD)/ip6_dns_negctl >$(BUILD)/ip6_dns_negctl.log 2>&1; then \
 		echo "NEGATIVE CONTROL FAILED: the suite passes with AAAA asked for unconditionally"; \
 		exit 1; \
@@ -3124,7 +3124,7 @@ test-term-audio-none: $(ISO) $(DISK)
 test-term-audio: test-term-audio-wav test-term-audio-none
 
 test-dhcp-host: $(BUILD)
-	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer -Ic/kernel/core
+	$(CC) -O2 -Wall -Wextra -DLOGIT_NET_HOST -o $(BUILD)/dhcp_test tests/unit/dhcp_test.c -Ic/net/core -Ic/net/transport -Ic/drivers/timer $(KCORE_INC)
 	$(BUILD)/dhcp_test
 
 # End-to-end e1000 -> IPv4 -> TCP -> HTTP transfer against a host-local server.
@@ -3287,14 +3287,14 @@ test-complete:
 	@$(BUILD)/complete_test
 
 # Framebuffer clip is per-target (struct surface), not global: this builds the
-# real c/kernel/gui/fb.c host-side and asserts a clip set on one app's surface
+# real c/kernel/gui/fb/fb.c host-side and asserts a clip set on one app's surface
 # does NOT bleed into a draw on another's (the "white Terminal" cross-app leak).
 test-fb-clip:
 	@mkdir -p $(BUILD)
 	@# $(GFX_SRC): fb.c rounds its window corners with gfx_mask_corner, so
 	@# linking fb.c without the engine stopped working when that landed. The
 	@# break was invisible because no suite reaches this target.
-	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb.c c/kernel/gui/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
+	@$(CC) -O2 -Wall -Wextra -o $(BUILD)/fb_clip_test tests/unit/fb_clip_test.c c/kernel/gui/fb/fb.c c/kernel/gui/fb/glass.c $(GFX_SRC) $(HOST_INCDIRS) -lm
 	@$(BUILD)/fb_clip_test
 
 # GC stress: collect before EVERY allocation -> any missing GC root becomes a crash
@@ -3412,7 +3412,7 @@ test-as-fast: test-as test-as-gcstress test-as-stress test-complete \
               test-as-port-negctl test-ash
 
 # --- the kernel log ring, host-side ---------------------------------------
-# Compiles the REAL c/kernel/core/klog.c + kprintf.c against tests/unit/klogstub
+# Compiles the REAL c/kernel/diag/klog.c + kprintf.c against tests/unit/klogstub
 # (which shadows the interrupt guard, the spinlock, per-CPU identity, the timer
 # and the two console sinks) and asserts wraparound, truncation, level
 # filtering, full-ring behaviour, two producers interleaving mid-line, and the
@@ -3432,8 +3432,8 @@ test-panic-log: $(ISO) $(DISK)
 test-panic: $(ISO) $(DISK)
 	@bash tests/boot/run-panic-test.sh $(ISO) $(DISK)
 
-KLOG_TEST_SRC := tests/unit/log_test.c c/kernel/core/klog.c c/kernel/core/kprintf.c
-KLOG_TEST_INC := -Itests/unit/klogstub -Ic/kernel/core
+KLOG_TEST_SRC := tests/unit/log_test.c c/kernel/diag/klog.c c/kernel/diag/kprintf.c
+KLOG_TEST_INC := -Itests/unit/klogstub $(KCORE_INC)
 test-klog:
 	@mkdir -p $(BUILD)
 	@$(CC) -O2 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -3463,8 +3463,8 @@ test-klog-control:
 # pmm_alloc_contig failures (the grow() double-accounting bug class).
 test-kheap:
 	@mkdir -p $(BUILD)
-	@$(CC) -O1 -g -DMM_HOSTTEST -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/kheap.c \
-	    -Itests/unit/kheapstub -Ic/kernel/mm
+	@$(CC) -O1 -g -DMM_HOSTTEST -fsanitize=address -o $(BUILD)/kheap_test tests/unit/kheap_test.c c/kernel/mm/phys/kheap.c \
+	    -Itests/unit/kheapstub $(KMM_INC)
 	@$(BUILD)/kheap_test
 
 # mini-libc allocator host test: asserts the SCALING of c/apps/libc/src/malloc.c,
@@ -3588,7 +3588,7 @@ test-browser: $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) -o $(BUILD)/layout_svg_test tests/unit/layout_svg_test.c \
 	    c/apps/browser/layout.c c/apps/browser/layout_text.c $(HTML_PARSER_SRC) c/apps/browser/css_engine.c c/apps/browser/css_vars.c \
 	    $(IMG_HOST_SRC) \
-	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm -Ic/kernel/mm
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm $(KMM_INC)
 	@$(BUILD)/layout_svg_test
 	@$(CC) -O2 -w $(BTEST_INC) $(CSS_INC) $(JS_INC) -DCONFIG_VERSION='"host"' -o $(BUILD)/js_dom_test \
 	    tests/unit/js_dom_test.c c/apps/browser/js_dom.c c/apps/browser/js_page.c \
@@ -4080,7 +4080,7 @@ bench-repaint: $(ISO) $(DISK)
 IMG_HOST_SRC := c/lib/image/img.c c/lib/image/gif.c c/lib/image/jpeg.c \
                 c/lib/image/svg.c c/lib/image/exif.c tests/unit/rust_host_shim.c \
                 $(GFX_SRC)
-IMG_HOST_INC := -Ic/lib/image -Ic/kernel/mm -Ic/lib/gfx
+IMG_HOST_INC := -Ic/lib/image $(KMM_INC) $(GFX_INC)
 
 # PNG decoder host test: PIL generates a matrix of cases (colour types, bit depths,
 # Adam7, tRNS) as ground truth; our decoder must match byte-for-byte. Needs PIL.
@@ -4344,7 +4344,7 @@ FONT_SRC   := c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/otlayout.c \
 # engine -- which is the whole point, since it means these font suites and the
 # desktop are judging the same rasterizer.
 FONT_RAS   := c/lib/text/glyphras.c $(GFX_SRC)
-FONT_INC   := -Ic/lib/text -Ic/kernel/gui -Ic/lib/gfx
+FONT_INC   := -Ic/lib/text $(KGUI_INC) $(GFX_INC)
 FONT_FIX   := tests/fixtures/fonts
 # The committed fixtures plus the fonts we actually ship on the disk image --
 # a regression that only shows up in ui.ttf is still a regression.
@@ -4476,8 +4476,8 @@ test-glyph-agree:
 # LOGIT_FACE_MONO/LOGIT_FACE_BOLD, which text.c reads rather than respelling.
 FONT_WEIGHT_SRC := c/kernel/gui/text.c c/lib/text/bidi.c c/lib/text/script.c \
                    c/lib/text/shape.c c/lib/text/utf8.c $(FONT_SRC) $(FONT_RAS)
-FONT_WEIGHT_INC := $(FONT_INC) -Iinclude/abi -Ic/kernel/cpu -Ic/kernel/core \
-                   -Ic/kernel/mm $(FS_INC)
+FONT_WEIGHT_INC := $(FONT_INC) -Iinclude/abi $(KCPU_INC) $(KCORE_INC) \
+                   $(KMM_INC) $(FS_INC)
 
 $(BUILD)/font_weight_test: tests/unit/font_weight_test.c $(FONT_WEIGHT_SRC)
 	@mkdir -p $(BUILD)
@@ -4580,7 +4580,7 @@ test-pci: $(BUILD)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -DLOGIT_HOST_TEST \
 	    -o $(BUILD)/pci_msi_test tests/unit/pci_msi_test.c c/kernel/pci/pci_msi.c \
 	    c/kernel/pci/pci.c c/drivers/core/device.c \
-	    -Itests/unit/pcistub -Ic/drivers/core -Ic/kernel/pci -Ic/kernel/cpu
+	    -Itests/unit/pcistub -Ic/drivers/core -Ic/kernel/pci $(KCPU_INC)
 	@$(BUILD)/pci_msi_test
 
 # Two DIFFERENT QEMU machines and device sets against the same kernel: set 'a'
@@ -4609,14 +4609,14 @@ test-devmodel: test-devmodel-a test-devmodel-b
 test-time-host: test-time-switch-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -DLOGIT_TIME_HOST -O1 -g -Wall -Wextra -o $(BUILD)/time_test \
-	    tests/unit/time_test.c c/kernel/core/ktime.c -Ic/kernel/core -Iinclude/abi
+	    tests/unit/time_test.c c/kernel/core/ktime.c $(KCORE_INC) -Iinclude/abi
 	@$(BUILD)/time_test
 
 test-time-switch-negctl:
 	@mkdir -p $(BUILD)/switch-negctl
 	@$(CC) -DLOGIT_TIME_HOST -DTIME_NEGCTL_SOURCE_BEFORE_SEQ -O1 -g -Wall -Wextra \
 	    -o $(BUILD)/switch-negctl/time_test tests/unit/time_test.c c/kernel/core/ktime.c \
-	    -Ic/kernel/core -Iinclude/abi
+	    $(KCORE_INC) -Iinclude/abi
 	@set +e; out=`$(BUILD)/switch-negctl/time_test 2>&1`; rc=$$?; set -e; \
 	 echo "$$out" | grep -q 'source/fold point published as a torn tuple'; \
 	 test `echo "$$out" | grep -c 'FAIL .*source/fold point published as a torn tuple'` -eq 1; \
@@ -4882,7 +4882,7 @@ clean-scratch:
 # Own fragment for the same reason as every other one above.
 -include tests/mem.mk
 
-# How far is c/kernel/mm/reclaim.c's clock from the offline optimum? An exact
+# How far is c/kernel/mm/reclaim/reclaim/reclaim/reclaim.c's clock from the offline optimum? An exact
 # answer, from a recorded reference string and Belady MIN. The tracer is a QEMU
 # plugin, so the kernel and this ISO are untouched by it.
 -include tests/mmtrace.mk
@@ -4914,13 +4914,13 @@ test-aui-mask:
 # The target succeeds when the test fails.
 test-glass:
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -Ic/kernel/gui \
+	$(CC) -O1 -g -Wall -Wextra $(KGUI_INC) \
 	    -o $(BUILD)/glass_lut_test tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
 	$(BUILD)/glass_lut_test
 
 test-glass-negctl:
 	@mkdir -p $(BUILD)
-	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION -Ic/kernel/gui \
+	$(CC) -O1 -g -Wall -Wextra -DGLASS_NO_DISPERSION $(KGUI_INC) \
 	    -o $(BUILD)/glass_lut_negctl tests/unit/glass_lut_test.c c/lib/gfx/openlogit_glass.c -lm
 	@if $(BUILD)/glass_lut_negctl > $(BUILD)/glass_negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: the test passes without dispersion"; exit 1; \
@@ -5099,7 +5099,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # control that builds the kernel with the FPU/SSE state left OUT of the signal
 # frame and requires the suite to fail. Own fragment for the reason every other
 # one here is. The kernel side needs no rule: C_SRC globs c/kernel, so
-# c/kernel/exec/ksignal.c and ksigframe.c link by existing.
+# c/kernel/exec/signal/ksignal.c and ksigframe.c link by existing.
 -include tests/signal.mk
 
 # The focus model and the form controls: the host state machine, the device

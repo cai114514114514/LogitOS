@@ -105,7 +105,7 @@ run byte for byte (same corpus, same probe).
 
 **NOT run**: `test-bing`'s device half. `$(ISO)`/`$(DISK)` do not currently
 build in this tree — `make bench-js-os` (a different, unrelated $(ISO)/$(DISK)
-build) failed during this same session on `c/kernel/mm/pcache.c:822: call to
+build) failed during this same session on `c/kernel/mm/cache/pcache.c:822: call to
 undeclared function 'reclaim_low'` and a `want` redefinition, both inside
 `c/kernel/**`, which is out of this task's scope and appears to be a
 concurrent, in-progress edit by another session (the CLAUDE.md system

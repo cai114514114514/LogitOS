@@ -17,7 +17,7 @@
 .PHONY: test-raw-host test-raw-negctl test-raw
 
 RAW_INC := -Ic/net/core -Ic/net/link -Ic/net/ip -Ic/net/transport -Ic/net/dns \
-           -Ic/drivers/timer -Ic/kernel/core
+           -Ic/drivers/timer $(KCORE_INC)
 
 # White-box, same shape as tests/unit/net_proto_test.c (test-net-proto in the
 # main Makefile): #includes ip.c/reasm.c/icmp.c/raw.c directly and stubs only
@@ -117,7 +117,7 @@ test-raw: test-raw-host test-raw-negctl
 .PHONY: test-dns test-dns-negctl
 
 DNS_INC := -Ic/net/dns -Ic/net/ip -Ic/net/link -Ic/net/core -Ic/net/transport \
-           -Ic/drivers/timer -Ic/kernel/core
+           -Ic/drivers/timer $(KCORE_INC)
 
 test-dns: test-dns-negctl
 	@mkdir -p $(BUILD)
@@ -160,10 +160,10 @@ test-dns-negctl:
 # one Makefile edit is the consumer -- see the note at the bottom of this file.
 #
 # WHITE BOX. unix_test.c #includes unix.c whole and supplies the two services
-# the kernel would (tests/unit/unixstub/{kheap.h,kernel/core/wait.h}), which is
+# the kernel would (tests/unit/unixstub/{kheap.h,kernel/sync/wait.h}), which is
 # the same shape tests/unit/tcp_test.c uses on tcp.c. The include path order is
 # load-bearing: -Itests/unit/unixstub comes FIRST so the stub wait.h wins over
-# c/kernel/core/wait.h, exactly the ordering trap CLAUDE.md's "Source layout"
+# c/kernel/sync/wait.h, exactly the ordering trap CLAUDE.md's "Source layout"
 # section records about uonly/.
 #
 # THE STUB DIRECTORY THAT SENTENCE NAMES DID NOT EXIST UNTIL 2026-08-28, and
@@ -300,7 +300,7 @@ test-unix-negctl:
 # Added to this fragment for the reason its opening comment gives -- it is the
 # shared net-test landing spot several agents append to. Nothing here is needed
 # to BUILD the change: it is c/net/core/net.c, c/net/transport/tcp.{c,h} and one
-# verb in c/kernel/core/kdiag.c, all of which C_SRC already globs.
+# verb in c/kernel/diag/kdiag.c, all of which C_SRC already globs.
 #
 # WHAT CHANGED, in one sentence: tcp_poll() is TCP's timer wheel (retransmit,
 # delayed-ACK flush, zero-window persist, TIME_WAIT reaping, the drain that

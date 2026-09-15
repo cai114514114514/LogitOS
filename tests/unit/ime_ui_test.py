@@ -3,9 +3,9 @@
 import argparse, subprocess, sys
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--build',type=Path,required=True);p.add_argument('--ui',type=Path);p.add_argument('--engine',type=Path);a=p.parse_args()
-r=a.root.resolve();b=a.build.resolve();e=a.engine or r/'c/lib/ime';ui=a.ui or r/'c/kernel/gui';b.mkdir(parents=True,exist_ok=True)
-incs=[ui,e]+[r/x for x in ['c/kernel/gui','c/kernel/mm','c/kernel/core','c/fs','c/lib/text','include','include/abi']]
-flags=['cc','-O2','-g','-Wall','-Wextra','-Werror','-DIME_LEARN_HOST','-fsanitize=address,undefined']+['-I'+str(i) for i in incs]+['-x','c',str(r/'tests/unit/ime_ui_test.c'),str(e/'pinyin.c'),str(r/'c/kernel/gui/ime_learn.c')]
+r=a.root.resolve();b=a.build.resolve();e=a.engine or r/'c/lib/ime';ui=a.ui or r/'c/kernel/gui/ime';b.mkdir(parents=True,exist_ok=True)
+incs=[ui,e]+[r/x for x in ['c/kernel/gui','c/kernel/gui/fb','c/kernel/gui/ime','c/kernel/gui/input','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/init','c/kernel/diag','c/kernel/sync','c/fs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/fs/vfs','c/fs/logitfs','c/fs/cache','c/fs/ramfs','c/fs/ctl','c/fs/procfs','c/lib/text','include','include/abi']]
+flags=['cc','-O2','-g','-Wall','-Wextra','-Werror','-DIME_LEARN_HOST','-fsanitize=address,undefined']+['-I'+str(i) for i in incs]+['-x','c',str(r/'tests/unit/ime_ui_test.c'),str(e/'pinyin.c'),str(r/'c/kernel/gui/ime/ime_learn.c')]
 def compile(src,out):subprocess.run(flags+[str(src),'-o',str(out)],check=True,cwd=r)
 compile(ui/'ime_ui.c',b/'ui_test')
 for mode in ['1','0','2']:subprocess.run([str(b/'ui_test'),str(b/'pinyin-qwen.dat'),mode],check=True,cwd=r)

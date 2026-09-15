@@ -17,7 +17,7 @@
  * so "TLS is slow" names no code. This header is what turns it into a number
  * per phase.
  *
- * IT IS NOT A SECOND PROFILER. The instrument is `kprof` (c/kernel/core/kprof.c):
+ * IT IS NOT A SECOND PROFILER. The instrument is `kprof` (c/kernel/diag/kprof.c):
  * KPROF_BEGIN/END, read back with `cat /dev/kprof`. All this header does is
  * decide whether the TLS sources can see it, which they cannot always:
  *

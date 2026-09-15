@@ -4,8 +4,8 @@ import argparse, os, pathlib, subprocess
 p=argparse.ArgumentParser();p.add_argument('--build',type=pathlib.Path,required=True);a=p.parse_args()
 r=pathlib.Path(__file__).resolve().parents[2];a.build.mkdir(parents=True,exist_ok=True)
 flags=['cc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function','-fsanitize=address,undefined','-fno-sanitize-recover=all','-DMM_HOSTTEST','-DDMA_HOSTTEST']
-flags += ['-I'+str(r/x) for x in ['tests/unit/mmstub','c/drivers/core','c/kernel/mm']]
-src=[r/x for x in ['tests/unit/dma_test.c','c/drivers/core/dma.c','c/kernel/mm/pmm.c']]
+flags += ['-I'+str(r/x) for x in ['tests/unit/mmstub','c/drivers/core','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/fs/logitfs']]
+src=[r/x for x in ['tests/unit/dma_test.c','c/drivers/core/dma.c','c/kernel/mm/phys/pmm.c']]
 for tag,assertion in [('DMA_NEG_CPU_ADDRESS','CPU_POINTER_ASSERT'),('DMA_NEG_TRUNCATE','HIGH_ADDRESS_ASSERT'),('DMA_NEG_DIRECTION','DIRECTION_ASSERT'),('DMA_NEG_EARLY_FREE','EARLY_FREE_ASSERT'),('',None)]:
     name=tag or 'dma-core';exe=a.build/name
     subprocess.run([*flags,*(['-D'+tag] if tag else []),*map(str,src),'-o',str(exe)],check=True)

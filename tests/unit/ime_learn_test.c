@@ -3,7 +3,7 @@
  * WHAT THIS CAN CHECK AND WHAT IT CANNOT, stated first because the second half
  * is the part a reader will otherwise assume away.
  *
- * c/kernel/gui/ime_learn.c is split by -DIME_LEARN_HOST (its own header
+ * c/kernel/gui/ime/ime_learn.c is split by -DIME_LEARN_HOST (its own header
  * explains the split): above the line is the hash table, the ageing sweep, the
  * serialiser and the parser -- pure memory work over static arrays, no kernel
  * header, no allocator, no disk. Below it are vfs_write, kmalloc, ktimer and

@@ -5,10 +5,10 @@
 #include "net.h"
 #include "pit.h"
 #include "rng.h"
-/* Path-qualified for the reason c/kernel/exec/file.c documents: mini-libc
+/* Path-qualified for the reason c/kernel/exec/fd/file.c documents: mini-libc
  * ships a sys/wait.h whose directory sorts earlier in INCDIRS, so the bare
  * form resolves to the userland header and fails somewhere else entirely. */
-#include "kernel/core/wait.h"   /* M27 wait queues: how a blocking accept() parks. The host
+#include "kernel/sync/wait.h"   /* M27 wait queues: how a blocking accept() parks. The host
                      * unit test resolves this to tests/unit/tcpstub/wait.h,
                      * which has no scheduler to park on and no need for one. */
 
@@ -192,7 +192,7 @@ static uint32_t iss_counter = 1;
  * port number.
  *
  * THE BACKLOG IS GUARDED BY THE WAIT QUEUE'S OWN LOCK, not by net_lock. That is
- * deliberate and it is the rule c/kernel/core/wait.h calls rule 2: a blocking
+ * deliberate and it is the rule c/kernel/sync/wait.h calls rule 2: a blocking
  * accept() must evaluate "is there a connection waiting" under the SAME lock it
  * hands to the sleep, or a handshake completing between the test and the park
  * is a wake that lands on nobody. tcp_input completes a handshake from softirq
@@ -245,7 +245,7 @@ static uint32_t st_syn_recv, st_accepted, st_refused_backlog,
  *
  * A blocked reader's condition -- rx_len, peer_fin, used -- lives under
  * net_lock, not under this queue's lock, so this does NOT satisfy rule 2 in
- * c/kernel/core/wait.h and a wake CAN in principle be missed. THE DEADLINE IS
+ * c/kernel/sync/wait.h and a wake CAN in principle be missed. THE DEADLINE IS
  * THE CORRECTNESS MECHANISM AND THE WAKE IS THE FAST PATH: every wait here is a
  * wait_event_timeout, so a missed wake costs latency, bounded and small, and
  * can never hang a thread. Doing it the other way round -- moving the receive
@@ -2080,12 +2080,12 @@ int tcp_get_info(int id, struct tcp_info *out)
  *   is tcp_accept_wait(), which parks the calling thread on the listener's wait
  *   queue until a handshake completes or a deadline passes -- it does not spin,
  *   does not hold the BKL, and is unlinked from the scheduler's run ring while
- *   it waits (c/kernel/core/wait.h).
+ *   it waits (c/kernel/sync/wait.h).
  *
  *   Two calls rather than one flag because the fd layer above needs both: a
  *   socket marked O_NONBLOCK by SYS_SETNB uses the first, an ordinary one uses
  *   the second. That is the SAME convention pipes already use in
- *   c/kernel/exec/file.c, deliberately -- a second blocking convention for the
+ *   c/kernel/exec/fd/file.c, deliberately -- a second blocking convention for the
  *   same word would be the thing that costs somebody an afternoon.
  *
  *   THE TIMEOUT IN tcp_accept_wait IS NOT A POLL AND IS NOT DECORATION. The
@@ -2318,7 +2318,7 @@ int tcp_wait_readable(int id, unsigned ms)
      * a segment arriving for any socket.
      *
      * The lost wakeup is unaffected, because net_lock was never what closed it:
-     * rule 2 of c/kernel/core/wait.h is satisfied by rx_wq.lock alone -- every
+     * rule 2 of c/kernel/sync/wait.h is satisfied by rx_wq.lock alone -- every
      * waker takes rx_wq.lock AFTER making the condition true. net_lock only made
      * the four reads mutually atomic, and each is a single aligned scalar whose
      * worst case is one extra pass round a loop that re-tests. tcp_wait_writable

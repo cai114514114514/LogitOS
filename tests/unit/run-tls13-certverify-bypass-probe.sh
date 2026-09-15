@@ -87,7 +87,7 @@ cp "$ROOT/c/crypto/trust/roots.c" "$TMP/roots_test.c"
 INCS="-I$TMP -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust \
       -I$ROOT/c/crypto/pq \
       -I$ROOT/c/net/tls -I$ROOT/c/net/core -I$ROOT/c/net/transport \
-      -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core -I$ROOT/c/kernel/cpu"
+      -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core -I$ROOT/c/kernel/init -I$ROOT/c/kernel/diag -I$ROOT/c/kernel/sync -I$ROOT/c/kernel/cpu -I$ROOT/c/kernel/cpu/acpi -I$ROOT/c/kernel/cpu/irq -I$ROOT/c/kernel/cpu/smp"
 SRC="$ROOT/tests/unit/tls_interop_test.c $ROOT/c/net/tls/tls.c $ROOT/c/net/tls/tls12.c \
      $ROOT/c/net/tls/tls_psk.c $ROOT/c/net/tls/x509.c $ROOT/c/net/tls/ocsp.c \
      $ROOT/c/kernel/cpu/cpufeat.c \

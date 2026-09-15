@@ -15,7 +15,7 @@
  * wait.h and that directory sorts before c/kernel/core in INCDIRS, so a bare
  * #include "wait.h" from outside c/kernel/core resolves to the userland one.
  * (See the identical note in c/kernel/exec/syscall.c -- it cost a build.) */
-#include "kernel/core/wait.h"   /* sched_sleep_ms */
+#include "kernel/sync/wait.h"   /* sched_sleep_ms */
 
 /* --------------------------------------------------------------------------
  * The path counters. Defined here, written by spinlock.c and interrupts.c.
@@ -28,7 +28,7 @@ _Static_assert(KB_MAXCPU == PERCPU_MAXCPU, "counter CPU cap must match scheduler
 
 void kb_stat_set(int on) { __atomic_store_n(&g_kb_stat, on ? 1 : 0, __ATOMIC_RELAXED); }
 
-/* c/kernel/exec/file.c. A local prototype rather than a header entry, the same
+/* c/kernel/exec/fd/file.c. A local prototype rather than a header entry, the same
  * way proc.c declares proc_fork_stats: this is a diagnostic between two files,
  * not an interface anybody else should reach for. */
 void tty_wait_stats(uint64_t *wakes, uint64_t *awake_cyc);

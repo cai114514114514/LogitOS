@@ -7,7 +7,7 @@ p=argparse.ArgumentParser();p.add_argument('--build',type=Path,required=True);p.
 r=Path(__file__).resolve().parents[2];b=a.build.resolve();b.mkdir(parents=True,exist_ok=True)
 def run(cmd):subprocess.run(list(map(str,cmd)),cwd=r,check=True)
 cc=os.environ.get('CC','clang');ld=os.environ.get('LD','ld.lld');nasm=os.environ.get('ASM','nasm')
-flags=['--target=x86_64-elf','-ffreestanding','-nostdlib','-fPIE','-ftls-model=local-exec','-fno-stack-protector','-mno-red-zone','-O2','-Ic/apps','-Iinclude/abi','-Ic/kernel/exec']
+flags=['--target=x86_64-elf','-ffreestanding','-nostdlib','-fPIE','-ftls-model=local-exec','-fno-stack-protector','-mno-red-zone','-O2','-Ic/apps','-Iinclude/abi','-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd']
 for src,name in [('ptinterp_program.c','program'),('ptinterp_runtime.c','runtime'),('ptinterp_driver.c','driver'),('ptinterp_gui.c','gui')]:run([cc,*flags,'-c','tests/unit/'+src,'-o',b/(name+'.o')])
 for src,name in [('c/apps/crt0_cli.asm','crt'),('tests/unit/pie_thread.asm','thread'),('tests/unit/ptinterp_start.asm','start')]:run([nasm,'-f','elf64',src,'-o',b/(name+'.o')])
 fork_nr=re.search(r'^#define SYS_FORK\s+(\d+)',(r/'include/abi/logit_abi.h').read_text(),re.M).group(1)
@@ -27,9 +27,9 @@ for name,path in [('missing','none'),('denied','deny'),('nested','loop'),('junk'
 (b/'junk.so').write_bytes(b'unsupported interpreter format'.ljust(128,b'!'))
 if a.fixtures_only:raise SystemExit(0)
 arch=['-arch','x86_64'] if platform.system()=='Darwin' else []
-host=[cc,*arch,'-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-DLOGIT_HOSTTEST','-Ic/kernel/exec','-Itests/unit/exechost','-Ic/fs','-Ic/kernel/mm','-Ic/crypto','-Ic/crypto/trust','-Ic/drivers/block']
-sources=['tests/unit/ptinterp_host.c','tests/unit/pie_space.c','c/kernel/exec/interp.c','c/drivers/block/crc32.c','c/crypto/hash/sha256.c']
-original=(r/'c/kernel/exec/elf.c').read_text()
+host=[cc,*arch,'-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-DLOGIT_HOSTTEST','-Ic/kernel/exec -Ic/kernel/exec/load -Ic/kernel/exec/signal -Ic/kernel/exec/fd','-Itests/unit/exechost','-Ic/fs -Ic/fs/vfs -Ic/fs/logitfs -Ic/fs/cache -Ic/fs/ramfs -Ic/fs/ctl -Ic/fs/procfs','-Ic/kernel/mm -Ic/kernel/mm/phys -Ic/kernel/mm/virt -Ic/kernel/mm/cache -Ic/kernel/mm/reclaim','-Ic/crypto','-Ic/crypto/trust','-Ic/drivers/block']
+sources=['tests/unit/ptinterp_host.c','tests/unit/pie_space.c','c/kernel/exec/load/interp.c','c/drivers/block/crc32.c','c/crypto/hash/sha256.c']
+original=(r/'c/kernel/exec/load/elf.c').read_text()
 controls={
  'start':('out->start_entry = interp.entry;','out->start_entry = out->entry;','START_ASSERT'),
  'base':('out->interp_base = interp.load_bias;','out->interp_base = 0;','BASE_ASSERT'),
@@ -37,11 +37,11 @@ controls={
  'relro':('if (relro && !deferred) {','if (relro) {','RELRO_ASSERT')}
 results=[]
 for name,change in list(controls.items())+[('positive',None),('asan',None)]:
- source=r/'c/kernel/exec/elf.c'
+ source=r/'c/kernel/exec/load/elf.c'
  if change:
   old,new,assertion=change;assert original.count(old)==1
-  tree=b/name;source=tree/'c/kernel/exec/elf.c';source.parent.mkdir(parents=True,exist_ok=True)
-  source.write_text(original.replace(old,new));shutil.copy2(r/'c/kernel/exec/elf.h',source.with_name('elf.h'))
+  tree=b/name;source=tree/'c/kernel/exec/load/elf.c';source.parent.mkdir(parents=True,exist_ok=True)
+  source.write_text(original.replace(old,new));shutil.copy2(r/'c/kernel/exec/load/elf.h',source.with_name('elf.h'))
   (tree/'c/kernel/mm').mkdir(parents=True,exist_ok=True);shutil.copy2(r/'c/kernel/mm/mm.h',tree/'c/kernel/mm/mm.h')
   (tree/'include').mkdir(exist_ok=True);shutil.copy2(r/'include/weaksym.h',tree/'include/weaksym.h')
   (tree/'include/abi').mkdir(exist_ok=True);shutil.copy2(r/'include/abi/aex_agent.h',tree/'include/abi/aex_agent.h')

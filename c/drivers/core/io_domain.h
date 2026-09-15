@@ -11,9 +11,13 @@ struct io_domain { pthread_mutex_t lock; void *owner; unsigned depth; };
 static inline void *io_domain_identity(void)
 { static _Thread_local char token; return &token; }
 #else
-#include "../../kernel/core/wait.h"
+/* Bare name: INCDIRS carries every directory under c/, and a relative
+ * spelling only survives until the target moves -- wait.h went from
+ * kernel/core/ to kernel/sync/ on 2026-09-15 and this was the one include
+ * in the tree that pointed at the old path. */
+#include "wait.h"
 #include "../../kernel/sched/sched.h"
-#include "../../kernel/cpu/percpu.h"
+#include "../../kernel/cpu/smp/percpu.h"
 struct io_domain { struct mutex lock; void *owner; unsigned depth; };
 #define IO_DOMAIN_INIT { MUTEX_INIT, 0, 0 }
 static inline void *io_domain_identity(void)

@@ -26,7 +26,7 @@ int ata_busy(void);
 
 /* The flag behind ata_busy(), exposed because AHCI shares it.
  *
- * c/kernel/cpu/interrupts.c consults ata_busy() to skip schedule() while an
+ * c/kernel/cpu/irq/interrupts.c consults ata_busy() to skip schedule() while an
  * ATA-family transfer is in flight; an AHCI command makes exactly the same
  * claim (a controller with a command outstanding and a PRDT pointing into a
  * buffer that must not be handed to another thread), so ahci.c raises this one

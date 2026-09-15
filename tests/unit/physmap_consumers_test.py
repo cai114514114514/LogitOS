@@ -24,8 +24,14 @@ def main():
     cc = os.environ.get('CC', 'cc')
     flags = ['-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-DMM_HOSTTEST',
              '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+             # c/kernel/{mm,exec} were split into subdirectories on 2026-09-15 and
+             # this gate passes its own narrow include path, not INCDIRS.
              '-I' + str(root / 'tests/unit/mmstub'), '-I' + str(root / 'c/kernel/mm'),
-             '-I' + str(root / 'c/kernel/exec'), '-I' + str(build)]
+             '-I' + str(root / 'c/kernel/mm/phys'), '-I' + str(root / 'c/kernel/mm/virt'),
+             '-I' + str(root / 'c/kernel/mm/cache'), '-I' + str(root / 'c/kernel/mm/reclaim'),
+             '-I' + str(root / 'c/kernel/exec'), '-I' + str(root / 'c/kernel/exec/load'),
+             '-I' + str(root / 'c/kernel/exec/signal'), '-I' + str(root / 'c/kernel/exec/fd'),
+             '-I' + str(build)]
 
     def check(name, sources, expected=None):
         binary = build / name
@@ -45,7 +51,7 @@ def main():
             print(result.stdout.strip().splitlines()[-1])
 
     if not args.ptrace_only:
-        cache = root / 'c/kernel/mm/pcache.c'
+        cache = root / 'c/kernel/mm/cache/pcache.c'
         cache_test = root / 'tests/unit/physmap_consumers_test.c'
         check('cache_alias', [cache_test, cache])
         old_cache = build / 'pcache_old_alias.c'
@@ -64,7 +70,7 @@ def main():
     include = build / 'physmap_ptrace_xlate.inc'
     include.write_text(helper)
     ptrace_test = root / 'tests/unit/physmap_ptrace_test.c'
-    vmm = (root / 'c/kernel/mm/vmm.c').read_text()
+    vmm = (root / 'c/kernel/mm/virt/vmm.c').read_text()
     start = vmm.index('int vmm_copy_in_space(')
     end = vmm.index('\n}\n', start) + 3
     copy = vmm[start:end]

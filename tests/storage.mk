@@ -37,7 +37,7 @@
 #
 # THE THREE TARGETS
 # -----------------
-#   test-storage          HOST unit: the REAL c/kernel/exec/file.c against
+#   test-storage          HOST unit: the REAL c/kernel/exec/fd/file.c against
 #                         tests/unit/storhost/hostmodel.c (what is real and
 #                         what is modelled is that file's header -- the short
 #                         version: file.c entire, the VFS by its documented
@@ -89,10 +89,10 @@
 # "sched.h" and "pit.h", whose basenames collide with the host's own headers
 # under a flat -I scan, and this TU must see the kernel's.
 STORAGE_HOST_SRC := tests/unit/storage_test.c tests/unit/storhost/hostmodel.c \
-                    c/kernel/exec/file.c
-STORAGE_HOST_INC := -iquote c -iquote c/kernel/exec -iquote c/kernel/mm \
-                    -iquote c/kernel/core -iquote c/kernel/cpu \
-                    -iquote c/kernel/sched -iquote c/fs \
+                    c/kernel/exec/fd/file.c
+STORAGE_HOST_INC := -iquote c $(KEXEC_IQ) $(KMM_IQ) \
+                    $(KCORE_IQ) $(KCPU_IQ) \
+                    -iquote c/kernel/sched -iquote c/fs $(FS_IQ) \
                     -iquote c/drivers/char -iquote c/drivers/timer \
                     -iquote include/abi
 # ASan + UBSan: file.c grows kmalloc buffers and does offset arithmetic on
@@ -100,12 +100,12 @@ STORAGE_HOST_INC := -iquote c -iquote c/kernel/exec -iquote c/kernel/mm \
 # silent by nature and this is the cheapest instrument that can see them.
 STORAGE_HOST_CF  := -O1 -g -Wall -Wextra -fsanitize=address,undefined
 
-$(BUILD)/storage_test: $(STORAGE_HOST_SRC) c/kernel/exec/file.h c/fs/vfs/vfs.h \
+$(BUILD)/storage_test: $(STORAGE_HOST_SRC) c/kernel/exec/fd/file.h c/fs/vfs/vfs.h \
                        include/abi/logit_abi.h
 	@mkdir -p $(BUILD)
 	$(CC) $(STORAGE_HOST_CF) -o $@ $(STORAGE_HOST_SRC) $(STORAGE_HOST_INC)
 
-$(BUILD)/storage_test_negctl: $(STORAGE_HOST_SRC) c/kernel/exec/file.h \
+$(BUILD)/storage_test_negctl: $(STORAGE_HOST_SRC) c/kernel/exec/fd/file.h \
                               c/fs/vfs/vfs.h include/abi/logit_abi.h
 	@mkdir -p $(BUILD)
 	$(CC) $(STORAGE_HOST_CF) -DSTORAGE_NEGCTL -o $@ $(STORAGE_HOST_SRC) $(STORAGE_HOST_INC)

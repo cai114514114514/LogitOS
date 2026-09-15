@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M27 blocking-core proof, ON DEVICE, under real preemption and real SMP.
 #
-# The kernel runs c/kernel/core/wait_selftest.c as an ordinary ring-0 thread at
+# The kernel runs c/kernel/diag/wait_selftest.c as an ordinary ring-0 thread at
 # boot. It exercises the wait queues, the sleeping locks and the deferred-work
 # chain against the real scheduler on real cores, and prints WAITQ_SELFTEST_OK
 # only if every phase held. This harness boots at several core counts and

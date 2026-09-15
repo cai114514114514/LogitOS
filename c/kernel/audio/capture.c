@@ -51,7 +51,7 @@ static struct io_domain cap_lifecycle = IO_DOMAIN_INIT;
 /* Path-qualified for the same reason mixer.c's include is: mini-libc ships a
  * userland wait.h that sorts earlier in INCDIRS, so a bare #include "wait.h"
  * from outside c/kernel/core silently picks up the wrong one. */
-#include "kernel/core/wait.h"
+#include "kernel/sync/wait.h"
 #include "sched.h"
 #include "spinlock.h"
 

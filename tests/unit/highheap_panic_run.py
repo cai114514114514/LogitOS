@@ -3,7 +3,7 @@
 """Actual panic range helpers/unwind loops, with required negative controls."""
 from pathlib import Path
 import argparse,re,subprocess,tempfile
-ap=argparse.ArgumentParser();ap.add_argument('--source',default=str(Path(__file__).resolve().parents[2]/'c/kernel/core/panic.c'));ap.add_argument('--build',type=Path,required=True);a=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('--source',default=str(Path(__file__).resolve().parents[2]/'c/kernel/diag/panic.c'));ap.add_argument('--build',type=Path,required=True);a=ap.parse_args()
 s=Path(a.source).read_text()
 def func(name):
     m=re.search(r'(?m)^(?:static )?(?:int|void) '+name+r'\(',s)

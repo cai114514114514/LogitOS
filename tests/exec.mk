@@ -23,7 +23,7 @@
 #                      the SAME machine so the difference cannot be read as
 #                      "you gave one of them less memory".
 #
-# The host tests link c/kernel/exec/elf.c and aex.c UNMODIFIED and replace only
+# The host tests link c/kernel/exec/load/elf.c and aex.c UNMODIFIED and replace only
 # the machine under them (tests/unit/exechost/space.c), which uses the host MMU
 # -- so "this page is not writable" is measured by storing to it and catching
 # the fault, not by reading back a flag the test itself wrote.
@@ -39,10 +39,10 @@
 # out does not skip a feature, it fails the link, which is the point: a
 # EXEC_SRC that silently dropped the signature verifier would be testing a
 # smaller aex.c than the one the kernel ships.
-EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/elf.c c/kernel/exec/aex.c \
+EXEC_SRC  := tests/unit/exechost/space.c c/kernel/exec/load/elf.c c/kernel/exec/load/aex.c \
              c/drivers/block/crc32.c c/crypto/trust/aexsig.c c/crypto/trust/pkgsig.c \
              c/crypto/pubkey/ed25519.c c/crypto/hash/sha256.c
-EXEC_INC  := -Itests/unit/exechost -Ic/kernel/exec -Ic/drivers/block -Ic/crypto \
+EXEC_INC  := -Itests/unit/exechost $(KEXEC_INC) -Ic/drivers/block -Ic/crypto \
              -Ic/crypto/trust -DLOGIT_HOSTTEST
 EXEC_WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 # Every .aex the build produces, including the deliberately crippled variants a
@@ -90,11 +90,11 @@ EXEC_ENV = EXEC_V1=$(BUILD)/exec_v1.aex EXEC_V2=$(BUILD)/echo.aex \
 $(BUILD)/exec_test $(BUILD)/exec_fuzz: c/crypto/trust/pkgroots.inc
 
 $(BUILD)/exec_test: tests/unit/exec_test.c $(EXEC_SRC) tests/unit/exechost/space.h \
-                    c/kernel/exec/elf.h c/kernel/exec/aex.h
+                    c/kernel/exec/load/elf.h c/kernel/exec/load/aex.h
 	@$(CC) -O1 -g $(EXEC_WARN) $(EXEC_INC) -o $@ tests/unit/exec_test.c $(EXEC_SRC)
 
 $(BUILD)/exec_fuzz: tests/unit/exec_fuzz.c $(EXEC_SRC) tests/unit/exechost/space.h \
-                    c/kernel/exec/elf.h c/kernel/exec/aex.h
+                    c/kernel/exec/load/elf.h c/kernel/exec/load/aex.h
 	@$(CC) -O1 -g $(EXEC_WARN) $(EXEC_INC) -o $@ tests/unit/exec_fuzz.c $(EXEC_SRC)
 
 # --- test-exec -------------------------------------------------------------
@@ -260,7 +260,7 @@ test-bigexec: $(ISO) $(BIGEXEC_DIR)/disk.img
 
 # --- test-bigexec-negctl ---------------------------------------------------
 # The whole-file materialisation, restored on a -D (EXEC_NEGCTL_SLURP in
-# c/kernel/exec/exec.c). It is the PLAUSIBLE wrong implementation -- the one
+# c/kernel/exec/load/exec.c). It is the PLAUSIBLE wrong implementation -- the one
 # that shipped, and one that loads every ordinary program on this disk -- so the
 # gate demands BOTH halves: the 64 MiB pad must fail against it, and the 16 MiB
 # pad must still pass. A control that fails at every size is measuring "did I
@@ -282,7 +282,7 @@ test-bigexec: test-bigexec-negctl
 # Two QEMU boots and 112 MiB of fixture, so this is a boot suite, not a host one.
 ci-boot: test-bigexec
 
-# poll(), eventfd and timerfd -- c/kernel/exec/kpoll.c and kpollsys.c. Its own
+# poll(), eventfd and timerfd -- c/kernel/exec/fd/kpoll.c and kpollsys.c. Its own
 # fragment, included from here rather than from the top-level Makefile, because
 # the Makefile is contended and `-include` nests. See the header of tests/poll.mk.
 -include tests/poll.mk
@@ -293,7 +293,7 @@ ci-boot: test-bigexec
 # tests/procfs.mk.
 -include tests/procfs.mk
 
-# Core dumps -- c/kernel/exec/coredump.c + c/apps/coreutils/corefmt.h. Its own
+# Core dumps -- c/kernel/exec/signal/coredump.c + c/apps/coreutils/corefmt.h. Its own
 # fragment, included from here rather than from the top-level Makefile, for the
 # reason tests/poll.mk and tests/procfs.mk both give: the Makefile is contended
 # and `-include` nests. See the header of tests/coredump.mk.
@@ -315,7 +315,7 @@ ci-boot: test-bigexec
 # a LOUD refusal that does not run the command. The places:
 #   /bin/sh                 c/apps/coreutils/sh.c  (words per command, bytes per line,
 #                           glob expansion, expanded-argv arena)
-#   the kernel's execve     c/kernel/exec/exec.c copy_uvec (LOGIT_EXEC_E2BIG)
+#   the kernel's execve     c/kernel/exec/load/exec.c copy_uvec (LOGIT_EXEC_E2BIG)
 #   the file-name limit     c/fs/vfs/vfs_path.h now DERIVES VFS_NAME_MAX from the on-disk
 #                           LFS_NAME_MAX instead of carrying its own 60
 # include/abi/logit_exec.h is the one definition both ends of execve read.
@@ -386,7 +386,7 @@ test-argv-limits-os: $(ISO) $(DISK)
 ci-host: test-sh-limits test-namemax
 ci-boot: test-argv-limits-os
 
-# What an open file DESCRIPTION costs -- c/kernel/exec/file.c's F_VFS backend
+# What an open file DESCRIPTION costs -- c/kernel/exec/fd/file.c's F_VFS backend
 # holds no bytes for a read-only open. Its own fragment, included from here
 # rather than from the top-level Makefile, for the reason tests/poll.mk,
 # tests/procfs.mk, tests/coredump.mk and tests/fsgeom.mk all give: the Makefile

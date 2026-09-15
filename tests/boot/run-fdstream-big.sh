@@ -3,7 +3,7 @@
 # that makes the answer readable.
 #
 # Until this change, opening a file meant kmalloc'ing all of it
-# (c/kernel/exec/file.c). "The largest file that can be opened" was therefore
+# (c/kernel/exec/fd/file.c). "The largest file that can be opened" was therefore
 # "the largest kmalloc that succeeds", which is a question about kheap's grow()
 # -- it DOUBLES an arena until it covers the request and then asks
 # pmm_alloc_contig(), a linear first-fit with no fallback -- and not a question
@@ -55,14 +55,14 @@ join_recipe() { sed -e ':a' -e '/\\$/{N;s/\\\n[ \t]*/ /;ba' -e '}'; }
 # `-W FILE` makes make PRETEND that file is newer, so both recipes are echoed
 # without touching anything -- `make -n` alone prints "is up to date" whenever
 # the tree is built, which is exactly when this harness runs.
-make -n -W c/kernel/exec/file.c build/kernel.elf > "$D/mk.txt" 2>/dev/null || true
+make -n -W c/kernel/exec/fd/file.c build/kernel.elf > "$D/mk.txt" 2>/dev/null || true
 CC_LINE=$(join_recipe < "$D/mk.txt" | grep -E 'exec/file\.c' | grep -E -- '-o build/c/kernel/exec/file\.o' | tail -1)
 LD_LINE=$(join_recipe < "$D/mk.txt" | grep -E -- '-o build/kernel\.elf' | tail -1)
 [ -n "$CC_LINE" ] || { echo "FAIL: no compile line for file.c in make -n output"; exit 1; }
 [ -n "$LD_LINE" ] || { echo "FAIL: no link line for kernel.elf in make -n output"; exit 1; }
 
 OBJ="$D/file_slurp.o"
-eval "$(printf '%s' "$CC_LINE" | sed -e "s#-o build/c/kernel/exec/file.o#-DFILE_SLURP -o $OBJ#")"
+eval "$(printf '%s' "$CC_LINE" | sed -e "s#-o build/c/kernel/exec/fd/file.o#-DFILE_SLURP -o $OBJ#")"
 [ -s "$OBJ" ] || { echo "FAIL: the control object did not compile"; exit 1; }
 
 make build/logit.iso >/dev/null 2>&1 || { echo "FAIL: the shipped ISO would not build"; exit 1; }
@@ -70,8 +70,8 @@ make build/logit.iso >/dev/null 2>&1 || { echo "FAIL: the shipped ISO would not 
 # object would produce a control identical to the shipped kernel, which would
 # fail this gate by PASSING -- the worst outcome available.
 case "$LD_LINE" in
-    *build/c/kernel/exec/file.o*) ;;
-    *) echo "FAIL: the link line does not name build/c/kernel/exec/file.o"; exit 1 ;;
+    *build/c/kernel/exec/fd/file.o*) ;;
+    *) echo "FAIL: the link line does not name build/c/kernel/exec/fd/file.o"; exit 1 ;;
 esac
 LD_LINE=$(printf '%s' "$LD_LINE" | sed -e "s#build/c/kernel/exec/file\.o#$OBJ#" \
                                        -e "s#-o build/kernel.elf#-o $D/kernel.elf#")

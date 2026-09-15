@@ -1,4 +1,4 @@
-# tests/imelearn.mk -- the pinyin USER-WEIGHT STORE (c/kernel/gui/ime_learn.c).
+# tests/imelearn.mk -- the pinyin USER-WEIGHT STORE (c/kernel/gui/ime/ime_learn.c).
 #
 # Separate from tests/ime.mk, and the split is the same one the code makes
 # rather than a filing convenience. tests/ime.mk measures c/lib/ime/pinyin.c:
@@ -33,10 +33,10 @@
 .PHONY: test-imelearn test-imelearn-negctl
 
 IMELEARN_CF  := -O2 -g -Wall -Wextra -Werror -DIME_LEARN_HOST \
-                -Ic/lib/ime -Ic/kernel/gui -Iinclude/abi
-IMELEARN_SRC := tests/unit/ime_learn_test.c c/lib/ime/pinyin.c c/kernel/gui/ime_learn.c
+                -Ic/lib/ime $(KGUI_INC) -Iinclude/abi
+IMELEARN_SRC := tests/unit/ime_learn_test.c c/lib/ime/pinyin.c c/kernel/gui/ime/ime_learn.c
 IMELEARN_DEP := c/lib/ime/pinyin.h c/lib/ime/pinyin_fmt.h c/lib/ime/pinyin_syllables.inc \
-                c/kernel/gui/ime_learn.h
+                c/kernel/gui/ime/ime_learn.h
 
 $(BUILD)/ime_learn_test: $(IMELEARN_SRC) $(IMELEARN_DEP)
 	@mkdir -p $(BUILD)

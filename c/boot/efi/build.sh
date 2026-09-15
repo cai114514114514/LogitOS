@@ -158,4 +158,4 @@ echo "[efi-build] -> $EFI_OUT"
 #   * INCDIRS (Makefile:79) DOES pick up c/boot/efi, which is why efi.h was
 #     checked to be a globally unique basename before being created, and why
 #     the ELF structs live inside loader.c instead of an elf.h that
-#     would shadow c/kernel/exec/elf.h. See CLAUDE.md, "Source layout".
+#     would shadow c/kernel/exec/load/elf.h. See CLAUDE.md, "Source layout".

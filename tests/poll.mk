@@ -10,7 +10,7 @@
 # Makefile, and this include at the bottom of tests/exec.mk comes out.
 #
 # The kernel side needs no build-system change at all: C_SRC globs c/kernel, so
-# c/kernel/exec/kpoll.c and kpollsys.c link by existing, and mini-libc's
+# c/kernel/exec/fd/kpoll.c and kpollsys.c link by existing, and mini-libc's
 # poll.c is picked up by the existing wildcard over c/apps/libc/src.
 
 .PHONY: test-poll test-poll-negctl test-poll-os
@@ -18,7 +18,7 @@
 # ---------------------------------------------------------------------------
 # THE HOST GATE.
 #
-# It compiles the REAL c/kernel/exec/kpoll.c and the REAL c/kernel/core/wait.c
+# It compiles the REAL c/kernel/exec/fd/kpoll.c and the REAL c/kernel/sync/wait.c
 # against a modelled scheduler (tests/unit/pollhost/hostsched.c). Read that
 # file's header for exactly what is real and what is modelled -- the short
 # version is that the wait queues, the poll hook and the ticket spinlock are the
@@ -33,19 +33,19 @@
 # kernel's own `#include "sched.h"` resolves and the system's does not. Same
 # flat-namespace trap CLAUDE.md records twice, met from the host side.
 POLL_HOST_SRC := tests/unit/poll_test.c tests/unit/pollhost/hostsched.c \
-                 c/kernel/core/wait.c c/kernel/exec/kpoll.c
-POLL_HOST_INC := -iquote c -iquote c/kernel/core -iquote c/kernel/cpu \
-                 -iquote c/kernel/sched -iquote c/kernel/exec \
+                 c/kernel/sync/wait.c c/kernel/exec/fd/kpoll.c
+POLL_HOST_INC := -iquote c $(KCORE_IQ) $(KCPU_IQ) \
+                 -iquote c/kernel/sched $(KEXEC_IQ) \
                  -iquote c/drivers/timer -iquote include/abi
 # ASan + UBSan: this code is a linked list mutated from several threads under a
 # hand-written lock, which is the shape where a use-after-free is silent.
 POLL_HOST_CF  := -O1 -g -Wall -Wextra -fsanitize=address,undefined -pthread
 
-$(BUILD)/poll_test: $(POLL_HOST_SRC) c/kernel/exec/kpoll.h c/kernel/core/wait.h
+$(BUILD)/poll_test: $(POLL_HOST_SRC) c/kernel/exec/fd/kpoll.h c/kernel/sync/wait.h
 	@mkdir -p $(BUILD)
 	$(CC) $(POLL_HOST_CF) -o $@ $(POLL_HOST_SRC) $(POLL_HOST_INC)
 
-$(BUILD)/poll_test_negctl: $(POLL_HOST_SRC) c/kernel/exec/kpoll.h c/kernel/core/wait.h
+$(BUILD)/poll_test_negctl: $(POLL_HOST_SRC) c/kernel/exec/fd/kpoll.h c/kernel/sync/wait.h
 	@mkdir -p $(BUILD)
 	$(CC) $(POLL_HOST_CF) -DPOLL_NO_PREREGISTER -o $@ $(POLL_HOST_SRC) $(POLL_HOST_INC)
 

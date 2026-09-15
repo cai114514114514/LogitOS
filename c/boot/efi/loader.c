@@ -288,7 +288,7 @@ static void die_st(const char *why, EFI_STATUS st)
  *  ELF64, only the part a loader reads                                *
  * ------------------------------------------------------------------ */
 
-/* NOT in a header. c/kernel/exec/elf.h already owns the basename "elf.h", and
+/* NOT in a header. c/kernel/exec/load/elf.h already owns the basename "elf.h", and
  * the Makefile's INCDIRS is one flat -I list over `find c include -type d`
  * (CLAUDE.md, "Source layout") -- a second elf.h in c/boot/efi would sort
  * before the kernel's and silently replace it for every kernel TU that

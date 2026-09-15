@@ -1,7 +1,7 @@
 #ifndef LOGIT_UNIXSTUB_KHEAP_H
 #define LOGIT_UNIXSTUB_KHEAP_H
 
-/* Host stub for c/kernel/mm/kheap.h, so c/net/core/unix.c compiles into the
+/* Host stub for c/kernel/mm/phys/kheap.h, so c/net/core/unix.c compiles into the
  * white-box gate. Same shape as tests/unit/fsstub/kheap.h -- the kernel heap is
  * the host heap -- with TWO additions the AF_UNIX gate needs and the fs one
  * does not:
@@ -52,7 +52,7 @@ static inline void *kmalloc(size_t n)
 
 static inline void kfree(void *p)
 {
-    /* kfree(NULL) is a no-op in c/kernel/mm/kheap.c and must not be counted
+    /* kfree(NULL) is a no-op in c/kernel/mm/phys/kheap.c and must not be counted
      * here either, or a failed allocation's rollback would drive the leak
      * counter negative and the final check would pass by cancellation. */
     if (!p) return;

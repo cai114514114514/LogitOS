@@ -12,7 +12,7 @@ LOG="$(mktemp)"
 QEMU="${QEMU:-qemu-system-x86_64}"
 
 # What this machine must say it trusts, EXACTLY. kernel_main calls
-# trust_banner() beside net_init (c/kernel/core/kmain.c), so every boot -- not
+# trust_banner() beside net_init (c/kernel/init/kmain.c), so every boot -- not
 # only one that opens a TLS connection -- enumerates the compiled-in CA set on
 # serial. These two numbers are literals on purpose: matching only the SHAPE of
 # the line would pass just as happily on a store that had silently shrunk to

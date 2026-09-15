@@ -56,7 +56,7 @@
 #include "vfs_cred.h"   /* vfs_cred_session(): who, if anyone, has logged in */
 /* Path-qualified for the same reason syscall.c and file.c are: mini-libc
  * ships a sys/wait.h that sorts first in INCDIRS. */
-#include "kernel/core/wait.h"   /* SYS_WAIT_EVENT: an idle app sleeps */
+#include "kernel/sync/wait.h"   /* SYS_WAIT_EVENT: an idle app sleeps */
 #include "power.h"      /* kernel_poweroff/kernel_reboot -- the LogitOS menu's Shut Down/Restart */
 
 #define MAXWIN     16
@@ -2087,7 +2087,7 @@ void wm_launch_locked(const char *aex_file, const char *arg)
         uint64_t stk_flags = VMM_WRITABLE | VMM_USER |
                              (cpu_prot_nx_usable() ? PTE_NX : 0);
         /* RESERVED, NOT MAPPED -- the half of exec.c's stack work that never
-         * reached this file. c/kernel/exec/exec.c:setup_cli_stack() says so in
+         * reached this file. c/kernel/exec/load/exec.c:setup_cli_stack() says so in
          * as many words ("it used to be decided here, and independently again
          * in c/kernel/gui/wm.c") and measured the change it made: 708 kcycles
          * per execve of which 522 -- 74% -- was allocating, poison-checking and
@@ -4410,7 +4410,7 @@ static void dirty_cursor(int x, int y)
                cursor_box[s][0] + 1, cursor_box[s][1] + 1);
 }
 
-/* Which byte lane fb_rgb() (c/kernel/gui/fb.c) packs each channel into.
+/* Which byte lane fb_rgb() (c/kernel/gui/fb/fb/fb.c) packs each channel into.
  * fb.c keeps red_pos/green_pos/blue_pos to itself, so this asks fb_rgb()
  * itself, on pure primaries, rather than duplicating the multiboot2 FB tag
  * parse: whichever byte a channel's 0xFF lands in IS its shift. That is
@@ -4520,7 +4520,7 @@ static int win_open_scale(const struct win *w)
  * windows can come out looking like the same window, which is the one thing a
  * picker may not do.
  *
- * fb_blit_surface_scaled_bl (c/kernel/gui/fb.c) is the bilinear variant, and
+ * fb_blit_surface_scaled_bl (c/kernel/gui/fb/fb/fb.c) is the bilinear variant, and
  * its own header prices it at ~4.3x nearest per pixel and scopes it to "the ONE
  * window currently under an open/close pop or a live resize drag ... not for
  * every window a compositor redraws every frame regardless of motion". This use

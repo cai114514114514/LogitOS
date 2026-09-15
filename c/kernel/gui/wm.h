@@ -48,7 +48,7 @@ void wm_damage(int x, int y, int w, int h);
 void wm_damage_menubar(void);
 int  wm_dark(void);                /* 1 if the system theme is dark */
 
-/* The third one, for the input method's candidate bar (c/kernel/gui/ime_ui.c).
+/* The third one, for the input method's candidate bar (c/kernel/gui/ime/ime_ui.c).
  * Fills the FOCUSED app window's index and its outer rectangle in device
  * pixels; returns 0 (and touches nothing) when there is no focused app window.
  *

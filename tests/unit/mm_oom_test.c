@@ -1,4 +1,4 @@
-/* Host test for the out-of-memory killer (c/kernel/mm/oom.c, -DMM_HOSTTEST).
+/* Host test for the out-of-memory killer (c/kernel/mm/reclaim/reclaim/oom.c, -DMM_HOSTTEST).
  *
  * WHAT IS ACTUALLY BEING GATED, because "an OOM killer works" is not a claim
  * anything can check. Three separate things, and they fail differently:

@@ -9,7 +9,7 @@ for rel in ['c/kernel/mm','c/kernel/module','include/weaksym.h']:
     dst=out/rel;dst.parent.mkdir(parents=True,exist_ok=True)
     if (r/rel).is_dir():shutil.copytree(r/rel,dst,dirs_exist_ok=True)
     else:shutil.copy2(r/rel,dst)
-file='c/kernel/module/modload.c' if a.control=='module-high' else 'c/kernel/mm/kheap.c'
+file='c/kernel/module/modload.c' if a.control=='module-high' else 'c/kernel/mm/phys/kheap.c'
 old,new={'identity':('low ? mm_p2v(phys) : mm_physmap_ptr(phys)','mm_p2v(phys)'),
          'low-pages':('pmm_alloc_contig_masked(frames, UINT64_MAX, FRAME_SIZE, 0)','pmm_alloc_contig(frames)'),
          'module-high':('uint8_t *blk = kmalloc_low((size_t)need)','uint8_t *blk = kmalloc((size_t)need)')}[a.control]

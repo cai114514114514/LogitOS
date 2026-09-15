@@ -38,7 +38,7 @@ def read(path):
         return None
     # The ELF starts where the header says it does. v1 had no hdr_size field
     # (those twelve bytes were `pad`), so v1 means 64 and reading the field
-    # would be reading padding -- the same rule c/kernel/exec/aex.c follows.
+    # would be reading padding -- the same rule c/kernel/exec/load/aex.c follows.
     ver = struct.unpack_from("<H", d, 4)[0]
     hdr_size = 64 if ver < 2 else struct.unpack_from("<H", d, 52)[0]
     if not 64 <= hdr_size <= len(d):

@@ -583,7 +583,7 @@ int main(int argc, char **argv)
     /* --- 4b. detach frees without a join ----------------------------------
      *
      * EIGHT, not sixteen, and the number is a finding rather than a taste. Each
-     * thread stack is one mmap and c/kernel/mm/vma.h caps an address space at
+     * thread stack is one mmap and c/kernel/mm/virt/vma.h caps an address space at
      * VMA_MAXAREA = 16 areas -- of which the program image's stack and libc's
      * malloc arena already hold some. Sixteen concurrent threads does not fail
      * as "too many threads", it fails as pthread_create returning EAGAIN partway

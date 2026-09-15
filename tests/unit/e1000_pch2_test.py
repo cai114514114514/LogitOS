@@ -19,7 +19,7 @@ for name,expected in variants:
     exe=b/name
     cmd=[os.environ.get('CC','cc'),'-std=c11','-D_POSIX_C_SOURCE=200112L','-O1','-g','-Wall','-Wextra','-Werror',
          '-Wno-unused-function','-fsanitize=address,undefined','-fno-sanitize-recover=all']
-    for d in ['c/drivers/net','c/drivers/core','c/kernel/pci','c/kernel/core','c/net/core']:cmd+=['-I'+str(root/d)]
+    for d in ['c/drivers/net','c/drivers/core','c/kernel/pci','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/net/core']:cmd+=['-I'+str(root/d)]
     if expected:cmd+=['-DPCH2_NEGCTL_'+name]
     cmd+=[str(root/'tests/unit/e1000_pch2_test.c'),'-o',str(exe)]
     subprocess.run(cmd,check=True)

@@ -151,7 +151,7 @@ Directory moved back; negative control re-run: `test-js-syntax` → 38 checks
 
 **Not separately proved**: `$(DISK)`'s wildcard-based prerequisite shrink.
 `$(ISO)`/`$(DISK)` do not currently build in this tree for an unrelated
-reason (`c/kernel/mm/pcache.c` compile errors, out of this task's scope —
+reason (`c/kernel/mm/cache/pcache.c` compile errors, out of this task's scope —
 see `tests/fixtures/webapi/PROVENANCE.md`'s note on the same failure). The
 `$(wildcard ...)` fix is a standard, widely-used idiom already relied on
 elsewhere in this same tree (`tests/cssweb.mk`'s `AUDIT_DIRS`) and was

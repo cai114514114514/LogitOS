@@ -376,7 +376,7 @@ static void ahci_unmap(struct ahci_port *p)
  * ---------------------------------------------------------------------------
  * WHY THIS IS STILL A POLL AND NOT AN INTERRUPT, MEASURED
  *
- * c/kernel/core/wait.h and dev_irq_request() would let a completion ISR wake a
+ * c/kernel/sync/wait.h and dev_irq_request() would let a completion ISR wake a
  * sleeper, and driver.h's own worked example is called `ahci_isr`. It is still
  * not done, and the reason is arithmetic rather than reluctance. There is no
  * completion interrupt wired on this port (P_IE is 0), so the only thing that

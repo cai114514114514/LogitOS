@@ -1,6 +1,6 @@
 /* Host test for a FILE-BACKED PAGE ACROSS A FORK, and for the fixed-address
- * file reservation the ELF loader creates (c/kernel/mm/vma.c
- * vma_reserve_file_fixed + c/kernel/mm/fault.c do_file + c/kernel/mm/vmm.c
+ * file reservation the ELF loader creates (c/kernel/mm/virt/vma.c
+ * vma_reserve_file_fixed + c/kernel/mm/virt/fault.c do_file + c/kernel/mm/virt/vmm.c
  * vmm_clone_user), compiled -DMM_HOSTTEST alongside the rest of c/kernel/mm.
  *
  * WHY THIS FILE EXISTS, said plainly: a file-backed PTE survives fork BY

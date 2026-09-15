@@ -8,10 +8,10 @@ p.add_argument('--out',type=Path,required=True)
 p.add_argument('--control',choices=['areas','metadata','fork-fp','stack'],required=True)
 a=p.parse_args();root=Path(__file__).resolve().parents[2]
 file,old,new={
- 'areas':('c/kernel/exec/elf.c','if (deferred && LOGIT_HAVE(vma_reserve_fixed)) {','if (0) {'),
- 'metadata':('c/kernel/exec/elf.c','if (deferred && LOGIT_HAVE(vma_reserve_fixed) &&','if (0 &&'),
+ 'areas':('c/kernel/exec/load/elf.c','if (deferred && LOGIT_HAVE(vma_reserve_fixed)) {','if (0) {'),
+ 'metadata':('c/kernel/exec/load/elf.c','if (deferred && LOGIT_HAVE(vma_reserve_fixed) &&','if (0 &&'),
  'fork-fp':('c/boot/enter_user.asm','    fxrstor [r13]','    fninit ; control: omit inherited user state'),
- 'stack':('c/kernel/exec/exec.c','    if (need > stack_pages) need = stack_pages;','    /* control: minimum ignores one-page GUI hint */'),
+ 'stack':('c/kernel/exec/load/exec.c','    if (need > stack_pages) need = stack_pages;','    /* control: minimum ignores one-page GUI hint */'),
 }[a.control]
 source=(root/file).read_text()
 if source.count(old)!=1:raise SystemExit('Control expression drifted: '+a.control)

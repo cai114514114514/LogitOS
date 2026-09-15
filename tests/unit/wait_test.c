@@ -1,5 +1,5 @@
 /* Host unit test for the M27 wait queues and sleeping locks
- * (c/kernel/core/wait.c, compiled against the stub headers in waitstub/).
+ * (c/kernel/sync/wait.c, compiled against the stub headers in waitstub/).
  *
  * WHAT IS AND IS NOT PROVED HERE
  * ------------------------------

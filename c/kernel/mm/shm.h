@@ -13,7 +13,7 @@
  * about which half, because the two are easy to conflate and only one of them
  * was missing.
  *
- *   FILE-BACKED SHARING: DONE, and done properly. c/kernel/mm/pcache.c keys a
+ *   FILE-BACKED SHARING: DONE, and done properly. c/kernel/mm/cache/pcache.c keys a
  *   cached page on (dev, ino), so two processes that map the same file land on
  *   the same physical frame -- not a copy of it. fault.c's do_file() takes a
  *   second pmm reference on the cache's frame and maps it. Two unrelated

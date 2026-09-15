@@ -2,7 +2,7 @@
  *
  * THE THING BEING TESTED. c/apps/libc/src/malloc.c used to own its memory as
  * `static unsigned char arena[ARENA_SIZE]` -- a .bss array. On this machine a
- * .bss byte is not free: elf_load() (c/kernel/exec/elf.c) walks
+ * .bss byte is not free: elf_load() (c/kernel/exec/load/elf.c) walks
  * [p_vaddr, p_vaddr+p_memsz) at load time and does pmm_alloc() + memset(0) for
  * every page in it. So the arena was fully resident before main() ran.
  * browser.aex shipped a 104.9 MiB .bss of which this one array was 96 MiB.

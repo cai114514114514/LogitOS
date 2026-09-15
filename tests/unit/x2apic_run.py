@@ -15,9 +15,9 @@ base = a.build.resolve()
 base.mkdir(parents=True, exist_ok=True)
 sources = [
     root / "tests/unit/x2apic_test.c",
-    root / "c/kernel/cpu/apic_model.c",
-    root / "c/kernel/cpu/lapic.c",
-    root / "c/kernel/cpu/smp_boot_model.c",
+    root / "c/kernel/cpu/irq/apic_model.c",
+    root / "c/kernel/cpu/irq/lapic.c",
+    root / "c/kernel/cpu/smp/smp/smp_boot_model.c",
 ]
 common = [
     os.environ.get("CC", "clang"), "-std=c11", "-O1", "-g",

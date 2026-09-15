@@ -19,7 +19,7 @@ controls=[
 ]
 if a.controls_only:variants=controls
 elif not a.positive_only:variants+=controls
-incs=['c/drivers/usb','c/drivers/block','c/drivers/core','c/kernel/core']
+incs=['c/drivers/usb','c/drivers/block','c/drivers/core','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync']
 for name,kind,old,diagnostic in variants:
  d=out/name;d.mkdir(exist_ok=True);b=bot;m=msc
  if kind:

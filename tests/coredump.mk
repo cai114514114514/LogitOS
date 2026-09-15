@@ -1,4 +1,4 @@
-# Core dumps -- c/kernel/exec/coredump.{c,h}, c/apps/coreutils/corefmt.h.
+# Core dumps -- c/kernel/exec/signal/coredump.{c,h}, c/apps/coreutils/corefmt.h.
 #
 # INCLUDED FROM tests/exec.mk, not from the Makefile, for the reason
 # tests/poll.mk states at its own head and which has not changed: the top-level
@@ -10,7 +10,7 @@
 #
 # THE KERNEL SIDE NEEDS NO BUILD-SYSTEM CHANGE. C_SRC is
 # `find c/kernel c/drivers c/lib c/fs c/net c/crypto -name '*.c'`
-# (Makefile:253), so c/kernel/exec/coredump.c links by existing, and
+# (Makefile:253), so c/kernel/exec/signal/coredump.c links by existing, and
 # fsroot/as/examples/*.as is a wildcard (Makefile:25) so the on-device fixture
 # reaches /usr/as/examples/ the same way.
 #
@@ -44,8 +44,8 @@
 # is never silently satisfied by a skip it didn't check for.
 .PHONY: test-coredump test-coredump-negctl test-coredump-os
 
-CORE_SRC  := tests/unit/coredump_test.c c/kernel/exec/coredump.c
-CORE_INC  := -iquote c/kernel/exec -iquote c/kernel/cpu -iquote c/apps/coreutils
+CORE_SRC  := tests/unit/coredump_test.c c/kernel/exec/signal/coredump.c
+CORE_INC  := $(KEXEC_IQ) $(KCPU_IQ) -iquote c/apps/coreutils
 # -iquote AND NOT -I, the same trap tests/poll.mk documents: this test includes
 # <sys/procfs.h> and <sys/user.h>, and c/kernel's flat header namespace holds
 # basenames glibc also uses. With -I the system headers start resolving into
@@ -57,11 +57,11 @@ CORE_INC  := -iquote c/kernel/exec -iquote c/kernel/cpu -iquote c/apps/coreutils
 # kernel runs.
 CORE_CF   := -O1 -g -Wall -Wextra -Wno-unused-parameter -DLOGIT_COREDUMP_HOST
 
-$(BUILD)/coredump_test: $(CORE_SRC) c/kernel/exec/coredump.h c/apps/coreutils/corefmt.h
+$(BUILD)/coredump_test: $(CORE_SRC) c/kernel/exec/signal/coredump.h c/apps/coreutils/corefmt.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CORE_CF) -o $@ $(CORE_SRC) $(CORE_INC)
 
-$(BUILD)/corecheck: tests/unit/corecheck.c c/kernel/exec/coredump.h c/apps/coreutils/corefmt.h
+$(BUILD)/corecheck: tests/unit/corecheck.c c/kernel/exec/signal/coredump.h c/apps/coreutils/corefmt.h
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -o $@ tests/unit/corecheck.c $(CORE_INC)
 

@@ -5,7 +5,7 @@
  *
  * The consumer the weighted scheduler was built for. Everything about it turns
  * on ONE property of this kernel that is easy to miss: execve() replaces the
- * image IN THE SAME THREAD (c/kernel/exec/exec.c), so a nice value set here
+ * image IN THE SAME THREAD (c/kernel/exec/load/exec.c), so a nice value set here
  * survives into COMMAND with no code at all. There is no "pass the priority to
  * the new program" mechanism anywhere and none is needed -- which is also why
  * this is a wrapper rather than a shell builtin.

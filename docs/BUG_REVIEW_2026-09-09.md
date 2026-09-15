@@ -24,7 +24,7 @@
 
 ## B01 — 合成设备写入在权限检查之前产生副作用
 
-位置：[vfs.c:777](/Users/wangzhe/system/LogitOS/c/fs/vfs.c:777)、[kdiag.c:480](/Users/wangzhe/system/LogitOS/c/kernel/core/kdiag.c:480)、[syscall.c:506](/Users/wangzhe/system/LogitOS/c/kernel/exec/syscall.c:506)。
+位置：[vfs.c:777](/Users/wangzhe/system/LogitOS/c/fs/vfs.c:777)、[kdiag.c:480](/Users/wangzhe/system/LogitOS/c/kernel/diag/kdiag.c:480)、[syscall.c:506](/Users/wangzhe/system/LogitOS/c/kernel/exec/syscall.c:506)。
 
 `vfs_write()` 先调用 `k_write()`，确认该设备由 kdiag 处理后才调用 `check_file(..., MAY_WRITE)`。`k_write()` 并非无副作用的识别函数，而是直接执行 `kdiag_write()`；后者可修改 profiler 状态，也含内核诊断中止操作。`SYS_WRITE_FILE` 直接到达这一路径，没有先执行文件写权限检查。
 
@@ -44,7 +44,7 @@
 
 ## B03 — SHM 权限只在 open 检查，map/close 没有句柄约束
 
-位置：[mmsys.c:303](/Users/wangzhe/system/LogitOS/c/kernel/mm/mmsys.c:303)、[mmsys.c:339](/Users/wangzhe/system/LogitOS/c/kernel/mm/mmsys.c:339)、[vma.c:349](/Users/wangzhe/system/LogitOS/c/kernel/mm/vma.c:349)、[shm.c:288](/Users/wangzhe/system/LogitOS/c/kernel/mm/shm.c:288)。
+位置：[mmsys.c:303](/Users/wangzhe/system/LogitOS/c/kernel/mm/mmsys.c:303)、[mmsys.c:339](/Users/wangzhe/system/LogitOS/c/kernel/mm/mmsys.c:339)、[vma.c:349](/Users/wangzhe/system/LogitOS/c/kernel/mm/virt/vma.c:349)、[shm.c:288](/Users/wangzhe/system/LogitOS/c/kernel/mm/shm.c:288)。
 
 `SYS_SHM_OPEN` 传 uid 并检查权限；`SYS_SHM_MAP` 直接把全局 segment 编号和请求的读写权限交给 `vma_reserve_shm()`，后者只检查 segment 存活、大小和范围，然后增加引用。没有进程句柄表，也没有再次检查 uid 或该句柄获准的访问模式。`SYS_SHM_CLOSE` 同样直接对全局编号 `shm_put()`。
 
@@ -78,7 +78,7 @@ TextEdit 的缓冲上限为 8,000 字节，Studio 为 65,536 字节。LogitFS �
 
 ## B06 — 阻塞 I/O 借用文件指针，没有保护等待期间的生命周期
 
-位置：[syscall.c:374](/Users/wangzhe/system/LogitOS/c/kernel/exec/syscall.c:374)、[proc.c:239](/Users/wangzhe/system/LogitOS/c/kernel/exec/proc.c:239)、[file.c:374](/Users/wangzhe/system/LogitOS/c/kernel/exec/file.c:374)、[file.c:1241](/Users/wangzhe/system/LogitOS/c/kernel/exec/file.c:1241)、[sched.c:1123](/Users/wangzhe/system/LogitOS/c/kernel/sched/sched.c:1123)。
+位置：[syscall.c:374](/Users/wangzhe/system/LogitOS/c/kernel/exec/syscall.c:374)、[proc.c:239](/Users/wangzhe/system/LogitOS/c/kernel/exec/proc.c:239)、[file.c:374](/Users/wangzhe/system/LogitOS/c/kernel/exec/fd/file.c:374)、[file.c:1241](/Users/wangzhe/system/LogitOS/c/kernel/exec/fd/file.c:1241)、[sched.c:1123](/Users/wangzhe/system/LogitOS/c/kernel/sched/sched.c:1123)。
 
 `SYS_READ/WRITE` 从 `proc_fd_get()` 获得借用指针，未增加文件引用便进入可能阻塞的处理。wait_event 在调度时释放 BKL，同一进程另一线程能够 close 同一 fd。eventfd 的最后 close 会唤醒等待者后立即释放 `eventobj`；等待者恢复时还会访问 waitq 和 `e->val`。唤醒并不等于等待函数已经返回。
 
@@ -191,7 +191,7 @@ errno 声明和定义仍为单个 `int`，而 pthread/TLS 已有实现。线程 
 - `check-abi` 通过：29 kernel structs，79 calls，81 SYS_* names bound。
 - B07、B10 功能探针和 B09 头文件探针重复执行得到相同结果；全部退出状态在 [probe-results.json](/tmp/logitos-audit-20260909/probe-results.json)。
 - [源码 SHA-256 和 mtime 清单](/tmp/logitos-audit-20260909/source-manifest.json)用于识别共享工作树之后的漂移；[门禁日志](/tmp/logitos-audit-20260909/gates.log)、[参考测试 ASan 日志](/tmp/logitos-audit-20260909/memstream-reference-asan.log)保留了本轮证据。
-- CLAUDE.md 中“munmap 完全不做跨核 shootdown”已过时：[vmm.c:562](/Users/wangzhe/system/LogitOS/c/kernel/mm/vmm.c:562) 已有释放 frame 前的批量刷新。没有把旧句子重报为 bug，也不据此宣称全部 TLB 行为已经通过 guest 验证。
+- CLAUDE.md 中“munmap 完全不做跨核 shootdown”已过时：[vmm.c:562](/Users/wangzhe/system/LogitOS/c/kernel/mm/virt/vmm.c:562) 已有释放 frame 前的批量刷新。没有把旧句子重报为 bug，也不据此宣称全部 TLB 行为已经通过 guest 验证。
 - “close 永远返回成功”“sh 不支持 -c”也不再符合当前源码，未列入。缺失的动态链接、完整 POSIX 功能、真实硬件覆盖不作为本轮 bug 凑数。
 - 阻塞 I/O 中用户缓冲区在等待期间被另一线程撤销映射的风险值得继续核查，本轮没有把它额外计算为已确认条目。
 

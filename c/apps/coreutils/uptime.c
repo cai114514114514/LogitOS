@@ -26,7 +26,7 @@
  *
  * `held` is the fd opened three seconds earlier. If it reads three seconds
  * behind `fresh`, the answer was computed at open() and the word is STALE.
- * See c/fs/procfs.h point 4 and the `live` field in c/kernel/exec/file.h. */
+ * See c/fs/procfs.h point 4 and the `live` field in c/kernel/exec/fd/file.h. */
 
 static void two(long v) { outc((char)('0' + (v / 10) % 10)); outc((char)('0' + v % 10)); }
 

@@ -1,4 +1,4 @@
-/* Host test for the page cache (c/kernel/mm/pcache.c), compiled -DMM_HOSTTEST
+/* Host test for the page cache (c/kernel/mm/cache/pcache.c), compiled -DMM_HOSTTEST
  * alongside the rest of c/kernel/mm (see mm_run.sh -- pcache.c is already part
  * of MMSRC, because fault.c's file case and vma.c's file-backed VMAs call
  * straight into it).
@@ -369,7 +369,7 @@ static void t_pread_identity(void)
      * loses: see the top-of-file design note on never stubbing to success.
      *
      * THE MECHANISM. pcache_pread() calls pcache_file_open(path) on entry and
-     * pcache_file_put(fh) on every exit (c/kernel/mm/pcache.c). When this file
+     * pcache_file_put(fh) on every exit (c/kernel/mm/cache/pcache.c). When this file
      * has no OTHER live reference -- exactly the common case for a plain
      * read()-only file nobody has mmap'd -- that open/put pair is refs 0->1->0
      * within the single call, and pcache_file_put()'s "refs <= 0 -> purge every

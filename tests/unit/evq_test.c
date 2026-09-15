@@ -1,4 +1,4 @@
-/* Host unit test for the per-window event ring (c/kernel/gui/evq.c).
+/* Host unit test for the per-window event ring (c/kernel/gui/input/evq.c).
  *
  * The ring is 256 entries and silently drops when full. That was survivable
  * while the only producers were keystrokes and clicks -- human-rate events. It
@@ -15,7 +15,7 @@
  *
  * Build (host, no QEMU):
  *   cc -O2 -Wall -Wextra -o build/evq_test tests/unit/evq_test.c \
- *      c/kernel/gui/evq.c -Ic/kernel/gui -Iinclude/abi && ./build/evq_test
+ *      c/kernel/gui/input/evq.c -Ic/kernel/gui -Iinclude/abi && ./build/evq_test
  */
 
 #include <stdio.h>

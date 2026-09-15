@@ -31,16 +31,16 @@ def tree_errors(root):
         errors += osxsave_errors((root / rel).read_text(), rel)
     errors += lockdiag_errors((root / "c/kernel/cpu/spinlock.c").read_text())
 
-    percpu = (root / "c/kernel/cpu/percpu.h").read_text()
+    percpu = (root / "c/kernel/cpu/smp/smp/percpu.h").read_text()
     for token in ("#define PERCPU_MAXCPU 32", "#define PERCPU_MAXCPU 8",
                   "LOGIT_CPU_CAP_NEGCTL"):
         if token not in percpu:
             errors.append(f"percpu.h: missing {token}")
 
     constants = {
-        "c/kernel/mm/kheap.c": r"#define\s+MAG_MAXCPU\s+32\b",
+        "c/kernel/mm/phys/kheap.c": r"#define\s+MAG_MAXCPU\s+32\b",
         "c/kernel/sched/kbench.h": r"#define\s+KB_MAXCPU\s+32\b",
-        "c/kernel/core/kprof.h": r"#define\s+KPROF_MAXCPU\s+32\b",
+        "c/kernel/diag/kprof.h": r"#define\s+KPROF_MAXCPU\s+32\b",
     }
     for rel, pattern in constants.items():
         if not re.search(pattern, (root / rel).read_text()):

@@ -7,7 +7,7 @@
  *
  * THE DATA EXISTS. LogitFS inodes carry real atime/mtime/ctime (CLAUDE.md's
  * Storage section, c/fs/logitfs_fmt.h) and SYS_STAT/SYS_LSTAT/SYS_FSTAT
- * (c/kernel/exec/meta.c) read them out to ring 3 already -- see <sys/stat.h>.
+ * (c/kernel/exec/load/meta.c) read them out to ring 3 already -- see <sys/stat.h>.
  * But nothing in include/abi/logit_abi.h SETS them: there is no syscall
  * analogous to SYS_CHMOD (mode) or SYS_CHOWN (owner) for timestamps, and
  * `struct vattr`'s setattr path (c/fs/vfs_meta.h) is not wired to any ring-3

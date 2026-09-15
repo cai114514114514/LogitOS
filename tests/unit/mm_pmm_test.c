@@ -1,5 +1,5 @@
 /* Host test for the physical frame allocator's REFERENCE COUNTS
- * (c/kernel/mm/pmm.c compiled with -DMM_HOSTTEST over a simulated physical
+ * (c/kernel/mm/phys/pmm.c compiled with -DMM_HOSTTEST over a simulated physical
  * memory -- the real algorithm, not a model of it).
  *
  * What is being defended here:

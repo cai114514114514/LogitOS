@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # THE NEGATIVE CONTROL for test-bigexec: the whole-file materialisation, back.
 #
-# c/kernel/exec/exec.c carries the pre-change proc_execve() under
+# c/kernel/exec/load/exec.c carries the pre-change proc_execve() under
 # -DEXEC_NEGCTL_SLURP -- kmalloc the whole file, one vfs_read, load from memory.
 # That is not "the feature switched off". It is the implementation that shipped
 # and that loads every ordinary program on this disk perfectly well, which is
@@ -55,14 +55,14 @@ join_recipe() { sed -e ':a' -e '/\\$/{N;s/\\\n[ \t]*/ /;ba' -e '}'; }
 # tree is built, which is exactly when this harness runs -- and `touch` + `-B`,
 # the first two things tried, either dirty a tracked file in a contended
 # workspace or echo the entire build.
-make -n -W c/kernel/exec/exec.c build/kernel.elf > "$D/mk.txt" 2>/dev/null || true
+make -n -W c/kernel/exec/load/exec.c build/kernel.elf > "$D/mk.txt" 2>/dev/null || true
 CC_LINE=$(join_recipe < "$D/mk.txt" | grep -E 'exec\.c' | grep -E -- '-o build/c/kernel/exec/exec\.o' | tail -1)
 LD_LINE=$(join_recipe < "$D/mk.txt" | grep -E -- '-o build/kernel\.elf' | tail -1)
 [ -n "$CC_LINE" ] || { echo "FAIL: no compile line for exec.c in make -n output"; exit 1; }
 [ -n "$LD_LINE" ] || { echo "FAIL: no link line for kernel.elf in make -n output"; exit 1; }
 
 OBJ="$D/exec_slurp.o"
-eval "$(printf '%s' "$CC_LINE" | sed -e "s#-o build/c/kernel/exec/exec.o#-DEXEC_NEGCTL_SLURP -o $OBJ#")"
+eval "$(printf '%s' "$CC_LINE" | sed -e "s#-o build/c/kernel/exec/load/exec.o#-DEXEC_NEGCTL_SLURP -o $OBJ#")"
 [ -s "$OBJ" ] || { echo "FAIL: the control object did not compile"; exit 1; }
 
 # The tree's own kernel must exist and be CURRENT, because the second boot below
@@ -72,8 +72,8 @@ make build/logit.iso >/dev/null 2>&1 || { echo "FAIL: the shipped ISO would not 
 # object would produce a control identical to the shipped kernel, which would
 # fail this gate by PASSING -- the worst outcome available.
 case "$LD_LINE" in
-    *build/c/kernel/exec/exec.o*) ;;
-    *) echo "FAIL: the link line does not name build/c/kernel/exec/exec.o"; exit 1 ;;
+    *build/c/kernel/exec/load/exec.o*) ;;
+    *) echo "FAIL: the link line does not name build/c/kernel/exec/load/exec.o"; exit 1 ;;
 esac
 LD_LINE=$(printf '%s' "$LD_LINE" | sed -e "s#build/c/kernel/exec/exec\.o#$OBJ#" \
                                        -e "s#-o build/kernel.elf#-o $D/kernel.elf#")

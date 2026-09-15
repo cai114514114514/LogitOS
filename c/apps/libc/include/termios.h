@@ -6,7 +6,7 @@
  * baud rate, no line discipline. The Terminal app (c/apps/gui/terminal) and
  * the serial console do their OWN line editing/echo in the kernel or in the
  * app that owns the tty; nothing exposes that state through an ioctl a ring-3
- * program can read or change (c/kernel/exec/file.c's F_TTY is a plain byte
+ * program can read or change (c/kernel/exec/fd/file.c's F_TTY is a plain byte
  * stream). So every call here is a HONEST FAILURE (ENOTTY) rather than a
  * struct of invented flags a program would believe it successfully set.
  * A program that checks the return value before relying on raw mode --

@@ -6,7 +6,7 @@
 # line:  -include tests/signal.mk
 #
 # The kernel side needs no Makefile change at all -- C_SRC globs c/kernel, so
-# c/kernel/exec/ksignal.c and ksigframe.c link by existing. What this adds is
+# c/kernel/exec/signal/ksignal.c and ksigframe.c link by existing. What this adds is
 # /bin/sigtest, a disk to put it on, and the two targets.
 
 .PHONY: test-signal test-signal-negctl test-signal-all
@@ -98,7 +98,7 @@ test-signal: $(ISO) $(SIGDISK)
 # in that suite are not checking anything and this line's central claim is
 # unsupported. Rebuilds the ordinary kernel afterwards either way, so a failed
 # run does not leave a sabotaged ISO behind for the next target to boot.
-SIGNAL_NEGCTL_SRC := c/kernel/exec/ksigframe.c
+SIGNAL_NEGCTL_SRC := c/kernel/exec/signal/ksigframe.c
 test-signal-negctl: $(SIGDISK)
 	@touch $(SIGNAL_NEGCTL_SRC)
 	@$(MAKE) --no-print-directory SIGNAL_NO_FPU=1 $(ISO) >/dev/null

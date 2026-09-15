@@ -58,7 +58,7 @@ git config user.name "perf plant"
 [ -n "$BASE" ] && git checkout -q -f "$BASE"
 git checkout -q -B perf-plant
 
-TARGET="c/kernel/exec/exec.c"
+TARGET="c/kernel/exec/load/exec.c"
 [ -f "$TARGET" ] || { echo "no $TARGET in this checkout"; exit 2; }
 
 innocent() {

@@ -4,7 +4,7 @@
 import argparse,json,pathlib,subprocess
 p=argparse.ArgumentParser();p.add_argument('--build',default='/tmp/logitos-bkl-20260910/proc/tlb');a=p.parse_args()
 root=pathlib.Path(__file__).resolve().parents[2];out=pathlib.Path(a.build).resolve();out.mkdir(parents=True,exist_ok=True)
-flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all','-DLOGIT_LOCK_HOST','-DLOGIT_TLB_HOST','-Ic/kernel/cpu']
+flags=['clang','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-pthread','-fsanitize=address,undefined','-fno-sanitize-recover=all','-DLOGIT_LOCK_HOST','-DLOGIT_TLB_HOST','-Ic/kernel/cpu -Ic/kernel/cpu/acpi -Ic/kernel/cpu/irq -Ic/kernel/cpu/smp']
 source=root/'c/kernel/cpu/tlb.c';control=out/'tlb-timeout-return.c';text=source.read_text();needle='tlb_failstop(me,ack,others,n);'
 if text.count(needle)!=1:raise SystemExit('timeout control no longer matches the production stop call')
 control.write_text(text.replace(needle,'(void)tlb_failstop; return;'))

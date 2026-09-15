@@ -9,7 +9,7 @@ p.add_argument('--build',required=True,type=Path)
 p.add_argument('--source-root',type=Path,default=Path(__file__).resolve().parents[2])
 p.add_argument('--dependency-root',type=Path)
 a=p.parse_args();r=a.source_root.resolve();dep=(a.dependency_root or r).resolve();b=a.build.resolve();b.mkdir(parents=True,exist_ok=True)
-incs=['c/net/core','c/net/ip','c/net/link','c/drivers/net','c/drivers/core','c/drivers/timer','c/kernel/core','c/kernel/pci']
+incs=['c/net/core','c/net/ip','c/net/link','c/drivers/net','c/drivers/core','c/drivers/timer','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/pci']
 for negative in [True,False]:
  d=b/('negative' if negative else 'positive');d.mkdir(exist_ok=True)
  route=(r/'c/net/core/route.c').read_text()

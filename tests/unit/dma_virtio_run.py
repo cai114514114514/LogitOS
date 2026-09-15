@@ -42,21 +42,20 @@ def run(negative=None):
         out = Path(td)
         for p in (ROOT/'c/drivers/virtio').glob('*.[ch]'):
             shutil.copy2(p, out/p.name)
-        shutil.copy2(ROOT/'c/kernel/gui/fb.c',out/'fb.c')
+        shutil.copy2(ROOT/'c/kernel/gui/fb/fb/fb.c',out/'fb.c')
         if negative:
             name, old, new, evidence = CONTROLS[negative]
             p=out/name; text=p.read_text()
             if text.count(old)!=1:
                 raise RuntimeError(f'control anchor drift: {name}: {old}')
             p.write_text(text.replace(old,new))
-        dirs=['c/drivers/core','c/kernel/pci','c/kernel/mm','c/kernel/cpu',
-              'c/kernel/core','c/drivers/net','c/net/core','c/drivers/timer','c/kernel/gui','c/lib/gfx','c/lib/text','c/drivers/block','include']
+        dirs=['c/drivers/core','c/kernel/pci','c/kernel/mm','c/kernel/mm/phys','c/kernel/mm/virt','c/kernel/mm/cache','c/kernel/mm/reclaim','c/kernel/cpu','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/cpu/acpi','c/kernel/cpu/irq','c/kernel/cpu/smp','c/kernel/core','c/kernel/init','c/kernel/diag','c/kernel/sync','c/kernel/init','c/kernel/diag','c/kernel/sync','c/drivers/net','c/net/core','c/drivers/timer','c/kernel/gui','c/kernel/gui/fb','c/kernel/gui/ime','c/kernel/gui/input','c/kernel/gui/fb','c/kernel/gui/ime','c/kernel/gui/input','c/lib/gfx','c/lib/text','c/drivers/block','include']
         cmd=[os.environ.get('CC','clang'),'-std=c11','-D_DARWIN_C_SOURCE',
              '-DDMA_HOSTTEST','-DMM_HOSTTEST','-DVIRTIO_HOSTTEST','-DLOGIT_NET_HOST','-DFB_DMA_HOSTTEST',
              '-O1','-g','-Wall','-Wextra','-Wno-unused-parameter','-Wno-unused-variable',
              '-fsanitize=address,undefined','-I'+str(out)]
         cmd += ['-I'+str(ROOT/d) for d in dirs]
-        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/glass.c'),*[str(p) for p in sorted((ROOT/'c/lib/gfx').glob('*.c'))],'-lm','-o',str(out/'test')]
+        cmd += [str(ROOT/'tests/unit/dma_virtio_test.c'),str(ROOT/'c/drivers/core/dma.c'),str(out/'fb.c'),str(ROOT/'c/kernel/gui/fb/fb/glass.c'),*[str(p) for p in sorted((ROOT/'c/lib/gfx').glob('*.c'))],'-lm','-o',str(out/'test')]
         subprocess.run(cmd,check=True,cwd=ROOT)
         env=dict(os.environ);env['ASAN_OPTIONS']='detect_leaks=0'
         r=subprocess.run([str(out/'test')],text=True,capture_output=True,env=env)

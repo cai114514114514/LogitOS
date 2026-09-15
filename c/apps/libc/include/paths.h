@@ -27,14 +27,14 @@
  *     concatenated straight onto a filename).
  *   - _PATH_DEV: where the synthetic control files actually live --
  *     c/fs/vfsctl.c serves /dev/{vfsctl,vfsmounts,vfsmeta,fsbench} and
- *     c/kernel/core/kdiag.c serves /dev/{kmsg,kstat,ktrigger,kprof}.
+ *     c/kernel/diag/kdiag.c serves /dev/{kmsg,kstat,ktrigger,kprof}.
  *   - _PATH_PASSWD: c/apps/coreutils/login.c and c/apps/libc/src/pwgrp.c
  *     both hardcode "/etc/passwd" as the one account store on this system.
  *
  * _PATH_DEVNULL IS THE ONE VALUE HERE THAT IS **NOT** TRUE ON THIS MACHINE
  * YET, AND THAT IS DELIBERATE -- READ THIS BEFORE "FIXING" IT. There is no
  * null device: /dev/ on LogitOS serves exactly the eight synthetic names
- * listed above (grep c/fs/vfsctl.c's g_names[] and c/kernel/core/kdiag.c's
+ * listed above (grep c/fs/vfsctl.c's g_names[] and c/kernel/diag/kdiag.c's
  * g_devnames[] -- "null" is in neither), so `open(_PATH_DEVNULL, O_WRONLY)`
  * fails with ENOENT today. The macro is still defined to the conventional
  * "/dev/null" rather than quietly pointed at some other real file (a ramfs
@@ -43,7 +43,7 @@
  * write to a fake null sink silently succeeds and silently accumulates
  * forever instead of discarding, which is worse than the honest ENOENT a
  * caller can actually detect and handle. A real null device belongs in
- * c/fs/vfsctl.c or c/kernel/core/kdiag.c (a third synthetic name whose
+ * c/fs/vfsctl.c or c/kernel/diag/kdiag.c (a third synthetic name whose
  * read always returns 0 bytes and whose write always reports success
  * without storing anything) -- not invented here as a path macro pointing
  * at nothing of the sort.

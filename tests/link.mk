@@ -26,7 +26,7 @@
         test-ip-arp-host test-ip-arp-negctl
 
 LINK_INC := -Ic/net/core -Ic/net/link -Ic/drivers/net -Ic/drivers/core \
-            -Ic/drivers/timer -Ic/kernel/core -Ic/kernel/pci
+            -Ic/drivers/timer $(KCORE_INC) -Ic/kernel/pci
 
 # The neighbour cache: the five-state ladder against a controllable clock, the
 # RFC 826 merge rule, RFC 5227 conflict detection, the pending-packet queue,
