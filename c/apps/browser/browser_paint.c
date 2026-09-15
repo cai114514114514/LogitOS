@@ -2445,6 +2445,11 @@ static uint32_t pd_item_sig(const struct item *e, const struct fpaint *fp)
     PD_MIX(e->is_float); PD_MIX(e->ctl); PD_MIX(e->ctl_mono); PD_MIX(e->ctl_font);
     /* The four live-read style spans -- see the block comment above. */
     const struct cstyle *st = sty(e);
+    if (st && e->type == IT_IMAGE) {
+        /* Padding can move the bitmap without changing its outer geometry. */
+        PD_MIX(st->pl);PD_MIX(st->pr);PD_MIX(st->pt);PD_MIX(st->pb);
+        for(int k=0;k<4;k++)PD_MIX(st->border_w[k]);
+    }
     if (st) for (int k = 0; k < XR__COUNT; k++) {
         PD_MIX((uintptr_t)st->xraw[k]); PD_MIX(st->xrawlen[k]);
     }
@@ -3039,7 +3044,7 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
                      * Child item pointers remain private, and its clip is an
                      * intersection with every parent viewport/overflow clip. */
                     struct layout_context *previous=layout_context_activate(fv.layout);
-                    paint_display_list(sx+fx,sy+fy,fw,fh,0,0,1,l,t,rr,bb,op);
+                    paint_display_list(sx+fx,sy+fy,fw,fh,fv.scroll_x,fv.scroll_y,1,l,t,rr,bb,op);
                     layout_context_activate(previous);
                     g_xf_key=0;g_xf_hit=0;
                     /* Raw login templates may contain contradictory hidden
@@ -3118,17 +3123,35 @@ static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scro
         } else if (e->type == IT_CONTROL) {
             paint_control(e, sx, sy, control);
         } else if (e->type == IT_IMAGE && e->img) {
-            gui_blit(sx, sy, e->w, e->h, e->img->rgba, e->img->w, e->img->h);
+            int ix=sx,iy=sy,iw=e->w,ih=e->h;
+#ifndef LEGACY_HOME_NEGCTL
+            /* Layout records a BORDER box; bitmap pixels fill its CONTENT
+             * box. Stretching a 272x92 wordmark into its padded 272x134 box
+             * distorted it on the real page. Keep hit/dirty boxes unchanged.
+             * Axis-aligned transforms have already scaled e, so scale the
+             * resolved insets by the same factors before applying them. */
+            const struct cstyle *is=sty(e);
+            const struct item *original=&it[i];
+            if(is && e->node && !strcmp(e->node->tag,"img")) {
+                int l=is->pl+is->border_w[3],r=is->pr+is->border_w[1];
+                int t=is->pt+is->border_w[0],b=is->pb+is->border_w[2];
+                if(original->w>0){l=(int)((long long)l*e->w/original->w);r=(int)((long long)r*e->w/original->w);}
+                if(original->h>0){t=(int)((long long)t*e->h/original->h);b=(int)((long long)b*e->h/original->h);}
+                ix+=l;iy+=t;iw-=l+r;ih-=t+b;
+            }
+#endif
+            if(iw<=0||ih<=0)continue;
+            gui_blit(ix, iy, iw, ih, e->img->rgba, e->img->w, e->img->h);
             /* An image cannot have its own alpha modulated without copying the
              * whole bitmap, so instead wash the backdrop back over it at
              * 1 - opacity. On top of the just-blitted image that composes to
              * img*op + backdrop*(1-op): the same exact result, one extra call,
              * and no per-frame allocation. */
-            if (op < 255) fill(sx, sy, e->w, e->h, backdrop_at(it, i), 255 - op);
+            if (op < 255) fill(ix, iy, iw, ih, backdrop_at(it, i), 255 - op);
             /* A full-bleed picture in a rounded card: without this its square
              * corners poke out of the card's own arc, which is the loudest
              * single artefact `overflow:hidden` was supposed to prevent. */
-            if (rc) img_rclip(sx, sy, e->w, e->h, backdrop_at(it, i), rc);
+            if (rc) img_rclip(ix, iy, iw, ih, backdrop_at(it, i), rc);
         }
     }
     } /* top-layer pass */
@@ -3213,6 +3236,23 @@ static int item_hit(const struct item *e, int x, int dy)
     if (e->has_clip && !(x >= e->clip_x && x < e->clip_x + e->clip_w &&
                          dy >= e->clip_y && dy < e->clip_y + e->clip_h)) return 0;
     return 1;
+}
+
+int browser_frame_content_hit(int x,int y,int scroll_x,int scroll,const struct node *node,int *child_x,int *child_y)
+{
+    if(!LOGIT_HAVE(passive_frame_view)||!passive_frame_view(node,0))return 0;
+    const struct item *it=layout_items();
+    for(int i=layout_count()-1;i>=0;i--){struct item e=it[i];
+        if(e.node!=node||e.type!=IT_RECT||e.hidden||!e.opacity||item_backface_culled(node))continue;
+        if(LOGIT_HAVE(js_cssom_project_item))js_cssom_project_item(&e);
+        struct gfx_matrix xm;if(item_xform(&e,0,0,0,&xm))continue;
+        int fixed=css_viewport_fixed_owner(node)||(LOGIT_HAVE(top_layer_owner)&&top_layer_owner(node));
+        int hx=x+(fixed?0:scroll_x),hy=y+(fixed?0:scroll),bx,by,bw,bh;
+        if(!item_hit(&e,hx,hy)||!passive_frame_content_box(node,e.w,e.h,&bx,&by,&bw,&bh))continue;
+        int cx=hx-e.x-bx,cy=hy-e.y-by;
+        if(cx<0||cy<0||cx>=bw||cy>=bh)return 0;
+        if(child_x)*child_x=cx;if(child_y)*child_y=cy;return 1;
+    }return 0;
 }
 
 int browser_frame_open_hit(int x,int y,int scroll_x,int scroll,const struct node *node)

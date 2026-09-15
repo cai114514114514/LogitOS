@@ -210,7 +210,10 @@ static JSValue js_clip_write_text(JSContext *ctx, JSValueConst t, int argc, JSVa
  * instead of silence, which is the difference between debugging a page and
  * guessing at it. */
 static JSValue g_reject_hook = JS_UNDEFINED;
+static JSValue g_parsed_hook = JS_UNDEFINED;
 static JSContext *g_ctx;
+static int g_legacy_frames=1;
+static struct js_platform_context *platform_current(void);
 
 #include "js_rejections.inc"
 #include "js_native_mo.inc"
@@ -220,8 +223,10 @@ static JSContext *g_ctx;
 
 extern int passive_frames_enabled(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(passive_frames_enabled);
+extern JSValue passive_frame_window(JSContext *,JSValueConst,int,JSValueConst *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(passive_frame_window);
 static const char *PLATFORM_PRELUDE =
-"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames) {\n"
+"(function (__random, __vw, __vh, __randomStrong, __clipWriteText, __nativeMOFlush, __initialIframes, __passiveFrames, __embeddedWindow, __legacyMarkup) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 /* The house rule for this whole file. Three lines are adding to this runtime
@@ -515,7 +520,11 @@ static const char *PLATFORM_PRELUDE =
  * DOMContentLoaded registration and then never initialises, which is a worse
  * failure than the one it replaces: silent instead of loud. browser.c already
  * dispatches DOMContentLoaded and load on the document, so the transitions
- * hang off those, and readystatechange fires with them as the spec requires. */
+ * hang off those. Correction: waiting for DOMContentLoaded to become
+ * interactive is too late for defer/module bodies. The loader now calls the
+ * private parser-boundary hook before those bodies; DCL remains a fallback for
+ * older embedders that only dispatch lifecycle events. */
+"var documentParsed = function () {};\n"
 "(function () {\n"
 "  var doc = G.document;\n"
 "  if (!doc) return;\n"
@@ -532,11 +541,15 @@ static const char *PLATFORM_PRELUDE =
 "      if (doc.dispatchEvent) doc.dispatchEvent(e);\n"
 "    } catch (x) {}\n"
 "  }\n"
+"  documentParsed = function () {\n"
+"    if (state !== 'loading') return;\n"
+"    G.__platMarkTiming('domInteractive');\n"
+"    change('interactive');\n"
+"  };\n"
 "  try {\n"
 "    doc.addEventListener('DOMContentLoaded', function () {\n"
-"      G.__platMarkTiming('domInteractive');\n"
+"      documentParsed();\n"
 "      G.__platMarkTiming('domContentLoadedEventStart');\n"
-"      change('interactive');\n"
 "      G.__platMarkTiming('domContentLoadedEventEnd');\n"
 "    });\n"
 "    doc.addEventListener('load', function () {\n"
@@ -571,11 +584,17 @@ static const char *PLATFORM_PRELUDE =
 "if (!G.MessageEvent) {\n"
 "  G.MessageEvent = function MessageEvent(type, init) {\n"
 "    init = init || {};\n"
-"    this.type = String(type); this.data = init.data;\n"
-"    this.origin = init.origin || ''; this.lastEventId = init.lastEventId || '';\n"
-"    this.source = init.source || null; this.ports = init.ports || [];\n"
-"    this.bubbles = !!init.bubbles; this.cancelable = !!init.cancelable;\n"
+"    var ev = new G.Event(String(type), init);\n"
+"    Object.setPrototypeOf(ev, G.MessageEvent.prototype);\n"
+"    Object.defineProperties(ev, {data:{value:init.data,enumerable:true},\n"
+"      origin:{value:String(init.origin || ''),enumerable:true},\n"
+"      lastEventId:{value:String(init.lastEventId || ''),enumerable:true},\n"
+"      source:{value:init.source || null,enumerable:true},\n"
+"      ports:{value:init.ports || [],enumerable:true}});\n"
+"    return ev;\n"
 "  };\n"
+"  G.MessageEvent.prototype = Object.create(G.Event.prototype);\n"
+"  Object.defineProperty(G.MessageEvent.prototype,'constructor',{value:G.MessageEvent,writable:true,configurable:true});\n"
 "}\n"
 #include "js_message_port.inc"
 /* ==== BroadcastChannel ==================================================
@@ -1138,7 +1157,7 @@ static const char *PLATFORM_PRELUDE =
 "      return x;\n"
 "    }\n"
 "    if (seen.has(x)) return seen.get(x);\n"
-"    if ((portIs && portIs(x)) || (G.Node && x instanceof G.Node) ||\n"
+"    if ((portIs && portIs(x)) || (G.MessagePort && x instanceof G.MessagePort) || (G.Node && x instanceof G.Node) ||\n"
 "        (typeof Promise!=='undefined' && x instanceof Promise) ||\n"
 "        (typeof WeakMap!=='undefined' && x instanceof WeakMap) ||\n"
 "        (typeof WeakSet!=='undefined' && x instanceof WeakSet) ||\n"
@@ -2905,6 +2924,10 @@ static const char *PLATFORM_PRELUDE =
  * html_parse_fragment() with a <body> context element, the WHATWG fragment
  * parsing algorithm this tree already scores against html5lib. */
 "function installDocWrite() {\n"
+   /* The legacy tree-splice helper revives scripts as dynamic nodes. An
+    * active CSP-owned child requires real parser provenance and insertion
+    * timing, so this helper must stay absent there until that is implemented. */
+"  if (!__legacyMarkup) return;\n"
 "  var D = G.document;\n"
 "  if (!D || ('write' in D) || typeof D.createElement !== 'function') return;\n"
 "  if (typeof G.__currentScriptNode !== 'function') return;\n"
@@ -3521,6 +3544,7 @@ static const char *PLATFORM_PRELUDE =
 "    initFrame(this);\n"
 "    var r = rec(this);\n"
 "    if (!r) return null;\n"
+"    if (r.blocked === 'passive' && __embeddedWindow) return __embeddedWindow(this);\n"
 "    if (r.blocked) throw blockedErr(r);\n"
 "    if (!r.win) r.win = makeWindow(this, r);\n"
 "    return r.win;\n"
@@ -3529,6 +3553,7 @@ static const char *PLATFORM_PRELUDE =
 "    initFrame(this);\n"
 "    var r = rec(this);\n"
 "    if (!r) return null;\n"
+"    if (r.blocked === 'passive') return null;\n"
 "    if (r.blocked) throw blockedErr(r);\n"
 "    return r.doc || null;\n"
 "  } });\n"
@@ -3985,6 +4010,7 @@ static const char *PLATFORM_PRELUDE =
 /* The hook the C rejection tracker calls. It is returned rather than published
  * as a global, so a page cannot fake an unhandled rejection. */
 "return {\n"
+"  onParsed: function () { documentParsed(); },\n"
 "  onNativeDelivery: function(){ if(typeof deliverMutations==='function')deliverMutations(); },\n"
 "  onNativeText: function(target,oldValue,chain,added,previous,following,split){if(typeof emit==='function')emit(target,{type:split?'childList':'characterData',attributeName:null,attributeNamespace:null,oldValue:split?null:oldValue,addedNodes:split?[added]:[],removedNodes:[],previousSibling:split?previous:null,nextSibling:split?following:null},chain)},\n"
 "  onReject: function (promise, reason, handled) {\n"
@@ -4021,7 +4047,7 @@ static const char *PLATFORM_PRELUDE =
 
 void js_platform_install(JSContext *ctx)
 {
-    if (!ctx) return;
+    if (!ctx || g_ctx) return;
     g_ctx = ctx;
 #ifndef FRAME_BOOTSTRAP_LATE_INSTALL
     /* installIframes does MORE than define getters: its initial native
@@ -4031,7 +4057,7 @@ void js_platform_install(JSContext *ctx)
      * fixture (1 child console side effect instead of 2). DOMParser has been
      * installed by js_page_open before this entry; frame_install itself only
      * registers C sinks/functions and has no platform-prelude dependency. */
-    if (LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
+    if (g_legacy_frames && LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
 #endif
     JSValue fn = JS_Eval(ctx, PLATFORM_PRELUDE, strlen(PLATFORM_PRELUDE), "<platform>",
                          JS_EVAL_TYPE_GLOBAL);
@@ -4044,7 +4070,7 @@ void js_platform_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[8];
+    JSValue args[10];
     args[0] = JS_NewCFunction(ctx, js_random, "__random", 2);
     args[1] = JS_NewInt32(ctx, g_vw);
     args[2] = JS_NewInt32(ctx, g_vh);
@@ -4053,12 +4079,14 @@ void js_platform_install(JSContext *ctx)
     args[5] = JS_NewCFunction(ctx, native_mo_drain, "drainMutations", 0);
     args[6] = js_bootstrap_snapshot(ctx,"iframe",0);
     args[7] = JS_NewBool(ctx,LOGIT_HAVE(passive_frames_enabled)&&passive_frames_enabled());
+    args[8] = LOGIT_HAVE(passive_frame_window)?JS_NewCFunction(ctx,passive_frame_window,"embeddedWindow",1):JS_UNDEFINED;
+    args[9] = JS_NewBool(ctx,g_legacy_frames);
     if(JS_IsException(args[6])) {
-        for(int i=0;i<8;i++)JS_FreeValue(ctx,args[i]);
+        for(int i=0;i<10;i++)JS_FreeValue(ctx,args[i]);
         JS_FreeValue(ctx,fn);return;
     }
-    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 8, (JSValueConst *)args);
-    for (int i = 0; i < 8; i++) JS_FreeValue(ctx, args[i]);
+    JSValue hooks = JS_Call(ctx, fn, JS_UNDEFINED, 10, (JSValueConst *)args);
+    for (int i = 0; i < 10; i++) JS_FreeValue(ctx, args[i]);
     JS_FreeValue(ctx, fn);
     if (JS_IsException(hooks)) {
         JSValue e = JS_GetException(ctx);
@@ -4071,10 +4099,12 @@ void js_platform_install(JSContext *ctx)
     }
     JS_FreeValue(ctx, g_reject_hook);
     g_reject_hook = JS_GetPropertyStr(ctx, hooks, "onReject");
+    JS_FreeValue(ctx, g_parsed_hook);
+    g_parsed_hook = JS_GetPropertyStr(ctx, hooks, "onParsed");
     g_native_mo_hook = JS_GetPropertyStr(ctx, hooks, "onNativeText");
     g_native_mo_delivery = JS_GetPropertyStr(ctx, hooks, "onNativeDelivery");
     struct node *mo_root = js_dom_root();
-    if (mo_root) dom_subscribe(mo_root->doc, &mo_subscription, native_mo_notify, NULL);
+    if (mo_root) dom_subscribe(mo_root->doc, mo_subscription, native_mo_notify, platform_current());
     JS_FreeValue(ctx, hooks);
     JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), rejection_tracker, 0);
     /* OLD CLAIM, corrected by the entry-time registration above:
@@ -4087,25 +4117,100 @@ void js_platform_install(JSContext *ctx)
      * (before JS_FreeContext/JS_FreeRuntime), so this needs no new hook cut
      * into a file another line of work is actively editing. */
 #ifdef FRAME_BOOTSTRAP_LATE_INSTALL
-    if (LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
+    if (g_legacy_frames && LOGIT_HAVE(js_frame_install)) js_frame_install(ctx);
 #endif
+}
+
+void js_platform_document_parsed(JSContext *ctx)
+{
+    if(!ctx || ctx!=g_ctx || !JS_IsFunction(ctx,g_parsed_hook))return;
+    JSValue result=JS_Call(ctx,g_parsed_hook,JS_UNDEFINED,0,NULL);
+    if(JS_IsException(result)) {
+        JSValue error=JS_GetException(ctx);
+        const char *message=JS_ToCString(ctx,error);
+        printf("[platform] parser lifecycle failed: %s\n",message?message:"?");
+        if(message)JS_FreeCString(ctx,message);
+        JS_FreeValue(ctx,error);
+    }
+    JS_FreeValue(ctx,result);
 }
 
 void js_platform_close(JSContext *ctx)
 {
+    if (!ctx || ctx!=g_ctx) return;
     /* FIRST, and the ordering is the same invariant js_page.c states above its
      * js_worker_close_all() call: every live frame holds a JSContext on this
      * page's runtime, and JS_FreeRuntime asserts on live GC objects. This
      * function is itself called from js_page_close() before
      * JS_FreeContext(g_ctx)/JS_FreeRuntime(g_rt), which is the whole reason
      * the hook lives here. */
-    if (LOGIT_HAVE(js_frame_close_all)) js_frame_close_all();
+    if (g_legacy_frames && LOGIT_HAVE(js_frame_close_all)) js_frame_close_all();
     if (ctx) {
         JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), 0, 0);
         rejections_close(ctx);
         native_mo_close(ctx);
         JS_FreeValue(ctx, g_reject_hook);
+        JS_FreeValue(ctx, g_parsed_hook);
     }
     g_reject_hook = JS_UNDEFINED;
+    g_parsed_hook = JS_UNDEFINED;
     g_ctx = 0;
+}
+
+/* Native subscriptions escape into the DOM list: keep the subscription in
+ * stable owner storage and switch a pointer, never memcpy its linked node.
+ * Entropy remains a shared OS service, not a duplicated PRNG stream. */
+#define PLATFORM_CONTEXT_FIELDS(X) \
+    X(g_vw) X(g_vh) X(g_ctx) X(g_legacy_frames) \
+    X(g_reject_hook) X(g_parsed_hook) \
+    X(rejections) X(rejection_seq) X(rejection_overflow) \
+    X(mo_subscription) X(mo_head) X(mo_tail) X(mo_count) \
+    X(mo_flushing) X(mo_enabled) X(mo_scheduled) X(mo_watches) X(mo_watch_count) \
+    X(g_native_mo_hook) X(g_native_mo_delivery)
+
+struct js_platform_context {
+    struct dom_subscription subscription;
+#define PLATFORM_FIELD(n) __typeof__(n) n;
+    PLATFORM_CONTEXT_FIELDS(PLATFORM_FIELD)
+#undef PLATFORM_FIELD
+};
+static struct js_platform_context platform_default_context;
+static struct js_platform_context *platform_active_context=&platform_default_context;
+static struct js_platform_context *platform_current(void)
+{ return platform_active_context; }
+
+struct js_platform_context *js_platform_context_create(void)
+{
+    struct js_platform_context *s=calloc(1,sizeof *s);
+    if (!s) return NULL;
+    s->g_vw=980;s->g_vh=600;
+    s->g_reject_hook=s->g_parsed_hook=JS_UNDEFINED;
+    s->g_native_mo_hook=s->g_native_mo_delivery=JS_UNDEFINED;
+    s->mo_subscription=&s->subscription;
+    return s;
+}
+
+void js_platform_context_activate(struct js_platform_context *next)
+{
+    if (!next) next=&platform_default_context;
+    if (next==platform_active_context) return;
+#define PLATFORM_SAVE(n) memcpy(&platform_active_context->n,&n,sizeof n);
+    PLATFORM_CONTEXT_FIELDS(PLATFORM_SAVE)
+#undef PLATFORM_SAVE
+#define PLATFORM_LOAD(n) memcpy(&n,&next->n,sizeof n);
+    PLATFORM_CONTEXT_FIELDS(PLATFORM_LOAD)
+#undef PLATFORM_LOAD
+    platform_active_context=next;
+}
+
+int js_platform_context_destroy(struct js_platform_context *s)
+{
+    if (!s || s==&platform_default_context) return 0;
+    struct js_platform_context *old=platform_active_context;
+    js_platform_context_activate(s);
+    int busy=g_ctx || mo_subscription->doc || mo_head || mo_watches;
+    js_platform_context_activate(old==s && !busy ? NULL : old);
+    if (busy) return 0;
+    free(s);
+    return 1;
 }

@@ -21,6 +21,8 @@
  * weak for the same reason: the host tests of THIS file link without it. */
 #define JS_PLATFORM_OPTIONAL
 #include "js_platform.h"
+#define JS_PORTS_OPTIONAL
+#include "js_ports.h"
 /* MediaSource / SourceBuffer / HTMLMediaElement -- js_media.c, weak for the
  * same reason as the two above: the host tests of THIS file link without it and
  * simply come up with no media. */
@@ -113,6 +115,21 @@ LOGIT_WEAK_STUB(js_anim_install);
 LOGIT_WEAK_STUB(js_anim_close);
 LOGIT_WEAK_STUB(js_domparser_install);
 LOGIT_WEAK_STUB(js_canvas_install);
+
+/* Optional modules still own process-singleton native state. A core child
+ * gets DOM, timers, jobs, console and the watchdog, but must neither install,
+ * pump nor close its parent's optional modules. Missing capabilities stay
+ * absent. The top-level path keeps every existing installer enabled.
+ * Correction: WebAPI and platform now have independently owned opt-in slots;
+ * their separate gates below never enable the remaining singleton modules. */
+static int g_extensions = 1;
+static int g_webapi_enabled = 1;
+static int g_platform_enabled = 1;
+static int g_workers_enabled = 1;
+#define PAGE_HAVE(fn) (g_extensions && LOGIT_HAVE(fn))
+#define PAGE_WEBAPI_HAVE(fn) (g_webapi_enabled && LOGIT_HAVE(fn))
+#define PAGE_PLATFORM_HAVE(fn) (g_platform_enabled && LOGIT_HAVE(fn))
+#define PAGE_WORKER_HAVE(fn) (g_workers_enabled && LOGIT_HAVE(fn))
 
 /* ---- the CSS animation/transition clock, as a consumer of THIS queue -----
  *
@@ -677,7 +694,11 @@ struct jstimer {
     JSValue *argv; int argc;       /* extra setTimeout(fn, ms, ...args) arguments */
 };
 
-static struct page_runtime g_page;
+/* A task token embeds its owner's ADDRESS. Copying this struct as part of a
+ * page switch would alias every document's token to the same global address.
+ * Keep each queue in stable storage and switch only the borrowed pointer. */
+static struct page_runtime page_default_queue;
+static struct page_runtime *g_page = &page_default_queue;
 static int g_next_id = 1;                    /* setTimeout/setInterval handles */
 static int g_next_raf_id = 1;                /* rAF has its own handle space, per spec */
 static unsigned long long g_frame_due;       /* the next animation-frame boundary */
@@ -726,41 +747,43 @@ int js_page_pending(void)
      * clock read is inside slice_end's own g_prof_on guard, which matters
      * because on the device now_ms() is a syscall and this runs every pass. */
     if (g_prof_on && g_prof_in_js) js_page_slice_end();
-    if (g_due_phase || g_page.count) return 1;
-    if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) return 1;
+    if (g_due_phase || g_page->count) return 1;
+    if (PAGE_PLATFORM_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) return 1;
     /* A running CSS animation/transition ticks on THIS queue's frame
      * boundary; without this line the main loop would park until an event
      * and a page whose only activity is CSS animation would never advance
      * past its first frame. */
-    if (LOGIT_HAVE(css_anim_active) && css_anim_active()) return 1;
+    if (PAGE_HAVE(css_anim_active) && css_anim_active()) return 1;
     /* A fetch in flight also needs the loop to call js_page_run_due(), which is
      * where its socket is stepped. */
-    if (LOGIT_HAVE(js_webapi_pending) && js_webapi_pending()) return 1;
+    if (PAGE_WEBAPI_HAVE(js_webapi_pending) && js_webapi_pending()) return 1;
+    if (LOGIT_HAVE(js_ports_pending) && js_ports_pending(g_ctx)) return 1;
     /* Same for a WebSocket that is CONNECTING, OPEN, or CLOSING -- see the long
      * comment on js_websocket_pump below. Missing this line is failure #5 of
      * this repository under a new name: the connection links, installs,
      * answers feature detection, and never progresses because nothing ever
      * calls js_websocket_pump again after the first frame. */
-    if (LOGIT_HAVE(js_websocket_pending) && js_websocket_pending()) return 1;
+    if (PAGE_HAVE(js_websocket_pending) && js_websocket_pending()) return 1;
     /* A live Worker with no timer of its own -- a dedicated worker sitting
      * idle after its startup fetch, waiting on a postMessage that has not
      * arrived yet -- must not read as an idle page either. See js_worker.h. */
-    return LOGIT_HAVE(js_worker_pending) && js_worker_pending();
+    return PAGE_WORKER_HAVE(js_worker_pending) && js_worker_pending();
 }
 
 long long js_page_next_due(void)
 {
     if(g_due_phase)return (long long)now_ms();
-    long long best = page_runtime_next_due(&g_page);
-    if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) best = 0;
-    if (LOGIT_HAVE(js_worker_next_due)) {
+    long long best = page_runtime_next_due(g_page);
+    if (LOGIT_HAVE(js_ports_pending) && js_ports_pending(g_ctx)) best=0;
+    if (PAGE_PLATFORM_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) best = 0;
+    if (PAGE_WORKER_HAVE(js_worker_next_due)) {
         long long wbest = js_worker_next_due();
         if (wbest >= 0 && (best < 0 || wbest < best)) best = wbest;
     }
     /* The animation clock's next frame boundary, so the main loop's sleep
      * ends on the animation's own cadence (20 ms) rather than on the pump
      * fallback -- the same argument the rAF comment above FRAME_MS makes. */
-    if (LOGIT_HAVE(css_anim_next_due)) {
+    if (PAGE_HAVE(css_anim_next_due)) {
         long long abest = css_anim_next_due();
         if (abest >= 0 && (best < 0 || abest < best)) best = abest;
     }
@@ -773,7 +796,10 @@ static void con_stack(JSContext *ctx, JSValueConst v);
 
 int js_page_run_due(void)
 {
-    if (!g_ctx || js_page_cancel_requested()) return 0;
+    /* Even a corrupted embedder selection must not call a timer's JSValue
+     * using a different runtime. The shared-queue negative control exercises
+     * this refusal as well as detecting the lost parent timer. */
+    if (!g_ctx || g_page->context!=g_ctx || js_page_cancel_requested()) return 0;
     int ran = 0;
     const unsigned long long deadline=now_ms()+JS_TASK_TURN_MS;
     int finish_previous=g_due_phase!=0;
@@ -788,7 +814,7 @@ int js_page_run_due(void)
      * API events out of order; it only services sockets whose promises remain
      * queued until the normal microtask checkpoint below.
      */
-    if (finish_previous && LOGIT_HAVE(js_webapi_fetch_checkpoint)) {
+    if (finish_previous && PAGE_WEBAPI_HAVE(js_webapi_fetch_checkpoint)) {
         int n = js_webapi_fetch_checkpoint(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
     }
@@ -796,9 +822,9 @@ run_phases:
     /* Notify only after the previous turn's microtasks had a chance to attach
      * handlers. A rejection created by work below waits for the next turn. */
     if(g_due_phase==0){
-      if (LOGIT_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) {
+      if (PAGE_PLATFORM_HAVE(js_platform_rejections_pending) && js_platform_rejections_pending()) {
         js_dom_run_jobs(g_ctx);
-        if (LOGIT_HAVE(js_platform_rejections_flush)) ran += js_platform_rejections_flush(g_ctx);
+        if (PAGE_PLATFORM_HAVE(js_platform_rejections_flush)) ran += js_platform_rejections_flush(g_ctx);
       }
       g_due_phase=1;
       if(js_task_budget_expired(now_ms(),deadline))return ran;
@@ -810,7 +836,7 @@ run_phases:
      * embedder repaints on a non-zero return and the .then() that writes the
      * DOM has to have run by then. */
     if(g_due_phase==1){
-      if (LOGIT_HAVE(js_webapi_pump)) {
+      if (PAGE_WEBAPI_HAVE(js_webapi_pump)) {
         int n = js_webapi_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
       }
@@ -822,7 +848,10 @@ run_phases:
      * a page with none -- which describes most of the WPT websockets/ corpus,
      * whose async_test()s have no timer at all. */
     if(g_due_phase==2){
-      if (LOGIT_HAVE(js_websocket_pump)) {
+      if(LOGIT_HAVE(js_ports_pump)&&LOGIT_HAVE(js_ports_pending)&&js_ports_pending(g_ctx)){
+        js_page_slice_begin();ran+=js_ports_pump(g_ctx);js_dom_run_jobs(g_ctx);js_page_slice_end();
+      }
+      if (PAGE_HAVE(js_websocket_pump)) {
         int n = js_websocket_pump(g_ctx);
         if (n > 0) { js_dom_run_jobs(g_ctx); ran += n; }
       }
@@ -836,9 +865,9 @@ run_phases:
      * the empty-queue early return below. */
     if(g_due_phase==3){
       int parent_handoff=0;
-      if(LOGIT_HAVE(js_worker_run_due_for_page))ran+=js_worker_run_due_for_page(deadline,&parent_handoff);
-      else if(LOGIT_HAVE(js_worker_run_due_until))ran+=js_worker_run_due_until(deadline);
-      else if(LOGIT_HAVE(js_worker_run_due))ran+=js_worker_run_due();
+      if(PAGE_WORKER_HAVE(js_worker_run_due_for_page))ran+=js_worker_run_due_for_page(deadline,&parent_handoff);
+      else if(PAGE_WORKER_HAVE(js_worker_run_due_until))ran+=js_worker_run_due_until(deadline);
+      else if(PAGE_WORKER_HAVE(js_worker_run_due))ran+=js_worker_run_due();
       /* Parent deliveries complete their page checkpoint before the next
        * page task. Worker checkpoints may resume separately because those
        * realms have separate event loops; a page checkpoint is not split.
@@ -849,7 +878,7 @@ run_phases:
        * that request one ordinary non-blocking service pass before another
        * worker runs. No handshake wait, timer dispatch, or worker callback
        * is part of this checkpoint; pending network work stays scheduled. */
-      if(parent_handoff&&LOGIT_HAVE(js_webapi_fetch_checkpoint))
+      if(parent_handoff&&PAGE_WEBAPI_HAVE(js_webapi_fetch_checkpoint))
           ran+=js_webapi_fetch_checkpoint(g_ctx);
       ran+=js_dom_run_jobs(g_ctx);
       js_page_slice_end();
@@ -868,7 +897,7 @@ run_phases:
      * jobs." WAAPI made both halves false: it can settle finished without a
      * pixel change and without any timer remaining to drain the reaction. */
     if(g_due_phase==4){
-      if (LOGIT_HAVE(css_anim_tick)) {
+      if (PAGE_HAVE(css_anim_tick)) {
         /* WAAPI sampling now enters JS through this formerly C-only clock.
          * Give it the same interrupt budget as timer callbacks: keyframe/effect
          * accessors are page code, and an unbounded accessor must not freeze IO. */
@@ -886,11 +915,11 @@ run_phases:
       g_due_phase=5;
       if(js_task_budget_expired(now_ms(),deadline))return ran;
     }
-    if (!g_page.count) goto phases_done;
+    if (!g_page->count) goto phases_done;
 
     if(!g_due_timer_active){
         g_due_timer_now=now_ms();
-        g_due_timer_limit=page_runtime_turn(&g_page);
+        g_due_timer_limit=page_runtime_turn(g_page);
         g_due_timer_active=1;
     }
     const unsigned long long now=g_due_timer_now;
@@ -901,7 +930,7 @@ run_phases:
     uint64_t limit = g_due_timer_limit;
 
     for (;;) {
-        struct page_task *ready = page_runtime_ready(&g_page, now, limit);
+        struct page_task *ready = page_runtime_ready(g_page, now, limit);
         if (!ready) break;
         struct jstimer *best = ready->payload;
 
@@ -932,10 +961,10 @@ run_phases:
             /* Re-arm from NOW, not from the old deadline: catching up on missed
              * ticks after a slow page load would fire a burst of callbacks the
              * page never asked for. */
-            page_task_rearm(&g_page, &best->task,
+            page_task_rearm(g_page, &best->task,
                             now + (unsigned long long)best->interval_ms);
         } else {
-            page_task_cancel(&g_page, &best->task);
+            page_task_cancel(g_page, &best->task);
         }
 
         js_prof_label(is_raf ? "<rAF callback>" : "<timer callback>");
@@ -991,8 +1020,8 @@ static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
      * now bounds timer/rAF ownership at JS_PAGE_TASK_CAPACITY entries; refusal
      * returns the existing failure handle 0 and retains no callback references.
      * Check before allocating, then let enqueue enforce the same ownership rule. */
-    if (ctx != g_page.context || !page_runtime_accepts(page_runtime_token(&g_page)) ||
-        g_page.count >= g_page.capacity) return 0;
+    if (ctx != g_page->context || !page_runtime_accepts(page_runtime_token(g_page)) ||
+        g_page->count >= g_page->capacity) return 0;
     struct jstimer *t = calloc(1, sizeof *t);
     if (!t) return 0;
     unsigned long long now = now_ms(), due;
@@ -1015,7 +1044,7 @@ static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
         t->argv = malloc((size_t)argc * sizeof *t->argv);
         if (t->argv) { for (int i = 0; i < argc; i++) t->argv[i] = JS_DupValue(ctx, argv[i]); t->argc = argc; }
     }
-    if (page_task_enqueue(&g_page, &t->task, page_runtime_token(&g_page), due,
+    if (page_task_enqueue(g_page, &t->task, page_runtime_token(g_page), due,
                           raf ? PAGE_TASK_ANIMATION_FRAME : PAGE_TASK_TIMER,
                           t, timer_dispose) != PAGE_TASK_OK) {
         timer_free(ctx, t);
@@ -1027,10 +1056,10 @@ static int timer_add(JSContext *ctx, JSValueConst fn, long delay, int interval,
 static void timer_cancel(JSContext *ctx, int id, int raf)
 {
     (void)ctx;
-    for (struct page_task *task = g_page.tasks; task; task = task->next) {
+    for (struct page_task *task = g_page->tasks; task; task = task->next) {
         struct jstimer *t = task->payload;
         if (t->id == id && t->raf == raf) {
-            page_task_cancel(&g_page, task);
+            page_task_cancel(g_page, task);
             return;
         }
     }
@@ -1267,6 +1296,8 @@ static void js_install_report(const struct js_install_sample *samples, int count
 
 int js_page_open(struct node *root)
 {
+    /* Opening is teardown plus allocation, never a reentrant JS operation. */
+    if (g_entry_depth) return 0;
 #ifdef JS_PAGE_INSTALL_PROFILE
     struct js_install_sample js_samples[48];
     int js_sample_count = 0;
@@ -1288,7 +1319,7 @@ int js_page_open(struct node *root)
 
     g_t0 = now_ms();
     int page_opened;
-    JS_OPEN_STEP("page_runtime_open", page_opened = page_runtime_open(&g_page, g_rt, g_ctx, root, JS_PAGE_TASK_CAPACITY));
+    JS_OPEN_STEP("page_runtime_open", page_opened = page_runtime_open(g_page, g_rt, g_ctx, root, JS_PAGE_TASK_CAPACITY));
     if (!page_opened) {
         JS_FreeContext(g_ctx); JS_FreeRuntime(g_rt);
         g_ctx = 0; g_rt = 0; return 0;
@@ -1330,7 +1361,7 @@ int js_page_open(struct node *root)
      * components and writable. This href-only stand-in is what a build without
      * js_webapi.c gets -- the surface it had before -- so dropping that file
      * from a link takes away fetch, not the page's own address. */
-    if (!LOGIT_HAVE(js_webapi_install)) {
+    if (!PAGE_WEBAPI_HAVE(js_webapi_install)) {
         JSValue loc = JS_NewObject(g_ctx);
         JS_SetPropertyStr(g_ctx, loc, "href", JS_NewString(g_ctx, g_location));
         JS_SetPropertyStr(g_ctx, g, "location", loc);
@@ -1364,33 +1395,38 @@ int js_page_open(struct node *root)
      * installers together rather than scattered above it. See js_domparser.c's
      * header for the lifetime scheme -- no close hook is registered because
      * none is needed (ordinary QuickJS object teardown is sufficient). */
-    if (LOGIT_HAVE(js_domparser_install)) JS_OPEN_STEP("js_domparser_install", js_domparser_install(g_ctx));
+    if (PAGE_HAVE(js_domparser_install)) JS_OPEN_STEP("js_domparser_install", js_domparser_install(g_ctx));
     JS_OPEN_STEP("window-event-target", js_dom_bind_event_target(g_ctx, g));  /* window.addEventListener + window.on* */
     /* AFTER the DOM: js_webapi publishes document.location and dispatches
      * popstate through window.dispatchEvent, both of which js_dom.c owns. */
-    if (LOGIT_HAVE(js_webapi_install)) JS_OPEN_STEP("js_webapi_install", js_webapi_install(g_ctx, g_location));
+    if (PAGE_WEBAPI_HAVE(js_webapi_install)) JS_OPEN_STEP("js_webapi_install", js_webapi_install(g_ctx, g_location));
     /* LAST. js_platform.c fills gaps in what the two above publish (document,
      * navigator, performance, localStorage) and every one of its installs is
      * conditional on the property being absent -- which only means anything
      * once everyone who owns one has had their turn. */
-    if (LOGIT_HAVE(js_select_install)) JS_OPEN_STEP("js_select_install", js_select_install(g_ctx));
-    if (LOGIT_HAVE(js_intl_install)) JS_OPEN_STEP("js_intl_install", js_intl_install(g_ctx));
+    /* Selectors, DOMTokenList and CharacterData keep their closures in the
+     * receiving runtime; their native callbacks use the selected DOM owner.
+     * Unlike CSSOM/forms they have no mutable process-wide document state.
+     * The earlier blanket optional-module gate left child querySelectorAll,
+     * matches and closest absent despite already having shipping consumers. */
+    if (PAGE_PLATFORM_HAVE(js_select_install)) JS_OPEN_STEP("js_select_install", js_select_install(g_ctx));
+    if (PAGE_HAVE(js_intl_install)) JS_OPEN_STEP("js_intl_install", js_intl_install(g_ctx));
     /* AFTER js_dom_init (it takes the Element prototype) and after the platform
      * fills in `document`; MediaSource has no dependency on either, but the
      * HTMLMediaElement members are installed on the element prototype. */
-    if (LOGIT_HAVE(js_media_install)) JS_OPEN_STEP("js_media_install", js_media_install(g_ctx));
-    if (LOGIT_HAVE(js_platform_install)) JS_OPEN_STEP("js_platform_install", js_platform_install(g_ctx));
+    if (PAGE_HAVE(js_media_install)) JS_OPEN_STEP("js_media_install", js_media_install(g_ctx));
+    if (PAGE_PLATFORM_HAVE(js_platform_install)) JS_OPEN_STEP("js_platform_install", js_platform_install(g_ctx));
     /* AFTER js_platform_install: it is what creates `crypto` in the first
      * place (getRandomValues, randomUUID). js_subtle_install only fills in
      * `.subtle` on whatever `crypto` object already exists. */
-    if (LOGIT_HAVE(js_subtle_install)) JS_OPEN_STEP("js_subtle_install", js_subtle_install(g_ctx));
+    if (PAGE_HAVE(js_subtle_install)) JS_OPEN_STEP("js_subtle_install", js_subtle_install(g_ctx));
     /* LAST of the last. The event layer needs js_dom.c's native Event classes
      * to wrap, js_webapi.c's AbortSignal for the `signal` option, and it
      * deliberately REPLACES two placeholders js_platform.c installs when
      * nobody better has (EventTarget, PromiseRejectionEvent) -- so unlike
      * js_platform.c's "only if absent" rule, this one has to run after the
      * placeholder exists in order to take it over. */
-    if (LOGIT_HAVE(js_events_install)) JS_OPEN_STEP("js_events_install", js_events_install(g_ctx));
+    if (PAGE_HAVE(js_events_install)) JS_OPEN_STEP("js_events_install", js_events_install(g_ctx));
     /* AFTER js_events_install (needs the real, constructible G.EventTarget --
      * IDBRequest/IDBTransaction/IDBDatabase all extend it) and after
      * js_platform_install above (needs G.DOMException and G.structuredClone).
@@ -1400,27 +1436,27 @@ int js_page_open(struct node *root)
      * built around. Weak, like every install above: a build without that TU
      * keeps `typeof indexedDB === 'undefined'`, the correct feature-detect
      * answer for a browser that does not have it. */
-    if (LOGIT_HAVE(js_idb_install)) JS_OPEN_STEP("js_idb_install", js_idb_install(g_ctx));
+    if (PAGE_HAVE(js_idb_install)) JS_OPEN_STEP("js_idb_install", js_idb_install(g_ctx));
     /* AFTER js_webapi_install (needs the real, singleton-bound G.fetch/
      * Request/Response/Headers -- js_cache.c is deliberately NOT a second
      * implementation of any of the four) and after js_platform_install
      * (needs G.DOMException). Weak like every install above: a build
      * without js_cache.c keeps `typeof caches === 'undefined'`. */
-    if (LOGIT_HAVE(js_cache_install)) JS_OPEN_STEP("js_cache_install", js_cache_install(g_ctx));
+    if (PAGE_HAVE(js_cache_install)) JS_OPEN_STEP("js_cache_install", js_cache_install(g_ctx));
     /* AFTER js_platform_install (needs G.DOMException) and after `navigator`
      * already exists -- js_page.c creates that object directly, well before
      * this line, so the ordering requirement is trivially satisfied. Weak
      * like every install above: a build without js_swreg.c keeps
      * `'serviceWorker' in navigator === false`. See js_swreg.c's header for
      * why register() always rejects rather than half-executing. */
-    if (LOGIT_HAVE(js_swreg_install)) JS_OPEN_STEP("js_swreg_install", js_swreg_install(g_ctx));
+    if (PAGE_HAVE(js_swreg_install)) JS_OPEN_STEP("js_swreg_install", js_swreg_install(g_ctx));
     /* AFTER all of the above, and the ordering is not a preference. js_cssom.c
      * takes the Element prototype js_dom.c published, and it deliberately
      * REPLACES two bindings older files install: getBoundingClientRect (its
      * version flushes a pending layout first) and matchMedia (its version is
      * the cascade's own media evaluator, which closes the divergence css.h
      * names). Installing it earlier means those two get overwritten again. */
-    if (LOGIT_HAVE(js_cssom_install)) JS_OPEN_STEP("js_cssom_install", js_cssom_install(g_ctx));
+    if (PAGE_HAVE(js_cssom_install)) JS_OPEN_STEP("js_cssom_install", js_cssom_install(g_ctx));
     /* The form controls and the focus model -- js_forms.c: element.value,
      * .checked, .focus(), document.activeElement, form.submit(). LAST, and
      * "only if absent" like js_platform.c: every property it defines is one an
@@ -1429,7 +1465,7 @@ int js_page_open(struct node *root)
      * rather than only for controls. Weak, like every other install above, so a
      * build without that object (the focus negative control, and the host tests
      * of this file) links and simply has no form bindings. */
-    if (LOGIT_HAVE(js_forms_install)) JS_OPEN_STEP("js_forms_install", js_forms_install(g_ctx));
+    if (PAGE_HAVE(js_forms_install)) JS_OPEN_STEP("js_forms_install", js_forms_install(g_ctx));
     /* AFTER js_webapi_install, and that ordering is the point. js_webapi.c
      * ships a URL / URLSearchParams built as a JS prelude over
      * c/net/http/url.c -- the four-field parser the fetch needs, which has no
@@ -1437,8 +1473,8 @@ int js_page_open(struct node *root)
      * REPLACES both globals with the standard's algorithm, and replacing
      * something means running after the thing that installed it. Weak, like
      * every install above, so a build without that TU keeps the old pair. */
-    if (LOGIT_HAVE(js_url_install)) JS_OPEN_STEP("js_url_install", js_url_install(g_ctx));
-    if (LOGIT_HAVE(js_download_install)) JS_OPEN_STEP("js_download_install", js_download_install(g_ctx));
+    if (PAGE_HAVE(js_url_install)) JS_OPEN_STEP("js_url_install", js_url_install(g_ctx));
+    if (PAGE_HAVE(js_download_install)) JS_OPEN_STEP("js_download_install", js_download_install(g_ctx));
     /* AFTER js_events_install (needs G.EventTarget/CloseEvent/MessageEvent)
      * and js_webapi_install (needs G.TextEncoder/TextDecoder); AFTER
      * js_url_install so a `new WebSocket(url)` validates its argument with
@@ -1446,7 +1482,7 @@ int js_page_open(struct node *root)
      * Weak, like every install above: a build without js_websocket.c keeps
      * `typeof WebSocket === 'undefined'`, the correct feature-detect answer
      * for a browser that does not have it. */
-    if (LOGIT_HAVE(js_websocket_install)) JS_OPEN_STEP("js_websocket_install", js_websocket_install(g_ctx));
+    if (PAGE_HAVE(js_websocket_install)) JS_OPEN_STEP("js_websocket_install", js_websocket_install(g_ctx));
     /* AFTER js_platform_install and js_events_install: the parent-side event
      * delivery a Worker fires (`onerror`/`onmessage`) reaches for
      * G.DOMException / G.MessageEvent / G.ErrorEvent when they exist and
@@ -1454,7 +1490,10 @@ int js_page_open(struct node *root)
      * them is strictly better and not a hard requirement -- see js_worker.h.
      * Weak like every install above: a build without js_worker.c keeps
      * `typeof Worker === 'undefined'`. */
-    if (LOGIT_HAVE(js_worker_install)) JS_OPEN_STEP("js_worker_install", js_worker_install(g_ctx));
+    if (PAGE_WORKER_HAVE(js_worker_install)) JS_OPEN_STEP("js_worker_install", js_worker_install(g_ctx));
+    /* Replace the platform's in-realm fallback only after its event types
+     * exist, before author scripts create channels. No global frame state. */
+    if (PAGE_PLATFORM_HAVE(js_ports_install)) JS_OPEN_STEP("js_ports_install", js_ports_install(g_ctx));
     /* AFTER js_webapi_install, and that ordering is the one thing js_wasm.c
      * asks for: WebAssembly.instantiateStreaming takes a Response and reads it
      * with .arrayBuffer(), so it needs the real G.Response.  It degrades the
@@ -1468,19 +1507,19 @@ int js_page_open(struct node *root)
      * anywhere else in this list -- a page feature-tests the constructor and
      * then TRUSTS what it gets, so a half-built WebAssembly is worse than
      * none. */
-    if (LOGIT_HAVE(js_wasm_install)) JS_OPEN_STEP("js_wasm_install", js_wasm_install(g_ctx));
+    if (PAGE_HAVE(js_wasm_install)) JS_OPEN_STEP("js_wasm_install", js_wasm_install(g_ctx));
     /* AFTER js_forms_install, and that ordering is load-bearing in one place:
      * js_forms.c installs focus()/blur() on HTMLInputElement.prototype only
      * (its `Object.getPrototypeOf(createElement('input'))` was the ONE shared
      * element prototype before 7fc2bec), and js_semantics.c copies that
      * descriptor up to HTMLElement.prototype so a <button> or <dialog> can be
      * focused. It can only copy a descriptor that already exists. */
-    if (LOGIT_HAVE(js_semantics_install)) JS_OPEN_STEP("js_semantics_install", js_semantics_install(g_ctx));
+    if (PAGE_HAVE(js_semantics_install)) JS_OPEN_STEP("js_semantics_install", js_semantics_install(g_ctx));
     /* After the interface objects exist, because it asks for
      * HTMLCanvasElement.prototype BY NAME and installs nothing if it is
      * absent -- saying so out loud rather than leaving the page to rediscover
      * it as `getContext is not a function`. */
-    if (LOGIT_HAVE(js_canvas_install)) JS_OPEN_STEP("js_canvas_install", js_canvas_install(g_ctx));
+    if (PAGE_HAVE(js_canvas_install)) JS_OPEN_STEP("js_canvas_install", js_canvas_install(g_ctx));
     /* LAST, after everyone who owns a piece of what it composes with has had
      * their turn, and the ordering is load-bearing twice over. It takes
      * Element.prototype, which js_dom.c publishes. And it REPLACES
@@ -1488,7 +1527,7 @@ int js_page_open(struct node *root)
      * installed at the time -- so it has to run after js_cssom.c and
      * js_platform.c, or it wraps a placeholder and the real one overwrites the
      * wrapper afterwards, leaving animate() present and unobservable. */
-    if (LOGIT_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
+    if (PAGE_HAVE(js_anim_install)) JS_OPEN_STEP("js_anim_install", js_anim_install(g_ctx));
     JS_FreeValue(g_ctx, g);
 #ifdef JS_PAGE_INSTALL_PROFILE
     js_install_report(js_samples,js_sample_count,now_ms()-js_open_start);
@@ -1500,14 +1539,18 @@ int js_page_open(struct node *root)
 
 void js_page_close(void)
 {
+    /* A close request from a native callback cancels the current slice. The
+     * embedder retries after it unwinds; freeing an executing context is not
+     * made safe by invalidating its task tokens. */
+    if (g_entry_depth) { js_page_request_cancel(); return; }
     slice_disarm();
     g_due_phase=0;g_due_timer_active=0;
     /* Invalidate BEFORE subsystem cleanup: no producer may queue more work
      * for this document once closing starts. Keep the context alive until the
      * queue has disposed every JS reference. Epochs survive context reuse. */
-    page_runtime_invalidate(&g_page);
+    page_runtime_invalidate(g_page);
     if (!g_ctx) {
-        page_runtime_close(&g_page); g_rt = 0;
+        page_runtime_close(g_page); g_rt = 0;
         g_entry_depth = 0; g_embedder_cancel = 0;
         return;
     }
@@ -1523,21 +1566,22 @@ void js_page_close(void)
      * is torn down, not after. It also frees each worker's own JSRuntime --
      * a second live runtime outliving the page it belongs to is exactly the
      * kind of thing nothing downstream would notice until it crashed. */
-    if (LOGIT_HAVE(js_semantics_close)) js_semantics_close(g_ctx);
-    if (LOGIT_HAVE(js_anim_close)) js_anim_close(g_ctx);
-    if (LOGIT_HAVE(js_worker_close_all)) js_worker_close_all();
-    page_runtime_close(&g_page);
+    if (PAGE_HAVE(js_semantics_close)) js_semantics_close(g_ctx);
+    if (PAGE_HAVE(js_anim_close)) js_anim_close(g_ctx);
+    if (PAGE_WORKER_HAVE(js_worker_close_all)) js_worker_close_all();
+    if (LOGIT_HAVE(js_ports_close)) js_ports_close(g_ctx);
+    page_runtime_close(g_page);
     g_frame_due = 0;
-    if (LOGIT_HAVE(js_platform_close)) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
-    if (LOGIT_HAVE(js_webapi_close)) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
-    if (LOGIT_HAVE(js_websocket_close)) js_websocket_close(g_ctx); /* closes sockets, drops self refs */
-    if (LOGIT_HAVE(js_media_close)) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
-    if (LOGIT_HAVE(js_cssom_close)) js_cssom_close(g_ctx);     /* drops the node lookup cache */
+    if (PAGE_PLATFORM_HAVE(js_platform_close)) js_platform_close(g_ctx);  /* unhooks the rejection tracker */
+    if (PAGE_WEBAPI_HAVE(js_webapi_close)) js_webapi_close(g_ctx);   /* aborts fetches, drops promise resolvers */
+    if (PAGE_HAVE(js_websocket_close)) js_websocket_close(g_ctx); /* closes sockets, drops self refs */
+    if (PAGE_HAVE(js_media_close)) js_media_close(g_ctx);     /* stops playback, frees the DPBs */
+    if (PAGE_HAVE(js_cssom_close)) js_cssom_close(g_ctx);     /* drops the node lookup cache */
 #ifndef WASM_LIFECYCLE_NEG_RESET
     /* wasm_js_test called reset manually; the shipping page never did.
      * A real page retaining an imported callback that captures its Instance
      * aborted in JS_FreeRuntime (wasm_lifecycle_test, before this hook). */
-    if (LOGIT_HAVE(js_wasm_reset)) js_wasm_reset(g_ctx);
+    if (PAGE_HAVE(js_wasm_reset)) js_wasm_reset(g_ctx);
 #endif
     js_dom_cleanup(g_ctx);
     js_dom_set_note(0);
@@ -1628,4 +1672,141 @@ int js_page_eval(const char *src, int len, const char *filename, struct node *no
     js_page_end_script();
     js_page_slice_end();
     return ok;
+}
+
+/* The working fields contain JS references and scheduling state, not their
+ * own stable identities. g_clock is deliberately shared: it is the embedder's
+ * monotonic clock service, not a document clock. Each performance origin g_t0
+ * is separate. g_page points to a NEVER-MOVED queue in the owning context. */
+#define PAGE_CONTEXT_FIELDS(X) \
+    X(g_out) X(g_outlen) X(g_note_sink) X(g_extensions) X(g_webapi_enabled) X(g_platform_enabled) X(g_workers_enabled) \
+    X(g_slice_ms) X(g_slice_due) X(g_slice_fuel_max) X(g_slice_fuel) \
+    X(g_slice_armed) X(g_slice_hits) X(g_slice_epoch) X(g_slice_io_depth) \
+    X(g_slice_io_begin) X(g_slice_io_ms) X(g_slice_begin_ms) \
+    X(g_interrupt_probe) X(g_interrupt_probe_opaque) X(g_embedder_cancel) \
+    X(g_entry_depth) X(g_prof) X(g_prof_n) X(g_prof_over) X(g_prof_on) \
+    X(g_prof_last_ms) X(g_prof_in_js) X(g_prof_label) X(g_polls) \
+    X(g_rt) X(g_ctx) X(g_t0) X(g_location) X(g_page) \
+    X(g_next_id) X(g_next_raf_id) X(g_frame_due) X(g_due_phase) \
+    X(g_due_timer_active) X(g_due_timer_now) X(g_due_timer_limit) X(g_cur_script)
+
+struct js_page_context {
+    struct js_dom_context *dom;
+    struct js_webapi_context *webapi;
+    struct js_platform_context *platform;
+    struct js_worker_context *workers;
+    struct page_runtime queue;
+#define PAGE_FIELD(n) __typeof__(n) n;
+    PAGE_CONTEXT_FIELDS(PAGE_FIELD)
+#undef PAGE_FIELD
+};
+static struct js_page_context page_default_context;
+static struct js_page_context *page_active_context=&page_default_context;
+
+struct js_page_context *js_page_context_create(void)
+{
+    if (g_entry_depth) return 0;
+    struct js_page_context *s=calloc(1,sizeof *s);
+    if (!s) return 0;
+    s->dom=js_dom_context_create();
+    if (!s->dom) { free(s); return 0; }
+    s->g_page=&s->queue;
+    s->g_slice_ms=g_slice_ms;
+    s->g_slice_fuel_max=g_slice_fuel_max;
+    s->g_prof_label="?";
+    s->g_next_id=s->g_next_raf_id=1;
+    memcpy(s->g_location,"about:blank",sizeof "about:blank");
+    return s;
+}
+
+int js_page_context_enable_webapi(struct js_page_context *s, const char *site_url)
+{
+    if (!s || s==&page_default_context || s==page_active_context ||
+        s->g_ctx || s->g_rt || s->webapi || g_entry_depth || g_slice_io_depth ||
+        !LOGIT_HAVE(js_webapi_context_create) ||
+        !LOGIT_HAVE(js_webapi_context_activate) ||
+        !LOGIT_HAVE(js_webapi_context_destroy)) return 0;
+    s->webapi=js_webapi_context_create(site_url);
+    if (!s->webapi) return 0;
+    s->g_webapi_enabled=1;
+    return 1;
+}
+
+int js_page_context_enable_platform(struct js_page_context *s)
+{
+    if (!s || s==&page_default_context || s==page_active_context ||
+        s->g_ctx || s->g_rt || !s->webapi || s->platform ||
+        g_entry_depth || g_slice_io_depth ||
+        !LOGIT_HAVE(js_platform_context_create) ||
+        !LOGIT_HAVE(js_platform_context_activate) ||
+        !LOGIT_HAVE(js_platform_context_destroy)) return 0;
+    s->platform=js_platform_context_create();
+    if (!s->platform) return 0;
+    s->g_platform_enabled=1;
+    return 1;
+}
+
+int js_page_context_enable_workers(struct js_page_context *s,const struct js_worker_policy *p)
+{
+    if(!s||s==&page_default_context||s==page_active_context||s->g_ctx||s->g_rt||
+       !s->platform||s->workers||g_entry_depth||g_slice_io_depth||
+       !LOGIT_HAVE(js_worker_context_create)||!LOGIT_HAVE(js_worker_context_activate)||
+       !LOGIT_HAVE(js_worker_context_destroy))return 0;
+    s->workers=js_worker_context_create(p);if(!s->workers)return 0;
+    s->g_workers_enabled=1;return 1;
+}
+
+int js_page_context_activate(struct js_page_context *next,
+                             struct js_page_context **previous)
+{
+    if (g_entry_depth || g_slice_io_depth) return 0;
+    if (!next) next=&page_default_context;
+    struct js_page_context *old=page_active_context;
+    if(LOGIT_HAVE(js_worker_context_activate)&&!js_worker_context_activate(next->workers))return 0;
+    if (!js_dom_context_activate(next->dom,0)) {
+        if(LOGIT_HAVE(js_worker_context_activate))js_worker_context_activate(old->workers);
+        return 0;
+    }
+    if (LOGIT_HAVE(js_webapi_context_activate)) js_webapi_context_activate(next->webapi);
+    if (LOGIT_HAVE(js_platform_context_activate)) js_platform_context_activate(next->platform);
+    if (next!=old) {
+#define PAGE_SAVE(n) memcpy(&old->n,&n,sizeof n);
+        PAGE_CONTEXT_FIELDS(PAGE_SAVE)
+#undef PAGE_SAVE
+#define PAGE_LOAD(n) memcpy(&n,&next->n,sizeof n);
+        PAGE_CONTEXT_FIELDS(PAGE_LOAD)
+#undef PAGE_LOAD
+        page_active_context=next;
+    }
+    if (previous) *previous=old==&page_default_context ? 0 : old;
+    return 1;
+}
+
+int js_page_context_destroy(struct js_page_context *s)
+{
+    if (!s || s==&page_default_context || g_entry_depth || g_slice_io_depth)
+        return 0;
+    struct js_page_context *previous;
+    if (!js_page_context_activate(s,&previous)) return 0;
+    int busy=g_ctx || g_rt || s->queue.state!=PAGE_RUNTIME_CLOSED || s->queue.count;
+    if (busy) { js_page_context_activate(previous,0); return 0; }
+    if(s->workers&&!js_worker_context_destroy(s->workers)){
+        js_page_context_activate(previous,0);return 0;
+    }
+    s->workers=0;
+    if (s->platform && !js_platform_context_destroy(s->platform)) {
+        js_page_context_activate(previous,0); return 0;
+    }
+    s->platform=0;
+    if (s->webapi && !js_webapi_context_destroy(s->webapi)) {
+        js_page_context_activate(previous,0); return 0;
+    }
+    s->webapi=0;
+    if (!js_dom_context_destroy(s->dom)) {
+        js_page_context_activate(previous,0); return 0;
+    }
+    s->dom=0;
+    js_page_context_activate(previous==s ? 0 : previous,0);
+    free(s);
+    return 1;
 }

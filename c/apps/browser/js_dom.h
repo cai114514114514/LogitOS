@@ -5,6 +5,23 @@
 
 struct node;
 
+/* Document-owned DOM binding state. NULL selects the legacy top-level slot.
+ * Each live slot must use its OWN JSRuntime and native DOM arena. This is a
+ * native scheduling boundary, not a WindowProxy or an origin permission:
+ * activate only between JS entries, and keep it active through evaluation,
+ * microtasks, cleanup and runtime destruction. Other JS modules and layout
+ * have separate ownership and are NOT switched by this API.
+ *
+ * A slot remains allocated until cleanup + JS_FreeContext/JS_FreeRuntime have
+ * released every wrapper. destroy refuses a live slot. Native DOM mutation
+ * notifications temporarily enter their owner without executing page script;
+ * finalizers account to their owner even when another slot is selected. */
+struct js_dom_context;
+struct js_dom_context *js_dom_context_create(void);
+int js_dom_context_activate(struct js_dom_context *next,
+                            struct js_dom_context **previous);
+int js_dom_context_destroy(struct js_dom_context *state);
+
 /* Install `document` + the Element/Event classes into ctx, bound to the live
  * page DOM. Call once per JS context before JS_Eval.
  *
@@ -125,6 +142,10 @@ int  js_dom_run_jobs(JSContext *ctx);
 /* The node that events bubble to (the N_DOCUMENT root), or NULL. `window` and
  * `document` listeners are registered here. */
 struct node *js_dom_root(void);
+/* Native window-message delivery, not a JS-exposed dispatch shortcut.
+ * The embedder must validate the recipient/source/origin and select/bracket
+ * the owning runtime first. Does not grant transient user activation. */
+JSValue js_dom_deliver_window_message(JSValueConst event);
 
 /* Actual platform/chrome keyboard ownership, independent of activeElement.
  * An absent/unknown query means no focus. The embedder sets this before page
@@ -182,6 +203,9 @@ void js_dom_set_note(void (*fn)(const char *));
  * (host DOM tests with no page runtime). See
  * docs/superpowers/specs/2026-08-16-inserted-script-execution.md. */
 void js_dom_set_script_sink(void (*fn)(struct node *));
+/* Native document policy, checked before compiling handler attributes.
+ * NULL retains the default behavior; the callback must not enter JS. */
+void js_dom_set_inline_handler_policy(int (*fn)(void));
 /* Source mutation discovery includes detached Image elements. No IO or JS may
  * run from this sink; the embedder drains it after the current script unwinds. */
 void js_dom_set_image_sink(void (*fn)(struct node *));

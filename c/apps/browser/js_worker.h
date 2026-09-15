@@ -39,6 +39,30 @@
  * see js__wSelfClose/nested-worker refusal in js_worker.c for why). */
 WORKER_FN void js_worker_install(JSContext *ctx);
 
+/* Stable owner storage: interrupt callbacks retain addresses inside its
+ * worker table, so this table must never be memcpy-swapped between pages.
+ * Blob workers inherit creator policy; network workers require an entry
+ * loader returning owned response policy before any script is evaluated. The
+ * embedder supplies enforced import/connect/eval policy, never JS hooks.
+ * site_url is copied; NULL means an opaque ancestor site-for-cookies. */
+enum { JSW_CREATE, JSW_IMPORT, JSW_CONNECT, JSW_EVAL };
+struct js_worker_policy {
+    void *opaque;
+    int (*allow)(void *, int operation, const char *url);
+    int (*load)(void *, const char *url, unsigned char **bytes, int *length);
+    const char *site_url;
+    /* Success transfers bytes and response policy to the worker. Failure
+     * transfers nothing. The final URL is returned in the bounded URL buffer.
+     * release is only for this response, never for the creator context. */
+    int (*entry)(void *, char *url, int capacity, unsigned char **bytes,
+                 int *length, struct js_worker_policy *response);
+    void (*release)(void *);
+};
+struct js_worker_context;
+WORKER_FN struct js_worker_context *js_worker_context_create(const struct js_worker_policy *);
+WORKER_FN int js_worker_context_activate(struct js_worker_context *);
+WORKER_FN int js_worker_context_destroy(struct js_worker_context *);
+
 /* ---- folded into js_page.c's own scheduling, per js_worker.c's rule: ONE
  * JAR, ONE DOOR. js_page_pending/next_due/run_due call these three so a page
  * holding only a live worker (no timer of its own) does not read as idle,
@@ -71,6 +95,9 @@ WORKER_FN void js_worker_close_all(void);
 /* The Mach-O half of the weak declarations above (include/weaksym.h). */
 #ifdef JS_WORKER_OPTIONAL
 LOGIT_WEAK_STUB(js_worker_install);
+LOGIT_WEAK_STUB(js_worker_context_create);
+LOGIT_WEAK_STUB(js_worker_context_activate);
+LOGIT_WEAK_STUB(js_worker_context_destroy);
 LOGIT_WEAK_STUB(js_worker_pending);
 LOGIT_WEAK_STUB(js_worker_next_due);
 LOGIT_WEAK_STUB(js_worker_run_due);

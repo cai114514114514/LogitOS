@@ -1553,7 +1553,7 @@ static int svg_attr_w(struct node *n, const struct cstyle *st)
  * height-driven, so something has to break the circularity; real engines lay
  * the line out twice, we probe with the block's own line height. It is exact
  * unless a line mixes font sizes right at a float's top or bottom edge. */
-struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start;
+struct iflow { int x0, x1, x, y, lineh, line_started, align, line_start, line_box_start;
                int bx0, bx1, probe;
                int transform_word_start;
                /* CSS Text 3 §4.1, and it lives on the FLOW rather than in
@@ -1602,7 +1602,7 @@ static void iflow_init(struct iflow *f, int x, int w, int y, int align, int prob
 {
     f->bx0 = x; f->bx1 = x + w;
     f->y = y; f->lineh = 0; f->line_started = 0; f->align = align;
-    f->line_start = nitem; f->pending_sp = 0;
+    f->line_start = nitem; f->line_box_start = nbox; f->pending_sp = 0;
     f->space_node = 0; f->space_style = 0; f->space_href = 0; f->space_z = 0;
     f->probe = probe > 0 ? probe : 20;
     flow_relayout_line(f);
@@ -1783,9 +1783,25 @@ static void newline2(struct iflow *f, int last)
         } else if (f->align == ALIGN_CENTER || f->align == ALIGN_RIGHT) {
             int used = f->x - f->x0, avail = f->x1 - f->x0;
             int off = (f->align == ALIGN_CENTER) ? (avail - used) / 2 : (avail - used);
-            if (off > 0)
+            if (off > 0) {
                 for (int i = f->line_start; i < nitem; i++)
                     if (!items[i].is_float) items[i].x += off;
+#ifndef LEGACY_HOME_NEGCTL
+                /* Center/right used to move only ink. The inline image or
+                 * control's CSSOM box stayed at x=0, so a click derived from
+                 * getBoundingClientRect missed the visibly centered field.
+                 * Only records created by this line move; the enclosing
+                 * block opened before flow_init, and floats keep their BFC
+                 * positions just as their is_float display items do. */
+                for(int i=f->line_box_start;i<nbox;i++) {
+                    struct boxrec *b=&boxes[i];
+                    const struct cstyle *bs=b->n?b->n->style:0;
+                    if(bs && (bs->flt || bs->pos_abs))continue;
+                    if(b->i0<nitem && items[b->i0].is_float)continue;
+                    b->x+=off;
+                }
+#endif
+            }
         }
         f->y += f->lineh;
     }
@@ -1795,6 +1811,7 @@ static void newline2(struct iflow *f, int last)
      * wrapped line would start one space in from the margin. */
     f->pending_sp = 0;
     f->line_start = nitem;
+    f->line_box_start = nbox;
     flow_relayout_line(f);              /* the new line sees a different band */
     ibox_reopen(f);                     /* continuation fragments start at the new pen */
 }
@@ -2443,7 +2460,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
          * fits beside the placed words; starting one line lower is the
          * conservative version of that rule and can never overlap text. */
         place_float(c, st, f->bx0, f->bx1, f->line_started ? f->y + f->lineh : f->y);
-        if (!f->line_started) { flow_relayout_line(f); f->line_start = nitem; }
+        if (!f->line_started) { flow_relayout_line(f); f->line_start = nitem; f->line_box_start = nbox; }
         return;
     }
 
@@ -2522,7 +2539,7 @@ static void flow_node(struct iflow *f, struct node *c, const char *href)
             return;
         }
         f->y += ch;
-        f->lineh = 0; f->line_started = 0; f->line_start = nitem;
+        f->lineh = 0; f->line_started = 0; f->line_start = nitem; f->line_box_start = nbox;
         f->pending_sp = 0;
         flow_relayout_line(f);
         return;
@@ -5548,8 +5565,11 @@ static int layout_grid(struct node *n, int x, int y, int w)
 
 /* ---- minimal table layout ----
  * Rows are collected from the <table>'s children (through thead/tbody/tfoot
- * wrappers), column widths are proportional to each column's widest word, and
- * each row is as tall as its tallest cell. colspan/rowspan are treated as 1. */
+ * wrappers), and each row is as tall as its tallest cell. The former column
+ * rule was proportional to the widest WORD: an input with no text children
+ * contributed zero, so a 512px input got a 131px cell on the live home page.
+ * Use the existing intrinsic box measurements and CSS/HTML width constraints.
+ * This remains the non-spanning subset: colspan/rowspan are treated as 1. */
 #define TBL_MAXROWS 64
 #define TBL_MAXCOLS 16
 
@@ -5559,6 +5579,7 @@ static int tbl_row_visible(struct node *r)
     return r->type == N_ELEM && tag_eq(r->tag, "tr") && !(rs && rs->display == DISP_NONE);
 }
 
+#ifdef LEGACY_HOME_NEGCTL
 /* The widest single word anywhere under `n` (skip display:none subtrees). */
 static int tbl_widest_word(struct node *n, int px, int mono)
 {
@@ -5582,6 +5603,7 @@ static int tbl_widest_word(struct node *n, int px, int mono)
     }
     return best;
 }
+#endif
 
 static int tbl_cell_count(struct node *r)
 {
@@ -5616,6 +5638,8 @@ static int layout_table(struct node *t, int x, int y, int w)
     if (!nc || nc > TBL_MAXCOLS) nc = nc > TBL_MAXCOLS ? TBL_MAXCOLS : nc;
     if (!nc) return y;
 
+    int cw[TBL_MAXCOLS];
+#ifdef LEGACY_HOME_NEGCTL
     int desired[TBL_MAXCOLS];
     for (int i = 0; i < nc; i++) desired[i] = 8;
     for (int i = 0; i < nr; i++) {
@@ -5633,9 +5657,66 @@ static int layout_table(struct node *t, int x, int y, int w)
     int total = 0;
     for (int i = 0; i < nc; i++) total += desired[i];
     if (total <= 0) total = 1;
-    int cw[TBL_MAXCOLS], acc = 0;
+    int acc = 0;
     for (int i = 0; i < nc; i++) { cw[i] = w * desired[i] / total; if (cw[i] < 24) cw[i] = 24; acc += cw[i]; }
     cw[nc-1] += w - acc; if (cw[nc-1] < 24) cw[nc-1] = 24;   /* absorb rounding */
+#else
+    int minimum[TBL_MAXCOLS]={0}, preferred[TBL_MAXCOLS]={0};
+    int specified[TBL_MAXCOLS]={0}, target[TBL_MAXCOLS]={0};
+    for(int i=0;i<nr;i++) {
+        int ci=0;
+        for(struct node *c=layout_first(rows[i]);c && ci<nc;c=layout_next(c)) {
+            if(c->type!=N_ELEM || (!tag_eq(c->tag,"td")&&!tag_eq(c->tag,"th")) || skipped(c))continue;
+            struct cstyle *st=c->style;int px=st?st->font_px:16,face=st_face(st);
+            /* A cell's width constrains the column AFTER measuring contents.
+             * Passing it into content_width would turn <td width=80> around
+             * a 300px control into an 80px intrinsic minimum. Temporarily
+             * select a local measurement style; no cascade state is changed. */
+            struct cstyle natural;
+            if(st){natural=*st;natural.has_w=0;c->style=&natural;}
+            int hi=content_width(c,px,face,0);
+            int lo=st && (st->white_space==WS_NOWRAP || st->white_space==WS_PRE)
+                ? hi:min_content_width(c,px,face,0);
+            c->style=st;
+            if(st&&st->has_w&&!st->w_pct){int fixed=to_border_w(st,st->width);if(lo<fixed)lo=fixed;}
+            if(lo>minimum[ci])minimum[ci]=lo;
+            if(hi>preferred[ci])preferred[ci]=hi;
+            if(st&&st->has_w) {
+                int v=to_border_w(st,resolve_len(st->width,st->w_pct,st->w_off,w));
+                if(v>target[ci])target[ci]=v;
+                specified[ci]=1;
+            }
+            ci++;
+        }
+    }
+    int minsum=0,goalsum=0;
+    for(int i=0;i<nc;i++) {
+        cw[i]=minimum[i];minsum+=cw[i];
+        if(!specified[i])target[i]=preferred[i];
+        if(target[i]<cw[i])target[i]=cw[i];
+        goalsum+=target[i];
+    }
+    /* Never shrink below an unbreakable control/image. If the viewport is
+     * narrower, the row overflows naturally instead of painting neighbouring
+     * cells over one another. Percentages are requests, not permission to
+     * violate the intrinsic minimum. */
+    int budget=w>minsum?w:minsum,room=budget-minsum,need=goalsum-minsum;
+    if(need>room) {
+        for(int i=0;i<nc;i++) {
+            int d=target[i]-cw[i],give=need?(int)((long long)room*d/need):0;
+            cw[i]+=give;room-=give;need-=d;
+        }
+    } else {
+        int flexible=0;
+        for(int i=0;i<nc;i++){cw[i]=target[i];if(!specified[i])flexible++;}
+        room=budget-goalsum;
+        int all=!flexible;if(all)flexible=nc;
+        for(int i=0;i<nc;i++)if(all||!specified[i]) {
+            int give=room/flexible;cw[i]+=give;room-=give;flexible--;
+        }
+    }
+    w=budget;
+#endif
 
     int cy = y;
     int secty[TBL_MAXROWS], sectb[TBL_MAXROWS];   /* each row's band, for the groups */

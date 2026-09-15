@@ -39,7 +39,9 @@
  * this estimate, and the tab test prints it for N = 1, 2, 4, 8.
  *
  * WHAT DEHYDRATION IS NOT. It is not "close the tab and re-open it later":
- * re-hydrating touches NO NETWORK. The document and every stylesheet are
+ * re-hydrating touches NO NETWORK. Correction (2026-09-16): this applies to
+ * retained top-level resources, not newly created network iframes/Workers;
+ * those reload their own response and policy in new runtimes. The document and every stylesheet are
  * replayed from the tab's own bytes, so switching tabs cannot multiply TLS
  * handshakes -- which is the property the connection-pool work bought and the
  * one a naive tab implementation would have thrown away first. What IS lost on
@@ -52,6 +54,7 @@
 #define TAB_URL      600         /* browser.c's url[] size; the same everywhere */
 #define TAB_TITLE    96
 #define TAB_HIST_MAX 64          /* per-tab back/forward entries */
+#define TAB_DOCUMENT_CSP_MAX 4096
 
 /* A resource this tab was built from, kept so a re-hydrate needs no network.
  * `url` is the ABSOLUTE url after redirects, which is what bfetch keys on. */
@@ -83,6 +86,10 @@ struct tab {
     /* The dehydrated document: the bytes, not the tree. */
     unsigned char *src;
     int            srclen;
+    /* Response policy belongs to these bytes, not the last network request.
+     * Memory-only: disk sessions restore URLs and must fetch fresh metadata. */
+    char          *document_csp;
+    int            document_policy_known;
     /* The concatenated author CSS (inline <style> + every external sheet that
      * arrived), exactly as browser.c assembled it. Kept so re-hydration does
      * not re-fetch a single stylesheet. */
@@ -125,6 +132,7 @@ int   tab_restore_take(struct tab *t, int *x, int *y);
  * ownership of the pointer (or copies, for the const forms). Passing NULL
  * clears. */
 void  tab_keep_src(struct tab *t, unsigned char *src, int len);
+void  tab_keep_document_policy(struct tab *t, const char *csp, int known);
 void  tab_keep_css(struct tab *t, const char *css, int len);
 void  tab_keep_res(struct tab *t, const char *url, const unsigned char *d, int len);
 /* The bytes this tab kept for `url` (absolute), or NULL. */

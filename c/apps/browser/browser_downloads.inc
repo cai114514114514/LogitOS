@@ -7,7 +7,7 @@ extern const char *bfetch_response_header(int,const char *) LOGIT_WEAK;
 LOGIT_WEAK_STUB(bfetch_response_header);
 static unsigned char *download_document;
 static int download_document_len,download_document_status;
-static char download_document_csp[4096];
+static char download_document_csp[TAB_DOCUMENT_CSP_MAX];
 static int download_document_policy_known;
 extern int bfetch_response_policy_known(int) LOGIT_WEAK;
 LOGIT_WEAK_STUB(bfetch_response_policy_known);

@@ -190,6 +190,18 @@ void tab_keep_src(struct tab *t, unsigned char *src, int len)
 #endif
 }
 
+void tab_keep_document_policy(struct tab *t, const char *csp, int known)
+{
+    if(!t)return;
+    /* Copy before freeing: callers may pass the tab's currently held policy.
+     * Missing metadata or allocation failure stays unknown, never allow-all. */
+    char *copy=NULL;
+    if(known&&csp&&strlen(csp)<TAB_DOCUMENT_CSP_MAX)copy=dups(csp);
+    if(t->document_csp){release(strlen(t->document_csp)+1);free(t->document_csp);}
+    t->document_csp=copy;t->document_policy_known=copy!=NULL;
+    if(copy)retain(strlen(copy)+1);
+}
+
 void tab_keep_css(struct tab *t, const char *css, int len)
 {
 #ifdef TABS_NO_RETAIN
@@ -238,6 +250,7 @@ const struct tabres *tab_res_find(const struct tab *t, const char *url)
 void tab_drop_content(struct tab *t)
 {
     if (!t) return;
+    tab_keep_document_policy(t,NULL,0);
     if (t->src) { release((size_t)t->srclen); free(t->src); t->src = 0; t->srclen = 0; }
     if (t->css) { release((size_t)t->csslen); free(t->css); t->css = 0; t->csslen = 0; }
     for (int i = 0; i < t->nres; i++) {
@@ -251,6 +264,7 @@ size_t tab_retained_bytes(const struct tab *t)
 {
     if (!t || !t->used) return 0;
     size_t n = sizeof *t + (size_t)t->srclen + (size_t)t->csslen;
+    if(t->document_csp)n+=strlen(t->document_csp)+1;
     for (int i = 0; i < t->nres; i++)
         n += (t->res[i].url ? strlen(t->res[i].url) + 1 : 0) + (size_t)t->res[i].len;
     for (int i = 0; i < TAB_HIST_MAX; i++)

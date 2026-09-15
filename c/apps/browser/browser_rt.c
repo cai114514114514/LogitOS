@@ -654,7 +654,7 @@ static int req_begin_exchange(struct breq *r)
         return 0;
     }
     r->c_live = 1;
-    h1_response_limit(&r->c.resp,r->embedded ? 512*1024 : r->nav ? 64*1024*1024 : BROWSER_BUFFERED_BODY_MAX);
+    h1_response_limit(&r->c.resp,r->embedded ? BROWSER_EMBEDDED_BODY_MAX : r->nav ? 64*1024*1024 : BROWSER_BUFFERED_BODY_MAX);
     r->state = RQ_XFER;
     r->t_xfer = monotonic_ms();     /* the first-byte deadline's own clock */
     return 1;

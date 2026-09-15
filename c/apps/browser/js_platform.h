@@ -152,9 +152,21 @@
  * once everyone else has had their turn. */
 PLATFORM_FN void js_platform_install(JSContext *ctx);
 
+/* Document-owned platform hooks and observer/rejection queues. Select only
+ * between JS entries, together with DOM/page/WebAPI; NULL is the default.
+ * Created slots do not install the legacy singleton iframe helper. They do
+ * not implement nested frame navigation, layout, or a cross-window bridge. */
+struct js_platform_context;
+PLATFORM_FN struct js_platform_context *js_platform_context_create(void);
+PLATFORM_FN void js_platform_context_activate(struct js_platform_context *);
+PLATFORM_FN int js_platform_context_destroy(struct js_platform_context *);
+
 /* Release everything held here before JS_FreeContext: the promise-rejection
  * tracker's context pointer and the observer registry. */
 PLATFORM_FN void js_platform_close(JSContext *ctx);
+/* Native parser boundary, before deferred script evaluation. Does not dispatch
+ * DOMContentLoaded. The callback is retained privately, not a window expando. */
+PLATFORM_FN void js_platform_document_parsed(JSContext *ctx);
 PLATFORM_FN int js_platform_rejections_pending(void);
 PLATFORM_FN int js_platform_rejections_flush(JSContext *ctx);
 PLATFORM_FN int js_platform_mutations_flush(JSContext *ctx);
@@ -190,7 +202,11 @@ PLATFORM_FN void js_subtle_install(JSContext *ctx);
  * only under JS_PLATFORM_OPTIONAL, i.e. only in that TU. */
 #ifdef JS_PLATFORM_OPTIONAL
 LOGIT_WEAK_STUB(js_platform_install);
+LOGIT_WEAK_STUB(js_platform_context_create);
+LOGIT_WEAK_STUB(js_platform_context_activate);
+LOGIT_WEAK_STUB(js_platform_context_destroy);
 LOGIT_WEAK_STUB(js_platform_close);
+LOGIT_WEAK_STUB(js_platform_document_parsed);
 LOGIT_WEAK_STUB(js_platform_rejections_pending);
 LOGIT_WEAK_STUB(js_platform_rejections_flush);
 LOGIT_WEAK_STUB(js_platform_mutations_flush);

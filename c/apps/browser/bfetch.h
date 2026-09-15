@@ -40,6 +40,10 @@ enum { BF_PENDING = 0, BF_DONE = 1, BF_FAILED = -1 };
 #ifndef BROWSER_BUFFERED_BODY_MAX
 #define BROWSER_BUFFERED_BODY_MAX (16 * 1024 * 1024)
 #endif
+/* Active embedded documents load executable bundles, not just preview HTML.
+ * Keep an explicit smaller transport ceiling than top-level navigation; the
+ * frame owner separately accounts aggregate bytes and each resource type. */
+#define BROWSER_EMBEDDED_BODY_MAX (4 * 1024 * 1024)
 
 void bfetch_init(void);
 

@@ -1,4 +1,4 @@
-#include "../../lib/gfx/openlogit_anim.h"
+#include "openlogit_anim.h"
 /* css_interp.c -- CSS value interpolation, and `transform` as a value.
  *
  * See css_interp.h for what this is for and why the decomposition is the part

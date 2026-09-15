@@ -3,6 +3,11 @@
 
 #include "quickjs.h"
 
+/* Context-owned native connect policy, applied before initial requests and
+ * every redirect. Set immediately after install, before author script runs.
+ * Callback/opaque must outlive this context's fetch realm. */
+int js_webapi_set_connect_policy(JSContext *ctx, int (*allow)(void *, const char *), void *opaque);
+
 /* The Web API surface that is not the DOM tree: fetch, XMLHttpRequest,
  * localStorage/sessionStorage, history, a parsed location, URL,
  * URLSearchParams and matchMedia.
@@ -82,6 +87,18 @@ struct webapi_net {
     long long (*now_unix)(void);
 };
 WEBAPI_FN void js_webapi_set_net(const struct webapi_net *n);   /* NULL = default */
+
+/* Selected document state; NULL selects the legacy top-level slot. Switch
+ * only between JS entries, together with the owning DOM/page context. The
+ * network pool, Cookie jar and origin-keyed storage remain shared services.
+ * site_url is the embedder-computed site-for-cookies (including the ancestor
+ * chain); NULL/empty means opaque, NOT permission to use the child's origin.
+ * New slots inherit the currently selected top-level storage session id.
+ * Destroy requires close() first. No JSValue may cross runtime boundaries. */
+struct js_webapi_context;
+WEBAPI_FN struct js_webapi_context *js_webapi_context_create(const char *site_url);
+WEBAPI_FN void js_webapi_context_activate(struct js_webapi_context *);
+WEBAPI_FN int js_webapi_context_destroy(struct js_webapi_context *);
 
 /* Install everything into `ctx`. `url` is the document's address, used as the
  * base for relative fetches, as location's value and as the storage origin.
@@ -207,6 +224,9 @@ WEBAPI_FN int  js_webapi_hist_step(JSContext *ctx, int delta, char *out, int max
  * only under JS_WEBAPI_OPTIONAL, i.e. only in that TU. */
 #ifdef JS_WEBAPI_OPTIONAL
 LOGIT_WEAK_STUB(js_webapi_set_net);
+LOGIT_WEAK_STUB(js_webapi_context_create);
+LOGIT_WEAK_STUB(js_webapi_context_activate);
+LOGIT_WEAK_STUB(js_webapi_context_destroy);
 LOGIT_WEAK_STUB(js_webapi_install);
 LOGIT_WEAK_STUB(js_webapi_install_encoding);
 LOGIT_WEAK_STUB(js_webapi_fetch_install);

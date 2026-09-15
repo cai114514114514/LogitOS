@@ -598,6 +598,49 @@ static css_error h_node_presentational_hint(void *pw, void *node,
      * currentColor inheritance agree with the ordinary computed style. */
     static css_hint svg_hints[3];
     *nhints = 0; *hints = NULL;
+#ifndef LEGACY_HOME_NEGCTL
+    if (n && n->ns == NS_HTML) {
+        /* These are zero-specificity author hints, not late overrides of
+         * cstyle: a stylesheet must be able to undo align/nowrap/width. The
+         * former SVG-only callback left legacy table forms with no alignment
+         * and no column constraints despite valid HTML attributes. */
+        static css_hint html_hints[3];
+        int cell = !strcmp(n->tag,"td") || !strcmp(n->tag,"th");
+        int block = !strcmp(n->tag,"div") || !strcmp(n->tag,"p") ||
+            !strcmp(n->tag,"h1") || !strcmp(n->tag,"h2") ||
+            !strcmp(n->tag,"h3") || !strcmp(n->tag,"h4") ||
+            !strcmp(n->tag,"h5") || !strcmp(n->tag,"h6");
+        int row = !strcmp(n->tag,"tr") || !strcmp(n->tag,"thead") ||
+            !strcmp(n->tag,"tbody") || !strcmp(n->tag,"tfoot");
+        const char *a=dom_attr(n,"align");
+        if(a && (cell || block || row)) {
+            int v=!strcasecmp(a,"center")?CSS_TEXT_ALIGN_CENTER:
+                  !strcasecmp(a,"left")?CSS_TEXT_ALIGN_LEFT:
+                  !strcasecmp(a,"right")?CSS_TEXT_ALIGN_RIGHT:
+                  !strcasecmp(a,"justify")?CSS_TEXT_ALIGN_JUSTIFY:0;
+            if(v){css_hint *h=&html_hints[(*nhints)++];memset(h,0,sizeof *h);
+                h->prop=CSS_PROP_TEXT_ALIGN;h->status=v;}
+        }
+        if(cell && dom_attr(n,"nowrap")) {
+            css_hint *h=&html_hints[(*nhints)++];memset(h,0,sizeof *h);
+            h->prop=CSS_PROP_WHITE_SPACE;h->status=CSS_WHITE_SPACE_NOWRAP;
+        }
+        a=dom_attr(n,"width");
+        if(a && (cell || !strcmp(n->tag,"table"))) {
+            /* Bound before converting to 22:10 LibCSS fixed point. Ignoring
+             * zero matches HTML's table dimension-hint rule. */
+            char *end;double v=strtod(a,&end);
+            if(end!=a && v>0 && v<=1048575) {
+                css_hint *h=&html_hints[(*nhints)++];memset(h,0,sizeof *h);
+                h->prop=CSS_PROP_WIDTH;h->status=CSS_WIDTH_SET;
+                h->data.length.value=(css_fixed)(v*1024);
+                h->data.length.unit=*end=='%'?CSS_UNIT_PCT:CSS_UNIT_PX;
+            }
+        }
+        if(*nhints)*hints=html_hints;
+        return CSS_OK;
+    }
+#endif
     if (!n || n->ns != NS_SVG) return CSS_OK;
     const char *s = dom_attr(n, "color"); unsigned char rgba[4];
     if (s && LOGIT_HAVE(img_css_color) && img_css_color(s, (int)strlen(s), rgba)) {
@@ -846,6 +889,12 @@ static const char UA_CSS[] =
      * alone is not enough for either). */
     "address,aside,dl,fieldset,details,summary{display:block}"
     "tr,td,th,thead,tbody,tfoot{display:block}"
+#ifndef LEGACY_HOME_NEGCTL
+    /* A center element establishes a block whose inline descendants inherit
+     * alignment. Without the block default its child blocks escape into the
+     * parent's flow and the wordmark/footer stay at the viewport's left. */
+    "center{display:block;text-align:center}"
+#endif
     "th{font-weight:bold}"
     "h1{font-size:32px;font-weight:bold;margin:14px 0}"
     "h2{font-size:24px;font-weight:bold;margin:12px 0}"

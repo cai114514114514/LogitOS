@@ -5,6 +5,38 @@
 
 struct node;
 
+/* Native core-document ownership for independent browsing contexts. The
+ * existing NULL/top-level context retains the full installed platform.
+ * Created contexts currently expose the CORE only: real DOM, timers, rAF,
+ * microtasks, console and watchdog. Network, storage, canvas/media and the
+ * platform extension installers remain absent until their native state can
+ * be owned independently. This API does not navigate or paint an iframe.
+ * Correction: enable_webapi/enable_platform now opt into owned document
+ * services. Other optional modules still follow the core-only restriction.
+ *
+ * Select only between JS entries. Then use the ordinary js_page_open/eval/
+ * run_due/close APIs; there is no second timer scheduler. Selection also
+ * selects its DOM state, NOT layout/CSS. Destroy requires a closed runtime
+ * and restores the top-level context when destroying the selected child. */
+struct js_page_context;
+struct js_page_context *js_page_context_create(void);
+/* Opt a closed, non-selected core context into independently owned Web APIs.
+ * Pass the embedder-computed site-for-cookies; NULL means opaque/fail-closed.
+ * Inherits the caller's top-level storage session. This enables real fetch,
+ * XHR, storage, history and URL, not the still-singleton platform extensions.
+ * Call once, before opening; 0 means unavailable, busy or allocation failure. */
+int js_page_context_enable_webapi(struct js_page_context *, const char *site_url);
+/* After enable_webapi, opt a closed/non-selected slot into owned platform
+ * observers, lifecycle and rejection notifications; legacy iframe helpers
+ * remain disabled. Call once before open. Other optional modules stay absent. */
+int js_page_context_enable_platform(struct js_page_context *);
+struct js_worker_policy;
+/* Explicit opt-in; requires the owned WebAPI/platform slots and a native
+ * policy. Closing this document must not terminate another owner's workers. */
+int js_page_context_enable_workers(struct js_page_context *,const struct js_worker_policy *);
+int js_page_context_activate(struct js_page_context *, struct js_page_context **previous);
+int js_page_context_destroy(struct js_page_context *);
+
 /* The page's JavaScript runtime -- the thing that makes a loaded page LIVE.
  *
  * Before this existed the runtime was created and destroyed inside the function
@@ -17,6 +49,10 @@ struct node;
  *
  * Exactly one page runtime exists at a time. js_page_open() on a live one
  * closes it first.
+ * Correction (2026-09-15): this is now per selected js_page_context. Opening
+ * a core context closes that context only; the default/full page stays live.
+ * WebAPI and platform are now explicitly opt-in; other optional modules are
+ * not yet independently owned by children.
  *
  * ORDERING RULE, and it is the trap this whole module exists to avoid: the DOM
  * must outlive the runtime. Every JS wrapper holds a {node, serial} handle and

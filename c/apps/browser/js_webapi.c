@@ -303,11 +303,17 @@ static struct wurl g_loc;                    /* the current document's URL */
  * silently overwrite it when a future frame caller tries to install another:
  * DOM, history and JS hooks are not yet per-realm. Refusal preserves the real
  * boundary; it is not a substitute for implementing multi-realm ownership. */
+/* Correction: this is now the selected document slot. The guard still
+ * refuses duplicate installation within one slot; sibling slots coexist. */
 static JSContext *g_webapi_ctx;
 static int  g_loc_valid;
 static char g_loc_raw[WURL_MAX] = "about:blank";   /* what we were handed, parseable or not */
 static char g_pending_nav[WURL_MAX];
 static int  g_have_pending_nav;
+/* The default slot uses its document origin. Embedded slots must carry an
+ * explicit ancestor-derived site (opaque by default), never a mutable URL. */
+static int g_embedded_site;
+static char g_site_url[WURL_MAX];
 
 #define WT_MAX 8
 struct wtimer { int used; unsigned long long due; JSValue fn; };
@@ -320,6 +326,8 @@ struct fetch_realm {
     struct wurl base, origin, site;
     int base_valid, origin_valid, site_valid, stopped;
     unsigned identity;
+    int (*connect_policy)(void *, const char *);
+    void *connect_policy_opaque;
     JSValue mk_response, mk_error;
     struct wtimer timers[WT_MAX];
 };
@@ -347,14 +355,27 @@ static struct fetch_realm *fetch_realm_new(JSContext *ctx, const char *base,
     return r;
 }
 
+int js_webapi_set_connect_policy(JSContext *ctx, int (*allow)(void *, const char *), void *opaque)
+{
+    struct fetch_realm *r=fetch_realm_for(ctx);
+    if(!r || r->stopped)return 0;
+    r->connect_policy=allow;r->connect_policy_opaque=opaque;return 1;
+}
+static int fetch_policy_allows(struct fetch_realm *r, const struct wurl *url)
+{
+    if(!r->connect_policy)return 1;
+    char href[WURL_MAX];wurl_href(url,href,sizeof href);
+    return r->connect_policy(r->connect_policy_opaque,href);
+}
+
 static void set_location(const char *url)
 {
     scopy(g_loc_raw, url && *url ? url : "about:blank", WURL_MAX);
     g_loc_valid = (wurl_parse(g_loc_raw, 0, &g_loc) == 0);
     if (!g_loc_valid) memset(&g_loc, 0, sizeof g_loc);
     if(g_page_fetch){
-        g_page_fetch->base=g_page_fetch->origin=g_page_fetch->site=g_loc;
-        g_page_fetch->base_valid=g_page_fetch->origin_valid=g_page_fetch->site_valid=g_loc_valid;
+        g_page_fetch->base=g_loc;
+        g_page_fetch->base_valid=g_loc_valid;
     }
 }
 
@@ -1612,6 +1633,10 @@ static int fetch_redirect(JSContext *ctx, struct wfetch *f)
 
     struct wurl next;
     if (wurl_parse(loc, &f->url, &next) != 0) return 0;
+    if (!fetch_policy_allows(f->owner, &next)) {
+        fetch_reject(ctx, f, "redirect blocked by document connect policy");
+        return 1;
+    }
 
     /* A redirect that leaves the origin taints the request: from here on the
      * server is told `Origin: null`, so it cannot be led to believe the
@@ -1965,6 +1990,7 @@ static JSValue js_fetch_start(JSContext *ctx, JSValueConst t, int argc, JSValueC
 #endif
     if (!us) msg = "no URL";
     else if (wurl_parse(us, owner->base_valid ? &owner->base : 0, &u) != 0) msg = "invalid URL";
+    else if (!fetch_policy_allows(owner, &u)) msg = "request blocked by document connect policy";
 
     if (!msg) {
         int gen = f->gen;                    /* the generation must survive the wipe */
@@ -2202,7 +2228,10 @@ static JSValue js_cookie_get(JSContext *ctx, JSValueConst t)
     ck_ctx(&cc, &g_loc, 0);
     static char buf[CK_HEADER_MAX];              /* 8 KiB: not on the stack */
     struct cookie_header_diagnostics diag;
-    int n = cookie_header_with_diagnostics(jar(), &cc, CK_REQ_SAME_SITE,
+    struct cookie_request request = cookie_request_for(
+        g_page_fetch ? &g_page_fetch->site : NULL,
+        g_page_fetch && g_page_fetch->site_valid, 0, 0);
+    int n = cookie_header_with_diagnostics(jar(), &cc, cookie_request_kind(&cc, &request),
                                           now_unix(), buf, (int)sizeof buf, &diag);
     if (n < 0) {
         printf("[webapi] document-cookie error=%d required=%llu cap=%d count=%d\n",
@@ -2220,7 +2249,9 @@ static JSValue js_cookie_set(JSContext *ctx, JSValueConst t, JSValueConst v)
     if (!s) return JS_EXCEPTION;
     struct cookie_ctx cc;
     ck_ctx(&cc, &g_loc, 0);
-    struct cookie_request request = cookie_request_for(&g_loc, g_loc_valid, 0, 0);
+    struct cookie_request request = cookie_request_for(
+        g_page_fetch ? &g_page_fetch->site : NULL,
+        g_page_fetch && g_page_fetch->site_valid, 0, 0);
     cookie_commit(cookie_set_ex(jar(), &cc, cookie_request_kind(&cc, &request), s, now_unix()));
     JS_FreeCString(ctx, s);
     return JS_UNDEFINED;
@@ -2245,6 +2276,8 @@ static JSValue js_utf8(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
  * page's retained callbacks, location and fetch slots. Calling that installer
  * in a worker would silently retarget the parent's state. This small prelude
  * closes over only immutable table lookups and its own realm's globals. */
+/* Correction: full document slots now coexist too. Workers still use their
+ * dedicated fetch/encoding realm rather than claiming a document slot. */
 static const char ENCODING_REALM_PRELUDE[] =
 "(function (__encLabel, __encIndex) { var G = globalThis;\n"
 #include "js_encoding_prelude.inc"
@@ -2928,11 +2961,12 @@ static JSValue hist_push(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
         JS_FreeCString(ctx, u);
         /* Same-origin only, exactly as the spec requires -- a page must not be
          * able to make the address bar claim another site. */
-        if (g_loc_valid && (n.https != g_loc.https || strcmp(n.host, g_loc.host) || n.port != g_loc.port))
+        if (!g_loc_valid || n.https != g_loc.https || strcmp(n.host, g_loc.host) || n.port != g_loc.port)
             return JS_ThrowTypeError(ctx, "history: cross-origin pushState");
         g_loc = n; g_loc_valid = 1;
         wurl_href(&g_loc, href, WURL_MAX);
         scopy(g_loc_raw, href, WURL_MAX);
+        set_location(href); /* Relative fetch base follows same-document history. */
     } else {
         scopy(href, g_loc_raw, WURL_MAX);
     }
@@ -3688,15 +3722,14 @@ void js_webapi_install(JSContext *ctx, const char *url)
 {
     if (!ctx) return;
     if (g_webapi_ctx) {
-        /* Installing over a live realm used to orphan fetch resolvers and
-         * replace the other realm's location, cookies, history and timers.
-         * Multi-realm Web APIs require per-realm state before this can widen. */
+        /* Refuse a second install in this slot. Other document slots own
+         * separate hooks/history and stable fetch realms. */
         printf("[webapi] install refused: a realm is already active\n");
         return;
     }
     g_webapi_ctx = ctx;
     set_location(url);
-    g_page_fetch=fetch_realm_new(ctx,url,url,url);
+    g_page_fetch=fetch_realm_new(ctx,url,url,g_embedded_site ? g_site_url : url);
     if(!g_page_fetch){g_webapi_ctx=NULL;return;}
     hist_reset(0, g_loc_raw);
     g_popstate_state = JS_NULL;
@@ -3809,7 +3842,8 @@ void js_webapi_install(JSContext *ctx, const char *url)
     if (g_loc_valid) wurl_origin(&g_loc, origin, (int)sizeof origin);
     else scopy(origin, g_loc_raw, (int)sizeof origin);
 
-    JS_NewClassID(&storage_cid);            /* per-runtime: js_page.c builds a new one per page */
+    /* Finalizers in an inactive runtime still use this process-wide ID. */
+    if (!storage_cid) JS_NewClassID(&storage_cid);
     if (JS_NewClass(rt, storage_cid, &storage_class) >= 0) {
         JSValue proto = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, proto, storage_proto,
@@ -3942,7 +3976,7 @@ void js_webapi_install(JSContext *ctx, const char *url)
 
     /* Viewport metrics, only if nothing else claimed them. */
     {
-        static const char *names[] = { "innerWidth", "innerHeight", "outerWidth", "outerHeight" };
+        static const char *const names[] = { "innerWidth", "innerHeight", "outerWidth", "outerHeight" };
         int vals[4] = { g_vw, g_vh, g_vw, g_vh };
         for (int i = 0; i < 4; i++) {
             JSValue cur = JS_GetPropertyStr(ctx, g, names[i]);
@@ -4061,6 +4095,7 @@ void js_webapi_close(JSContext *ctx)
     g_popstate_queued = g_hashchange_queued = 0;
     g_hist_n = 0; g_hist_i = 0;
     g_webapi_ctx = 0;
+    g_vp_dirty = 0;
     set_location("about:blank");
 }
 
@@ -4111,4 +4146,69 @@ int js_webapi_pump(JSContext *ctx)
 
     ran += js_webapi_fetch_pump(ctx);
     return ran;
+}
+
+/* These fields are a selected working image, not a second reference owner.
+ * Inactive images own their JSValues; active values reside in the globals.
+ * Request slots MUST NOT move: native HTTP callbacks retain their addresses.
+ * The shared realm registry owns stable heap records and filters work by ctx.
+ * Cookie/storage/preflight services and unique generation counters are also
+ * intentionally shared, unlike document history and its private JS hooks. */
+#define WEBAPI_CONTEXT_FIELDS(X) \
+    X(g_loc) X(g_webapi_ctx) X(g_loc_valid) X(g_loc_raw) \
+    X(g_pending_nav) X(g_have_pending_nav) X(g_embedded_site) X(g_site_url) \
+    X(g_page_fetch) X(g_storage_session) X(g_hist) X(g_hist_n) X(g_hist_i) \
+    X(g_popstate_queued) X(g_hashchange_queued) X(g_popstate_state) \
+    X(g_hash_old) X(g_hash_new) X(g_mk_response) X(g_viewport_changed) \
+    X(g_mk_error) X(g_vw) X(g_vh) X(g_vp_dirty) \
+    X(g_fire_fn) X(g_blob_fn) X(g_blob_origin)
+
+struct js_webapi_context {
+#define WEBAPI_FIELD(n) __typeof__(n) n;
+    WEBAPI_CONTEXT_FIELDS(WEBAPI_FIELD)
+#undef WEBAPI_FIELD
+};
+static struct js_webapi_context webapi_default_context;
+static struct js_webapi_context *webapi_active_context=&webapi_default_context;
+
+struct js_webapi_context *js_webapi_context_create(const char *site_url)
+{
+    /* A truncated authority must not become a different valid site. */
+    if (site_url && strlen(site_url)>=WURL_MAX) return NULL;
+    struct js_webapi_context *s=calloc(1,sizeof *s);
+    if (!s) return NULL;
+    s->g_embedded_site=1;
+    scopy(s->g_site_url,site_url ? site_url : "",WURL_MAX);
+    s->g_storage_session=g_storage_session;
+    s->g_vw=1180; s->g_vh=572;
+    s->g_popstate_state=JS_NULL;
+    s->g_mk_response=s->g_viewport_changed=s->g_mk_error=JS_UNDEFINED;
+    s->g_fire_fn=s->g_blob_fn=JS_UNDEFINED;
+    scopy(s->g_loc_raw,"about:blank",WURL_MAX);
+    return s;
+}
+
+void js_webapi_context_activate(struct js_webapi_context *next)
+{
+    if (!next) next=&webapi_default_context;
+    if (next==webapi_active_context) return;
+#define WEBAPI_SAVE(n) memcpy(&webapi_active_context->n,&n,sizeof n);
+    WEBAPI_CONTEXT_FIELDS(WEBAPI_SAVE)
+#undef WEBAPI_SAVE
+#define WEBAPI_LOAD(n) memcpy(&n,&next->n,sizeof n);
+    WEBAPI_CONTEXT_FIELDS(WEBAPI_LOAD)
+#undef WEBAPI_LOAD
+    webapi_active_context=next;
+}
+
+int js_webapi_context_destroy(struct js_webapi_context *s)
+{
+    if (!s || s==&webapi_default_context) return 0;
+    struct js_webapi_context *old=webapi_active_context;
+    js_webapi_context_activate(s);
+    int busy=g_webapi_ctx || g_page_fetch;
+    js_webapi_context_activate(old==s && !busy ? NULL : old);
+    if (busy) return 0;
+    free(s);
+    return 1;
 }

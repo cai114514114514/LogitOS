@@ -193,7 +193,8 @@ int iframe_policy_resource(const char *document_url,const char *resource_url,con
     struct ipurl d,r;if(!ip_url(document_url,&d))return 0;
     if(!ip_url(resource_url,&r)){ip_url_free(&d);return 0;}
     int ok=kind==IF_POLICY_STYLE ? ip_policies(csp,&d,&r,"style-src-elem","style-src","default-src",0) :
-        kind==IF_POLICY_IMAGE ? ip_policies(csp,&d,&r,"img-src","default-src",0,0):0;
+        kind==IF_POLICY_IMAGE ? ip_policies(csp,&d,&r,"img-src","default-src",0,0):
+        kind==IF_POLICY_CONNECT ? ip_policies(csp,&d,&r,"connect-src","default-src",0,0):0;
     if(!strcmp(d.scheme,"https:") && !strcmp(r.scheme,"http:"))ok=0;
     ip_url_free(&d);ip_url_free(&r);return ok;
 }
@@ -206,18 +207,20 @@ int iframe_policy_base(const char *document_url,const char *base_url,const char 
     int ok=ip_policies(csp,&d,&b,"base-uri",0,0,0);
     ip_url_free(&d);ip_url_free(&b);return ok;
 }
-static int ip_inline(const char *all,const char *nonce,int attr)
+static int ip_inline(const char *all,const char *nonce,int attr,int script)
 {
     if(!ip_bounded(all))return 0;
     size_t at=0;struct ips p;
     while(ip_next_policy(all,&at,&p)){
         if(ip_directive(p,"sandbox").found)return 0;
-        struct ips l=ip_select(p,attr?"style-src-attr":"style-src-elem","style-src","default-src");
+        struct ips l=ip_select(p,script?(attr?"script-src-attr":"script-src-elem"):
+            (attr?"style-src-attr":"style-src-elem"),script?"script-src":"style-src","default-src");
         if(!l.found)continue;
         size_t i=0;int unsafe=0,nonce_ok=0,has_key=0;
         while(i<l.n){while(i<l.n && ip_space(l.p[i]))i++;size_t b=i;
             while(i<l.n && !ip_space(l.p[i]))i++;struct ips t={l.p+b,i-b,1};
             if(ip_eq(t,"'unsafe-inline'"))unsafe=1;
+            if(script && ip_eq(t,"'strict-dynamic'"))has_key=1;
             if(t.n>8 && !memcmp(t.p,"'nonce-",7) && t.p[t.n-1]=='\''){
                 has_key=1;if(!attr && nonce && strlen(nonce)==t.n-8 && !memcmp(t.p+7,nonce,t.n-8))nonce_ok=1;
             }
@@ -226,5 +229,89 @@ static int ip_inline(const char *all,const char *nonce,int attr)
         if(!nonce_ok && !(unsafe && !has_key))return 0;
     }return 1;
 }
-int iframe_policy_inline_style(const char *csp,const char *nonce) { return ip_inline(csp,nonce,0); }
-int iframe_policy_style_attribute(const char *csp) { return ip_inline(csp,0,1); }
+int iframe_policy_inline_style(const char *csp,const char *nonce) { return ip_inline(csp,nonce,0,0); }
+int iframe_policy_style_attribute(const char *csp) { return ip_inline(csp,0,1,0); }
+int iframe_policy_inline_script(const char *csp,const char *nonce) { return ip_inline(csp,nonce,0,1); }
+int iframe_policy_script_attribute(const char *csp) { return ip_inline(csp,0,1,1); }
+static int ip_token(struct ips l,const char *s)
+{
+    for(size_t i=0;i<l.n;){while(i<l.n&&ip_space(l.p[i]))i++;size_t b=i;
+        while(i<l.n&&!ip_space(l.p[i]))i++;if(ip_eq((struct ips){l.p+b,i-b,1},s))return 1;
+    }return 0;
+}
+int iframe_policy_eval(const char *csp)
+{
+    if(!ip_bounded(csp))return 0;
+    size_t at=0;struct ips p;
+    while(ip_next_policy(csp,&at,&p)){
+        if(ip_directive(p,"sandbox").found)return 0;
+        struct ips l=ip_select(p,"script-src","default-src",0);
+        if(l.found&&!ip_token(l,"'unsafe-eval'"))return 0;
+    }return 1;
+}
+int iframe_policy_blob_worker(const char *csp)
+{
+    if(!ip_bounded(csp))return 0;
+    size_t at=0;struct ips p;
+    while(ip_next_policy(csp,&at,&p)){
+        if(ip_directive(p,"sandbox").found)return 0;
+        struct ips l=ip_select(p,"worker-src","child-src","script-src");
+        if(!l.found)l=ip_directive(p,"default-src");
+        /* Conservative subset: require explicit blob: when a source list
+         * exists. '*' is a network wildcard, not a Blob capability grant.
+         * Same-origin Blob matching of 'self' is not implemented here. */
+        if(l.found&&!ip_token(l,"blob:"))return 0;
+    }return 1;
+}
+int iframe_policy_network_worker(const char *document_url,const char *url,const char *csp)
+{
+    struct ipurl d,r;if(!ip_url(document_url,&d))return 0;
+    if(!ip_url(url,&r)){ip_url_free(&d);return 0;}
+    /* worker-src does not authorize a classic cross-origin entry. This
+     * includes redirects and HTTP-to-HTTPS origin changes. */
+    int ok=ip_bounded(csp)&&!strcmp(d.origin,r.origin);size_t at=0;struct ips p;
+    while(ok&&ip_next_policy(csp,&at,&p)){
+        if(ip_directive(p,"sandbox").found){ok=0;break;}
+        struct ips l=ip_select(p,"worker-src","child-src","script-src");
+        if(!l.found)l=ip_directive(p,"default-src");
+        ok=!l.found||ip_list(l,&d,&r);
+    }
+    ip_url_free(&d);ip_url_free(&r);return ok;
+}
+int iframe_policy_worker_import(const char *document_url,const char *url,const char *csp)
+{
+    struct ipurl d,r;if(!ip_url(document_url,&d))return 0;
+    if(!ip_url(url,&r)){ip_url_free(&d);return 0;}
+    int ok=ip_bounded(csp);size_t at=0;struct ips p;
+    if(!strcmp(d.scheme,"https:")&&!strcmp(r.scheme,"http:"))ok=0;
+    while(ok&&ip_next_policy(csp,&at,&p)){
+        if(ip_directive(p,"sandbox").found){ok=0;break;}
+        /* importScripts has no element, nonce or parser insertion. CSP3's
+         * worker script request uses script-src, NOT script-src-elem. */
+        struct ips l=ip_select(p,"script-src","default-src",0);
+        ok=!l.found||ip_token(l,"'strict-dynamic'")||ip_list(l,&d,&r);
+    }
+    ip_url_free(&d);ip_url_free(&r);return ok;
+}
+int iframe_policy_script(const char *document_url,const char *resource_url,
+                         const char *csp,const char *nonce,int parser_inserted)
+{
+    struct ipurl d,r;if(!ip_url(document_url,&d))return 0;
+    if(!ip_url(resource_url,&r)){ip_url_free(&d);return 0;}
+    int ok=ip_bounded(csp);
+    if(!strcmp(d.scheme,"https:")&&!strcmp(r.scheme,"http:"))ok=0;
+    size_t at=0;struct ips p;
+    while(ok&&ip_next_policy(csp,&at,&p)){
+        if(ip_directive(p,"sandbox").found){ok=0;break;}
+        struct ips l=ip_select(p,"script-src-elem","script-src","default-src");
+        if(!l.found)continue;
+        int nonce_ok=0;
+        for(size_t i=0;i<l.n;){while(i<l.n&&ip_space(l.p[i]))i++;size_t b=i;
+            while(i<l.n&&!ip_space(l.p[i]))i++;struct ips t={l.p+b,i-b,1};
+            if(t.n>8&&!memcmp(t.p,"'nonce-",7)&&t.p[t.n-1]=='\''&&nonce&&
+                strlen(nonce)==t.n-8&&!memcmp(t.p+7,nonce,t.n-8))nonce_ok=1;
+        }
+        if(!nonce_ok)ok=ip_token(l,"'strict-dynamic'")?!parser_inserted:ip_list(l,&d,&r);
+    }
+    ip_url_free(&d);ip_url_free(&r);return ok;
+}

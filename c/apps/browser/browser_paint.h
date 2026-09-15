@@ -34,6 +34,7 @@ int browser_hittest_node_viewport(int vx, int vy, int x, int y,
 /* Native affordance in an unrendered iframe; caller supplies the trusted
  * topmost hit target. No DOM event API calls this default action. */
 int browser_frame_open_hit(int x,int y,int scroll_x,int scroll_y,const struct node *node);
+int browser_frame_content_hit(int x,int y,int scroll_x,int scroll_y,const struct node *node,int *child_x,int *child_y);
 
 /* ---- WHAT CHANGED, for gui_flush_rect --------------------------------------
  *

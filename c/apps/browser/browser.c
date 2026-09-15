@@ -18,6 +18,8 @@
  * in js_page.c -- otherwise that link breaks. */
 #define JS_WEBAPI_OPTIONAL
 #include "js_webapi.h"           /* script-initiated navigation (location.*) */
+#define JS_PLATFORM_OPTIONAL
+#include "js_platform.h"
 /* THE NEGATIVE CONTROL, and it costs one #define because the control IS the
  * behaviour that shipped yesterday. -DBROWSER_NO_FOCUS compiles the routing
  * out: no element takes focus from a click, Tab does not move it, and a
@@ -864,6 +866,7 @@ struct resent {
     unsigned node_serial;    /* a prepared script may destroy/recycle its node */
     char *ref;               /* owned attribute snapshot; NULL for inline */
     int   module;             /* 0 classic, 1 module, 2 import-map data */
+    int   script_phase;       /* prepared mode: blocking, ready async, deferred */
     int   id;                 /* bfetch request id while in flight, else -1 */
     unsigned char *data;      /* fetched (or inline) source, owned */
     int   len;
@@ -953,6 +956,15 @@ static struct resent *res_add(struct node *n, const char *ref, int module)
     if(ref&&!saved_ref)return 0;
     struct resent *e = &g_res[g_nres++];
     e->node = n;e->node_serial=n?n->serial:0;e->ref=saved_ref;e->module = module;
+    /* Snapshot preparation, as for src: an earlier script may change async or
+     * defer on a later already-prepared element. Inline classic attributes
+     * have no effect; async wins over defer on an external classic script. */
+#ifdef BROWSER_PARSER_SCRIPT_LEGACY_ORDER
+    e->script_phase=module==1?2:0;
+#else
+    e->script_phase=module==1 || (module==0&&ref)
+        ? (n&&dom_attr(n,"async")?1:(module==1 || (n&&dom_attr(n,"defer"))?2:0)) : 0;
+#endif
     e->id = -1; e->data = 0; e->len = 0; e->url = 0;
     e->err = 0; e->status = 0;
     return e;
@@ -2005,14 +2017,17 @@ static void status_from_js(const char *fallback)
 
 /* Run the page's scripts.
  *
- * ORDER IS THE SPEC, and it is two passes rather than one:
+ * Historical claim: "ORDER IS THE SPEC", with classic scripts first and all
+ * modules second. That ignored classic defer and ran async load callbacks
+ * before the following blocking script declared the callback (local
+ * parser_script_order_test.c reproduces the ReferenceError).
  *
- *   - classic scripts run first, in document order. (In a real browser they run
- *     as the parser reaches them; we have already finished parsing, so document
- *     order is the same answer.)
- *   - MODULES ARE DEFERRED. Every <script type="module"> is implicitly `defer`,
- *     so they all run after the document is parsed and after every classic
- *     script, still in document order among themselves.
+ * The existing loader parses and fetches a whole batch before evaluation; this
+ * is NOT a streaming parser or readiness-driven async download scheduler.
+ * Within that limitation, execute blocking scripts/import maps first, then
+ * the ready async batch, then one document-ordered queue shared by classic
+ * defer and nonasync modules. No dependency on a site or callback name.
+ * Parsing completes before the latter queues; DOMContentLoaded follows them.
  *
  * Each script is its own program -- see 65eb2c7 -- so a bundle that throws no
  * longer takes the page's inline scripts down with it. Returns how many ran. */
@@ -2078,7 +2093,15 @@ static void parser_script_event(const struct resent *e,const char *type)
 static int run_collected_scripts(const char *page_url, int *out_lost, int *out_refused, int *out_exc)
 {
     int ran = 0, inline_n = 0, classic_n = 0, lost_n = 0, refused_n = 0, exc_n = 0;
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 3; pass++) {
+        if(pass==1&&LOGIT_HAVE(js_platform_document_parsed)) {
+            /* readystatechange invokes author code; use the same watchdog and
+             * close checkpoint as every other synchronous script entry. */
+            js_page_slice_begin();
+            js_platform_document_parsed(js_page_ctx());
+            js_page_slice_end();
+            load_close_checkpoint();
+        }
         for (int i = 0; i < g_nres; i++) {
             struct resent *e = &g_res[i];
             struct node *script=res_script_node(e);
@@ -2087,8 +2110,7 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                 /* Import maps occupy their original place in the classic
                  * pass, before deferred modules. Parsing them all upfront
                  * would let a later map alter an earlier classic import().
-                 * Streaming parser/async ordering remains a separate loader
-                 * component; this preserves the current two-pass contract. */
+                 * Streaming parser acquisition remains a separate component. */
                 if (pass == 0 && e->data) {
                     if (!js_module_importmap((const char *)e->data, e->len, page_url)) exc_n++;
                     load_close_checkpoint();
@@ -2096,7 +2118,7 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                 }
                 continue;
             }
-            if (e->module != pass) continue;            /* pass 0 classic, pass 1 module */
+            if (e->script_phase != pass) continue;
             /* Mark before running either body or resource handler: either can
              * reinsert/destroy the element. Doing it afterwards can mark a
              * replacement node in the freed script's slot instead. */
@@ -2995,8 +3017,18 @@ static void load_once_impl(const char *u, const char *initiator)
     g_root = dom_parse((const char *)g_page_src, blen);
     load_close_checkpoint();
     if (!g_root) { set_status("error: parse failed"); return; }
+    /* Previously hydration supplied known=0, disabling every network frame
+     * after a tab round-trip. Replay the policy captured with THIS document;
+     * never reuse another tab's staged response or invent a known empty CSP. */
+    if(!ht)tab_keep_document_policy(tab_cur(),download_document_csp,download_document_policy_known);
+    struct tab *policy_tab=tab_cur();
     if(LOGIT_HAVE(passive_frames_set_parent))passive_frames_set_parent(base,
-        ht?"":download_document_csp,ht?0:download_document_policy_known);
+        policy_tab?policy_tab->document_csp:NULL,
+#ifdef PF_TEST_LOST_TAB_POLICY
+        ht?0:policy_tab&&policy_tab->document_policy_known);
+#else
+        policy_tab&&policy_tab->document_policy_known);
+#endif
     /* Where forms.c resolves a Selection API position FROM. It normally starts
      * at the caret, and the one call that has no caret to start at is the one
      * that matters: a page placing the caret itself before the user has
@@ -4145,6 +4177,17 @@ static int mods_of(const struct logit_event *e, struct js_event_init *ji)
 static int dom_button(int btn)
 { return btn == EV_BTN_RIGHT ? 2 : btn == EV_BTN_MIDDLE ? 1 : 0; }
 
+static int frame_pointer_route(struct node *n,const struct logit_event *e,const char *type)
+{
+    if(!LOGIT_HAVE(passive_frame_pointer)||focus_is_inert(n))return 0;
+    int x,y;if(!browser_frame_content_hit(e->a,e->b-VIEW_Y,scroll_x,scroll,n,&x,&y))return 0;
+    struct js_event_init ji={0};ji.bubbles=ji.cancelable=1;ji.client_x=x;ji.client_y=y;
+    ji.button=dom_button(e->button);ji.buttons=!strcmp(type,"mousedown")?(ji.button==1?4:1<<ji.button):0;
+    ji.detail=(!strcmp(type,"mousedown")||!strcmp(type,"mouseup"))?1:0;mods_of(e,&ji);
+    if(!strcmp(type,"wheel")){if(e->mods&EV_MOD_SHIFT)ji.delta_x=e->wheel*40.0;else ji.delta_y=e->wheel*40.0;}
+    return passive_frame_pointer(n,type,&ji);
+}
+
 /* Is `anc` `n` itself, or one of its ancestors? Walks up from `n`, which is
  * the only direction a `struct node` can be walked -- there is no downward
  * "is descendant" test available cheaply, so every caller below is written
@@ -4686,7 +4729,7 @@ static void draw_ce_overlay(void)
         int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
         int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
-        /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb/fb/fb.c) reads
+        /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb/fb.c) reads
          * "radius < 1" as "nothing to draw" and returns before touching a
          * single pixel -- a guard written for a genuinely empty w<=0/h<=0
          * call that also silently swallows a caller asking for a SQUARE
@@ -4959,7 +5002,7 @@ static void draw_doc_selection(void)
         int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
         int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
-        /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb/fb/fb.c) has
+        /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb/fb.c) has
          * `if (w <= 0 || h <= 0 || radius < 1) return` -- a radius of 0 is
          * silently a NO-OP, not a square-cornered glass panel. Measured: the
          * selection bookkeeping (psel_bounds/psel_copy) was already correct
@@ -5713,7 +5756,9 @@ void app_main(void)
                 remember_size(); setting_commit();
 #endif
                 image_requests_reset();
-    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close(); bfetch_close_all(); app_exit(0);
+    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset();
+                if(LOGIT_HAVE(passive_frames_reset))passive_frames_reset();
+                js_page_close(); bfetch_close_all(); app_exit(0);
             }
             if (e.type == EV_THEME) {
 #ifndef LOADERHOST_LOGIT_H
@@ -5956,6 +6001,12 @@ void app_main(void)
                     }
                 }
                 if (handled) { js_dom_sync_focus(); need = 1; continue; }
+                if(!editing&&!g_panel&&!g_finding&&LOGIT_HAVE(passive_frame_key)){
+                    char one[5],code[8];struct js_event_init ji={0};
+                    ji.bubbles=ji.cancelable=1;ji.key=key_name(k,one);ji.code=key_code_name(k,code);
+                    ji.key_code=(k>=' '&&k<0x7f)?k:(is_nav_key(k)?(k&0xff):k);mods_of(&e,&ji);
+                    if(passive_frame_key(&ji)){need=1;continue;}
+                }
 
                 /* ---- the library panel owns the keyboard while it is open ---- */
                 if (g_panel) {
@@ -6435,6 +6486,10 @@ void app_main(void)
                     }
                     struct node *n = 0;
                     browser_hittest_node_viewport(0,VIEW_Y,mx, my - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                    if(frame_pointer_route(n,&e,e.type==EV_MOUSE_R?"contextmenu":"mousedown")){
+                        press_node=0;need=1;continue;
+                    }
+                    if(LOGIT_HAVE(passive_frames_blur))passive_frames_blur();
                     input_trace("down-hit",n,mx,my-VIEW_Y,-1,editing);
                     if(e.type==EV_MOUSE && e.button==EV_BTN_LEFT)top_layer_pointer_down(n);
                     /* Inert suppresses native user interaction, not synthetic
@@ -6537,6 +6592,7 @@ void app_main(void)
                     struct node *n = 0;
                     char href[512]; href[0] = 0;
                     browser_hittest_node_viewport(0,VIEW_Y,mx, my - VIEW_Y, scroll_x, scroll, &n, href, sizeof href);
+                    if(frame_pointer_route(n,&e,"mouseup")){press_node=0;need=1;continue;}
                     input_trace("up-hit",n,mx,my-VIEW_Y,-1,editing);
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1; ji.detail = 1;
@@ -6670,6 +6726,7 @@ frame_mouse_up_done:
                 int in_view = e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H;
                 struct node *n = 0;
                 if (in_view) browser_hittest_node_viewport(0,VIEW_Y,e.a, e.b - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                if(in_view&&frame_pointer_route(n,&e,"mousemove")){need=1;continue;}
                 css_interaction_hover(n);
                 if (js_dom_listener_count() > 0) {
                     struct js_event_init ji = { 0 };
@@ -6728,6 +6785,7 @@ frame_mouse_up_done:
                     mods_of(&e, &ji);
                     struct node *n = 0;
                     browser_hittest_node_viewport(0,VIEW_Y,e.a, e.b - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                    if(frame_pointer_route(n,&e,"wheel")){need=1;continue;}
                     wheel_target=n;
                     allow = js_dom_dispatch(n, "wheel", &ji);
                     /* Listener mutations may remove the hit node. Re-hit after
@@ -6861,7 +6919,11 @@ frame_mouse_up_done:
             if (settle_frame()) { need=1; timer_page_only=1; }
         }
         if(!navigated&&g_root&&LOGIT_HAVE(passive_frames_update)&&
-           passive_frames_update(g_root,js_dom_mutation_generation())){need=1;timer_page_only=1;}
+           passive_frames_update(g_root,js_dom_mutation_generation())){
+            /* A child's message can update the parent AFTER its earlier
+             * settle pass. Reconcile parent layout before publishing paint. */
+            settle_frame();need=1;timer_page_only=1;
+        }
         if (!navigated && finish_page_load()) { need=1; timer_page_only=1; }
         if (g_scroll_repaint) {
             g_scroll_repaint = 0; need = 1; chrome_edit_only = 0;

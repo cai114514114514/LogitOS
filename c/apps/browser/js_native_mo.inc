@@ -23,7 +23,8 @@ struct native_mo_record {
     struct mo_node_ref added, previous, following;
     int split;
 };
-static struct dom_subscription mo_subscription;
+static struct dom_subscription mo_default_subscription;
+static struct dom_subscription *mo_subscription=&mo_default_subscription;
 static struct native_mo_record *mo_head, *mo_tail;
 static unsigned mo_count;
 static int mo_flushing, mo_enabled, mo_scheduled;
@@ -103,9 +104,8 @@ static void native_mo_schedule(JSContext *ctx)
 }
 static void native_mo_free(struct native_mo_record *r)
 { free(r->old_value); free(r->chain); free(r); }
-static void native_mo_notify(void *opaque, const struct dom_mutation *m)
+static void native_mo_notify_current(const struct dom_mutation *m)
 {
-    (void)opaque;
     if((m->kind!=DOM_MUT_TEXT && m->kind!=DOM_MUT_SPLIT) || !m->node || !g_ctx || !mo_enabled)return;
     struct node *target=m->kind==DOM_MUT_SPLIT?m->parent:m->node;
     if(!target)return; /* Detached splitText has no childList target. */
@@ -136,6 +136,16 @@ static void native_mo_notify(void *opaque, const struct dom_mutation *m)
     }
     if(mo_tail)mo_tail->next=r;else mo_head=r;mo_tail=r;mo_count++;
     native_mo_schedule(g_ctx);
+}
+static void native_mo_notify(void *opaque, const struct dom_mutation *m)
+{
+    /* Native edits can target an inactive document. Capture into that owner's
+     * queue without executing JS; its own runtime pump delivers the record.
+     * This internal selection is restored before the native producer returns. */
+    struct js_platform_context *old=platform_current();
+    js_platform_context_activate(opaque);
+    native_mo_notify_current(m);
+    js_platform_context_activate(old);
 }
 int js_platform_mutations_flush(JSContext *ctx)
 {
@@ -170,7 +180,7 @@ static JSValue native_mo_drain(JSContext *ctx,JSValueConst self,int argc,JSValue
 }
 static void native_mo_close(JSContext *ctx)
 {
-    dom_unsubscribe(&mo_subscription);
+    dom_unsubscribe(mo_subscription);
     free(mo_watches);mo_watches=NULL;mo_watch_count=0;
     while(mo_head){struct native_mo_record *r=mo_head;mo_head=r->next;native_mo_free(r);}
     mo_tail=NULL;mo_count=0;mo_flushing=0;mo_enabled=0;mo_scheduled=0;

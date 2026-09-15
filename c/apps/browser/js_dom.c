@@ -110,6 +110,14 @@ static struct node *g_root;
  * which is what makes a single static correct rather than a shortcut. */
 static JSContext *g_ctx;
 
+/* Correction to the singleton claim above: the embedder can now select a DOM
+ * state at quiescent boundaries. The image definition is below the interface
+ * include, where all its types and prototype arrays are available. It owns
+ * references, not duplicated JSValues; only one image is active at a time. */
+static struct js_dom_context *dom_context_current(void);
+static struct js_dom_context *dom_context_enter(struct js_dom_context *);
+static void dom_context_wrapper_delta(struct js_dom_context *, int);
+
 /* ---- the invalidation record ----
  *
  * See js_dom.h for what the tiers mean. The representation is deliberately
@@ -290,6 +298,8 @@ void js_dom_set_note(void (*fn)(const char *)) { g_note = fn; }
  * insertion path stays pure DOM without it. */
 static void (*g_script_sink)(struct node *);
 void js_dom_set_script_sink(void (*fn)(struct node *)) { g_script_sink = fn; }
+static int (*g_inline_handler_policy)(void);
+void js_dom_set_inline_handler_policy(int (*fn)(void)) { g_inline_handler_policy=fn; }
 static void offer_scripts(struct node *n);   /* defined below el_appendChild */
 
 static JSClassID elem_cid;
@@ -311,6 +321,7 @@ struct elem_handle {
     struct elem_handle *doc_prev,*doc_next;
     struct wrapper_doc *owner;
     unsigned tracked;
+    struct js_dom_context *state; /* survives wrapper_unlist until finalization */
 };
 static void wrapper_dispose(JSRuntime *,struct elem_handle *);
 
@@ -373,6 +384,7 @@ struct wrapper_doc {
     struct dom_subscription sub;
     struct elem_handle *handles;
     JSContext *ctx;
+    struct js_dom_context *state;
 };
 static struct wrapper_doc *wrapper_docs;
 static unsigned wrapper_live;
@@ -412,7 +424,7 @@ static void wrapper_dispose(JSRuntime *rt,struct elem_handle *h)
     wrapper_unlink(rt,h);
     while(h->children)wrapper_unlink(rt,h->children);
     wrapper_unlist(h);
-    if(h->tracked){wrapper_live--;h->tracked=0;}
+    if(h->tracked){dom_context_wrapper_delta(h->state,-1);h->tracked=0;}
 }
 static void elem_gc_mark(JSRuntime *rt,JSValueConst v,JS_MarkFunc *mark)
 {
@@ -438,7 +450,7 @@ static int wrapper_connect(JSContext *ctx,struct elem_handle *h,struct node *par
 #endif
     return 0;
 }
-static void wrapper_notify(void *opaque,const struct dom_mutation *m)
+static void wrapper_notify_owned(void *opaque,const struct dom_mutation *m)
 {
     struct wrapper_doc *d=opaque;JSRuntime *rt=JS_GetRuntime(d->ctx);
     if(m->kind==DOM_MUT_CLOSE){
@@ -453,6 +465,17 @@ static void wrapper_notify(void *opaque,const struct dom_mutation *m)
     else if(m->kind==DOM_MUT_REMOVE)wrapper_unlink(rt,h);
     else if(m->kind==DOM_MUT_INSERT)wrapper_connect(d->ctx,h,m->node->parent);
 }
+static void wrapper_notify(void *opaque,const struct dom_mutation *m)
+{
+    struct wrapper_doc *d=opaque;
+    /* Native arena destruction can happen while its page is not selected.
+     * The notification does no JS dispatch. Switching here keeps root clearing
+     * and newly connected wrappers in the arena's owner, then restores the
+     * suspended native caller even on CLOSE. */
+    struct js_dom_context *previous=dom_context_enter(d->state);
+    wrapper_notify_owned(opaque,m);
+    dom_context_enter(previous);
+}
 static struct wrapper_doc *wrapper_doc_for(JSContext *ctx,struct dom_doc *doc)
 {
     for(struct wrapper_doc *d=wrapper_docs;d;d=d->next)if(d->sub.doc==doc)return d;
@@ -461,14 +484,14 @@ static struct wrapper_doc *wrapper_doc_for(JSContext *ctx,struct dom_doc *doc)
     struct wrapper_doc **q=&wrapper_docs;
     while(*q){struct wrapper_doc *d=*q;if(!d->sub.doc){*q=d->next;free(d);}else q=&d->next;}
     struct wrapper_doc *d=calloc(1,sizeof *d);if(!d)return 0;
-    d->ctx=ctx;d->next=wrapper_docs;wrapper_docs=d;
+    d->ctx=ctx;d->state=dom_context_current();d->next=wrapper_docs;wrapper_docs=d;
     dom_subscribe(doc,&d->sub,wrapper_notify,d);return d;
 }
 static void wrapper_track(struct wrapper_doc *d,struct elem_handle *h,JSValue self)
 {
     h->self=self;h->owner=d;h->doc_next=d->handles;
     if(d->handles)d->handles->doc_prev=h;d->handles=h;
-    h->tracked=1;wrapper_live++;
+    h->state=d->state;h->tracked=1;wrapper_live++;
 }
 static void wrapper_cleanup(JSContext *ctx)
 {
@@ -3987,6 +4010,7 @@ static void ensure_attr_handler(JSContext *ctx, struct node *n, const char *type
     struct nlist *e = nlist_for(ctx, n, 0);
     if (e) for (struct listener *l = e->head; l; l = l->next)
         if (l->attr && !strcmp(l->type, type)) return;    /* already compiled/assigned */
+    if (g_inline_handler_policy && !g_inline_handler_policy()) return;
     /* Wrapped so `event` is the parameter and `this` is the current target,
      * which is what a handler attribute sees in a real browser. */
     struct sbuf src = { 0, 0, 0 };
@@ -4391,6 +4415,27 @@ static JSValue target_dispatch(JSContext *ctx, struct node *n, int argc, JSValue
     return JS_NewBool(ctx, ok);
 }
 
+JSValue js_dom_deliver_window_message(JSValueConst event)
+{
+    JSContext *ctx=g_ctx;if(!ctx||!g_root)return JS_FALSE;
+    struct jsevent *ev=JS_GetOpaque(event,event_cid);
+    if(!ev||ev->dispatching||!ev->type||strcmp(ev->type,"message"))
+        return JS_ThrowTypeError(ctx,"native window delivery requires a fresh MessageEvent");
+    /* This event is generated by the UA's checked asynchronous message
+     * queue. Calling the JS dispatchEvent door would incorrectly clear its
+     * trust flag. Unlike device input, this must NEVER grant activation. */
+    ev->trusted=1;
+    int ok=dispatch_event(ctx,g_root,event,ev);
+    JSValue global=JS_GetGlobalObject(ctx),handler=JS_GetPropertyStr(ctx,global,"onmessage");
+    if(JS_IsException(handler)){JS_FreeValue(ctx,global);return handler;}
+    if(!js_page_cancel_requested()&&JS_IsFunction(ctx,handler)){
+        JSValue result=JS_Call(ctx,handler,global,1,&event);
+        if(JS_IsException(result))report_exc(ctx,"window.onmessage");
+        JS_FreeValue(ctx,result);
+    }
+    JS_FreeValue(ctx,handler);JS_FreeValue(ctx,global);return JS_NewBool(ctx,ok);
+}
+
 static JSValue el_addEventListener(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 { return target_add(ctx, node_of(t), argc, argv); }
 static JSValue el_removeEventListener(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -4491,6 +4536,7 @@ void js_dom_bind_event_target(JSContext *ctx, JSValueConst obj)
 void js_dom_cleanup(JSContext *ctx)
 {
     g_image_sink=0;
+    g_inline_handler_policy=0;
     wrapper_cleanup(ctx);
     nlist_free_all(ctx);
     JS_FreeValue(ctx, g_proto_event); g_proto_event = JS_UNDEFINED;
@@ -4501,6 +4547,7 @@ void js_dom_cleanup(JSContext *ctx)
     iface_cleanup(ctx);               /* the interface prototypes are strong refs too */
     if (g_root) dom_clear_wrappers(g_root->doc);
     g_ctx = 0;
+    g_root = 0;
 }
 
 /* ---- the members, SPLIT BY THE INTERFACE THAT DEFINES THEM ----
@@ -5162,6 +5209,8 @@ void js_dom_init(JSContext *ctx, struct node *root)
     g_proto_event = g_proto_ui = g_proto_mouse = g_proto_key = JS_UNDEFINED;
     g_document = JS_UNDEFINED;          /* the previous page's, if any, died with its runtime */
     g_scroll_x = g_scroll_y = 0;        /* a new page starts at the top */
+    /* Activation belongs to a document load, not the reusable owner slot. */
+    g_last_activation_ms = 0;
     /* Defensive: if a previous page's runtime went away without a cleanup call,
      * its wrapper slots are dangling JSObject*s. Start every page with none. */
     if (root) dom_clear_wrappers(root->doc);
@@ -5170,7 +5219,11 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * every page, so the class must be registered on each init. The old
      * `if (!elem_cid)` guard reused the first runtime's id -> out-of-bounds
      * access on ctx->class_proto[] from the second page on. */
-    JS_NewClassID(&elem_cid);
+    /* The old guard bug was skipping REGISTRATION in a later runtime, not
+     * reusing a process-wide class number. Allocate the number once, register
+     * in every runtime. Finalizers/GC may visit an inactive document, so they
+     * must not interpret its objects with the currently selected page's id. */
+    if (!elem_cid) JS_NewClassID(&elem_cid);
     if (JS_NewClass(rt, elem_cid, &elem_class) < 0) return;
     /* A placeholder class prototype: iface_install() replaces it with
      * Node.prototype (or, in the negative-control build, fills this one flat
@@ -5178,7 +5231,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
     JS_SetClassProto(ctx, elem_cid, JS_NewObject(ctx));
 
     JSValue token_proto_obj = JS_UNDEFINED;
-    JS_NewClassID(&token_cid);
+    if (!token_cid) JS_NewClassID(&token_cid);
     if (JS_NewClass(rt, token_cid, &token_class) >= 0) {
         JSValue tp = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, tp, token_proto, countof(token_proto));
@@ -5195,7 +5248,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * overrides the per-instance prototype to the real NodeList.prototype /
      * HTMLCollection.prototype (iface_list_proto), which additionally carries
      * `item()`. */
-    JS_NewClassID(&live_list_cid);
+    if (!live_list_cid) JS_NewClassID(&live_list_cid);
     if (JS_NewClass(rt, live_list_cid, &live_list_class) >= 0) {
         JSValue lp = JS_NewObject(ctx);
         install_arraylike(ctx, lp);
@@ -5203,7 +5256,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
     }
 
     JSValue cssd_proto_obj = JS_UNDEFINED;
-    JS_NewClassID(&cssd_cid);
+    if (!cssd_cid) JS_NewClassID(&cssd_cid);
     if (JS_NewClass(rt, cssd_cid, &cssd_class) >= 0) {
         JSValue sp = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, sp, cssd_proto, countof(cssd_proto));
@@ -5247,7 +5300,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
      * negative-control build. */
     dom_attrnode_install(ctx);
 
-    JS_NewClassID(&event_cid);
+    if (!event_cid) JS_NewClassID(&event_cid);
     if (JS_NewClass(rt, event_cid, &event_class) >= 0) {
         g_proto_event = make_event_class(ctx, g, "Event", JS_UNDEFINED,
                                          event_proto_funcs, countof(event_proto_funcs), CTOR_EVENT);
@@ -5333,4 +5386,90 @@ void js_dom_init(JSContext *ctx, struct node *root)
     named_scan(ctx, root);
     JS_FreeValue(ctx, g);
     maybe_install_console(ctx);
+}
+
+/* Quiescent DOM contexts, following layout_context/css_context's save/restore
+ * boundary. This is deliberately an explicit field list, not a .bss copy:
+ * class definitions and process-wide class IDs must remain shared, whereas
+ * every JSValue/atom, listener, dirty scope and embedder callback belongs to
+ * one document. tests/check_dom_context_fields.py checks this list against
+ * clang's declarations (including js_dom_iface.inc), so a new mutable global
+ * cannot silently become shared state.
+ *
+ * No memcpy duplicates ownership: the inactive image is the sole owner of
+ * its refs; the active image's refs reside in the working globals. Contexts
+ * are not threads, and public switching is forbidden inside a JS entry. */
+#define DOM_CONTEXT_FIELDS(X) \
+    X(g_root) X(g_ctx) X(g_droot) X(g_ndroot) X(g_level) X(g_whole) \
+    X(g_mutation_generation) X(g_image_sink) X(g_note) X(g_script_sink) X(g_inline_handler_policy) \
+    X(wrapper_docs) X(wrapper_live) X(g_document) X(g_scroll_x) X(g_scroll_y) \
+    X(g_lbucket) X(g_lcount) X(g_proto_event) X(g_proto_ui) X(g_proto_mouse) \
+    X(g_proto_key) X(g_last_activation_ms) X(g_dispatch_depth) \
+    X(g_focus_query) X(g_focus_reported) X(g_iproto) X(g_iface_ready) \
+    X(g_bridge_runs) X(g_named_count) X(g_itag) X(g_div_seal) X(g_div_seal_n)
+
+struct js_dom_context {
+#define DOM_FIELD(n) __typeof__(n) n;
+    DOM_CONTEXT_FIELDS(DOM_FIELD)
+#undef DOM_FIELD
+};
+static struct js_dom_context dom_default_context;
+static struct js_dom_context *dom_active_context = &dom_default_context;
+
+static struct js_dom_context *dom_context_current(void)
+{ return dom_active_context; }
+
+static struct js_dom_context *dom_context_enter(struct js_dom_context *next)
+{
+    if (!next) next=&dom_default_context;
+    struct js_dom_context *previous=dom_active_context;
+    if (next==previous) return previous;
+#define DOM_SAVE(n) memcpy(&previous->n, &n, sizeof n);
+    DOM_CONTEXT_FIELDS(DOM_SAVE)
+#undef DOM_SAVE
+#define DOM_LOAD(n) memcpy(&n, &next->n, sizeof n);
+    DOM_CONTEXT_FIELDS(DOM_LOAD)
+#undef DOM_LOAD
+    dom_active_context=next;
+    return previous;
+}
+
+static void dom_context_wrapper_delta(struct js_dom_context *owner, int delta)
+{
+    /* Finalization is allowed without selecting the runtime's DOM: GC only
+     * traverses handle-owned edges, and counters have stable owner storage. */
+    if (owner==dom_active_context) wrapper_live+=delta;
+    else owner->wrapper_live+=delta;
+}
+
+struct js_dom_context *js_dom_context_create(void)
+{
+    /* Fresh callbacks/activation are intentionally zero, not inherited from
+     * the parent. js_dom_init installs the document and all JS prototypes. */
+    return calloc(1,sizeof(struct js_dom_context));
+}
+
+int js_dom_context_activate(struct js_dom_context *next,
+                            struct js_dom_context **previous)
+{
+    if (g_dispatch_depth || js_page_entry_active()) return 0;
+    struct js_dom_context *old=dom_context_enter(next);
+    if (previous) *previous=old==&dom_default_context ? 0 : old;
+    return 1;
+}
+
+int js_dom_context_destroy(struct js_dom_context *state)
+{
+    if (!state || state==&dom_default_context || g_dispatch_depth ||
+        js_page_entry_active()) return 0;
+    struct js_dom_context *previous=dom_context_enter(state);
+    int busy=g_ctx || wrapper_docs || wrapper_live || g_lcount;
+    dom_context_enter(previous==state ? 0 : previous);
+    if (busy) {
+        /* A rejected destroy must not unexpectedly deselect its live owner. */
+        dom_context_enter(previous);
+        return 0;
+    }
+    free(state);
+    return 1;
 }
