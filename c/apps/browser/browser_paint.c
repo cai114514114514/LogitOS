@@ -1,3 +1,5 @@
+#include "openlogit_draw.h"
+#include "openlogit_bitmap.h"
 /* Ring-3 paint (M17 L1): walk the layout display list and draw it with the GUI
  * render syscalls. Mirrors the old kernel net/paint.c, fb_* -> gui_*.
  *
@@ -22,9 +24,15 @@
 #include "gfx.h"
 #include "layout.h"
 #include "browser_paint.h"
+#include "frame_open.h"
+#define PASSIVE_FRAME_OPTIONAL
+#include "passive_frame.h"
 #include "forms.h"
-#include "css.h"                   /* struct cstyle + the XR_* raw spans */
+#include "control_text_metrics.h"
+#include "css.h"
+#include "top_layer.h"                   /* struct cstyle + the XR_* raw spans */
 #include "css_interp.h"            /* struct ci_xform, for `transform` */
+#include "css_transform_context.h"
 #include "../../../include/weaksym.h"   /* every weak extern below; read it first */
 #include <stdlib.h>                 /* malloc/realloc/free -- the dirty-rect snapshot buffers */
 #include <stdint.h>                 /* uintptr_t -- pointers folded into pd_item_sig()'s hash */
@@ -113,6 +121,8 @@ extern int img_css_color(const char *s, int len, unsigned char *rgba)
 LOGIT_WEAK_STUB(media_paint_box);
 LOGIT_WEAK_STUB(canvas_pixels);
 LOGIT_WEAK_STUB(fc_paint_state);
+extern int fc_text_measure(const char *,int,int,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(fc_text_measure);
 LOGIT_WEAK_STUB(css_gradient_parse);
 LOGIT_WEAK_STUB(css_shadow_parse);
 LOGIT_WEAK_STUB(css_origin_parse);
@@ -121,6 +131,29 @@ LOGIT_WEAK_STUB(ci_transform_parse);
 LOGIT_WEAK_STUB(ci_transform_matrix);
 LOGIT_WEAK_STUB(img_css_color);
 
+extern int top_layer_count(void) LOGIT_WEAK;
+extern struct node *top_layer_at(int) LOGIT_WEAK;
+extern struct node *top_layer_current(void) LOGIT_WEAK;
+extern struct node *top_layer_owner(const struct node *) LOGIT_WEAK;
+extern int top_layer_allows_input(const struct node *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(top_layer_count);
+LOGIT_WEAK_STUB(top_layer_at);
+LOGIT_WEAK_STUB(top_layer_current);
+LOGIT_WEAK_STUB(top_layer_owner);
+LOGIT_WEAK_STUB(top_layer_allows_input);
+extern int top_layer_is_modal(const struct node *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(top_layer_is_modal);
+extern void js_cssom_project_item(struct item *) LOGIT_WEAK;
+extern void js_cssom_scroll_offset(const struct node *,int *,int *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_cssom_project_item);
+LOGIT_WEAK_STUB(js_cssom_scroll_offset);
+static void scroll_box_origin(const struct node *n,int *x,int *y) {
+    int sx=0,sy=0;
+    if(LOGIT_HAVE(js_cssom_scroll_offset))js_cssom_scroll_offset(n,&sx,&sy);
+    *x-=sx;*y-=sy;
+}
+
+
 /* The computed style behind a display-list item, or NULL.
  *
  * A text box hangs off the TEXT node, which has no style of its own, so the
@@ -128,10 +161,13 @@ LOGIT_WEAK_STUB(img_css_color);
  * does at the bottom of this file, and for the same reason. */
 static const struct cstyle *sty(const struct item *e)
 {
+    if (e && e->generated_style) return e->generated_style;
     struct node *n = e ? e->node : 0;
     while (n && n->type != N_ELEM) n = n->parent;
     return n ? (const struct cstyle *)n->style : 0;
 }
+
+#include "text_paint_wiring.inc"
 
 /* The root element's font-size, for `rem`. Not on any cstyle -- it is a
  * property of the DOCUMENT -- so it comes from css_engine.c. 16 is both the
@@ -1010,7 +1046,7 @@ static void grad_corner(int x, int y, int r, const unsigned char *cov, int cw, i
 }
 
 /* The diagonal path: composite the paint through a real path into a surface
- * and blit it. This is gfx_fill()'s shape -- a paint, a path and a rule -- and
+ * and blit it. This is ol_raster_fill()'s shape -- a paint, a path and a rule -- and
  * the only place in the browser that has ever asked for it. */
 static void grad_surface(int x, int y, int w, int h, int rpt,
                          const struct gfx_paint *P, int galpha)
@@ -1033,7 +1069,7 @@ static void grad_surface(int x, int y, int w, int h, int rpt,
     p.global_alpha = galpha;
     struct gfx_surface s;
     gfx_surface_init(&s, gsurf, sw, sh, sw * 4);
-    gfx_surface_clear(&s);
+    ol_raster_clear(&s);
     struct gfx_path pa;
     gfx_path_init(&pa, grad_pt, 64, grad_sub, 8);
     /* The radius is honoured only at 1:1. Downscaled, an antialiased corner is
@@ -1043,7 +1079,7 @@ static void grad_surface(int x, int y, int w, int h, int rpt,
     int rs = down ? 0 : devlen(x, rpt);
     if (rs > 0) gfx_path_rrect(&pa, 0, 0, sw * GFX_ONE, sh * GFX_ONE, rs * GFX_ONE);
     else        gfx_path_rect(&pa, 0, 0, sw * GFX_ONE, sh * GFX_ONE);
-    gfx_fill(&s, &pa, GFX_NONZERO, &p, 0);
+    ol_raster_fill(&s, &pa, GFX_NONZERO, &p, 0);
     gui_blit(x, y, w, h, gsurf, sw, sh);
 }
 
@@ -1167,12 +1203,13 @@ static int rclip_of(const struct item *e, int vx, int vy, int scroll, struct rcl
     if (!e->has_clip) return 0;
     struct node *n = e->node;
     while (n && n->type != N_ELEM) n = n->parent;
-    for (struct node *p = n; p; p = p->parent) {
+    for (struct node *p = n, *boundary = LOGIT_HAVE(top_layer_owner) ? top_layer_owner(n) : 0; p; p = p == boundary ? 0 : p->parent) {
         if (p->type != N_ELEM || !p->style) continue;
         const struct cstyle *s = (const struct cstyle *)p->style;
         if (s->overflow_x == OVF_VISIBLE && s->overflow_y == OVF_VISIBLE) continue;
         int bx, by, bw, bh;
         if (!layout_node_box(p, &bx, &by, &bw, &bh)) return 0;
+        scroll_box_origin(p,&bx,&by);
         /* The rounded overflow clip takes ONE radius: rclip's tile cache and
          * the corner[] flags below are both single-valued. The LARGEST
          * corner is the safe reduction here for the opposite reason to the
@@ -1375,7 +1412,7 @@ static void fill_rclip(int x, int y, int w, int h, uint32_t color, int alpha,
         gfx_path_init(&p, xf_ptbuf, 256, xf_subbuf, 8);
         gfx_path_rect(&p, dev(x) * GFX_ONE, dev(y) * GFX_ONE,
                           devlen(x, w) * GFX_ONE, devlen(y, h) * GFX_ONE);
-        if (!gfx_fill_mask_clipped(&p, GFX_NONZERO, xf_cov, cw, ch,
+        if (!ol_raster_mask_clipped(&p, GFX_NONZERO, xf_cov, cw, ch,
                                    dev(cx), dev(cy), GFX_SUBS, &cm)) {
             /* The engine refused the path. Same rule as the NULL above: the
              * bands did not paint this square, so falling through would leave
@@ -1503,6 +1540,7 @@ static int d8(double v)
 }
 
 static struct node *g_xf_key;
+#include "browser_backface.inc"
 static struct gfx_matrix g_xf_val;
 static int g_xf_hit;              /* 1 = g_xf_val is real, 0 = no transform */
 
@@ -1514,7 +1552,7 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
 {
     struct node *n = e ? e->node : 0;
     while (n && n->type != N_ELEM) n = n->parent;
-    if (!n || !LOGIT_HAVE(ci_transform_parse) || !LOGIT_HAVE(ci_transform_matrix)) return 0;
+    if (!n || !LOGIT_HAVE(ci_transform_parse_context) || !LOGIT_HAVE(ci_transform_matrix)) return 0;
     if (n == g_xf_key) {
         if (g_xf_hit) *out = g_xf_val;
         return g_xf_hit;
@@ -1522,7 +1560,7 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
     g_xf_key = n; g_xf_hit = 0;
 
     int any = 0;
-    for (struct node *p = n; p; p = p->parent) {
+    for (struct node *p = n, *boundary = LOGIT_HAVE(top_layer_owner) ? top_layer_owner(n) : 0; p; p = p == boundary ? 0 : p->parent) {
         const struct cstyle *s = (p->type == N_ELEM) ? (const struct cstyle *)p->style : 0;
         if (s && s->xraw[XR_TRANSFORM]) { any = 1; break; }
     }
@@ -1531,15 +1569,16 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
     struct gfx_matrix acc;
     gfx_m_identity(&acc);
     int found = 0;
-    for (struct node *p = n; p; p = p->parent) {
+    for (struct node *p = n, *boundary = LOGIT_HAVE(top_layer_owner) ? top_layer_owner(n) : 0; p; p = p == boundary ? 0 : p->parent) {
         const struct cstyle *s = (p->type == N_ELEM) ? (const struct cstyle *)p->style : 0;
         if (!s || !s->xraw[XR_TRANSFORM]) continue;
         int bx, by, bw, bh;
         if (!layout_node_box(p, &bx, &by, &bw, &bh)) continue;
+        scroll_box_origin(p,&bx,&by);
         int fs = s->font_px > 0 ? s->font_px : 16;
         struct ci_xform xf;
-        if (ci_transform_parse(s->xraw[XR_TRANSFORM], s->xrawlen[XR_TRANSFORM],
-                               (double)fs, (double)root_px(), &xf) != 0) continue;
+        if (css_node_transform_parse(p,s->xraw[XR_TRANSFORM],
+                                      s->xrawlen[XR_TRANSFORM],&xf) != 0) continue;
         if (xf.n == 0) continue;                       /* `none` is the identity */
         double m[16];
         /* Percentages in translate() resolve against the element's OWN border
@@ -1583,6 +1622,63 @@ static int item_xform(const struct item *e, int vx, int vy, int scroll,
     g_xf_val = acc; g_xf_hit = 1;
     *out = acc;
     return 1;
+}
+
+/* One rounded box projection for paint and ordinary translated input. Map
+ * the actual corners before p8 rounding; rounding the translation separately
+ * differs at fractional negative coordinates. Keep non-translation input on
+ * its existing path until a full inverse/clip implementation is available. */
+static void xf_map_box(const struct gfx_matrix *m, int x, int y, int w, int h,
+                        int *bx, int *by, int *bw, int *bh)
+{
+    int px[4], py[4];
+    static const int qx[4] = { 0, 1, 1, 0 }, qy[4] = { 0, 0, 1, 1 };
+    for (int k = 0; k < 4; k++) {
+        gfx_m_apply(m, (x + qx[k] * w) * GFX_ONE,
+                        (y + qy[k] * h) * GFX_ONE, &px[k], &py[k]);
+        px[k] = p8(px[k]); py[k] = p8(py[k]);
+    }
+    int x0=px[0],x1=px[0],y0=py[0],y1=py[0];
+    for(int k=1;k<4;k++) {
+        if(px[k]<x0)x0=px[k]; if(px[k]>x1)x1=px[k];
+        if(py[k]<y0)y0=py[k]; if(py[k]>y1)y1=py[k];
+    }
+    *bx=x0; *by=y0; *bw=x1-x0; *bh=y1-y0;
+}
+
+static void input_item_geometry(const struct item *source, int vx, int vy,
+                                 int scroll_x, int scroll, struct item *out)
+{
+    *out=*source;
+    if(LOGIT_HAVE(js_cssom_project_item))js_cssom_project_item(out);
+    int fixed=css_viewport_fixed_owner(out->node) ||
+              (LOGIT_HAVE(top_layer_owner)&&top_layer_owner(out->node));
+    int dx=fixed?0:scroll_x,dy=fixed?0:scroll;
+    int x=vx+out->x-dx,y=vy+out->y-dy;
+#ifndef BROWSER_TRANSLATED_HIT_LEGACY
+    struct gfx_matrix m;
+    if(item_xform(out,vx-dx,vy,dy,&m) && m.a==GFX_MONE && m.d==GFX_MONE &&
+       m.b==0 && m.c==0)
+        xf_map_box(&m,x,y,out->w,out->h,&x,&y,&out->w,&out->h);
+#endif
+    /* Map in actual window coordinates before subtracting viewport origin:
+     * p8 half-away-from-zero rounding changes phase when a translated edge
+     * crosses zero. Using vy=0 would shift a -0.5px top edge by one pixel.
+     * Input/selection callers add the page scroll to their viewport pointer.
+     * Normalize fixed/top-layer geometry to that same convention exactly once.
+     * Clips intentionally retain the painter's existing projected coordinates:
+     * transformed overflow-ancestor clips need a separate owner-aware fix. */
+    out->x=x-vx+scroll_x; out->y=y-vy+scroll;
+    if(fixed){out->clip_x+=scroll_x;out->clip_y+=scroll;}
+}
+
+void browser_input_item_geometry(const struct item *source, int vx, int vy,
+                                  int scroll_x, int scroll, struct item *out)
+{
+    /* External input can follow scrolling or a style/layout change without
+     * another paint. Never reuse the previous paint's node-only transform memo. */
+    g_xf_key=0;g_xf_hit=0;
+    input_item_geometry(source,vx,vy,scroll_x,scroll,out);
 }
 
 /* No rotation and no skew, i.e. a translate/scale/flip. The paint loop maps
@@ -1639,7 +1735,7 @@ static int paint_rect_xf(const struct item *e, int sx, int sy, int r, int op,
     gfx_path_matrix(&p, &q);            /* before the first point: allowed */
     if (r > 0) gfx_path_rrect(&p, 0, 0, e->w * GFX_ONE, e->h * GFX_ONE, r * GFX_ONE);
     else       gfx_path_rect(&p, 0, 0, e->w * GFX_ONE, e->h * GFX_ONE);
-    if (!gfx_fill_mask(&p, GFX_NONZERO, xf_cov, cw, chh, 0, 0)) {
+    if (!ol_raster_mask(&p, GFX_NONZERO, xf_cov, cw, chh, 0, 0)) {
         /* The path refused itself -- storage overflow, or a matrix set
          * mid-build, which cannot happen here. Either way the geometry is not
          * to be trusted and the engine says so; falling back is the caller's
@@ -1793,7 +1889,7 @@ static void shape_fill(struct gfx_path *p, int rule, int x, int y,
                        int wpt, int hpt, int wdev, int hdev, uint32_t color, int alpha)
 {
     if (wdev <= 0 || hdev <= 0 || wdev > CTL_SHAPE_MAX || hdev > CTL_SHAPE_MAX) return;
-    if (!gfx_fill_mask(p, rule, ctl_cov, wdev, hdev, 0, 0)) return;
+    if (!ol_raster_mask(p, rule, ctl_cov, wdev, hdev, 0, 0)) return;
     gfx_mask_to_rgba(ctl_rgba, ctl_cov, wdev, hdev, color, alpha, 0, 0);
     gui_blit(x, y, wpt, hpt, ctl_rgba, wdev, hdev);
 }
@@ -1849,15 +1945,64 @@ static void ctl_frame(int x, int y, int w, int h, int r, uint32_t bg, uint32_t e
 }
 
 /* Draw one control. `sx,sy` is its border box in window coordinates. */
-static void paint_control(const struct item *e, int sx, int sy)
+/* The GUI ABI truncates long runs. Use the same UTF-8 batches as caret
+ * measurement, or the cursor would track bytes that were never drawn. */
+static void paint_control_text(int x,int y,int font,int mono,unsigned ink,const char *text,int len)
+{
+#ifdef FC_CARET_OLD_GEOMETRY
+    gui_text_run(x,y,font,mono,ink,text,len);
+#else
+    for(int p=0;p<len;) {
+        int q=fc_text_run_next(text,len,p);
+        gui_text_run(x,y,font,mono,ink,text+p,q-p);
+        x+=LOGIT_HAVE(fc_text_measure)?fc_text_measure(text+p,q-p,font,mono):text_measure(text+p,q-p,font,mono);
+        p=q;
+    }
+#endif
+}
+
+/* Query every run the painter will emit, including a final run after byte
+ * 1023. The kernel limit is per run, not per control. An unsupported query or
+ * unavailable run makes the entire line use the documented em-box fallback;
+ * partial metrics must never claim to describe the whole displayed value. */
+static int control_text_ink(const char *text, int len, int font, int mono,
+                             struct logit_text_metrics *out)
+{
+#ifndef FC_SINGLE_LINE_INK_LEGACY
+    if (!text || len <= 0) return 0;
+    struct logit_text_metrics all = {0};
+    for (int p = 0; p < len;) {
+        int q = fc_text_run_next(text, len, p);
+        struct logit_text_metrics m;
+        int face = mono ? LOGIT_FACE_MONO : 0; /* exactly gui_text_run's face */
+        if (text_run_metrics_px(text + p, q - p, font, face, &m) != 1) return 0;
+        if (p && m.scale_percent != all.scale_percent) return 0;
+        if (!p) all = m;
+        else if (m.has_ink) {
+            if (!all.has_ink || m.ink_top < all.ink_top) all.ink_top = m.ink_top;
+            if (!all.has_ink || m.ink_bottom > all.ink_bottom) all.ink_bottom = m.ink_bottom;
+            all.has_ink = 1;
+        }
+        p = q;
+    }
+    *out = all;
+    return all.has_ink;
+#else
+    (void)text; (void)len; (void)font; (void)mono; (void)out;
+    return 0;
+#endif
+}
+
+static void control_paint_state(const struct item *e, struct fpaint *out)
 {
     struct fpaint fp;
     int have = 0;
     int k = e->ctl;
-    int fw = e->w, fh = e->h;
+    int fw = e->w;
     int font = e->ctl_font > 0 ? e->ctl_font : e->font_px;
     if (font <= 0) font = 14;
-    int content_w = fw - 2 * (FC_PAD_X + FC_BORDER);
+    struct fc_content_edges insets = fc_content_insets(e->node);
+    int content_w = fc_content_width(fw, insets);
 
     if (LOGIT_HAVE(fc_paint_state))
         have = fc_paint_state(e->node, font, e->ctl_mono, content_w, &fp);
@@ -1865,9 +2010,20 @@ static void paint_control(const struct item *e, int sx, int sy)
         /* forms.c is not linked (the host paint test). Draw the chrome with no
          * state -- an empty control, which is what a control with no state IS. */
         for (unsigned i = 0; i < sizeof fp; i++) ((unsigned char *)&fp)[i] = 0;
-        fp.kind = k; fp.caret_x = -1; fp.pad_x = FC_PAD_X; fp.pad_y = FC_PAD_Y;
+        fp.kind = k; fp.caret_x = -1; fp.insets = insets;
         fp.line_h = font + font / 4; fp.nline = 1;
     }
+    *out = fp;
+}
+
+static void paint_control(const struct item *e, int sx, int sy, const struct fpaint *state)
+{
+    /* Prepared once, immediately before this item is hashed and painted.
+     * Re-querying here would also redo caret measurement and scroll clamping. */
+    struct fpaint fp = *state;
+    int k = e->ctl, fw = e->w, fh = e->h;
+    int font = e->ctl_font > 0 ? e->ctl_font : e->font_px;
+    if (font <= 0) font = 14;
 
     /* Did the page style this control itself? If so its background and border
      * are the truth and the system chrome must not be painted underneath --
@@ -1875,14 +2031,21 @@ static void paint_control(const struct item *e, int sx, int sy)
      * frame first would show as a grey halo around theirs. */
     int authored = e->has_bg;
     for (int i = 0; i < 4; i++) if (e->border_w[i] > 0) authored = 1;
+#ifndef BROWSER_CONTROL_OLD_CHROME
+    /* Correction to the old "background or border means authored" claim:
+     * transparent + border:0 is a real computed result, not missing style.
+     * The UA sheet now supplies defaults through the same cascade. Respect
+     * every computed result; only a no-style host item needs native fallback. */
+    authored = e->node && e->node->style;
+#endif
 
-    uint32_t ink = fp.disabled ? CTL_INK_DIS : (authored ? e->color : CTL_INK);
+    uint32_t ink = authored ? e->color : (fp.disabled ? CTL_INK_DIS : CTL_INK);
     /* A form control takes one radius: the widgets below are chrome, drawn
      * with the toolkit's own rounded primitives. The page's largest corner
      * wins, which is exact whenever the four agree. */
     int radius = 0;
     for (int i = 0; i < 4; i++) if (e->radius[i] > radius) radius = e->radius[i];
-    if (radius == 0) radius = (FC_IS_BUTTON(k) || k == FC_SELECT ? 5 : 4);
+    if (radius == 0 && !authored) radius = (FC_IS_BUTTON(k) || k == FC_SELECT ? 5 : 4);
 
     if (FC_IS_TOGGLE(k)) {
         int d = fw < fh ? fw : fh;
@@ -1921,7 +2084,10 @@ static void paint_control(const struct item *e, int sx, int sy)
          * page chose, and the device test caught it by no longer being able to
          * find the field's own colour on screen. */
         if (fp.focused)
-            fill_round(sx - 2, sy - 2, fw + 4, fh + 4, radius + 2, CTL_EDGE_FOCUS, 110);
+            /* Unlike the old outer FILL subsequently covered by an opaque
+             * field, a ring also preserves a reset control's transparent
+             * centre. Focus must not add blue fill to an otherwise empty box. */
+            stroke_round(sx - 2, sy - 2, fw + 4, fh + 4, radius + 2, 2, CTL_EDGE_FOCUS, 110);
         int bmax = 0;
         for (int i = 0; i < 4; i++) if (e->border_w[i] > bmax) bmax = e->border_w[i];
         /* A transparent border occupies space and paints nothing: it arrives
@@ -1929,17 +2095,12 @@ static void paint_control(const struct item *e, int sx, int sy)
          * buttons -- the whole Wikipedia chrome -- are exactly that, and
          * drawing the ring anyway framed every one of them in black. */
         if (e->border_style[0] == BS_NONE || e->border_style[0] == BS_HIDDEN) bmax = 0;
-        if (e->has_bg && bmax > 0) {
-            fill_round(sx, sy, fw, fh, radius, e->border_color[0], 255);
-            fill_round(sx + bmax, sy + bmax, fw - 2 * bmax, fh - 2 * bmax,
-                       radius > bmax ? radius - bmax : 0, e->bg, e->bg_alpha ? e->bg_alpha : 255);
-        } else if (e->has_bg) {
-            fill_round(sx, sy, fw, fh, radius, e->bg, e->bg_alpha ? e->bg_alpha : 255);
-        } else if (bmax > 0) {
-            fill_round(sx, sy, fw, fh, radius, e->border_color[0], 255);
-            fill_round(sx + bmax, sy + bmax, fw - 2 * bmax, fh - 2 * bmax,
-                       radius > bmax ? radius - bmax : 0, CTL_FIELD_BG, 255);
-        }
+        if (e->has_bg)
+            fill_round(sx, sy, fw, fh, radius, e->bg, e->bg_alpha);
+        if (bmax > 0)
+            /* Two nested fills previously put opaque white inside a border
+             * whose computed background was transparent. Stroke the edge. */
+            stroke_round(sx, sy, fw, fh, radius, bmax, e->border_color[0], 255);
     } else {
         ctl_frame(sx, sy, fw, fh, radius,
                   face, fp.focused ? CTL_EDGE_FOCUS : CTL_EDGE, fp.focused ? 2 : 1);
@@ -1954,17 +2115,20 @@ static void paint_control(const struct item *e, int sx, int sy)
     }
 
     /* --- the content --- */
-    int cx = sx + FC_BORDER + fp.pad_x;
-    int cy = sy + FC_BORDER + fp.pad_y;
-    int cw = fw - 2 * (FC_BORDER + fp.pad_x);
-    int chh = fh - 2 * (FC_BORDER + fp.pad_y);
+    int cx = sx + fp.insets.left;
+    int cy = sy + fp.insets.top;
+    int cw = fc_content_width(fw, fp.insets);
+    int chh = fc_content_height(fh, fp.insets);
     if (k == FC_SELECT) cw -= 16;                 /* room for the triangle */
     if (cw < 0) cw = 0;
 
-    /* Centre a single line vertically. gui_text_run's y is the top of the em
-     * box (it adds the ascent itself), so the em box is what is centred. */
-    int ty = cy;
-    if (k != FC_TEXTAREA && chh > font) ty = cy + (chh - font) / 2;
+    /* The former em-box centering treated native draw y as the ink top.
+     * Real fonts add their ascent and can paint descenders below that em box.
+     * Single-line native labels now use the actual same-face run ink. Empty
+     * or whitespace-only labels and older kernels retain the prior fallback;
+     * textarea line layout and <button> child content remain separate. */
+    struct control_text_vertical vertical = control_text_fallback(cy, chh, font);
+    int ty = k == FC_TEXTAREA ? cy : vertical.draw_y;
 
     /* A button's and a select's label is centred / left-aligned respectively;
      * a field's text is left-aligned and may be scrolled. */
@@ -1982,6 +2146,13 @@ static void paint_control(const struct item *e, int sx, int sy)
     int nx0 = cx > ox0 ? cx : ox0, ny0 = cy > oy0 ? cy : oy0;
     int nx1 = cx + cw < ox1 ? cx + cw : ox1, ny1 = cy + chh < oy1 ? cy + chh : oy1;
     if (nx1 > nx0 && ny1 > ny0) {
+        /* A fully clipped label emits no native run and needs no query. */
+        if (k != FC_TEXTAREA) {
+            struct logit_text_metrics metrics;
+            if (control_text_ink(fp.text, fp.len, font, e->ctl_mono, &metrics))
+                vertical = control_text_center_ink(cy, chh, font, &metrics);
+            ty = vertical.draw_y;
+        }
         set_clip(nx0, ny0, nx1, ny1);
         if (k == FC_TEXTAREA && fp.text && fp.len > 0) {
             int ls = 0, line = 0;
@@ -1990,29 +2161,30 @@ static void paint_control(const struct item *e, int sx, int sy)
                     int yy = cy + line * fp.line_h;
                     if (yy > cy + chh) break;
                     if (i > ls)
-                        gui_text_run(tx, yy, font, e->ctl_mono,
+                        paint_control_text(tx, yy, font, e->ctl_mono,
                                      fp.placeholder ? CTL_PLACEHOLD : ink, fp.text + ls, i - ls);
                     ls = i + 1; line++;
                 }
             }
         } else if (fp.text && fp.len > 0) {
             if (fp.sel_x1 > fp.sel_x0)
-                fill(cx - fp.scroll_x + fp.sel_x0, ty, fp.sel_x1 - fp.sel_x0,
-                     font + font / 5, CTL_SELBG, 255);
-            gui_text_run(tx, ty, font, e->ctl_mono,
+                fill(cx - fp.scroll_x + fp.sel_x0, vertical.selection_y,
+                     fp.sel_x1 - fp.sel_x0, vertical.selection_h, CTL_SELBG, 255);
+            paint_control_text(tx, ty, font, e->ctl_mono,
                          fp.placeholder ? CTL_PLACEHOLD : ink, fp.text, fp.len);
         }
         if (fp.caret_x >= 0 && !fp.disabled) {
-            int caret_y = (k == FC_TEXTAREA) ? cy + fp.caret_line * fp.line_h : ty;
+            int caret_y = k == FC_TEXTAREA ? cy + fp.caret_line * fp.line_h - 1 : vertical.caret_y;
+            int caret_h = k == FC_TEXTAREA ? font + 2 : vertical.caret_h;
             int th = font >= 28 ? 2 : 1;
-            fill(cx - fp.scroll_x + fp.caret_x, caret_y - 1, th, font + 2, ink, 255);
+            fill(cx - fp.scroll_x + fp.caret_x, caret_y, th, caret_h, ink, 255);
         }
         set_clip(ox0, oy0, ox1, oy1);
     }
 
     if (k == FC_SELECT) {
         int aw = 9, ah = 6;
-        poly_shape(CTL_ARROW, 3, sx + fw - FC_BORDER - FC_PAD_X - aw,
+        poly_shape(CTL_ARROW, 3, sx + fw - fp.insets.right - aw,
                    sy + (fh - ah) / 2, aw, ah, fp.disabled ? CTL_INK_DIS : CTL_INK, 255);
     }
 }
@@ -2036,7 +2208,7 @@ static uint32_t backdrop_at(const struct item *it, int i)
     int lo = i - 256; if (lo < 0) lo = 0;
     for (int k = i - 1; k >= lo; k--) {
         const struct item *b = &it[k];
-        if (b->type != IT_RECT || !b->has_bg || b->hidden) continue;
+        if (b->type != IT_RECT || !b->has_bg || b->hidden || item_backface_culled(b->node)) continue;
         if (b->bg_alpha < 255 || b->opacity < 255) continue;    /* not opaque: keep looking */
         if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h)
             return b->bg;
@@ -2225,11 +2397,14 @@ static int g_pd_prev_pbg_has, g_pd_prev_pbg, g_pd_have_prev_bg;
 static int g_pd_result_valid;
 static int g_pd_rx, g_pd_ry, g_pd_rw, g_pd_rh;
 
-static uint32_t pd_item_sig(const struct item *e)
+static uint32_t pd_item_sig(const struct item *e, const struct fpaint *fp)
 {
     uint32_t h = 2166136261u;                 /* FNV-1a, 32-bit */
 #define PD_MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
     PD_MIX(e->type); PD_MIX(e->z); PD_MIX(e->has_bg); PD_MIX(e->bg); PD_MIX(e->bg_alpha);
+    PD_MIX(frame_open_source(e->node)!=0);
+    struct passive_frame_view fv;
+    if(LOGIT_HAVE(passive_frame_view)&&passive_frame_view(e->node,&fv))PD_MIX(fv.generation);
     for (int k = 0; k < 4; k++) {
         PD_MIX(e->border_w[k]); PD_MIX(e->border_color[k]);
         PD_MIX(e->border_style[k]); PD_MIX(e->radius[k]); PD_MIX(e->radius_pct[k]);
@@ -2244,6 +2419,26 @@ static uint32_t pd_item_sig(const struct item *e)
      * unchanged. Bounded by the text this file is already about to draw, so
      * the cost is the same order as drawing it. */
     for (int i = 0; i < e->len; i++) PD_MIX((unsigned char)e->text[i]);
+#ifndef PAINT_CONTROL_STATIC_SIGNATURE
+    /* Correction to the old "input value is covered by e->text" claim above:
+     * IT_CONTROL reads forms.c at paint time; its layout text never changes.
+     * The native input gate drew A and then the placeholder but submitted ZERO
+     * frames for either edit. z.ai likewise reached value length 6 while the
+     * screen kept its placeholder; that motivated this gate, not a proven
+     * attribution of the whole site's behavior. Hash the EXACT paint state, not
+     * another DOM/value lookup. Include caret/selection/check state even when
+     * text is unchanged; password text here is already masked. This does not
+     * fix independent canvas/video backing-store invalidation. */
+    if (fp) {
+        PD_MIX(fp->kind); PD_MIX(fp->len); PD_MIX(fp->placeholder);
+        for (int i = 0; i < fp->len; i++) PD_MIX((unsigned char)fp->text[i]);
+        PD_MIX(fp->checked); PD_MIX(fp->focused); PD_MIX(fp->disabled); PD_MIX(fp->readonly);
+        PD_MIX(fp->caret_x); PD_MIX(fp->sel_x0); PD_MIX(fp->sel_x1); PD_MIX(fp->scroll_x);
+        PD_MIX(fp->text_w); PD_MIX(fp->insets.left); PD_MIX(fp->insets.top);
+        PD_MIX(fp->insets.right); PD_MIX(fp->insets.bottom);
+        PD_MIX(fp->line_h); PD_MIX(fp->nline); PD_MIX(fp->caret_line);
+    }
+#endif
     PD_MIX((uintptr_t)e->img); PD_MIX((uintptr_t)e->imgsrc); PD_MIX(e->h_auto);
     PD_MIX((uintptr_t)e->href); PD_MIX(e->hidden); PD_MIX(e->opacity);
     PD_MIX(e->has_clip); PD_MIX(e->clip_x); PD_MIX(e->clip_y); PD_MIX(e->clip_w); PD_MIX(e->clip_h);
@@ -2379,34 +2574,152 @@ int browser_paint_dirty_rect(int *x, int *y, int *w, int *h)
     return 1;
 }
 
+/* Geometry, not ink: an empty width:2000px box contributes scrollable
+ * overflow even when it emits no display item. Compute after layout, never
+ * on every wheel event. The same transform evaluator as paint includes moved
+ * content; ancestor overflow clips limit descendants rather than the box itself.
+ * Negative overflow is deliberately unreachable in this LTR viewport. */
+int browser_content_width(struct node *root, int viewport_width)
+{
+    int width = viewport_width;
+#ifdef PAINT_SCROLL_WIDTH_ITEMS
+    /* Negative control: the original ink-only range misses empty boxes and
+     * transformed content even though both occupy real document space. */
+    const struct item *it = layout_items();
+    for (int i = 0; i < layout_count(); i++) {
+        const struct item *e = &it[i];
+        if (e->hidden || e->w <= 0) continue;
+        long long right = (long long)e->x + e->w;
+        if (e->has_clip && right > (long long)e->clip_x + e->clip_w)
+            right = (long long)e->clip_x + e->clip_w;
+        if (right > 2147483647LL) right = 2147483647LL;
+        if (right > width) width = (int)right;
+    }
+    return width;
+#endif
+    g_xf_key = 0; g_xf_hit = 0;
+    for (struct node *n = root; n;) {
+        int x, y, w, h;
+        /* A viewport top layer cannot enlarge the document's scroll range,
+         * even when an author gives its dialog a width wider than the screen. */
+        if ((!LOGIT_HAVE(top_layer_owner) || !top_layer_owner(n)) &&
+            layout_node_box(n, &x, &y, &w, &h)) {
+            long long right = (long long)x + w;
+            struct item probe = {0}; probe.node = n;
+            struct gfx_matrix xm;
+            if (item_xform(&probe, 0, 0, 0, &xm)) {
+                for (int k = 0; k < 4; k++) {
+                    int tx, ty;
+                    gfx_m_apply(&xm, d8((double)x + ((k & 1) ? w : 0)),
+                                d8((double)y + ((k & 2) ? h : 0)), &tx, &ty);
+                    long long edge = p8(tx);
+                    if (edge > right) right = edge;
+                }
+            }
+            for (struct node *p = n->parent; p; p = p->parent) {
+                const struct cstyle *st = (const struct cstyle *)p->style;
+                if (!st || st->overflow_x == OVF_VISIBLE) continue;
+                int cx, cy, cw, ch;
+                if (layout_node_box(p, &cx, &cy, &cw, &ch)) {
+                    long long edge = (long long)cx + cw - st->border_w[1];
+                    if (right > edge) right = edge;
+                }
+            }
+            if (right > 2147483647LL) right = 2147483647LL;
+            if (right > width) width = (int)right;
+        }
+        if (n->first_child) n = n->first_child;
+        else {
+            while (n != root && !n->next) n = n->parent;
+            if (n == root) break;
+            n = n->next;
+        }
+    }
+    g_xf_key = 0; g_xf_hit = 0;
+    return width;
+}
+
 void browser_paint(int vx, int vy, int vw, int vh, int scroll)
 {
+    browser_paint_scroll(vx, vy, vw, vh, 0, scroll);
+}
+
+/* Opacity is a group operation, not an inherited computed property: an
+ * opaque child remains invisible when any enclosing group is fully transparent.
+ * The old per-item alpha painted all three hidden-subtree controls in the host
+ * opacity-group gate (ordinary, fixed/transition, and explicit opacity:1 child).
+ * Zero has an exact answer without an offscreen surface; fractional groups
+ * still need real group compositing and are deliberately not approximated by
+ * multiplying ancestor alpha into every overlapping child. Read current styles
+ * on each paint so an animation/CSSOM 0 -> 1 change cannot leave a stale cull.
+ * This is PAINT ONLY: opacity:0 preserves geometry and pointer hit testing. */
+static int paint_zero_opacity_group(const struct node *n)
+{
+#ifdef BROWSER_NO_ZERO_OPACITY_ANCESTOR
+    (void)n; return 0;
+#else
+    for (; n; n=n->parent) {
+        const struct cstyle *st=n->style;
+        if(st && st->display!=DISP_CONTENTS && st->opacity==0)return 1;
+    }
+    return 0;
+#endif
+}
+
+static void paint_display_list(int vx,int vy,int vw,int vh,int scroll_x,int scroll,
+                               int passive,int clip_l,int clip_t,int clip_r,int clip_b,int inherited_op)
+{
+    /* Viewport and document origins must stay separate: passing -scroll_x as
+     * vx also moves the clip and exposes paint over browser chrome. Existing
+     * one-axis callers retain their explicit zero-x wrapper above. */
+#ifdef PAINT_NO_HORIZONTAL_SCROLL
+    scroll_x = 0;             /* negative control, same real display list */
+#endif
+    const int page_scroll = scroll;
     const struct item *it = layout_items();
     int n = layout_count();
-    g_pd_cur_n = 0;
-    /* Whole-pass, so the last paint wins: a repaint that covers half the
-     * viewport must not leave the other half's runs from the pass before it
-     * standing beside the new ones. */
-    g_ptx_n = g_ptx_runs = g_ptx_chars = 0;
     /* The transform memo is keyed on a NODE but its value is in WINDOW points,
      * so it is only valid for one (vx, vy, scroll) triple. Cleared per pass
      * rather than made part of the key: a stale entry here does not fail, it
      * paints last frame's scroll position, which is the kind of wrong that
      * looks like a compositor bug. */
     g_xf_key = 0; g_xf_hit = 0;
-    set_clip(vx, vy, vx + vw, vy + vh);
-    uint32_t pbg; int has_pbg = layout_page_bg(&pbg);
-    /* This fill is not an item -- it paints unconditionally, under
-     * everything else this function draws -- so pd_finish() needs to be told
-     * about it separately rather than missing it entirely (see the comment
-     * on pd_finish's `bg_changed` parameter). */
-    int pd_bg_changed = !g_pd_have_prev_bg || has_pbg != g_pd_prev_pbg_has ||
-                         (has_pbg && pbg != (uint32_t)g_pd_prev_pbg);
-    g_pd_prev_pbg_has = has_pbg; g_pd_prev_pbg = (int)pbg; g_pd_have_prev_bg = 1;
-    if (has_pbg) fill(vx, vy, vw, vh, pbg, 255);  /* themed background */
+    set_clip(clip_l,clip_t,clip_r,clip_b);
+    uint32_t pbg=0xFFFFFF;int has_pbg=layout_page_bg(&pbg);
+    if(has_pbg||passive)fill(vx,vy,vw,vh,has_pbg?pbg:0xFFFFFF,inherited_op);
+    int layers=!passive && LOGIT_HAVE(top_layer_count)?top_layer_count():0;
+#ifdef PAINT_MODAL_ORDINARY_ORDER
+    layers=0;
+#endif
+    /* Separate passes preserve z order WITHIN each layer while excluding its
+     * items from the normal pass. Appending a second modal drawing without
+     * this filter paints translucent content twice and leaves an active ghost
+     * at its former flow position. The gate records paint calls, not pixels. */
+    for(int layer=0;layer<=layers;layer++) {
+        struct node *modal=layer && LOGIT_HAVE(top_layer_at)?top_layer_at(layer-1):0;
+        int scroll=modal?0:page_scroll;
+        int dx=vx-(modal?0:scroll_x);
+        g_xf_key=0;g_xf_hit=0;
+        if(modal && LOGIT_HAVE(top_layer_is_modal) && top_layer_is_modal(modal)) {
+            set_clip(vx,vy,vx+vw,vy+vh);
+            fill(vx,vy,vw,vh,0x000000,100);
+            pd_record(modal,vx,vy,vw,vh,0x4d4f4441u);
+        }
     for (int i = 0; i < n; i++) {
         const struct item *e0 = &it[i], *e = e0;
-        if (e->hidden) continue;                  /* visibility:hidden / opacity:0 */
+        int viewport_local=modal || css_viewport_fixed_owner(e->node);
+        int scroll=viewport_local?0:page_scroll;
+        int dx=vx-(viewport_local?0:scroll_x);
+#ifndef PAINT_MODAL_ORDINARY_ORDER
+        struct node *owner=LOGIT_HAVE(top_layer_owner)?top_layer_owner(e->node):0;
+        if(owner!=modal)continue;
+#endif
+        if (e->hidden || e->type == IT_HIT || item_backface_culled(e->node)) continue; /* hit region has no ink */
+        if (paint_zero_opacity_group(e->node)) continue;
+        struct item scrolled;
+        if(!passive && LOGIT_HAVE(js_cssom_project_item)) {
+            scrolled=*e;js_cssom_project_item(&scrolled);e=&scrolled;
+        }
 
         /* `transform`, if any ancestor of this item has one. The item is
          * REPLACED by a copy carrying its transformed box, so everything below
@@ -2419,26 +2732,14 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
         struct item tmp;
         struct gfx_matrix xm;
         int xkind = 0;                            /* 0 none, 1 exact, 2 rotate/skew */
-        int sx0 = vx + e->x, sy0 = vy + e->y - scroll;
-        if (item_xform(e, vx, vy, scroll, &xm)) {
+        int sx0 = dx + e->x, sy0 = vy + e->y - scroll;
+        if (item_xform(e, dx, vy, scroll, &xm)) {
             xkind = xf_is_axis(&xm) ? 1 : 2;
-            int px[4], py[4];
-            static const int qx[4] = { 0, 1, 1, 0 }, qy[4] = { 0, 0, 1, 1 };
-            for (int k = 0; k < 4; k++) {
-                gfx_m_apply(&xm, (sx0 + qx[k] * e->w) * GFX_ONE,
-                                 (sy0 + qy[k] * e->h) * GFX_ONE, &px[k], &py[k]);
-                px[k] = p8(px[k]); py[k] = p8(py[k]);
-            }
-            int bx0 = px[0], bx1 = px[0], by0 = py[0], by1 = py[0];
-            for (int k = 1; k < 4; k++) {
-                if (px[k] < bx0) bx0 = px[k];
-                if (px[k] > bx1) bx1 = px[k];
-                if (py[k] < by0) by0 = py[k];
-                if (py[k] > by1) by1 = py[k];
-            }
+            int bx, by, bw, bh;
+            xf_map_box(&xm, sx0, sy0, e->w, e->h, &bx, &by, &bw, &bh);
             tmp = *e;
-            tmp.x = bx0 - vx; tmp.y = by0 - vy + scroll;
-            tmp.w = bx1 - bx0; tmp.h = by1 - by0;
+            tmp.x = bx - dx; tmp.y = by - vy + scroll;
+            tmp.w = bw; tmp.h = bh;
             /* Lengths that are not the box itself scale with the matrix: a
              * `scale(2)` heading is twice the type size, not the same type in
              * a bigger box, and its corner radius doubles with it. The uniform
@@ -2468,16 +2769,16 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
         }
         int top = e->y - scroll;                  /* viewport-local top */
         if (top + e->h < 0 || top > vh) continue; /* fully outside */
-        int sx = vx + e->x;
+        int sx = dx + e->x;
         int sy = vy + top;
 
         /* overflow: re-program the clip only when this item's differs from the
          * one already in force. Items under one clipping ancestor are
          * contiguous in the list, so in practice this is two syscalls per
          * scroller rather than two per box. */
-        int wx0 = vx, wy0 = vy, wx1 = vx + vw, wy1 = vy + vh;
+        int wx0=clip_l,wy0=clip_t,wx1=clip_r,wy1=clip_b;
         if (e->has_clip) {
-            int a0 = vx + e->clip_x, b0 = vy + e->clip_y - scroll;
+            int a0 = dx + e->clip_x, b0 = vy + e->clip_y - scroll;
             int a1 = a0 + e->clip_w, b1 = b0 + e->clip_h;
             if (a0 > wx0) wx0 = a0;
             if (b0 > wy0) wy0 = b0;
@@ -2498,7 +2799,7 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
         const struct rclip *rc = 0;
 #ifndef PAINT_NEGCTL_NO_RCLIP
         if ((e->type == IT_RECT || e->type == IT_IMAGE) &&
-            rclip_of(e, vx, vy, scroll, &rcbuf)) rc = &rcbuf;
+            rclip_of(e, dx, vy, scroll, &rcbuf)) rc = &rcbuf;
 #endif
         /* Every `continue` above this line means "not painted" -- reaching
          * here means this item WILL put ink on screen, which is exactly what
@@ -2506,9 +2807,33 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
          * (sx, sy, e->w, e->h), not the post-clip intersection: a clipped
          * item's full box can be a slight OVER-report of what actually
          * changed, which is the safe direction (rule 3), never the reverse. */
-        pd_record(e->node, sx, sy, e->w, e->h, pd_item_sig(e));
+        struct fpaint control_state;
+        const struct fpaint *control = 0;
+        if (e->type == IT_CONTROL) {
+            if(passive){
+                /* Child controls have no interactive form owner yet. Calling
+                 * fc_paint_state would register child nodes in the parent's
+                 * singleton and retain them after child teardown. Render only
+                 * immutable DOM state, with no caret/focus/media callbacks. */
+                memset(&control_state,0,sizeof control_state);
+                control_state.kind=e->ctl;control_state.disabled=1;control_state.caret_x=-1;
+                control_state.insets=fc_content_insets(e->node);
+                int font=e->ctl_font>0?e->ctl_font:14;
+                control_state.line_h=font+font/4;control_state.nline=1;
+                control_state.checked=dom_attr(e->node,"checked")!=0;
+                const char *value=(e->ctl==FC_PASSWORD||e->ctl==FC_FILE)?0:dom_attr(e->node,"value");
+                control_state.text=value;control_state.len=value?(int)strlen(value):0;
+                control_state.text_w=value?text_measure(value,control_state.len,font,e->ctl_mono):0;
+            }else control_paint_state(e, &control_state);
+            control = &control_state;
+        }
+        /* The native focus ring extends 2 px outside a control's border box.
+         * Include that ink in both snapshots so blur also clears the old ring. */
+        int control_pad = control ? 2 : 0;
+        pd_record(e->node, sx-control_pad, sy-control_pad,
+                  e->w+2*control_pad, e->h+2*control_pad, pd_item_sig(e, control));
 
-        int op = e->opacity;                      /* 0..255 */
+        int op = e->opacity*inherited_op/255;                      /* 0..255 */
 
         if (e->type == IT_RECT) {
             /* background-color's own alpha and the element's opacity multiply:
@@ -2689,6 +3014,54 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             /* box-shadow, inset half: OVER the box's own background and
              * border, which is what `inset` means. */
             if (!rect_done) paint_shadows(e, sx, sy, r, op, 0);
+            /* Earlier frames had no child-document paint pipeline. Passive
+             * documents now own a child display list; refused/unavailable
+             * documents retain this native explicit-open fallback. It offers
+             * the real src as a user action without changing
+             * author DOM, removing the cross-origin guard, or claiming that
+             * frame content loaded. Transforms are withheld until chrome hit
+             * geometry can follow the same transformed text representation. */
+            int fx,fy,fw,fh;
+            struct passive_frame_view fv;
+            int embedded=!passive && !xkind && LOGIT_HAVE(passive_frame_view) &&
+                passive_frame_view(e->node,&fv);
+            if(embedded &&
+#ifdef BROWSER_PASSIVE_NO_PAINT
+               0 &&
+#endif
+               LOGIT_HAVE(passive_frame_content_box) &&
+               passive_frame_content_box(e->node,e->w,e->h,&fx,&fy,&fw,&fh)) {
+                int l=sx+fx,t=sy+fy,rr=l+fw,bb=t+fh;
+                if(l<wx0)l=wx0;if(t<wy0)t=wy0;if(rr>wx1)rr=wx1;if(bb>wy1)bb=wy1;
+                if(rr>l&&bb>t){
+                    /* Switch only completed document contexts. This pass
+                     * never runs JS or reflows the unfinished parent layout.
+                     * Child item pointers remain private, and its clip is an
+                     * intersection with every parent viewport/overflow clip. */
+                    struct layout_context *previous=layout_context_activate(fv.layout);
+                    paint_display_list(sx+fx,sy+fy,fw,fh,0,0,1,l,t,rr,bb,op);
+                    layout_context_activate(previous);
+                    g_xf_key=0;g_xf_hit=0;
+                    /* Raw login templates may contain contradictory hidden
+                     * status labels until their scripts execute. Native chrome
+                     * states the actual capability; it changes no author DOM
+                     * and cannot be mistaken for a child authentication result. */
+                    if(fv.scripts_disabled&&fh>=18){
+                        int ny=sy+fy+fh-18;set_clip(l,t,rr,bb);
+                        fill(sx+fx,ny,fw,18,0xEEF1F5,op);
+                        gui_text_run(sx+fx+4,ny+3,11,0,mix(0xEEF1F5,0x465160,op),
+                                     PASSIVE_FRAME_SCRIPT_NOTICE,sizeof PASSIVE_FRAME_SCRIPT_NOTICE-1);
+                        ptx_note(sx+fx+4,ny+3,PASSIVE_FRAME_SCRIPT_NOTICE,sizeof PASSIVE_FRAME_SCRIPT_NOTICE-1);
+                    }
+                    set_clip(wx0,wy0,wx1,wy1);
+                }
+            }
+            if(!embedded && !passive && !xkind && frame_open_source(e->node) && frame_open_box(e->w,e->h,&fx,&fy,&fw,&fh)) {
+                fill(sx+fx,sy+fy,fw,fh,0xE8EEF9,op);
+                int tw=text_measure(FRAME_OPEN_LABEL,sizeof FRAME_OPEN_LABEL-1,14,0);
+                gui_text_run(sx+fx+(fw-tw)/2,sy+fy+(fh-14)/2,14,0,
+                             mix(0xE8EEF9,0x2458A6,op),FRAME_OPEN_LABEL,sizeof FRAME_OPEN_LABEL-1);
+            }
         } else if (e->type == IT_TEXT) {
             /* Opacity on text is folded into the COLOUR, and that is exact, not
              * an approximation of compositing: the glyph blend the kernel does
@@ -2707,7 +3080,7 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
              * gui_text_run_w, not gui_text_run: the plain name keeps its old
              * seven arguments for the ~30 c/apps/gui call sites that have no
              * weight to pass. */
-            gui_text_run_w(sx, sy, e->font_px, e->mono, col, e->text, e->len, e->bold);
+            paint_text_run_spaced(e, sx, sy, col);
             ptx_note(sx, sy, e->text, e->len);
             /* text-decoration. `y` is the top of the em box -- text_draw_run
              * adds the ascent itself, and the ascent lives in the kernel's font
@@ -2729,21 +3102,21 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
              * lets it blit; with no engine linked, the box paints black, which
              * is what a <video> with no source looks like anyway. Weak, so the
              * host layout/paint tests link without any of it. */
-            if (LOGIT_HAVE(media_paint_box))
+            if (!passive && LOGIT_HAVE(media_paint_box))
                 media_paint_box(e->node, sx, sy, e->w, e->h, cl_x0, cl_y0,
                                 cl_x1 - cl_x0, cl_y1 - cl_y0);
             else
                 fill(sx, sy, e->w, e->h, 0x000000, op);
         } else if (e->type == IT_CANVAS) {
             int cw = 0, ch = 0;
-            const unsigned char *cpx = LOGIT_HAVE(canvas_pixels)
+            const unsigned char *cpx = !passive && LOGIT_HAVE(canvas_pixels)
                                      ? canvas_pixels(e->node, &cw, &ch) : 0;
             /* Drawn at its OWN size into the box CSS gave it; when the two
              * differ the compositor's rescale applies, which is the spec's
              * behaviour and is why they are separate quantities. */
             if (cpx && cw > 0 && ch > 0) gui_blit(sx, sy, e->w, e->h, cpx, cw, ch);
         } else if (e->type == IT_CONTROL) {
-            paint_control(e, sx, sy);
+            paint_control(e, sx, sy, control);
         } else if (e->type == IT_IMAGE && e->img) {
             gui_blit(sx, sy, e->w, e->h, e->img->rgba, e->img->w, e->img->h);
             /* An image cannot have its own alpha modulated without copying the
@@ -2758,6 +3131,17 @@ void browser_paint(int vx, int vy, int vw, int vh, int scroll)
             if (rc) img_rclip(sx, sy, e->w, e->h, backdrop_at(it, i), rc);
         }
     }
+    } /* top-layer pass */
+}
+
+void browser_paint_scroll(int vx,int vy,int vw,int vh,int scroll_x,int scroll)
+{
+    g_pd_cur_n=0;g_ptx_n=g_ptx_runs=g_ptx_chars=0;
+    uint32_t pbg=0;int has_pbg=layout_page_bg(&pbg);
+    int pd_bg_changed=!g_pd_have_prev_bg||has_pbg!=g_pd_prev_pbg_has||
+        (has_pbg&&pbg!=(uint32_t)g_pd_prev_pbg);
+    g_pd_prev_pbg_has=has_pbg;g_pd_prev_pbg=(int)pbg;g_pd_have_prev_bg=1;
+    paint_display_list(vx,vy,vw,vh,scroll_x,scroll,0,vx,vy,vx+vw,vy+vh,255);
     gui_clip(0, 0, 0, 0);
     cl_x0 = cl_y0 = 0; cl_x1 = cl_y1 = 0;
 
@@ -2831,38 +3215,71 @@ static int item_hit(const struct item *e, int x, int dy)
     return 1;
 }
 
-int browser_hittest(int x, int y, int scroll, char *buf, int max)
+int browser_frame_open_hit(int x,int y,int scroll_x,int scroll,const struct node *node)
 {
-    if (max <= 0) return 0;
-    const struct item *it = layout_items();
-    int n = layout_count();
-    int dy = y + scroll;                          /* into doc coordinates */
-    for (int i = n - 1; i >= 0; i--) {            /* topmost first */
-        const struct item *e = &it[i];
-        if (!e->href || e->hidden) continue;
-        if (item_hit(e, x, dy)) {
-            int o = 0;
-            while (e->href[o] && o < max - 1) { buf[o] = e->href[o]; o++; }
-            buf[o] = 0;
-            return 1;
-        }
+    if(!frame_open_source(node)||(LOGIT_HAVE(passive_frame_view)&&passive_frame_view(node,0)))return 0;
+    const struct item *it=layout_items();
+    for(int i=layout_count()-1;i>=0;i--) {
+        struct item e=it[i];
+        if(e.node!=node || e.type!=IT_RECT || e.hidden || !e.opacity || item_backface_culled(e.node))continue;
+        if(LOGIT_HAVE(js_cssom_project_item))js_cssom_project_item(&e);
+        struct gfx_matrix xm;
+        if(item_xform(&e,0,0,0,&xm))continue;
+        int fixed=css_viewport_fixed_owner(node) || (LOGIT_HAVE(top_layer_owner)&&top_layer_owner(node));
+        int hx=x+(fixed?0:scroll_x),hy=y+(fixed?0:scroll),bx,by,bw,bh;
+        if(!item_hit(&e,hx,hy) || !frame_open_box(e.w,e.h,&bx,&by,&bw,&bh))continue;
+        return hx>=e.x+bx && hx<e.x+bx+bw && hy>=e.y+by && hy<e.y+by+bh;
     }
     return 0;
 }
 
+int browser_hittest(int x, int y, int scroll, char *buf, int max)
+{
+    if (!buf || max <= 0) return 0;
+    browser_hittest_node(x, y, scroll, 0, buf, max);
+    return buf[0] != 0;
+}
+
+/* Pointer hit testing and keyboard focus share the same inert ancestry
+ * predicate. The weak edge preserves painter-only host consumers; the shipped
+ * BROWSER_PIPE always links focus.c. Programmatic dispatchEvent remains valid
+ * on inert nodes, so this filter belongs in trusted hit testing, not dispatch. */
+extern int focus_is_inert(const struct node *n) LOGIT_WEAK;
+LOGIT_WEAK_STUB(focus_is_inert);
 int browser_hittest_node(int x, int y, int scroll, struct node **node, char *href, int max)
+{
+    return browser_hittest_node_scroll(x,y,0,scroll,node,href,max);
+}
+int browser_hittest_node_scroll(int x, int y, int scroll_x, int scroll,
+                                struct node **node, char *href, int max)
+{
+    return browser_hittest_node_viewport(0,0,x,y,scroll_x,scroll,node,href,max);
+}
+int browser_hittest_node_viewport(int vx, int vy, int x, int y,
+                                  int scroll_x, int scroll,
+                                  struct node **node, char *href, int max)
 {
     if (node) *node = 0;
     if (href && max > 0) href[0] = 0;
     const struct item *it = layout_items();
     int n = layout_count();
-    int dy = y + scroll;
+    struct node *modal=LOGIT_HAVE(top_layer_current)?top_layer_current():0;
+    int layers=LOGIT_HAVE(top_layer_count)?top_layer_count():0;
+    g_xf_key=0;g_xf_hit=0;
     /* Back to front. The display list is emitted parent-before-child (a block's
      * background rect, then its text), so the LAST box covering the point is the
      * innermost one -- which is the element a DOM event should target. */
+    for(int layer=layers;layer>=0;layer--) {
+    struct node *owner=layer && LOGIT_HAVE(top_layer_at)?top_layer_at(layer-1):0;
+    int hx=x+scroll_x,dy=y+scroll;
     for (int i = n - 1; i >= 0; i--) {
-        const struct item *e = &it[i];
-        if (e->hidden || !item_hit(e, x, dy)) continue;
+        struct item projected;
+        const struct item *e = &projected;
+        if((LOGIT_HAVE(top_layer_owner)?top_layer_owner(it[i].node):0)!=owner)continue;
+        input_item_geometry(&it[i],vx,vy,scroll_x,scroll,&projected);
+        if (modal && LOGIT_HAVE(top_layer_allows_input) && !top_layer_allows_input(e->node))continue;
+        if (e->hidden || item_backface_culled(e->node) || !css_pointer_targetable(e->node) || !item_hit(e, hx, dy)) continue;
+        if (LOGIT_HAVE(focus_is_inert) && focus_is_inert(e->node)) continue;
         if (node) {
             /* Text boxes hang off the TEXT node; an event target must be an
              * element, so climb until we find one. */
@@ -2875,12 +3292,23 @@ int browser_hittest_node(int x, int y, int scroll, struct node **node, char *hre
             while (e->href[o] && o < max - 1) { href[o] = e->href[o]; o++; }
             href[o] = 0;
         }
-        /* An inner box without its own href still navigates its ancestor link
-         * (layout propagates the href down the inline flow, but a background
-         * rect emitted for a nested element may carry none) -- so if this box
-         * had no href, fall back to the link hit test over the same point. */
-        if (href && max > 0 && !href[0]) browser_hittest(x, y, scroll, href, max);
+        /* The old fallback searched every underlying link at this point.
+         * That silently let a non-link overlay navigate the link it covered.
+         * Navigation belongs only to the topmost target's ancestor chain. */
+        if (href && max > 0 && !href[0]) {
+            for (struct node *p = e->node; p; p = p->parent) {
+                const char *u = p->type == N_ELEM && p->tag &&
+                    p->tag[0] == 'a' && !p->tag[1] ? dom_attr(p, "href") : 0;
+                if (!u) continue;
+                int o = 0;
+                while (u[o] && o < max - 1) { href[o] = u[o]; o++; }
+                href[o] = 0;
+                break;
+            }
+        }
         return 1;
     }
+    }
+    if(modal){if(node)*node=modal;return 1;} /* backdrop never clicks through */
     return 0;
 }

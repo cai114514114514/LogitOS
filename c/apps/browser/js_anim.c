@@ -120,8 +120,19 @@
  * of reach: composition still happens only within one WAAPI effect, never
  * between a WAAPI effect and a concurrently-running CSS animation, and the
  * two clocks do not read each other's currentTime.
+ *
+ * [2026-09-09 correction] WAAPI now samples the document clock through the
+ * SAME css_anim_* queue consumer and commits opacity/transform to cstyle.
+ * Other keyframe properties now throw NotSupportedError; full effect-stack
+ * add/accumulate, pseudo targets, relative/3D transforms, implicit endpoints,
+ * pending tasks and
+ * commitStyles are not implemented. See js_waapi_native.inc for ownership.
+ * Timing reference: https://www.w3.org/TR/web-animations-1/#timing-model
  */
 #include "css_interp.h"
+#include "js_anim.h"
+static JSValue wa_register(JSContext *, JSValueConst, int, JSValueConst *);
+static JSValue wa_wake(JSContext *, JSValueConst, int, JSValueConst *);
 
 #include <string.h>
 #include <stdio.h>
@@ -183,6 +194,31 @@ done:
     if (from) JS_FreeCString(ctx, from);
     if (to) JS_FreeCString(ctx, to);
     return out;
+}
+
+/* Keep the public keyframe acceptance and native paint subset in one oracle.
+ * A successfully interpolated width used to look supported while painting its
+ * unchanged base. Reject unsupported properties/units at construction instead.
+ * Relative transform lengths need element/font reference plumbing; 3D needs a
+ * compositor. Neither is silently flattened into the 2D painter here. */
+static JSValue wa_valid(JSContext *ctx, JSValueConst self, int argc, JSValueConst *argv)
+{
+    (void)self;if(argc<2)return JS_FALSE;
+    const char *p=JS_ToCString(ctx,argv[0]),*v=JS_ToCString(ctx,argv[1]);int ok=0;
+    if(p && v && !strcmp(p,"opacity")){
+        char *end=0;double n=strtod(v,&end);
+        while(end && (*end==' ' || *end=='\t' || *end=='\n'))end++;
+        ok=end && end!=v && !*end && n==n && n>-1e30 && n<1e30;
+    }else if(p && v && !strcmp(p,"transform") && strlen(v)<1024 &&
+             !strchr(v,'%') && !strstr(v,"em") && !strstr(v,"vw") && !strstr(v,"vh")){
+        struct ci_xform x;ok=ci_transform_parse(v,-1,16,16,&x)==0;
+        for(int i=0;ok && i<x.n;i++){
+            int k=x.f[i].kind;
+            if(k==CI_TRANSLATEZ || k==CI_TRANSLATE3D || k==CI_SCALEZ || k==CI_SCALE3D ||
+               k==CI_ROTATEX || k==CI_ROTATEY || k==CI_ROTATE3D || k==CI_MATRIX3D || k==CI_PERSPECTIVE)ok=0;
+        }
+    }
+    if(p)JS_FreeCString(ctx,p);if(v)JS_FreeCString(ctx,v);return JS_NewBool(ctx,ok);
 }
 
 /* ======================================================================
@@ -253,6 +289,7 @@ static const char ANIM_JS[] =
 "if (!gcs) return;\n"
 "var II = __anim_interp;\n"
 "var CC = __anim_composite;\n"
+"var validPaint = __wa_valid; delete globalThis.__wa_valid;\n"
 "\n"
 "/* A real DOMException when one exists, the same fallback idiom js_events.c\n"
 " * uses for domErr(): assert_throws_dom checks e.name and e instanceof\n"
@@ -697,6 +734,7 @@ static const char ANIM_JS[] =
 "    compParsed.push(String(cs));\n"
 "  }\n"
 "  if (!compParsed.length) compParsed = ['auto'];\n"
+"  for (var cc=0;cc<compParsed.length;cc++) if(compParsed[cc]!=='auto' && compParsed[cc]!=='replace') throw animDomErr('composite paint unsupported','NotSupportedError');\n"
 "\n"
 "  /* Offsets: range-checked and LOOSELY sorted (non-decreasing; duplicates at\n"
 "   * the same offset are fine, a later smaller one is not) -- but only over\n"
@@ -719,6 +757,7 @@ static const char ANIM_JS[] =
 "        offVal = num;\n"
 "      }\n"
 "    }\n"
+"    for (var prop in perFrame[ii]) if (!validPaint(prop, perFrame[ii][prop])) throw animDomErr('keyframe cannot be painted: ' + prop, 'NotSupportedError');\n"
 "    out.push({\n"
 "      offset: offVal,\n"
 "      computedOffset: offVal,\n"
@@ -760,6 +799,9 @@ static const char ANIM_JS[] =
 "      s = e2 - 1;\n"
 "    }\n"
 "  }\n"
+"  var props={}; for(var q=0;q<out.length;q++)for(var prop in out[q].props)props[prop]=true;\n"
+"  for(var prop in props){var first=-1,last=-1;for(var q=0;q<out.length;q++)if(prop in out[q].props){if(first<0)first=q;last=q;}\n"
+"    if(first===last || out[first].computedOffset!==0 || out[last].computedOffset!==1)throw animDomErr('implicit underlying keyframes unsupported','NotSupportedError');}\n"
 "  return out;\n"
 "}\n"
 "\n"
@@ -778,6 +820,7 @@ static const char ANIM_JS[] =
 "AnimationEffect.prototype.updateTiming = function (opt) {\n"
 "  if (opt === undefined || opt === null) return;\n"
 "  if (typeof opt !== 'object') return;\n"
+"  if (this.__owner) enroll(this.__owner);\n"
 "  var t = this.__timing;\n"
 "  if (opt.duration !== undefined) t.duration = toDurationValue(opt.duration);\n"
 "  if (opt.delay !== undefined) t.delay = toFiniteNumber(opt.delay);\n"
@@ -795,7 +838,7 @@ static const char ANIM_JS[] =
 "AnimationEffect.prototype.getComputedTiming = function () {\n"
 "  var t = this.__timing;\n"
 "  var owner = this.__owner;\n"
-"  var ct = owner ? owner.__hold : null;\n"
+"  var ct = owner ? owner.currentTime : null;\n"
 "  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
 "  var it = t.iterations;\n"
 "  var effIt = (it > 0) ? it : ((it === 0) ? 0 : 1);\n"
@@ -855,19 +898,23 @@ static const char ANIM_JS[] =
 "    if (options.composite !== undefined) {\n"
 "      var oc = String(options.composite);\n"
 "      if (!isValidEffectComposite(oc)) throw new TypeError(\"invalid composite: '\" + oc + \"'\");\n"
+"      if(oc!=='replace')throw animDomErr('composite paint unsupported','NotSupportedError');\n"
 "      this.__composite = oc;\n"
 "    }\n"
 "    if (options.iterationComposite !== undefined) {\n"
 "      var oic = String(options.iterationComposite);\n"
 "      if (!isValidIterationComposite(oic)) throw new TypeError(\"invalid iterationComposite: '\" + oic + \"'\");\n"
+"      if(oic!=='replace')throw animDomErr('iteration accumulation unsupported','NotSupportedError');\n"
 "      this.__iterationComposite = oic;\n"
 "    }\n"
 "    if (options.pseudoElement !== undefined) this.__pseudo = validatePseudo(options.pseudoElement);\n"
+"    if(this.__pseudo)throw animDomErr('pseudo target paint unsupported','NotSupportedError');\n"
 "  }\n"
 "  /* Keyframes are processed AFTER options, so a throwing keyframes getter\n"
 "   * (constructor.html's `{ get left(){ throw test_error } }` case) still\n"
 "   * propagates the exact object the page threw -- nothing here catches it. */\n"
 "  this.__kf = buildFrames(keyframes);\n"
+"  if (this.__owner) enroll(this.__owner);\n"
 "  try { this.__resolveValues(); } catch (e) {}\n"
 "}\n"
 "KeyframeEffect.prototype = Object.create(AnimationEffect.prototype);\n"
@@ -902,13 +949,14 @@ static const char ANIM_JS[] =
 "      }\n"
 "      if (nv) listFor(nv, true).push(owner);\n"
 "    }\n"
+"    if (owner) enroll(owner);\n"
 "    try { this.__resolveValues(); } catch (e) {}\n"
 "  },\n"
 "  configurable: true, enumerable: true\n"
 "});\n"
 "Object.defineProperty(KeyframeEffect.prototype, 'pseudoElement', {\n"
 "  get: function () { return this.__pseudo; },\n"
-"  set: function (v) { this.__pseudo = validatePseudo(v); },\n"
+"  set: function (v) { var p=validatePseudo(v);if(p)throw animDomErr('pseudo target paint unsupported','NotSupportedError');this.__pseudo=p; },\n"
 "  configurable: true, enumerable: true\n"
 "});\n"
 "Object.defineProperty(KeyframeEffect.prototype, 'composite', {\n"
@@ -916,7 +964,8 @@ static const char ANIM_JS[] =
 "  set: function (v) {\n"
 "    var s = String(v);\n"
 "    if (!isValidEffectComposite(s)) throw new TypeError(\"invalid composite: '\" + s + \"'\");\n"
-"    this.__composite = s;\n"
+"    if(s!=='replace')throw animDomErr('composite paint unsupported','NotSupportedError');\n"
+"    this.__composite = s; if(this.__owner)enroll(this.__owner);\n"
 "  },\n"
 "  configurable: true, enumerable: true\n"
 "});\n"
@@ -925,6 +974,7 @@ static const char ANIM_JS[] =
 "  set: function (v) {\n"
 "    var s = String(v);\n"
 "    if (!isValidIterationComposite(s)) throw new TypeError(\"invalid iterationComposite: '\" + s + \"'\");\n"
+"    if(s!=='replace')throw animDomErr('iteration accumulation unsupported','NotSupportedError');\n"
 "    this.__iterationComposite = s;\n"
 "  },\n"
 "  configurable: true, enumerable: true\n"
@@ -948,6 +998,7 @@ static const char ANIM_JS[] =
 "};\n"
 "KeyframeEffect.prototype.setKeyframes = function (keyframes) {\n"
 "  this.__kf = buildFrames(keyframes);\n"
+"  if (this.__owner) enroll(this.__owner);\n"
 "  try { this.__resolveValues(); } catch (e) {}\n"
 "};\n"
 "\n"
@@ -958,12 +1009,12 @@ static const char ANIM_JS[] =
 "KeyframeEffect.prototype.__progress = function () {\n"
 "  var t = this.__timing;\n"
 "  var owner = this.__owner;\n"
-"  var ct = owner ? owner.__hold : null;\n"
+"  var ct = owner ? owner.currentTime : null;\n"
 "  if (ct === null || (owner && owner.__state === 'idle')) return null;\n"
 "  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
 "  var it = t.iterations;\n"
 "  if (!(it > 0)) it = (it === 0) ? 0 : 1;\n"
-"  var active = d * it;\n"
+"  var active = d===0 || it===0 ? 0 : d * it;\n"
 "  var local = ct - t.delay;\n"
 "  var fill = t.fill === 'auto' ? 'none' : t.fill;\n"
 "  if (local < 0) {\n"
@@ -984,7 +1035,8 @@ static const char ANIM_JS[] =
 "  var dir = t.direction;\n"
 "  if (dir === 'reverse') f = 1 - f;\n"
 "  else if (dir === 'alternate' || dir === 'alternate-reverse') {\n"
-"    var iter = (d > 0) ? Math.floor(local / d) : 0;\n"
+"    var iter = (d > 0) ? Math.floor(local / d + t.iterationStart) : 0;\n"
+"    if (local >= active && active > 0 && d > 0 && (local / d + t.iterationStart) % 1 === 0) iter--;\n"
 "    if (dir === 'alternate-reverse') iter += 1;\n"
 "    if (iter % 2) f = 1 - f;\n"
 "  }\n"
@@ -1032,6 +1084,7 @@ static const char ANIM_JS[] =
 "  if (b === a) return kfval(kf[a], prop);\n"
 "  var span = kf[b].computedOffset - kf[a].computedOffset;\n"
 "  var lp = span > 0 ? (p - kf[a].computedOffset) / span : (p < kf[a].computedOffset ? 0 : 1);\n"
+"  lp = easingFn(kf[a].easing)(lp);\n"
 "  var v = II(prop, kfval(kf[a], prop), kfval(kf[b], prop), lp);\n"
 "  if (v === null || v === undefined) return v;\n"
 "  return this.__iterAccum(prop, v, kfval(kf[hi], prop));\n"
@@ -1051,7 +1104,7 @@ static const char ANIM_JS[] =
 "  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
 "  if (!(d > 0)) return v;\n"
 "  var owner = this.__owner;\n"
-"  var ct = owner ? owner.__hold : null;\n"
+"  var ct = owner ? owner.currentTime : null;\n"
 "  if (ct === null) return v;\n"
 "  var local = ct - t.delay;\n"
 "  var it = Math.floor(local / d + t.iterationStart);\n"
@@ -1227,61 +1280,127 @@ static const char ANIM_JS[] =
 "/* ======================================================================\n"
 " * Animation\n"
 " * ====================================================================== */\n"
-"function Animation(effect, timeline) {\n"
-"  this.effect = (effect === undefined) ? null : effect;\n"
-"  if (this.effect) this.effect.__owner = this;\n"
-"  this.timeline = (timeline === undefined) ? __DEFAULT_TIMELINE : timeline;\n"
-"  this.__hold = 0;\n"
-"  this.__state = 'running';\n"
-"  this.id = '';\n"
-"  this.playbackRate = 1;\n"
-"  this.startTime = null;\n"
-"  if (this.effect && this.effect.__target) listFor(this.effect.__target, true).push(this);\n"
-"}\n"
+"// This is a sampled document timeline, sharing the native CSS deadline queue.\n"
+"// Pending play/pause tasks and scroll timelines remain outside this subset.\n"
+"var LIVE = [];\n"
+"var wake = __wa_wake, register = __wa_register;\n"
+"delete globalThis.__wa_wake; delete globalThis.__wa_register;\n"
 "var REG = new WeakMap();\n"
 "function listFor(el, make) {\n"
-"  var l = REG.get(el);\n"
-"  if (!l && make) { l = []; REG.set(el, l); }\n"
-"  return l;\n"
+"  var l = REG.get(el); if (!l && make) { l = []; REG.set(el, l); } return l;\n"
+"}\n"
+"function enroll(a) {\n"
+"  if (LIVE.indexOf(a) < 0) LIVE.push(a);\n"
+"  var el = a.effect && a.effect.__target;\n"
+"  if (el) { var l = listFor(el, true); if (l.indexOf(a) < 0) l.push(a); }\n"
+"  wake();\n"
+"}\n"
+"function endTime(a) {\n"
+"  var t = a.effect && a.effect.__timing;\n"
+"  if(!t)return 0;var d=t.duration==='auto'?0:t.duration;return Math.max(0,t.delay+(d===0||t.iterations===0?0:d*t.iterations)+t.endDelay);\n"
+"}\n"
+"function timelineNow(a) { return a.timeline ? a.timeline.currentTime : null; }\n"
+"function notify(a, kind) {\n"
+"  // Promise reactions and handlers run after sampling, so a finish handler\n"
+"  // cannot navigate/free the native target halfway through a frame commit.\n"
+"  Promise.resolve().then(function () {\n"
+"    var e = typeof Event === 'function' ? new Event(kind) : {type:kind};\n"
+"    var f = a['on' + kind]; if (typeof f === 'function') f.call(a, e);\n"
+"    var l = (a.__listeners[kind] || []).slice();\n"
+"    for (var i=0;i<l.length;i++) { if (typeof l[i] === 'function') l[i].call(a,e); else if(l[i] && l[i].handleEvent) l[i].handleEvent(e); }\n"
+"  });\n"
+"}\n"
+"function finished(a) {\n"
+"  if (a.__state === 'finished') return;\n"
+"  a.__state = 'finished'; if (a.__resolve) a.__resolve(a); notify(a, 'finish');\n"
+"}\n"
+"function sample(a) {\n"
+"  if (a.__state !== 'running') return;\n"
+"  var now = timelineNow(a);\n"
+"  if (now === null || a.__hold === null) return;\n"
+"  if (a.__stamp !== null) a.__hold += (now - a.__stamp) * a.__rate;\n"
+"  a.__stamp = now;\n"
+"  var end = endTime(a);\n"
+"  if (a.__rate > 0 && a.__hold >= end) { a.__hold = end; finished(a); }\n"
+"  else if (a.__rate < 0 && a.__hold <= 0) { a.__hold = 0; finished(a); }\n"
+"}\n"
+"function Animation(effect, timeline) {\n"
+"  this.effect = effect === undefined ? null : effect;\n"
+"  if (this.effect) this.effect.__owner = this;\n"
+"  this.timeline = timeline === undefined ? __DEFAULT_TIMELINE : timeline;\n"
+"  this.__hold = null; this.__state = 'idle'; this.__rate = 1; this.__stamp = null;\n"
+"  this.__listeners = {}; this.id = '';\n"
 "}\n"
 "Object.defineProperty(Animation.prototype, 'currentTime', {\n"
-"  get: function () { return this.__hold; },\n"
-"  set: function (v) { this.__hold = (v === null || v === undefined) ? null : Number(v); },\n"
-"  configurable: true, enumerable: true\n"
+"  get: function () { sample(this); return this.__hold; },\n"
+"  set: function (v) {\n"
+"    var n = v === null ? null : Number(v); if(n !== null && !isFinite(n)) throw new TypeError('non-finite time');\n"
+"    this.__hold = n; this.__stamp = timelineNow(this);\n"
+"    if(n !== null && this.__state === 'idle') this.__state = 'paused';\n"
+"    if(this.__state === 'finished') this.__state = 'paused';\n"
+"    enroll(this);\n"
+"  }, configurable:true, enumerable:true\n"
 "});\n"
-"Object.defineProperty(Animation.prototype, 'playState', {\n"
-"  get: function () { return this.__state; }, configurable: true, enumerable: true\n"
+"Object.defineProperty(Animation.prototype, 'playState', {get:function(){sample(this);return this.__state;},configurable:true});\n"
+"Object.defineProperty(Animation.prototype, 'playbackRate', {\n"
+"  get:function(){return this.__rate;}, set:function(r){sample(this);r=Number(r);if(!isFinite(r))throw new TypeError('non-finite rate');this.__rate=r;this.__stamp=timelineNow(this);enroll(this);}, configurable:true\n"
 "});\n"
-"Animation.prototype.pause = function () { this.__state = 'paused'; };\n"
-"Animation.prototype.play = function () { this.__state = 'running'; if (this.__hold === null) this.__hold = 0; };\n"
+"Object.defineProperty(Animation.prototype, 'startTime', {\n"
+"  get:function(){return this.__state === 'running' && this.__rate && this.__hold !== null && this.__stamp !== null ? this.__stamp-this.__hold/this.__rate : null;},\n"
+"  set:function(v){if(v===null){this.pause();return;}v=Number(v);if(!isFinite(v))throw new TypeError('non-finite startTime');this.__stamp=timelineNow(this);this.__hold=this.__stamp===null?null:(this.__stamp-v)*this.__rate;this.__state='running';enroll(this);}, configurable:true\n"
+"});\n"
+"Animation.prototype.pause = function () { sample(this); if(this.__hold === null)this.__hold=this.__rate<0?endTime(this):0;this.__state='paused';enroll(this); };\n"
+"Animation.prototype.play = function () {\n"
+"  sample(this); var end=endTime(this);\n"
+"  if(this.__rate<0 && !isFinite(end) && (this.__hold===null || this.__hold<=0))throw animDomErr('unbounded reverse','InvalidStateError');\n"
+"  if(this.__hold===null || (this.__rate>0 && this.__hold>=end) || (this.__rate<0 && this.__hold<=0))this.__hold=this.__rate<0?end:0;\n"
+"  if(this.__state==='finished'){this.__promise=null;this.__resolve=null;this.__reject=null;}\n"
+"  this.__state='running';this.__stamp=timelineNow(this);enroll(this);\n"
+"};\n"
 "Animation.prototype.finish = function () {\n"
-"  var t = this.effect ? this.effect.__timing : null;\n"
-"  if (!t) { this.__state = 'finished'; return; }\n"
-"  var d = (t.duration === 'auto') ? 0 : t.duration;\n"
-"  this.__hold = t.delay + d * (t.iterations > 0 ? t.iterations : 1);\n"
-"  this.__state = 'finished';\n"
+"  var end=endTime(this);if(this.__rate===0 || (this.__rate>0 && !isFinite(end)))throw animDomErr('cannot finish','InvalidStateError');\n"
+"  this.__hold=this.__rate<0?0:end;finished(this);enroll(this);\n"
 "};\n"
 "Animation.prototype.cancel = function () {\n"
-"  this.__state = 'idle'; this.__hold = null;\n"
-"  var el = this.effect ? this.effect.__target : null;\n"
-"  var l = el ? listFor(el, false) : null;\n"
-"  if (l) { var i = l.indexOf(this); if (i >= 0) l.splice(i, 1); }\n"
+"  var was=this.__state!=='idle';this.__state='idle';this.__hold=null;this.__stamp=null;\n"
+"  if(this.__reject)this.__reject(animDomErr('animation canceled','AbortError'));\n"
+"  this.__promise=null;this.__resolve=null;this.__reject=null;\n"
+"  var el=this.effect && this.effect.__target,l=el && listFor(el,false),i=l?l.indexOf(this):-1;if(i>=0)l.splice(i,1);\n"
+"  i=LIVE.indexOf(this);if(i>=0)LIVE.splice(i,1);wake();if(was)notify(this,'cancel');\n"
 "};\n"
-"Animation.prototype.reverse = function () { this.playbackRate = -this.playbackRate; };\n"
-"Animation.prototype.updatePlaybackRate = function (r) { this.playbackRate = Number(r); };\n"
-"Animation.prototype.commitStyles = function () {};\n"
-"Animation.prototype.persist = function () {};\n"
-"Animation.prototype.addEventListener = function () {};\n"
-"Animation.prototype.removeEventListener = function () {};\n"
-"Object.defineProperty(Animation.prototype, 'finished', {\n"
-"  get: function () { return Promise.resolve(this); }, configurable: true\n"
+"Animation.prototype.reverse = function () { this.playbackRate=this.__rate===0?-1:-this.__rate;this.play(); };\n"
+"Animation.prototype.updatePlaybackRate = function (r) { this.playbackRate=r; };\n"
+"// Old no-op commitStyles falsely claimed persistence; keep refusal explicit.\n"
+"Animation.prototype.commitStyles = function () { throw animDomErr('commitStyles not implemented','NotSupportedError'); };\n"
+"Animation.prototype.addEventListener=function(t,f){t=String(t);var l=this.__listeners[t]||(this.__listeners[t]=[]);if(l.indexOf(f)<0)l.push(f);};\n"
+"Animation.prototype.removeEventListener=function(t,f){var l=this.__listeners[String(t)],i=l?l.indexOf(f):-1;if(i>=0)l.splice(i,1);};\n"
+"Object.defineProperty(Animation.prototype,'finished',{get:function(){\n"
+"  sample(this);if(!this.__promise){var a=this;this.__promise=new Promise(function(resolve,reject){a.__resolve=resolve;a.__reject=reject;});if(this.__state==='finished')this.__resolve(this);}return this.__promise;\n"
+"},configurable:true});\n"
+"Object.defineProperty(Animation.prototype,'ready',{get:function(){return Promise.resolve(this);},configurable:true});\n"
+"Animation.prototype[Symbol.toStringTag]='Animation';\n"
+"if(typeof globalThis!=='undefined' && !globalThis.Animation)globalThis.Animation=Animation;\n"
+"register(function () {\n"
+"  var out=[false], targets=[];\n"
+"  for(var i=0;i<LIVE.length;i++){\n"
+"    var a=LIVE[i];sample(a);\n"
+"    if(a.__state==='running' && a.__rate && a.timeline)out[0]=true;\n"
+"    var e=a.effect,el=e && e.__target;\n"
+"    if(a.__state!=='running' && (!e || e.__progress()===null)){LIVE.splice(i--,1);continue;}\n"
+"    if(!el || e.__pseudo)continue;\n"
+"    if(targets.indexOf(el)<0)targets.push(el);\n"
+"  }\n"
+"  for(var j=0;j<targets.length;j++){\n"
+"    var el=targets[j],l=listFor(el,false),op=null,xf=null;\n"
+"    for(var i=0;i<l.length;i++){\n"
+"      var e=l[i].effect;if(!e || e.__pseudo)continue;\n"
+"      var v=e.__valueAt('opacity');if(v!==null && v!==undefined)op=v;\n"
+"      v=e.__valueAt('transform');if(v!==null && v!==undefined)xf=v;\n"
+"    }\n"
+"    out.push(el,op,xf);\n"
+"  }\n"
+"  return out;\n"
 "});\n"
-"Object.defineProperty(Animation.prototype, 'ready', {\n"
-"  get: function () { return Promise.resolve(this); }, configurable: true\n"
-"});\n"
-"Animation.prototype[Symbol.toStringTag] = 'Animation';\n"
-"if (typeof globalThis !== 'undefined' && !globalThis.Animation) globalThis.Animation = Animation;\n"
-"\n"
 /* KeyframeAnimationOptions extends KeyframeEffectOptions with exactly two
  * fields THIS method reads and the KeyframeEffect constructor above never
  * sees: `id` and `timeline`. Both are read off the SAME options object
@@ -1300,7 +1419,7 @@ static const char ANIM_JS[] =
 "    if (options.id !== undefined) id = String(options.id);\n"
 "  }\n"
 "  var a = new Animation(effect, timeline);\n"
-"  a.id = id;\n"
+"  a.id = id; a.play();\n"
 "  return a;\n"
 "};\n"
 "EP.getAnimations = function () { var l = listFor(this, false); return l ? l.slice() : []; };\n"
@@ -1330,6 +1449,7 @@ static const char ANIM_JS[] =
 "  });\n"
 "}\n"
 "function animVal(el, prop, base) {\n"
+"  if(prop!=='opacity' && prop!=='transform')return null;\n"
 "  var l = listFor(el, false);\n"
 "  if (!l || !l.length) return null;\n"
 "  for (var i = l.length - 1; i >= 0; i--) {\n"
@@ -1354,7 +1474,7 @@ static const char ANIM_JS[] =
 "if (typeof window !== 'undefined') window.getComputedStyle = patched;\n"
 "\n"
 "if (typeof document !== 'undefined' && document && !document.getAnimations) {\n"
-"  document.getAnimations = function () { return []; };\n"
+"  document.getAnimations = function () { return LIVE.filter(function(a){return a.__state!=='idle';}); };\n"
 "}\n"
 "\n"
 "})();\n";
@@ -1363,6 +1483,9 @@ void js_anim_install(JSContext *ctx)
 {
     if (!ctx) return;
     JSValue g = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx,g,"__wa_valid",JS_NewCFunction(ctx,wa_valid,"validPaint",2));
+    JS_SetPropertyStr(ctx,g,"__wa_register",JS_NewCFunction(ctx,wa_register,"register",1));
+    JS_SetPropertyStr(ctx,g,"__wa_wake",JS_NewCFunction(ctx,wa_wake,"wake",0));
     JS_SetPropertyStr(ctx, g, "__anim_composite",
                       JS_NewCFunction(ctx, js_anim_composite, "__anim_composite", 4));
     JS_SetPropertyStr(ctx, g, "__anim_interp",
@@ -1431,7 +1554,11 @@ void js_anim_install(JSContext *ctx)
  * paint-time values; transform is read LIVE by the painter (no relayout
  * per frame), opacity is snapshotted into the display list at layout (so
  * an opacity tick costs one layout -- css_anim_needs_layout() tells
- * browser.c which kind of frame it owes). Every other property a
+ * browser.c which kind of frame it owes). Correction, 2026-09-13: the
+ * consumer now refreshes opacity/hidden snapshots without rebuilding boxes.
+ * The legacy 2 return value still means those snapshots need refreshing;
+ * geometry-affecting changes are not admitted to this animation tier.
+ * Every other property a
  * @keyframes rule may name -- width, margin, color, border-radius, ... --
  * keeps the element's CASCADE BASE value, which is the same end-state-
  * shaped answer the pre-clock tree gave. The refusal is deliberate and
@@ -1567,6 +1694,7 @@ static int          g_frozen_said;       /* the loud line, once per sheet */
 static unsigned long long g_next_frame;  /* next tick boundary, monotonic ms */
 static int          g_dirty;             /* a tick changed a pixel value */
 static int          g_need_layout;       /* ...and it was an OPACITY change */
+#include "js_waapi_native.inc"
 
 /* ---- small scanners (css_extra's equivalents are static; duplicating
  * eight lines is cheaper than widening a link boundary for a scanner that
@@ -1935,7 +2063,7 @@ static int ca_write(struct canim *e, const char *opv, const char *xfv, int xfl)
                 e->last_op = px;
                 e->ov_op = 1;
                 changed = 1;
-                g_need_layout = 1;             /* opacity is snapshotted at layout */
+                g_need_layout = 1;             /* refresh opacity/hidden snapshots */
             }
         }
     }
@@ -2357,6 +2485,7 @@ void css_anim_reset(void)
 
 void css_anim_snapshot(struct node *root)
 {
+    wa_restore();
     (void)root;                    /* the walk is over ENTRIES, not the tree:
                                     * bounded by the cap, one pass, no alloc */
     for (int i = 0; i < g_ncan; i++) {
@@ -2379,6 +2508,9 @@ void css_anim_snapshot(struct node *root)
 void css_anim_note(struct node *root)
 {
     if (!root) return;
+    /* Scoped cascades leave unrelated styles intact. Restore their WAAPI
+     * overlay before sampling CSS, while fresh styles keep their new base. */
+    wa_restore();
     unsigned long long now = clk_now();
     g_frozen = 0;                              /* counted per walk; the loud */
     note_walk(root, now);                      /* line prints once per sheet */
@@ -2409,10 +2541,12 @@ void css_anim_note(struct node *root)
         if (e->trans_op) trans_frame(e, now, 0);
         if (e->trans_xf) trans_frame(e, now, 1);
     }
+    wa_reapply();
 }
 
 int css_anim_active(void)
 {
+    if (g_wa_pending || g_wa_running) return 1;
     for (int i = 0; i < g_ncan; i++) {
         struct canim *e = &g_ca[i];
         if (!e->node || e->node->serial != e->serial) continue;
@@ -2433,7 +2567,7 @@ long long css_anim_next_due(void)
 int css_anim_tick(unsigned long long now)
 {
     g_dirty = g_need_layout = 0;
-    if (g_ncan == 0) return 0;
+    wa_restore();
     g_next_frame = now + CANIM_FRAME_MS;
     for (int i = 0; i < g_ncan; i++) {
         struct canim *e = &g_ca[i];
@@ -2450,13 +2584,15 @@ int css_anim_tick(unsigned long long now)
         if (e->trans_op) trans_frame(e, now, 0);
         if (e->trans_xf) trans_frame(e, now, 1);
     }
+    wa_render();
     return g_dirty;
 }
 
 int css_anim_needs_layout(void)
 {
     /* 2 = an OPACITY value moved (the display list snapshots opacity at
-     * layout: this frame is owed a relayout_page, not just a repaint),
+     * layout: historically this bought layout_page, now the browser uses
+     * layout_refresh_opacity before repainting),
      * 1 = only paint-live values moved (transform: the redraw browser.c
      * already does is enough), 0 = nothing moved. That 2/1/0 contract is
      * browser.c's comment at the call site; [2026-08-30] the recovered

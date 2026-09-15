@@ -24,6 +24,8 @@
  * getBoundingClientRect (which must flush layout first) and matchMedia (which
  * must be the same media evaluator the cascade uses; see css.h). Installing it
  * earlier means those two get overwritten again by the older versions.
+ * Correction (2026-09-09): matchMedia is now preserved, because webapi's live
+ * lists use the same LibCSS matcher and its pump delivers resize changes.
  *
  * OPTIONAL, like js_platform.c's installers and for the same reason: several
  * host test runners link a subset of the browser and must keep building
@@ -100,7 +102,25 @@
  * See the comment at the top of el_geom() in the .c for the numbers.
  * ========================================================================== */
 
+struct node;
+struct item;
+/* Presentation projection only; does not mutate layout or execute script. */
+CSSOM_FN void js_cssom_scroll_offset(const struct node *, int *x, int *y);
+CSSOM_FN void js_cssom_project_item(struct item *);
+CSSOM_FN int js_cssom_scroll_element_by(struct node *, int dx, int dy);
+/* Pump once before painting; changed elements receive one nonbubbling scroll. */
+CSSOM_FN int js_cssom_dispatch_element_scroll(void);
+CSSOM_FN int js_cssom_element_scroll_pending(void);
+CSSOM_FN void js_cssom_reconcile_element_scroll(void);
 CSSOM_FN void js_cssom_install(JSContext *ctx);
+/* Install the process-lifetime viewport owner. It clamps to the REAL viewport
+ * range, moves the displayed page, calls js_dom_set_scroll with the resulting
+ * position and dispatches scroll only on change. CSSOM does not dispatch a
+ * second event. NULL selects the standalone host layout fallback. Reinstalling
+ * CSSOM for a new document retains the callback; js_dom_init resets the origin. */
+CSSOM_FN void js_cssom_set_scroll_handler(void (*handler)(int x, int y));
+/* Embedder-owned cascade/layout flush; full contract below. */
+CSSOM_FN void js_cssom_set_reflow(void (*fn)(void));
 
 /* Drop the node lookup cache and the per-page side tables. Call from the page
  * teardown path, before JS_FreeContext. Safe to call twice. */
@@ -111,7 +131,15 @@ CSSOM_FN void js_cssom_close(JSContext *ctx);
  * needs a weak definition in the TU that may not link the provider. Emitted
  * only under JS_CSSOM_OPTIONAL, i.e. only in that TU. */
 #ifdef JS_CSSOM_OPTIONAL
+LOGIT_WEAK_STUB(js_cssom_scroll_offset);
+LOGIT_WEAK_STUB(js_cssom_project_item);
+LOGIT_WEAK_STUB(js_cssom_scroll_element_by);
+LOGIT_WEAK_STUB(js_cssom_dispatch_element_scroll);
+LOGIT_WEAK_STUB(js_cssom_element_scroll_pending);
+LOGIT_WEAK_STUB(js_cssom_reconcile_element_scroll);
 LOGIT_WEAK_STUB(js_cssom_install);
+LOGIT_WEAK_STUB(js_cssom_set_scroll_handler);
+LOGIT_WEAK_STUB(js_cssom_set_reflow);
 LOGIT_WEAK_STUB(js_cssom_close);
 #endif
 
@@ -127,7 +155,7 @@ LOGIT_WEAK_STUB(js_cssom_close);
  * With nothing registered the fallback is layout_page() alone, which means
  * geometry after a style write reflects the PREVIOUS cascade. That is a real
  * wrong answer, stated rather than hidden. NULL clears it. */
-void js_cssom_set_reflow(void (*fn)(void));
+/* js_cssom_set_reflow is declared with the optional entry points above. */
 
 /* Test seams. `js_cssom_layouts()` counts the reflows the geometry accessors
  * forced -- the assertion that measure-after-mutate actually re-laid-out, and

@@ -244,9 +244,21 @@ static void flush_layout(void)
     g_saw_dirty = dirty;
     if (!need) return;
     g_layouts++;
-    if (g_reflow) { g_reflow(); return; }
+    if (g_reflow) {
+        g_reflow();
+#ifndef CSS_LIVE_NEGCTL_DIRTY_EDGE
+        /* settle_dom consumes dirtiness. Remembering the pre-callback 1 made
+         * the NEXT write/read look like the same dirty episode: 31px -> 47px
+         * still returned 31px in test-css-live-wiring. Observe the state the
+         * callback left so a second mutation gets its own flush. */
+        g_saw_dirty = js_dom_dirty();
+#endif
+        js_cssom_reconcile_element_scroll();
+        return;
+    }
     int w = css_media_width();
     layout_page(root, w > 0 ? w : 800);
+    js_cssom_reconcile_element_scroll();
 }
 
 /* ==========================================================================
@@ -316,10 +328,23 @@ static void boxstat(const char *what, struct node *el)
  *
  * Under the control an element with no ink of its own borrows its nearest
  * inked ancestor's, so the "nothing is zero" half of the trap is real too. */
+/* The old ink-union fallback is useful for inline fragments, but contents
+ * generates no box at all. Apple-shaped nested navigation passed layout's
+ * boxless check while the guest JS still reported the children's 160x40 union.
+ * Share the exclusion with both rect APIs; scrolling an absent box must also
+ * leave its mandated zero rectangle at the origin. */
+static int contents_boxless(const struct node *el)
+{
+#ifndef CSSOM_CONTENTS_INK_UNION
+    return el && el->style && ((const struct cstyle *)el->style)->display == DISP_CONTENTS;
+#else
+    (void)el; return 0;
+#endif
+}
 static int border_box(struct node *el, int *ox, int *oy, int *ow, int *oh)
 {
     *ox = *oy = *ow = *oh = 0;
-    if (!el) return 0;
+    if (!el || contents_boxless(el)) return 0;
 
     /* Ask layout first. It knows whether a box was generated; the display list
      * only knows whether one was painted. Kept ahead of the IT_RECT scan rather
@@ -462,7 +487,10 @@ static struct node *offset_parent(struct node *el)
  *
  * WHAT "SCROLLING" MEANS HERE, said plainly. This engine paints one document
  * into one viewport and browser.c owns the offset it is painted at; no
- * sub-box has ever scrolled. So these do not move pixels. What they do is
+ * sub-box has ever scrolled. So these do not move pixels.
+ * Correction (2026-09-09): viewport methods now call the embedder scroll
+ * handler and move its real page; sub-box scrolling remains state-only.
+ * The original implementation below was described as: What they do is
  * maintain the SCROLL POSITIONS the CSSOM defines, on the viewport and on
  * every element with a scrollable overflow, with the spec's clamping and the
  * spec's argument handling -- because that is what a page reads back, and it
@@ -546,12 +574,23 @@ static int has_elem_child(const struct node *n)
     return 0;
 }
 
-/* The window's scroll position, in document px. Kept here rather than taken
- * from browser.c because the CSSOM is the thing that WRITES it: a page calls
- * window.scrollTo and then reads window.scrollY back, and in the host runner
- * there is no browser.c at all. js_dom_set_scroll pushes it back out so
- * getBoundingClientRect and a dispatched event's clientY cannot disagree. */
-static int g_win_sx, g_win_sy;
+/* Old model kept g_win_sx/g_win_sy here because a host has no browser.c.
+ * That split made native scrolling invisible to CSSOM and JS scrolling change
+ * only numbers, not pixels. js_dom now owns the published origin for BOTH
+ * paths. The optional embedder callback owns real range/clamping and painting;
+ * the host fallback below uses layout, without inventing a second position. */
+static void (*g_scroll_handler)(int x, int y);
+void js_cssom_set_scroll_handler(void (*handler)(int x, int y))
+{ g_scroll_handler = handler; }
+#ifdef JS_CSSOM_NO_SCROLL_SYNC
+/* The original independent state, retained solely as the watched control. */
+static int g_test_sx, g_test_sy;
+static int win_scroll_x(void) { return g_test_sx; }
+static int win_scroll_y(void) { return g_test_sy; }
+#else
+static int win_scroll_x(void) { int x; js_dom_get_scroll(&x, 0); return x; }
+static int win_scroll_y(void) { int y; js_dom_get_scroll(0, &y); return y; }
+#endif
 
 static double clampd(double v, double lo, double hi)
 { if (!(v > lo)) v = lo; if (v > hi) v = hi; return v; }
@@ -563,32 +602,31 @@ static void win_scroll_max(int *mx, int *my)
     *my = dh - view_h(); if (*my < 0) *my = 0;
 }
 
+/* Normalize non-finite values before integer conversion (CSSOM View 3.2).
+ * A huge finite request still reaches the owner's clamp; our int-based layout
+ * cannot represent subpixels or coordinates above INT_MAX. */
+static int scroll_request(double d)
+{
+    if (!(d > 0) || !__builtin_isfinite(d)) return 0;
+    return d >= 2147483647.0 ? 2147483647 : (int)d;
+}
 static void win_scroll_set(double x, double y)
 {
+#ifndef JS_CSSOM_NO_SCROLL_SYNC
+    if (g_scroll_handler) {
+        g_scroll_handler(scroll_request(x), scroll_request(y));
+        return; /* the owner publishes and dispatches exactly once */
+    }
+#endif
     int mx, my; win_scroll_max(&mx, &my);
-    int nx = (int)clampd(x, 0, mx);
-    int ny = (int)clampd(y, 0, my);
-    /* The `scroll` event, on the JS-driven half of scrolling.
-     *
-     * ONE JAR, TWO DOORS: browser.c's sync_scroll() dispatches `scroll` for
-     * the embedder-driven half (wheel, drag, PgUp/PgDn) against its OWN
-     * position variable (`scroll`) -- but window.scrollTo/scrollBy/scroll,
-     * scrollIntoView and `body.scrollTop = n` all land HERE, against g_win_sx/
-     * g_win_sy, a second independently-maintained position that exists (see
-     * the comment above it) precisely because the host test runner has no
-     * browser.c to own one. A page that does `window.scrollTo(0, 999)` and
-     * listens for `scroll` -- which is most of the WPT cssom-view scroll-event
-     * corpus, since a test harness cannot send a real wheel event either -- is
-     * on THIS door, not that one, and dispatching in only one of the two
-     * doors is the exact bug this tree has already paid for three times (see
-     * CLAUDE.md's "ONE JAR, TWO DOORS"). Guarded the same way sync_scroll
-     * guards itself: only on an actual change, so a script that polls
-     * scrollTo(x, y) with the same x/y in a loop does not get an event storm
-     * spec says should not exist. */
-    int changed = nx != g_win_sx || ny != g_win_sy;
-    g_win_sx = nx;
-    g_win_sy = ny;
-    js_dom_set_scroll(g_win_sx, g_win_sy);
+    int nx = scroll_request(x), ny = scroll_request(y);
+    if (nx > mx) nx = mx;
+    if (ny > my) ny = my;
+    int changed = nx != win_scroll_x() || ny != win_scroll_y();
+#ifdef JS_CSSOM_NO_SCROLL_SYNC
+    g_test_sx = nx; g_test_sy = ny;
+#endif
+    js_dom_set_scroll(nx, ny);
     if (changed) {
         struct js_event_init si = { 0 };
         js_dom_dispatch(js_dom_root(), "scroll", &si);
@@ -614,7 +652,12 @@ static int scroll_max_axis(struct node *el, int horiz)
      * needed the value back into six subtests that read 6. So the
      * measurement is used only where it is sound: a scroller whose content is
      * text (which always paints) or nothing at all. */
-    if (has_elem_child(el)) return -1;
+    /* The old unknown-child exemption above predates the real overflow table.
+     * Use it when linked; keeping -1 here let scrollTop=1e9 move real content
+     * completely out of view after the painter finally consumed the offset. */
+    int measured_w, measured_h;
+    if (has_elem_child(el) && (!LOGIT_HAVE(layout_node_scroll) ||
+        !layout_node_scroll(el, &measured_w, &measured_h))) return -1;
     /* A form control's content is not in the display list as descendants --
      * layout reserves one IT_CONTROL box and forms.c draws the text into it
      * at paint time (see layout.h). So its overflow is unmeasurable from
@@ -822,9 +865,14 @@ static JSValue el_offsetParentHops(JSContext *ctx, JSValueConst t,
  * field on struct node: this is per-page-session state that a handful of
  * elements in a whole corpus ever touch, and struct node is paid for by every
  * node on every page. */
-struct scrollent { struct node *n; uint32_t serial; int top, left; };
+/* Correction (2026-09-09) to the old number-only model above: the same
+ * entries now drive paint, hit testing and client geometry through
+ * js_cssom_project_item. Layout coordinates stay unscrolled: changing them
+ * would shrink scrollHeight on every scroll and feed the result into clamping. */
+struct scrollent { struct node *n; uint32_t serial; int top, left; unsigned long long pending; };
 static struct scrollent *g_scroll;
 static int g_scrolln, g_scrollcap;
+static unsigned long long g_scroll_seq;
 
 static struct scrollent *scroll_for(struct node *n, int create)
 {
@@ -838,7 +886,7 @@ static struct scrollent *scroll_for(struct node *n, int create)
         g_scroll = p; g_scrollcap = cap;
     }
     struct scrollent *e = &g_scroll[g_scrolln++];
-    e->n = n; e->serial = n->serial; e->top = e->left = 0;
+    e->n = n; e->serial = n->serial; e->top = e->left = e->pending = 0;
     return e;
 }
 
@@ -849,7 +897,7 @@ static struct scrollent *scroll_for(struct node *n, int create)
 static int el_scroll_read(struct node *el, int horiz)
 {
     if (!el) return 0;
-    if (is_viewport_scroller(el) || is_body_el(el)) return horiz ? g_win_sx : g_win_sy;
+    if (is_viewport_scroller(el) || is_body_el(el)) return horiz ? win_scroll_x() : win_scroll_y();
     struct scrollent *e = scroll_for(el, 0);
     if (!e) return 0;
     return horiz ? e->left : e->top;
@@ -859,16 +907,23 @@ static void el_scroll_write(struct node *el, int horiz, double d)
 {
     if (!el) return;
     if (is_viewport_scroller(el) || is_body_el(el)) {
-        if (horiz) win_scroll_set(d, g_win_sy);
-        else       win_scroll_set(g_win_sx, d);
+        if (horiz) win_scroll_set(d, win_scroll_y());
+        else       win_scroll_set(win_scroll_x(), d);
         return;
     }
     int m = scroll_max_axis(el, horiz);
-    if (d < 0) d = 0;
+    d = scroll_request(d);
     if (m >= 0 && d > m) d = m;
     struct scrollent *e = scroll_for(el, 1);
-    if (e) { if (horiz) e->left = (int)d; else e->top = (int)d; }
+    if (e) {
+        int old = horiz ? e->left : e->top;
+        if (horiz) e->left = (int)d; else e->top = (int)d;
+        if (old != (int)d && !e->pending) e->pending = ++g_scroll_seq;
+    }
 }
+
+#include "element_scroll_wiring.inc"
+
 
 static JSValue el_scroll_get(JSContext *ctx, JSValueConst t, int magic)
 {
@@ -913,6 +968,8 @@ static int scroll_parse(JSContext *ctx, int argc, JSValueConst *argv,
         if (JS_ToFloat64(ctx, &a->x, argv[0]) < 0) return -1;
         if (JS_ToFloat64(ctx, &a->y, argv[1]) < 0) return -1;
         a->have_x = a->have_y = 1;
+        if (!__builtin_isfinite(a->x)) a->x = 0;
+        if (!__builtin_isfinite(a->y)) a->y = 0;
         return 0;
     }
     if (argc == 0 || JS_IsUndefined(argv[0])) return 0;
@@ -942,9 +999,9 @@ static int scroll_parse(JSContext *ctx, int argc, JSValueConst *argv,
         JS_FreeValue(ctx, b);
         if (!ok) { JS_ThrowTypeError(ctx, "invalid scroll behavior"); return -1; }
     } else JS_FreeValue(ctx, b);
-    /* NaN is treated as 0, per the dictionary's unrestricted double. */
-    if (!(a->x == a->x)) a->x = 0;
-    if (!(a->y == a->y)) a->y = 0;
+    /* Normalize before scrollBy adds the current origin (CSSOM View 3.2). */
+    if (!__builtin_isfinite(a->x)) a->x = 0;
+    if (!__builtin_isfinite(a->y)) a->y = 0;
     return 0;
 }
 
@@ -957,6 +1014,14 @@ static JSValue el_scroll_meth(JSContext *ctx, JSValueConst t, int argc,
     if (scroll_parse(ctx, argc, argv, &a) < 0) return JS_EXCEPTION;
     if (!el) return JS_UNDEFINED;
     flush_layout();
+    /* The viewport moves once, not once per axis: two writes used to dispatch
+     * an intermediate scroll event whose x was new but y was still old. */
+    if (is_viewport_scroller(el) || is_body_el(el)) {
+        double x = a.have_x ? (magic ? win_scroll_x() + a.x : a.x) : win_scroll_x();
+        double y = a.have_y ? (magic ? win_scroll_y() + a.y : a.y) : win_scroll_y();
+        win_scroll_set(x, y);
+        return JS_UNDEFINED;
+    }
     if (a.have_x) el_scroll_write(el, 1, magic ? el_scroll_read(el, 1) + a.x : a.x);
     if (a.have_y) el_scroll_write(el, 0, magic ? el_scroll_read(el, 0) + a.y : a.y);
     return JS_UNDEFINED;
@@ -969,8 +1034,8 @@ static JSValue win_scroll_meth(JSContext *ctx, JSValueConst t, int argc,
     struct scroll_args a;
     if (scroll_parse(ctx, argc, argv, &a) < 0) return JS_EXCEPTION;
     flush_layout();
-    double nx = a.have_x ? (magic ? g_win_sx + a.x : a.x) : g_win_sx;
-    double ny = a.have_y ? (magic ? g_win_sy + a.y : a.y) : g_win_sy;
+    double nx = a.have_x ? (magic ? win_scroll_x() + a.x : a.x) : win_scroll_x();
+    double ny = a.have_y ? (magic ? win_scroll_y() + a.y : a.y) : win_scroll_y();
     win_scroll_set(nx, ny);
     return JS_UNDEFINED;
 }
@@ -978,7 +1043,7 @@ static JSValue win_scroll_meth(JSContext *ctx, JSValueConst t, int argc,
 static JSValue win_scroll_get(JSContext *ctx, JSValueConst t, int magic)
 {
     (void)t;
-    return JS_NewInt32(ctx, magic ? g_win_sx : g_win_sy);
+    return JS_NewInt32(ctx, magic ? win_scroll_x() : win_scroll_y());
 }
 
 /* innerWidth/innerHeight as GETTERS, not as values stamped at install time:
@@ -1061,7 +1126,8 @@ static JSValue el_scrollIntoView(JSContext *ctx, JSValueConst t, int argc,
     /* Inner scrollers first, outwards, then the viewport -- an element inside
      * a scrolling div must be brought into that div before the page is moved
      * to the div. */
-    for (struct node *p = el->parent; p; p = p->parent) {
+    const struct node *boundary=js_cssom_scroll_boundary(el);
+    for (struct node *p = el==boundary?0:el->parent; p; p = p==boundary?0:p->parent) {
         if (p->type != N_ELEM || is_viewport_scroller(p) || is_body_el(p)) continue;
         if (!el_is_scroller(p)) continue;
         int px, py, pw, ph;
@@ -1073,13 +1139,19 @@ static JSValue el_scrollIntoView(JSContext *ctx, JSValueConst t, int argc,
         /* The element's position in the scroller's own content coordinates:
          * document position minus the content-box origin, plus the scroll
          * already applied. */
-        double lox = (double)x - (px + bl) + el_scroll_read(p, 1);
-        double loy = (double)y - (py + bt) + el_scroll_read(p, 0);
+        int ax,ay,pax,pay;
+        js_cssom_scroll_offset(el,&ax,&ay);js_cssom_scroll_offset(p,&pax,&pay);
+        double lox = (double)x-ax-(px-pax+bl)+el_scroll_read(p,1);
+        double loy = (double)y-ay-(py-pay+bt)+el_scroll_read(p,0);
         el_scroll_write(p, 1, align_to(inl, el_scroll_read(p, 1), cw, lox, w));
         el_scroll_write(p, 0, align_to(blk, el_scroll_read(p, 0), ch, loy, h));
     }
-    win_scroll_set(align_to(inl, g_win_sx, view_w(), x, w),
-                   align_to(blk, g_win_sy, view_h(), y, h));
+    int ax,ay;js_cssom_scroll_offset(el,&ax,&ay);
+    /* A viewport-fixed descendant may scroll its internal boxes, but moving
+     * the page or an outer DOM scroller cannot bring it closer to the view. */
+    if(!boundary)
+        win_scroll_set(align_to(inl, win_scroll_x(), view_w(), x-ax, w),
+                       align_to(blk, win_scroll_y(), view_h(), y-ay, h));
     return JS_UNDEFINED;
 }
 
@@ -1090,13 +1162,16 @@ static JSValue el_getBoundingClientRect(JSContext *ctx, JSValueConst t,
     struct node *el = node_from(t);
     flush_layout();
     int x = 0, y = 0, w = 0, h = 0;
+    if (contents_boxless(el)) return make_rect(ctx, 0, 0, 0, 0);
     if (el) border_box(el, &x, &y, &w, &h);
     /* CLIENT coordinates, so the rect moves when the page scrolls. It used to
      * return document coordinates, which is the same number only at scroll 0
      * -- and the CSSOM's own scrollIntoView tests scroll first and measure
      * after. The two coincide on every page that has not scrolled, which is
      * why the difference stayed invisible until window.scrollTo existed. */
-    return make_rect(ctx, x - g_win_sx, y - g_win_sy, w, h);
+    int ax=0, ay=0; js_cssom_scroll_offset(el, &ax, &ay);
+    int layer=el && ((LOGIT_HAVE(top_layer_owner) && top_layer_owner(el)) || css_viewport_fixed_owner(el));
+    return make_rect(ctx, x-ax-(layer?0:win_scroll_x()), y-ay-(layer?0:win_scroll_y()), w, h);
 }
 
 /* getClientRects(): one rect per FRAGMENT. This engine has real fragments -- a
@@ -1113,13 +1188,15 @@ static JSValue el_getClientRects(JSContext *ctx, JSValueConst t, int argc, JSVal
     uint32_t k = 0;
     int n = 0;
     const struct item *it = items(&n);
-    if (el && it)
+    if (el && it && !contents_boxless(el))
         for (int i = 0; i < n; i++) {
             if (!it[i].node || !in_subtree(el, it[i].node)) continue;
             if (it[i].w == 0 && it[i].h == 0) continue;
+            struct item projected=it[i]; js_cssom_project_item(&projected);
+            int layer=(LOGIT_HAVE(top_layer_owner) && top_layer_owner(projected.node)) || css_viewport_fixed_owner(projected.node);
             JS_SetPropertyUint32(ctx, arr, k++,
-                make_rect(ctx, it[i].x - g_win_sx, it[i].y - g_win_sy,
-                          it[i].w, it[i].h));
+                make_rect(ctx, projected.x-(layer?0:win_scroll_x()), projected.y-(layer?0:win_scroll_y()),
+                          projected.w, projected.h));
         }
     /* A DOMRectList is an array-like with item(), not an Array. The difference
      * is invisible to every use of it in the corpus (`.length`, `[0]`,
@@ -1211,22 +1288,32 @@ static JSValue js_hitPaths(JSContext *ctx, JSValueConst t, int argc, JSValueCons
     /* Outside the viewport the spec answers null / an empty list, and that is
      * a real branch: it is what makes elementFromPoint(-1, -1) not the root. */
     if (!(dx >= 0) || !(dy >= 0) || dx >= view_w() || dy >= view_h()) return arr;
-    int px = (int)(dx + g_win_sx), py = (int)(dy + g_win_sy);
+    int px = (int)(dx + win_scroll_x()), py = (int)(dy + win_scroll_y());
 
     int n = 0;
     const struct item *it = items(&n);
     struct node *seen[128];
     int nseen = 0;
     uint32_t k = 0;
+    int layers=LOGIT_HAVE(top_layer_count)?top_layer_count():0;
+    for (int layer=layers;layer>=0;layer--) {
+    struct node *owner=layer && LOGIT_HAVE(top_layer_at)?top_layer_at(layer-1):0;
     for (int i = n - 1; i >= 0 && it; i--) {
-        if (!it[i].node || it[i].hidden) continue;
-        if (px < it[i].x || px >= it[i].x + it[i].w) continue;
-        if (py < it[i].y || py >= it[i].y + it[i].h) continue;
+        if (!it[i].node || it[i].hidden || !css_pointer_targetable(it[i].node)) continue;
+        if ((LOGIT_HAVE(top_layer_owner)?top_layer_owner(it[i].node):0)!=owner) continue;
+        if (LOGIT_HAVE(top_layer_allows_input) && !top_layer_allows_input(it[i].node)) continue;
+        struct item e=it[i]; js_cssom_project_item(&e);
+        int viewport_local=owner || css_viewport_fixed_owner(e.node);
+        int hx=viewport_local?(int)dx:px, hy=viewport_local?(int)dy:py;
+        if (hx < e.x || hx >= e.x+e.w || hy < e.y || hy >= e.y+e.h) continue;
+        if (e.has_clip && (hx < e.clip_x || hx >= e.clip_x+e.clip_w ||
+                          hy < e.clip_y || hy >= e.clip_y+e.clip_h)) continue;
         /* The element and then its ancestors: elementsFromPoint answers the
          * paint tree at that point, so a hit on a child is also a hit on
          * every box that contains it. */
         for (struct node *el = nearest_element(it[i].node); el;
              el = nearest_element(el->parent)) {
+            if (!css_pointer_targetable(el)) continue;
             int dup = 0;
             for (int j = 0; j < nseen; j++) if (seen[j] == el) { dup = 1; break; }
             if (dup) continue;
@@ -1236,18 +1323,21 @@ static JSValue js_hitPaths(JSContext *ctx, JSValueConst t, int argc, JSValueCons
         }
         if (!all) break;
     }
+    }
     /* Nothing painted there, but the point is inside the viewport: the body
      * and the root element still cover it. Without this, a point over blank
      * page answers null, and null is the answer reserved for OUTSIDE the
      * viewport -- two different states that must not read the same. */
     if (k == 0) {
+        struct node *modal=LOGIT_HAVE(top_layer_current)?top_layer_current():0;
+        if(modal){push_path(ctx,arr,&k,modal);return arr;}
         struct node *root = js_dom_root();
         struct node *html = 0, *body = 0;
         for (struct node *c = root ? root->first_child : 0; c; c = c->next)
             if (c->type == N_ELEM) { html = c; break; }
         for (struct node *c = html ? html->first_child : 0; c; c = c->next)
             if (is_body_el(c)) { body = c; break; }
-        if (body) { push_path(ctx, arr, &k, body); if (!all) return arr; }
+        if (body && css_pointer_targetable(body)) { push_path(ctx, arr, &k, body); if (!all) return arr; }
         if (html) push_path(ctx, arr, &k, html);
     }
     return arr;
@@ -1499,19 +1589,11 @@ static JSValue js_CSS_escape(JSContext *ctx, JSValueConst t, int argc, JSValueCo
 /* ==========================================================================
  * matchMedia
  *
- * js_webapi.c ships one with a scanner of its own, and css.h names that as a
- * KNOWN DIVERGENCE: two evaluators for one question do not fail by being
- * approximate, they fail by DISAGREEING -- a page whose @media block LibCSS
- * declined can still take the JS branch that assumes it applied. This one is
- * the cascade's own evaluator (css_media_matches, which IS LibCSS's matcher),
- * and it is installed after js_webapi's so it wins. Overwriting the binding
- * rather than editing their file is what closes the divergence without
- * touching a file this line does not own.
- *
- * The listener surface is present and inert: nothing here changes viewport or
- * colour scheme after load, so a `change` event has no producer. Present
- * because a page that calls addListener on undefined dies, and inert because
- * inventing a fire would be worse than not firing.
+ * The previous installer overwrote js_webapi's live MediaQueryList to use
+ * LibCSS's matcher. That fixed initial answers but silently discarded every
+ * resize listener. Correction 2026-09-09: __mediaMatch now calls LibCSS itself;
+ * preserve its live objects. The local snapshot fallback is only for reduced
+ * host embeddings with no webapi installer/pump, never the shipping browser.
  * ========================================================================== */
 
 static JSValue mql_noop(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -1934,10 +2016,22 @@ static void find_style_elements(struct node *n, struct node **out, int *cnt, int
  * document.styleSheets. */
 static void sheet_write_back(struct node *style, const char *text, size_t len)
 {
+#ifdef CSSOM_SHEET_NO_WRITEBACK
+    /* Control: a real interface whose mutations never reach the cascade. */
+    return;
+#endif
     if (!style || style->type != N_ELEM) return;
     dom_destroy_children(style);
     struct node *t = dom_create_text(style->doc, text, (int)len);
-    if (t) dom_append_child(style, t);
+    if (t) {
+        dom_append_child(style, t);
+        /* Native DOM edits notify resource observers but do not set the JS
+         * layout invalidation flag. Previously text changed while a CSSOM
+         * geometry read still saw the old box (40px rather than 137px in the
+         * host control). Use the same text invalidation door as CharacterData.
+         * Browser stylesheet rebuilding still belongs to its frame observer. */
+        js_dom_text_changed(t);
+    }
 }
 
 /* Which <style> a CSSStyleSheet object writes back to.
@@ -1949,10 +2043,60 @@ static void sheet_write_back(struct node *style, const char *text, size_t len)
  * so a slot recycled out of the DOM's free list can never be written through a
  * stale sheet object. (Rebuilding the table per read, which is what the first
  * version did, made a held sheet's insertRule write into whichever <style>
- * happened to land at its old index.) */
-struct sheetref { struct node *style; uint32_t serial; };
-static struct sheetref *g_sheets;
-static int g_nsheets;
+ * happened to land at its old index.)
+ *
+ * CORRECTION (2026-09-10), kept beside that historical design: the old
+ * public __sx property could be assigned, and plain sheet objects had no
+ * CSSStyleSheet identity. Even the non-adopting component fallback evaluates
+ * `value instanceof CSSStyleSheet`, so a missing interface stopped it BEFORE
+ * it could append a style. Native per-object backing replaces the index;
+ * copied properties/prototypes cannot acquire or redirect a sheet receiver.
+ * Both JS edges are traced: rule/owner expandos can point back to the sheet.
+ * A finalizer alone would turn those cycles into premature collection.
+ *
+ * This is the DOM-OWNED interface, not constructed stylesheet support. The
+ * constructor refuses explicitly; replace/replaceSync/adoptedStyleSheets
+ * stay absent until parsing, replacement and adoption have real effects.
+ * Publishing successful empty sheets would falsely select adoption paths.
+ * Existing parser/rule-array, external-link, disabled/media and collection
+ * liveness limitations are NOT fixed by giving the objects their interface. */
+struct sheetref {
+    struct node *style;
+    uint32_t serial;
+    JSValue owner, rules;
+};
+static JSClassID sheet_class_id;
+
+static void sheet_finalizer(JSRuntime *rt, JSValue val)
+{
+    struct sheetref *s = JS_GetOpaque(val, sheet_class_id);
+    if (!s) return;
+    JS_FreeValueRT(rt, s->owner);
+    JS_FreeValueRT(rt, s->rules);
+    free(s);
+}
+
+static void sheet_gc_mark(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark)
+{
+    struct sheetref *s = JS_GetOpaque(val, sheet_class_id);
+    if (!s) return;
+    JS_MarkValue(rt, s->owner, mark);
+    JS_MarkValue(rt, s->rules, mark);
+}
+
+static JSClassDef sheet_class = { "CSSStyleSheet", sheet_finalizer, sheet_gc_mark };
+
+static JSValue sheet_get_rules(JSContext *ctx, JSValueConst t)
+{
+    struct sheetref *s = JS_GetOpaque2(ctx, t, sheet_class_id);
+    return s ? JS_DupValue(ctx, s->rules) : JS_EXCEPTION;
+}
+
+static JSValue sheet_get_owner(JSContext *ctx, JSValueConst t)
+{
+    struct sheetref *s = JS_GetOpaque2(ctx, t, sheet_class_id);
+    return s ? JS_DupValue(ctx, s->owner) : JS_EXCEPTION;
+}
 
 static JSValue sheet_serialize(JSContext *ctx, JSValueConst rules)
 {
@@ -1973,8 +2117,10 @@ static JSValue sheet_serialize(JSContext *ctx, JSValueConst rules)
 
 static JSValue sheet_insertRule(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
+    struct sheetref *ref = JS_GetOpaque2(ctx, t, sheet_class_id);
+    if (!ref) return JS_EXCEPTION;
     if (argc < 1) return JS_ThrowTypeError(ctx, "insertRule requires a rule");
-    JSValue rules = JS_GetPropertyStr(ctx, t, "cssRules");
+    JSValue rules = JS_DupValue(ctx, ref->rules);
     JSValue lenv = JS_GetPropertyStr(ctx, rules, "length");
     uint32_t n = 0; JS_ToUint32(ctx, &n, lenv); JS_FreeValue(ctx, lenv);
     int32_t idx = 0;
@@ -2004,11 +2150,11 @@ static JSValue sheet_insertRule(JSContext *ctx, JSValueConst t, int argc, JSValu
     JS_FreeValue(ctx, rules);
     size_t tl = 0;
     const char *ts = JS_ToCStringLen(ctx, &tl, txt);
-    JSValue owner = JS_GetPropertyStr(ctx, t, "__sx");
-    int32_t si = -1; JS_ToInt32(ctx, &si, owner); JS_FreeValue(ctx, owner);
-    if (ts && si >= 0 && si < g_nsheets &&
-        g_sheets[si].style && g_sheets[si].style->serial == g_sheets[si].serial)
-        sheet_write_back(g_sheets[si].style, ts, tl);
+    /* Resolve through the DOM handle BEFORE touching its arena pointer. The
+     * serial prevents slot reuse, but by itself cannot protect a freed arena. */
+    struct node *style = js_dom_node_from(ref->owner);
+    if (ts && style && style == ref->style && style->serial == ref->serial)
+        sheet_write_back(style, ts, tl);
     if (ts) JS_FreeCString(ctx, ts);
     JS_FreeValue(ctx, txt);
     return JS_NewInt32(ctx, idx);
@@ -2016,7 +2162,9 @@ static JSValue sheet_insertRule(JSContext *ctx, JSValueConst t, int argc, JSValu
 
 static JSValue sheet_deleteRule(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    JSValue rules = JS_GetPropertyStr(ctx, t, "cssRules");
+    struct sheetref *ref = JS_GetOpaque2(ctx, t, sheet_class_id);
+    if (!ref) return JS_EXCEPTION;
+    JSValue rules = JS_DupValue(ctx, ref->rules);
     JSValue lenv = JS_GetPropertyStr(ctx, rules, "length");
     uint32_t n = 0; JS_ToUint32(ctx, &n, lenv); JS_FreeValue(ctx, lenv);
     int32_t idx = 0;
@@ -2034,14 +2182,62 @@ static JSValue sheet_deleteRule(JSContext *ctx, JSValueConst t, int argc, JSValu
     JS_FreeValue(ctx, rules);
     size_t tl = 0;
     const char *ts = JS_ToCStringLen(ctx, &tl, txt);
-    JSValue owner = JS_GetPropertyStr(ctx, t, "__sx");
-    int32_t si = -1; JS_ToInt32(ctx, &si, owner); JS_FreeValue(ctx, owner);
-    if (ts && si >= 0 && si < g_nsheets &&
-        g_sheets[si].style && g_sheets[si].style->serial == g_sheets[si].serial)
-        sheet_write_back(g_sheets[si].style, ts, tl);
+    struct node *style = js_dom_node_from(ref->owner);
+    if (ts && style && style == ref->style && style->serial == ref->serial)
+        sheet_write_back(style, ts, tl);
     if (ts) JS_FreeCString(ctx, ts);
     JS_FreeValue(ctx, txt);
     return JS_UNDEFINED;
+}
+
+static JSValue sheet_ctor(JSContext *ctx, JSValueConst target,
+                           int argc, JSValueConst *argv)
+{
+    (void)target; (void)argc; (void)argv;
+    return JS_ThrowTypeError(ctx, "Constructed stylesheets are not supported");
+}
+
+static void sheet_interface_install(JSContext *ctx, JSValueConst global)
+{
+    if (!sheet_class_id) JS_NewClassID(&sheet_class_id);
+    JS_NewClass(JS_GetRuntime(ctx), sheet_class_id, &sheet_class);
+    JSValue base = JS_NewObject(ctx);
+    static const JSCFunctionListEntry base_funcs[] = {
+        JS_CGETSET_DEF("ownerNode", sheet_get_owner, NULL),
+    };
+    JS_SetPropertyFunctionList(ctx, base, base_funcs, 1);
+    JSValue proto = JS_NewObjectProto(ctx, base);
+    static const JSCFunctionListEntry funcs[] = {
+        JS_CGETSET_DEF("cssRules", sheet_get_rules, NULL),
+        JS_CGETSET_DEF("rules", sheet_get_rules, NULL),
+        JS_CFUNC_DEF("insertRule", 2, sheet_insertRule),
+        JS_CFUNC_DEF("deleteRule", 1, sheet_deleteRule),
+        JS_CFUNC_DEF("removeRule", 1, sheet_deleteRule),
+    };
+    JS_SetPropertyFunctionList(ctx, proto, funcs, sizeof funcs / sizeof funcs[0]);
+    JSValue base_ctor = JS_NewCFunction2(ctx, sheet_ctor, "StyleSheet", 0,
+                                         JS_CFUNC_constructor, 0);
+    JSValue ctor = JS_NewCFunction2(ctx, sheet_ctor, "CSSStyleSheet", 0,
+                                    JS_CFUNC_constructor, 0);
+    JS_SetConstructor(ctx, base_ctor, base);
+    JS_SetConstructor(ctx, ctor, proto);
+    JS_SetPrototype(ctx, ctor, base_ctor);
+    JSValue symbol = JS_GetPropertyStr(ctx, global, "Symbol");
+    JSValue tag = JS_GetPropertyStr(ctx, symbol, "toStringTag");
+    JSAtom atom = JS_ValueToAtom(ctx, tag);
+    JS_DefinePropertyValue(ctx, base, atom, JS_NewString(ctx, "StyleSheet"), JS_PROP_CONFIGURABLE);
+    JS_DefinePropertyValue(ctx, proto, atom, JS_NewString(ctx, "CSSStyleSheet"), JS_PROP_CONFIGURABLE);
+    JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, tag); JS_FreeValue(ctx, symbol);
+    JS_SetClassProto(ctx, sheet_class_id, proto); /* consumes prototype */
+#ifndef CSSOM_SHEET_NO_INTERFACE
+    JS_SetPropertyStr(ctx, global, "StyleSheet", base_ctor);
+    JS_SetPropertyStr(ctx, global, "CSSStyleSheet", ctor);
+#else
+    /* Control preserves the sheet/cascade implementation, removes only the
+     * interface globals that generic fallback code actually evaluates. */
+    JS_FreeValue(ctx, base_ctor); JS_FreeValue(ctx, ctor);
+#endif
+    JS_FreeValue(ctx, base);
 }
 
 /* document.styleSheets.
@@ -2090,40 +2286,35 @@ static JSValue doc_styleSheets(JSContext *ctx, JSValueConst t)
     list = JS_NewArray(ctx);
     if (JS_IsException(list)) return list;
 
-    /* Appended to, never rebuilt -- see the note on struct sheetref. */
-    int base = g_nsheets;
-    if (cnt) {
-        struct sheetref *p = realloc(g_sheets, (size_t)(base + cnt) * sizeof *p);
-        if (p) { g_sheets = p; g_nsheets = base + cnt; }
-    }
-
     for (int i = 0; i < cnt; i++) {
-        int sx = base + i;
-        if (g_sheets && sx < g_nsheets)
-            { g_sheets[sx].style = found[i]; g_sheets[sx].serial = found[i]->serial; }
         struct sbuf src = { 0, 0, 0 };
         collect_text(found[i], &src);
-        JSValue sh = JS_NewObject(ctx);
+        JSValue sh = JS_NewObjectClass(ctx, sheet_class_id);
+        struct sheetref *ref = calloc(1, sizeof *ref);
+        if (JS_IsException(sh) || !ref) {
+            free(ref); free(src.p); JS_FreeValue(ctx, sh); JS_FreeValue(ctx, list);
+            return JS_ThrowOutOfMemory(ctx);
+        }
         JSValue rules = build_rules(ctx, src.p ? src.p : "", src.len, JS_NULL);
-        JS_SetPropertyStr(ctx, sh, "cssRules", JS_DupValue(ctx, rules));
+        if (JS_IsException(rules)) {
+            free(ref); free(src.p); JS_FreeValue(ctx, sh); JS_FreeValue(ctx, list);
+            return JS_EXCEPTION;
+        }
+        ref->style = found[i]; ref->serial = found[i]->serial;
+        /* Unlike geometry callers, styleSheets can be the FIRST access to
+         * this node. wrapper_of only looks up an existing wrapper and used
+         * to return null for a real owner; use the DOM's identity-preserving
+         * wrapping door, never manufacture a second wrapper here. */
+        ref->owner = js_dom_wrap_node(ctx, found[i]); ref->rules = rules;
+        JS_SetOpaque(sh, ref);
         /* `rules` is the old IE name and is still what a great deal of code
-         * reaches for first; it is the same list, not a copy. */
-        JS_SetPropertyStr(ctx, sh, "rules", rules);
+         * reaches for first; both getters return the SAME native-backed list. */
         JS_SetPropertyStr(ctx, sh, "type", JS_NewString(ctx, "text/css"));
         JS_SetPropertyStr(ctx, sh, "href", JS_NULL);
         JS_SetPropertyStr(ctx, sh, "title", JS_NULL);
         JS_SetPropertyStr(ctx, sh, "disabled", JS_FALSE);
         JS_SetPropertyStr(ctx, sh, "parentStyleSheet", JS_NULL);
         JS_SetPropertyStr(ctx, sh, "ownerRule", JS_NULL);
-        JS_SetPropertyStr(ctx, sh, "ownerNode", wrapper_of(ctx, found[i]));
-        JS_SetPropertyStr(ctx, sh, "__sx", JS_NewInt32(ctx, sx));
-        JS_SetPropertyStr(ctx, sh, "insertRule",
-                          JS_NewCFunction(ctx, sheet_insertRule, "insertRule", 2));
-        JS_SetPropertyStr(ctx, sh, "deleteRule",
-                          JS_NewCFunction(ctx, sheet_deleteRule, "deleteRule", 1));
-        /* addRule/removeRule: the pre-standard spellings, still in the corpus. */
-        JS_SetPropertyStr(ctx, sh, "removeRule",
-                          JS_NewCFunction(ctx, sheet_deleteRule, "removeRule", 1));
         JS_SetPropertyUint32(ctx, list, (uint32_t)i, sh);
         free(src.p);
     }
@@ -2954,18 +3145,26 @@ static void def_getset(JSContext *ctx, JSValueConst proto, const char *name,
     JS_FreeAtom(ctx, a);
 }
 
+#include "js_matrix.inc"
+
 void js_cssom_install(JSContext *ctx)
 {
     if (!ctx) return;
     g_installed = 1;
     g_cache_node = 0; g_cache_ptr = 0;
     g_scrolln = 0;
-    g_win_sx = g_win_sy = 0;
+#ifdef JS_CSSOM_NO_SCROLL_SYNC
+    g_test_sx = g_test_sy = 0;
+#endif
+    /* js_dom_init, not this optional installer, resets the shared origin. */
     g_saw_dirty = 0;
     g_sheetlist = JS_UNDEFINED;
     free(g_sheetsrc); g_sheetsrc = 0; g_sheetsrclen = 0;
 
     JSValue g = JS_GetGlobalObject(ctx);
+
+    matrix_install(ctx, g);
+    sheet_interface_install(ctx, g);
 
     /* The Element prototype. `Element` is the one js_dom.c publishes when its
      * interface hierarchy is built; the createElement fallback is for a build
@@ -3083,9 +3282,13 @@ void js_cssom_install(JSContext *ctx)
     JS_SetPropertyStr(ctx, g, "DOMRectReadOnly",
         JS_NewCFunction2(ctx, js_DOMRect, "DOMRectReadOnly", 4, JS_CFUNC_constructor, 0));
 
-    /* Wins over js_webapi.c's: see the note above js_matchMedia. */
-    JS_SetPropertyStr(ctx, g, "matchMedia",
-        JS_NewCFunction(ctx, js_matchMedia, "matchMedia", 1));
+    JSValue media_fn = JS_GetPropertyStr(ctx, g, "matchMedia");
+#ifndef CSS_LIVE_NEGCTL_MEDIA_OVERWRITE
+    if (!JS_IsFunction(ctx, media_fn))
+#endif
+        JS_SetPropertyStr(ctx, g, "matchMedia",
+            JS_NewCFunction(ctx, js_matchMedia, "matchMedia", 1));
+    JS_FreeValue(ctx, media_fn);
 
     /* document.styleSheets */
     JSValue doc = JS_GetPropertyStr(ctx, g, "document");
@@ -3115,7 +3318,6 @@ void js_cssom_close(JSContext *ctx)
     g_installed = 0;
     g_cache_node = 0; g_cache_ptr = 0;
     free(g_scroll); g_scroll = 0; g_scrolln = g_scrollcap = 0;
-    free(g_sheets); g_sheets = 0; g_nsheets = 0;
     /* The cached StyleSheetList holds a live GC reference; JS_FreeRuntime
      * asserts on one that outlives the context, which is why this is a close
      * hook and not just a static that gets forgotten at exit. */

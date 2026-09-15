@@ -1,3 +1,7 @@
+#include "openlogit_bitmap.h"
+#include "openlogit_draw.h"
+/* 2026-09-13: borrowed pixel targets render through the SDK. Parsing and
+ * layout stay here; the compatibility rasterizer is no longer a dependency. */
 /* js_canvas.c -- CanvasRenderingContext2D, on Open Logit.
  *
  * WHY THIS FILE EXISTS, and the number is the whole argument. The instrument
@@ -805,9 +809,9 @@ static void do_fill(struct canvas2d *c, struct gfx_path *path, int rule)
     struct gfx_rect clip = { 0, 0, c->w, c->h };
     if (c->st.clip) {
         struct gfx_clip_mask cm = { c->st.clip->cov, c->w, c->h, 0, 0 };
-        gfx_fill_clipped(&s, path, rule, &p, &clip, GFX_SUBS, &cm);
+        ol_raster_fill_clipped(&s, path, rule, &p, &clip, GFX_SUBS, &cm);
     } else {
-        gfx_fill(&s, path, rule, &p, &clip);
+        ol_raster_fill(&s, path, rule, &p, &clip);
     }
 }
 
@@ -862,9 +866,9 @@ static void do_stroke(struct canvas2d *c, struct gfx_path *path)
     struct gfx_rect clip = { 0, 0, c->w, c->h };
     if (c->st.clip) {
         struct gfx_clip_mask cm = { c->st.clip->cov, c->w, c->h, 0, 0 };
-        gfx_fill_clipped(&s, &out, GFX_NONZERO, &p, &clip, GFX_SUBS, &cm);
+        ol_raster_fill_clipped(&s, &out, GFX_NONZERO, &p, &clip, GFX_SUBS, &cm);
     } else {
-        gfx_fill(&s, &out, GFX_NONZERO, &p, &clip);
+        ol_raster_fill(&s, &out, GFX_NONZERO, &p, &clip);
     }
 }
 
@@ -1896,11 +1900,10 @@ static JSValue cv_clip(JSContext *ctx, JSValueConst t, int argc, JSValueConst *a
     unsigned char *cov = (unsigned char *)malloc(n);
     if (!cov) return JS_UNDEFINED;
     memset(cov, 0, n);
-    gfx_fill_mask(&c->path, rule, cov, c->w, c->h, 0, 0);
+    ol_raster_mask(&c->path, rule, cov, c->w, c->h, 0, 0);
     if (c->st.clip) {
         const unsigned char *old = c->st.clip->cov;
-        for (size_t i = 0; i < n; i++)
-            cov[i] = (unsigned char)(((int)cov[i] * old[i] + 127) / 255);
+        ol_mask_multiply(cov, old, n, 1, 1);
     }
     struct cv_clip *nc = (struct cv_clip *)malloc(sizeof *nc);
     if (!nc) { free(cov); return JS_UNDEFINED; }
@@ -2056,7 +2059,10 @@ static JSValue cv_strokeRect(JSContext *ctx, JSValueConst t, int argc, JSValueCo
  * here over a coverage mask -- the mask IS the shape, so a rotated CTM clears
  * a parallelogram and not its bounding box. The axis-aligned case (b and c
  * zero, which is every canvas that never called rotate) skips the mask
- * entirely because there the shape and its bounds are the same rectangle. */
+ * entirely because there the shape and its bounds are the same rectangle.
+ * Correction (2026-09-13): OpenLogit now owns destination-out. Both paths
+ * must multiply by the saved clip as well as rectangle coverage; ignoring
+ * that clip erased pixels belonging to adjacent masked Canvas layers. */
 static JSValue cv_clearRect(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     CV_THIS; int x, y, w, h;
@@ -2064,6 +2070,10 @@ static JSValue cv_clearRect(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     if (argc < 4 || arg_fx(ctx, argv[0], &x) || arg_fx(ctx, argv[1], &y) ||
         arg_fx(ctx, argv[2], &w) || arg_fx(ctx, argv[3], &h)) return JS_UNDEFINED;
     if (w == 0 || h == 0) return JS_UNDEFINED;
+    int clip_active = c->st.clip != 0;
+#ifdef CANVAS_CLEAR_CLIP_DISABLED
+    clip_active = 0; /* negative control: the old destination-out bug */
+#endif
 
     if (c->st.m.b == 0 && c->st.m.c == 0) {
         int x0, y0, x1, y1;
@@ -2075,8 +2085,10 @@ static JSValue cv_clearRect(JSContext *ctx, JSValueConst t, int argc, JSValueCon
         int px1 = (x1 + 128) >> 8, py1 = (y1 + 128) >> 8;
         if (px0 < 0) px0 = 0; if (py0 < 0) py0 = 0;
         if (px1 > c->w) px1 = c->w; if (py1 > c->h) py1 = c->h;
-        for (int yy = py0; yy < py1; yy++)
-            memset(c->px + ((size_t)yy * c->w + px0) * 4, 0, (size_t)(px1 - px0) * 4);
+        struct gfx_surface pixels;surf_of(c,&pixels);
+        struct gfx_clip_mask clip = {c->st.clip ? c->st.clip->cov : 0, c->w, c->h, 0, 0};
+        ol_bitmap_erase(&pixels, (struct gfx_rect){px0,py0,px1-px0,py1-py0},
+                        clip_active ? &clip : 0);
         return JS_UNDEFINED;
     }
 
@@ -2093,15 +2105,12 @@ static JSValue cv_clearRect(JSContext *ctx, JSValueConst t, int argc, JSValueCon
             unsigned char *cov = (unsigned char *)malloc((size_t)mw * mh);
             if (cov) {
                 memset(cov, 0, (size_t)mw * mh);
-                gfx_fill_mask(&r, GFX_NONZERO, cov, mw, mh, bx0, by0);
-                for (int yy = 0; yy < mh; yy++)
-                    for (int xx = 0; xx < mw; xx++) {
-                        int a = cov[(size_t)yy * mw + xx];
-                        if (!a) continue;
-                        unsigned char *d = c->px + (((size_t)(by0 + yy) * c->w) + bx0 + xx) * 4;
-                        d[3] = (unsigned char)((d[3] * (255 - a) + 127) / 255);
-                        if (d[3] == 0) { d[0] = d[1] = d[2] = 0; }
-                    }
+                struct gfx_clip_mask clip = {c->st.clip ? c->st.clip->cov : 0, c->w, c->h, 0, 0};
+                ol_raster_mask_clipped(&r, GFX_NONZERO, cov, mw, mh, bx0, by0,
+                                       GFX_SUBS, clip_active ? &clip : 0);
+                struct gfx_surface pixels;surf_of(c,&pixels);
+                struct gfx_clip_mask mask={cov,mw,mh,bx0,by0};
+                ol_bitmap_erase(&pixels,(struct gfx_rect){bx0,by0,mw,mh},&mask);
                 free(cov);
             }
         }
@@ -2163,17 +2172,8 @@ static JSValue cv_getImageData(JSContext *ctx, JSValueConst t, int argc, JSValue
      * w x h and a caller indexing it cannot walk off the end. */
     unsigned char *tmp = (unsigned char *)malloc((size_t)w * h * 4);
     if (!tmp) return JS_ThrowOutOfMemory(ctx);
-    memset(tmp, 0, (size_t)w * h * 4);
-    for (int yy = 0; yy < h; yy++) {
-        int sy = y + yy;
-        if (sy < 0 || sy >= c->h) continue;
-        for (int xx = 0; xx < w; xx++) {
-            int sx = x + xx;
-            if (sx < 0 || sx >= c->w) continue;
-            memcpy(tmp + ((size_t)yy * w + xx) * 4,
-                   c->px + ((size_t)sy * c->w + sx) * 4, 4);
-        }
-    }
+    struct gfx_surface source,out;surf_of(c,&source);gfx_surface_init(&out,tmp,w,h,w*4);
+    if(ol_bitmap_read(&source,x,y,&out)){free(tmp);return JS_ThrowRangeError(ctx,"ImageData dimensions exceed SDK limit");}
     JSValue r = make_imagedata(ctx, w, h, tmp, w * 4);
     free(tmp);
     return r;
@@ -2268,16 +2268,8 @@ static JSValue cv_putImageData(JSContext *ctx, JSValueConst t, int argc, JSValue
     JSValue ab = JS_GetTypedArrayBuffer(ctx, dv, NULL, NULL, NULL);
     if (!JS_IsException(ab)) p = JS_GetArrayBuffer(ctx, &abytes, ab);
     if (p && iw > 0 && ih > 0 && abytes >= (size_t)iw * ih * 4) {
-        for (int yy = 0; yy < ih; yy++) {
-            int ty = dy + yy;
-            if (ty < 0 || ty >= c->h) continue;
-            for (int xx = 0; xx < iw; xx++) {
-                int tx = dx + xx;
-                if (tx < 0 || tx >= c->w) continue;
-                memcpy(c->px + ((size_t)ty * c->w + tx) * 4,
-                       p + ((size_t)yy * iw + xx) * 4, 4);
-            }
-        }
+        struct gfx_surface dst,source;surf_of(c,&dst);gfx_surface_init(&source,p,iw,ih,iw*4);
+        ol_bitmap_copy(&dst,dx,dy,&source,0,0,iw,ih);
     }
     JS_FreeValue(ctx, ab);
     JS_FreeValue(ctx, dv);
@@ -2572,9 +2564,9 @@ static JSValue cv_drawImage(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     struct gfx_rect clip = { 0, 0, c->w, c->h };
     if (c->st.clip) {
         struct gfx_clip_mask cm = { c->st.clip->cov, c->w, c->h, 0, 0 };
-        gfx_fill_clipped(&s, &r, GFX_NONZERO, &p, &clip, GFX_SUBS, &cm);
+        ol_raster_fill_clipped(&s, &r, GFX_NONZERO, &p, &clip, GFX_SUBS, &cm);
     } else {
-        gfx_fill(&s, &r, GFX_NONZERO, &p, &clip);
+        ol_raster_fill(&s, &r, GFX_NONZERO, &p, &clip);
     }
     if (snap) free(snap);
     return JS_UNDEFINED;

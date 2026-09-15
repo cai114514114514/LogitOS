@@ -2,10 +2,38 @@
 #define BROWSER_PAINT_H
 
 struct node;
+struct item;
+/* Prefix advance uses the same spacing segmentation as native glyph paint. */
+int browser_text_run_advance(const struct item *item, int byte_offset);
 
 /* Paint the current layout display list into the window viewport (vx,vy,vw,vh)
  * at the given pixel scroll, using the GUI render syscalls. */
 void browser_paint(int vx, int vy, int vw, int vh, int scroll);
+struct node;
+int browser_content_width(struct node *root, int viewport_width);
+/* Two-axis page origin; viewport clip remains at vx/vy. */
+void browser_paint_scroll(int vx, int vy, int vw, int vh, int scroll_x, int scroll_y);
+/* Viewport-local x/y, explicit scroll offsets. Modal layers are viewport-fixed
+ * and backdrop hits target the dialog (never an underlying link/control). */
+int browser_hittest_node_scroll(int x, int y, int scroll_x, int scroll_y,
+                               struct node **node, char *href, int max);
+/* Input geometry after the same inner-scroll and pure-translation projection
+ * used by paint. vx/vy are the actual paint origin. Coordinates use
+ * viewport+pageScroll, including fixed/top-layer items, so existing caret,
+ * selection and popup callers subtract page scroll once.
+ * The complete border box is retained; this does not crop it to its clip.
+ * Scale/rotation and translated overflow-ancestor clipping are not extended. */
+void browser_input_item_geometry(const struct item *source, int vx, int vy,
+                                  int scroll_x, int scroll_y, struct item *out);
+/* x/y are viewport-local; vx/vy must match paint, preserving fractional-edge
+ * rounding in actual window coordinates. The older scroll entry uses (0,0). */
+int browser_hittest_node_viewport(int vx, int vy, int x, int y,
+                                  int scroll_x, int scroll_y,
+                                  struct node **node, char *href, int max);
+
+/* Native affordance in an unrendered iframe; caller supplies the trusted
+ * topmost hit target. No DOM event API calls this default action. */
+int browser_frame_open_hit(int x,int y,int scroll_x,int scroll_y,const struct node *node);
 
 /* ---- WHAT CHANGED, for gui_flush_rect --------------------------------------
  *
@@ -133,7 +161,7 @@ void browser_paint_rclip_stats(int *applied, int *refused);
  * into buf (<= max) and return 1, else 0. */
 int  browser_hittest(int x, int y, int scroll, char *buf, int max);
 
-/* The same hit test, but resolving to the DOM. Finds the topmost painted box
+/* The same hit test, but resolving to the DOM. Finds the topmost painted box or inline whitespace region
  * containing the point and reports BOTH what an event needs (`*node`, the
  * element the box came from -- a text box resolves to its parent element) and
  * what the default action needs (`href`, the link target, "" if none).
