@@ -56,6 +56,14 @@ int bfetch_resolve(const char *base, const char *ref, char *out, int max)
 { (void)base; if (!ref || !out || max <= 0) return 0; snprintf(out, (size_t)max, "%s", ref); return 1; }
 int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
 { (void)ref; (void)out; (void)outlen; return 0; }
+/* Module-loader retrieval moved to res_fetch plus prefetch. This URL binding
+ * gate executes no modules, but its real page installer links that loader;
+ * keeping only the old bfetch_sync stub made a fresh host link fail before it
+ * could test one URL. Network stays unavailable, rather than succeeding empty. */
+int res_fetch(const char *ref, unsigned char **out, int *outlen)
+{ (void)ref; (void)out; (void)outlen; return -1; }
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) {}
 
 static unsigned long long fake_clock(void) { return 0; }
 

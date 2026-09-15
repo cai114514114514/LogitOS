@@ -349,8 +349,24 @@ static void test_cookie_key(void)
           "invalidate drops every cookie variant (bob)");
 }
 
+static void test_response_metadata(void)
+{
+    char type[128], disposition[768]; const unsigned char body[]="attachment";
+    wacache_reset(); fake_ms=1000;
+    CHECK(wacache_store("/export", "session=a", body, sizeof body, "max-age=60",0,0,0,0,0,0)==0,"attachment body stored");
+    wacache_response_set("/export","session=a","application/pdf","attachment; filename=report.pdf");
+    wacache_response_get("/export","session=a",type,sizeof type,disposition,sizeof disposition);
+    CHECK(!strcmp(type,"application/pdf")&&!strcmp(disposition,"attachment; filename=report.pdf"),"cached response keeps disposition and type");
+    wacache_response_get("/export","session=b",type,sizeof type,disposition,sizeof disposition);
+    CHECK(!type[0]&&!disposition[0],"metadata respects cookie variant");
+    wacache_store("/export","session=a",body,sizeof body,"max-age=60",0,0,0,0,0,0);
+    wacache_response_get("/export","session=a",type,sizeof type,disposition,sizeof disposition);
+    CHECK(!type[0]&&!disposition[0],"replaced document drops old attachment metadata");
+}
+
 int main(void)
 {
+    test_response_metadata();
     test_dates();
     test_cc_tokens();
     test_freshness();

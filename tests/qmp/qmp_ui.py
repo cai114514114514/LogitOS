@@ -260,6 +260,24 @@ def locate_cursor(ppm):
     return None if box is None else (box[0], box[1])
 
 
+def browser_client_point(text, cx, cy):
+    """Client coordinates -> QMP pixels, using the last actual WM geometry.
+
+    Shared with the browser workload and real-site input probes: duplicating
+    this transform is how a correct DOM rectangle becomes an offset click.
+    The browser's current tabs/address chrome occupies 60 logical points;
+    callers must supply client (not document-scrolled) coordinates.
+    """
+    frames = re.findall(r'\[wm\] win \d+ frame (\d+) (\d+) (\d+) (\d+) content (\d+) (\d+) pt[^\n]*Browser', text)
+    if not frames:
+        raise AssertionError('missing guest Browser geometry')
+    x, y, w, h, cw, ch = map(int, frames[-1])
+    if cw <= 0 or ch <= 60 or not (0 <= cx < cw and 0 <= cy < ch - 60):
+        raise AssertionError('browser client point outside visible viewport')
+    scale = w / cw
+    return int(x + cx * scale + 0.5), int(y + h - ch * scale + (60 + cy) * scale + 0.5)
+
+
 def parse_pointer(text):
     """The last `[wm] ptr X Y` in a serial log, or None."""
     got = None
@@ -277,8 +295,14 @@ def parse_pointer(text):
 
 
 KMAP = {" ": "spc", ".": "dot", "\n": "ret", "-": "minus", "/": "slash",
-        "_": "minus", "=": "equal", ",": "comma"}
-SHIFT = {":": "semicolon", "_": "minus", "?": "slash"}
+        "=": "equal", ",": "comma", ";": "semicolon", "'": "apostrophe",
+        "[": "bracket_left", "]": "bracket_right", "\\": "backslash",
+        "`": "grave_accent"}
+SHIFT = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+         "&": "7", "*": "8", "(": "9", ")": "0", "_": "minus", "+": "equal",
+         "{": "bracket_left", "}": "bracket_right", "|": "backslash",
+         ":": "semicolon", '"': "apostrophe", "<": "comma", ">": "dot",
+         "?": "slash", "~": "grave_accent"}
 
 
 class Session:
@@ -650,7 +674,13 @@ class Session:
                 self.screendump(ppm_path, settle=0.2)
                 got = locate_cursor(PPM(ppm_path))
             if got is None:
-                return None
+                # Startup can still be compositing when the first pointer
+                # event arrives. A hardware cursor is absent from screendump,
+                # so neither source has evidence yet. Spend the bounded retry
+                # budget waiting for the guest report, rather than failing
+                # after the first 0.4-second attempt (observed with SDK gate).
+                time.sleep(settle)
+                continue
             if got == (tx, ty):
                 return got
             # Believe the guest, not the model, then re-aim.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The negative controls for the M30 threads gate.
 #
-# Four builds of c/apps/coreutils/thrtest.c, each with exactly ONE guard removed
+# Six builds of c/apps/coreutils/thrtest.c, each with exactly ONE guard removed
 # (tests/thread.mk builds them; the -D names are documented there and in the
 # header of thrtest.c). Every one MUST print THREAD_TEST_FAIL. If any of them
 # passes, the corresponding assertion in the real thrtest is not testing what it
@@ -12,13 +12,15 @@
 #                    speedup check must fail. THIS IS THE IMPORTANT ONE: it is
 #                    what makes the passing run's "T4 < 2*T1" mean "four threads
 #                    ran at once" rather than "the number came out small".
+#   thrtest-barrier  hides the one PTHREAD_BARRIER_SERIAL_THREAD return token.
 #   thrtest-tls      the per-thread value read from a shared global.
+#   thrtest-c11      the C11 mutex removed from a split counter update.
 #   thrtest-nolock   the mutex removed from a split read-modify-write.
 #   thrtest-leak     pthread_detach never called, so nothing is freed.
 #
-# All four run in ONE boot: each is a separate process, so a failure in one
+# All six run in ONE boot: each is a separate process, so a failure in one
 # cannot affect the next, and a single QEMU start under TCG is minutes cheaper
-# than four.
+# than six separate boots.
 
 set -u
 
@@ -29,7 +31,7 @@ LOG="$(mktemp)"
 cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null; rm -f "$LOG"; }
 trap cleanup EXIT
 
-CTRLS="serial tls nolock leak"
+CTRLS="serial barrier tls c11 nolock leak"
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 
 {
@@ -63,7 +65,9 @@ done
 expected_for() {
     case "$1" in
         serial) echo "genuine parallelism" ;;
+        barrier) echo "serial token exactly once" ;;
         tls)    echo "each thread read back its own value" ;;
+        c11)    echo "C11 threads adapters preserve identity" ;;
         nolock) echo "counter is exact" ;;
         leak)   echo "freed their descriptors with no join" ;;
     esac

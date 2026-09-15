@@ -6,29 +6,34 @@
 # THE CONTRACT BEING CHECKED, IN ORDER (this is the point of the milestone:
 # the loader IMPERSONATES GRUB, and every step below is a step GRUB also does,
 # just sourced from UEFI instead of BIOS):
-#   1. "[efi] gop"    -- the loader found a Graphics Output Protocol instance
+#   1. "[efi] load reserved" -- AllocateAddress returned the ELF's fixed
+#                         32-MiB destination and an immediate memory-map
+#                         readback described its full page span as LoaderData
+#   2. "[efi] gop"    -- the loader found a Graphics Output Protocol instance
 #                         and can build the Multiboot2 framebuffer tag from it
-#   2. "[efi] mmap"   -- it captured the UEFI memory map (the mmap tag)
-#   3. "[efi] ebs ok" -- ExitBootServices succeeded (the point of no return:
+#   3. "[efi] kernel map LoaderData confirmed" -- the exact final map/key
+#                         offered to ExitBootServices still owns the full span
+#   4. "[efi] mmap"   -- it captured the UEFI memory map (the mmap tag)
+#   5. "[efi] ebs ok" -- ExitBootServices succeeded (the point of no return:
 #                         ConOut is a dangling pointer from here on, so every
 #                         breadcrumb after this one can ONLY be on serial)
-#   4. "[efi] jump"   -- about to enter the 64->32 bit descent and jump to the
+#   6. "[efi] jump"   -- about to enter the 64->32 bit descent and jump to the
 #                         kernel's Multiboot2 entry, eax/ebx already loaded
-#   5. "[smp] 2 CPU(s) detected" -- the KERNEL's own line: acpi.c consumed
+#   7. "[smp] 2 CPU(s) detected" -- the KERNEL's own line: acpi.c consumed
 #                         the RSDP the loader forwarded as Multiboot2 tag 15
 #                         (acpi-mb2-tag.patch, applied at integration) and the
 #                         MADT behind it named both vCPUs. Before that patch
 #                         this slot asserted "[acpi] no RSDP" PRESENT, on
 #                         purpose -- see the ASSERT #5 note below.
-#   6. "LOGIT_BOOT_OK"  -- the kernel reached 64-bit C and ran its self-test
-#   7. "[wm] desktop live" -- the window manager's own marker (c/kernel/gui/
+#   8. "LOGIT_BOOT_OK"  -- the kernel reached 64-bit C and ran its self-test
+#   9. "[wm] desktop live" -- the window manager's own marker (c/kernel/gui/
 #                         wm.c) that the compositor loop is running, checked
 #                         before the screendump so a slow host does not get a
 #                         screendump of a black boot screen mistaken for "the
 #                         desktop never painted".
 #
-# Steps 1-4 are the loader's (c/boot/efi/*, built by build.sh -- see the
-# BOOTX64.EFI contract in tests/uefi.mk); 5-7 are the kernel's, UNCHANGED by
+# Steps 1-6 are the loader's (c/boot/efi/*, built by build.sh -- see the
+# BOOTX64.EFI contract in tests/uefi.mk); 7-9 are the kernel's, UNCHANGED by
 # this milestone, and are exactly what tests/boot/run-test.sh already checks
 # for the BIOS/GRUB path -- the point of "one kernel, two loaders" is that
 # nothing below the jump needs a UEFI-specific assertion at all.
@@ -82,7 +87,9 @@
 # capability is checked, not quietly assumed.
 #
 # Usage:
-#   run-uefi-test.sh <esp.img> <disk.img> [negctl]
+#   run-uefi-test.sh <esp.img> <disk.img> [mode]
+# Modes additionally cover forced PCIDE and forced LA57 transition controls;
+# the ordinary positive path remains the default.
 #
 # Positional mode (default) asserts the full chain above, then screendumps the
 # guest's own scanout over QMP (never the host window -- tools/shot.sh's
@@ -93,7 +100,7 @@
 # "negctl" mode is THE CONTROL: <esp.img> is expected to be built from a
 # loader whose trampoline hands the kernel eax != 0x36D76289 on purpose (see
 # tests/uefi.mk's BOOTX64-badmagic.EFI rule and its EFI_BAD_MAGIC contract).
-# Steps 1-4 must still happen -- the LOADER did nothing wrong, it did exactly
+# Steps 1-6 must still happen -- the LOADER did nothing wrong, it did exactly
 # what it was built to do -- and then boot.asm's check_multiboot .fail path
 # (c/boot/boot.asm:38-44) must swallow the jump: no LOGIT_BOOT_OK, ever. This
 # is the only way to know the magic check in the kernel's OWN entry point,
@@ -123,7 +130,11 @@ VARS="$(mktemp)"
 cp "$OVMF_VARS_TEMPLATE" "$VARS"
 SOCK="$(mktemp -u /tmp/logit-uefi-XXXXXX.sock)"
 PPM="$(mktemp -u /tmp/logit-uefi-XXXXXX.ppm)"
-PNG="${UEFI_SHOT:-build/uefi-desktop.png}"
+case "$ESP" in
+    */*) ESP_DIR=${ESP%/*} ;;
+    *)   ESP_DIR=. ;;
+esac
+PNG="${UEFI_SHOT:-$ESP_DIR/uefi-desktop.png}"
 
 cleanup() {
     [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null
@@ -173,17 +184,24 @@ wait_for() {
 
 echo "--- UEFI boot ($MODE mode): ESP=$ESP disk=$DISK"
 
-wait_for '\[efi\] gop'    "[efi] gop"    150
-wait_for '\[efi\] mmap'   "[efi] mmap"   100
-wait_for '\[efi\] ebs ok' "[efi] ebs ok" 100
-wait_for '\[efi\] jump'   "[efi] jump"   50
+wait_for '\[efi\] load reserved 0x2000000\.\.' "[efi] load reserved at 32 MiB" 150
+wait_for '\[efi\] gop'                          "[efi] gop"                    100
+wait_for '\[efi\] kernel map LoaderData confirmed' \
+                                                  "final LoaderData ownership" 100
+wait_for '\[efi\] mmap'                         "[efi] mmap"                   50
+wait_for '\[efi\] ebs ok'                       "[efi] ebs ok"                100
+wait_for '\[efi\] jump'                         "[efi] jump"                   50
 
 # Loader done its part; both modes must have gotten this far identically.
 line_of() { grep -an -- "$1" "$LOG" | head -1 | cut -d: -f1; }
-L1=$(line_of '\[efi\] gop'); L2=$(line_of '\[efi\] mmap')
-L3=$(line_of '\[efi\] ebs ok'); L4=$(line_of '\[efi\] jump')
-[ "$L1" -lt "$L2" ] && [ "$L2" -lt "$L3" ] && [ "$L3" -lt "$L4" ] \
-    || fail "loader breadcrumbs out of order (lines $L1,$L2,$L3,$L4) -- the contract is GOP, then mmap, then ExitBootServices, then jump"
+L0=$(line_of '\[efi\] load reserved 0x2000000\.\.')
+L1=$(line_of '\[efi\] gop')
+L2=$(line_of '\[efi\] kernel map LoaderData confirmed')
+L3=$(line_of '\[efi\] mmap'); L4=$(line_of '\[efi\] ebs ok')
+L5=$(line_of '\[efi\] jump')
+[ "$L0" -lt "$L1" ] && [ "$L1" -lt "$L2" ] && [ "$L2" -lt "$L3" ] && \
+    [ "$L3" -lt "$L4" ] && [ "$L4" -lt "$L5" ] \
+    || fail "loader breadcrumbs out of order (lines $L0,$L1,$L2,$L3,$L4,$L5) -- the contract is fixed allocation/readback, GOP, final-map ownership, mmap, ExitBootServices, jump"
 
 if [ "$MODE" = "negctl" ]; then
     # The control: give the kernel 20s to prove it does NOT come up, then
@@ -198,20 +216,70 @@ if [ "$MODE" = "negctl" ]; then
         kill -0 "$QPID" 2>/dev/null || break   # a triple fault ending the VM is also "did not boot" -- fine
         sleep 0.1
     done
-    echo "PASS (negctl): loader ran its full hand-off ([efi] gop/mmap/ebs ok/jump all seen, in order) and the kernel refused the corrupted magic -- no LOGIT_BOOT_OK in 20s"
+    echo "PASS (negctl): loader reserved 32 MiB, confirmed final LoaderData ownership, and completed gop/mmap/ebs/jump; the kernel refused corrupted magic -- no LOGIT_BOOT_OK in 20s"
+    grep -a '^\[efi\]' "$LOG" | sed 's/^/    /'
+    exit 0
+fi
+
+if [ "$MODE" = "pcide-negctl" ]; then
+    # F is emitted only after the test seam has read CR4.PCIDE back as one. A
+    # test-only fresh readback immediately before the far jump emits U and
+    # actively halts when a production-code mutation leaves PCIDE set. This is
+    # an executable observation of CR4 state, not a claim that QEMU TCG models
+    # a physical CPU's architectural #GP at the later CR0.PG clear.
+    wait_for '\[efi\] descent FU' \
+             "forced PCIDE remained set at the pre-jump readback" 50
+    for _ in $(seq 1 50); do
+        grep -aq '\[efi\] descent FI' "$LOG" 2>/dev/null \
+            && fail "PCIDE mutation reached the post-clear I breadcrumb"
+        grep -aq 'LOGIT_BOOT_OK' "$LOG" 2>/dev/null \
+            && fail "PCIDE mutation booted after the pre-jump assertion observed PCIDE still set"
+        kill -0 "$QPID" 2>/dev/null || break
+        sleep 0.1
+    done
+    echo "PASS (pcide-negctl): FU proves a fresh 64-bit pre-jump readback still saw PCIDE=1; the test seam halted before I/far-jump/LOGIT_BOOT_OK"
+    grep -a '^\[efi\]' "$LOG" | sed 's/^/    /'
+    exit 0
+fi
+
+if [ "$MODE" = "la57-negctl" ]; then
+    # The seam sets LA57 only after PG and LME are both off, reads it back, and
+    # emits 5. This mutation removes the production clear, so a fresh readback
+    # must emit U and halt before J and before the kernel receives control.
+    wait_for '\[efi\] descent ICPL5U' \
+             "forced LA57 remained set at the hand-off readback" 50
+    for _ in $(seq 1 50); do
+        grep -aq '\[efi\] descent ICPL5J' "$LOG" 2>/dev/null \
+            && fail "LA57 mutation reached the kernel-jump breadcrumb"
+        grep -aq 'LOGIT_BOOT_OK' "$LOG" 2>/dev/null \
+            && fail "LA57 mutation booted after the hand-off assertion saw LA57 set"
+        kill -0 "$QPID" 2>/dev/null || break
+        sleep 0.1
+    done
+    echo "PASS (la57-negctl): ICPL5U proves LA57=1 after PG/LME-off; the test seam halted before J/LOGIT_BOOT_OK"
     grep -a '^\[efi\]' "$LOG" | sed 's/^/    /'
     exit 0
 fi
 
 # --- positive path only, from here -----------------------------------------
 
+if [ "$MODE" = "pcide-positive" ]; then
+    wait_for '\[efi\] descent FICPLJ' \
+             "forced PCIDE -> clear/readback -> paging descent" 50
+fi
+
+if [ "$MODE" = "la57-positive" ]; then
+    wait_for '\[efi\] descent ICPL5J' \
+             "forced LA57 -> production clear/readback -> kernel jump" 50
+fi
+
 wait_for '\[smp\] 2 CPU(s) detected' "[smp] 2 CPU(s) detected" 150
 wait_for 'LOGIT_BOOT_OK'             "LOGIT_BOOT_OK"           200
 
 # Re-check ordering now that the kernel's two lines are in the log too.
-L5=$(line_of '\[smp\] 2 CPU'); L6=$(line_of 'LOGIT_BOOT_OK')
-[ "$L4" -lt "$L5" ] && [ "$L5" -lt "$L6" ] \
-    || fail "kernel lines out of order relative to the jump (lines $L4,$L5,$L6)"
+L6=$(line_of '\[smp\] 2 CPU'); L7=$(line_of 'LOGIT_BOOT_OK')
+[ "$L5" -lt "$L6" ] && [ "$L6" -lt "$L7" ] \
+    || fail "kernel lines out of order relative to the jump (lines $L5,$L6,$L7)"
 
 # THE REGAINED CAPABILITY, ASSERTED SO IT CANNOT SILENTLY STOP BEING TRUE.
 # This is the assertion the milestone DESIGNED to be rewritten: it shipped
@@ -276,6 +344,6 @@ PY
 [ -n "$COLOURS" ] || fail "could not read back the screendump"
 [ "$COLOURS" -gt 32 ] || fail "guest scanout has only $COLOURS distinct colours sampled -- that is a panic/black screen, not a desktop ($PNG)"
 
-echo "PASS: UEFI loader hand-off verified in order (gop -> mmap -> ebs ok -> jump -> [smp] 2 CPU(s) via forwarded RSDP -> LOGIT_BOOT_OK -> desktop live), screendump $PNG has $COLOURS distinct colours"
+echo "PASS: UEFI loader hand-off verified in order (32-MiB reservation -> final LoaderData map -> gop/mmap/ebs/jump -> [smp] 2 CPU(s) via forwarded RSDP -> LOGIT_BOOT_OK -> desktop live), screendump $PNG has $COLOURS distinct colours"
 grep -a -e '^\[efi\]' -e '^\[acpi\]' -e '^\[blk\]' -e '^\[wm\] desktop live' "$LOG" | sed 's/^/    /'
 exit 0

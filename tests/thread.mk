@@ -1,4 +1,4 @@
-# M30 threads: /bin/thrtest and its four negative controls.
+# M30 threads: /bin/thrtest and its six negative controls.
 #
 # Its own fragment rather than lines in the Makefile for the reason tests/audio.mk
 # and tests/nic.mk give: several lines are editing the Makefile at once, and a
@@ -29,13 +29,15 @@ ifneq ($(THRTEST_SRC),)
 # every line in the tree. A test fragment must not be able to break the build of
 # the thing it tests.
 define THRTEST_RULE
-$(BUILD)/throbj/$(1).o: $(CLIDIR)/thrtest.c c/apps/libc/include/pthread.h
+$(BUILD)/throbj/$(1).o: $(CLIDIR)/thrtest.c c/apps/libc/include/pthread.h c/apps/libc/include/threads.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
-$(BUILD)/$(1).elf: $(BUILD)/throbj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld
+# Defer the target-local AEX activation linker through eval. Otherwise this
+# app builds successfully but keeps the old entry and is packaged as v2.
+$(BUILD)/$(1).elf: $(BUILD)/throbj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/thread.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
+	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
 	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/throbj/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
@@ -53,7 +55,7 @@ $(DISK): $(BUILD)/thrtest.aex
 
 # THE NEGATIVE CONTROLS, on their own disk image.
 #
-# Four builds of the same program with one guard removed from each, and every
+# Six builds of the same program with one guard removed from each, and every
 # one of them MUST fail. They are packed only when THR_NEGCTL is set, so a
 # shipped disk can never contain a deliberately broken program -- the same shape
 # test-monitor-negctl uses for its crippled Monitor.
@@ -62,31 +64,38 @@ $(DISK): $(BUILD)/thrtest.aex
 #                    assertion fails. This is the control that gives the PASSING
 #                    run its meaning: without it, "T4 < 2*T1" is a number nobody
 #                    has seen come out the other way.
+#   thrtest-barrier  hides PTHREAD_BARRIER_SERIAL_THREAD -> the API's
+#                    distinguished-return assertion fails.
 #   thrtest-tls      reads the per-thread value out of a shared global -> the
 #                    "each thread read back its own value" assertion fails.
+#   thrtest-c11      drops the C11 mtx around a split counter update -> the
+#                    combined C11 adapter assertion fails.
 #   thrtest-nolock   drops the mutex around a split read-modify-write -> the
 #                    counter comes out short.
 #   thrtest-leak     never detaches -> descriptors are never returned and
 #                    pthread_create starts failing partway through.
 ifdef THR_NEGCTL
 $(eval $(call THRTEST_RULE,thrtest-serial,-DTHR_NEGCTL_SERIAL))
+$(eval $(call THRTEST_RULE,thrtest-barrier,-DTHR_NEGCTL_BARRIER))
 $(eval $(call THRTEST_RULE,thrtest-tls,-DTHR_NEGCTL_TLS))
+$(eval $(call THRTEST_RULE,thrtest-c11,-DTHR_NEGCTL_C11))
 $(eval $(call THRTEST_RULE,thrtest-nolock,-DTHR_NEGCTL_NOLOCK))
 $(eval $(call THRTEST_RULE,thrtest-leak,-DTHR_NEGCTL_LEAK))
-CLI += thrtest-serial thrtest-tls thrtest-nolock thrtest-leak
-$(DISK): $(BUILD)/thrtest-serial.aex $(BUILD)/thrtest-tls.aex \
+CLI += thrtest-serial thrtest-barrier thrtest-tls thrtest-c11 thrtest-nolock thrtest-leak
+$(DISK): $(BUILD)/thrtest-serial.aex $(BUILD)/thrtest-barrier.aex \
+         $(BUILD)/thrtest-tls.aex $(BUILD)/thrtest-c11.aex \
          $(BUILD)/thrtest-nolock.aex $(BUILD)/thrtest-leak.aex
 
 # thrtest-noguard: the BEFORE half of the guard-page measurement.
 #
-# It is NOT one of the four above and its shape is different, which is worth
-# saying because it sits in the same ifdef. The four are builds that must FAIL,
+# It is NOT one of the six above and its shape is different, which is worth
+# saying because it sits in the same ifdef. The six are builds that must FAIL,
 # and run-thread-negctl.sh requires each to fail on its own assertion. This one
 # must SUCCEED, loudly, at doing the wrong thing: it is `/bin/thrtest guard`
 # with pthread_attr_setguardsize(&a, 0) instead of 4096, and what it
 # demonstrates is that the identical stack overrun causes NO FAULT and
 # corrupts the mapping below the stack instead. It lives on the negctl disk
-# rather than the shipped one for the same reason the other four do -- a
+# rather than the shipped one for the same reason the other six do -- a
 # shipped disk should not carry a program built to misbehave -- and beside
 # them so that ONE boot can run the before and the after against the same
 # kernel, the same allocator and the same addresses.
@@ -120,7 +129,7 @@ test-guard: $(ISO)
 # WIRED TO test-thread-negctl AND NOT TO test-thread, and the choice is about
 # cost rather than taste: test-guard needs the THR_NEGCTL disk, which
 # test-thread-negctl already builds and test-thread does not. Hanging it there
-# adds one QEMU boot to a target that already does five; hanging it on
+# adds one QEMU boot to a target that already does one; hanging it on
 # test-thread would add a whole disk build to a target that does one boot.
 # Named on SOME suite either way -- CLAUDE.md's stranded-controls category
 # exists because "a separate target that nobody names" runs never while looking

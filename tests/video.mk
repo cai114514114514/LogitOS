@@ -22,7 +22,13 @@
 .PHONY: test-vidbench test-vidbench-host test-vidbench-guest
 
 VIDBENCH_INC   := -Ic/lib/video
-VIDBENCH_SRC   := $(wildcard c/lib/video/*.c)
+# vidbench currently dispatches only H.264/H.265. Once MJPEG joined VID_SRC,
+# blindly mirroring that wildcard pulled in mjpeg.c and its img_decode symbol,
+# so the benchmark stopped linking before it could time either decoder. Keep
+# the source set derived from the production list, but subtract the one codec
+# this binary cannot dispatch; adding MJPEG timing requires a real input matrix
+# and image/Rust link, not merely making an unused object link.
+VIDBENCH_SRC   := $(filter-out c/lib/video/mjpeg.c,$(wildcard c/lib/video/*.c))
 VIDBENCH_DIR   := $(BUILD)/vidbenchref
 VIDBENCH_SIZES := 320x240 640x360 1280x720 1920x1080
 VIDBENCH_H264  := $(foreach s,$(VIDBENCH_SIZES),$(VIDBENCH_DIR)/h264-$(s).h264)

@@ -177,11 +177,18 @@ static void run_case(const char *name)
 
     long cmp = n < rn ? n : rn;
     double acc = 0, peak = 0;
+    double ch_acc[VORBIS_MAX_CHANNELS] = {0};
+    double ch_peak[VORBIS_MAX_CHANNELS] = {0};
+    long ch_count[VORBIS_MAX_CHANNELS] = {0};
     for (long i = 0; i < cmp; i++) {
         double d = (double)got[i] - (double)ref[i];
         acc += d * d;
         double a = d < 0 ? -d : d;
         if (a > peak) peak = a;
+        int c = ch ? (int)(i % ch) : 0;
+        ch_acc[c] += d * d;
+        if (a > ch_peak[c]) ch_peak[c] = a;
+        ch_count[c]++;
         hist_add(a);
     }
     double rms = cmp ? sqrt(acc / (double)cmp) : 0.0;
@@ -195,6 +202,33 @@ static void run_case(const char *name)
 
     printf("  %-10s %6d Hz %dch %4d packets %8ld samples  RMS %.3e  peak %.3e\n",
            name, rate, ch, packets, n, rms, peak);
+    if (ch > 1 && (rms >= 1e-6 || peak >= 1e-4)) {
+        printf("               channel differential:");
+        for (int c = 0; c < ch; c++) {
+            double crms = ch_count[c] ? sqrt(ch_acc[c] / (double)ch_count[c]) : 0.0;
+            printf(" ch%d RMS %.3e peak %.3e", c, crms, ch_peak[c]);
+        }
+        printf("\n");
+        for (int c = 0; c < ch; c++) {
+            double got_e = 0.0, ref_e = 0.0, cross = 0.0, other_acc = 0.0;
+            long nf = cmp / ch;
+            int other = (c + 1) % ch;
+            for (long f = 0; f < nf; f++) {
+                double g = got[f * ch + c];
+                double r = ref[f * ch + c];
+                double ro = ref[f * ch + other];
+                got_e += g * g;
+                ref_e += r * r;
+                cross += g * r;
+                double d = g - ro;
+                other_acc += d * d;
+            }
+            printf("               ch%d level got %.3e ref %.3e gain %.5f; RMS vs ref-ch%d %.3e\n",
+                   c, nf ? sqrt(got_e / nf) : 0.0, nf ? sqrt(ref_e / nf) : 0.0,
+                   ref_e ? cross / ref_e : 0.0, other,
+                   nf ? sqrt(other_acc / nf) : 0.0);
+        }
+    }
 
     /* Determinism: the guest/host comparison depends on it. */
     int r2 = 0, c2 = 0, p2 = 0, e2 = 0;
@@ -331,7 +365,8 @@ int main(int argc, char **argv)
 
     static const char *CASES[] = {
         "sine", "sweep", "noise", "impulse", "quiet", "stereo", "tonal",
-        "mono", "lowq", "highq", "sr48", "sr32", "sr22", "sr16", "sr8", "cbr",
+        "left", "right", "mono", "lowq", "highq", "sr48", "sr32", "sr22",
+        "sr16", "sr8", "cbr",
     };
     for (unsigned i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++)
         run_case(CASES[i]);

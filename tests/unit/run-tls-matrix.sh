@@ -27,6 +27,9 @@ CC="${CC:-clang}"
 OPENSSL="${OPENSSL:-openssl}"
 TMP="$(mktemp -d)"
 PORT="${TLS_MATRIX_PORT:-15533}"
+CLASSICAL="${TLS_MATRIX_GROUPS:-X25519 P-256 P-384 X448}"
+# The same matrix with X448 absent is the consumer's negative control.
+EXTRA="${TLS_MATRIX_CFLAGS:-}"
 SRVPID=""
 pass=0; fail=0; na=0
 rows=""
@@ -92,7 +95,7 @@ INCS="-I$TMP -I$ROOT/c/net/tls -I$ROOT/c/crypto -I$ROOT/c/crypto/aead \
       -I$ROOT/c/net/core -I$ROOT/c/net/transport -I$ROOT/c/drivers/timer \
       -I$ROOT/c/kernel/core -I$ROOT/c/kernel/cpu"
 # shellcheck disable=SC2086
-$CC -O1 -g -w -o "$BUILD/tls_matrix_client" $CSRC $INCS || {
+$CC -O1 -g -w $EXTRA -o "$BUILD/tls_matrix_client" $CSRC $INCS || {
     echo "FAIL: could not build the matrix client"; exit 1; }
 
 # ------------------------------------------------------- build our server ----
@@ -103,7 +106,7 @@ SSRC="$ROOT/tests/unit/tls_server_test.c $ROOT/c/net/tls/tls_server.c \
              "$ROOT/c/crypto/kdf" "$ROOT/c/crypto/pq" -name '*.c' 2>/dev/null)"
 HAVE_SRV=1
 # shellcheck disable=SC2086
-$CC -O1 -g -w -o "$BUILD/tls_matrix_server" $SSRC \
+$CC -O1 -g -w $EXTRA -o "$BUILD/tls_matrix_server" $SSRC \
     -I$ROOT/c/crypto -I$ROOT/c/crypto/aead -I$ROOT/c/crypto/trust -I$ROOT/c/crypto/pq \
     -I$ROOT/c/net/tls -I$ROOT/c/net/core -I$ROOT/c/net/transport \
     -I$ROOT/c/drivers/timer -I$ROOT/c/kernel/core -I$ROOT/c/kernel/cpu 2>"$TMP/srvbuild.log" || {
@@ -149,8 +152,10 @@ cellA() {   # cellA <ver:12|13> <suite-name> <ossl-suite-arg> <group> <leaf>
             fail=$((fail+1)); return
         fi
     fi
-    "$BUILD/tls_matrix_client" 127.0.0.1 "$PORT" localhost >"$TMP/cli.log" 2>&1
+    "$BUILD/tls_matrix_client" 127.0.0.1 "$PORT" localhost --expect-version "$ver" >"$TMP/cli.log" 2>&1
     local rc=$?
+    mkdir -p "$BUILD/evidence"
+    cp "$TMP/cli.log" "$BUILD/evidence/A-$ver-$sname-$grp.log"
     stop_ossl
     local detail
     detail="$(grep -a -o 'suite 0x[0-9a-f]*[^,]*, group [A-Za-z0-9]*\|suite 0x[0-9a-f]* [A-Z0-9-]*' "$TMP/cli.log" | head -1)"
@@ -165,7 +170,9 @@ cellA() {   # cellA <ver:12|13> <suite-name> <ossl-suite-arg> <group> <leaf>
 # ============================================ direction B: openssl -> our server
 start_ours() {
     rm -f "$TMP/ours.log" "$TMP/ours.err"
-    "$BUILD/tls_matrix_server" serve "$PORT" --cert-out "$TMP/srv.der" --echo 64 \
+    # Exactly the bytes cellB sends. The old 64 vs 19 mismatch timed out the
+    # server after echoing a prefix, yet openssl's exit alone looked green.
+    "$BUILD/tls_matrix_server" serve "$PORT" --cert-out "$TMP/srv.der" --echo 19 \
         >"$TMP/ours.log" 2>"$TMP/ours.err" &
     SRVPID=$!
     for _ in $(seq 1 200); do
@@ -196,7 +203,12 @@ cellB() {   # cellB <suite-name> <ossl-suite-arg> <group> <claimed:1|0> <why-not
         -CAfile "$TMP/srv.pem" -verify_return_error -quiet \
         >"$TMP/scli.out" 2>"$TMP/scli.err"
     local orc=$?
-    kill "$SRVPID" 2>/dev/null; wait "$SRVPID" 2>/dev/null; SRVPID=""
+    local src
+    [ $orc -ne 0 ] && kill "$SRVPID" 2>/dev/null
+    wait "$SRVPID" 2>/dev/null; src=$?; SRVPID=""
+    mkdir -p "$BUILD/evidence"
+    cp "$TMP/ours.log" "$BUILD/evidence/B-13-$sname-$grp.log"
+    cp "$TMP/scli.out" "$BUILD/evidence/B-13-$sname-$grp.echo"
     local detail; detail="$(grep -a -o 'suite 0x[0-9a-f]*, group [A-Za-z0-9]*' "$TMP/ours.log" | head -1)"
     if [ "$claimed" = 0 ]; then
         # We do NOT claim this cell. The right outcome is a clean refusal.
@@ -208,7 +220,7 @@ cellB() {   # cellB <suite-name> <ossl-suite-arg> <group> <claimed:1|0> <why-not
         fi
         na=$((na+1)); return
     fi
-    if [ $orc -eq 0 ]; then
+    if [ $orc -eq 0 ] && [ $src -eq 0 ] && grep -qx 'hello-from-openssl' "$TMP/scli.out"; then
         record B 13 "$sname" "$grp" "ok" "${detail:-handshake complete}" "$cmd"; pass=$((pass+1))
     else
         record B 13 "$sname" "$grp" "FAIL" "$(head -1 "$TMP/scli.err" | cut -c1-60)" "$cmd"; fail=$((fail+1))
@@ -220,9 +232,9 @@ echo "   our client -> openssl s_server, and openssl s_client -> our server"
 [ "$HAVE_PQ" = 0 ] && echo "   NOTE: this openssl has no X25519MLKEM768; those cells report SKIP"
 echo
 
-# --- TLS 1.3: 3 suites x 4 groups, EC leaf (auth is not bound to the suite) ---
-G13="X25519 P-256 P-384"
-[ "$HAVE_PQ" = 1 ] && G13="$G13 X25519MLKEM768"
+# --- TLS 1.3: 3 suites x offered groups; EC leaf (auth is not suite-bound) ---
+G13="$CLASSICAL"
+[ "$HAVE_PQ" = 1 ] && [ -z "${TLS_MATRIX_GROUPS:-}" ] && G13="$G13 X25519MLKEM768"
 for g in $G13; do
     cellA 13 AES128-GCM-SHA256   TLS_AES_128_GCM_SHA256       "$g" ec
     cellA 13 CHACHA20-SHA256     TLS_CHACHA20_POLY1305_SHA256 "$g" ec
@@ -234,12 +246,12 @@ if [ "$HAVE_PQ" = 0 ]; then
     done
 fi
 
-# --- TLS 1.2: 6 suites x 3 groups. The leaf must match the suite's auth. ---
+# --- TLS 1.2: 6 suites x classical groups. Leaf must match the suite's auth. ---
 # The hybrid is deliberately absent: tls_group_supported() excludes it, so a
 # 1.2 server cannot name a KEM as its ECDHE curve. That is a claim we do NOT
 # make, recorded as n/a rather than left out -- an omitted row and a refused
 # one look identical in a table that only lists what ran.
-for g in X25519 P-256 P-384; do
+for g in $CLASSICAL; do
     cellA 12 ECDHE-ECDSA-AES128-GCM ECDHE-ECDSA-AES128-GCM-SHA256   "$g" ec
     cellA 12 ECDHE-RSA-AES128-GCM   ECDHE-RSA-AES128-GCM-SHA256     "$g" rsa
     cellA 12 ECDHE-ECDSA-AES256-GCM ECDHE-ECDSA-AES256-GCM-SHA384   "$g" ec
@@ -254,18 +266,15 @@ for s in ECDHE-ECDSA-AES128-GCM ECDHE-RSA-AES128-GCM ECDHE-ECDSA-AES256-GCM \
 done
 
 # --- direction B: openssl s_client -> our server (TLS 1.3 only, by design) ---
-for g in X25519 P-256 P-384; do
+for g in $CLASSICAL; do
     cellB AES128-GCM-SHA256 TLS_AES_128_GCM_SHA256       "$g" 1
     cellB CHACHA20-SHA256   TLS_CHACHA20_POLY1305_SHA256 "$g" 1
     cellB AES256-GCM-SHA384 TLS_AES_256_GCM_SHA384       "$g" 1
 done
-if [ "$HAVE_PQ" = 1 ]; then
-    # srv_groups[] is {x25519, P-256, P-384}. Offering ONLY the hybrid must not
-    # complete -- and the row says "not claimed" rather than hiding, because
-    # the client offers the hybrid and the server does not, which is a real
-    # asymmetry somebody should be able to read off this table.
-    cellB AES128-GCM-SHA256 TLS_AES_128_GCM_SHA256 X25519MLKEM768 0 \
-          "tls_server.c srv_groups[] has no hybrid"
+if [ "$HAVE_PQ" = 1 ] && [ -z "${TLS_MATRIX_GROUPS:-}" ]; then
+    # Correction: the server now shares the hybrid implementation too. The
+    # old matrix still expected refusal after srv_groups gained the group.
+    cellB AES128-GCM-SHA256 TLS_AES_128_GCM_SHA256 X25519MLKEM768 1
 fi
 
 # ------------------------------------------------------------------ report ---

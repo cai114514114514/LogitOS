@@ -72,3 +72,10 @@ test-usb-negctl: $(ISO) $(DISK)
 	@bash tests/boot/run-usb-negctl.sh $(ISO) $(DISK)
 
 test-usb: test-usb-host test-usb-os test-usb-none test-usb-both test-usb-negctl
+
+# Run the orphan regression before actual USB guests. It launches tiny real
+# children through the same wrapper, and includes a missing-cleanup control.
+.PHONY: test-usb-process-cleanup
+test-usb-process-cleanup:
+	python3 tests/unit/usb_process_cleanup_test.py --build $(BUILD)/usb-process-cleanup
+test-usb-os test-usb-negctl test-dma-drivers-os: test-usb-process-cleanup
