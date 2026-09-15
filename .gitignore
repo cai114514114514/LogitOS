@@ -135,3 +135,25 @@ third_party/html5lib-tests/*
 # keep `git status` readable when the prompt is not enough.
 refute-*/
 *-refute/
+
+# Agent work directories. Same argument as refute-*/ above, one rung wider: an
+# agent told to build in its own BUILD dir picks its own name, and the names
+# that actually appeared were work-r8-recovery/ (672 MB of .aex/.elf) and
+# work-r9-host/ (46 MB of .a and wiring logs). Both are output, both were sat
+# in `git status` for two days making 1497 entries look like 4800, and neither
+# is referenced by the Makefile or any fragment -- checked with git grep before
+# this line was written.
+work-*/
+.video_agent/
+
+# Editor/agent session scratch. .claude/ and .vscode/ are already above; .zcode/
+# is the same kind of thing and was deleting its own plan files into the diff.
+.zcode/
+
+# Patch and sed backups. Six of these (browser.c.orig, browser_paint.c.orig,
+# css_engine.c.orig, js_dom.c.orig, logit.h.orig, wm.c.orig) were left on the
+# tree on 2026-09-13 by a tool that writes a backup and does not clean up. They
+# are parked, byte-for-byte, on refs/heads/quarantine/orig-backups-2026-09-13 --
+# every one verified an OLDER snapshot than the file it shadowed, so no work was
+# lost. Recover one with: git show <that ref>:<path>
+*.orig
