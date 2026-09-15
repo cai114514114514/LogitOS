@@ -6,6 +6,13 @@
 /* Kernel dynamic memory. Backed by contiguous physical frames from the PMM
  * (identity-mapped). kmalloc must not be called before pmm_init. */
 void *kmalloc(size_t size);
+/* Correction (2026-09-10): kmalloc now returns a supervisor physmap CPU
+ * pointer, preferring physical RAM >=4 GiB. The old identity contract above
+ * applies only to kmalloc_low: a separate low (<1 GiB) domain for executable
+ * kernel modules with rel32 relocations. It is not a DMA allocation API.
+ * Both domains split/coalesce and are released with kfree; ordinary small
+ * blocks alone use the per-CPU magazines. pmm_init must have completed. */
+void *kmalloc_low(size_t size);
 void  kfree(void *ptr);
 
 /* ------------------------------------------------------------------ stats --
@@ -40,6 +47,9 @@ struct kheap_stats {
     unsigned long long req_bytes, served_bytes;
     unsigned long long allocs, frees, grows, splits, split_bytes, merges;
     unsigned long long live_blocks;
+    unsigned long long magazine_hits, magazine_puts, magazine_bytes;
+    unsigned long long magazine_drains, magazine_cpus;
+    unsigned long long low_arena_bytes, far_arena_bytes, max_phys;
 };
 
 void kheap_get_stats(struct kheap_stats *out);

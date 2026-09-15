@@ -1,3 +1,4 @@
+#include "mmguard.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "mm.h"
@@ -63,16 +64,16 @@ void reclaim_late_init(void);
 void *memset(void *, int, size_t);
 void *memcpy(void *, const void *, size_t);
 
-static int g_cow_on = MM_COW_DEFAULT;
-static uint64_t g_cow_copies, g_cow_reuse, g_anon, g_declined;
+static _Atomic int g_cow_on = MM_COW_DEFAULT;
+static _Atomic uint64_t g_cow_copies, g_cow_reuse, g_anon, g_declined;
 /* Set by fault_frame() when a fault is about to be declined FOR WANT OF MEMORY,
  * which is a different event from every other decline in this file: a decline
  * for a bad address is the process's own doing and killing it is correct, while
  * a decline for want of memory kills whoever happened to touch a page next.
  * Only mm_fault_in() reads it, and it clears it first, so it never carries
  * across faults. */
-static int g_oom_decline;
-static uint64_t g_oom_retry, g_oom_saved;
+/* OOM cause is per invocation, passed down from mm_fault_in. */
+static _Atomic uint64_t g_oom_retry, g_oom_saved;
 
 /* WHAT A FAULT COSTS. Demand paging and copy-on-write moved work OFF fork and
  * ONTO the page fault -- fork of /bin/sh went from 258 pages copied to 0. That
@@ -91,8 +92,8 @@ static inline uint64_t fault_cyc(void)
 { uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo; }
 #endif
-static uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin, g_cyc_file;
-static uint64_t g_swapin, g_file;
+static _Atomic uint64_t g_cyc_copy, g_cyc_reuse, g_cyc_anon, g_cyc_swapin, g_cyc_file;
+static _Atomic uint64_t g_swapin, g_file;
 /* THE FILE CASE SPLIT BY OUTCOME, which the block below at MM_FAULT_FILE said
  * was already done and was not. It said "the split between them is
  * pcache_hits()/pcache_misses(), reported next to this" -- but those are COUNTS
@@ -103,8 +104,8 @@ static uint64_t g_swapin, g_file;
  * was the number a reader would quote for "what does a page-cache miss cost".
  * The discriminator is pcache_misses() across the call: free, exact, and it
  * cannot disagree with the cache about what happened. */
-static uint64_t g_file_miss, g_cyc_file_miss;
-static uint64_t g_shm, g_cyc_shm;
+static _Atomic uint64_t g_file_miss, g_cyc_file_miss;
+static _Atomic uint64_t g_shm, g_cyc_shm;
 
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc);
 void mm_fault_cost(uint64_t *copy_cyc, uint64_t *reuse_cyc, uint64_t *anon_cyc)
@@ -136,7 +137,7 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
      * address, at a NULL dereference, or anywhere below the user base is
      * somebody's bug, and staying out of it is what keeps a null-pointer
      * dereference fatal instead of quietly allocating a page at address 0. */
-    if (cr2 < MM_USER_BASE || cr2 >= MM_USER_END)
+    if (!mm_user_addr(cr2))
         return MM_FAULT_NONE;
 
     /* A swap entry, before anything else looks at the VMA.
@@ -217,12 +218,13 @@ int mm_fault_classify(uint64_t cr2, uint64_t err, int pte_present,
 
 /* ------------------------------------------------------- acting on it --- */
 
-static uint64_t fault_frame(void);
+static uint64_t fault_frame(int *oom);
 
-static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
+static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active, int *oom)
 {
     uint64_t e = *pte;
     uint64_t old = e & MM_PTE_ADDR;
+    int copied=0;
     unsigned rc = pmm_refcount(old);
 
     if (rc == 0) {
@@ -242,7 +244,11 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
         *pte = (e | WRITABLE) & ~VMM_PTE_COW;
         g_cow_reuse++;
     } else {
-        uint64_t nf = fault_frame();
+        /* A nested reclaim pass may evict other pages of our space. Keep
+         * this source out of the candidate set while allocation can reclaim. */
+        pmm_pin(old);
+        uint64_t nf = fault_frame(oom);
+        pmm_unpin(old);
         if (!nf)
             return 0;               /* out of memory even after a forced reclaim
                                      * pass: decline. The process dies, the
@@ -265,12 +271,13 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
          * drop tier. */
         rmap_remove(old, cr3, page);
         rmap_add(nf, cr3, page);
+        vmm_flush_space(cr3);       /* retire sibling translations BEFORE reuse */
         pmm_free(old);              /* drop THIS space's reference, no more */
-        g_cow_copies++;
+        g_cow_copies++; copied=1;
     }
     g_mm_cow_pages--;
     if (active) mm_invlpg(page);
-    return 1;
+    return copied ? 2 : 1;
 }
 
 /* A frame, or a real answer that there is none.
@@ -286,11 +293,14 @@ static int do_cow(uint64_t cr3, uint64_t page, uint64_t *pte, int active)
  * a program for want of a page while tens of thousands of reclaimable pages are
  * sitting in memory is the exact failure this whole line was built to remove,
  * and it is reachable through nothing more exotic than an unlucky moment. */
-static uint64_t fault_frame(void)
+/* Wide-memory correction: user payload pages have no DMA address constraint.
+ * Page-table pages and legacy driver/heap allocations retain pmm_alloc()
+ * below 1 GiB; only these payloads opt into the RAM direct map. */
+static uint64_t fault_frame(int *oom)
 {
-    uint64_t f = pmm_alloc();
+    uint64_t f = pmm_alloc_any();
     if (f) return f;
-    if (reclaim_emergency(64)) f = pmm_alloc();
+    if (reclaim_emergency(64)) f = pmm_alloc_any();
     /* WHY THE KILLER IS NOT CALLED FROM HERE, one frame short of it.
      *
      * The obvious place to ask for a victim is right on this line, and it is
@@ -305,13 +315,13 @@ static uint64_t fault_frame(void)
      * So this function only RECORDS that the decline was for want of memory,
      * and mm_fault_in() -- which holds no pointer into the tables -- does the
      * kill and re-walks the fault from the top. */
-    if (!f) g_oom_decline = 1;
+    if (!f) *oom = 1;
     return f;
 }
 
-static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
+static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active, int *oom)
 {
-    uint64_t f = fault_frame();
+    uint64_t f = fault_frame(oom);
     if (!f)
         return 0;
     memset(mm_p2v(f), 0, 4096);     /* anonymous memory reads as zero, always:
@@ -363,7 +373,7 @@ static int do_anon(uint64_t cr3, uint64_t page, uint32_t prot, int active)
  * protection fault and stays one -- the classifier declines it and the process
  * dies, which is what a write to a read-only mapping is supposed to do. */
 static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
-                   uint32_t prot, int active)
+                   uint32_t prot, int active, int *miss)
 {
     /* ONE PAGE IS RETURNED AND SEVERAL MAY HAVE ARRIVED. pcache_get() runs
      * readahead underneath this call (pcache.h's READAHEAD block): if the
@@ -378,7 +388,7 @@ static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
      * those pages hold are charged to nobody visible from this file: they are
      * rmap 0 / pcache_holds 1 / refcount 1, which reclaim.h's three-term test
      * makes the cheapest eligible page on the machine rather than a leak. */
-    uint64_t f = pcache_get(fh, index);
+    uint64_t f = pcache_get_ref_counted(fh, index, miss);
     if (!f)
         return 0;                   /* unreadable, past EOF, or out of memory:
                                      * decline, and the process dies as it would
@@ -416,9 +426,10 @@ static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
      * vmm_clone_user's read-only branch. Only two INDEPENDENT execs of the same
      * binary stop sharing. So the gate must launch the same program twice, not
      * fork one process in two. */
-    uint64_t priv = pmm_alloc();
-    if (!priv) return 0;
+    uint64_t priv = pmm_alloc_any();
+    if (!priv) { pmm_free(f); return 0; }
     memcpy(mm_p2v(priv), mm_p2v(f), 4096);
+    pmm_free(f);
     vmm_map_page_in(cr3, page, priv,
                     VMM_USER | VMM_PTE_FILE |
                     ((prot & VMA_EXEC) ? 0 : MM_PTE_NX));
@@ -426,9 +437,7 @@ static int do_file(uint64_t cr3, uint64_t page, int fh, uint64_t index,
     g_file++;
     return 1;
 #else
-    if (pmm_ref(f) < 0)
-        return 0;                   /* saturated refcount: refuse to share it,
-                                     * exactly as the copy-on-write clone does */
+    /* pcache_get_ref already acquired the future PTE reference under pc_lock. */
     vmm_map_page_in(cr3, page, f,
                     VMM_USER | VMM_PTE_FILE |
                     ((prot & VMA_EXEC) ? 0 : MM_PTE_NX));
@@ -486,8 +495,9 @@ static int do_shm(uint64_t cr3, uint64_t page, int sh, uint64_t index,
     return 1;
 }
 
-static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
+static int fault_once(uint64_t cr3, uint64_t va, uint64_t err, int *oom)
 {
+    MM_GUARD(cr3);
     if (!cr3) { g_declined++; return 0; }
     uint64_t page = va & ~(uint64_t)0xFFF;
     uint64_t *pte = vmm_pte(cr3, page);
@@ -511,24 +521,34 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
     uint32_t prot = has_file ? fprot : (has_shm ? sprot : vma_prot_at(cr3, page));
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
 
+    /* A sibling can finish a fault, COW, mprotect or reclaim's temporary
+     * write revocation while this fault waits for its AS lock. Retry only if
+     * the CURRENT PTE grants the original access; real protection failures
+     * still enter the classifier and are rejected. ELF pages may have no VMA. */
+    if (mm_user_addr(va) && !(err & PF_RSVD) && present && user &&
+        (!(err & PF_W) || (*pte & WRITABLE)) &&
+        (!(err & PF_I) || !(*pte & MM_PTE_NX))) {
+        if (active) mm_invlpg(page);
+        return 1;
+    }
     uint64_t t0 = fault_cyc();
     switch (mm_fault_classify(va, err, present, cow, user, (int)prot, swapped,
                               has_file, has_shm)) {
     case MM_FAULT_COW: {
-        uint64_t before = g_cow_copies;
-        if (do_cow(cr3, page, pte, active)) {
+        int outcome=do_cow(cr3,page,pte,active,oom);
+        if (outcome) {
             /* Split by outcome, not by class: the sole-owner case is a PTE
              * write and the shared case is a 4 KiB memcpy plus an allocation.
              * Averaging them together would hide which one the workload
              * actually hits, which is the only interesting thing about them. */
-            if (g_cow_copies != before) g_cyc_copy  += fault_cyc() - t0;
+            if (outcome==2) g_cyc_copy  += fault_cyc() - t0;
             else                        g_cyc_reuse += fault_cyc() - t0;
             return 1;
         }
         break;
     }
     case MM_FAULT_ANON:
-        if (do_anon(cr3, page, prot, active)) { g_cyc_anon += fault_cyc() - t0; return 1; }
+        if (do_anon(cr3, page, prot, active, oom)) { g_cyc_anon += fault_cyc() - t0; return 1; }
         break;
     case MM_FAULT_FILE: {
         /* Timed separately from anon for the same reason swap-in is: a cache
@@ -542,11 +562,13 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
          * mm_report() was over a population whose two halves differ by four
          * orders of magnitude, so it read as "what a file fault costs" and was
          * neither number. See the declaration of g_file_miss. */
-        uint64_t m0 = pcache_misses();
-        if (do_file(cr3, page, fh, findex, prot, active)) {
+        /* Correction: global counter deltas include other CPUs. The cache
+         * now classifies this call while examining its own lookup. */
+        int miss = 0;
+        if (do_file(cr3, page, fh, findex, prot, active, &miss)) {
             uint64_t d = fault_cyc() - t0;
             g_cyc_file += d;
-            if (pcache_misses() != m0) { g_file_miss++; g_cyc_file_miss += d; }
+            if (miss) { g_file_miss++; g_cyc_file_miss += d; }
             return 1;
         }
         break;
@@ -604,16 +626,16 @@ static int fault_once(uint64_t cr3, uint64_t va, uint64_t err)
  * before this existed: decline, and the process dies. */
 int mm_fault_in(uint64_t cr3, uint64_t va, uint64_t err)
 {
-    g_oom_decline = 0;
-    int r = fault_once(cr3, va, err);
-    if (r || !g_oom_decline) return r;
+    int decline = 0;
+    int r = fault_once(cr3, va, err, &decline);
+    if (r || !decline) return r;
 
     if (!LOGIT_HAVE(oom_fault_retry)) return 0;  /* no killer linked: the old behaviour */
     g_oom_retry++;
     if (!oom_fault_retry()) return 0;   /* we were the victim, or nothing helped */
 
-    g_oom_decline = 0;
-    r = fault_once(cr3, va, err);
+    decline = 0;
+    r = fault_once(cr3, va, err, &decline);
     if (r) g_oom_saved++;
     return r;
 }

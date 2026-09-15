@@ -9,7 +9,7 @@
 #include "kprintf.h"
 
 #ifndef MM_HOSTTEST
-#include "sched.h"     /* bkl_hlt_wait(): wait WITHOUT holding the big kernel lock */
+#include "sched.h"     /* sched_poll_wait(): wait WITHOUT holding the big kernel lock */
 #include "percpu.h"    /* this_cpu()->in_kernel: do we hold it in the first place? */
 #endif
 
@@ -25,7 +25,7 @@
  * just started, and the hog was started first. It must redden exactly the
  * which-process assertions and none of the survival ones. */
 
-/* THE WAIT, in parks. Each park is bkl_hlt_wait(): drop the BKL, halt until the
+/* THE WAIT, in parks. Each park is sched_poll_wait(): drop the BKL, halt until the
  * next interrupt, re-take it. The timer runs at 100 Hz, so a park is at most
  * 10 ms and usually much less (any interrupt wakes it). 128 is therefore a
  * ceiling of about a second on a completely idle machine and far less in
@@ -168,22 +168,13 @@ uint64_t oom_rss_frames(uint64_t cr3)
 
 /* ---------------------------------------------------------- the choice -- */
 
-static int under_bkl(void)
-{
-#ifdef MM_HOSTTEST
-    return 1;                       /* the host fixture is single-threaded */
-#else
-    return this_cpu()->in_kernel;
-#endif
-}
-
 static void park(void)
 {
 #ifdef MM_HOSTTEST
     /* No scheduler here, so nothing can run and claim the mark. The host test
      * gates the POLICY; the machine gates the wait (tests/boot/run-oom-test.sh). */
 #else
-    if (this_cpu()->in_kernel) bkl_hlt_wait();
+    if (this_cpu()->in_kernel) sched_poll_wait();
     else __asm__ volatile ("pause");
 #endif
 }
@@ -228,31 +219,16 @@ int oom_kill(int source)
 {
     int self = oom_task_self();
 
-    /* THE SWEEP NEEDS THE BIG KERNEL LOCK (rmap.h's iterator contract), and
-     * pmm_alloc() is reachable from the BKL-free syscall (syscall_is_bkl_free,
-     * SYS_KHEAP_STRESS). Refusing here rather than walking a chain another core
-     * may be editing costs one diagnostic and never costs a corrupted walk;
-     * the alternative -- taking rmap_lock across the whole sweep -- would hold
-     * a leaf lock for 131,072 iterations on the failure path of every
-     * allocation, which is worse than not choosing. */
-    if (!under_bkl()) {
-        c_novictim++;
-        kprintf("[oom] %s: out of memory on a lock-free path -- no victim chosen "
-                "(the reverse map may not be walked here)\n", src_name(source));
+    /* Correction: the reverse-map iterator now copies values under its own
+     * short lock. Only the policy scratch table needs exclusion. Never wait
+     * here: the chooser may be reclaiming a space or awaiting a victim that
+     * the current caller owns. Concurrent shortages decline/retry normally. */
+    if (__atomic_exchange_n(&g_busy,1,__ATOMIC_ACQUIRE)) {
+        __atomic_fetch_add(&c_novictim,1,__ATOMIC_RELAXED);
         return OOM_NO_VICTIM;
     }
-
-    if (g_busy) {
-        /* Already choosing on this core, one frame down the stack. Say so and
-         * decline: the shortage that interrupted us has an answer in flight. */
-        c_novictim++;
-        kprintf("[oom] %s: re-entered from an interrupt while already choosing "
-                "-- declined\n", src_name(source));
-        return OOM_NO_VICTIM;
-    }
-    g_busy = 1;
     int decision = oom_choose(source, self);
-    g_busy = 0;
+    __atomic_store_n(&g_busy,0,__ATOMIC_RELEASE);
     return decision;
 }
 

@@ -57,7 +57,11 @@ static spinlock_t pmm_lock = SPINLOCK_INIT;
  *
  * All usable RAM in our QEMU config sits below the identity-mapped first
  * 1 GiB, so a physical address can be used directly as a virtual address
- * (mm_p2v; see mmhost.h for why that is a function and not a cast). */
+ * (mm_p2v; see mmhost.h for why that is a function and not a cast).
+ * Correction (2026-09-09): the old paragraph describes only the compatibility
+ * zone now. pmm_alloc/contig/reserve still allocate below 1 GiB; the explicit
+ * ANY APIs use high RAM through the direct map, never through its identity VA.
+ * Firmware holes remain reserved, even when RAM exists above the 4 GiB hole. */
 
 /* --- Multiboot2 structures (only what we need) --- */
 #define MB2_TAG_MMAP      6
@@ -105,8 +109,14 @@ static uint64_t shared_frames;   /* frames with refcount >= 2 */
 static uint64_t pinned_frames;   /* frames whose refcount saturated */
 static uint64_t refs_total;      /* sum of all refcounts */
 static uint64_t usable_bytes;
-static uint64_t alloc_hint;      /* frame to resume scanning from */
+static uint64_t alloc_hint;      /* low-zone scan hint */
+static uint64_t high_hint;       /* independent: high scans never strand the low hint */
+static uint64_t low_zone_free, high_available;
+static uint64_t high_allocs, high_max_phys;
+static uint64_t physmap_pages, physmap_tables;
+static int physmap_ready, physmap_low_ready;
 static uint64_t bug_count;
+static uint8_t *ram_bm;          /* immutable firmware AVAILABLE-page provenance */
 static uint64_t mm_meta_bytes;   /* bitmap + poison bitmap + refcount table */
 static int      poison_level = 1;
 
@@ -202,7 +212,7 @@ static void reserve(uint64_t base, uint64_t len)
     uint64_t start = base / FRAME_SIZE;
     uint64_t end   = (base + len + FRAME_SIZE - 1) / FRAME_SIZE;
     for (uint64_t f = start; f < end && f < total_frames; f++) {
-        if (!bm_test(f)) { bm_set(f); used_frames++; }
+        if (!bm_test(f)) { bm_set(f); used_frames++; if (f < PMM_LOW_LIMIT / FRAME_SIZE) low_zone_free--; }
         if (refcnt[f] == 0) { refcnt[f] = 1; refs_total++; }
         pz_clear(f);
     }
@@ -213,93 +223,327 @@ static void release(uint64_t base, uint64_t len)
     uint64_t start = (base + FRAME_SIZE - 1) / FRAME_SIZE;  /* round up  */
     uint64_t end   = (base + len) / FRAME_SIZE;             /* round down */
     for (uint64_t f = start; f < end && f < total_frames; f++) {
-        if (bm_test(f)) { bm_clear(f); used_frames--; }
+        if (bm_test(f)) { bm_clear(f); used_frames--; if (f < PMM_LOW_LIMIT / FRAME_SIZE) low_zone_free++; }
         if (refcnt[f]) { refs_total -= refcnt[f]; refcnt[f] = 0; }
         pz_clear(f);
     }
 }
 
+/* The physmap builder lives in this translation unit so every existing host
+ * PMM suite continues to link the real boot allocator. It runs before APs,
+ * rmap and reclaim exist, using only low-zone pages for its own tables. */
+#define PMM_PTE_ADDR 0x000ffffffffff000ull
+#define PMM_PTE_P    1ull
+#define PMM_PTE_W    2ull
+#define PMM_PTE_U    4ull
+#define PMM_PTE_PS   128ull
+#define PMM_PTE_NX   (1ull << 63)
+
+static int direct_nx_enabled(void)
+{
+#ifdef MM_HOSTTEST
+    /* Host tests inspect actual constructed PTEs with NX both enabled and
+     * disabled; neither variant executes a privileged host instruction. */
+#ifdef PHYSMAP_TEST_NO_NX
+    return 0;
+#else
+    return 1;
+#endif
+#else
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xc0000080u));
+    (void)hi;
+    return (lo & (1u << 11)) != 0;   /* EFER.NXE was decided by boot/long.asm */
+#endif
+}
+
+static uint64_t *direct_next(uint64_t *table, unsigned idx)
+{
+    uint64_t e = table[idx];
+    if (!(e & PMM_PTE_P)) {
+        uint64_t f = pmm_alloc_contig(1);  /* never invokes reclaim at bootstrap */
+        if (!f) return NULL;
+        memset(mm_p2v(f), 0, FRAME_SIZE);
+        table[idx] = f | PMM_PTE_P | PMM_PTE_W; /* USER deliberately absent */
+        physmap_tables++;
+        e = table[idx];
+    }
+    if ((e & (PMM_PTE_PS | PMM_PTE_U)) || (e & PMM_PTE_ADDR) >= PMM_LOW_LIMIT)
+        return NULL;                    /* cannot adopt an incompatible shared subtree */
+    return mm_p2v(e & PMM_PTE_ADDR);
+}
+
+static int direct_map_range(uint64_t start, uint64_t end, uint64_t flags)
+{
+    uint64_t root = mm_read_cr3() & PMM_PTE_ADDR;
+    if (!root || root >= PMM_LOW_LIMIT) return -1;
+    uint64_t *pml4 = mm_p2v(root);
+    while (start < end) {
+        uint64_t va = PHYSMAP_BASE + start;
+        uint64_t *pdpt = direct_next(pml4, (unsigned)((va >> 39) & 511));
+        if (!pdpt) return -1;
+        uint64_t *pd = direct_next(pdpt, (unsigned)((va >> 30) & 511));
+        if (!pd) return -1;
+        unsigned di = (unsigned)((va >> 21) & 511);
+        /* Only a fully RAM-backed, aligned 2 MiB interval is a large leaf.
+         * Boundary pages stay 4 KiB, so alignment never maps a firmware hole. */
+        if (!(start & 0x1fffffull) && end - start >= 0x200000ull && !pd[di]) {
+            pd[di] = start | flags | PMM_PTE_PS;
+            start += 0x200000ull;
+            physmap_pages += 512;
+        } else {
+            if ((pd[di] & (PMM_PTE_P | PMM_PTE_PS)) == (PMM_PTE_P | PMM_PTE_PS)) {
+                /* An overlapping AVAILABLE descriptor can name a page already
+                 * covered by a large leaf; it adds no mapping and no capacity. */
+                if ((pd[di] & PMM_PTE_ADDR & ~0x1fffffull) != (start & ~0x1fffffull))
+                    return -1;
+            } else {
+                uint64_t *pt = direct_next(pd, di);
+                if (!pt) return -1;
+                unsigned ti = (unsigned)((va >> 12) & 511);
+                if (!(pt[ti] & PMM_PTE_P)) { pt[ti] = start | flags; physmap_pages++; }
+                else if (pt[ti] != (start | flags)) return -1;
+            }
+            start += FRAME_SIZE;
+        }
+    }
+    return 0;
+}
+
+static int mmap_entry_range(const struct mb2_mmap_entry *me, uint64_t *start, uint64_t *end)
+{
+    if (me->type != MMAP_AVAILABLE || !me->len || me->addr >= PHYSMAP_SIZE ||
+        me->len > PHYSMAP_SIZE - me->addr) return 0;
+    *start = (me->addr + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
+    *end = (me->addr + me->len) & ~(uint64_t)(FRAME_SIZE - 1);
+    return *start < *end;
+}
+
+/* UEFI emits separate descriptors for reclaimed Loader/BootServices and
+ * conventional RAM. A 16 GiB guest needs roughly 15 MiB of flat metadata;
+ * requiring ONE descriptor immediately after the kernel rejected a usable
+ * 16 GiB OVMF boot. Cover a run by adjacent AVAILABLE descriptors, independent
+ * of their order, but never bridge an unreported/reserved page. */
+static int metadata_available(struct mb2_tag_mmap *map, uint64_t base, uint64_t bytes)
+{
+    uint8_t *end = (uint8_t *)map + map->size;
+    uint64_t cursor = base, limit = base + bytes;
+    while (cursor < limit) {
+        uint64_t next = cursor;
+        for (uint8_t *p = (uint8_t *)map->entries; p + sizeof(struct mb2_mmap_entry) <= end; ) {
+            uint64_t a, b;
+            if (mmap_entry_range((struct mb2_mmap_entry *)p, &a, &b) && a <= cursor && b > next)
+                next = b;
+            if (map->entry_size > (uint64_t)(end - p)) break;
+            p += map->entry_size;
+        }
+        if (next == cursor) return 0;
+#ifdef PMM_META_SINGLE_RANGE
+        return next >= limit; /* negative: the old one-descriptor assumption */
+#endif
+        cursor = next;
+    }
+    return 1;
+}
+
+static uint64_t metadata_place(struct mb2_tag_mmap *map, uint64_t floor, uint64_t bytes,
+                               uint64_t info, uint64_t info_size)
+{
+    uint8_t *end = (uint8_t *)map + map->size;
+    uint64_t best = 0;
+    for (uint8_t *p = (uint8_t *)map->entries; p + sizeof(struct mb2_mmap_entry) <= end; ) {
+        uint64_t a, b;
+        if (mmap_entry_range((struct mb2_mmap_entry *)p, &a, &b)) {
+            uint64_t candidate = a > floor ? a : floor;
+#ifdef PMM_META_FIXED_AFTER_KERNEL
+            candidate = floor; /* negative: refuse firmware holes after kernel */
+#endif
+            if (candidate < PMM_LOW_LIMIT && bytes <= PMM_LOW_LIMIT - candidate) {
+                if (info < candidate + bytes && candidate < info + info_size)
+                    candidate = (info + info_size + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
+                if (candidate < PMM_LOW_LIMIT && bytes <= PMM_LOW_LIMIT - candidate &&
+                    (!best || candidate < best) && metadata_available(map, candidate, bytes))
+                    best = candidate;
+            }
+        }
+        if (map->entry_size > (uint64_t)(end - p)) break;
+        p += map->entry_size;
+    }
+    return best;
+}
+
+
+int pmm_is_ram(uint64_t phys, size_t bytes)
+{
+    if (!ram_bm || !bytes || phys >= PHYSMAP_SIZE ||
+        bytes > PHYSMAP_SIZE - phys) return 0;
+    uint64_t first = phys / FRAME_SIZE;
+    uint64_t last = (phys + bytes - 1) / FRAME_SIZE;
+    if (last >= total_frames) return 0;
+    for (uint64_t f = first; f <= last; f++)
+        if (!(ram_bm[f >> 3] & (1u << (f & 7)))) return 0;
+    return 1;
+}
+
 void pmm_init(uint64_t mb_info_addr)
 {
+    /* Retain the low boot hand-off contract on both BIOS and UEFI. Metadata
+     * and map-building tables must fit in actually AVAILABLE, identity-mapped
+     * RAM BEFORE a high frame can be accessed. Failure leaves no allocatable
+     * pool and is printed, rather than pretending a RAM-size clamp succeeded. */
+    total_frames = used_frames = refs_total = usable_bytes = low_zone_free = 0;
+    high_available = high_allocs = high_max_phys = high_hint = alloc_hint = 0;
+    physmap_ready = physmap_low_ready = 0; physmap_pages = physmap_tables = mm_meta_bytes = 0;
+    reserve_hits = alloc_fails = shared_frames = pinned_frames = pins_live = bug_count = 0;
+    bitmap = poison_bm = pincnt = ram_bm = NULL; refcnt = NULL;
+    if (mb_info_addr >= PMM_LOW_LIMIT - 8) {
+        kprintf("[physmap] boot info outside low RAM; PMM disabled\n"); return;
+    }
     uint32_t total_size = *(volatile uint32_t *)mm_p2v(mb_info_addr);
-    uint8_t *p = (uint8_t *)mm_p2v(mb_info_addr + 8);   /* skip total_size + reserved */
-    uint8_t *end = (uint8_t *)mm_p2v(mb_info_addr + total_size);
-
+    if (total_size < 16 || total_size > PMM_LOW_LIMIT - mb_info_addr) {
+        kprintf("[physmap] invalid boot info extent; PMM disabled\n"); return;
+    }
+    uint8_t *p = mm_p2v(mb_info_addr + 8);
+    uint8_t *end = (uint8_t *)mm_p2v(mb_info_addr) + total_size;
     struct mb2_tag_mmap *mmap = NULL;
     uint64_t highest = 0;
-
-    /* First pass: find the memory map tag and the highest usable address. */
-    while (p < end) {
+    while (p + sizeof(struct mb2_tag) <= end) {
         struct mb2_tag *tag = (struct mb2_tag *)p;
-        if (tag->type == 0 || tag->size == 0)
-            break;                                   /* end tag (size 0 would stall the walk) */
-        if (tag->type == MB2_TAG_MMAP) {
-            mmap = (struct mb2_tag_mmap *)tag;
-            if (mmap->entry_size >= sizeof(struct mb2_mmap_entry)) {   /* entry_size 0 would stall the walk */
-                uint8_t *e = (uint8_t *)mmap->entries;
-                uint8_t *mend = p + mmap->size;
-                for (; e < mend; e += mmap->entry_size) {
-                    struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
-                    if (me->type == MMAP_AVAILABLE && me->addr + me->len > highest)
-                        highest = me->addr + me->len;
-                }
-            }
+        if (!tag->type) break;
+        if (tag->size < sizeof(*tag) || tag->size > (uint64_t)(end - p)) break;
+        if (tag->type == MB2_TAG_MMAP && tag->size >= sizeof(struct mb2_tag_mmap)) {
+            struct mb2_tag_mmap *mt = (struct mb2_tag_mmap *)p;
+            if (mt->entry_size >= sizeof(struct mb2_mmap_entry)) mmap = mt;
         }
-        p += (tag->size + 7) & ~7u;                  /* tags are 8-byte aligned */
+        uint64_t step = ((uint64_t)tag->size + 7) & ~7ull;
+        if (step > (uint64_t)(end - p)) break;
+        p += step;
     }
-
-    total_frames = highest / FRAME_SIZE;
-
-    /* Park the metadata immediately after the kernel image: the allocation
-     * bitmap, the poison-validity bitmap, then the refcount table. The two
-     * bitmaps' byte counts are rounded up to an 8-byte multiple so pmm_alloc's
-     * word-at-a-time scan can always read a full uint64_t without running past
-     * the bitmap; the extra padding bits cover frames beyond total_frames and
-     * stay marked used. */
+    if (!mmap) { kprintf("[physmap] no usable memory map; PMM disabled\n"); return; }
+    uint8_t *mend = (uint8_t *)mmap + mmap->size;
+    for (uint8_t *e = (uint8_t *)mmap->entries; e + sizeof(struct mb2_mmap_entry) <= mend; ) {
+        struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
+        uint64_t a, b;
+        if (mmap_entry_range(me, &a, &b) && b > highest) highest = b;
+        if (mmap->entry_size > (uint64_t)(mend - e)) break;
+        e += mmap->entry_size;
+    }
+    uint64_t frames = highest / FRAME_SIZE;
     uint64_t base = (mm_kernel_end_phys() + FRAME_SIZE - 1) & ~(uint64_t)(FRAME_SIZE - 1);
-    uint64_t bm_bytes = (((total_frames + 7) / 8) + 7) & ~(uint64_t)7;
-    uint64_t rc_bytes = total_frames * sizeof(uint16_t);
-    uint64_t pin_bytes = (total_frames + 7) & ~(uint64_t)7;   /* one byte per frame */
-
-    bitmap    = (uint8_t *)mm_p2v(base);
-    poison_bm = (uint8_t *)mm_p2v(base + bm_bytes);
-    refcnt    = (uint16_t *)mm_p2v(base + bm_bytes * 2);
-    pincnt    = (uint8_t *)mm_p2v(base + bm_bytes * 2 + rc_bytes);
-    mm_meta_bytes = bm_bytes * 2 + rc_bytes + pin_bytes;
-
-    memset(bitmap, 0xFF, bm_bytes);                  /* everything used... */
+    uint64_t bm_bytes = (((frames + 7) / 8) + 7) & ~7ull;
+    uint64_t rc_bytes = frames * sizeof(uint16_t);
+    uint64_t pin_bytes = (frames + 7) & ~7ull;
+    uint64_t meta = bm_bytes * 3 + rc_bytes + pin_bytes;
+    uint64_t kernel_reserved = base;
+    base = frames ? metadata_place(mmap, base, meta, mb_info_addr, total_size) : 0;
+    if (!base) {
+        kprintf("[physmap] PMM metadata does not fit unoccupied low RAM; PMM disabled\n"); return;
+    }
+    kprintf("[physmap] metadata base=%p bytes=%llu kernel_end=%p\n", (void *)base, meta, (void *)kernel_reserved);
+    total_frames = frames;
+    mm_meta_bytes = meta;
+    bitmap = mm_p2v(base);
+    poison_bm = mm_p2v(base + bm_bytes);
+    refcnt = mm_p2v(base + bm_bytes * 2);
+    pincnt = mm_p2v(base + bm_bytes * 2 + rc_bytes);
+    ram_bm = mm_p2v(base + bm_bytes * 2 + rc_bytes + pin_bytes);
+    memset(ram_bm, 0, bm_bytes);
+    memset(bitmap, 0xff, bm_bytes);
     memset(poison_bm, 0, bm_bytes);
     memset(pincnt, 0, pin_bytes);
-    used_frames = total_frames;
-    shared_frames = pinned_frames = 0;
-    refs_total = total_frames;
-    for (uint64_t f = 0; f < total_frames; f++)      /* ...with exactly one reference each */
-        refcnt[f] = 1;
+    used_frames = refs_total = frames;
+    for (uint64_t f = 0; f < frames; f++) refcnt[f] = 1;
 
-    /* ...then free what firmware says is available. */
-    if (mmap && mmap->entry_size >= sizeof(struct mb2_mmap_entry)) {
-        uint8_t *e = (uint8_t *)mmap->entries;
-        uint8_t *mend = (uint8_t *)mmap + mmap->size;
-        for (; e < mend; e += mmap->entry_size) {
-            struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
-            if (me->type == MMAP_AVAILABLE) {
-                release(me->addr, me->len);
-                usable_bytes += me->len;
-            }
+    /* Release LOW RAM first. High pages remain reserved until EVERY high RAM
+     * interval has a complete supervisor mapping. An OOM/negative control in
+     * the builder therefore degrades to a low-only boot, never a high pointer
+     * into a half-built map. Low DMA users keep their explicit allocation zone. */
+    for (uint8_t *e = (uint8_t *)mmap->entries; e + sizeof(struct mb2_mmap_entry) <= mend; ) {
+        struct mb2_mmap_entry *me = (struct mb2_mmap_entry *)e;
+        uint64_t a, b;
+        if (mmap_entry_range(me, &a, &b)) {
+            usable_bytes += b - a;
+            for (uint64_t f = a / FRAME_SIZE; f < b / FRAME_SIZE; f++)
+                ram_bm[f >> 3] |= (uint8_t)(1u << (f & 7));
+            if (a < PMM_LOW_LIMIT) release(a, (b < PMM_LOW_LIMIT ? b : PMM_LOW_LIMIT) - a);
         }
+        if (mmap->entry_size > (uint64_t)(mend - e)) break;
+        e += mmap->entry_size;
     }
-
-    /* Re-reserve low memory + kernel + the metadata itself, and the info block. */
-    reserve(0, base + mm_meta_bytes);
+    reserve(0, kernel_reserved);
+    reserve(base, meta); /* relocated metadata must not consume all intervening RAM */
     reserve(mb_info_addr, total_size);
 
+    uint64_t flags = PMM_PTE_P | PMM_PTE_W | (direct_nx_enabled() ? PMM_PTE_NX : 0);
+    /* Low aliases must be complete even in the high-map negative control.
+     * Legacy host fixtures have no hardware CR3 and use their arena directly;
+     * a nonzero simulated CR3 exercises this exact production builder. */
+    int low_ok = 1;
+#ifdef MM_HOSTTEST
+    if (mm_read_cr3())
+#endif
+    for (uint8_t *e = (uint8_t *)mmap->entries; e + sizeof(struct mb2_mmap_entry) <= mend; ) {
+        uint64_t a, b;
+        if (mmap_entry_range((struct mb2_mmap_entry *)e, &a, &b) && a < PMM_LOW_LIMIT &&
+            direct_map_range(a, b < PMM_LOW_LIMIT ? b : PMM_LOW_LIMIT, flags)) low_ok = 0;
+        if (mmap->entry_size > (uint64_t)(mend - e)) break;
+        e += mmap->entry_size;
+    }
+    if (!low_ok) {
+        /* Exposing a half-built low alias to DMA would be unsafe. Keep no
+         * allocatable pages; callers receive OOM instead of unmapped memory. */
+        kprintf("[physmap] low RAM alias failed; PMM disabled\n");
+        total_frames = used_frames = refs_total = usable_bytes = low_zone_free = 0;
+        bitmap = poison_bm = pincnt = ram_bm = NULL; refcnt = NULL;
+        return;
+    }
+    if (physmap_pages) mm_write_cr3(mm_read_cr3());
+    physmap_low_ready = 1; /* publish only the completed, flushed low alias */
+    int map_ok = 1;
+    for (uint8_t *e = (uint8_t *)mmap->entries; e + sizeof(struct mb2_mmap_entry) <= mend; ) {
+        uint64_t a, b;
+        if (mmap_entry_range((struct mb2_mmap_entry *)e, &a, &b) && b > PMM_LOW_LIMIT) {
+            if (a < PMM_LOW_LIMIT) a = PMM_LOW_LIMIT;
+#ifdef PHYS_MAP_DISABLE_HIGH
+            /* Negative control: keep high frames reserved instead of making
+             * the high-address workload accidentally pass through low RAM. */
+            map_ok = 0;
+#else
+            if (direct_map_range(a, b, flags)) map_ok = 0;
+#endif
+        }
+        if (mmap->entry_size > (uint64_t)(mend - e)) break;
+        e += mmap->entry_size;
+    }
+    (void)flags;
+    (void)direct_map_range;  /* retain identical build surface for the control */
+    if (map_ok) {
+        if (physmap_pages) mm_write_cr3(mm_read_cr3());
+        for (uint8_t *e = (uint8_t *)mmap->entries; e + sizeof(struct mb2_mmap_entry) <= mend; ) {
+            uint64_t a, b;
+            if (mmap_entry_range((struct mb2_mmap_entry *)e, &a, &b) && b > PMM_LOW_LIMIT) {
+                if (a < PMM_LOW_LIMIT) a = PMM_LOW_LIMIT;
+                release(a, b - a);
+            }
+            if (mmap->entry_size > (uint64_t)(mend - e)) break;
+            e += mmap->entry_size;
+        }
+        high_available = total_frames - used_frames - low_zone_free;
+        /* Prefer payload RAM above 4 GiB when the physical map reaches it.
+         * This preserves scarce low DMA RAM and exercises full-width physical
+         * addresses during ordinary large-memory boots. scan_zone still wraps
+         * through 1..4 GiB, including when every descriptor above 4 GiB is
+         * reserved. Small machines start at 1 GiB; the legacy low allocator's
+         * cursor and immediate free/reuse behavior are unchanged. */
+        const uint64_t far_first = 0x100000000ull / FRAME_SIZE;
+        high_hint = total_frames > far_first ? far_first : PMM_LOW_LIMIT / FRAME_SIZE;
+        physmap_ready = 1;
+    }
+    kprintf("[physmap] %s: base=%p high_pages=%llu table_pages=%llu low_free=%llu NX=%d\n",
+            map_ok ? "ready" : "HIGH DISABLED", (void *)PHYSMAP_BASE,
+            (unsigned long long)high_available, (unsigned long long)physmap_tables,
+            (unsigned long long)low_zone_free, direct_nx_enabled());
     pmm_report("boot");
-
-    /* The reverse map's tables come out of the pool that was just built, while
-     * it is empty and a contiguous run of a few hundred frames is certain to be
-     * there. It has to be here rather than later for a reason that is easy to
-     * get wrong: reclaim must work when memory is exhausted, so every structure
-     * it needs has to exist before anything can exhaust it. */
     rmap_init(total_frames);
 }
 
@@ -370,66 +614,53 @@ static uint64_t take_frame(uint64_t cand)
     refcnt[cand] = 1;
     used_frames++;
     refs_total++;
+    if (cand < PMM_LOW_LIMIT / FRAME_SIZE) low_zone_free--;
+    else {
+        high_allocs++;
+        if (cand * FRAME_SIZE > high_max_phys) high_max_phys = cand * FRAME_SIZE;
+    }
     watch_low();
     return cand * FRAME_SIZE;
 }
 
 /* The allocator proper. `allow_reserve` is what separates an ordinary request
  * from the swap-in fault's: see pmm.h on why the last few frames are kept back. */
-static uint64_t alloc_locked(int allow_reserve)
+static uint64_t scan_zone(uint64_t first, uint64_t last, uint64_t *hint)
 {
-    uint64_t ret = 0;
-
-    if (!allow_reserve && total_frames - used_frames <= reserve_frames)
-        return 0;                     /* the reserve is not for ordinary callers */
-
-    uint64_t start = alloc_hint;
-    if (start >= total_frames)
-        start = 0;
-
+    uint64_t start = *hint;
+    if (start < first || start >= last) start = first;
     for (int pass = 0; pass < 2; pass++) {
-        uint64_t from = (pass == 0) ? start : 0;
-        uint64_t to   = (pass == 0) ? total_frames : start;
-
-        /* Walk word-aligned 64-frame blocks within [from, to). */
+        uint64_t from = pass ? first : start;
+        uint64_t to = pass ? start : last;
         for (uint64_t f = from; f < to; ) {
-            uint64_t byte_idx = f >> 3;
-            uint64_t word = *(uint64_t *)(bitmap + (byte_idx & ~(uint64_t)7));
-            uint64_t base = (byte_idx & ~(uint64_t)7) << 3;   /* first frame in word */
-
-            if (word == 0xFFFFFFFFFFFFFFFFull) {
-                /* All 64 frames used: jump to the next aligned word. */
-                f = base + 64;
-                continue;
-            }
-
-            /* At least one free bit; find the first free frame >= f. */
-            uint64_t bit = (uint64_t)__builtin_ctzll(~word);
-            uint64_t cand = base + bit;
-            while (cand < f) {
-                /* First free bit is before our scan start: mask it out. */
-                word |= (1ull << (cand - base));
-                if (word == 0xFFFFFFFFFFFFFFFFull)
-                    break;
-                bit = (uint64_t)__builtin_ctzll(~word);
-                cand = base + bit;
-            }
-            if (word == 0xFFFFFFFFFFFFFFFFull) {
-                f = base + 64;
-                continue;
-            }
-            if (cand >= to) {
-                f = base + 64;
-                continue;
-            }
-            alloc_hint = cand;
-            ret = take_frame(cand);
-            return ret;
+            uint64_t base = f & ~63ull;
+            uint64_t word = *(uint64_t *)(bitmap + (base >> 3));
+            unsigned skip = (unsigned)(f - base);
+            if (skip) word |= (1ull << skip) - 1;
+            if (word == UINT64_MAX) { f = base + 64; continue; }
+            uint64_t cand = base + (uint64_t)__builtin_ctzll(~word);
+            if (cand >= to) break;
+            *hint = cand;  /* preserve immediate free/reuse, including poison checks */
+            return take_frame(cand);
         }
     }
+    *hint = first;
+    return 0;
+}
 
-    alloc_hint = 0;     /* wrap-around for the next attempt */
-    return ret;
+/* Reserve both a GLOBAL fault cushion and a LOW-zone cushion. Otherwise free
+ * high pages would conceal low-zone exhaustion from old page-table/DMA users.
+ * The explicit reserve APIs may use either cushion to complete a fault. */
+static uint64_t alloc_locked(int allow_reserve, int any)
+{
+    if (!allow_reserve && total_frames - used_frames <= reserve_frames) return 0;
+    uint64_t boundary = PMM_LOW_LIMIT / FRAME_SIZE;
+    if (any && physmap_ready && total_frames > boundary) {
+        uint64_t f = scan_zone(boundary, total_frames, &high_hint);
+        if (f) return f;
+    }
+    if (!allow_reserve && low_zone_free <= reserve_frames) return 0;
+    return scan_zone(0, total_frames < boundary ? total_frames : boundary, &alloc_hint);
 }
 
 /* THE PRESSURE POINT. Every frame in the system is handed out here, so this is
@@ -437,7 +668,7 @@ static uint64_t alloc_locked(int allow_reserve)
  * to do something about it. The call is made BEFORE pmm_lock is taken -- a
  * reclaim pass calls pmm_free() and pmm_refcount(), which take that lock, and a
  * spinlock this kernel uses is not recursive. */
-uint64_t pmm_alloc(void)
+static uint64_t alloc_normal(int any)
 {
     if (total_frames == 0)
         return 0;
@@ -445,7 +676,7 @@ uint64_t pmm_alloc(void)
     reclaim_on_alloc();
 
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
-    uint64_t ret = alloc_locked(0);
+    uint64_t ret = alloc_locked(0, any);
     if (!ret) alloc_fails++;
     spin_unlock_irqrestore(&pmm_lock, fl);
     /* OUTSIDE THE LOCK -- oom_alloc_fail() calls back into pmm_free_frames(),
@@ -466,27 +697,95 @@ uint64_t pmm_alloc(void)
     return ret;
 }
 
+uint64_t pmm_alloc(void)     { return alloc_normal(0); }
+uint64_t pmm_alloc_any(void) { return alloc_normal(1); }
+/* For bounded leaf-lock callers. Honor the normal reserve floor, but never
+ * reclaim, wait for a device or call OOM policy while another spinlock is held. */
+uint64_t pmm_alloc_any_nowait(void)
+{
+    uint64_t f=spin_lock_irqsave(&pmm_lock);
+    uint64_t page=alloc_locked(0,1);
+    if (!page) alloc_fails++;
+    spin_unlock_irqrestore(&pmm_lock,f);
+    return page;
+}
+
+
 /* The swap-in fault's allocation, and the only caller allowed past the reserve.
  * Deliberately does NOT trigger a reclaim pass: this is called from inside the
  * fault that reclaim's own eviction created, and the machine is better served
  * by finishing that fault than by starting another sweep underneath it. */
-uint64_t pmm_alloc_reserve(void)
+static uint64_t alloc_reserve(int any)
 {
     if (total_frames == 0) return 0;
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
     uint64_t before = total_frames - used_frames;
-    uint64_t ret = alloc_locked(1);
+    uint64_t ret = alloc_locked(1, any);
     if (ret && before <= reserve_frames) reserve_hits++;
     if (!ret) alloc_fails++;
     spin_unlock_irqrestore(&pmm_lock, fl);
     return ret;
 }
 
+uint64_t pmm_alloc_reserve(void)     { return alloc_reserve(0); }
+uint64_t pmm_alloc_reserve_any(void) { return alloc_reserve(1); }
+
 void pmm_set_reserve(uint64_t frames)
 {
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
     reserve_frames = frames;
     spin_unlock_irqrestore(&pmm_lock, fl);
+}
+
+
+/* Scan complete aligned candidates under the PMM lock. A failed candidate
+ * advances past its first occupied frame; no frame is claimed until the full
+ * range is known free. Zone cuts avoid crossing the legacy alias boundary. */
+static uint64_t masked_zone(uint64_t first, uint64_t last, uint64_t bytes,
+                            uint64_t align, uint64_t boundary)
+{
+    uint64_t p = (first + align - 1) & ~(align - 1);
+    while (p < last && bytes <= last - p) {
+        if (boundary && (p & (boundary - 1)) > boundary - bytes) {
+            uint64_t next = (p & ~(boundary - 1)) + boundary;
+            p = (next + align - 1) & ~(align - 1);
+            continue;
+        }
+        uint64_t f = p / FRAME_SIZE, end = f + bytes / FRAME_SIZE, busy = f;
+        while (busy < end && !bm_test(busy)) busy++;
+        if (busy == end) {
+            for (; f < end; f++) take_frame(f);
+            return p;
+        }
+        p = ((busy + 1) * FRAME_SIZE + align - 1) & ~(align - 1);
+    }
+    return 0;
+}
+
+uint64_t pmm_alloc_contig_masked(size_t pages, uint64_t mask,
+                               size_t align, size_t boundary)
+{
+    if (!pages || pages > PHYSMAP_SIZE / FRAME_SIZE ||
+        (mask != UINT64_MAX && (mask & (mask + 1))) ||
+        (align && (align & (align - 1))) ||
+        (boundary && (boundary & (boundary - 1)))) return 0;
+    uint64_t bytes = (uint64_t)pages * FRAME_SIZE;
+    uint64_t alignment = align < FRAME_SIZE ? FRAME_SIZE : align;
+    if (alignment > PHYSMAP_SIZE || (boundary && bytes > boundary) ||
+        bytes - 1 > mask) return 0;
+    uint64_t fl = spin_lock_irqsave(&pmm_lock);
+    uint64_t last = total_frames * FRAME_SIZE;
+    if (mask < last) last = mask + 1;
+    uint64_t ret = 0;
+    const uint64_t far = 0x100000000ull;
+    if (last > far) ret = masked_zone(far, last, bytes, alignment, boundary);
+    if (!ret && last > PMM_LOW_LIMIT)
+        ret = masked_zone(PMM_LOW_LIMIT, last < far ? last : far, bytes, alignment, boundary);
+    if (!ret) ret = masked_zone(FRAME_SIZE, last < PMM_LOW_LIMIT ? last : PMM_LOW_LIMIT,
+                                bytes, alignment, boundary);
+    if (!ret) alloc_fails++;
+    spin_unlock_irqrestore(&pmm_lock, fl);
+    return ret;
 }
 
 uint64_t pmm_alloc_contig(size_t n)
@@ -496,7 +795,7 @@ uint64_t pmm_alloc_contig(size_t n)
     uint64_t ret = 0;
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
     uint64_t run = 0, start = 0;
-    for (uint64_t f = 0; f < total_frames; f++) {
+    for (uint64_t f = 0; f < total_frames && f < PMM_LOW_LIMIT / FRAME_SIZE; f++) {
         if (!bm_test(f)) {
             if (run == 0)
                 start = f;
@@ -545,6 +844,7 @@ void pmm_free(uint64_t phys_addr)
         poison_fill(f);             /* before the bit clears: still exclusively ours */
         bm_clear(f);
         used_frames--;
+        if (f < PMM_LOW_LIMIT / FRAME_SIZE) low_zone_free++;
     }
     spin_unlock_irqrestore(&pmm_lock, fl);
 }
@@ -680,11 +980,20 @@ PMM_STAT(pmm_pins_live,      pins_live)
 PMM_STAT(pmm_reserve,        reserve_frames)
 PMM_STAT(pmm_reserve_hits,   reserve_hits)
 PMM_STAT(pmm_alloc_failures, alloc_fails)
+PMM_STAT(pmm_high_allocations, high_allocs)
+PMM_STAT(pmm_high_max_phys, high_max_phys)
+PMM_STAT(pmm_high_free_frames, total_frames - used_frames - low_zone_free)
+PMM_STAT(pmm_high_live_frames, high_available - (total_frames - used_frames - low_zone_free))
+PMM_STAT(pmm_low_zone_free_frames, low_zone_free)
+uint64_t pmm_physmap_pages(void)       { return physmap_pages; }
+uint64_t pmm_physmap_table_pages(void) { return physmap_tables; }
+int pmm_physmap_ready(void)           { return physmap_ready; }
+int pmm_physmap_low_ready(void)       { return physmap_low_ready; }
 
 int pmm_audit(void)
 {
     uint64_t fl = spin_lock_irqsave(&pmm_lock);
-    uint64_t used = 0, shared = 0, pinned = 0, refs = 0, mismatch = 0;
+    uint64_t used = 0, shared = 0, pinned = 0, refs = 0, mismatch = 0, low_free_check = 0;
     for (uint64_t f = 0; f < total_frames; f++) {
         unsigned rc = refcnt[f];
         int bit = bm_test(f) ? 1 : 0;
@@ -694,12 +1003,16 @@ int pmm_audit(void)
                         (int)f, bit, (int)rc);
             mismatch++;
         }
+        if (!rc && f < PMM_LOW_LIMIT / FRAME_SIZE) low_free_check++;
         if (rc >= 1) used++;
         if (rc >= 2) shared++;
         if (rc == PMM_REF_MAX) pinned++;
         refs += rc;
     }
     int errs = 0;
+    if (low_free_check != low_zone_free) {
+        kprintf("[mm] AUDIT: low-zone free count disagrees\n"); errs++;
+    }
     if (mismatch) { kprintf("[mm] AUDIT: %d frames where the bitmap and the refcount table disagree\n",
                             (int)mismatch); errs++; }
     if (used != used_frames)     { kprintf("[mm] AUDIT: used %d, counter says %d\n",
@@ -739,6 +1052,10 @@ void pmm_report(const char *tag)
             (int)(total - used), (int)used, (int)shared,
             (int)refs, (int)(refs - used), (int)((refs - used) * FRAME_SIZE / 1024),
             (int)pinned, (int)bugs);
+    kprintf("[physmap] %s: high_allocs=%llu high_live=%llu high_max=%p high_free=%llu low_free=%llu\n",
+            tag ? tag : "-", (unsigned long long)pmm_high_allocations(),
+            (unsigned long long)pmm_high_live_frames(), (void *)pmm_high_max_phys(),
+            (unsigned long long)pmm_high_free_frames(), (unsigned long long)pmm_low_zone_free_frames());
     kprintf("[mm] %s: metadata %d KiB (bitmap + poison map + %d-byte refcounts + pins), poison level %d\n",
             tag ? tag : "-", (int)(meta / 1024), (int)sizeof(uint16_t), plevel);
     kprintf("[mm] %s: %d frames pinned against reclaim, %d reserve frames "

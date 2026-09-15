@@ -7,6 +7,8 @@
  * the leftover simultaneously free-listed and bump-allocatable.
  *
  * Run: make test-kheap */
+#define _GNU_SOURCE
+#include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,12 @@
 #include <stdint.h>
 #include "kheap.h"
 #include "pmm.h"
+/* Physical addresses are offsets into a sparse host arena. A malloc pointer
+ * cannot stand in for a physical address: Linux ASan pointers can lie above
+ * the guest's entire 64 TiB physmap window. The same seam works on both hosts. */
+uint64_t mm_host_base, mm_host_kend, mm_host_cr3;
+#define HOST_RAM (1ull << 30)
+static uint64_t next_phys=4096;
 
 void kprintf(const char *fmt, ...)
 {
@@ -34,12 +42,13 @@ uint64_t pmm_alloc_contig(size_t n)
         pmm_fails++;
         return 0;
     }
-    void *p = aligned_alloc(FRAME_SIZE, n * FRAME_SIZE);
-    if (!p)
-        return 0;
-    memset(p, 0xCC, n * FRAME_SIZE);
-    return (uint64_t)(uintptr_t)p;
+    if (n > (HOST_RAM-next_phys)/FRAME_SIZE) return 0;
+    uint64_t phys=next_phys;next_phys+=n*FRAME_SIZE;
+    memset((void *)(uintptr_t)(mm_host_base+phys), 0xCC, n * FRAME_SIZE);
+    return phys;
 }
+uint64_t pmm_alloc_contig_masked(size_t n,uint64_t mask,size_t align,size_t boundary)
+{ (void)mask;(void)align;(void)boundary;return pmm_alloc_contig(n); }
 
 /* --- live-allocation table + the overlap invariant --- */
 #define MAXLIVE 4096
@@ -87,6 +96,9 @@ static void free_live(int i)
 
 int main(void)
 {
+    void *ram=mmap(NULL,HOST_RAM,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if(ram==MAP_FAILED){perror("heap test RAM");return 2;}
+    mm_host_base=(uintptr_t)ram;
     /* === Phase 1: deterministic repro of the grow()-failure double-accounting.
      * Carve the first 4 MiB arena down to a 30736-byte tail (16-byte header +
      * 30720 payload -- the exact leftover size observed in the QEMU freezes),
@@ -133,5 +145,6 @@ int main(void)
 
     printf("pmm: %d calls, %d injected failures\n", pmm_calls, pmm_fails);
     printf(fails ? "\n%d kheap invariant FAILURES\n" : "\nall kheap invariants held\n", fails);
+    munmap(ram,HOST_RAM);
     return fails ? 1 : 0;
 }

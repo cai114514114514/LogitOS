@@ -70,6 +70,14 @@
  *                                                     -----------------
  *                                                     ~2.8 MiB = 0.54% of RAM
  *
+ * Correction (2026-09-09): this was the legacy single-window layout. Wide
+ * user VAs need an absolute uint64_t VPN; next/cr3-frame stay uint32_t because
+ * the pool indices fit 32 bits and page tables stay in low memory. Nodes are
+ * now 16 bytes across the parallel arrays. At 512 MiB that is 3 MiB nodes +
+ * 512 KiB heads + 16 KiB incomplete bits, about 3.52 MiB (0.69% of RAM), plus
+ * at most seven bytes for the VPN array's 8-byte alignment. The old figures
+ * remain above so callers using them can identify the changed assumption.
+ *
  * 1.5 nodes per frame rather than 1.0 because sharing makes PTEs outnumber
  * frames: a fork of a 100 MiB process doubles the PTE count without allocating
  * a frame. The pool is sized once, at init, from the PMM -- reclaim must be
@@ -140,7 +148,10 @@ int rmap_incomplete(uint64_t phys);
  * throughout, and the iterator goes away. Said out loud because a reverse map
  * that is walked without a lock is exactly the kind of thing that works until
  * it silently does not. */
-struct rmap_iter { uint32_t node; };
+/* Correction: never keep a node index across unlock; the node can be
+ * recycled. The iterator resumes by tuple value under the chain lock. */
+struct rmap_iter { uint64_t phys, last_cr3, last_va; int ended; };
+int rmap_snapshot(uint64_t phys,uint64_t *cr3,uint64_t *va,int cap);
 void rmap_begin(struct rmap_iter *it, uint64_t phys);
 int  rmap_next(struct rmap_iter *it, uint64_t *cr3, uint64_t *va);
 

@@ -135,7 +135,9 @@ uint64_t vma_reserve_file(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t pr
 
 /* Reserve `len` bytes. `hint` is a preferred base (0 = anywhere). Returns the
  * base address, or 0 on failure. Nothing is mapped: the pages materialise on
- * first touch. */
+ * first touch. Legacy mmap placement is preferred for small unhinted requests;
+ * a wide hint or a request exceeding that window uses MM_USER_WIDE_BASE..END.
+ * Exhausting legacy space also falls back to wide without moving older areas. */
 uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot);
 
 /* Reserve an EXACT range, anywhere in the private user region rather than only

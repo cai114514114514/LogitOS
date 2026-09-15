@@ -1,3 +1,4 @@
+#include "mmguard.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "mm.h"
@@ -33,6 +34,16 @@
  * readable from ring 3 by a program rather than only greppable from a serial
  * log by a person -- that is what makes the on-device gate assert on numbers. */
 #define MMCTL_OOM      5
+#ifdef BKL_VERIFY
+long bkl_verify_entry(long expected);
+#endif
+#ifdef HIGHHEAP_VERIFY
+#include "../../../tests/unit/highheap_verify.h"
+#endif
+#ifdef MM_WIDE_VERIFY
+/* Test-only implementation lives under tests/unit, never in product images. */
+#include "../../../tests/unit/wide_memory_verify.h"
+#endif
 
 /* The userland face of memory management: mmap (anonymous AND file-backed),
  * mprotect, munmap, meminfo.
@@ -74,6 +85,7 @@ long mm_syscall(long num, long a, long b, long c)
 {
     uint64_t cr3 = sched_current_cr3();
     if (!cr3) return -1;
+    MM_GUARD(cr3);
 
     switch (num) {
     case SYS_MMAP: {
@@ -128,7 +140,7 @@ long mm_syscall(long num, long a, long b, long c)
 
         struct proc *p = proc_current();
         if (!p) return 0;
-        struct file *f = proc_fd_get(p, req.fd);
+        struct file *f FILE_REF = proc_fd_acquire(p, req.fd);
         /* Only F_VFS names a real, path-addressed, on-disk file. F_PIPE/F_TTY/
          * F_SOCK have no backing path at all, and mapping one would mean
          * inventing an identity for pcache_file_open() to key on that the fd
@@ -372,6 +384,12 @@ long mm_syscall(long num, long a, long b, long c)
          * --------------------------------------------------------------- */
         if (!a) {
             switch (b) {
+#ifdef HIGHHEAP_VERIFY
+            case MMCTL_HIGHHEAP_VERIFY: return highheap_verify(c);
+#endif
+#ifdef BKL_VERIFY
+            case 0xb001: return bkl_verify_entry(c);
+#endif
             case MMCTL_REPORT:
                 mm_report("on demand");
                 return 0;
@@ -427,6 +445,12 @@ long mm_syscall(long num, long a, long b, long c)
                         (int)pcache_ra_short());
                 return 0;
             }
+#ifdef MM_WIDE_VERIFY
+            case MMCTL_WIDE_VERIFY:
+                return wide_memory_verify();
+            case MMCTL_DMA_SHUTDOWN_VERIFY:
+                return dma_shutdown_verify();
+#endif
             case MMCTL_OOM:
                 /* Prose AND the one machine-readable line, for the reason
                  * MMCTL_STATS gives about its own: a harness greps [oomstat]

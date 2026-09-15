@@ -3,6 +3,9 @@
 #include "shm.h"
 #include "mm.h"
 #include "pmm.h"
+/* Cache/shared payloads may occupy high physical RAM. Metadata remains in
+ * the low contiguous pool; all CPU payload access uses mm_p2v(), and disk
+ * I/O already bounces buffers outside the legacy DMA window. */
 #include "mmhost.h"
 #include "spinlock.h"
 #include "kprintf.h"
@@ -44,7 +47,7 @@ struct seg {
 
 static struct seg g_seg[SHM_SEGMAX];
 static spinlock_t shm_lock = SPINLOCK_INIT;
-static int g_ready;
+static _Atomic int g_ready;
 static uint64_t g_bugs;
 
 /* A bug in this file is a shared page that stops being shared, which is
@@ -61,6 +64,7 @@ void shm_init(void)
 {
     if (g_ready) return;
     uint64_t fl = spin_lock_irqsave(&shm_lock);
+    if (g_ready) { spin_unlock_irqrestore(&shm_lock,fl); return; }
     for (int i = 0; i < SHM_SEGMAX; i++) g_seg[i].used = 0;
     g_ready = 1;
     spin_unlock_irqrestore(&shm_lock, fl);
@@ -131,7 +135,9 @@ static int may(const struct seg *s, unsigned uid, unsigned want)
 static int seg_fill(struct seg *s, uint64_t pages)
 {
     for (uint64_t i = 0; i < pages; i++) {
-        uint64_t f = pmm_alloc();
+        /* Correction: reclaim may now sleep. This bounded creation holds a
+         * leaf registry lock, so use the normal-reserve, no-reclaim allocator. */
+        uint64_t f = pmm_alloc_any_nowait();
         if (!f) {
             for (uint64_t k = 0; k < i; k++) pmm_free(s->frame[k]);
             return -1;

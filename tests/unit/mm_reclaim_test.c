@@ -896,8 +896,17 @@ static void t_pcache(void)
     mm_eqi((long long)(n + (pcache_holds(f) ? 1u : 0u)), (long long)rc,
            "but rmap_count(f) + pcache_holds(f) DOES equal pmm_refcount(f)");
 
+    /* The earlier read-back intentionally left page 0 cached as frame2.
+     * Previously physical allocation order happened to make the clock reach
+     * page 1 first. Widening rmap's VPN storage moved its metadata and changed
+     * that order: reclaim correctly freed page 0, while this test insisted it
+     * had requested page 1. Pin the unrelated candidate for this one decision
+     * so the assertions measure mapped+cached teardown, not a physical address
+     * accident. The target f remains unpinned and the pin is always balanced. */
+    pmm_pin(frame2);
     uint64_t dc2_before = reclaim_dropped_cache();
     uint64_t got2 = reclaim_frames(1);
+    pmm_unpin(frame2);
     mm_ok(got2 >= 1, "(c) reclaim evicted the mapped+cached page");
     mm_ok(reclaim_dropped_cache() > dc2_before, "evicted through the cache-drop tier");
 

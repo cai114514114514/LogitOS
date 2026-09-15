@@ -1,3 +1,4 @@
+#include "mmguard.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "reclaim.h"
@@ -109,8 +110,9 @@ void reclaim_set_watermarks(uint64_t low, uint64_t high)
 
 void reclaim_init(void)
 {
-    if (rc_inited) return;
-    rc_inited = 1;
+    int zero=0;
+    if (!__atomic_compare_exchange_n(&rc_inited,&zero,1,0,
+                              __ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) return;
     uint64_t total = pmm_total_frames();
     /* 3% / 6% of RAM: on 512 MiB that is 15 MiB / 31 MiB. Low enough that a
      * healthy machine (peak 229 of 511 MiB) never triggers a pass, high enough
@@ -124,6 +126,7 @@ void reclaim_init(void)
             (int)rc_low, (int)(rc_low * FRAME_SIZE / (1024 * 1024)),
             (int)rc_high, (int)(rc_high * FRAME_SIZE / (1024 * 1024)),
             swap_ready() ? swap_dev_name() : "OFF (drop tier only)");
+    __atomic_store_n(&rc_inited,2,__ATOMIC_RELEASE);
 }
 
 /* --------------------------------------------------------- the candidate --
@@ -171,7 +174,7 @@ void reclaim_init(void)
  *
  * The point of naming them is that both clauses read like defensive paranoia
  * and neither is. Each is load-bearing, and the failing build is the proof. */
-static int candidate(uint64_t f, unsigned *nmap, int *cached)
+static int candidate_extra(uint64_t f, unsigned *nmap, int *cached, unsigned extra)
 {
     uint64_t phys = f * FRAME_SIZE;
     /* Read once, up front: it is one aligned load (pcache.h), no lock, and
@@ -193,7 +196,7 @@ static int candidate(uint64_t f, unsigned *nmap, int *cached)
     if (n == 0 && !held) { c_skip_unmapped++; return 0; }   /* raced away; not ours */
     if (rmap_incomplete(phys)) { c_skip_partial++; c_skip_partial_cached += held; return 0; }
     unsigned rc = pmm_refcount(phys);
-    if (rc == 0 || n + held != rc) {
+    if (rc == 0 || n + held + extra != rc) {
         /* Either pmm thinks the frame is free while PTEs (or the cache) point
          * at it (a bug elsewhere, already reported by rmap_audit or
          * pcache_audit), or somebody holds a reference that is neither one of
@@ -212,37 +215,70 @@ static int candidate(uint64_t f, unsigned *nmap, int *cached)
     return 1;
 }
 
-/* Every PTE that maps `f`, resolved and checked. Returns the count, or -1 if
- * the reverse map and the page tables disagree -- which must never happen and
- * is the one thing that would make eviction unsafe, so it aborts loudly rather
- * than evicting what it can find. */
-static int gather(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, int max)
+static int candidate(uint64_t f,unsigned *nmap,int *cached)
+{ return candidate_extra(f,nmap,cached,0); }
+
+/* A reverse-map snapshot contains values, never pointers into its node pool.
+ * Try every owning AS before following a PTE. Failed trylocks unwind without
+ * waiting: allocation can enter reclaim while already owning an AS guard. */
+struct reclaim_hold {
+    struct mm_guard guards[RECLAIM_MAX_SHARERS];
+    uint64_t cr3[RECLAIM_MAX_SHARERS], va[RECLAIM_MAX_SHARERS];
+    uint64_t *pte[RECLAIM_MAX_SHARERS], original[RECLAIM_MAX_SHARERS];
+    int n, locked, frozen, ref, cached;
+    uint64_t phys;
+};
+static void reclaim_release(struct reclaim_hold *h)
 {
-    uint64_t phys = f * FRAME_SIZE;
-    struct rmap_iter it;
-    int n = 0;
-    for (rmap_begin(&it, phys); n < max; ) {
-        uint64_t cr3, va;
-        if (!rmap_next(&it, &cr3, &va)) break;
-        uint64_t *pte = vmm_pte(cr3, va);
-        if (!pte || !(*pte & PRESENT) || !(*pte & USER) ||
-            (*pte & MM_PTE_ADDR) != phys) {
-            kprintf("[reclaim] BUG: rmap says cr3 %p va %p maps frame %p; "
-                    "the page table says %p\n", (void *)cr3, (void *)va,
-                    (void *)phys, (void *)(pte ? *pte : 0));
-            c_bugs++;
-            return -1;
+    if (h->frozen) {
+        for (int i=0;i<h->n;i++) {
+            uint64_t e=*h->pte[i];
+            if ((e & (PRESENT|MM_PTE_ADDR))==(PRESENT|h->phys) &&
+                (h->original[i]&WRITABLE)) __atomic_fetch_or(h->pte[i], WRITABLE, __ATOMIC_RELAXED);
         }
-        /* Another core is executing this address space and has, or is about to
-         * have, a TLB entry for this page. We cannot shoot it down from here
-         * (tlb.h: a shootdown IPI under the BKL deadlocks), so the frame is not
-         * ours to take. Reported as "busy" rather than folded into one of the
-         * skip counters, because it is the only skip whose rate depends on how
-         * many cores are running rather than on what the memory looks like. */
-        if (vmm_space_busy_elsewhere(cr3)) { c_skip_busy++; return -2; }
-        cr3s[n] = cr3; vas[n] = va; ptes[n] = pte; n++;
+        for (int i=0;i<h->n;i++) vmm_flush_space(h->cr3[i]);
     }
-    return n;
+    if (h->ref) pmm_free(h->phys);
+    while (h->locked) mm_guard_end(&h->guards[--h->locked]);
+}
+static int gather_hold(uint64_t f,struct reclaim_hold *h)
+{
+    h->phys=f*FRAME_SIZE;
+    h->n=rmap_snapshot(h->phys,h->cr3,h->va,RECLAIM_MAX_SHARERS);
+    if (h->n<0) return -1;
+    for (int i=0;i<h->n;i++) {
+        h->guards[i]=mm_guard_try(h->cr3[i]);
+        if (!h->guards[i].held) { c_skip_busy++; return -1; }
+        h->locked++;
+    }
+    /* Nodes may have vanished or moved while we acquired their AS locks.
+     * That is ordinary concurrency, not a corruption report. */
+    if (rmap_count(h->phys)!=(unsigned)h->n) return -1;
+    for (int i=0;i<h->n;i++) {
+        if (!mm_space_live(h->cr3[i])) return -1;
+        h->pte[i]=vmm_pte(h->cr3[i],h->va[i]);
+        if (!h->pte[i] || (*h->pte[i]&(PRESENT|USER|MM_PTE_ADDR))!=
+                           (PRESENT|USER|h->phys)) return -1;
+        h->original[i]=*h->pte[i];
+    }
+    if (pmm_ref(h->phys)<0) return -1;
+    h->ref=1;
+    unsigned n=0; int cache=0;
+    if (!candidate_extra(f,&n,&cache,1) || n!=(unsigned)h->n) return -1;
+    h->cached=cache;
+    return h->n;
+}
+static void reclaim_freeze(struct reclaim_hold *h)
+{
+    /* AS locks stop kernel writers, not ring 3. Revoke every writable alias
+     * and complete the shootdown BEFORE inspecting zeroes or starting DMA.
+     * A fault on these temporary read-only PTEs waits for our AS guard. */
+    for (int i=0;i<h->n;i++) {
+        h->original[i]=*h->pte[i];
+        __atomic_fetch_and(h->pte[i], ~(uint64_t)WRITABLE, __ATOMIC_RELAXED);
+    }
+    for (int i=0;i<h->n;i++) vmm_flush_space(h->cr3[i]);
+    h->frozen=1;
 }
 
 static int page_is_zero(uint64_t f)
@@ -278,8 +314,9 @@ static int try_drop(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
         *ptes[i] = 0;
         rmap_remove(f * FRAME_SIZE, cr3s[i], vas[i]);
         flush_if_active(cr3s[i], vas[i]);
-        pmm_free(f * FRAME_SIZE);          /* one reference per PTE; the last frees */
     }
+    for (int i=0;i<n;i++) vmm_flush_space(cr3s[i]);
+    for (int i=0;i<n;i++) pmm_free(f*FRAME_SIZE);
     c_dropped++;
     c_dropped_zero++;
     return 1;
@@ -320,8 +357,9 @@ static int try_drop_cached(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t *
         *ptes[i] = 0;
         rmap_remove(phys, cr3s[i], vas[i]);
         flush_if_active(cr3s[i], vas[i]);
-        pmm_free(phys);                    /* one reference per PTE */
     }
+    for (int i=0;i<n;i++) vmm_flush_space(cr3s[i]);
+    for (int i=0;i<n;i++) pmm_free(phys);
     /* THE HOOK pcache.h asks for: O(1) through pc_of_frame[], called here,
      * under the same big kernel lock that made the eviction decision, exactly
      * as pcache.h's refcount section requires. This is the cache's own
@@ -377,7 +415,7 @@ static uint64_t swap_entry(uint64_t old, uint64_t slot)
  * every PTE is put back exactly as it was -- the frame is still held, so the
  * page is not lost; the process just keeps its memory and reclaim counts a
  * failure. */
-static int try_swap(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, int n)
+static int try_swap(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, int n, const uint64_t *original)
 {
     if (!swap_ready()) return 0;
 
@@ -395,11 +433,12 @@ static int try_swap(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
 
     pmm_pin(phys);
     for (int i = 0; i < n; i++) {
-        saved[i] = *ptes[i];
+        saved[i] = original[i];
         *ptes[i] = swap_entry(saved[i], slot);
         flush_if_active(cr3s[i], vas[i]);
     }
 
+    for (int i=0;i<n;i++) vmm_flush_space(cr3s[i]);
     if (swap_write_page(slot, mm_p2v(phys)) != 0) {
         for (int i = 0; i < n; i++) {
             *ptes[i] = saved[i];
@@ -449,7 +488,24 @@ static int try_swap(uint64_t f, uint64_t *cr3s, uint64_t *vas, uint64_t **ptes, 
  * per allocation instead of a sweep. */
 #define RECLAIM_ALLOC_BUDGET 16384
 
-static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
+#ifdef MM_WIDE_VERIFY
+/* The test can target only an eligible page in a detached address space. This
+ * selects the victim, not its outcome: production gather/try_swap still own
+ * every PTE transition, pin, disk write and reference release. */
+int reclaim_verify_evict(uint64_t phys);
+int reclaim_verify_evict(uint64_t phys)
+{
+    unsigned count=0;int cached=0;
+    if((phys&4095)||!candidate(phys/FRAME_SIZE,&count,&cached)||cached)return 0;
+    struct reclaim_hold h __attribute__((cleanup(reclaim_release)))={0};
+    int n=gather_hold(phys/FRAME_SIZE,&h);
+    if(n<=0)return 0;
+    reclaim_freeze(&h);
+    return try_swap(phys/FRAME_SIZE,h.cr3,h.va,h.pte,n,h.original);
+}
+#endif
+
+static uint64_t reclaim_scan_locked(uint64_t want, uint64_t budget)
 {
     if (!reclaim_enabled() || want == 0) return 0;
 
@@ -470,17 +526,12 @@ static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
         int cached = 0;
         if (!candidate(f, &nmap, &cached)) continue;
 
-        uint64_t cr3s[RECLAIM_MAX_SHARERS], vas[RECLAIM_MAX_SHARERS];
-        uint64_t *ptes[RECLAIM_MAX_SHARERS];
-        int n = 0;
-        if (nmap > 0) {
-            /* nmap == 0 only ever means "held only by the cache, no PTE at
-             * all" -- candidate() would have taken skip_unmapped otherwise --
-             * so gather() has nothing to walk and is skipped rather than
-             * asked to prove a negative. */
-            n = gather(f, cr3s, vas, ptes, RECLAIM_MAX_SHARERS);
-            if (n <= 0) continue;         /* rmap/page-table disagreement, or busy elsewhere */
-
+        struct reclaim_hold h __attribute__((cleanup(reclaim_release)))={0};
+        int n=gather_hold(f,&h);
+        if (n<0) continue;
+        cached=h.cached;
+        uint64_t *cr3s=h.cr3,*vas=h.va,**ptes=h.pte;
+        if (n>0) {
             /* SECOND CHANCE. The accessed bits of every PTE that maps this
              * frame, OR-ed: one sharer touching it is enough to keep it.
              * Clearing them all is the cost of the chance, and the next time
@@ -494,7 +545,7 @@ static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
             for (int i = 0; i < n; i++) if (*ptes[i] & VMM_PTE_ACCESSED) referenced = 1;
             if (referenced) {
                 for (int i = 0; i < n; i++) {
-                    *ptes[i] &= ~VMM_PTE_ACCESSED;
+                    __atomic_fetch_and(ptes[i], ~(uint64_t)VMM_PTE_ACCESSED, __ATOMIC_RELAXED);
                     flush_if_active(cr3s[i], vas[i]);
                 }
                 c_second++;
@@ -502,6 +553,7 @@ static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
             }
         }
 
+        reclaim_freeze(&h);
         /* pcache.h's page wins over the anonymous zero page: it is checked
          * first because it needs no 4 KiB comparison to know it is
          * reconstructible, and because a page cannot be both (VMM_PTE_ANON
@@ -516,11 +568,22 @@ static uint64_t reclaim_scan(uint64_t want, uint64_t budget)
         }
 
         if (try_drop(f, cr3s, vas, ptes, n)) { freed++; continue; }
-        if (try_swap(f, cr3s, vas, ptes, n)) { freed++; continue; }
+        if (try_swap(f, cr3s, vas, ptes, n, h.original)) { freed++; continue; }
     }
 
     c_cycles += rc_cyc() - t0;
     return freed;
+}
+
+/* One clock hand/scanner. An allocating caller never waits for reclaim:
+ * that scanner may itself need this caller's AS/FS lock to finish. */
+static int rc_scanning;
+static uint64_t reclaim_scan(uint64_t want,uint64_t budget)
+{
+    if (__atomic_exchange_n(&rc_scanning,1,__ATOMIC_ACQUIRE)) return 0;
+    uint64_t n=reclaim_scan_locked(want,budget);
+    __atomic_store_n(&rc_scanning,0,__ATOMIC_RELEASE);
+    return n;
 }
 
 uint64_t reclaim_frames(uint64_t want)
@@ -548,7 +611,8 @@ uint64_t reclaim_emergency(uint64_t want)
  * from being a hang. */
 void reclaim_on_alloc(void)
 {
-    if (!rc_on || rc_in_pass || !rmap_ready()) return;
+    if (!rc_on || __atomic_load_n(&rc_inited,__ATOMIC_ACQUIRE)!=2 ||
+        !rmap_ready()) return;
     uint64_t free_now = pmm_free_frames();
     if (free_now >= rc_low) return;
 
@@ -568,14 +632,18 @@ void reclaim_on_alloc(void)
      * there. The backoff is therefore only honoured while there is still a
      * cushion; below half the low watermark every allocation gets a real
      * attempt, however fruitless the last one was. */
-    if (rc_backoff && free_now > rc_low / 2) { rc_backoff--; return; }
+    /* Own the allocation backoff state. Never wait for another allocator. */
+    if (__atomic_exchange_n(&rc_in_pass,1,__ATOMIC_ACQUIRE)) return;
+    if (rc_backoff && free_now > rc_low / 2) {
+        rc_backoff--;
+        __atomic_store_n(&rc_in_pass,0,__ATOMIC_RELEASE);
+        return;
+    }
     rc_backoff = 0;
-
-    rc_in_pass = 1;
     uint64_t want = (rc_high > free_now) ? rc_high - free_now : 1;
     uint64_t got = reclaim_scan(want, RECLAIM_ALLOC_BUDGET);
-    rc_in_pass = 0;
     if (!got) { rc_backoff = 512; c_backoffs++; }
+    __atomic_store_n(&rc_in_pass,0,__ATOMIC_RELEASE);
 
     if (!got && free_now < rc_low / 4) {
         /* Nothing left to take, and memory is nearly gone. Say so once per
@@ -597,7 +665,7 @@ void reclaim_on_alloc(void)
 void reclaim_late_init(void);
 void reclaim_late_init(void)
 {
-    if (rc_inited) return;
+    if (__atomic_load_n(&rc_inited,__ATOMIC_ACQUIRE)) return;
     reclaim_init();
 }
 
@@ -605,6 +673,7 @@ void reclaim_late_init(void)
 
 int reclaim_swapin(uint64_t cr3, uint64_t va, uint64_t *pte, int active)
 {
+    MM_GUARD(cr3);
     uint64_t e = *pte;
     if (!vmm_pte_is_swap(e)) return 0;
     uint64_t slot = vmm_pte_swap_slot(e);
@@ -622,10 +691,12 @@ int reclaim_swapin(uint64_t cr3, uint64_t va, uint64_t *pte, int active)
      * So an empty reserve forces a pass and asks again, exactly as the anonymous
      * fault does. Only after that is "out of memory" the truth rather than a
      * scheduling accident. */
-    uint64_t f = pmm_alloc_reserve();
+    /* Swap restores a user payload, not a legacy DMA descriptor. High RAM
+     * uses the existing counted block-layer bounce path until DMA migration. */
+    uint64_t f = pmm_alloc_reserve_any();
     if (!f) {
         reclaim_emergency(64);
-        f = pmm_alloc_reserve();
+        f = pmm_alloc_reserve_any();
     }
     if (!f) { c_swapin_fail++; return 0; }
 

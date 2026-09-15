@@ -1,3 +1,4 @@
+#include "mmguard.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "vma.h"
@@ -66,6 +67,7 @@ static struct space *find(uint64_t cr3)
 
 void vma_space_new(uint64_t cr3)
 {
+    MM_GUARD(cr3);
     cr3 &= MM_PTE_ADDR;
     if (!cr3) return;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
@@ -110,6 +112,7 @@ void vma_space_new(uint64_t cr3)
 
 void vma_space_free(uint64_t cr3)
 {
+    MM_GUARD(cr3);
     int put[VMA_PUTMAX], np = 0;
     int sput[VMA_PUTMAX], nsp = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
@@ -129,6 +132,7 @@ void vma_space_free(uint64_t cr3)
 
 void vma_space_clear(uint64_t cr3)
 {
+    MM_GUARD(cr3);
     int put[VMA_PUTMAX], np = 0;
     int sput[VMA_PUTMAX], nsp = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
@@ -149,6 +153,7 @@ void vma_space_clear(uint64_t cr3)
 
 int vma_space_clone(uint64_t dst_cr3, uint64_t src_cr3)
 {
+    MM_PAIR(dst_cr3, src_cr3);
     int take[VMA_PUTMAX], nt = 0;
     int stake[VMA_PUTMAX], nst = 0;
     uint64_t fl = spin_lock_irqsave(&vma_lock);
@@ -236,14 +241,13 @@ int vma_shm_at(uint64_t cr3, uint64_t va, int *shm, uint64_t *index, uint32_t *p
 int vma_range(uint64_t addr, uint64_t len, uint64_t *out_start, uint64_t *out_end)
 {
     if (len == 0) return -1;
-    if (len > MM_USER_END) return -1;                 /* cannot exceed the whole region */
     uint64_t start = addr & ~(uint64_t)0xFFF;
     if (addr > ~(uint64_t)0 - len) return -1;         /* addr + len wraps */
     uint64_t end = addr + len;
     if (end > ~(uint64_t)0 - 0xFFF) return -1;        /* rounding up wraps */
     end = (end + 0xFFF) & ~(uint64_t)0xFFF;
     if (end <= start) return -1;
-    if (start < MM_USER_BASE || end > MM_USER_END) return -1;
+    if (!mm_user_range(start, end - start)) return -1;
     *out_start = start;
     *out_end = end;
     return 0;
@@ -258,9 +262,10 @@ static int overlaps(struct space *s, uint64_t a, uint64_t b)
 
 uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot)
 {
+    MM_GUARD(cr3);
     uint64_t need = (len + 0xFFF) & ~(uint64_t)0xFFF;
     if (len == 0 || need < len) return 0;                 /* zero, or the round-up wrapped */
-    if (need > MM_MMAP_TOP - MM_MMAP_BASE) return 0;
+    if (need > MM_USER_WIDE_END - MM_USER_WIDE_BASE) return 0;
 
     uint64_t fl = spin_lock_irqsave(&vma_lock);
     struct space *s = find(cr3);
@@ -276,20 +281,31 @@ uint64_t vma_reserve(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot)
      * MAP_FIXED becomes a way to unmap someone else's memory. */
     if (hint) {
         uint64_t h = hint & ~(uint64_t)0xFFF;
-        if (h >= MM_MMAP_BASE && h + need <= MM_MMAP_TOP && !overlaps(s, h, h + need))
-            got = h;
+        if (((h >= MM_MMAP_BASE && h < MM_MMAP_TOP && need <= MM_MMAP_TOP - h) ||
+             (h >= MM_USER_WIDE_BASE && h < MM_USER_WIDE_END && need <= MM_USER_WIDE_END - h)) &&
+            !overlaps(s, h, h + need)) got = h;
     }
     if (!got) {
         /* First fit from the base up. VMA_MAXAREA is 16, so the O(n^2) scan is
          * 256 comparisons worst case -- cheaper than keeping a sorted list
          * correct through splits. */
-        for (uint64_t a = MM_MMAP_BASE; a + need <= MM_MMAP_TOP; ) {
-            uint64_t clash_end = 0;
-            for (int j = 0; j < VMA_MAXAREA; j++)
-                if (s->v[j].used && a < s->v[j].end && s->v[j].start < a + need)
-                    if (s->v[j].end > clash_end) clash_end = s->v[j].end;
-            if (!clash_end) { got = a; break; }
-            a = clash_end;
+        /* Correction: VMA_MAXAREA is now 32, and the search has two windows.
+         * Ordinary allocations preserve legacy first-fit placement; a wide hint
+         * stays wide even when occupied, and requests too large for legacy go
+         * directly wide. Sparse reservations consume one VMA, never RAM pages. */
+        int wide_first = hint >= MM_USER_WIDE_BASE || need > MM_MMAP_TOP - MM_MMAP_BASE;
+        for (int window = wide_first; window < 2 && !got; window++) {
+            uint64_t base = window ? MM_USER_WIDE_BASE : MM_MMAP_BASE;
+            uint64_t top = window ? MM_USER_WIDE_END : MM_MMAP_TOP;
+            for (uint64_t a = base; need <= top - a; ) {
+                uint64_t clash_end = 0;
+                for (int j = 0; j < VMA_MAXAREA; j++)
+                    if (s->v[j].used && a < s->v[j].end && s->v[j].start < a + need)
+                        if (s->v[j].end > clash_end) clash_end = s->v[j].end;
+                if (!clash_end) { got = a; break; }
+                if (clash_end >= top) break;
+                a = clash_end;
+            }
         }
     }
     if (!got) goto out;
@@ -309,6 +325,7 @@ out:
 uint64_t vma_reserve_file(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot,
                           int fh, uint64_t foff)
 {
+    MM_GUARD(cr3);
     if (fh < 0) return 0;
     /* Reserve first, then attach. vma_reserve does all of the arithmetic and
      * all of the overlap refusal; repeating any of it here would be a second
@@ -349,6 +366,7 @@ uint64_t vma_reserve_file(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t pr
 uint64_t vma_reserve_shm(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t prot,
                          int sh, uint64_t off)
 {
+    MM_GUARD(cr3);
     if (sh < 0) return 0;
     if (off & 0xFFF) return 0;              /* the fault path divides by 4096 */
 
@@ -388,6 +406,7 @@ uint64_t vma_reserve_shm(uint64_t cr3, uint64_t hint, uint64_t len, uint32_t pro
 
 int vma_reserve_fixed(uint64_t cr3, uint64_t start, uint64_t len, uint32_t prot)
 {
+    MM_GUARD(cr3);
     uint64_t a, b;
     if (vma_range(start, len, &a, &b) < 0) return -1;   /* also bounds it to the user region */
 
@@ -438,6 +457,7 @@ out:
 int vma_reserve_file_fixed(uint64_t cr3, uint64_t start, uint64_t len,
                            uint32_t prot, int fh, uint64_t foff)
 {
+    MM_GUARD(cr3);
     if (fh < 0) return -1;
     /* A file mapping is never writable: there is no writeback in this line and
      * no private-file COW fault case, so a writable file PTE would be a dirty
@@ -480,6 +500,7 @@ out:
 
 int vma_release(uint64_t cr3, uint64_t addr, uint64_t len)
 {
+    MM_GUARD(cr3);
     uint64_t start, end;
     if (vma_range(addr, len, &start, &end) < 0) return -1;
 
@@ -588,6 +609,7 @@ static int split_at(struct space *s, uint64_t b, int *take, int *nt)
 
 int vma_protect(uint64_t cr3, uint64_t addr, uint64_t len, uint32_t prot)
 {
+    MM_GUARD(cr3);
     uint64_t start, end;
     if (vma_range(addr, len, &start, &end) < 0) return VMA_E_RANGE;
 

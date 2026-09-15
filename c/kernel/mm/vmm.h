@@ -187,10 +187,15 @@ static inline uint64_t vmm_pte_swap_slot(uint64_t e)
 
 /* Map one 4 KiB page (`virt` -> `phys`) into the active address space,
  * allocating intermediate page tables from the PMM as needed. PRESENT is
- * always set; pass extra flags such as VMM_WRITABLE. */
+ * always set; pass extra flags such as VMM_WRITABLE.
+ * Correction: USER mappings own the current AS guard. Supervisor mappings use
+ * the canonical kernel tree and a dedicated sleeping owner, publish new shared
+ * roots to all live spaces, and wait for TLB acknowledgement. They are refused
+ * in either user window; driver callers must use reserved kernel addresses. */
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags);
 
-/* Map a contiguous range (rounded out to page boundaries). */
+/* Map a contiguous range (rounded out to page boundaries). Supervisor changes
+ * retain their owner through one batched shootdown; identical leaves skip it. */
 void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags);
 
 /* --- per-process address spaces --- */
@@ -200,13 +205,21 @@ uint64_t vmm_kernel_cr3(void);
 
 /* Build a new address space: a fresh PML4 that shares the kernel's top-level
  * entries (identity-mapped low memory, framebuffer MMIO) but gets its own
- * private user region. Returns the new PML4 physical address, or 0 on failure. */
+ * private user region. Returns the new PML4 physical address, or 0 on failure.
+ * Correction (2026-09-09): the legacy PDPT[1] is retained, and wide user
+ * mappings own PML4[2..255]. All other kernel entries stay shared; the wide
+ * trees start empty even if the kernel root happened to contain entries there. */
 uint64_t vmm_new_space(void);
 
 /* Map one 4 KiB page into the address space rooted at PML4 physical `cr3`
  * (rather than the active one), so an app's space can be populated before the
  * switch. The private user PDPT is copied-on-first-use off the shared kernel
- * PDPT so kernel/framebuffer stay mapped. */
+ * PDPT so kernel/framebuffer stay mapped.
+ * Correction: the legacy PDPT is copied at vmm_new_space(), not first use.
+ * Wide subtrees are allocated lazily; USER flags are accepted only in either
+ * of mm.h's two user windows and never on the shared high physical map.
+ * Supervisor requests use the same canonical publication as vmm_map_page(),
+ * even when cr3 names a process with a private low PDPT. */
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags);
 
 /* Install a complete, NOT-present PTE (i.e. a swap entry) in `cr3`. mm-internal:
@@ -234,12 +247,19 @@ uint64_t *vmm_pte(uint64_t cr3, uint64_t virt);
 /* fork(): clone the private user subtree of `src_cr3` into `dst_cr3`. With
  * copy-on-write enabled (mm.h) no data page is copied: both spaces are pointed
  * at the same frames, read-only + VMM_PTE_COW, and the frames' refcounts go up.
+ * Both legacy and wide trees are walked by allocated page tables, so a sparse
+ * TiB reservation costs no page-by-page traversal. Swap and PROT_NONE entries
+ * survive too; kernel trees are never cloned or released as user ownership.
  * Returns 0 on success, -1 on OOM (caller must vmm_free_space(dst) + fail). */
 int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3);
+int vmm_clone_user_counted(uint64_t dst_cr3,uint64_t src_cr3,
+                           uint64_t *shared,uint64_t *copied);
 
 /* Pages shared / copied by the most recent vmm_clone_user, for the fork
  * accounting. Reset at the start of each clone. */
+#ifdef MM_HOSTTEST
 void vmm_clone_stats(uint64_t *shared, uint64_t *copied);
+#endif
 
 /* Unmap [virt, virt+len) in `cr3`, dropping a reference on each frame that was
  * present. Returns the number of pages actually unmapped. */

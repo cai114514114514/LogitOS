@@ -85,6 +85,31 @@
 #define MM_USER_BASE 0x40000000ull
 #define MM_USER_END  0x80000000ull
 
+/* Correction (2026-09-09): the PDPT[1] statement above describes the legacy
+ * window only. Keep every existing image/stack address working, and reserve
+ * PML4[2..255] for wide user mappings. The gap is NOT user space: it contains
+ * shared kernel mappings. The high canonical half (including the physmap) is
+ * likewise never user-accessible. A range must fit ONE window, not merely have
+ * two valid endpoints, or a range spanning the kernel gap would be accepted. */
+#define MM_USER_WIDE_BASE 0x0000010000000000ull
+#define MM_USER_WIDE_END  0x0000800000000000ull
+static inline int mm_user_addr(uint64_t addr)
+{
+    return (addr >= MM_USER_BASE && addr < MM_USER_END) ||
+           (addr >= MM_USER_WIDE_BASE && addr < MM_USER_WIDE_END);
+}
+/* Zero-length syscall accesses retain their caller's policy; an address range
+ * itself is nonempty. Subtraction avoids overflow for hostile size arguments. */
+static inline int mm_user_range(uint64_t addr, uint64_t len)
+{
+    if (!len) return 0;
+    if (addr >= MM_USER_BASE && addr < MM_USER_END)
+        return len <= MM_USER_END - addr;
+    if (addr >= MM_USER_WIDE_BASE && addr < MM_USER_WIDE_END)
+        return len <= MM_USER_WIDE_END - addr;
+    return 0;
+}
+
 /* Where mmap() hands out address space: the top of the user region, growing
  * down, well clear of every app's image + BSS + stack. The highest link base is
  * 0x50000000 (CLI programs) with a 64 MiB image+stack window above it, and the
@@ -186,7 +211,7 @@ uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
  * (vmm.c), lowered by the fault that resolves one and by every unmap, so the
  * three files that move it share the counter directly rather than through an
  * accessor that would hide which of them is out of step. */
-extern uint64_t g_mm_cow_pages;
+extern _Atomic uint64_t g_mm_cow_pages;
 
 /* One line of mm accounting on the console. `tag` says what prompted it. */
 void mm_report(const char *tag);

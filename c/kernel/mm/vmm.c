@@ -1,3 +1,4 @@
+#include "mmguard.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "vmm.h"
@@ -17,6 +18,8 @@
 void tlb_flush_all(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(tlb_flush_all);
 
+#include "mmguard.inc"
+
 #define PRESENT  0x1
 #define WRITABLE 0x2
 #define USER     0x4
@@ -29,22 +32,27 @@ static inline void invlpg(uint64_t addr) { mm_invlpg(addr); }
 /* Return the next-level table for `idx`, allocating and linking it if absent.
  * Physical frames live in the identity-mapped low region, so a frame's
  * physical address is directly usable as a pointer (mm_p2v). */
-static uint64_t *next_table(uint64_t *table, int idx)
+static uint64_t *next_table(uint64_t *table, int idx, int user)
 {
     if (!(table[idx] & PRESENT)) {
+#ifdef MM_KERNEL_MAP_TEST
+        void mm_host_table_absent(uint64_t *, int, int);
+        mm_host_table_absent(table,idx,user);
+#endif
         uint64_t frame = pmm_alloc();
         if (!frame) return NULL;                 /* OOM: frame 0 is reserved; never install it */
         memset(mm_p2v(frame), 0, 4096);
-        table[idx] = frame | PRESENT | WRITABLE | USER;
+        table[idx] = frame | PRESENT | WRITABLE | (user ? USER : 0);
     } else {
         if (table[idx] & 0x80)                  /* PS: a large-page leaf, not a table --
                                                  * refuse to descend (boot.asm maps 0-1 GiB
                                                  * with 2 MiB pages; treating a PD leaf as a
                                                  * PT pointer would corrupt that page). */
             return NULL;
-        /* Keep the path user-reachable; leaf PTE flags still gate access, so
-         * kernel-only pages (no USER on their final entry) stay protected. */
-        table[idx] |= USER;
+        /* Previously every walk set USER, even for a kernel mapping. Preserve
+         * existing user paths, but never grant USER to a supervisor-only
+         * subtree (especially the high physmap) while mapping kernel memory. */
+        if (user) table[idx] |= USER;
     }
     return (uint64_t *)mm_p2v(table[idx] & MM_PTE_ADDR);
 }
@@ -92,27 +100,119 @@ static void set_leaf(uint64_t cr3, uint64_t *pt, uint64_t virt, uint64_t entry)
         rmap_add(entry & MM_PTE_ADDR, cr3, virt);
 }
 
+/* The kernel PML4 is canonical. Each process has a private low PDPT to
+ * isolate PDPT[1], so adding a shared root after process creation also needs
+ * publication into those copies. Registry publication/retirement and physical
+ * root release use this same owner; no AS lock is acquired in this walk. */
+static void publish_kernel_root(uint64_t virt, uint64_t *kpml4)
+{
+    unsigned l=(unsigned)((virt>>39)&511),q=(unsigned)((virt>>30)&511);
+    uint64_t entry;
+    if (l==0) {
+        uint64_t *kpdpt=mm_p2v(kpml4[0]&MM_PTE_ADDR);
+        entry=kpdpt[q]&~(uint64_t)USER;
+        __atomic_store_n(&kpdpt[q],entry,__ATOMIC_RELEASE);
+    } else {
+        entry=kpml4[l]&~(uint64_t)USER;
+        __atomic_store_n(&kpml4[l],entry,__ATOMIC_RELEASE);
+    }
+    for (unsigned i=0;i<256;i++) {
+        uint64_t cr3=__atomic_load_n(&mm_live_spaces[i],__ATOMIC_ACQUIRE);
+        if (!cr3) continue;
+        uint64_t *root=mm_p2v(cr3&MM_PTE_ADDR);
+        if (l==0) {
+            uint64_t *pdpt=mm_p2v(root[0]&MM_PTE_ADDR);
+            __atomic_store_n(&pdpt[q],entry,__ATOMIC_RELEASE);
+        } else __atomic_store_n(&root[l],entry,__ATOMIC_RELEASE);
+    }
+}
+
+/* Caller owns the selected AS or shared-kernel guard. Returns whether a leaf
+ * changed, so range callers pay one shootdown after all publications.
+ * Correction: a newly allocated shared root also counts as a change, even if
+ * a later table allocation fails. Publish valid, zero-filled partial trees on
+ * that failure path: otherwise a retry sees an existing canonical root and
+ * never repairs the missing roots in processes which predate the allocation. */
+static int map_page_locked(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags, int user)
+{
+    uint64_t *pml4=mm_p2v(cr3&MM_PTE_ADDR);
+    unsigned l=(unsigned)((virt>>39)&511),q=(unsigned)((virt>>30)&511);
+    uint64_t old_root=pml4[l];
+    int changed=0;
+    if (!user && l==0 && (old_root&PRESENT))
+        old_root=((uint64_t *)mm_p2v(old_root&MM_PTE_ADDR))[q];
+    uint64_t *pdpt=next_table(pml4,(int)l,user); if (!pdpt) goto out;
+    uint64_t *pd=next_table(pdpt,(int)q,user); if (!pd) goto out;
+    uint64_t *pt=next_table(pd,(int)((virt>>21)&511),user); if (!pt) goto out;
+    uint64_t entry=(phys&MM_PTE_ADDR)|flags|PRESENT;
+    uint64_t old=pt[(virt>>12)&511];
+    if (old!=entry) { set_leaf(cr3,pt,virt,entry); changed=1; }
+out:
+#ifdef MM_NO_PARTIAL_KERNEL_PUBLISH
+    if (!user && !changed) return 0; /* negative control: omit OOM publication */
+#endif
+    if (!user) {
+        uint64_t new_root=pml4[l];
+        if (l==0 && (new_root&PRESENT))
+            new_root=((uint64_t *)mm_p2v(new_root&MM_PTE_ADDR))[q];
+        if ((new_root&PRESENT) && old_root!=new_root) {
+            publish_kernel_root(virt,pml4);
+            changed=1;
+        }
+    }
+    return changed;
+}
+static int kernel_map_address(uint64_t virt)
+{
+    /* Only canonical, supervisor regions. In particular never overwrite the
+     * private legacy PDPT[1] or any wide user PML4 root during publication. */
+    uint64_t top=virt>>47;
+    return (top==0 || top==0x1ffff) && !mm_user_addr(virt);
+}
+static void kernel_map_finish(int changed)
+{
+    /* A new root or permission replacement must be visible before a caller
+     * uses its MMIO alias. The sender retains the kernel owner until every
+     * CPU confirms, and tlb_flush_all fail-stops on a missing ACK. */
+    if (changed && LOGIT_HAVE(tlb_flush_all)) tlb_flush_all();
+}
+
 void vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    uint64_t cr3 = mm_read_cr3();
-
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
-    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
-    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
-    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
-
-    set_leaf(cr3, pt, virt, (phys & MM_PTE_ADDR) | flags | PRESENT);
-    invlpg(virt);
+    if (flags&USER) {
+        if (!mm_user_addr(virt)) return;
+        uint64_t cr3=mm_read_cr3(); MM_GUARD(cr3);
+        map_page_locked(cr3,virt,phys,flags,1);
+        invlpg(virt);
+    } else {
+        if (!kernel_map_address(virt)) return;
+        MM_KERNEL_GUARD;
+        int changed=map_page_locked(vmm_kernel_cr3(),virt,phys,flags,0);
+        invlpg(virt);
+        kernel_map_finish(changed);
+    }
 }
 
 void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
 {
-    if (size == 0 || virt > UINT64_MAX - size - 0xFFF) return;   /* overflow -> no-op, not a silent wrap */
-    uint64_t end = (virt + size + 0xFFF) & ~(uint64_t)0xFFF;
-    virt &= ~(uint64_t)0xFFF;
-    phys &= ~(uint64_t)0xFFF;
-    for (; virt < end; virt += 4096, phys += 4096)
-        vmm_map_page(virt, phys, flags);
+    if (size==0 || size>UINT64_MAX-0xFFF || virt>UINT64_MAX-size-0xFFF) return;
+    uint64_t end=(virt+size+0xFFF)&~(uint64_t)0xFFF;
+    virt&=~(uint64_t)0xFFF;phys&=~(uint64_t)0xFFF;
+    if (flags&USER) {
+        uint64_t cr3=mm_read_cr3(); MM_GUARD(cr3);
+        for (;virt<end;virt+=4096,phys+=4096) {
+            if (!mm_user_addr(virt)) continue;
+            map_page_locked(cr3,virt,phys,flags,1);invlpg(virt);
+        }
+    } else {
+        MM_KERNEL_GUARD; int changed=0;
+        uint64_t cr3=vmm_kernel_cr3();
+        for (;virt<end;virt+=4096,phys+=4096) {
+            if (!kernel_map_address(virt)) continue;
+            changed|=map_page_locked(cr3,virt,phys,flags,0);invlpg(virt);
+        }
+        kernel_map_finish(changed);
+    }
 }
 
 /* --- per-process address spaces --- */
@@ -123,6 +223,11 @@ void vmm_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags)
  * still sharing the kernel's other PDPT entries (identity low mem, framebuffer). */
 #define USER_PML4_IDX 0
 #define USER_PDPT_IDX 1
+/* Correction: in addition to the legacy subtree above, PML4[2..255]
+ * contains private user trees. PML4[1] stays kernel-reserved; indices >=256
+ * retain the kernel's supervisor mappings, including its physical map. */
+#define WIDE_PML4_FIRST ((int)(MM_USER_WIDE_BASE >> 39))
+#define WIDE_PML4_END   ((int)(MM_USER_WIDE_END >> 39))
 
 static uint64_t g_kernel_cr3;
 /* Statistics, not state: every writer (this file's clone, fault.c's resolve,
@@ -130,8 +235,12 @@ static uint64_t g_kernel_cr3;
  * syscall_is_bkl_free() and faults always take the BKL -- so plain increments
  * are correct. If fork is ever made BKL-free these need the same treatment the
  * PTE edits below would: a per-address-space lock. */
-uint64_t g_mm_cow_pages;                 /* PTEs currently carrying VMM_PTE_COW (mm.h) */
-static uint64_t g_clone_shared, g_clone_copied;
+_Atomic uint64_t g_mm_cow_pages;                 /* PTEs currently carrying VMM_PTE_COW (mm.h) */
+/* Legacy host API keeps per-host-thread results; kernel callers pass outputs
+ * to vmm_clone_user_counted, so sleeping/migration cannot mix two forks. */
+#ifdef MM_HOSTTEST
+static _Thread_local uint64_t g_clone_shared, g_clone_copied;
+#endif
 
 uint64_t mm_cow_pages(void) { return g_mm_cow_pages; }
 
@@ -190,12 +299,12 @@ void vmm_switch(uint64_t cr3)
 {
     int i = this_cpu()->index;
     if (i >= 0 && i < PERCPU_MAXCPU) {
-        g_cpu_prev[i] = g_cpu_cur[i];
-        g_cpu_cur[i]  = cr3 & MM_PTE_ADDR;
+        __atomic_store_n(&g_cpu_prev[i],__atomic_load_n(&g_cpu_cur[i],__ATOMIC_RELAXED),__ATOMIC_RELEASE);
+        __atomic_store_n(&g_cpu_cur[i],cr3 & MM_PTE_ADDR,__ATOMIC_RELEASE);
         __asm__ volatile ("" ::: "memory");
         mm_write_cr3(cr3);
         __asm__ volatile ("" ::: "memory");
-        g_cpu_prev[i] = 0;
+        __atomic_store_n(&g_cpu_prev[i],0,__ATOMIC_RELEASE);
         return;
     }
     mm_write_cr3(cr3);
@@ -208,7 +317,7 @@ int vmm_space_busy_elsewhere(uint64_t cr3)
     int me = this_cpu()->index;
     for (int i = 0; i < PERCPU_MAXCPU; i++) {
         if (i == me) continue;          /* our own TLB is handled by invlpg */
-        if (g_cpu_cur[i] == want || g_cpu_prev[i] == want) return 1;
+        if (__atomic_load_n(&g_cpu_cur[i],__ATOMIC_ACQUIRE) == want || __atomic_load_n(&g_cpu_prev[i],__ATOMIC_ACQUIRE) == want) return 1;
     }
     return 0;
 }
@@ -221,36 +330,41 @@ int  vmm_space_busy_elsewhere(uint64_t cr3) { (void)cr3; return 0; }
 
 uint64_t vmm_new_space(void)
 {
-    uint64_t kcr3 = vmm_kernel_cr3();
-    uint64_t *kpml4 = (uint64_t *)mm_p2v(kcr3);
-    uint64_t *kpdpt = (uint64_t *)mm_p2v(kpml4[USER_PML4_IDX] & MM_PTE_ADDR);
-
-    uint64_t pml4 = pmm_alloc();
-    uint64_t pdpt = pmm_alloc();
+    uint64_t pml4=pmm_alloc(),pdpt=pmm_alloc();
     if (!pml4 || !pdpt) { if (pml4) pmm_free(pml4); if (pdpt) pmm_free(pdpt); return 0; }
-
-    /* Copy the kernel PML4 wholesale: every region stays mapped by default. */
-    memcpy(mm_p2v(pml4), mm_p2v(kcr3), 4096);
-    /* Copy the kernel's low PDPT, then give this space its own PDPT so its
-     * user sub-tree (PDPT[1]) can diverge without touching the kernel's. */
-    memcpy(mm_p2v(pdpt), kpdpt, 4096);
-    ((uint64_t *)mm_p2v(pdpt))[USER_PDPT_IDX] = 0;   /* private, populated lazily */
-    ((uint64_t *)mm_p2v(pml4))[USER_PML4_IDX] = pdpt | PRESENT | WRITABLE | USER;
-
+    {
+        MM_KERNEL_GUARD;
+        uint64_t kcr3=vmm_kernel_cr3();
+        uint64_t *kpml4=mm_p2v(kcr3);
+        uint64_t *kpdpt=mm_p2v(kpml4[USER_PML4_IDX]&MM_PTE_ADDR);
+        /* Private roots become visible together, while kernel-root publishers
+         * cannot race the copy. Wide user trees never come from the kernel. */
+        memcpy(mm_p2v(pml4),kpml4,4096);
+        for (int l=WIDE_PML4_FIRST;l<WIDE_PML4_END;l++)
+            ((uint64_t *)mm_p2v(pml4))[l]=0;
+        memcpy(mm_p2v(pdpt),kpdpt,4096);
+        ((uint64_t *)mm_p2v(pdpt))[USER_PDPT_IDX]=0;
+        ((uint64_t *)mm_p2v(pml4))[USER_PML4_IDX]=pdpt|PRESENT|WRITABLE|USER;
+        if (!mm_space_publish(pml4)) { pmm_free(pdpt);pmm_free(pml4);return 0; }
+    }
+    /* No kernel -> blocking-AS edge: this takes the new space's AS guard. */
     vma_space_new(pml4);
     return pml4;
 }
 
-/* Like next_table() but walks the table tree rooted at an explicit PML4. */
+/* Explicit-space user mappings own that AS. Supervisor mappings still belong
+ * to the canonical shared tree, even if a driver runs in a process context. */
 void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
 {
-    uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
-    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
-    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
-    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
-
-    set_leaf(cr3, pt, virt, (phys & MM_PTE_ADDR) | flags | PRESENT);
-    /* No invlpg: this space is not active while being populated. */
+    if (flags&USER) {
+        if (!mm_user_addr(virt)) return;
+        MM_GUARD(cr3);map_page_locked(cr3,virt,phys,flags,1);
+    } else {
+        if (!kernel_map_address(virt)) return;
+        MM_KERNEL_GUARD;
+        int changed=map_page_locked(vmm_kernel_cr3(),virt,phys,flags,0);
+        kernel_map_finish(changed);
+    }
 }
 
 /* Install a COMPLETE, not-present PTE (a swap entry) in `cr3`. The clone path
@@ -258,10 +372,12 @@ void vmm_map_page_in(uint64_t cr3, uint64_t virt, uint64_t phys, uint64_t flags)
  * entries, and those have no frame to hand to vmm_map_page_in. */
 void vmm_map_raw_in(uint64_t cr3, uint64_t virt, uint64_t entry)
 {
+    MM_GUARD(cr3);
+    if (!mm_user_addr(virt)) return;
     uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
-    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF);   if (!pdpt) return;
-    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF);   if (!pd)   return;
-    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF);   if (!pt)   return;
+    uint64_t *pdpt = next_table(pml4, (virt >> 39) & 0x1FF, 1);   if (!pdpt) return;
+    uint64_t *pd   = next_table(pdpt, (virt >> 30) & 0x1FF, 1);   if (!pd)   return;
+    uint64_t *pt   = next_table(pd,   (virt >> 21) & 0x1FF, 1);   if (!pt)   return;
 
     set_leaf(cr3, pt, virt, entry);
 }
@@ -279,6 +395,26 @@ uint64_t *vmm_pte(uint64_t cr3, uint64_t virt)
         t = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     }
     return &t[(virt >> 12) & 0x1FF];
+}
+
+/* Lookup for sparse range operations. If an intermediate table is absent,
+ * skip its entire coverage; the caller's for-loop adds the final 4 KiB step.
+ * This keeps munmap/mprotect of a multi-TiB untouched reservation bounded by
+ * allocated tables. Nonpresent leaf encodings (swap/PROT_NONE) are NOT skipped. */
+static uint64_t *range_pte(uint64_t cr3, uint64_t *addr)
+{
+    uint64_t *t = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
+    static const int shift[] = {39, 30, 21};
+    for (int level = 0; level < 3; level++) {
+        uint64_t e = t[(*addr >> shift[level]) & 511];
+        if (!(e & PRESENT) || (e & 0x80)) {
+            uint64_t span = 1ull << shift[level];
+            *addr = (*addr & ~(span - 1)) + span - 4096;
+            return NULL;
+        }
+        t = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
+    }
+    return &t[(*addr >> 12) & 511];
 }
 
 /* ---------------------------------------------------------------- fork --
@@ -324,212 +460,250 @@ uint64_t *vmm_pte(uint64_t cr3, uint64_t virt)
  * TLB. src is the running process's own space and a process has exactly one
  * thread, so no other core can have these translations cached. We invalidate
  * on this core as we go, and reload CR3 at the end if src is active. */
-int vmm_clone_user(uint64_t dst_cr3, uint64_t src_cr3)
+int vmm_clone_user_counted(uint64_t dst_cr3, uint64_t src_cr3,
+                           uint64_t *shared, uint64_t *copied)
 {
-    g_clone_shared = g_clone_copied = 0;
+    MM_PAIR(dst_cr3, src_cr3);
+    uint64_t clone_shared = 0, clone_copied = 0;
+    if (shared) *shared=0;
+    if (copied) *copied=0;
 
     uint64_t *spml4 = (uint64_t *)mm_p2v(src_cr3 & MM_PTE_ADDR);
-    if (!(spml4[USER_PML4_IDX] & PRESENT)) return 0;
-    uint64_t *spdpt = (uint64_t *)mm_p2v(spml4[USER_PML4_IDX] & MM_PTE_ADDR);
-    uint64_t pde = spdpt[USER_PDPT_IDX];
-    if (!(pde & PRESENT)) return 0;
-    uint64_t *spd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
-
     int cow = mm_cow_enabled();
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (src_cr3 & MM_PTE_ADDR));
+    if (vma_space_clone(dst_cr3, src_cr3) != 0) return -1;
 
-    vma_space_clone(dst_cr3, src_cr3);
+    /* Walk allocated trees, not virtual pages: a 1 TiB reservation may contain
+     * only two resident pages. The old PDPT[1]-only traversal silently lost
+     * everything above 1 TiB on fork. The control reinstates exactly that loss. */
+    for (int l = 0; l < WIDE_PML4_END; l++) {
+        if (l != USER_PML4_IDX && l < WIDE_PML4_FIRST) continue;
+#ifdef WIDEVA_SKIP_CLONE
+        if (l >= WIDE_PML4_FIRST) continue;
+#endif
+        if (!(spml4[l] & PRESENT)) continue;
+        uint64_t *spdpt = (uint64_t *)mm_p2v(spml4[l] & MM_PTE_ADDR);
+        int first = l == USER_PML4_IDX ? USER_PDPT_IDX : 0;
+        int limit = l == USER_PML4_IDX ? USER_PDPT_IDX + 1 : 512;
+        for (int q = first; q < limit; q++) {
+            uint64_t pde = spdpt[q];
+            if (!(pde & PRESENT)) continue;
+            if (pde & 0x80) goto clone_failed; /* user huge pages are not supported */
+            uint64_t *spd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
+            for (int i = 0; i < 512; i++) {
+                if (!(spd[i] & PRESENT)) continue;
+                if (spd[i] & 0x80) goto clone_failed;
+                uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & MM_PTE_ADDR);
+                for (int j = 0; j < 512; j++) {
+                    uint64_t e = spt[j];
+                    uint64_t va = ((uint64_t)l << 39) | ((uint64_t)q << 30) |
+                                  ((uint64_t)i << 21) | ((uint64_t)j << 12);
 
-    for (int i = 0; i < 512; i++) {
-        if (!(spd[i] & PRESENT)) continue;
-        uint64_t *spt = (uint64_t *)mm_p2v(spd[i] & MM_PTE_ADDR);
-        for (int j = 0; j < 512; j++) {
-            uint64_t e = spt[j];
-            uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
-                          ((uint64_t)i << 21) | ((uint64_t)j << 12);
+                    if (!vmm_pte_is_swap(e) && !vmm_pte_is_noaccess(e) &&
+                        (e & (PRESENT | USER)) != (PRESENT | USER)) continue;
+                    uint64_t *dt = (uint64_t *)mm_p2v(dst_cr3 & MM_PTE_ADDR);
+                    dt = next_table(dt, l, 1); if (!dt) goto clone_failed;
+                    dt = next_table(dt, q, 1); if (!dt) goto clone_failed;
+                    dt = next_table(dt, i, 1); if (!dt) goto clone_failed;
 
-            /* A page the parent has swapped out. The child inherits the SLOT,
-             * not a frame: both PTEs point at the same bytes on the device and
-             * the slot's reference count says so. Whichever side faults first
-             * reads it back into a private frame (see swap.h -- the sharing is
-             * not restored). Missing this case would have the child inherit an
-             * empty address at that page, i.e. silently lose the parent's
-             * memory across a fork, which is precisely the kind of bug that
-             * only appears once swap is under real pressure. */
-            if (vmm_pte_is_swap(e)) {
-                swap_slot_ref(vmm_pte_swap_slot(e));
-                vmm_map_raw_in(dst_cr3, va, e);
-                g_clone_shared++;
-                continue;
-            }
+                    /* A page the parent has swapped out. The child inherits the SLOT,
+                     * not a frame: both PTEs point at the same bytes on the device and
+                     * the slot's reference count says so. Whichever side faults first
+                     * reads it back into a private frame (see swap.h -- the sharing is
+                     * not restored). Missing this case would have the child inherit an
+                     * empty address at that page, i.e. silently lose the parent's
+                     * memory across a fork, which is precisely the kind of bug that
+                     * only appears once swap is under real pressure. */
+                    if (vmm_pte_is_swap(e)) {
+                        swap_slot_ref(vmm_pte_swap_slot(e));
+                        vmm_map_raw_in(dst_cr3, va, e);
+                        clone_shared++;
+                        continue;
+                    }
 
-            /* A PROT_NONE page. The child inherits the RESERVATION and the
-             * bytes behind it, exactly as it inherits any other page -- the
-             * VMA came across in vma_space_clone above with prot 0, so the
-             * child's guard is a guard too. Installed WHOLE and given a
-             * reference, which is the same two moves the shared case below
-             * makes; what it does NOT get is a COW marker, because a page
-             * neither side may touch cannot be written by either side, and
-             * whichever side later mprotects it back to writable re-derives
-             * the sharing from the refcount then (vmm_protect_range_in).
-             * Skipping this case would silently drop the page from the child
-             * and leak the parent's reference -- the same failure the swap
-             * case above exists to prevent, one encoding along. */
-            if (vmm_pte_is_noaccess(e)) {
-                if (pmm_ref(e & MM_PTE_ADDR) == 0) {
-                    vmm_map_raw_in(dst_cr3, va, e);
-                    g_clone_shared++;
-                } else {
-                    /* Refcount saturated: pmm_ref's contract is that the frame
-                     * must then be COPIED, never shared. Same fallback the
-                     * ordinary path takes below, with the entry rebuilt around
-                     * the new frame rather than installed whole. */
-                    uint64_t nf = pmm_alloc();
-                    if (!nf) return -1;
-                    memcpy(mm_p2v(nf), mm_p2v(e & MM_PTE_ADDR), 4096);
-                    vmm_map_raw_in(dst_cr3, va, nf | (e & MM_PTE_FLAGS));
-                    g_clone_copied++;
-                }
-                continue;
-            }
+                    /* A PROT_NONE page. The child inherits the RESERVATION and the
+                     * bytes behind it, exactly as it inherits any other page -- the
+                     * VMA came across in vma_space_clone above with prot 0, so the
+                     * child's guard is a guard too. Installed WHOLE and given a
+                     * reference, which is the same two moves the shared case below
+                     * makes; what it does NOT get is a COW marker, because a page
+                     * neither side may touch cannot be written by either side, and
+                     * whichever side later mprotects it back to writable re-derives
+                     * the sharing from the refcount then (vmm_protect_range_in).
+                     * Skipping this case would silently drop the page from the child
+                     * and leak the parent's reference -- the same failure the swap
+                     * case above exists to prevent, one encoding along. */
+                    if (vmm_pte_is_noaccess(e)) {
+                        if (pmm_ref(e & MM_PTE_ADDR) == 0) {
+                            vmm_map_raw_in(dst_cr3, va, e);
+                            clone_shared++;
+                        } else {
+                            /* Refcount saturated: pmm_ref's contract is that the frame
+                             * must then be COPIED, never shared. Same fallback the
+                             * ordinary path takes below, with the entry rebuilt around
+                             * the new frame rather than installed whole. */
+                            uint64_t nf = pmm_alloc_any();
+                            if (!nf) goto clone_failed;
+                            memcpy(mm_p2v(nf), mm_p2v(e & MM_PTE_ADDR), 4096);
+                            vmm_map_raw_in(dst_cr3, va, nf | (e & MM_PTE_FLAGS));
+                            clone_copied++;
+                        }
+                        continue;
+                    }
 
-            if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
-            uint64_t frame = e & MM_PTE_ADDR;
+                    if ((e & (PRESENT | USER)) != (PRESENT | USER)) continue;
+                    uint64_t frame = e & MM_PTE_ADDR;
 
 #ifndef SHM_FORK_COPY
-            /* A MAP_SHARED page (c/kernel/mm/shm.h). THE ONE CASE THAT MUST NOT
-             * BECOME COPY-ON-WRITE.
-             *
-             * A shared region survives fork as THE SAME MEMORY. The child gets
-             * the parent's entry verbatim -- still writable, still marked SHM,
-             * NOT marked COW -- plus one pmm reference, which is the same two
-             * moves the copy-on-write branch below makes and the same two the
-             * swap and file branches above make. What it does not do is drop
-             * WRITABLE, and that omission is the whole feature.
-             *
-             * Getting this wrong is the quietest bug in this file. Fall through
-             * to the branch below and everything still WORKS: the child gets the
-             * right bytes, the right permissions, the right protections, and the
-             * refcounts all balance. The first write on either side then
-             * privatises the page and the two processes stop communicating --
-             * no error, no fault, no log line, and nothing in either address
-             * space that looks wrong to an audit. Both halves of a producer/
-             * consumer pair simply talk to themselves.
-             *
-             * -DSHM_FORK_COPY is exactly that: this branch compiled out, so a
-             * shared page takes the ordinary COW path. It is the PLAUSIBLE wrong
-             * implementation rather than the feature removed -- it is what
-             * adding shared memory and not touching fork looks like -- and
-             * tests/unit/mm_shm_test.c is required to fail against it.
-             *
-             * REFCOUNT SATURATION IS A FAILURE HERE, not a reason to copy. Every
-             * other branch in this loop answers a saturated refcount by copying
-             * the frame, which is correct when the sharing is an optimisation
-             * (COW) or a cache (a file page). For a shared segment the sharing
-             * IS the semantics, so a copy would be a silent wrong answer, and
-             * fork must fail instead: the caller frees dst and reports ENOMEM,
-             * which is a fact the program can act on. */
-            if (e & VMM_PTE_SHM) {
-                if (pmm_ref(frame) != 0) return -1;
-                vmm_map_raw_in(dst_cr3, va, e);
-                g_clone_shared++;
-                continue;
-            }
+                    /* A MAP_SHARED page (c/kernel/mm/shm.h). THE ONE CASE THAT MUST NOT
+                     * BECOME COPY-ON-WRITE.
+                     *
+                     * A shared region survives fork as THE SAME MEMORY. The child gets
+                     * the parent's entry verbatim -- still writable, still marked SHM,
+                     * NOT marked COW -- plus one pmm reference, which is the same two
+                     * moves the copy-on-write branch below makes and the same two the
+                     * swap and file branches above make. What it does not do is drop
+                     * WRITABLE, and that omission is the whole feature.
+                     *
+                     * Getting this wrong is the quietest bug in this file. Fall through
+                     * to the branch below and everything still WORKS: the child gets the
+                     * right bytes, the right permissions, the right protections, and the
+                     * refcounts all balance. The first write on either side then
+                     * privatises the page and the two processes stop communicating --
+                     * no error, no fault, no log line, and nothing in either address
+                     * space that looks wrong to an audit. Both halves of a producer/
+                     * consumer pair simply talk to themselves.
+                     *
+                     * -DSHM_FORK_COPY is exactly that: this branch compiled out, so a
+                     * shared page takes the ordinary COW path. It is the PLAUSIBLE wrong
+                     * implementation rather than the feature removed -- it is what
+                     * adding shared memory and not touching fork looks like -- and
+                     * tests/unit/mm_shm_test.c is required to fail against it.
+                     *
+                     * REFCOUNT SATURATION IS A FAILURE HERE, not a reason to copy. Every
+                     * other branch in this loop answers a saturated refcount by copying
+                     * the frame, which is correct when the sharing is an optimisation
+                     * (COW) or a cache (a file page). For a shared segment the sharing
+                     * IS the semantics, so a copy would be a silent wrong answer, and
+                     * fork must fail instead: the caller frees dst and reports ENOMEM,
+                     * which is a fact the program can act on. */
+                    if (e & VMM_PTE_SHM) {
+                        if (pmm_ref(frame) != 0) goto clone_failed;
+                        vmm_map_raw_in(dst_cr3, va, e);
+                        clone_shared++;
+                        continue;
+                    }
 #endif
 
-            if (cow && pmm_ref(frame) == 0) {
-                /* Share. Drop WRITABLE in both and mark both copy-on-write, so
-                 * whichever side writes first takes the fault. A page that was
-                 * ALREADY read-only keeps its flags (it may be read-only
-                 * because of an earlier fork -- then it is still COW and both
-                 * new holders inherit that -- or genuinely read-only, in which
-                 * case neither side may ever write it and no COW is needed). */
-                uint64_t shared_e = e;
-                if (e & WRITABLE) {
-                    shared_e = (e & ~(uint64_t)WRITABLE) | VMM_PTE_COW;
-                    spt[j] = shared_e;
-                    g_mm_cow_pages += 2;           /* both spaces now hold a COW PTE */
-                    if (active) invlpg(va);
-                } else if (e & VMM_PTE_COW) {
-                    g_mm_cow_pages += 1;           /* src already counted; dst is new */
-                }
-                /* The child's entry is the parent's entry, INSTALLED WHOLE.
-                 * This used to be vmm_map_page_in(dst, va, shared_e,
-                 * shared_e & 0xFFF) -- frame from the top, flags from the
-                 * bottom -- which worked only because the old ~0xFFF mask
-                 * carried bit 63 across inside the "frame". Now that the mask
-                 * is right, splitting the entry and re-assembling it would
-                 * drop NX (and every bit 52-62) on every forked page: a child
-                 * would silently get an executable stack its parent did not
-                 * have. Installing the entry verbatim cannot lose a bit, and
-                 * it is what the code meant -- shared_e already has PRESENT
-                 * (checked above), so the two are otherwise identical. */
+                    if (cow && pmm_ref(frame) == 0) {
+                        /* Share. Drop WRITABLE in both and mark both copy-on-write, so
+                         * whichever side writes first takes the fault. A page that was
+                         * ALREADY read-only keeps its flags (it may be read-only
+                         * because of an earlier fork -- then it is still COW and both
+                         * new holders inherit that -- or genuinely read-only, in which
+                         * case neither side may ever write it and no COW is needed). */
+                        uint64_t shared_e = e;
+                        if (e & WRITABLE) {
+                            shared_e = (e & ~(uint64_t)WRITABLE) | VMM_PTE_COW;
+                            spt[j] = shared_e;
+                            g_mm_cow_pages += 2;           /* both spaces now hold a COW PTE */
+                            if (active) invlpg(va);
+                        } else if (e & VMM_PTE_COW) {
+                            g_mm_cow_pages += 1;           /* src already counted; dst is new */
+                        }
+                        /* The child's entry is the parent's entry, INSTALLED WHOLE.
+                         * This used to be vmm_map_page_in(dst, va, shared_e,
+                         * shared_e & 0xFFF) -- frame from the top, flags from the
+                         * bottom -- which worked only because the old ~0xFFF mask
+                         * carried bit 63 across inside the "frame". Now that the mask
+                         * is right, splitting the entry and re-assembling it would
+                         * drop NX (and every bit 52-62) on every forked page: a child
+                         * would silently get an executable stack its parent did not
+                         * have. Installing the entry verbatim cannot lose a bit, and
+                         * it is what the code meant -- shared_e already has PRESENT
+                         * (checked above), so the two are otherwise identical. */
 #ifdef VMM_FORK_REASSEMBLE
-                /* NEGATIVE CONTROL (tests/unit/mm_run.sh): the entry taken
-                 * apart and put back together -- frame from the top, flags
-                 * from the bottom twelve bits -- which is what this line said
-                 * before the NX comment above was written. It loses every bit
-                 * 52..63, so the child's copy of a file-backed text page comes
-                 * back without MM_PTE_NX; and it is the plausible wrong
-                 * version rather than the feature switched off, because the
-                 * child still gets the right FRAME and the program still runs.
-                 * mm_forkfile_test requires this build to fail, and to fail on
-                 * the bit-for-bit assertion and not on the refcounts. */
-                vmm_map_page_in(dst_cr3, va, shared_e & MM_PTE_ADDR, shared_e & 0xFFF);
+                        /* NEGATIVE CONTROL (tests/unit/mm_run.sh): the entry taken
+                         * apart and put back together -- frame from the top, flags
+                         * from the bottom twelve bits -- which is what this line said
+                         * before the NX comment above was written. It loses every bit
+                         * 52..63, so the child's copy of a file-backed text page comes
+                         * back without MM_PTE_NX; and it is the plausible wrong
+                         * version rather than the feature switched off, because the
+                         * child still gets the right FRAME and the program still runs.
+                         * mm_forkfile_test requires this build to fail, and to fail on
+                         * the bit-for-bit assertion and not on the refcounts. */
+                        vmm_map_page_in(dst_cr3, va, shared_e & MM_PTE_ADDR, shared_e & 0xFFF);
 #else
-                vmm_map_raw_in(dst_cr3, va, shared_e);
+                        vmm_map_raw_in(dst_cr3, va, shared_e);
 #endif
-                g_clone_shared++;
-                continue;
-            }
+                        clone_shared++;
+                        continue;
+                    }
 
-            /* No COW (disabled), or the refcount saturated and the frame may
-             * not be shared: copy it, exactly as the eager clone always did.
-             *
-             * THE FLAGS ARE CARRIED, not rebuilt from WRITABLE alone, and that
-             * changed when file-backed text landed. This line used to say
-             * `VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0)`, which drops
-             * MM_PTE_NX -- a forked child silently got an executable stack its
-             * parent did not have -- and, now that a program's text can be a
-             * page-cache page, also drops VMM_PTE_FILE: the child would hold a
-             * private anonymous frame that says it is neither anonymous nor
-             * file-backed, so reclaim can neither drop it (try_drop_cached
-             * demands VMM_PTE_FILE on every PTE) nor swap it (try_drop demands
-             * VMM_PTE_ANON), and the page becomes permanently unreclaimable.
-             * The expression is do_cow()'s (fault.c), for the same reason: a
-             * private copy has the original's protections and only its sharing
-             * changes.
-             *
-             * TWO BITS ARE CLEARED, and the second is the one worth arguing.
-             * VMM_PTE_COW, because nothing is shared here. And VMM_PTE_FILE,
-             * because this frame is NOT the page cache's -- it is a private
-             * copy of what the cache held, and a PTE claiming FILE over a
-             * frame pcache_holds() says nothing about is the exact
-             * disagreement reclaim.c declines to act on. The copy is left
-             * marked neither FILE nor ANON, which makes it unreclaimable and
-             * is precisely what every page copied down this path has been
-             * since the path was written; do_cow() may carry FILE across
-             * because it can never see a file PTE (they are read-only and not
-             * COW, so a write to one is a genuine protection fault the
-             * classifier declines), and this loop sees every PTE there is. */
-            uint64_t nf = pmm_alloc();
-            if (!nf) return -1;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
-            memcpy(mm_p2v(nf), mm_p2v(frame), 4096);
-            vmm_map_page_in(dst_cr3, va, nf,
-                            (e & MM_PTE_FLAGS) &
-                                ~(uint64_t)(VMM_PTE_COW | VMM_PTE_FILE));
-            g_clone_copied++;
+                    /* No COW (disabled), or the refcount saturated and the frame may
+                     * not be shared: copy it, exactly as the eager clone always did.
+                     *
+                     * THE FLAGS ARE CARRIED, not rebuilt from WRITABLE alone, and that
+                     * changed when file-backed text landed. This line used to say
+                     * `VMM_USER | ((e & WRITABLE) ? VMM_WRITABLE : 0)`, which drops
+                     * MM_PTE_NX -- a forked child silently got an executable stack its
+                     * parent did not have -- and, now that a program's text can be a
+                     * page-cache page, also drops VMM_PTE_FILE: the child would hold a
+                     * private anonymous frame that says it is neither anonymous nor
+                     * file-backed, so reclaim can neither drop it (try_drop_cached
+                     * demands VMM_PTE_FILE on every PTE) nor swap it (try_drop demands
+                     * VMM_PTE_ANON), and the page becomes permanently unreclaimable.
+                     * The expression is do_cow()'s (fault.c), for the same reason: a
+                     * private copy has the original's protections and only its sharing
+                     * changes.
+                     *
+                     * TWO BITS ARE CLEARED, and the second is the one worth arguing.
+                     * VMM_PTE_COW, because nothing is shared here. And VMM_PTE_FILE,
+                     * because this frame is NOT the page cache's -- it is a private
+                     * copy of what the cache held, and a PTE claiming FILE over a
+                     * frame pcache_holds() says nothing about is the exact
+                     * disagreement reclaim.c declines to act on. The copy is left
+                     * marked neither FILE nor ANON, which makes it unreclaimable and
+                     * is precisely what every page copied down this path has been
+                     * since the path was written; do_cow() may carry FILE across
+                     * because it can never see a file PTE (they are read-only and not
+                     * COW, so a write to one is a genuine protection fault the
+                     * classifier declines), and this loop sees every PTE there is. */
+                    uint64_t nf = pmm_alloc_any();
+                    if (!nf) goto clone_failed;       /* OOM: caller must vmm_free_space(dst) + fail the fork */
+                    memcpy(mm_p2v(nf), mm_p2v(frame), 4096);
+                    vmm_map_page_in(dst_cr3, va, nf,
+                                    (e & MM_PTE_FLAGS) &
+                                        ~(uint64_t)(VMM_PTE_COW | VMM_PTE_FILE));
+                    clone_copied++;
+                }
+            }
         }
     }
     if (active) vmm_switch(mm_read_cr3());      /* flush the stale writable entries */
+    if (shared) *shared=clone_shared;
+    if (copied) *copied=clone_copied;
     return 0;
+clone_failed:
+    /* Earlier leaves may already have made the source COW; even a failed fork
+     * must flush those permissions before returning to the source process. */
+    if (active) vmm_switch(mm_read_cr3());
+    return -1;
 }
 
-void vmm_clone_stats(uint64_t *shared, uint64_t *copied)
+int vmm_clone_user(uint64_t dst_cr3,uint64_t src_cr3)
 {
-    if (shared) *shared = g_clone_shared;
-    if (copied) *copied = g_clone_copied;
+#ifdef MM_HOSTTEST
+    return vmm_clone_user_counted(dst_cr3,src_cr3,&g_clone_shared,&g_clone_copied);
+#else
+    return vmm_clone_user_counted(dst_cr3,src_cr3,0,0);
+#endif
 }
+#ifdef MM_HOSTTEST
+void vmm_clone_stats(uint64_t *shared,uint64_t *copied)
+{ if (shared) *shared=g_clone_shared; if (copied) *copied=g_clone_copied; }
+#endif
 
 /* How many frames this call may hold, with their PTEs already cleared, before it
  * has to stop and let the other cores catch up. See the header below: it is a
@@ -623,8 +797,9 @@ static void unmap_drain(uint64_t cr3, const uint64_t *hold, unsigned *nh)
  * SYS_KHEAP_STRESS being the one entry on syscall_is_bkl_free's allow-list.) */
 uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
 {
+    MM_GUARD(cr3);
     uint64_t start = virt & ~(uint64_t)0xFFF;
-    if (len == 0 || start > ~(uint64_t)0 - len - 0xFFF) return 0;
+    if (!mm_user_range(virt, len)) return 0;
     uint64_t end = (virt + len + 0xFFF) & ~(uint64_t)0xFFF;
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
     uint64_t n = 0;
@@ -632,7 +807,7 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
     unsigned nh = 0;
 
     for (uint64_t a = start; a < end; a += 4096) {
-        uint64_t *pte = vmm_pte(cr3, a);
+        uint64_t *pte = range_pte(cr3, &a);
         if (!pte) continue;
         uint64_t e = *pte;
         /* A swapped-out page still occupies something -- a slot rather than a
@@ -736,14 +911,15 @@ uint64_t vmm_unmap_range_in(uint64_t cr3, uint64_t virt, uint64_t len)
  *     VMA in the eager case and therefore no such guarantee. */
 uint64_t vmm_protect_range_in(uint64_t cr3, uint64_t virt, uint64_t len, uint32_t prot)
 {
+    MM_GUARD(cr3);
     uint64_t start = virt & ~(uint64_t)0xFFF;
-    if (len == 0 || start > ~(uint64_t)0 - len - 0xFFF) return 0;
+    if (!mm_user_range(virt, len)) return 0;
     uint64_t end = (virt + len + 0xFFF) & ~(uint64_t)0xFFF;
     int active = ((mm_read_cr3() & MM_PTE_ADDR) == (cr3 & MM_PTE_ADDR));
     uint64_t n = 0;
 
     for (uint64_t a = start; a < end; a += 4096) {
-        uint64_t *pte = vmm_pte(cr3, a);
+        uint64_t *pte = range_pte(cr3, &a);
         if (!pte) continue;
         uint64_t e = *pte;
         if (vmm_pte_is_swap(e)) continue;              /* see above: the VMA carries it */
@@ -800,9 +976,9 @@ uint64_t vmm_protect_range_in(uint64_t cr3, uint64_t virt, uint64_t len, uint32_
          * user mapping any more, only a retained frame), and coming back adds
          * it again. */
         uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
-        uint64_t *pdpt = next_table(pml4, (a >> 39) & 0x1FF);   if (!pdpt) continue;
-        uint64_t *pd   = next_table(pdpt, (a >> 30) & 0x1FF);   if (!pd)   continue;
-        uint64_t *pt   = next_table(pd,   (a >> 21) & 0x1FF);   if (!pt)   continue;
+        uint64_t *pdpt = next_table(pml4, (a >> 39) & 0x1FF, 1);   if (!pdpt) continue;
+        uint64_t *pd   = next_table(pdpt, (a >> 30) & 0x1FF, 1);   if (!pd)   continue;
+        uint64_t *pt   = next_table(pd,   (a >> 21) & 0x1FF, 1);   if (!pt)   continue;
         set_leaf(cr3, pt, a, ne);
         if (active) invlpg(a);
         n++;
@@ -838,46 +1014,60 @@ uint64_t vmm_protect_range_in(uint64_t cr3, uint64_t virt, uint64_t len, uint32_
  * references left and stays allocated. */
 void vmm_free_user(uint64_t cr3)
 {
+    MM_GUARD(cr3);
     vma_space_clear(cr3);
 
     uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
-    if (!(pml4[USER_PML4_IDX] & PRESENT)) return;
-    uint64_t *pdpt = (uint64_t *)mm_p2v(pml4[USER_PML4_IDX] & MM_PTE_ADDR);
-    uint64_t pde = pdpt[USER_PDPT_IDX];
-    if (!(pde & PRESENT)) return;
-    uint64_t *pd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
-    for (int i = 0; i < 512; i++) {
-        if (!(pd[i] & PRESENT)) continue;
-        uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & MM_PTE_ADDR);
-        for (int j = 0; j < 512; j++) {
-            uint64_t e = pt[j];
-            uint64_t va = ((uint64_t)USER_PML4_IDX << 39) | ((uint64_t)USER_PDPT_IDX << 30) |
-                          ((uint64_t)i << 21) | ((uint64_t)j << 12);
-            if (vmm_pte_is_swap(e)) {
-                pt[j] = 0;
-                swap_slot_put(vmm_pte_swap_slot(e));   /* a dying process releases its swap */
-                continue;
+    for (int l = 0; l < WIDE_PML4_END; l++) {
+        if (l != USER_PML4_IDX && l < WIDE_PML4_FIRST) continue;
+        if (!(pml4[l] & PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)mm_p2v(pml4[l] & MM_PTE_ADDR);
+        int first = l == USER_PML4_IDX ? USER_PDPT_IDX : 0;
+        int limit = l == USER_PML4_IDX ? USER_PDPT_IDX + 1 : 512;
+        for (int q = first; q < limit; q++) {
+            uint64_t pde = pdpt[q];
+            if (!(pde & PRESENT) || (pde & 0x80)) continue;
+            uint64_t *pd = (uint64_t *)mm_p2v(pde & MM_PTE_ADDR);
+            for (int i = 0; i < 512; i++) {
+                if (!(pd[i] & PRESENT) || (pd[i] & 0x80)) continue;
+                uint64_t *pt = (uint64_t *)mm_p2v(pd[i] & MM_PTE_ADDR);
+                for (int j = 0; j < 512; j++) {
+                    uint64_t e = pt[j];
+                    uint64_t va = ((uint64_t)l << 39) | ((uint64_t)q << 30) |
+                                  ((uint64_t)i << 21) | ((uint64_t)j << 12);
+                    if (vmm_pte_is_swap(e)) {
+                        pt[j] = 0;
+                        swap_slot_put(vmm_pte_swap_slot(e));   /* a dying process releases its swap */
+                        continue;
+                    }
+                    /* A PROT_NONE page: not present, no rmap entry, frame still
+                     * referenced (vmm.h). Released here for the same reason the swap
+                     * slot above is -- a dying process must give back everything it
+                     * holds, and this is the one holding that no other loop can see. */
+                    if (vmm_pte_is_noaccess(e)) {
+                        pt[j] = 0;
+                        pmm_free(e & MM_PTE_ADDR);
+                        continue;
+                    }
+                    if ((e & (PRESENT | USER)) == (PRESENT | USER)) {
+                        if (e & VMM_PTE_COW) g_mm_cow_pages--;
+                        pt[j] = 0;
+                        rmap_remove(e & MM_PTE_ADDR, cr3, va);
+                        pmm_free(e & MM_PTE_ADDR);
+                    }
+                }
+                pmm_free(pd[i] & MM_PTE_ADDR);     /* the PT frame */
             }
-            /* A PROT_NONE page: not present, no rmap entry, frame still
-             * referenced (vmm.h). Released here for the same reason the swap
-             * slot above is -- a dying process must give back everything it
-             * holds, and this is the one holding that no other loop can see. */
-            if (vmm_pte_is_noaccess(e)) {
-                pt[j] = 0;
-                pmm_free(e & MM_PTE_ADDR);
-                continue;
-            }
-            if ((e & (PRESENT | USER)) == (PRESENT | USER)) {
-                if (e & VMM_PTE_COW) g_mm_cow_pages--;
-                pt[j] = 0;
-                rmap_remove(e & MM_PTE_ADDR, cr3, va);
-                pmm_free(e & MM_PTE_ADDR);
-            }
+            pmm_free(pde & MM_PTE_ADDR);           /* the PD frame */
+            pdpt[q] = 0;
         }
-        pmm_free(pd[i] & MM_PTE_ADDR);     /* the PT frame */
+        /* Legacy PDPT contains shared kernel entries and stays until the
+         * address space itself dies. Wide PDPTs are wholly private. */
+        if (l >= WIDE_PML4_FIRST) {
+            pmm_free(pml4[l] & MM_PTE_ADDR);
+            pml4[l] = 0;
+        }
     }
-    pmm_free(pde & MM_PTE_ADDR);           /* the PD frame */
-    pdpt[USER_PDPT_IDX] = 0;
 
     /* If this tore down the ACTIVE user space (execve), stale TLB entries for the
      * old image may still translate its VAs to the just-freed frames (which PMM can
@@ -894,13 +1084,21 @@ void vmm_free_user(uint64_t cr3)
  * PDPT/PML4 entries) are left untouched. Must not be called on the active CR3. */
 void vmm_free_space(uint64_t cr3)
 {
+    MM_GUARD(cr3);
     if (!cr3) return;
+    mm_space_retire(cr3);
     uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t pdpt_e = pml4[USER_PML4_IDX];
     vmm_free_user(cr3);
     vma_space_free(cr3);
-    if (pdpt_e & PRESENT) pmm_free(pdpt_e & MM_PTE_ADDR);   /* private PDPT frame */
-    pmm_free(cr3 & MM_PTE_ADDR);                            /* PML4 frame */
+    {
+        /* Retirement already removed this space from publication. Hold the
+         * same owner for physical root release, so no publisher can observe
+         * a freed/reused PML4 or private low PDPT. AS -> kernel, never reverse. */
+        MM_KERNEL_GUARD;
+        if (pdpt_e&PRESENT) pmm_free(pdpt_e&MM_PTE_ADDR);
+        pmm_free(cr3&MM_PTE_ADDR);
+    }
     /* THE SHOOTDOWN IS WIRED IN NOW, and this comment used to say why it could
      * not be. It said: "a core spinning to acquire the BKL does so with IF=0
      * and cannot service the shootdown IPI, so it never acks and the initiator
@@ -925,13 +1123,13 @@ static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 {
     uint64_t *pml4 = (uint64_t *)mm_p2v(cr3 & MM_PTE_ADDR);
     uint64_t e = pml4[(virt >> 39) & 0x1FF];
-    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    if ((e & (PRESENT | USER)) != (PRESENT | USER) || (e & 0x80)) return 0;
     uint64_t *pdpt = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pdpt[(virt >> 30) & 0x1FF];
-    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    if ((e & (PRESENT | USER)) != (PRESENT | USER) || (e & 0x80)) return 0;
     uint64_t *pd = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pd[(virt >> 21) & 0x1FF];
-    if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
+    if ((e & (PRESENT | USER)) != (PRESENT | USER) || (e & 0x80)) return 0;
     uint64_t *pt = (uint64_t *)mm_p2v(e & MM_PTE_ADDR);
     e = pt[(virt >> 12) & 0x1FF];
     if ((e & (PRESENT | USER)) != (PRESENT | USER)) return 0;
@@ -941,13 +1139,14 @@ static int user_page_ok(uint64_t cr3, uint64_t virt, int write)
 
 int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write)
 {
+    MM_GUARD(cr3);
     if (!cr3) return 0;
     if (len == 0) return 1;                 /* a zero-length access is valid even at NULL */
     if (!ptr) return 0;
     uint64_t start = (uint64_t)ptr;
     uint64_t end = start + len - 1;
     if (end < start) return 0;
-    if ((start >> 47) != 0 || (end >> 47) != 0) return 0;
+    if (!mm_user_range(start, len)) return 0;
     for (uint64_t p = start & ~(uint64_t)0xFFF;; p += 0x1000) {
         if (!user_page_ok(cr3, p, write)) return 0;
         if (p >= (end & ~(uint64_t)0xFFF)) break;
@@ -962,13 +1161,14 @@ int vmm_user_range_ok(uint64_t cr3, const void *ptr, uint64_t len, int write)
  * about why resolve-then-copy has no window here. */
 int vmm_user_range_fault_in(uint64_t cr3, const void *ptr, uint64_t len, int write)
 {
+    MM_GUARD(cr3);
     if (!cr3) return 0;
     if (len == 0) return 1;
     if (!ptr) return 0;
     uint64_t start = (uint64_t)ptr;
     uint64_t end = start + len - 1;
     if (end < start) return 0;
-    if ((start >> 47) != 0 || (end >> 47) != 0) return 0;
+    if (!mm_user_range(start, len)) return 0;
 
     for (uint64_t p = start & ~(uint64_t)0xFFF;; p += 0x1000) {
         if (!user_page_ok(cr3, p, write)) {
@@ -982,4 +1182,49 @@ int vmm_user_range_fault_in(uint64_t cr3, const void *ptr, uint64_t len, int wri
         if (p >= (end & ~(uint64_t)0xFFF)) break;
     }
     return 1;
+}
+
+/* A pin has an independent reference: pmm_pin prevents reclaim, while the
+ * reference prevents explicit munmap from returning the page to the PMM. */
+int vmm_pin_user_page(uint64_t cr3,uint64_t va,int write,uint64_t *phys)
+{
+    MM_GUARD(cr3);
+    if (!phys || !mm_user_addr(va) || !mm_space_live(cr3)) return -1;
+    if (!vmm_user_range_fault_in(cr3,(void *)(uintptr_t)va,1,write)) return -1;
+    uint64_t *pte=vmm_pte(cr3,va);
+    if (!pte || !user_page_ok(cr3,va,write)) return -1;
+    uint64_t p=*pte & MM_PTE_ADDR;
+    if (pmm_ref(p)<0) return -1;
+    pmm_pin(p);
+    /* Alias copies bypass the hardware PTE walker; account access/dirty here
+     * so reclaim observes the same information as a user load/store. */
+    *pte |= VMM_PTE_ACCESSED | (write ? VMM_PTE_DIRTY : 0);
+    *phys=p;
+    return 0;
+}
+int vmm_copy_in_space(uint64_t cr3,void *kernel,uint64_t va,uint64_t len,int write)
+{
+    if (!len) return 0;
+    if (!kernel || !mm_user_range(va,len)) return -1;
+    MM_GUARD(cr3);
+    if (!mm_space_live(cr3)) return -1;
+    uint8_t *k=kernel;
+    while (len) {
+        /* Ptrace's existing contract is resident-only. Resolve a present COW
+         * write, but never first-touch an absent page or silently read swap. */
+        if (!user_page_ok(cr3,va,0)) return -1;
+        uint64_t p,n=4096-(va&4095); if (n>len) n=len;
+        if (vmm_pin_user_page(cr3,va,write,&p)) return -1;
+        void *alias=(uint8_t *)mm_p2v(p)+(va&4095);
+        if (write) memcpy(alias,k,(size_t)n); else memcpy(k,alias,(size_t)n);
+        pmm_unpin(p); pmm_free(p);
+        k+=n; va+=n; len-=n;
+    }
+    return 0;
+}
+void vmm_flush_space(uint64_t cr3)
+{
+    if ((mm_read_cr3() & MM_PTE_ADDR)==(cr3 & MM_PTE_ADDR))
+        mm_write_cr3(mm_read_cr3());
+    if (LOGIT_HAVE(tlb_flush_all) && vmm_space_busy_elsewhere(cr3)) tlb_flush_all();
 }

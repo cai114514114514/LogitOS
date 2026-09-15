@@ -21,7 +21,11 @@ static spinlock_t rmap_lock = SPINLOCK_INIT;
  * footprint is. */
 static uint32_t *rm_head;        /* frame -> first node, or RMAP_NIL */
 static uint32_t *rm_next;        /* node  -> next node, or RMAP_NIL */
-static uint32_t *rm_vpn;         /* node  -> (va - MM_USER_BASE) >> 12 */
+/* Correction: the original 12-byte node accounting above was for one 1 GiB
+ * user window. VPNs are now absolute 64-bit values (16-byte total node arrays),
+ * so mappings beyond 16 TiB cannot alias low VPNs during reclaim. CR3 remains
+ * a 32-bit frame number because page tables are allocated from low memory. */
+static uint64_t *rm_vpn;         /* node -> va >> 12, both user windows */
 static uint32_t *rm_cr3;         /* node  -> cr3 >> 12 */
 static uint8_t  *rm_incomp;      /* 1 bit per frame: chain is not the whole truth */
 
@@ -31,8 +35,8 @@ static uint32_t rm_free_list = RMAP_NIL;
 static uint64_t rm_overflow, rm_incomplete_frames, rm_bug;
 static int      rm_ready;
 
-static inline void ic_set(uint64_t f) { rm_incomp[f >> 3] |= (uint8_t)(1u << (f & 7)); }
-static inline int  ic_test(uint64_t f) { return rm_incomp[f >> 3] & (1u << (f & 7)); }
+static inline void ic_set(uint64_t f) { __atomic_fetch_or(&rm_incomp[f >> 3],(uint8_t)(1u << (f & 7)),__ATOMIC_RELEASE); }
+static inline int  ic_test(uint64_t f) { return __atomic_load_n(&rm_incomp[f >> 3],__ATOMIC_ACQUIRE) & (1u << (f & 7)); }
 
 static void rmap_bug(const char *what, uint64_t phys, uint64_t cr3, uint64_t va)
 {
@@ -59,7 +63,7 @@ int rmap_init(uint64_t total_frames)
     uint64_t head_b = total_frames * 4;
     uint64_t node_b = nodes * 4;
     uint64_t ic_b   = ((total_frames + 7) / 8 + 7) & ~(uint64_t)7;
-    uint64_t bytes  = head_b + node_b * 3 + ic_b;
+    uint64_t bytes  = head_b + node_b * 4 + ic_b + 7; /* align the 64-bit VPN array */
     uint64_t frames = (bytes + FRAME_SIZE - 1) / FRAME_SIZE;
 
     uint64_t base = pmm_alloc_contig((size_t)frames);
@@ -76,8 +80,9 @@ int rmap_init(uint64_t total_frames)
     uint8_t *p = (uint8_t *)mm_p2v(base);
     rm_head   = (uint32_t *)p;                     p += head_b;
     rm_next   = (uint32_t *)p;                     p += node_b;
-    rm_vpn    = (uint32_t *)p;                     p += node_b;
     rm_cr3    = (uint32_t *)p;                     p += node_b;
+    p = (uint8_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7);
+    rm_vpn    = (uint64_t *)p;                     p += node_b * 2;
     rm_incomp = (uint8_t *)p;
 
     memset(rm_head, 0xFF, (size_t)head_b);         /* RMAP_NIL everywhere */
@@ -96,7 +101,7 @@ int rmap_init(uint64_t total_frames)
 
     kprintf("[rmap] %d frames, %d nodes (%d KiB total: %d KiB heads + %d KiB nodes)\n",
             (int)total_frames, (int)nodes, (int)(bytes / 1024),
-            (int)(head_b / 1024), (int)(node_b * 3 / 1024));
+            (int)(head_b / 1024), (int)(node_b * 4 / 1024));
     return 0;
 }
 
@@ -107,20 +112,20 @@ int rmap_init(uint64_t total_frames)
  * repeat them. `phys` out of range, `va` outside the private user region, or no
  * reverse map at all: nothing to record, and nothing recorded means the frame
  * is not a reclaim candidate, which is the safe direction. */
-static int usable(uint64_t phys, uint64_t va, uint64_t *frame, uint32_t *vpn)
+static int usable(uint64_t phys, uint64_t va, uint64_t *frame, uint64_t *vpn)
 {
     if (!rm_ready) return 0;
-    if (va < MM_USER_BASE || va >= MM_USER_END) return 0;
+    if (!mm_user_addr(va)) return 0;
     uint64_t f = phys / FRAME_SIZE;
     if (f == 0 || f >= rm_frames) return 0;
     *frame = f;
-    *vpn = (uint32_t)((va - MM_USER_BASE) >> 12);
+    *vpn = va >> 12;
     return 1;
 }
 
 void rmap_add(uint64_t phys, uint64_t cr3, uint64_t va)
 {
-    uint64_t f; uint32_t vpn;
+    uint64_t f, vpn;
     if (!usable(phys, va, &f, &vpn)) return;
     uint32_t c = (uint32_t)((cr3 & MM_PTE_ADDR) >> 12);
 
@@ -152,7 +157,7 @@ void rmap_add(uint64_t phys, uint64_t cr3, uint64_t va)
     rm_vpn[n] = vpn;
     rm_cr3[n] = c;
     rm_next[n] = rm_head[f];
-    rm_head[f] = n;
+    __atomic_store_n(&rm_head[f],n,__ATOMIC_RELEASE);
     if (++rm_used > rm_peak) rm_peak = rm_used;
 
     spin_unlock_irqrestore(&rmap_lock, fl);
@@ -160,7 +165,7 @@ void rmap_add(uint64_t phys, uint64_t cr3, uint64_t va)
 
 void rmap_remove(uint64_t phys, uint64_t cr3, uint64_t va)
 {
-    uint64_t f; uint32_t vpn;
+    uint64_t f, vpn;
     if (!usable(phys, va, &f, &vpn)) return;
     uint32_t c = (uint32_t)((cr3 & MM_PTE_ADDR) >> 12);
 
@@ -168,7 +173,7 @@ void rmap_remove(uint64_t phys, uint64_t cr3, uint64_t va)
     uint32_t prev = RMAP_NIL;
     for (uint32_t n = rm_head[f]; n != RMAP_NIL; prev = n, n = rm_next[n]) {
         if (rm_vpn[n] != vpn || rm_cr3[n] != c) continue;
-        if (prev == RMAP_NIL) rm_head[f] = rm_next[n];
+        if (prev == RMAP_NIL) __atomic_store_n(&rm_head[f],rm_next[n],__ATOMIC_RELEASE);
         else                  rm_next[prev] = rm_next[n];
         rm_next[n] = rm_free_list;
         rm_free_list = n;
@@ -203,7 +208,7 @@ int rmap_mapped(uint64_t phys)
     if (!rm_ready) return 0;
     uint64_t f = phys / FRAME_SIZE;
     if (f == 0 || f >= rm_frames) return 0;
-    return rm_head[f] != RMAP_NIL;      /* deliberately unlocked; see rmap.h */
+    return __atomic_load_n(&rm_head[f],__ATOMIC_ACQUIRE) != RMAP_NIL;      /* deliberately unlocked; see rmap.h */
 }
 
 int rmap_incomplete(uint64_t phys)
@@ -216,25 +221,37 @@ int rmap_incomplete(uint64_t phys)
 
 /* --- iteration ----------------------------------------------------------- */
 
-void rmap_begin(struct rmap_iter *it, uint64_t phys)
+int rmap_snapshot(uint64_t phys,uint64_t *cr3,uint64_t *va,int cap)
 {
-    it->node = RMAP_NIL;
-    if (!rm_ready) return;
-    uint64_t f = phys / FRAME_SIZE;
-    if (f == 0 || f >= rm_frames) return;
-    uint64_t fl = spin_lock_irqsave(&rmap_lock);
-    it->node = rm_head[f];
-    spin_unlock_irqrestore(&rmap_lock, fl);
+    uint64_t frame=phys/FRAME_SIZE;
+    if (!rm_ready || !frame || frame>=rm_frames) return 0;
+    uint64_t f=spin_lock_irqsave(&rmap_lock);
+    int count=0;
+    for (uint32_t n=rm_head[frame];n!=RMAP_NIL;n=rm_next[n]) {
+        if (count==cap) { count=-1; break; }
+        cr3[count]=(uint64_t)rm_cr3[n]<<12;
+        va[count]=rm_vpn[n]<<12; count++;
+    }
+    spin_unlock_irqrestore(&rmap_lock,f);
+    return count;
 }
-
-int rmap_next(struct rmap_iter *it, uint64_t *cr3, uint64_t *va)
+void rmap_begin(struct rmap_iter *it,uint64_t phys)
+{ it->phys=phys; it->last_cr3=it->last_va=0; it->ended=0; }
+int rmap_next(struct rmap_iter *it,uint64_t *cr3,uint64_t *va)
 {
-    if (!rm_ready || it->node == RMAP_NIL) return 0;
-    uint32_t n = it->node;
-    if (cr3) *cr3 = (uint64_t)rm_cr3[n] << 12;
-    if (va)  *va  = MM_USER_BASE + ((uint64_t)rm_vpn[n] << 12);
-    it->node = rm_next[n];
-    return 1;
+    uint64_t frame=it->phys/FRAME_SIZE;
+    if (it->ended || !rm_ready || !frame || frame>=rm_frames) return 0;
+    uint64_t f=spin_lock_irqsave(&rmap_lock);
+    uint64_t bc=~0ull,bv=~0ull; int found=0;
+    for (uint32_t n=rm_head[frame];n!=RMAP_NIL;n=rm_next[n]) {
+        uint64_t c=(uint64_t)rm_cr3[n]<<12,v=rm_vpn[n]<<12;
+        if ((c>it->last_cr3 || (c==it->last_cr3 && v>it->last_va)) &&
+            (!found || c<bc || (c==bc && v<bv))) { bc=c; bv=v; found=1; }
+    }
+    spin_unlock_irqrestore(&rmap_lock,f);
+    if (!found) { it->ended=1; return 0; }
+    it->last_cr3=bc; it->last_va=bv;
+    if (cr3) *cr3=bc; if (va) *va=bv; return 1;
 }
 
 /* --- the check ----------------------------------------------------------- */

@@ -89,6 +89,7 @@ static spinlock_t kheap_lock = SPINLOCK_INIT;
  * four bits are always zero and are free to carry state. */
 #define F_FREE        0x1u
 #define F_LAST        0x2u                 /* no block follows this one in its arena */
+#define F_LOW         0x4u                 /* explicit low identity allocation domain */
 #define SIZE_MASK     (~(size_t)0xF)
 
 struct header {                            /* 16 bytes: payload stays 16-aligned */
@@ -104,7 +105,13 @@ struct fnode {
     struct fnode *next, *prev;
 };
 
-static struct fnode *bins[NUM_BINS] = { NULL };
+/* Ordinary heap arenas use the supervisor physmap, including on small RAM
+ * machines. Executable modules still need low identity addresses for rel32
+ * calls into the low-linked kernel and an executable alias. A filtered common
+ * list/cache is too easy to bypass on reuse: give the domains separate lists,
+ * propagate the domain through splits, and keep low blocks out of magazines.
+ * The block header remains 16 bytes. kfree accepts either domain. */
+static struct fnode *bins[2][NUM_BINS];
 
 /* Accounting (kheap.h). All mutated under kheap_lock.
  *
@@ -121,6 +128,7 @@ static unsigned long long st_arena, st_live, st_free;
 static unsigned long long st_req, st_served;
 static unsigned long long st_allocs, st_frees, st_grows, st_splits, st_split_bytes;
 static unsigned long long st_merges, st_live_blocks;
+static unsigned long long st_low_arena, st_far_arena, st_max_phys;
 
 /* Fail-safe bound on a single free-list walk. No real bin ever holds anywhere
  * near this many free blocks; a walk that exceeds it means the list has been
@@ -136,6 +144,7 @@ static unsigned long long st_merges, st_live_blocks;
 static inline size_t blk_size(const struct header *h) { return h->size & SIZE_MASK; }
 static inline int    blk_free(const struct header *h) { return (h->size & F_FREE) != 0; }
 static inline int    blk_last(const struct header *h) { return (h->size & F_LAST) != 0; }
+static inline int    blk_low(const struct header *h) { return (h->size & F_LOW) != 0; }
 static inline void   blk_set_size(struct header *h, size_t n)
 { h->size = n | (h->size & ~SIZE_MASK); }
 
@@ -168,11 +177,12 @@ static int bin_index(size_t size)
 static void bin_push(struct header *h)
 {
     int b = bin_index(blk_size(h));
+    struct fnode **list = bins[blk_low(h)];
     struct fnode *n = blk_node(h);
     n->prev = NULL;
-    n->next = bins[b];
-    if (bins[b]) bins[b]->prev = n;
-    bins[b] = n;
+    n->next = list[b];
+    if (list[b]) list[b]->prev = n;
+    list[b] = n;
     h->size |= F_FREE;
     st_free += blk_size(h);
 }
@@ -180,9 +190,10 @@ static void bin_push(struct header *h)
 static void bin_remove(struct header *h)
 {
     int b = bin_index(blk_size(h));
+    struct fnode **list = bins[blk_low(h)];
     struct fnode *n = blk_node(h);
     if (n->prev) n->prev->next = n->next;
-    else         bins[b] = n->next;
+    else         list[b] = n->next;
     if (n->next) n->next->prev = n->prev;
     h->size &= ~(size_t)F_FREE;
     st_free -= blk_size(h);
@@ -190,7 +201,7 @@ static void bin_remove(struct header *h)
 
 /* --- arenas -------------------------------------------------------------- */
 
-static int grow(size_t need)
+static int grow(size_t need, int low)
 {
     size_t frames = ARENA_FRAMES;
     while (frames * FRAME_SIZE < need) {
@@ -208,9 +219,14 @@ static int grow(size_t need)
         phys = 0;
     else
 #endif
-    phys = pmm_alloc_contig(frames);
+    /* Neither allocator reclaims/sleeps: grow owns the irqsave heap lock.
+     * pmm_init completes RAM aliases before the first heap consumer. Legacy
+     * page tables/PMM metadata keep using their existing low PMM interface. */
+    phys = low ? pmm_alloc_contig(frames) :
+        pmm_alloc_contig_masked(frames, UINT64_MAX, FRAME_SIZE, 0);
     if (!phys) {
-        kprintf("[kheap] grow: pmm_alloc_contig(%d frames) FAILED\n", (int)frames);
+        kprintf("[kheap] grow: domain=%s frames=%llu FAILED\n", low ? "low" : "physmap",
+                (unsigned long long)frames);
         return 0;
     }
 
@@ -225,17 +241,28 @@ static int grow(size_t need)
      * test build it is the offset into the simulated RAM, which is the only
      * reason kheap.c can be run under ASan at all (tests/unit/leak_kheap_test.c).
      * Same seam pmm.c and vmm.c already use -- see c/kernel/mm/mmhost.h. */
-    uint8_t *base = (uint8_t *)mm_p2v(phys);
+    /* Correction (2026-09-10) to the identity-only claim above: ordinary
+     * arenas ALWAYS use physmap, even for low physical pages. CPU addresses
+     * must never be copied to a device descriptor; streaming DMA resolves
+     * each mapped page. Only kmalloc_low uses the executable identity alias. */
+    uint8_t *base = low ? mm_p2v(phys) : mm_physmap_ptr(phys);
     size_t   bytes = frames * FRAME_SIZE;
 
     struct header *h = (struct header *)base;
     h->size = (bytes - sizeof(struct header)) & SIZE_MASK;
     h->size |= F_LAST;                     /* nothing follows it: arena boundary */
+    if (low) h->size |= F_LOW;
     h->prev_size = 0;                      /* nothing precedes it: arena boundary */
     bin_push(h);
 
     st_arena += (unsigned long long)bytes;
+    if (low) st_low_arena += bytes;
+    if (phys >= 0x100000000ull) st_far_arena += bytes;
+    if (phys + bytes - 1 > st_max_phys) st_max_phys = phys + bytes - 1;
     st_grows++;
+    kprintf("[kheap] arena domain=%s cpu=%p phys=%p bytes=%llu\n",
+            low ? "low" : "physmap", base, (void *)(uintptr_t)phys,
+            (unsigned long long)bytes);
     /* Say so, every time. An arena is frames the PMM will never see again --
      * pmm's own counters stay perfectly balanced and pmm_audit() stays clean
      * while free memory falls, so this line is the only place that growth is
@@ -270,7 +297,7 @@ static void split_block(struct header *b, size_t size)
     struct header *rest = (struct header *)((uint8_t *)(b + 1) + size);
     size_t rest_size = have - size - sizeof(struct header);
 
-    rest->size = rest_size;                       /* not free yet; bin_push sets F_FREE */
+    rest->size = rest_size | (b->size & F_LOW);    /* not free yet; retain domain */
     rest->prev_size = size;
     if (blk_last(b)) { rest->size |= F_LAST; b->size &= ~(size_t)F_LAST; }
     else             { blk_next(rest)->prev_size = rest_size; }
@@ -371,20 +398,37 @@ static struct header *coalesce(struct header *h)
  * magazine, which is exactly the coverage a single-threaded test can give. */
 int kheap_cpu_index(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(kheap_cpu_index);
-static inline int mag_cpu(void) { return LOGIT_HAVE(kheap_cpu_index) ? kheap_cpu_index() : 0; }
+static inline int mag_cpu(void) {
+#ifdef KHEAP_GLOBAL_MAG
+    return 0; /* negative control: all CPUs contend on one magazine */
+#else
+    return LOGIT_HAVE(kheap_cpu_index) ? kheap_cpu_index() : 0;
+#endif
+}
 
 #define MAG_CLASSES   6                     /* 16, 32, 64, 128, 256, 512 */
 #define MAG_DEPTH     32                    /* blocks parked per class per core */
 #define MAG_MAX_SIZE  512
 
-struct magazine {
+/* Correction (2026-09-10): global fast-path counters raced and shared a
+ * cache line across CPUs. Keep them under each magazine's lock, and align
+ * magazine boundaries so neighbours do not share a writable cache line.
+ * Accounting must finish before publishing a freed block to another caller. */
+struct __attribute__((aligned(64))) magazine {
     spinlock_t     lock;
     struct header *blk[MAG_CLASSES][MAG_DEPTH];
     int            n[MAG_CLASSES];
+    unsigned long long hits, puts, bytes; /* owned by this magazine lock */
 };
+#ifdef LOGIT_CPU_CAP_NEGCTL
 #define MAG_MAXCPU 8
+#else
+#define MAG_MAXCPU 32                    /* == PERCPU_MAXCPU */
+#endif
+_Static_assert((MAG_MAXCPU & (MAG_MAXCPU - 1)) == 0,
+               "magazine CPU count must remain a power of two");
 static struct magazine g_mag[MAG_MAXCPU];
-static unsigned long long st_mag_hits, st_mag_puts, st_mag_bytes, st_mag_drains;
+static unsigned long long st_mag_drains; /* owned by kheap_lock */
 
 /* -1 when `size` is not exactly a class. Exactness is the whole contract. */
 static inline int mag_class(size_t size)
@@ -401,8 +445,8 @@ static struct header *mag_pop(int cls)
     struct header *b = NULL;
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->n[cls] > 0) b = m->blk[cls][--m->n[cls]];
+    if (b) { m->hits++; m->bytes -= blk_size(b); }
     spin_unlock_irqrestore(&m->lock, f);
-    if (b) { st_mag_hits++; st_mag_bytes -= blk_size(b); }
     return b;
 }
 
@@ -412,8 +456,8 @@ static int mag_push(int cls, struct header *b)
     int took = 0;
     uint64_t f = spin_lock_irqsave(&m->lock);
     if (m->n[cls] < MAG_DEPTH) { m->blk[cls][m->n[cls]++] = b; took = 1; }
+    if (took) { m->puts++; m->bytes += blk_size(b); }
     spin_unlock_irqrestore(&m->lock, f);
-    if (took) { st_mag_puts++; st_mag_bytes += blk_size(b); }
     return took;
 }
 
@@ -430,7 +474,11 @@ static void mag_drain_all_locked(void)
         for (int cls = 0; cls < MAG_CLASSES; cls++) {
             while (m->n[cls] > 0) {
                 struct header *b = m->blk[cls][--m->n[cls]];
-                st_mag_bytes -= blk_size(b);
+                size_t bytes=blk_size(b);
+                m->bytes -= bytes;
+                st_live -= bytes;
+                if (st_live_blocks) st_live_blocks--;
+                st_frees++;
                 b->size |= F_FREE;
                 bin_push(coalesce(b));
             }
@@ -439,7 +487,7 @@ static void mag_drain_all_locked(void)
     }
 }
 
-void *kmalloc(size_t size)
+static void *alloc_domain(size_t size, int low)
 {
     if (size == 0)
         return NULL;
@@ -451,13 +499,14 @@ void *kmalloc(size_t size)
 
     /* The fast path: this core's magazine, no global lock, no search. */
     int cls = mag_class(size);
-    if (cls >= 0) {
+    if (!low && cls >= 0) {
         struct header *mb = mag_pop(cls);
         if (mb) return (void *)(mb + 1);
     }
 
     struct header *b = NULL;
     uint64_t f = spin_lock_irqsave(&kheap_lock);
+    struct fnode **list = bins[low];
 
     for (int attempt = 0; attempt < 2 && !b; attempt++) {
         /* Reuse a free block from the matching size class. A block lands in bin
@@ -466,10 +515,10 @@ void *kmalloc(size_t size)
          * vary, so still confirm the block is big enough before taking it. */
         for (int i = bin_index(size); i < NUM_BINS && !b; i++) {
             unsigned long walked = 0;
-            for (struct fnode *n = bins[i]; n; n = n->next) {
+            for (struct fnode *n = list[i]; n; n = n->next) {
                 if (++walked > FREELIST_WALK_MAX) {   /* corrupted into a cycle -> fail safe */
                     kprintf("[kheap] bin %d free list corrupt (cycle) -- dropping it to stay alive\n", i);
-                    bins[i] = NULL;
+                    list[i] = NULL;
                     break;
                 }
                 if (blk_size(node_blk(n)) >= size) { b = node_blk(n); break; }
@@ -483,12 +532,16 @@ void *kmalloc(size_t size)
              * had. Returning NULL while they sit there would be an
              * out-of-memory that is not true, so they come back first and
              * grow() is only asked if the heap still cannot serve the request. */
-            mag_drain_all_locked();
+            /* The low domain never parks blocks in these magazines. Draining
+             * them cannot satisfy its request and needlessly takes every CPU
+             * cache lock during module loading. Ordinary growth still drains
+             * first, retaining the existing no-false-OOM guarantee. */
+            if (!low) mag_drain_all_locked();
             for (int i = bin_index(size); i < NUM_BINS && !b; i++)
-                for (struct fnode *n = bins[i]; n; n = n->next)
+                for (struct fnode *n = list[i]; n; n = n->next)
                     if (blk_size(node_blk(n)) >= size) { b = node_blk(n); break; }
             if (b) break;
-            if (!grow(sizeof(struct header) + size)) break;
+            if (!grow(sizeof(struct header) + size, low)) break;
         } else {
             break;
         }
@@ -525,9 +578,16 @@ void *kmalloc(size_t size)
      * rounded up to 16 with a MIN_PAYLOAD floor. A diagnostic that reports the
      * rounded figure sends whoever reads it looking for an allocation nobody
      * made. */
-    if (!ret && LOGIT_HAVE(oom_kheap_fail)) oom_kheap_fail(req);
+    /* Exhausting the explicit low executable domain is not global heap OOM:
+     * killing a high-memory user process cannot make its arenas executable or
+     * move them below 1 GiB. Report grow failure and let the module loader
+     * return NOMEM, with no spill into the ordinary domain. */
+    if (!ret && !low && LOGIT_HAVE(oom_kheap_fail)) oom_kheap_fail(req);
     return ret;
 }
+
+void *kmalloc(size_t size) { return alloc_domain(size, 0); }
+void *kmalloc_low(size_t size) { return alloc_domain(size, 1); }
 
 void kfree(void *ptr)
 {
@@ -542,7 +602,7 @@ void kfree(void *ptr)
      * takes the slow path, where it is caught) and keeps kheap_audit's arena
      * walk consistent -- every block it sees is either free in a bin or
      * allocated, with no third state to teach it about. */
-    if (!blk_free(h)) {
+    if (!blk_low(h) && !blk_free(h)) {
         int cls = mag_class(blk_size(h));
         if (cls >= 0 && mag_push(cls, h)) return;
     }
@@ -573,6 +633,9 @@ void kheap_get_stats(struct kheap_stats *out)
     if (!out) return;
     uint64_t f = spin_lock_irqsave(&kheap_lock);
     out->arena_bytes = st_arena;
+    out->low_arena_bytes = st_low_arena;
+    out->far_arena_bytes = st_far_arena;
+    out->max_phys = st_max_phys;
     out->live_bytes  = st_live;
     out->free_bytes  = st_free;
     out->req_bytes   = st_req;
@@ -584,6 +647,18 @@ void kheap_get_stats(struct kheap_stats *out)
     out->split_bytes = st_split_bytes;
     out->merges      = st_merges;
     out->live_blocks = st_live_blocks;
+    out->magazine_hits=out->magazine_puts=out->magazine_bytes=0;
+    out->magazine_cpus=0;
+    out->magazine_drains=st_mag_drains;
+    for (int i=0;i<MAG_MAXCPU;i++) {
+        struct magazine *m=&g_mag[i];
+        spin_lock(&m->lock);
+        out->magazine_hits+=m->hits;
+        out->magazine_puts+=m->puts;
+        out->magazine_bytes+=m->bytes;
+        if (m->hits) out->magazine_cpus++;
+        spin_unlock(&m->lock);
+    }
     spin_unlock_irqrestore(&kheap_lock, f);
 }
 
@@ -591,6 +666,10 @@ void kheap_report(const char *tag)
 {
     struct kheap_stats s;
     kheap_get_stats(&s);
+    kprintf("[kheap] %s: physmap %llu KiB, low %llu KiB, above4g %llu KiB, max_phys=%p\n",
+            tag ? tag : "-", (s.arena_bytes-s.low_arena_bytes)/1024,
+            s.low_arena_bytes/1024, s.far_arena_bytes/1024,
+            (void *)(uintptr_t)s.max_phys);
     kprintf("[kheap] %s: arena %d KiB, live %d KiB (%d blocks), free %d KiB, "
             "over-allocated %d KiB of %d KiB served, "
             "%d allocs, %d frees, %d grows, %d splits, %d merges\n",
@@ -598,4 +677,7 @@ void kheap_report(const char *tag)
             (int)s.live_blocks, (int)(s.free_bytes / 1024),
             (int)((s.served_bytes - s.req_bytes) / 1024), (int)(s.served_bytes / 1024),
             (int)s.allocs, (int)s.frees, (int)s.grows, (int)s.splits, (int)s.merges);
+    kprintf("[kheap] %s: magazines %d CPUs, %d hits / %d puts, %d KiB cached, %d drains\n",
+            tag ? tag : "-", (int)s.magazine_cpus, (int)s.magazine_hits,
+            (int)s.magazine_puts, (int)(s.magazine_bytes/1024), (int)s.magazine_drains);
 }

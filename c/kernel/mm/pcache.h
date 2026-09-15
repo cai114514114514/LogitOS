@@ -364,6 +364,8 @@ uint64_t pcache_file_size(int fh);
  * The CACHE's reference is held on the returned frame; a caller that is about
  * to install a PTE must take its own with pmm_ref() first, exactly as
  * fault.c's copy-on-write path does. */
+uint64_t pcache_get_ref(int fh, uint64_t index); /* caller owns one PMM ref */
+uint64_t pcache_get_ref_counted(int fh, uint64_t index, int *miss);
 uint64_t pcache_get(int fh, uint64_t index);
 
 /* Does the cache hold this frame? 0 or 1 -- the extra term in reclaim's

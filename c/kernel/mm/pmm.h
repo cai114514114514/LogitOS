@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "physmap.h"
 
 #define FRAME_SIZE 4096
 
@@ -15,11 +16,30 @@ void pmm_init(uint64_t mb_info_addr);
 /* Allocate / free a single 4 KiB physical frame. Returns 0 on failure.
  * A fresh frame comes back with refcount 1. pmm_free DECREMENTS: the frame
  * returns to the free pool only when the last reference goes. */
+/* Compatibility allocation: always below PMM_LOW_LIMIT (1 GiB), including
+ * boot page tables and existing identity-addressed kernel/DMA objects. */
 uint64_t pmm_alloc(void);
+/* MM payload allocation: prefer mapped high RAM, then fall back to low RAM.
+ * The returned value is PHYSICAL; dereference exclusively through mm_p2v. */
+uint64_t pmm_alloc_any(void);
+uint64_t pmm_alloc_any_nowait(void); /* normal reserve floor; cannot sleep */
 void     pmm_free(uint64_t phys_addr);
 
 /* Allocate `n` contiguous frames; returns the base physical address or 0. */
 uint64_t pmm_alloc_contig(size_t n);
+/* DMA allocation: physically contiguous pages satisfying the ENTIRE extent.
+ * mask is an inclusive address mask of consecutive low 1 bits (UINT64_MAX
+ * allowed); align/boundary are bytes, powers of two or zero. align=0 means a
+ * page, boundary=0 means unrestricted. Prioritise >=4 GiB, then >=1 GiB,
+ * then low RAM; never touch the legacy alloc cursors. No reclaim is invoked.
+ * This explicit device allocation, like legacy contig, may use the reserve.
+ * Free each page with pmm_free. Invalid constraints/OOM return 0. */
+uint64_t pmm_alloc_contig_masked(size_t pages, uint64_t mask,
+                               size_t align, size_t boundary);
+/* True only if every byte lies in full firmware AVAILABLE RAM pages. This
+ * immutable provenance includes allocated/kernel pages; it does not assert
+ * ownership, allocation liveness, contiguity of CPU VAs, or device access. */
+int pmm_is_ram(uint64_t phys, size_t bytes);
 
 /* Take an additional reference on an already-allocated frame (copy-on-write
  * fork maps one frame into two address spaces). Returns 0, or -1 if the count
@@ -64,7 +84,8 @@ uint64_t pmm_pins_live(void);     /* frames with a nonzero pin count */
  *
  * Small on purpose. This is the escape hatch for the last few faults, not a
  * pool to run from; 32 frames is 128 KiB out of 512 MiB. */
-uint64_t pmm_alloc_reserve(void);
+uint64_t pmm_alloc_reserve(void);          /* low zone only */
+uint64_t pmm_alloc_reserve_any(void);      /* swap-in: high first, then low */
 void     pmm_set_reserve(uint64_t frames);
 uint64_t pmm_reserve(void);
 uint64_t pmm_reserve_hits(void);   /* allocations that dipped into it */
@@ -79,6 +100,13 @@ uint64_t pmm_free_frames(void);
 uint64_t pmm_shared_frames(void); /* frames with refcount >= 2 */
 uint64_t pmm_pinned_frames(void); /* frames whose count saturated: never freeable */
 uint64_t pmm_refs_total(void);    /* sum of every frame's refcount */
+/* These counters distinguish usable high RAM from merely reported capacity.
+ * allocations/max_phys are cumulative; live/free change on the last put. */
+uint64_t pmm_high_allocations(void);
+uint64_t pmm_high_max_phys(void);
+uint64_t pmm_high_live_frames(void);
+uint64_t pmm_high_free_frames(void);
+uint64_t pmm_low_zone_free_frames(void);  /* not pmm_low_free_frames: that is a watermark */
 uint64_t pmm_bugs(void);          /* invariant violations detected so far */
 
 /* Frame poisoning (guardrail: turn "corruption somewhere, someday" into

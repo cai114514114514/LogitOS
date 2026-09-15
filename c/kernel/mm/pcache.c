@@ -1,7 +1,11 @@
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "pcache.h"
 #include "pmm.h"
+/* Cache/shared payloads may occupy high physical RAM. Metadata remains in
+ * the low contiguous pool; all CPU payload access uses mm_p2v(), and disk
+ * I/O already bounces buffers outside the legacy DMA window. */
 /* For reclaim_low() only, and only so readahead can refuse to be the thing
  * that pushes the machine into reclaim. Nothing here calls a reclaim path --
  * that direction (reclaim.c -> pcache.h) is the one that already existed. */
@@ -61,6 +65,8 @@ struct pfile {
     uint64_t dev, ino, size;
     int      refs;          /* VMA references + transient lookups */
     int      used;
+    int      recycling; /* reserve the old identity until its pages are gone */
+    uint64_t generation; /* invalidates disk reads that crossed a mutation */
     /* The highest page index ever installed for this file, +1, or 0 for none.
      * purge() walks the INDEX SPACE rather than the pool (see purge_locked),
      * and this is the bound that makes that walk exact: pf.size can shrink
@@ -126,12 +132,12 @@ static const struct pcache_ops *pc_ops;
 
 /* Defined below with the page table; needed earlier by pcache_file_open's
  * idle-slot eviction. */
-static void purge(int fh, uint64_t *counter);
+static void purge(int fh, _Atomic uint64_t *counter);
 
-static uint64_t c_hit, c_miss, c_drop, c_evict, c_inval, c_bypass, c_peak, c_resident;
-static uint64_t c_orphan, c_uncached;
-static uint64_t c_ra_run, c_ra_pages, c_ra_reads, c_ra_short;
-static uint64_t c_bug;
+static _Atomic uint64_t c_hit, c_miss, c_drop, c_evict, c_inval, c_bypass, c_peak, c_resident;
+static _Atomic uint64_t c_orphan, c_uncached;
+static _Atomic uint64_t c_ra_run, c_ra_pages, c_ra_reads, c_ra_short;
+static _Atomic uint64_t c_bug;
 
 /* WHAT ONE BACKEND CALL COSTS, and why this is not decoration.
  *
@@ -162,7 +168,7 @@ static inline uint64_t pc_cyc(void)
 { uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
   return ((uint64_t)hi << 32) | lo; }
 #endif
-static uint64_t c_be_calls, c_be_cyc, c_be_pages, c_be_worst;
+static _Atomic uint64_t c_be_calls, c_be_cyc, c_be_pages, c_be_worst;
 
 /* The one place pc_ops->read is called from, so the accounting cannot drift
  * from the thing it accounts for. `pages` is what the call was ASKED for, not
@@ -171,12 +177,18 @@ static uint64_t c_be_calls, c_be_cyc, c_be_pages, c_be_worst;
 static long backend_read(int fh, uint64_t off, void *dst, uint64_t len)
 {
     uint64_t t0 = pc_cyc();
-    long r = pc_ops->read(pf[fh].path, off, dst, len);
+    char path[PCACHE_PATHMAX];
+    uint64_t f=spin_lock_irqsave(&pc_lock);
+    memcpy(path,pf[fh].path,sizeof path);
+    spin_unlock_irqrestore(&pc_lock,f);
+    long r = pc_ops->read(path, off, dst, len);
     uint64_t d = pc_cyc() - t0;
     c_be_calls++;
     c_be_cyc += d;
     c_be_pages += (len + FRAME_SIZE - 1) / FRAME_SIZE;
-    if (d > c_be_worst) c_be_worst = d;
+    uint64_t worst=c_be_worst;
+    while(d>worst && !atomic_compare_exchange_weak_explicit(&c_be_worst,&worst,d,
+                                    memory_order_relaxed,memory_order_relaxed)) {}
     return r;
 }
 
@@ -351,7 +363,7 @@ static uint64_t unlink_entry(int32_t e)
 
     uint64_t phys = pg[e].phys;
     uint64_t f = phys / FRAME_SIZE;
-    if (pc_of_frame && f < pc_frames) pc_of_frame[f] = 0;
+    if (pc_of_frame && f < pc_frames) __atomic_store_n(&pc_of_frame[f],0,__ATOMIC_RELEASE);
 
     pg[e].fh = -1;
     pg[e].phys = 0;
@@ -366,7 +378,7 @@ int pcache_holds(uint64_t phys)
     if (!pc_ready) return 0;
     uint64_t f = phys / FRAME_SIZE;
     if (f >= pc_frames) return 0;
-    return pc_of_frame[f] != 0;      /* one aligned load; see pcache.h */
+    return __atomic_load_n(&pc_of_frame[f],__ATOMIC_ACQUIRE) != 0;      /* one aligned load; see pcache.h */
 }
 
 void pcache_forget_frame(uint64_t phys)
@@ -405,7 +417,7 @@ int pcache_file_open(const char *path)
      * handle -- which is the only reason a page can be shared at all. The
      * negative control below removes exactly this loop. */
     for (int i = 0; i < PCACHE_MAXFILE; i++)
-        if (pf[i].used && pf[i].dev == dev && pf[i].ino == ino) {
+        if (pf[i].used && !pf[i].recycling && pf[i].dev == dev && pf[i].ino == ino) {
             pf[i].refs++;               /* revives a CACHED-IDLE entry too --
                                          * that re-hit is what idle exists for */
             /* The size can have moved under us since the last open (logitfs
@@ -433,6 +445,7 @@ int pcache_file_open(const char *path)
     for (int i = 0; i < PCACHE_MAXFILE; i++)
         if (!pf[i].used) {
             pf[i].used = 1;
+            pf[i].recycling=0; pf[i].generation++;
             pf[i].refs = 1;
             pf[i].dev = dev;
             pf[i].ino = ino;
@@ -459,30 +472,22 @@ int pcache_file_open(const char *path)
      * would be bookkeeping the workload cannot yet justify -- revisit when
      * pcache_report says eviction is hot. */
     for (int i = 0; i < PCACHE_MAXFILE; i++)
-        if (pf[i].used && pf[i].refs <= 0) {
-            size_t n = pc_slen(path);
-            if (n >= PCACHE_PATHMAX) goto out;
-            pf[i].refs = 1;
-            pf[i].dev = dev; pf[i].ino = ino; pf[i].size = size;
-            memcpy(pf[i].path, path, n + 1);
-            ret = i;
-            spin_unlock_irqrestore(&pc_lock, fl);
-            purge(ret, &c_evict);       /* the OLD identity's pages, under the
-                                         * OLD hiwater -- which is why the reset
-                                         * below comes after, not before */
-            fl = spin_lock_irqsave(&pc_lock);
-            if (pf[ret].used && pf[ret].dev == dev && pf[ret].ino == ino) {
-                pf[ret].hiwater = 0;    /* still ours: the new identity has
-                                         * installed nothing yet */
-                /* The sequence state goes with the identity for the same
-                 * reason: the previous file's trail would make this file's
-                 * first request look like a resumption of a walk through a
-                 * file it has nothing to do with, and prefetch pages of it. */
-                pf[ret].ra_next = 0;
-                pf[ret].ra_win  = 0;
-            }
-            spin_unlock_irqrestore(&pc_lock, fl);
-            return ret;
+        if (pf[i].used && !pf[i].recycling && pf[i].refs == 0) {
+            size_t n=pc_slen(path);
+            if (n>=PCACHE_PATHMAX) goto out;
+            /* Do not publish the new key while the old key's pages are still
+             * tagged with this slot: another opener could read those bytes. */
+            pf[i].recycling=1; pf[i].generation++;
+            spin_unlock_irqrestore(&pc_lock,fl);
+            purge(i,&c_evict);
+            fl=spin_lock_irqsave(&pc_lock);
+            pf[i].dev=dev; pf[i].ino=ino; pf[i].size=size;
+            memcpy(pf[i].path,path,n+1);
+            pf[i].refs=1; pf[i].hiwater=0;
+            pf[i].ra_next=pf[i].ra_win=0;
+            pf[i].recycling=0;
+            ret=i;
+            goto out;
         }
     /* Full of LIVE entries. Not fatal and not silent: the mapping is refused,
      * the caller falls back to reading the file, and the number says the table
@@ -538,7 +543,7 @@ static int purge_locked(int fh, uint64_t *out, int max, uint64_t *cursor)
 
 #define PURGE_BATCH 64
 
-static void purge(int fh, uint64_t *counter)
+static void purge(int fh, _Atomic uint64_t *counter)
 {
     for (;;) {
         uint64_t frames[PURGE_BATCH];
@@ -616,15 +621,22 @@ void pcache_file_put(int fh)
 static void retire_if_idle(int fh)
 {
     uint64_t fl = spin_lock_irqsave(&pc_lock);
-    if (pf[fh].used && pf[fh].refs <= 0) pf[fh].used = 0;
+    if (pf[fh].used && !pf[fh].recycling && pf[fh].refs == 0) pf[fh].used = 0;
     spin_unlock_irqrestore(&pc_lock, fl);
 }
 
 void pcache_invalidate_file(int fh)
 {
-    if (fh < 0 || fh >= PCACHE_MAXFILE) return;
-    if (pc_ops && pc_ops->forget) pc_ops->forget(pf[fh].used ? pf[fh].path : 0);
-    purge(fh, &c_inval);
+    if (fh<0 || fh>=PCACHE_MAXFILE) return;
+    char path[PCACHE_PATHMAX];
+    uint64_t f=spin_lock_irqsave(&pc_lock);
+    if (!pf[fh].used || pf[fh].recycling) { spin_unlock_irqrestore(&pc_lock,f); return; }
+    pf[fh].refs++; pf[fh].generation++;
+    memcpy(path,pf[fh].path,sizeof path);
+    spin_unlock_irqrestore(&pc_lock,f);
+    if (pc_ops && pc_ops->forget) pc_ops->forget(path);
+    purge(fh,&c_inval);
+    pcache_file_put(fh);
     retire_if_idle(fh);
 }
 
@@ -651,8 +663,9 @@ void pcache_invalidate_path(const char *path)
     int nh = 0;
     uint64_t fl = spin_lock_irqsave(&pc_lock);
     for (int i = 0; i < PCACHE_MAXFILE; i++)
-        if (pf[i].used && pc_sneq(pf[i].path, path, PCACHE_PATHMAX) == 0)
-            hits[nh++] = i;
+        if (pf[i].used && !pf[i].recycling && pc_sneq(pf[i].path, path, PCACHE_PATHMAX) == 0) {
+            pf[i].refs++; pf[i].generation++; hits[nh++] = i;
+        }
     spin_unlock_irqrestore(&pc_lock, fl);
 
     if (pc_ops && pc_ops->stat) {
@@ -660,16 +673,16 @@ void pcache_invalidate_path(const char *path)
         if (pc_ops->stat(path, &dev, &ino, &size) == 0) {
             fl = spin_lock_irqsave(&pc_lock);
             for (int i = 0; i < PCACHE_MAXFILE; i++) {
-                if (!pf[i].used || pf[i].dev != dev || pf[i].ino != ino) continue;
+                if (!pf[i].used || pf[i].recycling || pf[i].dev != dev || pf[i].ino != ino) continue;
                 pf[i].size = size;
                 int seen = 0;
                 for (int j = 0; j < nh; j++) if (hits[j] == i) seen = 1;
-                if (!seen) hits[nh++] = i;
+                if (!seen) { pf[i].refs++; pf[i].generation++; hits[nh++] = i; }
             }
             spin_unlock_irqrestore(&pc_lock, fl);
         }
     }
-    for (int j = 0; j < nh; j++) { purge(hits[j], &c_inval); retire_if_idle(hits[j]); }
+    for (int j = 0; j < nh; j++) { purge(hits[j], &c_inval); pcache_file_put(hits[j]); retire_if_idle(hits[j]); }
 #endif
 }
 
@@ -771,7 +784,7 @@ static int install_locked(int fh, uint64_t index, uint64_t frame)
     uint32_t b = hash(fh, index);
     pg[e].hnext = bucket[b];
     bucket[b] = e;
-    pc_of_frame[frame / FRAME_SIZE] = (uint32_t)e + 1;
+    __atomic_store_n(&pc_of_frame[frame / FRAME_SIZE],(uint32_t)e+1,__ATOMIC_RELEASE);
     if (index + 1 > pf[fh].hiwater) pf[fh].hiwater = index + 1;   /* purge's bound */
     c_resident++;
     if (c_resident > c_peak) c_peak = c_resident;
@@ -854,13 +867,13 @@ static unsigned free_slots_locked(unsigned max)
  * own reference. (pmm_pin() across the batch was the other candidate. It also
  * works, costs a pin/unpin pair, and leaves the hazard present-but-guarded
  * instead of absent.) */
-static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
+static uint64_t ra_batch(int fh, uint64_t first, unsigned want, int take_ref,
+                         uint64_t generation, uint64_t size)
 {
     uint64_t frames[PCACHE_RA_MAX + 1];
     unsigned n = want > PCACHE_RA_MAX + 1 ? PCACHE_RA_MAX + 1 : want;
 
     /* (1) The file's end. */
-    uint64_t size = pf[fh].size;
     uint64_t npages = (size + FRAME_SIZE - 1) / FRAME_SIZE;
     if (first >= npages) return 0;
     if ((uint64_t)n > npages - first) n = (unsigned)(npages - first);
@@ -892,7 +905,7 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
     /* (4) Every frame, before any of them is installed. See the note above. */
     unsigned got = 0;
     while (got < n) {
-        uint64_t f = pmm_alloc();
+        uint64_t f = pmm_alloc_any();
         if (!f) break;
         frames[got++] = f;
     }
@@ -960,7 +973,15 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
          * ONE run for the whole batch; it is measured (pcache_ra_reads) rather
          * than assumed, because on a fragmented machine it is not. */
         unsigned j = i + 1;
-        while (j < n && frames[j] == frames[j - 1] + FRAME_SIZE) j++;
+        /* Correction (2026-09-09), beside the old identity-only premise:
+         * physical adjacency is insufficient at 1 GiB. mm_p2v(low) keeps the
+         * identity VA while mm_p2v(high) uses the high physmap. A batch that
+         * exhausts high RAM and falls back to low RAM can contain both sides
+         * of that boundary; one backend buffer must never span the two aliases.
+         * Test the zone explicitly so MM_HOSTTEST's linear arena exercises the
+         * same split rather than concealing it behind host pointer adjacency. */
+        while (j < n && frames[j] == frames[j - 1] + FRAME_SIZE &&
+               (frames[j] < PMM_LOW_LIMIT) == (frames[i] < PMM_LOW_LIMIT)) j++;
 
         uint64_t off = (first + i) * (uint64_t)FRAME_SIZE;
         uint64_t len = (uint64_t)(j - i) * FRAME_SIZE;
@@ -992,11 +1013,24 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
     /* (6) Install. Free list only -- never evict for a page nobody asked for. */
     unsigned installed = 0;
     fl = spin_lock_irqsave(&pc_lock);
+#ifndef PCACHE_STALE_FILL
+    if (pf[fh].generation!=generation) {
+        /* The read overlapped a write/invalidation. Its demand page remains
+         * a valid caller-owned snapshot, but may not repopulate the cache. */
+        spin_unlock_irqrestore(&pc_lock,fl);
+        unsigned keep=covered && take_ref ? 1 : 0;
+        for (unsigned i=keep;i<n;i++) pmm_free(frames[i]);
+        return keep ? frames[0] : 0;
+    }
+#else
+    (void)generation;
+#endif
     for (unsigned i = 0; i < covered; i++) {
         if (find(fh, first + i) >= 0) break;        /* not reachable under the BKL */
         if (install_locked(fh, first + i, frames[i]) < 0) break;   /* pool full */
         installed++;
     }
+    int held = installed && (!take_ref || pmm_ref(frames[0]) == 0);
     if (installed) c_ra_pages += installed - 1;     /* the demand page is not
                                                      * ahead of anyone */
     if (shortread) {
@@ -1010,25 +1044,31 @@ static uint64_t ra_batch(int fh, uint64_t first, unsigned want)
     spin_unlock_irqrestore(&pc_lock, fl);
 
     for (unsigned i = installed; i < n; i++) pmm_free(frames[i]);
-    return installed ? frames[0] : 0;
+    return held ? frames[0] : 0;
 }
 
-uint64_t pcache_get(int fh, uint64_t index)
+static uint64_t pcache_get_impl(int fh, uint64_t index, int take_ref, int *miss)
 {
+    if (miss) *miss = 0;
     if (!pc_ready || !pc_ops || !pc_ops->read) return 0;
-    if (fh < 0 || fh >= PCACHE_MAXFILE || !pf[fh].used) return 0;
+    if (fh < 0 || fh >= PCACHE_MAXFILE) return 0;
     if (index > 0xFFFFFFFFull) return 0;
 
     uint64_t fl = spin_lock_irqsave(&pc_lock);
+    if (!pf[fh].used || pf[fh].recycling) { spin_unlock_irqrestore(&pc_lock,fl); return 0; }
+    uint64_t generation=pf[fh].generation, size=pf[fh].size;
     int32_t e = find(fh, index);
     unsigned batch = ra_advance(fh, index, e >= 0);
     if (e >= 0) {
         uint64_t phys = pg[e].phys;
+        if (take_ref && pmm_ref(phys) < 0) phys = 0;
         c_hit++;
         spin_unlock_irqrestore(&pc_lock, fl);
         return phys;
     }
     spin_unlock_irqrestore(&pc_lock, fl);
+
+    if (miss) *miss = 1; /* Per-call classification; another CPU cannot change it. */
 
     /* A SEQUENTIAL MISS. One batch, one backend call per contiguous run of
      * frames, and the page asked for is the first of them. A 0 back means the
@@ -1037,15 +1077,15 @@ uint64_t pcache_get(int fh, uint64_t index)
      * what makes -DPCACHE_NO_READAHEAD the old code and not an approximation
      * of it. */
     if (batch > 1) {
-        uint64_t phys = ra_batch(fh, index, batch);
+        uint64_t phys = ra_batch(fh, index, batch, take_ref, generation, size);
         if (phys) { c_miss++; return phys; }
     }
 
     /* MISS. Off the lock, because this reads a disk. */
     uint64_t off = index * (uint64_t)FRAME_SIZE;
-    if (off >= pf[fh].size) return 0;              /* past EOF: not a page of this file */
+    if (off >= size) return 0;              /* past EOF: not a page of this file */
 
-    uint64_t frame = pmm_alloc();
+    uint64_t frame = pmm_alloc_any();
     if (!frame) return 0;
 
     /* Zero first, then read over it. The tail page of a file is shorter than a
@@ -1053,16 +1093,24 @@ uint64_t pcache_get(int fh, uint64_t index)
      * previous owner of the frame left -- the same disclosure rule do_anon()
      * follows, and the same reason. */
     memset(mm_p2v(frame), 0, FRAME_SIZE);
-    uint64_t want = pf[fh].size - off;
+    uint64_t want = size - off;
     if (want > FRAME_SIZE) want = FRAME_SIZE;
     long got = backend_read(fh, off, mm_p2v(frame), want);
     if (got < 0) { pmm_free(frame); return 0; }
     c_miss++;
 
     fl = spin_lock_irqsave(&pc_lock);
+#ifndef PCACHE_STALE_FILL
+    if (pf[fh].generation!=generation) {
+        spin_unlock_irqrestore(&pc_lock,fl);
+        if (take_ref) return frame;
+        pmm_free(frame); return 0;
+    }
+#endif
     e = find(fh, index);
     if (e >= 0) {                                   /* somebody beat us to it */
         uint64_t phys = pg[e].phys;
+        if (take_ref && pmm_ref(phys) < 0) phys = 0;
         spin_unlock_irqrestore(&pc_lock, fl);
         pmm_free(frame);
         return phys;
@@ -1070,14 +1118,13 @@ uint64_t pcache_get(int fh, uint64_t index)
     if (pc_free < 0) {
         uint64_t victim = evict_one_locked();
         if (victim) {
-            spin_unlock_irqrestore(&pc_lock, fl);
             pmm_free(victim);
-            fl = spin_lock_irqsave(&pc_lock);
         }
     }
     if (install_locked(fh, index, frame) == 0) {
+        int held = !take_ref || pmm_ref(frame) == 0;
         spin_unlock_irqrestore(&pc_lock, fl);
-        return frame;
+        return held ? frame : 0;
     }
     /* UNREACHABLE, and counted rather than trusted.
      *
@@ -1103,6 +1150,29 @@ uint64_t pcache_get(int fh, uint64_t index)
     return frame;
 }
 
+/* Borrowed lookup is retained for the serialized legacy host fixtures.
+ * Kernel consumers take a reference BEFORE releasing pc_lock; purge/reclaim
+ * may remove the cache reference as soon as that lock is dropped. */
+uint64_t pcache_get(int fh, uint64_t index)
+{ return pcache_get_impl(fh, index, 0, 0); }
+uint64_t pcache_get_ref(int fh, uint64_t index)
+{
+#ifdef PCACHE_NO_RETURN_REF
+    return pcache_get_impl(fh, index, 0, 0);
+#else
+    return pcache_get_impl(fh, index, 1, 0);
+#endif
+}
+
+uint64_t pcache_get_ref_counted(int fh, uint64_t index, int *miss)
+{
+#ifdef PCACHE_NO_RETURN_REF
+    return pcache_get_impl(fh, index, 0, miss);
+#else
+    return pcache_get_impl(fh, index, 1, miss);
+#endif
+}
+
 long pcache_pread(const char *path, void *buf, uint64_t off, uint64_t len)
 {
     if (!pc_ready || !pc_ops || !pc_ops->stat) return -1;
@@ -1125,12 +1195,13 @@ long pcache_pread(const char *path, void *buf, uint64_t off, uint64_t len)
         uint64_t in_page = (off + done) % FRAME_SIZE;
         uint64_t n = FRAME_SIZE - in_page;
         if (n > len - done) n = len - done;
-        uint64_t frame = pcache_get(fh, p);
+        uint64_t frame = pcache_get_ref(fh, p);
         if (!frame) { pcache_file_put(fh); return done ? (long)done : -1; }
         /* THE IDENTITY, in one line: these are the bytes of the very frame an
          * mmap of this page would install in a page table. read() copies out of
          * it; mmap() maps it. There is one copy of the file in RAM. */
         memcpy(dst + done, (const uint8_t *)mm_p2v(frame) + in_page, (size_t)n);
+        pmm_free(frame);
         done += n;
     }
     pcache_file_put(fh);

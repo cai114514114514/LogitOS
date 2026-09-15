@@ -18,7 +18,7 @@ static inline uint64_t sw_cyc(void) { return 0; }
 static inline void sw_park(void) { }
 #else
 #include "blkdev.h"
-#include "sched.h"          /* bkl_hlt_wait(): wait WITHOUT holding the BKL */
+#include "sched.h"          /* sched_poll_wait(): wait WITHOUT holding the BKL */
 #include "percpu.h"         /* this_cpu()->in_kernel: do we hold it in the first place? */
 static inline uint64_t sw_cyc(void)
 { uint32_t lo, hi; __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
@@ -26,7 +26,7 @@ static inline uint64_t sw_cyc(void)
 
 /* Give the CPU up while another transfer finishes.
  *
- * bkl_hlt_wait() RELEASES the big kernel lock, halts, and re-acquires -- which
+ * sched_poll_wait() RELEASES the big kernel lock, halts, and re-acquires -- which
  * is exactly right when the caller holds it, and catastrophic when it does not:
  * it would unlock a lock this core never took, handing the kernel to two
  * threads at once. Reclaim is reachable from pmm_alloc(), pmm_alloc() is
@@ -36,7 +36,7 @@ static inline uint64_t sw_cyc(void)
  * already keeps for precisely this question, so ask it rather than assume. */
 static inline void sw_park(void)
 {
-    if (this_cpu()->in_kernel) bkl_hlt_wait();
+    if (this_cpu()->in_kernel) sched_poll_wait();
     else __asm__ volatile ("pause");
 }
 #endif
@@ -58,8 +58,8 @@ void *memset(void *, int, size_t);
  * 443,460,152 -- 850x the mean. Four times the mean is comfortably outside
  * anything a healthy command does here, so a normal transfer never parks and
  * the workload does not slow down. */
-#ifndef SWAP_BKL_BUDGET_CYC
-#define SWAP_BKL_BUDGET_CYC 2000000ull
+#ifndef SWAP_POLL_BUDGET_CYC
+#define SWAP_POLL_BUDGET_CYC 2000000ull
 #endif
 
 static spinlock_t swap_lock = SPINLOCK_INIT;
@@ -69,7 +69,7 @@ static uint16_t *sw_ref;                 /* per slot; 0 = free. Index 0 unused. 
 static uint64_t  sw_nslots;              /* highest valid slot number */
 static uint64_t  sw_used, sw_hint = 1;
 static uint64_t  sw_writes, sw_reads, sw_errors, sw_waits;
-static uint64_t  sw_bkl_cyc, sw_bkl_worst;
+static uint64_t  sw_poll_cyc, sw_poll_worst;
 /* The transfer's WALL time, alongside the BKL-held time above. Two numbers now
  * that they can differ: before the block layer grew submit/poll they were the
  * same number by construction, and reporting only one of them was therefore
@@ -86,7 +86,7 @@ static struct blkdev *sw_dev;
 
 /* One in-flight transfer. Not a mutex from c/kernel/core/wait.h on purpose: the
  * callers are page-fault handlers, and the wait a fault is allowed to do is the
- * one the scheduler already sanctions from trap context -- bkl_hlt_wait(), which
+ * one the scheduler already sanctions from trap context -- sched_poll_wait(), which
  * drops the BKL, halts until an interrupt, and re-takes it. See swap_io(). */
 static volatile int sw_busy;
 
@@ -155,6 +155,11 @@ static int dev_io(uint64_t lba, void *page, int write, uint64_t *held)
          * because "swap never bounces" is true of this machine (its pages are
          * identity-mapped frames) and is the kind of truth that stops holding
          * quietly. */
+        /* Wide-memory correction: high payload frames now deliberately take
+         * this branch. Preserve the low bounce buffer and descriptor contract. */
+        /* DMA migration correction: kernel high aliases are now accepted
+         * asynchronously. This remains a compatibility refusal fallback;
+         * it is no longer selected by a numeric physical/DMA ceiling. */
         sw_bounced++;
         t = sw_cyc();
         int s = write ? dev_write(lba, SWAP_SECTORS, page)
@@ -167,7 +172,7 @@ static int dev_io(uint64_t lba, void *page, int write, uint64_t *held)
     for (;;) {
         uint64_t a = sw_cyc();
         int done;
-        while (!(done = blk_poll(&r)) && sw_cyc() - a < SWAP_BKL_BUDGET_CYC)
+        while (!(done = blk_poll(&r)) && sw_cyc() - a < SWAP_POLL_BUDGET_CYC)
             __asm__ volatile ("pause");
         *held += sw_cyc() - a;
         if (done) break;
@@ -372,7 +377,7 @@ unsigned swap_slot_refs(uint64_t slot)
  *
  *   THE QUEUEING WAIT -- waiting for the device to be free of the PREVIOUS
  *   swap transfer. This one is potentially long (as long as another page's
- *   whole transfer) and it is done with bkl_hlt_wait(), which drops the BKL,
+ *   whole transfer) and it is done with sched_poll_wait(), which drops the BKL,
  *   halts until the next interrupt, and re-acquires. So a second faulting
  *   thread costs the machine nothing while it waits: other cores keep working,
  *   the timer keeps ticking, the window manager keeps drawing. This is the wait
@@ -387,8 +392,8 @@ unsigned swap_slot_refs(uint64_t slot)
  *   ahci.c says why a naive sleep there corrupts logitfs's static staging
  *   buffers.
  *
- * So the transfer is MEASURED instead of assumed: swap_bkl_cycles() is the
- * total and swap_bkl_worst() the worst single one, both printed by
+ * So the transfer is MEASURED instead of assumed: swap_poll_cycles() is the
+ * total and swap_poll_worst() the worst single one, both printed by
  * swap_report(), so the cost of the remaining gap is a number in the log rather
  * than a paragraph in a comment.
  *
@@ -397,12 +402,12 @@ unsigned swap_slot_refs(uint64_t slot)
  *
  * The paragraph that used to end this comment asked for submit/poll on
  * `struct blk_ops` and said "with those, this function becomes submit(); while
- * (!poll()) bkl_hlt_wait(); and the BKL is not held across any part of a swap
+ * (!poll()) sched_poll_wait(); and the BKL is not held across any part of a swap
  * transfer." The pointers exist now (c/drivers/block/blkdev.h). That sentence
  * is still WRONG, and the arithmetic that makes it wrong was not visible from
  * here:
  *
- *   bkl_hlt_wait() halts until the NEXT INTERRUPT. Neither the AHCI port nor
+ *   sched_poll_wait() halts until the NEXT INTERRUPT. Neither the AHCI port nor
  *   the NVMe queue has a completion interrupt wired -- P_IE is 0, IEN is 0 --
  *   so the only thing that can wake this core is the 100 Hz timer. That is
  *   10 ms. A swap transfer, MEASURED on this machine, is 519,292 cycles, and
@@ -419,7 +424,7 @@ unsigned swap_slot_refs(uint64_t slot)
  *
  * WHAT WOULD CLOSE THE REST, stated as precisely as the last ask so it can be
  * asked for in turn: a completion interrupt on the swap device, so that
- * bkl_hlt_wait() wakes on the transfer instead of on the tick. The facility
+ * sched_poll_wait() wakes on the transfer instead of on the tick. The facility
  * exists (dev_irq_request(), c/drivers/core/driver.h, whose own worked example
  * is `ahci_isr`); what does not is the ORDERING -- blk_init() runs at
  * kmain.c:135 and smp_init() at :183, and wiring an interrupt needs a live
@@ -428,7 +433,7 @@ unsigned swap_slot_refs(uint64_t slot)
  * be requested LATER than the driver is brought up. That is a change to the
  * bring-up order in kmain.c, not to this file and not to blkdev.c.
  *
- * ON THE BUDGET'S VALUE (SWAP_BKL_BUDGET_CYC, defined at the top of this file):
+ * ON THE BUDGET'S VALUE (SWAP_POLL_BUDGET_CYC, defined at the top of this file):
  * LOWER IS NOT BETTER, and the arithmetic above is why. Set it below the mean
  * transfer and most transfers park, and each park costs a 10 ms tick -- so a
  * budget chosen to "hold the lock less" makes the machine dramatically slower
@@ -456,8 +461,8 @@ static int swap_io(uint64_t slot, void *page, int write)
     uint64_t dt = sw_cyc() - t0;            /* cycles the transfer took, held or not */
 
     uint64_t fl = spin_lock_irqsave(&swap_lock);
-    sw_bkl_cyc += held;
-    if (held > sw_bkl_worst) sw_bkl_worst = held;
+    sw_poll_cyc += held;
+    if (held > sw_poll_worst) sw_poll_worst = held;
     sw_dev_cyc += dt;
     if (dt > sw_dev_worst) sw_dev_worst = dt;
     if (rc) sw_errors++;
@@ -479,11 +484,11 @@ uint64_t swap_writes(void)      { return sw_writes; }
 uint64_t swap_reads(void)       { return sw_reads; }
 uint64_t swap_io_errors(void)   { return sw_errors; }
 uint64_t swap_waits(void)       { return sw_waits; }
-uint64_t swap_bkl_cycles(void)  { return sw_bkl_cyc; }
-uint64_t swap_bkl_worst(void)   { return sw_bkl_worst; }
+uint64_t swap_poll_cycles(void)  { return sw_poll_cyc; }
+uint64_t swap_poll_worst(void)   { return sw_poll_worst; }
 uint64_t swap_dev_cycles(void)  { return sw_dev_cyc; }
 uint64_t swap_dev_worst(void)   { return sw_dev_worst; }
-uint64_t swap_bkl_releases(void){ return sw_parks; }
+uint64_t swap_poll_parks(void){ return sw_parks; }
 uint64_t swap_bounced(void)     { return sw_bounced; }
 
 void swap_report(const char *tag)
@@ -498,19 +503,19 @@ void swap_report(const char *tag)
             tag ? tag : "-", sw_name, (int)sw_used, (int)sw_nslots,
             (int)(sw_used * SWAP_PAGE_SIZE / (1024 * 1024)),
             (int)sw_writes, (int)sw_reads, (int)sw_errors, (int)sw_waits);
-    kprintf("[swap] %s: BKL held inside the device: %d kcycles total, "
+    kprintf("[swap] %s: CPU polling inside the device: %d kcycles total, "
             "%d per transfer, %d worst\n",
-            tag ? tag : "-", (int)(sw_bkl_cyc / 1000),
-            (int)(ios ? sw_bkl_cyc / ios : 0), (int)sw_bkl_worst);
+            tag ? tag : "-", (int)(sw_poll_cyc / 1000),
+            (int)(ios ? sw_poll_cyc / ios : 0), (int)sw_poll_worst);
     /* The same three for the TRANSFER, which is now a different thing. If these
      * two lines are identical the asynchrony did nothing, and that is a finding
      * rather than a formatting accident -- it means no transfer ever exceeded
-     * SWAP_BKL_BUDGET_CYC, so the lock was never given back. */
+     * SWAP_POLL_BUDGET_CYC, so the lock was never given back. */
     kprintf("[swap] %s: device transfer itself:     %d kcycles total, "
             "%d per transfer, %d worst\n",
             tag ? tag : "-", (int)(sw_dev_cyc / 1000),
             (int)(ios ? sw_dev_cyc / ios : 0), (int)sw_dev_worst);
-    kprintf("[swap] %s: %d BKL releases mid-transfer (%d kcycles given back), "
+    kprintf("[swap] %s: %d scheduler parks mid-transfer (%d kcycles given back), "
             "%d bounced\n",
             tag ? tag : "-", (int)sw_parks, (int)(sw_park_cyc / 1000),
             (int)sw_bounced);
