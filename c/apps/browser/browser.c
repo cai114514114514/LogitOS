@@ -2,8 +2,14 @@
 #include "dom.h"
 #include "css.h"
 #include "layout.h"
+#include "top_layer.h"
 #include "browser_paint.h"
+#include "frame_open.h"
+#define PASSIVE_FRAME_OPTIONAL
+#include "passive_frame.h"
 #include "js_dom.h"
+#define JS_CSSOM_OPTIONAL
+#include "js_cssom.h"
 #include "../../../include/weaksym.h"   /* the weak declarations below are an ELF idiom */
 #include "js_page.h"
 #include "js_module.h"           /* <script type="module"> + the module loader */
@@ -33,6 +39,11 @@
  * where there is nothing to clean up. */
 void js_forms_cleanup(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(js_forms_cleanup);
+/* Native clicks do not call HTMLElement.click(). Reuse the same invoker
+ * default after cancellation has been checked; otherwise parser-created
+ * popover/command buttons work in script and silently do nothing on screen. */
+extern int js_semantics_activate_invoker(struct node *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_semantics_activate_invoker);
 
 /* The CSS animation clock's engine hooks (js_anim.c part 2). Weak for the
  * same reason: the host loader test links no js_anim.o and must keep the
@@ -45,11 +56,18 @@ int  css_anim_needs_layout(void) LOGIT_WEAK;
 LOGIT_WEAK_STUB(css_anim_reset);
 LOGIT_WEAK_STUB(css_anim_snapshot);
 LOGIT_WEAK_STUB(css_anim_needs_layout);
+/* Small loader harnesses can omit layout's real image cache. Real browser
+ * builds use its generation, never a made-up "no geometry changed" counter. */
+int layout_image_geometry_pending(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(layout_image_geometry_pending);
 
 #include "bfetch.h"              /* the pooled ring-3 resource fetcher */
 #include "tabs.h"                /* per-tab state, session, history, bookmarks */
 #include "url.h"                 /* url_parse + url_resolve for link clicks */
 #include "css_report.h"          /* the ONE accounting of the stylesheet pipeline */
+/* Included like layout_flex/grid: the production loader and its host gate use
+ * one implementation without another copied browser source list. */
+#include "css_import.c"
 #include <stdlib.h>              /* malloc/realloc/free -- resources are sized to fit */
 #include <string.h>
 
@@ -84,7 +102,8 @@ LOGIT_WEAK_STUB(css_anim_needs_layout);
 static int win_w = WINW, win_h = WINH;
 
 #define VIEW_Y   (TABH + BARH)
-#define VIEW_H   (win_h - VIEW_Y - 18)   /* viewport (below the bars, above status) */
+static int g_hbar;                       /* reserved only for horizontal overflow */
+#define VIEW_H   (win_h - VIEW_Y - 18 - g_hbar)   /* viewport (below the bars, above status) */
 
 /* ---- the two numbers the main loop's sleep is allowed to invent -----------
  *
@@ -105,6 +124,11 @@ static int win_w = WINW, win_h = WINH;
  * syscall a second when nothing at all is happening is not measurable. */
 #define BROWSER_PUMP_MS      10
 #define BROWSER_WAIT_MAX_MS  1000
+/* Yield between completed native events, never in a handler/default action.
+ * 20 ms is two guest clock ticks. The count rail also bounds a burst whose
+ * cheap events all fit in one tick; neither rail consumes the next event. */
+#define BROWSER_EVENT_BUDGET_MS 20
+#define BROWSER_EVENT_BUDGET_COUNT 32
 
 /* THE START PAGE. This used to be "http://example.com/" -- plain http, on a
  * machine with a real TLS 1.3 stack, and typed-over rather than edited (see
@@ -123,6 +147,9 @@ static int win_w = WINW, win_h = WINH;
  * pressing Ctrl+L and typing the full URL, never by reading this default, so
  * the control keeps measuring the same page it always has. */
 static char url[600] = "";
+/* Shared with the synchronous Document.hasFocus query. This remains the
+ * same address-bar input state app_main uses to route every keystroke. */
+static int editing = 1;
 static int  ulen = 0;
 /* The address bar's caret and selection, both BYTE offsets into url[] (UTF-8
  * stepped, like every other caret in this file -- see ce_step/fc_edit's own
@@ -170,10 +197,13 @@ static int  usel = 0;
  * already depends on it and hist_go is defined before that block.) */
 static void addr_sync(void) { ucaret = ulen; usel = ulen; }
 
-static int  scroll;                      /* pixel scroll offset */
+static int  scroll;                      /* vertical pixel scroll offset */
+static int  scroll_x;                    /* horizontal document offset */
 static int  ph;                          /* laid-out page height */
 static char status[96] = "ready -- Enter loads; Cmd+T new tab, Ctrl+Tab switches";
 static struct node *g_root;              /* current page DOM (owns display-list strings) */
+
+#include "browser_input_trace.inc"
 
 /* ===================== history: now PER TAB, not global =====================
  *
@@ -187,8 +217,27 @@ static struct node *g_root;              /* current page DOM (owns display-list 
  * is deliberate: a back/forward stack that belongs to the wrong tab is a bug
  * you find by clicking Back, and the smaller the diff at the call sites the
  * fewer places that bug can hide. */
-static void hist_push(const char *u)    { tab_hist_push(tab_cur(), u); }
-static void hist_replace(const char *u) { tab_hist_replace(tab_cur(), u); }
+/* A request can resolve to an attachment. Commit its history entry only
+ * when it becomes a document; otherwise Back gains a spurious download. */
+static char hist_pending_url[TAB_URL];
+static struct tab *hist_pending_tab;
+static int hist_pending_kind;
+static void hist_stage(const char *u,int kind)
+{
+    size_t n=strlen(u);if(n>=sizeof hist_pending_url)n=sizeof hist_pending_url-1;
+    memcpy(hist_pending_url,u,n);hist_pending_url[n]=0;
+    hist_pending_tab=tab_cur();hist_pending_kind=kind;
+}
+static void hist_push(const char *u)    { hist_stage(u,1); }
+static void hist_replace(const char *u) { hist_stage(u,2); }
+static void hist_commit(void)
+{
+    if(hist_pending_tab==tab_cur()){
+        if(hist_pending_kind==1)tab_hist_push(hist_pending_tab,hist_pending_url);
+        if(hist_pending_kind==2)tab_hist_replace(hist_pending_tab,hist_pending_url);
+    }
+    hist_pending_kind=0;hist_pending_tab=NULL;
+}
 
 /* -1 back, +1 forward. Returns 0 (nothing to do), 1 (a real navigation
  * happened -- url[] holds the target and the caller MUST call load()), or 2
@@ -207,6 +256,7 @@ static void hist_replace(const char *u) { tab_hist_replace(tab_cur(), u); }
  * the full-document stack is the fallback, not the other way around. */
 static int hist_go(int delta)
 {
+    hist_pending_kind=0;hist_pending_tab=NULL;
     if (LOGIT_HAVE(js_webapi_hist_step)) {
         char u[600];
         if (js_webapi_hist_step(js_page_ctx(), delta, u, (int)sizeof u)) {
@@ -371,7 +421,12 @@ unsigned long strlen(const char *);
  * on -- test-loader drives load() directly and never enters app_main's loop.
  * Shimmed HERE rather than in the harness header so the whole change lives in
  * one file, and it is a no-op for the same reason sys_yield() is one. */
+#ifdef BROWSER_IDLE_OBSERVER
+void late_callback_park(int ms);
+static inline void wait_idle(int ms) { late_callback_park(ms); }
+#else
 static inline void wait_idle(int ms) { (void)ms; }
+#endif
 #endif
 
 /* js_page.c is written against an injected clock so the host tests can step
@@ -443,24 +498,49 @@ static int append_media_close(char *out, int o, int max)
     return o;
 }
 
-static int collect_style(struct node *n, char *out, int o, int max)
+/* Formerly fixed 4 MiB / 4.5 MiB arrays. That "fits a 3.25 MiB site" claim
+ * counted unique downloads, not repeated cascade occurrences: the same href
+ * after an inline override must appear again. Grow actual output, including
+ * url rebasing/imports/variables, within explicit per-buffer page budgets.
+ * Capacity is scratch reused across navigations; content always belongs to
+ * the active document. No hostname or guessed source-to-output ratio. */
+#ifndef BROWSER_CSS_BYTES
+#ifdef BROWSER_FIXED_CSS_BUFFERS
+#define BROWSER_CSS_BYTES (4 * 1024 * 1024)
+#else
+#define BROWSER_CSS_BYTES (32 * 1024 * 1024)
+#endif
+#endif
+static char *author_css, *css_expanded;
+static int author_cap, css_expanded_cap;
+static int css_exlen;
+
+static int collect_style(struct node *n, char **out, int o, int *cap)
 {
     if (!n) return o;
     if (n->type == N_ELEM && tag_is(n->tag, "style")) {
         const char *media = dom_attr(n, "media");
         int wrap = media_needs_wrap(media);
-        if (wrap) o = append_media_open(out, o, max, media);
         int had = 0;
+        for(struct node *c=n->first_child;c;c=c->next)
+            if(c->type==N_TEXT&&c->text)had+=c->textlen;
+        int need=had+(wrap?(int)strlen(media)+13:0);
+        if(need>BROWSER_CSS_BYTES-o-1 || !css_text_reserve(out,cap,o+need+1,BROWSER_CSS_BYTES)){
+            printf("[css] inline sheet refused: required=%d allowed=%d\n",need,BROWSER_CSS_BYTES-o-1);
+            goto children;
+        }
+        if (wrap) o = append_media_open(*out, o, *cap, media);
         for (struct node *c = n->first_child; c; c = c->next)
             if (c->type == N_TEXT && c->text) {
-                had += c->textlen;
-                for (int i = 0; i < c->textlen && o < max - 1; i++) out[o++] = c->text[i];
+                memcpy(*out+o,c->text,(size_t)c->textlen);o+=c->textlen;
             }
-        if (wrap) o = append_media_close(out, o, max);
+        if (wrap) o = append_media_close(*out, o, *cap);
+        (*out)[o]=0;
         css_report_style(had);
     }
+children:
     for (struct node *c = n->first_child; c; c = c->next)
-        o = collect_style(c, out, o, max);
+        o = collect_style(c, out, o, cap);
     return o;
 }
 
@@ -598,7 +678,9 @@ static int addr_infer_scheme(void)
 static int os_store_read(const char *p, void *b, int m)  { return read_file(p, b, m); }
 static int os_store_write(const char *p, const void *b, int l) { return write_file(p, b, l); }
 static int os_store_mkdir(const char *p) { return make_dir(p); }
-static const struct bstore_ops os_store = { os_store_read, os_store_write, os_store_mkdir };
+static int os_store_exists(const char *p) { int fd=sys_open(p,0);if(fd<0)return 0;sys_close(fd);return 1; }
+static const struct bstore_ops os_store = { os_store_read, os_store_write, os_store_mkdir, sys_rename, delete_file, os_store_exists };
+#include "cookie_store_guest.inc"
 #endif
 
 /* The window's real size. EV_RESIZE tells us when it changes, but an app that
@@ -779,8 +861,9 @@ static void tab_retitle(void)
  * scratch buffer that kimi's 1.55 MB main bundle already exceeded. */
 struct resent {
     struct node *node;
-    const char  *ref;         /* the raw attribute value; NULL for an inline script */
-    int   module;             /* <script type="module"> */
+    unsigned node_serial;    /* a prepared script may destroy/recycle its node */
+    char *ref;               /* owned attribute snapshot; NULL for inline */
+    int   module;             /* 0 classic, 1 module, 2 import-map data */
     int   id;                 /* bfetch request id while in flight, else -1 */
     unsigned char *data;      /* fetched (or inline) source, owned */
     int   len;
@@ -830,12 +913,18 @@ void layout_images_reset(void);
  * the largest amount of network a frame can start and finish without the
  * window going unresponsive -- res_fetch_all() blocks until its batch lands
  * and drops everything but the close button while it does. A page that reveals
- * forty images gets eight a frame for five frames rather than one stall. */
+ * forty images gets eight a frame for five frames rather than one stall.
+ * Correction (2026-09-09): even ONE delayed picture blocked scripts for
+ * 3.1 guest seconds in tools/perf/browser_load.py. Production now keeps at
+ * most eight requests in flight, polls them between input/timer turns, and
+ * decodes only ready bodies. The old first-pass limit survives solely in the
+ * BROWSER_BLOCKING_IMAGES negative control. */
 #define IMG_LOAD_MAX     128
 #define IMG_FRAME_BUDGET 8
 
 /* 1 when the image pass has work it has not finished -- see settle_frame(). */
 static int g_img_owed;
+static int g_scroll_repaint;
 
 static void res_reset(void)
 {
@@ -843,10 +932,12 @@ static void res_reset(void)
         if (g_res[i].id >= 0) bfetch_release(g_res[i].id);
         free(g_res[i].data);
         free(g_res[i].url);
+        free(g_res[i].ref);
     }
     g_nres = 0;
 }
 
+static char *dupstr(const char *s);
 static struct resent *res_add(struct node *n, const char *ref, int module)
 {
     if (g_nres == g_cres) {
@@ -855,8 +946,13 @@ static struct resent *res_add(struct node *n, const char *ref, int module)
         if (!nv) return 0;
         g_res = nv; g_cres = nc;
     }
+    /* Earlier parser scripts and load handlers can rewrite later attributes.
+     * The fetch list is already prepared: borrowing those strings lets a
+     * callback free a future entry's URL before diagnostics/cascade use it. */
+    char *saved_ref=ref?dupstr(ref):0;
+    if(ref&&!saved_ref)return 0;
     struct resent *e = &g_res[g_nres++];
-    e->node = n; e->ref = ref; e->module = module;
+    e->node = n;e->node_serial=n?n->serial:0;e->ref=saved_ref;e->module = module;
     e->id = -1; e->data = 0; e->len = 0; e->url = 0;
     e->err = 0; e->status = 0;
     return e;
@@ -878,12 +974,71 @@ static char *dupstr(const char *s)
  * the BROWSER'S OWN window does with that: honour the close button, and show
  * progress instead of a frozen "loading...".
  *
- * Input other than close is dropped on purpose while loading. There is no page
- * to deliver it to yet, and queueing it would replay a burst of keystrokes into
- * whatever document finally arrives. */
+ * Input which precedes close is retained for the ordinary event loop. This is
+ * required once the first page paint is visible while subresources continue
+ * loading: gestures made against that page must take effect on its next turn. */
+static void image_requests_reset(void);
+static void pending_scripts_reset(void);
+static void stylesheet_reset(void);
+static void dom_images_reset(void);
+static void download_cancel_staged(void);
+static int pending_scripts_have_work(void);
 static int  g_prog_done, g_prog_total;
 static unsigned long long g_prog_last;
 static const char *g_prog_what = "";
+static int g_load_depth, g_load_close_requested, g_load_transport_cancelled;
+/* Set only after the new document's first real flush. Wheel input can use that
+ * committed display list while synchronous CSS fetches still own this thread. */
+static int g_load_frame_committed;
+/* js_page_open installs platform objects but runs no page source. External
+ * scripts are fetched after that point; this flips immediately before the first
+ * classic/module/inline evaluation so the load pump can distinguish a live but
+ * still page-code-free runtime from a callback stack it must never re-enter. */
+static int g_load_page_scripts_started;
+
+/* QuickJS's interrupt hook now watches the window queue as well as native
+ * load_tick calls. It must not eat the input which happened to sit in front of
+ * EV_CLOSE, so retain it for the ordinary event loop. Adjacent wheel/move
+ * samples coalesce just as the native queue does; everything else keeps FIFO
+ * order. The fixed bound matches the kernel queue's own capacity. */
+#define LOAD_EVENT_QUEUE 256
+static struct logit_event g_load_event_q[LOAD_EVENT_QUEUE];
+static int g_load_event_head, g_load_event_count;
+
+static void load_defer_event(const struct logit_event *e)
+{
+    if (g_load_event_count > 0 &&
+        (e->type == EV_WHEEL || e->type == EV_MOUSE_MOVE)) {
+        int tail = (g_load_event_head + g_load_event_count - 1) % LOAD_EVENT_QUEUE;
+        struct logit_event *last = &g_load_event_q[tail];
+        if (last->type == e->type && last->mods == e->mods) {
+            if (e->type == EV_MOUSE_MOVE) { *last = *e; return; }
+            long long sum = (long long)last->wheel + e->wheel;
+            if (sum > 2147483647LL) sum = 2147483647LL;
+            if (sum < -2147483647LL - 1) sum = -2147483647LL - 1;
+            last->wheel = (int)sum; last->a = e->a; last->b = e->b;
+            return;
+        }
+    }
+    if (g_load_event_count == LOAD_EVENT_QUEUE) {
+        /* The producer would have dropped this sample at the same 256-event
+         * boundary had we not drained it. Keep the older FIFO intact. */
+        return;
+    }
+    int tail = (g_load_event_head + g_load_event_count) % LOAD_EVENT_QUEUE;
+    g_load_event_q[tail] = *e; g_load_event_count++;
+}
+
+static int browser_poll_event(struct logit_event *e)
+{
+    if (g_load_event_count > 0) {
+        *e = g_load_event_q[g_load_event_head];
+        g_load_event_head = (g_load_event_head + 1) % LOAD_EVENT_QUEUE;
+        g_load_event_count--;
+        return 1;
+    }
+    return poll_event(e);
+}
 
 /* getBoundingClientRect reports VIEWPORT coordinates, and js_dom.c cannot know
  * the scroll offset -- the embedder owns it. Push it whenever it moves.
@@ -892,26 +1047,96 @@ static const char *g_prog_what = "";
  * call here is invisible to every test and wrong the instant a user scrolls.
  * Hence one function called from every site that touches `scroll`, rather than
  * an assignment sprinkled next to each of them. */
-static int g_scroll_pushed;
+static int g_scroll_pushed, g_scroll_x_pushed, g_page_width;
+static int g_scroll_event_pending;
+static int max_scroll_x(void)
+{ return g_page_width > win_w ? g_page_width - win_w : 0; }
 static void sync_scroll(void)
 {
-    if (scroll == g_scroll_pushed) return;
-    g_scroll_pushed = scroll;
-    js_dom_set_scroll(0, scroll);
-    /* The `scroll` event: fired at the document, does not bubble (per spec it
-     * is dispatched from the "run the scroll steps" of the update-the-rendering
-     * task, once the position has settled -- never once per wheel notch or key
-     * repeat). The guard above already coalesces every caller in this file
-     * (wheel, PgUp/PgDn, drag, hydrate-restore, resize-induced clamping) down
-     * to one dispatch per actual change, which is the same guarantee under a
-     * different name: nothing here changes `scroll` and skips calling
-     * sync_scroll(), so "changed" and "about to be pushed" are the same event.
-     *
-     * This is also what makes below-the-fold IntersectionObserver content
-     * arrive: js_platform.c's shim listens for this and re-measures instead of
-     * stopping after a bounded number of timer rechecks. */
-    struct js_event_init si = { 0 };
-    js_dom_dispatch(js_dom_root(), "scroll", &si);
+    int mx = max_scroll_x();
+    if (scroll_x < 0) scroll_x = 0;
+    if (scroll_x > mx) scroll_x = mx;
+    if (scroll == g_scroll_pushed && scroll_x == g_scroll_x_pushed) return;
+    g_scroll_pushed = scroll; g_scroll_x_pushed = scroll_x;
+    js_dom_set_scroll(scroll_x, scroll);
+    /* The old implementation dispatched immediately and described the value
+     * guard as coalescing. Correction: a listener's scrollTo re-entered it on
+     * the same stack. Publish coordinates now, queue one document scroll event
+     * for the frame loop; a listener's further change waits for the next turn. */
+#ifdef BROWSER_SCROLL_SYNC_EVENTS
+    struct js_event_init si = {0};
+    js_dom_dispatch(js_dom_root(), "scroll", &si); /* negative control */
+#else
+    g_scroll_event_pending = 1;
+#endif
+}
+
+/* A wheel arriving after first paint does not have to wait while the initial
+ * stylesheet socket is pending. Keep this path deliberately narrower than the
+ * ordinary event loop: it never enters QuickJS, never settles a dirty DOM and
+ * never guesses about a nested overflow default. Those cases stay in the FIFO
+ * and retain the normal wheel dispatch/preventDefault path after the loader
+ * unwinds. Before any page script executes there can be no page-installed
+ * listener; js_page_open may already have created the runtime and installed
+ * engine listeners while external scripts are still downloading. Lazy inline
+ * onwheel/onscroll content attributes already exist in the parsed DOM, so the
+ * native ancestor query below catches the only page handlers possible at this
+ * boundary, including body/html handlers.
+ *
+ * Return 0 to defer, 1 when consumed without a visual change, 2 when a new
+ * viewport frame must be painted after the kernel queue has been drained. */
+static int load_try_live_wheel(const struct logit_event *e)
+{
+#ifdef BROWSER_LOAD_CLOSE_LEGACY
+    (void)e; return 0;
+#else
+    if (!e || e->type != EV_WHEEL) return 0;
+    if (!g_load_frame_committed || g_load_page_scripts_started ||
+        js_page_entry_active() || js_dom_dirty() || g_load_event_count > 0 || !g_root)
+        return 0;
+
+    struct node *target = 0;
+    if (e->b >= VIEW_Y && e->b < VIEW_Y + VIEW_H)
+        browser_hittest_node_viewport(0, VIEW_Y, e->a, e->b - VIEW_Y,
+                                      scroll_x, scroll, &target, 0, 0);
+    if (!target) return 0;
+    if (js_dom_event_has_inline_handler(target, "wheel") ||
+        js_dom_event_has_inline_handler(target, "scroll")) return 0;
+
+    /* An overflow container owns the wheel default before the document does.
+     * Its side table is installed with the JS runtime later in this load, so
+     * changing the document now would both target the wrong scroller and lose
+     * that container state at install. Defer it to the one full event path. */
+    for (struct node *n = target; n; n = n->parent) {
+        if (n->type != N_ELEM || n == g_root ||
+            !strcmp(n->tag, "html") || !strcmp(n->tag, "body")) continue;
+        const struct cstyle *st = (const struct cstyle *)n->style;
+        if (st && (st->overflow_x == OVF_AUTO || st->overflow_x == OVF_SCROLL ||
+                   st->overflow_y == OVF_AUTO || st->overflow_y == OVF_SCROLL))
+            return 0;
+    }
+
+    int old_x = scroll_x, old_y = scroll;
+    if (e->mods & EV_MOD_SHIFT) scroll_x += e->wheel * 40;
+    else scroll += e->wheel * 40;
+    int maxy = ph - VIEW_H; if (maxy < 0) maxy = 0;
+    int maxx = max_scroll_x();
+    if (scroll < 0) scroll = 0; if (scroll > maxy) scroll = maxy;
+    if (scroll_x < 0) scroll_x = 0; if (scroll_x > maxx) scroll_x = maxx;
+
+    /* sync_scroll() queues a DOM scroll event. A runtime may exist during the
+     * external-script fetch, but no page script has executed; registered
+     * listeners at this point belong to platform shims, while the native check
+     * above proved the parsed page has no inline observer. Do not dispatch from
+     * the network callback or queue a past event for a listener installed by a
+     * later page script. Push geometry directly; after the earlier CSS
+     * boundary, js_page_open re-publishes it because js_dom_init resets DOM
+     * state. Platform observers read the current viewport when page code later
+     * activates them, so they do not need a historical scroll notification. */
+    g_scroll_pushed = scroll; g_scroll_x_pushed = scroll_x;
+    js_dom_set_scroll(scroll_x, scroll);
+    return old_x == scroll_x && old_y == scroll ? 1 : 2;
+#endif
 }
 
 static void num_append(char *st, int *p, int v)
@@ -921,11 +1146,92 @@ static void num_append(char *st, int *p, int v)
     while (d) { st[(*p)++] = (char)('0' + (v / d) % 10); d /= 10; }
 }
 
-static void load_tick(void)
+/* Closing during a load has two different stack-safety boundaries. Native
+ * stages observe it at the checkpoint after their current call returns.
+ * QuickJS cannot free its runtime from its own interrupt callback: doing so
+ * would be a use-after-free, so that callback records the request and asks the
+ * interpreter to unwind. The first safe checkpoint after JS returns takes the
+ * exit path.
+ *
+ * The first page paint may already be visible while a stylesheet or script is
+ * still arriving. load_poll_close_request therefore retains every non-close
+ * event it drains, and browser_poll_event replays the FIFO as soon as loading
+ * gives the ordinary event loop a turn. */
+static int load_poll_close_request(void)
 {
     struct logit_event e;
-    while (poll_event(&e))
-        if (e.type == EV_CLOSE) { js_page_close(); bfetch_close_all(); app_exit(0); }
+    int live_wheel_changed = 0;
+    while (poll_event(&e)) {
+        if (e.type == EV_CLOSE) {
+            g_load_close_requested = 1;
+            js_page_request_cancel();
+        }
+#ifndef BROWSER_LOAD_CLOSE_LEGACY
+        else {
+            int live = load_try_live_wheel(&e);
+            if (live == 2) live_wheel_changed = 1;
+            if (!live) load_defer_event(&e);
+        }
+#endif
+    }
+    /* Coalesced kernel bursts pay for one frame. redraw() cannot dispatch JS,
+     * and the helper proved the display list clean before changing its origin. */
+    if (live_wheel_changed) redraw(0);
+    return g_load_close_requested;
+}
+
+static void load_close_checkpoint(void)
+{
+#ifndef BROWSER_LOAD_CLOSE_LEGACY
+    if (!g_load_close_requested) load_poll_close_request();
+    if (!g_load_close_requested) return;
+    js_page_request_cancel();
+    /* load_tick is also the callback for a module dependency's synchronous
+     * bfetch wait. That stack is inside QuickJS: closing its runtime here would
+     * free the interpreter which will resume when this function returns. Abort
+     * transport once so the native wait unwinds, then let the first checkpoint
+     * after js_page_eval/js_module_eval/dispatch returns own teardown. */
+    if (js_page_entry_active()) {
+        if (!g_load_transport_cancelled) {
+            g_load_transport_cancelled = 1;
+            bfetch_close_all();
+        }
+        return;
+    }
+    /* The staged document has already left bfetch's request table. Free that
+     * owner explicitly for host lifetime checks; the real process would reclaim
+     * it on exit, but relying on that makes a cancellation leak invisible. */
+    download_cancel_staged();
+    image_requests_reset();
+    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset();
+    js_page_close(); bfetch_close_all(); app_exit(0);
+#endif
+}
+
+static int load_js_interrupt_probe(void *opaque)
+{
+    (void)opaque;
+#ifdef BROWSER_LOAD_CLOSE_LEGACY
+    return 0;
+#else
+    /* Loading also includes delayed scripts and load/pageshow listeners after
+     * load_once returned, so C stack depth is not the lifetime boundary. Any
+     * input ahead of close is retained by load_poll_close_request. */
+    return load_poll_close_request();
+#endif
+}
+
+static void load_tick(void)
+{
+#ifdef BROWSER_LOAD_CLOSE_LEGACY
+    /* Negative control: preserve the former network-wait close door while
+     * removing only the new CPU-stage and interpreter interrupt coverage. */
+    if (load_poll_close_request()) {
+        js_page_close(); bfetch_close_all(); app_exit(0);
+    }
+#else
+    load_close_checkpoint();
+#endif
 
     /* REPAINT BETWEEN RESOURCES, NEVER DURING ONE.
      *
@@ -958,6 +1264,21 @@ static void load_tick(void)
     st[p++] = ' '; st[p++] = '.'; st[p++] = '.'; st[p++] = '.';
     st[p] = 0;
     set_status(st);
+#ifndef BROWSER_PROGRESS_STALE_PAINT
+    /* "Between resources" above is NOT necessarily between JS mutations and
+     * their layout commit: a nested module download re-enters this callback
+     * from inside script evaluation. Its old display list can still borrow
+     * pseudo styles/text which that script has just replaced. MDN, after the
+     * CSSStyleSheet interface let bootstrap proceed, faulted in shadow paint
+     * while reading one of those stale spans (guest rip css_shadow_parse+0x50).
+     * The host control proves this boundary without freeing anything: a plain
+     * append used to repaint an unsettled tree; clean/committed frames still
+     * repaint. Keep the last committed pixels here. Do NOT settle_frame from
+     * a transport callback: it can dispatch more JS and re-enter the loader.
+     * The outer frame commit owns rebuilding and painting the changed tree;
+     * close events above remain serviced on every tick. */
+    if (js_dom_dirty()) return;
+#endif
     if (g_root) redraw(0);
 }
 
@@ -1051,6 +1372,120 @@ static void res_fetch_all(const char *what, int keep)
     }
 }
 
+/* rel is an ASCII whitespace-separated token set. Substring matches make
+ * rel="notalternate" disable a real sheet; use the same predicate for fetch
+ * collection and final cascade assembly (duplicates share fetched bytes). */
+static int link_rel_has(const char *rel, const char *token)
+{
+    if (!rel) return 0;
+    int len=(int)strlen(token);
+    while (*rel) {
+        while (*rel && (*rel==' ' || *rel=='\t' || *rel=='\r' || *rel=='\n' || *rel=='\f')) rel++;
+        const char *start=rel;
+        while (*rel && *rel!=' ' && *rel!='\t' && *rel!='\r' && *rel!='\n' && *rel!='\f') rel++;
+        if (rel-start==len) {
+            int i=0;for(;i<len;i++){char c=start[i];if(c>='A'&&c<='Z')c+='a'-'A';if(c!=token[i])break;}
+            if(i==len)return 1;
+        }
+    }
+    return 0;
+}
+static int link_sheet_active(struct node *n)
+{
+    const char *rel=dom_attr(n,"rel");
+    return link_rel_has(rel,"stylesheet") && !link_rel_has(rel,"alternate") && !dom_attr(n,"disabled");
+}
+
+/* CSS imports use the same asynchronous subresource fetch boundary as links.
+ * Pumping here keeps close/progress responsive; do not call a host/kernel HTTP
+ * shortcut, which would lose redirects, pooling and the browser's request rules. */
+static int browser_css_resolve(void *ctx, const char *base, const char *ref, char *out, int cap)
+{ (void)ctx; return bfetch_resolve(base, ref, out, cap); }
+static int browser_css_fetch(void *ctx, const char *url, unsigned char **data, int *len,
+                             char *final, int cap)
+{
+    (void)ctx;
+    int id = bfetch_start_from(url, url);
+    if (id < 0) { printf("[css-import] cannot queue %s\n", url); return -1; }
+    while (bfetch_state(id) == BF_PENDING) { bfetch_pump(); load_tick(); sys_yield(); }
+    int status = bfetch_status(id);
+    const char *u = bfetch_url(id);
+    int n = u ? (int)strlen(u) : 0;
+    if (n >= cap || bfetch_state(id) != BF_DONE || status / 100 != 2) {
+        printf("[css-import] fetch failed HTTP %d %s\n", status, url);
+        bfetch_release(id); return -1;
+    }
+    if (n) memcpy(final, u, (size_t)n + 1); else final[0] = 0;
+    *len = bfetch_take(id, data); /* takes bytes AND releases the request slot */
+    if (*len < 0) return -1;
+    printf("[css-import] loaded %d bytes %s\n", *len, n ? final : url);
+    return 0;
+}
+static int browser_css_emit(const char *src, int len, const char *base, const char *media,
+                            char **out, int used, int *cap, struct css_import_budget *budget)
+{
+    int before = used, wrap = media_needs_wrap(media);
+    int prefix=wrap?(int)strlen(media)+10:0;
+    if(!css_text_reserve(out,cap,used+prefix+1,BROWSER_CSS_BYTES)){budget->limited++;return before;}
+    if (wrap) used = append_media_open(*out, used, *cap, media);
+    struct css_import_io io = { browser_css_resolve, browser_css_fetch, 0 };
+    int end = css_import_expand_alloc(src,len,base,out,used,cap,BROWSER_CSS_BYTES,budget,&io);
+    /* Never publish a half-open media block when the page budget is exhausted. */
+    if (end < 0 || !css_text_reserve(out,cap,end+(wrap?4:2),BROWSER_CSS_BYTES)) {
+        if(end>=0)budget->limited++; /* closing wrapper also belongs to the sheet */
+        (*out)[before] = 0;
+        printf("[css-import] whole sheet refused: source=%d prefix=%d allowed=%d (%s)\n",len,before,BROWSER_CSS_BYTES,base);
+        return before;
+    }
+    if (wrap) end = append_media_close(*out, end, *cap);
+    else (*out)[end++] = '\n';
+    (*out)[end] = 0; return end;
+}
+static void stylesheet_remember(struct node *n, const struct resent *e);
+static int stylesheet_emit(struct node *n, char **out, int used, int *cap,
+                           struct css_import_budget *budget);
+/* Rebuild the FINAL author sheet in document order. The earlier first paint is
+ * still inline-only, but collecting every inline sheet BEFORE every link also
+ * reversed ordinary <link><style> overrides; import expansion must preserve
+ * both the dependency order and the surrounding document's stylesheet order. */
+static int browser_css_collect(struct node *n, const char *base, char **out, int used,
+                               int *cap, struct css_import_budget *budget)
+{
+    if (!n) return used;
+    if (n->type == N_ELEM && tag_is(n->tag, "style")) {
+        int len = 0;
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text) len += c->textlen;
+        char *text = malloc((size_t)len + 1);
+        if (!text) { budget->limited++; return used; }
+        int p = 0;
+        for (struct node *c = n->first_child; c; c = c->next)
+            if (c->type == N_TEXT && c->text) { memcpy(text+p,c->text,(size_t)c->textlen);p+=c->textlen; }
+        text[p]=0;
+        used = browser_css_emit(text,len,base,dom_attr(n,"media"),out,used,cap,budget);
+        free(text);
+    } else if (n->type == N_ELEM && tag_is(n->tag, "link") && link_sheet_active(n)) {
+        const char *href = dom_attr(n,"href");
+        int found = 0;
+        for (int i = 0; i < g_nres; i++) {
+            struct resent *e = &g_res[i];
+            /* Deduplicate the FETCH, not the cascade occurrence. A repeated
+             * link after an inline override still occupies its later position. */
+            if ((e->node == n || (href && e->ref && str_eq(href,e->ref))) && e->data && e->len > 0) {
+                stylesheet_remember(n,e);
+                used = browser_css_emit((const char *)e->data,e->len,e->url ? e->url : base,
+                                        dom_attr(n,"media"),out,used,cap,budget);
+                found = 1;
+                break;
+            }
+        }
+        if (!found) used = stylesheet_emit(n,out,used,cap,budget);
+    }
+    for (struct node *c = n->first_child; c; c = c->next)
+        used = browser_css_collect(c,base,out,used,cap,budget);
+    return used;
+}
+
 /* ============================ THE IMAGE PASS ==============================
  *
  * ONE function for every image load on the page, first or late, because there
@@ -1072,16 +1507,100 @@ static void res_fetch_all(const char *what, int keep)
  * SHAPE: queue every wanted URL into the resource table FIRST, fetch the batch
  * concurrently over the pooled connections, push the bodies into bfetch's
  * cache, and only then let layout decode. That is the same ordering the first
- * load has used since the pool landed and for the same measured reason (see
+ * load used since the pool landed and for the same measured reason (see
  * the long note at the original call site): a decode is seconds on an emulated
  * CPU and a CDN keep-alive is often five, so fetching one image at a time
  * inside the decode loop handed back sockets the server had already closed.
  *
+ * Correction (2026-09-09): requests now survive across event-loop turns and
+ * each ready body is decoded without waiting for the other sockets. The old
+ * blocking implementation below is retained only for the regression control.
+ *
  * `budget` bounds the NEW work: URLs the cache has not already answered.
  * Anything already decoded costs a pointer copy and is not charged. Returns >0
  * if the display list changed and the caller should repaint. */
+/* Image IO owns separate slots from g_res: stylesheet/script collection
+ * resets g_res, while an image may remain pending across arbitrary event-loop
+ * turns. Queue entries own their strings, never DOM/item pointers. */
+struct page_image_request { int id; char *src; };
+static struct page_image_request g_image_requests[IMG_FRAME_BUDGET];
+static int dom_images_wants(const char *src);
+static int g_load_event_pending;
+static unsigned long long g_navigation_started;
+static void image_requests_cancel(void)
+{
+    for (int i=0; i<IMG_FRAME_BUDGET; i++) if (g_image_requests[i].src) {
+        bfetch_release(g_image_requests[i].id);
+        free(g_image_requests[i].src);
+        g_image_requests[i].src = 0;
+    }
+}
+static void image_requests_reset(void)
+{
+    image_requests_cancel();
+    g_img_owed = 0; g_load_event_pending = 0;
+}
+static int image_fetch_ready(const char *src, unsigned char **bytes, int *len)
+{
+    if (starts_ci(src, "data:")) return res_fetch(src, bytes, len);
+    int slot=-1;
+    for (int i=0; i<IMG_FRAME_BUDGET; i++) {
+        if (g_image_requests[i].src && str_eq(g_image_requests[i].src,src)) { slot=i; break; }
+    }
+    if (slot<0) {
+        /* Tab hydration reuses its retained bytes exactly like CSS/scripts.
+         * Going straight to bfetch here would silently turn tab switching
+         * into a network reload (and fail when the server went away). */
+        struct resent retained={0}; retained.ref=(char *)src;
+        if(res_try_tab(&retained)){
+            *bytes=retained.data; *len=retained.len; free(retained.url); return 0;
+        }
+        for(int i=0;i<IMG_FRAME_BUDGET;i++)if(!g_image_requests[i].src){slot=i;break;}
+        if(slot<0)return 1;
+        char *copy=dupstr(src);if(!copy)return -1;
+        int id=bfetch_start(src);
+        if(id<0){
+            /* A full shared request table is temporary. An unresolvable URL
+             * is permanent: retrying it forever would suppress window.load. */
+            char absolute[2048]; struct url parsed;
+            int invalid=bfetch_resolve(0,src,absolute,sizeof absolute)!=0 || url_parse(absolute,&parsed)!=0;
+            free(copy);return invalid?-1:1;
+        }
+        g_image_requests[slot].src=copy;g_image_requests[slot].id=id;
+    }
+    struct page_image_request *q=&g_image_requests[slot];
+    int state=bfetch_state(q->id);
+    if(state==BF_PENDING)return 1;
+    int ok=state==BF_DONE && bfetch_status(q->id)/100==2;
+    if(ok){
+        const unsigned char *data=bfetch_body(q->id,len);
+        if(data&&*len>0){
+            char requested[2048];
+            if(bfetch_resolve(0,src,requested,sizeof requested)==0)
+                tab_keep_res(tab_cur(),requested,data,*len);
+        }
+        *len=bfetch_take(q->id,bytes);ok=*len>=0;
+    }else{
+        printf("[img] fetch failed (status %d): %.180s: %s\n",bfetch_status(q->id),src,bfetch_error(q->id));
+        bfetch_release(q->id);
+    }
+    free(q->src);q->src=0;
+    return ok?0:-1;
+}
+static void image_requests_prune(void)
+{
+    const struct item *its=layout_items();int count=layout_count();
+    for(int q=0;q<IMG_FRAME_BUDGET;q++)if(g_image_requests[q].src){
+        int used=dom_images_wants(g_image_requests[q].src);
+        for(int i=0;!used&&i<count;i++)if(its[i].type==IT_IMAGE&&its[i].imgsrc&&str_eq(its[i].imgsrc,g_image_requests[q].src)){used=1;break;}
+        if(!used){bfetch_release(g_image_requests[q].id);free(g_image_requests[q].src);g_image_requests[q].src=0;}
+    }
+}
+static int flush_image_geometry(void);
 static int load_late_images(int budget)
 {
+#ifdef BROWSER_BLOCKING_IMAGES
+
     if (budget <= 0) return 0;
     int n = layout_count();
     const struct item *items = layout_items();
@@ -1121,8 +1640,20 @@ static int load_late_images(int budget)
             bfetch_cache_put(g_res[i].url, g_res[i].data, g_res[i].len);
     res_reset();
     int got = layout_load_images(budget);
+    if(got>0)flush_image_geometry();
     set_status(keep);
     return got;
+
+#else
+    if(budget<=0)return 0;
+    /* A script may remove or replace src while IO is pending. Release orphan
+     * requests so they cannot exhaust the eight slots or keep load waiting. */
+    image_requests_prune();
+    bfetch_pump();
+    int got=layout_load_images_fetch(budget,image_fetch_ready);
+    if(got>0)flush_image_geometry();
+    return got;
+#endif
 }
 
 /* ---- what the DOM offers ---- */
@@ -1137,13 +1668,13 @@ static void collect_css_links(struct node *n)
          * outside, from one that 404'd and from one that was never linked --
          * three different bugs, one unstyled page. The counts go to
          * css_report.c and nowhere else. */
-        if (href && has_ci(rel, "stylesheet")) {
-            /* a11y override themes are inactive unless the user selected them;
-             * skipping saves ~1 MiB of CSS on github.com. This is a CORRECTNESS
-             * filter (the sheets do not apply), not a budget. */
-            if (has_ci(href, "high_contrast") || has_ci(href, "colorblind") ||
-                has_ci(href, "tritanopia")) {
-                css_report_link(href, 1, "a11y theme (inactive)");
+        if (href && link_rel_has(rel, "stylesheet")) {
+            /* Old code inferred inactive accessibility themes from href
+             * substrings (claiming ~1 MiB saved). A filename is not state:
+             * an ordinary active sheet with that name was silently omitted.
+             * Follow the link's declared disabled/alternate state instead. */
+            if (!link_sheet_active(n)) {
+                css_report_link(href, 1, "disabled or alternate stylesheet");
             } else if (starts_ci(href, "data:")) {
                 css_report_link(href, 1, "data: URI (not fetched)");
             } else {
@@ -1174,10 +1705,13 @@ static void collect_scripts(struct node *n)
         const char *type = dom_attr(n, "type");
         const char *src  = dom_attr(n, "src");
         int module = js_module_is_module_type(type);
+        int importmap = js_module_is_importmap_type(type);
         int classic = !module && js_module_is_classic_type(type);
-        if (!module && !classic) {
+        if (importmap && src) {
+            printf("[browser] import map rejected: external src is not supported\n");
+        } else if (!module && !classic && !importmap) {
             printf("[browser] skipping <script type=\"%s\"> (not executable)\n", type ? type : "");
-        } else if (!module && dom_attr(n, "nomodule")) {
+        } else if (classic && dom_attr(n, "nomodule")) {
             /* the fallback for a browser without modules; we are not one */
         } else if (src) {
             /* Scheme filter as a PREFIX, not a substring (see starts_ci), and
@@ -1197,7 +1731,7 @@ static void collect_scripts(struct node *n)
                 if (c->type == N_TEXT && c->text) total += c->textlen;
             if (total <= 0) { /* empty inline script */ }
             else {
-                struct resent *e = res_add(n, 0, module);
+                struct resent *e = res_add(n, 0, importmap ? 2 : module);
                 if (e) {
                     e->data = malloc((size_t)total + 1);
                     if (e->data) {
@@ -1216,6 +1750,94 @@ static void collect_scripts(struct node *n)
 }
 
 static void load(const char *u);
+static void load_from(const char *u, const char *initiator);
+
+static const char *committed_page_url(void)
+{
+    /* The address field is an edit buffer, including after about:boxes/text.
+     * Native links/forms and late scripts must share the committed page URL.
+     * Fixing only script fetches left native /search submissions resolving
+     * against "about:boxes" and then loading a bare relative URL. */
+    return js_page_location();
+}
+
+static const char *navigation_base(void)
+{
+#ifdef BROWSER_NAV_USES_ADDRESS_EDIT
+    return url;
+#else
+    return committed_page_url();
+#endif
+}
+
+/* Execute a javascript: URL in the CURRENT document's realm.
+ *
+ * The address parser has always recognised javascript: as an explicit scheme,
+ * while load_once() treated it like a network address. Links deliberately
+ * refuse the scheme in follow_link() below, so the only observable result was
+ * an address-bar bookmarklet being fetched and failing. That is a particularly
+ * bad split: the UI says the text is a URL, but neither of the two places that
+ * could act on it does.
+ *
+ * This is intentionally address-bar only. A page-authored javascript: link has
+ * different CSP, navigation and string-result replacement rules; silently
+ * granting those links an evaluator here would broaden page authority. A
+ * PERSON typing/pasting a bookmarklet and pressing Enter is already the
+ * browser's trusted navigation gesture, and executes in the live page realm,
+ * which gives localStorage the page's real origin exactly as on other browsers.
+ *
+ * URL percent escapes are decoded before evaluation. '+' is not form-space in
+ * a javascript: URL and is therefore preserved. The script's string completion
+ * value is not used to replace the document yet; that unsupported corner is
+ * safer than treating source code as a network destination. Script-requested
+ * location changes remain deferred through the ordinary navigation consumer,
+ * so this function never frees the realm whose JS stack it is running on. */
+static int javascript_url_execute(const char *typed)
+{
+    static const char HEX[] = "0123456789abcdef";
+    if (!typed || !starts_ci(typed, "javascript:")) return 0;
+    if (!g_root || !js_page_live()) {
+        set_status("javascript URL needs a live page");
+        return 1;
+    }
+
+    char page[600], src[600];
+    int pn = 0;
+    const char *base = committed_page_url();
+    while (base[pn] && pn < (int)sizeof page - 1) { page[pn] = base[pn]; pn++; }
+    page[pn] = 0;
+
+    const char *p = typed + 11;          /* strlen("javascript:") */
+    int n = 0;
+    while (*p && n < (int)sizeof src - 1) {
+        if (p[0] == '%' && p[1] && p[2]) {
+            int hi = -1, lo = -1;
+            for (int i = 0; i < 16; i++) {
+                if ((p[1] | 32) == HEX[i]) hi = i;
+                if ((p[2] | 32) == HEX[i]) lo = i;
+            }
+            if (hi >= 0 && lo >= 0) { src[n++] = (char)((hi << 4) | lo); p += 3; continue; }
+        }
+        src[n++] = *p++;
+    }
+    src[n] = 0;
+
+    printf("[browser] javascript URL: %d bytes\n", n);
+    int ok = js_page_eval(src, n, "<javascript URL>", 0);
+    if (ok) set_status("javascript URL executed");
+    else set_status("javascript URL threw; see console");
+
+    /* The address field held source code while the committed document did
+     * not change. Put its actual address back. A location write made by the
+     * script is consumed later in the same outer event-loop turn and replaces
+     * this with its destination through the one existing navigation door. */
+    int i = 0;
+    while (page[i] && i < (int)sizeof url - 1) { url[i] = page[i]; i++; }
+    url[i] = 0; ulen = i; addr_sync();
+    return 1;
+}
+
+#include "frame_open.inc"
 
 /* Follow a clicked link: resolve relative hrefs against the current page URL
  * (url_resolve handles absolute/protocol-relative refs itself), skip schemes we
@@ -1227,34 +1849,79 @@ static void follow_link(const char *href)
     char abs[600];
     struct url base;
     const char *target = href;
-    if (url_parse(url, &base) == 0 && url_resolve(&base, href, abs, sizeof abs) == 0)
+    if (url_parse(navigation_base(), &base) == 0 && url_resolve(&base, href, abs, sizeof abs) == 0)
         target = abs;
     int i = 0; while (target[i] && i < (int)sizeof url - 1) { url[i] = target[i]; i++; }
     url[i] = 0; ulen = i; addr_sync();
     hist_push(url);
-    load(url);
+    load_from(url, committed_page_url());
 }
 
 /* The document source. The DOM borrows text out of it, so it has to outlive the
  * tree -- which is also why it is a malloc'd buffer sized to the response and no
  * longer a 1 MiB static: a page bigger than that used to be silently cut. */
 static unsigned char *g_page_src;
-static char author_css[4194304];         /* inline <style> + fetched external <link> CSS (4 MiB; github.com ships ~3.25 MiB) */
-static char css_expanded[4718592];       /* author_css after var() expansion -> LibCSS (4.5 MiB) */
-static int  css_exlen;
+static int browser_expand_author(int len)
+{
+    int n=css_expand_vars_alloc(author_css?author_css:"",len,&css_expanded,&css_expanded_cap,BROWSER_CSS_BYTES);
+    if(n>=0)return n;
+    printf("[css] variable expansion refused: input=%d allowed=%d; retaining previous complete sheet\n",len,BROWSER_CSS_BYTES);
+    return css_exlen;
+}
+#include "browser_stylesheets.inc"
 
 /* Re-style + re-lay-out after script changed the DOM. Every path that can run
  * JS ends here, so a mutation from a click handler and one from a timer take
  * exactly the same route back to the screen. Returns 1 if the page actually
  * changed and needs repainting. */
-static int restyle(void);
+static int restyle(int interaction_changed);
+static int flush_image_geometry(void)
+{
+#ifndef BROWSER_IMAGE_GEOMETRY_NO_FLUSH
+    /* A load event need not change DOM/style. Previously successful decoding
+     * only resized the painted bitmap: its box and following title retained
+     * placeholder geometry indefinitely. One cache generation gives all
+     * image producers the same cheap invalidation; layout consumes it. It is
+     * flushed before image load handlers' CSSOM reads and once per frame batch,
+     * with no fetch/decode/re-entrant callback inside the geometry pass. */
+    if(g_root&&LOGIT_HAVE(layout_image_geometry_pending)&&layout_image_geometry_pending()) {
+        layout_page(g_root,win_w);
+        ph=layout_height();g_page_width=browser_content_width(g_root,win_w);
+        g_hbar=max_scroll_x()>0?12:0;g_scroll_repaint=1;g_img_owed=1;
+        return 1;
+    }
+#endif
+    return 0;
+}
 
 static int settle_dom(void)
 {
-    if (!js_dom_dirty()) return 0;
-    int changed = restyle();
+    int interaction_changed = css_interaction_take_change();
+    if (!js_dom_dirty() && !interaction_changed) return flush_image_geometry();
+    int changed = restyle(interaction_changed);
     js_dom_clear_dirty();
     return changed;
+}
+
+/* CSSOM reads happen inside JavaScript. Flush style and geometry here, but
+ * leave image IO and callbacks to the outer loop to avoid re-entering JS.
+ * Dirty was consumed by the flush; remember the paint explicitly or a script
+ * ending in getBoundingClientRect() could silently leave the old pixels. */
+static unsigned long long g_reflow_ms;
+static unsigned g_reflow_calls;
+static void browser_cssom_reflow(void)
+{
+    unsigned long long start=monotonic_ms();
+    if (settle_dom()) { g_scroll_repaint=1; g_img_owed=1; }
+    g_reflow_ms+=monotonic_ms()-start;g_reflow_calls++;
+}
+
+static void browser_viewport(void)
+{
+    /* Old code used the whole window, including toolbar/status. CSS media
+     * queries and matchMedia must both use the actual page viewport. */
+    css_viewport(win_w, VIEW_H);
+    if (LOGIT_HAVE(js_webapi_set_viewport)) js_webapi_set_viewport(win_w, VIEW_H);
 }
 
 /* settle_dom() plus the image pass the re-layout it may have done makes
@@ -1273,9 +1940,16 @@ static int settle_dom(void)
  *
  * settle_dom() itself is left alone because browser_settle() is its exported
  * form and the host loader harness calls that with no network underneath it. */
+#include "browser_images.inc"
 static int settle_frame(void)
 {
-    int changed = settle_dom();
+    int changed = stylesheet_frame();
+    changed |= dom_images_frame();
+    changed |= settle_dom();
+    /* Cancellation cannot depend on new image work being owed. Removing the
+     * last visible image may set that count to zero while its transport is
+     * still pending, including when a detached preload keeps the queue live. */
+    image_requests_prune();
     if (changed) g_img_owed = 1;
     /* THE GATE IS A FLAG, NOT THE SCAN. layout_images_pending() walks the whole
      * display list -- up to MAXITEM entries -- and this function runs on every
@@ -1285,10 +1959,27 @@ static int settle_frame(void)
      * mutation, and a pass that stopped at its budget) and the scan runs only
      * then. */
     if (g_img_owed) {
-        if (load_late_images(IMG_FRAME_BUDGET) > 0) { ph = layout_height(); changed = 1; }
+        if (load_late_images(IMG_FRAME_BUDGET) > 0) { ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0; changed = 1; }
         g_img_owed = layout_images_pending() > 0;
+        /* A full decoded-image cache explicitly refuses further images.
+         * Those requests must be cancelled too, rather than left owning
+         * sockets after the pending scan has stopped the pump. */
+        if (!g_img_owed && !dom_images_pending()) image_requests_cancel();
     }
     return changed;
+}
+
+static int finish_page_load(void)
+{
+    if(!g_load_event_pending || g_img_owed || pending_scripts_have_work() || stylesheet_pending() || dom_images_pending())return 0;
+    g_load_event_pending=0;
+    struct js_event_init e={0};
+    js_dom_dispatch(js_dom_root(),"load",&e);
+    js_dom_dispatch(js_dom_root(),"pageshow",&e);
+    printf("[load-complete] elapsed_ms=%llu\n",monotonic_ms()-g_navigation_started);
+    /* load may mutate the DOM or insert another image; settle its effects
+     * without turning those newly created resources into another load event. */
+    return settle_frame();
 }
 
 /* Console bytes already reflected in the status bar. The status line only ever
@@ -1349,6 +2040,23 @@ static int body_is_html_not_js(const unsigned char *p, int len)
     return 1;
 }
 
+static void script_resource_event(struct node *n,const char *type);
+static struct node *res_script_node(const struct resent *e)
+{
+    /* DOM slots are recycled inside the document arena. A detached live node
+     * keeps its serial; explicit subtree destruction invalidates the handle. */
+    return e->node && e->node->serial==e->node_serial?e->node:0;
+}
+static void parser_script_event(const struct resent *e,const char *type)
+{
+#ifndef BROWSER_NO_PARSER_SCRIPT_EVENTS
+    struct node *n=res_script_node(e);
+    if(n&&e->ref&&!e->module)script_resource_event(n,type);
+#else
+    (void)e;(void)type;
+#endif
+}
+
 /* out_lost / out_refused / out_exc: the SAME conditions the printf lines
  * right beside them already narrate to the serial log, counted rather than
  * only printed -- so the DevTools chain panel (the "library panel" section,
@@ -1373,7 +2081,26 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < g_nres; i++) {
             struct resent *e = &g_res[i];
+            struct node *script=res_script_node(e);
+            if(!script)continue;
+            if (e->module == 2) {
+                /* Import maps occupy their original place in the classic
+                 * pass, before deferred modules. Parsing them all upfront
+                 * would let a later map alter an earlier classic import().
+                 * Streaming parser/async ordering remains a separate loader
+                 * component; this preserves the current two-pass contract. */
+                if (pass == 0 && e->data) {
+                    if (!js_module_importmap((const char *)e->data, e->len, page_url)) exc_n++;
+                    load_close_checkpoint();
+                    dom_script_mark_done(e->node);
+                }
+                continue;
+            }
             if (e->module != pass) continue;            /* pass 0 classic, pass 1 module */
+            /* Mark before running either body or resource handler: either can
+             * reinsert/destroy the element. Doing it afterwards can mark a
+             * replacement node in the freed script's slot instead. */
+            dom_script_mark_done(script);
             if (!e->data || e->len <= 0) {
                 /* An EXTERNAL script with no bytes is a script the page asked
                  * for that will never run -- jQuery on jd.com was this, and the
@@ -1381,11 +2108,18 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                  * other files. Say it once, plainly, with the reason the fetch
                  * recorded. (An inline entry with no bytes is just an empty
                  * <script></script>; nothing was lost.) */
-                if (e->ref) {
+                if(e->ref && !e->module && e->data && e->status/100==2){
+                    /* A successful zero-byte classic script is still loaded.
+                     * The old branch below called every empty body LOST. */
+                    parser_script_event(e,"load");
+                    load_close_checkpoint();
+                } else if (e->ref) {
                     printf("[browser] script LOST: %s: %s (status %d)\n",
                            e->url ? e->url : e->ref,
                            e->err ? e->err : "no body", e->status);
                     lost_n++;
+                    parser_script_event(e,"error");
+                    load_close_checkpoint();
                 }
                 continue;
             }
@@ -1393,6 +2127,8 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                 printf("[browser] script REFUSED (HTML, not JS): %s (status %d, %d bytes)\n",
                        e->url ? e->url : e->ref, e->status, e->len);
                 refused_n++;
+                parser_script_event(e,"error");
+                load_close_checkpoint();
                 continue;
             }
             if (!e->module) {
@@ -1424,9 +2160,17 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                     num_append(cname, &p, ++classic_n);
                     cname[p] = 0;
                     cnm = cname;
+                    if (!js_module_inline_referrer(cnm, page_url)) {
+                        printf("[browser] inline script identity allocation failed\n"); lost_n++; continue;
+                    }
                 }
-                if (!js_page_eval((const char *)e->data, e->len, cnm, e->node)) exc_n++;
-                dom_script_mark_done(e->node);   /* never re-run via DOM insertion */
+                if (!js_page_eval((const char *)e->data, e->len, cnm, script)) exc_n++;
+                load_close_checkpoint();
+                /* Throwing JS still completed its resource. Dynamic scripts
+                 * already used this event door; parser-collected markup did
+                 * not, leaving ordinary onload chunk continuations inert. */
+                parser_script_event(e,"load");
+                load_close_checkpoint();
                 ran++;
                 continue;
             }
@@ -1446,9 +2190,12 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
                 num_append(name, &p, ++inline_n);
                 name[p] = 0;
                 nm = name;
+                if (!js_module_inline_referrer(nm, page_url)) {
+                    printf("[browser] inline module identity allocation failed\n"); lost_n++; continue;
+                }
             }
             if (!js_module_eval((const char *)e->data, e->len, nm)) exc_n++;
-            dom_script_mark_done(e->node);
+            load_close_checkpoint();
             ran++;
         }
     }
@@ -1468,99 +2215,238 @@ static int run_collected_scripts(const char *page_url, int *out_lost, int *out_r
  * the per-frame loop, exactly where run_collected_scripts already runs and
  * where res_fetch_all already pumps the network.
  *
- * A src script is fetched (synchronously here, on the frame loop, not the
- * insertion stack -- the same bfetch_sync the module loader uses) and run;
- * an inline script runs from its own text. Insertion order is preserved by
- * the queue being FIFO. dom_script_mark_done stamps each before running so a
- * re-insertion never re-runs it, and so offer_scripts never re-queues one
- * already queued (the stamp is set at run, but the QUEUED set is checked by
- * pointer below to stop a double-enqueue between insertion and drain). */
+ * A src script USED TO be fetched synchronously on this frame loop. Native
+ * input on a live page waited behind consecutive 62880/60010/60010 ms request
+ * timeouts in the assembled Bing guest. Correction: retaining the head across
+ * frames lets app_main consume input; calling load_tick here would discard it.
+ * FIFO execution is deliberately retained (including async=false insertion
+ * order). Correction (2026-09-13): downloads now overlap within a small window;
+ * a slow head no longer prevents the next chunk from starting. Module acquisition
+ * inside js_module_eval and initial parser batches remain synchronous. */
 #define PENDING_MAX 64
-static struct node *g_pending[PENDING_MAX];
-static int g_pending_n;
+struct pending_script {
+    JSContext *ctx;
+    JSValue node;
+    unsigned epoch;
+    int fd, prepared, kind, external, failed;
+    unsigned char *data;
+    int len;
+    char name[600];
+};
+static struct pending_script *g_pending;
+static int g_pending_cap, g_pending_n, g_pending_did_work;
+static unsigned g_pending_epoch=1;
 
+static int pending_scripts_have_work(void) { return g_pending_n>0; }
+static void pending_script_dispose(struct pending_script *p)
+{
+    if(p->fd>=0)bfetch_release(p->fd);
+    free(p->data);
+    /* Reset normally retires every wrapper BEFORE its context is closed.
+     * Epoch also protects a local completed job if a callback tears down the
+     * document: never free a JS value through a recycled context address. */
+    if(p->ctx && p->epoch==g_pending_epoch && p->ctx==js_page_ctx())
+        JS_FreeValue(p->ctx,p->node);
+}
+static void pending_scripts_reset(void)
+{
+    js_dom_set_script_sink(0);
+    for(int i=0;i<g_pending_n;i++)pending_script_dispose(&g_pending[i]);
+    free(g_pending);g_pending=0;g_pending_cap=0;
+    g_pending_n=0;g_pending_did_work=0;g_pending_epoch++;
+}
 static void on_script_inserted(struct node *n)
 {
-    if (!n || g_pending_n >= PENDING_MAX) {
-        if (n) printf("[browser] inserted-script queue full -- dropping one\n");
-        return;
+    if(!n || !js_page_ctx())return;
+    for(int i=0;i<g_pending_n;i++)
+        if(js_dom_node_from(g_pending[i].node)==n)return;
+#ifdef BROWSER_INSERTED_QUEUE_FIXED
+    if(g_pending_n>=PENDING_MAX){printf("[browser] inserted-script queue full -- dropping one\n");return;}
+#endif
+    /* Doubao's live page overflowed the old 64-entry array 86 times in one
+     * observation (2026-09-13), despite the scoreboard saying PAINTED. Pending
+     * DOM work is not network capacity: grow the owner array, keep downloads
+     * bounded separately. Never evaluate recursively to make room. No pointer
+     * into this array may survive a JS callback, which can grow it again. */
+    if(g_pending_n==g_pending_cap){
+        int cap=g_pending_cap?g_pending_cap*2:PENDING_MAX;
+        if(cap<g_pending_cap || (unsigned long)cap>0x7fffffffUL/sizeof *g_pending){
+            printf("[browser] inserted-script queue allocation limit\n");return;
+        }
+        struct pending_script *q=realloc(g_pending,(size_t)cap*sizeof *q);
+        if(!q){printf("[browser] inserted-script queue allocation failed\n");return;}
+        g_pending=q;g_pending_cap=cap;
     }
-    for (int i = 0; i < g_pending_n; i++) if (g_pending[i] == n) return;  /* already queued */
-    g_pending[g_pending_n++] = n;
+    JSValue value=js_dom_node_value(js_page_ctx(),n);
+    if(JS_IsException(value))return;
+    struct pending_script *p=&g_pending[g_pending_n++];
+    memset(p,0,sizeof *p);p->ctx=js_page_ctx();p->node=value;
+    p->epoch=g_pending_epoch;p->fd=-1;
+    /* Hold the canonical wrapper, not a raw pointer into recyclable DOM
+     * storage. Detaching a prepared live script does not cancel its fetch;
+     * explicit destruction invalidates this handle instead of retargeting it. */
 }
 
-/* Run every queued inserted script, in order. Re-entrant by construction: a
- * script run here that inserts another appends to g_pending (via the sink)
- * and this loop, which re-reads g_pending_n each turn, picks it up -- without
- * ever recursing, because the sink only enqueues. Returns how many ran. */
+static void script_resource_event(struct node *n,const char *type)
+{
+#ifndef BROWSER_NO_SCRIPT_RESOURCE_EVENTS
+    /* Resource completion is not JS success: an external classic script
+     * which throws still fires load, whereas a failed fetch fires error.
+     * Chunk loaders chain their next insertion from these non-bubbling
+     * events. Previously eval ran but that continuation never did. Dispatch
+     * here, after the insertion/evaluation stack unwinds, not in the DOM sink.
+     * Module completion (including pending top-level await) needs its own
+     * promise consumer and is deliberately not faked by this classic path. */
+    struct js_event_init ev={0};
+    js_dom_dispatch(n,type,&ev);
+#else
+    (void)n;(void)type;
+#endif
+}
+
+/* Preparation snapshots mutable DOM data once. It runs on the outer frame,
+ * preserving the existing insertion-sink contract: no recursive evaluation. */
+static void pending_script_prepare(struct pending_script *p,struct node *n,const char *base)
+{
+    p->prepared=1;
+    if(dom_script_is_done(n))return;
+    dom_script_mark_done(n);
+    const char *type=dom_attr(n,"type");
+    p->kind=js_module_is_module_type(type)?2:js_module_is_importmap_type(type)?3:
+            js_module_is_classic_type(type)?1:0;
+    if(p->kind==1 && dom_attr(n,"nomodule"))p->kind=0;
+    if(!p->kind)return;
+    const char *src=dom_attr(n,"src");p->external=src!=0;
+    if(p->kind==3 && src){printf("[browser] import map rejected: external src is not supported\n");p->failed=1;return;}
+    if(src){
+        if(!src[0] || bfetch_resolve(base,src,p->name,sizeof p->name)!=0){
+            printf("[browser] inserted script: bad src %s\n",src);p->failed=1;
+        }
+        /* Validate before admission: bfetch_start's -1 otherwise conflates an
+         * unsupported URL with transient request-table pressure. The same URL
+         * parser is used by the transport; valid HTTP URLs stay queued. */
+        struct url parsed;
+        if(!p->failed && url_parse(p->name,&parsed)!=0)p->failed=1;
+    }else{
+        int i=0;while(base[i]&&i<(int)sizeof p->name-1){p->name[i]=base[i];i++;}p->name[i]=0;
+        for(struct node *c=n->first_child;c;c=c->next)
+            if(c->type==N_TEXT&&c->text)p->len+=c->textlen;
+        if(p->len>0){
+            p->data=malloc((size_t)p->len+1);
+            if(!p->data){p->failed=1;return;}
+            int o=0;
+            for(struct node *c=n->first_child;c;c=c->next)
+                if(c->type==N_TEXT&&c->text)for(int j=0;j<c->textlen;j++)p->data[o++]=(unsigned char)c->text[j];
+            p->data[o]=0;
+        }
+    }
+}
+
+static void pending_scripts_admit(const char *base)
+{
+#ifndef BROWSER_INSERTED_FETCH_SERIAL
+    int live=0;
+    for(int i=0;i<g_pending_n;i++)if(g_pending[i].fd>=0)live++;
+    /* Four retained bodies at most; the shared transport's connection and
+     * byte limits still apply. The bounded lookahead also avoids scanning a
+     * large queue on every frame. Consumption releases one slot at a time. */
+    for(int i=0;i<g_pending_n && i<32 && live<4;i++){
+        struct pending_script *p=&g_pending[i];
+        struct node *n=p->epoch==g_pending_epoch&&p->ctx==js_page_ctx()?js_dom_node_from(p->node):0;
+        if(n && !p->prepared)pending_script_prepare(p,n,base);
+        if(!n || !p->kind || !p->external || p->failed || p->fd>=0)continue;
+        p->fd=bfetch_start(p->name);
+        if(p->fd<0)break; /* another consumer owns the slots; retry next turn */
+        live++;
+    }
+#else
+    (void)base;
+#endif
+}
+
+/* Drain immediately executable FIFO entries, bounded as before, but pump the
+ * transport at most once per call. A pending head survives until another
+ * outer turn; never poll native events recursively on a JS/network stack. */
 static int run_pending_inserted_scripts(const char *page_url)
 {
-    int ran = 0, guard = 0;
-    while (g_pending_n > 0) {
-        if (++guard > 4 * PENDING_MAX) {          /* a script re-inserting forever */
-            printf("[browser] inserted-script drain guard tripped -- stopping\n");
-            g_pending_n = 0;
-            break;
+    int ran=0,guard=0,pumped=0;g_pending_did_work=0;
+    while(g_pending_n>0){
+        /* A frame work budget is a yield, never permission to discard the
+         * rest of a valid script chain. The previous 256-job guard deleted it. */
+#ifdef BROWSER_INSERTED_QUEUE_FIXED
+        if(++guard>4*PENDING_MAX){
+            for(int i=0;i<g_pending_n;i++)pending_script_dispose(&g_pending[i]);
+            g_pending_n=0;g_pending_did_work=1;break;
         }
-        struct node *n = g_pending[0];
-        for (int i = 1; i < g_pending_n; i++) g_pending[i - 1] = g_pending[i];
-        g_pending_n--;
-        if (dom_script_is_done(n)) continue;
-        dom_script_mark_done(n);                  /* stamp BEFORE running: run-once even if it throws */
-
-        int is_module = 0;
-        const char *type = dom_attr(n, "type");
-        if (type && (has_ci(type, "module"))) is_module = 1;
-        const char *src = dom_attr(n, "src");
-
-        unsigned char *data = 0; int len = 0; char urlbuf[600];
-        const char *name = page_url;
-        if (src && src[0]) {
-            /* Fetch on the frame loop, not the insertion stack. bfetch_sync
-             * pumps the network the same way the module loader's mod_loader
-             * does. */
-            int rc = bfetch_resolve(page_url, src, urlbuf, sizeof urlbuf);
-            if (rc != 0) { printf("[browser] inserted script: bad src %s\n", src); continue; }
-            int fd = bfetch_start(urlbuf);
-            if (fd < 0) { printf("[browser] inserted script: cannot fetch %s\n", urlbuf); continue; }
-            while (bfetch_state(fd) == BF_PENDING) bfetch_pump();
-            if (bfetch_state(fd) == BF_DONE && bfetch_status(fd) / 100 == 2) {
-                len = bfetch_take(fd, &data);
-                if (len < 0) { len = 0; data = 0; }
-                name = urlbuf;
-            } else {
-                printf("[browser] inserted script LOST: %s: %s (status %d)\n",
-                       urlbuf, bfetch_error(fd), bfetch_status(fd));
-                bfetch_release(fd);
-                continue;
+#else
+        if(++guard>32)return ran;
+#endif
+        pending_scripts_admit(page_url);
+        struct pending_script *p=&g_pending[0];
+        struct node *n=p->epoch==g_pending_epoch&&p->ctx==js_page_ctx()?js_dom_node_from(p->node):0;
+        if(n && !p->prepared)pending_script_prepare(p,n,page_url);
+        if(n && p->kind && p->external && !p->failed){
+            if(p->fd<0){
+                p->fd=bfetch_start(p->name);
+                if(p->fd<0)return ran;
             }
-        } else {
-            /* Inline: reassemble the child text nodes, exactly as
-             * collect_scripts does at parse time. */
-            int total = 0;
-            for (struct node *c = n->first_child; c; c = c->next)
-                if (c->type == N_TEXT && c->text) total += c->textlen;
-            if (total <= 0) continue;
-            data = malloc((size_t)total + 1);
-            if (!data) continue;
-            int o = 0;
-            for (struct node *c = n->first_child; c; c = c->next)
-                if (c->type == N_TEXT && c->text)
-                    for (int i = 0; i < c->textlen; i++) data[o++] = (unsigned char)c->text[i];
-            data[o] = 0; len = o;
+            if(p->fd>=0){
+#ifdef BROWSER_INSERTED_SCRIPT_SYNC_WAIT
+                while(bfetch_state(p->fd)==BF_PENDING)bfetch_pump();
+#else
+                if(bfetch_state(p->fd)==BF_PENDING && !pumped){bfetch_pump();pumped=1;}
+                if(bfetch_state(p->fd)==BF_PENDING)return ran;
+#endif
+                if(bfetch_state(p->fd)==BF_DONE && bfetch_status(p->fd)/100==2){
+                    const char *final=bfetch_url(p->fd);
+                    if(final&&final[0]){int i=0;while(final[i]&&i<(int)sizeof p->name-1){p->name[i]=final[i];i++;}p->name[i]=0;}
+                    /* take consumes the ID on both success and failure. */
+                    int fd=p->fd;p->fd=-1;p->len=bfetch_take(fd,&p->data);
+                    if(p->len<0)p->failed=1;
+                }else{
+                    printf("[browser] inserted script LOST: %s: %s (status %d)\n",p->name,bfetch_error(p->fd),bfetch_status(p->fd));
+                    bfetch_release(p->fd);p->fd=-1;p->failed=1;
+                }
+            }
         }
-        if (data && len > 0 && !(src && body_is_html_not_js(data, len))) {
-            if (is_module) js_module_eval((const char *)data, len, name);
-            /* `n` is the node, and a dynamically inserted script's
-             * document.currentScript is itself exactly as a parsed one's is --
-             * which is how a bundler's chunk loader finds its own <script>
-             * after appendChild has run it. */
-            else           js_page_eval((const char *)data, len, name, n);
-            ran++;
+        /* Remove BEFORE calling JS: an onload handler may enqueue a full new
+         * FIFO, and must neither overwrite this job nor cause a load gap. */
+        struct pending_script done=*p;
+        for(int i=1;i<g_pending_n;i++)g_pending[i-1]=g_pending[i];
+        g_pending_n--;g_pending_did_work=1;
+        if(n && done.kind){
+            int rejected=done.external&&done.data&&done.len>0&&body_is_html_not_js(done.data,done.len);
+            if(!done.failed && !rejected && done.data&&done.len>0){
+                if(done.kind==3)js_module_importmap((const char *)done.data,done.len,done.name);
+                else if(done.kind==2)js_module_eval((const char *)done.data,done.len,done.name);
+                else js_page_eval((const char *)done.data,done.len,done.name,n);
+                load_close_checkpoint();
+                if(done.kind!=3)ran++;
+            }
+            if(done.epoch==g_pending_epoch && done.ctx==js_page_ctx() && done.external&&done.kind==1){
+                n=js_dom_node_from(done.node);
+                if(n)script_resource_event(n,done.failed||rejected?"error":"load");
+                load_close_checkpoint();
+            }
         }
-        free(data);
+        pending_script_dispose(&done);
+        if(done.epoch!=g_pending_epoch)break;
     }
     return ran;
+}
+
+static const char *live_script_base(void)
+{
+#ifdef BROWSER_SCRIPT_USES_ADDRESS_EDIT
+    return url;
+#else
+    /* url is editable chrome, not the loaded document. A native Ctrl+L while
+     * an async chunk arrived changed its base to "about:t...", so a perfectly
+     * valid /rp/... URL failed resolution in the real search guest. Initial
+     * loading has its local post-redirect base; later work uses the runtime's
+     * committed document address. Typing an unsubmitted URL is not navigation. */
+    return committed_page_url();
+#endif
 }
 
 /* ===================== script-initiated navigation ==========================
@@ -1614,7 +2500,7 @@ static int take_script_nav(char *out, int max)
     return js_webapi_take_navigation(out, max) ? 1 : 0;
 }
 
-static void load_once(const char *u);
+static void load_once(const char *u, const char *initiator);
 
 /* A user-initiated load, plus every navigation the page itself then asks for.
  *
@@ -1622,8 +2508,19 @@ static void load_once(const char *u);
  * hops must cost one stack frame, not n, and each hop tears down the previous
  * document completely before the next one starts. */
 static void load(const char *u)
+{ load_from(u, 0); }
+
+static void load_from(const char *u, const char *initiator)
 {
-    char cur[600], next[600];
+    char cur[600], next[600], origin[600];
+    /* Freeze BEFORE load_once retires the initiating realm. Address-bar,
+     * bookmark, history and session-restore loads pass NULL; page links,
+     * forms and script navigations carry their committed document URL. */
+    int oi = 0;
+    if (initiator) while (initiator[oi] && oi < (int)sizeof origin - 1) {
+        origin[oi] = initiator[oi]; oi++;
+    }
+    origin[oi] = 0;
     /* `u` is usually &url[0] -- follow_link and the address bar both write it
      * before calling. Copy first: the chain rewrites `url` on every hop. */
     { int i = 0; while (u[i] && i < (int)sizeof cur - 1) { cur[i] = u[i]; i++; } cur[i] = 0; }
@@ -1665,6 +2562,8 @@ static void load(const char *u)
      * "does this need a scheme" is the one-jar-two-doors trap this file's own
      * comments warn about elsewhere -- addr_infer_scheme() is the one door,
      * and it runs before `url` is ever handed to load(). */
+
+    if(!strncmp(cur,"about:",6)){hist_pending_kind=0;hist_pending_tab=NULL;}
 
     /* about:text -- print the words the LAST paint put on the screen, and stay
      * where we are. Not a navigation and not a page: it answers a question
@@ -1743,6 +2642,39 @@ static void load(const char *u)
         set_status("display list dumped to the serial console");
         return;
     }
+    /* On-demand diagnostics only: no per-frame census or normal-load scan.
+     * Queue state belongs here; decoded/display-list state belongs to layout.
+     * A pending transfer and an absent img item otherwise both look like an
+     * empty gray thumbnail with no fetch error in the ordinary console. */
+    if(str_eq(cur,"about:images")) {
+        layout_dump_images(g_root);
+        printf("[images] owed=%d load_event_pending=%d\n",g_img_owed,g_load_event_pending);
+        for(int i=0;i<IMG_FRAME_BUDGET;i++)if(g_image_requests[i].src) {
+            int id=g_image_requests[i].id;
+            printf("[images] queue slot=%d id=%d state=%d status=%d error=%s src=%s\n",
+                i,id,bfetch_state(id),bfetch_status(id),bfetch_error(id),g_image_requests[i].src);
+        }
+        /* A load:about:images line proves dispatch, not that the potentially
+         * long DOM/queue census finished. The instrument must not report an
+         * absent tail as zero images; this on-demand marker adds no scan to
+         * normal rendering and changes neither fetch state nor page content. */
+        printf("[images] end state\n");
+        set_status("image state dumped to the serial console");return;
+    }
+    if (str_eq(cur,"about:input")) {
+        g_input_trace_budget = 64;
+        g_input_trace_needs_frame = 0;
+        input_trace("armed",0,0,0,-1,-1);
+        set_status("native input trace armed (64 points; no typed content)");
+#ifndef BROWSER_INPUT_TRACE_NAVIGATES
+        return;
+#endif
+    }
+    g_input_trace_budget = 0; /* a real navigation must not trace the next page */
+    g_input_trace_needs_frame = 0;
+    /* Cancel only a DIFFERENT user navigation, before the redirect loop.
+     * A restored URL's redirects still belong to its first-load position. */
+    tab_restore_begin(tab_cur(), cur);
     /* THE INVARIANT: after load(u), the browser is AT u. Every in-app caller
      * already wrote `url` before calling, so this is a no-op for them -- but it
      * has to be stated, because the moment it is only true by convention it
@@ -1758,8 +2690,32 @@ static void load(const char *u)
     take_script_nav(next, sizeof next);
 
     for (int hops = 0; ; hops++) {
-        load_once(cur);
-        if (!take_script_nav(next, sizeof next)) return;
+        load_once(cur, origin[0] ? origin : 0);
+        if (!take_script_nav(next, sizeof next)) {
+            /* Disk sessions carry no cached src, so the old ht-only restore
+             * in load_once never ran for them. Wait for the FINAL successful
+             * document, not its inline-only first paint or a redirect stub.
+             * A failed load leaves the one-shot intent available for retry. */
+            struct tab *t = tab_cur();
+            int rx, ry;
+            if (g_root && t && t->loaded && tab_restore_take(t, &rx, &ry)) {
+                int maxy = ph - VIEW_H; if (maxy < 0) maxy = 0;
+                scroll_x = rx;
+                scroll = ry < 0 ? 0 : ry > maxy ? maxy : ry;
+                sync_scroll();
+                t->scroll_x = scroll_x; t->scroll = scroll;
+                session_save();
+                redraw(0);
+            }
+            return;
+        }
+        /* This next hop is a navigation requested by the newly committed
+         * document, so its identity replaces the previous hop's initiator. */
+        const char *page = committed_page_url(); oi = 0;
+        if (page) while (page[oi] && oi < (int)sizeof origin - 1) {
+            origin[oi] = page[oi]; oi++;
+        }
+        origin[oi] = 0;
         if (hops >= NAV_MAX_HOPS) {
             set_status("stopped: too many redirects");
             redraw(0);
@@ -1810,8 +2766,87 @@ struct dt_chain {
 };
 static struct dt_chain g_dt;
 
-static void load_once(const char *u)
+/* Load phase durations use the guest clock and are printed only after the
+ * measured work. Host stopwatch time mixes QMP typing, VM scheduling and
+ * browser work; API existence cannot explain a 12-second resource stall. */
+/* Coarse guest phases distinguish downloading a sheet from parsing/cascading
+ * it. Keep serial writes after all four samples so printing is not charged
+ * as style/geometry work. These are production entry points, not host copies. */
+static void browser_style_layout(const char *phase)
 {
+    unsigned long long pc=css_generated_compose_count(),ps=css_generated_skip_count();
+    unsigned long long a=monotonic_ms();
+    css_apply(g_root, css_expanded, css_exlen);
+    load_close_checkpoint();
+    unsigned long long b=monotonic_ms();
+    css_extra_apply(g_root, css_expanded, css_exlen);
+    load_close_checkpoint();
+    unsigned long long c=monotonic_ms();
+    layout_page(g_root, win_w);
+    load_close_checkpoint();
+    if(LOGIT_HAVE(js_cssom_reconcile_element_scroll))js_cssom_reconcile_element_scroll();
+    unsigned long long d=monotonic_ms();
+    printf("[style-perf] phase=%s bytes=%d cascade_ms=%llu extra_ms=%llu layout_ms=%llu items=%d pseudo_compose=%llu pseudo_skip=%llu\n",
+        phase,css_exlen,b-a,c-b,d-c,layout_count(),css_generated_compose_count()-pc,css_generated_skip_count()-ps);
+}
+
+struct browser_load_profile {
+    unsigned long long start, previous, elapsed[16];
+    const char *name[16];
+    int count;
+};
+static void load_profile_step(struct browser_load_profile *p, const char *name)
+{
+    unsigned long long now = monotonic_ms();
+    if (p->count < 16) {
+        p->name[p->count] = name;
+        p->elapsed[p->count++] = now - p->previous;
+    }
+    p->previous = now;
+}
+static void load_profile_print(const struct browser_load_profile *p)
+{
+    printf("[load-perf] total_ms=%llu", p->previous - p->start);
+    for (int i=0; i<p->count; i++) printf(" %s=%llu", p->name[i], p->elapsed[i]);
+    printf("\n");
+    printf("[reflow-perf] cssom_calls=%u cssom_ms=%llu live_sheet_rebuilds=%d dom_restyles=%u\n",
+        g_reflow_calls,g_reflow_ms,g_sheet_rebuild_count,g_restyle_calls);
+}
+
+/* Defined at the g_* node-pointer block above fire_hover_transition();
+ * forward-declared here because load_once() and tab_dehydrate() both call
+ * it well before its definition point in the file. */
+static void embed_ptrs_reset(void);
+
+#include "browser_downloads.inc"
+static void download_cancel_staged(void)
+{
+    free(download_document); download_document = NULL;
+    download_document_len = download_document_status = 0;
+    download_document_url[0] = download_document_csp[0] = 0;
+    download_document_policy_known = 0;
+}
+
+static void load_once_impl(const char *u, const char *initiator)
+{
+    struct browser_load_profile lp = {0};
+    lp.start = lp.previous = monotonic_ms();
+    g_navigation_started = lp.start;
+    g_reflow_ms=0;g_reflow_calls=0;
+    g_restyle_calls=0;
+    g_load_frame_committed=0;
+    g_load_page_scripts_started=0;
+    struct tab *oldtab=tab_cur();
+    int retained=g_hydrating&&oldtab&&oldtab->src&&oldtab->srclen>0;
+    int staged_stop = !retained && download_stage_navigation(u,initiator);
+    /* A completed response can be immediate (memory/HTTP cache, localhost, or
+     * a tiny body), so bfetch_wait need not spin and need not invoke load_tick.
+     * This check closes the exact gap where EV_CLOSE sat queued for the entire
+     * CPU half of a load. */
+    load_close_checkpoint();
+    if(staged_stop){hist_pending_kind=0;hist_pending_tab=NULL;return;}
+    hist_commit();
+    image_requests_reset();
     set_status(g_hydrating ? "restoring tab..." : "loading...");
     /* The animation clock's entries point into the document that is about
      * to be freed, and unlike the JS wrappers they have no teardown hook
@@ -1827,12 +2862,15 @@ static void load_once(const char *u)
      * no-op -- no `if (g_root)` needed here to say the same thing twice. */
     struct js_event_init ph_out = { 0 };
     js_dom_dispatch(js_dom_root(), "pagehide", &ph_out);
+    load_close_checkpoint();
     /* ORDER: the runtime dies before the DOM does. Every JS wrapper holds a
      * {node, serial} handle and every node holds a weak pointer back to its
      * wrapper, so freeing the document first would leave the runtime's
      * finalizers walking nodes that no longer exist -- and freeing the runtime
      * first is what clears the wrapper slots. */
-    js_page_close();
+    image_requests_reset();
+    if(LOGIT_HAVE(passive_frames_reset))passive_frames_reset();
+    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close();
     /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
      * just freed. Left installed, the next keystroke would call into it. Weak
      * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
@@ -1850,13 +2888,21 @@ static void load_once(const char *u)
      * lives on `struct doc`), so a freed slot reused by the NEXT document's
      * parse can legally mint the very same serial number again. Cleared here
      * explicitly rather than trusted to the same guard everything else uses,
-     * because unlike those three -- which only misroute a synthetic DOM
-     * event -- a wrong psel match would highlight and let Ctrl+C copy text
-     * from a page the user never selected anything on. */
+     * because a wrong psel match would highlight and let Ctrl+C copy text
+     * from a page the user never selected anything on. The three app_main
+     * node pointers are cleared here too (embed_ptrs_reset): the sentence
+     * that used to end the paragraph above -- "which only misroute a
+     * synthetic DOM event" -- was disproved by the iana.org GP crash of
+     * 2026-09-09 (see the block comment at embed_ptrs_reset's definition
+     * for the core-dump evidence: the serial check READS FREED MEMORY, and
+     * a partial reuse can leave the old serial intact while the rest of
+     * the node is new page text). */
     popup_close();
+    css_interaction_reset();
     focus_reset();
     fc_reset();
     psel_clear();
+    embed_ptrs_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     /* The decoded-image cache goes with the document. Its key is the raw
@@ -1869,8 +2915,8 @@ static void load_once(const char *u)
     res_reset();
     free(g_page_src); g_page_src = 0;
     ph = 0;
-    if (!g_hydrating) scroll = 0;     /* hydrating: the tab's scroll is restored */
-    g_scroll_pushed = 0;          /* js_dom_init resets its side to 0 as well */
+    if (!g_hydrating) { scroll = 0; scroll_x = 0; }     /* hydrating: the tab's scroll is restored */
+    g_scroll_pushed = g_scroll_x_pushed = 0; g_scroll_event_pending = 0;          /* js_dom_init resets its side to 0 as well */
 
     /* A navigation ends the old page's connections: keeping them would hold
      * pool slots (and kernel socket slots) for an origin the new page may have
@@ -1896,11 +2942,12 @@ static void load_once(const char *u)
          * above, so nothing is pointing into these bytes. */
         tab_drop_content(tab_cur());
     }
-    bfetch_reset_stats();
+    if(!download_document)bfetch_reset_stats();
     g_res_from_tab = g_res_from_net = 0;
     js_module_reset();
     bfetch_set_base(u);
 
+    load_profile_step(&lp, "teardown");
     g_prog_what = "fetching page"; g_prog_total = 0; g_prog_done = 0; g_prog_last = 0;
     char base[600];
     int code = 200, blen = 0;
@@ -1917,6 +2964,7 @@ static void load_once(const char *u)
         { const char *f = ht->base[0] ? ht->base : u; int i = 0;
           while (f[i] && i < (int)sizeof base - 1) { base[i] = f[i]; i++; } base[i] = 0; }
         bfetch_set_base(base);
+    bfetch_set_document(base);
         /* Put every byte the tab kept back where res_fetch() will look for it,
          * so layout's <img> loop finds its images without a connection. */
         for (int i = 0; i < ht->nres; i++)
@@ -1927,64 +2975,11 @@ static void load_once(const char *u)
      * Clearing `ht` is what makes every "am I replaying?" test below correct;
      * leaving it set would apply a stale stylesheet to fresh markup. */
     ht = 0;
-    /* The ONE navigation in this file; everything else bfetch_start()s is a
-     * subresource. That distinction is a cookie rule, not a label -- bfetch.h. */
-    int doc = bfetch_start_nav(u);
-    if (doc < 0) { set_status("load failed: bad URL (need http:// or https://)"); return; }
-    bfetch_wait(doc, load_tick);
-    if (bfetch_state(doc) != BF_DONE) {
-        /* Name the URL as the fetcher saw it: when this fires under a test
-         * harness, "which exact string did the address bar hand over" is the
-         * whole question (a dropped or doubled keystroke lives right here). */
-        const char *why = bfetch_error(doc);
-        printf("[browser] page fetch failed: %s (%s)\n", why, bfetch_url(doc));
-        /* The REASON, in the one place a person is looking. "could not fetch
-         * the page" was the same sentence for a rejected certificate, a name
-         * that does not resolve and a network that is down -- three different
-         * things to do about it, and the diagnosis that separates them already
-         * existed the whole way up from x509 through sock_poll's error byte
-         * (see the SOCK_P_ERROR branch in browser_rt.c). It was thrown away
-         * here. No snprintf in this TU on purpose -- see build_get's note in
-         * browser_rt.c; status[] is 96 and the longest sock_why() sentence is
-         * 57, so nothing here can truncate. */
-        { char st[sizeof status];
-          const char *pre = "load failed: ";
-          int p = 0;
-          while (pre[p] && p < (int)sizeof st - 1) { st[p] = pre[p]; p++; }
-          for (int i = 0; why[i] && p < (int)sizeof st - 1; i++) st[p++] = why[i];
-          st[p] = 0;
-          set_status(st); }
-        bfetch_release(doc);
-        return;
-    }
-    code = bfetch_status(doc);
-    /* The URL AFTER redirects is the base for every relative reference on the
-     * page. Resolving against the typed URL instead is how a redirected page
-     * ends up asking the wrong origin for its own stylesheets. */
-    { const char *f = bfetch_url(doc); int i = 0;
-      while (f[i] && i < (int)sizeof base - 1) { base[i] = f[i]; i++; } base[i] = 0; }
-    bfetch_set_base(base);
-    blen = bfetch_take(doc, &g_page_src);
-    /* A DOWNLOAD is a body that goes to the disk instead of the parser. It is
-     * decided here and not earlier because "is this a page" is a property of
-     * the response, and this is the first point at which the response exists. */
-    if (code / 100 == 2 && blen > 0 && download_is_downloadable(base)) {
-        int d = download_record(base, g_page_src, blen);
-        const struct download *rec = download_at(d);
-        char st[96]; int p = 0;
-        const char *pre = rec && rec->ok ? "downloaded to " : "download FAILED: ";
-        while (*pre) st[p++] = *pre++;
-        for (const char *s = rec ? rec->path : "?"; *s && p < 92; s++) st[p++] = *s;
-        st[p] = 0;
-        set_status(st);
-        printf("[browser] %s (%d bytes)\n", st, blen);
-        free(g_page_src); g_page_src = 0;
-        /* Stay on the page that linked it, exactly as a real browser does. */
-        { struct tab *t = tab_cur(); if (t && t->url[0]) {
-            int i = 0; while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
-            url[i] = 0; ulen = i; addr_sync(); } }
-        return;
-    }
+    /* Response already fetched while the old page was still alive. */
+    code=download_document_status;blen=download_document_len;
+    memcpy(base,download_document_url,sizeof base);
+    g_page_src=download_document;download_document=NULL;
+    bfetch_set_base(base);bfetch_set_document(base);
     }
     { struct tab *t = tab_cur(); if (t) {
         int i = 0; while (base[i] && i < TAB_URL - 1) { t->base[i] = base[i]; i++; } t->base[i] = 0; } }
@@ -1996,8 +2991,12 @@ static void load_once(const char *u)
         if (blen <= 0) return;                       /* still render an error body */
     }
     if (blen <= 0) { set_status("error: empty response"); return; }
+    load_profile_step(&lp, "document");
     g_root = dom_parse((const char *)g_page_src, blen);
+    load_close_checkpoint();
     if (!g_root) { set_status("error: parse failed"); return; }
+    if(LOGIT_HAVE(passive_frames_set_parent))passive_frames_set_parent(base,
+        ht?"":download_document_csp,ht?0:download_document_policy_known);
     /* Where forms.c resolves a Selection API position FROM. It normally starts
      * at the caret, and the one call that has no caret to start at is the one
      * that matters: a page placing the caret itself before the user has
@@ -2025,29 +3024,38 @@ static void load_once(const char *u)
     { const char *frag = 0;
       for (int i = 0; url[i]; i++) if (url[i] == '#') { frag = url + i + 1; break; }
       css_set_target_fragment(frag, -1); }
-    int css_len = collect_style(g_root, author_css, 0, (int)sizeof author_css);
+    /* Clear old-document bytes before a new first pass, including empty pages.
+     * The old fixed arrays got overwritten in place; failed growth must never
+     * make a new document inherit a previous document's stylesheet. */
+    css_exlen=0;if(css_expanded)css_expanded[0]=0;
+    if(author_css)author_css[0]=0;
+    int css_len = collect_style(g_root, &author_css, 0, &author_cap);
+    load_close_checkpoint();
     /* HYDRATING: the tab kept the FULL author stylesheet (inline + every
      * external sheet, concatenated exactly as assembled below), so the whole
      * stylesheet phase -- discovery, fetch, concatenation -- is replaced by a
      * copy and costs no connection at all. */
     if (ht && ht->css && ht->csslen > 0) {
-        css_len = ht->csslen < (int)sizeof author_css - 1 ? ht->csslen : (int)sizeof author_css - 1;
-        for (int i = 0; i < css_len; i++) author_css[i] = ht->css[i];
-        author_css[css_len] = 0;
+        if(css_text_reserve(&author_css,&author_cap,ht->csslen+1,BROWSER_CSS_BYTES)){
+            css_len=ht->csslen;memcpy(author_css,ht->css,(size_t)css_len);author_css[css_len]=0;
+        }else printf("[css] restored sheet refused: required=%d allowed=%d\n",ht->csslen+1,BROWSER_CSS_BYTES);
     }
-    css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
-    css_apply(g_root, css_expanded, css_exlen);
-    css_extra_apply(g_root, css_expanded, css_exlen);
-    layout_page(g_root, win_w);
-    ph = layout_height();
+    css_exlen = browser_expand_author(css_len);
+    load_close_checkpoint();
+    browser_style_layout("first");
+    ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
     set_status(ht ? "restoring tab..." : "loaded -- fetching stylesheets...");
     redraw(0);                       /* first paint: HTML + inline CSS, before slow CDN fetches */
+    g_load_frame_committed=1;
+    load_close_checkpoint();
+    load_profile_step(&lp, "first_style_layout_paint");
 
     /* ---- external stylesheets, all at once, no budget ---- */
     int css2 = css_len, got_sheets = 0, nsheets = 0;
     if (!ht) {
     res_reset();
     collect_css_links(g_root);
+    load_close_checkpoint();
     nsheets = g_nres;
     res_fetch_all("stylesheets", 0);
     int css_offered = 0;         /* bytes the sheets contained */
@@ -2069,17 +3077,17 @@ static void load_once(const char *u)
         got_sheets++;
         css_offered += e->len;
         css_report_fetched(u, e->status, e->len, CSSSH_OK, 0);
-        /* e->node is the <link> element itself (res_add(n, href, 0) above),
-         * so this is the same attribute, the same wrap, as collect_style's
-         * <style media>. See the comment above collect_style. */
-        const char *media = dom_attr(e->node, "media");
-        int wrap = media_needs_wrap(media);
-        if (wrap) css2 = append_media_open(author_css, css2, (int)sizeof author_css, media);
-        for (int k = 0; k < e->len && css2 < (int)sizeof author_css - 1; k++)
-            author_css[css2++] = (char)e->data[k];
-        if (wrap) css2 = append_media_close(author_css, css2, (int)sizeof author_css);
-        else if (css2 < (int)sizeof author_css - 1) author_css[css2++] = '\n';
     }
+    struct css_import_budget imports = {0};
+    css2 = browser_css_collect(g_root,url,&author_css,0,&author_cap,&imports);
+    load_close_checkpoint();
+    printf("[css-import] %d loaded, %d failed, %d cycles, %d limited, %d unsupported; %d requests, %d bytes\n",
+           imports.loaded,imports.failed,imports.cycles,imports.limited,imports.unsupported,
+           imports.requests,imports.bytes);
+    /* Removing @import directives and rebasing url() changes byte counts even
+     * when no capacity was lost. Account for that transformation separately;
+     * otherwise a fully loaded sheet can be reported as truncated. */
+    css_offered += imports.bytes + imports.rewrite_delta;
     /* offered vs kept. They differ when author_css filled up -- the 216 KB-
      * stylesheet failure this file already carries a comment about, and which,
      * before this line, cut the tail off a page's CSS and said nothing -- OR
@@ -2092,9 +3100,10 @@ static void load_once(const char *u)
     res_reset();
     /* Retain ONE copy of the finished stylesheet, not one per sheet: this is
      * the byte count a background tab actually costs for its CSS. */
-    author_css[css2 < (int)sizeof author_css ? css2 : (int)sizeof author_css - 1] = 0;
+    if(author_css)author_css[css2]=0;
     tab_keep_css(tab_cur(), author_css, css2);
     }
+    load_profile_step(&lp, "styles_fetch");
     /* report what actually arrived: sheet count + KiB (debug aid for CDN fetch issues) */
     { char st[96]; int p = 0; const char *pre = "loaded, ";
       while (*pre) st[p++] = *pre++;
@@ -2104,22 +3113,24 @@ static void load_once(const char *u)
       while (*mid) st[p++] = *mid++;
       num_append(st, &p, css2 / 1024);
       st[p++] = 'K'; st[p] = 0; set_status(st); }
-    if (css2 > css_len) {
+    if (!ht) {
         css_len = css2;
-        css_exlen = css_expand_vars(author_css, css_len, css_expanded, (int)sizeof css_expanded);
-        css_report_expand(css_len, css_exlen, (int)sizeof css_expanded);
-        css_apply(g_root, css_expanded, css_exlen);
-    css_extra_apply(g_root, css_expanded, css_exlen);
-        layout_page(g_root, win_w);
-        ph = layout_height();
+        css_exlen = browser_expand_author(css_len);
+        load_close_checkpoint();
+        css_report_expand(css_len, css_exlen, css_expanded_cap);
+        browser_style_layout("full");
+        ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
         { extern size_t malloc_peak; printf("[browser] heap peak %uK\n", (unsigned)(malloc_peak / 1024)); }
         redraw(0);                   /* re-paint with the page's real stylesheets */
+        load_close_checkpoint();
+        stylesheet_commit_initial();
     }
     /* The stylesheet half of "load done". Printed unconditionally, INCLUDING
      * on the hydrating path where every count is legitimately zero, because a
      * page that reports nothing about its CSS is the state this whole record
      * exists to end. The parser drop counts are already in it by now: the
      * hooks fed them during css_apply above. */
+    load_profile_step(&lp, "full_style_layout_paint");
     css_report_print();
     /* Images ride the same pooled connections, so eight of them from one host
      * is one handshake rather than eight. That is why IMG_LOAD_MAX can go up
@@ -2130,14 +3141,17 @@ static void load_once(const char *u)
      * The first pass is load_late_images() too -- ONE image path, so a fix to
      * either the queueing or the budget cannot land on only one of them. The
      * two differ in exactly one number, see IMG_LOAD_MAX. */
+#ifdef BROWSER_BLOCKING_IMAGES
     if (load_late_images(IMG_LOAD_MAX) > 0) {
-        ph = layout_height();
+        ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
         redraw(0);
     }
+#endif
     /* A page with more than IMG_LOAD_MAX images has some left; the frame loop
      * drains them. Set unconditionally rather than from the pass's own count,
      * because the scripts about to run are the other producer. */
     g_img_owed = 1;
+    load_profile_step(&lp, "images");
     /* Open the page's JS runtime. It stays open until the next navigation --
      * that is the whole point: listeners, timers and pending promises all live
      * past the end of the script that created them. It is opened even when the
@@ -2146,9 +3160,21 @@ static void load_once(const char *u)
     js_page_output_clear();
     js_out_shown = 0;
     js_page_set_location(base);
+    /* A session belongs to the top-level tab, not the transient JS heap.
+     * Dehydrating a tab closes its runtime but must retain sessionStorage;
+     * closing the tab drops this key before tabs_close can reuse its slot. */
+    js_webapi_set_storage_session((unsigned long long)(tabs_active() + 1));
     js_page_open(g_root);
-    g_pending_n = 0;                       /* fresh page, empty inserted-script queue */
+    /* js_dom_init starts a runtime at (0,0). A wheel handled against the first
+     * committed frame while CSS was pending must remain the runtime's viewport
+     * origin, without manufacturing a delayed scroll event for new listeners. */
+    js_dom_set_scroll(scroll_x, scroll);
+    g_scroll_pushed=scroll; g_scroll_x_pushed=scroll_x;
+    load_close_checkpoint();
+    js_module_prepare(); /* classic import() also needs the graph loader */
+    pending_scripts_reset();              /* fresh runtime, no outstanding old-page work */
     js_dom_set_script_sink(on_script_inserted);
+    dom_images_install(); /* renderer-backed getters installed once per page */
     /* The form/focus JS surface (element.value, .checked, form.submit(),
      * document.activeElement) is installed by js_page_open() itself, alongside
      * every other module's -- NOT from here.
@@ -2161,6 +3187,7 @@ static void load_once(const char *u)
      * is the correct shape anyway and matches every other module here. Do not
      * "helpfully" add a second call back. */
 
+    load_profile_step(&lp, "runtime_init");
     /* Fetch every external script CONCURRENTLY, then run them in spec order.
      * Real sites ship huge minified bundles that assume a full browser env;
      * with no real DOM they just throw -- but they throw ALONE. The runtime's
@@ -2168,6 +3195,7 @@ static void load_once(const char *u)
      * catchable RangeError instead of faulting. */
     res_reset();
     collect_scripts(g_root);
+    load_close_checkpoint();
     /* The guest's own inventory, printed BEFORE fetching: the scoreboard's
      * asked/got gap compares the host's count of the document's <script src>
      * against requests we issued, and without this line a shortfall cannot be
@@ -2175,6 +3203,7 @@ static void load_once(const char *u)
      * happened". One number from each side of that boundary. */
     { int xc = 0, xm = 0, in = 0;
       for (int i = 0; i < g_nres; i++) {
+          if (g_res[i].module == 2) continue; /* JSON map is not an executable script */
           if (!g_res[i].ref) in++;
           else if (g_res[i].module) xm++;
           else xc++;
@@ -2183,15 +3212,21 @@ static void load_once(const char *u)
              xc, xm, in);
       g_dt.xc = xc; g_dt.xm = xm; g_dt.in = in; }
     res_fetch_all("scripts", 1);
+    load_close_checkpoint();
+    load_profile_step(&lp, "scripts_fetch");
     g_prog_what = "running scripts"; g_prog_total = 0; g_prog_last = 0;
+    g_load_page_scripts_started=1;
     int dt_lost = 0, dt_refused = 0, dt_exc = 0;
     int dt_ran = run_collected_scripts(base, &dt_lost, &dt_refused, &dt_exc);
+    load_close_checkpoint();
     int had_script = dt_ran > 0;
     /* A parse-time script may have inserted more <script>s (an AMD/loader
-     * shim is the common case). Drain them here, on this stack, before the
-     * page is declared loaded -- run_pending_inserted_scripts is itself
-     * re-entrant, so a chain of loaders resolves fully. */
+     * shim is the common case). The old synchronous drain finished the chain
+     * here. Start it now, but pending network work continues on outer frames;
+     * finish_page_load owns the outstanding-script dependency. */
     int dt_dyn_ran = run_pending_inserted_scripts(base);
+    load_close_checkpoint();
+    load_profile_step(&lp, "scripts_execute");
     if (dt_dyn_ran > 0) had_script = 1;
     g_dt.ran = dt_ran; g_dt.lost = dt_lost; g_dt.refused = dt_refused;
     g_dt.exc = dt_exc;
@@ -2231,15 +3266,11 @@ static void load_once(const char *u)
     struct js_event_init li = { 0 };
     li.bubbles = 1;
     js_dom_dispatch(js_dom_root(), "DOMContentLoaded", &li);
-    li.bubbles = 0;
-    js_dom_dispatch(js_dom_root(), "load", &li);
-    /* HTML requires this at window on EVERY load, unconditionally -- it is not
-     * a bfcache-restore-only event, whatever its name suggests. A bootstrap
-     * written as `addEventListener('pageshow', init)` (a real, if uncommon,
-     * alternative to a `load` listener) sat inert forever without this: the
-     * property existed (js_cssom.c's SHIM_BODY_HANDLERS reflects onpageshow),
-     * assignment worked, and nothing ever called it. */
-    js_dom_dispatch(js_dom_root(), "pageshow", &li);
+    load_close_checkpoint();
+    /* DOMContentLoaded follows scripts; load/pageshow wait for outstanding
+     * images in the event loop. A slow picture must not suspend page timers,
+     * native input or script bootstrap while its socket waits. */
+    g_load_event_pending = 1;
 
     /* settle_FRAME: a `load` handler that inserts images is the single most
      * common way a real page's pictures arrive after the first image pass, and
@@ -2247,6 +3278,7 @@ static void load_once(const char *u)
     if (settle_frame() || had_script) {
         status_from_js(had_script ? "loaded (ran script, no output)" : "loaded");
         redraw(0);
+        load_close_checkpoint();
     }
 
     /* The tab is now what it will look like in the strip and in the history
@@ -2267,10 +3299,29 @@ static void load_once(const char *u)
           if (ht) {                        /* restore where the user had scrolled to */
               int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
               scroll = t->scroll > maxs ? maxs : t->scroll;
+              scroll_x = t->scroll_x;
               sync_scroll();
           }
           session_save();
       } }
+    if (finish_page_load()) redraw(0);
+    load_close_checkpoint();
+    load_profile_step(&lp, "lifecycle_settle");
+    load_profile_print(&lp);
+    js_module_profile_dump();
+}
+
+static void load_once(const char *u, const char *initiator)
+{
+    if (g_load_depth++ == 0) {
+        g_load_close_requested = 0;
+        g_load_transport_cancelled = 0;
+    }
+    /* The hook itself never tears down QuickJS. It only requests an ordinary
+     * interpreter unwind; load_once_impl's next checkpoint owns the exit. */
+    js_page_set_interrupt_probe(load_js_interrupt_probe, 0);
+    load_once_impl(u, initiator);
+    g_load_depth--;
 }
 
 /* ======================= tabs: dehydrate / hydrate =========================
@@ -2287,16 +3338,26 @@ static void load_once(const char *u)
  * everything derived. */
 static void tab_dehydrate(void)
 {
+    if(LOGIT_HAVE(passive_frames_reset))passive_frames_reset();
     struct tab *t = tab_cur();
-    if (t) {
-        t->scroll = scroll;
+    /* A never-loaded restored tab still owns its disk position and URL.
+     * The live viewport belongs to no document, so zero is not its position. */
+    if (t && !t->restore_pending) {
+        t->scroll = scroll; t->scroll_x = scroll_x;
         t->ph = ph;
-        int i = 0; while (url[i] && i < TAB_URL - 1) { t->url[i] = url[i]; i++; }
+        /* A loaded tab's identity is its document, not a half-typed address.
+         * The first diagnosis suspected replay with the wrong runtime origin;
+         * the native tab-round-trip control disproved that (hydrate uses
+         * ht->base). What was corrupted was the saved tab URL/address field,
+         * also consumed by the old native link resolver. Preserve both facts. */
+        const char *saved_url = g_root ? navigation_base() : url;
+        int i = 0; while (saved_url[i] && i < TAB_URL - 1) { t->url[i] = saved_url[i]; i++; }
         t->url[i] = 0;
     }
     /* Same teardown order as a navigation, and for the same reason: the runtime
      * holds {node, serial} handles into the DOM, so it dies first. */
-    js_page_close();
+    image_requests_reset();
+    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close();
     /* js_forms.c's editing-event dispatcher holds the JS context js_page_close
      * just freed. Left installed, the next keystroke would call into it. Weak
      * so a build without js_forms.o (BROWSER_PIPE, the host loader test) still
@@ -2314,13 +3375,21 @@ static void tab_dehydrate(void)
      * lives on `struct doc`), so a freed slot reused by the NEXT document's
      * parse can legally mint the very same serial number again. Cleared here
      * explicitly rather than trusted to the same guard everything else uses,
-     * because unlike those three -- which only misroute a synthetic DOM
-     * event -- a wrong psel match would highlight and let Ctrl+C copy text
-     * from a page the user never selected anything on. */
+     * because a wrong psel match would highlight and let Ctrl+C copy text
+     * from a page the user never selected anything on. The three app_main
+     * node pointers are cleared here too (embed_ptrs_reset): the sentence
+     * that used to end the paragraph above -- "which only misroute a
+     * synthetic DOM event" -- was disproved by the iana.org GP crash of
+     * 2026-09-09 (see the block comment at embed_ptrs_reset's definition
+     * for the core-dump evidence: the serial check READS FREED MEMORY, and
+     * a partial reuse can leave the old serial intact while the rest of
+     * the node is new page text). */
     popup_close();
+    css_interaction_reset();
     focus_reset();
     fc_reset();
     psel_clear();
+    embed_ptrs_reset();
     if (g_root) { dom_free(g_root); g_root = 0; }
     layout_free();
     /* The decoded-image cache goes with the document. Its key is the raw
@@ -2332,8 +3401,8 @@ static void tab_dehydrate(void)
     layout_images_reset();
     res_reset();
     free(g_page_src); g_page_src = 0;
-    ph = 0; scroll = 0;
-    g_scroll_pushed = 0;
+    ph = 0; scroll = 0; scroll_x = 0; g_hbar = 0;
+    g_scroll_pushed = g_scroll_x_pushed = 0; g_scroll_event_pending = 0;
 }
 
 /* Bring the active tab back to the screen. Returns 1 if it rendered from its
@@ -2345,9 +3414,9 @@ static int tab_hydrate(void)
     int i = 0; while (t->url[i] && i < (int)sizeof url - 1) { url[i] = t->url[i]; i++; }
     url[i] = 0; ulen = i; addr_sync();
     if (!t->src || t->srclen <= 0) return 0;
-    scroll = t->scroll;
+    scroll = t->scroll; scroll_x = t->scroll_x;
     g_hydrating = 1;
-    load_once(url);
+    load_once(url, 0);
     g_hydrating = 0;
     return 1;
 }
@@ -2411,11 +3480,12 @@ void browser_res_split(int *from_tab, int *from_net)
  * The fallbacks are all in the safe direction: no scopes, too many scopes, or
  * a scope whose node was destroyed before we got here all mean "do what this
  * function used to do". */
-static int restyle(void)
+static int restyle(int interaction_changed)
 {
     if (!g_root) return 0;
     int level = js_dom_inval_level();
-    if (level == INVAL_NONE) return 0;
+    if (level == INVAL_NONE && !interaction_changed) return 0;
+    g_restyle_calls++;
 
     /* BEFORE the cascade runs: the animation clock snapshots the current
      * effective opacity/transform of every element it watches, so that a
@@ -2425,7 +3495,9 @@ static int restyle(void)
      * the cascade below. Weak like the reset in load_once(). */
     if (LOGIT_HAVE(css_anim_snapshot)) css_anim_snapshot(g_root);
 
-    int nroots = js_dom_inval_roots();
+    /* Pointer ancestors and sibling selectors can affect the whole tree. A
+     * DOM-local dirty scope cannot stand in for an interaction transition. */
+    int nroots = interaction_changed ? 0 : js_dom_inval_roots();
     int changed = CSS_CHANGED_NONE;
     for (int i = 0; i < nroots; i++) {
         int sib = 0;
@@ -2463,7 +3535,8 @@ static int restyle(void)
      * invisible to any test that resizes without mutating. See the test in
      * tests/unit/loader_test.c part 3 (f), which mutates on purpose. */
     layout_page(g_root, win_w);
-    ph = layout_height();
+    if(LOGIT_HAVE(js_cssom_reconcile_element_scroll))js_cssom_reconcile_element_scroll();
+    ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
     return 1;
 }
 
@@ -2615,6 +3688,7 @@ static int tab_strip_hit(int mx, int my, int *close)
  * selection bugs. */
 enum { PANEL_NONE = 0, PANEL_HISTORY, PANEL_BOOKMARKS, PANEL_DOWNLOADS, PANEL_DEVTOOLS };
 static int  g_panel, g_panel_sel, g_panel_top;
+
 static char g_find[64];
 static int  g_findlen;
 
@@ -2625,6 +3699,18 @@ static int  g_findlen;
 static int  g_finding;
 static char g_pfq[64];
 static int  g_pfqlen;
+
+static int browser_document_focus(void)
+{
+#ifndef LOADERHOST_LOGIT_H
+    /* Older kernels return -1 for the new selector: unknown is not focused.
+     * No periodic polling is needed; EV_WINDOW_FOCUS wakes wait_idle(0). */
+    return !editing && !g_panel && !g_finding &&
+        _sys(SYS_GUI_WIN_STATE, WINS_FOCUSED, 0, 0) > 0;
+#else
+    return 0; /* the loader-host has no real desktop focus owner */
+#endif
+}
 
 #define PANEL_ROW 22
 
@@ -2910,13 +3996,15 @@ void browser_resize(int w, int h);
 void browser_resize(int w, int h)
 {
     if (w > 100 && h > 100) { win_w = w; win_h = h; remember_size(); }
-    css_viewport(win_w, win_h);
+    css_viewport(win_w, VIEW_H);
     if (g_root) {
         css_apply(g_root, css_expanded, css_exlen);
         css_extra_apply(g_root, css_expanded, css_exlen);
         layout_page(g_root, win_w);
-        ph = layout_height();
+        if(LOGIT_HAVE(js_cssom_reconcile_element_scroll))js_cssom_reconcile_element_scroll();
+        ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
     }
+    if (LOGIT_HAVE(js_webapi_set_viewport)) js_webapi_set_viewport(win_w, VIEW_H);
     int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
     if (scroll > maxs) scroll = maxs;
     sync_scroll();
@@ -2931,6 +4019,50 @@ void browser_resize(int w, int h)
      * is the one case the spec says must NOT fire it. */
     struct js_event_init ri = { 0 };
     js_dom_dispatch(js_dom_root(), "resize", &ri);
+}
+
+/* Shift+wheel, plain Left/Right, and this visible track reach fixed-width
+ * content without changing the page's layout width or a system input ABI.
+ * The thumb shares the actual clamped offset used by paint and hit testing. */
+static int g_hdrag, g_hdrag_grab, g_hbar_drawn;
+static int hbar_thumb_width(void)
+{
+    int docw = win_w + max_scroll_x();
+    int w = (int)((long long)win_w * win_w / docw);
+    if (w < 24) w = 24;
+    return w > win_w ? win_w : w;
+}
+static int hbar_thumb_x(void)
+{
+    int m = max_scroll_x(), span = win_w - hbar_thumb_width();
+    return m > 0 ? (int)((long long)scroll_x * span / m) : 0;
+}
+static void hbar_move(int pointer_x)
+{
+    int span = win_w - hbar_thumb_width();
+    int pos = pointer_x - g_hdrag_grab;
+    if (pos < 0) pos = 0; if (pos > span) pos = span;
+    scroll_x = span > 0 ? (int)((long long)pos * max_scroll_x() / span) : 0;
+    sync_scroll();
+}
+static void draw_hbar(void)
+{
+    g_hbar_drawn = g_hbar;
+    if (!g_hbar) return;
+    int y = VIEW_Y + VIEW_H;
+    gui_rect(0, y, win_w, g_hbar, rgb(235, 236, 239));
+    gui_rrect(hbar_thumb_x(), y + 2, hbar_thumb_width(), g_hbar - 4,
+              4, rgb(135, 139, 148));
+}
+static void browser_scroll_to(int x, int y)
+{
+    int maxy = ph - VIEW_H; if (maxy < 0) maxy = 0;
+    scroll_x = x; scroll = y < 0 ? 0 : y > maxy ? maxy : y;
+    sync_scroll();
+    /* Script scrolls may occur in a timer without a DOM mutation. Defer paint
+     * to the event loop: painting on the callback stack can run scroll
+     * listeners or inspect a half-mutated document while QuickJS is active. */
+    g_scroll_repaint = 1;
 }
 
 /* The contenteditable caret + selection, drawn over the page. Defined with the
@@ -2948,28 +4080,7 @@ static void draw_doc_selection(void);
  * two doors": the day one of them gained a control the other did not, a
  * chrome-only repaint would show a caret in the wrong place, or not show one
  * at all, and nothing would say why. */
-static void draw_address_bar(int editing)
-{
-    /* Liquid Glass address bar + a glass URL field */
-    gui_glass(0, TABH, win_w, BARH, 1, 255, 255, 255, 70);
-    gui_glass(10, TABH + 5, win_w - 20, 20, 8, 255, 255, 255, 95);
-    /* The selection highlight goes UNDER the text, exactly like every real
-     * text field -- drawn first so gui_text's glyphs paint over it. usel ==
-     * ucaret is "no selection" by construction (addr_move/addr_home/addr_end
-     * collapse it there), so this is a no-op then. */
-    if (editing && usel != ucaret) {
-        int a = ucaret < usel ? ucaret : usel;
-        int b = ucaret < usel ? usel : ucaret;
-        gui_rect(14 + a * 8, TABH + 6, (b - a) * 8, 18, rgb(140, 180, 250));
-    }
-    gui_text(14, TABH + 7, rgb(40, 40, 48), url);
-    /* The caret: a thin bar AT ucaret, not at ulen -- this is the whole fix
-     * for "append-at-end only". Before this the address bar had no caret to
-     * draw, only a block glued to the end of whatever had been typed. */
-    if (editing) gui_rect(14 + ucaret * 8, TABH + 7, 2, 16, rgb(90, 150, 240));
-    /* a star for "this page is bookmarked", right-aligned in the field */
-    if (bookmark_find(url) >= 0) gui_text(win_w - 26, TABH + 7, rgb(240, 180, 60), "*");
-}
+#include "address_geometry.inc"
 
 static void redraw(int editing)
 {
@@ -2977,11 +4088,13 @@ static void redraw(int editing)
     draw_tab_strip();
     draw_address_bar(editing);
     /* the page */
-    browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    sync_scroll();
+    browser_paint_scroll(0, VIEW_Y, win_w, VIEW_H, scroll_x, scroll);
     draw_doc_selection();
     draw_ce_overlay();
     draw_select_popup();
     if (g_panel) draw_panel();
+    draw_hbar();
     /* glass status line (frosts the bottom of the page) */
     gui_glass(0, win_h - 18, win_w, 18, 1, 255, 255, 255, 70);
     gui_text(10, win_h - 16, rgb(110, 110, 120), status);
@@ -3076,6 +4189,45 @@ static int node_is_self_or_ancestor(struct node *anc, struct node *n)
  * `typeof e.relatedTarget` check and then make every
  * `if (this.contains(e.relatedTarget)) return;` boundary guard useless,
  * which is worse than the property not existing at all. */
+/* THE EMBEDDER'S THREE RAW NODE POINTERS, hoisted out of app_main to file
+ * scope so the document teardown paths can kill them (embed_ptrs_reset).
+ *
+ * WHY THE SERIAL GUARD ALONE WAS NOT ENOUGH, and this is not a style change.
+ * Each pointer was checked before use as `p && p->serial == saved_serial` --
+ * which READS FREED MEMORY once a navigation has torn the document down:
+ * whether the check "passes" is decided by whatever bytes the allocator's
+ * next tenant left at the serial offset. The iana.org crash of 2026-09-09
+ * (guest /core.1, registers preserved in the dump) is that lottery LOST:
+ * the freed node's chunk was split and reused by the new page's whitespace
+ * text; the text covered the parent field (p->parent read back as eight
+ * '\n' bytes, 0x0a0a0a0a0a0a0a0a) but NOT serial (the old value survived
+ * untouched), so `hover_node->serial == hover_serial` PASSED on a corpse
+ * and the mouseout dispatch walked into 0x0a0a... -- a non-canonical
+ * address, #GP(0), browser dead:
+ *   dom_is_shadow_root <- dispatch_event <- js_dom_dispatch("mouseout").
+ * Within ONE document the serial check still earns its keep (a slot
+ * recycled by the same document mints a new serial), so the checks stay --
+ * they just stop being the only line of defence across a teardown. */
+static struct node *g_press_node;
+static uint32_t g_press_serial;
+static int g_frame_open_press;
+static struct node *g_hover_node;
+static uint32_t g_hover_serial;
+static struct node *g_lastclick_node;
+static uint32_t g_lastclick_serial;
+
+/* Called by BOTH document teardown paths (load_once, tab_dehydrate) BEFORE
+ * dom_free: after that call every pointer above points into freed memory
+ * and, per the block comment above, the serial check cannot be trusted to
+ * notice. */
+static void embed_ptrs_reset(void)
+{
+    g_press_node = 0; g_press_serial = 0;
+    g_frame_open_press = 0;
+    g_hover_node = 0; g_hover_serial = 0;
+    g_lastclick_node = 0; g_lastclick_serial = 0;
+}
+
 static void fire_hover_transition(struct node *from, struct node *to,
                                    const struct js_event_init *base)
 {
@@ -3176,6 +4328,41 @@ static const char *key_name(int k, char *one)
     return "Unidentified";
 }
 
+/* KeyboardEvent.code names the PHYSICAL key, not the character produced by
+ * the current layout. Equating it with .key happened to work for Enter and
+ * arrows but made the most common media shortcut arrive as code=" " instead
+ * of code="Space"; production players (and games) legitimately key on the
+ * code because it is layout-independent. Cover the printable US-keyboard
+ * positions the PS/2 driver exposes and reuse key_name for already-canonical
+ * named navigation keys. */
+static const char *key_code_name(int k, char out[8])
+{
+    if (k == ' ') return "Space";
+    if (k >= 'a' && k <= 'z') k -= 'a' - 'A';
+    if (k >= 'A' && k <= 'Z') {
+        out[0] = 'K'; out[1] = 'e'; out[2] = 'y'; out[3] = (char)k; out[4] = 0;
+        return out;
+    }
+    if (k >= '0' && k <= '9') {
+        memcpy(out, "Digit", 5); out[5] = (char)k; out[6] = 0;
+        return out;
+    }
+    switch (k) {
+    case '-': return "Minus";
+    case '=': return "Equal";
+    case '[': return "BracketLeft";
+    case ']': return "BracketRight";
+    case '\\': return "Backslash";
+    case ';': return "Semicolon";
+    case '\'': return "Quote";
+    case '`': return "Backquote";
+    case ',': return "Comma";
+    case '.': return "Period";
+    case '/': return "Slash";
+    }
+    return key_name(k, out);
+}
+
 /* ============================ keyboard shortcuts ===========================
  *
  * ONE TABLE, because the window-management line owns the system shortcut table
@@ -3227,6 +4414,32 @@ static int is_cmd(const struct logit_event *e) { return (e->mods & EV_MOD_SUPER)
 static int forms_dispatch(struct node *target, const char *type,
                           int bubbles, int cancelable)
 {
+    if (g_input_trace_budget && (!strcmp(type,"focus") || !strcmp(type,"blur"))) {
+        /* Provenance before dispatching the focus listener: a callback's own
+         * filename would misattribute who moved focus. Read native stack atoms,
+         * never construct/throw a JS Error or invoke a page-replaced getter. */
+        input_trace(type,target,0,0,-1,-1);
+        /* A legitimate dialog autofocus can look like stolen focus when its
+         * ancestor boxes collapse. Capture computed geometry producers, not
+         * field contents, before attributing the symptom to focus policy. */
+        if(!strcmp(type,"focus"))for(struct node *p=target; p && p->type==N_ELEM; p=p->parent){
+            const struct cstyle *s=p->style;
+            const char *id=dom_attr(p,"id"),*cl=dom_attr(p,"class"),*role=dom_attr(p,"role");
+            printf("[input-trace] focus-style <%s>#%.48s role=%.24s display=%d position=%d width=%d/%d height=%d/%d top=%d/%d bottom=%d/%d class=%.96s\n",
+                p->tag,id?id:"",role?role:"",s?s->display:-1,s?s->position:-1,
+                s?s->has_w:0,s?s->width:0,s?s->has_h:0,s?s->height:0,
+                s?s->has_top:0,s?s->top:0,s?s->has_bottom:0,s?s->bottom:0,cl?cl:"");
+            if(!g_input_trace_budget || --g_input_trace_budget==0)break;
+        }
+        JSContext *ctx=js_page_ctx();
+        if(ctx)for(int level=0,shown=0;level<16&&shown<4;level++){
+            JSAtom a=JS_GetScriptOrModuleName(ctx,level);
+            if(a==JS_ATOM_NULL)continue;
+            const char *s=JS_AtomToCString(ctx,a);
+            if(s){printf("[input-trace] focus-caller[%d]=%.256s\n",level,s);shown++;JS_FreeCString(ctx,s);}
+            JS_FreeAtom(ctx,a);
+        }
+    }
     struct js_event_init ji = { 0 };
     ji.bubbles = bubbles;
     ji.cancelable = cancelable;
@@ -3313,15 +4526,20 @@ static struct node *popup_live(void)
     return g_popup;
 }
 
-/* The control's border box in DOCUMENT coordinates, from the display list.
- * Returns 0 if the control has no box (display:none, or not laid out yet). */
+/* The control's complete painted border box in viewport+pageScroll coordinates.
+ * Previously this was the unprojected DOCUMENT box, which left translated
+ * input carets and select popups at the old location. Existing callers subtract
+ * page scroll once; fixed/top-layer projection deliberately preserves that
+ * convention. Returns 0 when no control box exists. */
 static int control_box(struct node *n, int *bx, int *by, int *bw, int *bh)
 {
     const struct item *it = layout_items();
     int cnt = layout_count();
     for (int i = 0; i < cnt; i++) {
         if (it[i].type != IT_CONTROL || it[i].node != n) continue;
-        *bx = it[i].x; *by = it[i].y; *bw = it[i].w; *bh = it[i].h;
+        struct item q;
+        browser_input_item_geometry(&it[i],0,VIEW_Y,scroll_x,scroll,&q);
+        *bx = q.x; *by = q.y; *bw = q.w; *bh = q.h;
         return 1;
     }
     return 0;
@@ -3357,6 +4575,28 @@ static int control_box(struct node *n, int *bx, int *by, int *bw, int *bh)
  * reproduces. */
 int text_measure(const char *s, int len, int px, int face);
 #define ITEM_FACE(it) ((it)->mono | ((it)->bold ? LOGIT_FACE_BOLD : 0))
+
+/* Selection uses the same scrolling projection as glyph paint. Keep the
+ * caller's document-coordinate convention; viewport fixed/top-layer items cancel
+ * the page scroll that those callers subtract later. Pure translation now
+ * shares paint's box mapping without changing glyph advances or byte offsets;
+ * other transforms still need their own source-to-glyph map. */
+static struct item selection_item(const struct item *e)
+{
+    struct item q;
+    browser_input_item_geometry(e,0,VIEW_Y,scroll_x,scroll,&q);
+    return q;
+}
+static int selection_clip(const struct item *q)
+{
+    int l=0,t=VIEW_Y,r=win_w,b=VIEW_Y+VIEW_H;
+    if(q->has_clip){
+        int x=q->clip_x-scroll_x,y=VIEW_Y+q->clip_y-scroll;
+        if(x>l)l=x;if(y>t)t=y;if(x+q->clip_w<r)r=x+q->clip_w;if(y+q->clip_h<b)b=y+q->clip_h;
+    }
+    if(r<=l||b<=t)return 0;gui_clip(l,t,r-l,b-t);return 1;
+}
+static struct item ce_current_clip;
 
 static int ce_run_for(struct node *t, int off, const struct item **out, int *rel)
 {
@@ -3394,8 +4634,9 @@ static int ce_caret_box(int *cx, int *cy, int *ch)
         const struct item *r = 0;
         int rel = 0;
         if (ce_run_for(n, off, &r, &rel)) {
-            *cx = r->x + text_measure(r->text, rel, r->font_px, ITEM_FACE(r));
-            *cy = r->y;
+            ce_current_clip=selection_item(r);
+            *cx = ce_current_clip.x + browser_text_run_advance(r,rel);
+            *cy = ce_current_clip.y;
             *ch = r->h > 0 ? r->h : r->font_px;
             return 1;
         }
@@ -3413,8 +4654,9 @@ static int ce_caret_box(int *cx, int *cy, int *ch)
         for (int i = 0; i < cnt; i++) {
             if (it[i].node != e || it[i].type == IT_TEXT) continue;
             int fh = it[i].font_px > 0 ? it[i].font_px : 16;
-            *cx = it[i].x + 2;
-            *cy = it[i].y + 2;
+            ce_current_clip=selection_item(&it[i]);
+            *cx = ce_current_clip.x + 2;
+            *cy = ce_current_clip.y + 2;
             *ch = it[i].h > 4 && it[i].h < fh * 3 ? it[i].h - 4 : fh;
             return 1;
         }
@@ -3439,9 +4681,10 @@ static void draw_ce_overlay(void)
         if (r0 < 0) r0 = 0;
         if (r1 > it[i].len) r1 = it[i].len;
         if (r1 <= r0) continue;
-        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, ITEM_FACE(&it[i]));
-        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
-        int sy = VIEW_Y + it[i].y - scroll;
+        struct item q=selection_item(&it[i]);
+        int x0 = q.x - scroll_x + browser_text_run_advance(&it[i],r0);
+        int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
+        int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
         /* radius 1, not 0: fb_liquid_glass_cut() (c/kernel/gui/fb.c) reads
          * "radius < 1" as "nothing to draw" and returns before touching a
@@ -3452,13 +4695,13 @@ static void draw_ce_overlay(void)
          * comparing before/after screendumps byte-for-byte. 1px of corner
          * rounding on a text-height band is not visible; a highlight nobody
          * can see is not a highlight. */
-        gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);
+        if(selection_clip(&q)){gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);gui_clip(0,0,0,0);}
     }
     int cx, cy, chh;
     if (!ce_caret_box(&cx, &cy, &chh)) return;
     int sy = VIEW_Y + cy - scroll;
     if (sy + chh < VIEW_Y || sy > VIEW_Y + VIEW_H) return;
-    gui_rect(cx, sy, 2, chh, rgb(30, 30, 40));
+    if(selection_clip(&ce_current_clip)){gui_rect(cx - scroll_x, sy, 2, chh, rgb(30, 30, 40));gui_clip(0,0,0,0);}
 }
 
 /* Place the caret from a click inside an editing host. `vx`,`vy` are viewport
@@ -3471,23 +4714,27 @@ static void draw_ce_overlay(void)
  * a fallback, it is the case that matters most. */
 static void ce_caret_from_click(struct node *host, int vx, int vy)
 {
+    vx += scroll_x;
     int dy = vy + scroll;
     const struct item *it = layout_items();
     int cnt = layout_count();
     const struct item *hit = 0;
+    struct item hit_geometry;
     long bestd = -1;
     for (int i = 0; i < cnt; i++) {
         if (it[i].type != IT_TEXT || it[i].hidden) continue;
         if (!it[i].node || it[i].node->type != N_TEXT) continue;
         if (fc_ce_host(it[i].node) != host) continue;
-        if (dy < it[i].y || dy >= it[i].y + it[i].h) continue;
+        struct item q=selection_item(&it[i]);
+        if(q.has_clip&&(vx<q.clip_x||vx>=q.clip_x+q.clip_w||dy<q.clip_y||dy>=q.clip_y+q.clip_h))continue;
+        if (dy < q.y || dy >= q.y + q.h) continue;
         /* On the pointer's LINE. Nearest run horizontally, so a click past the
          * end of a short line still lands on that line's last word instead of
          * missing everything. */
         long d = 0;
-        if (vx < it[i].x) d = it[i].x - vx;
-        else if (vx > it[i].x + it[i].w) d = vx - (it[i].x + it[i].w);
-        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; }
+        if (vx < q.x) d = q.x - vx;
+        else if (vx > q.x + q.w) d = vx - (q.x + q.w);
+        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; hit_geometry=q; }
     }
     if (!hit) { fc_ce_caret_in(host, 1); return; }
 
@@ -3495,12 +4742,12 @@ static void ce_caret_from_click(struct node *host, int vx, int vy)
      * for the reason fc_offset_at_px gives: the measurement is monotone in
      * characters and not in bytes, so a binary search over bytes is a bug
      * waiting for a multi-byte character. */
-    int relx = vx - hit->x;
+    int relx = vx - hit_geometry.x;
     if (relx < 0) relx = 0;
     int best = 0;
     long bd = -1;
     for (int i = 0; i <= hit->len; ) {
-        int w = text_measure(hit->text, i, hit->font_px, ITEM_FACE(hit));
+        int w = browser_text_run_advance(hit,i);
         long d = w > relx ? w - relx : relx - w;
         if (bd < 0 || d < bd) { bd = d; best = i; }
         if (i >= hit->len) break;
@@ -3608,27 +4855,31 @@ static void psel_word_at(struct node *t, int off, int *a, int *b)
  * the click did not land on any line of text at all. */
 static int doc_pos_from_click(int vx, int vy, struct node **out_n, int *out_off)
 {
+    vx += scroll_x;
     int dy = vy + scroll;
     const struct item *it = layout_items();
     int cnt = layout_count();
     const struct item *hit = 0;
+    struct item hit_geometry;
     long bestd = -1;
     for (int i = 0; i < cnt; i++) {
         if (it[i].type != IT_TEXT || it[i].hidden) continue;
         if (!it[i].node || it[i].node->type != N_TEXT) continue;
-        if (dy < it[i].y || dy >= it[i].y + it[i].h) continue;
+        struct item q=selection_item(&it[i]);
+        if(q.has_clip&&(vx<q.clip_x||vx>=q.clip_x+q.clip_w||dy<q.clip_y||dy>=q.clip_y+q.clip_h))continue;
+        if (dy < q.y || dy >= q.y + q.h) continue;
         long d = 0;
-        if (vx < it[i].x) d = it[i].x - vx;
-        else if (vx > it[i].x + it[i].w) d = vx - (it[i].x + it[i].w);
-        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; }
+        if (vx < q.x) d = q.x - vx;
+        else if (vx > q.x + q.w) d = vx - (q.x + q.w);
+        if (bestd < 0 || d < bestd) { bestd = d; hit = &it[i]; hit_geometry=q; }
     }
     if (!hit) return 0;
-    int relx = vx - hit->x;
+    int relx = vx - hit_geometry.x;
     if (relx < 0) relx = 0;
     int best = 0;
     long bd = -1;
     for (int i = 0; i <= hit->len; ) {
-        int w = text_measure(hit->text, i, hit->font_px, ITEM_FACE(hit));
+        int w = browser_text_run_advance(hit,i);
         long d = w > relx ? w - relx : relx - w;
         if (bd < 0 || d < bd) { bd = d; best = i; }
         if (i >= hit->len) break;
@@ -3703,9 +4954,10 @@ static void draw_doc_selection(void)
         if (r0 < 0) r0 = 0;
         if (r1 > it[i].len) r1 = it[i].len;
         if (r1 <= r0) continue;
-        int x0 = it[i].x + text_measure(it[i].text, r0, it[i].font_px, ITEM_FACE(&it[i]));
-        int x1 = it[i].x + text_measure(it[i].text, r1, it[i].font_px, ITEM_FACE(&it[i]));
-        int sy = VIEW_Y + it[i].y - scroll;
+        struct item q=selection_item(&it[i]);
+        int x0 = q.x - scroll_x + browser_text_run_advance(&it[i],r0);
+        int x1 = q.x - scroll_x + browser_text_run_advance(&it[i],r1);
+        int sy = VIEW_Y + q.y - scroll;
         if (sy + it[i].h < VIEW_Y || sy > VIEW_Y + VIEW_H) continue;
         /* radius must be >= 1: fb_liquid_glass_cut (c/kernel/gui/fb.c) has
          * `if (w <= 0 || h <= 0 || radius < 1) return` -- a radius of 0 is
@@ -3716,7 +4968,7 @@ static void draw_doc_selection(void)
          * NOTHING, so the highlight silently never appeared. 1px is not
          * visually distinguishable from 0 at this box size; it just crosses
          * fb.c's own floor. */
-        gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);
+        if(selection_clip(&q)){gui_glass(x0, sy, x1 - x0, it[i].h, 1, 90, 150, 240, 110);gui_clip(0,0,0,0);}
     }
 }
 
@@ -3769,11 +5021,12 @@ static int ce_settle(struct node *host)
     if (host) css_apply_scoped(host, 0, css_expanded, css_exlen);
     else      css_apply(g_root, css_expanded, css_exlen);
     layout_page(g_root, win_w);
-    ph = layout_height();
+    if(LOGIT_HAVE(js_cssom_reconcile_element_scroll))js_cssom_reconcile_element_scroll();
+    ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
     return 1;
 }
 
-/* 1 if the browser navigated (so the caller stops draining events).
+/* 1 if the browser scheduled navigation (stop draining native events).
  *
  * `fire_event` is 0 only for form.submit(), which the spec defines as NOT
  * firing the submit event -- the difference between it and requestSubmit() is
@@ -3802,8 +5055,9 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
         /* No action: this page. The existing query and fragment are dropped,
          * which is what the spec's "URL record with the query replaced" means
          * and what a search box on a results page depends on. */
-        for (int i = 0; url[i] && url[i] != '?' && url[i] != '#' && o < 640; i++)
-            target[o++] = url[i];
+        const char *page = navigation_base();
+        for (int i = 0; page[i] && page[i] != '?' && page[i] != '#' && o < 640; i++)
+            target[o++] = page[i];
     }
     target[o] = 0;
 
@@ -3812,7 +5066,7 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
          * the payload is built and correct, the network path is not this
          * line's file. */
         set_status("POST form: payload built, but POST is not wired yet");
-        printf("[browser] FORM-POST %s body=%s\n", target, g_submit_buf);
+        printf("[browser] FORM-POST unsupported=1 bytes=%d\n", n);
         return 0;
     }
 
@@ -3824,9 +5078,27 @@ static int form_submit_ex(struct node *form, struct node *submitter, int fire_ev
         for (int i = 0; i < n && q < (int)sizeof target - 1; i++) target[q++] = g_submit_buf[i];
     }
     target[q] = 0;
-    printf("[browser] FORM-GET %s\n", target);
+    printf("[browser] FORM-GET bytes=%d\n", n);
+#ifdef BROWSER_FORM_SUBMIT_SYNC_LOAD
     follow_link(target);
     return 1;
+#else
+    /* Previously follow_link loaded here. form.submit()/requestSubmit() also
+     * enter this function from JS, including keydown/submit listeners; freeing
+     * their realm here lets dispatch return into dead QuickJS objects. The
+     * real search guest faulted in __JS_FreeValueRT just after destination
+     * load. Queue with location's producer and let the outer consumer load
+     * after every callback has unwound. A second local queue would reorder
+     * a handler that mixes location writes and form submissions. */
+    char absolute[700];struct url base;
+    if (url_parse(navigation_base(),&base)!=0 ||
+        url_resolve(&base,target,absolute,sizeof absolute)!=0 ||
+        !LOGIT_HAVE(js_webapi_request_navigation) ||
+        !js_webapi_request_navigation(absolute)) {
+        set_status("cannot schedule form navigation");return 0;
+    }
+    return 1;
+#endif
 }
 
 static int form_submit(struct node *form, struct node *submitter)
@@ -3841,24 +5113,33 @@ static int implicit_submit(struct node *ctl)
     return form_submit(form, 0);
 }
 
+static int select_popup_box(struct node *sel, int *px, int *py, int *pw, int *ph2)
+{
+    int bx, by, bw, bh;
+    if (!control_box(sel, &bx, &by, &bw, &bh)) return 0;
+    int n = fc_option_count(sel), rows = n > POPUP_MAXROWS ? POPUP_MAXROWS : n;
+    if (rows <= 0) return 0;
+    *px = bx - scroll_x; *py = VIEW_Y + by - scroll + bh;
+    *pw = bw < 140 ? 140 : bw; *ph2 = rows * POPUP_ROW + 8;
+    if (*pw > win_w) *pw = win_w;
+    if (*px + *pw > win_w) *px = win_w - *pw;
+    if (*px < 0) *px = 0;
+    if (*py + *ph2 > VIEW_Y + VIEW_H) {
+        int above = VIEW_Y + by - scroll - *ph2;
+        if (above > VIEW_Y) *py = above;
+    }
+    return 1;
+}
 static void draw_select_popup(void)
 {
     struct node *sel = popup_live();
     if (!sel) return;
-    int bx, by, bw, bh;
-    if (!control_box(sel, &bx, &by, &bw, &bh)) { popup_close(); return; }
-    int n = fc_option_count(sel);
-    int rows = n > POPUP_MAXROWS ? POPUP_MAXROWS : n;
-    if (rows <= 0) { popup_close(); return; }
-    int px = bx, py = VIEW_Y + by - scroll + bh;
-    int pw = bw < 140 ? 140 : bw;
-    int ph2 = rows * POPUP_ROW + 8;
-    /* Flip above the control when there is no room below -- a dropdown that
-     * runs off the bottom of the window is a dropdown you cannot use. */
-    if (py + ph2 > win_h - 18) {
-        int above = VIEW_Y + by - scroll - ph2;
-        if (above > VIEW_Y) py = above;
-    }
+    int px, py, pw, ph2;
+    if (!select_popup_box(sel, &px, &py, &pw, &ph2)) { popup_close(); return; }
+    int n = fc_option_count(sel), rows = n > POPUP_MAXROWS ? POPUP_MAXROWS : n;
+    /* The previous click path used min-width 120 while paint used 140, and
+     * forgot the upward flip. Sharing this geometry also keeps horizontally
+     * scrolled controls' visible options and clickable rows together. */
     gui_clip(0, VIEW_Y, win_w, VIEW_H);
     gui_rrect(px, py, pw, ph2, 6, rgb(0xB0, 0xB4, 0xBA));
     gui_rrect(px + 1, py + 1, pw - 2, ph2 - 2, 5, rgb(0xFF, 0xFF, 0xFF));
@@ -3919,7 +5200,11 @@ static int overlays_active(void)
  * changed, see its own header in browser_paint.h -- says actually differs. */
 static void redraw_page(int editing)
 {
-    browser_paint(0, VIEW_Y, win_w, VIEW_H, scroll);
+    /* The scrollbar is browser chrome outside the painter's dirty region.
+     * A full repaint also clears its old band when overflow disappears. */
+    if (g_hbar || g_hbar_drawn) { redraw(editing); return; }
+    sync_scroll();
+    browser_paint_scroll(0, VIEW_Y, win_w, VIEW_H, scroll_x, scroll);
     draw_doc_selection();
     draw_ce_overlay();
     draw_select_popup();
@@ -3967,6 +5252,7 @@ static void redraw_page(int editing)
 /* Activate a control the way a click or Space/Enter does. */
 static int control_activate(struct node *n, int *navigated)
 {
+    if(LOGIT_HAVE(js_semantics_activate_invoker) && js_semantics_activate_invoker(n)) return 1;
     int k = fc_kind(n);
     if (FC_IS_TOGGLE(k)) {
         if (fc_disabled(n)) return 1;
@@ -4037,6 +5323,7 @@ static int textarea_line_move(struct node *n, int down, int extend)
 static int control_key(struct node *n, int k, const struct logit_event *ev,
                        int *navigated)
 {
+    input_trace("control-key",n,0,0,1,-1);
     int kind = fc_kind(n);
     if (kind == FC_NONE) return 0;
     int shift = (ev->mods & EV_MOD_SHIFT) != 0;
@@ -4205,20 +5492,46 @@ static int ce_key(struct node *host, int k, const struct logit_event *ev, int *d
     return 0;
 }
 
+/* Consume only after JS has returned: navigation tears down its context.
+ * History pushes here remain distinct from load()'s bounded redirect replace.
+ * The caller runs once after every callback phase, including scroll/load. */
+static int consume_live_navigation(int *editing)
+{
+    char want[600];if(!take_script_nav(want,sizeof want))return 0;
+    *editing=0;int i=0;
+    while(want[i]&&i<(int)sizeof url-1){url[i]=want[i];i++;}
+    url[i]=0;ulen=i;addr_sync();hist_push(url);load_from(url, committed_page_url());return 1;
+}
+
 void app_main(void)
 {
+    if(LOGIT_HAVE(js_download_set_handler))js_download_set_handler(download_queue);
+    layout_set_profile_clock(monotonic_ms);
+    if (LOGIT_HAVE(js_cssom_set_reflow)) js_cssom_set_reflow(browser_cssom_reflow);
+    if (LOGIT_HAVE(js_cssom_set_scroll_handler))
+        js_cssom_set_scroll_handler(browser_scroll_to);
     /* Arm the painted-text record. Only here: browser_paint.c is linked by
      * five host harnesses that render pages without being a browser, and it
      * must not write into their output. */
     browser_paint_text_log(1);
     css_init();             /* build the UA default stylesheet */
+#ifndef LOADERHOST_LOGIT_H
+    css_set_reduced_motion(setting_int("ui.reduce_motion", 0));
+#endif
+#ifndef LOADERHOST_LOGIT_H
+    /* Device media queries and JS screen share actual desktop geometry.
+     * A resized viewport is not a changed display; reporting it as one made
+     * device-width search loops unable to converge on this browser. */
+    css_set_screen(screen_w(),screen_h());
+#endif
     win_query_size();
-    css_viewport(win_w, win_h);  /* @media/vw/vh evaluate against the real window */
+    browser_viewport();  /* @media/vw/vh evaluate against the real window */
     /* css_extra patches node->style after the cascade, so a scoped re-style has
      * to run it before it decides whether anything changed -- see css.h. */
     css_set_post_pass(css_extra_apply);
     img_init();             /* register PNG + GIF decoders */
     js_page_set_clock(clock_ms);
+    js_dom_set_focus_query(browser_document_focus);
     /* focus.c and forms.c raise DOM events through a function pointer rather
      * than including js_dom.h -- they are compiled into BROWSER_PIPE, which has
      * no QuickJS include path. This is where that pointer is installed, and it
@@ -4238,7 +5551,7 @@ void app_main(void)
     gui_create("Browser", win_w, win_h);
     win_set_min();
     win_query_size();       /* the WM may have clamped what we asked for */
-    css_viewport(win_w, win_h);
+    browser_viewport();
 
     /* ---- the session, before the first paint ----
      *
@@ -4250,6 +5563,14 @@ void app_main(void)
     int want_restore = 1;
 #ifndef LOADERHOST_LOGIT_H
     tabs_set_store(&os_store);
+    /* Bind before opening any page: a successful localStorage write promises
+     * recovery after browser exit, so the Web API must see the guest store. */
+    if (js_webapi_set_storage_store && js_webapi_set_storage_store(&os_store) < 0)
+        printf("[browser] localStorage snapshot could not be loaded\n");
+    /* Load persistent cookies before session_restore can issue a request.
+     * Cookie writes are synchronous; exit/crash needs no last-minute callback. */
+    if (js_webapi_set_cookie_store && js_webapi_set_cookie_store(&cookie_os_store) < 0)
+        printf("[browser] Cookie snapshot could not be loaded\n");
     /* WHETHER to restore is a PREFERENCE, and preferences belong in the
      * machine's settings store (SYS_SETTING_*, c/kernel/core/settings.c), which
      * says in its own header that another line should use it rather than build
@@ -4314,27 +5635,31 @@ void app_main(void)
     }
 
     redraw(1);
-    int editing = 1;
-    struct node *press_node = 0;      /* the element the last mousedown landed on */
-    uint32_t press_serial = 0;
-    struct node *hover_node = 0;      /* the element the pointer is currently over,
-                                        * for synthesising mouseover/out/enter/leave
-                                        * -- see fire_hover_transition(). */
-    uint32_t hover_serial = 0;
-    struct node *lastclick_node = 0;  /* dblclick: same-target, close-in-time,
-                                        * close-in-space state, one slot -- a
-                                        * third click clears it rather than
-                                        * chaining, matching titlebar_double_click()
-                                        * in wm.c (the platform's other double-click
-                                        * detector, same 400ms window). */
-    uint32_t lastclick_serial = 0;
+    editing = 1;
+    /* press/hover/lastclick live as the file-scope g_* above so BOTH
+     * teardown paths can clear them (embed_ptrs_reset) -- they must not
+     * survive a navigation holding pointers into the freed document. */
+    #define press_node   g_press_node
+    #define press_serial g_press_serial
+    #define hover_node   g_hover_node
+    #define hover_serial g_hover_serial
+    #define lastclick_node   g_lastclick_node
+    #define lastclick_serial g_lastclick_serial
     unsigned long long lastclick_ms = 0;
     int lastclick_x = 0, lastclick_y = 0;
 
     for (;;) {
         struct logit_event e;
-        int need = 0;                 /* coalesce: drain the whole event burst, repaint once */
+        /* Old policy: drain the whole event burst, repaint once. Correction:
+         * a stream of slow input handlers can keep the queue nonempty forever.
+         * z.ai's six defaults occupied 3,090 guest ms before the later frame;
+         * the host control likewise drew nothing until all 12 slow / 40 fast
+         * inputs had drained. Bound coalescing so painting, timers and resource
+         * progress get a turn. This does NOT preempt an individual long JS
+         * callback or promise that the whole frame fits the event budget. */
+        int need = 0;
         int navigated = 0;
+        if (js_dom_sync_focus()) need = 1;
         /* CHROME-ONLY REPAINT TRACKING. `nev` counts events actually
          * processed this burst; `chrome_edit_only` is reset at the top of
          * EVERY iteration and set true by exactly two branches below (typing
@@ -4358,23 +5683,49 @@ void app_main(void)
          * navigation) does not clear a flag some EARLIER event in the same
          * burst had already set. */
         int nev = 0, chrome_edit_only = 0, page_only_repaint = 0;
-        while (!navigated && poll_event(&e)) {
+        unsigned long long burst_started = 0;
+        while (!navigated &&
+#ifndef BROWSER_UNBOUNDED_EVENT_BURST
+               (nev == 0 || (nev < BROWSER_EVENT_BUDGET_COUNT &&
+                monotonic_ms() - burst_started < BROWSER_EVENT_BUDGET_MS)) &&
+#endif
+               browser_poll_event(&e)) {
+            if (!nev) burst_started = monotonic_ms(); /* no extra idle clock read */
             nev++;
             chrome_edit_only = 0;
             page_only_repaint = 0;
             sync_scroll();
+            if (e.type == EV_WINDOW_FOCUS) {
+                /* Re-read the WM rather than trusting an older queued value;
+                 * hasFocus and the transition listeners see the same owner. */
+                if (js_dom_sync_focus()) need = 1;
+                continue;
+            }
             if (e.type == EV_CLOSE) {
                 /* Record where the user was BEFORE tearing anything down: the
                  * whole value of a session is that it survives the thing that
                  * ended it. */
-                { struct tab *t = tab_cur(); if (t) t->scroll = scroll; }
+                { struct tab *t = tab_cur(); if (t && !t->restore_pending) { t->scroll = scroll; t->scroll_x = scroll_x; } }
                 session_save(); history_save(); bookmarks_save();
                 /* The window size the user settled on. Set in RAM by every
                  * resize; this is the one write to disk. */
 #ifndef LOADERHOST_LOGIT_H
                 remember_size(); setting_commit();
 #endif
-                js_page_close(); bfetch_close_all(); app_exit(0);
+                image_requests_reset();
+    dom_images_reset(); stylesheet_reset(); pending_scripts_reset(); top_layer_reset(); js_page_close(); bfetch_close_all(); app_exit(0);
+            }
+            if (e.type == EV_THEME) {
+#ifndef LOADERHOST_LOGIT_H
+                css_set_reduced_motion(setting_int("ui.reduce_motion", 0));
+#endif
+                /* Re-evaluate cascade before the deferred MQL listeners. Using
+                 * the resize notification here would manufacture resize events. */
+                css_set_color_scheme(e.a != 0);
+                js_webapi_media_changed();
+                restyle(1);
+                need = 1;
+                continue;
             }
             if (e.type == EV_RESIZE) {
                 browser_resize(e.a, e.b);
@@ -4382,6 +5733,7 @@ void app_main(void)
                 continue;
             }
             if (e.type == EV_KEY) {
+                input_trace("key-arrived",0,0,0,-1,editing);
                 int k = e.a;
                 int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
 
@@ -4456,6 +5808,7 @@ void app_main(void)
                     } else if (c == 'w') {                       /* close tab */
                         int cur = tabs_active();
                         tab_dehydrate();
+                        js_webapi_drop_storage_session((unsigned long long)(cur + 1));
                         int nx = tabs_close(cur);
                         tabs_select(nx);
                         if (!tab_hydrate()) {
@@ -4602,7 +5955,7 @@ void app_main(void)
                         handled = 1;
                     }
                 }
-                if (handled) { need = 1; continue; }
+                if (handled) { js_dom_sync_focus(); need = 1; continue; }
 
                 /* ---- the library panel owns the keyboard while it is open ---- */
                 if (g_panel) {
@@ -4677,10 +6030,11 @@ void app_main(void)
                 struct node *fnode = 0;
                 if (!editing) {
                     char one[5];               /* up to 4 UTF-8 bytes + NUL -- see key_name */
+                    char code[8];
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1;
                     ji.key = key_name(k, one);
-                    ji.code = ji.key;
+                    ji.code = key_code_name(k, code);
                     /* Legacy .keyCode: the ASCII fast path is unchanged; a
                      * navigation code keeps its old (masked) value, and a code
                      * point above ASCII carries itself rather than an
@@ -4699,7 +6053,10 @@ void app_main(void)
                      * listener sees the key bubble past exactly as before. */
                     fnode = FOCUS_ROUTING ? focus_current() : 0;
                     struct node *body = g_root ? dom_doc_body(g_root->doc) : 0;
-                    struct node *tgt = fnode ? fnode : (body ? body : js_dom_root());
+                    /* A blurred modal still owns keyboard input. The old body
+                     * fallback let background handlers consume keys. */
+                    struct node *modal = top_layer_current();
+                    struct node *tgt = fnode ? fnode : (modal ? modal : (body ? body : js_dom_root()));
                     allow = js_dom_dispatch(tgt, "keydown", &ji);
                     /* A keydown handler is entitled to move focus, or to remove
                      * the focused element outright. Re-read rather than trust
@@ -4713,11 +6070,23 @@ void app_main(void)
                          * see a CJK candidate arrive here too, or it can never
                          * refuse one. */
                         struct js_event_init jp = ji;
+                        /* keydown may remove tgt: never reuse its old pointer. */
+                        modal = top_layer_current();
+                        body = g_root ? dom_doc_body(g_root->doc) : 0;
+                        tgt = fnode ? fnode : (modal ? modal : (body ? body : js_dom_root()));
                         allow = js_dom_dispatch(tgt, "keypress", &jp);
                         fnode = FOCUS_ROUTING ? focus_current() : 0;
                     }
                 }
 
+                input_trace("key-dispatched",focus_current(),0,0,allow,editing);
+                /* Modal Escape is a page default action. Honor keydown
+                 * cancellation first, then consume it even if cancel prevents
+                 * closing; the background must never receive the key. */
+                if (!editing && allow && k == 0x1b && top_layer_escape()) {
+                    allow = 0;
+                    if (settle_frame()) need = 1;
+                }
                 /* Tab moves focus. Before the control's own handling, because a
                  * text field must not eat the key that leaves it, and after the
                  * page's keydown, because a focus trap cancels Tab. */
@@ -4732,7 +6101,9 @@ void app_main(void)
                          * screen is indistinguishable from a Tab that did
                          * nothing. */
                         int bx, by, bw, bh;
-                        if (nf && control_box(nf, &bx, &by, &bw, &bh)) {
+                        if (nf && !top_layer_owner(nf) && !css_viewport_fixed_owner(nf) && control_box(nf, &bx, &by, &bw, &bh)) {
+                            if (bx < scroll_x + 8) scroll_x = bx - 8;
+                            else if (bx + bw > scroll_x + win_w - 8) scroll_x = bx + bw - win_w + 8;
                             if (by < scroll + 8) scroll = by - 8;
                             else if (by + bh > scroll + VIEW_H - 8) scroll = by + bh - VIEW_H + 8;
                             if (scroll < 0) scroll = 0;
@@ -4774,6 +6145,8 @@ void app_main(void)
                  * exists to avoid (one gate, read once, at the bottom). */
                 if (FOCUS_ROUTING && allow && !editing && fnode && fc_kind(fnode) != FC_NONE) {
                     if (control_key(fnode, k, &e, &navigated)) {
+                        input_trace("key-default",focus_current(),0,0,1,editing);
+                        if (g_input_trace_budget) g_input_trace_needs_frame = 1;
                         allow = 0;
                         need = 1;
                         page_only_repaint = 1;
@@ -4838,13 +6211,19 @@ void app_main(void)
                     else if (!editing && k == KEY_END)  scroll = maxs;
                     else if (editing && k == KEY_LEFT)  { addr_move(-1, (e.mods & EV_MOD_CTRL) != 0, (e.mods & EV_MOD_SHIFT) != 0); chrome_edit_only = 1; }
                     else if (editing && k == KEY_RIGHT) { addr_move(+1, (e.mods & EV_MOD_CTRL) != 0, (e.mods & EV_MOD_SHIFT) != 0); chrome_edit_only = 1; }
-                    /* hist_go's three outcomes: 0 nothing, 1 a real navigation
+                    /* Correction: plain arrows now scroll the document;
+                     * Alt+Left/Right retain history, so reaching wide content
+                     * never navigates away. Address/control caret routing above
+                     * still owns arrows while editing.
+                     * hist_go's three outcomes: 0 nothing, 1 a real navigation
                      * (load() the new url, tear the document down), 2 a
                      * same-document pushState/hash move (address bar only --
                      * the popstate it queued fires from js_page_pending()
                      * further down THIS SAME iteration; navigated must stay 0
                      * or that never runs). Reached only when !editing now --
                      * see the caret-key block just above. */
+                    else if (!editing && k == KEY_LEFT && !(e.mods & EV_MOD_ALT)) scroll_x -= 40;
+                    else if (!editing && k == KEY_RIGHT && !(e.mods & EV_MOD_ALT)) scroll_x += 40;
                     else if (!editing && k == KEY_LEFT)  { int hg = hist_go(-1); if (hg == 1) { load(url); navigated = 1; } else if (hg == 2) { need = 1; } }
                     else if (!editing && k == KEY_RIGHT) { int hg = hist_go(+1); if (hg == 1) { load(url); navigated = 1; } else if (hg == 2) { need = 1; } }
                     /* addr_infer_scheme() -- see its own comment -- either
@@ -4856,7 +6235,12 @@ void app_main(void)
                      * bar stays in edit mode and the ordinary full redraw()
                      * this iteration already asks for shows why. */
                     else if (editing && k == '\n') {
-                        if (addr_infer_scheme()) { editing = 0; hist_push(url); load(url); navigated = 1; }
+                        if (starts_ci(url, "javascript:")) {
+                            editing = 0;
+                            javascript_url_execute(url);
+                        } else if (addr_infer_scheme()) {
+                            editing = 0; hist_push(url); load(url); navigated = 1;
+                        }
                     }
                     /* Ctrl+A / Ctrl+C / Ctrl+X / Ctrl+V, folded to a control
                      * byte by the keyboard driver exactly as forms.c's
@@ -4969,6 +6353,7 @@ void app_main(void)
                     } else if (hit >= 0 && close) {
                         int cur = tabs_active();
                         tab_dehydrate();
+                        js_webapi_drop_storage_session((unsigned long long)(cur + 1));
                         tabs_select(tabs_close(cur));
                         if (!tab_hydrate()) {
                             struct tab *t = tab_cur();
@@ -4983,7 +6368,7 @@ void app_main(void)
                     }
                     need = 1;
                 }
-                else if (my < VIEW_Y) { editing = 1; press_node = 0; }   /* click the bar to edit */
+                else if (my < VIEW_Y) { editing = 1; press_node = 0; ucaret=addr_hit(mx); if(!(e.mods&EV_MOD_SHIFT))usel=ucaret; }
                 else if (g_panel && my < VIEW_Y + VIEW_H) {
                     /* The panel is modal over the viewport: a click in it picks
                      * a row, and a click outside it dismisses. Routing it to the
@@ -5012,21 +6397,26 @@ void app_main(void)
                     }
                     need = 1;
                 }
+                else if (g_hbar && my >= VIEW_Y + VIEW_H && my < win_h - 18) {
+                    if (e.type == EV_MOUSE && e.button == EV_BTN_LEFT) {
+                        int tx = hbar_thumb_x(), tw = hbar_thumb_width();
+                        g_hdrag_grab = mx >= tx && mx < tx + tw ? mx - tx : tw / 2;
+                        g_hdrag = 1; press_node = 0; hbar_move(mx); need = 1;
+                    }
+                }
                 else if (my >= VIEW_Y && my < VIEW_Y + VIEW_H) {
                     editing = 0;
+                    if (js_dom_sync_focus()) need = 1;
                     /* An open <select> is modal over the viewport, exactly like
                      * the library panel above: a click in the list picks a row,
                      * a click outside it dismisses, and neither reaches the
                      * page underneath. */
                     struct node *pop = popup_live();
                     if (pop) {
-                        int bx, by, bw, bh;
-                        if (control_box(pop, &bx, &by, &bw, &bh)) {
+                        int px, py, pw, ph2;
+                        if (select_popup_box(pop, &px, &py, &pw, &ph2)) {
                             int n2 = fc_option_count(pop);
                             int rows = n2 > POPUP_MAXROWS ? POPUP_MAXROWS : n2;
-                            int px = bx, py = VIEW_Y + by - scroll + bh;
-                            int pw = bw < 120 ? 120 : bw;
-                            int ph2 = rows * POPUP_ROW + 8;
                             if (mx >= px && mx < px + pw && my >= py && my < py + ph2) {
                                 int row = (my - py - 4) / POPUP_ROW;
                                 if (row >= 0 && row < rows) {
@@ -5044,9 +6434,19 @@ void app_main(void)
                         continue;
                     }
                     struct node *n = 0;
-                    browser_hittest_node(mx, my - VIEW_Y, scroll, &n, 0, 0);
+                    browser_hittest_node_viewport(0,VIEW_Y,mx, my - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                    input_trace("down-hit",n,mx,my-VIEW_Y,-1,editing);
+                    if(e.type==EV_MOUSE && e.button==EV_BTN_LEFT)top_layer_pointer_down(n);
+                    /* Inert suppresses native user interaction, not synthetic
+                     * dispatchEvent. Keep this at the device-input boundary. */
+                    if (focus_is_inert(n)) { css_interaction_active(0); press_node = 0; continue; }
+                    if (e.type == EV_MOUSE && e.button == EV_BTN_LEFT)
+                        css_interaction_active(n);
+                    css_interaction_hover(n);
                     press_node = n;
                     press_serial = n ? n->serial : 0;
+                    g_frame_open_press = e.type==EV_MOUSE && e.button==EV_BTN_LEFT &&
+                        browser_frame_open_hit(mx,my-VIEW_Y,scroll_x,scroll,n);
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1; ji.detail = 1;
                     ji.client_x = mx; ji.client_y = my - VIEW_Y;
@@ -5054,6 +6454,7 @@ void app_main(void)
                     ji.buttons = 1 << ji.button;
                     mods_of(&e, &ji);
                     int okdown = js_dom_dispatch(n, e.type == EV_MOUSE_R ? "contextmenu" : "mousedown", &ji);
+                    input_trace("down-dispatched",0,mx,my-VIEW_Y,okdown,editing);
                     /* FOCUS FOLLOWS THE MOUSE DOWN, not the click -- that is
                      * what makes click-and-drag inside a field select text in
                      * every real browser, and what makes preventDefault() on
@@ -5063,6 +6464,7 @@ void app_main(void)
                         struct node *lbl = 0;
                         struct node *tgt = focus_target_for_click(n, &lbl);
                         focus_control(tgt);
+                        input_trace("focus-chosen",focus_current(),mx,my-VIEW_Y,okdown,editing);
                         if (tgt && FC_IS_TEXTUAL(fc_kind(tgt))) {
                             /* Put the caret where the pointer is. */
                             int bx, by, bw, bh;
@@ -5074,7 +6476,8 @@ void app_main(void)
                                         font = its[i].ctl_font ? its[i].ctl_font : its[i].font_px;
                                         mono = its[i].ctl_mono; break;
                                     }
-                                int relx = mx - (bx + FC_BORDER + FC_PAD_X);
+                                struct fc_content_edges insets = fc_content_insets(tgt);
+                                int relx = mx + scroll_x - (bx + insets.left);
                                 int off = fc_offset_at_px(tgt, relx, font, mono);
                                 fc_set_selection(tgt, off, off);
                             }
@@ -5120,7 +6523,9 @@ void app_main(void)
                     need = 1;
                 }
             } else if (e.type == EV_MOUSE_UP) {
+                if (e.button == EV_BTN_LEFT) css_interaction_active(0);
                 int mx = e.a, my = e.b;
+                if (g_hdrag) { g_hdrag = 0; press_node = 0; need = 1; continue; }
                 /* A drag ends wherever the button comes up, including off the
                  * viewport (over the address bar, a panel, the tab strip) --
                  * gating this on `my` the way the click-target logic below
@@ -5131,13 +6536,40 @@ void app_main(void)
                 if (my >= VIEW_Y && my < VIEW_Y + VIEW_H) {
                     struct node *n = 0;
                     char href[512]; href[0] = 0;
-                    browser_hittest_node(mx, my - VIEW_Y, scroll, &n, href, sizeof href);
+                    browser_hittest_node_viewport(0,VIEW_Y,mx, my - VIEW_Y, scroll_x, scroll, &n, href, sizeof href);
+                    input_trace("up-hit",n,mx,my-VIEW_Y,-1,editing);
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1; ji.detail = 1;
                     ji.client_x = mx; ji.client_y = my - VIEW_Y;
                     ji.button = dom_button(e.button);
                     mods_of(&e, &ji);
+                    if(e.button==EV_BTN_LEFT && top_layer_pointer_up(n)) {
+                        need=1;settle_frame();
+                        browser_hittest_node_viewport(0,VIEW_Y,mx,my-VIEW_Y,scroll_x,scroll,&n,href,sizeof href);
+                    }
+                    int frame_press=g_frame_open_press;
+                    int frame_release=frame_press && n && n==press_node && n->serial==press_serial &&
+                        browser_frame_open_hit(mx,my-VIEW_Y,scroll_x,scroll,n);
                     js_dom_dispatch(n, "mouseup", &ji);
+                    if(frame_press && e.button==EV_BTN_LEFT) {
+                        /* Re-hit after EACH script checkpoint. A handler may
+                         * remove/recycle the iframe or navigate; dereferencing
+                         * the old target after settle_frame would be a UAF.
+                         * embed_ptrs_reset clears the press across teardown. */
+                        if(settle_frame())need=1;
+                        browser_hittest_node_viewport(0,VIEW_Y,mx,my-VIEW_Y,scroll_x,scroll,&n,0,0);
+                        if(frame_release && g_frame_open_press && n && n==press_node &&
+                           n->serial==press_serial && browser_frame_open_hit(mx,my-VIEW_Y,scroll_x,scroll,n)) {
+                            int go=js_dom_dispatch(n,"click",&ji);
+                            if(settle_frame())need=1;
+                            browser_hittest_node_viewport(0,VIEW_Y,mx,my-VIEW_Y,scroll_x,scroll,&n,0,0);
+                            if(go && g_frame_open_press && n && n==press_node && n->serial==press_serial &&
+                               browser_frame_open_hit(mx,my-VIEW_Y,scroll_x,scroll,n))
+                                navigated=open_embedded_page(n);
+                        }
+                        g_frame_open_press=0;
+                        goto frame_mouse_up_done;
+                    }
                     /* A click needs a press and a release on the same element --
                      * dragging off a link and letting go must not navigate. The
                      * press target is re-validated by serial, because a mousedown
@@ -5148,6 +6580,7 @@ void app_main(void)
                          * unconditionally on mousedown; now it is what happens
                          * when the click event survives the page's handlers. */
                         int go = js_dom_dispatch(n, "click", &ji);
+                        input_trace("click-dispatched",0,mx,my-VIEW_Y,go,editing);
                         if (settle_frame()) need = 1;
                         /* dblclick: two clicks on the SAME target, close in time
                          * and space. 400ms + 6px slop -- the same numbers
@@ -5208,12 +6641,14 @@ void app_main(void)
                                 if (control_activate(tgt, &navigated)) need = 1;
                             }
                         }
-                        if (go && !navigated && href[0]) { follow_link(href); navigated = 1; }
+                        if (go && !navigated && href[0]) { if(!download_activate_anchor(n)){follow_link(href);navigated=1;} }
                     }
+frame_mouse_up_done:
                     press_node = 0;
                     need = 1;
                 }
             } else if (e.type == EV_MOUSE_MOVE) {
+                if (g_hdrag) { hbar_move(e.a); need = 1; continue; }
                 /* THE "hover style change" CASE the task names, plus plain
                  * mousemove dispatch and drag-selection extension below --
                  * all three can only touch the page viewport (a mouseover/
@@ -5229,19 +6664,14 @@ void app_main(void)
                  * and falls back to a full redraw() when any of them are, so
                  * this flag can stay unconditional. */
                 page_only_repaint = 1;
-                /* Motion is the one event that arrives continuously, so it is
-                 * the one worth not paying for: with no listeners registered
-                 * anywhere, building an Event per sample is pure waste. Inline
-                 * on-attributes are compiled lazily and so are invisible to this
-                 * count -- onmousemove= in markup is the accepted casualty. The
-                 * same guard covers the hover transitions below: a page with
-                 * zero listeners of ANY kind cannot observe a mouseover
-                 * either, and the hit test they'd need is exactly as
-                 * expensive as the one mousemove was already paying for. */
+                /* Old path gated the hit test on JS listeners. CSS-only hover
+                 * menus have no listener, so pointer state must be sampled
+                 * independently; event object construction still stays gated. */
+                int in_view = e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H;
+                struct node *n = 0;
+                if (in_view) browser_hittest_node_viewport(0,VIEW_Y,e.a, e.b - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                css_interaction_hover(n);
                 if (js_dom_listener_count() > 0) {
-                    int in_view = e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H;
-                    struct node *n = 0;
-                    if (in_view) browser_hittest_node(e.a, e.b - VIEW_Y, scroll, &n, 0, 0);
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1;
                     ji.client_x = e.a; ji.client_y = e.b - VIEW_Y;
@@ -5287,18 +6717,29 @@ void app_main(void)
             } else if (e.type == EV_WHEEL) {
                 int maxs = ph - VIEW_H; if (maxs < 0) maxs = 0;
                 int allow = 1;
+                struct node *wheel_target=0;
                 if (e.b >= VIEW_Y && e.b < VIEW_Y + VIEW_H) {
                     struct js_event_init ji = { 0 };
                     ji.bubbles = 1; ji.cancelable = 1;
                     ji.client_x = e.a; ji.client_y = e.b - VIEW_Y;
                     ji.detail = e.wheel;
-                    ji.delta_y = (double)e.wheel * 40.0;
+                    if (e.mods & EV_MOD_SHIFT) ji.delta_x = (double)e.wheel * 40.0;
+                    else ji.delta_y = (double)e.wheel * 40.0;
                     mods_of(&e, &ji);
                     struct node *n = 0;
-                    browser_hittest_node(e.a, e.b - VIEW_Y, scroll, &n, 0, 0);
+                    browser_hittest_node_viewport(0,VIEW_Y,e.a, e.b - VIEW_Y, scroll_x, scroll, &n, 0, 0);
+                    wheel_target=n;
                     allow = js_dom_dispatch(n, "wheel", &ji);
+                    /* Listener mutations may remove the hit node. Re-hit after
+                     * settling before running the native scrolling default. */
+                    settle_frame();
+                    browser_hittest_node_viewport(0,VIEW_Y,e.a,e.b-VIEW_Y,scroll_x,scroll,&wheel_target,0,0);
                 }
-                if (allow) scroll += e.wheel * 40;
+                if (allow && (!LOGIT_HAVE(js_cssom_scroll_element_by) || !js_cssom_scroll_element_by(wheel_target,
+                    (e.mods&EV_MOD_SHIFT)?e.wheel*40:0,(e.mods&EV_MOD_SHIFT)?0:e.wheel*40))) {
+                    if (e.mods & EV_MOD_SHIFT) scroll_x += e.wheel * 40;
+                    else scroll += e.wheel * 40;
+                }
                 if (scroll < 0) scroll = 0; if (scroll > maxs) scroll = maxs;
                 sync_scroll();
                 need = 1;
@@ -5307,8 +6748,13 @@ void app_main(void)
                  * `scroll`, which only moves what browser_paint() draws. */
                 page_only_repaint = 1;
             }
+            if (js_dom_sync_focus()) need = 1;
             if (!navigated && settle_frame()) need = 1;   /* a handler rewrote the DOM */
         }
+
+        /* Panel/find branches can finish with continue, before the normal
+         * per-event tail. Publish their ownership change before timers/idle. */
+        if (js_dom_sync_focus()) need = 1;
 
         /* THE "mutate" CASE the task names: `timer_page_only` tracks whether
          * whatever this timer pass did to `need` can ONLY have changed the
@@ -5329,7 +6775,7 @@ void app_main(void)
             if (js_page_run_due() > 0) {
                 /* A timer/rAF callback can inject a <script> too -- drain the
                  * queue on the frame loop, never on the callback's own stack. */
-                if (g_pending_n > 0) run_pending_inserted_scripts(url);
+                if (g_pending_n > 0) run_pending_inserted_scripts(live_script_base());
                 if (settle_frame()) { need = 1; timer_page_only = 1; }
                 /* status_from_js() rewrites the STATUS LINE (chrome, not page
                  * content) AND, as a side effect, resets js_out_shown to make
@@ -5345,8 +6791,9 @@ void app_main(void)
                 }
                 /* The CSS animation tick ran inside run_due and overlayed
                  * values on cstyle; the frame it is owed depends on WHAT
-                 * moved. opacity is snapshotted into the display list at
-                 * layout, so an opacity frame costs one layout_page; a
+                 * moved. Opacity used to cost one layout_page because its
+                 * values are snapshotted into the display list. Refresh those
+                 * paint snapshots without remeasuring text/flex/grid; a
                  * transform-only frame is read live by the painter and
                  * costs only the repaint. css_anim_needs_layout() answers
                  * 2 / 1 / 0 and clears itself, so a pass where nothing
@@ -5355,35 +6802,24 @@ void app_main(void)
                 if (LOGIT_HAVE(css_anim_needs_layout)) {
                     int fk = css_anim_needs_layout();
                     if (fk == 2 && g_root) {
+#ifndef BROWSER_ANIMATION_FULL_LAYOUT
+                        if (!layout_refresh_opacity(g_root))
+#endif
+                        {
                         layout_page(g_root, win_w);
-                        ph = layout_height();
+                        if(LOGIT_HAVE(js_cssom_reconcile_element_scroll))js_cssom_reconcile_element_scroll();
+                        ph = layout_height(); g_page_width = browser_content_width(g_root, win_w); g_hbar = max_scroll_x() > 0 ? 12 : 0;
+                        }
                     }
                     if (fk) { need = 1; timer_page_only = 1; }
                 }
             }
         }
         if (timer_chrome_touched) timer_page_only = 0;
-
-        /* A navigation the LIVE page asked for -- a click handler setting
-         * location.href, a timer calling location.replace, a router. Taken
-         * here, at the top of the loop, because this is the first point after
-         * the callback returned at which tearing the document down is safe.
-         *
-         * This one PUSHES history: a page that moves seconds or minutes after
-         * it loaded is acting on the user, and Back must come back here. The
-         * redirect chain inside load() replaces instead -- see hist_replace. */
-        if (!navigated) {
-            char want[600];
-            if (take_script_nav(want, sizeof want)) {
-                editing = 0;
-                int i = 0;
-                while (want[i] && i < (int)sizeof url - 1) { url[i] = want[i]; i++; }
-                url[i] = 0; ulen = i; addr_sync();
-                hist_push(url);
-                load(url);
-                navigated = 1; need = 1;
-            }
-        }
+        if(!navigated&&download_pump_jobs())need=1;
+#ifdef BROWSER_EARLY_CALLBACK_CONSUMERS
+        if(!navigated&&consume_live_navigation(&editing)){navigated=1;need=1;}
+#endif
 
         /* CHROME-ONLY / PAGE-ONLY DISPATCH. nev == 1 && chrome_edit_only means
          * the single event this burst processed was proven (by the two
@@ -5393,9 +6829,11 @@ void app_main(void)
          * page control keystroke, a hover-driven change); nev == 0 &&
          * timer_page_only means NO event fired this pass at all and the only
          * thing that set `need` was the page's own timer, which cannot touch
-         * chrome either. The take_script_nav() check just above this line is
-         * the only other thing that can set `need` or `navigated` between the
-         * burst and here, so `!navigated` covers all three branches.
+         * chrome either. The old claim was that the earlier navigation check
+         * was the only later work. Correction: scroll/load listeners and their
+         * inserted scripts run below too. The final consumer clears narrow
+         * repaint flags for scripts or new console output; navigation then
+         * forces a full redraw through `navigated`.
          *
          * overlays_active() is checked ONLY for the page-only branch: the
          * chrome branch draws exactly the address bar and nothing browser_
@@ -5410,6 +6848,71 @@ void app_main(void)
          * choice, never a correctness one: when the classification is not
          * airtight, the fallback is the whole canvas, exactly as before this
          * change existed. */
+        if (LOGIT_HAVE(js_cssom_dispatch_element_scroll) && js_cssom_dispatch_element_scroll()) {
+            need=1;chrome_edit_only=0;settle_frame();
+        }
+        if (g_scroll_event_pending) {
+            g_scroll_event_pending = 0;
+            struct js_event_init si = {0};
+            js_dom_dispatch(js_dom_root(), "scroll", &si);
+            if (settle_frame()) need = 1;
+        }
+        if (!navigated && g_img_owed) {
+            if (settle_frame()) { need=1; timer_page_only=1; }
+        }
+        if(!navigated&&g_root&&LOGIT_HAVE(passive_frames_update)&&
+           passive_frames_update(g_root,js_dom_mutation_generation())){need=1;timer_page_only=1;}
+        if (!navigated && finish_page_load()) { need=1; timer_page_only=1; }
+        if (g_scroll_repaint) {
+            g_scroll_repaint = 0; need = 1; chrome_edit_only = 0;
+        }
+#ifndef BROWSER_EARLY_CALLBACK_CONSUMERS
+        /* The old consumer ran before scroll and delayed load/pageshow.
+         * Those callbacks can insert scripts or request navigation too. A
+         * pending navigation is not a timer/fetch wake source, and the host
+         * wait_idle no-op used to hide the resulting indefinite guest park.
+         * Drain inserted scripts first: they may themselves request navigation.
+         * Keep this on the outer loop, after JS dispatch has unwound, so loading
+         * the destination cannot destroy a context still executing a callback. */
+        if (stylesheet_frame() | dom_images_frame()) {
+            /* Resource callbacks can invalidate layout after the earlier
+             * settle pass. Publish their DOM changes before painting. */
+            g_img_owed=1; settle_frame(); need=1; chrome_edit_only=0;
+            page_only_repaint=timer_page_only=0;
+        }
+        if (g_pending_n > 0) {
+            run_pending_inserted_scripts(live_script_base());
+            if(g_pending_did_work){
+                settle_frame();
+                need = 1; chrome_edit_only = 0;
+                page_only_repaint = timer_page_only = 0;
+            }
+        }
+#ifndef BROWSER_LOAD_BEFORE_SCRIPT_DRAIN
+        /* The earlier load check can still see the final pending script.
+         * Once this drain retires it there may be no timer, image or request
+         * left to wake wait_idle(0). Dispatch the now-unblocked lifecycle
+         * before parking; a host no-op wait otherwise hides a guest-only
+         * lost load event. Its new scripts retain the bounded queue wake,
+         * and its navigation is consumed below, outside the JS stack. */
+        if (finish_page_load()) {
+            need=1;chrome_edit_only=0;page_only_repaint=timer_page_only=0;
+        }
+#endif
+        if (js_page_output_len() != js_out_shown) {
+            status_from_js("loaded"); need = 1; chrome_edit_only = 0;
+            page_only_repaint = timer_page_only = 0;
+        }
+
+        /* Even a new page can request a URL in a late listener. Do not gate
+         * this on an earlier native navigation; consume once per outer turn. */
+        if(consume_live_navigation(&editing)){navigated=1;need=1;}
+#endif
+
+        /* A close observed by QuickJS's interrupt hook has unwound through the
+         * event/timer entry by here. Exit before paying for another paint. */
+        if (g_load_close_requested) load_close_checkpoint();
+
         if (need) {
             if (nev == 1 && chrome_edit_only && !navigated) redraw_chrome(editing);
             else if (!navigated &&
@@ -5417,6 +6920,14 @@ void app_main(void)
                      !overlays_active())
                 redraw_page(editing);
             else redraw(editing);
+            /* An edited value is not a completed paint: callbacks/resources
+             * between the event burst and here can still hold the frame.
+             * The diagnostic observes the real path; it never forces a flush
+             * or claims that the compositor has presented the returned frame. */
+            if (g_input_trace_needs_frame) {
+                g_input_trace_needs_frame = 0;
+                input_trace("frame-painted",focus_current(),0,0,1,editing);
+            }
         }
 
         /* ---- THE SLEEP, and it is the entire cost of an idle browser -------
@@ -5458,6 +6969,9 @@ void app_main(void)
          * js_webapi_pending is WEAK here (JS_WEBAPI_OPTIONAL above):
          * browser-nofetch.aex links without js_webapi.o. */
         {
+            /* A scroll listener may queue another change; do not park with
+             * that next-frame event pending and no external wake source. */
+            if (g_scroll_event_pending || g_scroll_repaint || (LOGIT_HAVE(js_cssom_element_scroll_pending) && js_cssom_element_scroll_pending())) continue;
             int wait_ms = 0;                     /* 0 = park until an event */
             if (js_page_pending()) {
                 long long due = js_page_next_due();       /* -1: no timer armed */
@@ -5469,6 +6983,9 @@ void app_main(void)
                 if (dt > BROWSER_WAIT_MAX_MS) dt = BROWSER_WAIT_MAX_MS;
                 wait_ms = (int)dt;
             }
+            if ((g_img_owed || pending_scripts_have_work() || stylesheet_pending() || dom_images_pending() ||
+                 (LOGIT_HAVE(passive_frames_pending)&&passive_frames_pending())) && (wait_ms == 0 || wait_ms > BROWSER_PUMP_MS))
+                wait_ms = BROWSER_PUMP_MS;
             wait_idle(wait_ms);
         }
     }

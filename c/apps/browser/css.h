@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "dom.h"
 
-enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_FLEX, DISP_NONE, DISP_GRID };
+enum { DISP_INLINE, DISP_BLOCK, DISP_INLINE_BLOCK, DISP_FLEX, DISP_NONE, DISP_GRID, DISP_CONTENTS };
 enum { ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT, ALIGN_JUSTIFY };
 
 /* box-sizing: what the used `width`/`height` measure. CONTENT is the CSS
@@ -92,10 +92,14 @@ enum { GR_TEMPL_COLS = 0, GR_TEMPL_ROWS, GR_TEMPL_AREAS,
  * LIFETIME is grid_raw[]'s, unchanged: these point into css_extra.c's private
  * copy of the author sheet or into a node's own style="" attribute, are NOT
  * NUL-terminated, and nothing frees them from here. APPEND ONLY. */
+#include "svg_style_props.h"
 enum { XR_TRANSFORM = 0,        /* the <transform-list>, or `none`           */
        XR_TRANSFORM_ORIGIN,     /* 1-3 components, css_origin_parse          */
        XR_BG_IMAGE,             /* the `linear-gradient(...)` call, verbatim */
        XR_BOX_SHADOW,           /* the whole shadow list                     */
+#define CSS_SVG_XR(id, name, initial, inherited) XR_SVG_##id,
+       CSS_SVG_PAINT_PROPERTIES(CSS_SVG_XR)
+#undef CSS_SVG_XR
        XR__COUNT };
 
 /* ---- linear-gradient, parsed ----
@@ -202,6 +206,13 @@ enum { DIR_LTR = 0, DIR_RTL };
 enum { WM_HORIZ_TB = 0, WM_VERT_RL, WM_VERT_LR };
 
 struct cstyle {
+    /* Generated boxes are layout-only proxies, owned by this allocation's tail.
+     * Never attach them to DOM child links: selectors, children and textContent
+     * must keep seeing the authored tree. A pseudo style records its owner so
+     * display-list provenance can be retargeted without exposing a fake Node. */
+    struct node *generated[2];          /* before, after on the originating style */
+    struct node *generated_owner;       /* only on the proxy's style */
+    unsigned char generated_kind;       /* 1 before, 2 after; 0 real element */
     int display;
     uint32_t color;                 /* 0xRRGGBB (text) */
     uint32_t background; int has_bg;
@@ -209,7 +220,18 @@ struct cstyle {
                                      * Blended by the painter, combined with the
                                      * element's opacity. */
     int font_px, bold, italic, mono;
-    int mt, mr, mb, ml;             /* margins (px); ml/mr = -1 means auto */
+    int mt, mr, mb, ml;             /* resolved margins (px), including negatives */
+    /* Auto used to be the numeric sentinel -1, silently turning -1px into
+     * auto (and block layout treated EVERY negative horizontal margin as auto).
+     * Keep the kind separately. Percentage values retain LibCSS's signed
+     * 10-bit fraction until layout knows the containing block width; converting
+     * them through len_px used to turn 10% into 10px at every viewport size. */
+    unsigned char margin_auto;       /* physical edge bits: top,right,bottom,left */
+    int margin_pct[4];               /* percent * 1024; zero also represents 0% */
+    /* Fixed term of a mixed length-percentage. mt/mr/mb/ml become USED caches
+     * during layout, so reusing them here would add last frame's percentage a
+     * second time after resize. Plain physical percentages leave this zero. */
+    int margin_pct_offset[4];
     int pt, pr, pb, pl;             /* paddings (px), percentages RESOLVED */
     /* The specified percentage, in HUNDREDTHS of a percent, or 0 for "not a
      * percentage" (0% and absent resolve to the same pixel count, so the
@@ -223,13 +245,16 @@ struct cstyle {
      * engine that resolves the vertical edges against height instead produces
      * a plausible wrong number rather than an obvious one. */
     int pt0, pr0, pb0, pl0;
+    /* Immutable px term of logical calc(length + percentage) padding. The
+     * pt/pr/pb/pl fields are used caches and cannot supply it on a resize. */
+    int padding_pct_offset[4];
     int width, height; int has_w, has_h, w_pct, h_pct;
     int w_off, h_off;               /* px addend when w_pct/h_pct (calc) */
     int min_w, max_w, min_h, max_h;             /* min/max sizing */
     int has_min_w, has_max_w, has_min_h, has_max_h;
     int min_w_pct, max_w_pct, min_h_pct, max_h_pct;
     int text_align;
-    int line_px;                    /* line height (px); 0 = derive from font */
+    int line_px;                    /* used line height (px); see has_line_px */
     int border_w[4];                /* top, right, bottom, left (px); 0 = none */
     uint32_t border_color[4];       /* per edge, 0xRRGGBB */
     unsigned char border_style[4];  /* CSS_BORDER_STYLE_* per edge. The painter
@@ -259,11 +284,17 @@ struct cstyle {
     unsigned char list_style;       /* LST_* */
     int hidden;                     /* visibility:hidden/collapse or opacity:0 */
     int op0;                        /* hidden was (also) caused by opacity:0 */
+    unsigned char pointer_events_none; /* inherited auto/none/all; only none excludes HTML box hits */
     int vis_hid;                    /* hidden was caused by visibility:hidden/collapse */
     unsigned char position;         /* POS_* */
     int pos_abs;                    /* position:absolute -- out of flow (laid out nowhere) */
     int top, left, right, bottom;   /* box offsets from the containing block */
     int has_top, has_left, has_right, has_bottom;
+    /* Insets retain percentage * 1024 until the containing block is known.
+     * The mask distinguishes 0% from 0px when a relative height is indefinite;
+     * top/right/bottom/left remain px, never a hidden second unit. */
+    int inset_pct[4];
+    unsigned char inset_pct_mask;
     int z_index; int has_z;         /* z-index (paint order); has_z == 0 means auto */
     unsigned char box_sizing;       /* BOX_* */
     unsigned char white_space;      /* WS_* */
@@ -367,7 +398,96 @@ struct cstyle {
     unsigned short anim_rawlen;
     const char    *trans_raw;
     unsigned short trans_rawlen;
+    /* display is the INNER formatting algorithm for flex. inline-flex used
+     * to be collapsed to DISP_FLEX alone, forcing a line break and block width
+     * even when 50px of children fit after text in a 200px line. Keep its
+     * outer display independently; do not renumber DISP_* or duplicate the
+     * flex algorithm. Appended so existing cstyle field offsets stay stable.
+     * Zero is block outer; inline-block/flex/grid now share an atomic outer
+     * box, while display still selects their different inside algorithms. */
+    unsigned char outer_inline;
+    /* Zero line-height is a valid specified length/number, not `normal`.
+     * Keep the old zero-initialized style default (derive from font) while
+     * allowing 0%, 0px and unitless 0 to produce coincident baselines. */
+    unsigned char has_line_px;
+    /* Preserve opacity < 1 before rounding its paint alpha to 8 bits.
+     * opacity:.999 may paint as 255 yet still creates a stacking context. */
+    unsigned char opacity_context;
+    /* Color before inheritance composition distinguishes an authored colour
+     * from a default inherited through <defs>. SVG <use> must inherit the
+     * latter from its instance, not bake the original defs parent's colour. */
+    unsigned char svg_color_explicit;
+    /* Non-inherited face visibility and 3D accumulation boundary. These are
+     * computed keywords, not aliases of visibility:hidden: geometry remains
+     * present and a currently front-facing element must still paint/hit. */
+    unsigned char backface_hidden;
+    unsigned char preserve_3d;
 };
+
+/* Layout and line-relative transform lengths must use the same strut. Keep
+ * the existing normal-line font metric approximation, including explicit zero
+ * and styles built by native callers, instead of giving lh a second formula. */
+static inline int css_used_line_px(const struct cstyle *st)
+{
+    if (!st) return 20;
+    int px=st->font_px>0?st->font_px:16;
+    return st->has_line_px || st->line_px>0 ? st->line_px : px*5/4;
+}
+
+/* Shared coordinate-space decision for layout, paint, native hit and CSSOM.
+ * A fixed box's ordinary descendants share its viewport origin; checking only
+ * the leaf's position makes fixed inputs/text scroll while their box stays.
+ * Transforms establishing a different fixed containing block remain outside
+ * this engine's positioning model; this matches layout's viewport contract,
+ * rather than teaching only one downstream consumer a different origin. */
+static inline const struct node *css_viewport_fixed_owner(const struct node *n)
+{
+#ifndef LAYOUT_FIXED_SCROLL_LEGACY
+    for(;n;n=n->parent) {
+        const struct cstyle *s=n->style;
+        if(s&&s->display!=DISP_CONTENTS&&s->position==POS_FIXED)return n;
+    }
+#else
+    (void)n;
+#endif
+    return 0;
+}
+
+/* Point targeting reads the candidate's computed value, never an ancestor
+ * veto: inherited none can be overridden by a descendant's explicit auto.
+ * Text items borrow their generating element; keyboard focus and painting
+ * deliberately do not call this helper (CSS UI 4, pointer-events). */
+static inline int css_pointer_targetable(const struct node *n)
+{
+#ifndef CSS_POINTER_HIT_LEGACY
+    while(n && n->type!=N_ELEM)n=n->parent;
+    const struct cstyle *s=n?n->style:0;
+    return !s || !s->pointer_events_none;
+#else
+    (void)n;return 1;
+#endif
+}
+
+/* Shared used-value arithmetic for block, flex and grid. All physical edges
+ * resolve percentages against the containing block's inline width. A signed
+ * round avoids the +half bias that makes negative percentages one pixel off. */
+static inline int css_margin_percent_px(int pct, int width)
+{
+    long long v = (long long)pct * (width > 0 ? width : 0);
+    return (int)(v < 0 ? -((-v + 51200) / 102400) : (v + 51200) / 102400);
+}
+static inline int css_margin_px(const struct cstyle *s, int edge, int width)
+{
+    if (!s || (s->margin_auto & (1u << edge))) return 0;
+    if (s->margin_pct[edge]) return css_margin_percent_px(s->margin_pct[edge], width) + s->margin_pct_offset[edge];
+    return edge == 0 ? s->mt : edge == 1 ? s->mr : edge == 2 ? s->mb : s->ml;
+}
+static inline void css_resolve_margins(struct cstyle *s, int width)
+{
+    if (!s) return;
+    s->mt = css_margin_px(s, 0, width); s->mr = css_margin_px(s, 1, width);
+    s->mb = css_margin_px(s, 2, width); s->ml = css_margin_px(s, 3, width);
+}
 
 /* ---------------- CSSOM: the property surface ----------------
  *
@@ -404,6 +524,8 @@ enum {
     CSSP_TEXT_ALIGN, CSSP_LINE_HEIGHT, CSSP_TEXT_DECORATION,
     CSSP_BOX_SIZING, CSSP_WHITE_SPACE, CSSP_FLOAT, CSSP_CLEAR,
     CSSP_LIST_STYLE_TYPE,
+    CSSP_POINTER_EVENTS,
+    CSSP_BACKFACE_VISIBILITY, CSSP_TRANSFORM_STYLE,
     CSSP__COUNT,
 
     /* A CUSTOM PROPERTY (`--x`), which is not a member of the enum in any
@@ -472,6 +594,17 @@ int  css_computed_text(struct node *n, int prop, char *out, int outmax);
  * why that distinction is the whole point, and for the one direction in which
  * it deliberately under-reports. `plen`/`vlen` < 0 mean NUL-terminated. */
 int  css_supports_decl(const char *prop, int plen, const char *value, int vlen);
+/* Native-only validation for the extension cascade fallback; positive lengths. */
+int css_native_supports_decl(const char *prop,int plen,const char *value,int vlen);
+int css_box_supports_decl(const char *prop,int plen,const char *value,int vlen);
+/* Shared extension keyword grammar: 0 initial, 1 hidden/preserve, 2 inherit,
+ * -1 invalid. `preserve` chooses transform-style rather than backface. */
+int css_facing_keyword(const char *value,int len,int preserve);
+/* Cumulative actual pseudo composition attempts/empty-content early-outs.
+ * Guest profiling can take deltas without a clock syscall per styled node. */
+unsigned long long css_generated_compose_count(void);
+unsigned long long css_generated_skip_count(void);
+
 
 /* ---------------- the property universe ----------------
  *
@@ -552,10 +685,15 @@ void css_init(void);                            /* build the UA default styleshe
 /* Set the real viewport size for @media evaluation + vw/vh units (css_init
  * defaults to 760x540 for host tests). */
 void css_viewport(int w, int h);
+/* Measured display size in CSS pixels; never substitute a window viewport. */
+void css_set_screen(int w, int h);
+int css_screen_width(void);
+int css_screen_height(void);
 /* Current viewport width in px. */
 int  css_media_width(void);
 /* Current viewport height in px. Together with css_media_width and
- * css_color_scheme these are every input an @media verdict depends on, which
+ * css_color_scheme these WERE every input an @media verdict depended on.
+ * Correction 2026-09-09: css_screen_width/height are inputs too, which
  * is what lets css_extra.c cache a compiled sheet and know when to throw it
  * away. */
 int  css_media_height(void);
@@ -594,6 +732,7 @@ int  css_media_matches(const char *query, int len);
  * Default light; there is no user setting yet, and "light" is what a UA with no
  * preference reports. Set BEFORE css_apply -- it changes which rules cascade. */
 void css_set_color_scheme(int dark);
+void css_set_reduced_motion(int reduced);
 int  css_color_scheme(void);
 
 /* The URL fragment `:target` is matched against -- the part after '#', with no
@@ -611,12 +750,20 @@ void        css_set_target_fragment(const char *frag, int len);
 const char *css_target_fragment(int *len);
 /* Post-pass for properties our LibCSS doesn't know (grid, gap, the logical
  * box family): scans the
- * author sheet's simple selectors + inline style= attrs and patches node->style
- * after css_apply. */
+ * author sheet's complete selectors through LibCSS + inline style= attrs and
+ * patches node->style after css_apply. Pseudo-element-only rules are refused.
+ * Correction 2026-09-09: generated pseudo cstyles now exist in css_engine, but
+ * this EXTRA-property post-pass still has no pseudo-target routing. Standard
+ * LibCSS properties render on pseudos; grid/gap/logical extras do not yet. */
 void css_extra_apply(struct node *root, const char *page_css, int page_len);
 /* Test seam: rules in the last COMPILED sheet (see css_extra.c), or -1 if the
- * compile fell back to scanning the text. */
+ * compile failed (no approximate fallback). */
 int  css_extra_rules(void);
+/* Rules refused by the latest extra-property selector compile: unsupported
+ * parser syntax or a pseudo-only target (extra has no pseudo routing yet).
+ * Zero is not a compatibility claim: known dynamic states use css_engine's
+ * current state model, and property specificity/!important is still separate. */
+int css_extra_rejected_rules(void);
 
 /* ---- timing functions (css_interp.c) --------------------------------------
  *
@@ -900,6 +1047,13 @@ int  css_extra_compiles(void);
  * cascading UA defaults + `page_css` (page_len bytes from <style>) + inline style=. */
 void css_apply(struct node *root, const char *page_css, int page_len);
 
+/* Native UI state, independent of DOM mutation. Reset before freeing a page.
+ * take_change consumes only the frame obligation; CSSOM tracks its own flush. */
+void css_interaction_hover(struct node *n);
+void css_interaction_active(struct node *n);
+void css_interaction_reset(void);
+int css_interaction_take_change(void);
+
 /* "Update style" for `n`'s document, the way CSSOM requires before a resolved
  * value is read. Idempotent and cheap when nothing has been mutated.
  *
@@ -970,6 +1124,8 @@ void css_stats(int *styled, int *cache_hits);
  * its --name:value declarations, writing the expanded sheet to `out`. Returns
  * the expanded length. (Our LibCSS predates native var() support.) */
 int  css_expand_vars(const char *in, int inlen, char *out, int outmax);
+/* Grows a heap buffer after measuring; -1 refuses without modifying its bytes. */
+int css_expand_vars_alloc(const char *in,int inlen,char **out,int *cap,int limit);
 
 /* Test seam into the last css_expand_vars: how many distinct custom properties
  * it collected, and the value the CASCADE chose for one of them (`name` with or
@@ -978,5 +1134,23 @@ int  css_expand_vars(const char *in, int inlen, char *out, int outmax);
  * distinguishes "the right value won" from "some value was substituted". */
 int  css_vars_count(void);
 const char *css_vars_value(const char *name);
+
+/* Quiescent passive-document style contexts. The composite owns LibCSS,
+ * extension-sheet spans and custom-property arenas; NULL is the existing
+ * top-level state. Callers normally use layout_context, which switches both.
+ * These are not script realms and intentionally have no live animation hook. */
+struct css_context;
+struct css_context *css_context_create(void);
+struct css_context *css_context_activate(struct css_context *context);
+void css_context_destroy(struct css_context *context);
+/* Internal components remain separate TUs so reduced host links can omit them. */
+struct css_extra_context;
+struct css_extra_context *css_extra_context_create(void);
+struct css_extra_context *css_extra_context_activate(struct css_extra_context *context);
+void css_extra_context_destroy(struct css_extra_context *context);
+struct css_vars_context;
+struct css_vars_context *css_vars_context_create(void);
+struct css_vars_context *css_vars_context_activate(struct css_vars_context *context);
+void css_vars_context_destroy(struct css_vars_context *context);
 
 #endif /* LOGIT_CSS_H */
