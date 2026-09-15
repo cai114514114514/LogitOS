@@ -1,0 +1,377 @@
+{
+  "date": "2026-09-13",
+  "scope": "Project identity and native application integration, first delivery",
+  "evidence_root": "/tmp/logitos-project-20260913",
+  "feature_integration_passed": true,
+  "stability_acceptance_passed": false,
+  "results": {
+    "host": {
+      "evidence": "/tmp/logitos-project-20260913/host-verified/result.json",
+      "sha256": "ccedc3e31eda118283781c38c12c303b95eb1fcb53dd6080e114d3101cc223a9",
+      "result": {
+        "passed": true,
+        "checks": [
+          "reuse-negative",
+          "identity",
+          "v5 full device-write crash sweep",
+          "binding journal recovery"
+        ]
+      }
+    },
+    "native_real_model": {
+      "evidence": "/tmp/logitos-project-20260913/paired-native/result.json",
+      "sha256": "702ed40cf3b66dd4e767a716c26b7926a255271c93f1250310aba6907034db35",
+      "result": {
+        "passed": true,
+        "mode": "bios",
+        "ram": "512M",
+        "native_ui": true,
+        "real_model": true,
+        "volume": {
+          "format": 5,
+          "objects": 32,
+          "volume": "df1a405c8be1409895c75dcc76e66fbc",
+          "source_unchanged": true
+        },
+        "checks": [
+          "conversion preserves source image",
+          "command /bin/agentctl",
+          "persistent identity /docs/Community",
+          "command /bin/agentctl",
+          "empty directory is already a Project",
+          "command /bin/cp",
+          "command /bin/agentctl",
+          "report contains source facts and citations",
+          "command /bin/agentctl",
+          "persistent identity /docs/Community/report-1.md",
+          "command /bin/agentctl",
+          "Project owns the created task",
+          "command /bin/agentctl",
+          "disk bytes match report",
+          "Finder opens TextEdit with the same task",
+          "command /bin/agentctl",
+          "unsaved TextEdit edit is in task state",
+          "command /bin/agentctl",
+          "command /bin/agentctl",
+          "review retains user document",
+          "command /bin/mv",
+          "command /bin/agentctl",
+          "persistent identity /docs/Library",
+          "Project identity survives rename",
+          "command /bin/agentctl",
+          "persistent identity /docs/Library/report-1.md",
+          "file identity survives parent rename",
+          "command /bin/agentctl",
+          "renamed Project has same task",
+          "command /bin/agentctl",
+          "TextEdit lookup follows identity",
+          "command /bin/mkdir",
+          "command /bin/mv",
+          "command /bin/agentctl",
+          "persistent identity /docs/Archive/Library",
+          "Project identity survives reparenting",
+          "command /bin/agentctl",
+          "reparented Project keeps the task",
+          "command /bin/agentctl",
+          "persistent identity /docs/Archive/Library",
+          "Project identity survives reboot",
+          "command /bin/agentctl",
+          "task binding survives reboot",
+          "command /bin/agentctl",
+          "confirmed document survives reboot",
+          "command /bin/agentctl",
+          "pending review survives rename and reboot",
+          "command /bin/agent-runtime-test",
+          "command /bin/agentctl",
+          "native Apply commits same proposal",
+          "command /bin/agentctl",
+          "accepted report stays inside renamed Project",
+          "command /bin/agentctl",
+          "native Save keeps exact bytes",
+          "command /bin/cp",
+          "command /bin/agentctl",
+          "persistent identity /docs/Archive/Library/report-1.md",
+          "external edit retains the file identity",
+          "external content revision cannot restore an older checkpoint",
+          "command /bin/rm",
+          "command /bin/cp",
+          "command /bin/agentctl",
+          "persistent identity /docs/Archive/Library/report-1.md",
+          "replacement receives new identity",
+          "same pathname cannot take over old task",
+          "command /bin/cat",
+          "original source is unchanged"
+        ]
+      }
+    },
+    "migration": {
+      "evidence": "/tmp/logitos-project-20260913/paired-migration/result.json",
+      "sha256": "7e51b4528a6f7cb03e252e86961523ace99914238966ef0f636e27e1fb739fe0",
+      "result": {
+        "passed": true,
+        "real_model": false,
+        "checks": [
+          "v4 task creation",
+          "v5 copy conversion",
+          "identity-preserving install",
+          "task adoption",
+          "Project rename",
+          "disk equality"
+        ]
+      }
+    },
+    "actual_launcher": {
+      "evidence": "/tmp/logitos-project-20260913/menu-session/result.json",
+      "sha256": "5638836e6da0ff0bad67fbfb91101ccf1a6165ff24529e95d9dc62a571c59da1",
+      "result": {
+        "passed": true,
+        "provider_calls": 0,
+        "checks": [
+          "actual Project launcher boot",
+          "persistent Project creation",
+          "native edge context menu enters Project",
+          "native double-click enters Project",
+          "second launch preserves identity and revision"
+        ]
+      }
+    },
+    "matrix": {
+      "all_configurations_have_passing_runs": true,
+      "unresolved_failure_present": true,
+      "rows": [
+        {
+          "mode": "bios",
+          "ram": "512M",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/paired-matrix/bios-512M/result.json",
+          "sha256": "3f531bdef6c54177eba2c95ea6e57465725ab8c5039e9e16a1a31ece5032942e"
+        },
+        {
+          "mode": "bios",
+          "ram": "2G",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/paired-matrix/bios-2G/result.json",
+          "sha256": "2c10d1b1b9c398acc46b2750e3fc1d342488da283114ae165385bc26c40469d0"
+        },
+        {
+          "mode": "bios",
+          "ram": "8G",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/diagnostic-bios-8G/result.json",
+          "sha256": "3ab90a90b40aed1b5da781e576b3e18f391b7985922194101187d8254382376e"
+        },
+        {
+          "mode": "uefi",
+          "ram": "512M",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/paired-uefi/512M/result.json",
+          "sha256": "31907417c6c8a07ad9afc342aba446618eb080d702169d0770ab86e3cc38d9e0"
+        },
+        {
+          "mode": "uefi",
+          "ram": "2G",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/paired-uefi/2G/result.json",
+          "sha256": "62e71921b29a0803f8e2df402fbcaa5d044186a8c970ed3e48aaa9027326354c"
+        },
+        {
+          "mode": "uefi",
+          "ram": "8G",
+          "passed": true,
+          "checks": 55,
+          "evidence": "/tmp/logitos-project-20260913/paired-uefi/8G/result.json",
+          "sha256": "16b25dcce6ede4ade4b7feaad6396919aefb097e2f36c6671361ac13dc1ebf5e"
+        }
+      ]
+    }
+  },
+  "unresolved_failures": [
+    {
+      "evidence": "/tmp/logitos-project-20260913/delivery-native",
+      "symptom": "Finder initial white window; first frame absent",
+      "root_cause": "not established",
+      "status": "unresolved; later paired build passed"
+    },
+    {
+      "evidence": "/tmp/logitos-project-20260913/paired-matrix/bios-8G",
+      "symptom": "model task stayed running; service millisecond clock did not advance; simulated provider received zero calls",
+      "root_cause": "not established",
+      "status": "unresolved; same-build rerun and six independent boot clock probes passed"
+    }
+  ],
+  "clock_probe": {
+    "evidence": "/tmp/logitos-project-20260913/clock-probe.log",
+    "ticks": [
+      [
+        0,
+        483,
+        700
+      ],
+      [
+        1,
+        317,
+        526
+      ],
+      [
+        2,
+        497,
+        730
+      ],
+      [
+        3,
+        435,
+        643
+      ],
+      [
+        4,
+        428,
+        650
+      ],
+      [
+        5,
+        420,
+        646
+      ]
+    ],
+    "claim": "six bounded startup observations; no root-cause or long-term stability claim"
+  },
+  "model": {
+    "provider": "DeepSeek",
+    "model": "deepseek-flash",
+    "native_run_calls": [
+      {
+        "call": 5,
+        "http": 200,
+        "seconds": 2.239
+      },
+      {
+        "call": 6,
+        "http": 200,
+        "seconds": 1.892
+      },
+      {
+        "call": 7,
+        "http": 200,
+        "seconds": 4.15
+      },
+      {
+        "call": 8,
+        "http": 200,
+        "seconds": 3.514
+      }
+    ],
+    "timings": "host request records, not guest performance benchmark",
+    "sampled_peak_worker_rss_bytes": 1191936,
+    "worker_cpu_ns": 83139784,
+    "recovery_ms_observed": 0,
+    "recovery_claim": "zero sample is not a zero-duration claim"
+  },
+  "build": {
+    "manifest": "/tmp/logitos-project-20260913/consistent-source.json",
+    "manifest_sha256": "36697d684550b52afdc9700f7572b7fcb48554ba2f0feaf7a15c45159665713e",
+    "stable_during_build": true,
+    "source_files": 901,
+    "artifacts": {
+      "logit.iso": {
+        "sha256": "4757a9b3d03ba457a80bd423ce443e50487ae8329bd92e9108f2d631e6275ea7",
+        "bytes": 15607808
+      },
+      "esp.img": {
+        "sha256": "459ced3a7cd9ad251c836ffe144db23103416f5d4fad87cf2edcaa2b2d21079a",
+        "bytes": 16777216
+      },
+      "agentd.aex": {
+        "sha256": "8207e1357330405f364a34c46330aa38467688819f5ae337b537e3108484aa8e",
+        "bytes": 134128
+      },
+      "agentctl.aex": {
+        "sha256": "33199369e23132258e2cb7af0635f59eb49a680cbffa88e8e628d77e2a9c659d",
+        "bytes": 162552
+      },
+      "files.aex": {
+        "sha256": "a5ef7877256311dbfbd54bbfd9995699f608f59d8842880f0f41c08f3a47cf8a",
+        "bytes": 317360
+      },
+      "textedit.aex": {
+        "sha256": "ed5a883498a0ef3cf838dec6aab18def737043f55276b305dfcc4a87c03e9034",
+        "bytes": 321040
+      },
+      "assistant.aex": {
+        "sha256": "d9652357c59c70d05995a2d9f07a6d48752e58e7dac12571d81e95dad61eb106",
+        "bytes": 296712
+      },
+      "agent-runtime-test.aex": {
+        "sha256": "ea0f58098444bcce4ce2b0917df37f32a70773475813cb5045fd4abf3f596219",
+        "bytes": 47888
+      },
+      "login.aex": {
+        "sha256": "175c2728e16a70f14270720b498d4a806a4d5cf622444d214bd88532fcb991b6",
+        "bytes": 179880
+      },
+      "sh.aex": {
+        "sha256": "f3ef3222998b55112634a37f732210f9273ba664b0cf6872bd34d299b9d2f106",
+        "bytes": 190256
+      },
+      "cat.aex": {
+        "sha256": "f915ba8154071c1c71d77dede67e2e2922edda5be4558343ec712e5fd6150a69",
+        "bytes": 154408
+      },
+      "echo.aex": {
+        "sha256": "ad68d7e44df2b853a9019ab9e5e7f3c46d6017cde7d082bc515c9220bec4d197",
+        "bytes": 154072
+      },
+      "mv.aex": {
+        "sha256": "1740ebb81226015eaddb1da7c6317f57dc1323d5c869e20ef3175dbdc5cc9e82",
+        "bytes": 154040
+      },
+      "mkdir.aex": {
+        "sha256": "52a7a8e460e151f3ed9c7680fd8ea20f1930e46fb8d72f87ec7e35628bc2842c",
+        "bytes": 154168
+      },
+      "rm.aex": {
+        "sha256": "36a1636f9dd3e89f9f585780fdffe36b461bf774335a5deb02186b2a5db87d2d",
+        "bytes": 154152
+      },
+      "cp.aex": {
+        "sha256": "0e3fecd761e91a3bf7e40965f6d1993f8f32460118140e5652e80b6f3058601a",
+        "bytes": 155656
+      }
+    }
+  },
+  "guest_application_hashes": {
+    "paired-native": {
+      "/bin/agentd": "8207e1357330405f364a34c46330aa38467688819f5ae337b537e3108484aa8e",
+      "/bin/agentctl": "33199369e23132258e2cb7af0635f59eb49a680cbffa88e8e628d77e2a9c659d",
+      "/files.aex": "72de6b378d8b6d342772fa61ca57f4035d14ee5b507cb24c58961df7e0ccf8f7",
+      "/textedit.aex": "ed5a883498a0ef3cf838dec6aab18def737043f55276b305dfcc4a87c03e9034",
+      "/assistant.aex": "d9652357c59c70d05995a2d9f07a6d48752e58e7dac12571d81e95dad61eb106"
+    },
+    "diagnostic-bios-8G": {
+      "/bin/agentd": "8207e1357330405f364a34c46330aa38467688819f5ae337b537e3108484aa8e",
+      "/bin/agentctl": "33199369e23132258e2cb7af0635f59eb49a680cbffa88e8e628d77e2a9c659d",
+      "/files.aex": "a5ef7877256311dbfbd54bbfd9995699f608f59d8842880f0f41c08f3a47cf8a",
+      "/textedit.aex": "ed5a883498a0ef3cf838dec6aab18def737043f55276b305dfcc4a87c03e9034",
+      "/assistant.aex": "d9652357c59c70d05995a2d9f07a6d48752e58e7dac12571d81e95dad61eb106"
+    },
+    "paired-uefi/8G": {
+      "/bin/agentd": "8207e1357330405f364a34c46330aa38467688819f5ae337b537e3108484aa8e",
+      "/bin/agentctl": "33199369e23132258e2cb7af0635f59eb49a680cbffa88e8e628d77e2a9c659d",
+      "/files.aex": "a5ef7877256311dbfbd54bbfd9995699f608f59d8842880f0f41c08f3a47cf8a",
+      "/textedit.aex": "ed5a883498a0ef3cf838dec6aab18def737043f55276b305dfcc4a87c03e9034",
+      "/assistant.aex": "d9652357c59c70d05995a2d9f07a6d48752e58e7dac12571d81e95dad61eb106"
+    }
+  },
+  "limits": [
+    "normal mkfs remains v4; Project launcher makes an independent v5 copy",
+    "no atomic identity-based commit across concurrent rename",
+    "59-byte component names, 128-byte application paths, bounded directory view, 1 MiB documents, 8 task slots",
+    "no recycle bin, full version graph, persistent links or system directory relocation yet",
+    "wide-memory, ELF/PIE, DMA and IME independent regressions not rerun in this delivery",
+    "Finder last context-menu fixes tested through actual launcher after the real-model UI run"
+  ]
+}

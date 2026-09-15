@@ -57,6 +57,31 @@ Run = layout("logit_run", 40, [
     ["bold", 36, 4, "i"]
 ])
 
+Text_metrics = layout("logit_text_metrics", 44, [
+    ["scale_percent", 0, 4, "i"],
+    ["advance", 4, 4, "i"],
+    ["baseline", 8, 4, "i"],
+    ["ascent", 12, 4, "i"],
+    ["descent", 16, 4, "i"],
+    ["line_gap", 20, 4, "i"],
+    ["has_ink", 24, 4, "i"],
+    ["ink_left", 28, 4, "i"],
+    ["ink_top", 32, 4, "i"],
+    ["ink_right", 36, 4, "i"],
+    ["ink_bottom", 40, 4, "i"]
+])
+
+Text_metrics_query = layout("logit_text_metrics_query", 40, [
+    ["size", 0, 4, "u"],
+    ["version", 4, 4, "u"],
+    ["s", 8, 8, "p"],
+    ["len", 16, 4, "i"],
+    ["px", 20, 4, "i"],
+    ["face", 24, 4, "i"],
+    ["flags", 28, 4, "i"],
+    ["out", 32, 8, "p"]
+])
+
 Blit = layout("logit_blit", 32, [
     ["x", 0, 4, "i"],
     ["y", 4, 4, "i"],
@@ -182,7 +207,7 @@ Thread_spec = layout("logit_thread_spec", 48, [
     ["arg", 40, 8, "u"]
 ])
 
-Stat = layout("logit_stat", 88, [
+Stat = layout("logit_stat", 120, [
     ["len", 0, 4, "u"],
     ["version", 4, 4, "u"],
     ["mode", 8, 4, "u"],
@@ -197,7 +222,11 @@ Stat = layout("logit_stat", 88, [
     ["blocks", 56, 8, "u"],
     ["atime", 64, 8, "i"],
     ["mtime", 72, 8, "i"],
-    ["ctime", 80, 8, "i"]
+    ["ctime", 80, 8, "i"],
+    ["volume_0", 88, 8, "u"],
+    ["volume_1", 96, 8, "u"],
+    ["object_id", 104, 8, "u"],
+    ["revision", 112, 8, "u"]
 ])
 
 Dirent = layout("logit_dirent", 280, [
