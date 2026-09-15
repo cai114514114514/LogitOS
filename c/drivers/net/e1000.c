@@ -4,7 +4,7 @@
 #include "netring.h"
 #include "e1000_stats.h"
 #include "pci.h"
-#include "pmm.h"
+#include "dma.h"
 #include "vmm.h"
 #include "net.h"
 #include "pit.h"
@@ -133,6 +133,24 @@ struct tx_desc {
 static volatile uint8_t *mmio;
 static net_rx_cb g_rxcb;                    /* RX handler for IRQ mode */
 
+/* Coherent memory is CPU-mapped independently of the device address. All
+ * buffers are prepared before DMA is enabled; failed preparation can therefore
+ * release them without assuming a controller has stopped. Successful rings
+ * remain device-owned for the driver's lifetime. */
+static struct dma_device nic_dma;
+static void dma_discard_unpublished(void)
+{
+    while (nic_dma.buffers) {
+        if (dma_free_coherent(nic_dma.buffers) != 0) break;
+    }
+}
+static void dma_publish_buffers(void)
+{
+    for (struct dma_buffer *b = nic_dma.buffers; b; b = b->next)
+        dma_buffer_submit(b);
+    dma_wmb();
+}
+static struct dma_buffer *rx_dma, *tx_dma;
 static volatile struct rx_desc *rx_ring;    /* DMA rings: the NIC writes status/length */
 static volatile struct tx_desc *tx_ring;
 static uint8_t *rx_buf[RX_DESC];
@@ -472,18 +490,15 @@ static void stats_poll(struct e1000_pending *p)
 static int rx_init(void)
 {
     /* One contiguous frame holds the descriptor ring (RX_DESC*16 = 512 B). */
-    uint64_t ring = pmm_alloc();
-    if (!ring) return -1;
-    rx_ring = (struct rx_desc *)ring;
-    memset((void *)rx_ring, 0, RX_DESC * sizeof(struct rx_desc));
+    rx_dma = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+    if (!rx_dma) return -1;
+    uint64_t ring = dma_addr_value(rx_dma->dma);
+    rx_ring = rx_dma->cpu;
     for (int i = 0; i < RX_DESC; i++) {
-        rx_buf[i] = (uint8_t *)pmm_alloc();      /* 4 KiB frame, holds a 2 KiB buffer */
-        if (!rx_buf[i]) {
-            for (int j = 0; j < i; j++) pmm_free((uint64_t)rx_buf[j]);
-            pmm_free(ring);
-            return -1;
-        }
-        rx_ring[i].addr = (uint64_t)rx_buf[i];   /* identity-mapped: phys == virt */
+        struct dma_buffer *b = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+        if (!b) return -1;
+        rx_buf[i] = b->cpu;
+        rx_ring[i].addr = dma_addr_value(b->dma);
         rx_ring[i].status = 0;
     }
     reg_write(REG_RDBAL, (uint32_t)(ring & 0xFFFFFFFF));
@@ -492,25 +507,22 @@ static int rx_init(void)
     reg_write(REG_RDH, 0);
     reg_write(REG_RDT, RX_DESC - 1);
     rx_cur = 0;
-    reg_write(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_MPE | RCTL_SECRC | RCTL_BSIZE_2048);
+
     return 0;
 }
 
 static int tx_init(void)
 {
-    uint64_t ring = pmm_alloc();
-    if (!ring) return -1;
-    tx_ring = (struct tx_desc *)ring;
-    memset((void *)tx_ring, 0, TX_DESC * sizeof(struct tx_desc));
+    tx_dma = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+    if (!tx_dma) return -1;
+    uint64_t ring = dma_addr_value(tx_dma->dma);
+    tx_ring = tx_dma->cpu;
     for (int i = 0; i < TX_DESC; i++) {
-        tx_buf[i] = (uint8_t *)pmm_alloc();
-        if (!tx_buf[i]) {
-            for (int j = 0; j < i; j++) pmm_free((uint64_t)tx_buf[j]);
-            pmm_free(ring);
-            return -1;
-        }
-        tx_ring[i].addr = (uint64_t)tx_buf[i];
-        tx_ring[i].status = TXD_STA_DD;          /* mark free */
+        struct dma_buffer *b = dma_alloc_coherent(&nic_dma, 4096, 4096, 0);
+        if (!b) return -1;
+        tx_buf[i] = b->cpu;
+        tx_ring[i].addr = dma_addr_value(b->dma);
+        tx_ring[i].status = TXD_STA_DD;
     }
     reg_write(REG_TDBAL, (uint32_t)(ring & 0xFFFFFFFF));
     reg_write(REG_TDBAH, (uint32_t)(ring >> 32));
@@ -519,7 +531,7 @@ static int tx_init(void)
     reg_write(REG_TDT, 0);
     tx_cur = 0;
     reg_write(REG_TIPG, 10 | (8 << 10) | (6 << 20));
-    reg_write(REG_TCTL, TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT));
+
     return 0;
 }
 
@@ -527,7 +539,7 @@ static int tx_init(void)
  * otherwise serialized. All current paths (eth/ip/tcp/udp/icmp send) do. */
 static int e1000_tx_frame(const void *frame, uint16_t len)
 {
-    if (!mmio || len > BUF_SIZE) return -1;
+    if (!mmio || nic_dma.blocked || len > BUF_SIZE) return -1;
     uint32_t i = tx_cur;
     /* Wait for this descriptor to be free (its previous send done). */
     int spins = 0;
@@ -545,7 +557,8 @@ static int e1000_tx_frame(const void *frame, uint16_t len)
 
 static int e1000_rx_drain(net_rx_cb cb)
 {
-    if (!mmio) return 0;
+    NET_GUARD;
+    if (!mmio || nic_dma.blocked) return 0;
     struct e1000_pending rep; rep.link = rep.stats = 0; rep.goct_note = 0; rep.link_status = 0; rep.irq = rep.dirq = 0;
 #ifdef E1000_REG_PROBE
     rep.probe = 0;
@@ -649,8 +662,10 @@ static void e1000_irq_on(net_rx_cb cb)
  * nested inside a kernel sti window) where net_rx_schedule drains inline. */
 static void e1000_isr(void)
 {
+    NET_GUARD;
     if (!mmio) return;
     uint32_t icr = reg_read(REG_ICR);            /* read-to-clear the causes */
+    if (!icr || icr == UINT32_MAX) return;       /* shared INTx, or removed PCI function */
     g_irq++;
     /* NOT reported here. kprintf from the NIC vector runs with IF=0 and the BKL
      * held, and would put a VGA scroll inside an interrupt; the flag is picked
@@ -668,7 +683,9 @@ static struct netdev e1000_dev = {
 int e1000_probe(struct device *dev)
 {
     if (mmio) return -1;                          /* one NIC bound at a time */
-    dev_enable(dev, 1);                           /* memory decode + bus master (DMA) */
+    if (dev_enable_checked(dev, 0) != 0) {
+        kprintf("[e1000] PCI Command decode rejected\n"); return -1;
+    }
     /* BAR0 is the register window. dev_bar_map maps exactly the size the BAR
      * decodes, identity + uncached -- the old code mapped a hardcoded 128 KiB,
      * which is right for a 82540EM and a guess anywhere else. */
@@ -693,6 +710,11 @@ int e1000_probe(struct device *dev)
     e1000_dev.mac[2] = (ral >> 16) & 0xFF; e1000_dev.mac[3] = (ral >> 24) & 0xFF;
     e1000_dev.mac[4] = rah & 0xFF;        e1000_dev.mac[5] = (rah >> 8) & 0xFF;
 
+    if (reg_read(REG_CTRL) & CTRL_RST) {
+        kprintf("[e1000] reset timeout\n");
+        return -1;
+    }
+
     /* Program receive-address filter 0 with our MAC and the Address-Valid bit
      * (RAH bit 31). Without AV the NIC drops unicast frames (only BAM broadcasts
      * pass), so ARP/ICMP replies addressed to us would never be received. */
@@ -700,11 +722,24 @@ int e1000_probe(struct device *dev)
               ((uint32_t)e1000_dev.mac[2] << 16) | ((uint32_t)e1000_dev.mac[3] << 24));
     reg_write(REG_RAH0, (uint32_t)e1000_dev.mac[4] | ((uint32_t)e1000_dev.mac[5] << 8) | (1u << 31));
 
+    dma_device_init(&nic_dma, "e1000", DMA_MASK_64);
     if (rx_init() != 0 || tx_init() != 0) {
+        dma_discard_unpublished();
+        rx_ring = NULL; tx_ring = NULL;
         kprintf("[e1000] descriptor ring allocation failed\n");
         mmio = NULL;
         return -1;
     }
+
+    if (dev_enable_checked(dev, 1) != 0) {
+        kprintf("[e1000] PCI bus-master enable rejected\n");
+        dma_discard_unpublished();
+        rx_ring = NULL; tx_ring = NULL; mmio = NULL;
+        return -1;
+    }
+    dma_publish_buffers();
+    reg_write(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_MPE | RCTL_SECRC | RCTL_BSIZE_2048);
+    reg_write(REG_TCTL, TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT));
 
     /* QEMU only re-offers a packet that arrived while RX was disabled when the
      * guest pokes the NIC; re-write RDT so any queued frame is flushed to us. */
@@ -777,4 +812,26 @@ int e1000_probe(struct device *dev)
     kprintf("[e1000] up: mmio=%p\n", (void *)(uintptr_t)base);
     dev_set_drvdata(dev, &e1000_dev);
     return 0;
+}
+
+/* The existing device-model removal hook stops DMA before releasing backing
+ * pages. A controller that cannot acknowledge reset keeps every allocation. */
+void e1000_remove(struct device *dev)
+{
+    NET_GUARD;
+    (void)dev;
+    if (!mmio) return;
+    reg_write(REG_IMC, 0xffffffffu);
+    reg_write(REG_CTRL, reg_read(REG_CTRL) | CTRL_RST);
+    for (unsigned i = 0; i < 1000000; i++) {
+        if (!(reg_read(REG_CTRL) & CTRL_RST)) goto stopped;
+    }
+    dma_device_quarantine(&nic_dma);
+    kprintf("[e1000] reset unconfirmed: DMA quarantined\n");
+    return;
+stopped:
+    dma_device_quiesced(&nic_dma);
+    dma_discard_unpublished(); /* now quiesced, including previously owned pages */
+    mmio = NULL;
+    rx_ring = NULL; tx_ring = NULL;
 }

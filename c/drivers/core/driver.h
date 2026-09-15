@@ -96,6 +96,8 @@ struct driver;
 struct dev_match;
 
 struct device {
+    unsigned unbinding; /* CAS selects the one teardown owner */
+    unsigned bind_busy; /* one probe/remove callback owner; registry lock is separate */
     char     name[DEV_NAME_LEN];    /* "0000:00:03.0" -- seg:bus:slot.func */
     uint8_t  bus_type;              /* DEV_BUS_* */
 
@@ -235,9 +237,15 @@ void dev_dump(void);
  * its base address, or 0 if that BAR is absent / is an I/O BAR. Idempotent. */
 uint64_t dev_bar_map(struct device *dev, int idx);
 
-/* Enable/disable the device's response to memory + I/O cycles and its ability
- * to act as a DMA master (PCI command register). Every probe() that touches a
- * BAR or does DMA must call dev_enable(). */
+/* Enable/disable the device's response to its enumerated BAR spaces and its ability
+ * to act as a DMA master (PCI Command register). checked(false) explicitly
+ * clears bus mastering, so a driver can map/reset first and grant DMA only
+ * after the controller is stopped and its own queues are ready.  Success proves
+ * only the Command readback; controller/DMA ownership needs a driver-specific
+ * acknowledgement.  Every new probe must check the return before its first BAR
+ * access or DMA publication.  The void wrappers remain for legacy callers. */
+int  dev_enable_checked(struct device *dev, int bus_master);
+int  dev_disable_checked(struct device *dev);
 void dev_enable(struct device *dev, int bus_master);
 void dev_disable(struct device *dev);
 
@@ -252,7 +260,10 @@ typedef void (*irq_handler_t)(void *arg);
  * The handler runs in interrupt context on the BSP with the BKL held; EOI is
  * sent for you. It must not block and must not use floating point. */
 int  dev_irq_request(struct device *dev, irq_handler_t fn, void *arg, const char *name);
-void dev_irq_release(struct device *dev);
+/* Returns 0 only after the hardware source can no longer target irq_vec and
+ * the vector has drained.  On -1 the ownership fields and callback remain
+ * live, so dev_unbind must not run the driver's remove callback. */
+int  dev_irq_release(struct device *dev);
 
 /* Delivery count for dev's vector (0 if unwired). Tests assert on this. */
 uint64_t dev_irq_count(const struct device *dev);
