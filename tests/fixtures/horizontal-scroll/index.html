@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Horizontal scrolling</title>
+<style>body{margin:0;font:18px sans-serif}.wide{width:1800px;height:700px;background:#eef3ff}button{font-size:18px}.right{position:absolute;left:1450px;top:100px;width:300px}.left{padding:20px}.readout{background:white;border:1px solid #345;padding:10px}.cover{position:absolute;left:1480px;top:250px;width:50px;height:30px;background:red}</style></head>
+<body><div class="wide"><div class="left"><h1>Horizontal scroll fixture</h1>
+<p>Use Shift + wheel, Right arrow, or drag the bottom scrollbar.</p>
+<button id="move">Scroll to right with JavaScript</button>
+<button id="bounded">Two scroll events, without nested dispatch</button>
+<p class="readout" id="leftState">At origin</p></div>
+<div class="right"><h2>RIGHT EDGE REACHED</h2><p class="readout" id="rightState">At origin</p>
+<a href="target.html">json next</a><p><input size="20" value="editable right field"></p>
+<select><option>First</option><option>Second</option></select></div></div>
+<script>
+var depth=0,events=0,bounded=false;
+function state(extra){var s='scrollX='+window.scrollX+' pageXOffset='+window.pageXOffset+' events='+events+' '+extra;
+document.getElementById('leftState').textContent=s;document.getElementById('rightState').textContent=s;console.log(s);}
+document.addEventListener('scroll',function(){depth++;events++;if(depth>1)console.error('NESTED_SCROLL_EVENT');
+if(bounded && events===1)window.scrollTo(900,0);state('depth='+depth);depth--;});
+document.getElementById('move').onclick=function(){window.scrollTo(900,0);state('script request');};
+document.getElementById('bounded').onclick=function(){events=0;bounded=true;window.scrollTo(100,0);};
+document.addEventListener('click',function(e){console.log('click clientX='+e.clientX+' pageX='+e.pageX);});
+console.log('FETCH_READY='+typeof fetch);
+</script></body></html>

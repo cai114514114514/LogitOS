@@ -503,3 +503,40 @@ test-ime-os-negctl: $(ISO) $(DISK) tests/boot/run-ime-test.sh tests/boot/ime_typ
 # tests/audit-stranded.baseline.
 ci-host: test-ime
 ci-boot: test-ime-os
+
+# Usability exercises both dictionaries, real UI policy and deliberately broken
+# copies. It is a prerequisite of the existing gate, so nobody has to discover
+# another target to cover sentence/partial selection or BPE extraction.
+.PHONY: test-ime-usability
+test-ime: test-ime-usability
+test-ime-usability: test-ime-geometry
+	@python3 tests/unit/ime_usability_test.py --root . --build $(BUILD)/ime-usability
+	@python3 tests/unit/ime_ui_test.py --root . --build $(BUILD)/ime-usability
+
+.PHONY: test-ime-geometry
+test-ime-geometry:
+	@python3 tests/unit/ime_geometry_test.py
+
+.PHONY: test-ime-usability-os
+test-ime-usability-os: test-ime-geometry $(ISO) $(DISK)
+	@python3 tests/boot/run-ime-usability.py $(ISO) $(DISK) $(BUILD)/ime-guest
+ci-boot: test-ime-usability-os
+
+# FS_FILES lists the directory, whose mtime does not change when a contained
+# file is rewritten. Name the dictionary explicitly so a rebuild reaches the
+# product disk instead of leaving the old words in an apparently current image.
+fsroot/ime/pinyin-qwen.dat: c/lib/ime/build_dictionary.py c/lib/ime/qwen35-zh.tsv.gz fsroot/ime/pinyin.dat tools/mkpinyin.py c/lib/ime/pinyin_syllables.inc
+	@python3 c/lib/ime/build_dictionary.py --root . --tsv c/lib/ime/qwen35-zh.tsv.gz --output $@
+$(DISK): fsroot/ime/pinyin-qwen.dat
+
+# License sources live in LICENSES; only their guest-facing copies are staged
+# in fsroot/licenses. Include the directory even on a clean tree, before the
+# copy recipes have created it, so the first disk build also packs the notices.
+FS_FILES := $(filter-out fsroot/licenses,$(FS_FILES)) fsroot/licenses
+fsroot/licenses/ime/Qwen3.5.txt: LICENSES/Qwen3.5.txt
+	@mkdir -p $(@D)
+	@cp $< $@
+fsroot/licenses/ime/Qwen3.5-NOTICE.md: LICENSES/Qwen3.5-NOTICE.md
+	@mkdir -p $(@D)
+	@cp $< $@
+$(DISK): fsroot/licenses/ime/Qwen3.5.txt fsroot/licenses/ime/Qwen3.5-NOTICE.md

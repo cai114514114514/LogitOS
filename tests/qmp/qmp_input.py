@@ -134,7 +134,11 @@ def qcmd(d):
 
 
 def send(*events):
-    qcmd({"execute": "input-send-event", "arguments": {"events": list(events)}})
+    reply = qcmd({"execute": "input-send-event", "arguments": {"events": list(events)}})
+    if reply is None:
+        die("QMP disconnected while sending input-send-event")
+    if "error" in reply:
+        die("QMP input-send-event failed: " + json.dumps(reply["error"], sort_keys=True))
 
 
 def rel(dx, dy):
@@ -160,16 +164,63 @@ def events_since(mark):
 
 
 def stats():
-    """Run evqstat.as on the guest shell and parse the WM's event counters."""
+    """Run evqstat.as and parse both stages of the input pipeline."""
     mark = len(log)
     ser.sendall(b"as /usr/as/examples/evqstat.as\n")
     end = time.time() + 60
     while time.time() < end:
         pump(0.3)
-        m = re.search(r"Events (\d+) queued, (\d+) merged, (\d+) dropped", log[mark:])
-        if m:
-            return tuple(int(g) for g in m.groups())
-    die("evqstat.as printed no Events line")
+        # evqstat gained an evicted-motion counter when semantic events started
+        # displacing stale pointer motion in a full ring.  Keep accepting the
+        # older three-counter spelling so this harness can still be used while
+        # bisecting, but do not mistake the new field for a missing Events line.
+        event_m = re.search(
+            r"Events (\d+) queued, (\d+) merged, "
+            r"(?:(\d+) evicted-motion, )?(\d+) dropped",
+            log[mark:])
+        raw_m = re.search(
+            r"Raw-input (\d+) queued, (\d+) merged, (\d+) evicted-motion, "
+            r"(\d+) dropped-motion, (\d+) dropped-semantic, hwm (\d+), "
+            r"backlog-batches (\d+)",
+            log[mark:])
+        if event_m and raw_m:
+            return {
+                "events": {
+                    "queued": int(event_m.group(1)),
+                    "merged": int(event_m.group(2)),
+                    "evicted_motion": int(event_m.group(3) or 0),
+                    "dropped": int(event_m.group(4)),
+                },
+                "raw": {
+                    "queued": int(raw_m.group(1)),
+                    "merged": int(raw_m.group(2)),
+                    "evicted_motion": int(raw_m.group(3)),
+                    "dropped_motion": int(raw_m.group(4)),
+                    "dropped_semantic": int(raw_m.group(5)),
+                    "high_watermark": int(raw_m.group(6)),
+                    "backlog_batches": int(raw_m.group(7)),
+                },
+            }
+    die("evqstat.as did not print both Events and Raw-input lines")
+
+
+def stats_delta(after, before):
+    """Subtract monotonic counters while leaving gauges out of the result."""
+    fields = {
+        "events": ("queued", "merged", "evicted_motion", "dropped"),
+        "raw": ("queued", "merged", "evicted_motion",
+                "dropped_motion", "dropped_semantic", "backlog_batches"),
+    }
+    delta = {"events": {}, "raw": {}}
+    for stage, names in fields.items():
+        for name in names:
+            value = after[stage][name] - before[stage][name]
+            if value < 0:
+                die(f"{stage}.{name} counter went backwards: "
+                    f"{before[stage][name]} -> {after[stage][name]}")
+            delta[stage][name] = value
+    delta["raw"]["high_watermark"] = after["raw"]["high_watermark"]
+    return delta
 
 
 # ---------------------------------------------------------------- boot + app
@@ -185,27 +236,69 @@ pump(1)
 
 # ------------------------------------------------------- 1. the event stream
 mark = len(log)
+abi_deadline = time.time() + 30
 
-send(*rel(4, 3)); pump(0.25)               # motion
-send(*rel(-4, -3)); pump(0.25)
 
-send(btn("left", True)); pump(0.4)         # press / release
-send(btn("left", False)); pump(0.4)
+def await_abi(ready, what):
+    """Wait for a guest-observed fact; input is never resent on timeout."""
+    while time.time() < abi_deadline:
+        evs = events_since(mark)
+        if ready(evs):
+            return evs
+        pump(min(0.2, max(0, abi_deadline - time.time())))
+    die(f"timed out waiting for {what}; guest delivered: {events_since(mark)}")
 
-send(btn("right", True)); pump(0.4)
-send(btn("right", False)); pump(0.4)
 
-send(btn("wheel-down", True)); send(btn("wheel-down", False)); pump(0.4)
-send(btn("wheel-up", True)); send(btn("wheel-up", False)); pump(0.4)
+send(*rel(4, 3))                            # motion, then restore the target
+await_abi(lambda xs: sum(e[0] == EV_MOUSE_MOVE for e in xs) >= 1,
+          "the first EV_MOUSE_MOVE")
+send(*rel(-4, -3))
+await_abi(lambda xs: sum(e[0] == EV_MOUSE_MOVE for e in xs) >= 2,
+          "the restoring EV_MOUSE_MOVE")
 
-send(key("shift", True)); pump(0.2)        # modifier carried on a click
-send(btn("left", True)); pump(0.4)
-send(btn("left", False)); pump(0.4)
-send(key("shift", False)); pump(0.5)
+send(btn("left", True))                    # press / release
+await_abi(lambda xs: any(e[0] == EV_MOUSE and e[4] == EV_BTN_LEFT and e[3] == 0
+                         for e in xs),
+          "an unmodified left-button press")
+send(btn("left", False))
+await_abi(lambda xs: any(e[0] == EV_MOUSE_UP and e[4] == EV_BTN_LEFT
+                         for e in xs),
+          "a left-button release")
+
+send(btn("right", True))
+await_abi(lambda xs: any(e[0] == EV_MOUSE_R and e[4] == EV_BTN_RIGHT
+                         for e in xs),
+          "a right-button press")
+send(btn("right", False))
+await_abi(lambda xs: any(e[0] == EV_MOUSE_UP and e[4] == EV_BTN_RIGHT
+                         for e in xs),
+          "a right-button release")
+
+send(btn("wheel-down", True)); send(btn("wheel-down", False))
+await_abi(lambda xs: any(e[0] == EV_WHEEL and e[5] > 0 for e in xs),
+          "a positive EV_WHEEL")
+send(btn("wheel-up", True)); send(btn("wheel-up", False))
+await_abi(lambda xs: any(e[0] == EV_WHEEL and e[5] < 0 for e in xs),
+          "a negative EV_WHEEL")
+
+# A modifier make code deliberately emits no event of its own. Prove that the
+# guest has processed Shift with a harmless key before relying on it for the
+# cross-device click; a host sleep cannot establish that under a loaded TCG.
+send(key("shift", True))
+send(key("x", True), key("x", False))
+await_abi(lambda xs: any(e[0] == EV_KEY and e[3] & EV_MOD_SHIFT for e in xs),
+          "a shifted EV_KEY")
+send(btn("left", True))
+await_abi(lambda xs: any(e[0] == EV_MOUSE and e[4] == EV_BTN_LEFT and
+                         e[3] & EV_MOD_SHIFT for e in xs),
+          "a shifted left-button press")
+send(btn("left", False))
+await_abi(lambda xs: any(e[0] == EV_MOUSE_UP and e[4] == EV_BTN_LEFT and
+                         e[3] & EV_MOD_SHIFT for e in xs),
+          "a shifted left-button release")
+send(key("shift", False))
 
 evs = events_since(mark)
-if not evs:
-    die("the app received no events at all")
 
 
 def find(pred, what):
@@ -224,6 +317,7 @@ find(lambda e: e[0] == EV_MOUSE_R and e[4] == EV_BTN_RIGHT, "EV_MOUSE_R with but
 find(lambda e: e[0] == EV_MOUSE_UP and e[4] == EV_BTN_RIGHT, "EV_MOUSE_UP with button=RIGHT")
 find(lambda e: e[0] == EV_WHEEL and e[5] > 0, "EV_WHEEL scrolling down (positive)")
 find(lambda e: e[0] == EV_WHEEL and e[5] < 0, "EV_WHEEL scrolling up (negative)")
+find(lambda e: e[0] == EV_KEY and e[3] & EV_MOD_SHIFT, "a shifted EV_KEY")
 find(lambda e: e[0] == EV_MOUSE and e[3] & EV_MOD_SHIFT, "a shifted EV_MOUSE (mods carries SHIFT)")
 
 # Coordinates are window-local. The window is at (166,126) with a 30px titlebar
@@ -259,12 +353,25 @@ t0 = time.time()
 for n in range(SAMPLES):
     dx, dy = JITTER[n % 4]
     send(*rel(dx, dy))
-print(f"flooded {SAMPLES} pointer samples in {time.time() - t0:.1f}s")
+print(f"requested {SAMPLES} QMP pointer samples in {time.time() - t0:.1f}s")
 pump(3)
 
 after = stats()
-d_queued, d_merged, d_dropped = (after[i] - base[i] for i in range(3))
-print(f"ring: queued +{d_queued}, merged +{d_merged}, dropped +{d_dropped}")
+d = stats_delta(after, base)
+event_slots = d["events"]["queued"]
+raw_slots = d["raw"]["queued"]
+total_merged = d["events"]["merged"] + d["raw"]["merged"]
+total_dropped = (d["events"]["dropped"] + d["raw"]["dropped_motion"] +
+                 d["raw"]["dropped_semantic"])
+raw_observed = raw_slots + d["raw"]["merged"] + d["raw"]["dropped_motion"] + \
+               d["raw"]["dropped_semantic"]
+print(f"window ring: queued +{event_slots}, merged +{d['events']['merged']}, "
+      f"evicted-motion +{d['events']['evicted_motion']}, dropped +{d['events']['dropped']}")
+print(f"raw input: queued +{raw_slots}, merged +{d['raw']['merged']}, "
+      f"evicted-motion +{d['raw']['evicted_motion']}, "
+      f"dropped motion/semantic +{d['raw']['dropped_motion']}/"
+      f"{d['raw']['dropped_semantic']}, hwm {d['raw']['high_watermark']}, "
+      f"backlog-batches +{d['raw']['backlog_batches']}")
 
 send(key("q", True), key("q", False))      # events.as quits on 'q'
 pump(2)
@@ -272,23 +379,28 @@ ser.sendall(b"exit\n")
 pump(1)
 proc.kill()
 
-if d_dropped != 0:
-    die(f"{d_dropped} events dropped during the flood -- the ring overflowed")
-if d_merged == 0:
-    die("coalescing never engaged (0 merged), so this run proves nothing about it")
-if d_merged <= d_queued:
-    die(f"only {d_merged} of {d_merged + d_queued} events merged -- coalescing is "
-        "firing occasionally rather than doing the work")
+if total_dropped != 0:
+    die(f"input pipeline dropped {total_dropped} events during the flood "
+        f"(window={d['events']['dropped']}, raw-motion={d['raw']['dropped_motion']}, "
+        f"raw-semantic={d['raw']['dropped_semantic']})")
+if total_merged == 0:
+    die("neither input queue coalesced a motion sample, so this run proves nothing about it")
 
-total = d_merged + d_queued
-# How much of the ring the motion would have taken WITHOUT coalescing, if the app
-# had been mid-repaint the whole time -- which is the case the ring has to
-# survive. Stated as a fraction rather than "it would have overflowed", because
-# how many samples get through depends on host load and a run that only sends 96
-# does not prove overflow; what every run does prove is that motion took
-# d_queued slots instead of `total`.
-print(f"PASS: event ABI verified end to end; {SAMPLES} injected samples -> {total} events "
-      f"reached the ring, {d_merged} merged into the tail, {d_queued} took a slot, "
-      f"0 dropped (unmerged, those {total} would have filled {100 * total // 256}% of the "
-      f"256-slot ring)")
+# QEMU is allowed to throttle the emulated PS/2 device, so SAMPLES is a request
+# count, never a claim that 9000 reports reached the guest. Use only guest
+# counters for the gate. Each merge replaces a slot append at one of the two
+# queue stages. Requiring the final ring's actual appends plus all avoided
+# appends to exceed one whole event-ring capacity proves a substantial absolute
+# workload without requiring either queue to win a scheduler-dependent ratio.
+unmerged_slot_floor = event_slots + total_merged
+if unmerged_slot_floor <= 256:
+    die(f"guest observed too little coalescing work: {event_slots} window slots + "
+        f"{total_merged} merges = {unmerged_slot_floor}, not more than the "
+        "256-slot event-ring capacity")
+
+print(f"PASS: event ABI verified end to end; guest observed {raw_observed} raw pointer "
+      f"reports, appended {raw_slots} raw slots and {event_slots} window slots, "
+      f"merged {total_merged} across both queues, and dropped 0; "
+      f"{event_slots}+{total_merged}={unmerged_slot_floor} exceeds the 256-slot "
+      "event-ring capacity")
 sys.exit(0)

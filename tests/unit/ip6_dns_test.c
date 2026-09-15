@@ -27,10 +27,25 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 #include "net.h"
 #include "eth.h"
 #include "ip6.h"
+
+/* dns.c's ANOMALY-ONLY finalize line (the 2026-09-09 DNS-forgery diagnostic)
+ * calls kprintf; same swallow-into-a-buffer stub ip6_fallback_test.c uses for
+ * the sock.c paths, so a test can also assert on the anomaly text later. */
+static char dns_logbuf[4096];
+static int  dns_loglen;
+void kprintf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    dns_loglen += vsnprintf(dns_logbuf + dns_loglen,
+                            sizeof dns_logbuf - dns_loglen - 1, fmt, ap);
+    va_end(ap);
+}
 
 struct net_config net_cfg = {
     .mac = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 },

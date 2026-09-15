@@ -345,6 +345,28 @@ static void test_v4_only_unchanged(void)
     sock_close(fd, 1);
 }
 
+/* The common page-load path after the first request: the name is already in
+ * the resolver cache, the gateway MAC is already in ARP, and only the SYN is
+ * real work.  The model makes all three facts true at tick zero.  A single
+ * sock_pump() must therefore reach READY without inventing two timer/scheduler
+ * turns between them.  SOCK_NEGCTL_PHASE_PER_POLL restores those empty turns
+ * and makes this exact assertion red (two ticks), while all bytes and final
+ * states would otherwise look correct. */
+static void test_warm_open_has_no_phase_bubbles(void)
+{
+    reset_all();
+    static const char *ans[] = { "::ffff:10.0.2.2" };
+    answers(ans, 1);
+    script("::ffff:10.0.2.2", D_CONNECTS, 0);
+
+    int fd = sock_open("warm.test", 80, 0, 1);
+    CHECK(fd >= 0, "warm socket opened (got %d)", fd);
+    int took = run_until_settled(fd, 10);
+    CHECK(took == 0, "cached DNS + warm ARP reaches READY in one pump (took %d ticks)", took);
+    CHECK(nconn_log == 1, "the eager path still sends exactly one SYN (got %d)", nconn_log);
+    sock_close(fd, 1);
+}
+
 /* ---- 2. the claim that matters -------------------------------------------- */
 
 static void test_v6_blackhole_falls_back(void)
@@ -588,6 +610,7 @@ static void test_concurrent_sockets_independent(void)
 int main(void)
 {
     test_v4_only_unchanged();
+    test_warm_open_has_no_phase_bubbles();
     test_v6_blackhole_falls_back();
     test_v6_refused_falls_back();
     test_v6_refused_after_the_race_started();

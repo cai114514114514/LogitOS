@@ -34,6 +34,9 @@ that reason, and the reason is recorded here because the next chord change will
 be argued from this file.
 """
 import json
+import re
+import struct
+from pathlib import Path
 import os
 import socket
 import subprocess
@@ -41,21 +44,25 @@ import sys
 import tempfile
 import threading
 import time
+from ime_geometry import textedit_frames
 
 if len(sys.argv) != 5:
     sys.exit(__doc__)
 iso, disk, mode, shot = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-if mode not in ("ime", "ascii"):
-    sys.exit("ime_type.py: mode must be 'ime' or 'ascii'")
+if mode not in ("ime", "ascii", "usability"):
+    sys.exit("ime_type.py: mode must be 'ime', 'ascii' or 'usability'")
 
 fd, sock = tempfile.mkstemp(suffix=".qmp"); os.close(fd); os.unlink(sock)
 ser = tempfile.mktemp(suffix=".ser")
 qemu = os.environ.get("QEMU", "qemu-system-x86_64")
 proc = subprocess.Popen([
     qemu, "-cpu", os.environ.get("QEMU_CPU", "max"), "-cdrom", iso,
+    # Input/event ownership must run concurrently in the BKL regression.
+    # Keep a one-core override for diagnosis; default real typing to four CPUs.
+    "-smp", os.environ.get("IME_TEST_SMP", "4"), "-accel", "tcg,thread=multi",
     "-drive", f"file={disk},format=raw,if=none,id=hd0,file.locking=off",
     "-device", "virtio-blk-pci,drive=hd0", "-boot", "d",
-    "-m", "512M", "-vga", "none", "-device", "virtio-gpu-pci",
+    "-m", os.environ.get("IME_TEST_RAM", "512M"), "-vga", "none", "-device", "virtio-gpu-pci",
     "-display", "none", "-no-reboot",
     "-chardev", f"socket,id=ser0,path={ser},server=on,wait=on",
     "-serial", "chardev:ser0",
@@ -194,7 +201,7 @@ json.loads(f.readline()); cmd({"execute": "qmp_capabilities"})
 # file -- containing "nihao " -- which is EXACTLY what the negative control
 # expects. Without this check a broken dictionary makes the positive test fail
 # in a way that reads like a bad candidate rather than a missing file.
-chk(b"[ime] /ime/pinyin.dat" in log and b"pinyin keys" in log,
+chk((b"[ime] /ime/pinyin.dat" in log or b"[ime] /ime/pinyin-qwen.dat" in log) and b"pinyin keys" in log,
     "the kernel loaded /ime/pinyin.dat at boot")
 if fails:
     bail("no dictionary; nothing below would mean anything")
@@ -208,7 +215,10 @@ def dock_x(i, n):
 
 
 launched = False
-for count in (11, 10, 12, 9, 13, 8):
+# Minimal app acceptance disks declare their actual catalog size. Keep the
+# observed "launched TextEdit" assertion; a matching pixel alone is not proof.
+counts = (int(os.environ['IME_TEST_DOCK_COUNT']),) if 'IME_TEST_DOCK_COUNT' in os.environ else (11, 10, 12, 9, 13, 8)
+for count in counts:
     goto(dock_x(1, count), 753); click(); time.sleep(3.0)
     if b"launched TextEdit" in log:
         launched = True
@@ -219,25 +229,66 @@ if not launched:
     bail("no TextEdit")
 time.sleep(2.0)
 
-if mode == "ime":
+if mode != "ascii":
     mark = len(log)
-    shift_key("spc")
+    if mode == "usability":
+        # This harness fixes the guest at 1280x800, 100% UI scale. The live
+        # label position is derived from the WM's menu geometry and the font.
+        goto(1040, 12); click()
+    else:
+        shift_key("spc")
     time.sleep(0.8)
     on = b"pinyin ON" in bytes(log[mark:])
-    chk(on, "Shift+Space reached the guest and turned the IME on")
+    chk(on, "the toggle reached the guest and turned the IME on")
     if not on:
         cmd({"execute": "screendump", "arguments": {"filename": shot}})
         bail("the toggle never arrived -- see the pacing note")
 
-for q in ("n", "i", "h", "a", "o"):
-    key(q)
-time.sleep(0.6)
-cmd({"execute": "screendump", "arguments": {"filename": shot}})   # the bar, mid-composition
-time.sleep(0.4)
-key("spc")                     # commit candidate 1 (or a literal space in ascii mode)
-time.sleep(0.8)
+if mode != "usability":
+    for q in ("n", "i", "h", "a", "o"):
+        key(q)
+    time.sleep(0.6)
+    cmd({"execute": "screendump", "arguments": {"filename": shot}})   # the bar, mid-composition
+    time.sleep(0.4)
+    key("spc")                     # commit candidate 1 (or a literal space in ascii mode)
+    time.sleep(0.8)
+else:
+    chk(b"[ime] /ime/pinyin-qwen.dat" in log, "expanded Qwen dictionary is actually loaded")
+    if fails: bail("wrong runtime dictionary")
+    def spelling(s):
+        for q in s: key(q)
+    spelling("nihao"); key("comma")
+    spelling("woaizhongguo"); key("spc"); key("dot")
+    spelling("nihaom"); key("1"); spelling("a"); key("spc"); shift_key("slash")
+    spelling("nvhai"); key("spc")
+    spelling("shurufa"); key("spc")
+    spelling("erweima"); key("spc")
+    spelling("xian"); time.sleep(0.8)
+    cmd({"execute":"screendump","arguments":{"filename":shot}})
+    # The window location comes from the guest; text-row spacing comes from
+    # the same hhea/head metrics text_line_height reads, not a guessed pixel.
+    # The title is the document name (untitled.txt), not the app name. Limit
+    # the match to frames announced AFTER the observed TextEdit launch, so a
+    # Finder/Clock frame cannot supply a plausible but wrong click coordinate.
+    # The original basename-only title match is corrected in the shared
+    # parser: root-path document identity now names this /untitled.txt.
+    frames=textedit_frames(bytes(log))
+    if not frames: bail("no TextEdit geometry for candidate click")
+    wx,wy=map(int,frames[-1])
+    font=Path("fsroot/fonts/ui.ttf").read_bytes()
+    tables={}
+    for i in range(struct.unpack_from(">H",font,4)[0]):
+        at=12+16*i; tag,_,off,size=struct.unpack_from(">4sIII",font,at);tables[tag]=font[off:off+size]
+    ascent,descent,gap=struct.unpack_from(">hhh",tables[b"hhea"],4)
+    units=struct.unpack_from(">H",tables[b"head"],18)[0]
+    lh=(ascent-descent+gap)*16//units
+    # BAR_PAD=10, BAR_GAP=4, titlebar=30 and anchor gap=6 at 100%.
+    goto(wx+20,wy+30+6+10+lh*9+4+lh//2);click()
+    time.sleep(0.6)
 ctrl_key("s")                  # TextEdit saves to untitled.txt
 time.sleep(2.5)
+if mode == "usability":
+    cmd({"execute":"screendump","arguments":{"filename":shot+".saved.ppm"}})
 
 # Quiesce: the serial console has its own /bin/sh, and poweroff unmounts. LogitFS
 # commits per write (see log_commit's barrier comment), so the bytes are on media

@@ -73,7 +73,12 @@ void serial_putc(char c) { (void)c; abort(); }   /* never driven: no tty in this
 
 /* --- locks / per-cpu / clock: single-threaded, uncontended ------------- */
 
-spinlock_t g_bkl;
+/* BKL-free file.c uses a per-description sleeping lock. This fixture is
+ * deliberately single-threaded: abort on contention instead of simulating it. */
+void mutex_init(struct mutex *m) { memset(m, 0, sizeof *m); }
+void mutex_lock(struct mutex *m) { assert(!m->owner); m->owner = (struct thread *)(uintptr_t)1; }
+void mutex_unlock(struct mutex *m) { assert(m->owner); m->owner = NULL; }
+void sched_poll_wait(void) { abort(); }
 
 uint64_t spin_lock_irqsave(spinlock_t *l) { spin_lock(l); return 0; }
 void spin_unlock_irqrestore(spinlock_t *l, uint64_t f) { (void)f; spin_unlock(l); }

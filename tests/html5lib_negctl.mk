@@ -54,3 +54,5 @@ test-html5lib-negctl: $(BUILD)/libcss_host.a build/negctl/html_tree.c
 	    grep 'NEW FAILURE' $(BUILD)/html5lib_negctl.log | head -$(if $(V),$(V),6); \
 	    grep -E 'html5lib tree-construction:' $(BUILD)/html5lib_negctl.log; \
 	 fi
+
+-include tests/html_rawtext_perf.mk
