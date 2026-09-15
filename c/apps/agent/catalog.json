@@ -3,7 +3,7 @@
     "name": "files",
     "id": "os.logit.finder",
     "path": "/files.aex",
-    "source": "c/apps/gui/files.c",
+    "source": "c/apps/gui/files/files.c",
     "kind": "gui",
     "domain": "Finder: enumerate and read the explicitly selected UTF-8 materials, retaining source locations.",
     "actions": [
@@ -14,7 +14,7 @@
     "name": "textedit",
     "id": "os.logit.textedit",
     "path": "/textedit.aex",
-    "source": "c/apps/gui/textedit.c",
+    "source": "c/apps/gui/textedit/textedit.c",
     "kind": "gui",
     "domain": "TextEdit: write and revise the versioned UTF-8 document with verifiable source citations.",
     "actions": [
@@ -27,7 +27,7 @@
     "name": "assistant",
     "id": "os.logit.assistant",
     "path": "/assistant.aex",
-    "source": "c/apps/gui/assistant.c",
+    "source": "c/apps/gui/assistant/assistant.c",
     "kind": "gui",
     "domain": "System assistant: coordinate already authorized tasks and show their durable state.",
     "actions": [
@@ -66,7 +66,7 @@
     "name": "as",
     "id": "os.logit.as",
     "path": "/bin/as",
-    "source": "c/apps/as/as.c",
+    "source": "c/apps/as/cli/main.c",
     "kind": "cli",
     "domain": "as: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -102,7 +102,7 @@
     "name": "ch",
     "id": "os.logit.ch",
     "path": "/ch.aex",
-    "source": "c/apps/gui/ch.c",
+    "source": "c/apps/gui/ch/ch.c",
     "kind": "gui",
     "domain": "ch: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -150,7 +150,7 @@
     "name": "clock",
     "id": "os.logit.clock",
     "path": "/clock.aex",
-    "source": "c/apps/gui/clock.c",
+    "source": "c/apps/clock/main.c",
     "kind": "gui",
     "domain": "Clock: explain the supplied current clock and plan schedules. Scheduling a reminder is not yet an executable action.",
     "actions": [
@@ -270,7 +270,7 @@
     "name": "gallery",
     "id": "os.logit.gallery",
     "path": "/gallery.aex",
-    "source": "c/apps/gui/gallery.c",
+    "source": "c/apps/gui/gallery/gallery.c",
     "kind": "gui",
     "domain": "gallery: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
@@ -282,7 +282,7 @@
     "name": "greeter",
     "id": "os.logit.greeter",
     "path": "/sbin/greeter.aex",
-    "source": "c/apps/gui/greeter.c",
+    "source": "c/apps/gui/greeter/greeter.c",
     "kind": "gui",
     "domain": "Sign in: explain the sign-in workflow. Passwords and authentication tokens are never application context.",
     "actions": [
@@ -378,7 +378,7 @@
     "name": "monitor",
     "id": "os.logit.monitor",
     "path": "/monitor.aex",
-    "source": "c/apps/gui/monitor.c",
+    "source": "c/apps/gui/monitor/monitor.c",
     "kind": "gui",
     "domain": "Activity Monitor: explain the supplied measured process and resource data; do not invent missing measurements or terminate processes.",
     "actions": [
@@ -510,7 +510,7 @@
     "name": "preview",
     "id": "os.logit.preview",
     "path": "/preview.aex",
-    "source": "c/apps/gui/preview.c",
+    "source": "c/apps/gui/preview/preview.c",
     "kind": "gui",
     "domain": "Preview: explain media metadata supplied by the app. Pixels and audio are not available to this agent.",
     "actions": [
@@ -630,7 +630,7 @@
     "name": "settings",
     "id": "os.logit.settings",
     "path": "/settings.aex",
-    "source": "c/apps/gui/settings.c",
+    "source": "c/apps/gui/settings/settings.c",
     "kind": "gui",
     "domain": "Settings: explain the supplied visible preferences and draft a configuration change for review. Do not change settings.",
     "actions": [
@@ -750,7 +750,7 @@
     "name": "studio",
     "id": "os.logit.studio",
     "path": "/studio.aex",
-    "source": "c/apps/gui/studio.c",
+    "source": "c/apps/gui/studio/studio.c",
     "kind": "gui",
     "domain": "Code Studio: review the supplied unsaved AetherScript source and draft code changes. Do not claim to have run code.",
     "actions": [
@@ -774,7 +774,7 @@
     "name": "terminal",
     "id": "os.logit.terminal",
     "path": "/terminal.aex",
-    "source": "c/apps/gui/terminal.c",
+    "source": "c/apps/gui/terminal/terminal.c",
     "kind": "gui",
     "domain": "Terminal: explain the supplied explicitly selected command text. Do not execute commands or assume access to scrollback.",
     "actions": [
@@ -894,7 +894,7 @@
     "name": "widgets",
     "id": "os.logit.widgets",
     "path": "/widgets.aex",
-    "source": "c/apps/gui/widgets.c",
+    "source": "c/apps/gui/widgets/widgets.c",
     "kind": "gui",
     "domain": "widgets: analyze explicitly supplied input in this application domain and draft a textual result. Access to files, devices, the network and command execution is not granted.",
     "actions": [
