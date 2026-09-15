@@ -114,6 +114,10 @@ BOOTX64_PCIDE_SKIP_EFI := $(EFI_DIR)/BOOTX64-pcide-skip.EFI
 BOOTX64_PCIDE_LATE_EFI := $(EFI_DIR)/BOOTX64-pcide-late.EFI
 BOOTX64_LA57_EFI     := $(EFI_DIR)/BOOTX64-la57.EFI
 BOOTX64_LA57_SKIP_EFI := $(EFI_DIR)/BOOTX64-la57-skip.EFI
+BOOTX64_NATIVE_EFI := $(EFI_DIR)/BOOTX64-native.EFI
+BOOTX64_NATIVE_BADVER_EFI := $(EFI_DIR)/BOOTX64-native-bad-version.EFI
+BOOTX64_NATIVE_HIGHINFO_EFI := $(EFI_DIR)/BOOTX64-native-high-info.EFI
+BOOTX64_NATIVE_EARLYEBS_EFI := $(EFI_DIR)/BOOTX64-native-early-ebs.EFI
 
 ESP_IMG          := $(BUILD)/esp.img
 ESP_PYFAT_IMG    := $(BUILD)/esp-pyfat.img
@@ -123,6 +127,20 @@ ESP_PCIDE_SKIP_IMG := $(BUILD)/esp-pcide-skip.img
 ESP_PCIDE_LATE_IMG := $(BUILD)/esp-pcide-late.img
 ESP_LA57_IMG      := $(BUILD)/esp-la57.img
 ESP_LA57_SKIP_IMG := $(BUILD)/esp-la57-skip.img
+ESP_NATIVE_IMG := $(BUILD)/esp-native.img
+ESP_NATIVE_BADVER_IMG := $(BUILD)/esp-native-bad-version.img
+ESP_NATIVE_HIGHINFO_IMG := $(BUILD)/esp-native-high-info.img
+ESP_NATIVE_EARLYEBS_IMG := $(BUILD)/esp-native-early-ebs.img
+
+# Native-loader builds select logit_native_start as ELF e_entry. Reuse the
+# already-authoritative BIOS-native kernel rule instead of spelling the link
+# line a second time; the order-only directory fixes the otherwise-unobservable
+# direct-target failure where lld was asked to create a file in no directory.
+UEFI_NATIVE_KERNEL := $(BUILD)/bios-native/kernel-dump.elf
+$(UEFI_NATIVE_KERNEL): | $(BUILD)/bios-native/
+
+$(BUILD)/bios-native/:
+	@mkdir -p $@
 
 $(BOOTX64_EFI): $(EFI_SRC)
 	@test -f c/boot/efi/build.sh || { \
@@ -169,6 +187,25 @@ $(BOOTX64_LA57_SKIP_EFI): $(EFI_SRC)
 	@mkdir -p $(EFI_DIR)
 	EFI_OUT=$(BOOTX64_LA57_SKIP_EFI) EFI_CPPFLAGS="-DEFI_FORCE_LA57_AFTER_PG -DEFI_LA57_TEST_ASSERT_CLEAR -DEFI_LA57_NEGCTL_SKIP_CLEAR" bash c/boot/efi/build.sh
 
+# EFI_NATIVE selects the native v1 block and direct long-mode handoff. With no
+# flag, BOOTX64_EFI remains the shipping MB2/descent build. The three following
+# images are executable controls, not alternate production policies.
+$(BOOTX64_NATIVE_EFI): $(EFI_SRC)
+	@mkdir -p $(EFI_DIR)
+	EFI_OUT=$@ EFI_CPPFLAGS="-DEFI_NATIVE" bash c/boot/efi/build.sh
+
+$(BOOTX64_NATIVE_BADVER_EFI): $(EFI_SRC)
+	@mkdir -p $(EFI_DIR)
+	EFI_OUT=$@ EFI_CPPFLAGS="-DEFI_NATIVE -DEFI_NATIVE_BAD_VERSION" bash c/boot/efi/build.sh
+
+$(BOOTX64_NATIVE_HIGHINFO_EFI): $(EFI_SRC)
+	@mkdir -p $(EFI_DIR)
+	EFI_OUT=$@ EFI_CPPFLAGS="-DEFI_NATIVE -DEFI_NATIVE_INFO_ABOVE_MAP" bash c/boot/efi/build.sh
+
+$(BOOTX64_NATIVE_EARLYEBS_EFI): $(EFI_SRC)
+	@mkdir -p $(EFI_DIR)
+	EFI_OUT=$@ EFI_CPPFLAGS="-DEFI_NATIVE -DEFI_NATIVE_EBS_EARLY" bash c/boot/efi/build.sh
+
 $(ESP_IMG): $(BOOTX64_EFI) $(KERNEL) tools/mkesp.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkesp.py $@ --efi $(BOOTX64_EFI) --kernel $(KERNEL)
@@ -204,6 +241,80 @@ $(ESP_LA57_SKIP_IMG): $(BOOTX64_LA57_SKIP_EFI) $(KERNEL) tools/mkesp.py
 	@mkdir -p $(BUILD)
 	python3 tools/mkesp.py $@ --efi $(BOOTX64_LA57_SKIP_EFI) --kernel $(KERNEL)
 
+$(ESP_NATIVE_IMG): $(BOOTX64_NATIVE_EFI) $(UEFI_NATIVE_KERNEL) tools/mkesp.py
+	@mkdir -p $(BUILD)
+	python3 tools/mkesp.py $@ --efi $(BOOTX64_NATIVE_EFI) --kernel $(UEFI_NATIVE_KERNEL)
+
+$(ESP_NATIVE_BADVER_IMG): $(BOOTX64_NATIVE_BADVER_EFI) $(UEFI_NATIVE_KERNEL) tools/mkesp.py
+	@mkdir -p $(BUILD)
+	python3 tools/mkesp.py $@ --efi $(BOOTX64_NATIVE_BADVER_EFI) --kernel $(UEFI_NATIVE_KERNEL)
+
+$(ESP_NATIVE_HIGHINFO_IMG): $(BOOTX64_NATIVE_HIGHINFO_EFI) $(UEFI_NATIVE_KERNEL) tools/mkesp.py
+	@mkdir -p $(BUILD)
+	python3 tools/mkesp.py $@ --efi $(BOOTX64_NATIVE_HIGHINFO_EFI) --kernel $(UEFI_NATIVE_KERNEL)
+
+$(ESP_NATIVE_EARLYEBS_IMG): $(BOOTX64_NATIVE_EARLYEBS_EFI) $(UEFI_NATIVE_KERNEL) tools/mkesp.py
+	@mkdir -p $(BUILD)
+	python3 tools/mkesp.py $@ --efi $(BOOTX64_NATIVE_EARLYEBS_EFI) --kernel $(UEFI_NATIVE_KERNEL)
+
+# OVMF is packaged under /usr/share on Linux and as split 3.5-MiB/528-KiB
+# pflash files by Homebrew. The old runner hard-codes only the Linux pair; this
+# gate names both layouts so "firmware absent" is a loud SKIP, not a macOS
+# failure unrelated to the loader. Callers may still override either path.
+UEFI_NATIVE_OVMF_CODE ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_CODE_4M.fd /opt/homebrew/share/qemu/edk2-x86_64-code.fd /usr/local/share/qemu/edk2-x86_64-code.fd))
+UEFI_NATIVE_OVMF_VARS ?= $(firstword $(wildcard /usr/share/OVMF/OVMF_VARS_4M.fd /opt/homebrew/share/qemu/edk2-i386-vars.fd /usr/local/share/qemu/edk2-i386-vars.fd))
+UEFI_NATIVE_LOG_DIR := $(BUILD)/efi-native-logs
+
+# Run one bounded OVMF specimen and retain its complete serial stream. The
+# console prints only boot-contract lines so a normal gate does not bury its
+# verdict under desktop diagnostics. Arguments after the Python program are:
+# qemu, code, vars-template, ESP, optional data disk or '-', RAM MiB, log,
+# required strings separated by '|', and a forbidden string or '-'.
+UEFI_NATIVE_RUN = python3 -c 'import pathlib,shlex,shutil,signal,subprocess,sys; q,code,varsrc,esp,disk,ram,log,required,forbidden=sys.argv[1:]; pathlib.Path(log).parent.mkdir(parents=True,exist_ok=True); varcopy=log+".vars"; shutil.copyfile(varsrc,varcopy); cmd=shlex.split(q)+["-machine","q35","-drive","if=pflash,format=raw,readonly=on,file="+code,"-drive","if=pflash,format=raw,file="+varcopy,"-device","ich9-ahci,id=ahci0","-drive","file="+esp+",format=raw,if=none,id=esp0,file.locking=off","-device","ide-hd,drive=esp0,bus=ahci0.0","-m",ram,"-smp","2","-display","none","-serial","stdio","-monitor","none","-no-reboot","-snapshot"]; cmd += (["-vga","none"] if disk == "-" else ["-drive","file="+disk+",format=raw,if=none,id=hd0,file.locking=off","-device","virtio-blk-pci,drive=hd0"]); p=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT); signal.signal(signal.SIGALRM,lambda *_: p.terminate()); signal.alarm(14); out=p.communicate()[0]; signal.alarm(0); pathlib.Path(log).write_bytes(out); text=out.decode(errors="replace"); keep=("[efi]","LOGIT BOOT","LOGIT_BOOT","MB2 RESULT","MB2 ACPI","MB2 FB","LOGIT_BOOT_OK"); print("\n".join(line for line in text.splitlines() if any(k in line for k in keep))); missing=[s for s in required.split("|") if s and s not in text]; assert not missing,"missing required serial text: "+repr(missing); assert forbidden == "-" or forbidden not in text,"forbidden serial text present: "+forbidden'
+
+.PHONY: test-uefi-native-negctl test-uefi-native-differential test-uefi-native
+
+# These are controls of the native boundary itself. They are a prerequisite of
+# the positive gate, so nobody can run the green path while silently skipping
+# the evidence that version, reachability and EBS ordering are load-bearing.
+test-uefi-native-negctl: $(ESP_NATIVE_BADVER_IMG) $(ESP_NATIVE_HIGHINFO_IMG) $(ESP_NATIVE_EARLYEBS_IMG)
+	@if [ -z "$(UEFI_NATIVE_OVMF_CODE)" ] || [ -z "$(UEFI_NATIVE_OVMF_VARS)" ] || ! command -v $(firstword $(QEMU)) >/dev/null 2>&1; then \
+	    echo 'SKIP: test-uefi-native-negctl needs qemu-system-x86_64 plus OVMF CODE/VARS; set UEFI_NATIVE_OVMF_CODE and UEFI_NATIVE_OVMF_VARS'; \
+	    exit 0; \
+	fi; \
+	$(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_NATIVE_BADVER_IMG)" - 1024 "$(UEFI_NATIVE_LOG_DIR)/bad-version.log" "[efi] ebs ok|LOGIT BOOT VERSION REFUSED got=0002 wanted=0001" LOGIT_BOOT_OK; \
+	$(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_NATIVE_HIGHINFO_IMG)" - 2048 "$(UEFI_NATIVE_LOG_DIR)/high-info.log" "[efi] info 0x40000000|[efi] ebs ok|LOGIT BOOT HEADER OUTSIDE IDENTITY MAP" LOGIT_BOOT_OK; \
+	$(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_NATIVE_EARLYEBS_IMG)" - 1024 "$(UEFI_NATIVE_LOG_DIR)/early-ebs.log" "CONTROL ExitBootServices before native block complete|[efi] ebs ok|LOGIT BOOT HEADER EXTENT REFUSED" LOGIT_BOOT_OK; \
+	echo 'PASS: uefi-native controls refused bad version, unreachable block, and incomplete-before-EBS block'
+
+# The BIOS three-way is byte-for-byte because all three see SeaBIOS E820. OVMF
+# is a different firmware and its 100+ descriptors are not that map. The fourth
+# specimen therefore compares only honest consumer facts: RSDP present,
+# framebuffer absent under the same -vga none condition, ordered/non-overlapping
+# regions, loader available-byte accounting, and complete RAM coverage of the
+# loaded kernel. It explicitly does NOT compare descriptor boundaries, ACPI
+# revision/addresses, or demand identical region counts.
+test-uefi-native-differential: $(ESP_NATIVE_IMG) \
+    $(BUILD)/bios-native/native-dump.iso $(BUILD)/bios-boot/ours-dump.iso \
+    $(BUILD)/bios-mb2/grub-dump.iso
+	@python3 tests/unit/bios_mb2_test.py --qemu $(QEMU) three-way \
+	    $(BUILD)/bios-native/native-dump.iso $(BUILD)/bios-boot/ours-dump.iso \
+	    $(BUILD)/bios-mb2/grub-dump.iso
+	@if [ -z "$(UEFI_NATIVE_OVMF_CODE)" ] || [ -z "$(UEFI_NATIVE_OVMF_VARS)" ] || ! command -v $(firstword $(QEMU)) >/dev/null 2>&1; then \
+	    echo 'SKIP: fourth UEFI differential needs qemu-system-x86_64 plus OVMF CODE/VARS; set UEFI_NATIVE_OVMF_CODE and UEFI_NATIVE_OVMF_VARS'; \
+	    exit 0; \
+	fi; \
+	$(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_NATIVE_IMG)" - 1024 "$(UEFI_NATIVE_LOG_DIR)/differential.log" "LOGIT_BOOT_NATIVE_OK version=0001|[efi] gop none|MB2 ACPI|MB2 RESULT PASS" "MB2 FB"; \
+	python3 -c 'import pathlib,re; t=pathlib.Path("$(UEFI_NATIVE_LOG_DIR)/differential.log").read_text(errors="replace"); rows=[tuple(int(x,16) for x in m) for m in re.findall(r"MB2 MMAP ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+)",t)]; assert rows,"UEFI dump has no memory regions"; assert all(n>0 for _,n,_ in rows),"zero-length UEFI region"; assert all(rows[i][0]+rows[i][1] <= rows[i+1][0] for i in range(len(rows)-1)),"UEFI regions overlap or are out of order"; usable=[(a,a+n) for a,n,k in rows if k==1]; lo,hi=(int(x,16) for x in re.search(r"\[efi\] load reserved 0x([0-9a-f]+)\.\.0x([0-9a-f]+)",t).groups()); cover=[(max(a,lo),min(b,hi)) for a,b in usable if a<hi and b>lo]; assert cover and cover[0][0]==lo and cover[-1][1]==hi and all(cover[i][1]==cover[i+1][0] for i in range(len(cover)-1)),"UEFI RAM entries do not cover the complete loaded kernel"; claimed=int(re.search(r"\[efi\] mmap [0-9]+ entries, ([0-9]+) MiB available",t).group(1)); actual=sum(b-a for a,b in usable)>>20; assert actual==claimed,(actual,claimed); print("FOURTH-WAY FACTS uefi_regions=%d usable_mib=%d rsdp=present framebuffer=absent"%(len(rows),actual)); print("PASS: four-way consumer differential -- BIOS three paths agree exactly; UEFI agrees on RSDP/framebuffer presence and has internally consistent usable RAM (descriptor boundaries intentionally not compared)")'
+
+test-uefi-native: test-uefi-native-negctl test-uefi-native-differential $(ESP_NATIVE_IMG) $(DISK)
+	@if [ -z "$(UEFI_NATIVE_OVMF_CODE)" ] || [ -z "$(UEFI_NATIVE_OVMF_VARS)" ] || ! command -v $(firstword $(QEMU)) >/dev/null 2>&1; then \
+	    echo 'SKIP: test-uefi-native needs qemu-system-x86_64 plus OVMF CODE/VARS; set UEFI_NATIVE_OVMF_CODE and UEFI_NATIVE_OVMF_VARS'; \
+	    exit 0; \
+	fi; \
+	$(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_NATIVE_IMG)" "$(DISK)" 1024 "$(UEFI_NATIVE_LOG_DIR)/positive.log" "LOGIT BOOT IDENTITY VERIFY promised=0000000040000000|LOGIT_BOOT_NATIVE_OK version=0001|MB2 RESULT PASS|[smp] 2/2 CPUs online|LOGIT_BOOT_OK" -; \
+	echo 'PASS: test-uefi-native OVMF reached LOGIT_BOOT_OK through native long-mode entry'
+
 # ---------------------------------------------------------------------------
 # test-uefi -- THE GATE.
 # ---------------------------------------------------------------------------
@@ -212,10 +323,19 @@ $(ESP_LA57_SKIP_IMG): $(BOOTX64_LA57_SKIP_EFI) $(KERNEL) tools/mkesp.py
 # changes nothing about the filesystem or what is on it, only how the kernel
 # gets STARTED, so reusing it is the point, not a shortcut.
 test-uefi: test-uefi-load-policy-host test-uefi-pcide-host test-uefi-la57-host $(ESP_IMG) $(ESP_PYFAT_IMG) $(DISK)
-	@bash tests/boot/run-uefi-test.sh $(ESP_IMG) $(DISK)
-	@echo "--- repeating against the from-scratch (no-mtools) FAT16 ESP, to prove"
-	@echo "    that path is not merely mdir-clean but actually boots OVMF ---"
-	@bash tests/boot/run-uefi-test.sh $(ESP_PYFAT_IMG) $(DISK)
+	@if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then \
+	    bash tests/boot/run-uefi-test.sh $(ESP_IMG) $(DISK); \
+	    echo "--- repeating against the from-scratch (no-mtools) FAT16 ESP, to prove"; \
+	    echo "    that path is not merely mdir-clean but actually boots OVMF ---"; \
+	    bash tests/boot/run-uefi-test.sh $(ESP_PYFAT_IMG) $(DISK); \
+	elif [ -n "$(UEFI_NATIVE_OVMF_CODE)" ] && [ -n "$(UEFI_NATIVE_OVMF_VARS)" ] && command -v $(firstword $(QEMU)) >/dev/null 2>&1; then \
+	    $(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_IMG)" "$(DISK)" 1024 "$(UEFI_NATIVE_LOG_DIR)/mb2-positive.log" "[efi] descent ICPLJ|LOGIT_BOOT_OK" -; \
+	    echo "--- repeating against the from-scratch (no-mtools) FAT16 ESP, to prove"; \
+	    echo "    that path is not merely mdir-clean but actually boots OVMF ---"; \
+	    $(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_PYFAT_IMG)" "$(DISK)" 1024 "$(UEFI_NATIVE_LOG_DIR)/mb2-pyfat-positive.log" "[efi] descent ICPLJ|LOGIT_BOOT_OK" -; \
+	else \
+	    echo 'SKIP: test-uefi needs qemu-system-x86_64 plus OVMF CODE/VARS; set UEFI_NATIVE_OVMF_CODE and UEFI_NATIVE_OVMF_VARS'; \
+	fi
 
 # ---------------------------------------------------------------------------
 # test-uefi-negctl -- THE CONTROL.
@@ -228,11 +348,19 @@ test-uefi: test-uefi-load-policy-host test-uefi-pcide-host test-uefi-la57-host $
 # every breadcrumb BEFORE the jump still fires, so a failure here can only
 # mean the kernel's own check did not run, not that the loader broke.
 test-uefi-negctl: $(ESP_BADMAGIC_IMG) $(DISK)
-	@bash tests/boot/run-uefi-test.sh $(ESP_BADMAGIC_IMG) $(DISK) negctl
+	@if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then \
+	    bash tests/boot/run-uefi-test.sh $(ESP_BADMAGIC_IMG) $(DISK) negctl; \
+	elif [ -n "$(UEFI_NATIVE_OVMF_CODE)" ] && [ -n "$(UEFI_NATIVE_OVMF_VARS)" ] && command -v $(firstword $(QEMU)) >/dev/null 2>&1; then \
+	    $(UEFI_NATIVE_RUN) "$(QEMU)" "$(UEFI_NATIVE_OVMF_CODE)" "$(UEFI_NATIVE_OVMF_VARS)" "$(ESP_BADMAGIC_IMG)" "$(DISK)" 1024 "$(UEFI_NATIVE_LOG_DIR)/mb2-bad-magic.log" "[efi] descent ICPLJ" LOGIT_BOOT_OK; \
+	else \
+	    echo 'SKIP: test-uefi-negctl needs qemu-system-x86_64 plus OVMF CODE/VARS; set UEFI_NATIVE_OVMF_CODE and UEFI_NATIVE_OVMF_VARS'; \
+	fi
 
-# The positive run must emit FICPLJ and boot the complete kernel. Both controls
-# force PCIDE but remove or delay its clear; each must emit FU and halt before
-# the far jump. U comes from a fresh CR4 readback in 64-bit paged mode.
+# The old claim here said the normal positive emits FICPLJ. Measured under OVMF
+# on 2026-09-15, the unforced MB2 build emits ICPLJ and reaches LOGIT_BOOT_OK;
+# F belongs to the EFI_FORCE_PCIDE specimens below, not the default build. Both
+# controls force PCIDE but remove or delay its clear; each must emit FU and halt
+# before the far jump. U comes from a fresh CR4 readback in 64-bit paged mode.
 .PHONY: test-uefi-pcide test-uefi-pcide-negctl
 test-uefi-pcide-negctl: $(ESP_PCIDE_SKIP_IMG) $(ESP_PCIDE_LATE_IMG) $(DISK)
 	@bash tests/boot/run-uefi-test.sh $(ESP_PCIDE_SKIP_IMG) $(DISK) pcide-negctl
