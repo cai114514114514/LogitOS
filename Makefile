@@ -5437,6 +5437,7 @@ include tests/document_referrer.mk
 -include tests/h2_header_copy.mk
 
 -include tests/servers.mk
+-include tests/bootself.mk
 
 include tests/agent.mk
 
