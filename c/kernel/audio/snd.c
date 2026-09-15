@@ -1,3 +1,5 @@
+/* 2026-09-10: the historical shared-bounce notes below are superseded.
+ * Every PCM call now owns its heap buffer across waits and migration. */
 /* The SYS_SND_* implementations.
  *
  * They live here rather than as a dozen cases in c/kernel/exec/syscall.c so the
@@ -38,8 +40,7 @@ static int g_reported;
  * (it allocates nothing and starts no thread). */
 void snd_report_once(void)
 {
-    if (g_reported) return;
-    g_reported = 1;
+    if (__atomic_exchange_n(&g_reported, 1, __ATOMIC_RELAXED)) return;
     snd_report();
 }
 
@@ -59,14 +60,14 @@ long snd_syscall(long num, long a, long b, long c)
         struct logit_sndinfo si;
         if (!user_range_ok((void *)a, sizeof si, 1)) return SND_E_FAULT;
         snd_info_fill(&si);
-        user_copy_to((void *)a, &si, sizeof si);
+        if (user_copy_to((void *)a, &si, sizeof si)) return SND_E_FAULT;
         return snd_present() ? 1 : 0;
     }
 
     case SYS_SND_OPEN: {
         struct logit_sndfmt f;
         if (!user_range_ok((const void *)a, sizeof f, 0)) return SND_E_FAULT;
-        user_copy_from(&f, (const void *)a, sizeof f);
+        if (user_copy_from(&f, (const void *)a, sizeof f)) return SND_E_FAULT;
         return snd_stream_open(owner, &f);
     }
 
@@ -76,13 +77,21 @@ long snd_syscall(long num, long a, long b, long c)
          * tables -- see the M11 note in CLAUDE.md). Sharing one buffer between
          * callers is safe only because syscalls run under the BKL; when audio
          * joins syscall_is_bkl_free() this must become per-stream. */
-        static uint8_t bounce[SND_BOUNCE];
+        uint8_t *bounce;
         int want = (int)c;
         if (want <= 0) return 0;
         if (want > SND_BOUNCE) want = SND_BOUNCE;
         if (!user_range_ok((const void *)b, (uint64_t)want, 0)) return SND_E_FAULT;
-        user_copy_from(bounce, (const void *)b, (uint64_t)want);
-        return snd_stream_write(owner, (int)a, bounce, want);
+        /* This buffer belongs to the call, including the wait for ring room.
+         * A shared or per-CPU buffer is unsafe because a blocked call migrates. */
+        bounce = kmalloc((size_t)want);
+        if (!bounce) return SND_E_NOMEM;
+        if (user_copy_from(bounce, (const void *)b, (uint64_t)want)) {
+            kfree(bounce); return SND_E_FAULT;
+        }
+        int rc = snd_stream_write(owner, (int)a, bounce, want);
+        kfree(bounce);
+        return rc;
     }
 
     case SYS_SND_AVAIL:
@@ -96,7 +105,7 @@ long snd_syscall(long num, long a, long b, long c)
         int rc;
         if (!user_range_ok((void *)b, sizeof st, 1)) return SND_E_FAULT;
         rc = snd_stream_state(owner, (int)a, &st);
-        if (rc == 0) user_copy_to((void *)b, &st, sizeof st);
+        if (rc == 0 && user_copy_to((void *)b, &st, sizeof st)) return SND_E_FAULT;
         return rc;
     }
 
@@ -105,7 +114,7 @@ long snd_syscall(long num, long a, long b, long c)
         struct logit_sndfmt f;
         int h;
         if (!user_range_ok((void *)a, sizeof f, 1)) return SND_E_FAULT;
-        user_copy_from(&f, (const void *)a, sizeof f);
+        if (user_copy_from(&f, (const void *)a, sizeof f)) return SND_E_FAULT;
         h = snd_cap_open(owner, &f);
         /* Written back even on failure, matching what the caller already had
          * -- SND_E_FORMAT specifically wants the caller able to inspect what
@@ -114,7 +123,10 @@ long snd_syscall(long num, long a, long b, long c)
          * real numbers out); on failure it is an unchanged echo. Either way
          * the copy is unconditional, not "on success only", so there is one
          * rule instead of two. */
-        user_copy_to((void *)a, &f, sizeof f);
+        if (user_copy_to((void *)a, &f, sizeof f)) {
+            if (h >= 0) snd_cap_close(owner, h);
+            return SND_E_FAULT;
+        }
         return h;
     }
 
@@ -122,14 +134,17 @@ long snd_syscall(long num, long a, long b, long c)
         /* Same bounce-buffer posture as SYS_SND_WRITE and the same BKL-only
          * safety note applies (see SND_BOUNCE above): one shared buffer is
          * safe only because audio syscalls are not on syscall_is_bkl_free(). */
-        static uint8_t bounce[SND_BOUNCE];
+        uint8_t *bounce;
         int want = (int)c;
         int got;
         if (want <= 0) return 0;
         if (want > SND_BOUNCE) want = SND_BOUNCE;
         if (!user_range_ok((void *)b, (uint64_t)want, 1)) return SND_E_FAULT;
+        bounce = kmalloc((size_t)want);
+        if (!bounce) return SND_E_NOMEM;
         got = snd_cap_read(owner, (int)a, bounce, want);
-        if (got > 0) user_copy_to((void *)b, bounce, (uint64_t)got);
+        if (got > 0 && user_copy_to((void *)b, bounce, (uint64_t)got)) got = SND_E_FAULT;
+        kfree(bounce);
         return got;
     }
 
@@ -144,7 +159,7 @@ long snd_syscall(long num, long a, long b, long c)
         int rc;
         if (!user_range_ok((void *)b, sizeof st, 1)) return SND_E_FAULT;
         rc = snd_cap_state(owner, (int)a, &st);
-        if (rc == 0) user_copy_to((void *)b, &st, sizeof st);
+        if (rc == 0 && user_copy_to((void *)b, &st, sizeof st)) return SND_E_FAULT;
         return rc;
     }
 

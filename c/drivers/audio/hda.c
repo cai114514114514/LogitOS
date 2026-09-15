@@ -1,3 +1,7 @@
+#include "../core/io_lock.h"
+/* Command rings and stream register RMW belong to this controller. The ISR
+ * takes this short gate but never an audio worker/lifecycle owner. */
+static io_lock_t hda_gate = IO_LOCK_INIT;
 /* Intel High Definition Audio controller + codec.
  *
  * HDA is the right target because it is what real machines have: every PC
@@ -25,6 +29,9 @@
  * controller's side, which is why this driver reports the codec graph it found
  * rather than just "ok".
  *
+ * DMA now uses coherent allocations: CPU pointers always name the physmap,
+ * device addresses come from the DMA handle, with the GCAP 64OK capability
+ * selecting the mask. Historical description (superseded):
  * DMA: the same pattern virtio.c uses -- pmm_alloc()/pmm_alloc_contig() return
  * identity-mapped low physical pages, so the address the CPU writes is the
  * address the device reads, with no IOMMU and no translation. The BDL must be
@@ -39,10 +46,16 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "driver.h"
+#include "pci.h"
 #include "snd.h"
-#include "pmm.h"
+#include "dma.h"
 #include "kprintf.h"
 #include "pit.h"
+#ifdef HDA_DMA_CAPTURE_CANARY
+#include "sched.h"
+#include "kernel/core/wait.h"
+void hda_capture_stop_check(void);
+#endif
 
 /* The monotonic ns clock is what this driver WANTS for its reset and codec
  * timeouts -- a duration expressed in spins is a different duration on every
@@ -79,7 +92,8 @@ void *memset(void *, int, size_t);
 #define CORBWP      0x48    /* 16 */
 #define CORBRP      0x4A    /* 16: bit15 = reset */
 #define CORBCTL     0x4C    /* 8:  bit1 RUN */
-#define CORBSIZE    0x4D
+#define CORBSTS     0x4D
+#define CORBSIZE    0x4E
 #define RIRBLBASE   0x50
 #define RIRBUBASE   0x54
 #define RIRBWP      0x58    /* 16: bit15 = reset */
@@ -167,9 +181,15 @@ struct bdl_entry {
 struct hda {
     volatile uint8_t *mmio;
     struct device    *dev;
+    int removing;
+    struct dma_device dma;
+    struct dma_buffer *corb_dma, *rirb_dma;
+    struct dma_buffer *ring_dma, *bdl_dma, *cap_ring_dma, *cap_bdl_dma;
 
-    uint32_t         *corb;       /* 256 entries */
-    uint64_t         *rirb;       /* 256 entries of 2 x 32 */
+    uint32_t         *corb;       /* one page; active entry count is negotiated */
+    uint64_t         *rirb;       /* one page; active entry count is negotiated */
+    unsigned          corb_entries;
+    unsigned          rirb_entries;
     unsigned          corb_wp;
     unsigned          rirb_rp;
 
@@ -206,7 +226,16 @@ struct hda {
     int                  has_capture;
 };
 
+static void hda_remove(struct device *dev);
 static struct hda g_hda;
+/* An unacknowledged controller reset means its last CORB/RIRB addresses may
+ * still be live.  The active instance must nevertheless be reusable when a
+ * display controller's HDA function probes before the motherboard codec.  A
+ * separate, stable ledger retains those pages for their lifetime instead
+ * of either freeing device-owned memory or leaving g_hda.mmio poisoned. */
+static struct dma_device g_hda_quarantined_dma = {
+    .name = "hda-quarantine", .mask = DMA_MASK_64, .blocked = 1,
+};
 static int g_hda_dbg;   /* bounds the codec-timeout trace to its first 8 lines */
 
 /* ------------------------------------------------------------- accessors -- */
@@ -287,6 +316,7 @@ static void udelay(unsigned us)
 static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
                      unsigned verb, unsigned payload, uint32_t *resp)
 {
+    IO_GUARD(&hda_gate);
     uint32_t val;
     unsigned wp;
     uint64_t deadline;
@@ -315,7 +345,7 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
      * the count cannot reach it during the short probe conversation at all. */
     w8(h, RIRBSTS, 0x05);
 
-    wp = (h->corb_wp + 1) % 256;
+    wp = (h->corb_wp + 1) % h->corb_entries;
     h->corb[wp] = val;
     h->corb_wp = wp;
     w16(h, CORBWP, (uint16_t)wp);
@@ -326,9 +356,9 @@ static int codec_cmd(struct hda *h, unsigned cad, unsigned nid,
      * machine when its hardware is absent is worse than no driver. */
     deadline = hda_ms() + 50;
     for (unsigned long spins = 0; spins < 200000000ul; spins++) {
-        unsigned rwp = r16(h, RIRBWP) & 0xFF;
+        unsigned rwp = (r16(h, RIRBWP) & 0xFF) % h->rirb_entries;
         if (rwp != h->rirb_rp) {
-            h->rirb_rp = (h->rirb_rp + 1) % 256;
+            h->rirb_rp = (h->rirb_rp + 1) % h->rirb_entries;
             if (resp) *resp = (uint32_t)(h->rirb[h->rirb_rp] & 0xFFFFFFFFu);
             w8(h, RIRBSTS, 0x05);          /* ack response + overrun */
             /* The success path used to trace its first eight commands. That
@@ -705,19 +735,31 @@ static void codec_setup_capture(struct hda *h)
 
 static void hda_stop(struct snd_device *d)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
     unsigned sd = h->out_base;
     w8(h, sd + SD_CTL, 0);                     /* clear RUN + interrupt enables */
-    udelay(100);
+    for (unsigned i = 0; i < 100 && (r8(h, sd + SD_CTL) & 2); i++) udelay(100);
+    if (r8(h, sd + SD_CTL) & 2) {
+        dma_device_quarantine(&h->dma);
+        kprintf("[hda] stream stop unconfirmed: DMA quarantined\n");
+        return;
+    }
     w8(h, sd + SD_STS, 0x1C);                  /* ack BCIS/FIFOE/DESE */
+    if (h->ring_dma && h->ring_dma->state == DMA_DEVICE_OWNED)
+        dma_buffer_complete(h->ring_dma, h->ring_dma->token);
+    if (h->bdl_dma && h->bdl_dma->state == DMA_DEVICE_OWNED)
+        dma_buffer_complete(h->bdl_dma, h->bdl_dma->token);
 }
 
 static int hda_start(struct snd_device *d)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
     unsigned sd = h->out_base, i;
-    uint64_t ring_phys = (uint64_t)(uintptr_t)h->ring;
-    uint64_t bdl_phys  = (uint64_t)(uintptr_t)h->bdl;
+    if (__atomic_load_n(&h->removing, __ATOMIC_ACQUIRE) || h->dma.blocked) return -1;
+    uint64_t ring_phys = dma_addr_value(h->ring_dma->dma);
+    uint64_t bdl_phys  = dma_addr_value(h->bdl_dma->dma);
 
     /* Stream reset. SRST must be observed as 1 and then as 0 -- writing it and
      * carrying on leaves the descriptor half-configured, which shows up as a
@@ -740,6 +782,11 @@ static int hda_start(struct snd_device *d)
         h->bdl[i].flags = 1;                   /* IOC */
     }
 
+    if (h->ring_dma->state != DMA_DEVICE_OWNED &&
+        !dma_buffer_submit(h->ring_dma)) return -1;
+    if (h->bdl_dma->state != DMA_DEVICE_OWNED &&
+        !dma_buffer_submit(h->bdl_dma)) return -1;
+    dma_wmb();
     w32(h, sd + SD_BDPL, (uint32_t)(bdl_phys & 0xFFFFFFFFu));
     w32(h, sd + SD_BDPU, (uint32_t)(bdl_phys >> 32));
     w32(h, sd + SD_CBL, HDA_RING_BYTES);
@@ -775,6 +822,7 @@ static int hda_start(struct snd_device *d)
 
 static uint64_t hda_position(struct snd_device *d)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
     return r32(h, h->out_base + SD_LPIB) / (HDA_CHANNELS * 2u);
 }
@@ -783,19 +831,56 @@ static uint64_t hda_position(struct snd_device *d)
 
 static void hda_cap_stop(struct snd_capdevice *d)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
     unsigned sd = h->in_base;
     w8(h, sd + SD_CTL, 0);
-    udelay(100);
+    for (unsigned i = 0; i < 100 && (r8(h, sd + SD_CTL) & 2); i++) udelay(100);
+    if (r8(h, sd + SD_CTL) & 2) {
+        dma_device_quarantine(&h->dma);
+        kprintf("[hda] stream stop unconfirmed: DMA quarantined\n");
+        return;
+    }
     w8(h, sd + SD_STS, 0x1C);
+    if (h->cap_ring_dma && h->cap_ring_dma->state == DMA_DEVICE_OWNED)
+        dma_buffer_complete(h->cap_ring_dma, h->cap_ring_dma->token);
+    if (h->cap_bdl_dma && h->cap_bdl_dma->state == DMA_DEVICE_OWNED)
+        dma_buffer_complete(h->cap_bdl_dma, h->cap_bdl_dma->token);
+
 }
+
+#ifdef HDA_DMA_CAPTURE_CANARY
+void hda_capture_stop_check(void)
+{
+    static unsigned closes;
+    struct hda *h = &g_hda;
+    /* Allow an already pending interrupt to drain before taking the baseline.
+     * The guest waits 250 ms before reopen, so this observer cannot race restart. */
+    sched_sleep_ms(20);
+    uint32_t pos = r32(h, h->in_base + SD_LPIB);
+    uint64_t irqs = h->cap_irqs;
+    memset(h->cap_ring, 0xc7, HDA_RING_BYTES);
+    dma_wmb();
+    sched_sleep_ms(100);
+    int ok = pos == r32(h, h->in_base + SD_LPIB) && irqs == h->cap_irqs;
+    for (unsigned i = 0; i < HDA_RING_BYTES; i++)
+        if (((volatile uint8_t *)h->cap_ring)[i] != 0xc7) ok = 0;
+    kprintf("HDA_CAPTURE_STOP_%s lpib=%u irqs=%llu\n", ok ? "PASS" : "FAIL", pos, irqs);
+    if (++closes == 2) {
+        hda_remove(h->dev);
+        kprintf("HDA_REMOVE_%s\n", !h->dma.buffers && !snd_present() && !snd_capture_present() ? "PASS" : "FAIL");
+    }
+}
+#endif
 
 static int hda_cap_start(struct snd_capdevice *d)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)d->priv;
     unsigned sd = h->in_base, i;
-    uint64_t ring_phys = (uint64_t)(uintptr_t)h->cap_ring;
-    uint64_t bdl_phys  = (uint64_t)(uintptr_t)h->cap_bdl;
+    if (__atomic_load_n(&h->removing, __ATOMIC_ACQUIRE) || h->dma.blocked) return -1;
+    uint64_t ring_phys = dma_addr_value(h->cap_ring_dma->dma);
+    uint64_t bdl_phys  = dma_addr_value(h->cap_bdl_dma->dma);
 
     /* Identical reset/program/run sequence to hda_start -- the DMA engine
      * does not know or care which direction it moves bytes, only that SRST
@@ -816,6 +901,18 @@ static int hda_cap_start(struct snd_capdevice *d)
         h->cap_bdl[i].flags = 1;                   /* IOC */
     }
 
+    if (h->cap_ring_dma->state != DMA_DEVICE_OWNED &&
+        !dma_buffer_submit(h->cap_ring_dma)) return -1;
+    if (h->cap_bdl_dma->state != DMA_DEVICE_OWNED &&
+        !dma_buffer_submit(h->cap_bdl_dma)) return -1;
+#ifdef HDA_DMA_CAPTURE_CANARY
+    /* A silent backend must overwrite this poison through the actual capture
+     * DMA engine; zero-initialised buffers would not establish that fact. */
+    memset(h->cap_ring, 0xa5, HDA_RING_BYTES);
+    kprintf("HDA_CAPTURE_CANARY dma=%p bytes=%u\n",
+            (void *)ring_phys, HDA_RING_BYTES);
+#endif
+    dma_wmb();
     w32(h, sd + SD_BDPL, (uint32_t)(bdl_phys & 0xFFFFFFFFu));
     w32(h, sd + SD_BDPU, (uint32_t)(bdl_phys >> 32));
     w32(h, sd + SD_CBL, HDA_RING_BYTES);
@@ -836,7 +933,12 @@ static int hda_cap_start(struct snd_capdevice *d)
 
 static void hda_isr(void *arg)
 {
+    IO_GUARD(&hda_gate);
     struct hda *h = (struct hda *)arg;
+    int removing = __atomic_load_n(&h->removing, __ATOMIC_ACQUIRE);
+#ifdef HDA_X79_NEGCTL_ISR_EARLY_RETURN_ON_REMOVE
+    if (removing) return;
+#endif
     uint32_t sts = r32(h, INTSTS);
     unsigned out_idx = (h->out_base - SD_BASE) / 0x20;
 
@@ -856,7 +958,7 @@ static void hda_isr(void *arg)
          * level-triggered INTx that is an interrupt storm that wedges the
          * machine -- the worst possible way for an audio driver to fail. */
         w8(h, h->out_base + SD_STS, ss & 0x1C);
-        if (ss & 0x04) {                 /* BCIS: a buffer (period) completed */
+        if ((ss & 0x04) && !removing) {    /* BCIS: a buffer (period) completed */
             h->irqs++;
             snd_period_elapsed(&h->snd);
         }
@@ -867,7 +969,7 @@ static void hda_isr(void *arg)
         if (sts & (1u << in_idx)) {
             uint8_t ss = r8(h, h->in_base + SD_STS);
             w8(h, h->in_base + SD_STS, ss & 0x1C);
-            if (ss & 0x04) {              /* BCIS: a buffer (period) filled */
+            if ((ss & 0x04) && !removing) { /* BCIS: a buffer (period) filled */
                 h->cap_irqs++;
                 snd_capture_period_elapsed(&h->cap);
             }
@@ -877,6 +979,257 @@ static void hda_isr(void *arg)
 
 /* ------------------------------------------------------------- probing --- */
 
+#define HDA_PCI_CLASS       0x04
+#define HDA_PCI_SUBCLASS    0x03
+#define HDA_INTEL_VENDOR    0x8086
+#define HDA_X79_DEVICE      0x1d20
+#define HDA_NVIDIA_VENDOR   0x10de
+#define HDA_RUN             0x02
+
+/* Bring up BAR decoding without ever reviving firmware DMA.  The legacy
+ * wrappers now use the checked Command helper: disable first removes decode
+ * and BME, then dev_enable(0) restores only the enumerated BAR decode while
+ * keeping BME clear.  The explicit final readback remains the HDA ownership
+ * gate; a controller that will not confirm MEM=1/BME=0 is never mapped/reset. */
+static int hda_pci_mem_only(struct device *dev)
+{
+#ifdef HDA_X79_NEGCTL_MASTER_BEFORE_QUIESCE
+    /* Mutation control: the historical order restored BME while firmware
+     * CORB/RIRB/stream pointers could still name reclaimed boot memory. */
+    dev_enable(dev, 1);
+    return 0;
+#else
+    dev_disable(dev);
+    dev_enable(dev, 0);
+    uint16_t command = pci_cfg_read16(dev->bus, dev->slot, dev->func,
+                                      PCI_CFG_COMMAND);
+    if (command != UINT16_MAX && (command & PCI_CMD_MEM) &&
+        !(command & PCI_CMD_MASTER))
+        return 0;
+    kprintf("[hda] %s: PCI MEM-only state unconfirmed (command=%x)\n",
+            dev->name, command);
+    dev_disable(dev);
+    return -1;
+#endif
+}
+
+static int hda_pci_master_enable(struct device *dev)
+{
+#ifdef HDA_X79_NEGCTL_MASTER_BEFORE_QUIESCE
+    (void)dev;
+    return 0;
+#else
+    dev_enable(dev, 1);
+    uint16_t command = pci_cfg_read16(dev->bus, dev->slot, dev->func,
+                                      PCI_CFG_COMMAND);
+    if (command != UINT16_MAX &&
+        (command & (PCI_CMD_MEM | PCI_CMD_MASTER)) ==
+        (PCI_CMD_MEM | PCI_CMD_MASTER))
+        return 0;
+    kprintf("[hda] %s: PCI bus-master enable unconfirmed (command=%x)\n",
+            dev->name, command);
+    return -1;
+#endif
+}
+
+/* Clear one DMA engine and observe RUN low. Merely issuing the write is
+ * insufficient: firmware may have left a command ring or stream descriptor
+ * active, and CRST is forbidden until every engine has acknowledged stop. */
+static int hda_stop_run(struct hda *h, unsigned reg, uint8_t clear_bits)
+{
+    uint8_t ctl = r8(h, reg);
+    w8(h, reg, (uint8_t)(ctl & ~clear_bits));
+    for (unsigned i = 0; i < 100 && (r8(h, reg) & HDA_RUN); i++)
+        udelay(100);
+#ifdef HDA_X79_NEGCTL_IGNORE_STUCK_FIRMWARE_RUN
+    return 0;
+#else
+    return (r8(h, reg) & HDA_RUN) ? -1 : 0;
+#endif
+}
+
+/* Stop every host-DMA source advertised by GCAP.  Input descriptors precede
+ * output descriptors, followed by bidirectional descriptors; all three groups
+ * use the same 0x20-byte register shape. */
+static int hda_stop_all_dma(struct hda *h)
+{
+    if (!h->mmio) return 0;
+    uint16_t cap = r16(h, GCAP);
+    unsigned streams = ((cap >> 8) & 0x0f) + ((cap >> 12) & 0x0f) +
+                       ((cap >> 3) & 0x1f);
+    if (streams > 30) {
+        kprintf("[hda] invalid GCAP stream count %u; reset refused\n", streams);
+        return -1;
+    }
+
+    w32(h, INTCTL, 0);
+    int stopped = 0;
+    if (hda_stop_run(h, CORBCTL, 0x03) != 0) stopped = -1;
+    if (hda_stop_run(h, RIRBCTL, 0x07) != 0) stopped = -1;
+    for (unsigned i = 0; i < streams; i++)
+        if (hda_stop_run(h, SD_BASE + i * 0x20 + SD_CTL, 0x1e) != 0)
+            stopped = -1;
+    if (stopped)
+        kprintf("[hda] firmware DMA RUN state did not quiesce; CRST refused\n");
+    return stopped;
+}
+
+/* CORBSIZE/RIRBSIZE advertise supported depths in bits 6:4 and accept the
+ * selected encoding in bits 1:0. Prefer the largest implemented ring, but
+ * support the legal 16- and 2-entry-only controllers too. */
+static int hda_set_ring_size(struct hda *h, unsigned reg, unsigned *entries)
+{
+    uint8_t caps = r8(h, reg);
+    uint8_t select;
+#ifdef HDA_X79_NEGCTL_FORCE_256_RINGS
+    (void)caps;
+    select = 2;
+    *entries = 256;
+#else
+    if (caps & 0x40)      { select = 2; *entries = 256; }
+    else if (caps & 0x20) { select = 1; *entries = 16; }
+    else if (caps & 0x10) { select = 0; *entries = 2; }
+    else return -1;
+#endif
+    w8(h, reg, select);
+    if ((r8(h, reg) & 0x03) != select) return -1;
+    return 0;
+}
+
+static int hda_is_x79_onboard(const struct device *dev)
+{
+    /* Patsburg exposes the X79/C600 HD Audio function at 00:1b.0.  Requiring
+     * both the published ID and the integrated BDF prevents an unrelated
+     * passthrough endpoint with a copied ID from becoming the boot-wide
+     * single HDA instance. */
+    return dev && dev->bus_type == DEV_BUS_PCI && dev->seg == 0 &&
+           dev->bus == 0 && dev->slot == 0x1b && dev->func == 0 &&
+           dev->vendor == HDA_INTEL_VENDOR && dev->device == HDA_X79_DEVICE &&
+           dev->class_code == HDA_PCI_CLASS &&
+           dev->subclass == HDA_PCI_SUBCLASS;
+}
+
+static int hda_has_display_sibling(const struct device *dev)
+{
+    /* A GPU's HDMI/DP codec is normally function 1 beside display function 0.
+     * Vendor matching alone is too narrow (the same shape exists on AMD and
+     * Intel GPUs); the enumerated multifunction relationship is the property
+     * that identifies it without touching either function. */
+    for (int i = 0; dev && i < dev_count(); i++) {
+        const struct device *sibling = dev_at(i);
+        if (!sibling || sibling == dev || sibling->bus_type != DEV_BUS_PCI)
+            continue;
+        if (sibling->seg == dev->seg && sibling->bus == dev->bus &&
+            sibling->slot == dev->slot && sibling->func != dev->func &&
+            sibling->class_code == 0x03)
+            return 1;
+    }
+    return 0;
+}
+
+static int hda_x79_onboard_present(void)
+{
+    for (int i = 0; i < dev_count(); i++)
+        if (hda_is_x79_onboard(dev_at(i))) return 1;
+    return 0;
+}
+
+static int hda_controller_candidate(const struct device *dev)
+{
+    if (!dev || dev->bus_type != DEV_BUS_PCI ||
+        dev->class_code != HDA_PCI_CLASS ||
+        dev->subclass != HDA_PCI_SUBCLASS)
+        return 0;
+#ifdef HDA_X79_NEGCTL_ACCEPT_GPU_AUDIO
+    /* Mutation control: recreates the GTX 1050 HDMI function taking g_hda
+     * before the X79 controller is reached. */
+    if (dev->vendor == HDA_NVIDIA_VENDOR) return 1;
+#endif
+    if (hda_has_display_sibling(dev)) return 0;
+    if (!hda_is_x79_onboard(dev) && hda_x79_onboard_present()) return 0;
+    return 1;
+}
+
+static void hda_retain_unconfirmed_dma(struct hda *h)
+{
+    dma_device_quarantine(&h->dma);
+
+    /* dma_device_quarantine changes only device-owned objects.  Objects not
+     * yet published are safe to release even though another object in this
+     * probe must be retained. */
+    for (struct dma_buffer *b = h->dma.buffers, *next; b; b = next) {
+        next = b->next;
+        if (b->state != DMA_DEVICE_OWNED && b->state != DMA_QUARANTINED)
+            (void)dma_free_coherent(b);
+    }
+
+    if (h->dma.buffers) {
+        struct dma_buffer *tail = h->dma.buffers;
+        for (struct dma_buffer *b = h->dma.buffers; b; b = b->next) {
+            b->dev = &g_hda_quarantined_dma;
+            tail = b;
+        }
+        tail->next = g_hda_quarantined_dma.buffers;
+        g_hda_quarantined_dma.buffers = h->dma.buffers;
+        h->dma.buffers = NULL;
+    }
+    if (h->dma.mappings) {
+        struct dma_mapping *tail = h->dma.mappings;
+        for (struct dma_mapping *m = h->dma.mappings; m; m = m->next) {
+            m->dev = &g_hda_quarantined_dma;
+            tail = m;
+        }
+        tail->next = g_hda_quarantined_dma.mappings;
+        g_hda_quarantined_dma.mappings = h->dma.mappings;
+        h->dma.mappings = NULL;
+    }
+}
+
+static void hda_probe_abort(struct hda *h, struct device *dev)
+{
+    int reset_ok = 1;
+
+    __atomic_store_n(&h->removing, 1, __ATOMIC_RELEASE);
+    if (h->mmio) {
+        /* Stop every DMA-capable engine before judging ownership.  CRST is the
+         * controller-wide acknowledgement; a write request by itself is not
+         * evidence that the controller stopped fetching memory. */
+        if (hda_stop_all_dma(h) != 0) {
+            reset_ok = 0;
+        } else {
+            w32(h, GCTL, 0);
+            for (unsigned i = 0; i < 100 && (r32(h, GCTL) & 1); i++) udelay(100);
+            reset_ok = !(r32(h, GCTL) & 1);
+        }
+    }
+
+    if (reset_ok) {
+        dma_device_quiesced(&h->dma);
+        while (h->dma.buffers)
+            if (dma_free_coherent(h->dma.buffers) != 0) break;
+    } else if (h->dma.buffers || h->dma.mappings) {
+#ifdef HDA_X79_NEGCTL_RELEASE_UNACKED_DMA
+        /* Mutation control: discards the quarantine on an unobserved reset. */
+        hda_retain_unconfirmed_dma(h);
+        dma_device_quiesced(&g_hda_quarantined_dma);
+        while (g_hda_quarantined_dma.buffers)
+            if (dma_free_coherent(g_hda_quarantined_dma.buffers) != 0) break;
+#else
+        hda_retain_unconfirmed_dma(h);
+#endif
+        kprintf("[hda] failed reset: DMA memory quarantined\n");
+    }
+
+    dev_set_drvdata(dev, NULL);
+    dev_disable(dev);
+#ifndef HDA_X79_NEGCTL_KEEP_POISONED_INSTANCE
+    /* The device model can now continue to a later HDA function.  The
+     * quarantine ledger above, rather than these active-instance pointers,
+     * owns anything hardware could still reach. */
+    memset(h, 0, sizeof *h);
+#endif
+}
+
 static int hda_probe(struct device *dev)
 {
     struct hda *h = &g_hda;
@@ -884,24 +1237,42 @@ static int hda_probe(struct device *dev)
     uint16_t statests;
     unsigned i, iss, oss;
 
+    if (!hda_controller_candidate(dev)) {
+        if (hda_has_display_sibling(dev))
+            kprintf("[hda] %s: display-function audio skipped\n", dev->name);
+        else if (hda_x79_onboard_present())
+            kprintf("[hda] %s: deferred to X79 8086:1d20 at 00:1b.0\n",
+                    dev->name);
+        return -1;
+    }
     if (h->mmio) return -1;          /* one output device; see snd_register_device */
 
-    dev_enable(dev, 1);              /* MMIO + bus master: this device does DMA */
+    if (hda_pci_mem_only(dev) != 0) return -1;
     bar = dev_bar_map(dev, 0);
-    if (!bar) { kprintf("[hda] %s: no BAR0\n", dev->name); return -1; }
+    if (!bar) { kprintf("[hda] %s: no BAR0\n", dev->name); goto probe_fail; }
 
     h->mmio = (volatile uint8_t *)(uintptr_t)bar;
     h->dev = dev;
+
+    /* Firmware can leave command rings and any advertised stream running.
+     * PCI BME is confirmed low above, so stale physical pointers cannot fetch
+     * while each RUN bit is cleared and read back. CRST is legal only after
+     * every engine reports stopped. */
+    if (hda_stop_all_dma(h) != 0) goto probe_fail;
 
     /* Controller reset: CRST low, wait for it to read back low, then high and
      * wait for it to read back high. Both directions must be OBSERVED. */
     w32(h, GCTL, 0);
     for (i = 0; i < 100 && (r32(h, GCTL) & 1); i++) udelay(100);
+    if (r32(h, GCTL) & 1) {
+        kprintf("[hda] %s: controller did not enter reset\n", dev->name);
+        goto probe_fail;
+    }
     w32(h, GCTL, 1);
     for (i = 0; i < 100 && !(r32(h, GCTL) & 1); i++) udelay(100);
     if (!(r32(h, GCTL) & 1)) {
         kprintf("[hda] %s: controller did not come out of reset\n", dev->name);
-        return -1;
+        goto probe_fail;
     }
     /* Codecs need time on the link before STATESTS is meaningful. Reading it
      * immediately finds zero codecs on hardware that has several. */
@@ -909,9 +1280,10 @@ static int hda_probe(struct device *dev)
 
     {
         uint16_t cap = r16(h, GCAP);
+        dma_device_init(&h->dma, "hda", (cap & 1) ? DMA_MASK_64 : DMA_MASK_32);
         iss = (cap >> 8) & 0xF;
         oss = (cap >> 12) & 0xF;
-        if (!oss) { kprintf("[hda] %s: no output streams\n", dev->name); return -1; }
+        if (!oss) { kprintf("[hda] %s: no output streams\n", dev->name); goto probe_fail; }
         h->out_base = SD_BASE + iss * 0x20;    /* input descriptors come first */
         /* Input descriptors occupy [SD_BASE, SD_BASE + iss*0x20); the first
          * one is capture's, when there is one at all. GCAP reporting 0 input
@@ -927,27 +1299,38 @@ static int hda_probe(struct device *dev)
     statests = r16(h, STATESTS);
     if (!statests) {
         kprintf("[hda] %s: no codec responded (STATESTS=0)\n", dev->name);
-        return -1;
+        goto probe_fail;
     }
     for (i = 0; i < 15; i++) if (statests & (1u << i)) { h->codec_addr = i; break; }
 
     /* CORB/RIRB. One page each: 256 x 4 and 256 x 8 both fit in 4 KiB, and a
      * PMM page is 4 KiB-aligned, which covers the 128-byte alignment the spec
      * requires for both rings. */
-    h->corb = (uint32_t *)(uintptr_t)pmm_alloc();
-    h->rirb = (uint64_t *)(uintptr_t)pmm_alloc();
-    if (!h->corb || !h->rirb) { kprintf("[hda] no memory for CORB/RIRB\n"); return -1; }
-    memset((void *)h->corb, 0, 4096);
-    memset((void *)h->rirb, 0, 4096);
-
-    w8(h, CORBCTL, 0);
-    w8(h, RIRBCTL, 0);
-    w32(h, CORBLBASE, (uint32_t)((uintptr_t)h->corb & 0xFFFFFFFFu));
-    w32(h, CORBUBASE, (uint32_t)((uint64_t)(uintptr_t)h->corb >> 32));
-    w32(h, RIRBLBASE, (uint32_t)((uintptr_t)h->rirb & 0xFFFFFFFFu));
-    w32(h, RIRBUBASE, (uint32_t)((uint64_t)(uintptr_t)h->rirb >> 32));
-    w8(h, CORBSIZE, 0x02);                 /* 256 entries */
-    w8(h, RIRBSIZE, 0x02);
+    h->corb_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
+    h->rirb_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
+    if (!h->corb_dma || !h->rirb_dma) {
+        kprintf("[hda] no memory for CORB/RIRB\n"); goto probe_fail;
+    }
+    h->corb = h->corb_dma->cpu;
+    h->rirb = h->rirb_dma->cpu;
+    if (hda_set_ring_size(h, CORBSIZE, &h->corb_entries) != 0 ||
+        hda_set_ring_size(h, RIRBSIZE, &h->rirb_entries) != 0) {
+        kprintf("[hda] %s: no supported/readable CORB or RIRB size\n",
+                dev->name);
+        goto probe_fail;
+    }
+    if (!dma_buffer_submit(h->corb_dma) ||
+        !dma_buffer_submit(h->rirb_dma)) {
+        kprintf("[hda] %s: CORB/RIRB DMA ownership failed\n", dev->name);
+        goto probe_fail;
+    }
+    dma_wmb();
+    uint64_t corb_addr = dma_addr_value(h->corb_dma->dma);
+    uint64_t rirb_addr = dma_addr_value(h->rirb_dma->dma);
+    w32(h, CORBLBASE, (uint32_t)corb_addr);
+    w32(h, CORBUBASE, (uint32_t)(corb_addr >> 32));
+    w32(h, RIRBLBASE, (uint32_t)rirb_addr);
+    w32(h, RIRBUBASE, (uint32_t)(rirb_addr >> 32));
 
     /* Reset the read pointer: set bit 15, wait for it to read back, clear it. */
     w16(h, CORBRP, 0x8000);
@@ -962,17 +1345,24 @@ static int hda_probe(struct device *dev)
     h->corb_wp = 0;
     h->rirb_rp = 0;
 
-    w8(h, CORBCTL, 0x02);                  /* RUN */
-    w8(h, RIRBCTL, 0x02);                  /* RUN, response interrupts off:
+    /* All DMA addresses and ring geometry are now valid. This is the first
+     * point at which PCI bus mastering may be restored. */
+    if (hda_pci_master_enable(dev) != 0) goto probe_fail;
+    w8(h, CORBCTL, HDA_RUN);                /* RUN */
+    w8(h, RIRBCTL, HDA_RUN);                /* RUN, response interrupts off:
                                             * we poll RIRBWP inside codec_cmd,
                                             * which is bounded and only runs at
                                             * probe time. */
     udelay(100);
+    if (!(r8(h, CORBCTL) & HDA_RUN) || !(r8(h, RIRBCTL) & HDA_RUN)) {
+        kprintf("[hda] %s: CORB/RIRB RUN state did not latch\n", dev->name);
+        goto probe_fail;
+    }
 
     if (find_output_path(h) != 0) {
         kprintf("[hda] %s: codec %u exposes no usable output path\n",
                 dev->name, h->codec_addr);
-        return -1;
+        goto probe_fail;
     }
 
     hda_report_jack(h, "output", h->pin_nid);
@@ -1025,13 +1415,13 @@ static int hda_probe(struct device *dev)
      * pages would need one entry per page and would work, but the mixer wants a
      * flat buffer it can index. */
     {
-        uint64_t ringp = pmm_alloc_contig((HDA_RING_BYTES + 4095) / 4096);
-        uint64_t bdlp  = pmm_alloc();
-        if (!ringp || !bdlp) { kprintf("[hda] no memory for the DMA ring\n"); return -1; }
-        h->ring = (uint8_t *)(uintptr_t)ringp;
-        h->bdl  = (struct bdl_entry *)(uintptr_t)bdlp;
-        memset(h->ring, 0, HDA_RING_BYTES);
-        memset((void *)h->bdl, 0, 4096);
+        h->ring_dma = dma_alloc_coherent(&h->dma, HDA_RING_BYTES, 4096, 0);
+        h->bdl_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
+        if (!h->ring_dma || !h->bdl_dma) {
+            kprintf("[hda] no memory for the DMA ring\n"); goto probe_fail;
+        }
+        h->ring = h->ring_dma->cpu;
+        h->bdl = h->bdl_dma->cpu;
     }
 
     /* Capture's own ring + BDL, same shape and same contiguity argument as
@@ -1041,17 +1431,18 @@ static int hda_probe(struct device *dev)
      * the mandatory half of this driver (see the `return -1` above this
      * block on the output ring), capture is additive. */
     if (h->adc_nid) {
-        uint64_t cringp = pmm_alloc_contig((HDA_RING_BYTES + 4095) / 4096);
-        uint64_t cbdlp  = pmm_alloc();
-        if (!cringp || !cbdlp) {
-            kprintf("[hda] %s: no memory for the capture DMA ring -- capture disabled\n",
-                    dev->name);
-            h->adc_nid = 0;     /* the has_capture gate below reads this */
+        h->cap_ring_dma = dma_alloc_coherent(&h->dma, HDA_RING_BYTES, 4096, 0);
+        h->cap_bdl_dma = dma_alloc_coherent(&h->dma, 4096, 4096, 0);
+        if (!h->cap_ring_dma || !h->cap_bdl_dma) {
+            /* Neither address was published; release a partial allocation. */
+            if (h->cap_ring_dma) dma_free_coherent(h->cap_ring_dma);
+            if (h->cap_bdl_dma) dma_free_coherent(h->cap_bdl_dma);
+            h->cap_ring_dma = h->cap_bdl_dma = NULL;
+            kprintf("[hda] %s: no memory for capture DMA -- capture disabled\n", dev->name);
+            h->adc_nid = 0;
         } else {
-            h->cap_ring = (uint8_t *)(uintptr_t)cringp;
-            h->cap_bdl  = (struct bdl_entry *)(uintptr_t)cbdlp;
-            memset(h->cap_ring, 0, HDA_RING_BYTES);
-            memset((void *)h->cap_bdl, 0, 4096);
+            h->cap_ring = h->cap_ring_dma->cpu;
+            h->cap_bdl = h->cap_bdl_dma->cpu;
         }
     }
 
@@ -1081,23 +1472,9 @@ static int hda_probe(struct device *dev)
         h->has_capture = 1;
     }
 
-    /* ONE shared interrupt for the whole controller -- there is only one
-     * vector to wire either engine to, which is exactly why hda_isr checks
-     * both stream indices unconditionally (see its comment) rather than each
-     * engine registering its own handler. h->has_capture must already be set
-     * (just above) before this: hda_isr is live the instant dev_irq_request
-     * returns, and its capture branch is gated on that flag. */
-    if (dev_irq_request(dev, hda_isr, h, "hda") >= 0) {
-        h->snd.irq_mode = dev->irq_mode;
-        if (h->has_capture) h->cap.irq_mode = dev->irq_mode;
-    } else {
-        kprintf("[hda] %s: no interrupt could be wired -- refills would stall\n",
-                dev->name);
-    }
-
     dev_set_drvdata(dev, h);
 
-    if (snd_register_device(&h->snd) != 0) return -1;
+    if (snd_register_device(&h->snd) != 0) goto probe_fail;
     if (h->has_capture && snd_register_capture_device(&h->cap) != 0) {
         /* Registration failing here (format/geometry rejected, or a second
          * capture device already claimed) does not fail the probe -- exactly
@@ -1108,6 +1485,20 @@ static int hda_probe(struct device *dev)
         kprintf("[hda] %s: capture device registration failed -- input disabled\n",
                 dev->name);
         h->has_capture = 0;
+    }
+
+    /* ONE shared interrupt for the whole controller -- there is only one
+     * vector to wire either engine to, which is exactly why hda_isr checks
+     * both stream indices unconditionally (see its comment).  Registration
+     * deliberately precedes IRQ publication: after an IRQ exists there is no
+     * fallible probe step left, so a failed teardown can never leave a live
+     * callback pointing into an instance that probe() is about to clear. */
+    if (dev_irq_request(dev, hda_isr, h, "hda") >= 0) {
+        h->snd.irq_mode = dev->irq_mode;
+        if (h->has_capture) h->cap.irq_mode = dev->irq_mode;
+    } else {
+        kprintf("[hda] %s: no interrupt could be wired -- refills would stall\n",
+                dev->name);
     }
     /* Start the mixer here rather than from kmain: driver.h's whole point is
      * that adding a driver requires editing no other file.
@@ -1121,12 +1512,63 @@ static int hda_probe(struct device *dev)
      * mixer decides it is safe to call it. */
     snd_init();
     return 0;
+
+probe_fail:
+    hda_probe_abort(h, dev);
+    return -1;
 }
 
-/* Match by CLASS, not by ID: 0x04/0x03 is "HD Audio controller" and covers
- * QEMU's intel-hda and ich9-intel-hda as well as every real Intel, AMD, NVIDIA
- * and VIA controller, none of which share a vendor:device. This is exactly what
- * the device model was built for. */
+/* Match by class so the policy above can inspect the complete enumerated PCI
+ * topology.  Matching a GPU's HDMI function is harmless because probe declines
+ * it without enabling or mapping it; restricting the table to one Intel ID
+ * would instead discard the generic non-display HDA fallback. */
+/* Existing device-model unbind, not a hotplug framework. Detaching upper
+ * pointers under their worker locks makes subsequent DMA-buffer access
+ * impossible even when hardware reset fails and the memory is quarantined. */
+static void hda_remove(struct device *dev)
+{
+    struct hda *h = &g_hda;
+    if (!h->mmio || __atomic_exchange_n(&h->removing, 1, __ATOMIC_ACQ_REL)) return;
+    /* dev_unbind normally drains the IRQ before calling remove().  Keep this
+     * check for the direct diagnostic removal path as well: on failure the
+     * callback can still run, so every object it can reach must stay live and
+     * a later teardown must be allowed to retry. */
+    w32(h, INTCTL, 0);
+    if (dev_irq_release(dev) != 0) {
+#ifndef HDA_X79_NEGCTL_REMOVE_AFTER_IRQ_RELEASE_FAIL
+        __atomic_store_n(&h->removing, 0, __ATOMIC_RELEASE);
+        kprintf("[hda] unbind IRQ teardown unconfirmed: instance retained\n");
+        return;
+#endif
+    }
+    snd_unregister_device(&h->snd);
+    snd_unregister_capture_device(&h->cap);
+    if (h->ring_dma) hda_stop(&h->snd);
+    if (h->cap_ring_dma) hda_cap_stop(&h->cap);
+    IO_GUARD(&hda_gate);
+    if (hda_stop_all_dma(h) != 0) {
+        dma_device_quarantine(&h->dma);
+        dev_disable(dev);
+        kprintf("[hda] unbind DMA stop unconfirmed: DMA quarantined\n");
+        return;
+    }
+    w32(h, GCTL, 0);
+    for (unsigned i = 0; i < 100 && (r32(h, GCTL) & 1); i++) udelay(100);
+    if (r32(h, GCTL) & 1) {
+        dma_device_quarantine(&h->dma);
+        dev_disable(dev);
+        kprintf("[hda] unbind reset unconfirmed: DMA quarantined\n");
+        return;
+    }
+    dma_device_quiesced(&h->dma);
+    while (h->dma.buffers) {
+        if (dma_free_coherent(h->dma.buffers) != 0) break;
+    }
+    dev_set_drvdata(dev, NULL);
+    dev_disable(dev);
+    memset(h, 0, sizeof *h);
+}
+
 static const struct dev_match hda_ids[] = {
     DEV_MATCH_CLASS(0x04, 0x03),
     DEV_MATCH_END
@@ -1137,7 +1579,7 @@ static struct driver hda_driver = {
     .bus_type = DEV_BUS_PCI,
     .match    = hda_ids,
     .probe    = hda_probe,
-    .remove   = NULL,
+    .remove   = hda_remove,
     .next     = NULL,
 };
 DRIVER_DECLARE(hda_driver);

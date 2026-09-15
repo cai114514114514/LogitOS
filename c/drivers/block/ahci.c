@@ -88,6 +88,9 @@
  * A page is 4 KiB-aligned, so all three fall out for free and no allocator with
  * an alignment parameter is needed.
  */
+/* DMA migration correction: the page layout above is retained, but its CPU
+ * alias and DMA base are separate. Payloads use bounded SG mappings; CAP.S64A
+ * constrains metadata and payloads alike. */
 #include <stdint.h>
 #include <stddef.h>
 #include "ahci.h"
@@ -95,7 +98,8 @@
 #include "ata.h"
 #include "pci.h"
 #include "vmm.h"
-#include "pmm.h"
+#include "dma.h"
+#include "panic.h"
 #include "pit.h"
 #include "kprintf.h"
 
@@ -221,6 +225,13 @@ struct ahci_cmdspec {
 #define AHCI_RETRIES 8
 
 struct ahci_port {
+    struct dma_device dma_dev;
+    struct dma_buffer *metadata;
+    struct dma_mapping *mapping;
+    uint64_t map_token;
+    struct device *controller;
+    struct blkdev *block;
+
     int      index;
     volatile uint8_t *reg;          /* port register block */
     uint8_t *dma;                   /* the 4 KiB page (identity mapped: virt == phys) */
@@ -248,11 +259,27 @@ static volatile uint8_t *g_abar;
 static struct ahci_port  g_ports[AHCI_MAX_DISKS];
 static int               g_ndisks;
 
+/* Keep capability policy with this driver; no upper layer guesses whether an
+ * HBA can address 64-bit PRDs or command-list/FIS structures. */
+static int ahci_dma_init(struct ahci_port *p, uint32_t cap)
+{
+    dma_device_init(&p->dma_dev, "ahci", (cap & CAP_S64A) ? DMA_MASK_64 : DMA_MASK_32);
+    p->dma_dev.max_segments = AHCI_PRDT;
+    p->dma_dev.max_segment = AHCI_PRD_MAX;
+    p->metadata = dma_alloc_coherent(&p->dma_dev, 4096, 4096, 0);
+    p->dma = p->metadata ? p->metadata->cpu : NULL;
+    return p->dma ? 0 : -1;
+}
+
 static inline uint32_t r32(volatile uint8_t *b, int o) { return *(volatile uint32_t *)(b + o); }
 static inline void     w32(volatile uint8_t *b, int o, uint32_t v) { *(volatile uint32_t *)(b + o) = v; }
 static inline void     barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
 
-int ahci_disk_count(void) { return g_ndisks; }
+int ahci_disk_count(void) {
+    int live = 0;
+    for (int i = 0; i < g_ndisks; i++) if (g_ports[i].metadata) live++;
+    return live;
+}
 
 /* A crude spin delay. Used only where the spec asks for a settling period with
  * no register to watch (staggered spin-up), and only during init, where the PIT
@@ -303,14 +330,33 @@ static void port_start(struct ahci_port *p)
 /* Clear the accumulated error registers and re-run the engines. Called between
  * command retries -- a task-file error leaves ST set but the port refusing to
  * make progress until SERR is acknowledged. */
+/* Acknowledged CR/FR stop is the release boundary, including the final
+ * failed retry. Keeping pages pinned alone would not stop caller reuse. */
+static void port_quiesce(struct ahci_port *p)
+{
+    if (port_stop(p)) {
+        dma_device_quarantine(&p->dma_dev);
+        panic("ahci: DMA stop unconfirmed; caller memory cannot be reused");
+    }
+    dma_device_quiesced(&p->dma_dev);
+}
+
 static void port_recover(struct ahci_port *p)
 {
-    w32(p->reg, P_CMD, r32(p->reg, P_CMD) & ~CMD_ST);
-    (void)wait_clear(p->reg, P_CMD, CMD_CR, SPIN_INIT, 600);
-    w32(p->reg, P_SERR, r32(p->reg, P_SERR));   /* write-1-to-clear */
-    w32(p->reg, P_IS,   r32(p->reg, P_IS));
-    (void)wait_clear(p->reg, P_TFD, TFD_BSY | TFD_DRQ, SPIN_INIT, 1000);
-    w32(p->reg, P_CMD, r32(p->reg, P_CMD) | CMD_ST);
+    port_quiesce(p);
+    w32(p->reg, P_SERR, r32(p->reg, P_SERR));
+    w32(p->reg, P_IS, r32(p->reg, P_IS));
+    if (dma_device_resume(&p->dma_dev) || !dma_buffer_submit(p->metadata))
+        panic("ahci: cannot resume DMA ownership after acknowledged stop");
+    port_start(p);
+}
+
+static void ahci_unmap(struct ahci_port *p)
+{
+    if (p->mapping) {
+        if (dma_unmap(p->mapping)) panic("ahci: unmap before DMA stopped");
+        p->mapping = NULL; p->map_token = 0;
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -357,18 +403,18 @@ static int ahci_issue(struct ahci_port *p)
     memset(tbl, 0, 0x80 + AHCI_PRDT * 16);
 
     int nprd = 0;
-    uint64_t addr = (uint64_t)(uintptr_t)s->buf;
-    uint32_t left = s->bytes;
-    while (left > 0 && nprd < AHCI_PRDT) {
-        uint32_t chunk = left > AHCI_PRD_MAX ? AHCI_PRD_MAX : left;
-        uint32_t *e = (uint32_t *)(prd + nprd * 16);
-        e[0] = (uint32_t)addr;
-        e[1] = (uint32_t)(addr >> 32);
-        e[2] = 0;
-        e[3] = chunk - 1;                               /* DBC: byte count minus one */
-        addr += chunk; left -= chunk; nprd++;
+    if (s->bytes) {
+        if (!p->mapping || p->mapping->nsegments > AHCI_PRDT) return -1;
+        for (size_t i = 0; i < p->mapping->nsegments; i++) {
+            const struct dma_segment *segment = &p->mapping->segments[i];
+            uint64_t addr = dma_addr_value(segment->addr);
+            if (!segment->len || segment->len > AHCI_PRD_MAX) return -1;
+            uint32_t *e = (uint32_t *)(prd + nprd * 16);
+            e[0] = (uint32_t)addr; e[1] = (uint32_t)(addr >> 32);
+            e[2] = 0; e[3] = (uint32_t)segment->len - 1;
+            nprd++;
+        }
     }
-    if (left > 0) return -1;                            /* caller must chunk further */
 
     /* Host-to-device register FIS. */
     fis[0]  = 0x27;                                     /* FIS type: H2D register */
@@ -390,9 +436,15 @@ static int ahci_issue(struct ahci_port *p)
            | (s->write ? (1u << 6) : 0u)                /* W: host to device */
            | ((uint32_t)nprd << 16);                    /* PRDTL */
     hdr[1] = 0;                                         /* PRDBC: device fills this in */
-    hdr[2] = (uint32_t)(uintptr_t)tbl;
-    hdr[3] = (uint32_t)((uint64_t)(uintptr_t)tbl >> 32);
+    uint64_t table_dma = dma_addr_value(dma_addr_add(p->metadata->dma, 0x800));
+    hdr[2] = (uint32_t)table_dma;
+    hdr[3] = (uint32_t)(table_dma >> 32);
 
+    if (p->mapping) {
+        /* submit synchronises TO/BIDI bounce bytes, including a retry. */
+        p->map_token = dma_mapping_submit(p->mapping);
+        if (!p->map_token) return -1;
+    }
     w32(p->reg, P_IS, r32(p->reg, P_IS));               /* clear stale status */
     barrier();
     w32(p->reg, P_CI, 1u);                              /* issue slot 0 */
@@ -412,6 +464,7 @@ static int ahci_check(struct ahci_port *p)
     /* A read must have moved every byte it asked for. Without this a short DMA
      * -- the shape a truncated or mis-programmed PRDT produces -- returns
      *  success with a buffer that is partly whatever was there before. */
+    dma_rmb();
     const uint32_t *hdr = (const uint32_t *)p->dma;
     if (!p->cur.write && p->cur.bytes && hdr[1] < p->cur.bytes) return -1;
     return 1;
@@ -422,9 +475,17 @@ static int ahci_check(struct ahci_port *p)
  * before the port is registered at all. */
 static int ahci_begin(struct ahci_port *p, const struct ahci_cmdspec *s)
 {
+    if (p->dma_dev.blocked || p->mapping) return -1;
     p->cur = *s;
     p->attempt = 0;
-    return ahci_issue(p);
+    if (s->bytes) {
+        p->mapping = dma_map_kernel(&p->dma_dev, s->buf, s->bytes,
+            s->write ? DMA_TO_DEVICE : DMA_FROM_DEVICE, 0);
+        if (!p->mapping) return -1;
+    }
+    int rc = ahci_issue(p);
+    if (rc) ahci_unmap(p); /* no doorbell was written */
+    return rc;
 }
 
 /* One look, WITH the retry. 1 = done, 0 = still running (possibly re-issued
@@ -444,11 +505,20 @@ static int ahci_begin(struct ahci_port *p, const struct ahci_cmdspec *s)
 static int ahci_step(struct ahci_port *p, int expired)
 {
     int r = ahci_check(p);
-    if (r == 1) return 1;
+    if (r == 1) {
+        if (p->mapping && dma_mapping_complete(p->mapping, p->map_token, p->cur.bytes))
+            panic("ahci: invalid DMA completion ownership");
+        ahci_unmap(p);
+        return 1;
+    }
     if (r == 0 && !expired) return 0;
-    if (++p->attempt >= AHCI_RETRIES) return -1;
-    port_recover(p);
-    if (ahci_issue(p) != 0) return -1;
+    if (++p->attempt >= AHCI_RETRIES) {
+        port_quiesce(p); ahci_unmap(p); return -1;
+    }
+    port_recover(p); /* retain the mapping while the same command is retried */
+    if (ahci_issue(p) != 0) {
+        port_quiesce(p); ahci_unmap(p); return -1;
+    }
     return 0;
 }
 
@@ -462,7 +532,7 @@ static int ahci_step(struct ahci_port *p, int expired)
 static int ahci_run(struct ahci_port *p, const struct ahci_cmdspec *s)
 {
     uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
-    g_ata_busy++;
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
     __asm__ volatile ("sti");
 
     int rc = -1;
@@ -479,7 +549,7 @@ static int ahci_run(struct ahci_port *p, const struct ahci_cmdspec *s)
     }
 
     if (!(fl & 0x200)) __asm__ volatile ("cli");        /* restore the caller's IF */
-    g_ata_busy--;
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     return rc;
 }
 
@@ -515,7 +585,9 @@ static int ahci_begin_chunk(struct ahci_port *p, struct blk_req *r)
     /* Bound each command by the smallest of: what the PRDT can describe, what
      * the sector-count field can express, and (for a drive without LBA48) what
      * the 28-bit addressing can reach. */
-    uint32_t prd_max = (AHCI_PRDT * AHCI_PRD_MAX) / 512;
+    /* DMA mappings are bounded to 1 MiB, independently of the larger ATA
+     * command/PRDT limits described in the historical NCQ note above. */
+    uint32_t prd_max = DMA_MAX_MAPPING / 512;
     if (n > prd_max) n = prd_max;
     if (p->lba48) { if (n > 65535) n = 65535; }
     else {
@@ -600,9 +672,12 @@ static const struct blk_ops ahci_ops = { .submit = ahci_blk_submit, .poll = ahci
 
 /* An AHCI controller, however it was located. */
 struct ahci_hba {
+    struct device *model;
     uint16_t vendor, device;
     uint8_t  bus, slot, func;
     uint64_t abar;                  /* BAR5, mapped */
+    uint16_t old_command;           /* exact pre-probe PCI Command value */
+    int      quarantined;           /* ownership failed; never touch again */
 };
 
 /* AHCI is PCI class 01 / subclass 06 / prog-if 01, and matching on THAT rather
@@ -614,6 +689,81 @@ struct ahci_hba {
 #define AHCI_CLASS     0x01
 #define AHCI_SUBCLASS  0x06
 #define AHCI_PROGIF    0x01
+
+/* A controller that failed an ownership transition stays out of every later
+ * ahci_init() call. Keeping this small table is enough: this driver deliberately
+ * examines at most AHCI_MAX_HBA controllers per boot. */
+static uint32_t g_ahci_quarantine[AHCI_MAX_HBA];
+static unsigned g_ahci_quarantine_count;
+
+static uint32_t ahci_hba_key(const struct ahci_hba *h)
+{
+    return 1u + ((uint32_t)h->bus << 8) + ((uint32_t)h->slot << 3) + h->func;
+}
+
+static int ahci_hba_is_quarantined(const struct ahci_hba *h)
+{
+    uint32_t key = ahci_hba_key(h);
+    for (unsigned i = 0; i < g_ahci_quarantine_count; i++)
+        if (g_ahci_quarantine[i] == key) return 1;
+    return 0;
+}
+
+static void ahci_hba_quarantine(struct ahci_hba *h)
+{
+    if (ahci_hba_is_quarantined(h)) { h->quarantined = 1; return; }
+    if (g_ahci_quarantine_count >= AHCI_MAX_HBA)
+        panic("ahci: controller quarantine ledger exhausted");
+    g_ahci_quarantine[g_ahci_quarantine_count++] = ahci_hba_key(h);
+    h->quarantined = 1;
+}
+
+/* PCI Command is split into two ownership transitions. Discovery enables only
+ * MMIO decode; it must never introduce Bus Master before BOHC and the firmware
+ * command/FIS engines have been stopped. old_command is retained so any refusal
+ * before handoff can restore the exact firmware state. */
+static uint16_t ahci_pci_command_read(const struct ahci_hba *h)
+{
+    return pci_cfg_read16(h->bus, h->slot, h->func, PCI_CFG_COMMAND);
+}
+
+static void ahci_pci_command_write(const struct ahci_hba *h, uint16_t command)
+{
+    pci_cfg_write16(h->bus, h->slot, h->func, PCI_CFG_COMMAND, command);
+}
+
+static void ahci_pci_restore_initial(struct ahci_hba *h)
+{
+    ahci_pci_command_write(h, h->old_command);
+    uint16_t restored = ahci_pci_command_read(h);
+    if (restored != h->old_command) {
+        kprintf("[ahci] %02x:%02x.%u PCI Command restore unconfirmed (old=%x now=%x)\n",
+                h->bus, h->slot, h->func, h->old_command, restored);
+        panic("ahci: PCI Command restore unconfirmed");
+    }
+}
+
+static int ahci_pci_mem_enable(struct ahci_hba *h)
+{
+    uint16_t old = ahci_pci_command_read(h);
+    if (old == UINT16_MAX) return -1;
+    h->old_command = old;
+
+    /* Preserve a firmware-enabled BME, but never introduce it here. Firmware
+     * may still own and use the controller until BOHC completes. */
+    uint16_t wanted = (uint16_t)(old | PCI_CMD_MEM);
+    ahci_pci_command_write(h, wanted);
+    uint16_t after = ahci_pci_command_read(h);
+    int decode_ok = (after & PCI_CMD_MEM) != 0;
+    int master_unchanged = ((after ^ old) & PCI_CMD_MASTER) == 0;
+    if (after != UINT16_MAX && decode_ok && master_unchanged) return 0;
+
+    ahci_pci_restore_initial(h);
+    kprintf("[ahci] %02x:%02x.%u PCI MEM enable refused (command=%x mem=%s bme-unchanged=%s)\n",
+            h->bus, h->slot, h->func, after, decode_ok ? "yes" : "no",
+            master_unchanged ? "yes" : "no");
+    return -1;
+}
 
 #ifdef AHCI_DEVICE_MODEL
 
@@ -627,10 +777,23 @@ static int ahci_find(struct ahci_hba *out, int nth)
          d = dev_find_class(AHCI_CLASS, AHCI_SUBCLASS, d)) {
         if (d->prog_if != AHCI_PROGIF) continue;
         if (nth-- > 0) continue;
-        dev_enable(d, 1);                       /* MEM decode + bus master, for DMA */
+        out->model = d;
         out->vendor = d->vendor; out->device = d->device;
         out->bus = d->bus; out->slot = d->slot; out->func = d->func;
+        out->abar = 0; out->quarantined = 0;
+        if (ahci_hba_is_quarantined(out)) {
+            out->quarantined = 1;
+            return 0;
+        }
+        if (ahci_pci_mem_enable(out) != 0) {
+            ahci_hba_quarantine(out);
+            return 0;
+        }
         out->abar = dev_bar_map(d, 5);          /* ABAR is BAR5, always */
+        if (!out->abar) {
+            ahci_pci_restore_initial(out);
+            ahci_hba_quarantine(out);
+        }
         return 0;
     }
     return -1;
@@ -659,14 +822,21 @@ static int ahci_find(struct ahci_hba *out, int nth)
             if (nth-- > 0) continue;
             uint32_t bar5 = pci_cfg_read(0, slot, func, 0x24) & ~(uint32_t)0xF;
             if (bar5 == 0xFFFFFFF0u) bar5 = 0;
-            if (bar5) {
-                uint32_t cmd = pci_cfg_read(0, slot, func, 0x04);
-                pci_cfg_write(0, slot, func, 0x04, cmd | 0x02 | 0x04);   /* MEM + bus master */
-                vmm_map_range(bar5, bar5, 0x2000, VMM_WRITABLE | VMM_NOCACHE);
-            }
+            out->model = NULL;
             out->bus = 0; out->slot = slot; out->func = func;
             out->vendor = id & 0xFFFF; out->device = id >> 16;
-            out->abar = bar5;
+            out->abar = 0; out->quarantined = 0;
+            if (ahci_hba_is_quarantined(out)) {
+                out->quarantined = 1;
+                return 0;
+            }
+            if (bar5) {
+                if (ahci_pci_mem_enable(out) == 0) {
+                    vmm_map_range(bar5, bar5, 0x2000,
+                                  VMM_WRITABLE | VMM_NOCACHE);
+                    out->abar = bar5;
+                } else ahci_hba_quarantine(out);
+            }
             return 0;
         }
     }
@@ -674,6 +844,156 @@ static int ahci_find(struct ahci_hba *out, int nth)
 }
 
 #endif
+
+/* ACS IDENTIFY word 106 bits 15:14 validate the logical-sector fields.
+ * 512e media keeps 256 words per logical sector; bit 13 only describes its
+ * physical grouping. Native 4Kn sets bit 12 and words 117/118. Earlier code
+ * ignored those words and exposed native-sector LBAs through a 512-byte API. */
+static uint64_t ahci_identify_sector_bytes(const uint16_t *id)
+{
+    if ((id[106] & 0xc000) != 0x4000 || !(id[106] & (1u << 12))) return 512;
+    return ((uint64_t)id[117] | ((uint64_t)id[118] << 16)) * 2;
+}
+
+/* If firmware retains either ownership or BIOS-busy, no port/GHC write is
+ * permitted. Previously both wait failures were explicitly discarded and the
+ * driver programmed a controller that firmware could still be using.
+ * The existing bounded wait is retained; firmware that does not release within
+ * it is refused. This does not claim calibrated real-PC handoff timing. */
+static int ahci_bios_handoff(volatile uint8_t *abar)
+{
+    if (!(r32(abar, HBA_CAP2) & 1u)) return 0;
+    w32(abar, HBA_BOHC, r32(abar, HBA_BOHC) | BOHC_OOS);
+    if (wait_clear(abar, HBA_BOHC, BOHC_BOS | BOHC_BB, SPIN_INIT, 2000)) {
+        kprintf("[ahci] BIOS handoff timed out (bohc=%x); no port/engine writes\n", r32(abar, HBA_BOHC));
+        return -1;
+    }
+    return 0;
+}
+
+/* BOHC is the boundary at which it is legal to take DMA away from firmware.
+ * Preserve firmware's BME before that boundary; immediately afterwards force a
+ * known MEM-on/BME-off Command value and confirm it before inspecting any port.
+ * If the clear cannot be confirmed, an old command engine may still be able to
+ * DMA through its old CLB/FIS addresses, so there is no safe return path. */
+static void ahci_pci_master_quiet(struct ahci_hba *h)
+{
+    uint16_t safe = (uint16_t)((h->old_command | PCI_CMD_MEM) & ~PCI_CMD_MASTER);
+    ahci_pci_command_write(h, safe);
+    uint16_t after = ahci_pci_command_read(h);
+    if (after != safe) {
+        kprintf("[ahci] %02x:%02x.%u cannot quarantine BME after handoff "
+                "(want=%x got=%x)\n",
+                h->bus, h->slot, h->func, safe, after);
+        panic("ahci: BME disable unconfirmed after BIOS handoff");
+    }
+}
+
+/* Enable DMA only after every firmware engine has been observed stopped. A
+ * failed enable is restored to the post-handoff safe state, not old_command:
+ * old_command may contain firmware's BME and ownership has already moved to us.
+ * If even that isolation write cannot be confirmed, stop the machine. */
+static int ahci_pci_master_enable(struct ahci_hba *h)
+{
+    uint16_t safe = (uint16_t)((h->old_command | PCI_CMD_MEM) & ~PCI_CMD_MASTER);
+    uint16_t before = ahci_pci_command_read(h);
+    if (before != safe) {
+        ahci_pci_command_write(h, safe);
+        if (ahci_pci_command_read(h) != safe)
+            panic("ahci: pre-BME safe Command state unconfirmed");
+    }
+
+    uint16_t wanted = (uint16_t)(safe | PCI_CMD_MASTER);
+    ahci_pci_command_write(h, wanted);
+    uint16_t after = ahci_pci_command_read(h);
+    int mem_ok = (after & PCI_CMD_MEM) != 0;
+    int master_ok = (after & PCI_CMD_MASTER) != 0;
+    if (after != UINT16_MAX && mem_ok && master_ok) return 0;
+
+    ahci_pci_command_write(h, safe);
+    uint16_t isolated = ahci_pci_command_read(h);
+    if (isolated != safe) {
+        kprintf("[ahci] %02x:%02x.%u BME enable failed and isolation is "
+                "unconfirmed (want=%x got=%x)\n",
+                h->bus, h->slot, h->func, safe, isolated);
+        panic("ahci: BME quarantine failed");
+    }
+    kprintf("[ahci] %02x:%02x.%u BME enable refused (command=%x mem=%s master=%s); "
+            "controller quarantined\n",
+            h->bus, h->slot, h->func, after, mem_ok ? "yes" : "no",
+            master_ok ? "yes" : "no");
+    return -1;
+}
+
+/* Stop every implemented firmware port while PCI BME is confirmed clear. ST
+ * and FRE are writable requests; CR and FR are the hardware acknowledgements.
+ * All four must read clear before any later BME write. PI bits outside CAP.NP
+ * are malformed and refused without walking beyond the reported register set. */
+static int ahci_stop_firmware_ports(volatile uint8_t *abar, uint32_t cap,
+                                    uint32_t pi)
+{
+    unsigned nports = (cap & 0x1Fu) + 1u;
+    uint32_t valid = nports == 32 ? UINT32_MAX : ((1u << nports) - 1u);
+    if (pi & ~valid) return -1;
+
+    for (unsigned i = 0; i < nports; i++) {
+        if (!(pi & (1u << i))) continue;
+        volatile uint8_t *pr = abar + 0x100 + i * 0x80;
+        uint32_t cmd = r32(pr, P_CMD);
+        w32(pr, P_CMD, cmd & ~CMD_ST);
+        if (wait_clear(pr, P_CMD, CMD_ST | CMD_CR, SPIN_INIT, 600))
+            return -1;
+        cmd = r32(pr, P_CMD);
+        w32(pr, P_CMD, cmd & ~CMD_FRE);
+        if (wait_clear(pr, P_CMD, CMD_FRE | CMD_FR, SPIN_INIT, 600))
+            return -1;
+        if (r32(pr, P_CMD) & (CMD_ST | CMD_FRE | CMD_CR | CMD_FR))
+            return -1;
+    }
+    return 0;
+}
+
+/* Complete the ownership transaction before ahci_bring_up allocates a byte of
+ * DMA memory. On a recoverable refusal the controller remains MEM-decodable,
+ * BME-clear and marked quarantined; no caller may touch ABAR again. */
+static int ahci_prepare_controller(struct ahci_hba *h, volatile uint8_t *abar,
+                                   uint32_t *cap_out, uint32_t *pi_out,
+                                   uint32_t *vs_out)
+{
+    if (ahci_bios_handoff(abar)) {
+        ahci_pci_restore_initial(h);
+        ahci_hba_quarantine(h);
+        return -1;
+    }
+
+    ahci_pci_master_quiet(h);
+
+    uint32_t ghc = r32(abar, HBA_GHC);
+    w32(abar, HBA_GHC, (ghc | GHC_AE) & ~GHC_IE);
+    ghc = r32(abar, HBA_GHC);
+    if (!(ghc & GHC_AE) || (ghc & GHC_IE)) {
+        ahci_hba_quarantine(h);
+        return -1;
+    }
+
+    uint32_t cap = r32(abar, HBA_CAP);
+    uint32_t pi = r32(abar, HBA_PI);
+    uint32_t vs = r32(abar, HBA_VS);
+    if (ahci_stop_firmware_ports(abar, cap, pi)) {
+        kprintf("[ahci] %02x:%02x.%u firmware engines did not stop; "
+                "BME remains off and controller is quarantined\n",
+                h->bus, h->slot, h->func);
+        ahci_hba_quarantine(h);
+        return -1;
+    }
+    if (ahci_pci_master_enable(h)) {
+        ahci_hba_quarantine(h);
+        return -1;
+    }
+
+    *cap_out = cap; *pi_out = pi; *vs_out = vs;
+    return 0;
+}
 
 /* IDENTIFY DEVICE: capacity, LBA48 support and the model string, read from the
  * drive rather than assumed. The capacity is what bounds every later request,
@@ -685,6 +1005,12 @@ static int port_identify(struct ahci_port *p)
     memset(id, 0, sizeof id);
     struct ahci_cmdspec s = { ATA_IDENTIFY, 0, 0, 0, id, sizeof id };
     if (ahci_run(p, &s) != 0) return -1;
+    uint64_t sector_bytes = ahci_identify_sector_bytes(id);
+    if (sector_bytes != 512) {
+        kprintf("[ahci] port %d: logical-sector=%llu unsupported (need 512)\n",
+                p->index, (unsigned long long)sector_bytes);
+        return -1;
+    }
 
     p->lba48 = (id[83] & (1u << 10)) ? 1 : 0;
     uint64_t caps = p->lba48
@@ -714,28 +1040,15 @@ static const char *sig_name(uint32_t sig)
     }
 }
 
-/* Bring up one controller: BIOS handoff, AHCI enable, then every implemented
- * port. Returns the number of SATA disks registered off it. */
-static int ahci_bring_up(const struct ahci_hba *dev)
+/* Bring up one controller: claim MMIO/BOHC, quiesce every firmware engine,
+ * enable BME, then initialise attached SATA disks. */
+static int ahci_bring_up(struct ahci_hba *dev)
 {
     volatile uint8_t *abar = (volatile uint8_t *)(uintptr_t)dev->abar;
     g_abar = abar;
 
-    /* BIOS/OS handoff: on real firmware the BIOS owns the controller until we
-     * ask for it, and touching GHC before it lets go is how a machine hangs at
-     * this exact line. Skipped silently when the capability is absent (QEMU). */
-    if (r32(abar, HBA_CAP2) & 1u) {
-        w32(abar, HBA_BOHC, r32(abar, HBA_BOHC) | BOHC_OOS);
-        (void)wait_clear(abar, HBA_BOHC, BOHC_BOS, SPIN_INIT, 2000);
-        (void)wait_clear(abar, HBA_BOHC, BOHC_BB,  SPIN_INIT, 2000);
-    }
-
-    w32(abar, HBA_GHC, r32(abar, HBA_GHC) | GHC_AE);
-    w32(abar, HBA_GHC, r32(abar, HBA_GHC) & ~GHC_IE);   /* we poll; no HBA interrupts */
-
-    uint32_t cap = r32(abar, HBA_CAP);
-    uint32_t pi  = r32(abar, HBA_PI);
-    uint32_t vs  = r32(abar, HBA_VS);
+    uint32_t cap, pi, vs;
+    if (ahci_prepare_controller(dev, abar, &cap, &pi, &vs)) return 0;
     int nports = (int)(cap & 0x1F) + 1;
     int ncs    = (int)((cap >> 8) & 0x1F) + 1;
 
@@ -784,31 +1097,35 @@ static int ahci_bring_up(const struct ahci_hba *dev)
         }
 
         struct ahci_port *p = &g_ports[g_ndisks];
+        p->controller = dev->model;
         p->index = i;
         p->reg   = pr;
-        p->dma   = (uint8_t *)(uintptr_t)pmm_alloc();
-        if (!p->dma) { kprintf("[ahci] port %d: out of memory\n", i); continue; }
+        if (ahci_dma_init(p, cap)) { kprintf("[ahci] port %d: out of memory\n", i); continue; }
         memset(p->dma, 0, 4096);
 
         if (port_stop(p) != 0) {
             kprintf("[ahci] port %d: engines would not stop (cmd=%x) -- skipped\n", i, r32(pr, P_CMD));
-            pmm_free((uint64_t)(uintptr_t)p->dma);
+            dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL;
             continue;
         }
-        w32(pr, P_CLB,  (uint32_t)(uintptr_t)p->dma);
-        w32(pr, P_CLBU, (uint32_t)((uint64_t)(uintptr_t)p->dma >> 32));
-        w32(pr, P_FB,   (uint32_t)((uintptr_t)p->dma + 0x400));
-        w32(pr, P_FBU,  (uint32_t)(((uint64_t)(uintptr_t)p->dma + 0x400) >> 32));
+        uint64_t md = dma_addr_value(p->metadata->dma);
+        w32(pr, P_CLB,  (uint32_t)md);
+        w32(pr, P_CLBU, (uint32_t)(md >> 32));
+        w32(pr, P_FB,   (uint32_t)(md + 0x400));
+        w32(pr, P_FBU,  (uint32_t)((md + 0x400) >> 32));
         w32(pr, P_SERR, r32(pr, P_SERR));
         w32(pr, P_IS,   r32(pr, P_IS));
         w32(pr, P_IE,   0);
+        if (!dma_buffer_submit(p->metadata)) {
+            dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL; continue;
+        }
         port_start(p);
 
         if (port_identify(p) != 0) {
             kprintf("[ahci] port %d: IDENTIFY failed (tfd=%x serr=%x) -- skipped\n",
                     i, r32(pr, P_TFD), r32(pr, P_SERR));
-            (void)port_stop(p);
-            pmm_free((uint64_t)(uintptr_t)p->dma);
+            port_quiesce(p);
+            dma_free_coherent(p->metadata); p->metadata = NULL; p->dma = NULL;
             continue;
         }
 
@@ -817,7 +1134,7 @@ static int ahci_bring_up(const struct ahci_hba *dev)
         kprintf("[ahci] port %d: SATA disk '%s' %u sectors (%u MiB) lba48=%s\n",
                 i, p->model, (unsigned)p->nsectors, (unsigned)(p->nsectors / 2048),
                 p->lba48 ? "yes" : "no");
-        blk_register(p->name, &ahci_ops, p, p->nsectors);
+        p->block = blk_register(p->name, &ahci_ops, p, p->nsectors);
         g_ndisks++;
         found++;
     }
@@ -833,6 +1150,12 @@ static int ahci_bring_up(const struct ahci_hba *dev)
  * a box that boots off the add-in card means the OS does not boot. There is no
  * cost to the loop: on a machine with one controller the second lookup simply
  * finds nothing. */
+#ifdef AHCI_DEVICE_MODEL
+static const struct driver ahci_driver = {
+    .name = "ahci", .bus_type = DEV_BUS_PCI, .remove = ahci_shutdown,
+};
+#endif
+
 int ahci_init(void)
 {
     int total = 0;
@@ -844,7 +1167,38 @@ int ahci_init(void)
                     dev.vendor, dev.device, (int)dev.bus, (int)dev.slot, (int)dev.func);
             continue;
         }
-        total += ahci_bring_up(&dev);
+        int found = ahci_bring_up(&dev);
+        total += found;
+#ifdef AHCI_DEVICE_MODEL
+        /* Root disks precede dev_probe_all: publish the binding now rather
+         * than probing the same controller again after filesystem mounting. */
+        if (found && dev.model) dev.model->drv = &ahci_driver;
+#endif
     }
     return total;
+}
+
+/* BKL-held normal controller removal. Each port owns its DMA context, so a
+ * different HBA and its in-flight requests remain unaffected. The block registry
+ * retains offline objects so old filesystem/swap handles fail safely. */
+void ahci_shutdown(struct device *controller)
+{
+    if (!controller) return;
+    /* First close all upper-layer entry points on this controller. */
+    for (int i = 0; i < g_ndisks; i++) {
+        struct ahci_port *p = &g_ports[i];
+        if (p->controller == controller && p->metadata && p->block)
+            blk_dev_offline(p->block);
+    }
+    for (int i = 0; i < g_ndisks; i++) {
+        struct ahci_port *p = &g_ports[i];
+        if (p->controller != controller || !p->metadata) continue;
+        port_quiesce(p);
+        ahci_unmap(p);
+        if (dma_free_coherent(p->metadata)) panic("ahci: stopped metadata still owned");
+        p->metadata = NULL; p->dma = NULL;
+    }
+#ifdef AHCI_DEVICE_MODEL
+    dev_disable(controller);
+#endif
 }

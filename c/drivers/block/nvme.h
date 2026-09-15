@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: Removal is serialized by per-medium offline/drain and the device binding owner; it requires no BKL. */
 #ifndef LOGIT_NVME_H
 #define LOGIT_NVME_H
 
@@ -7,6 +8,8 @@
  * 0x010802); nvme_present() reports success. nvme_busy() lets interrupts.c avoid
  * preempting the driver's own bring-up poll. */
 int nvme_init(void);
+/* Caller holds the BKL. Offline/drain the disk, acknowledge stop, free DMA. */
+void nvme_shutdown(void);
 int nvme_present(void);
 int nvme_busy(void);
 

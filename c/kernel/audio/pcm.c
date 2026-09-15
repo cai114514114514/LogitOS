@@ -187,17 +187,20 @@ void pcm_silence(void *dst, int fmt, unsigned samples)
 
 void pcm_ring_init(struct pcm_ring *r, uint8_t *buf, unsigned size)
 {
-    r->buf = buf; r->size = size; r->head = 0; r->tail = 0;
+    r->buf = buf;
+    __atomic_store_n(&r->size, size, __ATOMIC_RELAXED);
+    __atomic_store_n(&r->head, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&r->tail, 0, __ATOMIC_RELEASE);
 }
 
 unsigned pcm_ring_used(const struct pcm_ring *r)
 {
-    return (unsigned)(r->head - r->tail);
+    return (unsigned)(__atomic_load_n(&r->head, __ATOMIC_ACQUIRE) - __atomic_load_n(&r->tail, __ATOMIC_ACQUIRE));
 }
 
 unsigned pcm_ring_free(const struct pcm_ring *r)
 {
-    return r->size - (unsigned)(r->head - r->tail);
+    return __atomic_load_n(&r->size, __ATOMIC_ACQUIRE) - (unsigned)(__atomic_load_n(&r->head, __ATOMIC_ACQUIRE) - __atomic_load_n(&r->tail, __ATOMIC_ACQUIRE));
 }
 
 unsigned pcm_ring_write(struct pcm_ring *r, const void *src, unsigned bytes)
@@ -212,7 +215,7 @@ unsigned pcm_ring_write(struct pcm_ring *r, const void *src, unsigned bytes)
 
     for (unsigned i = 0; i < first; i++) r->buf[off + i] = s[i];
     for (unsigned i = 0; i < n - first; i++) r->buf[i] = s[first + i];
-    r->head += n;
+    __atomic_store_n(&r->head, __atomic_load_n(&r->head, __ATOMIC_RELAXED) + n, __ATOMIC_RELEASE);
     return n;
 }
 
@@ -234,12 +237,12 @@ unsigned pcm_ring_peek(const struct pcm_ring *r, void *dst, unsigned bytes)
 void pcm_ring_advance(struct pcm_ring *r, unsigned bytes)
 {
     unsigned have = pcm_ring_used(r);
-    r->tail += (bytes < have ? bytes : have);
+    __atomic_store_n(&r->tail, __atomic_load_n(&r->tail, __ATOMIC_RELAXED) + (bytes < have ? bytes : have), __ATOMIC_RELEASE);
 }
 
 unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes)
 {
     unsigned n = pcm_ring_peek(r, dst, bytes);
-    r->tail += n;
+    __atomic_store_n(&r->tail, __atomic_load_n(&r->tail, __ATOMIC_RELAXED) + n, __ATOMIC_RELEASE);
     return n;
 }

@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: Removal is serialized by per-medium offline/drain and the device binding owner; it requires no BKL. */
 #ifndef LOGIT_AHCI_H
 #define LOGIT_AHCI_H
 
@@ -14,6 +15,9 @@
  * Probe every implemented port, bring up the ones with a SATA disk on them, and
  * register each as a block device. Returns the number of disks found. */
 int ahci_init(void);
+struct device;
+/* Caller holds the BKL. Remove only this controller, after draining its ports. */
+void ahci_shutdown(struct device *controller);
 
 /* Number of SATA disks brought up (0 before ahci_init). */
 int ahci_disk_count(void);

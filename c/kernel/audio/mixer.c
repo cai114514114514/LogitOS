@@ -1,3 +1,7 @@
+#include "../../drivers/core/io_domain.h"
+/* Start/open and detach own the device pointer across allocation or scheduler
+ * publication. The IRQ/period worker still use their short existing locks. */
+static struct io_domain snd_lifecycle = IO_DOMAIN_INIT;
 /* The mixer: streams in, one DMA period out, once per interrupt.
  *
  * The shape is the whole design, so it is worth stating before the code:
@@ -64,9 +68,9 @@ void *memset(void *, int, size_t);
 #define SND_FILL_LEAD   3
 
 struct snd_stream {
-    int              used;
+    _Atomic int              used;
     void            *owner;          /* struct proc *, or NULL for a kernel caller */
-    int              handle;
+    _Atomic int              handle;
 
     unsigned         rate;
     unsigned short   channels;
@@ -83,21 +87,31 @@ struct snd_stream {
     uint64_t         frames_consumed;
     unsigned         underruns;
     int              state;          /* SND_S_* */
-    int              closing;        /* set by close(); kaudio reaps */
+    _Atomic int              closing;        /* set by close(); kaudio reaps */
 
     struct waitq     wq;             /* writers wait here for room */
 };
 
 static struct snd_stream g_str[SND_MAX_STREAMS];
 static spinlock_t        g_snd_lock = SPINLOCK_INIT;
+/* Public stream operations share the worker's lock. A waiting syscall must
+ * drop it and re-find its handle after waking: close/reopen may recycle the
+ * static slot while the task is asleep. Wait queues are initialised once. */
+struct snd_guard { uint64_t f; int held; };
+static struct snd_guard snd_guard_take(void)
+{ return (struct snd_guard){ spin_lock_irqsave(&g_snd_lock), 1 }; }
+static void snd_guard_drop(struct snd_guard *g)
+{ if (g->held) { g->held = 0; spin_unlock_irqrestore(&g_snd_lock, g->f); } }
+#define snd_GUARD struct snd_guard guard __attribute__((cleanup(snd_guard_drop))) = snd_guard_take()
+
 static int               g_next_handle = 1;
 
-static struct snd_device *g_dev;
+static struct snd_device * _Atomic g_dev;
 static struct semaphore   g_period;
 static unsigned           g_fill;        /* period index kaudio fills next */
 static unsigned           g_dev_underruns;
-static volatile uint64_t  g_periods_done;
-static int                g_running;
+static _Atomic uint64_t   g_periods_done;
+static _Atomic int        g_running;
 
 /* Scratch, allocated once from the device's real geometry. Not on the stack:
  * the deep path here is 32 KiB at 192 kHz, and this kernel has already
@@ -143,7 +157,7 @@ int snd_present(void) { return g_dev != 0; }
  * post, both of which wait.h documents as interrupt-safe. */
 void snd_period_elapsed(struct snd_device *d)
 {
-    (void)d;
+    if (d != g_dev || !g_running) return;
     g_periods_done++;
     sem_post(&g_period);
 }
@@ -345,6 +359,7 @@ static int g_engine_up;
 
 static int snd_engine_start(int quiet)
 {
+    IO_DOMAIN_GUARD(&snd_lifecycle);
     if (g_engine_up) return 1;
     if (!g_dev) return 0;
 
@@ -358,6 +373,7 @@ static int snd_engine_start(int quiet)
         return 0;
     }
 
+    struct snd_guard start_guard __attribute__((cleanup(snd_guard_drop))) = snd_guard_take();
     /* Fill the WHOLE ring with silence before the engine is allowed to run, so
      * a card that starts playing the instant it is told to plays silence rather
      * than whatever was in that RAM. */
@@ -376,6 +392,7 @@ static int snd_engine_start(int quiet)
     g_running = 1;
     g_engine_up = 1;
 
+    snd_guard_drop(&start_guard);
     thread_create(kaudio_thread, "kaudio");
     kprintf("[snd] engine running: kaudio started, DMA at %u Hz\n", g_dev->rate);
     return 1;
@@ -433,6 +450,7 @@ void snd_init(void)
 
 void snd_report(void)
 {
+    snd_GUARD;
     if (!g_dev) {
         /* Printed on the no-card path too, and deliberately: on unfamiliar
          * hardware "there is no line" and "the line says none" are completely
@@ -466,6 +484,7 @@ static struct snd_stream *find(void *owner, int h)
 
 int snd_stream_open(void *owner, const struct logit_sndfmt *f)
 {
+    IO_DOMAIN_GUARD(&snd_lifecycle);
     struct snd_stream *s = 0;
     unsigned bytes, ms;
     uint64_t fl;
@@ -487,17 +506,15 @@ int snd_stream_open(void *owner, const struct logit_sndfmt *f)
     bytes = (f->rate * ms / 1000) * (unsigned)snd_fmt_bytes(f->format) * f->channels;
     if (bytes < 4096) bytes = 4096;
 
+    uint8_t *ringmem = (uint8_t *)kmalloc(bytes);
+    if (!ringmem) return SND_E_NOMEM;
     fl = spin_lock_irqsave(&g_snd_lock);
+    if (!g_dev) { spin_unlock_irqrestore(&g_snd_lock, fl); kfree(ringmem); return SND_E_NODEV; }
     for (int i = 0; i < SND_MAX_STREAMS; i++)
         if (!g_str[i].used) { s = &g_str[i]; break; }
-    if (!s) { spin_unlock_irqrestore(&g_snd_lock, fl); return SND_E_NOMEM; }
-    /* Claim the slot before dropping the lock to allocate. */
-    s->used = 1;
+    if (!s) { spin_unlock_irqrestore(&g_snd_lock, fl); kfree(ringmem); return SND_E_NOMEM; }
     s->handle = g_next_handle++;
-    spin_unlock_irqrestore(&g_snd_lock, fl);
-
-    s->ringmem = (uint8_t *)kmalloc(bytes);
-    if (!s->ringmem) { s->used = 0; return SND_E_NOMEM; }
+    s->ringmem = ringmem;
 
     s->owner = owner;
     s->rate = f->rate; s->channels = f->channels; s->format = f->format;
@@ -507,14 +524,16 @@ int snd_stream_open(void *owner, const struct logit_sndfmt *f)
     s->underruns = 0;
     s->state = SND_S_RUNNING;
     s->closing = 0;
-    waitq_init(&s->wq);
     pcm_ring_init(&s->ring, s->ringmem, bytes);
-
-    return s->handle;
+    s->used = 1;
+    int handle = s->handle;
+    spin_unlock_irqrestore(&g_snd_lock, fl);
+    return handle;
 }
 
 int snd_stream_avail(void *owner, int h)
 {
+    snd_GUARD;
     struct snd_stream *s;
     if (!g_dev) return SND_E_NODEV;
     s = find(owner, h);
@@ -527,6 +546,7 @@ int snd_stream_avail(void *owner, int h)
  * copy, so this function is equally usable by the on-device self-test. */
 int snd_stream_write(void *owner, int h, const void *buf, int bytes)
 {
+    snd_GUARD;
     struct snd_stream *s;
     unsigned n, bps;
     int waited_ok;
@@ -546,9 +566,12 @@ int snd_stream_write(void *owner, int h, const void *buf, int bytes)
          * backstop: if the card stopped producing interrupts we return a short
          * write and let the caller decide, rather than hanging its thread
          * forever on hardware that has gone quiet. */
-        wait_event_timeout(&s->wq, pcm_ring_free(&s->ring) > 0 || s->closing, 500,
+        snd_guard_drop(&guard);
+        wait_event_timeout(&s->wq, pcm_ring_free(&s->ring) > 0 || !s->used || s->closing || s->handle != h, 500,
                            waited_ok);
-        if (!waited_ok || s->closing) return 0;
+        guard = snd_guard_take();
+        s = find(owner, h);
+        if (!waited_ok || !s || !g_dev) return 0;
     }
 
     n = pcm_ring_write(&s->ring, buf, (unsigned)bytes);
@@ -558,6 +581,7 @@ int snd_stream_write(void *owner, int h, const void *buf, int bytes)
 
 int snd_stream_close(void *owner, int h, int drain)
 {
+    snd_GUARD;
     struct snd_stream *s = find(owner, h);
     if (!s) return SND_E_BADH;
 
@@ -566,7 +590,11 @@ int snd_stream_close(void *owner, int h, int drain)
          * because the card has stopped must not wedge the closing thread. */
         int ok;
         s->state = SND_S_DRAINING;
-        wait_event_timeout(&s->wq, pcm_ring_used(&s->ring) == 0, 3000, ok);
+        snd_guard_drop(&guard);
+        wait_event_timeout(&s->wq, pcm_ring_used(&s->ring) == 0 || !s->used || s->closing || s->handle != h, 3000, ok);
+        guard = snd_guard_take();
+        s = find(owner, h);
+        if (!s) return 0;
     }
     s->state = SND_S_DRAINING;
     s->closing = 1;
@@ -578,6 +606,7 @@ int snd_stream_close(void *owner, int h, int drain)
 
 int snd_stream_state(void *owner, int h, struct logit_sndstate *st)
 {
+    snd_GUARD;
     struct snd_stream *s;
     if (!g_dev) return SND_E_NODEV;
     s = find(owner, h);
@@ -593,6 +622,7 @@ int snd_stream_state(void *owner, int h, struct logit_sndstate *st)
 
 void snd_owner_release(void *owner)
 {
+    snd_GUARD;
     /* A player that faults mid-tone must stop making noise. Without this the
      * ring keeps its last samples and the mixer keeps playing them until the
      * ring drains, which is a dead process still audible. */
@@ -606,6 +636,7 @@ void snd_owner_release(void *owner)
 
 void snd_info_fill(struct logit_sndinfo *si)
 {
+    snd_GUARD;
     int i, open = 0;
     memset(si, 0, sizeof *si);
     if (!g_dev) return;
@@ -626,4 +657,22 @@ void snd_info_fill(struct logit_sndinfo *si)
 
     for (i = 0; i < SND_MAX_STREAMS; i++) if (g_str[i].used) open++;
     si->streams_open = (unsigned)open;
+}
+
+void snd_unregister_device(struct snd_device *d)
+{
+    IO_DOMAIN_GUARD(&snd_lifecycle);
+    uint64_t fl = spin_lock_irqsave(&g_snd_lock);
+    if (g_dev != d) { spin_unlock_irqrestore(&g_snd_lock, fl); return; }
+    g_running = 0;
+    g_dev = NULL;
+    for (int i = 0; i < SND_MAX_STREAMS; i++) {
+        if (!g_str[i].used) continue;
+        g_str[i].closing = 1;
+        g_str[i].state = SND_S_DRAINING;
+        waitq_wake_all(&g_str[i].wq);
+    }
+    spin_unlock_irqrestore(&g_snd_lock, fl);
+    /* kaudio can reap app rings, but its device/ring branch is now unreachable. */
+    if (g_engine_up) sem_post(&g_period);
 }

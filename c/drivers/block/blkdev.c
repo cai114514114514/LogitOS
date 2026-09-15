@@ -2,11 +2,22 @@
 #include <stddef.h>
 #include "blkdev.h"
 #include "part.h"
+#include "../../fs/logitfs_fmt.h"
 #include "ata.h"
 #include "ahci.h"
 #include "virtio_blk.h"
+#include "virtio_scsi.h"
 #include "nvme.h"
 #include "kprintf.h"
+#include "../../kernel/mm/mm.h"
+#ifdef BLK_HOSTTEST
+#include <stdlib.h>
+#define kmalloc malloc
+#define kfree free
+#else
+#include "../../kernel/mm/kheap.h"
+#include "../../kernel/exec/usercopy.h"
+#endif
 
 void *memset(void *, int, size_t);
 void *memcpy(void *, const void *, size_t);
@@ -26,18 +37,18 @@ void *memcpy(void *, const void *, size_t);
  * conditional inside those would make the gate a test of a different program.
  * ------------------------------------------------------------------------ */
 #ifdef BLK_HOSTTEST
-uint64_t blk_hosttest_dma_limit = ~0ull;      /* the test moves this to force a bounce */
+void *blk_hosttest_user_buffer; /* simulate the usercopy boundary, not a DMA mask */
 #  define BLK_IRQ_SAVE(f)     ((f) = 0x200)
 #  define BLK_IRQ_ENABLE()    ((void)0)
 #  define BLK_IRQ_DISABLE()   ((void)0)
 #  define BLK_RELAX()         ((void)0)
-#  define BLK_DMA_LIMIT       blk_hosttest_dma_limit
+
 #else
 #  define BLK_IRQ_SAVE(f)     __asm__ volatile ("pushfq; pop %0" : "=r"(f) :: "memory")
 #  define BLK_IRQ_ENABLE()    __asm__ volatile ("sti")
 #  define BLK_IRQ_DISABLE()   __asm__ volatile ("cli")
 #  define BLK_RELAX()         __asm__ volatile ("pause")
-#  define BLK_DMA_LIMIT       (1ull << 30)    /* boot.asm:80: the identity-mapped span */
+
 #endif
 
 /* --------------------------------------------------------------------------
@@ -149,14 +160,35 @@ static int in_bounds(struct blkdev *d, uint64_t lba, uint32_t count)
  * guesswork; refusing costs the one caller that could ever hit it (swap, whose
  * pages are identity-mapped frames and therefore never do) a counted fallback.
  * ------------------------------------------------------------------------ */
-#define BLK_BOUNCE_SECT 64u              /* 32 KiB a chunk */
-static uint8_t blk_bounce[BLK_BOUNCE_SECT * BLK_SECTOR];
-
-static int dma_reachable(const void *buf, uint32_t count)
+/* Correction (2026-09-09): the historic reachability/global-bounce contract
+ * above is retired. Each DMA driver maps and owns its request independently.
+ * This layer handles only the existing usercopy boundary: DMA never receives
+ * user VAs, while kernel high aliases and scattered mappings reach the driver.
+ * User staging is per-call, bounded, and retained across synchronous wait. */
+#define BLK_BOUNCE_SECT 64u
+static int user_buffer(const void *buf)
 {
-    uint64_t a = (uint64_t)(uintptr_t)buf;
-    uint64_t n = (uint64_t)count * BLK_SECTOR;
-    return a + n >= a && a + n <= BLK_DMA_LIMIT;
+#ifdef BLK_HOSTTEST
+    return buf == blk_hosttest_user_buffer;
+#else
+    return mm_user_addr((uint64_t)(uintptr_t)buf);
+#endif
+}
+static int copy_from_user(void *dst, const void *src, size_t n)
+{
+#ifdef BLK_HOSTTEST
+    memcpy(dst, src, n); return 0;
+#else
+    return user_copy_from(dst, src, n);
+#endif
+}
+static int copy_to_user(void *dst, const void *src, size_t n)
+{
+#ifdef BLK_HOSTTEST
+    memcpy(dst, src, n); return 0;
+#else
+    return user_copy_to(dst, src, n);
+#endif
 }
 
 /* --------------------------------------------------------------------------
@@ -208,12 +240,19 @@ void blk_req_init(struct blk_req *r, struct blkdev *d, int op,
 
 /* Finish a request. The medium is released HERE and nowhere else, so there is
  * exactly one place that can leave a disk permanently busy. */
+static int req_reject(struct blk_req *r, int status)
+{
+    r->status = status;
+    __atomic_store_n(&r->state, BLK_REQ_DONE, __ATOMIC_RELEASE);
+    return status;
+}
+
 static int req_finish(struct blk_req *r, int status)
 {
     struct blkdev *m = medium(r->dev);
     if (m && m->inflight == r) m->inflight = NULL;
     r->status = status;
-    r->state  = BLK_REQ_DONE;
+    __atomic_store_n(&r->state, BLK_REQ_DONE, __ATOMIC_RELEASE);
     return status;
 }
 
@@ -239,57 +278,83 @@ static int run_sync_ops(struct blk_req *r)
 static unsigned long blk_nodma_refusals;
 unsigned long blk_async_refusals(void) { return blk_nodma_refusals; }
 
+/* The old interlock below was BKL-serialised. A pointer test is not a
+ * claim on SMP, and two pollers consuming the same completion can unmap DMA
+ * twice. The medium gate protects both ownership and the driver state machine.
+ * We keep it while a polled driver executes; none of those callbacks sleeps.
+ * Completion is published LAST with release ordering, after the driver stopped
+ * referring to the submitter's (possibly stack allocated) request. */
+static int poll_locked(struct blk_req *r)
+{
+    if (r->state != BLK_REQ_INFLIGHT) return 1;
+    struct blkdev *d = r->dev;
+    if (!d->ops->poll) { req_finish(r, -1); return 1; }
+    if (!d->ops->poll(d->ctx, r)) return 0;
+    req_finish(r, r->status);
+    return 1;
+}
+
 int blk_poll(struct blk_req *r)
 {
     if (!r) return 1;
-    if (r->state != BLK_REQ_INFLIGHT) return 1;   /* DONE, or never submitted */
-    struct blkdev *d = r->dev;
-    if (!d->ops->poll) { req_finish(r, -1); return 1; }  /* only submit leaves INFLIGHT set */
-    if (d->ops->poll(d->ctx, r) == 0) return 0;
-    req_finish(r, r->status);
-    return 1;
+    if (__atomic_load_n(&r->state, __ATOMIC_ACQUIRE) != BLK_REQ_INFLIGHT) return 1;
+    struct blkdev *m = medium(r->dev);
+    if (!m) return 1;
+    uint64_t f = io_lock_enter(&m->gate);
+    int done = poll_locked(r);
+    io_lock_leave(&m->gate, f);
+    return done;
+}
+
+void blk_dev_offline(struct blkdev *d)
+{
+    struct blkdev *m = medium(d);
+    if (!m) return;
+    uint64_t f = io_lock_enter(&m->gate);
+    m->offline = 1;
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    BLK_IRQ_ENABLE();
+    while (m->inflight) { (void)poll_locked(m->inflight); BLK_RELAX(); }
+    BLK_IRQ_DISABLE();
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    io_lock_leave(&m->gate, f);
 }
 
 int blk_submit(struct blk_req *r)
 {
     if (!r) return BLK_E_ARG;
     struct blkdev *d = r->dev;
-    if (!d || !d->ops) return req_finish(r, BLK_E_ARG);
+    if (!d || !d->ops) return req_reject(r, BLK_E_ARG);
     if (r->op != BLK_OP_FLUSH && !in_bounds(d, r->lba, r->count))
-        return req_finish(r, BLK_E_ARG);
-
-    /* Somebody else's request is on this medium: DRIVE IT, do not wait for its
-     * submitter to be scheduled (blkdev.h says why). The pointer is re-read
-     * every time round because this loop can be preempted when we are the
-     * async path -- while we are away another thread may finish that request
-     * and start a third. */
-    struct blkdev *m = medium(d);
-#ifndef BLK_NO_INTERLOCK
-    while (m->inflight && m->inflight != r)
-        (void)blk_poll(m->inflight);
-#endif
-
-    /* A buffer the device cannot reach needs the shared bounce, which an
-     * asynchronous request may not have. Refuse it AS ITSELF -- the request is
-     * fine, this way of making it is not, and the caller has a correct
-     * fallback. */
-    if (r->op != BLK_OP_FLUSH && r->async && !dma_reachable(r->buf, r->count)) {
-        blk_nodma_refusals++;
-        return req_finish(r, BLK_E_NODMA);        /* medium untouched: never claimed */
+        return req_reject(r, BLK_E_ARG);
+    if (r->op != BLK_OP_FLUSH && user_buffer(r->buf)) {
+        __atomic_fetch_add(&blk_nodma_refusals, 1, __ATOMIC_RELAXED);
+        return req_reject(r, BLK_E_NODMA);
     }
-
-    r->state   = BLK_REQ_INFLIGHT;
-    r->status  = 0;
-    r->done    = 0;
+    struct blkdev *m = medium(d);
+    uint64_t f = io_lock_enter(&m->gate);
+#ifndef BLK_NO_INTERLOCK
+    struct blk_req *prior;
+    while ((prior = m->inflight) && prior != r)
+        (void)poll_locked(prior);
+#endif
+    int rc;
+    if (m->offline) { rc = req_finish(r, BLK_E_ARG); goto out; }
+    if (m->inflight == r) { rc = 0; goto out; }
+    r->state = BLK_REQ_INFLIGHT;
+    r->status = 0;
+    r->done = 0;
     r->attempt = 0;
     r->dev_lba = d->start + r->lba;
     m->inflight = r;
-
-    if (!d->ops->submit) return req_finish(r, run_sync_ops(r));
-
-    int rc = d->ops->submit(d->ctx, r);
-    if (rc < 0) return req_finish(r, rc);
-    return 0;
+    if (!d->ops->submit) rc = req_finish(r, run_sync_ops(r));
+    else {
+        rc = d->ops->submit(d->ctx, r);
+        if (rc < 0) rc = req_finish(r, rc);
+    }
+out:
+    io_lock_leave(&m->gate, f);
+    return rc;
 }
 
 int blk_wait(struct blk_req *r)
@@ -299,14 +364,14 @@ int blk_wait(struct blk_req *r)
 
     uint64_t fl;
     BLK_IRQ_SAVE(fl);
-    g_ata_busy++;                       /* flag BEFORE sti -- see the header above */
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);                       /* flag BEFORE sti -- see the header above */
     BLK_IRQ_ENABLE();
 
     if (blk_submit(r) == 0)
         while (!blk_poll(r)) BLK_RELAX();
 
     if (!(fl & 0x200)) BLK_IRQ_DISABLE();
-    g_ata_busy--;
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     return r->status;
 }
 
@@ -322,14 +387,16 @@ static int blk_rw(struct blkdev *d, int op, uint64_t lba, uint32_t count, void *
         return blk_wait(&r) ? -1 : 0;
     }
     if (!in_bounds(d, lba, count)) return -1;
-    if (dma_reachable(buf, count)) {
+    if (!user_buffer(buf)) {
         blk_req_init(&r, d, op, lba, count, buf);
         return blk_wait(&r) ? -1 : 0;
     }
 
+    uint8_t *blk_bounce = kmalloc(BLK_BOUNCE_SECT * BLK_SECTOR);
+    if (!blk_bounce) return -1;
     uint64_t fl;
     BLK_IRQ_SAVE(fl);
-    g_ata_busy++;
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
     BLK_IRQ_ENABLE();
 
     int rc = 0;
@@ -337,17 +404,16 @@ static int blk_rw(struct blkdev *d, int op, uint64_t lba, uint32_t count, void *
     for (uint32_t done = 0; done < count && rc == 0; ) {
         uint32_t n = count - done;
         if (n > BLK_BOUNCE_SECT) n = BLK_BOUNCE_SECT;
-        if (op == BLK_OP_WRITE)
-            memcpy(blk_bounce, p + (size_t)done * BLK_SECTOR, (size_t)n * BLK_SECTOR);
+        if (op == BLK_OP_WRITE && copy_from_user(blk_bounce, p + (size_t)done * BLK_SECTOR, (size_t)n * BLK_SECTOR)) { rc = -1; break; }
         blk_req_init(&r, d, op, lba + done, n, blk_bounce);
         if (blk_wait(&r) != 0) { rc = -1; break; }
-        if (op == BLK_OP_READ)
-            memcpy(p + (size_t)done * BLK_SECTOR, blk_bounce, (size_t)n * BLK_SECTOR);
+        if (op == BLK_OP_READ && copy_to_user(p + (size_t)done * BLK_SECTOR, blk_bounce, (size_t)n * BLK_SECTOR)) { rc = -1; break; }
         done += n;
     }
 
     if (!(fl & 0x200)) BLK_IRQ_DISABLE();
-    g_ata_busy--;
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
+    kfree(blk_bounce);
     return rc;
 }
 
@@ -511,16 +577,14 @@ static int dev_sector_read(void *ctx, uint64_t lba, uint32_t count, void *buf)
  * chosen. The constants are duplicated from c/fs/logitfs.c (and tools/mkfs.py)
  * rather than shared, because the alternative is the block layer including a
  * filesystem header, which is the worse dependency of the two. */
-#define LOGITFS_MAGIC   0x4C4F4749u   /* "LOGI" */
-#define LOGITFS_VERSION 4
-#define LOGITFS_BS      4096
 
 static int has_logitfs(struct blkdev *d)
 {
     uint8_t sec[BLK_SECTOR];
     if (blk_dev_read(d, 0, 1, sec) != 0) return 0;
     const uint32_t *w = (const uint32_t *)(const void *)sec;
-    return w[0] == LOGITFS_MAGIC && w[1] == LOGITFS_VERSION && w[2] == LOGITFS_BS;
+    /* Full extension/geometry validation belongs to LogitFS mount. */
+    return w[0] == LFS_MAGIC && (w[1] == LFS_VERSION || w[1] == LFS_ID_VERSION) && w[2] == LFS_BS;
 }
 
 static void mib(uint64_t sectors, unsigned *whole, unsigned *frac)
@@ -546,11 +610,25 @@ static const char *mbr_type_name(uint8_t t)
 /* Read one disk's table and publish each partition as a device named <disk>p<n>.
  * Partitions inherit the parent's ops and ctx with an absolute start LBA, so a
  * partition read is one addition, not a chain of forwarding calls. */
-static void scan_partitions(struct blkdev *disk)
+void blk_probe_partitions(struct blkdev *disk)
 {
+    /* USB class discovery occurs after blk_init. The old private scanner could
+     * not publish those partitions. Serialize its shared scratch and refuse a
+     * second publication, including raw media whose scheme remains PART_NONE.
+     * No IRQ path enters this gate; controller waits may open their IRQ window.
+     * Registration remains a serialized boot operation, not a hotplug API. */
+    static io_lock_t partition_gate = IO_LOCK_INIT;
     static struct part_table t;      /* ~1.4 KiB: too big for a kernel stack frame */
-
+    if (!disk) return;
+    int registered = 0;
+    for (int i = 0; i < g_ndev; i++) if (disk == &g_dev[i]) registered = 1;
+    if (!registered || disk->parent || disk->offline || !disk->nsectors) return;
+    IO_GUARD(&partition_gate);
+#ifndef BLK_PART_NO_ONCE
+    if (disk->parts_scanned) return;
+#endif
     if (part_scan(dev_sector_read, disk, disk->nsectors, &t) < 0) return;
+    disk->parts_scanned = 1;
     disk->scheme = t.scheme;
 
     if (t.scheme == PART_NONE) {
@@ -630,11 +708,11 @@ void blk_init(void)
 
     if (nvme_present()) {
         struct blkdev *d = blk_register("nvme0", &nvme_bops, NULL, nvme_capacity());
-        if (d) { disks++; announce(d, "NVMe namespace"); scan_partitions(d); }
+        if (d) { disks++; announce(d, "NVMe namespace"); blk_probe_partitions(d); }
     }
     if (virtio_blk_present()) {
         struct blkdev *d = blk_register("vblk0", &vblk_bops, NULL, virtio_blk_capacity());
-        if (d) { disks++; announce(d, "virtio-blk"); scan_partitions(d); }
+        if (d) { disks++; announce(d, "virtio-blk"); blk_probe_partitions(d); }
     }
 
     /* AHCI is probed here rather than from kmain because it is the block layer
@@ -645,7 +723,19 @@ void blk_init(void)
     for (int i = first_ahci; i < last_ahci; i++) {
         disks++;
         announce(&g_dev[i], "AHCI SATA disk");
-        scan_partitions(&g_dev[i]);
+        blk_probe_partitions(&g_dev[i]);
+    }
+
+    /* Like AHCI, SCSI registers its own media. Snapshot the disk range before
+     * scanning: scan_partitions appends entries, which must not be treated as
+     * another controller-discovered disk. Existing root priorities stay first. */
+    int first_scsi = g_ndev;
+    virtio_scsi_init();
+    int last_scsi = g_ndev;
+    for (int i = first_scsi; i < last_scsi; i++) {
+        disks++;
+        announce(&g_dev[i], "virtio-scsi disk");
+        blk_probe_partitions(&g_dev[i]);
     }
 
     uint64_t ata_sectors = 0;
@@ -656,7 +746,7 @@ void blk_init(void)
             disks++;
             kprintf("[ata] primary master '%s'\n", ata_model);
             announce(d, "legacy ATA PIO");
-            scan_partitions(d);
+            blk_probe_partitions(d);
         }
     }
 

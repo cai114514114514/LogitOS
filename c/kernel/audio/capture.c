@@ -1,3 +1,7 @@
+#include "../../drivers/core/io_domain.h"
+/* Start/open and detach own the device pointer across allocation or scheduler
+ * publication. The IRQ/period worker still use their short existing locks. */
+static struct io_domain cap_lifecycle = IO_DOMAIN_INIT;
 /* The capture engine: one hardware period in, drained into one ring, once per
  * interrupt. The read-side twin of mixer.c, and worth stating up front how it
  * differs and why, because "just run mixer.c backwards" is the wrong model:
@@ -53,35 +57,45 @@
 
 void *memset(void *, int, size_t);
 
-static struct snd_capdevice *g_capdev;
+static struct snd_capdevice * _Atomic g_capdev;
 static struct semaphore      g_cap_period;
 static spinlock_t            g_cap_lock = SPINLOCK_INIT;
+/* Public stream operations share the worker's lock. A waiting syscall must
+ * drop it and re-find its handle after waking: close/reopen may recycle the
+ * static slot while the task is asleep. Wait queues are initialised once. */
+struct cap_guard { uint64_t f; int held; };
+static struct cap_guard cap_guard_take(void)
+{ return (struct cap_guard){ spin_lock_irqsave(&g_cap_lock), 1 }; }
+static void cap_guard_drop(struct cap_guard *g)
+{ if (g->held) { g->held = 0; spin_unlock_irqrestore(&g_cap_lock, g->f); } }
+#define cap_GUARD struct cap_guard guard __attribute__((cleanup(cap_guard_drop))) = cap_guard_take()
+
 
 /* The one stream. `used` and `owner`/`handle` exist (rather than a bare
  * "is-open" bool) purely so find()'s shape matches the playback side's and a
  * reader of both files sees the same pattern, not because more than one
  * could ever be `used` at once. */
 struct snd_cap_stream {
-    int              used;
+    _Atomic int              used;
     void            *owner;
-    int              handle;
+    _Atomic int              handle;
 
     struct pcm_ring  ring;
     uint8_t         *ringmem;
 
     uint64_t         frames_captured;
     unsigned         overruns;
-    int              closing;
+    _Atomic int              closing;
 
     struct waitq     wq;             /* readers wait here for data */
 };
 static struct snd_cap_stream g_cs;
 static int g_next_handle = 1;
 
-static volatile uint64_t g_cap_periods_done;   /* periods the DMA has FINISHED writing */
+static _Atomic uint64_t g_cap_periods_done;   /* periods the DMA has FINISHED writing */
 static unsigned          g_cap_drain;          /* next period index to copy out */
 static unsigned          g_cap_dev_overruns;    /* periods dropped with NO stream open */
-static int               g_cap_running;
+static _Atomic int       g_cap_running;
 static int               g_cap_engine_up;
 
 /* ------------------------------------------------------------- registry -- */
@@ -116,19 +130,29 @@ int snd_capture_present(void) { return g_capdev != 0; }
 void snd_capture_period_elapsed(struct snd_capdevice *d)
 {
     (void)d;
+    if (!g_cap_running) return;
     g_cap_periods_done++;
     sem_post(&g_cap_period);
 }
 
 /* -------------------------------------------------------------- draining -- */
 
-static void reap_cap_closed(void)
+static int reap_cap_closed(void)
 {
-    if (!g_cs.used || !g_cs.closing) return;
+    if (!g_cs.used || !g_cs.closing) return 0;
+    int stopped = g_cap_running;
+    /* The ABI currently permits one capture consumer. Stop only when that
+     * consumer is reaped, after the drain loop has relinquished its ring. The
+     * kcapture thread survives; a later open restarts the same DMA buffers. */
+    if (g_cap_running) {
+        g_cap_running = 0;
+        if (g_capdev && g_capdev->stop) g_capdev->stop(g_capdev);
+    }
     g_cs.used = 0;
     g_cs.closing = 0;
     waitq_wake_all(&g_cs.wq);
     if (g_cs.ringmem) { kfree(g_cs.ringmem); g_cs.ringmem = 0; }
+    return stopped;
 }
 
 static void kcapture_thread(void)
@@ -137,7 +161,7 @@ static void kcapture_thread(void)
         sem_wait(&g_cap_period);
 
         uint64_t fl = spin_lock_irqsave(&g_cap_lock);
-        reap_cap_closed();
+        int stopped = reap_cap_closed();
 
         if (g_capdev && g_cap_running) {
             uint64_t done = g_cap_periods_done;
@@ -182,6 +206,14 @@ static void kcapture_thread(void)
         }
         spin_unlock_irqrestore(&g_cap_lock, fl);
 
+#ifdef HDA_DMA_CAPTURE_CANARY
+        if (stopped) {
+            extern void hda_capture_stop_check(void);
+            hda_capture_stop_check(); /* sleeps only AFTER releasing the lock */
+        }
+#else
+        (void)stopped;
+#endif
         if (g_cs.used) waitq_wake_all(&g_cs.wq);
     }
 }
@@ -197,7 +229,7 @@ static void kcapture_thread(void)
  * called thread_create() from here at probe time. Deferred to first open. */
 static int snd_cap_engine_start(void)
 {
-    if (g_cap_engine_up) return 1;
+    if (g_cap_running) return 1;
     if (!g_capdev) return 0;
     if (!sched_current_thread()) {
         kprintf("[snd] capture engine start refused: the scheduler is not up yet\n");
@@ -206,17 +238,15 @@ static int snd_cap_engine_start(void)
 
     memset(g_capdev->ring, 0, (size_t)g_capdev->periods * g_capdev->period_bytes);
 
-    if (g_capdev->start && g_capdev->start(g_capdev) != 0) {
-        kprintf("[snd] %s: capture DMA engine would not start -- capture disabled\n",
-                g_capdev->name);
-        g_capdev = 0;
-        return 0;
-    }
+    g_cap_periods_done = 0;
     g_cap_drain = 0;
     g_cap_running = 1;
-    g_cap_engine_up = 1;
-
-    thread_create(kcapture_thread, "kcapture");
+    if (g_capdev->start && g_capdev->start(g_capdev) != 0) {
+        g_cap_running = 0;
+        kprintf("[snd] %s: capture DMA engine would not start -- capture disabled\n",
+                g_capdev->name);
+        return 0;
+    }
     kprintf("[snd] capture engine running: kcapture started, DMA at %u Hz\n",
             g_capdev->rate);
     return 1;
@@ -242,11 +272,11 @@ static struct snd_cap_stream *cap_find(void *owner, int h)
 
 int snd_cap_open(void *owner, struct logit_sndfmt *f)
 {
+    IO_DOMAIN_GUARD(&cap_lifecycle);
     unsigned bytes, ms;
     uint64_t fl;
 
     if (!g_capdev) return SND_E_NODEV;
-    if (!snd_cap_engine_start()) return SND_E_NODEV;
 
     /* rate==0 is the "native" sentinel -- see the ABI note. Anything else
      * must match the hardware EXACTLY: no resampler exists on this path (see
@@ -268,29 +298,39 @@ int snd_cap_open(void *owner, struct logit_sndfmt *f)
     bytes = (f->rate * ms / 1000) * (unsigned)snd_fmt_bytes(f->format) * f->channels;
     if (bytes < 4096) bytes = 4096;
 
+    uint8_t *ringmem = (uint8_t *)kmalloc(bytes);
+    if (!ringmem) return SND_E_NOMEM;
     fl = spin_lock_irqsave(&g_cap_lock);
-    if (g_cs.used) { spin_unlock_irqrestore(&g_cap_lock, fl); return SND_E_NOMEM; }
-    g_cs.used = 1;
-    g_cs.handle = g_next_handle++;
-    spin_unlock_irqrestore(&g_cap_lock, fl);
-
-    g_cs.ringmem = (uint8_t *)kmalloc(bytes);
-    if (!g_cs.ringmem) { g_cs.used = 0; return SND_E_NOMEM; }
-
+    if (g_cs.used) {
+        spin_unlock_irqrestore(&g_cap_lock, fl);
+        kfree(ringmem);
+        return SND_E_NOMEM;
+    }
+    /* Publish one fully initialised stream with start/stop serialised by the
+     * capture lock. No IRQ or worker can observe a half-initialised byte ring. */
+    g_cs.ringmem = ringmem;
     g_cs.owner = owner;
     g_cs.frames_captured = 0;
     g_cs.overruns = 0;
     g_cs.closing = 0;
-    waitq_init(&g_cs.wq);
     pcm_ring_init(&g_cs.ring, g_cs.ringmem, bytes);
-
-    /* Start draining from whatever the engine finishes NEXT, not from
-     * whatever is sitting in the ring already -- the DMA has likely been
-     * running (or looping over stale silence-then-noise) since the engine
-     * started, and handing that backlog to a caller who just opened the
-     * stream would deliver audio from before they asked for any. */
+    g_cs.used = 1;
+    g_cs.handle = g_next_handle++;
+    spin_unlock_irqrestore(&g_cap_lock, fl);
+    /* Scheduler publication cannot run under an audio spinlock. The claimed
+     * stream is already initialised, and g_cap_running keeps the worker idle. */
+    if (!g_cap_engine_up) {
+        thread_create(kcapture_thread, "kcapture");
+        g_cap_engine_up = 1;
+    }
     fl = spin_lock_irqsave(&g_cap_lock);
-    g_cap_drain = (unsigned)g_cap_periods_done;
+    if (!g_capdev || g_cs.closing || !snd_cap_engine_start()) {
+        g_cs.used = 0;
+        g_cs.ringmem = 0;
+        spin_unlock_irqrestore(&g_cap_lock, fl);
+        kfree(ringmem);
+        return SND_E_NODEV;
+    }
     spin_unlock_irqrestore(&g_cap_lock, fl);
 
     return g_cs.handle;
@@ -298,6 +338,7 @@ int snd_cap_open(void *owner, struct logit_sndfmt *f)
 
 int snd_cap_avail(void *owner, int h)
 {
+    cap_GUARD;
     struct snd_cap_stream *s;
     if (!g_capdev) return SND_E_NODEV;
     s = cap_find(owner, h);
@@ -307,6 +348,7 @@ int snd_cap_avail(void *owner, int h)
 
 int snd_cap_read(void *owner, int h, void *buf, int bytes)
 {
+    cap_GUARD;
     struct snd_cap_stream *s;
     unsigned n;
     int waited_ok;
@@ -321,9 +363,12 @@ int snd_cap_read(void *owner, int h, void *buf, int bytes)
          * wait: a busy loop here would hold the BKL against the very thread
          * (kcapture) that produces the data being waited for. The timeout is
          * a backstop for hardware that has gone quiet, not the mechanism. */
-        wait_event_timeout(&s->wq, pcm_ring_used(&s->ring) > 0 || s->closing, 500,
+        cap_guard_drop(&guard);
+        wait_event_timeout(&s->wq, pcm_ring_used(&s->ring) > 0 || !s->used || s->closing || s->handle != h, 500,
                            waited_ok);
-        if (!waited_ok || s->closing) return 0;
+        guard = cap_guard_take();
+        s = cap_find(owner, h);
+        if (!waited_ok || !s || !g_capdev) return 0;
     }
 
     n = pcm_ring_read(&s->ring, buf, (unsigned)bytes);
@@ -332,6 +377,7 @@ int snd_cap_read(void *owner, int h, void *buf, int bytes)
 
 int snd_cap_close(void *owner, int h)
 {
+    cap_GUARD;
     struct snd_cap_stream *s = cap_find(owner, h);
     if (!s) return SND_E_BADH;
     /* Nothing to drain on the input side -- there is no "play out what is
@@ -346,6 +392,7 @@ int snd_cap_close(void *owner, int h)
 
 int snd_cap_state(void *owner, int h, struct logit_sndstate *st)
 {
+    cap_GUARD;
     struct snd_cap_stream *s;
     if (!g_capdev) return SND_E_NODEV;
     s = cap_find(owner, h);
@@ -361,6 +408,7 @@ int snd_cap_state(void *owner, int h, struct logit_sndstate *st)
 
 void snd_cap_report(void)
 {
+    cap_GUARD;
     if (!g_capdev) {
         kprintf("[snd] no capture device found -- input is silent\n");
         return;
@@ -378,8 +426,24 @@ void snd_cap_report(void)
 
 void snd_cap_owner_release(void *owner)
 {
+    cap_GUARD;
     if (g_cs.used && g_cs.owner == owner && owner) {
         g_cs.closing = 1;
         if (g_capdev) sem_post(&g_cap_period);
     }
+}
+
+void snd_unregister_capture_device(struct snd_capdevice *d)
+{
+    IO_DOMAIN_GUARD(&cap_lifecycle);
+    uint64_t fl = spin_lock_irqsave(&g_cap_lock);
+    if (g_capdev != d) { spin_unlock_irqrestore(&g_cap_lock, fl); return; }
+    g_cap_running = 0;
+    g_capdev = NULL;
+    if (g_cs.used) {
+        g_cs.closing = 1;
+        waitq_wake_all(&g_cs.wq);
+    }
+    spin_unlock_irqrestore(&g_cap_lock, fl);
+    if (g_cap_engine_up) sem_post(&g_cap_period);
 }

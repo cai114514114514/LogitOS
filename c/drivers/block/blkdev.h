@@ -1,7 +1,9 @@
+/* 2026-09-10 concurrency correction: BKL references below are historical. The medium gate owns submit, poll and offline; request completion release-publishes DONE after DMA cleanup. Busy counters are diagnostics, not SMP exclusion. */
 #ifndef LOGIT_BLKDEV_H
 #define LOGIT_BLKDEV_H
 
 #include <stdint.h>
+#include "../core/io_lock.h"
 
 /* The block layer: a registry of block devices, and the one device the
  * filesystem is mounted on.
@@ -133,8 +135,11 @@ struct blkdev {
     uint64_t start;                /* first LBA of this device within the medium */
     uint64_t nsectors;             /* length in 512-byte sectors */
     struct blkdev *parent;         /* whole disk this partition sits in, else NULL */
+    io_lock_t gate;            /* serialises submit, completion and offline */
+    int      offline;            /* whole medium: reject new work before drain */
     int      part_index;           /* 1-based partition number; 0 for a whole disk */
     int      scheme;               /* partition scheme found ON this device (PART_*) */
+    int      parts_scanned;        /* successful boot/late discovery, including raw media */
     uint8_t  type_mbr;             /* MBR partition type byte */
     char     label[BLK_LABEL_MAX]; /* GPT name / MBR type description, for the log */
     struct blk_req *inflight;      /* whole disks only: the request this medium is
@@ -159,7 +164,16 @@ void blk_req_init(struct blk_req *r, struct blkdev *d, int op,
  * exact assumption this file has just removed. Refusing is not a limitation
  * dressed up as a rule: the caller's correct response is to issue the same
  * request synchronously, which bounces exactly as it always did. */
+/* DMA migration correction (2026-09-09): the shared-bounce rule above is
+ * historical. Kernel pointers, including high aliases, are mapped by the
+ * selected DMA driver and may be submitted asynchronously. BLK_E_NODMA now
+ * rejects only user pointers at this boundary; the synchronous wrapper uses
+ * bounded per-call staging and usercopy, before calling any DMA interface. */
 int  blk_submit(struct blk_req *r);
+/* Under the BKL: stop new requests on the whole medium and its partitions,
+ * drain already-owned requests, retain registry/ops for stale caller safety.
+ * The driver must then acknowledge hardware stop before releasing DMA. */
+void blk_dev_offline(struct blkdev *dev);
 
 /* 1 = complete (status valid), 0 = still running. Safe on a request that is
  * already complete, and safe from any thread holding the BKL. */
@@ -183,6 +197,11 @@ unsigned long blk_async_refusals(void);
  * partition table. Returns the device, or NULL if the table is full. */
 struct blkdev *blk_register(const char *name, const struct blk_ops *ops,
                             void *ctx, uint64_t nsectors);
+
+/* Boot-time late discovery (e.g. USB after root mount). Scan a registered whole
+ * medium once, publish its partitions, and leave the chosen root unchanged.
+ * This is not runtime hotplug or rescanning a mounted partition table. */
+void blk_probe_partitions(struct blkdev *disk);
 
 int             blk_count(void);
 struct blkdev  *blk_at(int i);

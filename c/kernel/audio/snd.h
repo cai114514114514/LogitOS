@@ -298,4 +298,9 @@ unsigned pcm_ring_read(struct pcm_ring *r, void *dst, unsigned bytes);
 unsigned pcm_ring_peek(const struct pcm_ring *r, void *dst, unsigned bytes);
 void     pcm_ring_advance(struct pcm_ring *r, unsigned bytes);
 
+/* Detach upper-layer DMA access under the worker's lock. Driver removal then
+ * masks/releases its IRQ, acknowledges hardware stop, and reclaims buffers. */
+void snd_unregister_device(struct snd_device *dev);
+void snd_unregister_capture_device(struct snd_capdevice *dev);
+
 #endif /* LOGIT_SND_H */

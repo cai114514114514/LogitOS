@@ -94,7 +94,7 @@ static int ata_guarded(int write, uint32_t lba, uint8_t count, void *buf)
      * transfer 0 and desync the controller -- reject it instead. */
     if (count == 0) return -1;
     uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
-    g_ata_busy++;
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
     __asm__ volatile ("sti");
     int rc = -1;
     for (int attempt = 0; attempt < 8; attempt++) {
@@ -103,7 +103,7 @@ static int ata_guarded(int write, uint32_t lba, uint8_t count, void *buf)
         if (r == 0) { rc = 0; break; }
     }
     if (!(fl & 0x200)) __asm__ volatile ("cli");   /* restore the caller's IF */
-    g_ata_busy--;
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     return rc;
 }
 
@@ -155,7 +155,7 @@ int ata_identify(uint64_t *sectors, char model[41])
     if (model) model[0] = 0;
 
     uint64_t fl; __asm__ volatile ("pushfq; pop %0" : "=r"(fl) :: "memory");
-    g_ata_busy++;
+    __atomic_fetch_add(&g_ata_busy, 1, __ATOMIC_RELAXED);
     __asm__ volatile ("sti");
 
     int rc = -1;
@@ -179,7 +179,7 @@ int ata_identify(uint64_t *sectors, char model[41])
     } while (0);
 
     if (!(fl & 0x200)) __asm__ volatile ("cli");
-    g_ata_busy--;
+    __atomic_fetch_sub(&g_ata_busy, 1, __ATOMIC_RELAXED);
     if (rc != 0) return -1;
 
     if (sectors) *sectors = (uint64_t)id[60] | ((uint64_t)id[61] << 16);   /* LBA28 capacity */

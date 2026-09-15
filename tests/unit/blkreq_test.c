@@ -19,7 +19,7 @@
  *   - a partition's request reaches the driver with the parent's absolute LBA
  *   - a second submitter on a busy medium drives the first request to
  *     completion rather than issuing on top of it  <-- the one with a control
- *   - an async request that would need the single shared bounce buffer is
+ *   - an async request that would need the single usercopy staging buffer is
  *     refused as BLK_E_NODMA, and a synchronous one bounces as it always did
  *
  * THE FAKE DRIVERS ARE THE ORACLE. Each one records what it was actually asked
@@ -38,6 +38,7 @@
 #include <stdint.h>
 
 #include "blkdev.h"
+#include "part.h"
 
 /* ---------------------------------------------------------------- harness -- */
 static int checks, failures;
@@ -70,6 +71,7 @@ int  ata_write(uint32_t lba, uint8_t n, const void *b) { (void)lba;(void)n;(void
 int  ata_flush(void) { return -1; }
 int  ata_identify(uint64_t *n, char *m) { (void)n;(void)m; return -1; }
 int  ahci_init(void) { return 0; }
+int  virtio_scsi_init(void) { return 0; }
 int  ahci_disk_count(void) { return 0; }
 int  nvme_present(void) { return 0; }
 int  nvme_init(void) { return -1; }
@@ -90,14 +92,24 @@ void kprintf(const char *fmt, ...) { (void)fmt; }
  * never calls, and linking it would put a second subject in a gate whose whole
  * claim is about the request engine. `PART_NONE` is what a disk with no table
  * reports, so if blk_init() ever DID run here it would take the honest path. */
-struct part_table;
+/* Late USB discovery also publishes partitions through this engine. Supply a
+ * parsed table here; part.c has separate on-disk format tests. */
+static int part_mode, part_calls;
 int part_scan(int (*rd)(void *, uint64_t, uint32_t, void *), void *ctx,
               uint64_t dev_sectors, struct part_table *t)
-{ (void)rd; (void)ctx; (void)dev_sectors; (void)t; return -1; }
+{
+    (void)rd; (void)ctx; (void)dev_sectors;
+    part_calls++;
+    if (!part_mode) return -1;
+    memset(t, 0, sizeof *t);
+    t->scheme = PART_MBR; t->count = 1;
+    t->e[0].start = 19; t->e[0].count = 32; t->e[0].type_mbr = 0x83;
+    return 0;
+}
 const char *part_scheme_name(int scheme) { (void)scheme; return "none"; }
 void part_guid_str(const uint8_t guid[16], char out[37]) { (void)guid; out[0] = 0; }
 
-extern uint64_t blk_hosttest_dma_limit;
+extern void *blk_hosttest_user_buffer;
 
 /* --------------------------------------------------------- the fake medium --
  * 4096 sectors of RAM with a distinct byte pattern per sector, so a read that
@@ -245,7 +257,7 @@ int main(void)
     struct blkdev *sd, *ad, *p1;
 
     disk_fill();
-    blk_hosttest_dma_limit = ~0ull;          /* everything reachable, for now */
+    blk_hosttest_user_buffer = NULL;          /* everything reachable, for now */
 
     sd = blk_register("sync0",  &sync_ops,  NULL, DISK_SECTORS);
     ad = blk_register("async0", &async_ops, NULL, DISK_SECTORS);
@@ -366,15 +378,15 @@ int main(void)
         ck(sector_is(b2, 1005 & 0xFF), "and so is the second reader's");
     }
 
-    /* -- 8. BLK_E_NODMA: an async request may not use the shared bounce ---- */
+    /* -- 8. User pointers must pass through synchronous usercopy ---- */
     async_reset(0, DISK_SECTORS);
-    blk_hosttest_dma_limit = 0;              /* nothing is reachable now */
+    blk_hosttest_user_buffer = buf;              /* this pointer needs usercopy, independent of device DMA range */
     {
         unsigned long before = blk_async_refusals();
         struct blk_req r;
         blk_req_init(&r, ad, BLK_OP_READ, 10, 1, buf);
         r.async = 1;
-        ckeq(blk_submit(&r), BLK_E_NODMA, "an async request that would bounce is refused");
+        ckeq(blk_submit(&r), BLK_E_NODMA, "async user pointer is refused before crossing address spaces");
         ckeq(r.status, BLK_E_NODMA, "and says so in its status");
         ckeq(blk_poll(&r), 1, "a refused async request does not wait forever");
         ckeq(A.commands, 0, "nothing reached the device");
@@ -399,7 +411,7 @@ int main(void)
             if (g_disk[500 * BLK_SECTOR + i] != 0xA5) { ck(0, "bounced write reached the disk"); break; }
         ck(g_disk[503 * BLK_SECTOR] == (uint8_t)(503 & 0xFF), "and did not run past its end");
     }
-    blk_hosttest_dma_limit = ~0ull;
+    blk_hosttest_user_buffer = NULL;
 
     /* -- 10. flush is an op, not a side door ------------------------------- */
     async_reset(1, DISK_SECTORS);
@@ -447,6 +459,42 @@ int main(void)
                                           DISK_SECTORS - 1),
            "first and last sector both correct");
     }
+
+    /* Removing a medium drains its existing async command before the driver
+     * may stop/free queues; partitions share the same offline gate. */
+    async_reset(0, DISK_SECTORS);
+    struct blk_req removal;
+    blk_req_init(&removal, ad, BLK_OP_READ, 12, 1, buf);removal.async=1;
+    ckeq(blk_submit(&removal),0,"submit before device removal");
+    blk_dev_offline(p1);
+    ck(removal.state==BLK_REQ_DONE&&!removal.status&&!ad->inflight,"offline drains active request before hardware teardown");
+    ck(ad->offline,"partition removal takes whole medium offline");
+    unsigned calls=A.submits;
+    ck(blk_dev_read(ad,12,1,buf)<0&&blk_dev_read(p1,1,1,buf)<0,"offline rejects disk and partition operations");
+    ckeq(A.submits,calls,"offline never calls driver submit");
+    ckeq(g_ata_busy,0,"offline balances interrupt/no-preemption window");
+
+    /* The root choice is already committed when USB arrives. Publishing a
+     * late disk must preserve it, offset real reads, and remain idempotent. */
+    struct blkdev *late = blk_register("usbtest", &sync_ops, NULL, DISK_SECTORS);
+    blk_set_root(sd);
+    int count_before = blk_count();
+    int scan_before = part_calls;
+    blk_probe_partitions(late); /* transport not ready: retry remains possible */
+    ck(!late->parts_scanned && blk_count() == count_before, "failed late scan remains retryable");
+    part_mode = 1;
+    blk_probe_partitions(late);
+    struct blkdev *lp = blk_find("usbtestp1");
+    ck(lp && lp->parent == late && lp->start == 19 && lp->nsectors == 32, "late disk publishes bounded partition");
+    ck(blk_root() == sd, "late disk leaves selected root unchanged");
+    ck(lp && blk_dev_read(lp, 0, 1, buf) == 0 && sector_is(buf, 19), "late partition read uses physical offset");
+    blk_probe_partitions(late);
+    ckeq(blk_count(), count_before + 1, "late partition probe cannot duplicate registry entries");
+    ckeq(part_calls, scan_before + 2, "successful late scan is read only once");
+    struct blkdev outsider = {0};
+    blk_probe_partitions(NULL); blk_probe_partitions(lp); blk_probe_partitions(&outsider);
+    ckeq(part_calls, scan_before + 2, "late scan refuses null partition and unregistered medium");
+    part_mode = 0;
 
     printf("%s: %d checks, %d failures\n",
            failures ? "BLK-ASYNC FAILED" : "BLK-ASYNC OK", checks, failures);
