@@ -8,6 +8,8 @@
  * (ssh-ed25519 only) against an authorized_keys text buffer in OpenSSH's own
  * format, so a real user's existing `~/.ssh/id_ed25519.pub` line works
  * unedited.
+ * 2026-09-13 correction: authorized_keys also accepts the ECDSA NIST key
+ * types and ssh-rsa blobs; signature algorithms are checked by ssh_pubkey.c.
  *
  * NO I/O HERE. The account-store bytes and the authorized_keys bytes are
  * READ by the caller (sshd.c does the file open/read; a host test hands in a
@@ -52,6 +54,9 @@ int ssh_auth_parse_publickey(const uint8_t *rest, int restlen,
  * requiring the line to START with "ssh-ed25519 ", one space, base64, then
  * an optional comment). Everything else (a line with option prefixes such as
  * `command=...`, or a different key type) is skipped, not misread. */
+/* 2026-09-13: the field now matches the request blob's exact key type, with
+ * spaces/tabs accepted as separators. Options-prefixed lines stay excluded.
+ * The caller must first validate the algorithm/blob via ssh_pubkey_supported. */
 int ssh_authkeys_match(const char *authkeys_text, int len,
                        const uint8_t *blob, int bloblen);
 
@@ -61,7 +66,8 @@ int ssh_authkeys_match(const char *authkeys_text, int len,
  *   string blob
  * Written into `out` (caller sizes it -- see SSH_AUTH_SIGDATA_MAX). Returns
  * the length, or -1 if it would not fit. */
-#define SSH_AUTH_SIGDATA_MAX 512  /* comfortably above session_id(36)+msgtype(1)+
+#define SSH_AUTH_SIGDATA_MAX 2048 /* 2026-09-13: includes RSA-4096 key blobs.
+                                   * Previous Ed25519-only bound was 512:
                                    * user(<=68)+service(<=20)+"publickey"(13)+
                                    * bool(1)+"ssh-ed25519"(15)+blob(<=59) ~= 213 */
 int ssh_auth_pubkey_signdata(const uint8_t session_id[32],

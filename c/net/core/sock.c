@@ -1,3 +1,9 @@
+#include "../../drivers/core/io_domain.h"
+/* Socket broker ownership covers slot claim, pump, send/receive and teardown.
+ * These eight entry points do not wait for data: tcp_send_nb/tls_step return
+ * immediately. Ordering is broker -> DNS or TLS -> protocol net_lock. DNS
+ * and TLS do not call back into the broker while holding their own state. */
+static struct io_domain sock_owner = IO_DOMAIN_INIT;
 #include <stdint.h>
 #include <stddef.h>
 #include "sock.h"
@@ -14,6 +20,14 @@
 #include "pit.h"
 #include "rtc.h"
 #include "kprintf.h"
+
+/* tcp.c's one-line connection-table census, for the connect-refused
+ * diagnostic in start_connect(). WEAK because the host gates that #include
+ * this file (ip6_fallback_test) link no tcp.c: there the stub resolves to a
+ * no-op and the refusal line prints an empty census rather than breaking
+ * the build -- the same door malloc.c's locks and js_webapi's cookies use. */
+void tcp_conn_census(char *buf, int cap) LOGIT_WEAK;
+LOGIT_WEAK_STUB(tcp_conn_census);
 
 /* See the same guard in c/net/ip/ip.c for the full argument. Short form: this
  * file is freestanding in the kernel, and tests/unit/ip6_fallback_test.c
@@ -139,6 +153,7 @@ static struct sock *lookup(int fd, int pid)
 }
 
 static void drop_transport(struct sock *s);
+static void sock_release(struct sock *s);
 
 /* The handle survives -- the app still has to be able to read WHY it failed --
  * but the transport underneath it goes immediately. TCP connections and TLS
@@ -147,6 +162,16 @@ static void drop_transport(struct sock *s);
  * not be able to exhaust the connection table by doing so. */
 static void fail(struct sock *s, int err)
 {
+#ifndef SOCK_CLOSED_DRAIN_LEAK
+    /* The old claim below (keep the handle so its owner can read the error)
+     * applies only BEFORE sock_close. A shut handle is already invisible to
+     * lookup(), and S_DEAD never visits S_READY's drain deadline again. Keeping
+     * it here stranded 16/16 handles after queued sends failed during close;
+     * the 17th real open returned NOSLOT even after >7 s per drain (host gate
+     * sock_closed_drain_test, production open/send/close/pump). No owner can
+     * close it again, so release now; unclosed errors remain observable. */
+    if (s->shut) { sock_release(s); return; }
+#endif
     drop_transport(s);
     s->err = err;
     s->state = S_DEAD;
@@ -205,6 +230,7 @@ static void txq_flush(struct sock *s)
  * first SYN being dropped on a cold cache. */
 static uint32_t next_hop(uint32_t ip)
 {
+    NET_GUARD;
     return ((ip & net_cfg.mask) == (net_cfg.ip & net_cfg.mask)) ? ip : net_cfg.gw;
 }
 
@@ -272,10 +298,43 @@ static int other_family(struct sock *s)
 #endif
 }
 
+static int dst_next(struct sock *s);   /* defined with advance_dst(), below:
+                                        * start_connect() advances on a -2 */
+
 static void start_connect(struct sock *s)
 {
-    s->tcp = connect_to(s, &s->dst[s->cur]);
-    if (s->tcp < 0) { fail(s, SOCK_E_NOSLOT); return; }
+    for (;;) {
+        s->tcp = connect_to(s, &s->dst[s->cur]);
+        if (s->tcp >= 0) break;
+        if (s->tcp == -2 && dst_next(s) == 0)
+            continue;      /* no source address for THIS dst; the next DNS
+                            * answer may be another family -- see dst_next() */
+        /* Genuinely stuck: -1/-3 are resource exhaustion (another dst would
+         * hit the same wall), or every destination lacked a source address.
+         * NAME THE CAUSE, not just the refusal: "table is full" with no
+         * census sent every diagnosis of this class down a guessing path --
+         * the 2026-09-09 youtube refusal printed "table is full" while 31
+         * of 32 slots were free. tcp.c returns -1 table, -2 no source
+         * address, -3 no local port. softirq-safe: kprintf is used from
+         * IRQ paths elsewhere (the [core] dump line among them), and a
+         * refusal this rare can afford one serial line.
+         *
+         * The ERROR CODE splits the same way the message does: exhaustion
+         * stays SOCK_E_NOSLOT (that is the ABI's "no slot" and ch.c's
+         * table-full text is true for it), while an all-destinations
+         * source failure is SOCK_E_CONN -- an unreachable host, not a full
+         * table. Folding them was the second half of the same lie. */
+        /* census via the weak door declared at file scope: host gates that
+         * #include this file link no tcp.c, and the stub keeps them whole */
+        char cen[96];
+        tcp_conn_census(cen, sizeof cen);
+        const char *why = s->tcp == -2 ? "no source address for any dst"
+                        : s->tcp == -3 ? "ephemeral port range exhausted"
+                        : "conn table full";
+        kprintf("[sock] connect refused: %s -- %s\n", why, cen);
+        fail(s, s->tcp == -2 ? SOCK_E_CONN : SOCK_E_NOSLOT);
+        return;
+    }
     s->state = S_CONNECT;
     s->t0 = timer_ticks();
     /* Arm the Happy-Eyeballs race. If the preferred family has not connected
@@ -283,6 +342,33 @@ static void start_connect(struct sock *s)
     s->alt = -1;
     s->tcp_alt = -1;
     s->alt_at = s->t0 + T_HAPPY;
+}
+
+/* Move to the next destination in RFC 6724 order WITHOUT starting anything.
+ * Returns 0 if there was one, -1 if the list is exhausted. Split out of
+ * advance_dst() because start_connect() now needs the bare advance: a
+ * destination with no source address (tcp.c's -2 -- typically a global IPv6
+ * DNS answer on a machine with only link-local v6) is unusable BY
+ * CONSTRUCTION, and the 2026-09-09 youtube outage was exactly this -- the
+ * socket died on dst[0] while a perfectly good v4 address sat at dst[1],
+ * because only the in-flight failure paths (refusal, T_CONNECT timeout)
+ * ever advanced; an immediate source-address failure went straight to
+ * fail() and the page printed "the kernel socket table is full", which
+ * the connection census then disproved (31 of 32 slots free). */
+static int dst_next(struct sock *s)
+{
+    int was_v6 = !ip6_is_v4mapped(&s->dst[s->cur]);
+    if (s->tcp >= 0) { tcp_close(s->tcp); s->tcp = -1; }
+    if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; }
+    int next = s->cur + 1;
+    if (s->alt >= 0 && next == s->alt) next++;      /* already tried in the race */
+    if (next >= s->ndst) return -1;
+    if (was_v6 && ip6_is_v4mapped(&s->dst[next]) && said_fb < 3) {
+        said_fb++;
+        kprintf("[sock] ipv6 attempt to %s failed, falling back to ipv4\n", s->host);
+    }
+    s->cur = next;
+    return 0;
 }
 
 /* Give up on the current destination and move to the next one in RFC 6724
@@ -299,17 +385,7 @@ static int advance_dst(struct sock *s)
     (void)s;
     return -1;
 #else
-    int was_v6 = !ip6_is_v4mapped(&s->dst[s->cur]);
-    if (s->tcp >= 0) { tcp_close(s->tcp); s->tcp = -1; }
-    if (s->tcp_alt >= 0) { tcp_close(s->tcp_alt); s->tcp_alt = -1; }
-    int next = s->cur + 1;
-    if (s->alt >= 0 && next == s->alt) next++;      /* already tried in the race */
-    if (next >= s->ndst) return -1;
-    if (was_v6 && ip6_is_v4mapped(&s->dst[next]) && said_fb < 3) {
-        said_fb++;
-        kprintf("[sock] ipv6 attempt to %s failed, falling back to ipv4\n", s->host);
-    }
-    s->cur = next;
+    if (dst_next(s) != 0) return -1;
     start_connect(s);
     return 0;
 #endif
@@ -346,6 +422,20 @@ static void pump_one(struct sock *s)
 {
     uint64_t now = timer_ticks();
 
+    /* A completed resolver lookup and a warm ARP entry are decisions, not I/O.
+     * Each used to consume a whole net_poll() pass: RESOLVE merely changed the
+     * state to ARP and returned, then ARP found an already-cached MAC, changed
+     * the state to CONNECT and returned again.  The WM is the network pump for
+     * ring-3 clients, so those two empty returns became two scheduler/WM turns
+     * before the SYN was even sent -- visible on every cached-name connection
+     * and every subresource after the first.
+     *
+     * Advance at most three phases in one call.  Anything that actually waits
+     * (DNS pending, ARP cold, SYN/TLS pending) still returns immediately, and
+     * the bound prevents a future state from turning this nonblocking pump into
+     * an unbounded loop.  SOCK_NEGCTL_PHASE_PER_POLL restores the old one-phase
+     * shape for the watched timing/control test. */
+    for (int eager = 0; eager < 3; eager++) {
     switch (s->state) {
     case S_RESOLVE: {
         int n = dns_query_addrs(s->dnsq, s->dst, SOCK_MAXDST);
@@ -362,7 +452,11 @@ static void pump_one(struct sock *s)
         s->state = S_ARP;
         s->t0 = now;
         s->arp_last = 0;
+#ifdef SOCK_NEGCTL_PHASE_PER_POLL
         return;
+#else
+        continue;                 /* a cached/literal answer can ARP now */
+#endif
     }
 
     case S_ARP: {
@@ -382,10 +476,21 @@ static void pump_one(struct sock *s)
         /* IPv6 has no ARP. Neighbour Discovery warms itself: ip6_output sends
          * the solicitation on the first miss and TCP's own retransmit covers
          * the round trip, so a v6 destination goes straight to the SYN. */
-        if (!ip6_is_v4mapped(&s->dst[s->cur])) { start_connect(s); return; }
+        if (!ip6_is_v4mapped(&s->dst[s->cur])) {
+            start_connect(s);
+#ifdef SOCK_NEGCTL_PHASE_PER_POLL
+            return;
+#else
+            continue;
+#endif
+        }
         if (arp_resolve(next_hop(ip6_to_v4(&s->dst[s->cur])), mac) == 0) {
             start_connect(s);
+#ifdef SOCK_NEGCTL_PHASE_PER_POLL
             return;
+#else
+            continue;             /* SYN is armed; observe an immediate result */
+#endif
         }
         if (now - s->t0 > T_ARP) start_connect(s);
         return;
@@ -501,10 +606,12 @@ static void pump_one(struct sock *s)
     default:
         return;
     }
+    }
 }
 
 void sock_pump(void)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     /* Re-entrancy guard. Everything below is non-blocking by construction, but
      * one mistake -- a tcp_send() instead of a tcp_send_nb(), a tls_step() that
      * pumps net_poll -- would re-enter this walk with sockets half-advanced. The
@@ -521,12 +628,31 @@ void sock_pump(void)
 
 int sock_open(const char *host, int port, int flags, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     if (!host || !*host || port <= 0 || port > 65535) return SOCK_E_ARG;
     if (!net_up()) return SOCK_E_CONN;
 
     int fd = -1;
     for (int i = 0; i < NSOCK; i++) if (!socks[i].used) { fd = i; break; }
-    if (fd < 0) return SOCK_E_NOSLOT;
+    if (fd < 0) {
+        /* Same census argument as start_connect's refusal: a full HANDLE
+         * table is a different bug (a holder leak -- handles are freed by
+         * sock_close/process exit) than a full CONN table (wait-state
+         * backlog), and the one line has to say which it is and who holds
+         * it, or every future report of this error is a guessing game. */
+        int by[8] = {0}, live = 0;
+        for (int i = 0; i < NSOCK; i++) {
+            if (!socks[i].used) continue;
+            live++;
+            if (socks[i].state >= 0 && socks[i].state < 8) by[socks[i].state]++;
+        }
+        kprintf("[sock] open refused: %d handle(s) held by pid %d "
+                "(resolve=%d arp=%d connect=%d tls=%d ready=%d dead=%d)\n",
+                live, socks[0].pid,
+                by[S_RESOLVE], by[S_ARP], by[S_CONNECT], by[S_TLS],
+                by[S_READY], by[S_DEAD]);
+        return SOCK_E_NOSLOT;
+    }
     struct sock *s = &socks[fd];
     memset(s, 0, sizeof *s);
     s->dnsq = s->tcp = s->tls = s->tcp_alt = -1;
@@ -552,6 +678,7 @@ int sock_open(const char *host, int port, int flags, int pid)
 
 int sock_poll_bits(int fd, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     struct sock *s = lookup(fd, pid);
     if (!s) return SOCK_E_ARG;
 
@@ -581,6 +708,7 @@ int sock_poll_bits(int fd, int pid)
 
 int sock_send(int fd, const void *buf, int len, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     struct sock *s = lookup(fd, pid);
     if (!s || len < 0 || (!buf && len > 0)) return SOCK_E_ARG;
     if (s->state == S_DEAD) return SOCK_E_CONN;
@@ -595,6 +723,7 @@ int sock_send(int fd, const void *buf, int len, int pid)
 
 int sock_recv(int fd, void *buf, int max, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     struct sock *s = lookup(fd, pid);
     if (!s || max <= 0 || !buf) return SOCK_E_ARG;
     if (s->state == S_DEAD) return -1;
@@ -609,6 +738,7 @@ int sock_recv(int fd, void *buf, int max, int pid)
 
 int sock_alpn(int fd, char *buf, int max, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     struct sock *s = lookup(fd, pid);
     if (!s || max <= 0 || !buf) return SOCK_E_ARG;
     int n = s->alpn_len;
@@ -620,6 +750,7 @@ int sock_alpn(int fd, char *buf, int max, int pid)
 
 int sock_close(int fd, int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     struct sock *s = lookup(fd, pid);
     if (!s) return SOCK_E_ARG;
     /* Queued bytes are not thrown away: mark the socket shut and let sock_pump()
@@ -632,6 +763,7 @@ int sock_close(int fd, int pid)
 
 void sock_close_owner(int pid)
 {
+    IO_DOMAIN_GUARD(&sock_owner);
     for (int i = 0; i < NSOCK; i++)
         if (socks[i].used && socks[i].pid == pid)
             sock_release(&socks[i]);

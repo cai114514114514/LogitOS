@@ -167,6 +167,12 @@ void route_flush_if(int oif);
  * empty slot; the index space is the raw slot space, so callers walk
  * 0..RT_NROUTE and skip NULLs rather than being handed a compacted view that
  * would change under them. */
+/* Snapshot lives in task-private scratch until its next name/route lookup. */
+/* Correction: scratch is shared with a syscall interrupted on this thread.
+ * IRQ/softirq callers must use route_at_copy; 1 means copied, 0 means absent
+ * or invalid. Failure leaves caller storage unchanged. Legacy wrapper is for
+ * immediate task-context use only. */
+int route_at_copy(int slot, struct route_entry *out);
 const struct route_entry *route_at(int slot);
 int route_count(void);
 

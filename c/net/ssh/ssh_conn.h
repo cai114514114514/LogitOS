@@ -35,6 +35,7 @@ int ssh_build_channel_failure(uint32_t chan, uint8_t *out, int outmax);
 int ssh_parse_exec_command(const uint8_t *data, int datalen, char *cmd, int cmdmax);
 
 int ssh_build_channel_data(uint32_t chan, const uint8_t *data, int datalen, uint8_t *out, int outmax);
+int ssh_build_channel_stderr(uint32_t chan, const uint8_t *data, int datalen, uint8_t *out, int outmax);
 int ssh_parse_channel_data(const uint8_t *payload, int len, uint32_t *chan,
                            const uint8_t **data, int *datalen);
 

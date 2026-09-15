@@ -69,6 +69,9 @@
  *      ordinary (non-strict) mode, which every OpenSSH client still accepts.
  *   ext-info-s -- RFC 8308 extension-info. Optional; not offered, so the
  *      client sends none and expects none.
+ *      2026-09-13 correction: ext-info-s controls receiving CLIENT extensions.
+ *      The client's ext-info-c separately permits our server-sig-algs reply,
+ *      now sent after initial NEWKEYS for RSA SHA-2 and NIST ECDSA user keys.
  */
 
 /* ---- message numbers (RFC 4253 12, RFC 4252 6, RFC 4254 5/6/9) ---- */

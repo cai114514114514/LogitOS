@@ -117,7 +117,7 @@ test-ip-route-negctl:
 # It stubs seven symbols (dev_count/dev_at/dev_match_table and the four
 # probes) and reads the match tables from the real net_ids.inc, the same way
 # tests/unit/net_drv_test.c does.
-test-netif: test-netif-negctl
+test-netif: test-netif-negctl test-netif-irq-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra \
 		-o $(BUILD)/netif_test tests/unit/netif_test.c \
@@ -127,10 +127,10 @@ test-netif: test-netif-negctl
 
 # Negative control: NETIF_NEGCTL_SINGLE puts back the `return 0;` that stopped
 # netdev_init at the first bound card. Note what it does NOT break -- 36 of the
-# 43 checks stay green, including every single-NIC property, because a machine
+# Single-NIC properties stay green, because a machine
 # with one card behaves identically. That is why the limitation survived
 # unnoticed: it is invisible until the second card is in the slot.
-# MEASURED: 7 of 43 redden, and they are exactly the multi-card ones.
+# MEASURED: 6 of 55 redden, and they are exactly the multi-card ones.
 test-netif-negctl:
 	@mkdir -p $(BUILD)
 	@$(CC) -std=c11 -O1 -w -DNETIF_NEGCTL_SINGLE \
@@ -141,7 +141,24 @@ test-netif-negctl:
 		echo "NEGATIVE CONTROL FAILED: the suite passes when only the first NIC binds"; \
 		exit 1; \
 	else \
-		echo "negative control ok: $$(grep -c '^FAIL' $(BUILD)/netif_negctl.log) checks fail with one-NIC binding (expect 7)"; \
+		grep -q '^netif_test: 55 checks, 6 failed$$' $(BUILD)/netif_negctl.log || exit 1; \
+		echo "negative control ok: exactly 6 of 55 checks fail with one-NIC binding"; \
 	fi
+
+# Recreate the old smp.c policy: request an IRQ for only the primary card.
+# Exercise the production registration loop, not a copied count expression.
+.PHONY: test-netif-irq-negctl
+test-netif-irq-negctl:
+	@mkdir -p $(BUILD)
+	@$(CC) -std=c11 -O1 -w -DNETIF_NEGCTL_PRIMARY_IRQ \
+		-o $(BUILD)/netif_irq_negctl tests/unit/netif_test.c \
+		-Ic/drivers/net -Ic/drivers/core -Ic/net/core -Ic/kernel/pci \
+		-Itests/unit/pcistub
+	@if ./$(BUILD)/netif_irq_negctl >$(BUILD)/netif_irq_negctl.log 2>&1; then \
+		echo "NEGATIVE CONTROL FAILED: only the primary NIC gets an IRQ and the test passed"; exit 1; \
+	fi
+	@grep -q '^FAIL every bound interrupt NIC uses device-model registration' $(BUILD)/netif_irq_negctl.log
+	@grep -q '^netif_test: 55 checks, 5 failed$$' $(BUILD)/netif_irq_negctl.log
+	@echo "negative control ok: primary-only IRQ registration fails the real multi-NIC route check"
 
 test-route-all: test-netif test-route test-ip-route

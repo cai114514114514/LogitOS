@@ -63,7 +63,8 @@ SSH_SRC      := $(wildcard $(SSH_DIR)/*.c)
 SSH_CRYPTO_SRC := c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c \
                   c/crypto/aead/aes_modes.c c/crypto/aead/aes_dispatch.c \
                   c/crypto/aead/aesgcm.c c/crypto/aead/aes_ni.c c/kernel/cpu/cpufeat.c \
-                  c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/kdf/pbkdf2.c
+                  c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/kdf/pbkdf2.c \
+                  c/crypto/pubkey/ecdsa.c c/crypto/pubkey/rsa.c
 
 $(BUILD)/ssh_wire_test: tests/unit/ssh_wire_test.c $(SSH_DIR)/ssh_wire.c $(SSH_DIR)/ssh_wire.h
 	@mkdir -p $(BUILD)
@@ -116,7 +117,7 @@ test-ssh: test-ssh-wire test-ssh-packet test-ssh-kex
 # symbol: aes_backend_ni") and is why this list is spelled out rather than
 # reusing $(SSH_CRYPTO_SRC).
 SSHD_CRYPTO_SRC := c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c \
-                    c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c \
+                    c/crypto/pubkey/ed25519.c c/crypto/pubkey/x25519.c c/crypto/pubkey/ecdsa.c c/crypto/pubkey/rsa.c \
                     c/crypto/aead/aes_modes.c c/crypto/aead/aes_dispatch.c c/crypto/aead/aesgcm.c \
                     c/crypto/kdf/pbkdf2.c
 SSHD_SRC := c/apps/coreutils/sshd.c $(SSH_SRC) $(SSHD_CRYPTO_SRC)
@@ -144,8 +145,36 @@ $(BUILD)/sshd.aex: $(BUILD)/sshd.elf tools/mkaex.py
 # --- the device gate ---------------------------------------------------------
 # See this file's header for why this is a SEPARATE disk image rather than
 # $(DISK): sshd is not on $(DISK) until the APPS-list line lands.
-$(BUILD)/disk-ssh.img: $(DISK) $(BUILD)/sshd.aex tests/boot/mk_ssh_disk.py
-	python3 tests/boot/mk_ssh_disk.py $(CURDIR) $@ $(BUILD)/sshd.aex
+# 2026-09-10: the daemon is in the product image. The old filename remains
+# usable; normal OpenSSH verification now includes exec streams and reboot.
+$(BUILD)/disk-ssh.img: $(DISK)
+	cp $(DISK) $@
 
-test-ssh-os: $(ISO) $(BUILD)/disk-ssh.img
-	@bash tests/boot/run-ssh-test.sh $(ISO) $(BUILD)/disk-ssh.img
+test-ssh-os: test-servers-os
+
+# 2026-09-10: /bin/sshd is now shipped; launch is explicit, with no default
+# account/key; boot listeners require explicit administrator enable files. Its custom crypto link stays here.
+$(DISK): $(BUILD)/sshd.aex
+$(SSHD_OBJS): c/apps/logit.h c/apps/logit_stat.h include/abi/logit_abi.h $(wildcard c/net/ssh/*.h)
+
+$(BUILD)/httpd.elf: c/apps/coreutils/httpd_protocol.h c/apps/logit_stat.h
+
+# The signature oracle is Python cryptography; the product parser/verifier
+# is loaded unchanged. The control disables only the additional key families
+# and must fail on a valid P-256 key after the Ed25519 checks succeed.
+SSH_PUBKEY_SRC := $(SSH_DIR)/ssh_pubkey.c $(SSH_DIR)/ssh_auth.c $(SSH_DIR)/ssh_wire.c $(SSH_DIR)/base64.c \
+    c/crypto/hash/sha256.c c/crypto/hash/sha384.c c/crypto/hash/hmac_hkdf.c \
+    c/crypto/pubkey/ed25519.c c/crypto/pubkey/ecdsa.c c/crypto/pubkey/rsa.c
+$(BUILD)/ssh_pubkey.so: $(SSH_PUBKEY_SRC) $(wildcard $(SSH_DIR)/*.h) c/crypto/crypto.h
+	@mkdir -p $(BUILD)
+	$(CC) -shared -fPIC -O2 -w $(SSH_HOST_MININC) $(SSH_PUBKEY_SRC) -o $@
+$(BUILD)/ssh_pubkey_neg.so: $(SSH_PUBKEY_SRC) $(wildcard $(SSH_DIR)/*.h) c/crypto/crypto.h
+	@mkdir -p $(BUILD)
+	$(CC) -shared -fPIC -O2 -w -DSSH_AUTH_ED25519_ONLY $(SSH_HOST_MININC) $(SSH_PUBKEY_SRC) -o $@
+test-ssh-pubkey-neg: $(BUILD)/ssh_pubkey_neg.so
+	@python3 tests/unit/ssh_pubkey_test.py $< > $(BUILD)/ssh-pubkey-neg.log 2>&1; rc=$$?; tail -4 $(BUILD)/ssh-pubkey-neg.log; test $$rc -ne 0 && rg -q 'AssertionError: supported ecdsa-sha2-nistp256' $(BUILD)/ssh-pubkey-neg.log
+test-ssh-pubkey: test-ssh-pubkey-neg $(BUILD)/ssh_pubkey.so
+	python3 tests/unit/ssh_pubkey_test.py $(BUILD)/ssh_pubkey.so
+test-servers-os: test-ssh-pubkey
+ci-host: test-ssh-pubkey
+.PHONY: test-ssh-pubkey test-ssh-pubkey-neg

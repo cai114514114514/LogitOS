@@ -2,6 +2,7 @@
 #include "ssh_wire.h"
 #include "ssh.h"
 #include "base64.h"
+#include "ssh_pubkey.h"
 
 int ssh_authreq_parse(const uint8_t *payload, int len, struct ssh_authreq *out)
 {
@@ -55,8 +56,9 @@ int ssh_auth_parse_publickey(const uint8_t *rest, int restlen,
 {
     int off = ssh_r_bool(rest, 0, restlen, has_sig);
     if (off < 0) return -1;
-    off = ssh_r_string_cpy(rest, off, restlen, alg, algmax, 0);
-    if (off < 0) return -1;
+    int alglen;
+    off = ssh_r_string_cpy(rest, off, restlen, alg, algmax, &alglen);
+    if (off < 0 || alglen >= algmax) return -1;
     off = ssh_r_string(rest, off, restlen, blob, bloblen);
     if (off < 0) return -1;
     if (*has_sig) {
@@ -65,14 +67,14 @@ int ssh_auth_parse_publickey(const uint8_t *rest, int restlen,
     } else {
         *sig = 0; *siglen = 0;
     }
-    return 0;
+    return off == restlen ? 0 : -1;
 }
 
 int ssh_authkeys_match(const char *authkeys_text, int len,
                        const uint8_t *blob, int bloblen)
 {
-    const char *prefix = "ssh-ed25519 ";
-    int plen = 12;
+    const uint8_t *type; int plen;
+    if (bloblen > SSH_AUTH_KEY_MAX || ssh_r_string(blob,0,bloblen,&type,&plen)<0) return 0;
     int i = 0;
     while (i < len) {
         int start = i;
@@ -93,18 +95,23 @@ int ssh_authkeys_match(const char *authkeys_text, int len,
          * the line ending). */
         while (linelen > j && line[linelen - 1] == '\r') linelen--;
 
-        if (linelen - j < plen || line[j] == '#') continue;
+        if (linelen - j <= plen || line[j] == '#') continue;
         int match_prefix = 1;
-        for (int k = 0; k < plen; k++) if (line[j + k] != prefix[k]) { match_prefix = 0; break; }
+        for (int k = 0; k < plen; k++) if ((uint8_t)line[j + k] != type[k]) { match_prefix = 0; break; }
         if (!match_prefix) continue;
 
         int b64start = j + plen;
+        /* Match the blob's exact key type and a field separator. Options
+         * remain unsupported: skipping command=/restrict would lose the
+         * administrator's restrictions while still authorizing the key. */
+        if (line[b64start]!=' ' && line[b64start]!='\t') continue;
+        while(b64start<linelen && (line[b64start]==' ' || line[b64start]=='\t')) b64start++;
         int b64end = b64start;
         while (b64end < linelen && line[b64end] != ' ' && line[b64end] != '\t') b64end++;
         int b64len = b64end - b64start;
         if (b64len <= 0) continue;
 
-        uint8_t decoded[4 + 11 + 4 + 64]; /* room to spare; ed25519 blob is 51 */
+        uint8_t decoded[SSH_AUTH_KEY_MAX];
         int dn = b64_decode(line + b64start, b64len, decoded, (int)sizeof decoded);
         if (dn == bloblen) {
             int eq = 1;

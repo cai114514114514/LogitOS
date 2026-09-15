@@ -142,3 +142,12 @@ int ssh_build_disconnect(uint32_t reason, const char *msg, uint8_t *out, int out
     off = ssh_w_cstring(out, off, outmax, msg);
     return ssh_w_cstring(out, off, outmax, "");
 }
+
+/* RFC 4254 5.2: stderr consumes the same channel window as ordinary data. */
+int ssh_build_channel_stderr(uint32_t chan, const uint8_t *data, int datalen, uint8_t *out, int outmax)
+{
+    int off = ssh_w_u8(out, 0, outmax, SSH_MSG_CHANNEL_EXTENDED_DATA);
+    off = ssh_w_u32(out, off, outmax, chan);
+    off = ssh_w_u32(out, off, outmax, 1 /* SSH_EXTENDED_DATA_STDERR */);
+    return ssh_w_string(out, off, outmax, data, datalen);
+}

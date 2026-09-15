@@ -11,6 +11,13 @@
 
 #include <stdint.h>
 #include "route.h"
+#include "../../drivers/core/io_lock.h"
+static io_lock_t route_gate;
+#if __STDC_HOSTED__
+static _Thread_local struct route_entry route_copy;
+#else
+extern char *sched_name_scratch(void);
+#endif
 
 /* A slot, i.e. a row plus the two fields callers have no business setting.
  * `seq` is the insertion order, kept explicitly rather than inferred from the
@@ -36,7 +43,7 @@ struct rt_ifmemo {
 };
 static struct rt_ifmemo ifmemo[RT_NIF];
 
-uint32_t route_generation(void) { return rt_gen; }
+uint32_t route_generation(void) { IO_GUARD(&route_gate); return rt_gen; }
 
 uint32_t route_plen_mask(int plen)
 {
@@ -64,7 +71,7 @@ static int same_route(const struct route_entry *a, const struct route_entry *b)
            a->oif == b->oif && a->nexthop == b->nexthop;
 }
 
-int route_add(struct route_entry r)
+static int route_add_locked(struct route_entry r)
 {
     if (r.plen > 32) return RT_EINVAL;
     if (r.oif <= 0) return RT_EINVAL;
@@ -98,6 +105,7 @@ int route_add(struct route_entry r)
 
 int route_del(uint32_t dst, int plen, int oif)
 {
+    IO_GUARD(&route_gate);
     if (plen < 0 || plen > 32) return RT_EINVAL;
     dst &= route_plen_mask(plen);
     int n = 0;
@@ -115,6 +123,7 @@ int route_del(uint32_t dst, int plen, int oif)
 
 int route_lookup(uint32_t dst, struct route_res *out)
 {
+    IO_GUARD(&route_gate);
     int best = -1;
 
     for (int i = 0; i < RT_NROUTE; i++) {
@@ -165,13 +174,14 @@ int route_lookup(uint32_t dst, struct route_res *out)
 
 void route_flush(void)
 {
+    IO_GUARD(&route_gate);
     for (int i = 0; i < RT_NROUTE; i++) tab[i].used = 0;
     for (int i = 0; i < RT_NIF; i++) ifmemo[i].set = 0;
     rt_seq = 0;
     rt_gen++;
 }
 
-void route_flush_if(int oif)
+static void route_flush_if_locked(int oif)
 {
     if (oif <= 0) return;
     int n = 0;
@@ -181,14 +191,30 @@ void route_flush_if(int oif)
     if (n) rt_gen++;
 }
 
+/* IRQ-capable callers provide their own value storage: borrowing the current
+ * thread scratch would overwrite a syscall interrupted on this same CPU. */
+int route_at_copy(int slot, struct route_entry *out)
+{
+    if (!out || slot < 0 || slot >= RT_NROUTE) return 0;
+    IO_GUARD(&route_gate);
+    if (!tab[slot].used) return 0;
+    *out = tab[slot].e;
+    return 1;
+}
+
 const struct route_entry *route_at(int slot)
 {
-    if (slot < 0 || slot >= RT_NROUTE) return 0;
-    return tab[slot].used ? &tab[slot].e : 0;
+#if __STDC_HOSTED__
+    struct route_entry *out = &route_copy;
+#else
+    struct route_entry *out = (struct route_entry *)sched_name_scratch();
+#endif
+    return route_at_copy(slot, out) ? out : 0;
 }
 
 int route_count(void)
 {
+    IO_GUARD(&route_gate);
     int n = 0;
     for (int i = 0; i < RT_NROUTE; i++) if (tab[i].used) n++;
     return n;
@@ -199,6 +225,7 @@ int route_count(void)
 int route_v4_iface(int oif, uint32_t addr, uint32_t mask, uint32_t gw,
                    uint32_t flags)
 {
+    IO_GUARD(&route_gate);
     if (oif <= 0 || oif >= RT_NIF) return RT_EINVAL;
     int plen = route_mask_plen(mask);
     if (plen < 0) return RT_EINVAL;
@@ -213,7 +240,7 @@ int route_v4_iface(int oif, uint32_t addr, uint32_t mask, uint32_t gw,
      * the old connected route behind would keep sending the previous subnet's
      * traffic out of a card that no longer holds an address in it, and it
      * would keep winning on prefix length while doing so. */
-    route_flush_if(oif);
+    route_flush_if_locked(oif);
 
     int rc;
     /* METRIC 0 on both, deliberately. A metric only ever separates routes to
@@ -222,14 +249,14 @@ int route_v4_iface(int oif, uint32_t addr, uint32_t mask, uint32_t gw,
      * worse metric would express nothing and would quietly hide a broken
      * prefix comparison behind a working metric comparison. That is exactly
      * what the negative control needs to be able to see. */
-    rc = route_add((struct route_entry){
+    rc = route_add_locked((struct route_entry){
         .dst = addr & route_plen_mask(plen), .plen = (uint8_t)plen,
         .nexthop = 0, .src = addr, .flags = flags, .oif = oif, .metric = 0,
     });
     if (rc != RT_OK) return rc;
 
     if (gw) {
-        rc = route_add((struct route_entry){
+        rc = route_add_locked((struct route_entry){
             .dst = 0, .plen = 0, .nexthop = gw, .src = addr,
             .flags = flags, .oif = oif, .metric = 0,
         });
@@ -239,3 +266,10 @@ int route_v4_iface(int oif, uint32_t addr, uint32_t mask, uint32_t gw,
     m->addr = addr; m->mask = mask; m->gw = gw; m->flags = flags; m->set = 1;
     return RT_OK;
 }
+
+/* Public mutations hold only the small table lock; interface refresh uses
+ * the private helpers so withdraw/add/publish is one atomic transaction. */
+int route_add(struct route_entry r)
+{ IO_GUARD(&route_gate); return route_add_locked(r); }
+void route_flush_if(int oif)
+{ IO_GUARD(&route_gate); route_flush_if_locked(oif); }
