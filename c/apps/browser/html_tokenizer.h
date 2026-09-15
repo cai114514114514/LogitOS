@@ -27,11 +27,11 @@
  *      a network-buffer boundary then has self-consistent state: the part we
  *      already saw is in our buffer, not in memory that is about to be reused.
  *
- *   2. Only TOK_CHARS may point into the input, and only on the fast path (a
- *      run in the data state with no '&', '<', NUL or CR).  CONTRACT: the
- *      caller must consume or copy a token's payload BEFORE calling
- *      html_tok_next() again.  This is what makes plain text -- the bulk of
- *      every real page -- zero-copy.
+ *   2. Only TOK_CHARS may point into the input, and only on a fast path: a run
+ *      of characters with no byte that changes the current tokenizer state.
+ *      CONTRACT: the caller must consume or copy a token's payload BEFORE
+ *      calling html_tok_next() again.  This makes ordinary text plus the long
+ *      bodies of script/style/textarea elements zero-copy.
  *
  *   3. On input exhaustion with eof == 0, the tokenizer rolls `pos` back to
  *      where this token started, restores the state it started in, drops the

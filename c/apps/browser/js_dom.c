@@ -50,6 +50,19 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+/* Work counters, never a host stopwatch: traversal_work_test checks native
+ * visits/allocations at the production query and insertion doors. They are
+ * compiled out of browser.aex; the guest measures elapsed browser time. */
+#ifdef JSDOM_TRAVERSAL_PROFILE
+unsigned long js_dom_profile_named_visits;
+unsigned long js_dom_profile_script_visits;
+unsigned long js_dom_profile_collection_builds;
+unsigned long js_dom_profile_attr_reads;
+unsigned long js_dom_profile_wrap_calls;
+unsigned long js_dom_profile_simple_queries;
+unsigned long js_dom_profile_simple_candidates;
+#endif
+
 #ifndef countof
 #define countof(x) (sizeof(x) / sizeof((x)[0]))
 #endif
@@ -84,6 +97,11 @@ LOGIT_WEAK_STUB(js_module_is_module_type);
 LOGIT_WEAK_STUB(js_module_is_classic_type);
 static int have_layout(void) { return LOGIT_HAVE(layout_count) && LOGIT_HAVE(layout_items); }
 
+int js_platform_mutations_flush(JSContext *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_platform_mutations_flush);
+int js_cssom_computed_transform(struct node *, char *, int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_cssom_computed_transform);
+
 static struct node *g_root;
 
 /* The context the page is bound to. Dispatch is entered from C (a click, a
@@ -113,6 +131,13 @@ static struct dirty_root g_droot[JS_DOM_MAX_DIRTY];
 static int g_ndroot;
 static int g_level;                     /* INVAL_* */
 static int g_whole;                     /* scope escaped the root set */
+static unsigned long long g_mutation_generation;
+
+/* Dirty scopes coalesce, but synchronous style reads must distinguish two
+ * mutations inside the same dirty scope. Allocated DOM chunk capacity is not
+ * a mutation version: style none -> block can change no allocation at all.
+ * Keep this monotonic across clear/page reopen; consumers also key the doc. */
+unsigned long long js_dom_mutation_generation(void) { return g_mutation_generation; }
 
 int  js_dom_dirty(void) { return g_level != INVAL_NONE; }
 void js_dom_clear_dirty(void) { g_level = INVAL_NONE; g_ndroot = 0; g_whole = 0; }
@@ -172,6 +197,7 @@ static void mark(struct node *n, int level, int siblings)
     /* Before the level is even raised: an off-document mutation is not a
      * pending repaint, so it must not make the page report itself dirty. */
     if (n && !connected(n)) return;
+    g_mutation_generation++;
     if (level > g_level) g_level = level;
     if (g_whole) return;
     if (!n || n->type != N_ELEM) { g_whole = 1; return; }
@@ -211,8 +237,22 @@ static void mark(struct node *n, int level, int siblings)
  * construction, and it also moves the sibling-position pseudo-classes
  * (:first-child, :nth-child, :empty) of everything under it -- hence the whole
  * subtree, rooted at the PARENT of what changed. */
-static void mark_self(struct node *n, int level) { mark(n, level, 1); }
+/* Images preload while detached; repaint's connected() guard must not also
+ * become their resource-discovery guard. The sink only queues native work. */
+static void (*g_image_sink)(struct node *);
+void js_dom_set_image_sink(void (*fn)(struct node *)) { g_image_sink=fn; }
+static void mark_self(struct node *n, int level)
+{
+    if(g_image_sink && n && n->type==N_ELEM && n->tag && !strcmp(n->tag,"img"))g_image_sink(n);
+    mark(n, level, 1);
+}
 static void mark_children(struct node *n) { mark(n, INVAL_LAYOUT, 0); }
+
+void js_dom_control_changed(struct node *n) { mark(n, INVAL_PAINT, 0); }
+/* Top-layer membership changes box existence/paint order without changing a
+ * CSS field. A PAINT invalidation is discarded by the unchanged-style fast
+ * path, leaving showPopover() true while synchronous geometry still reads 0. */
+void js_dom_top_layer_changed(struct node *n) { mark(n, INVAL_LAYOUT, 0); }
 
 /* A TEXT/COMMENT node's data changed. mark() only records ELEMENT scopes (a
  * text node has no subtree to re-style and no selector can key off it), so the
@@ -234,6 +274,8 @@ static void mark_chardata(struct node *n)
 }
 
 struct node *js_dom_root(void) { return g_root; }
+
+void js_dom_text_changed(struct node *n) { mark_chardata(n); }
 
 static void (*g_note)(const char *);
 void js_dom_set_note(void (*fn)(const char *)) { g_note = fn; }
@@ -261,19 +303,32 @@ static JSClassID elem_cid;
  * subtree free, so a script that did one textContent= lost document.body. It is
  * also what makes the DOM's node free list safe -- a recycled slot gets a fresh
  * serial, so an old handle can never silently address the new occupant. */
-struct elem_handle { struct node *n; uint32_t serial; };
+struct wrapper_doc;
+struct elem_handle {
+    struct node *n; uint32_t serial;
+    JSValue self, parent_value; /* self borrowed; parent is a marked strong edge */
+    struct elem_handle *parent_handle,*children,*prev_child,*next_child;
+    struct elem_handle *doc_prev,*doc_next;
+    struct wrapper_doc *owner;
+    unsigned tracked;
+};
+static void wrapper_dispose(JSRuntime *,struct elem_handle *);
 
 static void elem_finalizer(JSRuntime *rt, JSValue val)
 {
-    (void)rt;
     struct elem_handle *h = JS_GetOpaque(val, elem_cid);
     if (!h) return;
     /* Clear the node's weak wrapper slot, but only if it still points at THIS
      * object: after a recycle the slot may belong to a different node.
      * Contract: the DOM must outlive the JSRuntime (browser.c frees the page
-     * DOM only after js_page_close has torn its runtime down). */
+     * DOM only after js_page_close has torn its runtime down).
+     * Correction: wrapper_doc subscriptions also invalidate h->n on native
+     * DESTROY/CLOSE before slot recycling or foreign-arena release. Finalizers
+     * can therefore run after a foreign document closes without dereferencing
+     * its freed node; page cleanup still breaks all remaining JS graph edges. */
     if (h->n && h->n->serial == h->serial && h->n->jsw == JS_VALUE_GET_PTR(val))
         dom_set_wrapper(h->n, NULL);
+    wrapper_dispose(rt,h);
     free(h);
 }
 
@@ -292,8 +347,137 @@ static struct node *node_of(JSValueConst v)
 static struct elem_handle *new_handle(struct node *n)
 {
     struct elem_handle *h = malloc(sizeof *h);
-    if (h) { h->n = n; h->serial = n->serial; }
+    if (h) { memset(h,0,sizeof *h);h->n = n; h->serial = n->serial;h->self=h->parent_value=JS_UNDEFINED; }
     return h;
+}
+
+/* The native DOM arena owns nodes, not JS objects. Its jsw slot remains WEAK.
+ * The old claim that this alone preserved expandos was false: assignment in an
+ * IIFE released the only wrapper and lost a Symbol handler before the next
+ * event. Model the reachable DOM edges in QuickJS instead of pinning every
+ * wrapper until navigation. A wrapped child retains its parent and its parent
+ * retains the wrapped child; elem_gc_mark describes those exact references.
+ * document roots connected components, while an unreachable detached component
+ * (including expando cycles) is collectible by QuickJS's cycle collector.
+ * Only requested nodes and their ancestor chain are wrapped, never a scan of
+ * all descendants. INSERT/REMOVE adjust one edge; CLOSE visits the document's
+ * wrapper list before its arena can disappear.
+ * Ownership gate (host, 2026-09-09): 300 detached parent/child cycles take live
+ * wrappers 6 -> 606 -> 6 after JS_RunGC; omitting gc_mark leaves 9 -> 609 ->
+ * 609. Storage is intrusive links per live requested wrapper, not a permanent
+ * global JS root. A 2400-element bootstrap keeps 112 wrap calls, not a full
+ * tree materialization. Event/NodeList native reference edges and DOMParser's
+ * separate dp_cid are not silently claimed as covered by this tree graph. */
+struct wrapper_doc {
+    struct wrapper_doc *next;
+    struct dom_subscription sub;
+    struct elem_handle *handles;
+    JSContext *ctx;
+};
+static struct wrapper_doc *wrapper_docs;
+static unsigned wrapper_live;
+unsigned js_dom_wrapper_count(void){return wrapper_live;}
+static JSValue wrap(JSContext *,struct node *);
+
+static void wrapper_unlink(JSRuntime *rt,struct elem_handle *h)
+{
+    struct elem_handle *p=h->parent_handle;
+    if(!p)return;
+    JSValue pv=h->parent_value,sv=h->self;
+    if(h->prev_child)h->prev_child->next_child=h->next_child;else p->children=h->next_child;
+    if(h->next_child)h->next_child->prev_child=h->prev_child;
+    h->parent_handle=0;h->parent_value=JS_UNDEFINED;h->prev_child=h->next_child=0;
+    /* Unlink before releasing either reference: a zero refcount can run the
+     * other endpoint's finalizer immediately. No dereference after Free(sv). */
+    JS_FreeValueRT(rt,pv);JS_FreeValueRT(rt,sv);
+}
+static void wrapper_unlist(struct elem_handle *h)
+{
+    if(!h->owner)return;
+    if(h->doc_prev)h->doc_prev->doc_next=h->doc_next;else h->owner->handles=h->doc_next;
+    if(h->doc_next)h->doc_next->doc_prev=h->doc_prev;
+    h->owner=0;h->doc_prev=h->doc_next=0;
+}
+static void wrapper_invalidate(JSRuntime *rt,struct elem_handle *h)
+{
+    JSValue held=JS_DupValueRT(rt,h->self);
+    wrapper_unlink(rt,h);
+    while(h->children)wrapper_unlink(rt,h->children);
+    if(h->n&&h->n->serial==h->serial&&h->n->jsw==JS_VALUE_GET_PTR(h->self))dom_set_wrapper(h->n,0);
+    h->n=0;wrapper_unlist(h);
+    JS_FreeValueRT(rt,held);
+}
+static void wrapper_dispose(JSRuntime *rt,struct elem_handle *h)
+{
+    wrapper_unlink(rt,h);
+    while(h->children)wrapper_unlink(rt,h->children);
+    wrapper_unlist(h);
+    if(h->tracked){wrapper_live--;h->tracked=0;}
+}
+static void elem_gc_mark(JSRuntime *rt,JSValueConst v,JS_MarkFunc *mark)
+{
+    struct elem_handle *h=JS_GetOpaque(v,elem_cid);if(!h)return;
+    JS_MarkValue(rt,h->parent_value,mark);
+    for(struct elem_handle *c=h->children;c;c=c->next_child)JS_MarkValue(rt,c->self,mark);
+}
+static int wrapper_connect(JSContext *ctx,struct elem_handle *h,struct node *parent)
+{
+#ifndef JSDOM_WEAK_WRAPPERS
+    if(!parent)return 0;
+    if(h->parent_handle&&h->parent_handle->n==parent)return 0;
+    JSValue pv=parent->jsw?JS_DupValue(ctx,JS_MKPTR(JS_TAG_OBJECT,parent->jsw)):wrap(ctx,parent);
+    if(JS_IsException(pv))return -1;
+    struct elem_handle *p=JS_GetOpaque(pv,elem_cid);
+    if(!p){JS_FreeValue(ctx,pv);return 0;}
+    wrapper_unlink(JS_GetRuntime(ctx),h);
+    h->parent_value=pv;h->parent_handle=p;
+    h->next_child=p->children;if(p->children)p->children->prev_child=h;p->children=h;
+    (void)JS_DupValue(ctx,h->self); /* owned by p's child list, marked above */
+#else
+    (void)ctx;(void)h;(void)parent;
+#endif
+    return 0;
+}
+static void wrapper_notify(void *opaque,const struct dom_mutation *m)
+{
+    struct wrapper_doc *d=opaque;JSRuntime *rt=JS_GetRuntime(d->ctx);
+    if(m->kind==DOM_MUT_CLOSE){
+        while(d->handles)wrapper_invalidate(rt,d->handles);
+        if(g_root&&g_root->doc==d->sub.doc)g_root=0;
+        return; /* dom_destroy unlinks subscriptions after CLOSE */
+    }
+    if(!m->node||!m->node->jsw)return;
+    struct elem_handle *h=JS_GetOpaque(JS_MKPTR(JS_TAG_OBJECT,m->node->jsw),elem_cid);
+    if(!h)return;
+    if(m->kind==DOM_MUT_DESTROY)wrapper_invalidate(rt,h);
+    else if(m->kind==DOM_MUT_REMOVE)wrapper_unlink(rt,h);
+    else if(m->kind==DOM_MUT_INSERT)wrapper_connect(d->ctx,h,m->node->parent);
+}
+static struct wrapper_doc *wrapper_doc_for(JSContext *ctx,struct dom_doc *doc)
+{
+    for(struct wrapper_doc *d=wrapper_docs;d;d=d->next)if(d->sub.doc==doc)return d;
+    /* Closed foreign documents have no native subscriptions or handles left.
+     * Prune outside notification delivery, whose linked list is read-only. */
+    struct wrapper_doc **q=&wrapper_docs;
+    while(*q){struct wrapper_doc *d=*q;if(!d->sub.doc){*q=d->next;free(d);}else q=&d->next;}
+    struct wrapper_doc *d=calloc(1,sizeof *d);if(!d)return 0;
+    d->ctx=ctx;d->next=wrapper_docs;wrapper_docs=d;
+    dom_subscribe(doc,&d->sub,wrapper_notify,d);return d;
+}
+static void wrapper_track(struct wrapper_doc *d,struct elem_handle *h,JSValue self)
+{
+    h->self=self;h->owner=d;h->doc_next=d->handles;
+    if(d->handles)d->handles->doc_prev=h;d->handles=h;
+    h->tracked=1;wrapper_live++;
+}
+static void wrapper_cleanup(JSContext *ctx)
+{
+    JSRuntime *rt=JS_GetRuntime(ctx);
+    while(wrapper_docs){struct wrapper_doc *d=wrapper_docs;wrapper_docs=d->next;
+        dom_unsubscribe(&d->sub);
+        while(d->handles)wrapper_invalidate(rt,d->handles);
+        free(d);
+    }
 }
 
 /* The prototype a wrapper for `n` must carry -- HTMLBodyElement.prototype for a
@@ -326,21 +510,30 @@ static int is_docx(const struct node *n);
  * js_dom_iface.inc for the mechanism and the two shadowing rules. */
 static void named_scan(JSContext *ctx, struct node *root);
 static void named_note_attr(JSContext *ctx, struct node *n, const char *attr);
+static JSValue shadow_getById(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv);
 
 /* One wrapper per node, cached in the node's weak `jsw` slot, so
  * document.body === document.body and a script can hang expandos off an
  * element. The slot takes no reference: the finalizer clears it, and
  * js_dom_cleanup() clears every slot in the document when the page's runtime
- * goes away. */
+ * goes away.
+ * Correction 2026-09-09: the weak slot does not preserve expandos. The marked
+ * parent/child wrapper graph above now retains reachable wrapper identities;
+ * the slot stays weak so unreferenced detached components remain collectible. */
 static JSValue wrap(JSContext *ctx, struct node *n)
 {
     if (!n) return JS_NULL;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+    js_dom_profile_wrap_calls++;
+#endif
     /* The compatibility bridge's trigger. Every foreign installer probes the
      * element prototype with `document.createElement('div')`, which is a wrap,
      * and it must run AFTER all of them -- see BRIDGE_WRAPS in
      * js_dom_iface.inc for why this is here and not on an embedder hook. */
     iface_bridge(ctx);
     if (n->jsw) return JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, n->jsw));
+    struct wrapper_doc *owner=wrapper_doc_for(ctx,n->doc);
+    if(!owner)return JS_ThrowOutOfMemory(ctx);
     JSValueConst proto = iface_proto_for(n);
     JSValue o = JS_IsObject(proto) ? JS_NewObjectProtoClass(ctx, proto, elem_cid)
                                    : JS_NewObjectClass(ctx, (int)elem_cid);
@@ -349,6 +542,8 @@ static JSValue wrap(JSContext *ctx, struct node *n)
     if (!h) { JS_FreeValue(ctx, o); return JS_NULL; }
     JS_SetOpaque(o, h);
     dom_set_wrapper(n, JS_VALUE_GET_PTR(o));
+    wrapper_track(owner,h,o);
+    if(wrapper_connect(ctx,h,n->parent)<0){JS_FreeValue(ctx,o);return JS_EXCEPTION;}
     /* .host / .mode: OWN properties on this one object, never on the shared
      * Element.prototype. This engine has no dedicated ShadowRoot interface
      * slot (iface_proto_for maps "#shadow-root" to IF_HTMLUNKNOWNELEMENT, the
@@ -372,6 +567,11 @@ static JSValue wrap(JSContext *ctx, struct node *n)
             JS_NewString(ctx, n->shadow_mode == SHADOW_MODE_CLOSED ? "closed" : "open"),
             JS_PROP_ENUMERABLE);
         JS_DefinePropertyValueStr(ctx, o, "host", wrap(ctx, n->parent), JS_PROP_ENUMERABLE);
+        /* ShadowRoot is still represented by an element wrapper here. Install
+         * its scoped query on this object only, for the same reason as host /
+         * mode above: ordinary Element must not acquire getElementById. */
+        JS_DefinePropertyValueStr(ctx, o, "getElementById",
+            JS_NewCFunction(ctx, shadow_getById, "getElementById", 1), JS_PROP_C_W_E);
     }
     return o;
 }
@@ -382,6 +582,8 @@ JSValue js_dom_node_value(JSContext *ctx, struct node *n) { return wrap(ctx, n);
 
 /* ---- a growable byte buffer: textContent has no business being capped ---- */
 struct sbuf { char *p; size_t len, cap; };
+
+JSValue js_dom_wrap_node(JSContext *ctx, struct node *n) { return wrap(ctx, n); }
 
 static int sb_push(struct sbuf *b, const char *s, size_t n)
 {
@@ -417,13 +619,13 @@ static void gather_text(struct node *root, struct sbuf *b)
  * then append" over the same public fields dom_text_append maintains. Done in
  * place rather than by swapping in a fresh node because every JS wrapper, every
  * listener bucket and every invalidation root already held is keyed on this
- * node -- React's commitTextUpdate writes the SAME text node over and over. */
+ * node -- React's commitTextUpdate writes the SAME text node over and over.
+ * Correction: dom_text_replace now performs an atomic replacement and reports
+ * the old/new UTF-16 range to native mutation consumers before invalidation. */
 static void chardata_set(struct node *n, const char *s, size_t len)
 {
     if (!n || (n->type != N_TEXT && n->type != N_COMMENT)) return;
-    n->textlen = 0;
-    if (n->text && n->textcap > 0) n->text[0] = 0;
-    if (len) dom_text_append(n, s, (int)len);
+    if (!dom_text_replace(n, 0, dom_text_length(n), s, (int)len)) return;
     mark_chardata(n);
 }
 
@@ -471,9 +673,21 @@ static JSValue doc_getById(JSContext *ctx, JSValueConst t, int argc, JSValueCons
 {
     (void)t; if (argc < 1 || !g_root) return JS_NULL;
     const char *id = JS_ToCString(ctx, argv[0]); if (!id) return JS_NULL;
-    /* The document's id index, not a tree walk: getElementById is O(1) and,
-     * per the DOM spec, case-sensitive (the old walk compared case-insensitively). */
+    /* Exact-case indexed candidates, with tree-order resolution for duplicate
+     * IDs. The old comment promised O(1) unconditionally, but a bucket's first
+     * entry is not necessarily the document's first matching descendant. */
     struct node *n = dom_get_element_by_id(g_root->doc, id);
+    JS_FreeCString(ctx, id);
+    return wrap(ctx, n);
+}
+static JSValue shadow_getById(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    struct node *root = node_of(t);
+    if (!dom_is_shadow_root(root)) return JS_ThrowTypeError(ctx, "not a ShadowRoot");
+    if (argc < 1) return JS_ThrowTypeError(ctx, "getElementById requires an argument");
+    const char *id = JS_ToCString(ctx, argv[0]);
+    if (!id) return JS_EXCEPTION;
+    struct node *n = dom_get_element_by_id_in(root, id);
     JS_FreeCString(ctx, id);
     return wrap(ctx, n);
 }
@@ -571,12 +785,36 @@ static JSValue el_set_id(JSContext *ctx, JSValueConst t, JSValueConst v)
  * different property entirely: it returns the concatenated text with every tag
  * stripped, so a script that read innerHTML got markup-free text back and any
  * round trip (el.innerHTML = el.innerHTML) silently destroyed the subtree. */
+extern JSValue js_semantics_template_content(JSContext *,JSValueConst) LOGIT_WEAK;
+LOGIT_WEAK_STUB(js_semantics_template_content);
+static JSValue html_contents(JSContext *ctx,JSValueConst value,struct node *n)
+{
+#ifndef TEMPLATE_CONTENT_SNAPSHOT
+    /* A template's retained .content fragment is the innerHTML target. The
+     * private lookup also covers a saved Element descriptor borrowed
+     * with .call(template), without reading an overridable public .content.
+     * Existing unmaterialized templates retain their parser representation;
+     * creating a fragment here would newly lose their outer serialization.
+     * Dropping the cache instead would break a caller's held identity. */
+    if(n->type==N_ELEM && n->ns==NS_HTML && ieq(n->tag,"template") &&
+       LOGIT_HAVE(js_semantics_template_content))
+        return js_semantics_template_content(ctx,value);
+#else
+    (void)ctx;(void)value;(void)n; /* original element-only target control */
+#endif
+    return JS_UNDEFINED;
+}
 static JSValue el_get_html(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t); if (!n) return JS_UNDEFINED;
+    JSValue contents=html_contents(ctx,t,n);
+    if(JS_IsException(contents))return contents;
+    struct node *target=node_of(contents);
+    if(target)n=target;
     char *s = dom_serialize_html(n, 0);          /* children only == innerHTML */
     JSValue v = JS_NewString(ctx, s ? s : "");
     free(s);
+    JS_FreeValue(ctx,contents);
     return v;
 }
 
@@ -613,6 +851,11 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
     const char *s = JS_ToCString(ctx, v);
     if (!s) return JS_UNDEFINED;
 
+    JSValue contents=html_contents(ctx,t,n);
+    if(JS_IsException(contents)){JS_FreeCString(ctx,s);return contents;}
+    struct node *target=node_of(contents);
+    if(!target)target=n;
+
     /* The HTML fragment parsing algorithm, with this element as context -- so
      * "<td>x" inside a <tr> builds a cell and inside a <div> does not, exactly
      * as the spec requires. It parses into its OWN document, so the result has
@@ -622,14 +865,17 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
                                             n->tag, (int)strlen(n->tag), n->ns);
     JS_FreeCString(ctx, s);
     if (frag) {
-        dom_destroy_children(n);
+        /* Parse with the original template context (not #document-fragment),
+         * then replace the contents. That retains template/table parse modes. */
+        dom_destroy_children(target);
         for (struct node *c = frag->first_child; c; c = c->next) {
-            struct node *cp = dom_import_node(n->doc, c);
-            if (cp) { mark_fragment_scripts_started(cp); dom_append_child(n, cp); }
+            struct node *cp = dom_import_node(target->doc, c);
+            if (cp) { mark_fragment_scripts_started(cp); dom_append_child(target, cp); }
         }
-        mark_children(n);
+        mark_children(target);
     }
     if (fdoc) dom_free(dom_doc_root(fdoc));
+    JS_FreeValue(ctx,contents);
     return JS_UNDEFINED;
 }
 /* ---- attribute values are BYTE STRINGS, not C strings --------------------
@@ -647,8 +893,9 @@ static JSValue el_set_html(JSContext *ctx, JSValueConst t, JSValueConst v)
  * truncation, the enumerated value "text\0" would have matched the keyword
  * "text" and read back as valid.
  *
- * dom_set_attr_raw takes the name VERBATIM, so the ASCII-lowercasing
- * dom_set_attr would have done has to happen here. */
+ * Formerly this binding lowercased every name before dom_set_attr_raw.
+ * Correction: normal reads/writes now use dom.c's length-carrying shared
+ * lookup/setter, so SVG viewBox stays case-sensitive without losing NUL. */
 static char *lower_dup(const char *s, size_t len)
 {
     char *o = malloc(len + 1);
@@ -664,14 +911,9 @@ static const char *attr_val_len(const struct node *n, const char *name, int *len
 {
     if (len) *len = 0;
     if (!n || n->type != N_ELEM || !name) return 0;
-    for (int i = 0; i < n->nattr; i++) {
-        const char *an = dom_attr_name_at(n, i);
-        if (an && ieq(an, name)) {
-            if (len) *len = (int)n->attrs[i].vlen;
-            return n->attrs[i].value;
-        }
-    }
-    return 0;
+    const struct dom_attr *a=dom_find_attr(n,name);
+    if (a && len) *len=(int)a->vlen;
+    return a?a->value:0;
 }
 
 /* Write an attribute with an explicit length, keeping every derived index in
@@ -681,18 +923,19 @@ static void attr_write(JSContext *ctx, struct node *n, const char *name,
                        const char *val, int vlen)
 {
     if (!n || n->type != N_ELEM || !name || !*name) return;
-    char *ln = lower_dup(name, strlen(name));
-    if (!ln) return;
-    if (dom_set_attr_raw(n, ln, (int)strlen(ln), val ? val : "", vlen)) {
+    if (dom_set_attr_len(n, name, val ? val : "", vlen)) {
         mark_self(n, INVAL_STYLE);
-        named_note_attr(ctx, n, ln);
+        const struct dom_attr *a=dom_find_attr(n,name);
+        if(a)named_note_attr(ctx,n,dom_attr_name_at(n,(int)(a-n->attrs)));
     }
-    free(ln);
 }
 
 static JSValue el_getattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = node_of(t); if (!n || argc < 1) return JS_NULL;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+    js_dom_profile_attr_reads++;
+#endif
     const char *nm = JS_ToCString(ctx, argv[0]); if (!nm) return JS_NULL;
     int len = 0;
     const char *v = attr_val_len(n, nm, &len); JS_FreeCString(ctx, nm);
@@ -724,6 +967,8 @@ static JSValue el_setattr(JSContext *ctx, JSValueConst t, int argc, JSValueConst
  *
  *   - setAttributeNS(ns, qualifiedName, v) IGNORES ns and stores under
  *     qualifiedName VERBATIM -- no lower-casing, unlike setAttribute().
+ *     Correction: ordinary setAttribute now folds only HTML element names;
+ *     foreign element attributes already use the same verbatim spelling.
  *     html_tree.c:917 already keeps parser-authored foreign attributes
  *     case-sensitively for the same reason: XML namespaced names (xlink:href,
  *     xml:lang) are case-sensitive, and lower-casing "xlink:href" on the way
@@ -865,9 +1110,12 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
     if (ref && ref->parent != p) ref = 0;                       /* not ours: append */
     if (ref == c) return 1;                                     /* already in place */
 
-    if (is_fragment(c)) {
+    int fragment = is_fragment(c);
+    struct node *scan_first = c, *scan_last = c;
+    if (fragment) {
         struct node *k = c->first_child;
         if (!k) return 1;                    /* an empty fragment inserts nothing */
+        scan_first = k; scan_last = c->last_child;
         while (k) {
             struct node *nx = k->next;
             dom_insert_before(p, k, ref);
@@ -879,16 +1127,36 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
         if (old && old != p) mark_children(old);
     }
     mark_children(p);
+    /* The fragment is empty now. The old fallback scanned p in its place,
+     * revisiting every existing sibling on every incremental commit: eight
+     * two-root fragments into 512 spans caused 4252 name visits, 4252 script
+     * visits and 45 offers for nine scripts (traversal_work_test). Remember
+     * the inserted interval instead; names for ALL roots precede script
+     * offering, preserving the original two-phase notification order. */
+#ifdef JSDOM_FRAGMENT_RESCAN_PARENT
+    if (fragment) scan_first = scan_last = p;
+#endif
+    int in_document = (g_ctx || g_script_sink) && connected(p);
     /* Anything that just entered the document can claim a window name. Only on
      * a CONNECTED destination: an off-document subtree exposes nothing, and
      * react-dom builds every commit off-document, so this costs nothing on the
      * path that runs thirty times a frame. */
-    if (g_ctx && connected(p)) named_scan(g_ctx, is_fragment(c) ? p : c);
+    if (g_ctx && in_document) {
+        for (struct node *k = scan_first; k; k = k->next) {
+            named_scan(g_ctx, k);
+            if (k == scan_last) break;
+        }
+    }
     /* A <script> that just became connected is prepared+run per HTML5. Same
      * connected-only guard and same reason: react-dom's off-document commits
      * never reach here, and a script is only "prepared" when it enters the
      * document. The sink ENQUEUES; nothing runs on this stack. */
-    if (g_script_sink && connected(p)) offer_scripts(is_fragment(c) ? p : c);
+    if (g_script_sink && in_document) {
+        for (struct node *k = scan_first; k; k = k->next) {
+            offer_scripts(k);
+            if (k == scan_last) break;
+        }
+    }
     return 1;
 }
 
@@ -933,6 +1201,9 @@ static int insert_run(struct node *p, struct node *c, struct node *ref)
 static void offer_scripts(struct node *n)
 {
     if (!n) return;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+    js_dom_profile_script_visits++;
+#endif
     if (n->type == N_ELEM && ieq(n->tag, "script") && !dom_script_is_done(n)) {
         const char *type = dom_attr(n, "type");
         int executable = 1;
@@ -1103,6 +1374,209 @@ static int node_type_of(const struct node *n)
 
 static JSValue el_get_nodeType(JSContext *ctx, JSValueConst t)
 { struct node *n = node_of(t); return n ? JS_NewInt32(ctx, node_type_of(n)) : JS_UNDEFINED; }
+
+static unsigned char selector_fold(unsigned char c)
+{ return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c; }
+static int selector_bytes_equal(const char *a, size_t an, const char *b, size_t bn,
+                                int fold_a, int fold_b)
+{
+    if (an != bn) return 0;
+    for (size_t i = 0; i < an; i++) {
+        unsigned char x = (unsigned char)a[i], y = (unsigned char)b[i];
+        if (fold_a) x = selector_fold(x);
+        if (fold_b) y = selector_fold(y);
+        if (x != y) return 0;
+    }
+    return 1;
+}
+static int selector_space(unsigned char c)
+{ return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'; }
+
+/* The JS parser remains authoritative, including escapes and SyntaxError.
+ * Originally only one unqualified tag, class, ID or universal selector was
+ * admitted by its AST dispatcher. Complex selectors now also use this walk
+ * for a NECESSARY rightmost literal, then run the unchanged full JS matcher.
+ * Attribute presence (kind 4) deliberately ignores values/operators: it is
+ * only a candidate filter, never the answer to a compound selector.
+ * The guest's 600-row/10-query simple specimen otherwise makes
+ * 6060 JS getAttribute calls; this walk checks those same candidates in C and
+ * wraps only matches. This is operation-count evidence, not a host timing.
+ *
+ * Do not reuse doc_qs's historical ID shortcut: duplicate IDs require tree
+ * order, quirks folding differs, and strlen would truncate embedded NUL in an
+ * attribute. No shadow_root traversal and no sibling of the scope root enters
+ * this walk. Unsupported scopes return undefined for the complete JS matcher. */
+static int selector_literal_matches(struct node *n, int kind,
+                                    const char *want, size_t len,
+                                    int quirks, int fold_names)
+{
+    int match = 0;
+    if (kind == 0) match = 1;
+    else if (kind == 1) {
+        int html = n->ns == NS_HTML;
+        match = n->tag && selector_bytes_equal(n->tag, strlen(n->tag), want, len,
+                                               html, html && fold_names);
+    } else if (kind == 4) {
+        /* Use DOM's NUL-terminated name accessor, not the intern-table
+         * representation (which would add a new include dependency to
+         * every consumer of this TU). Foreign names must not be folded:
+         * accepting extra candidates
+         * is harmless, but rejecting a real match is silent data loss.
+         * Values and namespace semantics remain in attrMatch(). */
+        int html = n->ns == NS_HTML;
+        for (int i = 0; i < n->nattr; i++) {
+            const char *name = dom_attr_name_at(n, i);
+            if (name && selector_bytes_equal(name, strlen(name),
+                                     want, len, html, html && fold_names)) {
+                match = 1; break;
+            }
+        }
+    } else {
+        int vl = 0;
+        const char *v = attr_val_len(n, kind == 2 ? "class" : "id", &vl);
+        if (v && kind == 3)
+            match = selector_bytes_equal(v, (size_t)vl, want, len, quirks, quirks);
+        else if (v) {
+            for (int i = 0; i < vl;) {
+                while (i < vl && selector_space((unsigned char)v[i])) i++;
+                int start = i;
+                while (i < vl && !selector_space((unsigned char)v[i])) i++;
+                if (i > start && selector_bytes_equal(v + start, (size_t)(i - start),
+                                                      want, len, quirks, quirks)) {
+                    match = 1; break;
+                }
+            }
+        }
+    }
+    return match;
+}
+
+static struct node *selector_next(struct node *n, struct node *root)
+{
+    if (n->first_child) return n->first_child;
+    while (n != root && !n->next) n = n->parent;
+    return n == root ? NULL : n->next;
+}
+
+/* A native UNION is one preorder walk, not concatenated per-selector results.
+ * Kind 6 is the complementary AND form: every necessary literal must match;
+ * an optional true third pair member inverts that literal. The inversion is
+ * admitted only by the strict selector AST for an exact :not([attr]) fast
+ * answer, never inferred from selector text in C.
+ * It remains only a candidate filter; the complete JS matcher still decides
+ * operators, pseudo-classes and combinators.
+ * It admits necessary literals selected by the existing strict JS AST only;
+ * the complete matcher still decides every result. GitHub's two live comma
+ * queries cost 21.27 and 22.81 guest seconds in the old full-JS walk (2026-09-11
+ * diagnostic); selector_batch_test exercises the same 113-alternative shape.
+ * A first-match caller can resume AFTER a retained wrapper, so a broad query
+ * stops at one candidate and an absent query wraps none. No JS callback runs
+ * while C holds raw traversal pointers. Revalidate ancestry on each resume
+ * because the full matcher between calls may have observed a DOM mutation. */
+#define SELECTOR_FILTER_MAX 256
+JSValue js_dom_simple_query(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 7) return JS_UNDEFINED;
+    struct node *root = node_of(argv[0]);
+    int kind;
+    if (!root) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &kind, argv[1]) < 0) return JS_EXCEPTION;
+    if (kind < 0 || kind > 6) return JS_UNDEFINED;
+    struct selector_filter { int kind; const char *value; size_t len; int negated; };
+    struct selector_filter filters[SELECTOR_FILTER_MAX] = {{0}};
+    int nfilter = 1;
+    if (kind == 5 || kind == 6) {
+        JSValue length = JS_GetPropertyStr(ctx, argv[2], "length");
+        int rc = JS_ToInt32(ctx, &nfilter, length);
+        JS_FreeValue(ctx, length);
+        if (rc < 0) return JS_EXCEPTION;
+        if (nfilter <= 0 || nfilter > SELECTOR_FILTER_MAX) return JS_UNDEFINED;
+    }
+    for (int i = 0; i < nfilter; i++) {
+        JSValue pair = JS_UNDEFINED, value = JS_UNDEFINED, k = JS_UNDEFINED;
+        int bad = 0, unsupported = 0;
+        if (kind == 5 || kind == 6) {
+            pair = JS_GetPropertyUint32(ctx, argv[2], (uint32_t)i);
+            bad = JS_IsException(pair);
+            if (!bad) { k = JS_GetPropertyUint32(ctx, pair, 0); bad = JS_IsException(k); }
+            if (!bad) bad = JS_ToInt32(ctx, &filters[i].kind, k) < 0;
+            unsupported = !bad && (filters[i].kind < 0 || filters[i].kind > 4);
+            if (!bad && !unsupported) {
+                value = JS_GetPropertyUint32(ctx, pair, 1);
+                bad = JS_IsException(value);
+            }
+            if (!bad && !unsupported && kind == 6) {
+                JSValue negated = JS_GetPropertyUint32(ctx, pair, 2);
+                bad = JS_IsException(negated);
+                if (!bad) filters[i].negated = JS_ToBool(ctx, negated);
+                JS_FreeValue(ctx, negated);
+            }
+        } else {
+            filters[i].kind = kind;
+            value = JS_DupValue(ctx, argv[2]);
+        }
+        if (!bad && !unsupported) {
+            filters[i].value = JS_ToCStringLen(ctx, &filters[i].len, value);
+            bad = filters[i].value == NULL;
+        }
+        JS_FreeValue(ctx, value); JS_FreeValue(ctx, k); JS_FreeValue(ctx, pair);
+        if (bad || unsupported) {
+            for (int j = 0; j <= i; j++) JS_FreeCString(ctx, filters[j].value);
+            return bad ? JS_EXCEPTION : JS_UNDEFINED;
+        }
+    }
+    int include = JS_ToBool(ctx, argv[3]), one = JS_ToBool(ctx, argv[4]);
+    int quirks = JS_ToBool(ctx, argv[5]), fold_names = JS_ToBool(ctx, argv[6]);
+    JSValue result = one ? JS_NULL : JS_NewArray(ctx);
+    if (JS_IsException(result)) goto done;
+    struct node *start = include ? root : root->first_child;
+    if (argc > 7 && !JS_IsUndefined(argv[7])) {
+        struct node *after = node_of(argv[7]), *parent = after;
+        while (parent && parent != root) parent = parent->parent;
+        if (!after || parent != root) {
+            JS_FreeValue(ctx, result); result = JS_UNDEFINED; goto done;
+        }
+        start = selector_next(after, root);
+    }
+    uint32_t count = 0;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+    js_dom_profile_simple_queries++;
+#endif
+    for (struct node *n = start; n;) {
+        int match = 0;
+        if (node_type_of(n) == 1) {
+            match = kind == 6;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+            js_dom_profile_simple_candidates++;
+#endif
+            for (int i = 0; i < nfilter; i++) {
+                int literal = selector_literal_matches(n, filters[i].kind,
+                                                       filters[i].value,
+                                                       filters[i].len,
+                                                       quirks, fold_names);
+                if (filters[i].negated) literal = !literal;
+                if (kind == 6) {
+                    if (!literal) { match = 0; break; }
+                } else if (literal) {
+                    match = 1; break;
+                }
+            }
+        }
+        if (match) {
+            JSValue value = wrap(ctx, n);
+            if (JS_IsException(value)) { JS_FreeValue(ctx, result); result = value; break; }
+            if (one) { result = value; break; }
+            if (JS_DefinePropertyValueUint32(ctx, result, count++, value, JS_PROP_C_W_E) < 0) {
+                JS_FreeValue(ctx, result); result = JS_EXCEPTION; break;
+            }
+        }
+        n = selector_next(n, root);
+    }
+done:
+    for (int i = 0; i < nfilter; i++) JS_FreeCString(ctx, filters[i].value);
+    return result;
+}
 
 /* nodeName: the uppercased tag name for an HTML element (see tagname_value),
  * and the literal "#text" / "#comment" / "#document" / the doctype's name for
@@ -1363,6 +1837,9 @@ static JSClassDef live_list_class = { "NodeList", live_list_finalizer, NULL, NUL
 static JSValue child_array(JSContext *ctx, struct node *n, int elems_only)
 {
     if (!n) return JS_UNDEFINED;
+#ifdef JSDOM_TRAVERSAL_PROFILE
+    js_dom_profile_collection_builds++;
+#endif
 #ifdef PLATFORM_NO_LIVE_COLLECTIONS
     /* THE NEGATIVE CONTROL for the fix above -- restores the exact snapshot
      * this file shipped before 2026-08-28, byte for byte. See
@@ -1532,17 +2009,8 @@ static JSValue el_get_namespaceURI(JSContext *ctx, JSValueConst t)
  * reclaimed with the document. */
 static int attr_remove(struct node *n, const char *name)
 {
-    if (!n || n->type != N_ELEM || !name || !*name) return 0;
-    if (!dom_attr(n, name)) return 0;                    /* not present */
-    dom_set_attr(n, name, "");                           /* step 1: sync id/class */
-    for (int i = 0; i < n->nattr; i++) {
-        const char *an = dom_attr_name_at(n, i);
-        if (!an || !ieq(an, name)) continue;
-        for (int k = i + 1; k < n->nattr; k++) n->attrs[k - 1] = n->attrs[k];
-        n->nattr--;
-        return 1;
-    }
-    return 0;
+    /* dom_remove_attr owns both indexes and the single mutation record. */
+    return dom_remove_attr(n, name);
 }
 
 static JSValue el_removeAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
@@ -1569,10 +2037,7 @@ static int attr_remove_ns(struct node *n, const char *local)
     for (int i = 0; i < n->nattr; i++) {
         const char *an = dom_attr_name_at(n, i);
         if (!an || strcmp(attr_local_part(an), local)) continue;
-        dom_set_attr(n, an, "");                         /* step 1: sync id/class */
-        for (int k = i + 1; k < n->nattr; k++) n->attrs[k - 1] = n->attrs[k];
-        n->nattr--;
-        return 1;
+        return dom_remove_attr_raw(n, an);
     }
     return 0;
 }
@@ -1667,6 +2132,8 @@ static JSValue el_set_className(JSContext *ctx, JSValueConst t, JSValueConst v)
  *    Until it is, the two coincide -- which they do exactly at page load. */
 static int g_scroll_x, g_scroll_y;
 void js_dom_set_scroll(int x, int y) { g_scroll_x = x; g_scroll_y = y; }
+void js_dom_get_scroll(int *x, int *y)
+{ if (x) *x = g_scroll_x; if (y) *y = g_scroll_y; }
 
 static int in_subtree(const struct node *root, const struct node *n)
 {
@@ -2261,6 +2728,30 @@ static void style_write(struct node *n, const char *text, int level)
 static void style_set(struct node *n, const char *name, const char *value, int important)
 {
     if (!n || !name || !*name) return;
+#ifdef BROWSER_TRACE_VISIBILITY
+    /* Opt-in provenance, not a visibility override: "painted, then blank"
+     * cannot tell a layout defect from a page callback hiding its own root.
+     * Trace at the shared CSSOM producer so named/setProperty/removal agree.
+     * Bound output (128 writes/process, four caller filenames), and never print the
+     * surrounding style attribute, cookies, form values or request bodies. */
+    static unsigned traced;
+    if(g_ctx && traced<128 && (!strcmp(name,"visibility") || !strcmp(name,"display") || !strcmp(name,"opacity"))){
+        traced++;
+        const char *id=dom_attr(n,"id");
+        printf("[style-trace] node=%u tag=%.32s id=%.64s %s=%.48s important=%d\n",
+               n->serial,n->tag?n->tag:"",id?id:"",name,value?value:"(removed)",important);
+        /* JS_NewError alone produced stack=undefined in the first guest
+         * trace: QuickJS adds that property when throwing/constructing JS
+         * Error. Do not throw (or invoke a page-replaced Error) for logging. */
+        for(int level=0,shown=0;level<16&&shown<4;level++){
+            JSAtom a=JS_GetScriptOrModuleName(g_ctx,level);
+            if(a==JS_ATOM_NULL)continue;
+            const char *s=JS_AtomToCString(g_ctx,a);
+            if(s){printf("[style-trace] caller[%d]=%.256s\n",level,s);shown++;JS_FreeCString(g_ctx,s);}
+            JS_FreeAtom(g_ctx,a);
+        }
+    }
+#endif
     size_t nlen = strlen(name);
     const char *cur = dom_attr(n, "style");
     int ds = 0, de = 0;
@@ -2324,6 +2815,16 @@ static JSValue cssd_read(JSContext *ctx, struct node *n, int computed, const cha
 {
     if (!n || !name || !*name) return JS_NewString(ctx, "");
     if (computed) {
+#ifndef DOM_MATRIX_NO_COMPUTED_TRANSFORM
+        /* Correction to the old claim below: transform lives in the extra
+         * cascade's winning paint declaration, outside LibCSS's property enum.
+         * CSSOM owns layout flushing and its real percentage reference box. */
+        if (!strcmp(name, "transform") && LOGIT_HAVE(js_cssom_computed_transform)) {
+            char out[4096];
+            int len = js_cssom_computed_transform(n, out, sizeof out);
+            if (len >= 0) return JS_NewStringLen(ctx, out, (size_t)len);
+        }
+#endif
         int prop = css_prop_lookup(name, -1);
         /* An unresolvable property reads as "", the same answer a real browser
          * gives for one it does not implement. We cannot do better: what is on
@@ -2454,6 +2955,7 @@ static JSValue cssd_set_cssText(JSContext *ctx, JSValueConst t, JSValueConst v)
     struct node *n = cssd_node(t, &computed);
     if (!n || computed) return JS_UNDEFINED;
     const char *s = JS_ToCString(ctx, v);
+    if (!s) return JS_EXCEPTION;
     /* Replacing the whole block can change anything, so it takes the
      * layout-affecting tier without inspecting what is in it. */
     if (s) { style_write(n, s, INVAL_STYLE); JS_FreeCString(ctx, s); }
@@ -2659,7 +3161,21 @@ static JSValue cssd_prop_set(JSContext *ctx, JSValueConst t, JSValueConst v, int
     return JS_UNDEFINED;
 }
 
+/* The extra cascade's transform has no LibCSS property index to enumerate.
+ * Keep named and getPropertyValue access on the same producer/store. */
+static JSValue cssd_transform_get(JSContext *ctx, JSValueConst t)
+{
+    int computed = 0; struct node *n = cssd_node(t, &computed);
+    return cssd_read(ctx, n, computed, "transform");
+}
+static JSValue cssd_transform_set(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    JSValue args[2] = { JS_NewString(ctx, "transform"), JS_DupValue(ctx, v) };
+    JSValue r = cssd_setProperty(ctx, t, 2, args);
+    JS_FreeValue(ctx, args[0]); JS_FreeValue(ctx, args[1]); return r;
+}
 static const JSCFunctionListEntry cssd_proto[] = {
+    JS_CGETSET_DEF("transform", cssd_transform_get, cssd_transform_set),
     JS_CFUNC_DEF("getPropertyValue", 1, cssd_getPropertyValue),
     JS_CFUNC_DEF("getPropertyPriority", 1, cssd_getPropertyPriority),
     JS_CFUNC_DEF("setProperty", 2, cssd_setProperty),
@@ -2793,6 +3309,26 @@ static JSValue el_get_style(JSContext *ctx, JSValueConst t)
     return n ? cssd_new(ctx, n, CSSD_INLINE) : JS_NULL;
 }
 
+static JSValue el_set_style(JSContext *ctx, JSValueConst t, JSValueConst v)
+{
+    /* CSSOM PutForwards=cssText: a strict assignment used by the real Douyin
+     * page stopped its callback with "no setter for property 'style'" on
+     * 2026-09-13. Forward through the actual declaration, including a page's
+     * cssText accessor, so the existing mutation/layout path owns the write. */
+    JSValue style = el_get_style(ctx, t);
+    if (JS_IsException(style)) return style;
+    int rc = JS_SetPropertyStr(ctx, style, "cssText", JS_DupValue(ctx, v));
+    JS_FreeValue(ctx, style);
+    return rc < 0 ? JS_EXCEPTION : JS_UNDEFINED;
+}
+
+static JSValue cssd_constructor(JSContext *ctx, JSValueConst target, int argc,
+                                JSValueConst *argv)
+{
+    (void)target; (void)argc; (void)argv;
+    return JS_ThrowTypeError(ctx, "Illegal constructor");
+}
+
 /* window.getComputedStyle(el[, pseudo]).
  *
  * The pseudo-element argument is accepted and ignored: we have no ::before /
@@ -2843,17 +3379,20 @@ static void report_exc(JSContext *ctx, const char *where)
 
 int js_dom_run_jobs(JSContext *ctx)
 {
-    if (!ctx) return 0;
+    if (!ctx || js_page_cancel_requested()) return 0;
     /* The one place that is reliably reached after js_page_open has run EVERY
      * installer and before a page script can observe the result. */
     iface_bridge(ctx);
+    if (LOGIT_HAVE(js_platform_mutations_flush)) js_platform_mutations_flush(ctx);
     JSRuntime *rt = JS_GetRuntime(ctx);
     int n = 0;
     for (; n < MAX_JOBS_PER_PUMP; n++) {
         JSContext *jc = 0;
         int r = JS_ExecutePendingJob(rt, &jc);
         if (r == 0) break;                     /* queue empty */
-        if (r < 0) { report_exc(jc ? jc : ctx, "promise job"); continue; }
+        if (LOGIT_HAVE(js_platform_mutations_flush)) js_platform_mutations_flush(ctx);
+        if (r < 0) { report_exc(jc ? jc : ctx, "promise job"); }
+        if (js_page_cancel_requested()) break;
     }
     if (n >= MAX_JOBS_PER_PUMP)
         printf("[js] microtask queue did not drain in %d jobs -- giving up this turn\n",
@@ -3054,15 +3593,20 @@ enum { EPHASE_NONE = 0, EPHASE_CAPTURING = 1, EPHASE_AT_TARGET = 2, EPHASE_BUBBL
 
 struct nref { struct node *n; uint32_t serial; };
 
+struct event_path_entry { struct nref node, adjusted_target; unsigned char closed_root, host; };
+
 struct jsevent {
     char *type;
     struct nref target, current;
+    struct event_path_entry *path;
+    int path_len, path_current;
     int phase;
     unsigned char bubbles, cancelable, composed, trusted;
     unsigned char prevented, stop_prop, stop_imm, dispatching, in_passive;
     double timestamp;
     int detail;                                     /* UIEvent */
     int client_x, client_y, button, buttons;        /* MouseEvent */
+    double page_x, page_y;                         /* frozen while dispatching */
     unsigned char shift, ctrl, alt, meta;
     double delta_x, delta_y;                        /* WheelEvent */
     char *key, *code;                               /* KeyboardEvent */
@@ -3139,11 +3683,20 @@ static JSValue ev_get(JSContext *ctx, JSValueConst t, int magic)
     case EG_COMPOSED:   return JS_NewBool(ctx, e->composed);
     case EG_TIMESTAMP:  return JS_NewFloat64(ctx, e->timestamp);
     case EG_DETAIL:     return JS_NewInt32(ctx, e->detail);
-    /* pageX/pageY differ from clientX/clientY by the scroll offset. Layout hands
-     * us viewport coordinates and the page scroll lives in browser.c, so the two
-     * are reported equal rather than guessed at. */
-    case EG_CLIENTX: case EG_PAGEX: case EG_SCREENX: return JS_NewInt32(ctx, e->client_x);
-    case EG_CLIENTY: case EG_PAGEY: case EG_SCREENY: return JS_NewInt32(ctx, e->client_y);
+    /* Old claim: page and client coordinates were "equal rather than guessed
+     * at". The viewport origin is now authoritative in this TU, so no guess is
+     * needed. CSSOM View #dom-mouseevent-pagex freezes the event position while
+     * dispatching: a handler that scrolls must not move the click underneath
+     * later listeners. Outside dispatch, the getter adds the current origin. */
+    case EG_CLIENTX: case EG_SCREENX: return JS_NewInt32(ctx, e->client_x);
+    case EG_CLIENTY: case EG_SCREENY: return JS_NewInt32(ctx, e->client_y);
+#ifdef JS_DOM_NO_PAGE_SCROLL
+    case EG_PAGEX: return JS_NewInt32(ctx, e->client_x);
+    case EG_PAGEY: return JS_NewInt32(ctx, e->client_y);
+#else
+    case EG_PAGEX: return JS_NewFloat64(ctx, e->dispatching ? e->page_x : (double)e->client_x + g_scroll_x);
+    case EG_PAGEY: return JS_NewFloat64(ctx, e->dispatching ? e->page_y : (double)e->client_y + g_scroll_y);
+#endif
     case EG_BUTTON:     return JS_NewInt32(ctx, e->button);
     case EG_BUTTONS:    return JS_NewInt32(ctx, e->buttons);
     case EG_SHIFT:      return JS_NewBool(ctx, e->shift);
@@ -3184,17 +3737,31 @@ static JSValue ev_stopImmediate(JSContext *ctx, JSValueConst t, int argc, JSValu
     if (e) { e->stop_prop = 1; e->stop_imm = 1; }
     return JS_UNDEFINED;
 }
-/* composedPath(): the ancestor chain, recomputed live. Kept because feature
- * detection for it is common; it is exact for our flat (shadow-less) tree. */
+/* The old "exact for our flat (shadow-less) tree" claim was false once
+ * attachShadow landed. The dispatcher now owns the immutable path; rebuilding
+ * it here changes ancestry midway through one event when a listener reparents.
+ * Closed-root visibility is evaluated against the listener's captured entry,
+ * so even removing the root during a callback cannot reveal its internals.
+ * Slot-assignment paths and relatedTarget trimming are not implemented here. */
 static JSValue ev_composedPath(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)argc; (void)argv;
     struct jsevent *e = JS_GetOpaque(t, event_cid);
     JSValue arr = JS_NewArray(ctx);
     if (!e || JS_IsException(arr)) return arr;
-    uint32_t i = 0;
+    uint32_t out = 0;
+#ifdef JS_EVENT_PATH_NEGCTL
     for (struct node *p = nref_live(&e->target); p; p = p->parent)
-        JS_SetPropertyUint32(ctx, arr, i++, wrap(ctx, p));
+        JS_SetPropertyUint32(ctx, arr, out++, wrap(ctx, p));
+#else
+    for (int i = 0; e->dispatching && i < e->path_len; i++) {
+        int hidden = 0;
+        for (int k = i; k < e->path_len; k++)
+            if (e->path[k].closed_root && e->path_current > k) { hidden = 1; break; }
+        struct node *n = nref_live(&e->path[i].node);
+        if (!hidden && n) JS_SetPropertyUint32(ctx, arr, out++, wrap(ctx, n));
+    }
+#endif
     return arr;
 }
 
@@ -3379,6 +3946,24 @@ static struct node *event_target_of(struct node *n)
     return n;
 }
 
+int js_dom_event_has_inline_handler(struct node *target, const char *type)
+{
+    if (!type || !*type) return 0;
+    target = event_target_of(target);
+    char attr[40];
+    size_t tl = strlen(type);
+    if (tl + 3 > sizeof attr) return 1; /* cannot prove the lazy-handler name */
+    attr[0] = 'o'; attr[1] = 'n';
+    memcpy(attr + 2, type, tl + 1);
+    for (struct node *n = target; n; n = n->parent) {
+        if (n->type == N_ELEM) {
+            const char *body = dom_attr(n, attr);
+            if (body && *body) return 1;
+        }
+    }
+    return 0;
+}
+
 /* An inline on<type>="..." content attribute, compiled on first use.
  *
  * The spec calls this "the event handler content attribute", and it is compiled
@@ -3417,8 +4002,8 @@ static void ensure_attr_handler(JSContext *ctx, struct node *n, const char *type
 }
 
 /* Run the listeners registered on one node. `want_capture` is 1 for the capture
- * pass, 0 for the bubble pass and -1 at the target, where the DOM runs BOTH
- * kinds in registration order. */
+ * pass and 0 for the bubble pass. At-target capture is a separate
+ * invocation before at-target bubble, regardless of registration order. */
 static void invoke_at(JSContext *ctx, struct jsevent *ev, JSValueConst evobj,
                       struct nref *nr, int want_capture)
 {
@@ -3457,6 +4042,10 @@ static void invoke_at(JSContext *ctx, struct jsevent *ev, JSValueConst evobj,
         if (JS_IsException(r)) report_exc(ctx, "event listener");
         JS_FreeValue(ctx, r);
         JS_FreeValue(ctx, this_val);
+        if (js_page_cancel_requested()) {
+            ev->stop_imm = ev->stop_prop = 1;
+            break;
+        }
         /* A handler may have resolved a promise; run its reactions before the
          * next handler so ordering matches a real browser's microtask
          * checkpoint per callback. */
@@ -3472,43 +4061,65 @@ static int dispatch_event(JSContext *ctx, struct node *target, JSValueConst evob
 {
     nlist_prune(ctx);
     ev->target = nref_of(target);
+    ev->page_x = (double)ev->client_x + g_scroll_x;
+    ev->page_y = (double)ev->client_y + g_scroll_y;
     ev->dispatching = 1;
     ev->stop_prop = ev->stop_imm = 0;
 
-    /* The propagation path, captured up front. Node identity is (pointer,
-     * serial): a handler is allowed to delete an ancestor mid-dispatch, and
-     * when it does the remaining nodes on the path simply stop matching and are
-     * skipped rather than being followed into recycled memory. */
+    /* Each entry freezes both node identity and retargeting. Seven of eight
+     * ordinary event-path checks failed before this change (reparent, dispatch
+     * lifetime, target order, cancellation and open/closed shadow boundaries).
+     * Serial guards still distinguish a recycled arena slot from a live node;
+     * this change does not claim to diagnose the old guest event GPF. */
     int cap = 16, np = 0;
-    struct nref *path = malloc((size_t)cap * sizeof *path);
-    if (!path) return 1;
+    struct event_path_entry *path = malloc((size_t)cap * sizeof *path);
+    if (!path) { ev->dispatching = 0; return 0; }
+    struct node *adjusted = target;
+    int host = 0;
     for (struct node *p = target; p; p = p->parent) {
         if (np == cap) {
             int ncap = cap * 2;
-            struct nref *q = realloc(path, (size_t)ncap * sizeof *path);
-            if (!q) break;
+            struct event_path_entry *q = realloc(path, (size_t)ncap * sizeof *path);
+            if (!q) { free(path); ev->dispatching = 0; return 0; }
             path = q; cap = ncap;
         }
-        path[np++] = nref_of(p);
+        int shadow = dom_is_shadow_root(p);
+        path[np].node = nref_of(p);
+        path[np].adjusted_target = nref_of(adjusted);
+        path[np].closed_root = shadow && p->shadow_mode == SHADOW_MODE_CLOSED;
+        path[np].host = host;
+        np++; host = 0;
+        if (shadow) {
+            if (!ev->composed) break;
+            adjusted = p->parent; host = 1;
+        }
     }
-
-    ev->phase = EPHASE_CAPTURING;
-    for (int i = np - 1; i >= 1 && !ev->stop_prop; i--)
-        invoke_at(ctx, ev, evobj, &path[i], 1);
-    if (!ev->stop_prop) {
+    ev->path = path; ev->path_len = np;
+    for (int i = np - 1; i >= 1 && !ev->stop_prop; i--) {
+        ev->path_current = i; ev->target = path[i].adjusted_target;
+        ev->phase = path[i].host ? EPHASE_AT_TARGET : EPHASE_CAPTURING;
+        invoke_at(ctx, ev, evobj, &path[i].node, 1);
+    }
+    if (np && !ev->stop_prop) {
+        ev->path_current = 0; ev->target = path[0].adjusted_target;
         ev->phase = EPHASE_AT_TARGET;
-        invoke_at(ctx, ev, evobj, &path[0], -1);
+        invoke_at(ctx, ev, evobj, &path[0].node, 1);
+        if (!ev->stop_imm) invoke_at(ctx, ev, evobj, &path[0].node, 0);
     }
-    if (ev->bubbles) {
-        ev->phase = EPHASE_BUBBLING;
-        for (int i = 1; i < np && !ev->stop_prop; i++)
-            invoke_at(ctx, ev, evobj, &path[i], 0);
+    for (int i = 1; i < np && !ev->stop_prop; i++) {
+        if (!ev->bubbles && !path[i].host) continue;
+        ev->path_current = i; ev->target = path[i].adjusted_target;
+        ev->phase = path[i].host ? EPHASE_AT_TARGET : EPHASE_BUBBLING;
+        invoke_at(ctx, ev, evobj, &path[i].node, 0);
     }
-    free(path);
-
+    /* Retain the outer adjusted target, never a closed-tree internal node. */
+    ev->target = np ? path[np-1].adjusted_target : nref_of(NULL);
+    if (np && dom_is_shadow_root(nref_live(&path[np-1].node))) ev->target = nref_of(NULL);
+    free(path); ev->path = NULL; ev->path_len = 0; ev->path_current = -1;
     ev->phase = EPHASE_NONE;
     ev->current.n = 0; ev->current.serial = 0;
     ev->dispatching = 0;
+    ev->stop_prop = ev->stop_imm = 0;
     return !ev->prevented;
 }
 
@@ -3559,6 +4170,25 @@ int  js_dom_has_activation(void) { return g_last_activation_ms != 0; }
 /* Nesting depth of js_dom_dispatch() itself -- see the bracket at the bottom
  * of this function for why it exists and what it guards. */
 static int g_dispatch_depth;
+
+/* Element focus survives a switch to another application or the address bar.
+ * It therefore cannot answer Document.hasFocus. Only the embedder knows the
+ * WM keyboard window and its own chrome/page input owner. Keep the query
+ * synchronous so an event queued before a switch cannot make it stale. */
+static int (*g_focus_query)(void);
+static int g_focus_reported;
+void js_dom_set_focus_query(int (*query)(void)) { g_focus_query = query; }
+int js_dom_has_focus(void)
+{ return g_ctx && g_root && g_focus_query && g_focus_query() > 0; }
+int js_dom_sync_focus(void)
+{
+    int focused = js_dom_has_focus();
+    if (!g_ctx || focused == g_focus_reported) return 0;
+    g_focus_reported = focused; /* listener queries see the new state */
+    struct js_event_init init = {0};
+    js_dom_dispatch(g_root, focused ? "focus" : "blur", &init);
+    return 1;
+}
 
 int js_dom_dispatch(struct node *target, const char *type,
                     const struct js_event_init *init)
@@ -3697,7 +4327,7 @@ int js_dom_dispatch(struct node *target, const char *type,
 #endif
     int ok = dispatch_event(ctx, target, evobj, ev);
     JS_FreeValue(ctx, evobj);
-    js_dom_run_jobs(ctx);
+    if (!js_page_cancel_requested()) js_dom_run_jobs(ctx);
 #ifndef JS_DOM_NO_SLICE_BRACKET
     if (--g_dispatch_depth == 0) js_page_slice_end();
 #endif
@@ -3755,7 +4385,7 @@ static JSValue target_dispatch(JSContext *ctx, struct node *n, int argc, JSValue
      * flags a previous dispatch left behind (the DOM's "initialised flag"
      * dance, minus the deprecated initEvent path). */
     ev->trusted = 0;
-    ev->prevented = 0;
+    /* Cancellation survives dispatch; only initEvent clears it. */
     int ok = dispatch_event(ctx, n, argv[0], ev);
     js_dom_run_jobs(ctx);
     return JS_NewBool(ctx, ok);
@@ -3860,6 +4490,8 @@ void js_dom_bind_event_target(JSContext *ctx, JSValueConst obj)
  * pointer straight back to JS. */
 void js_dom_cleanup(JSContext *ctx)
 {
+    g_image_sink=0;
+    wrapper_cleanup(ctx);
     nlist_free_all(ctx);
     JS_FreeValue(ctx, g_proto_event); g_proto_event = JS_UNDEFINED;
     JS_FreeValue(ctx, g_proto_ui);    g_proto_ui    = JS_UNDEFINED;
@@ -3947,7 +4579,8 @@ static const JSCFunctionListEntry nondoctype_child_funcs[] = {
  * reaches into it, and none of THOSE files needed to change for this to be
  * safe: see dom.h's "shadow trees" section), on host->parent (so ancestor
  * climbs from inside the shadow tree reach the host and beyond, matching the
- * spec's shadow-including tree order for getElementById/connectedness).
+ * spec's shadow-including connectedness). The old text included getElementById
+ * in that claim; ID queries instead stop at the shadow tree boundary.
  *
  * THE BOUNDARY THIS BUYS FOR FREE. CLAUDE.md's brief for this feature is
  * explicit that the hard part is not the tree, it is selector matching: "a
@@ -3978,7 +4611,14 @@ static const JSCFunctionListEntry nondoctype_child_funcs[] = {
  * these block the corpus operations (create/update/select/swap/remove rows);
  * a component that depends on :host styling will run and simply render
  * unstyled, which is the same "invisible, not wrong" contract as the rest of
- * this feature. */
+ * this feature.
+ *
+ * CORRECTION (2026-09-10), beside the old "needs nothing new here" claim:
+ * a real component fallback also evaluates `value instanceof CSSStyleSheet`.
+ * An absent interface throws before appendChild; it does not safely choose
+ * the fallback. js_cssom.c now brands its existing DOM-owned sheets and
+ * publishes that interface, while constructed sheets/adoption remain absent.
+ * This does NOT close the shadow cascade/layout/slot gaps described above. */
 static JSValue el_get_shadowRoot(JSContext *ctx, JSValueConst t)
 {
     struct node *n = node_of(t);
@@ -4122,7 +4762,11 @@ static const JSCFunctionListEntry element_proto_funcs[] = {
     JS_CGETSET_DEF("id", el_get_id, el_set_id),
     JS_CGETSET_DEF("classList", el_get_classlist, NULL),
     JS_CGETSET_DEF("className", el_get_className, el_set_className),
+#ifdef CSSD_FORWARD_LEGACY
     JS_CGETSET_DEF("style", el_get_style, NULL),
+#else
+    JS_CGETSET_DEF("style", el_get_style, el_set_style),
+#endif
     JS_CGETSET_DEF("namespaceURI", el_get_namespaceURI, NULL),
     JS_CFUNC_DEF("getAttribute", 1, el_getattr),
     JS_CFUNC_DEF("setAttribute", 2, el_setattr),
@@ -4145,7 +4789,11 @@ static const JSCFunctionListEntry parentnode_funcs[] = {
     JS_CGETSET_DEF("lastElementChild", el_get_lastElemChild, NULL),
 };
 
+#ifdef JSDOM_NO_WRAPPER_GC_MARK
 static JSClassDef elem_class = { "Element", elem_finalizer };
+#else
+static JSClassDef elem_class = { "Element", elem_finalizer, elem_gc_mark };
+#endif
 
 /* ---- console.log/warn/error ----
  * Installed only when the caller hasn't provided its own `console` (browser.c's
@@ -4509,6 +5157,7 @@ void js_dom_init(JSContext *ctx, struct node *root)
 {
     g_ctx = ctx;
     g_root = root;
+    g_focus_reported = js_dom_has_focus();
     js_dom_clear_dirty();               /* scope roots from the previous page are dead */
     g_proto_event = g_proto_ui = g_proto_mouse = g_proto_key = JS_UNDEFINED;
     g_document = JS_UNDEFINED;          /* the previous page's, if any, died with its runtime */
@@ -4553,15 +5202,31 @@ void js_dom_init(JSContext *ctx, struct node *root)
         JS_SetClassProto(ctx, live_list_cid, lp);
     }
 
+    JSValue cssd_proto_obj = JS_UNDEFINED;
     JS_NewClassID(&cssd_cid);
     if (JS_NewClass(rt, cssd_cid, &cssd_class) >= 0) {
         JSValue sp = JS_NewObject(ctx);
         JS_SetPropertyFunctionList(ctx, sp, cssd_proto, countof(cssd_proto));
         install_css_props(ctx, sp);
+        cssd_proto_obj = JS_DupValue(ctx, sp);
         JS_SetClassProto(ctx, cssd_cid, sp);
     }
 
     JSValue g = JS_GetGlobalObject(ctx);
+#ifndef CSSD_INTERFACE_LEGACY
+    /* Expose the prototype the existing inline/computed declarations actually
+     * use. Anthropic's real page accessed this interface in a timer and threw
+     * ReferenceError before continuing (2026-09-13). This does not implement
+     * CSSOM's separate snapshot rule declarations or constructible blocks. */
+    if (JS_IsObject(cssd_proto_obj)) {
+        JSValue ctor = JS_NewCFunction2(ctx, cssd_constructor,
+            "CSSStyleDeclaration", 0, JS_CFUNC_constructor, 0);
+        JS_SetConstructor(ctx, ctor, cssd_proto_obj);
+        iface_set_tostringtag(ctx, cssd_proto_obj, "CSSStyleDeclaration");
+        iface_define_global(ctx, g, "CSSStyleDeclaration", ctor);
+    }
+#endif
+    JS_FreeValue(ctx, cssd_proto_obj);
     JS_SetPropertyStr(ctx, g, "getComputedStyle",
                       JS_NewCFunction(ctx, js_getComputedStyle, "getComputedStyle", 2));
 

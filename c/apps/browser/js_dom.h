@@ -17,6 +17,8 @@ void js_dom_init(JSContext *ctx, struct node *root);
 /* 1 if JS mutated the DOM since the last clear (caller should re-layout). */
 int  js_dom_dirty(void);
 void js_dom_clear_dirty(void);
+/* Advances for every attached invalidation, including an already dirty scope. */
+unsigned long long js_dom_mutation_generation(void);
 
 /* ---- invalidation ----
  *
@@ -65,9 +67,18 @@ int  js_dom_inval_roots(void);
  * must be re-styled too -- an `a + b` / `a ~ b` rule can key off a class the
  * mutation just changed. */
 struct node *js_dom_inval_root(int i, int *siblings);
+/* A native control's live state changed without changing its HTML attributes.
+ * Schedule its repaint; detached controls wait for the insertion invalidation. */
+void js_dom_control_changed(struct node *n);
+/* Layer membership requires layout even when computed CSS compares equal. */
+void js_dom_top_layer_changed(struct node *n);
 
 /* Number of registered event listeners across the whole document. */
 int  js_dom_listener_count(void);
+
+/* Whether the parsed event path carries an inline on<type> content attribute.
+ * This is a native DOM query: it never compiles or dispatches the handler. */
+int  js_dom_event_has_inline_handler(struct node *target, const char *type);
 
 /* ---- viewport ----
  *
@@ -82,6 +93,8 @@ int  js_dom_listener_count(void);
  * are reported in document coordinates; the two coincide at scroll 0, which is
  * where every page starts. js_dom_init resets it to 0 for the new page. */
 void js_dom_set_scroll(int x, int y);
+/* CSSOM and the embedder read the SAME viewport origin. Nullable outputs. */
+void js_dom_get_scroll(int *x, int *y);
 
 /* ---- what js_reflect.c reaches into this file for ----
  *
@@ -112,6 +125,14 @@ int  js_dom_run_jobs(JSContext *ctx);
 /* The node that events bubble to (the N_DOCUMENT root), or NULL. `window` and
  * `document` listeners are registered here. */
 struct node *js_dom_root(void);
+
+/* Actual platform/chrome keyboard ownership, independent of activeElement.
+ * An absent/unknown query means no focus. The embedder sets this before page
+ * creation; sync at event boundaries emits transitions through the existing
+ * window event-target binding. Querying hasFocus itself never dispatches JS. */
+void js_dom_set_focus_query(int (*query)(void));
+int  js_dom_has_focus(void);
+int  js_dom_sync_focus(void);
 
 /* TRANSIENT ACTIVATION -- "did the user do something in the last five
  * seconds", the gate a capability that acts outside the page must ask before
@@ -161,6 +182,9 @@ void js_dom_set_note(void (*fn)(const char *));
  * (host DOM tests with no page runtime). See
  * docs/superpowers/specs/2026-08-16-inserted-script-execution.md. */
 void js_dom_set_script_sink(void (*fn)(struct node *));
+/* Source mutation discovery includes detached Image elements. No IO or JS may
+ * run from this sink; the embedder drains it after the current script unwinds. */
+void js_dom_set_image_sink(void (*fn)(struct node *));
 
 /* Give an object (in practice `window`) the EventTarget surface + on* handler
  * properties, bound to the document root. Call after js_dom_init. */
@@ -192,5 +216,16 @@ struct js_event_init {
  * script must never lose its links. */
 int js_dom_dispatch(struct node *target, const char *type,
                     const struct js_event_init *init);
+
+void js_dom_text_changed(struct node *n);
+JSValue js_dom_wrap_node(JSContext *, struct node *);
+/* Private selector installer argument, never a property on globalThis.
+ * Originally only validated single-simple ASTs entered this callback; the
+ * same literals now also prefilter complex queries before full JS matching. */
+JSValue js_dom_simple_query(JSContext *, JSValueConst, int, JSValueConst *);
+
+/* Live Element-wrapper handles, including externally retained detached ones.
+ * Diagnostic counter for ownership/GC gates; does not create a JS root. */
+unsigned js_dom_wrapper_count(void);
 
 #endif /* LOGIT_JS_DOM_H */

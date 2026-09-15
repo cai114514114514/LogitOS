@@ -35,6 +35,7 @@
  */
 
 #include "dom.h"
+#include "css.h"
 
 /* ------------------------------------------------------------- the kinds -- */
 /* Ordered so the FC_IS_* tests below are range checks. Do not reorder without
@@ -129,6 +130,29 @@ static inline int fc_kind(const struct node *n)
 /* The control's border thickness, in points, when the page has not styled it. */
 #define FC_BORDER 1
 
+/* Content geometry is pure computed CSS, shared by measurement, painting and
+ * mouse placement. Percentage padding was resolved by layout against its
+ * containing block; never resolve it again against the control's own width. */
+#define FC_COMPUTED_CONTENT 1
+struct fc_content_edges { int left, top, right, bottom; };
+static inline struct fc_content_edges fc_content_insets(const struct node *n)
+{
+    struct fc_content_edges e = { FC_BORDER + FC_PAD_X, FC_BORDER + FC_PAD_Y,
+                                  FC_BORDER + FC_PAD_X, FC_BORDER + FC_PAD_Y };
+#ifndef FC_CONTENT_BOX_LEGACY
+    const struct cstyle *st = n ? n->style : 0;
+    if (st) {
+        e.left = st->pl + st->border_w[3]; e.top = st->pt + st->border_w[0];
+        e.right = st->pr + st->border_w[1]; e.bottom = st->pb + st->border_w[2];
+    }
+#endif
+    return e;
+}
+static inline int fc_content_width(int outer, struct fc_content_edges e)
+{ int w = outer - e.left - e.right; return w > 0 ? w : 0; }
+static inline int fc_content_height(int outer, struct fc_content_edges e)
+{ int h = outer - e.top - e.bottom; return h > 0 ? h : 0; }
+
 /* The control's intrinsic border-box size at font size `font_px`, before CSS
  * width/height override it, is computed in layout.c (fc_metrics there): it
  * needs text_measure() for the <select>'s widest option and a button's label,
@@ -161,9 +185,14 @@ int  fc_checked(struct node *n);
 void fc_set_checked(struct node *n, int on);
 int  fc_default_checked(struct node *n);
 
-/* <select>: index of the selected <option>, or -1. */
+/* <select>: index of the selected <option>, or -1. Setting any index outside
+ * the option list clears selection; UI navigation clamps before calling. */
 int  fc_selected_index(struct node *n);
 void fc_set_selected_index(struct node *n, int i);
+/* Option-local state also exists before the option is inserted into a select.
+ * Selecting within a single select uses fc_set_selected_index to clear peers. */
+int  fc_option_selected(struct node *n);
+void fc_set_option_selected(struct node *n, int on);
 /* Is the <select>'s dropdown showing? The list itself is drawn by browser.c
  * (it has to float above everything the display list contains, and the display
  * list has no z-order above itself), so forms.c owns only the flag. */
@@ -181,6 +210,10 @@ int  fc_option_label(struct node *opt, char *buf, int max);
 /* The text caret / selection, in BYTES into the value. */
 void fc_selection(struct node *n, int *start, int *end);
 void fc_set_selection(struct node *n, int start, int end);
+/* Still byte offsets. direction: -1 backward, 0 none, +1 forward. The anchor
+ * must move with direction; storing only a JS label breaks Shift+Arrow. */
+void fc_set_selection_directed(struct node *n, int start, int end, int direction);
+int fc_selection_direction(struct node *n);
 
 /* Is this control disabled (own attribute or an ancestor <fieldset disabled>)? */
 int  fc_disabled(struct node *n);
@@ -244,6 +277,50 @@ int  fc_method_post(struct node *form);
 const char *fc_action(struct node *form);
 
 /* ------------------------------------------------------------- painting -- */
+/* Native drawing truncates at 1023 bytes while native measurement refuses
+ * >1024. Keep BOTH consumers on these UTF-8 boundaries: measuring the whole
+ * value and only splitting paint would also disagree at rounded run advances.
+ * 256 bytes bounds each hit-test prefix measurement; short text stays one run.
+ * This helper is inline so the painter's no-forms weak-link mode stays usable. */
+static inline int fc_text_run_next(const char *s, int len, int offset)
+{
+    if (!s || offset >= len) return len;
+#ifdef BROWSER_LONG_TEXT_RAW_RUNS
+    /* Negative control: restore the one unbounded syscall which measures as
+     * zero above 1024 bytes and whose matching draw silently stops at 1023. */
+    return len;
+#else
+    int end = len - offset > 256 ? offset + 256 : len;
+    if (end < len) {
+        while (end > offset && ((unsigned char)s[end] & 0xc0) == 0x80) end--;
+        /* Invalid input must still make progress; valid UTF-8 backs up at most
+         * three bytes. Do not turn a malformed continuation run into a hang. */
+        if (end == offset) end = offset + 256;
+    }
+    return end;
+#endif
+}
+typedef int (*fc_text_measure_fn)(const char *, int, int, int);
+/* The width of exactly the native runs fc_text_run_next describes.  Layout,
+ * paint advances, form carets and ordinary/contenteditable hit testing call
+ * this instead of independently rediscovering the kernel's byte ceiling. */
+static inline int fc_text_measure_runs(const char *s, int len, int font_px,
+                                       int face, fc_text_measure_fn measure)
+{
+    int width = 0;
+    if (!s || len <= 0 || !measure) return 0;
+    for (int off = 0; off < len;) {
+        int end = fc_text_run_next(s, len, off);
+        int part = measure(s + off, end - off, font_px, face);
+        if (part < 0) return part;
+        if (part > 0 && width > 2147483647 - part) return 2147483647;
+        width += part;
+        off = end;
+    }
+    return width;
+}
+int fc_text_measure(const char *s, int len, int font_px, int mono);
+
 /* Everything browser_paint.c needs to draw one control, in one call, so that
  * the painter does no text measuring and no state lookup of its own. Pixel
  * offsets are relative to the control's CONTENT origin (border box inset by
@@ -254,6 +331,9 @@ const char *fc_action(struct node *form);
  * Putting it here keeps the painter to the five primitives it is documented to
  * use, and keeps the weak-link fallback honest -- without forms.c the painter
  * draws an empty control instead of a control with a wrong caret. */
+/* Correction to the old "no text measuring" contract above: the painter now
+ * advances between bounded native runs with fc_text_measure. Caret/selection
+ * geometry and state lookup still belong here; run boundaries are shared. */
 struct fpaint {
     int kind;
     const char *text; int len;       /* what to draw inside (masked, for a password) */
@@ -264,7 +344,7 @@ struct fpaint {
     int sel_x0, sel_x1;              /* selection highlight; equal = none */
     int scroll_x;                    /* px the content is scrolled left by */
     int text_w;                      /* measured width of `text` */
-    int pad_x, pad_y;                /* content inset inside the border box */
+    struct fc_content_edges insets;  /* resolved padding and border on all four sides */
     int line_h;                      /* textarea: line advance */
     int nline;                       /* textarea: lines in `text` */
     int caret_line;                  /* textarea: which line the caret is on */

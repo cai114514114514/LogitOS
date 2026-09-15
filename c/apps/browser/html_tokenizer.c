@@ -575,6 +575,60 @@ static void emit_cp(struct html_tokenizer *t, uint32_t cp)
     cb_putcp(&t->chars, cp);
 }
 
+/* Most bytes inside script, style, textarea and plaintext are ordinary text.
+ * Sending those bytes through emit_ch() paid a capacity check, a memcpy and a
+ * terminator store for every byte.  Scan to the next state-changing byte and,
+ * when no transformed characters precede it, return a slice of the input just
+ * like the DATA-state fast path.  The slow state machine still owns CR
+ * normalisation, NUL replacement, character references and every '<' edge.
+ *
+ * Returning R_NEED at a non-final buffer boundary preserves streaming rule 3:
+ * the caller grows/replaces the input and the token is replayed from its start.
+ * A pending transformed prefix (for example an entity in RCDATA) is appended
+ * in one copy so adjacent character data remains one logical run.
+ *
+ * HTML_RAWTEXT_BYTEWISE is the watched performance control.  It restores the
+ * former byte-at-a-time path without changing any parser output. */
+#ifndef HTML_RAWTEXT_BYTEWISE
+enum {
+    RUN_STOP_AMP = 1u << 0,
+    RUN_STOP_LT  = 1u << 1,
+    RUN_STOP_NUL = 1u << 2,
+    RUN_STOP_CR  = 1u << 3,
+    RUN_STOP_RBR = 1u << 4
+};
+
+static int emit_input_run(struct html_tokenizer *t, struct html_token *out,
+                          unsigned stops)
+{
+    size_t s = t->pos, p = s;
+    while (p < t->len) {
+        unsigned char ch = (unsigned char)t->buf[p];
+        if ((ch == '&'  && (stops & RUN_STOP_AMP)) ||
+            (ch == '<'  && (stops & RUN_STOP_LT))  ||
+            (ch == 0    && (stops & RUN_STOP_NUL)) ||
+            (ch == '\r' && (stops & RUN_STOP_CR))  ||
+            (ch == ']'  && (stops & RUN_STOP_RBR))) break;
+        p++;
+    }
+    if (p == s) return 0;
+    if (p == t->len && !t->eof) return R_NEED;
+    if (t->chars.len) {
+        emit_str(t, t->buf + s, (uint32_t)(p - s));
+        t->pos = p;
+        return 0;
+    }
+    t->pos = p;
+    memset(out, 0, sizeof *out);
+    out->type = TOK_CHARS;
+    out->data = t->buf + s;
+    out->datalen = (uint32_t)(p - s);
+    out->src_start = (uint32_t)s;
+    out->src_end = (uint32_t)p;
+    return 1;
+}
+#endif
+
 /* An end tag is "appropriate" only when it matches the last start tag we
  * emitted.  Without this, "</b>" inside <title> would close the title. */
 static int appropriate(struct html_tokenizer *t)
@@ -627,9 +681,9 @@ static int run(struct html_tokenizer *t, struct html_token *out)
 
         /* ================================================== data-ish ==== */
         case HTML_STATE_DATA: {
-            /* rule 2: the zero-copy fast path.  Plain text with no '&', '<',
-             * NUL or CR is the overwhelming majority of every real document,
-             * and it is the only thing we hand back as a slice of the input. */
+            /* rule 2: the original zero-copy fast path.  Plain text with no
+             * '&', '<', NUL or CR is the overwhelming majority of ordinary
+             * element content; the raw-text states below use the same rule. */
             size_t s = t->pos, p = s;
             while (p < t->len) {
                 unsigned char ch = (unsigned char)t->buf[p];
@@ -663,6 +717,14 @@ static int run(struct html_tokenizer *t, struct html_token *out)
         }
 
         case HTML_STATE_RCDATA:
+#ifndef HTML_RAWTEXT_BYTEWISE
+            {
+                int r = emit_input_run(t, out, RUN_STOP_AMP | RUN_STOP_LT |
+                                               RUN_STOP_NUL | RUN_STOP_CR);
+                if (r) return r;
+                if (t->pos != m) continue;
+            }
+#endif
             c = nextc(t);
             if (c == C_NEED) return R_NEED;
             if (c == C_EOF) return emit_eof(t, out);
@@ -674,6 +736,14 @@ static int run(struct html_tokenizer *t, struct html_token *out)
             continue;
 
         case HTML_STATE_RAWTEXT:
+#ifndef HTML_RAWTEXT_BYTEWISE
+            {
+                int r = emit_input_run(t, out, RUN_STOP_LT | RUN_STOP_NUL |
+                                               RUN_STOP_CR);
+                if (r) return r;
+                if (t->pos != m) continue;
+            }
+#endif
             c = nextc(t);
             if (c == C_NEED) return R_NEED;
             if (c == C_EOF) return emit_eof(t, out);
@@ -683,6 +753,14 @@ static int run(struct html_tokenizer *t, struct html_token *out)
             continue;
 
         case HTML_STATE_SCRIPT_DATA:
+#ifndef HTML_RAWTEXT_BYTEWISE
+            {
+                int r = emit_input_run(t, out, RUN_STOP_LT | RUN_STOP_NUL |
+                                               RUN_STOP_CR);
+                if (r) return r;
+                if (t->pos != m) continue;
+            }
+#endif
             c = nextc(t);
             if (c == C_NEED) return R_NEED;
             if (c == C_EOF) return emit_eof(t, out);
@@ -692,6 +770,13 @@ static int run(struct html_tokenizer *t, struct html_token *out)
             continue;
 
         case HTML_STATE_PLAINTEXT:
+#ifndef HTML_RAWTEXT_BYTEWISE
+            {
+                int r = emit_input_run(t, out, RUN_STOP_NUL | RUN_STOP_CR);
+                if (r) return r;
+                if (t->pos != m) continue;
+            }
+#endif
             c = nextc(t);
             if (c == C_NEED) return R_NEED;
             if (c == C_EOF) return emit_eof(t, out);
@@ -1440,6 +1525,13 @@ static int run(struct html_tokenizer *t, struct html_token *out)
 
         /* ================================================== CDATA ======= */
         case HTML_STATE_CDATA_SECTION:
+#ifndef HTML_RAWTEXT_BYTEWISE
+            {
+                int r = emit_input_run(t, out, RUN_STOP_CR | RUN_STOP_RBR);
+                if (r) return r;
+                if (t->pos != m) continue;
+            }
+#endif
             c = nextc(t);
             if (c == C_NEED) return R_NEED;
             if (c == C_EOF) return emit_eof(t, out);

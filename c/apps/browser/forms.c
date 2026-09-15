@@ -45,11 +45,14 @@ struct fctl {
     unsigned char dirty_checked;    /* the spec's dirty checkedness flag */
     unsigned char checked;
     unsigned char dirty_sel;        /* <select>: selectedness has been set */
+    unsigned char dirty_option;     /* <option>: current state overrides markup */
+    unsigned char option_selected;
     unsigned char open;             /* <select>: the dropdown is showing */
-    int  sel_index;                 /* <select> */
+    int  sel_index;                 /* <select>: last explicit index; -1 means none */
 
     int  sel0, sel1;                /* text selection / caret, BYTES */
     int  anchor;                    /* selection anchor for Shift+Arrow */
+    int  selection_direction;       /* -1 backward, 0 none, +1 forward */
     int  scroll_x;                  /* px the field is scrolled */
 
     char *fval; int fvlen;          /* value when focus arrived -> `change` */
@@ -57,6 +60,8 @@ struct fctl {
 
 static struct fctl *g_buck[FC_NBUCKET];
 static int g_count;
+static char *g_mask;
+static int g_mask_cap;
 
 static unsigned hash_ptr(const void *p)
 {
@@ -83,6 +88,7 @@ void fc_reset(void)
         g_buck[i] = 0;
     }
     g_count = 0;
+    free(g_mask); g_mask = 0; g_mask_cap = 0;
 }
 
 /* Find (create) the entry for `n`. A hit whose serial disagrees is a RECYCLED
@@ -294,24 +300,59 @@ int fc_option_value(struct node *opt, char *buf, int max)
     return fc_option_label(opt, buf, max);
 }
 
+int fc_option_selected(struct node *n)
+{
+    struct fctl *c = ent(n, 0);
+    return c && c->dirty_option ? c->option_selected : dom_attr(n, "selected") != 0;
+}
+
+void fc_set_option_selected(struct node *n, int on)
+{
+    struct fctl *c = ent(n, 1);
+    if (c) { c->dirty_option = 1; c->option_selected = !!on; }
+}
+
 int fc_selected_index(struct node *n)
 {
     if (!n || fc_kind(n) != FC_SELECT) return -1;
     struct fctl *c = ent(n, 1);
     int cnt = fc_option_count(n);
-    if (c && c->dirty_sel) {
-        if (c->sel_index >= cnt) return cnt > 0 ? cnt - 1 : -1;
-        return c->sel_index;
-    }
+    /* The old control remembered only an index. Once the JS facade uses this
+     * state too, moving an option must not silently select its new neighbour.
+     * Selectedness belongs to the option, keyed by node+serial in ent(), so
+     * it survives reordering and an option configured before insertion. */
+    int selected = -1, selected_count = 0;
+    int multiple = dom_attr(n, "multiple") != 0;
     for (int i = 0; i < cnt; i++) {
         struct node *o = fc_option_at(n, i);
-        if (o && dom_attr(o, "selected")) return i;
+        if (o && fc_option_selected(o)) {
+            if (multiple) return i;
+            selected = i; selected_count++;
+        }
     }
+    if (selected >= 0) {
+        /* Removing `multiple` reduces the selected set to its last option.
+         * Persist that reduction: switching it back on must not resurrect
+         * the options the single-select state already deselected. */
+        if (selected_count > 1)
+            for (int i = 0; i < cnt; i++)
+                if (i != selected && fc_option_selected(fc_option_at(n, i)))
+                    fc_set_option_selected(fc_option_at(n, i), 0);
+        return selected;
+    }
+    if (c && c->dirty_sel && c->sel_index < 0) return -1;
     /* A single-line <select> with no explicit selection shows its first option.
      * A `multiple` or sized list shows none, which is why this is not just
      * "return 0". */
-    if (dom_attr(n, "multiple") || dom_attr(n, "size")) return -1;
-    return cnt > 0 ? 0 : -1;
+    const char *size = dom_attr(n, "size");
+    if (dom_attr(n, "multiple") || (size && atoi(size) > 1)) return -1;
+    for (int i = 0; i < cnt; i++) {
+        struct node *o = fc_option_at(n, i);
+        if (dom_attr(o, "disabled")) continue;
+        if (o->parent && tag_is(o->parent->tag, "optgroup") && dom_attr(o->parent, "disabled")) continue;
+        return i;
+    }
+    return -1;
 }
 
 void fc_set_selected_index(struct node *n, int i)
@@ -319,10 +360,19 @@ void fc_set_selected_index(struct node *n, int i)
     struct fctl *c = ent(n, 1);
     if (!c) return;
     int cnt = fc_option_count(n);
+#ifdef SELECT_STATE_CLAMP_INDEX
     if (i < -1) i = -1;
     if (i >= cnt) i = cnt - 1;
+#else
+    /* The old setter clamped an oversized index to the last option. That is
+     * a keyboard-navigation policy, already applied by browser.c's callers,
+     * not selectedIndex's contract: an index outside the list clears it. Keep
+     * this rule here so script and native entry points cannot disagree. */
+    if (i < 0 || i >= cnt) i = -1;
+#endif
     c->sel_index = i;
     c->dirty_sel = 1;
+    for (int j = 0; j < cnt; j++) fc_set_option_selected(fc_option_at(n, j), j == i);
 }
 
 /* ============================================================ the value === */
@@ -354,6 +404,12 @@ const char *fc_value(struct node *n, int *len)
 {
     int k = fc_kind(n);
     if (k == FC_NONE) { if (len) *len = 0; return ""; }
+#ifndef FORM_FILES_MARKUP_VALUE
+    /* No selected-file broker exists yet (see js_forms.c). An HTML value or
+     * prior text-mode edit is not a selected file; all native readers must
+     * agree with input.files/value instead of exposing a fabricated path. */
+    if (k == FC_FILE) { if (len) *len = 0; return ""; }
+#endif
     struct fctl *c = ent(n, 1);
     if (!c) { return fc_default_value(n, len); }
     if (!c->dirty_value || k == FC_SELECT) {
@@ -371,6 +427,9 @@ const char *fc_value(struct node *n, int *len)
 
 int fc_set_value(struct node *n, const char *s, int len)
 {
+#ifndef FORM_FILES_MARKUP_VALUE
+    if (fc_kind(n) == FC_FILE && (len < 0 ? slen(s) : len) != 0) return 0;
+#endif
     struct fctl *c = ent(n, 1);
     if (!c) return 0;
     if (fc_kind(n) == FC_SELECT) {
@@ -394,6 +453,7 @@ int fc_set_value(struct node *n, const char *s, int len)
      * selection. Pages depend on it: an input-mask handler rewrites the value
      * on every keystroke and expects to keep typing at the end. */
     c->sel0 = c->sel1 = c->anchor = c->vlen;
+    c->selection_direction = 0;
     c->scroll_x = 0;
     return 1;
 }
@@ -405,7 +465,15 @@ void fc_reset_control(struct node *n)
     c->dirty_value = 0;
     c->dirty_checked = 0;
     c->dirty_sel = 0;
+    if (fc_kind(n) == FC_SELECT) {
+        int cnt = fc_option_count(n);
+        for (int i = 0; i < cnt; i++) {
+            struct fctl *o = ent(fc_option_at(n, i), 0);
+            if (o) o->dirty_option = 0;
+        }
+    }
     c->sel0 = c->sel1 = c->anchor = 0;
+    c->selection_direction = 0;
     c->scroll_x = 0;
     int dl = 0;
     const char *d = fc_default_value(n, &dl);
@@ -499,6 +567,15 @@ void fc_selection(struct node *n, int *start, int *end)
 }
 
 void fc_set_selection(struct node *n, int start, int end)
+{ fc_set_selection_directed(n, start, end, 0); }
+
+int fc_selection_direction(struct node *n)
+{
+    struct fctl *c = ent(n, 1);
+    return c ? c->selection_direction : 0;
+}
+
+void fc_set_selection_directed(struct node *n, int start, int end, int direction)
 {
     struct fctl *c = ent(n, 1);
     if (!c) return;
@@ -510,6 +587,8 @@ void fc_set_selection(struct node *n, int start, int end)
     if (end > vl) end = vl;
     if (end < start) end = start;
     c->sel0 = start; c->sel1 = end; c->anchor = start;
+    c->selection_direction = direction < 0 ? -1 : direction > 0 ? 1 : 0;
+    if (direction < 0) c->anchor = end;
 }
 
 /* ========================================================== text editing === */
@@ -632,6 +711,7 @@ static int splice(struct node *n, int a, int b, const char *s, int len,
     if (!ok) return 0;
     c->dirty_value = 1;
     c->sel0 = c->sel1 = c->anchor = a + len;
+    c->selection_direction = 0;
     fc_dispatch_input(n, "input", itype, data, 1, 0);
     return 1;
 }
@@ -691,8 +771,10 @@ static int move_to(struct fctl *c, int pos, int extend)
         if (c->sel0 == c->sel1) c->anchor = c->sel0;
         if (pos < c->anchor) { c->sel0 = pos; c->sel1 = c->anchor; }
         else                 { c->sel0 = c->anchor; c->sel1 = pos; }
+        c->selection_direction = pos < c->anchor ? -1 : pos > c->anchor ? 1 : 0;
     } else {
         c->sel0 = c->sel1 = c->anchor = pos;
+        c->selection_direction = 0;
     }
     return c->sel0 != o0 || c->sel1 != o1;
 }
@@ -710,6 +792,9 @@ int fc_edit_move(struct node *n, int dir, int word, int extend)
      * caret model gets wrong by default. */
     int cur = (dir < 0) ? c->sel0 : c->sel1;
     if (!extend && c->sel0 != c->sel1) return move_to(c, cur, 0);
+    /* The old direction-selected end grows a backward selection on Shift+
+     * Right. Extend from the moving end, opposite the stored anchor. */
+    if (extend) cur = c->selection_direction < 0 ? c->sel0 : c->sel1;
     int pos = (c->sel0 == c->sel1) ? c->sel0 : cur;
     if (dir < 0) {
         pos = step_left(v, pos);
@@ -746,7 +831,7 @@ int fc_edit_home(struct node *n, int extend)
     int vl = 0;
     const char *v = fc_value(n, &vl);
     int a, b;
-    line_bounds(v, vl, c->sel0, &a, &b);
+    line_bounds(v, vl, c->selection_direction < 0 ? c->sel0 : c->sel1, &a, &b);
     return move_to(c, a, extend);
 }
 
@@ -758,7 +843,7 @@ int fc_edit_end(struct node *n, int extend)
     int vl = 0;
     const char *v = fc_value(n, &vl);
     int a, b;
-    line_bounds(v, vl, c->sel1, &a, &b);
+    line_bounds(v, vl, c->selection_direction < 0 ? c->sel0 : c->sel1, &a, &b);
     return move_to(c, b, extend);
 }
 
@@ -770,6 +855,7 @@ int fc_edit_select_all(struct node *n)
     int vl = 0;
     fc_value(n, &vl);
     c->sel0 = 0; c->sel1 = vl; c->anchor = 0;
+    c->selection_direction = 0;
     return 1;
 }
 
@@ -954,15 +1040,34 @@ const char *fc_action(struct node *form)
 
 /* ============================================================== painting === */
 
-/* Password masking. U+2022 BULLET, the character every UA uses; three bytes of
- * UTF-8 each, so a 200-character password needs 600 bytes and anything longer
- * is truncated for display only -- the VALUE is untouched. */
-static char g_mask[3 * 256 + 1];
+int fc_text_measure(const char *s, int len, int font_px, int mono)
+{
+#ifdef FC_CARET_OLD_GEOMETRY
+    return text_measure(s, len, font_px, mono);
+#else
+    return fc_text_measure_runs(s, len, font_px, mono, text_measure);
+#endif
+}
+
+/* Password masking uses U+2022 BULLET. The old fixed 256-character mask
+ * deliberately truncated only DISPLAY, but that also pinned every later
+ * caret position to character 256 and made later characters unclickable.
+ * Reuse a growable buffer, freed with the control table on navigation. On OOM
+ * leave display absent; never fall back to exposing the cleartext password. */
 
 static const char *mask_of(const char *s, int len, int *out_len)
 {
     int chars = char_count(s, len);
+#ifdef FC_CARET_OLD_GEOMETRY
     if (chars > 256) chars = 256;
+#endif
+    if (chars > 0x2aaaaaaa) { *out_len = 0; return ""; }
+    int need = chars * 3 + 1;
+    if (need > g_mask_cap) {
+        char *next = (char *)realloc(g_mask, (size_t)need);
+        if (!next) { *out_len = 0; return ""; }
+        g_mask = next; g_mask_cap = need;
+    }
     int o = 0;
     for (int i = 0; i < chars; i++) {
         g_mask[o++] = (char)0xE2; g_mask[o++] = (char)0x80; g_mask[o++] = (char)0xA2;
@@ -979,7 +1084,7 @@ static int caret_px(const char *text, int off, int font_px, int mono, int *line_
     int line = 0, ls = 0;
     for (int i = 0; i < off; i++) if (text[i] == '\n') { line++; ls = i + 1; }
     if (line_out) *line_out = line;
-    return text_measure(text + ls, off - ls, font_px, mono);
+    return fc_text_measure(text + ls, off - ls, font_px, mono);
 }
 
 int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct fpaint *out)
@@ -989,8 +1094,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
     memset(out, 0, sizeof *out);
     out->kind = k;
     out->caret_x = -1;
-    out->pad_x = FC_PAD_X;
-    out->pad_y = FC_PAD_Y;
+    out->insets = fc_content_insets(n);
     out->disabled = fc_disabled(n);
     out->readonly = fc_readonly(n);
     out->focused = (focus_current() == n);
@@ -1009,6 +1113,12 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
         if (tag_is(n->tag, "button")) return 1;
         static char lbl[256];
         const char *v = dom_attr(n, "value");
+#ifndef FORM_FILES_MARKUP_VALUE
+        /* The first guest files fixture passed all 23 JS checks yet painted
+         * value="not-a-selected-path" as the chooser label. File inputs are
+         * not submit buttons: markup cannot name a chosen file or its label. */
+        if (k == FC_FILE) v = NULL;
+#endif
         if (!v) v = (k == FC_SUBMIT) ? "Submit" :
                     (k == FC_RESET)  ? "Reset"  :
                     (k == FC_FILE)   ? "Choose File" : "";
@@ -1017,7 +1127,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
         for (int i = 0; i < l; i++) lbl[i] = v[i];
         lbl[l] = 0;
         out->text = lbl; out->len = l;
-        out->text_w = text_measure(lbl, l, font_px, mono);
+        out->text_w = fc_text_measure(lbl, l, font_px, mono);
         return 1;
     }
 
@@ -1027,7 +1137,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
         int l = opt ? fc_option_label(opt, lbl, (int)sizeof lbl) : 0;
         if (!opt) lbl[0] = 0;
         out->text = lbl; out->len = l;
-        out->text_w = text_measure(lbl, l, font_px, mono);
+        out->text_w = fc_text_measure(lbl, l, font_px, mono);
         return 1;
     }
 
@@ -1046,7 +1156,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
         if (ph && ph[0]) {
             out->text = ph; out->len = slen(ph);
             out->placeholder = 1;
-            out->text_w = text_measure(ph, out->len, font_px, mono);
+            out->text_w = fc_text_measure(ph, out->len, font_px, mono);
             /* The caret still belongs at the start; a placeholder does not
              * displace it. */
             if (out->focused) out->caret_x = 0;
@@ -1054,7 +1164,7 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
         }
     }
     out->text = shown; out->len = shown_len;
-    out->text_w = text_measure(shown, shown_len, font_px, mono);
+    out->text_w = fc_text_measure(shown, shown_len, font_px, mono);
 
     int nl = 1;
     for (int i = 0; i < shown_len; i++) if (shown[i] == '\n') nl++;
@@ -1073,13 +1183,13 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
             if (s1 > shown_len) s1 = shown_len;
         }
         int line = 0;
-        int cx = caret_px(shown, s1, font_px, mono, &line);
+        int cx = caret_px(shown, c->selection_direction < 0 ? s0 : s1, font_px, mono, &line);
         out->caret_line = line;
         if (out->focused) out->caret_x = cx;
         if (s0 != s1) {
             int l0 = 0;
             out->sel_x0 = caret_px(shown, s0, font_px, mono, &l0);
-            out->sel_x1 = cx;
+            out->sel_x1 = caret_px(shown, s1, font_px, mono, 0);
             /* A selection spanning lines is drawn only on the caret's line;
              * multi-line selection painting is not built. */
             if (l0 != line) out->sel_x0 = 0;
@@ -1091,6 +1201,12 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
             if (cx - c->scroll_x > content_w - 2) c->scroll_x = cx - content_w + 2;
             if (cx < c->scroll_x) c->scroll_x = cx;
             int maxs = out->text_w - content_w;
+#ifndef FC_CARET_OLD_GEOMETRY
+            /* The old clamp above discarded the +2 caret space we just
+             * reserved: at End, x-scroll became exactly content_w, outside
+             * the painter's exclusive clip. Reserve it in the maximum too. */
+            maxs += 2;
+#endif
             if (maxs < 0) maxs = 0;
             if (c->scroll_x > maxs) c->scroll_x = maxs;
             if (c->scroll_x < 0) c->scroll_x = 0;
@@ -1100,27 +1216,46 @@ int fc_paint_state(struct node *n, int font_px, int mono, int content_w, struct 
     return 1;
 }
 
-/* The byte offset in the value nearest to `px` from the content origin. Used to
- * place the caret from a click. Linear because a form field is short and a
- * binary search over a measurement that is not monotone in bytes (it is
- * monotone in characters) is a bug waiting to happen. */
+/* The byte offset in the value nearest to `px` from the content origin.
+ * The old "a form field is short" assumption measured every whole prefix;
+ * after byte 1024 the syscall returned zero, and before that it was quadratic.
+ * Cache completed paint runs and measure only the current <=256-byte prefix.
+ * Password positions must use bullets too, or clicking leaks secret widths
+ * and places the caret at a different glyph than the one under the pointer. */
 int fc_offset_at_px(struct node *n, int px, int font_px, int mono)
 {
     int k = fc_kind(n);
     if (!FC_IS_TEXTUAL(k)) return 0;
     int vl = 0;
     const char *v = fc_value(n, &vl);
+    const char *shown = v;
+    int shown_len = vl;
+#ifndef FC_CARET_OLD_GEOMETRY
+    if (k == FC_PASSWORD) shown = mask_of(v, vl, &shown_len);
+#endif
     struct fctl *c = ent(n, 1);
     int x0 = px + (c ? c->scroll_x : 0);
     if (x0 <= 0) return 0;
     int best = 0, bestd = -1;
-    int i = 0;
+    int i = 0, shown_off = 0, run_start = 0, run_width = 0;
+    int run_end = fc_text_run_next(shown, shown_len, 0);
     for (;;) {
+#ifdef FC_CARET_OLD_GEOMETRY
         int w = text_measure(v, i, font_px, mono);
+#else
+        while (shown_off > run_end && run_start < shown_len) {
+            run_width += text_measure(shown + run_start, run_end - run_start, font_px, mono);
+            run_start = run_end;
+            run_end = fc_text_run_next(shown, shown_len, run_start);
+        }
+        int w = run_width + text_measure(shown + run_start, shown_off - run_start, font_px, mono);
+#endif
         int d = w > x0 ? w - x0 : x0 - w;
         if (bestd < 0 || d < bestd) { bestd = d; best = i; }
         if (i >= vl) break;
         i = step_right(v, vl, i);
+        shown_off = k == FC_PASSWORD ? shown_off + 3 : i;
+        if (shown_off > shown_len) shown_off = shown_len;
     }
     return best;
 }
@@ -1383,22 +1518,12 @@ static int ce_text_splice(struct node *t, int a, int b, const char *s, int len)
     if (b > tl) b = tl;
     if (b < a) b = a;
     if (len < 0) len = slen(s);
-    int nl = tl - (b - a) + len;
-    if (nl == 0) {
-        t->textlen = 0;
-        if (t->text && t->textcap > 0) t->text[0] = 0;
-        return 1;
-    }
-    char *nb = (char *)malloc((size_t)nl + 1);
-    if (!nb) return 0;
-    for (int i = 0; i < a; i++) nb[i] = t->text[i];
-    for (int i = 0; i < len; i++) nb[a + i] = s[i];
-    for (int i = b; i < tl; i++) nb[a + len + (i - b)] = t->text[i];
-    nb[nl] = 0;
-    t->textlen = 0;
-    int ok = dom_text_append(t, nb, nl);
-    free(nb);
-    return ok;
+    /* Correction: truncate+append lost the edit location. The DOM primitive
+     * now records a UTF-16 splice while preserving this byte editor's input.
+     * Do not round-trip through a JS string: forms_test ce_typ feeds UTF-8 one
+     * byte at a time, and decoding each incomplete prefix replaced the bytes
+     * with U+FFFD (two UTF-8 editing regressions in the 195-check host gate). */
+    return dom_text_splice_bytes(t, (unsigned)a, (unsigned)b, s, len);
 }
 
 /* ------------------------------------------------------- normalisation -- */

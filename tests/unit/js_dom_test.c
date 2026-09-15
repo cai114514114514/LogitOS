@@ -308,6 +308,7 @@ static void live_page_tests(void)
      * handle is what makes that detectable, and the bucket is dropped instead. */
     {
         int before = js_dom_listener_count();
+        struct node *doomed_node = dom_get_element_by_id(root->doc, "doom");
         CK(prun("window.doomed = document.getElementById('doom');"
                 "doomed.addEventListener('gone', function(){ throw 'must never run'; });"
                 "document.getElementById('doomkid')"
@@ -315,6 +316,16 @@ static void live_page_tests(void)
            "two listeners attached to a doomed subtree");
         CK(js_dom_listener_count() == before + 2, "both listeners counted");
         prun("document.body.removeChild(doomed);");
+        /* This test formerly treated removeChild as destruction. It detaches:
+         * scripts may retain and reinsert the node, including its listeners.
+         * Test that contract first, then explicitly recycle the C subtree to
+         * exercise stale-wrapper protection without freeing the live document. */
+        CK(prun("if (doomed.textContent !== 'd' || doomed.isConnected || "
+                "document.getElementById('doom') !== null) throw 'bad detach';"),
+           "removeChild preserves the detached wrapper and excludes document lookup");
+        CK(js_dom_listener_count() == before + 2,
+           "removeChild preserves listeners for later reinsertion");
+        dom_destroy_subtree(doomed_node);
         CK(prun("if (doomed.textContent !== undefined)"
                 "  throw 'stale wrapper still resolves: ' + doomed.textContent;"),
            "a wrapper into a destroyed subtree goes stale instead of dangling");

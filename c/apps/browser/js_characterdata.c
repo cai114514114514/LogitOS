@@ -46,9 +46,52 @@
  */
 #include "quickjs.h"
 #include "js_characterdata.h"
+#include "dom.h"
+#include "js_dom.h"
 #include <string.h>
 
 int printf(const char *, ...);
+
+/* Correction (2026-09-09), preserving the old rationale above: a whole
+ * `.data = prefix + replacement + suffix` write cannot tell live Range where
+ * the splice occurred. Mutations now use the native UTF-16 operation. The
+ * platform observer consumes DOM_MUT_TEXT, including native keyboard edits,
+ * rather than relying on the old setter wrapper. */
+static JSValue cd_native_replace(JSContext *ctx, JSValueConst self, int argc, JSValueConst *argv)
+{
+    (void)self;
+    if (argc < 4) return JS_ThrowTypeError(ctx, "replaceData requires node, offset, count and string");
+    struct node *n = js_dom_node_from(argv[0]);
+    uint32_t offset, count;
+    if (!n || (n->type != N_TEXT && n->type != N_COMMENT)) return JS_ThrowTypeError(ctx, "Not CharacterData");
+    if (JS_ToUint32(ctx, &offset, argv[1]) || JS_ToUint32(ctx, &count, argv[2])) return JS_EXCEPTION;
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[3]);
+    if (!s) return JS_EXCEPTION;
+    if (offset > dom_text_length(n)) {
+        JS_FreeCString(ctx, s);
+        return js_dom_throw_dom(ctx, "IndexSizeError", "CharacterData offset exceeds length");
+    }
+    int ok = len <= 0x7fffffff && dom_text_replace(n, offset, count, s, (int)len);
+    JS_FreeCString(ctx, s);
+    if (!ok) return JS_ThrowOutOfMemory(ctx);
+    js_dom_text_changed(n);
+    return JS_UNDEFINED;
+}
+static JSValue cd_native_split(JSContext *ctx, JSValueConst self, int argc, JSValueConst *argv)
+{
+    (void)self;
+    if (argc < 2) return JS_ThrowTypeError(ctx, "splitText requires node and offset");
+    struct node *n = js_dom_node_from(argv[0]);
+    uint32_t offset;
+    if (!n || n->type != N_TEXT) return JS_ThrowTypeError(ctx, "Not a Text node");
+    if (JS_ToUint32(ctx, &offset, argv[1])) return JS_EXCEPTION;
+    if (offset > dom_text_length(n)) return js_dom_throw_dom(ctx, "IndexSizeError", "Text offset exceeds length");
+    struct node *tail = dom_text_split(n, offset);
+    if (!tail) return JS_ThrowOutOfMemory(ctx);
+    js_dom_text_changed(n);
+    return js_dom_node_value(ctx, tail);
+}
 
 static const char *CHARACTERDATA_PRELUDE =
 "(function () {\n"
@@ -111,7 +154,7 @@ static const char *CHARACTERDATA_PRELUDE =
 "  offset = ulong(offset);\n"
 "  if (offset > s.length) domThrow('IndexSizeError',\n"
 "    \"insertData: offset (\" + offset + \") is greater than the node's length (\" + s.length + \").\");\n"
-"  self.data = s.slice(0, offset) + String(data) + s.slice(offset);\n"
+"  G.__cdReplace(self, offset, 0, String(data));\n"
 "});\n"
 
 /* deleteData(offset, count) -- count is clamped to what remains, not an error:
@@ -126,7 +169,7 @@ static const char *CHARACTERDATA_PRELUDE =
 "    \"deleteData: offset (\" + offset + \") is greater than the node's length (\" + s.length + \").\");\n"
 "  var end = offset + count;\n"
 "  if (end > s.length) end = s.length;\n"
-"  self.data = s.slice(0, offset) + s.slice(end);\n"
+"  G.__cdReplace(self, offset, end - offset, '');\n"
 "});\n"
 
 /* replaceData(offset, count, data) -- the same clamp on count, and the
@@ -141,7 +184,7 @@ static const char *CHARACTERDATA_PRELUDE =
 "    \"replaceData: offset (\" + offset + \") is greater than the node's length (\" + s.length + \").\");\n"
 "  var end = offset + count;\n"
 "  if (end > s.length) end = s.length;\n"
-"  self.data = s.slice(0, offset) + String(data) + s.slice(end);\n"
+"  G.__cdReplace(self, offset, end - offset, String(data));\n"
 "});\n"
 
 /* Text.splitText(offset) -- DOM sec 4.10. Read the tail BEFORE truncating the
@@ -164,24 +207,23 @@ static const char *CHARACTERDATA_PRELUDE =
 "  offset = ulong(offset);\n"
 "  if (offset > s.length) domThrow('IndexSizeError',\n"
 "    \"splitText: offset (\" + offset + \") is greater than the node's length (\" + s.length + \").\");\n"
-"  var newData = s.slice(offset);\n"
-"  var od = self.ownerDocument;\n"
-"  if (!od || typeof od.createTextNode !== 'function')\n"
-"    throw new TypeError('splitText: no owner document to create the new node in');\n"
-"  var newNode = od.createTextNode(newData);\n"
-"  var parent = self.parentNode;\n"
-"  var ref = self.nextSibling;\n"
-"  if (parent) parent.insertBefore(newNode, ref);\n"
-"  self.data = s.slice(0, offset);\n"
-"  return newNode;\n"
+"  return G.__cdSplit(self, offset);\n"
 "});\n"
 
+/* The sibling methods used byte offsets. Keep the full family on the same
+ * UTF-16 contract; no new setter call means no duplicate observer record. */
+"def(CDP, 'appendData', function(data){var self=cdOf(this);G.__cdReplace(self,self.data.length,0,String(data));});\n"
+"def(CDP, 'substringData', function(offset,count){var s=cdOf(this).data;offset=ulong(offset);count=ulong(count);if(offset>s.length)domThrow('IndexSizeError','Offset exceeds length');return s.slice(offset,offset+count);});\n"
 "G.__logit_characterdata = 1;\n"
 "})\n";
 
 void js_characterdata_install(JSContext *ctx)
 {
     if (!ctx) return;
+    JSValue g = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, g, "__cdReplace", JS_NewCFunction(ctx, cd_native_replace, "__cdReplace", 4));
+    JS_SetPropertyStr(ctx, g, "__cdSplit", JS_NewCFunction(ctx, cd_native_split, "__cdSplit", 2));
+    JS_FreeValue(ctx, g);
     JSValue fn = JS_Eval(ctx, CHARACTERDATA_PRELUDE, strlen(CHARACTERDATA_PRELUDE),
                          "<characterdata>", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(fn)) {
