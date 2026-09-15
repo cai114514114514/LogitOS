@@ -724,7 +724,16 @@ static int get_class_atom(REParseState *s, CharRange *cr,
             if (ret >= 0) {
                 c = ret;
             } else {
-                if (ret == -2 && *p != '\0' && strchr("^$\\.*+?()[]{}|/", *p)) {
+                if (ret == -2 && *p != '\0' && (strchr("^$\\.*+?()[]{}|/", *p)
+#ifndef LRE_CLASS_HYPHEN_LEGACY
+                    /* ECMA-262 ClassEscape[+UnicodeMode] includes '-'. A
+                     * 3,854,316-byte Qwen editor module failed to compile on
+                     * its [a-z...\\-...\\p{L}] /uy literal (2026-09-13).
+                     * Accept it INSIDE a class only: /\\-/u remains invalid.
+                     * This does not relax arbitrary Unicode identity escapes. */
+                    || (inclass && *p == '-')
+#endif
+                    )) {
                     /* always valid to escape these characters */
                     goto normal_char;
                 } else if (s->is_utf16) {
@@ -1506,18 +1515,20 @@ static int re_parse_term(REParseState *s, BOOL is_backward_dir)
                         goto done;
                     }
                 }
-                
-                if (dbuf_error(&s->byte_code))
-                    goto out_of_memory;
-                /* the spec tells that if there is no advance when
-                   running the atom after the first quant_min times,
-                   then there is no match. We remove this test when we
-                   are sure the atom always advances the position. */
-                add_zero_advance_check = re_need_check_advance(s->byte_code.buf + last_atom_start,
-                                                               s->byte_code.size - last_atom_start);
-            } else {
-                add_zero_advance_check = FALSE;
             }
+            if (dbuf_error(&s->byte_code))
+                goto out_of_memory;
+            /* RepeatMatcher rejects an optional repetition that consumes
+               nothing, for both greedy and lazy quantifiers. The previous
+               lazy path omitted this guard; the real Qwen page remained in
+               this VM past the 240 s observation window (2026-09-13).
+               Elide it only when the atom is proven to advance. */
+            add_zero_advance_check = re_need_check_advance(s->byte_code.buf + last_atom_start,
+                                                           s->byte_code.size - last_atom_start);
+#ifdef LRE_LAZY_PROGRESS_LEGACY
+            if (!greedy)
+                add_zero_advance_check = FALSE;
+#endif
             
             {
                 int len, pos;
@@ -1969,6 +1980,7 @@ typedef struct {
     size_t state_size;
     uint8_t *state_stack;
     size_t state_stack_size;
+    unsigned interrupt_budget;
     size_t state_stack_len;
 } REExecContext;
 
@@ -2026,6 +2038,18 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
 
     for(;;) {
         //        printf("top=%p: pc=%d\n", th_list.top, (int)(pc - (bc_buf + RE_HEADER_LEN)));
+#ifndef LRE_UNINTERRUPTIBLE_LEGACY
+        /* Qwen's live startup remained in this native VM past the 240 s
+         * observation budget (guest RIP samples, 2026-09-13). JS bytecode
+         * polls cannot interrupt a native regexp. Charge bounded VM work to
+         * the SAME embedder watchdog, including nested quantifier calls;
+         * cancellation is an exception, never a fabricated no-match result. */
+        if (unlikely(--s->interrupt_budget == 0)) {
+            s->interrupt_budget = 16384;
+            if (lre_check_timeout(s->opaque))
+                return LRE_RET_INTERRUPTED;
+        }
+#endif
         opcode = *pc++;
         switch(opcode) {
         case REOP_match:
@@ -2388,7 +2412,7 @@ static intptr_t lre_exec_backtrack(REExecContext *s, uint8_t **capture,
                 for(;;) {
                     res = lre_exec_backtrack(s, capture, stack, stack_len,
                                              pc1, cptr, TRUE);
-                    if (res == -1)
+                    if (res == -1 || res == LRE_RET_INTERRUPTED)
                         return res;
                     if (!res)
                         break;
@@ -2441,6 +2465,7 @@ int lre_exec(uint8_t **capture,
     if (s->cbuf_type == 1 && s->is_utf16)
         s->cbuf_type = 2;
     s->opaque = opaque;
+    s->interrupt_budget = 16384;
 
     s->state_size = sizeof(REExecState) +
         s->capture_count * sizeof(capture[0]) * 2 +
@@ -2481,6 +2506,8 @@ const char *lre_get_groupnames(const uint8_t *bc_buf)
 }
 
 #ifdef TEST
+
+BOOL lre_check_timeout(void *opaque) { (void)opaque; return FALSE; }
 
 BOOL lre_check_stack_overflow(void *opaque, size_t alloca_size)
 {

@@ -497,6 +497,8 @@ uint8_t css_computed_table_layout(
 uint8_t css_computed_unicode_bidi(
 		const css_computed_style *style);
 
+uint8_t css_computed_pointer_events(const css_computed_style *style);
+
 uint8_t css_computed_visibility(
 		const css_computed_style *style);
 

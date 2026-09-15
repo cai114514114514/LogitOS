@@ -1,4 +1,4 @@
-/* c/lib/audio/aac.c -- from-scratch MPEG-2/4 AAC Low Complexity decoder.
+/* c/lib/audio/aac.c -- AAC-LC core and HE-AAC v1 / SBR decoder.
  * See aac.h for what is and is not implemented, and for why the bar for this
  * format is a conformance tolerance rather than a bit pattern.
  *
@@ -32,6 +32,7 @@
 #include "abits.h"
 #include "amath.h"
 #include "afft.h"
+#include "aac_sbr.h"
 #include "aac_tables.h"
 
 /* --- constants ----------------------------------------------------------- */
@@ -128,22 +129,27 @@ struct aacdec {
     int have_config;
     int sfi;                            /* sampling frequency index */
     int rate;
+    int output_rate;
     int channels;                       /* channels of the last decoded frame */
     int chancfg;
     int had_sbr;
+    int explicit_sbr;
+    int sbr_type;
     int had_pns;
 
     uint32_t rng;                       /* PNS */
 
     amdct *mdct_long;
     amdct *mdct_short;
+    aac_sbr_ctx *sbr;
 
     chanstate ch[AAC_MAX_CHANNELS];
     icsinfo ics[AAC_MAX_CHANNELS];
     double spec[AAC_MAX_CHANNELS][AAC_FRAME_LEN];
     int32_t quant[AAC_FRAME_LEN];
 
-    float pcm[AAC_MAX_CHANNELS * AAC_FRAME_LEN];
+    float pcm[AAC_MAX_CHANNELS * AAC_MAX_SAMPLES];
+    float core_pcm[2 * AAC_FRAME_LEN];
 
     /* ms_used for the channel pair currently being decoded */
     uint8_t ms_used[MAX_GROUPS][MAX_SFB];
@@ -972,7 +978,7 @@ static int skip_dse(abits *b)
     return b->error ? AUDIO_ERR_CORRUPT : AUDIO_OK;
 }
 
-static int skip_fil(aacdec *d, abits *b)
+static int decode_fil(aacdec *d, abits *b, int parent_type)
 {
     int count = (int)ab_u(b, 4);
     if (count == 15) {
@@ -985,10 +991,26 @@ static int skip_fil(aacdec *d, abits *b)
     if (end > b->len * 8) { b->error = 1; return AUDIO_ERR_CORRUPT; }
 
     int type = (int)ab_u(b, 4);
-    /* EXT_SBR_DATA = 13, EXT_SBR_DATA_CRC = 14. Skipping the payload decodes
-     * the core, which is the right samples at half the intended rate -- so it
-     * is recorded and reported rather than passed off as a full decode. */
-    if (type == 13 || type == 14) d->had_sbr = 1;
+    if (type == 13 || type == 14) {       /* EXT_SBR_DATA[_CRC] */
+        if (parent_type != ID_SCE && parent_type != ID_CPE && parent_type != ID_LFE)
+            return AUDIO_ERR_CORRUPT;
+        int channels = parent_type == ID_CPE ? 2 : 1;
+        if (!d->sbr) {
+            if (d->rate <= 0 || d->rate > 48000) return AUDIO_ERR_UNSUPPORTED;
+            d->output_rate = d->rate * 2;
+            d->sbr = aac_sbr_open(d->rate, d->output_rate, channels);
+            if (!d->sbr) return AUDIO_ERR_OOM;
+        }
+        /* b is positioned just after extension_type, which is exactly the
+         * entry point the SBR syntax owns. The count still includes that
+         * nibble; changing it to a rounded byte count shifts the CRC/header
+         * flags and produces music-shaped garbage rather than a clean error. */
+        if (aac_sbr_parse(d->sbr, b->data, b->len * 8, ab_pos(b), count,
+                          type == 14, parent_type) < 0)
+            return AUDIO_ERR_CORRUPT;
+        d->had_sbr = 1;
+        d->sbr_type = parent_type;
+    }
 
     ab_seek(b, end);
     return b->error ? AUDIO_ERR_CORRUPT : AUDIO_OK;
@@ -1061,6 +1083,7 @@ static int parse_pce(aacdec *d, abits *b, int *sfi, int *nch)
 static int decode_block(aacdec *d, abits *b, int *nch_out)
 {
     int nch = 0;
+    int parent_type = -1;
     d->nelem = 0;
     memset(d->slot_type, 0, sizeof(d->slot_type));
 
@@ -1083,6 +1106,7 @@ static int decode_block(aacdec *d, abits *b, int *nch_out)
             tns_decode(d, ic, d->spec[slot]);
             d->slot_type[slot] = (uint8_t)id;
             if (slot + 1 > nch) nch = slot + 1;
+            parent_type = id;
         } else if (id == ID_CPE) {
             if (nch + 2 > AAC_MAX_CHANNELS) return AUDIO_ERR_UNSUPPORTED;
             int cpetag = (int)ab_u(b, 4);
@@ -1137,6 +1161,7 @@ static int decode_block(aacdec *d, abits *b, int *nch_out)
             d->slot_type[cslot] = ID_CPE;
             d->slot_type[cslot + 1] = 0xFF;    /* second half of a pair */
             if (cslot + 2 > nch) nch = cslot + 2;
+            parent_type = ID_CPE;
         } else if (id == ID_DSE) {
             int e = skip_dse(b);
             if (e != AUDIO_OK) return e;
@@ -1150,7 +1175,7 @@ static int decode_block(aacdec *d, abits *b, int *nch_out)
                 d->have_config = 1;
             }
         } else if (id == ID_FIL) {
-            int e = skip_fil(d, b);
+            int e = decode_fil(d, b, parent_type);
             if (e != AUDIO_OK) return e;
         } else {
             /* CCE: coupling changes the output of other elements, so silently
@@ -1205,19 +1230,39 @@ aacdec *aac_open_asc(const uint8_t *asc, long len, int *err)
     ab_init(&b, asc, len);
     int aot = (int)ab_u(&b, 5);
     if (aot == 31) aot = 32 + (int)ab_u(&b, 6);
-    int sfi = (int)ab_u(&b, 4);
-    if (sfi == 15) {
+    int core_sfi = (int)ab_u(&b, 4);
+    if (core_sfi == 15) {
         ab_u(&b, 24);
-        sfi = -1;
+        core_sfi = -1;
     }
     int chancfg = (int)ab_u(&b, 4);
 
-    /* Explicit SBR/PS signalling. Decoding the core and calling it a decode
-     * would be the right samples at half the rate, which sounds nearly right
-     * and is wrong; refusing says so. */
-    if (aot == 5 || aot == 29) { if (err) *err = AUDIO_ERR_UNSUPPORTED; return NULL; }
+    int output_sfi = core_sfi;
+    int explicit_sbr = 0;
+    if (aot == 5) {
+        /* For explicit hierarchical signalling the FIRST rate belongs to the
+         * LC core and the rate after channelConfiguration is the SBR output.
+         * Bilibili's 2b118800 is therefore 24 kHz core / 48 kHz output / AOT
+         * 2, not the reverse. Parsing those two indices through the ordinary
+         * LC path is a timing bug: it returns 2048 samples stamped 24 kHz. */
+        output_sfi = (int)ab_u(&b, 4);
+        if (output_sfi == 15) { ab_u(&b, 24); output_sfi = -1; }
+        aot = (int)ab_u(&b, 5);
+        if (aot == 31) aot = 32 + (int)ab_u(&b, 6);
+        explicit_sbr = 1;
+    } else if (aot == 29) {
+        if (err) *err = AUDIO_ERR_UNSUPPORTED;
+        return NULL;
+    }
     if (aot != 2) { if (err) *err = AUDIO_ERR_UNSUPPORTED; return NULL; }
-    if (sfi < 0 || sfi >= 13) { if (err) *err = AUDIO_ERR_UNSUPPORTED; return NULL; }
+    if (core_sfi < 0 || core_sfi >= 13 || output_sfi < 0 || output_sfi >= 13) {
+        if (err) *err = AUDIO_ERR_UNSUPPORTED;
+        return NULL;
+    }
+    if (explicit_sbr && aac_sample_rates[output_sfi] != aac_sample_rates[core_sfi] * 2) {
+        if (err) *err = AUDIO_ERR_UNSUPPORTED;
+        return NULL;
+    }
 
     /* GASpecificConfig: frameLengthFlag must be 0 (1024 samples). */
     int framelen_flag = (int)ab_u1(&b);
@@ -1227,10 +1272,26 @@ aacdec *aac_open_asc(const uint8_t *asc, long len, int *err)
 
     aacdec *d = aac_alloc();
     if (!d) { if (err) *err = AUDIO_ERR_OOM; return NULL; }
-    d->sfi = sfi;
-    d->rate = aac_sample_rates[sfi];
+    d->sfi = core_sfi;
+    d->rate = aac_sample_rates[core_sfi];
+    d->output_rate = aac_sample_rates[output_sfi];
     d->chancfg = chancfg;
     d->channels = (chancfg == 7) ? 8 : chancfg;
+    d->explicit_sbr = explicit_sbr;
+    d->sbr_type = d->channels == 2 ? ID_CPE : ID_SCE;
+    if (explicit_sbr) {
+        if (d->channels != 1 && d->channels != 2) {
+            aac_close(d);
+            if (err) *err = AUDIO_ERR_UNSUPPORTED;
+            return NULL;
+        }
+        d->sbr = aac_sbr_open(d->rate, d->output_rate, d->channels);
+        if (!d->sbr) {
+            aac_close(d);
+            if (err) *err = AUDIO_ERR_OOM;
+            return NULL;
+        }
+    }
     d->have_config = 1;
     if (err) *err = AUDIO_OK;
     (void)e;
@@ -1242,13 +1303,14 @@ void aac_close(aacdec *d)
     if (!d) return;
     amdct_free(d->mdct_long);
     amdct_free(d->mdct_short);
+    aac_sbr_close(d->sbr);
     free(d);
 }
 
 int aac_info(const aacdec *d, int *rate, int *channels)
 {
     if (!d) return AUDIO_ERR_RANGE;
-    if (rate) *rate = d->rate;
+    if (rate) *rate = d->output_rate ? d->output_rate : d->rate;
     if (channels) *channels = d->channels;
     return AUDIO_OK;
 }
@@ -1276,13 +1338,22 @@ static int finish_frame(aacdec *d, int nch, aacframe *out)
     if (!channel_permutation(d, nch, perm))
         for (int c = 0; c < nch; c++) perm[c] = c;
 
-    for (int c = 0; c < nch; c++)
-        filterbank(d, &d->ics[c], &d->ch[c], d->spec[c], d->pcm, nch, perm[c]);
+    if (d->sbr) {
+        if (nch < 1 || nch > 2) return AUDIO_ERR_UNSUPPORTED;
+        for (int c = 0; c < nch; c++)
+            filterbank(d, &d->ics[c], &d->ch[c], d->spec[c], d->core_pcm,
+                       nch, perm[c]);
+        if (aac_sbr_synthesize(d->sbr, d->core_pcm, d->pcm, nch) < 0)
+            return AUDIO_ERR_CORRUPT;
+    } else {
+        for (int c = 0; c < nch; c++)
+            filterbank(d, &d->ics[c], &d->ch[c], d->spec[c], d->pcm, nch, perm[c]);
+    }
 
     d->channels = nch;
-    out->rate = d->rate;
+    out->rate = d->output_rate ? d->output_rate : d->rate;
     out->channels = nch;
-    out->nsamples = AAC_FRAME_LEN;
+    out->nsamples = d->sbr ? AAC_MAX_SAMPLES : AAC_FRAME_LEN;
     out->pcm = d->pcm;
     return AUDIO_OK;
 }
@@ -1331,8 +1402,10 @@ int aac_decode(aacdec *d, const uint8_t *data, long len, aacframe *out, int *got
     if (nblocks != 1) return AUDIO_ERR_UNSUPPORTED;
 
     if (!d->have_config || d->sfi != sfi) {
+        if (d->sbr) return AUDIO_ERR_UNSUPPORTED;
         d->sfi = sfi;
         d->rate = aac_sample_rates[sfi];
+        d->output_rate = d->rate;
         d->have_config = 1;
         /* A geometry change invalidates the overlap tails. */
         for (int c = 0; c < AAC_MAX_CHANNELS; c++) {

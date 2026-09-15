@@ -33,6 +33,10 @@ typedef struct {
  * "name" is encoded by setting the operator to "bool"
  * "value op name" is encoded verbatim (with op2 set to "unused")
  * "name op value" inverts the operator to encode (i.e < becomes >=) (and sets op2 to "unused")
+ * Correction (2026-09-10): the old sentence described the bug. Reversing
+ * operands changes < to >, <= to >=, and leaves equality unchanged; it does
+ * NOT complement the predicate. mq_parse_range's boundary gate checks both
+ * name-first and value-first spellings at one pixel below/on/above the edge.
  * "value op name op value" is encoded using op2 and value2
  */
 typedef enum {

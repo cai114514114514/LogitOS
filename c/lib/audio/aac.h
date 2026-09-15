@@ -1,4 +1,4 @@
-/* c/lib/audio/aac.h -- from-scratch MPEG-2/4 AAC Low Complexity decoder.
+/* c/lib/audio/aac.h -- AAC-LC core and HE-AAC v1 / SBR decoder.
  *
  * WHY AAC IS FIRST OF THE THREE.  It is what essentially every MP4 carries,
  * and a container line landing MP4/MKV demuxing without it delivers video with
@@ -32,13 +32,11 @@
  *
  * NOT IMPLEMENTED (each a clean error or a documented degradation, never a
  * crash or silent garbage)
- *   SBR and PS -- that is, HE-AAC v1 and v2. An AudioSpecificConfig that
- *   explicitly signals object type 5 or 29 is refused with
- *   AUDIO_ERR_UNSUPPORTED rather than silently decoded as its core, because
- *   the core alone is the right samples at half the intended rate and that is
- *   a wrong answer that sounds nearly right. SBR arriving IMPLICITLY inside a
- *   FIL element is skipped and the core is decoded, and aac_had_sbr() reports
- *   that it happened so a caller can say so.
+ *   PS -- HE-AAC v2 (object type 29). HE-AAC v1 / SBR (object type 5) is
+ *   implemented through a narrow adapter over the FFmpeg n4.4 SBR core; the
+ *   AAC-LC core remains this decoder's own implementation. PS is still
+ *   refused rather than duplicating mono into two channels, which would be a
+ *   plausible-sounding wrong answer.
  *   Main profile prediction, LTP, SSR, scalable and ER syntax, LATM/LOAS
  *   framing, and the 960-sample frame length.
  *
@@ -54,13 +52,14 @@
 
 #define AAC_MAX_CHANNELS  8
 #define AAC_FRAME_LEN     1024
+#define AAC_MAX_SAMPLES   2048
 
 typedef struct aacdec aacdec;
 
 typedef struct {
     int rate;
     int channels;
-    int nsamples;              /* per channel; always 1024 for LC */
+    int nsamples;              /* per channel: 1024 LC, 2048 HE-AAC v1 */
     const float *pcm;          /* interleaved, nsamples*channels, valid until
                                 * the next aac_decode* call */
 } aacframe;
@@ -88,8 +87,7 @@ int aac_decode_raw(aacdec *d, const uint8_t *data, long len, aacframe *out, int 
  * aac_open_asc). */
 int aac_info(const aacdec *d, int *rate, int *channels);
 
-/* 1 if a FIL element carrying an SBR payload has been seen and skipped, so the
- * output is the core at half the intended sampling rate. */
+/* 1 if a FIL element carrying an SBR payload has been seen and decoded. */
 int aac_had_sbr(const aacdec *d);
 
 /* 1 if any band in the stream so far used perceptual noise substitution. A

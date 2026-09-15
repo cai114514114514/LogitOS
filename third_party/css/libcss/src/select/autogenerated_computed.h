@@ -108,6 +108,7 @@ struct css_computed_style_i {
  * page_break_after                 3             
  * page_break_before                3             
  * page_break_inside                2             
+ * pointer_events                   2             
  * position                         3             
  * right                            2 + 5           4
  * stroke_opacity                   1               4
@@ -156,7 +157,7 @@ struct css_computed_style_i {
  * quotes                           1             sizeof(ptr)
  * 
  * ---                            ---             ---
- *                                508 bits        268 + 8sizeof(ptr) bytes
+ *                                510 bits        268 + 8sizeof(ptr) bytes
  *                                ===================
  *                                332 + 8sizeof(ptr) bytes
  * 
@@ -195,11 +196,11 @@ struct css_computed_style_i {
  * 9  bbbbbbbbbbbaaaaaaaaaaaoooooooozz
  * border_bottom_left_radius; background_position; outline_width; z_index
  * 
- * 10 uuttppoollffnnaaeemmddccssrriiCC
- * unicode_bidi; table_layout; page_break_inside; outline_color;
- * list_style_position; font_variant; font_style; float; flex_wrap;
- * empty_cells; direction; content; column_span; column_rule_color;
- * column_fill; column_count
+ * 10 uuttppaaoollffnnFFeemmddccssrrii
+ * unicode_bidi; table_layout; pointer_events; page_break_inside;
+ * outline_color; list_style_position; font_variant; font_style; float;
+ * flex_wrap; empty_cells; direction; content; column_span; column_rule_color;
+ * column_fill
  * 
  * 11 bbbbbbbbbbbooooooooooovvvvvvvvvw
  * border_top_right_radius; border_top_left_radius; vertical_align; widows
@@ -215,12 +216,12 @@ struct css_computed_style_i {
  * background_repeat; align_self; align_items; align_content; writing_mode;
  * visibility; orphans
  * 
- * 15 ccbboorrddeettaakkOplfxiunCg....
- * caption_side; box_sizing; border_top_color; border_right_color;
- * border_left_color; border_collapse; border_bottom_color; background_color;
- * background_attachment; order; opacity; list_style_image; flex_shrink;
- * flex_grow; fill_opacity; counter_reset; counter_increment; color;
- * background_image
+ * 15 ccaabboorrddeettkkggOplfxiunCm..
+ * column_count; caption_side; box_sizing; border_top_color;
+ * border_right_color; border_left_color; border_collapse; border_bottom_color;
+ * background_color; background_attachment; order; opacity; list_style_image;
+ * flex_shrink; flex_grow; fill_opacity; counter_reset; counter_increment;
+ * color; background_image
  */
 	uint32_t bits[16];
 	

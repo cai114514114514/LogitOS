@@ -316,6 +316,28 @@ css_error handleStartRuleset(css_language *c, const parserutils_vector *vector)
 	if (cur != NULL && cur->type != CSS_PARSER_START_STYLESHEET)
 		parent_rule = cur->data;
 
+	/* LOGITOS FIX (2026-09-09, the claude.ai crash): the context stack
+	 * holds EVERY open rule -- @font-face and @page among them -- but the
+	 * only parent css__stylesheet_add_rule can take is a group rule,
+	 * which this tree's patch builds as CSS_RULE_MEDIA and which that
+	 * function then casts parent to, UNCONDITIONALLY, writing
+	 * first_child/last_child at offsets that are different fields (or
+	 * payload) in every other rule type. With asserts compiled out
+	 * (the shipped browser's -DNDEBUG) the writes land through a wrong
+	 * struct: on claude.ai, parenting a ruleset under an @font-face rule
+	 * read media->last_child back as font-face payload bytes
+	 * (0x300000060) and the next append wrote there -- sig 11, the whole
+	 * browser, from a stylesheet. Caught by rebuilding the guest with
+	 * asserts live: "Assertion `parent->type == CSS_RULE_MEDIA' failed"
+	 * at exactly this call. The guard keeps the ruleset (parented at the
+	 * sheet root instead -- the @font-face block is not a real parent
+	 * anyway, whatever construct put a ruleset inside one is malformed
+	 * CSS the parser is recovering from) rather than losing it, and is a
+	 * no-op for every intended nesting, since @layer/@container/@scope/
+	 * @supports and @media are ALL CSS_RULE_MEDIA here. */
+	if (parent_rule != NULL && parent_rule->type != CSS_RULE_MEDIA)
+		parent_rule = NULL;
+
 	error = css__stylesheet_rule_create(c->sheet, CSS_RULE_SELECTOR, &rule);
 	if (error != CSS_OK)
 		return error;
@@ -483,6 +505,8 @@ extern int logit_css_extra_supports_name(const char *name, int len) LOGIT_WEAK;
 LOGIT_WEAK_STUB(logit_css_extra_supports_name);
 extern int logit_css_engine_ignores_name(const char *name, int len) LOGIT_WEAK;
 LOGIT_WEAK_STUB(logit_css_engine_ignores_name);
+extern int logit_css_generated_supports(const uint32_t *code, uint32_t used) LOGIT_WEAK;
+LOGIT_WEAK_STUB(logit_css_generated_supports);
 
 /**
  * Is `( <property> : <value> )` something this engine can actually do?
@@ -582,6 +606,16 @@ static bool supports_decl(css_language *c, const parserutils_vector *vector,
 	if (handler != NULL &&
 			css__stylesheet_style_create(c->sheet, &style) == CSS_OK) {
 		ok = (handler(c, vector, ctx, style) == CSS_OK);
+		/* 2026-09-09 correction to the old name-only content denial: string
+		 * and attr() now render. Dropping the denial alone would also affirm
+		 * counter()/url(), which still do not. Ask the rendering owner about
+		 * these parsed opcodes before releasing the temporary style. A plain
+		 * LibCSS consumer without the hook retains its parser-only answer. */
+		if (ok && i == CONTENT && LOGIT_HAVE(logit_css_generated_supports)) {
+			consumeWhitespace(vector, ctx);
+			ok = tokenIsChar(parserutils_vector_peek(vector, *ctx), ')') &&
+				logit_css_generated_supports(style->bytecode, style->used);
+		}
 		css__stylesheet_style_destroy(style);
 	}
 
@@ -703,6 +737,14 @@ static css_error group_rule(css_language *c, bool applies, css_rule **out)
 	cur = parserutils_stack_get_current(c->context);
 	if (cur != NULL && cur->type != CSS_PARSER_START_STYLESHEET)
 		parent = cur->data;
+
+	/* LOGITOS FIX (2026-09-09): same guard as handleStartRuleset -- a
+	 * group rule may only nest under another group rule. Without this, a
+	 * group at-rule recovered inside an @font-face/@page context parents
+	 * under a non-media rule and css__stylesheet_add_rule's cast writes
+	 * through the wrong struct. See the longer comment there. */
+	if (parent != NULL && parent->type != CSS_RULE_MEDIA)
+		parent = NULL;
 
 	error = mq_all(c, applies, &media);
 	if (error != CSS_OK) return error;

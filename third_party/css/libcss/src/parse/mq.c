@@ -399,7 +399,16 @@ static css_error mq_parse_range(lwc_string **strings,
 		return error;
 	}
 	if (name_first) {
-		/* Invert operator */
+		/* Formerly this "invert" was a logical complement (< became >=),
+		 * not operand reversal. The stored form is VALUE op FEATURE, so
+		 * width >= 1012px must become 1012px <= width, including equality.
+		 * The old value producer below also stored the IDENT `width` rather
+		 * than 1012px; the length matcher then always returned false, hiding
+		 * the boundary error. Before the correction, the 87-check shared
+		 * query/cascade/variables gate failed 23 checks. Keep both defects in
+		 * the executable control: fixing only the value must not pass edges.
+		 * This is common grammar, not a host/site/framework-specific rule. */
+#if defined(CSS_MQ_RANGE_LEGACY) || defined(CSS_MQ_RANGE_COMPLEMENT)
 		if (op == CSS_MQ_FEATURE_OP_LT) {
 			op = CSS_MQ_FEATURE_OP_GTE;
 		} else if (op == CSS_MQ_FEATURE_OP_LTE) {
@@ -409,6 +418,12 @@ static css_error mq_parse_range(lwc_string **strings,
 		} else if (op == CSS_MQ_FEATURE_OP_GTE) {
 			op = CSS_MQ_FEATURE_OP_LT;
 		}
+#else
+		if (op == CSS_MQ_FEATURE_OP_LT) op = CSS_MQ_FEATURE_OP_GT;
+		else if (op == CSS_MQ_FEATURE_OP_LTE) op = CSS_MQ_FEATURE_OP_GTE;
+		else if (op == CSS_MQ_FEATURE_OP_GT) op = CSS_MQ_FEATURE_OP_LT;
+		else if (op == CSS_MQ_FEATURE_OP_GTE) op = CSS_MQ_FEATURE_OP_LTE;
+#endif
 	}
 	result->op = op;
 	if (value_is_ratio) {
@@ -416,7 +431,12 @@ static css_error mq_parse_range(lwc_string **strings,
 		result->value.data.num_or_ratio = ratio;
 	} else {
 		/* num/dim/ident */
-		error = mq_populate_value(&result->value, name_or_value);
+		error = mq_populate_value(&result->value,
+#ifdef CSS_MQ_RANGE_LEGACY
+				name_or_value);
+#else
+				name_first ? value_or_name : name_or_value);
+#endif
 		if (error != CSS_OK) {
 			css__mq_feature_destroy(result);
 			return error;
@@ -1276,4 +1296,3 @@ css_error css_parse_media_query(lwc_string **strings,
 	*media_out = ctx.media;
 	return CSS_OK;
 }
-

@@ -344,17 +344,30 @@ static void run_pns_case(void)
     free(a); free(b); free(abuf);
 }
 
-/* --- refusals ------------------------------------------------------------ */
+/* --- explicit SBR geometry and remaining refusals ----------------------- */
 
 static void run_refusals(void)
 {
     int err = 0;
-    /* AOT 5 = SBR. Object type 5, sfi 3, chancfg 2. */
+    /* Bilibili's explicit HE-AAC v1 ASC: 24 kHz LC core, SBR output at
+     * 48 kHz, stereo. Opening this is a geometry check; the live/probe test
+     * supplies actual SBR payloads and scores the output against FFmpeg. */
     uint8_t sbr[4] = { 0x2B, 0x11, 0x88, 0x00 };
     aacdec *d = aac_open_asc(sbr, 4, &err);
+    int rate = 0, channels = 0;
+    if (d) aac_info(d, &rate, &channels);
+    CHECK(d != NULL && err == AUDIO_OK && rate == 48000 && channels == 2,
+          "AOT 5 ASC must open as HE-AAC v1 at 48 kHz stereo "
+          "(got %p / %d / %d Hz / %d ch)", (void *)d, err, rate, channels);
+    if (d) aac_close(d);
+
+    /* The same geometry with AOT 29 requires Parametric Stereo. */
+    uint8_t ps[4] = { 0xEB, 0x11, 0x88, 0x00 };
+    err = 0;
+    d = aac_open_asc(ps, 4, &err);
     CHECK(d == NULL && err == AUDIO_ERR_UNSUPPORTED,
-          "an ASC signalling SBR (AOT 5) must be refused, not decoded as its "
-          "core at half the intended rate (got %p / %d)", (void *)d, err);
+          "HE-AAC v2 / Parametric Stereo must remain refused (got %p / %d)",
+          (void *)d, err);
     if (d) aac_close(d);
 
     /* AOT 1 = Main profile, which needs the backward prediction we do not do. */

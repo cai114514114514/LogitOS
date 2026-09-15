@@ -120,6 +120,49 @@ static inline bool mq_match_feature(
 {
 	bool match;
 
+#ifndef CSS_DEVICE_MEDIA_NEGCTL
+	/* The device dimensions are supplied by the embedder, never inferred from
+	 * viewport width/height. A real telemetry script binary-searched
+	 * min-device-width; an always-false unknown-feature answer made it issue
+	 * 248,073 queries (past negative widths) before the diagnostic fuel guard.
+	 * Reuse the range operators so stylesheet @media and matchMedia agree. */
+	css_fixed device_len = 0;
+	bool device_feature = false;
+	if (lwc_string_isequal(feat->name, str->device_width, &match) == lwc_error_ok && match) {
+		device_len = media->device_width; device_feature = true;
+	} else if (lwc_string_isequal(feat->name, str->device_height, &match) == lwc_error_ok && match) {
+		device_len = media->device_height; device_feature = true;
+	}
+	if (device_feature) {
+		/* Zero denotes an embedder with no display information, not a tiny
+		 * viewport. Do not manufacture a positive device verdict there. */
+		if (device_len <= 0) return false;
+		if (feat->op == CSS_MQ_FEATURE_OP_BOOL) return true;
+		return mq_match_feature_range_length_op1(feat->op, &feat->value, device_len, unit_ctx) &&
+		       mq_match_feature_range_length_op2(feat->op2, &feat->value2, device_len, unit_ctx);
+	}
+#endif
+
+	/* One matcher serves both stylesheet @media and JS matchMedia. Boolean
+	 * syntax is false for no-preference; unknown values and ranges are false. */
+	if (lwc_string_isequal(feat->name, str->prefers_reduced_motion, &match) == lwc_error_ok && match) {
+#ifdef OPENLOGIT_REDUCED_MOTION_DISABLED
+		return false;
+#else
+		if (feat->op == CSS_MQ_FEATURE_OP_BOOL) return media->prefers_reduced_motion;
+		if (feat->op != CSS_MQ_FEATURE_OP_EQ || feat->value.type != CSS_MQ_VALUE_TYPE_IDENT)
+			return false;
+		if (!feat->value.data.ident) return false;
+		const char *value = lwc_string_data(feat->value.data.ident);
+		size_t len = lwc_string_length(feat->value.data.ident);
+		const char *want = media->prefers_reduced_motion ? "reduce" : "no-preference";
+		if (len != (media->prefers_reduced_motion ? 6u : 13u)) return false;
+		/* CSS keyword matching is ASCII-insensitive, unlike custom identifiers. */
+		for (size_t j=0;j<len;j++) if (((unsigned char)value[j] | 32) != (unsigned char)want[j]) return false;
+		return true;
+#endif
+	}
+
 	/* TODO: Use interned string for comparison. */
 	if (lwc_string_isequal(feat->name,
 			str->width, &match) == lwc_error_ok &&

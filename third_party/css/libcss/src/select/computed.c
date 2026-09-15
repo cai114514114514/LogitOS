@@ -1207,6 +1207,11 @@ uint8_t css_computed_unicode_bidi(const css_computed_style *style)
 	return get_unicode_bidi(style);
 }
 
+uint8_t css_computed_pointer_events(const css_computed_style *style)
+{
+	return get_pointer_events(style);
+}
+
 uint8_t css_computed_visibility(const css_computed_style *style)
 {
 	return get_visibility(style);

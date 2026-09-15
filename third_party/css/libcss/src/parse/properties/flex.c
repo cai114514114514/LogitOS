@@ -14,7 +14,7 @@
 #include "parse/properties/utils.h"
 
 /**
- * Parse list-style
+ * Parse flex
  *
  * \param c	  Parsing context
  * \param vector  Vector of tokens to process
@@ -44,6 +44,7 @@ css_error css__parse_flex(css_language *c,
 	css_style *basis_style;
 	bool short_auto = false;
 	bool short_none = false;
+	bool factors_closed = false;
 	enum flag_value flag_value;
 	bool match;
 
@@ -99,6 +100,7 @@ css_error css__parse_flex(css_language *c,
 		short_none = true;
 		parserutils_vector_iterate(vector, ctx);
 
+#ifdef CSS_FLEX_SHORTHAND_LEGACY
 	} else if ((token->type == CSS_TOKEN_IDENT) &&
 		(lwc_string_caseless_isequal(
 			token->idata, c->strings[AUTO],
@@ -106,20 +108,30 @@ css_error css__parse_flex(css_language *c,
 		/* Handle shorthand auto, equivalent of flex: 1 1 auto; */
 		short_auto = true;
 		parserutils_vector_iterate(vector, ctx);
+#endif
 
 	} else do {
 		/* Attempt to parse the various longhand properties */
 		prev_ctx = *ctx;
 		error = CSS_OK;
 
-		/* Ensure that we're not about to parse another inherit */
+		/* CSS-wide keywords belong to the whole shorthand, never a slot. */
 		token = parserutils_vector_peek(vector, *ctx);
+#ifdef CSS_FLEX_SHORTHAND_LEGACY
 		if (token != NULL && is_css_inherit(c, token)) {
+#else
+		/* The declaration caller owns !important; @supports owns its ')'. */
+		if (*ctx != orig_ctx &&
+				(tokenIsChar(token, '!') || tokenIsChar(token, ')')))
+			break;
+		if (token != NULL && get_css_flag_value(c, token) != FLAG_VALUE__NONE) {
+#endif
 			error = CSS_INVALID;
 			goto css__parse_flex_cleanup;
 		}
 
-		if ((grow) && 
+#ifdef CSS_FLEX_SHORTHAND_LEGACY
+		if ((grow) &&
 			   (error = css__parse_flex_grow(c, vector,
 				ctx, grow_style)) == CSS_OK) {
 			grow = false;
@@ -132,6 +144,48 @@ css_error css__parse_flex(css_language *c,
 				ctx, shrink_style)) == CSS_OK) {
 			shrink = false;
 		}
+#else
+		/* The old grow -> basis -> shrink order silently read the second
+		 * factor as a length: even standards-mode `1 0` became 1 1 0px;
+		 * quirks mode also swallowed the second 1 in `1 1 0%` as 1px and
+		 * discarded the declaration. The real computed/layout gate observed
+		 * the latter's two flex slots at 8/8px instead of 50/150px.
+		 *
+		 * Flex's grammar is [grow shrink?] || basis: prefer both numbers,
+		 * keep that group contiguous, and allow basis before OR after it.
+		 * Do not change the shared length parser's quirks policy to fix a
+		 * shorthand ambiguity. Only a third unitless zero can be basis.
+		 * https://www.w3.org/TR/css-flexbox-1/#flex-property */
+		error = CSS_INVALID;
+		if (grow) {
+			error = css__parse_flex_grow(c, vector, ctx, grow_style);
+			if (error == CSS_OK) grow = false;
+			else if (error != CSS_INVALID) goto css__parse_flex_cleanup;
+		}
+		if (error == CSS_INVALID && !grow && shrink && !factors_closed) {
+			error = css__parse_flex_shrink(c, vector, ctx, shrink_style);
+			if (error == CSS_OK) shrink = false;
+			else if (error != CSS_INVALID) goto css__parse_flex_cleanup;
+		}
+		if (error == CSS_INVALID && basis) {
+			bool basis_number = false;
+			if (token != NULL && token->type == CSS_TOKEN_NUMBER) {
+				size_t consumed = 0;
+				css_fixed n = css__number_from_lwc_string(token->idata,
+						false, &consumed);
+				basis_number = grow || shrink || n != 0 ||
+						consumed != lwc_string_length(token->idata);
+			}
+			if (!basis_number) {
+				error = css__parse_flex_basis(c, vector, ctx, basis_style);
+				if (error == CSS_OK) {
+					basis = false;
+					factors_closed = !grow;
+				}
+			}
+		}
+		if (error != CSS_OK) goto css__parse_flex_cleanup;
+#endif
 
 		if (error == CSS_OK) {
 			consumeWhitespace(vector, ctx);
@@ -149,7 +203,13 @@ css_error css__parse_flex(css_language *c,
 		if (error != CSS_OK)
 			goto css__parse_flex_cleanup;
 
+#ifdef CSS_FLEX_SHORTHAND_LEGACY
 		css_fixed grow_num = short_auto ? INTTOFIX(1) : 0;
+#else
+		/* Old code defaulted basis-only `flex:20px` to grow=0, confusing
+		 * longhand initial values with omitted shorthand components. */
+		css_fixed grow_num = short_none ? 0 : INTTOFIX(1);
+#endif
 		error = css__stylesheet_style_append(grow_style, grow_num);
 		if (error != CSS_OK)
 			goto css__parse_flex_cleanup;
@@ -211,4 +271,3 @@ css__parse_flex_cleanup:
 
 	return error;
 }
-
