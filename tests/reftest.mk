@@ -120,13 +120,13 @@ REFT_PIPELINE := c/apps/browser/layout.c c/apps/browser/layout_text.c c/apps/bro
 # the glyph rasterizer is now a converter onto Open Logit, and $(GFX_SRC) below
 # was already here for the painter, so the reference renderer picks up the
 # engine's glyph path with no new dependency.
-# c/kernel/gui/fb/fb/glass.c is here because fb.c calls into it (glass_build_lut,
+# c/kernel/gui/fb/glass.c is here because fb.c calls into it (glass_build_lut,
 # gl_isqrt, glass_disp, glass_fres -- the rim refraction table) and has done
 # since a1c345a76. It was missing from this list, which nothing noticed while
 # REFT_KERNEL was only ever linked together with the rest of the kernel; the
 # ahem_test target below links REFT_KERNEL ALONE and so it failed there first.
-REFT_KERNEL   := c/kernel/gui/fb/fb/fb.c c/lib/text/glyphras.c c/kernel/gui/text.c \
-                 c/kernel/gui/fb/fb/glass.c \
+REFT_KERNEL   := c/kernel/gui/fb/fb.c c/lib/text/glyphras.c c/kernel/gui/text.c \
+                 c/kernel/gui/fb/glass.c \
                  c/lib/text/ttf.c c/lib/text/cff.c c/lib/text/utf8.c \
                  c/lib/text/shape.c c/lib/text/script.c c/lib/text/bidi.c \
                  c/lib/text/otlayout.c

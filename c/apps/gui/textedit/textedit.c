@@ -25,7 +25,7 @@
 #include "aui.h"
 #include "textedit_document.h"
 #include <stdio.h>
-#include "../../lib/agent/sdk.h"
+#include "../../../lib/agent/sdk.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>

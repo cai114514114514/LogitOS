@@ -1,4 +1,4 @@
-#include "../../lib/agent/gui.h"
+#include "../../../lib/agent/gui.h"
 #include <stdio.h>
 #include <string.h>
 /* Preview: opens a file and shows what is in it -- a still image, an ANIMATED
@@ -1293,7 +1293,7 @@ static int pick_from_media(char *out, int outmax)
         /* A 6x6 anchor in a colour nothing else on the desktop uses, at
          * content (0,0). tests/qmp/qmp_preview.py finds the window's content
          * origin from it and then works in window-local coordinates -- the
-         * same trick c/apps/gui/gallery.c uses and for the same reason: the
+         * same trick c/apps/gui/gallery/gallery.c uses and for the same reason: the
          * compositor cascades windows, so the position is not knowable from
          * outside, and hunting for a background colour finds the wallpaper
          * about one run in three. It is on the LIST only; no picture ever has

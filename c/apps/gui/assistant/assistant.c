@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "aui.h"
-#include "../../lib/agent/sdk.h"
+#include "../../../lib/agent/sdk.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

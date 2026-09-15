@@ -3,7 +3,7 @@
 # THIS FILE IS A CREDENTIAL FILE. The `key` line is a bearer token; treat the
 # file the way you would treat a private key. It is a file rather than a setting
 # in the machine's settings store on purpose -- see the long note at the top of
-# c/apps/gui/ch.c -- because that store is ENUMERABLE: `setting_enum`, the
+# c/apps/gui/ch/ch.c -- because that store is ENUMERABLE: `setting_enum`, the
 # Settings window and /bin/pref would all list a secret put there, and a
 # credential must have to be named to be read.
 #

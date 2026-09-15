@@ -2,6 +2,7 @@
 #include "aui.h"
 #include "gfx.h"
 #include "openlogit_anim.h"
+#include "aui_scroll_motion.h"
 
 /* ============================================================================
  * aui -- immediate-mode widgets over the gui_* syscalls.
@@ -404,6 +405,7 @@ static void ad_flush(void)
 /* ---------------------------------------------------------------- 2. theme */
 
 static int theme_dark, theme_inited;
+static int theme_override = -1;
 struct aui_theme aui_t;
 
 /* The channel lerp lives in the engine (gfx_mix): a gradient strip built by
@@ -490,6 +492,11 @@ void aui_set_dark(int on)
     if (on) load_dark(); else load_light();
 }
 int aui_is_dark(void) { return theme_dark; }
+void aui_theme_override(int mode)
+{
+    theme_override = mode < 0 ? -1 : !!mode;
+    aui_set_dark(theme_override < 0 ? sys_ui_dark(-1) > 0 : theme_override);
+}
 
 /* HSL -> packed rgb, integer-only. h:0..359, s,l:0..100. Channels are carried in
  * "percent" (0..100) through the standard piecewise formula, then scaled to 8-bit:
@@ -686,7 +693,7 @@ static void clip_apply(void)
     if (r.w <= 0 || r.h <= 0) { gui_clip(0, 0, 1, 1); return; }
     gui_clip(r.x, r.y, r.w, r.h);
 }
-static void clip_push(struct aui_rect r)
+static struct aui_rect clip_intersect(struct aui_rect r)
 {
     if (clipn > 0) {
         struct aui_rect p = clipst[clipn - 1];
@@ -694,6 +701,11 @@ static void clip_push(struct aui_rect r)
         int x1 = imin(r.x + r.w, p.x + p.w), y1 = imin(r.y + r.h, p.y + p.h);
         r.x = x0; r.y = y0; r.w = x1 - x0; r.h = y1 - y0;
     }
+    return r;
+}
+static void clip_push(struct aui_rect r)
+{
+    r = clip_intersect(r);
     if (clipn < 8) clipst[clipn++] = r;
     clip_apply();
 }
@@ -1239,6 +1251,21 @@ static int      anim_loop_want;    /* an ENDLESS animation drew this frame    */
 static int      anim_live;         /* slots still in flight after this frame  */
 static int      anim_armed;        /* aui_anim_due() said yes, frame pending  */
 
+/* Offset pointers are the existing scroll-container identity. Using widget
+ * call order here would alias slots when a list culls a different set of rows.
+ * Keep only borrowed identities: an absent container's pointer is never read.
+ */
+#define SCROLL_SLOTS 16
+static struct scroll_slot {
+    int *owner;
+    struct aui_scroll_motion motion;
+    struct aui_rect viewport;
+    unsigned gen, order;
+} scroll_slots[SCROLL_SLOTS];
+static unsigned scroll_order;
+static int *scroll_wheel_owner;
+static int scroll_wheel_used;
+
 #ifndef AUI_ANIM_OFF          /* unreferenced in the negative-control build */
 static struct anim_slot *anim_slot_for(int id, int key, int *fresh)
 {
@@ -1350,6 +1377,7 @@ unsigned aui_anim_loop(void) { if(anim_reduced)return 0; anim_loop_want = 1; ret
 void aui_anim_reset(void)
 {
     for (int i = 0; i < AUI_ANIM_MAX; i++) anim_tab[i].id = 0;
+    for (int i = 0; i < SCROLL_SLOTS; i++) scroll_slots[i].owner = 0;
     anim_have_due = 0; anim_live = 0; anim_armed = 0;
 }
 
@@ -1476,7 +1504,10 @@ void aui_feed(const struct logit_event *e)
         in.ev = 0; in.key_used = 1; in.repaint = 1;
     }
     if (e->type == EV_KEY) focus_vis = 1;
-    if (e->type == EV_THEME) { aui_set_dark(sys_ui_dark(-1) > 0); in.repaint = 1; }
+    if (e->type == EV_THEME) {
+        if (theme_override < 0) aui_set_dark(sys_ui_dark(-1) > 0);
+        in.repaint = 1;
+    }
 }
 
 void aui_feed_done(void)
@@ -1603,11 +1634,27 @@ static void focus_ring(int focused, int x, int y, int w, int h, int r)
 
 void aui_begin(unsigned bg)
 {
-    int s = sys_ui_dark(-1) > 0;            /* live-follow the system theme each frame */
+    int s = theme_override < 0 ? sys_ui_dark(-1) > 0 : theme_override;
     if (!theme_inited || s != theme_dark) { aui_set_dark(s); bg = aui_t.bg; }
     aui_ensure();
     frame_ms = (unsigned)monotonic_ms();
     anim_reduced = setting_int("ui.reduce_motion",0) != 0;
+    /* Last frame's clipped rectangles pick the innermost eligible scroller.
+     * Both ancestors and descendants used to consume the same wheel event.
+     * Resolve before any slot is touched in this frame; no live state pointer
+     * is dereferenced during hit testing. New containers use first-hit fallback.
+     */
+    scroll_wheel_owner = 0; scroll_wheel_used = 0; scroll_order = 0;
+    if (in.ev == EV_WHEEL) {
+        unsigned last = 0;
+        for (int i = 0; i < SCROLL_SLOTS; i++) {
+            struct scroll_slot *s = &scroll_slots[i];
+            if (s->owner && s->gen == anim_gen && s->motion.limit > 0 &&
+                aui_hit(s->viewport, in.mx, in.my) && s->order >= last) {
+                scroll_wheel_owner = s->owner; last = s->order;
+            }
+        }
+    }
     /* The animation frame counter. It is what the continuity rule in section 5c
      * compares against, so it advances here -- once per DRAWN frame -- and not
      * on a clock. `anim_live` and `anim_loop_want` are re-derived by the widgets
@@ -2369,58 +2416,115 @@ int aui_textfield(int x, int y, int w, char *buf, int cap)
 
 /* ---- scrolling ---- */
 
-int aui_scrollbar(int x, int y, int h, int *off, int content, int view)
-{
-    int id = ++id_ctr, w = 10;
-    int wx = X_(x), wy = Y_(y);
-    if (content <= view) { *off = 0; return 0; }
-    struct wres r = wpoll(id, wx - 3, wy, w + 6, h, 1, 0);
-    int thumb_h = imax(24, h * view / content);
-    int span = h - thumb_h;
-    int changed = 0;
-    int o = iclamp(*off, 0, content - view);
+static int scrollbar_thumb(int h, int content, int view)
+{ return imin(h, imax(24, (int)((long long)h * view / content))); }
 
-    if (r.clicked || (in.active == id && in.down && in.ev == EV_MOUSE_MOVE)) {
-        int ty = in.my - wy - thumb_h / 2;
-        int no = iclamp(span > 0 ? ty * (content - view) / span : 0, 0, content - view);
-        if (no != o) { o = no; changed = 1; }
+static int scrollbar_input(int id, int x, int y, int h, int *off,
+                           int content, int view, int *state)
+{
+    struct wres r = wpoll(id, X_(x) - 3, Y_(y), 16, h, 1, 0);
+    *state = r.st;
+    int direct = r.clicked || (in.active == id && in.down);
+    if (direct) {
+        int thumb = scrollbar_thumb(h, content, view), span = h - thumb;
+        long long ty = (long long)in.my - Y_(y) - thumb / 2;
+        *off = aui_scroll_clamp(span > 0 ? ty * (content - view) / span : 0,
+                                content - view);
     }
-    *off = o;
-    int ty = span > 0 ? o * span / (content - view) : 0;
-    aui_round(x, y, w, h, w / 2, AUI_TRACK);
-    aui_round(x, y + ty, w, thumb_h, w / 2,
-              (r.st & (AUI_HOVER | AUI_ACTIVE)) ? AUI_MUTED : aui_mix(AUI_TRACK, AUI_TEXT, 90));
-    return changed;
+    return direct;
 }
 
-static struct { int x, y, w, h, sx, sy; int *off; int content; } scr[4];
-static int scrn;
+static void scrollbar_draw(int x, int y, int h, int off, int content, int view, int state)
+{
+    int thumb = scrollbar_thumb(h, content, view), span = h - thumb;
+    int ty = (int)((long long)aui_scroll_clamp(off, content - view) * span / (content - view));
+    aui_round(x, y, 10, h, 5, AUI_TRACK);
+    aui_round(x, y + ty, 10, thumb, 5,
+              (state & (AUI_HOVER | AUI_ACTIVE)) ? AUI_MUTED : aui_mix(AUI_TRACK, AUI_TEXT, 90));
+}
+
+int aui_scrollbar(int x, int y, int h, int *off, int content, int view)
+{
+    int id = ++id_ctr, state = 0, old = *off;
+    if (content <= view || h <= 0) { *off = 0; return old != 0; }
+    *off = aui_scroll_clamp(*off, content - view);
+    scrollbar_input(id, x, y, h, off, content, view, &state);
+    scrollbar_draw(x, y, h, *off, content, view, state);
+    return old != *off;
+}
+
+static struct {
+    int x, y, w, h, sx, sy, state, show_bar;
+    int *off, content;
+} scr[4];
+static int scrn, scr_skip;
+
+static struct scroll_slot *scroll_slot_for(int *off)
+{
+    struct scroll_slot *free_slot = 0, *oldest = &scroll_slots[0];
+    for (int i = 0; i < SCROLL_SLOTS; i++) {
+        struct scroll_slot *s = &scroll_slots[i];
+        if (s->owner == off) return s;
+        if (!s->owner && !free_slot) free_slot = s;
+        if ((unsigned)(anim_gen - s->gen) > (unsigned)(anim_gen - oldest->gen)) oldest = s;
+    }
+    struct scroll_slot *s = free_slot ? free_slot : oldest;
+    s->owner = off; s->gen = anim_gen - 2; /* new/evicted owners latch */
+    return s;
+}
 
 void aui_scroll_begin(int x, int y, int w, int h, int *off, int content_h)
 {
-    if (scrn >= 4) return;
-    int wx = X_(x), wy = Y_(y);
-    int maxo = imax(0, content_h - h);
-    *off = iclamp(*off, 0, maxo);
-    if (in.ev == EV_WHEEL && input_ok(wx, wy, w, h) && maxo > 0) {
-        *off = iclamp(*off + in.wheel * 48, 0, maxo);
+    /* A rejected nested begin still has a matching end. Without this balance
+     * the fifth container used to pop the fourth one's clip and origin. */
+    if (scr_skip || scrn >= 4 || w <= 0 || h <= 0 || !off) { scr_skip++; return; }
+    int wx = X_(x), wy = Y_(y), maxo = content_h > h ? content_h - h : 0;
+    /* Tiny containers still clip and scroll; only the thumb is omitted when
+     * its gutter/track cannot fit. Skipping begin would leave child drawing
+     * unbounded during a small resize. */
+    int show_bar = maxo > 0 && w >= 14 && h >= 5;
+    int state = 0, direct = 0;
+    struct scroll_slot *s = scroll_slot_for(off);
+    int fresh = s->gen + 1 != anim_gen;
+    /* Poll before painting the content, draw the thumb after it. The old
+     * end-only poll moved the thumb but left the content one frame behind;
+     * on mouse-up there might never be another frame to repair that mismatch.
+     * A container reserves the gutter so its children cannot take the drag.
+     */
+    if (show_bar)
+        direct = scrollbar_input(++id_ctr, x + w - 12, y + 2, h - 4,
+                                  off, content_h, h, &state);
+    long long delta = 0;
+    if (in.ev == EV_WHEEL && !scroll_wheel_used && maxo > 0 &&
+        (!scroll_wheel_owner || scroll_wheel_owner == off) && input_ok(wx, wy, w, h)) {
+        delta = (long long)in.wheel * 48;
+        scroll_wheel_used = 1;
     }
+    *off = aui_scroll_sample(&s->motion, *off, maxo, delta, frame_ms, AUI_T_BASE,
+                             fresh, direct, anim_reduced);
+    if (s->motion.running) anim_live++;
+    s->gen = anim_gen; s->order = ++scroll_order;
     scr[scrn].x = x; scr[scrn].y = y; scr[scrn].w = w; scr[scrn].h = h;
-    scr[scrn].sx = ox_; scr[scrn].sy = oy_; scr[scrn].off = off; scr[scrn].content = content_h;
+    scr[scrn].sx = ox_; scr[scrn].sy = oy_; scr[scrn].off = off;
+    scr[scrn].content = content_h; scr[scrn].state = state;
+    scr[scrn].show_bar = show_bar;
     scrn++;
-    clip_push(aui_r(wx, wy, w, h));
+    /* Wheel hit testing includes the gutter; content clipping excludes it. */
+    s->viewport = clip_intersect(aui_r(wx, wy, w, h));
+    clip_push(aui_r(wx, wy, show_bar ? w - 12 : w, h));
     ox_ = wx; oy_ = wy - *off;
 }
 
 void aui_scroll_end(void)
 {
+    if (scr_skip) { scr_skip--; return; }
     if (!scrn) return;
     scrn--;
     ox_ = scr[scrn].sx; oy_ = scr[scrn].sy;
     clip_pop();
-    if (scr[scrn].content > scr[scrn].h)
-        aui_scrollbar(scr[scrn].x + scr[scrn].w - 12, scr[scrn].y + 2, scr[scrn].h - 4,
-                      scr[scrn].off, scr[scrn].content, scr[scrn].h);
+    if (scr[scrn].show_bar)
+        scrollbar_draw(scr[scrn].x + scr[scrn].w - 12, scr[scrn].y + 2, scr[scrn].h - 4,
+                        *scr[scrn].off, scr[scrn].content, scr[scrn].h, scr[scrn].state);
 }
 
 /* ---- lists and tables ---- */

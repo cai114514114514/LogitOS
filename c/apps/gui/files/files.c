@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../lib/agent/sdk.h"
+#include "../../../lib/agent/sdk.h"
 
 /* Logit Files -- a macOS-Finder-style file manager (ring-3, aui toolkit).
  *

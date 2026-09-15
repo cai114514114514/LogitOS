@@ -23,8 +23,8 @@
 #                         window must say so, specifically, instead of hanging
 #                         or coming up blank.
 
-CH_SRC   := c/apps/gui/ch.c c/apps/gui/ch_sse.c
-CH_HDR   := c/apps/gui/ch_sse.h
+CH_SRC   := c/apps/gui/ch/ch.c c/apps/gui/ch/ch_sse.c
+CH_HDR   := c/apps/gui/ch/ch_sse.h
 CH_AEX   := $(BUILD)/ch.aex
 CH_H1OBJ := $(BUILD)/r3netobj/c/net/http/http1.o
 
@@ -42,7 +42,7 @@ CH_H1OBJ := $(BUILD)/r3netobj/c/net/http/http1.o
 # rather than `/bin/ch.aex`) plus NAPPS 11 -> 12 in tests/qmp/qmp_ui.py -- and
 # it must be packed AFTER settings, or BROWSER_SLOT/GALLERY_SLOT/SETTINGS_SLOT
 # all shift.
-CH_PACK := $(CH_AEX):/bin/ch.aex c/apps/gui/ai.conf.example:/etc/ai.conf.example
+CH_PACK := $(CH_AEX):/bin/ch.aex c/apps/gui/ch/ai.conf.example:/etc/ai.conf.example
 
 # --- the app --------------------------------------------------------------
 # Not APP_RULE: that rule compiles exactly one .c and links crt0 + aui + gfx.
@@ -59,8 +59,8 @@ $(BUILD)/ch.elf: $(CH_SRC) $(CH_HDR) $(APPDIR)/crt0.asm $(APPDIR)/logit.h \
                  $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS)
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0.asm -o $(BUILD)/apps/ch.crt0.o
-	$(CC) $(UCFLAGS) -c c/apps/gui/ch.c     -o $(BUILD)/apps/ch.o
-	$(CC) $(UCFLAGS) -c c/apps/gui/ch_sse.c -o $(BUILD)/apps/ch_sse.o
+	$(CC) $(UCFLAGS) -c c/apps/gui/ch/ch.c     -o $(BUILD)/apps/ch.o
+	$(CC) $(UCFLAGS) -c c/apps/gui/ch/ch_sse.c -o $(BUILD)/apps/ch_sse.o
 	$(LD) -nostdlib -e _start -Ttext=0x44000000 -o $@ --start-group \
 	    $(BUILD)/apps/ch.crt0.o $(BUILD)/apps/ch.o $(BUILD)/apps/ch_sse.o \
 	    $(BUILD)/apps/aui.o $(GFX_OBJ) $(CH_H1OBJ) $(LIBC_OBJS) --end-group
@@ -75,7 +75,7 @@ $(CH_AEX): $(BUILD)/ch.elf tools/mkaex.py
 test-ch-host:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter -o $(BUILD)/ch_sse_test \
-	      tests/unit/ch_sse_test.c c/apps/gui/ch_sse.c -Ic/apps/gui
+	      tests/unit/ch_sse_test.c c/apps/gui/ch/ch_sse.c -Ic/apps/gui/ch
 	@$(BUILD)/ch_sse_test
 
 # The reader everybody writes first: -DSSE_NAIVE_CHUNK drops the partial line at
@@ -86,7 +86,7 @@ test-ch-negctl:
 	@mkdir -p $(BUILD)
 	$(CC) -O1 -g -Wall -Wextra -Wno-unused-parameter -DSSE_NAIVE_CHUNK \
 	      -o $(BUILD)/ch_sse_negctl \
-	      tests/unit/ch_sse_test.c c/apps/gui/ch_sse.c -Ic/apps/gui
+	      tests/unit/ch_sse_test.c c/apps/gui/ch/ch_sse.c -Ic/apps/gui/ch
 	@if $(BUILD)/ch_sse_negctl > $(BUILD)/ch_sse_negctl.log 2>&1; then \
 	    echo "NEGATIVE CONTROL FAILED: a per-buffer SSE reader passed the gate"; \
 	    exit 1; \

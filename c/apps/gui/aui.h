@@ -97,6 +97,9 @@ struct aui_theme {
 extern struct aui_theme aui_t;        /* the active theme (follows the system) */
 void     aui_ensure(void);            /* fill aui_t on first use (idempotent) */
 void     aui_set_dark(int on);        /* swap the whole palette light<->dark */
+/* -1 follows the desktop (default); 0/1 pins this process to light/dark.
+ * Unlike set_dark, an override survives the next frame and EV_THEME. */
+void     aui_theme_override(int mode);
 int      aui_is_dark(void);
 unsigned aui_hsl(int h, int s, int l);   /* h:0..359 s,l:0..100 -> packed rgb */
 void     aui_set_accent(unsigned color); /* recolor the accent + focus tokens   */
@@ -337,11 +340,17 @@ int aui_textfield_ex(int x, int y, int w, char *buf, int cap,
                      const char *placeholder, int enabled);
 
 /* Scrollbar. `off` is the scroll offset in content units; returns 1 when the
- * offset changed (drag, click on the trough, or wheel over `track_rect`). */
+ * offset changed (drag or click on the trough). Wheel belongs to the container. */
 int aui_scrollbar(int x, int y, int h, int *off, int content, int view);
 
 /* A clipped, scrollable container. Between begin and end, draw in CONTENT
- * coordinates -- aui translates and clips for you.
+ * coordinates -- aui translates and clips for you. Wheel movement uses the
+ * OpenLogit transition sampler; *off always holds the displayed offset, so
+ * existing visible-row culling remains valid. Keep off's address stable across
+ * frames. Changes to *off and thumb drags take effect immediately.
+ * The rightmost 12 points are reserved when an overflowing scrollbar fits.
+ * Use aui_anim_due()/aui_anim_wait() in the event loop (as for other widgets).
+ * Reduce Motion skips interpolation; inactive/absent containers request no wakes.
  *
  *     static int sc;
  *     aui_scroll_begin(x, y, w, h, &sc, content_h);

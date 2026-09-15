@@ -1,4 +1,4 @@
-#include "../../lib/agent/gui.h"
+#include "../../../lib/agent/gui.h"
 #include <stdio.h>
 #include <string.h>
 /* ch -- the chat window. An assistant reply arrives token by token and the
@@ -23,7 +23,7 @@
  *   the window  is aui, the immediate-mode toolkit every GUI app links.
  *
  * What did NOT exist is SSE record framing and a JSON reader, and that is the
- * only new wire code in this unit: c/apps/gui/ch_sse.c, deliberately separate
+ * only new wire code in this unit: c/apps/gui/ch/ch_sse.c, deliberately separate
  * so it can be driven by a host test with no window, no socket and no kernel
  * (`make test-ch-host`, and its negative control `make test-ch-negctl`).
  *
@@ -67,8 +67,11 @@
  *      repainted at most once every CH_REPAINT_MS (40 ms = 25 fps). So the
  *      repaint count is bounded by the stream's DURATION and is independent of
  *      how many tokens it contained. The app prints both numbers on the serial
- *      console when the stream ends (CH_STREAM_END repaints=.. deltas=..), so
- *      the ratio is measured rather than asserted.
+ *      console when the stream ends (CH_STREAM_END repaints=.. deltas=..).
+ *      Correction 2026-09-15: repaints still counts ALL submitted frames.
+ *      Now that the spinner consumes SDK deadlines, motion_repaints separately
+ *      counts frames with no pending transcript change. Subtract those for the
+ *      stream budget; total frames can exceed tokens during a slow response.
  *   2. WRAPPING IS INCREMENTAL. Appending to the transcript re-measures ONE
  *      word -- the one that just completed -- not the paragraph and not the
  *      transcript. A full re-wrap happens only on EV_RESIZE.
@@ -467,7 +470,7 @@ static int  g_code;                  /* HTTP status of the current exchange   */
 static int  g_chunked;               /* the response used chunked framing     */
 static unsigned long long g_t0, g_last_progress;
 static uint64_t g_progress;
-static unsigned g_repaints, g_frames_skipped;
+static unsigned g_repaints, g_frames_skipped, g_motion_repaints;
 static unsigned g_fnv;
 static int  g_dirty;
 static unsigned long long g_last_paint;
@@ -739,6 +742,7 @@ static void send_prompt(const char *prompt)
     g_t0 = g_last_progress = monotonic_ms();
     g_progress = 0;
     g_repaints = 0;
+    g_motion_repaints = 0;
     status("connecting...");
     printf("CH_STREAM_BEGIN host=%s port=%d tls=%d model=%s auth=%s\n",
            g_conf.host, g_conf.port, g_conf.tls, g_conf.model,
@@ -792,10 +796,10 @@ static void finish(void)
         status(msg);
     }
     printf("CH_STREAM_END deltas=%u records=%u comments=%u refused=%u "
-           "bytes=%u repaints=%u skipped=%u ms=%u chunked=%d code=%d fnv=%08x\n",
+           "bytes=%u repaints=%u skipped=%u ms=%u chunked=%d code=%d fnv=%08x motion_repaints=%u\n",
            g_sse.n_deltas, g_sse.n_records, g_sse.n_comments, g_sse.n_refused,
            g_sse.n_bytes, g_repaints, g_frames_skipped, (unsigned)ms,
-           g_chunked, g_code, g_fnv);
+           g_chunked, g_code, g_fnv, g_motion_repaints);
     g_dirty = 1;
 }
 
@@ -1074,24 +1078,35 @@ void app_main(void)
 
         if (g_state == ST_DIAL || g_state == ST_STREAM) pump();
 
-        /* THE REPAINT BUDGET. A delta only sets g_dirty; the window is redrawn
+        /* THE REPAINT BUDGET. A delta only sets g_dirty; its repaint is drawn
          * at most every CH_REPAINT_MS. Bounded by the stream's duration, not by
          * its token count -- and the last frame is forced by finish(), which
          * sets g_dirty with the state no longer streaming. */
         if (g_dirty && !drew) {
             unsigned long long now = monotonic_ms();
             if (now - g_last_paint >= CH_REPAINT_MS ||
-                (g_state != ST_DIAL && g_state != ST_STREAM))
-                frame();
+                (g_state != ST_DIAL && g_state != ST_STREAM)) {
+                frame(); drew = 1;
+            }
             else
                 g_frames_skipped++;
+        }
+
+        /* Wheel/hover/spinner frames use the toolkit deadline, independently
+         * of network progress. Without this an idle conversation's first
+         * smoothed wheel frame would remain parked at its starting offset. */
+        /* A pending delta remains subject to the budget above. An expired
+         * spinner deadline must not quietly turn rate-limited text into an
+         * unbudgeted animation frame, or a 1 ms busy wake while it is waiting. */
+        if (!drew && !g_dirty && aui_anim_due()) {
+            frame(); drew = 1; g_motion_repaints++;
         }
 
         /* ---- THE SLEEP -----------------------------------------------------
          * Was sys_yield(): two syscalls a turn, each taking the BKL to be told
          * nothing had happened, and under TCG that is host CPU taken away from
-         * the compositor. There are exactly two things here that a window event
-         * does not wake:
+         * the compositor. The original two non-event deadlines are retained,
+         * now joined by the toolkit's finite/visible animation deadline:
          *
          *   the socket   ST_DIAL/ST_STREAM must call pump() to step it, and it
          *                has no wakeup on this window's queue. CH_PUMP_MS is
@@ -1101,7 +1116,7 @@ void app_main(void)
          *                set; the frame it is owed is due at
          *                g_last_paint + CH_REPAINT_MS.
          *
-         * Idle -- no stream, nothing dirty -- is a real block, so a chat window
+         * Idle -- no stream, nothing dirty or animating -- is a real block, so a chat window
          * nobody is typing into costs zero syscalls instead of tens of
          * thousands a second. */
         {
@@ -1112,6 +1127,8 @@ void app_main(void)
                                - (long long)monotonic_ms();
                 wait_ms = left > 0 ? (int)left : 1;
             }
+            int anim_ms = g_dirty ? 0 : aui_anim_wait();
+            if (anim_ms > 0 && (!wait_ms || anim_ms < wait_ms)) wait_ms = anim_ms;
             wait_idle(wait_ms);
         }
     }

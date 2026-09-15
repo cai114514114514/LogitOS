@@ -1,4 +1,4 @@
-#include "../../lib/agent/gui.h"
+#include "../../../lib/agent/gui.h"
 #include <stdio.h>
 #include <string.h>
 #include "aui.h"
@@ -12,7 +12,7 @@
  * tokens, spacing from AUI_SP(). That is not tidiness for its own sake: hand
  * placed coordinates are what made this UI look like 1998, and they are also
  * what makes a window that cannot be resized -- every number would have to be
- * recomputed by hand. Read c/apps/gui/gallery.c for the vocabulary; this app
+ * recomputed by hand. Read c/apps/gui/gallery/gallery.c for the vocabulary; this app
  * uses tabs, cards, toggles, sliders, dropdowns, text fields, a table and the
  * keyboard focus ring, all of which already existed.
  *

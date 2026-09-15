@@ -1,4 +1,4 @@
-#include "../../lib/agent/gui.h"
+#include "../../../lib/agent/gui.h"
 #include <stdio.h>
 #include <string.h>
 #include "aui.h"
@@ -471,7 +471,7 @@ static void frame(void)
     unsigned long long t0 = monotonic_ns();
     aui_begin(AUI_BG);
 
-    /* Test probe, the same device c/apps/gui/gallery.c uses: a 6x6 rect at
+    /* Test probe, the same device c/apps/gui/gallery/gallery.c uses: a 6x6 rect at
      * window-local (4,4) in a colour unique to the current tab. It gives the
      * QMP driver the window's content origin without hard-coding anything
      * about the compositor, and tells it which view is showing. Two facts one
@@ -566,8 +566,16 @@ void app_main(void)
             drew = 1;
             if (++secs % 5 == 0) { report_cost(); report_xcheck(); }
         }
-        (void)drew;
-        wait_idle(100);   /* was sys_yield(): a spin. the meters re-sample on their own clock */
+        /* Previously wait_idle(100) polled, but only the one-second refresh
+         * actually drew. AUI wheel/hover motion needs its own deadline between
+         * samples. Neither deadline restarts the other, and at rest the meter
+         * keeps only its genuine one-second sampling wake. */
+        if (!drew && aui_anim_due()) frame();
+        long long remaining = 1000 - (long long)(monotonic_ms() - last);
+        int wait_ms = remaining > 0 ? (int)remaining : 1;
+        int anim_ms = aui_anim_wait();
+        if (anim_ms > 0 && anim_ms < wait_ms) wait_ms = anim_ms;
+        wait_idle(wait_ms);
     }
 }
 
