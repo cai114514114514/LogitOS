@@ -52,6 +52,16 @@ These numbers have limits, and the first one is now the important one:
   the authorship policy. A hand-written change carrying a model trailer would
   pass unnoticed, and 146 commits carry no trailer at all. Read the count as
   evidence that agents did most of the recorded work, not as enforcement.
+- **The trailer is not always the author, and the census above inherits that.**
+  `CONTRIBUTING.md` sets eligibility floors for models that write production
+  code — released after July 2026, Artificial Analysis Intelligence Index above
+  40 — and that rule depends on the trailer naming who wrote the code. It does
+  not always. The boot self-hosting commits of 2026-09-15 name `Claude Opus 5
+  (1M context)`, which dispatched, verified and committed them; the
+  implementations came from `gpt-5.6-sol` running under the Codex CLI, a model
+  that appears in no trailer in this history. So the five-model list above is
+  the list of models that COMMITTED, not the list that wrote. The practice is
+  corrected going forward; the existing history is not rewritten.
 
 - A commit trailer does not measure who supplied an idea, reviewed a change, or
   typed each line.

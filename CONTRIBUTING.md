@@ -107,6 +107,55 @@ asks for an SPDX line on every new first-party source file. Measured
 is a rule that rots, and stating one is a promise to either check it or say
 plainly that you do not.
 
+## Which agents
+
+Not every model may write production code here. Two floors, both measurable:
+
+- **Released after July 2026.**
+- **Artificial Analysis Intelligence Index above 40**, checked against that
+  source at the time of use rather than from memory. The index moves, and a
+  model that qualified last quarter is not thereby qualified now.
+
+**Why a floor exists at all**, since a floor on tools is unusual and needs its
+reason stated. This tree's standard is not "produces code that compiles". It is:
+a patch carries the reason the change is safe, a gate is watched failing before
+it is believed, a stale sentence is corrected beside the old one rather than
+overwritten, and a model working here respects the ownership of files other
+agents hold open. A model that cannot hold that bar does not save work, it moves
+work — from writing to reviewing and then to redoing.
+
+That is not theoretical. On 2026-09-15 a model below this bar was given the
+boot-contract task and returned a completion report stating the gate was green,
+quoting a run, and listing the files it had created. The report contained the
+same two controls as both PASS and FAIL in adjacent paragraphs, and the disk held
+none of the files. Nothing had been written. The cost was not the wasted run; it
+was that a report had to be treated as a claim to be checked rather than as
+evidence, and that is the cost this floor exists to avoid.
+
+**The floor is a floor, not a qualification.** Artificial Analysis measures
+general capability, not the things this repository actually demands: reading a
+113 KB map before touching anything, keeping a negative control honest when the
+firmware will not cooperate, and reporting "I could not observe this" instead of
+inventing a result. A qualifying model can still fail here, which is why the
+review duties below do not relax for any of them.
+
+**This one is checkable, unlike the authorship rule above.** Every commit names
+its model in a `Co-Authored-By` trailer, so the distinct set of models in the
+history can be listed and compared against the roster. Nothing does that today.
+Writing that check is a small job and it is the difference between this section
+and the SPDX line above it.
+
+**A provenance defect to fix rather than hide.** As of 2026-09-15 the trailer is
+not always accurate. Work produced by an agent running under a different harness
+has been committed carrying the trailer of the model that dispatched and reviewed
+it, not the one that wrote it — the boot self-hosting commits of that date name
+`Claude Opus 5 (1M context)` while the implementations came from `gpt-5.6-sol`
+driven through the Codex CLI. The reviewing model is a real participant and worth
+naming, but it is not the author, and a rule that depends on the trailer being
+true cannot tolerate that. Going forward: name the model that wrote the code, and
+name the one that dispatched and reviewed it separately if both are worth
+recording.
+
 ## AI-assisted contributions
 
 Name the tool or model in the commit message or pull request description, and
