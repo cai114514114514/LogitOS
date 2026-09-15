@@ -1143,6 +1143,9 @@ struct css_context;
 struct css_context *css_context_create(void);
 struct css_context *css_context_activate(struct css_context *context);
 void css_context_destroy(struct css_context *context);
+/* Opt the selected context into its matching DOM/focus owner. The embedder
+ * must select that document for EVERY cascade/flush, not only JS callbacks. */
+void css_context_set_interactive(int interactive);
 /* Internal components remain separate TUs so reduced host links can omit them. */
 struct css_extra_context;
 struct css_extra_context *css_extra_context_create(void);

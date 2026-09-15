@@ -35,6 +35,12 @@
  */
 
 struct node;
+struct focus_context;
+/* Independent document holders. NULL selects the legacy top-level owner.
+ * Dispatch callbacks travel with the holder, never with another document. */
+struct focus_context *focus_context_create(void);
+struct focus_context *focus_context_activate(struct focus_context *);
+int focus_context_destroy(struct focus_context *);
 
 /* The dispatcher the embedder installs. Returns 1 if the default action should
  * proceed (i.e. nothing called preventDefault); focus events are not

@@ -33,6 +33,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from as_examples import guest_command
 
 ISO, DISK = sys.argv[1], sys.argv[2]
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
@@ -166,7 +171,8 @@ def events_since(mark):
 def stats():
     """Run evqstat.as and parse both stages of the input pipeline."""
     mark = len(log)
-    ser.sendall(b"as /usr/as/examples/evqstat.as\n")
+    command = guest_command(ROOT / "fsroot/as/examples/evqstat.as")
+    ser.sendall((command + "\n").encode())
     end = time.time() + 60
     while time.time() < end:
         pump(0.3)
@@ -229,7 +235,10 @@ if not wait_for("LOGIT_BOOT_OK", 180):
 pump(6)                                    # let the desktop launch Finder + Clock
 qcmd({"execute": "qmp_capabilities"})
 
-ser.sendall(b"as /usr/as/examples/events.as &\n")
+# The migrated examples ship as AEX files. A missing native artifact must
+# report an execution failure rather than silently invoking the retiring VM.
+command = guest_command(ROOT / "fsroot/as/examples/events.as", background=True)
+ser.sendall((command + "\n").encode())
 if not wait_for("EVENTS-READY", 90):
     die("events.as did not open its window")
 pump(1)

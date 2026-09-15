@@ -27,6 +27,7 @@
 #include "js_webapi.h"
 #include "js_platform.h"
 #include "js_module.h"
+#include "focus.h"
 #define JS_WORKER_OPTIONAL
 #include "js_worker.h"
 #define JS_PORTS_OPTIONAL
@@ -69,7 +70,8 @@ struct pframe {
     struct pf_script scripts[PF_SCRIPTS];int nscript,script,script_id,loaded,runtime_pending;
     unsigned long long mutation;
     int scroll_x,scroll_y;
-    struct node *press,*focus;uint32_t press_serial,focus_serial;
+    struct node *press;uint32_t press_serial;
+    int want_focus;
     struct pf_window *window;
     JSValue parent_proxy,message_dispatch;
     JSContext *ctx;struct dom_subscription policy_subscription;int policy_failed,retire;
@@ -157,6 +159,7 @@ static void drop_content(struct pframe *f)
     if(focused_frame==f)focused_frame=0;
     if(f->page){struct js_page_context *old=0;
         if(js_page_context_activate(f->page,&old)){
+            focus_reset();fc_set_dispatch(NULL);
             frame_window_close_child(f);
             js_page_close();js_page_context_activate(old,0);js_page_context_destroy(f->page);
         }f->page=0;
@@ -205,10 +208,16 @@ static int append_sheet(struct pframe *f,const char *text,int len,const char *ba
 }
 static int style_layout(struct pframe *f)
 {
+    /* Interactive CSS asks js_dom_dirty/focus_current. Styles fetched before
+     * the script pump must therefore select the child owner as well. Never
+     * try to switch away while a child focus callback is already on stack. */
+    struct js_page_context *page_old=NULL;int switched=f->ctx&&js_page_ctx()!=f->ctx;
+    if(switched&&!js_page_context_activate(f->page,&page_old))return 0;
     struct layout_context *old=layout_context_activate(f->layout);css_viewport(f->width,f->height);
     int len=css_expand_vars_alloc(f->css?f->css:"",f->csslen,&f->expanded,&f->expandedcap,PF_CSS);
     if(len>=0){css_apply(f->root,f->expanded,len);css_extra_apply(f->root,f->expanded,len);layout_page(f->root,f->width);if(!layout_items())len=-1;}
-    layout_context_activate(old);if(len<0)return 0;f->dirty=0;f->generation=next_generation++;return 1;
+    layout_context_activate(old);if(switched)js_page_context_activate(page_old,NULL);
+    if(len<0)return 0;f->dirty=0;f->generation=next_generation++;return 1;
 }
 static int prepare_document(struct pframe *f)
 {
@@ -277,6 +286,7 @@ static int frame_connect(void *owner,const char *url)
 static int frame_connected(struct pframe *f,struct node *n,uint32_t serial)
 {if(!n||n->serial!=serial)return 0;while(n&&n!=f->root)n=n->parent;return n==f->root;}
 #include "embedded_window.inc"
+#include "embedded_focus.inc"
 static void frame_policy_mutation(void *owner,const struct dom_mutation *m)
 {
     struct pframe *f=owner;
@@ -419,7 +429,8 @@ static int frame_runtime_open(struct pframe *f)
     if(ok){
         f->ctx=js_page_ctx();dom_subscribe(f->root->doc,&f->policy_subscription,frame_policy_mutation,f);
         JS_SetStringCodeGenerationAllowed(js_page_ctx(),iframe_policy_eval(f->csp));
-        ok=js_webapi_set_connect_policy(js_page_ctx(),frame_connect,f)&&frame_window_open_child(f);
+        ok=js_webapi_set_connect_policy(js_page_ctx(),frame_connect,f)&&frame_window_open_child(f)&&frame_focus_install(f);
+        if(ok)css_context_set_interactive(1);
         js_dom_set_inline_handler_policy(frame_inline_handlers);
         js_dom_set_script_sink(frame_script_offer);
         js_webapi_set_viewport(f->width,f->height);js_platform_set_viewport(f->width,f->height);
@@ -536,11 +547,17 @@ int passive_frame_pointer(struct node *host,const char *type,struct js_event_ini
     struct layout_context *layout_old=layout_context_activate(f->layout);active_frame=f;
     struct node *n=0;browser_hittest_node_scroll(event->client_x,event->client_y,f->scroll_x,f->scroll_y,&n,0,0);
     if(!strcmp(type,"mousedown")){
-        focused_frame=f;f->focus=f->press=n;f->focus_serial=f->press_serial=n?n->serial:0;
+        focused_frame=f;f->press=n;f->press_serial=n?n->serial:0;
         css_interaction_active(n);css_interaction_hover(n);
     }
     if(!strcmp(type,"mousemove"))css_interaction_hover(n);
     int allow=js_dom_dispatch(n?n:f->root,type,event);
+    if(!strcmp(type,"mousedown")&&allow){
+        if(js_dom_mutation_generation()!=f->mutation)style_layout(f);
+        if(n&&!frame_connected(f,n,f->press_serial))n=NULL;
+        struct node *candidate=n;while(candidate&&!focus_is_focusable(candidate))candidate=candidate->parent;
+        focus_set(candidate);f->want_focus=1;
+    }
     if(!strcmp(type,"mouseup")){
         css_interaction_active(0);
         if(allow&&n==f->press&&frame_connected(f,n,f->press_serial))js_dom_dispatch(n,"click",event);
@@ -552,15 +569,16 @@ int passive_frame_pointer(struct node *host,const char *type,struct js_event_ini
         js_dom_set_scroll(f->scroll_x,f->scroll_y);
     }
     f->dirty=1;f->generation=next_generation++;
-    active_frame=0;layout_context_activate(layout_old);js_page_context_activate(old,0);return 1;
+    active_frame=0;layout_context_activate(layout_old);js_page_context_activate(old,0);frame_focus_commit_parent(f);return 1;
 }
 int passive_frame_key(struct js_event_init *event)
 {
     struct pframe *f=focused_frame;if(!f||!f->page)return 0;
     struct js_page_context *old=0;if(!js_page_context_activate(f->page,&old))return 0;
     struct layout_context *layout_old=layout_context_activate(f->layout);active_frame=f;
-    struct node *n=frame_connected(f,f->focus,f->focus_serial)?f->focus:f->root;
-    js_dom_dispatch(n,"keydown",event);
+    struct node *n=focus_current();if(!n)n=f->root;
+    int allow=js_dom_dispatch(n,"keydown",event);
+    if(allow&&event->key&&!strcmp(event->key,"Tab")){focus_advance(f->root,event->shift);f->want_focus=1;}
     f->dirty=1;f->generation=next_generation++;
     active_frame=0;layout_context_activate(layout_old);js_page_context_activate(old,0);return 1;
 }
@@ -668,6 +686,7 @@ int passive_frames_update(struct node *root,unsigned long long mutation)
         int w,h;if(host_size(f->host,&w,&h)&&(w!=f->width||h!=f->height)){f->width=w;f->height=h;f->dirty=1;changed=1;}
         changed|=advance_frame(f);
         if(f->page&&f->state>=PF_PIXELS&&f->state<=PF_READY)changed|=frame_runtime_pump(f);
+        frame_focus_commit_parent(f);
     }}
     return changed;
 }

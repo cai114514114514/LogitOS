@@ -23,6 +23,13 @@
 #include "js_platform.h"
 #define JS_PORTS_OPTIONAL
 #include "js_ports.h"
+#include "focus.h"
+struct focus_context *focus_context_create(void) LOGIT_WEAK;
+struct focus_context *focus_context_activate(struct focus_context *) LOGIT_WEAK;
+int focus_context_destroy(struct focus_context *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(focus_context_create);
+LOGIT_WEAK_STUB(focus_context_activate);
+LOGIT_WEAK_STUB(focus_context_destroy);
 /* MediaSource / SourceBuffer / HTMLMediaElement -- js_media.c, weak for the
  * same reason as the two above: the host tests of THIS file link without it and
  * simply come up with no media. */
@@ -1692,6 +1699,7 @@ int js_page_eval(const char *src, int len, const char *filename, struct node *no
 
 struct js_page_context {
     struct js_dom_context *dom;
+    struct focus_context *focus;
     struct js_webapi_context *webapi;
     struct js_platform_context *platform;
     struct js_worker_context *workers;
@@ -1710,6 +1718,10 @@ struct js_page_context *js_page_context_create(void)
     if (!s) return 0;
     s->dom=js_dom_context_create();
     if (!s->dom) { free(s); return 0; }
+    if(LOGIT_HAVE(focus_context_create)){
+        s->focus=focus_context_create();
+        if(!s->focus){js_dom_context_destroy(s->dom);free(s);return 0;}
+    }
     s->g_page=&s->queue;
     s->g_slice_ms=g_slice_ms;
     s->g_slice_fuel_max=g_slice_fuel_max;
@@ -1769,6 +1781,7 @@ int js_page_context_activate(struct js_page_context *next,
     }
     if (LOGIT_HAVE(js_webapi_context_activate)) js_webapi_context_activate(next->webapi);
     if (LOGIT_HAVE(js_platform_context_activate)) js_platform_context_activate(next->platform);
+    if(LOGIT_HAVE(focus_context_activate))focus_context_activate(next->focus);
     if (next!=old) {
 #define PAGE_SAVE(n) memcpy(&old->n,&n,sizeof n);
         PAGE_CONTEXT_FIELDS(PAGE_SAVE)
@@ -1807,6 +1820,7 @@ int js_page_context_destroy(struct js_page_context *s)
     }
     s->dom=0;
     js_page_context_activate(previous==s ? 0 : previous,0);
+    if(s->focus)focus_context_destroy(s->focus);
     free(s);
     return 1;
 }

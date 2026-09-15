@@ -1,6 +1,6 @@
 PASSIVE_FRAME_BASE = $(sort $(filter-out tests/unit/navigation_base_test.c,$(NAVIGATION_BASE_SRC)) c/apps/browser/js_url.c c/apps/browser/passive_frame.c c/apps/browser/iframe_policy.c) tests/unit/passive_frame_test.c
 PASSIVE_FRAME_SRC = $(PASSIVE_FRAME_BASE) $(filter-out $(PASSIVE_FRAME_BASE),$(IMGCHK_SRC))
-PASSIVE_FRAME_DEPS = $(PASSIVE_FRAME_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/browser/embedded_window.inc tests/passive_frame.mk
+PASSIVE_FRAME_DEPS = $(PASSIVE_FRAME_SRC) $(RUNTIME_SCROLL_DEPS) c/apps/browser/embedded_window.inc c/apps/browser/embedded_focus.inc tests/passive_frame.mk
 PASSIVE_FRAME_DIR = $(BUILD)/passive-frame
 $(PASSIVE_FRAME_DIR)/current: $(PASSIVE_FRAME_DEPS)
 	@mkdir -p $(PASSIVE_FRAME_DIR)
@@ -64,6 +64,23 @@ test-frame-tab-policy-san: test-frame-tab-policy
 	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/tab-policy-san $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
 	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/tab-policy-san active-ports-restore
 ci-host: test-frame-tab-policy
+
+$(PASSIVE_FRAME_DIR)/no-element-focus: $(FRAME_PORT_DEP)
+	@mkdir -p $(PASSIVE_FRAME_DIR)
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DPF_TEST_NO_ELEMENT_FOCUS -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+.PHONY: test-frame-focus test-frame-focus-negctl test-frame-focus-san
+$(PASSIVE_FRAME_DIR)/shared-element-focus: $(FRAME_PORT_DEP)
+	@mkdir -p $(PASSIVE_FRAME_DIR)
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -DFOCUS_TEST_SHARED_OWNER -o $@ $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+test-frame-focus-negctl: $(PASSIVE_FRAME_DIR)/no-element-focus $(PASSIVE_FRAME_DIR)/shared-element-focus
+	@rc=0; $(PASSIVE_FRAME_DIR)/no-element-focus active-focus > $(PASSIVE_FRAME_DIR)/no-element-focus.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/no-element-focus.log
+	@rc=0; $(PASSIVE_FRAME_DIR)/shared-element-focus active-focus > $(PASSIVE_FRAME_DIR)/shared-element-focus.log 2>&1 || rc=$$?; test $$rc -eq 1 && grep -q '^FAIL: native child click and bidirectional message repaint embedded pixels' $(PASSIVE_FRAME_DIR)/shared-element-focus.log
+test-frame-focus: test-frame-focus-negctl $(PASSIVE_FRAME_DIR)/ports
+	@$(PASSIVE_FRAME_DIR)/ports active-focus
+test-frame-focus-san: test-frame-focus
+	@$(CC) $(RUNTIME_SCROLL_CF) $(IMG_HOST_INC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -o $(PASSIVE_FRAME_DIR)/focus-san $(FRAME_PORT_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+	@ASAN_OPTIONS=detect_leaks=0 $(PASSIVE_FRAME_DIR)/focus-san active-focus
+ci-host: test-frame-focus
 
 PASSIVE_TRANSPORT_SRC = $(filter-out tests/unit/range_test.c,$(RANGE_SRC)) tests/unit/passive_frame_transport_test.c c/net/http/cookies.c
 .PHONY: test-passive-frame-transport test-passive-frame-transport-negctl

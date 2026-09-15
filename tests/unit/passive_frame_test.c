@@ -13,6 +13,7 @@
 #include "passive_frame.h"
 #include "js_dom.h"
 #include "bfetch.h"
+#include "focus.h"
 void app_main(void);
 static int stage,polls,finished,embed_requests,resource_requests,mutated;
 static const char *mode;
@@ -76,6 +77,7 @@ static void finish(void){finished=1;CHECK(!strcmp(js_page_location(),parent),"em
   CHECK(textop("FRAME-MESSAGE")!=0,"native child click and bidirectional message repaint embedded pixels");
   CHECK(expr("got===1 && bad===0 && sourceOK"),"parent receives exact child origin and stable source identity");
   CHECK(!js_dom_has_activation(),"window messages do not grant parent user activation");
+  if(!strcmp(mode,"active-focus"))CHECK(focus_current()==dom_get_element_by_id_in(js_dom_root(),"f"),"parent focus holder is the iframe host, never a child node");
   CHECK(fake_site_fetched("active.js")== (restore_mode()?2:1),"external classic child script loaded once per document runtime");
   if(restore_mode()){
    CHECK(restored==2&&fake_site_fetched("page.html")==1,"restored tab reuses its original document bytes");
@@ -139,6 +141,28 @@ int main(int argc,char **argv){mode=argc>1?argv[1]:"paint";blocked=!strcmp(mode,
  const char *child="<!doctype html><head><base href='https://child.test/'><link rel=stylesheet href='/child.css'></head><body><span id=inside>FRAME-CONTENT</span><img src='/qr.svg' width=32 height=32><input type=file value=FORGED-FILE><input type=password value=SECRET-MARKUP><video></video><canvas width=2 height=2></canvas><script>childRan=true</script><script src='/never.js'></script><iframe src='/nested.html'></iframe></body>";
  fake_site_reset();fake_site_add(parent,page);char child_page[1800];snprintf(child_page,sizeof child_page,"%s%s",!strcmp(mode,"base-blocked")?"<base href='https://forbidden.test/'>":"",child);if(!strcmp(mode,"static")){char *a;while((a=strstr(child_page,"<script"))!=0){char *b=strstr(a,"</script>");if(!b)break;memmove(a,b+9,strlen(b+9)+1);}}if(active())strcpy(child_page,"<!doctype html><style>body{margin:0}#inside{display:block;width:190px;height:70px;background:#9f9}</style><body><div id=inside>FRAME-PENDING</div><script src='/active.js'></script></body>");fake_site_add("https://child.test/child.html",child_page);fake_site_add("https://child.test/child.css","body{margin:0}#inside{display:block;color:#c02020;font-size:12px}");fake_site_add("https://child.test/qr.svg","<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='white'/><path d='M0 0h12v12H0zM20 0h12v12H20zM0 20h12v12H0zM18 18h8v8h-8z' fill='black'/></svg>");
  fake_site_add("https://child.test/active.js","var childRan=true;var box=document.getElementById('inside');box.textContent='FRAME-READY';box.addEventListener('click',function(e){if(!e.isTrusted||e.clientX<0||e.clientX>=200)throw Error('input coordinates');parent.postMessage('wrong','https://not-parent.test');parent.postMessage('clicked','https://parent.test');});addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply')box.textContent='FRAME-MESSAGE';});");
+ if(!strcmp(mode,"active-focus")){
+  fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
+  fake_site_add("https://child.test/active.js",
+    "var box=document.getElementById('inside');box.setAttribute('tabindex','0');box.textContent='FRAME-READY';"
+    "function check(x,m){if(!x)throw Error(m)};"
+    "box.addEventListener('click',function(e){"
+    "check(e.isTrusted,'native click');box.blur();check(document.activeElement===document.body,'blur owner');"
+    "var events=[];function f(e){events.push(e.type);check(document.activeElement===box,'focus event owner')}"
+    "box.addEventListener('focus',f);box.addEventListener('focusin',f);box.focus();"
+    "check(events.join(',')==='focus,focusin','focus event sequence');"
+    "box.removeEventListener('focus',f);box.removeEventListener('focusin',f);"
+    "var detached=document.createElement('button');detached.focus();check(document.activeElement===box,'detached refusal');"
+    "var other=document.createElement('button');document.body.appendChild(other);other.setAttribute('disabled','');other.focus();check(document.activeElement===box,'disabled refusal');"
+    "other.removeAttribute('disabled');other.setAttribute('inert','');other.focus();check(document.activeElement===box,'inert refusal');other.removeAttribute('inert');"
+    "other.style.display='none';other.focus();check(document.activeElement===box,'hidden refusal');other.style.display='block';"
+    "other.addEventListener('focus',function(){box.focus()});var stale=0;other.addEventListener('focusin',function(){stale++});other.focus();"
+    "check(document.activeElement===box&&stale===0,'reentrant focus owner');other.remove();"
+    "var removed=document.createElement('span');removed.setAttribute('tabindex','-1');document.body.appendChild(removed);removed.focus();"
+    "check(document.activeElement===removed,'negative tabindex');removed.remove();check(document.activeElement===document.body,'removed fallback');box.focus();"
+    "parent.postMessage('clicked','https://parent.test');});"
+    "addEventListener('message',function(e){if(e.origin==='https://parent.test'&&e.source===parent&&e.data==='reply'&&document.activeElement===box)box.textContent='FRAME-MESSAGE';});");
+ }
  if(port_mode()){
   fake_site_reset();fake_site_add(parent,page);fake_site_add("https://child.test/child.html",child_page);
   fake_site_add("https://child.test/active.js",

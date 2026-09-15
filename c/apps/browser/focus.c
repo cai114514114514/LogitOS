@@ -19,10 +19,37 @@
 #include "dom.h"
 #include "css.h"
 #include "top_layer.h"
+#include <stdlib.h>
 
 /* ------------------------------------------------------------ dispatch -- */
 
-static fc_dispatch_fn g_dispatch;
+/* A frame must not install its JS dispatcher over the parent's callback or
+ * move the parent's focused-node pointer. These fields contain no JSValues;
+ * the page owner selects them alongside its DOM before invoking script. */
+struct focus_context {
+    fc_dispatch_fn dispatch;
+    fc_dispatch_input_fn dispatch_input;
+    struct node *node;
+    uint32_t serial;
+};
+static struct focus_context default_focus,*focus_owner=&default_focus;
+#define g_dispatch (focus_owner->dispatch)
+#define g_dispatch_input (focus_owner->dispatch_input)
+#define g_focus (focus_owner->node)
+#define g_serial (focus_owner->serial)
+struct focus_context *focus_context_create(void){return calloc(1,sizeof(struct focus_context));}
+struct focus_context *focus_context_activate(struct focus_context *s)
+{
+    struct focus_context *old=focus_owner;
+#ifdef FOCUS_TEST_SHARED_OWNER
+    (void)s;focus_owner=&default_focus;
+#else
+    focus_owner=s?s:&default_focus;
+#endif
+    return old==&default_focus?NULL:old;
+}
+int focus_context_destroy(struct focus_context *s)
+{if(!s||s==&default_focus||s==focus_owner)return 0;free(s);return 1;}
 
 void fc_set_dispatch(fc_dispatch_fn fn) { g_dispatch = fn; }
 
@@ -36,7 +63,6 @@ int fc_dispatch(struct node *target, const char *type, int bubbles, int cancelab
  * fallback below is the whole reason -- with no rich dispatcher installed the
  * editing events still fire, they simply carry no inputType. Nothing that works
  * without it breaks when it is absent. */
-static fc_dispatch_input_fn g_dispatch_input;
 
 void fc_set_dispatch_input(fc_dispatch_input_fn fn) { g_dispatch_input = fn; }
 
@@ -211,8 +237,6 @@ int focus_is_focusable(struct node *n)
 
 /* ------------------------------------------------- the focused element -- */
 
-static struct node *g_focus;
-static uint32_t     g_serial;
 
 void focus_reset(void) { g_focus = 0; g_serial = 0; }
 
@@ -246,6 +270,7 @@ int focus_set(struct node *n)
     if (n && n->type != N_ELEM) n = 0;
     if (n && !focus_is_focusable(n)) n = 0;
     if (old == n) return 0;
+    uint32_t old_serial=old?old->serial:0,new_serial=n?n->serial:0;
 
     /* The new element is recorded BEFORE the events fire, so a blur handler
      * that reads document.activeElement, or one that calls focus() on a third
@@ -254,14 +279,16 @@ int focus_set(struct node *n)
 
     if (old) {
         fc_dispatch(old, "blur", 0, 0);
-        fc_dispatch(old, "focusout", 1, 0);
+        if(old->serial==old_serial)fc_dispatch(old, "focusout", 1, 0);
     }
     if (n) {
         /* A blur handler may have moved focus again; only announce the element
          * that actually ended up with it. */
-        if (focus_current() == n) {
+        if (focus_current() == n && n->serial==new_serial) {
             fc_dispatch(n, "focus", 0, 0);
-            fc_dispatch(n, "focusin", 1, 0);
+            /* focus itself can synchronously focus a third element. Do not
+             * announce focusin for an identity that no longer owns focus. */
+            if(focus_current()==n&&n->serial==new_serial)fc_dispatch(n, "focusin", 1, 0);
         }
     }
     return 1;

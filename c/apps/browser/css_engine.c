@@ -357,6 +357,8 @@ struct css_ui_handle { struct node *node; uint32_t serial; };
 static struct css_ui_handle ui_hover, ui_active, ui_focus;
 static unsigned long ui_revision = 1, ui_rendered;
 static int g_css_passive;
+void css_context_set_interactive(int interactive)
+{g_css_passive=!interactive;ui_revision++;}
 static struct node *ui_live(struct css_ui_handle *h)
 {
     struct node *n = h->node;
