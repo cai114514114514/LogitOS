@@ -35,8 +35,8 @@
 #define LOGIT_BOOT_IDENTITY_PAGE_BYTES   0x00200000
 #define LOGIT_BOOT_BASE_PAGE_BYTES       0x00001000
 
-/* These are intentionally outside Multiboot2's namespace.  Unknown tags are
- * skipped using size rounded up to eight bytes; END must be last. */
+/* These are intentionally outside the retired Multiboot2 namespace. Unknown
+ * tags are skipped using size rounded up to eight bytes; END must be last. */
 #define LOGIT_BOOT_TAG_MEMORY_MAP        0x4c420101
 #define LOGIT_BOOT_TAG_FRAMEBUFFER       0x4c420102
 #define LOGIT_BOOT_TAG_ACPI_OLD          0x4c420103
@@ -44,6 +44,15 @@
 #define LOGIT_BOOT_TAG_END               0x4c42ffff
 #define LOGIT_BOOT_TAG_NAMESPACE_MASK    0xffff0000
 #define LOGIT_BOOT_TAG_NAMESPACE         0x4c420000
+
+/* Memory kinds preserve the firmware/E820 values already consumed by pmm.c.
+ * Renumbering them would buy no native-protocol property and would make the
+ * entry adapter translate descriptor contents as well as tag provenance. */
+#define LOGIT_BOOT_MEMORY_AVAILABLE      1
+#define LOGIT_BOOT_MEMORY_RESERVED       2
+#define LOGIT_BOOT_MEMORY_ACPI_RECLAIM   3
+#define LOGIT_BOOT_MEMORY_NVS            4
+#define LOGIT_BOOT_MEMORY_BADRAM         5
 
 struct logit_boot_header {
     uint32_t magic;
@@ -59,9 +68,10 @@ struct logit_boot_tag {
     uint32_t size;
 } __attribute__((packed));
 
-/* Payloads deliberately retain the useful MB2 shapes.  Only provenance and
- * type numbers change, so entry-time normalization can leave one reader per
- * fact rather than teaching every consumer a second tag walker. */
+/* Payloads deliberately retain the useful shapes of the retired protocol.
+ * Only provenance and type numbers change, so entry-time normalization can
+ * leave one reader per fact rather than teaching every consumer a second tag
+ * walker. The compatibility is internal layout reuse, not a second boot ABI. */
 struct logit_boot_mmap_entry {
     uint64_t addr;
     uint64_t len;

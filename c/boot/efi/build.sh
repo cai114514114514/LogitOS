@@ -25,13 +25,10 @@ OUT="$ROOT/build"
 CC="${CC:-clang}"
 LINK="${LINK:-lld-link}"
 
-# Two knobs, both used by tests/boot/run-uefi-test.sh's negative control:
+# Two knobs, both used by the native protocol controls:
 #   EFI_OUT       where to write the image (default build/BOOTX64.EFI)
-#   EFI_CPPFLAGS  extra defines, notably -DEFI_BAD_MAGIC, which makes the
-#                 trampoline hand the kernel one wrong nibble of Multiboot2
-#                 magic so that boot.asm's check_multiboot can be proved to
-#                 run on this path (see the comment on MB2_MAGIC in
-#                 trampoline.S -- it is where the reasoning lives).
+#   EFI_CPPFLAGS  extra defines for bad-version, high-info and early-EBS
+#                 controls. Native v1 is the only production protocol.
 # The object directory is derived from the output name so the two builds
 # cannot overwrite each other's .obj files, which would make the control pass
 # or fail depending on build order -- the worst kind of flake.
@@ -76,12 +73,6 @@ CFLAGS=(
 echo "[efi-build] cc   loader.c"
 "$CC" "${CFLAGS[@]}" $EFI_CPPFLAGS -c "$SRC/loader.c" -o "$OBJ/loader.obj"
 
-# .S and not .s: the trampoline is preprocessed, which is what lets EFI_BAD_MAGIC
-# and the selector/COM1 names be spelled once instead of as bare numbers.
-echo "[efi-build] as   trampoline.S"
-"$CC" --target=x86_64-unknown-windows $EFI_CPPFLAGS \
-      -c "$SRC/trampoline.S" -o "$OBJ/trampoline.obj"
-
 # /subsystem:efi_application  PE subsystem 10 (UEFI 2.10 sec 2.1.1). This is
 #                             what makes the firmware willing to run the file.
 # /entry:efi_main             lld's default entry name for this subsystem is not
@@ -97,10 +88,9 @@ echo "[efi-build] as   trampoline.S"
 #                             itself been given, and the refusal it printed was
 #                             correct and self-inflicted. Any preferred base
 #                             clear of the kernel's ~12 MiB image works; 256 MiB
-#                             is comfortably clear and comfortably below 4 GiB,
-#                             which the descent in trampoline.S requires.
-#                             loader.c verifies the ACTUAL placement anyway
-#                             (below 4 GiB, and disjoint from the kernel span),
+#                             is comfortably clear and inside the native 1-GiB
+#                             identity runway. loader.c verifies the ACTUAL
+#                             placement and disjointness from the kernel span,
 #                             because a preferred base is a request.
 #
 # NOT passed: /align. lld-link already gives SectionAlignment 4096 and
@@ -115,7 +105,7 @@ echo "[efi-build] link $(basename "$EFI_OUT")"
   /nodefaultlib \
   /base:0x10000000 \
   /out:"$EFI_OUT" \
-  "$OBJ/loader.obj" "$OBJ/trampoline.obj"
+  "$OBJ/loader.obj"
 
 # ---- the gate's first half, run here so it cannot be forgotten -------------
 # A PE that the firmware silently refuses looks exactly like a machine that did
@@ -149,8 +139,8 @@ echo "[efi-build] -> $EFI_OUT"
 # of work this week). When it is free, this is the whole change:
 #
 #   BOOTX64 := $(BUILD)/BOOTX64.EFI
-#   EFI_SRC := c/boot/efi/loader.c c/boot/efi/trampoline.S \
-#              c/boot/efi/efi.h c/boot/efi/mb2.h
+#   EFI_SRC := c/boot/efi/loader.c c/boot/efi/efi.h \
+#              c/boot/efi/load_policy.h
 #
 #   $(BOOTX64): $(EFI_SRC)
 #   	@bash c/boot/efi/build.sh
@@ -164,8 +154,8 @@ echo "[efi-build] -> $EFI_OUT"
 #     c/crypto`, which does not include c/boot at all, so loader.c cannot leak
 #     into the kernel link.
 #   * ASM_SRC (Makefile:254) is `$(wildcard c/boot/*.asm)` -- non-recursive AND
-#     .asm only, so trampoline.S is invisible to it twice over.
-#   * INCDIRS (Makefile:79) DOES pick up c/boot/efi, which is why efi.h and
-#     mb2.h were checked to be globally unique basenames before being created,
-#     and why the ELF structs live inside loader.c instead of an elf.h that
+#     .asm only, so the UEFI loader is invisible to it.
+#   * INCDIRS (Makefile:79) DOES pick up c/boot/efi, which is why efi.h was
+#     checked to be a globally unique basename before being created, and why
+#     the ELF structs live inside loader.c instead of an elf.h that
 #     would shadow c/kernel/exec/elf.h. See CLAUDE.md, "Source layout".

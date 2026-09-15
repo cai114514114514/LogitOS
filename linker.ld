@@ -2,14 +2,13 @@
  *
  * The kernel is loaded at 32 MiB.  The old conventional 1 MiB address crosses
  * firmware-owned low-memory ranges on real UEFI machines (and OVMF puts ACPI
- * NVS in the old image span). 32 MiB remains inside boot.asm's first-1-GiB
- * identity map while leaving that firmware workspace alone. Both GRUB and the
- * self-built UEFI loader consume this same ELF physical address. The
- * Multiboot2 header is forced to the very front so GRUB still finds it within
- * the first 32 KiB of the file.
+ * NVS in the old image span). 32 MiB remains inside the native protocol's
+ * first-1-GiB identity runway while leaving that firmware workspace alone.
+ * The .boot placement below remains solely for the one-release GRUB escape
+ * hatch and test-only oracle; shipping kernels contribute no scanned header.
  */
 
-ENTRY(start)
+ENTRY(logit_native_start)
 
 SECTIONS
 {

@@ -1,5 +1,11 @@
 ; ============================================================================
-; Logit OS - 32-bit boot entry
+; TEST-ONLY GRUB oracle - 32-bit Multiboot2 entry
+;
+; This source is deliberately outside c/boot, so the wildcard that builds a
+; shipping kernel cannot include it.  GRUB remains an independent description
+; of the fixed SeaBIOS machine for the native-loader differential.  It cannot
+; catch firmware differences outside that QEMU invocation, and it must never
+; be used as evidence that Multiboot2 is a supported product entry.
 ;
 ; GRUB hands control here in 32-bit protected mode (per Multiboot2). We:
 ;   1. set up a stack

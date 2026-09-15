@@ -1,5 +1,9 @@
 ; ============================================================================
-; Logit OS - Multiboot2 header
+; TEST-ONLY GRUB oracle - Multiboot2 header
+;
+; This header is scanned only in the separately linked oracle kernel.  It is
+; absent from every shipping kernel; moving it here, instead of replacing it
+; with a native-looking header, preserves GRUB as an independent test oracle.
 ;
 ; GRUB scans the first 32 KiB of the kernel image for this 8-byte-aligned
 ; structure. The linker script places this section first (at 32 MiB), so the

@@ -457,15 +457,24 @@ $(KERNEL): $(OBJ) $(RUST_LIB) linker.ld
 PRODUCT_BIOS_DIR := $(BUILD)/bios-product
 PRODUCT_BIOS_PRELOAD := $(PRODUCT_BIOS_DIR)/preload.bin
 PRODUCT_BIOS_LOADER := $(PRODUCT_BIOS_DIR)/loader.bin
+PRODUCT_BIOS_ABI_INC := $(PRODUCT_BIOS_DIR)/logit_boot.inc
 GRUB_ISO := $(BUILD)/logit-grub.iso
+GRUB_KERNEL := $(BUILD)/grub-oracle-kernel.elf
+GRUB_INPUT_KERNEL ?= $(GRUB_KERNEL)
+GRUB_BOOT_OBJ := $(BUILD)/tests/fixtures/bootoracle/boot.o
+GRUB_HEADER_OBJ := $(BUILD)/tests/fixtures/bootoracle/multiboot2.o
 
 $(PRODUCT_BIOS_PRELOAD): c/boot/bios/preload.asm
 	@mkdir -p $(PRODUCT_BIOS_DIR)
 	$(ASM) -f bin -o $@ $<
 
-$(PRODUCT_BIOS_LOADER): c/boot/bios/loader.asm
+$(PRODUCT_BIOS_ABI_INC): include/abi/logit_boot.h
 	@mkdir -p $(PRODUCT_BIOS_DIR)
-	$(ASM) -f bin -o $@ $<
+	@awk '/^#define LOGIT_BOOT_(MAGIC|VERSION|HEADER_SIZE|IDENTITY_MAP_BYTES|IDENTITY_PAGE_BYTES|BASE_PAGE_BYTES|TAG_|MEMORY_)/ { print "%define " $$2 " " $$3 }' $< >$@
+
+$(PRODUCT_BIOS_LOADER): c/boot/bios/loader.asm $(PRODUCT_BIOS_ABI_INC)
+	@mkdir -p $(PRODUCT_BIOS_DIR)
+	$(ASM) -f bin -DLOADER_NATIVE -I$(PRODUCT_BIOS_DIR)/ -o $@ $<
 
 $(ISO): $(KERNEL) tools/mkiso.py $(PRODUCT_BIOS_PRELOAD) $(PRODUCT_BIOS_LOADER)
 	python3 tools/mkiso.py $@ --boot-image $(PRODUCT_BIOS_PRELOAD) \
@@ -474,9 +483,17 @@ $(ISO): $(KERNEL) tools/mkiso.py $(PRODUCT_BIOS_PRELOAD) $(PRODUCT_BIOS_LOADER)
 .PHONY: iso-grub
 iso-grub: $(GRUB_ISO)
 
-$(GRUB_ISO): $(KERNEL) grub.cfg
+$(GRUB_KERNEL): $(OBJ) $(RUST_LIB) linker.ld $(GRUB_BOOT_OBJ) $(GRUB_HEADER_OBJ)
+	$(LD) $(LDFLAGS) -e start -Map=$(BUILD)/grub-oracle-kernel.map -o $@ \
+	    --start-group $(OBJ) $(RUST_LIB) $(GRUB_BOOT_OBJ) $(GRUB_HEADER_OBJ) --end-group
+
+# One-release escape hatch and differential oracle. The shipping kernel has no
+# scanned header or 32-bit entry; only this separately named test kernel does.
+# GRUB is still independent of both native loaders, but this fixed-QEMU oracle
+# cannot catch differences in other firmware or real-machine memory maps.
+$(GRUB_ISO): $(GRUB_INPUT_KERNEL) grub.cfg
 	@mkdir -p $(ISO_DIR)/boot/grub
-	cp $(KERNEL) $(ISO_DIR)/boot/kernel.elf
+	cp $(GRUB_INPUT_KERNEL) $(ISO_DIR)/boot/kernel.elf
 	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
 	# DUE 2026-10-15: remove this one-release bisection escape hatch after the self-hosted ISO has baked for 30 days.
 	$(GRUB_RESCUE) -o $@ $(ISO_DIR)
@@ -1671,13 +1688,13 @@ QEMU_DISK := -drive file=$(DISK),format=raw,if=none,id=hd0 -device virtio-blk-pc
 # 1 GiB, and THAT NUMBER IS A CEILING RATHER THAN A PREFERENCE. Do not raise
 # it without reading the next paragraph -- the machine will still boot.
 #
-# c/boot/boot.asm:80 identity-maps EXACTLY the first 1 GiB, one PD of 512
-# 2 MiB pages, and c/kernel/mm/mmhost.h:43 makes that an assumption the whole
+# Both native loaders identity-map EXACTLY the first 1 GiB with one PD of 512
+# 2 MiB pages, and c/kernel/mm/mmhost.h makes that an assumption the whole
 # kernel rests on: mm_p2v(phys) is `(void *)phys`, with the file's own comment
 # saying so -- "the kernel identity-maps the low 1 GiB, so phys == virt".
 #
-# Nothing clamps the allocator to that. pmm.c:251 takes total_frames from the
-# multiboot map, and pmm_init frees every AVAILABLE region firmware reports
+# Nothing clamps the allocator to that. pmm.c takes total_frames from the
+# boot map, and pmm_init frees every AVAILABLE region firmware reports
 # (`release(me->addr, me->len)`), so with more than 1 GiB the PMM hands out
 # frames it has no way to address. The kernel then does the ordinary thing --
 # e.g. next_table()'s `memset(mm_p2v(frame), 0, 4096)` -- and writes to a

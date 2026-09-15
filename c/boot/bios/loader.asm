@@ -2,14 +2,13 @@ BITS 16
 ORG 0
 
 %define COM1                 0x3f8
-%define MB2_MAGIC            0x36d76289
 %define MMAP_BUFFER          0x5000
 %define MMAP_ENTRY_BYTES     24
 %define MMAP_MAX_ENTRIES     128
 %define VBE_INFO             0x6000
 %define VBE_MODE_INFO        0x6200
-%define MB2_INFO             0x8000
-%define MB2_LIMIT            0xa000
+%define BOOT_INFO            0x8000
+%define BOOT_INFO_LIMIT      0xa000
 %define PHDR_BUFFER          0x3000
 %define PHDR_BUFFER_BYTES    (MMAP_BUFFER - PHDR_BUFFER)
 %define BOUNCE_SEGMENT       0x7000
@@ -31,20 +30,12 @@ ORG 0
 %define NATIVE_PD            0x01fff000
 %define NATIVE_CONTROL_PT    0x01ffc000
 
-%ifdef LOADER_NATIVE
 %include "logit_boot.inc"
 %define BOOT_TAG_MMAP        LOGIT_BOOT_TAG_MEMORY_MAP
 %define BOOT_TAG_FRAMEBUFFER LOGIT_BOOT_TAG_FRAMEBUFFER
 %define BOOT_TAG_ACPI_OLD    LOGIT_BOOT_TAG_ACPI_OLD
 %define BOOT_TAG_ACPI_NEW    LOGIT_BOOT_TAG_ACPI_NEW
 %define BOOT_TAG_END         LOGIT_BOOT_TAG_END
-%else
-%define BOOT_TAG_MMAP        6
-%define BOOT_TAG_FRAMEBUFFER 8
-%define BOOT_TAG_ACPI_OLD    14
-%define BOOT_TAG_ACPI_NEW    15
-%define BOOT_TAG_END         0
-%endif
 
 %ifndef LOADER_HANDOFF
 %define LOADER_HANDOFF load_kernel_and_enter
@@ -110,10 +101,8 @@ loader_entry:
     call find_rsdp
     call probe_vbe
     call build_boot_info
-    jc mb2_failed
+    jc boot_info_failed
 
-    mov eax, MB2_MAGIC
-    mov ebx, MB2_INFO
     jmp LOADER_HANDOFF
 
 a20_failed:
@@ -126,8 +115,8 @@ e820_failed:
     call serial_print
     jmp loader_halt
 
-mb2_failed:
-    mov si, mb2_fail
+boot_info_failed:
+    mov si, boot_info_fail
     call serial_print
 
 loader_halt:
@@ -257,8 +246,8 @@ collect_e820:
     jne .bad
     cmp ecx, 20
     jb .bad
-    ; E820 may return only the original 20-byte structure.  MB2 entries have a
-    ; fixed 24-byte stride here, so the non-firmware tail is deterministically
+    ; E820 may return only the original 20-byte structure. Native entries have
+    ; a fixed 24-byte stride here, so the non-firmware tail is deterministically
     ; zero rather than leaking the request attribute into the block.
     mov dword [es:di + 20], 0
     inc bp
@@ -418,8 +407,8 @@ validate_rsdp:
     ret
 
 ; Select exactly the optional 1024x768x32 direct-colour linear mode requested
-; by the existing MB2 header.  If VBE is absent (the shipping -vga none path),
-; unsupported, or refuses the mode, vbe_present remains zero and tag 8 is
+; by the native framebuffer policy. If VBE is absent (the shipping -vga none
+; path), unsupported, or refuses the mode, vbe_present remains zero and the tag is
 ; absent.  A text-mode address must never be dressed up as a framebuffer tag.
 probe_vbe:
     mov byte [vbe_present], 0
@@ -516,8 +505,7 @@ probe_vbe:
 build_boot_info:
     xor ax, ax
     mov es, ax
-    mov di, MB2_INFO
-%ifdef LOADER_NATIVE
+    mov di, BOOT_INFO
     mov dword [es:di], LOGIT_BOOT_MAGIC
 %ifdef LOADER_NEGCTL_NATIVE_BAD_VERSION
     mov word [es:di + 4], LOGIT_BOOT_VERSION + 1
@@ -530,15 +518,10 @@ build_boot_info:
     mov dword [es:di + 16], 0
     mov dword [es:di + 20], 0
     add di, LOGIT_BOOT_HEADER_SIZE
-%else
-    mov dword [es:di], 0
-    mov dword [es:di + 4], 0
-    add di, 8
-%endif
 
     ; Memory-map tag: 16-byte header followed by the firmware entries exactly
     ; as returned.  The chosen 128-entry ceiling plus ACPI/VBE tags fits within
-    ; the explicit MB2_LIMIT; overflow is fatal instead of silently truncating.
+    ; the explicit BOOT_INFO_LIMIT; overflow is fatal instead of truncating.
     mov dword [es:di], BOOT_TAG_MMAP
     movzx eax, word [mmap_count]
     imul eax, MMAP_ENTRY_BYTES
@@ -621,23 +604,19 @@ build_boot_info:
     call align_di_8
 
 .end_tag:
-    cmp di, MB2_LIMIT - 8
+    cmp di, BOOT_INFO_LIMIT - 8
     ja .overflow
     mov dword [es:di], BOOT_TAG_END
     mov dword [es:di + 4], 8
     add di, 8
     movzx eax, di
-    sub eax, MB2_INFO
-%ifdef LOADER_NATIVE
+    sub eax, BOOT_INFO
 %ifdef LOADER_NEGCTL_NATIVE_TRUNCATED
     sub eax, 8
     mov si, native_truncated_control
     call serial_print
 %endif
-    mov [es:MB2_INFO + 16], eax
-%else
-    mov [es:MB2_INFO], eax
-%endif
+    mov [es:BOOT_INFO + 16], eax
     clc
     ret
 .overflow:
@@ -768,18 +747,14 @@ load_kernel_and_enter:
     mov si, kernel_enter_marker
     call serial_print
 
-    ; This is the final transition, not a copy round-trip.  MB2 keeps the
-    ; original 32-bit contract; native enters the loader's long-mode runway.
+    ; This is the final transition, not a copy round-trip. The loader enters
+    ; the kernel through the native protocol's long-mode runway.
     cli
     lgdt [gdt_descriptor]
     mov eax, cr0
     or eax, 1
     mov cr0, eax
-%ifdef LOADER_NATIVE
     jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_native_entry)
-%else
-    jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_kernel_entry)
-%endif
 
 kernel_load_failed:
     mov si, kernel_load_fail
@@ -997,23 +972,6 @@ protected_memory_entry:
 .return_real:
     jmp word GDT_CODE16:protected_return_16
 
-protected_kernel_entry:
-    mov ax, GDT_DATA32
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
-    mov esp, 0x7c00
-    cld
-    mov edx, [LOADER_PHYSICAL + kernel_entry_address]
-%ifdef LOADER_NEGCTL_BAD_MB2_MAGIC
-    mov eax, 0x0badc0de
-%else
-    mov eax, MB2_MAGIC
-%endif
-    mov ebx, MB2_INFO
-    jmp edx
-
-%ifdef LOADER_NATIVE
 protected_native_entry:
     mov ax, GDT_DATA32
     mov ds, ax
@@ -1114,10 +1072,9 @@ native_long_entry:
     mov gs, ax
     mov rsp, 0x7c00
     mov edx, [abs LOADER_PHYSICAL + kernel_entry_address]
-    mov edi, MB2_INFO
+    mov edi, BOOT_INFO
     mov eax, LOGIT_BOOT_MAGIC
     jmp rdx
-%endif
 
 BITS 16
 protected_return_16:
@@ -1263,18 +1220,14 @@ native_gdt_descriptor:
     dd LOADER_PHYSICAL + native_gdt
 
 rsdp_signature: db 'RSD PTR '
-%ifdef LOADER_NATIVE
 loader_marker: db 'LOGIT_BIOS_LOADER_NATIVE', 13, 10, 0
-%else
-loader_marker: db 'LOGIT_BIOS_LOADER_MB2', 13, 10, 0
-%endif
 a20_ok: db 'LOADER A20 VERIFY PASS', 13, 10, 0
 a20_fail: db 'LOADER A20 VERIFY FAIL', 13, 10, 0
 a20_control_unavailable: db 'LOADER CONTROL A20 PRE_ENABLED', 13, 10, 0
 e820_fail: db 'LOADER E820 FAIL', 13, 10, 0
 e820_overflow: db 'LOADER E820 OVERFLOW', 13, 10, 0
 rsdp_control_rejected: db 'LOADER CONTROL RSDP CHECKSUM REJECTED', 13, 10, 0
-mb2_fail: db 'LOADER MB2 OVERFLOW', 13, 10, 0
+boot_info_fail: db 'LOADER BOOT INFO OVERFLOW', 13, 10, 0
 kernel_load_ok: db 'LOADER KERNEL LOAD OK', 13, 10, 0
 kernel_enter_marker: db 'LOADER ENTER KERNEL', 13, 10, 0
 kernel_load_fail: db 'LOADER KERNEL LOAD FAIL', 13, 10, 0

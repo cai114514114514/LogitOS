@@ -1,35 +1,16 @@
 /* c/boot/efi/loader.c -- LogitOS's own UEFI boot loader.
  *
  * ============================ WHAT THIS IS ============================
- * This loader has two deliberately parallel output protocols. The default
- * build still impersonates GRUB and enters the kernel through Multiboot2;
- * -DEFI_NATIVE emits Logit's native v1 block and enters logit_native_start in
- * the long mode UEFI already supplied. Keeping MB2 as the default is not
- * inertia: the next removal job needs both paths alive for a differential.
+ * This loader emits only Logit's native v1 block and enters logit_native_start
+ * in the long mode UEFI already supplied. GOP, the EFI memory map and the EFI
+ * configuration-table RSDP become the three native tags consumed by fb.c,
+ * pmm.c and acpi.c through bootinfo.c's single entry-time adapter.
  *
- * The old MB2-only design paragraph is retained immediately below because it
- * still explains the default build and the next deletion job will arrive with
- * that claim in hand. EFI_NATIVE is the correction: the kernel now also has a
- * native contract and that build does not execute any of the descent described
- * here. The default kernel contract is Multiboot2: c/boot/boot.asm:38 compares
- * eax against 0x36D76289, and every
- * consumer in the kernel walks the tag list that ebx points at. So rather than
- * teach the kernel a second way to be booted -- two entry paths, two sets of
- * assumptions, and a permanent obligation to test both -- this loader gathers
- * from UEFI exactly what GRUB gathers from BIOS, forges the same information
- * block, gives the CPU back the way the firmware handed it over (32-bit
- * protected mode, paging off), and jumps to the same address GRUB jumps to.
- *
- *   ONE KERNEL, TWO LOADERS. The kernel does not change in this milestone.
- *
- * The three translations, each with its consumer named -- because the consumer
- * is the authority for the layout, not the spec (see mb2.h):
- *
- *   GOP mode                -> mb2 framebuffer tag  (8)  -> c/kernel/gui/fb.c
- *   EFI memory map          -> mb2 mmap tag         (6)  -> c/kernel/mm/pmm.c
- *   EFI config-table RSDP   -> mb2 ACPI tag        (15)  -> c/kernel/cpu/acpi.c
- *                                                          (was "nobody yet";
- *                                                           see THE KNOWN GAP)
+ * HISTORY (retired 2026-09-15): the old build forged a Multiboot2 block, tore
+ * UEFI long mode down to 32-bit protected mode, then made the kernel climb back
+ * to long mode. That path and its PCIDE/LA57 descent gates were deleted after
+ * both loaders gained the native entry. GRUB survives only in a separately
+ * linked test fixture as the fixed-SeaBIOS differential oracle.
  *
  * ================= THE ONE THING GRUB NEVER HAS TO DO =================
  * GRUB loads PT_LOAD segments at the ELF physical addresses after consulting
@@ -39,49 +20,14 @@
  * ExitBootServices destroyed firmware state and made a QEMU convenience into a
  * real-machine hazard.
  *
- * The shared ELF now links at 32 MiB, still inside boot.asm's first-1-GiB
- * identity map. The loader accepts exactly one placement path: AllocatePages at
+ * The shared ELF now links at 32 MiB, inside the native first-1-GiB identity
+ * runway. The loader accepts exactly one placement path: AllocatePages at
  * the ELF address must succeed, and both an immediate memory-map readback and
  * the final map used for ExitBootServices must describe every byte as
  * EfiLoaderData. Any refusal, hole, type mismatch, or descriptor overflow stops
  * before ExitBootServices. No code writes the kernel image after firmware exit.
  *
- * ================== THE KNOWN GAP -- CLOSED 2026-09-15 ================
- * THE OLD SENTENCE IS KEPT BELOW BECAUSE SOMEBODY WILL ARRIVE HOLDING IT. It
- * read, in the present tense, for as long as this file has existed:
- *
- *   "c/kernel/cpu/acpi.c finds the RSDP by scanning the BIOS EBDA/ROM area,
- *    which under UEFI holds nothing. So the first UEFI boot comes up with NO
- *    ACPI: one CPU, no FADT. That is accepted for this milestone and the gate
- *    asserts a boot WITHOUT SMP. The tag is emitted here anyway -- carrying it
- *    now means the ~20-line acpi.c patch (c/boot/efi/acpi-mb2-tag.patch,
- *    deferred because another line owns that file right now) lands against a
- *    loader that already provides what it reads."
- *
- * Every clause of that is now false, and each was checked rather than assumed:
- *
- *   - THE CONSUMER EXISTS. acpi.c:119-128 holds g_mb2_info,
- *     acpi_set_mb2_info() and rsdp_from_mb2(); kmain.c:84 hands the block over.
- *     acpi.c:158 states the resulting policy in its own words -- "the
- *     bootloader's tag WINS over the scan".
- *   - THE GATE ASSERTS ITS OPPOSITE. tests/boot/run-uefi-test.sh runs `-smp 2`,
- *     waits for the kernel's own "[smp] 2 CPU(s) detected" (:276) and fails if
- *     "2/2 CPUs online" never appears (:295) -- with the message "MADT-from-
- *     forwarded-RSDP is broken". The script's own comment at :78 records the
- *     flip: "this assertion used to be its own opposite".
- *   - THE PATCH LANDED. Its content is in acpi.c. Both the patch file and its
- *     checker are now dead weight, and the checker is dead in the way rule 5 of
- *     CLAUDE.md names: check-acpi-patch.sh's FIRST branch greps acpi.c for
- *     acpi_set_mb2_info, prints "patch is ALREADY APPLIED ... nothing to check"
- *     and exits 0, so it can no longer fail for any input -- and nothing calls
- *     it anyway: no hit in the Makefile, in any tests fragment, or in build.sh.
- *     Retiring c/boot/efi/acpi-mb2-tag.patch and check-acpi-patch.sh together
- *     is a two-file deletion waiting on nothing but somebody's say-so.
- *
- * WHAT IS STILL GENUINELY THIN, so that repairing one stale paragraph is not
- * read as this loader being finished. It emits FIVE tag types (2, 6, 8, 14/15)
- * out of Multiboot2's twenty-odd. MB2_TAG_CMDLINE is #defined in mb2.h:35 and
- * never emitted -- a dead define, not a feature. There is no module/initrd tag,
+ * WHAT IS STILL GENUINELY THIN. There is no module/initrd tag,
  * so this loader has no way to hand the kernel anything except the kernel. The
  * image path is the hardcoded pair \logit.elf / \LOGIT.ELF: no config, no
  * second entry, no fallback kernel. Nothing verifies the image it is about to
@@ -105,7 +51,6 @@
 
 #include "efi.h"
 #include "load_policy.h"
-#include "mb2.h"
 #include "../../../include/abi/logit_boot.h"
 
 /* L"..." must be UCS-2 for every string handed to a firmware protocol. It is,
@@ -154,10 +99,6 @@ static int meq(const void *a, const void *b, UINT64 n)
     while (n--) if (*x++ != *y++) return 0;
     return 1;
 }
-
-#ifndef EFI_NATIVE
-static UINT64 slen(const char *s) { UINT64 n = 0; while (s[n]) n++; return n; }
-#endif
 
 /* ------------------------------------------------------------------ *
  *  COM1, by raw port I/O                                             *
@@ -383,25 +324,11 @@ static struct elf64_phdr phdrs[MAX_PHNUM];
  *  the boot information block, built with a bounds-checked cursor      *
  * ------------------------------------------------------------------ */
 
-#ifdef EFI_NATIVE
 #define BOOT_TAG_MMAP        LOGIT_BOOT_TAG_MEMORY_MAP
 #define BOOT_TAG_FRAMEBUFFER LOGIT_BOOT_TAG_FRAMEBUFFER
 #define BOOT_TAG_ACPI_OLD    LOGIT_BOOT_TAG_ACPI_OLD
 #define BOOT_TAG_ACPI_NEW    LOGIT_BOOT_TAG_ACPI_NEW
 #define BOOT_TAG_END         LOGIT_BOOT_TAG_END
-#else
-#define BOOT_TAG_MMAP        MB2_TAG_MMAP
-#define BOOT_TAG_FRAMEBUFFER MB2_TAG_FRAMEBUFFER
-#define BOOT_TAG_ACPI_OLD    MB2_TAG_ACPI_OLD
-#define BOOT_TAG_ACPI_NEW    MB2_TAG_ACPI_NEW
-#define BOOT_TAG_END         MB2_TAG_END
-#endif
-
-/* Native deliberately retained the three consumer payload layouts. These
- * assertions are the reason the builder below may share the old field names:
- * only the provenance-bearing tag numbers and outer header differ. */
-_Static_assert(sizeof(struct logit_boot_mmap_entry) == sizeof(struct mb2_mmap_entry),
-               "native and MB2 mmap payloads diverged");
 _Static_assert(sizeof(struct logit_boot_framebuffer_tag) == 38,
                "native framebuffer wire size drifted");
 
@@ -559,38 +486,12 @@ static UINT64 load_kernel(EFI_HANDLE image)
     st = BS->HandleProtocol(image, &li_guid, (void **)&li);
     if (st) die_st("no LoadedImageProtocol on our own image handle", st);
 
-    /* This old MB2-only assumption remains beside its native correction. The
-     * native build never descends, but it has the stricter 1-GiB requirement
-     * below because its replacement CR3 deliberately maps no higher.
-     *
-     * ============ THE ASSUMPTION THE WHOLE DESCENT RESTS ON =============
-     * trampoline.S clears CR0.PG while executing out of THIS image, which is
-     * legal only if the instruction doing it is identity-mapped (SDM Vol 3A
-     * sec 9.8.5.4). UEFI identity-maps everything in its memory map (UEFI 2.10
-     * sec 2.3.4), so that holds -- provided the image is below 4 GiB, because
-     * the moment paging goes off the address space is 32 bits wide and the
-     * GDTR base loaded from a 64-bit pointer is truncated.
-     *
-     * Firmware relocates a PE image wherever it likes. In practice that is low
-     * memory and this check has never fired; it is here because the failure it
-     * prevents is a machine that resets with the firmware logo still on screen
-     * and nothing on the wire. Verified, not assumed. */
+    /* Firmware relocates a PE image wherever it likes. The native handoff
+     * replaces CR3 with a table mapping exactly the first 1 GiB, so the code
+     * performing that switch must itself be inside the runway. */
     UINT64 img_end = (UINT64)(UINTN)li->ImageBase + li->ImageSize;
-#ifndef EFI_NATIVE
-    if (img_end > 0xFFFFFFFFULL || (UINT64)(UINTN)&mzero > 0xFFFFFFFFULL) {
-        say("[efi] loader image at "); sayx((UINT64)(UINTN)li->ImageBase);
-        say(" size "); sayx(li->ImageSize); say("\n");
-        die("firmware placed this loader above 4 GiB; the 32-bit descent "
-            "cannot run from there");
-    }
-#else
-    /* Native replaces firmware CR3 with a table that maps exactly the first
-     * 1 GiB. The switching instruction stream and its GDT live in this PE
-     * image, so accepting a higher placement would unmap the code that is
-     * doing the switch. MB2 keeps its weaker below-4-GiB descent condition. */
     if (img_end > BOOT_IDENTITY_LIMIT)
         die("firmware placed the native loader outside its 1-GiB runway");
-#endif
     say("[efi] image "); sayx((UINT64)(UINTN)li->ImageBase);
     say(".."); sayx(img_end); say("\n");
 
@@ -723,10 +624,8 @@ static UINT64 load_kernel(EFI_HANDLE image)
     file->Close(file);
     root->Close(root);
 
-    /* The entry point is the ELF's e_entry, because that is what GRUB uses:
-     * c/boot/multiboot2.asm carries only a framebuffer request tag and the end
-     * tag -- no address tag and no entry-address tag -- and Multiboot2 sec
-     * 3.1.5 makes e_entry the entry point in exactly that case. */
+    /* Native loaders use ELF e_entry directly. There is deliberately no
+     * scanned boot header or second entry-address field that could disagree. */
     if (eh.e_entry < lo || eh.e_entry >= hi)
         die("the ELF entry point is outside the loaded image");
 
@@ -748,13 +647,9 @@ static void mask_field(UINT32 mask, UINT8 *pos, UINT8 *size)
     *pos = p; *size = n;
 }
 
-/* Emits the selected protocol's framebuffer tag, or emits nothing and says
- * why. Emitting
- * nothing is a SUPPORTED outcome, not a failure: c/boot/multiboot2.asm already
- * marks its framebuffer request optional because `-vga none` means GRUB has
- * none either, and fb_init() then falls back to driving virtio-gpu itself
- * (fb.c:131). Refusing to boot over a missing framebuffer would be stricter
- * than the loader we are impersonating. */
+/* Emits the native framebuffer tag, or emits nothing and says why. Absence is
+ * a supported outcome: with `-vga none`, fb_init() drives virtio-gpu itself.
+ * A fabricated linear address would turn a usable fallback into corruption. */
 static void build_fb_tag(struct infobuf *ib)
 {
     EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
@@ -802,9 +697,9 @@ static void build_fb_tag(struct infobuf *ib)
         return;
     }
 
-    struct mb2_tag_framebuffer *t = ib_take(ib, 38);
-    t->type   = BOOT_TAG_FRAMEBUFFER;
-    t->size   = 38;                     /* 32 of header+geometry, 6 of colour */
+    struct logit_boot_framebuffer_tag *t = ib_take(ib, 38);
+    t->tag.type = BOOT_TAG_FRAMEBUFFER;
+    t->tag.size = 38;                   /* 32 of header+geometry, 6 of colour */
     t->addr   = gop->Mode->FrameBufferBase;
     /* PixelsPerScanLine is in PIXELS and may exceed the visible width (the
      * scanline is padded); fb.c's `pitch` is in BYTES -- it strides fb_mem with
@@ -814,10 +709,10 @@ static void build_fb_tag(struct infobuf *ib)
     t->width  = mi->HorizontalResolution;
     t->height = mi->VerticalResolution;
     t->bpp     = 32;                    /* fb.c:157 requires exactly this */
-    t->fb_type = MB2_FB_TYPE_RGB;       /* fb.c:157 requires exactly this */
-    t->red_pos   = rp; t->red_size   = 8;
-    t->green_pos = gp; t->green_size = 8;
-    t->blue_pos  = bp; t->blue_size  = 8;
+    t->framebuffer_type = 1;            /* RGB; fb.c requires exactly this */
+    t->red_position   = rp; t->red_mask_size   = 8;
+    t->green_position = gp; t->green_mask_size = 8;
+    t->blue_position  = bp; t->blue_mask_size  = 8;
 
     say("[efi] gop ");
     sayd(t->width); say("x"); sayd(t->height);
@@ -870,10 +765,10 @@ static void build_acpi_tag(struct infobuf *ib)
         else { len = l; type = BOOT_TAG_ACPI_NEW; }
     }
 
-    struct mb2_tag_acpi *t = ib_take(ib, 8 + len);
+    struct logit_boot_tag *t = ib_take(ib, 8 + len);
     t->type = type;
     t->size = 8 + len;
-    mcopy(t->rsdp, rsdp, len);
+    mcopy((UINT8 *)t + sizeof(*t), rsdp, len);
 
     say("[efi] rsdp ");
     say(type == BOOT_TAG_ACPI_NEW ? "acpi2 " : "acpi1 ");
@@ -909,7 +804,7 @@ static void build_acpi_tag(struct infobuf *ib)
  * LIVE: this loader never calls SetVirtualAddressMap, so the firmware's runtime
  * code and data must stay exactly where they are. */
 #ifndef EFI_NATIVE_EBS_EARLY
-static UINT32 mb2_type_of(UINT32 efi_type)
+static UINT32 boot_memory_type_of(UINT32 efi_type)
 {
     switch (efi_type) {
     case EfiConventionalMemory:
@@ -917,11 +812,11 @@ static UINT32 mb2_type_of(UINT32 efi_type)
     case EfiBootServicesData:
     case EfiLoaderCode:
     case EfiLoaderData:
-        return MB2_MEM_AVAILABLE;
-    case EfiACPIReclaimMemory: return MB2_MEM_ACPI_RECLAIM;
-    case EfiACPIMemoryNVS:     return MB2_MEM_NVS;
-    case EfiUnusableMemory:    return MB2_MEM_BADRAM;
-    default:                   return MB2_MEM_RESERVED;
+        return LOGIT_BOOT_MEMORY_AVAILABLE;
+    case EfiACPIReclaimMemory: return LOGIT_BOOT_MEMORY_ACPI_RECLAIM;
+    case EfiACPIMemoryNVS:     return LOGIT_BOOT_MEMORY_NVS;
+    case EfiUnusableMemory:    return LOGIT_BOOT_MEMORY_BADRAM;
+    default:                   return LOGIT_BOOT_MEMORY_RESERVED;
     }
 }
 #endif
@@ -930,15 +825,6 @@ static UINT32 mb2_type_of(UINT32 efi_type)
  *  entry                                                              *
  * ------------------------------------------------------------------ */
 
-/* c/boot/efi/trampoline.S. Not returning is part of its contract.
- *
- * It receives only values already safe below 1 GiB. The old install arguments
- * represented a post-ExitBootServices overwrite path; removing them from the
- * ABI makes reintroducing that unsafe operation require an explicit interface
- * change rather than a stray nonzero length. */
-extern void mb2_handoff(UINT64 entry, UINT64 info);
-
-#ifdef EFI_NATIVE
 /* Four pages immediately below the kernel allocation: a temporary stack,
  * PML4, PDPT and PD. This matches the BIOS native layout for a non-cosmetic
  * reason: pmm.c's existing reserve from zero through the kernel covers these
@@ -1030,17 +916,11 @@ static void native_handoff(UINT64 entry, UINT64 info, UINT64 pml4, UINT64 stack)
         : "rax", "rdi", "memory");
     __builtin_unreachable();
 }
-#endif
 
-/* THE 1 GiB CEILING ON THE INFORMATION BLOCK, and it is 1 GiB, not 4.
- *
- * The obvious constraint is that ebx is 32 bits wide, so the block must be
- * below 4 GiB. The REAL constraint is tighter and comes from the kernel:
- * boot.asm's setup_page_tables (c/boot/boot.asm:83-101) identity-maps exactly
- * the first 1 GiB with 2 MiB pages, and pmm_init reads the block through
- * mm_p2v(), which on the target is the identity (c/kernel/mm/mmhost.h:43). A
- * block at 2 GiB would satisfy Multiboot2 perfectly and page-fault the kernel
- * on its first read of total_size -- before there is an IDT to report it. */
+/* THE 1 GiB CEILING ON THE INFORMATION BLOCK. The native contract promises
+ * exactly this runway and pmm_init reads the block through the low identity
+ * mapping. A block at 1 GiB would page-fault before there is an IDT to report
+ * it, so allocation uses the highest reachable address and verifies it. */
 #define INFO_MAX_ADDR (BOOT_IDENTITY_LIMIT - 1) /* uppermost byte below 1 GiB */
 
 /* Slack on the map buffer. GetMemoryMap's own documentation (UEFI 2.10 sec 7.2)
@@ -1074,11 +954,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
         halt();
     }
 
-#ifdef EFI_NATIVE
     say("\n[efi] LogitOS UEFI loader -- native v1 handoff, no descent\n");
-#else
-    say("\n[efi] LogitOS UEFI loader -- multiboot2 handoff, no GRUB\n");
-#endif
     say("[efi] firmware revision "); sayx(ST->Hdr.Revision); say("\n");
 
     /* UEFI 2.10 sec 7.5: the firmware arms a 5-minute watchdog before calling a
@@ -1088,9 +964,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 
     UINT64 entry = load_kernel(image);
 
-#ifdef EFI_NATIVE
     setup_native_runway();
-#endif
 
     /* ---- everything that ALLOCATES happens here, before the map is taken ---- */
 
@@ -1112,8 +986,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     /* The information block, sized from the map just measured -- one 24-byte
      * entry per EFI descriptor -- plus room for the fixed tags. */
     UINTN max_entries = map_cap / desc_size + 8;
-    UINTN info_bytes  = 8                        /* total_size + reserved */
-                      + 64                       /* bootloader-name tag */
+    UINTN info_bytes  = LOGIT_BOOT_HEADER_SIZE
                       + 48                       /* framebuffer tag */
                       + 4096                     /* ACPI tag, generously */
                       + 16 + max_entries * 24    /* mmap tag */
@@ -1121,7 +994,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     info_bytes = (info_bytes + 0xFFF) & ~(UINTN)0xFFF;
 
     EFI_PHYSICAL_ADDRESS info_at;
-#if defined(EFI_NATIVE) && defined(EFI_NATIVE_INFO_ABOVE_MAP)
+#if defined(EFI_NATIVE_INFO_ABOVE_MAP)
     /* Executable control: with 2 GiB of guest RAM this is a real allocation at
      * the first byte the promised page tables do not map. The native entry
      * checks RDI before dereferencing it, so the expected result is a named
@@ -1145,13 +1018,8 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 
     struct infobuf ib = {
         (UINT8 *)(UINTN)info_at, info_bytes,
-#ifdef EFI_NATIVE
         LOGIT_BOOT_HEADER_SIZE
-#else
-        8
-#endif
     };
-#ifdef EFI_NATIVE
     struct logit_boot_header *native_header =
         (struct logit_boot_header *)ib.base;
     mzero(native_header, LOGIT_BOOT_HEADER_SIZE);
@@ -1163,26 +1031,6 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 #endif
     native_header->header_size = LOGIT_BOOT_HEADER_SIZE;
     native_header->identity_map_bytes = LOGIT_BOOT_IDENTITY_MAP_BYTES;
-#else
-    mzero(ib.base, 8);        /* total_size is written last; reserved stays 0 */
-#endif
-
-#ifndef EFI_NATIVE
-    /* Tag 2, bootloader name (Multiboot2 sec 3.6.3). The kernel ignores it, so
-     * it is here for two other reasons: it is what GRUB does, and it is an
-     * ODD-LENGTH tag standing in front of the two tags the kernel does read --
-     * so if the 8-byte alignment arithmetic in ib_take() were wrong, the very
-     * first boot would fail loudly, instead of on some future machine whose
-     * RSDP happened to have a different length. */
-    {
-        const char *name = "LogitOS-EFI";
-        UINT32 n = (UINT32)slen(name) + 1;
-        struct mb2_tag *t = ib_take(&ib, 8 + n);
-        t->type = MB2_TAG_LOADER;
-        t->size = 8 + n;
-        mcopy((UINT8 *)t + 8, name, n);
-    }
-#endif
 
     build_fb_tag(&ib);
     build_acpi_tag(&ib);
@@ -1227,14 +1075,12 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                   "the complete kernel span as LoaderData\n[efi] halted.\n");
             halt();
         }
-#ifdef EFI_NATIVE
         if (!efi_load_range_is_loader_data(map, map_size, desc_size,
                                            native_aux_lo, native_aux_hi)) {
             sputs("\n[efi] REFUSING TO BOOT: final memory map no longer owns "
                   "the native page tables as LoaderData\n[efi] halted.\n");
             halt();
         }
-#endif
         if (!efi_load_range_is_loader_data(map, map_size, desc_size,
                                            info_at, info_at + info_bytes)) {
             sputs("\n[efi] REFUSING TO BOOT: final memory map no longer owns "
@@ -1244,7 +1090,7 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
         if (attempt == 0)
             sputs("[efi] kernel map LoaderData confirmed\n");
 
-#if defined(EFI_NATIVE) && defined(EFI_NATIVE_EBS_EARLY)
+#if defined(EFI_NATIVE_EBS_EARLY)
         /* Control-only wrong order: the header remains visibly incomplete
          * (total_size is still zero), and no byte is written after EBS. The
          * kernel must refuse it through the native entry normalizer. */
@@ -1252,9 +1098,9 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
             sputs("[efi] CONTROL ExitBootServices before native block complete\n");
 #else
         UINTN n_desc = map_size / desc_size;
-        struct mb2_tag_mmap *mm = ib_take(&ib, 16 + n_desc * 24);
-        mm->type = BOOT_TAG_MMAP;
-        mm->size = (UINT32)(16 + n_desc * 24);
+        struct logit_boot_mmap_tag *mm = ib_take(&ib, 16 + n_desc * 24);
+        mm->tag.type = BOOT_TAG_MMAP;
+        mm->tag.size = (UINT32)(16 + n_desc * 24);
         mm->entry_size = 24;        /* pmm.c:236 refuses anything smaller */
         mm->entry_version = 0;
 
@@ -1269,12 +1115,12 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                 (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + i * desc_size);
             mm->entries[i].addr     = d->PhysicalStart;
             mm->entries[i].len      = d->NumberOfPages * 4096;
-            mm->entries[i].type     = mb2_type_of(d->Type);
+            mm->entries[i].type     = boot_memory_type_of(d->Type);
             mm->entries[i].reserved = 0;
-            if (mm->entries[i].type == MB2_MEM_AVAILABLE)
+            if (mm->entries[i].type == LOGIT_BOOT_MEMORY_AVAILABLE)
                 avail += mm->entries[i].len;
 
-            /* -DEFI_DUMP_MMAP prints the EFI descriptor and the mb2 entry it
+            /* -DEFI_DUMP_MMAP prints the EFI descriptor and native entry it
              * became, side by side, so the conversion can be AUDITED rather
              * than trusted -- "no reserved region became available" is a claim
              * about 128 descriptors that no summary line can carry. Off by
@@ -1287,22 +1133,18 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
                 sputs("[efi] mm ");   sputx(mm->entries[i].addr);
                 sputs(" +");          sputx(mm->entries[i].len);
                 sputs(" efi=");       sputs(efi_type_name(d->Type));
-                sputs(" mb2=");       sputd(mm->entries[i].type);
-                sputs(mm->entries[i].type == MB2_MEM_AVAILABLE ? " AVAIL\n" : "\n");
+                sputs(" boot=");      sputd(mm->entries[i].type);
+                sputs(mm->entries[i].type == LOGIT_BOOT_MEMORY_AVAILABLE ? " AVAIL\n" : "\n");
             }
 #endif
         }
 
         /* End tag, then the total size -- both inside the loop, because a retry
          * with a longer map moves both. */
-        struct mb2_tag *end = ib_take(&ib, 8);
+        struct logit_boot_tag *end = ib_take(&ib, 8);
         end->type = BOOT_TAG_END;
         end->size = 8;
-#ifdef EFI_NATIVE
         native_header->total_size = (UINT32)ib.off;
-#else
-        *(UINT32 *)ib.base = (UINT32)ib.off;
-#endif
 
         if (attempt == 0) {
             sputs("[efi] mmap ");   sputd(n_desc);
@@ -1337,20 +1179,9 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
     sputx((UINT64)(UINTN)ib.base);
     sputs("\n");
 
-#ifdef EFI_NATIVE
     sputs("[efi] native jump (UEFI long mode retained)\n");
     native_handoff(entry, (UINT64)(UINTN)ib.base, native_pml4,
                    native_stack_top);
-#else
-    /* The prefix for the trampoline's own breadcrumbs -- it emits one character
-     * per step of the descent and cannot afford a string. A log that stops
-     * after "[efi] descent CP" says the machine died between clearing CR0.PG
-     * and clearing EFER.LME, which is a located bug; a log that stops after
-     * "[efi] jump" says only that something went wrong somewhere. */
-    sputs("[efi] descent ");
 
-    mb2_handoff(entry, (UINT64)(UINTN)ib.base);
-#endif
-
-    halt();   /* mb2_handoff does not return; this is so the compiler knows */
+    halt();   /* native_handoff does not return; this is for the compiler */
 }

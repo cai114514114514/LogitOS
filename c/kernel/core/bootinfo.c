@@ -2,22 +2,29 @@
 #include "abi/logit_boot.h"
 #include "serial.h"
 
-/* The three boot consumers intentionally keep one parser each.  Native tags
+/* The three boot consumers intentionally keep one parser each. Native tags
  * have independent type numbers on the wire, then this entry-only adapter
- * validates their framing and rewrites only those numbers into the existing
- * canonical MB2-shaped view.  The payload bytes never move: pmm.c, fb.c and
- * acpi.c therefore cannot diverge between two walkers for the same fact.
+ * validates their framing and rewrites only those numbers into the internal
+ * legacy-shaped view. The payload bytes never move: pmm.c, fb.c and acpi.c
+ * therefore cannot diverge between two walkers for the same fact.
+ *
+ * This adapter stays after the Multiboot2 product entry is deleted because
+ * direct conversion would require a simultaneous edit to acpi.c, which is
+ * owned by another active task, and three new walkers would make the loader
+ * provenance change alter three mature consumers. The test-only GRUB oracle
+ * bypasses this function and already arrives in the same internal view; that
+ * is intentional comparison plumbing, not a supported second entry path.
  *
  * Header fields are ordered so the canonical eight-byte header begins at
  * native offset 16.  Normalization costs five type stores plus one total-size
  * adjustment on the measured SeaBIOS block; copying a second map would need
  * another low-memory capacity rule and could silently reorder descriptors. */
 
-#define MB2_TAG_END         0u
-#define MB2_TAG_MMAP        6u
-#define MB2_TAG_FRAMEBUFFER 8u
-#define MB2_TAG_ACPI_OLD    14u
-#define MB2_TAG_ACPI_NEW    15u
+#define LEGACY_VIEW_TAG_END         0u
+#define LEGACY_VIEW_TAG_MMAP        6u
+#define LEGACY_VIEW_TAG_FRAMEBUFFER 8u
+#define LEGACY_VIEW_TAG_ACPI_OLD    14u
+#define LEGACY_VIEW_TAG_ACPI_NEW    15u
 
 static void append_hex(char **out, uint64_t value, unsigned digits)
 {
@@ -87,19 +94,19 @@ uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic)
             refuse("LOGIT BOOT TAG LIST TRUNCATED\n");
 
         switch (tag->type) {
-        case LOGIT_BOOT_TAG_MEMORY_MAP:  tag->type = MB2_TAG_MMAP; break;
-        case LOGIT_BOOT_TAG_FRAMEBUFFER: tag->type = MB2_TAG_FRAMEBUFFER; break;
-        case LOGIT_BOOT_TAG_ACPI_OLD:    tag->type = MB2_TAG_ACPI_OLD; break;
-        case LOGIT_BOOT_TAG_ACPI_NEW:    tag->type = MB2_TAG_ACPI_NEW; break;
+        case LOGIT_BOOT_TAG_MEMORY_MAP:  tag->type = LEGACY_VIEW_TAG_MMAP; break;
+        case LOGIT_BOOT_TAG_FRAMEBUFFER: tag->type = LEGACY_VIEW_TAG_FRAMEBUFFER; break;
+        case LOGIT_BOOT_TAG_ACPI_OLD:    tag->type = LEGACY_VIEW_TAG_ACPI_OLD; break;
+        case LOGIT_BOOT_TAG_ACPI_NEW:    tag->type = LEGACY_VIEW_TAG_ACPI_NEW; break;
         case LOGIT_BOOT_TAG_END:
             if (tag->size != sizeof(*tag) || cursor + step != end)
                 refuse("LOGIT BOOT TAG LIST TRUNCATED\n");
-            tag->type = MB2_TAG_END;
+            tag->type = LEGACY_VIEW_TAG_END;
             saw_end = 1;
             break;
         default:
             /* Extensions remain skippable, but only inside our namespace.
-             * Otherwise an accidentally MB2-numbered tag would survive this
+             * Otherwise an accidentally legacy-numbered tag would survive this
              * adapter and erase the provenance distinction the protocol was
              * introduced to make explicit. */
             if ((tag->type & LOGIT_BOOT_TAG_NAMESPACE_MASK) !=

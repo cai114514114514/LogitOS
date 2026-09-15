@@ -1,41 +1,3 @@
-# The source gate is intentionally host-only: it audits what future loaders must
-# produce.  Its two mutations are prerequisites so the positive gate cannot be
-# run while silently skipping evidence that the apparatus detects bad inputs.
-BOOT_CONTRACT_DIR := $(BUILD)/boot-contract
-BOOT_CONTRACT_TEST := $(BOOT_CONTRACT_DIR)/boot_contract_test
-BOOT_CONTRACT_SOURCES := c/boot/multiboot2.asm c/boot/boot.asm linker.ld \
-    c/kernel/mm/pmm.c c/kernel/gui/fb.c c/kernel/cpu/acpi.c c/kernel/core/kmain.c
-BOOT_CONTRACT_FIXTURES := tests/fixtures/bootcontract/multiboot2_bad_checksum.asm \
-    tests/fixtures/bootcontract/unexpected_tag_consumer.c
-
-.PHONY: test-boot-contract test-boot-contract-negctl
-
-$(BOOT_CONTRACT_TEST): tests/unit/boot_contract_test.c tests/bootself.mk
-	@mkdir -p $(BOOT_CONTRACT_DIR)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -o $@ $<
-
-test-boot-contract-negctl: $(BOOT_CONTRACT_TEST) $(BOOT_CONTRACT_FIXTURES)
-	@rc=0; $(BOOT_CONTRACT_TEST) \
-	    --multiboot tests/fixtures/bootcontract/multiboot2_bad_checksum.asm \
-	    >$(BOOT_CONTRACT_DIR)/bad-checksum.log 2>&1 || rc=$$?; \
-	 cat $(BOOT_CONTRACT_DIR)/bad-checksum.log; \
-	 test "$$rc" -eq 1 && \
-	 grep -Fq 'FAIL: Multiboot2 checksum: magic + architecture + length + checksum = 0x00000001 (expected 0x00000000)' \
-	    $(BOOT_CONTRACT_DIR)/bad-checksum.log || \
-	 { echo 'test-boot-contract-negctl: FAIL -- checksum mutation was not caught'; exit 1; }; \
-	 rc=0; $(BOOT_CONTRACT_TEST) \
-	    --extra-consumer tests/fixtures/bootcontract/unexpected_tag_consumer.c \
-	    >$(BOOT_CONTRACT_DIR)/unexpected-tag.log 2>&1 || rc=$$?; \
-	 cat $(BOOT_CONTRACT_DIR)/unexpected-tag.log; \
-	 test "$$rc" -eq 1 && \
-	 grep -Fq 'FAIL: unexpected Multiboot2 consumer tag 42 in tests/fixtures/bootcontract/unexpected_tag_consumer.c' \
-	    $(BOOT_CONTRACT_DIR)/unexpected-tag.log || \
-	 { echo 'test-boot-contract-negctl: FAIL -- extra-consumer mutation was not caught'; exit 1; }; \
-	 echo 'PASS: boot-contract negative controls both failed as required'
-
-test-boot-contract: test-boot-contract-negctl $(BOOT_CONTRACT_TEST) $(BOOT_CONTRACT_SOURCES)
-	@$(BOOT_CONTRACT_TEST)
-
 # This gate boots a deliberately tiny serial-printing real-mode fixture.  It
 # proves our catalog is accepted and control reaches its boot image; it cannot
 # yet prove the real loader path because preload.asm deliberately does not exist.
@@ -217,227 +179,11 @@ test-bios-preload: test-bios-preload-negctl test-bios-preload-probe \
 	@python3 $(BIOS_PRELOAD_TEST) $(BIOS_PRELOAD_IMAGE) --loader $(BIOS_LOADER_BIN) \
 	    --qemu $(BIOS_PRELOAD_QEMU)
 
-# The loader stops at a fixture handoff in real mode.  This is deliberate: the
-# block-format instrument must be independently useful before ELF loading and
-# protected-mode entry exist, otherwise a kernel failure cannot distinguish a
-# bad machine description from a bad handoff.
-BIOS_MB2_DIR := $(BUILD)/bios-mb2
-BIOS_MB2_PRELOAD := $(BIOS_MB2_DIR)/preload.bin
-BIOS_MB2_LOADER := $(BIOS_MB2_DIR)/loader.bin
-BIOS_MB2_A20_LOADER := $(BIOS_MB2_DIR)/loader-a20-skip.bin
-BIOS_MB2_TRUNC_LOADER := $(BIOS_MB2_DIR)/loader-e820-truncated.bin
-BIOS_MB2_BAD_RSDP_LOADER := $(BIOS_MB2_DIR)/loader-rsdp-bad-checksum.bin
-BIOS_MB2_IMAGE := $(BIOS_MB2_DIR)/ours.iso
-BIOS_MB2_A20_IMAGE := $(BIOS_MB2_DIR)/a20-skip.iso
-BIOS_MB2_TRUNC_IMAGE := $(BIOS_MB2_DIR)/e820-truncated.iso
-BIOS_MB2_BAD_RSDP_IMAGE := $(BIOS_MB2_DIR)/rsdp-bad-checksum.iso
-BIOS_MB2_GRUB_IMAGE := $(BIOS_MB2_DIR)/grub-dump.iso
-BIOS_MB2_GRUB_WORK_IMAGE := $(BIOS_MB2_DIR)/grub-dump-work.iso
-BIOS_MB2_GRUB_KERNEL := $(BIOS_MB2_DIR)/kernel-dump.elf
-BIOS_MB2_TEST := tests/unit/bios_mb2_test.py
-BIOS_MB2_QEMU ?= qemu-system-x86_64
-
-.PHONY: test-bios-mb2 test-bios-mb2-negctl \
-    test-bios-mb2-differential test-bios-mb2-differential-negctl
-
-$(BIOS_MB2_PRELOAD): c/boot/bios/preload.asm tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	nasm -f bin -o $@ $<
-
-$(BIOS_MB2_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	nasm -f bin -o $@ tests/fixtures/bios/mb2-dump.asm
-
-$(BIOS_MB2_A20_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	nasm -f bin -DLOADER_NEGCTL_SKIP_A20 -o $@ tests/fixtures/bios/mb2-dump.asm
-
-$(BIOS_MB2_TRUNC_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	# Two entries keep the control parseable and retain one usable region, while
-	# the real nine-entry SeaBIOS map makes the missing suffix unambiguous.
-	nasm -f bin -DLOADER_NEGCTL_TRUNCATE_E820=2 -o $@ tests/fixtures/bios/mb2-dump.asm
-
-$(BIOS_MB2_BAD_RSDP_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	nasm -f bin -DLOADER_NEGCTL_BAD_RSDP -o $@ tests/fixtures/bios/mb2-dump.asm
-
-$(BIOS_MB2_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_LOADER) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_LOADER)
-
-$(BIOS_MB2_A20_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_A20_LOADER) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_A20_LOADER)
-
-$(BIOS_MB2_TRUNC_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_TRUNC_LOADER) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_TRUNC_LOADER)
-
-$(BIOS_MB2_BAD_RSDP_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_BAD_RSDP_LOADER) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_BAD_RSDP_LOADER)
-
-# Build the ordinary kernel objects in the caller's isolated BUILD tree,
-# recompile only the two diagnostic translation units with BOOT_MB2_DUMP, then
-# link a separately named kernel and ask the retained GRUB escape hatch for a
-# separately named ISO.  Naming both outputs is important: merely recompiling
-# two objects inside one filesystem timestamp tick once left the old kernel
-# linked and the apparent "differential" ran no dumper at all.
-# Correction (2026-09-15): the product ISO now uses mkiso.py; this differential
-# deliberately keeps its oracle on iso-grub for one release so a loader defect
-# cannot make both sides of the comparison agree on the same wrong behavior.
-$(BIOS_MB2_GRUB_IMAGE): c/kernel/core/mb2dump.c c/kernel/core/kmain.c tests/bootself.mk
-	@mkdir -p $(BIOS_MB2_DIR)
-	$(MAKE) BUILD=$(BUILD) $(KERNEL)
-	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
-	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
-	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) $(BIOS_MB2_GRUB_KERNEL)
-	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) \
-	    GRUB_ISO=$(BIOS_MB2_GRUB_WORK_IMAGE) iso-grub
-	cp $(BIOS_MB2_GRUB_WORK_IMAGE) $@
-
-# SeaBIOS on the measured host enters with A20 enabled.  The control therefore
-# cannot demonstrate a failed enable request here; it still executes the alias
-# write/read verification, and the oracle prints a loud SKIP naming the missing
-# firmware state instead of laundering an unobservable control into a pass.
-test-bios-mb2-negctl: $(BIOS_MB2_A20_IMAGE) $(BIOS_MB2_TEST)
-	@if ! command -v $(BIOS_MB2_QEMU) >/dev/null 2>&1; then \
-	  echo 'SKIP: test-bios-mb2-negctl requires $(BIOS_MB2_QEMU) to watch the A20 alias control'; \
-	  exit 0; \
-	 fi; \
-	 python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) a20-control $(BIOS_MB2_A20_IMAGE)
-
-test-bios-mb2: test-bios-mb2-negctl $(BIOS_MB2_IMAGE) $(BIOS_MB2_TEST)
-	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) check $(BIOS_MB2_IMAGE)
-
-# Both mutations remain valid blocks so the differential, not a parser crash,
-# is what goes red.  The comparator prints every differing consumed field on
-# adjacent CONTROL/GRUB lines; that is intentionally more verbose than a raw
-# unified diff because memory-map suffix loss is otherwise easy to miss.
-test-bios-mb2-differential-negctl: $(BIOS_MB2_TRUNC_IMAGE) \
-    $(BIOS_MB2_BAD_RSDP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_MB2_TEST)
-	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) expect-difference \
-	    $(BIOS_MB2_TRUNC_IMAGE) $(BIOS_MB2_GRUB_IMAGE) --reason truncated-e820
-	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) expect-difference \
-	    $(BIOS_MB2_BAD_RSDP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) --reason bad-rsdp-checksum
-
-test-bios-mb2-differential: test-bios-mb2-differential-negctl \
-    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_MB2_TEST)
-	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) compare \
-	    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE)
-
-# Stage 3 kept the product ISO and grub.cfg untouched. Correction (2026-09-15):
-# the product now uses this preload/loader/kernel layout; the sibling image here
-# remains separately named. The GRUB image above is still built because its
-# BOOT_MB2_DUMP is the oracle for consumed tags, not because GRUB participates
-# in our product boot.
-BIOS_BOOT_DIR := $(BUILD)/bios-boot
-BIOS_BOOT_PRELOAD := $(BIOS_BOOT_DIR)/preload.bin
-BIOS_BOOT_LOADER := $(BIOS_BOOT_DIR)/loader.bin
-BIOS_BOOT_BAD_MAGIC_LOADER := $(BIOS_BOOT_DIR)/loader-bad-magic.bin
-BIOS_BOOT_SHORT_SEGMENT_LOADER := $(BIOS_BOOT_DIR)/loader-short-segment.bin
-BIOS_BOOT_SKIP_BSS_LOADER := $(BIOS_BOOT_DIR)/loader-skip-bss-zero.bin
-BIOS_BOOT_IMAGE := $(BIOS_BOOT_DIR)/ours.iso
-BIOS_BOOT_BAD_MAGIC_IMAGE := $(BIOS_BOOT_DIR)/bad-magic.iso
-BIOS_BOOT_SHORT_SEGMENT_IMAGE := $(BIOS_BOOT_DIR)/short-segment.iso
-BIOS_BOOT_SKIP_BSS_IMAGE := $(BIOS_BOOT_DIR)/skip-bss-zero.iso
-BIOS_BOOT_DUMP_IMAGE := $(BIOS_BOOT_DIR)/ours-dump.iso
-BIOS_BOOT_KERNEL := $(BIOS_BOOT_DIR)/kernel.elf
-BIOS_BOOT_KERNEL_STAMP := $(BIOS_BOOT_DIR)/kernel-normal.stamp
-BIOS_BOOT_DUMP_KERNEL := $(BIOS_MB2_GRUB_KERNEL)
-BIOS_BOOT_GRUB_IMAGE := $(BIOS_MB2_GRUB_IMAGE)
-BIOS_BOOT_DISK := $(BUILD)/disk.img
-BIOS_BOOT_TEST := tests/unit/bios_mb2_test.py
-BIOS_BOOT_QEMU ?= qemu-system-x86_64
-
-.PHONY: test-bios-boot test-bios-boot-negctl
-
-$(BIOS_BOOT_PRELOAD): c/boot/bios/preload.asm tests/bootself.mk
-	@mkdir -p $(BIOS_BOOT_DIR)
-	nasm -f bin -o $@ $<
-
-$(BIOS_BOOT_LOADER): c/boot/bios/loader.asm tests/bootself.mk
-	@mkdir -p $(BIOS_BOOT_DIR)
-	nasm -f bin -o $@ $<
-
-$(BIOS_BOOT_BAD_MAGIC_LOADER): c/boot/bios/loader.asm tests/bootself.mk
-	@mkdir -p $(BIOS_BOOT_DIR)
-	nasm -f bin -DLOADER_NEGCTL_BAD_MB2_MAGIC -o $@ $<
-
-$(BIOS_BOOT_SHORT_SEGMENT_LOADER): c/boot/bios/loader.asm tests/bootself.mk
-	@mkdir -p $(BIOS_BOOT_DIR)
-	nasm -f bin -DLOADER_NEGCTL_SHORT_SEGMENT -o $@ $<
-
-$(BIOS_BOOT_SKIP_BSS_LOADER): c/boot/bios/loader.asm tests/bootself.mk
-	@mkdir -p $(BIOS_BOOT_DIR)
-	nasm -f bin -DLOADER_NEGCTL_SKIP_BSS_ZERO -o $@ $<
-
-# The differential recipe deliberately leaves mb2dump.o and kmain.o compiled
-# with BOOT_MB2_DUMP.  Recompile those two without it before linking the normal
-# sibling kernel; otherwise an incremental run can silently call a dump-and-
-# exit artifact "normal" and make LOGIT_BOOT_OK impossible by construction.
-$(BIOS_BOOT_KERNEL_STAMP): $(BIOS_BOOT_GRUB_IMAGE) c/kernel/core/mb2dump.c \
-    c/kernel/core/kmain.c tests/bootself.mk
-	$(CC) $(CFLAGS) -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
-	$(CC) $(CFLAGS) -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
-	rm -f $(BIOS_BOOT_KERNEL)
-	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_BOOT_KERNEL) $(BIOS_BOOT_KERNEL)
-	@touch $@
-
-$(BIOS_BOOT_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_BOOT_LOADER) \
-    $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
-	    --loader $(BIOS_BOOT_LOADER) --kernel $(BIOS_BOOT_KERNEL)
-
-$(BIOS_BOOT_BAD_MAGIC_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
-    $(BIOS_BOOT_BAD_MAGIC_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
-	    --loader $(BIOS_BOOT_BAD_MAGIC_LOADER) --kernel $(BIOS_BOOT_KERNEL)
-
-$(BIOS_BOOT_SHORT_SEGMENT_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
-    $(BIOS_BOOT_SHORT_SEGMENT_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
-	    --loader $(BIOS_BOOT_SHORT_SEGMENT_LOADER) --kernel $(BIOS_BOOT_KERNEL)
-
-$(BIOS_BOOT_SKIP_BSS_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
-    $(BIOS_BOOT_SKIP_BSS_LOADER) $(BIOS_BOOT_KERNEL_STAMP) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
-	    --loader $(BIOS_BOOT_SKIP_BSS_LOADER) --kernel $(BIOS_BOOT_KERNEL)
-
-$(BIOS_BOOT_DUMP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_BOOT_LOADER) \
-    $(BIOS_BOOT_GRUB_IMAGE) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
-	    --loader $(BIOS_BOOT_LOADER) --kernel $(BIOS_BOOT_DUMP_KERNEL)
-
-# These mutations are prerequisites of the positive gate.  The BSS half is
-# allowed to SKIP only after the serial transcript proves zeroing was omitted
-# and entry was attempted: zero-filled emulator RAM can make the defect
-# unobservable, and treating that luck as a failed control would be fabricated
-# evidence.  The wrong-magic and short-segment halves must fail on every run.
-test-bios-boot-negctl: $(BIOS_BOOT_BAD_MAGIC_IMAGE) \
-    $(BIOS_BOOT_SHORT_SEGMENT_IMAGE) $(BIOS_BOOT_SKIP_BSS_IMAGE) \
-    $(BIOS_BOOT_DISK) $(BIOS_BOOT_TEST)
-	@if ! command -v $(BIOS_BOOT_QEMU) >/dev/null 2>&1; then \
-	  echo 'SKIP: test-bios-boot-negctl requires $(BIOS_BOOT_QEMU) to watch the kernel-entry controls'; \
-	  exit 0; \
-	 fi
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
-	    $(BIOS_BOOT_BAD_MAGIC_IMAGE) --reason bad-magic
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
-	    $(BIOS_BOOT_SHORT_SEGMENT_IMAGE) --reason short-segment
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-control \
-	    $(BIOS_BOOT_SKIP_BSS_IMAGE) --reason skip-bss-zero
-	@echo 'PASS: bios-boot negative controls completed with any unobservable half skipped loudly'
-
-test-bios-boot: test-bios-boot-negctl $(BIOS_BOOT_IMAGE) \
-    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_BOOT_TEST)
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-compare \
-	    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_BOOT_GRUB_IMAGE)
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-check \
-	    $(BIOS_BOOT_IMAGE)
-
-# Phase 2 keeps the MB2 artifacts above as both compatibility path and oracle.
-# Only these native targets relink the same kernel with logit_native_start as
-# ELF e_entry; there is no scanned header and no address baked into the loader.
-# The NASM include is mechanically derived from the C ABI header so protocol
-# numbers have one authoritative spelling.
+# Shipping and test loaders now speak only native v1. The sole retired-protocol
+# entry is assembled from tests/fixtures/bootoracle into a separately named
+# GRUB kernel. That keeps an independent loader oracle without putting the old
+# entry or scanned header in a product artifact. It can compare the fixed QEMU
+# machine, but cannot catch QEMU/SeaBIOS changes or real-firmware differences.
 BIOS_NATIVE_DIR := $(BUILD)/bios-native
 BIOS_NATIVE_ABI_INC := $(BIOS_NATIVE_DIR)/logit_boot.inc
 BIOS_NATIVE_LOADER := $(BIOS_NATIVE_DIR)/loader.bin
@@ -452,6 +198,16 @@ BIOS_NATIVE_IMAGE := $(BIOS_NATIVE_DIR)/native.iso
 BIOS_NATIVE_BAD_VERSION_IMAGE := $(BIOS_NATIVE_DIR)/bad-version.iso
 BIOS_NATIVE_TRUNCATED_IMAGE := $(BIOS_NATIVE_DIR)/truncated.iso
 BIOS_NATIVE_SHORT_MAP_IMAGE := $(BIOS_NATIVE_DIR)/short-map.iso
+BIOS_NATIVE_PRELOAD := $(BIOS_PRELOAD_BIN)
+BIOS_BOOT_DISK := $(DISK)
+BIOS_BOOT_TEST := tests/unit/bios_mb2_test.py
+BIOS_BOOT_QEMU ?= qemu-system-x86_64
+BIOS_ORACLE_DIR := $(BUILD)/bios-mb2
+BIOS_ORACLE_BOOT_OBJ := $(BUILD)/tests/fixtures/bootoracle/boot.o
+BIOS_ORACLE_HEADER_OBJ := $(BUILD)/tests/fixtures/bootoracle/multiboot2.o
+BIOS_ORACLE_KERNEL := $(BIOS_ORACLE_DIR)/kernel-dump.elf
+BIOS_ORACLE_IMAGE := $(BIOS_ORACLE_DIR)/grub-dump.iso
+BIOS_ORACLE_WORK_IMAGE := $(BIOS_ORACLE_DIR)/grub-dump-work.iso
 
 .PHONY: test-bios-native test-bios-native-negctl
 
@@ -493,29 +249,29 @@ $(BIOS_NATIVE_KERNEL_STAMP): $(BIOS_NATIVE_DUMP_IMAGE) c/kernel/core/mb2dump.c \
 	    -o $(BIOS_NATIVE_KERNEL) --start-group $(OBJ) $(RUST_LIB) --end-group
 	@touch $@
 
-$(BIOS_NATIVE_DUMP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+$(BIOS_NATIVE_DUMP_IMAGE): tools/mkiso.py $(BIOS_NATIVE_PRELOAD) \
     $(BIOS_NATIVE_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_NATIVE_PRELOAD) \
 	    --loader $(BIOS_NATIVE_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
 
-$(BIOS_NATIVE_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_NATIVE_LOADER) \
+$(BIOS_NATIVE_IMAGE): tools/mkiso.py $(BIOS_NATIVE_PRELOAD) $(BIOS_NATIVE_LOADER) \
     $(BIOS_NATIVE_KERNEL_STAMP) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_NATIVE_PRELOAD) \
 	    --loader $(BIOS_NATIVE_LOADER) --kernel $(BIOS_NATIVE_KERNEL)
 
-$(BIOS_NATIVE_BAD_VERSION_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+$(BIOS_NATIVE_BAD_VERSION_IMAGE): tools/mkiso.py $(BIOS_NATIVE_PRELOAD) \
     $(BIOS_NATIVE_BAD_VERSION_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_NATIVE_PRELOAD) \
 	    --loader $(BIOS_NATIVE_BAD_VERSION_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
 
-$(BIOS_NATIVE_TRUNCATED_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+$(BIOS_NATIVE_TRUNCATED_IMAGE): tools/mkiso.py $(BIOS_NATIVE_PRELOAD) \
     $(BIOS_NATIVE_TRUNCATED_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_NATIVE_PRELOAD) \
 	    --loader $(BIOS_NATIVE_TRUNCATED_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
 
-$(BIOS_NATIVE_SHORT_MAP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+$(BIOS_NATIVE_SHORT_MAP_IMAGE): tools/mkiso.py $(BIOS_NATIVE_PRELOAD) \
     $(BIOS_NATIVE_SHORT_MAP_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
-	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_NATIVE_PRELOAD) \
 	    --loader $(BIOS_NATIVE_SHORT_MAP_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
 
 # All three controls are prerequisites.  The map control's failure is the
@@ -536,9 +292,24 @@ test-bios-native-negctl: $(BIOS_NATIVE_BAD_VERSION_IMAGE) \
 	    native-control $(BIOS_NATIVE_SHORT_MAP_IMAGE) --reason short-map
 	@echo 'PASS: bios-native negative controls all failed as required'
 
+# The oracle reuses the same diagnostic consumers but adds the retired header
+# and 32-bit climb only to this link. The iso-grub escape-hatch recipe packages
+# it, so GRUB remains the independent producer rather than a native mirror.
+$(BIOS_ORACLE_KERNEL): $(BIOS_NATIVE_DUMP_KERNEL) $(BIOS_ORACLE_BOOT_OBJ) \
+    $(BIOS_ORACLE_HEADER_OBJ) tests/bootself.mk
+	@mkdir -p $(BIOS_ORACLE_DIR)
+	$(LD) $(LDFLAGS) -e start -Map=$(BIOS_ORACLE_DIR)/kernel-dump.map -o $@ \
+	    --start-group $(OBJ) $(RUST_LIB) $(BIOS_ORACLE_BOOT_OBJ) \
+	    $(BIOS_ORACLE_HEADER_OBJ) --end-group
+
+$(BIOS_ORACLE_IMAGE): $(BIOS_ORACLE_KERNEL) grub.cfg tests/bootself.mk
+	$(MAKE) BUILD=$(BUILD) GRUB_INPUT_KERNEL=$(BIOS_ORACLE_KERNEL) \
+	    GRUB_ISO=$(BIOS_ORACLE_WORK_IMAGE) iso-grub
+	cp $(BIOS_ORACLE_WORK_IMAGE) $@
+
 test-bios-native: test-bios-native-negctl $(BIOS_NATIVE_DUMP_IMAGE) \
-    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_NATIVE_IMAGE) $(BIOS_BOOT_TEST)
-	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) three-way \
-	    $(BIOS_NATIVE_DUMP_IMAGE) $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_MB2_GRUB_IMAGE)
+    $(BIOS_ORACLE_IMAGE) $(BIOS_NATIVE_IMAGE) $(BIOS_BOOT_TEST)
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) compare \
+	    $(BIOS_NATIVE_DUMP_IMAGE) $(BIOS_ORACLE_IMAGE)
 	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) \
 	    native-kernel-check $(BIOS_NATIVE_IMAGE)

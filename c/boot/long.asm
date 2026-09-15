@@ -1,9 +1,10 @@
 ; ============================================================================
 ; Logit OS - 64-bit long mode entry
 ;
-; Reached via the far jump in boot.asm once paging + long mode are live.
-; We zero the data segment selectors (segmentation is flat in long mode) and
-; hand off to the C kernel.
+; Shipping loaders enter logit_native_start directly in long mode. The sibling
+; long_mode_start exists only for tests/fixtures/bootoracle/boot.asm, so GRUB
+; can remain an independent description of the fixed SeaBIOS test machine.
+; It is not linked to by any shipping loader.
 ; ============================================================================
 
 global long_mode_start
@@ -25,7 +26,7 @@ logit_native_start:
     jmp long_mode_common
 
 long_mode_start:
-    xor r12d, r12d               ; retained Multiboot2 path
+    xor r12d, r12d               ; test-only GRUB oracle path
 long_mode_common:
     ; In long mode segment bases are ignored; null data selectors are fine.
     mov ax, 0
@@ -108,7 +109,7 @@ long_mode_common:
     ; bit, and elf.c asks cpu_prot_nx() -- which reads the SAME CPUID bit --
     ; before it sets bit 63 on anything. The two answers cannot disagree.
     ;
-    ; CPUID clobbers eax/ebx/ecx/edx and leaves edi (the Multiboot2 info
+    ; CPUID clobbers eax/ebx/ecx/edx and leaves edi (the internal boot-view
     ; pointer, still live for the kernel_main call below) untouched.
 
     ; NX: CPUID.0x80000001:EDX bit 20 -> EFER.NXE (bit 11).
@@ -162,7 +163,7 @@ long_mode_common:
     ; backends. Pure CPUID + a pointer store: no serial, heap, IDT or timer
     ; needed, which is why it can run this early. Reporting happens later,
     ; once kprintf exists.
-    ; The Multiboot2 info pointer is parked in ebx across the call rather than
+    ; The boot-view pointer is parked in ebx across the call rather than
     ; pushed: rbx is callee-saved, and pushing would flip rsp's 16-byte parity
     ; for the callee (SysV wants rsp%16==8 on entry, which is what plain
     ; `call` from the untouched boot stack gives).
@@ -171,7 +172,7 @@ long_mode_common:
     mov edi, ebx
     ; ----------------------------------------------------------------------
 
-    mov edi, edi            ; zero-extend Multiboot2 info ptr into rdi (1st arg)
+    mov edi, edi            ; zero-extend low boot-view ptr into rdi (1st arg)
     call kernel_main
 
     ; kernel_main should never return; halt forever if it does.
@@ -179,9 +180,8 @@ long_mode_common:
     hlt
     jmp .hang
 
-; Keep the native runway independent of boot.asm.  Both stacks coexist for
-; this one compatibility milestone; deleting the 32-bit MB2 path later also
-; deletes its sibling stack without changing this entry's contract.
+; This is the only stack in shipping kernels. The oracle's 32-bit climb owns a
+; separate test-only stack because its pre-long-mode call sequence needs one.
 section .bss
 align 4096
 native_stack_bottom:
