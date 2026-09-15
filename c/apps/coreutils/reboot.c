@@ -4,7 +4,7 @@
  *
  * Same shape as poweroff.c and for the same reason: a working reboot does
  * not return to this instruction stream either -- the reset line that
- * SYS_REBOOT pulls (see the kernel side, c/kernel/cpu/acpi/acpi/acpi.c) restarts the
+ * SYS_REBOOT pulls (see the kernel side, c/kernel/cpu/acpi/acpi.c) restarts the
  * CPU at the BIOS/firmware entry point, not here. So, as with poweroff,
  * everything past the syscall is the failure case, and ID_E_PERM is the same
  * root-only refusal SYS_SETUID and SYS_POWEROFF both use -- copied, not

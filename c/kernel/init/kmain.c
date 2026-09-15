@@ -33,6 +33,7 @@
 #include "blkdev.h"
 #include "pci.h"
 #include "driver.h"
+#include "amd/bootfb.h"
 
 /* TIMER_HZ now lives in pit.h: SYS_MONOTONIC_MS divides by it, so the tick rate
  * is part of a userland-visible answer and cannot be a private constant here. */
@@ -86,6 +87,10 @@ void kernel_main(uint64_t mb_info)
      * reachable through this block (c/boot/efi/loader.c forwards it as tag 15),
      * and the BIOS-area scan acpi.c falls back to finds nothing there. */
     acpi_set_mb2_info(mb_info);
+    /* ACPI-backed clocks cannot be discovered in pit_init(): firmware tables
+     * are not safely mapped until pmm_init.  This keeps early boot on PIT/TSC,
+     * then upgrades a PIT-only machine to HPET continuously when available. */
+    time_platform_init();
     kprintf("[logitos] interrupts + memory + gdt/tss online\n");
 
     /* The page cache's frame table (pc_of_frame[], pcache.c) comes out of the
@@ -221,6 +226,10 @@ void kernel_main(uint64_t mb_info)
      * and the driver that claimed it. On unfamiliar hardware this log is the
      * first debugging tool anyone has. */
     dev_probe_all();
+    /* Resource discovery needs both a mounted root and the boot-display
+     * driver's successful binding; at root mount time no GPU is bound yet. */
+    if (fs_ok)
+        amd_bootfb_probe_resources();
     dev_dump();
     dma_report("boot");
 

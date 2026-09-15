@@ -203,7 +203,7 @@ uint64_t mm_oom_retries(void);     /* faults that ran out of memory and asked th
                                     * out-of-memory killer for one more chance */
 uint64_t mm_oom_saved(void);       /* ...and the ones that then SUCCEEDED, i.e.
                                     * processes that would have died before
-                                    * c/kernel/mm/reclaim/reclaim/oom.c existed */
+                                    * c/kernel/mm/reclaim/oom.c existed */
 uint64_t mm_shm_faults(void);      /* first touches of a shared-segment page */
 uint64_t mm_cow_pages(void);       /* pages currently mapped copy-on-write */
 

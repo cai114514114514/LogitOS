@@ -85,7 +85,9 @@ int getrusage(int who, struct rusage *usage);
  * PRIO_PGRP and PRIO_USER are DECLARED because a ported program writes
  * PRIO_PROCESS by name and needs the others to exist for its switch statement
  * to compile -- and they are REFUSED with EINVAL at runtime, because this
- * kernel has no process groups and no per-user process list. Accepting either
+ * kernel historically had no process groups and still has no per-user process
+ * list. PTY wiring added group identity but not group resource aggregation;
+ * accepting either
  * would renice one process while the caller believed it had reniced a group.
  *
  * getpriority() returns -1 for the legal nice value -1, so POSIX's rule

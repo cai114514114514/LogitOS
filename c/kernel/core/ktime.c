@@ -59,6 +59,7 @@ static int  in_kernel_now(void) { return 0; }
 #include "sched.h"
 #include "smp.h"
 #include "proc.h"
+#include "hpet.h"
 
 static int proc_current_pid(void)
 {
@@ -205,6 +206,7 @@ static uint64_t ns_of_cycles(const struct clocksource *cs, uint64_t cycles)
 #ifndef LOGIT_TIME_HOST
 static uint64_t src_read_tsc(void) { return rdtsc(); }
 static uint64_t src_read_pit(void) { return timer_ticks(); }
+static uint64_t src_read_hpet(void) { return hpet_read(); }
 #else
 static uint64_t src_read_host(void) { return host_read(); }
 static uint64_t g_host_ticks = 0;
@@ -217,10 +219,12 @@ static struct clocksource g_src[TIMESRC_N] = {
     [TIMESRC_TSC] = { "tsc", src_read_tsc, ~0ull, 0, 1, 0, 1, 0 },
     [TIMESRC_PIT] = { "pit", src_read_pit, ~0ull, TIMER_HZ, 0, 0,
                       (uint32_t)(NS_PER_SEC / TIMER_HZ), 1 },
+    [TIMESRC_HPET] = { "hpet", src_read_hpet, 0, 0, 1, 0, 0, 0 },
 #else
     [TIMESRC_TSC] = { "tsc", src_read_host, ~0ull, 0, 1, 0, 1, 0 },
     [TIMESRC_PIT] = { "pit", src_read_hpit, ~0ull, TIMER_HZ, 0, 0,
                       (uint32_t)(NS_PER_SEC / TIMER_HZ), 1 },
+    [TIMESRC_HPET] = { "hpet", src_read_hpit, 0, 0, 1, 0, 0, 0 },
 #endif
 };
 
@@ -323,6 +327,12 @@ static uint64_t g_base_ns;
 
 static uint64_t g_wall_offset_ns;               /* real = mono + this */
 static int      g_ready;
+
+#ifdef LOGIT_TIME_HOST
+/* Deterministic host seam at the publication window.  The callback inspects
+ * the intermediate tuple without relying on a scheduler to hit two stores. */
+static void (*g_host_switch_probe)(void);
+#endif
 
 /* Cross-core monotonicity clamp. */
 static volatile uint64_t g_mono_last;
@@ -452,10 +462,28 @@ int time_set_source(int src)
     uint64_t f = spin_lock_irqsave(&g_tlock);
     if (src != g_cur) {
         fold_locked();                          /* bank everything the old source owes */
+        uint64_t new_cycles = g_src[src].read() & g_src[src].mask;
+        /* Publish source + its matching fold point in ONE seqlock write.  The
+         * old order assigned g_cur before making g_seq odd, so an SMP reader
+         * could combine HPET/TSC cycles with the previous source's
+         * last_cycles and manufacture an enormous forward jump. */
+#ifdef TIME_NEGCTL_SOURCE_BEFORE_SEQ
+        /* Reproduce the original torn-publication window for the watched
+         * negative control: source is new while last_cycles is still old. */
         g_cur = src;
+#ifdef LOGIT_TIME_HOST
+        if (g_host_switch_probe) g_host_switch_probe();
+#endif
+#endif
         g_seq++;
         __atomic_thread_fence(__ATOMIC_RELEASE);
-        g_last_cycles = g_src[src].read() & g_src[src].mask;
+#ifndef TIME_NEGCTL_SOURCE_BEFORE_SEQ
+#ifdef LOGIT_TIME_HOST
+        if (g_host_switch_probe) g_host_switch_probe();
+#endif
+        g_cur = src;
+#endif
+        g_last_cycles = new_cycles;
         __atomic_thread_fence(__ATOMIC_RELEASE);
         g_seq++;
         /* g_base_ns is untouched, so the clock is CONTINUOUS: the switch changes
@@ -1135,7 +1163,7 @@ static void tickloss_step(struct ktimer *t)
 
 /* --- (c) the PIT fallback, actually exercised --------------------------- */
 static uint64_t fb_m0;
-static int      fb_state;
+static int      fb_state, fb_saved_source;
 
 static void fallback_step(struct ktimer *t)
 {
@@ -1144,6 +1172,7 @@ static void fallback_step(struct ktimer *t)
          * clock to the PIT, leave it there for a measured interval, and switch
          * back -- if the PIT source were broken, every timeout in the machine
          * would notice immediately and so would this. */
+        fb_saved_source = g_cur;
         if (time_set_source(TIMESRC_PIT) < 0) { ktimer_cancel(t); return; }
         fb_m0 = time_mono_ns();
         fb_state = 1;
@@ -1151,12 +1180,15 @@ static void fallback_step(struct ktimer *t)
     }
     uint64_t on_pit = time_mono_ns() - fb_m0;
     uint64_t back0  = time_mono_ns();
-    int rc = time_set_source(g_tsc_calib_ok ? TIMESRC_TSC : TIMESRC_PIT);
+    /* Restore what was active rather than re-deriving TSC/PIT policy.  HPET is
+     * discovered after time_init(), and the old expression silently stranded
+     * an HPET fallback on PIT after this self-test ran. */
+    int rc = time_set_source(fb_saved_source);
     uint64_t back1  = time_mono_ns();
     char a[24], b[24];
-    kprintf("[time] fallback pit ran %sms (want ~500), switch back rc=%d "
+    kprintf("[time] fallback pit ran %sms (want ~500), switch back restore=%s rc=%d "
             "continuity=%sns %s\n",
-            u64d(on_pit / NS_PER_MS, a), rc,
+            u64d(on_pit / NS_PER_MS, a), g_src[fb_saved_source].name, rc,
             u64d(back1 >= back0 ? back1 - back0 : 0, b),
             back1 >= back0 ? "monotonic" : "WENT BACKWARDS");
     ktimer_cancel(t);
@@ -1296,6 +1328,28 @@ void time_init(void)
 #endif
 }
 
+void time_platform_init(void)
+{
+#ifndef LOGIT_TIME_HOST
+    if (!g_ready || hpet_init() != 0) return;
+    uint64_t hz = hpet_hz(), mask = hpet_mask();
+    if (!hz || !mask) return;
+    g_src[TIMESRC_HPET].hz = hz;
+    g_src[TIMESRC_HPET].mask = mask;
+    calc_mult_shift(hz, &g_src[TIMESRC_HPET].mult, &g_src[TIMESRC_HPET].shift);
+    uint64_t res = (NS_PER_SEC + hz - 1) / hz;
+    g_src[TIMESRC_HPET].res_ns = (uint32_t)(res ? res : 1);
+    g_src[TIMESRC_HPET].available = 1;
+
+    if (g_cur == TIMESRC_PIT && time_set_source(TIMESRC_HPET) == 0) {
+        kprintf("[time] HPET active: TSC unavailable, PIT remains emergency fallback\n");
+        time_report();
+    } else {
+        kprintf("[time] HPET standby: invariant TSC remains active\n");
+    }
+#endif
+}
+
 void time_tick(void)
 {
     if (!g_ready) return;
@@ -1345,9 +1399,11 @@ void time_host_reset(uint64_t hz, uint64_t mask)
     g_tick_prev_ns = 0; g_tick_seen = 0; g_tick_missed = 0; g_tick_gap_max = 0;
     g_acc_total = 0; g_acc_idle = 0; g_acc_last_ns = 0;
     g_wall_offset_ns = 0;
+    g_host_switch_probe = 0;
     for (int i = 0; i < CPUACC_MAX; i++) g_acc[i].pid = 0;
     time_init();
 }
+void time_host_set_switch_probe(void (*probe)(void)) { g_host_switch_probe = probe; }
 uint64_t time_host_base_ns(void) { return g_base_ns; }
 int      time_host_heap_ok(void)
 {

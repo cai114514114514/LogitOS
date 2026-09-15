@@ -33,7 +33,7 @@
  *     allocator with no device write at all, because the file still holds the
  *     bytes and the next fault re-reads them.
  *
- * That last one is what this was built for. c/kernel/mm/reclaim/reclaim/reclaim.h says, in the
+ * That last one is what this was built for. c/kernel/mm/reclaim/reclaim.h says, in the
  * long comment at the top, that TIER 1 -- drop a clean page and re-derive it --
  * had NO PRODUCER on this machine, because nothing here was file-backed, and
  * that the all-zero anonymous page was standing in for one. This file is the

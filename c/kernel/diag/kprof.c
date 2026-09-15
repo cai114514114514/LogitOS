@@ -538,7 +538,7 @@ int kprof_summary(char *buf, int max)
  *     which cannot distinguish 70/20/10 from 65/25/10.
  *
  *   The LAPIC timer. Per-core, and on the APs it is ALREADY the preemption
- *     tick -- c/kernel/cpu/smp/smp/smp.c arms it at vector 32, staggered per core, and
+ *     tick -- c/kernel/cpu/smp/smp.c arms it at vector 32, staggered per core, and
  *     the scheduler depends on it. Reprogramming an AP's LAPIC timer would stop
  *     that core being preempted, which is disturbing the scheduler. But the
  *     BSP's LAPIC timer is armed by NOTHING: the BSP is preempted by the PIT

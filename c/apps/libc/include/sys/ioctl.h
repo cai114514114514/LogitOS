@@ -20,6 +20,9 @@
  * foreground process group (CLAUDE.md: "There are no process groups and no
  * sessions"). ioctl.c's handling of these two is deliberately consistent
  * with that file rather than re-deriving its own answer.
+ * Correction (2026-09-15): PTYs now answer window, controlling-terminal and
+ * foreground-pgrp requests through SYS_PTY_CTL. The serial console and all
+ * non-terminal fds retain the ENOTTY policy described above.
  *
  * FIONREAD: unlike the two above, this one IS answerable, but only for a
  * SEEKABLE fd (an F_VFS regular file) -- bytes remaining to EOF is exactly
@@ -41,6 +44,8 @@ struct winsize {
 #define TIOCGWINSZ 0x5413
 #define TIOCSWINSZ 0x5414
 #define TIOCGPGRP  0x540F
+#define TIOCSPGRP  0x5410
+#define TIOCSCTTY  0x540E
 #define FIONREAD   0x541B
 
 int ioctl(int fd, unsigned long request, ...);

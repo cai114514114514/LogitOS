@@ -15,7 +15,7 @@
 #include "../../../../include/weaksym.h"   /* the weak oom_fault_retry below */
 
 /* WEAK, and the reason is about the test tree rather than about the kernel.
- * c/kernel/mm/reclaim/reclaim/oom.c reads the PROCESS TABLE, so it only makes sense where there
+ * c/kernel/mm/reclaim/oom.c reads the PROCESS TABLE, so it only makes sense where there
  * is one; tests/unit/mm_run.sh and tests/unit/leak_run.sh both compile this
  * file over a simulated physical memory with no processes at all, and their two
  * source lists are required to be identical to each other by a comment in both.

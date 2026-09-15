@@ -647,7 +647,7 @@ static long ut_detach(int tid)
  *   2. Nothing can take it away again inside the window. Only this process can
  *      unmap its own memory, and its other threads cannot be in the kernel --
  *      SYS_FUTEX is not in syscall_is_bkl_free(), so this core holds the big
- *      kernel lock. Reclaim (c/kernel/mm/reclaim/reclaim/reclaim.c) is likewise a BKL path.
+ *      kernel lock. Reclaim (c/kernel/mm/reclaim/reclaim.c) is likewise a BKL path.
  * The second point is a dependency on the BKL, so it is stated rather than
  * assumed: the day a BKL-free munmap exists, this needs a pinned page.
  * Correction: that day is now. user_pin_word retains the physical page and

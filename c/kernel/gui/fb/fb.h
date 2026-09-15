@@ -201,7 +201,12 @@ void fb_liquid_glass(int x, int y, int w, int h, int radius,
  * one. NOT inferred from the target's bounds on purpose: a titlebar panel
  * spans its window surface edge-to-edge and genuinely ENDS there, wanting its
  * bevel -- only the caller knows which truncations are physical. */
-#include "../../../lib/gfx/openlogit_display.h"
+/* Bare name, not a path: c/lib/gfx moved its public headers into
+ * c/lib/gfx/include/ and this spelling pointed at where they used to be, so
+ * the include was dead before this file moved. Spelled as a path rather than a bare name so the
+ * narrow -I sets the host gates pass keep working without each of them
+ * growing a -Ic/lib/gfx/include of its own. */
+#include "../../../lib/gfx/include/openlogit_display.h"
 #define GLASS_CUT_TOP    OL_GLASS_CUT_TOP
 #define GLASS_CUT_BOTTOM OL_GLASS_CUT_BOTTOM
 #define GLASS_CUT_LEFT   OL_GLASS_CUT_LEFT

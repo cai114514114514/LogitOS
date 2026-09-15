@@ -8,7 +8,7 @@
  * only be yanked is a machine whose every shutdown is a crash with good
  * manners. This is the other kind: SYS_POWEROFF syncs the filesystem, tells
  * ACPI to remove power (PM1a_CNT via the FACP the kernel already parses,
- * see c/kernel/cpu/acpi/acpi/acpi.c), and does not come back.
+ * see c/kernel/cpu/acpi/acpi.c), and does not come back.
  *
  * THE CONTROL FLOW HERE IS BACKWARDS FROM EVERY OTHER COREUTIL ON PURPOSE.
  * A working power-off does not return -- the CPU this program is running on

@@ -1520,11 +1520,15 @@ struct logit_dirreq {
  * necessarily thread-directed: it is delivered on the faulting thread's own
  * frame, which is the only frame that describes the fault.
  *
- * SESSIONS, likewise. There are no process groups and no sessions -- SYS_SETSID
- * and SYS_GETPGID do not exist and are not added here. The tty therefore holds
- * ONE foreground pid, set by the last process to read the console, and Ctrl+C
- * sends SIGINT to it and to its children. That is less than job control and it
- * is said out loud rather than dressed up as it.
+ * SESSIONS, likewise. There were no process groups and no sessions --
+ * SYS_SETSID and SYS_GETPGID did not exist here. The tty therefore held ONE
+ * foreground pid, set by the last process to read the console, and Ctrl+C sent
+ * SIGINT to it and to its children. That was less than job control and it was
+ * said out loud rather than dressed up as it.
+ * Correction (2026-09-15): include/abi/pty.h now owns the small session/group
+ * syscall block used by controlling PTYs. The serial console signal rule above
+ * is unchanged, and tty-generated group signals/background-stop policy remain
+ * absent; adding sid/pgid state did not silently claim complete job control.
  * =========================================================================== */
 
 /* (signo, const struct logit_sigaction *act, struct logit_sigaction *old)
@@ -2756,7 +2760,7 @@ struct logit_itimer {
  * WHAT THIS COSTS, said here because a caller should know: a segment's pages
  * are allocated when it is created and CANNOT BE RECLAIMED under memory
  * pressure. There is nowhere to evict them to -- swapping a shared page breaks
- * the sharing (c/kernel/mm/reclaim/reclaim/swap.h says the sharing is not restored on the way
+ * the sharing (c/kernel/mm/reclaim/swap.h says the sharing is not restored on the way
  * back), and there is no file behind it to re-read. A segment is memory spent
  * until it is unlinked and unmapped. The ceiling is 8 segments of 2 MiB.
  *

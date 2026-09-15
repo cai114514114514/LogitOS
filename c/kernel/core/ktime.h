@@ -99,7 +99,8 @@ uint64_t time_clock_res_ns(int clock_id);
 
 #define TIMESRC_TSC  0      /* rdtsc, calibrated; ~ns resolution */
 #define TIMESRC_PIT  1      /* the 100 Hz tick counter; 10 ms resolution */
-#define TIMESRC_N    2
+#define TIMESRC_HPET 2      /* ACPI MMIO main counter; usually 50-100 ns */
+#define TIMESRC_N    3
 
 /* Switch the clocksource at runtime. The monotonic clock is CONTINUOUS across
  * the switch (the new source is re-based onto the current mono value), so this
@@ -178,6 +179,9 @@ void time_account_switch(int old_pid, int new_pid);
  * -- NOT from kmain.c, so that owning the timer driver is enough to own the
  * clock's initialisation order. Idempotent. */
 void time_init(void);
+/* Discover late firmware clocks after pmm_init() made ACPI/MMIO mappings safe.
+ * If TSC was rejected, a valid HPET replaces PIT without stepping monotonic. */
+void time_platform_init(void);
 int  time_ready(void);
 
 /* Called from timer_tick() on every PIT interrupt: folds the cycle counter into
@@ -219,6 +223,7 @@ void     time_host_reset(uint64_t hz, uint64_t mask);
 void     time_host_set_cycles(uint64_t c);
 void     time_host_set_ticks(uint64_t t);
 void     time_host_set_rtc_second(int s);
+void     time_host_set_switch_probe(void (*probe)(void));
 uint64_t time_host_base_ns(void);
 int      time_host_heap_ok(void);
 #endif

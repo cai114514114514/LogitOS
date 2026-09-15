@@ -55,6 +55,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <termios.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -260,12 +261,18 @@ int ioctl(int fd, unsigned long request, ...)
         if (libc_pty_ctl(fd,LPTY_SETWIN,arg)==0) return 0;
         errno=ENOTTY;return -1;
     case TIOCGPGRP:
-        /* Consistent with termios.c's not_a_pty(): no driver in this kernel
-         * tracks a window size or a foreground process group for ANY fd, tty
-         * or not. This is not even a divergence from Linux -- a non-tty fd
-         * gets ENOTTY for these two there as well. */
-        errno = ENOTTY;
-        return -1;
+        if(!arg){errno=EFAULT;return -1;}
+        { pid_t pg=tcgetpgrp(fd);if(pg<0)return -1;*(pid_t *)arg=pg;return 0; }
+    case TIOCSPGRP:
+        if(!arg){errno=EFAULT;return -1;}
+        return tcsetpgrp(fd,*(pid_t *)arg);
+    case TIOCSCTTY:
+        /* Preserve the old ENOTTY boundary for pipes/files/serial. Once the fd
+         * is known to be a native PTY, failure is policy (not a session leader,
+         * wrong endpoint, or already controlled) and is reported as EPERM. */
+        if(!isatty(fd)||libc_pty_ctl(fd,LPTY_GETATTR,&(struct termios){0})<0){errno=ENOTTY;return -1;}
+        if(libc_pty_ctl(fd,LPTY_SETCTTY,0)==0)return 0;
+        errno=EPERM;return -1;
     case FIONREAD: {
         if (!arg) { errno = EFAULT; return -1; }
         if (fd_probe < 0) {

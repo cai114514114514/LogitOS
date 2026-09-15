@@ -73,4 +73,8 @@ int acpi_pm1_cnt(uint32_t *pm1a, uint32_t *pm1b);
  * this kernel can act on (see struct acpi_gas above); -1 otherwise. */
 int acpi_reset_reg(struct acpi_gas *reg, uint8_t *value);
 
+/* Copy the checksum-validated RSDP, returning byte count or -1. The copied
+ * object has no implied physical-address identity. */
+int acpi_copy_rsdp(void *destination, unsigned capacity);
+
 #endif

@@ -4410,7 +4410,7 @@ static void dirty_cursor(int x, int y)
                cursor_box[s][0] + 1, cursor_box[s][1] + 1);
 }
 
-/* Which byte lane fb_rgb() (c/kernel/gui/fb/fb/fb.c) packs each channel into.
+/* Which byte lane fb_rgb() (c/kernel/gui/fb/fb.c) packs each channel into.
  * fb.c keeps red_pos/green_pos/blue_pos to itself, so this asks fb_rgb()
  * itself, on pure primaries, rather than duplicating the multiboot2 FB tag
  * parse: whichever byte a channel's 0xFF lands in IS its shift. That is
@@ -4520,7 +4520,7 @@ static int win_open_scale(const struct win *w)
  * windows can come out looking like the same window, which is the one thing a
  * picker may not do.
  *
- * fb_blit_surface_scaled_bl (c/kernel/gui/fb/fb/fb.c) is the bilinear variant, and
+ * fb_blit_surface_scaled_bl (c/kernel/gui/fb/fb.c) is the bilinear variant, and
  * its own header prices it at ~4.3x nearest per pixel and scopes it to "the ONE
  * window currently under an open/close pop or a live resize drag ... not for
  * every window a compositor redraws every frame regardless of motion". This use
@@ -6563,6 +6563,7 @@ void wm_run(void)
     { char *login_argv[] = { "login", 0 }; proc_spawn("/bin/login", login_argv); }
 
     wm_state_unlock();
+    kernel_power_start();
     uint64_t last = 0;
     for (;;) {
         /* Input metadata needs only wm_lock.  Keeping graphics_lock around the

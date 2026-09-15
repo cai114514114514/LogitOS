@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "acpi.h"
+#include "acpi_integrity.h"
 #include "apic_model.h"
 #include "serial.h"
 #include "kprintf.h"
@@ -56,11 +57,9 @@ struct sdt_header {
  * 1 MiB is a hard bound per SDT, checked after mapping only its header; an
  * invalid firmware length cannot make the kernel build an unbounded mapping. */
 #define ACPI_ALIAS_BASE (PHYSMAP_BASE + PHYSMAP_SIZE)
-#define ACPI_TABLE_MAX  (1u << 20)
-
 static const void *map_firmware(uint64_t phys, uint32_t bytes)
 {
-    if (!phys || !bytes || bytes > ACPI_TABLE_MAX ||
+    if (!phys || !bytes || bytes > ACPI_SDT_MAX_BYTES ||
         phys >= PHYSMAP_SIZE || bytes > PHYSMAP_SIZE - phys) return NULL;
     uint64_t start = phys & ~0xfffull;
     uint64_t end = (phys + bytes + 0xfffull) & ~0xfffull;
@@ -81,8 +80,14 @@ static const void *map_firmware(uint64_t phys, uint32_t bytes)
 static const struct sdt_header *map_sdt(uint64_t phys)
 {
     const struct sdt_header *h = map_firmware(phys, sizeof *h);
-    if (!h || h->length < sizeof *h || h->length > ACPI_TABLE_MAX) return NULL;
-    return map_firmware(phys, h->length);
+    if (!h || h->length < sizeof *h || h->length > ACPI_SDT_MAX_BYTES) return NULL;
+    h = map_firmware(phys, h->length);
+    /* Before this check every RSDT/XSDT child with a plausible length was
+     * trusted even if firmware's checksum said its contents were corrupt.  On
+     * MCFG that can fabricate an ECAM aperture; on MADT it can fabricate an
+     * APIC destination.  Keep the table absent instead of driving addresses
+     * firmware itself did not authenticate. */
+    return acpi_sdt_integrity_ok(h, h ? h->length : 0) ? h : NULL;
 }
 
 static uint32_t g_lapic_base = 0xFEE00000;   /* default; MADT may override */
@@ -102,13 +107,6 @@ uint32_t acpi_ioapic_addr(void){ return g_ioapic_addr; }
 uint32_t acpi_ioapic_gsibase(void){ return g_ioapic_gsibase; }
 uint32_t acpi_gsi_for_irq(int irq){ return (irq >= 0 && irq < 16) ? g_irq_gsi[irq] : (uint32_t)irq; }
 uint16_t acpi_gsi_flags(int irq){ return (irq >= 0 && irq < 16) ? g_irq_flags[irq] : 0; }
-
-static int sum_ok(const void *p, int len)
-{
-    const uint8_t *b = p; uint8_t s = 0;
-    for (int i = 0; i < len; i++) s += b[i];
-    return s == 0;
-}
 
 /* --- the Multiboot2 ACPI tags (spec sec 3.6.14/3.6.15) --------------------
  * Tag 14 carries a 20-byte ACPI 1.0 RSDP, tag 15 a full ACPI 2.0+ one; both are
@@ -131,12 +129,14 @@ static struct rsdp *rsdp_from_mb2(void)
     while (p + 8 <= end) {
         uint32_t type = ((uint32_t *)p)[0], size = ((uint32_t *)p)[1];
         if (type == 0 || size < 8) break;         /* end tag, or malformed */
+        if ((uint64_t)size > (uint64_t)(end - p)) break; /* claimed body is not present */
         if (type == 15 || type == 14) {           /* ACPI 2.0+ / ACPI 1.0 */
             struct rsdp *r = (struct rsdp *)(p + 8);
             /* Trust nothing unchecked: the tag is only as good as the loader
              * that wrote it, and a bad RSDP here gets dereferenced as an XSDT
-             * pointer. Exactly the two checks the BIOS scan already makes. */
-            if (size >= 8 + 20 && memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
+             * pointer. ACPI 2.0 adds a second checksum over the XSDT-bearing
+             * extension; validating only the ACPI-1.0 prefix is insufficient. */
+            if (size >= 8 + 20 && acpi_rsdp_integrity_ok(r, size - 8))
                 return r;
         }
         p += (size + 7) & ~7u;
@@ -149,7 +149,7 @@ static struct rsdp *scan_bios_area(void)
     /* RSDP is on a 16-byte boundary in the EBDA or the BIOS area 0xE0000-0xFFFFF. */
     for (uint64_t a = 0x000E0000; a < 0x00100000; a += 16) {
         struct rsdp *r = (struct rsdp *)a;
-        if (memcmp(r->sig, "RSD PTR ", 8) == 0 && sum_ok(r, 20))
+        if (acpi_rsdp_integrity_ok(r, (uint32_t)(0x00100000 - a)))
             return r;
     }
     return NULL;
@@ -226,6 +226,20 @@ static void parse_madt(const struct sdt_header *madt)
 static const struct sdt_header *g_xsdt;   /* 64-bit entry table (ACPI 2.0+) */
 static const struct sdt_header *g_rsdt;   /* 32-bit entry table (ACPI 1.0)  */
 static int g_tables_done;
+/* Keep the validated bootloader copy stable. A Multiboot ACPI tag is a CPU
+ * pointer to copied bytes, not the physical RSDP address firmware advertised. */
+static unsigned char g_power_rsdp[ACPI_RSDP_MAX_BYTES];
+static unsigned g_power_rsdp_size;
+int acpi_copy_rsdp(void *destination, unsigned capacity)
+{
+    if (!destination || !g_power_rsdp_size || capacity < g_power_rsdp_size)
+        return -1;
+
+    unsigned char *copy = destination;
+    for (unsigned index = 0; index < g_power_rsdp_size; index++)
+        copy[index] = g_power_rsdp[index];
+    return (int)g_power_rsdp_size;
+}
 
 int acpi_tables_init(void)
 {
@@ -234,14 +248,26 @@ int acpi_tables_init(void)
 
     struct rsdp *r = find_rsdp();
     if (!r) { serial_puts("[acpi] no RSDP\n"); return -1; }
+    g_power_rsdp_size = r->revision >= 2 ? r->length : 20;
+    for (unsigned index = 0; index < g_power_rsdp_size; index++)
+        g_power_rsdp[index] = ((const unsigned char *)r)[index];
 
     if (r->revision >= 2 && r->xsdt_addr) {
         const struct sdt_header *x = map_sdt(r->xsdt_addr);
-        if (!x) { serial_puts("[acpi] cannot map bounded XSDT\n"); return -1; }
+        /* A checksum authenticates bytes, not their meaning.  Without the
+         * signature gate a valid unrelated SDT can be walked as 64-bit XSDT
+         * entries, manufacturing child physical addresses from its payload. */
+        if (!x || !acpi_sdt_matches(x, x->length, "XSDT")) {
+            serial_puts("[acpi] invalid or unavailable XSDT\n");
+            return -1;
+        }
         g_xsdt = x;
     } else if (r->rsdt_addr) {
         const struct sdt_header *t = map_sdt(r->rsdt_addr);
-        if (!t) { serial_puts("[acpi] cannot map bounded RSDT\n"); return -1; }
+        if (!t || !acpi_sdt_matches(t, t->length, "RSDT")) {
+            serial_puts("[acpi] invalid or unavailable RSDT\n");
+            return -1;
+        }
         g_rsdt = t;
     } else {
         return -1;
