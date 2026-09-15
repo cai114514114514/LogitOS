@@ -583,8 +583,9 @@ int kprof_summary(char *buf, int max)
  *     200000       ~300 Hz      0.1%        ~5%
  *
  * The -smp 4 column is dominated by the IPI fan-out, not by the sample itself:
- * lapic_send_ipi() polls the delivery-status bit, and three of those per sample
- * costs about 75 us under TCG against about 25 us for the interrupt, the
+ * xAPIC lapic_send_ipi() polls the delivery-status bit; x2APIC dispatches with
+ * one architectural ICR WRMSR. Three IPIs per sample cost about 75 us under
+ * TCG against about 25 us for the interrupt, the
  * fxsave and the accumulator together.
  *
  * 60000 is the default because 1 kHz per core is already far more resolution
@@ -620,7 +621,7 @@ void kprof_sample_isr(uint64_t *frame)
         int n = smp_cpu_count();
         if (n > KPROF_MAXCPU) n = KPROF_MAXCPU;
         for (int i = 1; i < n; i++)
-            lapic_send_ipi((uint8_t)g_cpus[i].lapic_id, KPROF_VEC);
+            (void)lapic_send_ipi(g_cpus[i].lapic_id, KPROF_VEC);
     }
     lapic_eoi();
 }

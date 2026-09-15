@@ -18,6 +18,8 @@ static int path_under(const char *a, const char *b)
 }
 
 #define CP_DEPTH_MAX 32                 /* ring-3 stack guard for deep directory trees */
+#define CP_IO_CHUNK  (64 * 1024)
+static char copy_buf[CP_IO_CHUNK];       /* BSS: keep recursive stack frames small */
 
 static int copy_file(const char *src, const char *dst)
 {
@@ -25,10 +27,9 @@ static int copy_file(const char *src, const char *dst)
     if (in < 0) { errs("cp: cannot open "); errs(src); errs("\n"); return 1; }
     int out = sys_open(dst, O_WRONLY | O_CREAT | O_TRUNC);
     if (out < 0) { errs("cp: cannot create "); errs(dst); errs("\n"); sys_close(in); return 1; }
-    char buf[4096];
     int r, rc = 0;
-    while ((r = sys_read(in, buf, sizeof buf)) > 0)
-        if (sys_write(out, buf, r) != r) { errs("cp: write error\n"); rc = 1; break; }
+    while ((r = sys_read(in, copy_buf, sizeof copy_buf)) > 0)
+        if (sys_write(out, copy_buf, r) != r) { errs("cp: write error\n"); rc = 1; break; }
     sys_close(in);
     sys_close(out);
     return rc;

@@ -1,8 +1,20 @@
+/* IRQ1 and IRQ12 remain routed to the BSP and do not nest their handlers.
+ * Prefix/packet state is owned there; modifiers also have cross-CPU readers,
+ * so each reader takes one atomic snapshot. */
 #include <stdint.h>
 #include "keyboard.h"
 #include "io.h"
 #include "wm.h"
 #include "logit_abi.h"   /* KEY_* codes for arrows / page keys */
+#include "../../../include/weaksym.h"
+
+/* Narrow host keyboard fixtures do not link PCI/DMA drivers. The real kernel
+ * provides this from USB HID; use the portable optional-symbol guard so
+ * PS/2-only host links keep testing the actual keyboard implementation. */
+int usb_hid_mods(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(usb_hid_mods);
+int usb_hid_key_held(int key) LOGIT_WEAK;
+LOGIT_WEAK_STUB(usb_hid_key_held);
 
 #define KBD_DATA 0x60
 
@@ -82,19 +94,33 @@ static const char scancode_map_shift[128] = {
 #define MK_LSUPER 0x40
 #define MK_RSUPER 0x80
 static int mod_keys;
+static unsigned char held[256];
+int kbd_key_held(int key)
+{
+    if(key>='A'&&key<='Z')key+='a'-'A';
+    if(key>0&&key<128) {
+        for(int i=0;i<128;i++)if(scancode_map[i]==key &&
+            __atomic_load_n(&held[i],__ATOMIC_RELAXED))return 1;
+    }
+    int sc=key==KEY_UP?0x48:key==KEY_DOWN?0x50:key==KEY_LEFT?0x4b:key==KEY_RIGHT?0x4d:0;
+    if(sc && __atomic_load_n(&held[sc|128],__ATOMIC_RELAXED))return 1;
+    return LOGIT_HAVE(usb_hid_key_held) ? usb_hid_key_held(key) : 0;
+}
 
 static void modk(int bit, int down)
 {
-    if (down) mod_keys |= bit;
-    else      mod_keys &= ~bit;
+    if (down) __atomic_fetch_or(&mod_keys, bit, __ATOMIC_RELAXED);
+    else      __atomic_fetch_and(&mod_keys, ~bit, __ATOMIC_RELAXED);
 }
 
 int kbd_mods(void)
 {
-    return ((mod_keys & (MK_LSHIFT | MK_RSHIFT)) ? EV_MOD_SHIFT : 0) |
-           ((mod_keys & (MK_LCTRL  | MK_RCTRL))  ? EV_MOD_CTRL  : 0) |
-           ((mod_keys & (MK_LALT   | MK_RALT))   ? EV_MOD_ALT   : 0) |
-           ((mod_keys & (MK_LSUPER | MK_RSUPER)) ? EV_MOD_SUPER : 0);
+    int keys = __atomic_load_n(&mod_keys, __ATOMIC_RELAXED);
+    return ((keys & (MK_LSHIFT | MK_RSHIFT)) ? EV_MOD_SHIFT : 0) |
+           ((keys & (MK_LCTRL  | MK_RCTRL))  ? EV_MOD_CTRL  : 0) |
+           ((keys & (MK_LALT   | MK_RALT))   ? EV_MOD_ALT   : 0) |
+           ((keys & (MK_LSUPER | MK_RSUPER)) ? EV_MOD_SUPER : 0) |
+           (LOGIT_HAVE(usb_hid_mods) ? usb_hid_mods() : 0);
 }
 
 void keyboard_handle(void)
@@ -103,6 +129,9 @@ void keyboard_handle(void)
     uint8_t sc = inb(KBD_DATA);
 
     if (sc == 0xE0) { ext = 1; return; }            /* extended-key prefix */
+    /* Track both edges before the text path drops releases. A game holding
+     * W must not advance only when keyboard auto-repeat emits characters. */
+    __atomic_store_n(&held[(sc&127)|(ext?128:0)],!(sc&128),__ATOMIC_RELAXED);
     if (ext) {                                       /* arrows / page / home / end / Cmd */
         ext = 0;
         int rel = sc & 0x80, code = sc & 0x7F;

@@ -1,3 +1,6 @@
+#include "openlogit_draw.h"
+/* 2026-09-13: borrowed pixel targets render through the SDK. Parsing and
+ * layout stay here; the compatibility rasterizer is no longer a dependency. */
 /* Glyphs onto Open Logit. This file is the bridge that let c/kernel/gui/raster.c
  * be deleted, and it is deliberately small: a converter plus one call.
  *
@@ -8,7 +11,7 @@
  * it was the largest live contradiction of the claim Open Logit is built on:
  * ONE rasterizer for every pixel. The engine's caps were raised to raster.c's
  * OWN production numbers for this moment (GFX_MAX_EDGES 8192 == raster.c's
- * MAXEDGE, GFX_MAX_ACTIVE 1024 == its MAXCROSS) and gfx_fill_mask_subs() takes
+ * MAXEDGE, GFX_MAX_ACTIVE 1024 == its MAXCROSS) and ol_raster_mask_subs() takes
  * the sub-scanline count per call, so a glyph keeps its 16 while a button keeps
  * its 4.
  *
@@ -217,7 +220,7 @@ int text_raster(const struct ttf_font *f, int gid, int px,
     if (w > GR_MAXW || w * h > covcap) return -1;
 
     if (build_path(&path, px, upem, ox_i, top_i)) return -1;
-    if (!gfx_fill_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS))
+    if (!ol_raster_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS))
         return -1;
 
     *wout = w; *hout = h; *ox = ox_i; *oy = top_i;
@@ -234,7 +237,7 @@ int text_raster_at(const struct ttf_font *f, int gid, int px, int ox_i, int top_
     int upem = f->units_per_em;
     if (upem <= 0 || w <= 0 || h <= 0 || w > GR_MAXW) return -1;
     if (build_path(&path, px, upem, ox_i, top_i)) return -1;
-    return gfx_fill_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS)
+    return ol_raster_mask_subs(&gr_path, GFX_NONZERO, cov, w, h, 0, 0, GR_SUBS)
            ? 0 : -1;
 }
 

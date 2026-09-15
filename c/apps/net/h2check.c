@@ -304,7 +304,20 @@ int main(int argc, char **argv)
     while (a < argc && argv[a][0] == '-') {
         if (!strcmp(argv[a], "--h1")) only_h1 = 1;
         else if (!strcmp(argv[a], "--both")) both = 1;
-        else if (!strcmp(argv[a], "--port") && a + 1 < argc) g_port = atoi(argv[++a]);
+        else if (!strcmp(argv[a], "--port") && a + 1 < argc) {
+            const char *why = NULL;
+            long long port = strtonum(argv[++a], 1, 65535, &why);
+            /* atoi made "443junk" indistinguishable from 443 and let a
+             * negative value reach the socket ABI.  This is a user-supplied
+             * network endpoint, so consume libc's bounded parser at the
+             * boundary instead of validating a lossy int afterwards. */
+            if (why) {
+                printf("h2check: invalid --port '%s': %s (expected 1..65535)\n",
+                       argv[a], why);
+                return 2;
+            }
+            g_port = (int)port;
+        }
         else { printf("h2check: unknown option %s\n", argv[a]); return 2; }
         a++;
     }

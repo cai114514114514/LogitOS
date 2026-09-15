@@ -44,7 +44,7 @@
  * Not chosen, MEASURED. Three real drivers were compiled with the kernel's own
  * flags and their undefined symbols listed:
  *
- *   c/drivers/core/qemu_edu.c        dev_enable dev_bar_map dev_irq_request
+ *   c/drivers/core/qemu_edu.c        dev_enable_checked dev_bar_map dev_irq_request
  *                                    dev_irq_release dev_irq_prefer
  *                                    dev_irq_count kprintf          (7)
  *   c/drivers/virtio/virtio_rng.c    virtio_init virtio_queue_setup
@@ -114,6 +114,8 @@ static const struct ksym g_ksyms[] = {
     KSYM(kprintf),
 
     /* -- device model: what qemu_edu.c needs, exactly. */
+    KSYM(dev_enable_checked),
+    KSYM(dev_disable_checked),
     KSYM(dev_enable),
     KSYM(dev_disable),
     KSYM(dev_bar_map),

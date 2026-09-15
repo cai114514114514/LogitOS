@@ -93,7 +93,7 @@ static void klog_commit(struct klog_line *L, int cpu)
     if (!g_lockless)
         fl = spin_lock_irqsave(&g_klog_lock);
 
-    uint64_t s = g_seq++;
+    uint64_t s = __atomic_fetch_add(&g_seq, 1, __ATOMIC_RELAXED);
     struct klog_rec *r = &g_ring[(unsigned)(s & (KLOG_SLOTS - 1))];
 
     /* seq=0 first, seq=s last: a reader that races a lockless (panic-mode)
@@ -177,13 +177,13 @@ void klog_flush_partial(void)
 
 /* --- levelled entry points ------------------------------------------------ */
 
-int  klog_console_level(void) { return g_console_level; }
+int  klog_console_level(void) { return __atomic_load_n(&g_console_level, __ATOMIC_RELAXED); }
 
 void klog_set_console_level(int level)
 {
     if (level < KL_PANIC) level = KL_PANIC;
     if (level > KL_DEBUG) level = KL_DEBUG;
-    g_console_level = level;
+    __atomic_store_n(&g_console_level, level, __ATOMIC_RELAXED);
 }
 
 void klogv(int level, const char *fmt, va_list ap)
@@ -194,7 +194,7 @@ void klogv(int level, const char *fmt, va_list ap)
     static const char *const tag[KL_NLEVELS] = {
         "", "[err] ", "[warn] ", "", "",
     };
-    int console = (level <= g_console_level);
+    int console = (level <= klog_console_level());
     const char *t = (level >= 0 && level < KL_NLEVELS) ? tag[level] : "";
     kvlog_out(level, console, t, fmt, ap);
 }
@@ -209,17 +209,17 @@ void klog(int level, const char *fmt, ...)
 
 /* --- consumers ------------------------------------------------------------ */
 
-uint64_t klog_next_seq(void) { return g_seq; }
+uint64_t klog_next_seq(void) { return __atomic_load_n(&g_seq, __ATOMIC_ACQUIRE); }
 
 uint64_t klog_first_seq(void)
 {
-    uint64_t n = g_seq;
+    uint64_t n = klog_next_seq();
     return (n > KLOG_SLOTS) ? (n - KLOG_SLOTS) : 1;
 }
 
 int klog_get(uint64_t seq, struct klog_rec *out)
 {
-    if (seq == 0 || seq >= g_seq)
+    if (seq == 0 || seq >= klog_next_seq())
         return 0;
     uint64_t fl = g_lockless ? 0 : spin_lock_irqsave(&g_klog_lock);
     struct klog_rec *r = &g_ring[(unsigned)(seq & (KLOG_SLOTS - 1))];
@@ -233,7 +233,11 @@ int klog_get(uint64_t seq, struct klog_rec *out)
 
 void klog_get_stats(struct klog_stats *out)
 {
-    uint64_t n = g_seq - 1;
+    /* Counters describe one committed-ring instant. A sequence read followed
+     * by unlocked level counters can otherwise report fewer total records
+     * than the sum of its levels while another CPU commits a line. */
+    uint64_t fl = g_lockless ? 0 : spin_lock_irqsave(&g_klog_lock);
+    uint64_t n = klog_next_seq() - 1;
     out->records         = n;
     out->overwritten     = (n > KLOG_SLOTS) ? (n - KLOG_SLOTS) : 0;
     out->truncated_lines = g_truncated_lines;
@@ -242,6 +246,7 @@ void klog_get_stats(struct klog_stats *out)
         out->by_level[i] = g_by_level[i];
     out->slots    = KLOG_SLOTS;
     out->text_max = KLOG_TEXT;
+    if (!g_lockless) spin_unlock_irqrestore(&g_klog_lock, fl);
 }
 
 int klog_format_rec(const struct klog_rec *r, char *buf, int max)
@@ -280,14 +285,15 @@ int klog_render(char *buf, int max)
 
 void klog_dump_tail(int lines)
 {
-    klog_dump_tail_before(g_seq, lines);
+    klog_dump_tail_before(klog_next_seq(), lines);
 }
 
 void klog_dump_tail_before(uint64_t before_seq, int lines)
 {
     uint64_t last = before_seq;
     uint64_t first = klog_first_seq();
-    if (last > g_seq) last = g_seq;
+    uint64_t current = klog_next_seq();
+    if (last > current) last = current;
     if (lines > 0 && last > (uint64_t)lines && last - (uint64_t)lines > first)
         first = last - (uint64_t)lines;
 
@@ -308,6 +314,12 @@ void klog_dump_tail_before(uint64_t before_seq, int lines)
 
 void klog_panic_takeover(void)
 {
+#if !__STDC_HOSTED__
+    /* panic_body has stopped peers. Their console leaf owner may be wedged. */
+    kprintf_panic_takeover();
+    vga_panic_takeover();
+    serial_panic_takeover();
+#endif
     /* The dying core may BE the lock holder. Re-initialise it and stop taking
      * it at all: a garbled line beats a report that never prints. */
     g_klog_lock.ticket = 0;

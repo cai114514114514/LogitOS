@@ -4,13 +4,39 @@
 #include "klog.h"
 #include "vga.h"
 #include "serial.h"
+#include "../../drivers/core/io_lock.h"
+
+/* One formatted diagnostic is indivisible across CPUs. Per-character UART
+ * locking preserves bytes but produced unparseable interleaved SMP probes.
+ * This lock intentionally covers the UART wait; diagnostics therefore remain
+ * a serial, IRQ-off cost. ksnprintf never takes it. Panic stops peers first. */
+static io_lock_t printf_lock = IO_LOCK_INIT;
+static unsigned printf_panicking;
+void kprintf_panic_takeover(void)
+{ __atomic_store_n(&printf_panicking, 1, __ATOMIC_RELEASE); }
+/* Raw boot/scheduler strings use this same domain. The byte sink stays below
+ * it, so formatting never recursively takes the message lock. */
+uint64_t kprintf_console_enter(void)
+{
+    return __atomic_load_n(&printf_panicking, __ATOMIC_ACQUIRE)
+        ? UINT64_MAX : io_lock_enter(&printf_lock);
+}
+void kprintf_console_leave(uint64_t flags)
+{ if (flags != UINT64_MAX) io_lock_leave(&printf_lock, flags); }
+static void printf_leave(uint64_t *flags) { kprintf_console_leave(*flags); }
+#define PRINTF_GUARD uint64_t print_guard_ \
+    __attribute__((cleanup(printf_leave))) = kprintf_console_enter()
 
 /* The formatter writes through a sink so the same code serves the console
  * (VGA + COM1 + the log ring) and a plain memory buffer (ksnprintf). The
  * console sink emits exactly the bytes the old char-by-char loop emitted, in
  * the same order, with no lock held -- serial_putc busy-waits on the UART, and
  * holding a lock across ~87us per character would be a multi-millisecond
- * interrupts-off window on real hardware. */
+ * interrupts-off window on real hardware.
+ * Correction: each hardware sink now owns its tiny register/cursor update;
+ * no sink lock covers formatting, a whole line, or the UART-ready wait.
+ * Further correction: printf_lock above now owns the whole message to keep
+ * simultaneous CPU diagnostics intact, including the bounded UART wait. */
 /* aligned(8), and every field assigned rather than brace-initialised, ON
  * PURPOSE.
  *
@@ -41,15 +67,15 @@ struct out {
 static unsigned long g_misaligned_calls;
 static void         *g_misaligned_caller;
 
-unsigned long kprintf_misaligned_calls(void)  { return g_misaligned_calls; }
-void         *kprintf_misaligned_caller(void) { return g_misaligned_caller; }
+unsigned long kprintf_misaligned_calls(void)  { return __atomic_load_n(&g_misaligned_calls, __ATOMIC_RELAXED); }
+void         *kprintf_misaligned_caller(void) { return __atomic_load_n(&g_misaligned_caller, __ATOMIC_RELAXED); }
 
 static inline void note_alignment(void *frame, void *caller)
 {
     /* After `push rbp; mov rsp,rbp` a correctly-aligned frame has rbp % 16 == 0. */
     if (__builtin_expect(((unsigned long)frame & 15u) != 0, 0)) {
-        g_misaligned_calls++;
-        g_misaligned_caller = caller;
+        __atomic_add_fetch(&g_misaligned_calls, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_misaligned_caller, caller, __ATOMIC_RELAXED);
     }
 }
 
@@ -190,6 +216,7 @@ static void out_init(struct out *o, void (*put)(struct out *, char),
 
 void kprintf(const char *fmt, ...)
 {
+    PRINTF_GUARD;
     note_alignment(__builtin_frame_address(0), __builtin_return_address(0));
 
     struct out o;
@@ -203,6 +230,7 @@ void kprintf(const char *fmt, ...)
 void kvlog_out(int level, int console, const char *prefix,
                const char *fmt, va_list ap)
 {
+    PRINTF_GUARD;
     struct out o;
     out_init(&o, out_console, 0, 0, level, console);
     for (; prefix && *prefix; prefix++)

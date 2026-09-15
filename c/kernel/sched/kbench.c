@@ -20,12 +20,13 @@
 /* --------------------------------------------------------------------------
  * The path counters. Defined here, written by spinlock.c and interrupts.c.
  * -------------------------------------------------------------------------- */
+/* Correction: syscall.c and interrupts.c now write only the exiting CPU shard. */
 struct kb_cpu   g_kb[KB_MAXCPU];
-volatile int    g_kb_stat;
-uint64_t        g_kb_sys_n[KB_NSYS];
-uint64_t        g_kb_sys_cyc[KB_NSYS];
+int             g_kb_stat;
+struct kb_sys_cpu g_kb_sys[KB_MAXCPU];
+_Static_assert(KB_MAXCPU == PERCPU_MAXCPU, "counter CPU cap must match scheduler");
 
-void kb_stat_set(int on) { g_kb_stat = on ? 1 : 0; }
+void kb_stat_set(int on) { __atomic_store_n(&g_kb_stat, on ? 1 : 0, __ATOMIC_RELAXED); }
 
 /* c/kernel/exec/file.c. A local prototype rather than a header entry, the same
  * way proc.c declares proc_fork_stats: this is a diagnostic between two files,
@@ -291,85 +292,21 @@ static void bench_klog(void)
 
 /* --------------------------------------------------------------- the report */
 
-/* ==========================================================================
- * WHO IS HOLDING THE BKL, sampled.
- *
- * The lock's own counters say how long it was held and how often it was
- * waited for. They do not say BY WHAT -- and after SYS_WAIT_EVENT deleted
- * 98% of the traffic, "by what" is the only question left: 6,549 ms of
- * waiting remained against 2,500 ms of holding, so the hold is concentrated
- * somewhere and widening the BKL-free syscall list is a guess until that
- * somewhere has a name.
- *
- * The sample is taken in the timer tick, which runs BEFORE the interrupt
- * entry acquires the lock -- so this observes the holder from outside,
- * without becoming a holder itself and without perturbing what it measures.
- * spinlock_t already records the acquiring caller's return address; this only
- * has to count them.
- *
- * Direct-mapped, 64 slots, no eviction policy: a hold that matters shows up
- * at hundreds of samples, and one that collides away was not the answer. The
- * addresses are printed raw and symbolised by the harness with nm, because a
- * kernel that could resolve its own symbols would need the table in memory
- * for the sake of a diagnostic.
- * ========================================================================== */
-#define KB_BKLPROF_N 64
-static struct { unsigned long ra; unsigned int hits; } g_bklprof[KB_BKLPROF_N];
-static unsigned int g_bklprof_samples, g_bklprof_held, g_bklprof_lost;
-
-void kb_bkl_sample(void)
-{
-    if (!g_kb_stat) return;
-    g_bklprof_samples++;
-    if (g_bkl_owner < 0) return;                 /* nobody: an idle machine */
-    unsigned long ra = g_bkl.owner_ra;
-    if (!ra) return;
-    g_bklprof_held++;
-    unsigned int i = (unsigned int)((ra >> 4) & (KB_BKLPROF_N - 1));
-    for (unsigned int n = 0; n < 8; n++) {       /* short linear probe */
-        unsigned int k = (i + n) & (KB_BKLPROF_N - 1);
-        if (g_bklprof[k].ra == ra) { g_bklprof[k].hits++; return; }
-        if (!g_bklprof[k].ra) { g_bklprof[k].ra = ra; g_bklprof[k].hits = 1; return; }
-    }
-    g_bklprof_lost++;                            /* said out loud, not dropped */
-}
-
-static void bklprof_report(void)
-{
-    if (!g_bklprof_samples) return;
-    kprintf("[kbench] BKL holders: %u samples, held in %u (%u%%), %u lost to collision\n",
-            g_bklprof_samples, g_bklprof_held,
-            g_bklprof_samples ? g_bklprof_held * 100 / g_bklprof_samples : 0,
-            g_bklprof_lost);
-    for (int rank = 0; rank < 8; rank++) {
-        int best = -1;
-        for (int k = 0; k < KB_BKLPROF_N; k++)
-            if (g_bklprof[k].hits && (best < 0 || g_bklprof[k].hits > g_bklprof[best].hits))
-                best = k;
-        if (best < 0) break;
-        kprintf("[kbench]   bkl 0x%lx: %u samples (%u%% of held)\n",
-                g_bklprof[best].ra, g_bklprof[best].hits,
-                g_bklprof_held ? g_bklprof[best].hits * 100 / g_bklprof_held : 0);
-        g_bklprof[best].hits = 0;
-    }
-}
-
+/* Correction (2026-09-10): BKL holder sampling retired with the lock.
+ * Entry/operation timings remain measurements; a printed zero acquisitions
+ * would not prove concurrent kernel execution. */
 void kb_stat_report(const char *tag)
 {
-    uint64_t acq = 0, cont = 0, wait = 0, hold = 0;
     uint64_t n[KB_NCLASS] = { 0 }, cyc[KB_NCLASS] = { 0 };
     int cores = 0;
 
     for (int c = 0; c < KB_MAXCPU; c++) {
-        if (!g_kb[c].bkl_acq && !g_kb[c].n[KB_C_TIMER]) continue;
+        if (!__atomic_load_n(&g_kb[c].n[KB_C_TIMER], __ATOMIC_RELAXED) &&
+            !__atomic_load_n(&g_kb[c].n[KB_C_SYSCALL], __ATOMIC_RELAXED)) continue;
         cores++;
-        acq  += g_kb[c].bkl_acq;
-        cont += g_kb[c].bkl_contended;
-        wait += g_kb[c].bkl_wait;
-        hold += g_kb[c].bkl_hold;
         for (int k = 0; k < KB_NCLASS; k++) {
-            n[k]   += g_kb[c].n[k];
-            cyc[k] += g_kb[c].cyc[k];
+            n[k]   += __atomic_load_n(&g_kb[c].n[k], __ATOMIC_RELAXED);
+            cyc[k] += __atomic_load_n(&g_kb[c].cyc[k], __ATOMIC_RELAXED);
         }
     }
 
@@ -405,7 +342,7 @@ void kb_stat_report(const char *tag)
     }
 
     kprintf("[kbench] scheduler: %d context switches, %d threads parked now, "
-            "%d poll passes through bkl_hlt_wait\n",
+            "%d poll passes through sched_poll_wait\n",
             (int)sched_switches(), (int)sched_blocked_count(),
             (int)sched_hlt_waits());
     /* ...and by whom. The threshold above says a poll survived; this says which
@@ -428,49 +365,37 @@ void kb_stat_report(const char *tag)
      * but it removes rank from the question, and eight more lines cost 1.6 ms
      * of boot. */
     {
+        /* Correction: 256 slots are copied into 4096 bytes on this thread's
+         * 16 KiB kernel stack. The original report consumed global n[] while
+         * sorting; now repeated reports leave every live CPU shard intact. */
+        struct kb_sys_snapshot snapshot;
+        kb_sys_snapshot_read(&snapshot);
         uint64_t total_n = 0, total_c = 0;
-        for (int s = 0; s < KB_NSYS; s++) { total_n += g_kb_sys_n[s]; total_c += g_kb_sys_cyc[s]; }
+        for (int s = 0; s < KB_NSYS; s++) { total_n += snapshot.n[s]; total_c += snapshot.cyc[s]; }
         /* Shootdowns that were never acknowledged. This is the assertion that the
      * per-core request flag actually reaches a core spinning for a lock with
      * interrupts off -- the case that kept M25 P2b uncallable. A non-zero
      * number here means somebody kept stale TLB entries. */
     kprintf("[kbench] tlb: %lu shootdown(s) never acked\n", tlb_late_count());
-    bklprof_report();
     kprintf("[kbench] syscalls: %d calls, %d ms inside the dispatcher "
-                "(BKL already held; blocking calls include time descheduled)\n",
+                "(blocking calls include time descheduled)\n",
                 (int)total_n, (int)(total_c / g_mhz / 1000));
         for (int rank = 0; rank < 16; rank++) {
             int best = -1;
             for (int s = 0; s < KB_NSYS; s++)
-                if (g_kb_sys_n[s] && (best < 0 || g_kb_sys_n[s] > g_kb_sys_n[best])) best = s;
+                if (snapshot.n[s] && (best < 0 || snapshot.n[s] > snapshot.n[best])) best = s;
             if (best < 0) break;
-            uint64_t per = ns_x1000(g_kb_sys_cyc[best], g_kb_sys_n[best]);
+            uint64_t per = ns_x1000(snapshot.cyc[best], snapshot.n[best]);
             kprintf("[kbench]   SYS %d: %d calls (%d%%), mean %d.%03d ns in handler, %d ms total\n",
-                    best, (int)g_kb_sys_n[best],
-                    (int)(total_n ? g_kb_sys_n[best] * 100 / total_n : 0),
+                    best, (int)snapshot.n[best],
+                    (int)(total_n ? snapshot.n[best] * 100 / total_n : 0),
                     (int)(per / 1000), (int)(per % 1000),
-                    (int)(g_kb_sys_cyc[best] / g_mhz / 1000));
-            g_kb_sys_n[best] = 0;          /* consumed: this report runs once */
+                    (int)(snapshot.cyc[best] / g_mhz / 1000));
+            snapshot.n[best] = 0;          /* consumed only in this report snapshot */
         }
     }
 
-    /* The BKL. Two numbers decide whether it is the dominant cost: how much of
-     * the wall clock the cores spent WAITING for it, and how much they spent
-     * HOLDING it. Waiting is pure loss. Holding is not loss by itself -- it is
-     * only loss to the extent another core wanted it -- so `contended` is what
-     * turns the second number into an argument. */
-    if (acq) {
-        uint64_t wper = ns_x1000(wait, acq);
-        uint64_t hper = ns_x1000(hold, acq);
-        kprintf("[kbench] BKL: %d acquisitions, %d contended (%d%%); "
-                "wait mean %d.%03d ns, hold mean %d.%03d ns\n",
-                (int)acq, (int)cont, (int)(acq ? cont * 100 / acq : 0),
-                (int)(wper / 1000), (int)(wper % 1000),
-                (int)(hper / 1000), (int)(hper % 1000));
-        kprintf("[kbench] BKL: %d ms spent waiting, %d ms spent holding, "
-                "across %d cores\n",
-                (int)(wait / g_mhz / 1000), (int)(hold / g_mhz / 1000), cores);
-    }
+
 }
 
 /* ----------------------------------------------------------------- the thread */
@@ -511,6 +436,8 @@ static void kbench_thread(void)
     /* Stop accounting and print what boot cost. Reading first and disarming
      * after would race the other three cores; disarming first means the last
      * few entries are missing, which is the harmless direction. */
+    /* Correction: disarming is atomic, and a syscall already timed may still
+     * finish later. Reports use atomic scalar snapshots without clearing data. */
     kb_stat_set(0);
     kb_stat_report("boot through desktop live");
 

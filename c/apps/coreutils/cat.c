@@ -1,13 +1,16 @@
 #include "clib.h"
 
+#define CAT_IO_CHUNK (64 * 1024)
+static char io_buf[CAT_IO_CHUNK];
+
 /* cat [file...] -- copy files (or stdin if none) to stdout. */
 static void copy_fd(int fd)
 {
-    char b[512]; int r;
-    while ((r = sys_read(fd, b, sizeof b)) > 0) {
+    int r;
+    while ((r = sys_read(fd, io_buf, sizeof io_buf)) > 0) {
         int o = 0;
         while (o < r) {                     /* pipe short writes: retry, don't drop data */
-            int w = sys_write(1, b + o, r - o);
+            int w = sys_write(1, io_buf + o, r - o);
             if (w <= 0) return;
             o += w;
         }

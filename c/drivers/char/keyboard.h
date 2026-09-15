@@ -8,5 +8,8 @@ void keyboard_handle(void);
  * The mouse driver reads this so a click can carry shift/ctrl/alt: the keyboard
  * is where that state lives, and there is exactly one of it. */
 int kbd_mods(void);
+/* Physical state for focused interactive applications, independent of IME
+ * text input and typematic repeat. key is unshifted ASCII or a KEY_* code. */
+int kbd_key_held(int key);
 
 #endif /* LOGIT_KEYBOARD_H */

@@ -55,7 +55,11 @@
  * host wall clock and not a unit of guest work.
  * ==========================================================================*/
 
-#define KB_MAXCPU 8          /* == PERCPU_MAXCPU */
+#ifdef LOGIT_CPU_CAP_NEGCTL
+#define KB_MAXCPU 8
+#else
+#define KB_MAXCPU 32         /* == PERCPU_MAXCPU */
+#endif
 
 /* Interrupt-entry classes. Coarse on purpose: the question is "what does
  * getting into and out of the kernel cost", not "which syscall is slow" --
@@ -71,16 +75,13 @@
  * cores at once, and sharing a line between them would make the instrument's
  * own coherence traffic part of what it reports. */
 struct kb_cpu {
-    uint64_t bkl_acq;        /* BKL acquisitions by this core */
-    uint64_t bkl_contended;  /* ...that had to wait for another core */
-    uint64_t bkl_wait;       /* cycles spun waiting for the BKL */
-    uint64_t bkl_hold;       /* cycles the BKL was held by this core */
-    uint64_t bkl_t0;         /* scratch: this core's acquire timestamp */
     uint64_t n[KB_NCLASS];   /* kernel entries by class */
     uint64_t cyc[KB_NCLASS]; /* cycles from entry to exit, by class */
     uint64_t _pad[64 / 8 - 5];
 } __attribute__((aligned(64)));
 
+/* Correction: five count/cycle pairs occupy two cache lines, not one.
+ * Alignment still keeps adjacent CPU records on separate cache lines. */
 extern struct kb_cpu g_kb[KB_MAXCPU];
 
 /* Per-syscall-number accounting. "1.3 million syscalls during boot" is a
@@ -90,14 +91,60 @@ extern struct kb_cpu g_kb[KB_MAXCPU];
  * the handler's own cost and not the queueing in front of it -- the two are
  * separated on purpose, because only one of them is fixable by making the
  * handler faster. */
-#define KB_NSYS 128
-extern uint64_t g_kb_sys_n[KB_NSYS];
-extern uint64_t g_kb_sys_cyc[KB_NSYS];
+/* Correction (2026-09-10): the ABI already reaches 189, and no BKL remains.
+ * Each CPU owns a separate 64-byte-aligned 4096-byte histogram. Record at EXIT
+ * after disabling IRQs and re-reading this_cpu(): blocking handlers can migrate.
+ * With one writer per CPU, relaxed atomic loads/stores need no locked RMW;
+ * atomic readers can sample the live table without a C data race. */
+#define KB_NSYS 256
+struct kb_sys_cpu {
+    uint64_t n[KB_NSYS];
+    uint64_t cyc[KB_NSYS];
+} __attribute__((aligned(64)));
+extern struct kb_sys_cpu g_kb_sys[KB_MAXCPU];
+struct kb_sys_snapshot { uint64_t n[KB_NSYS], cyc[KB_NSYS]; };
+_Static_assert(sizeof(struct kb_sys_cpu) % 64 == 0, "CPU histograms must not share a cache line");
+_Static_assert(sizeof(struct kb_sys_snapshot) == 4096, "report snapshot must stay one page");
+
+/* Caller: IRQs disabled on this CPU, no scheduling inside either record helper.
+ * NMI handlers do not record here. No other CPU may write this CPU's shard. */
+static inline void kb_sys_record(unsigned cpu, uint64_t nr, uint64_t cycles)
+{
+    if (cpu >= KB_MAXCPU || nr >= KB_NSYS) return;
+    struct kb_sys_cpu *s = &g_kb_sys[cpu];
+    __atomic_store_n(&s->n[nr], __atomic_load_n(&s->n[nr], __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->cyc[nr], __atomic_load_n(&s->cyc[nr], __ATOMIC_RELAXED) + cycles, __ATOMIC_RELAXED);
+}
+static inline void kb_entry_record(unsigned cpu, unsigned cls, uint64_t cycles)
+{
+    if (cpu >= KB_MAXCPU || cls >= KB_NCLASS) return;
+    struct kb_cpu *s = &g_kb[cpu];
+    __atomic_store_n(&s->n[cls], __atomic_load_n(&s->n[cls], __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->cyc[cls], __atomic_load_n(&s->cyc[cls], __ATOMIC_RELAXED) + cycles, __ATOMIC_RELAXED);
+}
+
+/* Cumulative, non-destructive snapshot. While writers are active, individual
+ * scalar reads may belong to adjacent instants; disarming prevents new timed
+ * entries but does not wait for old blocking calls to return. No claim of a
+ * globally simultaneous sample is made. Sorting may change only this copy. */
+static inline void kb_sys_snapshot_read(struct kb_sys_snapshot *out)
+{
+    for (unsigned n = 0; n < KB_NSYS; n++) {
+        uint64_t count = 0, cycles = 0;
+        for (unsigned c = 0; c < KB_MAXCPU; c++) {
+            count += __atomic_load_n(&g_kb_sys[c].n[n], __ATOMIC_RELAXED);
+            cycles += __atomic_load_n(&g_kb_sys[c].cyc[n], __ATOMIC_RELAXED);
+        }
+        out->n[n] = count; out->cyc[n] = cycles;
+    }
+}
 
 /* THE DISABLED PATH: one load, one predicted-not-taken branch. Nothing may be
  * added here -- the whole claim that these numbers describe the uninstrumented
  * kernel rests on the instrumented kernel being the same kernel when it is off. */
-extern volatile int g_kb_stat;
+extern int g_kb_stat;
+static inline int kb_stat_enabled(void)
+{ return __atomic_load_n(&g_kb_stat, __ATOMIC_RELAXED) != 0; }
 
 static inline uint64_t kb_rdtsc(void)
 {
@@ -129,6 +176,6 @@ void kb_stat_report(const char *tag);
 /* Sample who holds the BKL. Called from the timer tick, which runs BEFORE
  * the interrupt entry takes the lock -- so it observes the holder from
  * outside instead of becoming one. No-op unless the accounting is armed. */
-void kb_bkl_sample(void);
+/* BKL holder sampling removed with the global lock. */
 
 #endif /* LOGIT_KBENCH_H */

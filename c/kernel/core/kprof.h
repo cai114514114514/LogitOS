@@ -79,8 +79,12 @@
 #define KPROF_NBUCKET    (1 << KPROF_HASH_BITS)   /* 8192 kernel-RIP buckets */
 #define KPROF_UBUCKET    1024                     /* ring-3 RIP buckets */
 #define KPROF_PROBE      16      /* open-addressing probe limit */
-#define KPROF_MAXCPU     8       /* == PERCPU_MAXCPU; kept private so kprof.c
+#ifdef LOGIT_CPU_CAP_NEGCTL
+#define KPROF_MAXCPU     8
+#else
+#define KPROF_MAXCPU     32      /* == PERCPU_MAXCPU; kept private so kprof.c
                                   * compiles on the host without percpu.h */
+#endif
 
 /* The diagnostic IDT vector the sampler runs on. 238/239 are kdiag's, 240/241
  * are the TLB and present IPIs, 255 is LAPIC spurious, 0x60-0x7F are the

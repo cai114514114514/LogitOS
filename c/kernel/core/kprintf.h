@@ -2,6 +2,7 @@
 #define LOGIT_KPRINTF_H
 
 #include <stdarg.h>
+#include <stdint.h>
 
 /* Minimal formatted output. Writes to both the VGA text screen and COM1 --
  * and, since the log ring landed, into klog as well, so everything printed
@@ -16,6 +17,7 @@
  * the 'l' / 'll' length modifiers (%lu %llx %ld ...). */
 
 void kprintf(const char *fmt, ...);
+void kprintf_panic_takeover(void); /* after peers stop; never wait for failed owner */
 
 /* snprintf-alike over the same formatter. Writes at most `max-1` bytes plus a
  * NUL and returns the number of bytes actually written (never >= max), so
@@ -37,5 +39,9 @@ void         *kprintf_misaligned_caller(void);
  * into the ring. Appends a newline if the format did not end with one. */
 void kvlog_out(int level, int console, const char *prefix,
                const char *fmt, va_list ap);
+
+/* One whole console message, including raw serial strings. Never recurse. */
+uint64_t kprintf_console_enter(void);
+void kprintf_console_leave(uint64_t flags);
 
 #endif /* LOGIT_KPRINTF_H */

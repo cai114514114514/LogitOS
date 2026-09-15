@@ -190,8 +190,9 @@ static int render_kstat(char *buf, int max)
 
     n += ksnprintf(buf + n, max - n, "\npid  ppid state name\n");
     for (int pid = 1; pid <= NPROC * 4 && n < max - 64; pid++) {
-        struct proc *p = proc_by_pid(pid);
-        if (!p || p->state == 0)
+        struct proc snapshot;
+        struct proc *p = &snapshot;
+        if (!proc_snapshot(pid,p))
             continue;
         n += ksnprintf(buf + n, max - n, "%-4d %-4d %-5s %s\n",
                        p->pid, p->ppid,
@@ -283,7 +284,7 @@ void kdiag_stop_other_cpus(void)
     for (int i = 0; i < n; i++) {
         if (i == me)
             continue;
-        lapic_send_ipi((uint8_t)g_cpus[i].lapic_id, KDIAG_VEC_HALT);
+        (void)lapic_send_ipi(g_cpus[i].lapic_id, KDIAG_VEC_HALT);
     }
     for (volatile int spin = 0; spin < 4000000; spin++)
         ;                                   /* let them take the interrupt */
@@ -393,7 +394,7 @@ static void do_irqstorm(long rounds)
         klog(KL_DEBUG, "kdiag thr cpu=%d n=%lld tail=%lld", me, (long long)i, (long long)i);
         /* Self first: this is the one that can land INSIDE the klog call above,
          * which is the same-core case the interrupt guard exists for. */
-        lapic_send_ipi((uint8_t)g_cpus[me].lapic_id, KDIAG_VEC_LOG);
+        (void)lapic_send_ipi(g_cpus[me].lapic_id, KDIAG_VEC_LOG);
         /* Then one remote core, rotating. Not all of them at once: a LAPIC has
          * a single IRR bit per vector, so a second IPI to a core that has not
          * serviced the first is COALESCED -- blasting every core each round
@@ -401,7 +402,7 @@ static void do_irqstorm(long rounds)
         if (ncpu > 1) {
             int c = (int)(i % ncpu);
             if (c != me)
-                lapic_send_ipi((uint8_t)g_cpus[c].lapic_id, KDIAG_VEC_LOG);
+                (void)lapic_send_ipi(g_cpus[c].lapic_id, KDIAG_VEC_LOG);
         }
         for (volatile int s = 0; s < 3000; s++)
             ;                                /* let the remote core service it */

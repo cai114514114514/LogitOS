@@ -1,3 +1,4 @@
+#include "dma.h"
 #include <stdint.h>
 #include "serial.h"
 #include "kprintf.h"
@@ -217,6 +218,7 @@ void kernel_main(uint64_t mb_info)
      * first debugging tool anyone has. */
     dev_probe_all();
     dev_dump();
+    dma_report("boot");
 
     if (fs_ok)
         kprintf("\n" BOOT_OK_MARKER "\n");
