@@ -10,14 +10,19 @@
  *
  * There is exactly one host controller type (xhci.c) and the calls below go
  * straight to it rather than through a vtable. A second controller would need
- * one; there is no second controller worth having (see xhci.h), so the
- * indirection is not written yet.
+ * one. Correction to the former "no second controller worth having" claim:
+ * older PCs can have only UHCI/OHCI/EHCI, and remain unsupported. HID coverage
+ * below does not establish that their host controller can transfer anything.
+ * Correction (X79 bring-up): usb_hc.h now provides a per-controller backend
+ * contract, used by xHCI and EHCI. USB2 hub boot enumeration carries route and
+ * transaction-translator topology; controller support remains backend-specific.
  */
 
 #include <stdint.h>
 #include "usb_desc.h"
+#include "usb_hc.h"
 
-#define USB_MAX_DEVICES 8
+#define USB_MAX_DEVICES 32
 
 /* Standard request codes / recipients (USB 2.0 Table 9-4, 9-2) */
 #define USB_REQ_GET_STATUS        0x00
@@ -54,11 +59,23 @@ struct usb_device {
     uint8_t  port;            /* root hub port, 1-based */
     uint8_t  speed;           /* XSPEED_* */
     uint8_t  addr;            /* USB address the controller assigned */
+    struct usb_hc *hc;
+    void *hcpriv;             /* backend-owned device state */
+    struct usb_device *parent;
+    uint8_t parent_port, depth;
+    uint32_t route;           /* xHCI route string, 4 bits per downstream hop */
+    struct usb_device *tt_hub; /* nearest HIGH-speed transaction translator */
+    uint8_t tt_port, tt_multi;
+    uint8_t hub_ports, hub_multi_tt, hub_tt_think;
     struct usb_device_desc dd;
     struct usb_config cfg;
-    int      ifno;            /* index into cfg.iface[] a driver bound to */
-    const struct usb_driver *drv;
-    void    *drvdata;
+    /* USB 2.0 9.6.5 binds a driver to each interface. The former single
+     * drv/ifno/drvdata tuple silently left a composite receiver's second
+     * interface idle even though its descriptor was successfully enumerated. */
+    struct {
+        const struct usb_driver *drv;
+        void *drvdata;
+    } binding[USB_MAX_IF];
 };
 
 /* A class driver matches on the INTERFACE triple, not on vendor:product. That
@@ -77,13 +94,23 @@ struct usb_driver {
                                       * { 0, 0, 0 } (class 0 is "use the device
                                       * descriptor", never a real interface) */
     int  (*probe)(struct usb_device *dev, int ifno);   /* 0 = bound */
-    void (*poll)(struct usb_device *dev);              /* called ~100 Hz */
-    void (*remove)(struct usb_device *dev);
+    void (*poll)(struct usb_device *dev, int ifno);   /* completion-driven */
+    void (*remove)(struct usb_device *dev, int ifno);
 };
 
 /* Class drivers register from their own file at bring-up; usb_core calls each
  * registered driver's match table against every interface of every device. */
 void usb_register_driver(const struct usb_driver *drv);
+
+/* The same interface binder is linked by the guest and the protocol fixture.
+ * Endpoints belong to the host controller, private data to each interface. */
+int usb_bind_interfaces(struct usb_device *, const struct usb_driver *const *, int);
+void usb_poll_interfaces(struct usb_device *);
+void usb_remove_interfaces(struct usb_device *);
+
+/* Atomic modifier snapshot; kbd_mods combines this with the PS/2 state. */
+int usb_hid_mods(void);
+int usb_hid_key_held(int key);
 
 /* There is no usb_init(). The controller driver registers itself through the
  * device model (DRIVER_DECLARE in usb_core.c) and is bound by PCI class, so

@@ -101,11 +101,15 @@ int32_t  hid_extract_signed(const uint8_t *body, int body_bits, const struct hid
 struct hid_mouse_state {
     int dx, dy, wheel;
     uint32_t buttons;       /* bit 0 = button 1 (left), 1 = right, 2 = middle */
+    unsigned present;      /* bit 0 X, 1 Y, 2 wheel, 3 buttons */
+    unsigned absolute;     /* bit 0 X / 1 Y lack HID_MAIN_RELATIVE */
+    int32_t min[2], max[2]; /* each absolute axis has its own logical range */
 };
 
+#define HID_MAX_KEYS 32
 struct hid_kbd_state {
     uint8_t mods;           /* HID modifier byte layout: bit0 LCtrl .. bit7 RGui */
-    uint8_t keys[8];        /* usage codes currently down, 0-padded */
+    uint8_t keys[HID_MAX_KEYS]; /* array and NKRO bitmap usages currently down */
     int nkeys;
 };
 
@@ -115,6 +119,12 @@ struct hid_kbd_state {
  * fields), -1 on a report too short for its own descriptor. */
 int hid_decode_mouse(const struct hid_desc *hd, const uint8_t *rep, int len, struct hid_mouse_state *st);
 int hid_decode_keyboard(const struct hid_desc *hd, const uint8_t *rep, int len, struct hid_kbd_state *st);
+
+/* Apply only fields present in this report; report-ID-separated buttons must
+ * not release when an axis-only report arrives. Absolute axes are normalized
+ * from the descriptor range, relative axes are saturating deltas. */
+void hid_mouse_apply(const struct hid_mouse_state *, int width, int height,
+                     int *x, int *y, uint32_t *buttons);
 
 /* Does this descriptor describe a pointer / a keyboard at all? Used to pick a
  * decoder when the interface protocol byte says nothing (report-protocol-only

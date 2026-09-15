@@ -323,6 +323,7 @@ int hid_decode_mouse(const struct hid_desc *hd, const uint8_t *rep, int len, str
         const struct hid_field *f = &hd->f[i];
         if (f->report_id != id || !f->is_input) continue;
         if (f->usage_page == HID_PAGE_BUTTON) {
+            st->present |= 8;
             if (f->flags & HID_MAIN_VARIABLE) {
                 if (f->usage >= 1 && f->usage <= 32 && hid_extract(body, bits, f, 0))
                     st->buttons |= 1u << (f->usage - 1);
@@ -339,12 +340,45 @@ int hid_decode_mouse(const struct hid_desc *hd, const uint8_t *rep, int len, str
             }
         } else if (f->usage_page == HID_PAGE_DESKTOP && (f->flags & HID_MAIN_VARIABLE)) {
             int32_t v = hid_extract_signed(body, bits, f, 0);
-            if (f->usage == HID_USAGE_X)      { st->dx = v; touched = 1; }
-            else if (f->usage == HID_USAGE_Y) { st->dy = v; touched = 1; }
-            else if (f->usage == HID_USAGE_WHEEL) { st->wheel = v; touched = 1; }
+            if (f->usage == HID_USAGE_X || f->usage == HID_USAGE_Y) {
+                int axis = f->usage == HID_USAGE_Y;
+                if (axis) st->dy = v; else st->dx = v;
+                st->present |= 1u << axis;
+                if (!(f->flags & HID_MAIN_RELATIVE)) {
+                    if (f->lmax <= f->lmin) return -1;
+                    st->absolute |= 1u << axis;
+                    st->min[axis] = f->lmin; st->max[axis] = f->lmax;
+                }
+                touched = 1;
+            } else if (f->usage == HID_USAGE_WHEEL) {
+                st->wheel = v; st->present |= 4; touched = 1;
+            }
         }
     }
     return touched ? 1 : 0;
+}
+
+void hid_mouse_apply(const struct hid_mouse_state *st, int width, int height,
+                     int *x, int *y, uint32_t *buttons)
+{
+    for (int axis = 0; axis < 2; axis++) {
+        if (!(st->present & (1u << axis))) continue;
+        int *pos = axis ? y : x;
+        int span = (axis ? height : width) - 1;
+        if (span < 0) span = 0;
+        int32_t raw = axis ? st->dy : st->dx;
+        int64_t n;
+#ifndef USB_INPUT_NEGCTL_ABSOLUTE_AS_RELATIVE
+        if (st->absolute & (1u << axis)) {
+            int64_t range = (int64_t)st->max[axis] - st->min[axis];
+            if (range <= 0) continue;
+            n = ((int64_t)raw - st->min[axis]) * span / range;
+        } else
+#endif
+            n = (int64_t)*pos + raw;
+        *pos = n < 0 ? 0 : n > span ? span : (int)n;
+    }
+    if (st->present & 8) *buttons = st->buttons;
 }
 
 int hid_decode_keyboard(const struct hid_desc *hd, const uint8_t *rep, int len, struct hid_kbd_state *st)
@@ -372,14 +406,25 @@ int hid_decode_keyboard(const struct hid_desc *hd, const uint8_t *rep, int len, 
                 if (hid_extract(body, bits, f, 0))
                     st->mods |= (uint8_t)(1u << (f->usage - 0xE0));
                 touched = 1;
+            } else if (f->usage >= 4 && f->usage <= 0xDF) {
+                /* NKRO keyboards encode one variable bit per key instead of
+                 * six array slots. The previous decoder recognized only the
+                 * modifier bitmap, so these keyboards enumerated but typed
+                 * nothing. Refuse overflow instead of fabricating releases. */
+                if (hid_extract(body, bits, f, 0)) {
+                    if (st->nkeys == HID_MAX_KEYS) return -1;
+                    st->keys[st->nkeys++] = (uint8_t)f->usage;
+                }
+                touched = 1;
             }
         } else {
-            for (int k = 0; k < f->count && st->nkeys < 8; k++) {
+            for (int k = 0; k < f->count; k++) {
                 uint32_t u = hid_extract(body, bits, f, k);
                 /* 0 = no key in this slot; 1..3 are the rollover/POST error
                  * codes, which are states, not keys, and must not be typed. */
                 if (u == 0 || u > 0xFF) continue;
                 if (u <= 3) continue;
+                if (st->nkeys == HID_MAX_KEYS) return -1;
                 st->keys[st->nkeys++] = (uint8_t)u;
             }
             touched = 1;
@@ -403,14 +448,16 @@ int hid_looks_like_mouse(const struct hid_desc *hd)
 
 int hid_looks_like_keyboard(const struct hid_desc *hd)
 {
-    int mods = 0, keys = 0;
+    int keys = 0;
     for (int i = 0; i < hd->nfields; i++) {
         const struct hid_field *f = &hd->f[i];
         if (!f->is_input || f->usage_page != HID_PAGE_KEYBOARD) continue;
-        if (f->flags & HID_MAIN_VARIABLE) mods++;
+        if (f->flags & HID_MAIN_VARIABLE) {
+            if (f->usage >= 4 && f->usage <= 0xDF) keys++;
+        }
         else keys += f->count;
     }
-    return keys >= 1 && mods >= 1;
+    return keys >= 1;
 }
 
 /* -------------------------------------------------------------- keymap -- */

@@ -46,7 +46,7 @@
 #include "usb.h"
 #include "usb_desc.h"
 #include "hid_report.h"
-#include "xhci.h"
+#include "usb_hc.h"
 #include "wm.h"
 #include "fb.h"
 #include "kheap.h"
@@ -54,13 +54,44 @@
 #include "pit.h"
 #include "logit_abi.h"
 
+#ifndef memset
 void *memset(void *, int, size_t);
+#endif
 
 extern unsigned long usb_reports_total, usb_keys_total, usb_motion_total;
 
 #define ROLE_NONE 0
 #define ROLE_KBD  1
 #define ROLE_MOUSE 2
+
+/* The common keyboard reader may run on another CPU. Keep snapshots outside
+ * allocated HID state so a read cannot race interface removal's kfree. Each
+ * interface owns one slot; removal clears it after core drains IRQ users. */
+static unsigned hid_modifiers[USB_MAX_DEVICES * USB_MAX_IF];
+static uint64_t hid_held[USB_MAX_DEVICES * USB_MAX_IF][4];
+static unsigned char hid_modifier_used[USB_MAX_DEVICES * USB_MAX_IF];
+int usb_hid_mods(void)
+{
+    unsigned m = 0;
+    for (unsigned i = 0; i < USB_MAX_DEVICES * USB_MAX_IF; i++)
+        m |= __atomic_load_n(&hid_modifiers[i], __ATOMIC_ACQUIRE);
+    return ((m & 0x22) ? EV_MOD_SHIFT : 0) | ((m & 0x11) ? EV_MOD_CTRL : 0) |
+           ((m & 0x44) ? EV_MOD_ALT : 0) | ((m & 0x88) ? EV_MOD_SUPER : 0);
+}
+
+/* Query physical levels, independent of text translation and typematic.
+ * Static snapshots survive interface teardown; never let a game query an
+ * allocated hid_dev that the USB removal path can free concurrently. */
+int usb_hid_key_held(int key)
+{
+    if(key>='A'&&key<='Z')key+='a'-'A';
+    uint64_t held[4]={0};
+    for(unsigned i=0;i<USB_MAX_DEVICES*USB_MAX_IF;i++)for(int j=0;j<4;j++)
+        held[j]|=__atomic_load_n(&hid_held[i][j],__ATOMIC_ACQUIRE);
+    for(unsigned u=4;u<256;u++)
+        if((held[u/64]&(1ull<<(u%64)))&&hid_usage_to_key(u,0)==key)return 1;
+    return 0;
+}
 
 /* HID modifier byte (boot report byte 0, and the same bit order the parsed
  * decoder produces from usages E0..E7). */
@@ -85,9 +116,13 @@ struct hid_dev {
      * down, every time anything changes -- not press and release events. The
      * difference between consecutive sets is where keystrokes come from, and
      * failing to diff means holding a key types it forever. */
-    uint8_t prev_keys[8];
-    int     prev_nkeys;
-    uint8_t prev_mods;
+    struct hid_history {
+        uint8_t prev_keys[HID_MAX_KEYS];
+        int prev_nkeys;
+        uint8_t prev_mods;
+        int repeat_ticks;
+    } history[HID_MAX_REPORTS];
+    int modifier_slot;
 
     /* Auto-repeat, driven by the DEVICE's idle timer rather than an OS one.
      * A PS/2 keyboard repeats in hardware; a USB one reports only on change, so
@@ -96,12 +131,12 @@ struct hid_dev {
      * instead SET_IDLE asks the keyboard to re-send its unchanged report every
      * ~96 ms -- which is a periodic interrupt, from the device, for free. An
      * unchanged non-empty report is therefore a repeat tick. */
-    int repeat_ticks;
 
     /* Pointer position. wm_mouse_event() takes an ABSOLUTE screen position and
      * a HID mouse reports relative deltas, so the position is integrated here.
      * See the note in probe() about what that means alongside a PS/2 mouse. */
     int mx, my, have_pos;
+    uint32_t buttons;
 
     unsigned long reports;
 };
@@ -136,7 +171,7 @@ static int hid_get_report_desc(struct usb_device *d, int ifnum, uint8_t *buf, ui
 
 /* ---------------------------------------------------------- keyboard --- */
 
-static int was_down(const struct hid_dev *h, uint8_t usage)
+static int was_down(const struct hid_history *h, uint8_t usage)
 {
     for (int i = 0; i < h->prev_nkeys; i++)
         if (h->prev_keys[i] == usage) return 1;
@@ -165,9 +200,13 @@ static void post_key(uint8_t usage, uint8_t mods)
 static void handle_keyboard(struct hid_dev *h, const uint8_t *rep, int len)
 {
     struct hid_kbd_state ks;
+    int report = 0;
 
     if (h->generic) {
         if (hid_decode_keyboard(&h->rd, rep, len, &ks) <= 0) return;
+        if (h->rd.uses_report_ids)
+            for (int i = 0; i < h->rd.nreports; i++)
+                if (h->rd.rep[i].id == rep[0]) { report = i; break; }
     } else {
         if (len < 8) return;
         memset(&ks, 0, sizeof ks);
@@ -176,27 +215,41 @@ static void handle_keyboard(struct hid_dev *h, const uint8_t *rep, int len)
             if (rep[i] > 3) ks.keys[ks.nkeys++] = rep[i];
     }
 
+    /* A receiver can put modifiers and normal keys in separate report IDs.
+     * Keep their histories independent and publish the union BEFORE wm_key
+     * samples kbd_mods, so the first shifted key/click has the right flags. */
+    struct hid_history *prev = &h->history[report];
+    prev->prev_mods = ks.mods;
+    unsigned combined = 0;
+    for (int i = 0; i < HID_MAX_REPORTS; i++) combined |= h->history[i].prev_mods;
+    __atomic_store_n(&hid_modifiers[h->modifier_slot], combined, __ATOMIC_RELEASE);
+    uint64_t held[4]={0};
+    for(int r=0;r<HID_MAX_REPORTS;r++) {
+        const uint8_t *keys=r==report?ks.keys:h->history[r].prev_keys;
+        int n=r==report?ks.nkeys:h->history[r].prev_nkeys;
+        for(int i=0;i<n;i++)held[keys[i]/64]|=1ull<<(keys[i]%64);
+    }
+    for(int i=0;i<4;i++)__atomic_store_n(&hid_held[h->modifier_slot][i],held[i],__ATOMIC_RELEASE);
     int fresh = 0;
     for (int i = 0; i < ks.nkeys; i++)
-        if (!was_down(h, ks.keys[i])) { post_key(ks.keys[i], ks.mods); fresh = 1; }
+        if (!was_down(prev, ks.keys[i])) { post_key(ks.keys[i], combined); fresh = 1; }
 
     /* Same set of keys still held, nothing new pressed: this is the device's
      * idle re-report, i.e. a repeat tick. The last key in the report is the one
      * most recently pressed, which is the one a person expects to repeat. */
-    int same = (ks.nkeys == h->prev_nkeys) && !fresh;
+    int same = (ks.nkeys == prev->prev_nkeys) && !fresh;
     for (int i = 0; same && i < ks.nkeys; i++)
-        if (ks.keys[i] != h->prev_keys[i]) same = 0;
+        if (ks.keys[i] != prev->prev_keys[i]) same = 0;
 
     if (same && ks.nkeys > 0) {
-        if (++h->repeat_ticks >= REPEAT_DELAY_TICKS)
-            post_key(ks.keys[ks.nkeys - 1], ks.mods);
+        if (++prev->repeat_ticks >= REPEAT_DELAY_TICKS)
+            post_key(ks.keys[ks.nkeys - 1], combined);
     } else {
-        h->repeat_ticks = 0;
+        prev->repeat_ticks = 0;
     }
 
-    for (int i = 0; i < 8; i++) h->prev_keys[i] = i < ks.nkeys ? ks.keys[i] : 0;
-    h->prev_nkeys = ks.nkeys;
-    h->prev_mods = ks.mods;
+    for (int i = 0; i < HID_MAX_KEYS; i++) prev->prev_keys[i] = i < ks.nkeys ? ks.keys[i] : 0;
+    prev->prev_nkeys = ks.nkeys;
 }
 
 /* ------------------------------------------------------------- mouse --- */
@@ -212,6 +265,7 @@ static void handle_mouse(struct hid_dev *h, const uint8_t *rep, int len)
         if (len < 3) return;
         memset(&ms, 0, sizeof ms);
         ms.buttons = rep[0] & 0x1F;
+        ms.present = 15;
         ms.dx = (int)(int8_t)rep[1];
         ms.dy = (int)(int8_t)rep[2];
         ms.wheel = len >= 4 ? (int)(int8_t)rep[3] : 0;
@@ -227,14 +281,12 @@ static void handle_mouse(struct hid_dev *h, const uint8_t *rep, int len)
      * same direction as screen coordinates -- so this adds where the PS/2 path
      * subtracts. PS/2 packets carry Y growing upward; that is a property of the
      * PS/2 protocol, not of mice. */
-    h->mx += ms.dx;
-    h->my += ms.dy;
-
-    int w = (int)fb_width(), ht = (int)fb_height();
-    if (h->mx < 0) h->mx = 0;
-    if (h->my < 0) h->my = 0;
-    if (h->mx > w - 1) h->mx = w - 1;
-    if (h->my > ht - 1) h->my = ht - 1;
+    /* Correction: the old addition above treated absolute tablet coordinates
+     * as deltas. Repeated identical reports ran the pointer to a screen edge.
+     * HID 1.11 6.2.2.5's Relative bit and each axis's logical range decide the
+     * conversion; no product IDs or QEMU-specific coordinate limits appear. */
+    hid_mouse_apply(&ms, (int)fb_width(), (int)fb_height(),
+                    &h->mx, &h->my, &h->buttons);
 
     /* THE WHEEL IS NEGATED, and this is not a guess. HID Usage(Wheel) is
      * positive for rotation AWAY from the user, i.e. scrolling up (Usage Tables
@@ -253,10 +305,10 @@ static void handle_mouse(struct hid_dev *h, const uint8_t *rep, int len)
      * window manager derives press and release from the previous level, because
      * only it knows which window owns a press. */
     wm_mouse_event(h->mx, h->my,
-                   (ms.buttons & 1) ? 1 : 0,
-                   (ms.buttons & 2) ? 1 : 0,
-                   (ms.buttons & 4) ? 1 : 0,
-                   -ms.wheel);
+                   (h->buttons & 1) ? 1 : 0,
+                   (h->buttons & 2) ? 1 : 0,
+                   (h->buttons & 4) ? 1 : 0,
+                   ms.wheel == INT32_MIN ? INT32_MAX : -ms.wheel);
     usb_motion_total++;
 }
 
@@ -278,7 +330,7 @@ static int hid_probe(struct usb_device *d, int ifno)
     h->ifnum = it->num;
 
     /* Parse the report descriptor if the interface declared one. */
-    if (it->has_hid && it->hid_report_len > 0 && it->hid_report_len <= 512) {
+    if (it->has_hid && it->hid_report_len > 0 && it->hid_report_len <= 4096) {
         uint8_t *rd = kmalloc(it->hid_report_len);
         if (rd) {
             int n = hid_get_report_desc(d, it->num, rd, it->hid_report_len);
@@ -297,10 +349,11 @@ static int hid_probe(struct usb_device *d, int ifno)
     /* Role: what the descriptor actually describes beats what the interface
      * protocol byte claims, because a report-protocol-only device commonly
      * declares bInterfaceProtocol 0 and is still a keyboard. */
-    if (h->have_rd && hid_looks_like_keyboard(&h->rd))    h->role = ROLE_KBD;
-    else if (h->have_rd && hid_looks_like_mouse(&h->rd))  h->role = ROLE_MOUSE;
-    else if (it->if_proto == USB_HID_PROTO_KBD)           h->role = ROLE_KBD;
-    else if (it->if_proto == USB_HID_PROTO_MOUSE)         h->role = ROLE_MOUSE;
+    if (h->have_rd) {
+        if (hid_looks_like_keyboard(&h->rd)) h->role |= ROLE_KBD;
+        if (hid_looks_like_mouse(&h->rd)) h->role |= ROLE_MOUSE;
+    } else if (it->if_proto == USB_HID_PROTO_KBD) h->role = ROLE_KBD;
+    else if (it->if_proto == USB_HID_PROTO_MOUSE) h->role = ROLE_MOUSE;
 
     if (h->role == ROLE_NONE) {
         kprintf("[hid] if%d: neither keyboard nor mouse; not bound\n", it->num);
@@ -318,52 +371,81 @@ static int hid_probe(struct usb_device *d, int ifno)
             kfree(h);
             return -1;
         }
-        if (hid_set_protocol(d, it->num, HID_PROTO_BOOT) < 0)
-            kprintf("[hid] if%d: SET_PROTOCOL(boot) refused; assuming boot layout\n", it->num);
+        if (hid_set_protocol(d, it->num, HID_PROTO_BOOT) < 0) {
+            /* The former "assuming boot layout" on a refused request silently
+             * interpreted unverified bytes as keys. A STALL gives no layout
+             * guarantee; leave this interface unbound. */
+            kprintf("[hid] if%d: SET_PROTOCOL(boot) refused\n", it->num);
+            kfree(h); return -1;
+        }
+    } else if (it->if_subclass == USB_HID_SUB_BOOT &&
+               hid_set_protocol(d, it->num, HID_PROTO_REPORT) < 0) {
+        /* Firmware may have left a boot keyboard in boot protocol. Parsing its
+         * report descriptor is not sufficient to select that wire format. */
+        kprintf("[hid] if%d: SET_PROTOCOL(report) refused\n", it->num);
+        kfree(h); return -1;
     }
 
     /* Advisory -- some devices STALL SET_IDLE, harmlessly. A keyboard that
      * refuses it simply will not auto-repeat. */
-    hid_set_idle(d, it->num, h->role == ROLE_KBD ? 24 : 0);
+    hid_set_idle(d, it->num, (h->role & ROLE_KBD) ? 24 : 0);
 
-    d->drvdata = h;
-    if (xhci_int_in_arm(d, h->ep_addr) != 0) {
+    h->modifier_slot = -1;
+    for (unsigned i = 0; i < USB_MAX_DEVICES * USB_MAX_IF; i++)
+        if (!hid_modifier_used[i]) {
+            hid_modifier_used[i] = 1;
+            h->modifier_slot = (int)i; break;
+        }
+    if (h->modifier_slot < 0) { kfree(h); return -1; }
+    d->binding[ifno].drvdata = h;
+    if (usb_int_in_arm(d, h->ep_addr) != 0) {
         kprintf("[hid] if%d: could not arm the interrupt endpoint\n", it->num);
+        hid_modifier_used[h->modifier_slot] = 0;
         kfree(h);
-        d->drvdata = NULL;
+        d->binding[ifno].drvdata = NULL;
         return -1;
     }
 
     kprintf("USB_HID_BIND if=%d role=%s decode=%s ep=%02x interval=%d\n",
-            it->num, h->role == ROLE_KBD ? "keyboard" : "mouse",
+            it->num, h->role == (ROLE_KBD | ROLE_MOUSE) ? "keyboard+mouse" :
+                     h->role == ROLE_KBD ? "keyboard" : "mouse",
             h->generic ? "report-descriptor" : "boot-protocol",
             h->ep_addr, ep->interval);
     return 0;
 }
 
-static void hid_poll(struct usb_device *d)
+static void hid_poll(struct usb_device *d, int ifno)
 {
-    struct hid_dev *h = d->drvdata;
+    struct hid_dev *h = d->binding[ifno].drvdata;
     if (!h) return;
 
     uint8_t *buf = NULL;
-    int n = xhci_int_in_poll(d, h->ep_addr, &buf);
+    int n = usb_int_in_poll(d, h->ep_addr, &buf);
     if (n >= 0 && buf) {
         h->reports++;
         usb_reports_total++;
-        if (h->role == ROLE_KBD) handle_keyboard(h, buf, n);
-        else                     handle_mouse(h, buf, n);
+        /* A single HID interface can multiplex both roles using report IDs.
+         * Each decoder rejects reports outside its fields. The old else made
+         * every mouse report vanish when the descriptor also had a keyboard. */
+        if (h->role & ROLE_KBD) handle_keyboard(h, buf, n);
+        if (h->role & ROLE_MOUSE) handle_mouse(h, buf, n);
     }
 
     /* Re-arm unconditionally: an interrupt endpoint with no TRB queued is an
      * endpoint the controller stops asking about, and the report that would
      * have told us so is the one we are no longer collecting. */
-    xhci_int_in_arm(d, h->ep_addr);
+    usb_int_in_arm(d, h->ep_addr);
 }
 
-static void hid_remove(struct usb_device *d)
+static void hid_remove(struct usb_device *d, int ifno)
 {
-    if (d->drvdata) { kfree(d->drvdata); d->drvdata = NULL; }
+    struct hid_dev *h = d->binding[ifno].drvdata;
+    if (h) {
+        __atomic_store_n(&hid_modifiers[h->modifier_slot], 0, __ATOMIC_RELEASE);
+        for(int i=0;i<4;i++)__atomic_store_n(&hid_held[h->modifier_slot][i],0,__ATOMIC_RELEASE);
+        hid_modifier_used[h->modifier_slot] = 0;
+        kfree(h); d->binding[ifno].drvdata = NULL;
+    }
 }
 
 /* Any HID interface, whatever its subclass or protocol. The role is decided in
