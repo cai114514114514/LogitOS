@@ -10,7 +10,15 @@
  * hidden). The author sheet is scanned
  * for simple selectors (tag, .class, #id, tag.class, comma lists; descendant
  * selectors match on their last compound) and inline style= attributes, and
- * matching nodes' cstyle is patched after css_apply. @media blocks are gated
+ * matching nodes' cstyle is patched after css_apply.
+ * Correction (2026-09-09): that last-compound approximation was WRONG. The
+ * complete selector is now parsed/matched by css_engine's LibCSS adapter;
+ * unsupported selectors and pseudo-element targets are refused and counted.
+ * Source-order property patching remains a separate limitation; this change
+ * does not claim to implement specificity/!important for extension properties.
+ * Correction (2026-09-09, expansion): author specificity, importance and
+ * declaration order now use css_extra_cascade.inc; layers are still absent.
+ * @media blocks are gated
  * on the viewport width (min/max-width only), so tiered rules like Bilibili's
  * repeat(2..17,1fr) breakpoints apply only in their tier.
  *
@@ -44,6 +52,9 @@ void  kfree(void *);
  * moment the cascade -- not a later tick -- changes what is animated. */
 void css_anim_note(struct node *root) LOGIT_WEAK;
 LOGIT_WEAK_STUB(css_anim_note);
+extern int img_css_color(const char *, int, unsigned char[4]) LOGIT_WEAK;
+LOGIT_WEAK_STUB(img_css_color);
+static int g_extra_passive;
 
 static int spc(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 static int ident(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -297,6 +308,7 @@ enum { LGX_ML = 0, LGX_MR, LGX_MT, LGX_MB,
 
 /* Everything we may want to patch from one declarations block. */
 struct xpatch {
+    int backface_set, backface, preserve_set, preserve;
     int do_none;                            /* visually-hidden -> display:none */
     int do_masked;                          /* mask-image set: the background is
                                              * a SHAPE we cannot cut -- see
@@ -319,13 +331,24 @@ struct xpatch {
     const char *trans_raw;
     int         trans_rawlen;
     int lg_set[LGX__COUNT], lg[LGX__COUNT]; /* logical properties, resolved to physical */
+    /* The former inset px cache could not represent calc/em/percent/auto.
+     * Stable source spans use the same lifetime as grid_raw below, keeping
+     * font-dependent values out of the once-per-sheet compile step. */
+    const char *inset_raw[4];
+    int inset_len[4];
+    const char *margin_raw[4];
+    int margin_len[4];
+    const char *gap_raw[2];
+    int gap_len[2];
+    const char *padding_raw[4];
+    int padding_len[4];
     /* The grid properties, kept as TEXT rather than values -- see the
      * grid_raw[] comment in css.h for why, and for the lifetime rule these
      * pointers depend on. They point straight into the declarations block
      * parse_decls was handed, so they are only retained when that block is
      * stable storage: the compiled sheet's private copy, or a node's own
-     * style="" attribute. gr_drop() clears them for the one caller whose
-     * buffer is not (the out-of-memory rescan). */
+     * style="" attribute. The former out-of-memory rescan is now refused
+     * altogether, so it cannot retain spans into the caller's mutable buffer. */
     const char *gr[GR__COUNT];
     int gr_len[GR__COUNT];
     int gr_any;
@@ -336,6 +359,27 @@ struct xpatch {
     int xr_len[XR__COUNT];
     int xr_any;
 };
+
+static int ieq(const char *s, int n, const char *lit);
+/* 2 temporarily represents explicit inherit. Resolve it in a parent-first
+ * walk after the complete extension cascade, never while applying one rule.
+ * Invalid values publish no patch and cannot erase an earlier valid value. */
+int css_facing_keyword(const char *s,int n,int preserve)
+{
+    while(n && spc(*s)){s++;n--;}
+    while(n && spc(s[n-1]))n--;
+    if(ieq(s,n,preserve?"preserve-3d":"hidden"))return 1;
+    if(ieq(s,n,"inherit"))return 2;
+    if(ieq(s,n,preserve?"flat":"visible") || ieq(s,n,"initial") ||
+       ieq(s,n,"unset") || ieq(s,n,"revert"))return 0;
+    return -1;
+}
+/* The bounded length grammar is now shared by logical margins and insets.
+ * Their executable controls disable the producer, not the shared grammar. */
+#include "css_inset_math.inc"
+#include "css_logical_margin.inc"
+#include "css_spacing_math.inc"
+#include "css_physical_box.inc"
 
 /* One px length from `v`, advancing *i. Accepts a leading '-'; returns -1 and
  * leaves *i alone for `auto`, a percentage or anything else we cannot turn
@@ -387,27 +431,46 @@ static void logical_one(const char *d, int dlen, const char *key, int idx,
 static int xpatch_has_logical(const struct xpatch *p)
 {
     for (int i = 0; i < LGX__COUNT; i++) if (p->lg_set[i]) return 1;
+    for (int i = 0; i < 4; i++) if (p->inset_raw[i]) return 1;
+    for (int i = 0; i < 4; i++) if (p->margin_raw[i]) return 1;
+    for (int i = 0; i < 4; i++) if (p->padding_raw[i]) return 1;
     return 0;
 }
 
 static void parse_logical(const char *d, int dlen, struct xpatch *p)
 {
+#ifdef CSS_LOGICAL_MARGIN_LEGACY
     logical_pair(d, dlen, "margin-inline",  LGX_ML, LGX_MR, p);
     logical_pair(d, dlen, "margin-block",   LGX_MT, LGX_MB, p);
+#else
+    parse_logical_margins(d,dlen,p);
+#endif
+#ifdef CSS_SPACING_MATH_LEGACY
     logical_pair(d, dlen, "padding-inline", LGX_PL, LGX_PR, p);
     logical_pair(d, dlen, "padding-block",  LGX_PT, LGX_PB, p);
+#endif
     /* Longhands after the shorthands: `margin-inline: 0; margin-inline-start:
      * 8px` must end at 0/8, which is source order for a real cascade and is
      * what this ordering reproduces for the overwhelmingly common case. */
+#ifdef CSS_LOGICAL_MARGIN_LEGACY
     logical_one(d, dlen, "margin-inline-start",  LGX_ML, p);
     logical_one(d, dlen, "margin-inline-end",    LGX_MR, p);
     logical_one(d, dlen, "margin-block-start",   LGX_MT, p);
     logical_one(d, dlen, "margin-block-end",     LGX_MB, p);
+#endif
+#ifdef CSS_SPACING_MATH_LEGACY
     logical_one(d, dlen, "padding-inline-start", LGX_PL, p);
     logical_one(d, dlen, "padding-inline-end",   LGX_PR, p);
     logical_one(d, dlen, "padding-block-start",  LGX_PT, p);
     logical_one(d, dlen, "padding-block-end",    LGX_PB, p);
+#endif
 
+    /* Old px-only inset path retained as an executable negative control.
+     * The correction parses the whole list or refuses the whole declaration;
+     * old one_px silently kept a valid prefix of an invalid shorthand. */
+#ifndef CSS_INSET_LENGTH_LEGACY
+    parse_inset_lengths(d,dlen,p);
+#else
     /* inset: the physical 1-4 shorthand (top right bottom left). */
     {
         int vs, ve, i = 0, v[4], n = 0;
@@ -431,6 +494,7 @@ static void parse_logical(const char *d, int dlen, struct xpatch *p)
     logical_one(d, dlen, "inset-inline-end",   LGX_RIGHT, p);
     logical_one(d, dlen, "inset-block-start",  LGX_TOP, p);
     logical_one(d, dlen, "inset-block-end",    LGX_BOTTOM, p);
+#endif
 }
 
 /* The grid properties, in GR_* order. Every one of them is absent from our
@@ -522,29 +586,9 @@ static void parse_grid_raw(const char *d, int dlen, struct xpatch *p)
     parse_grid_shorthand(d, dlen, p);   /* after the longhands: see above */
 }
 
-/* The one caller whose declarations block is NOT stable storage: the
- * out-of-memory rescan reads the buffer the CALLER owns and rewrites in place,
- * so a retained pointer into it would be read long after it meant something.
- * Grid falls back to its old track list on that path rather than reading text
- * that has moved. */
-static void gr_drop(struct xpatch *p)
-{
-    for (int g = 0; g < GR__COUNT; g++) { p->gr[g] = 0; p->gr_len[g] = 0; }
-    p->gr_any = 0;
-    /* The paint spans point into the same non-stable buffer and go for the
-     * same reason. Forgetting them here would not fail at the free: it would
-     * hand browser_paint.c a pointer into a buffer the caller has since
-     * rewritten IN PLACE, so the shadow it draws is whatever declaration
-     * happens to occupy those bytes now. */
-    for (int g = 0; g < XR__COUNT; g++) { p->xr[g] = 0; p->xr_len[g] = 0; }
-    p->xr_any = 0;
-    /* The animation/transition shorthands point there too, and their failure
-     * mode is nastier than a wrong shadow: the engine would parse a STALE
-     * `animation:` as a real timing and clock a real element with it. On
-     * this path the element simply keeps the end-state approximation. */
-    p->anim_raw = 0; p->anim_rawlen = 0;
-    p->trans_raw = 0; p->trans_rawlen = 0;
-}
+/* gr_drop used to strip borrowed spans from the OOM rescan. That rescan
+ * also resurrected approximate selectors; the whole fallback is now refused,
+ * so every retained declaration comes from stable sheet/inline storage. */
 
 /* ---- the PAINT declarations: transform, box-shadow, gradients ------------
  *
@@ -719,6 +763,44 @@ static const char *const k_shadow[] = { "box-shadow", "-webkit-box-shadow",
 /* k_bg[] is deliberately NOT in the @supports derivation below, and that is a
  * measured exclusion rather than an oversight -- see xr_names(). */
 static const char *const k_bg[]     = { "background-image", "background" };
+static const char *const k_svg_paint[] = {
+#define CSS_SVG_NAME(id, name, initial, inherited) name,
+    CSS_SVG_PAINT_PROPERTIES(CSS_SVG_NAME)
+#undef CSS_SVG_NAME
+};
+static int svg_paint_value(int slot, const char *s, int n)
+{
+    if (ieq(s,n,"inherit") || ieq(s,n,"initial") || ieq(s,n,"unset")) return 1;
+    if (slot == XR_SVG_FILL || slot == XR_SVG_STROKE) {
+        if (ieq(s,n,"none") || ieq(s,n,"currentcolor")) return 1;
+        unsigned char rgba[4];
+        /* Use the same literal grammar as the pixel consumer. An invalid late
+         * declaration must not erase an earlier valid paint in the cascade.
+         * CSS-only host links have no SVG decoder; retain the raw capability
+         * there without introducing a second, disagreeing colour parser. */
+        return !LOGIT_HAVE(img_css_color) || img_css_color(s,n,rgba);
+    }
+    if (slot == XR_SVG_FILL_RULE || slot == XR_SVG_CLIP_RULE)
+        return ieq(s,n,"nonzero") || ieq(s,n,"evenodd");
+    if (slot == XR_SVG_CLIP_PATH)
+        return ieq(s,n,"none") || (n > 5 && ieq(s,4,"url(") && s[n-1] == ')');
+    /* Number/percentage/px syntax; actual used values and clamping belong to
+     * the codec. Avoid accepting a colour name as opacity merely because a
+     * generic raw property collector is otherwise happy to retain any text. */
+    int i=0, digits=0;
+    if (i<n && (s[i]=='+' || s[i]=='-')) i++;
+    if (slot==XR_SVG_STROKE_WIDTH && n && s[0]=='-') return 0;
+    while(i<n && s[i]>='0' && s[i]<='9') { i++; digits++; }
+    if(i<n && s[i]=='.') { i++; while(i<n && s[i]>='0' && s[i]<='9') {i++;digits++;} }
+    if(!digits)return 0;
+    if(i<n && (s[i]=='e'||s[i]=='E')) {
+        i++;if(i<n && (s[i]=='+'||s[i]=='-'))i++;int start=i;
+        while(i<n && s[i]>='0' && s[i]<='9')i++;if(i==start)return 0;
+    }
+    if(i<n && s[i]=='%')i++;
+    else if(slot==XR_SVG_STROKE_WIDTH && n-i==2 && ieq(s+i,2,"px"))i+=2;
+    return i==n;
+}
 #endif
 
 /* Every property name the xraw producer accepts, as one flat list, in the one
@@ -734,6 +816,7 @@ static int xr_names(const char *const **out, int i)
     case 0: *out = k_xform;  return 5;
     case 1: *out = k_orig;   return 2;
     case 2: *out = k_shadow; return 3;
+    case 3: *out = k_svg_paint; return sizeof k_svg_paint / sizeof k_svg_paint[0];
     /* k_bg[] STOPS HERE, and the reason is that @supports cannot reach it
      * anyway -- measured, not assumed. logit_css_extra_supports_name() is
      * consulted by language.c's supports_decl() ONLY on the branch where the
@@ -776,6 +859,16 @@ static void parse_xraw(const char *d, int dlen, struct xpatch *p)
     if (decl_first(d, dlen, k_shadow, 3, &vs, &ve))
         xr_set(p, XR_BOX_SHADOW, d + vs, ve - vs);
 
+    /* These spans go through the same declaration order, selector specificity
+     * and !important merge as every other extension. The old raw-SVG shortcut
+     * never saw author CSS at all (a red presentation attribute stayed red
+     * under `svg rect { fill: lime }`). The consumer resolves inheritance and
+     * currentColor only after the normal CSS cascade has finished. */
+    for (unsigned i = 0; i < sizeof k_svg_paint / sizeof k_svg_paint[0]; i++)
+        if (decl_first(d, dlen, &k_svg_paint[i], 1, &vs, &ve) &&
+            svg_paint_value(XR_SVG_FILL + (int)i, d + vs, ve - vs))
+            xr_set(p, XR_SVG_FILL + (int)i, d + vs, ve - vs);
+
     /* The gradient is looked for in BOTH `background-image` and the
      * `background` shorthand, because more than a third of them are written in
      * the shorthand. Measured over tests/fixtures/cssweb by splitting the 102
@@ -805,9 +898,18 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     if (decls_vish(d, dlen)) p->do_none = 1;
     if (decls_masked(d, dlen)) p->do_masked = 1;
     int vs, ve;
+    if(find_decl(d,dlen,"backface-visibility",&vs,&ve)) {
+        int v=css_facing_keyword(d+vs,ve-vs,0);
+        if(v>=0){p->backface_set=1;p->backface=v;}
+    }
+    if(find_decl(d,dlen,"transform-style",&vs,&ve)) {
+        int v=css_facing_keyword(d+vs,ve-vs,1);
+        if(v>=0){p->preserve_set=1;p->preserve=v;}
+    }
     if (find_decl(d, dlen, "grid-template-columns", &vs, &ve) &&
         parse_grid_cols(d + vs, ve - vs, &p->gcols, p->gtracks) == 0)
         p->do_grid = 1;
+#ifdef CSS_SPACING_MATH_LEGACY
     if (find_decl(d, dlen, "gap", &vs, &ve) && parse_gap(d + vs, ve - vs, &p->gx, &p->gy) == 0) {
         p->gx_set = p->gy_set = 1;
     }
@@ -822,7 +924,14 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
         if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gx = x; p->gx_set = 1; } }
     if (find_decl(d, dlen, "grid-row-gap", &vs, &ve)) { int x, y;
         if (parse_gap(d + vs, ve - vs, &x, &y) == 0) { p->gy = y; p->gy_set = 1; } }
+#endif
     parse_logical(d, dlen, p);
+#ifndef CSS_SPACING_MATH_LEGACY
+    parse_spacing_lengths(d,dlen,p);
+#endif
+#ifndef CSS_PHYSICAL_SPACING_LEGACY
+    parse_physical_boxes(d,dlen,p);
+#endif
     p->anim = decls_anim(d, dlen);
     p->trans_op = decls_trans_op(d, dlen);
     /* The shorthand spans the clock resolves. !important is cut the way
@@ -842,6 +951,7 @@ static void parse_decls(const char *d, int dlen, struct xpatch *p)
     }
 }
 
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
 /* ONE compound selector (no combinators) taken apart: [tag][#id][.cls][.cls].
  *
  * This used to be parsed out of the selector TEXT once per node visited. A
@@ -1018,6 +1128,8 @@ static void compile_selector(const char *s, int len, struct xsel *x)
     }
 }
 
+#endif
+
 /* --- APPROXIMATION ACCOUNTING (measurement only; nothing branches on it) ---
  *
  * The error this file makes is not a DROP and no drop counter can see it: a
@@ -1036,7 +1148,9 @@ static void compile_selector(const char *s, int len, struct xsel *x)
 static long g_ax_rules_exact, g_ax_rules_approx;
 static long g_ax_apply_exact, g_ax_apply_approx;
 static long g_ax_decl_exact,  g_ax_decl_approx;
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
 static int  g_ax_last_approx;
+#endif
 
 void css_extra_approx_stats(long *re, long *ra, long *ae, long *aa,
                             long *de, long *da)
@@ -1052,6 +1166,7 @@ void css_extra_approx_reset(void)
     g_ax_decl_exact  = g_ax_decl_approx  = 0;
 }
 
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
 static int match_xsel(struct node *n, const struct xsel *x, const char *s, int len)
 {
     for (int i = 0; i < x->nalt; i++)
@@ -1064,10 +1179,15 @@ static int match_xsel(struct node *n, const struct xsel *x, const char *s, int l
     return 0;
 }
 
-static void apply_patch(struct node *n, const struct xpatch *p)
+#endif
+
+static void apply_patch_base(struct node *n, const struct xpatch *p,
+                             const struct pb_base *base)
 {
     if (!n->style) return;
     struct cstyle *st = n->style;
+    if(p->backface_set)st->backface_hidden=(unsigned char)p->backface;
+    if(p->preserve_set)st->preserve_3d=(unsigned char)p->preserve;
     if (p->do_none) { st->display = DISP_NONE; return; }
     /* A masked background is a SHAPE, and we have no mask: painting the solid
      * colour is strictly wrong (see decls_masked). Drop the background and
@@ -1108,18 +1228,37 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     /* Logical properties, already resolved to physical edges by parse_logical.
      * A box offset additionally has to set its has_* flag, or layout treats the
      * value as "not specified" and the number is stored and never read. */
-    if (p->lg_set[LGX_ML]) st->ml = p->lg[LGX_ML];
-    if (p->lg_set[LGX_MR]) st->mr = p->lg[LGX_MR];
-    if (p->lg_set[LGX_MT]) st->mt = p->lg[LGX_MT];
-    if (p->lg_set[LGX_MB]) st->mb = p->lg[LGX_MB];
+    /* Logical px replaced the whole physical margin value, not just its pixel
+     * cache: retain -1px as a length and clear an earlier percentage/auto kind.
+     * That px-only producer remains for the control. The raw-margin producer
+     * below now retains auto, percentages and bounded length arithmetic. */
+#define LOGICAL_MARGIN(ID, FIELD, EDGE) do { \
+    if (p->lg_set[ID]) { st->FIELD = p->lg[ID]; \
+        st->margin_pct[EDGE] = 0; st->margin_pct_offset[EDGE] = 0; st->margin_auto &= ~(1u << EDGE); } \
+} while (0)
+    LOGICAL_MARGIN(LGX_ML, ml, 3); LOGICAL_MARGIN(LGX_MR, mr, 1);
+    LOGICAL_MARGIN(LGX_MT, mt, 0); LOGICAL_MARGIN(LGX_MB, mb, 2);
+#undef LOGICAL_MARGIN
+    apply_logical_margins(st,p);
     if (p->lg_set[LGX_PL]) st->pl = p->lg[LGX_PL];
     if (p->lg_set[LGX_PR]) st->pr = p->lg[LGX_PR];
     if (p->lg_set[LGX_PT]) st->pt = p->lg[LGX_PT];
     if (p->lg_set[LGX_PB]) st->pb = p->lg[LGX_PB];
-    if (p->lg_set[LGX_LEFT])   { st->left = p->lg[LGX_LEFT];     st->has_left = 1; }
-    if (p->lg_set[LGX_RIGHT])  { st->right = p->lg[LGX_RIGHT];   st->has_right = 1; }
-    if (p->lg_set[LGX_TOP])    { st->top = p->lg[LGX_TOP];       st->has_top = 1; }
-    if (p->lg_set[LGX_BOTTOM]) { st->bottom = p->lg[LGX_BOTTOM]; st->has_bottom = 1; }
+#ifndef CSS_SPACING_MATH_LEGACY
+    apply_spacing_lengths(st,p);
+#endif
+    if (p->lg_set[LGX_LEFT])   { st->left = p->lg[LGX_LEFT];     st->has_left = 1; st->inset_pct_mask &= ~(1u << 3); st->inset_pct[3] = 0; }
+    if (p->lg_set[LGX_RIGHT])  { st->right = p->lg[LGX_RIGHT];   st->has_right = 1; st->inset_pct_mask &= ~(1u << 1); st->inset_pct[1] = 0; }
+    if (p->lg_set[LGX_TOP])    { st->top = p->lg[LGX_TOP];       st->has_top = 1; st->inset_pct_mask &= ~(1u << 0); st->inset_pct[0] = 0; }
+    if (p->lg_set[LGX_BOTTOM]) { st->bottom = p->lg[LGX_BOTTOM]; st->has_bottom = 1; st->inset_pct_mask &= ~(1u << 2); st->inset_pct[2] = 0; }
+#ifndef CSS_INSET_LENGTH_LEGACY
+    apply_inset_lengths(st,p);
+#endif
+#ifndef CSS_PHYSICAL_SPACING_LEGACY
+    apply_box_keywords(n,p,base);
+#else
+    (void)base;
+#endif
     if (p->anim > 0) st->anim = 1;
     else if (p->anim < 0) st->anim = 0;
     if (p->trans_op) st->trans_op = 1;
@@ -1140,10 +1279,12 @@ static void apply_patch(struct node *n, const struct xpatch *p)
     }
 }
 
-static void walk(struct node *n, const char *sel, int slen, const struct xpatch *p)
+/* Approximate-selector controls keep their old per-rule entry. Production
+ * walks capture the native baseline once, before any extension rule applies. */
+static void apply_patch(struct node *n,const struct xpatch *p)
 {
-    if (n->type == N_ELEM && match_selector(n, sel, slen)) apply_patch(n, p);
-    for (struct node *c = n->first_child; c; c = c->next) walk(c, sel, slen, p);
+    struct pb_base base;pb_snapshot(n->style,&base);
+    apply_patch_base(n,p,&base);
 }
 
 /* The same walk against a pre-parsed selector -- the compiled path. */
@@ -1154,6 +1295,8 @@ static void walk(struct node *n, const char *sel, int slen, const struct xpatch 
 static int patch_ndecl(const struct xpatch *p)
 {
     int n = 0;
+    if(p->backface_set)n++;
+    if(p->preserve_set)n++;
     if (p->do_none) n++;
     if (p->do_masked) n++;
     if (p->do_grid) n++;
@@ -1162,11 +1305,16 @@ static int patch_ndecl(const struct xpatch *p)
     if (p->anim) n++;
     if (p->trans_op) n++;
     for (int i = 0; i < LGX__COUNT; i++) if (p->lg_set[i]) n++;
+    for (int i = 0; i < 4; i++) if (p->inset_raw[i]) n++;
+    for (int i = 0; i < 4; i++) if (p->margin_raw[i]) n++;
+    for (int i = 0; i < 4; i++) if (p->padding_raw[i]) n++;
+    for (int i = 0; i < 2; i++) if (p->gap_raw[i]) n++;
     for (int i = 0; i < GR__COUNT; i++)  if (p->gr[i]) n++;
     for (int i = 0; i < XR__COUNT; i++)  if (p->xr[i]) n++;
     return n;
 }
 
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
 static void walk_x(struct node *n, const struct xsel *x, const char *sel, int slen,
                    const struct xpatch *p)
 {
@@ -1181,6 +1329,8 @@ static void walk_x(struct node *n, const struct xsel *x, const char *sel, int sl
     }
     for (struct node *c = n->first_child; c; c = c->next) walk_x(c, x, sel, slen, p);
 }
+
+#endif
 
 /* opacity:0 + animation/opacity-transition -> the end state is visible (we
  * [2026-08-30: HAD no animation clock, so this approximated the static end
@@ -1210,6 +1360,8 @@ static void walk_anim(struct node *n)
     for (struct node *c = n->first_child; c; c = c->next) walk_anim(c);
 }
 
+#include "css_extra_cascade.inc"
+
 /* inline style="animation:...;grid-template-columns:..." on each element */
 static void walk_inline(struct node *n)
 {
@@ -1217,8 +1369,15 @@ static void walk_inline(struct node *n)
         const char *st = dom_attr(n, "style");
         if (st) {
             struct xpatch p;
+#if defined(CSS_NEGCTL_EXTRA_CASCADE) || defined(CSS_NEGCTL_APPROX_SELECTOR)
             parse_decls(st, (int)strlen(st), &p);
             apply_patch(n, &p);
+#else
+            struct xpatch imp;
+            parse_cascade_decls(st, (int)strlen(st), &p, &imp);
+            struct pb_base base;pb_snapshot(n->style,&base);
+            apply_patch_base(n,&p,&base);apply_patch_base(n,&imp,&base);
+#endif
         }
     }
     for (struct node *c = n->first_child; c; c = c->next) walk_inline(c);
@@ -1236,12 +1395,42 @@ static void walk_inline(struct node *n)
  * later, correctly declined it, and the two disagreed about the same block of
  * the same sheet. Any place in the browser that needs this answer asks for it;
  * nowhere computes it twice. */
-#define MAX_MREGION 512
+/* Braces and @media text inside CSS strings/comments are not structure.
+ * Share this lexical step with the extension rule walk, or the media map can
+ * be correct while the consumer still splits a rule at a quoted brace. */
+static int extra_skip_noise(const char *s, int len, int *at)
+{
+    int i=*at;
+    if(i+1<len && s[i]=='/' && s[i+1]=='*'){
+        i+=2;while(i+1<len && !(s[i]=='*'&&s[i+1]=='/'))i++;
+        *at=i+1<len?i+2:len;return 1;
+    }
+    if(i<len && (s[i]=='\''||s[i]=='"')){
+        int q=s[i++];
+        while(i<len){if(s[i]=='\\'&&i+1<len){i+=2;continue;}if(s[i++]==q)break;}
+        *at=i;return 1;
+    }
+    if(i+1<len && s[i]=='\\'){*at=i+2;return 1;}
+    return 0;
+}
+static int extra_block_end(const char *s,int len,int open)
+{
+    int depth=1,i=open+1;
+    while(i<len){
+        if(extra_skip_noise(s,len,&i))continue;
+        if(s[i]=='{')depth++;
+        else if(s[i]=='}'&&!--depth)return i;
+        i++;
+    }
+    return len;
+}
 struct mregion { int start, end, active; };
+#ifdef CSS_MEDIA_LEGACY_REGIONS
+#define MAX_MREGION 512
 static struct mregion g_mr[MAX_MREGION];
 static int g_nmr;
 
-static void media_scan(const char *css, int len)
+static int media_scan(const char *css, int len)
 {
     int mdepths[64], nm = 0, depth = 0;
     g_nmr = 0;
@@ -1266,6 +1455,7 @@ static void media_scan(const char *css, int len)
             if (depth > 0) depth--;
         }
     }
+    return 1;
 }
 
 /* 1 if position s is not inside any inactive @media block. */
@@ -1275,6 +1465,62 @@ static int media_active_at(int s)
         if (s >= g_mr[r].start && s < g_mr[r].end && !g_mr[r].active) return 0;
     return 1;
 }
+#else
+/* Old map: 512 entries and a depth stack, but closing a parent wrote the
+ * newest child's end. Beyond entry 512 every query silently matched. The
+ * 700-group and nested-outer gates both failed with that map. Keep disjoint
+ * INACTIVE spans instead: skip their nested content once, grow with input,
+ * and binary-search at lookup. Active ancestors need no stack or saved span.
+ * Allocation failure refuses extension compilation, never enables a rule.
+ * This remains a media gate, not @supports/@container evaluation. */
+static struct mregion *g_mr;
+static int g_nmr,g_mrcap;
+static int media_push(int start,int end)
+{
+    if(g_nmr==g_mrcap){
+        if(g_mrcap>0x3fffffff)return 0;
+        int cap=g_mrcap?g_mrcap*2:32;
+        struct mregion *p=kmalloc((unsigned long)cap*sizeof *p);
+        if(!p)return 0;
+        if(g_nmr)memcpy(p,g_mr,(unsigned long)g_nmr*sizeof *p);
+        if(g_mr)kfree(g_mr);
+        g_mr=p;g_mrcap=cap;
+    }
+    g_mr[g_nmr++]=(struct mregion){start,end,0};return 1;
+}
+static int media_scan(const char *css,int len)
+{
+    g_nmr=0;
+    for(int i=0;i<len;){
+        if(extra_skip_noise(css,len,&i))continue;
+        if(css[i]=='@'&&i+6<len&&ieq(css+i+1,5,"media")&&!ident(css[i+6])){
+            int b=i+6;
+            while(b<len){
+                if(extra_skip_noise(css,len,&b))continue;
+                if(css[b]=='{'||css[b]==';')break;
+                b++;
+            }
+            if(b<len&&css[b]=='{'){
+                if(!css_media_matches(css+i+6,b-i-6)){
+                    int end=extra_block_end(css,len,b);
+                    if(!media_push(b+1,end))return 0;
+                    i=end<len?end+1:end;continue;
+                }
+                i=b+1;continue; /* inspect nested media inside an active group */
+            }
+            i=b<len?b+1:b;continue;
+        }
+        i++;
+    }
+    return 1;
+}
+static int media_active_at(int s)
+{
+    int lo=0,hi=g_nmr;
+    while(lo<hi){int mid=lo+(hi-lo)/2;if(g_mr[mid].start<=s)lo=mid+1;else hi=mid;}
+    return lo==0||s>=g_mr[lo-1].end;
+}
+#endif
 
 /* ---- @keyframes, captured --------------------------------------------------
  *
@@ -1388,9 +1634,9 @@ static int kf_push(struct css_kf *r, int off, const char *decls, int dlen)
 }
 
 /* Capture every @keyframes (and @-webkit-keyframes) in the compiled copy.
- * Returns 0 only on allocation failure, which makes the caller fall back to
- * the text path -- where no animation runs at all (see gr_drop), i.e. the
- * honest degradation rather than a half-captured table. */
+ * Returns 0 only on allocation failure. The caller used to fall back to a
+ * text path with no animation; it now refuses author patches altogether,
+ * rather than use half-captured tables or approximate selectors. */
 static int keyframes_scan(int from, int len)
 {
     for (int i = from; i < len; i++) {
@@ -1492,19 +1738,50 @@ static int keyframes_scan(int from, int len)
  * resolved at compile time, so a rule list compiled for one viewport must not
  * be reused at another. A private copy of the source is kept because the
  * selector spans point into it and the caller rewrites its buffer in place. */
-struct xrule { int sel, slen; struct xsel x; struct xpatch p; };
+struct xrule { int sel, slen;
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
+    struct xsel x;
+#endif
+    struct xpatch p, important;
+};
+/* Weak keeps raw-value-only host users independent of LibCSS. Missing exact
+ * matcher means refuse stylesheet patches, NEVER resurrect the approximation. */
+void *css_extra_matcher_create(const char *, int, int, unsigned char *) LOGIT_WEAK;
+void css_extra_matcher_destroy(void *) LOGIT_WEAK;
+int css_extra_matcher_match(void *, struct node *, unsigned char *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_extra_matcher_create);
+LOGIT_WEAK_STUB(css_extra_matcher_destroy);
+LOGIT_WEAK_STUB(css_extra_matcher_match);
+int css_extra_matcher_match_specificity(void *, struct node *, unsigned char *, uint32_t *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_extra_matcher_match_specificity);
+static uint32_t *g_specificity;
+static int *g_cascade_order;
+static void *g_matcher;
+static unsigned char *g_matchbits;
+static int g_rejected;
+int css_extra_rejected_rules(void) { return g_rejected; }
 static int          g_srclen;          /* g_src itself is declared up with the
                                         * keyframes block, above keyframes_scan */
 static struct xrule *g_rules;
 static int          g_nrules, g_rulecap;
 static int          g_compiled;
-static int          g_key_vw, g_key_vh, g_key_dark;
+static int          g_key_vw, g_key_vh, g_key_dark, g_key_screen_w, g_key_screen_h;
 static int          g_compiles;            /* test seam; see css_extra_compiles() */
 
 int css_extra_compiles(void) { return g_compiles; }
 
 static void compile_drop(void)
 {
+#ifndef CSS_MEDIA_LEGACY_REGIONS
+    if(g_mr)kfree(g_mr);
+    g_mr=0;g_nmr=g_mrcap=0;
+#endif
+    if (g_matcher && LOGIT_HAVE(css_extra_matcher_destroy)) css_extra_matcher_destroy(g_matcher);
+    g_matcher = NULL;
+    if (g_matchbits) kfree(g_matchbits);
+    g_matchbits = NULL; g_rejected = 0;
+    if (g_specificity) kfree(g_specificity); g_specificity = NULL;
+    if (g_cascade_order) kfree(g_cascade_order); g_cascade_order = NULL;
     if (g_src)   { kfree(g_src);   g_src = 0; }
     if (g_rules) { kfree(g_rules); g_rules = 0; }
     if (g_kf)    { kfree(g_kf);    g_kf = 0; }
@@ -1518,7 +1795,7 @@ static void compile_drop(void)
     g_sheet_gen++;
 }
 
-static int rules_push(int sel, int slen, const struct xpatch *p)
+static int rules_push(int sel, int slen, const struct xpatch *p, const struct xpatch *important)
 {
     if (g_nrules == g_rulecap) {
         int cap = g_rulecap ? g_rulecap * 2 : 64;
@@ -1531,6 +1808,8 @@ static int rules_push(int sel, int slen, const struct xpatch *p)
     g_rules[g_nrules].sel = sel;
     g_rules[g_nrules].slen = slen;
     g_rules[g_nrules].p = *p;
+    g_rules[g_nrules].important = *important;
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
     compile_selector(g_src + sel, slen, &g_rules[g_nrules].x);
     {
         const struct xsel *x = &g_rules[g_nrules].x;
@@ -1538,9 +1817,12 @@ static int rules_push(int sel, int slen, const struct xpatch *p)
         for (int i = 0; i < x->nalt; i++) if (x->alt[i].approx) ap = 1;
         if (ap) g_ax_rules_approx++; else g_ax_rules_exact++;
     }
+#endif
     g_nrules++;
     return 1;
 }
+
+static void compile_exact_matcher(void);
 
 /* Scan [css,len) for the rules that can patch something, storing them against a
  * private copy. Returns 1 if g_rules is usable, 0 if the caller must fall back
@@ -1548,7 +1830,8 @@ static int rules_push(int sel, int slen, const struct xpatch *p)
 static int compile_sheet(const char *css, int len)
 {
     int vw = css_media_width(), vh = css_media_height(), dark = css_color_scheme();
-    if (g_compiled && g_srclen == len && g_key_vw == vw && g_key_vh == vh &&
+    int sw = css_screen_width(), sh = css_screen_height();
+    if (g_compiled && g_srclen == len && g_key_vw == vw && g_key_vh == vh && g_key_screen_w == sw && g_key_screen_h == sh &&
         g_key_dark == dark && memcmp(g_src, css, (unsigned)len) == 0)
         return 1;
 
@@ -1559,8 +1842,9 @@ static int compile_sheet(const char *css, int len)
     memcpy(cp, css, (unsigned)len);
     g_src = cp; g_srclen = len;
     g_key_vw = vw; g_key_vh = vh; g_key_dark = dark;
+    g_key_screen_w = sw; g_key_screen_h = sh;
 
-    media_scan(g_src, len);
+    if(!media_scan(g_src, len)){compile_drop();return 0;}
     if (!keyframes_scan(0, len)) { compile_drop(); return 0; }
     if (g_kf_droprule || g_kf_dropstop)
         printf("[css] @keyframes: kept %d rule(s); dropped %d rule(s), %d stop(s) "
@@ -1569,6 +1853,7 @@ static int compile_sheet(const char *css, int len)
     while (i < len) {
         while (i < len && (spc(g_src[i]) || g_src[i] == '}')) i++;
         if (i >= len) break;
+        if(extra_skip_noise(g_src,len,&i))continue;
         if (g_src[i] == '@') {
             /* @keyframes blocks were consumed whole by keyframes_scan; their
              * `from {}` / `50% {}` inner selectors are NOT element selectors
@@ -1589,63 +1874,101 @@ static int compile_sheet(const char *css, int len)
                 }
                 continue;
             }
-            while (i < len && g_src[i] != '{') i++;
+            while (i < len && g_src[i] != '{' && g_src[i]!=';') {
+                if(!extra_skip_noise(g_src,len,&i))i++;
+            }
             if (i < len) i++;
             continue;
         }
         int s = i;
-        while (i < len && g_src[i] != '{') i++;
+        while (i < len && g_src[i] != '{') {
+            if(!extra_skip_noise(g_src,len,&i))i++;
+        }
         if (i >= len) break;
         int slen = i - s;
-        i++;
-        int d = i, depth = 1;
-        while (i < len && depth) { if (g_src[i] == '{') depth++; else if (g_src[i] == '}') depth--; i++; }
-        int dlen = i - 1 - d;
+        int end=extra_block_end(g_src,len,i),d=i+1;
+        i=end<len?end+1:end;
+        int dlen=end-d;
         if (dlen <= 0 || !media_active_at(s)) continue;
-        struct xpatch p;
-        parse_decls(g_src + d, dlen, &p);
-        if (p.do_none || p.do_masked || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
-            p.anim_raw || p.trans_raw ||
-            p.gr_any || p.xr_any || xpatch_has_logical(&p))
-            if (!rules_push(s, slen, &p)) { compile_drop(); return 0; }
+        struct xpatch p, imp;
+#if defined(CSS_NEGCTL_EXTRA_CASCADE) || defined(CSS_NEGCTL_APPROX_SELECTOR)
+        parse_decls(g_src + d, dlen, &p); memset(&imp, 0, sizeof imp);
+#else
+        parse_cascade_decls(g_src + d, dlen, &p, &imp);
+#endif
+        if (patch_ndecl(&p) || p.anim_raw || p.trans_raw ||
+            patch_ndecl(&imp) || imp.anim_raw || imp.trans_raw)
+            if (!rules_push(s, slen, &p, &imp)) { compile_drop(); return 0; }
     }
+#ifndef CSS_NEGCTL_APPROX_SELECTOR
+    compile_exact_matcher();
+#endif
     g_compiled = 1;
     return 1;
 }
 
-/* The pre-cache path, kept verbatim as the allocation-failure fallback. */
-static void apply_uncompiled(struct node *root, const char *css, int len)
+/* Allocation failure used to fall back to the same lossy matcher. Refuse
+ * author patches instead; inline declarations remain independent of selectors. */
+static void compile_exact_matcher(void)
 {
-    media_scan(css, len);
-    int i = 0;
-    while (i < len) {
-        /* selector up to '{' (skip @-blocks naively: their inner rules still
-         * get matched, gated by the media pre-scan above). Stray '}' from
-         * closed @-blocks must be skipped too, else it poisons the next
-         * selector as a bogus tag name. */
-        while (i < len && (spc(css[i]) || css[i] == '}')) i++;
-        if (i >= len) break;
-        if (css[i] == '@') {                       /* @media ... { -> scan inside */
-            while (i < len && css[i] != '{') i++;
-            if (i < len) i++;
-            continue;
-        }
-        int s = i;
-        while (i < len && css[i] != '{') i++;
-        if (i >= len) break;
-        int slen = i - s;
-        i++;
-        int d = i, depth = 1;
-        while (i < len && depth) { if (css[i] == '{') depth++; else if (css[i] == '}') depth--; i++; }
-        int dlen = i - 1 - d;
-        if (dlen <= 0 || !media_active_at(s)) continue;
-        struct xpatch p;
-        parse_decls(css + d, dlen, &p);
-        gr_drop(&p);            /* the caller.s buffer moves; see gr_drop() */
-        if (p.do_none || p.do_masked || p.do_grid || p.gx_set || p.gy_set || p.anim || p.trans_op ||
-            xpatch_has_logical(&p))
-            walk(root, css + s, slen, &p);
+    g_rejected = g_nrules;
+    if (!g_nrules || !LOGIT_HAVE(css_extra_matcher_create) ||
+        !LOGIT_HAVE(css_extra_matcher_match) || !LOGIT_HAVE(css_extra_matcher_destroy)) return;
+    unsigned long cap = 1;
+    for (int i = 0; i < g_nrules; i++) cap += (unsigned)g_rules[i].slen + 32;
+    char *sheet = kmalloc(cap);
+    g_matchbits = kmalloc((unsigned long)g_nrules);
+    g_specificity = kmalloc((unsigned long)g_nrules * sizeof *g_specificity);
+    g_cascade_order = kmalloc((unsigned long)g_nrules * sizeof *g_cascade_order);
+    if (!sheet || !g_matchbits || !g_specificity || !g_cascade_order) { if (sheet) kfree(sheet); return; }
+    int used = 0;
+    for (int i = 0; i < g_nrules; i++) {
+        memcpy(sheet + used, g_src + g_rules[i].sel, (unsigned)g_rules[i].slen);
+        used += g_rules[i].slen;
+        used += snprintf(sheet + used, cap - (unsigned)used, "{z-index:%d}\n", i);
     }
+    g_matcher = css_extra_matcher_create(sheet, used, g_nrules, g_matchbits);
+    kfree(sheet);
+    if (g_matcher) for (int i = 0; i < g_nrules; i++) if (g_matchbits[i]) {
+        g_rejected--; g_ax_rules_exact++;
+    }
+    if (g_rejected) printf("[css] extra selectors: refused %d of %d rule(s) (unsupported syntax or pseudo target)\n", g_rejected, g_nrules);
+}
+static void walk_exact(struct node *n)
+{
+#if defined(CSS_NEGCTL_EXTRA_CASCADE)
+    if (n->type == N_ELEM && css_extra_matcher_match(g_matcher, n, g_matchbits))
+        for (int r = 0; r < g_nrules; r++) if (g_matchbits[r]) apply_patch(n, &g_rules[r].p);
+#else
+    if (n->type == N_ELEM && n->style) {
+        int count = 0;
+        if (LOGIT_HAVE(css_extra_matcher_match_specificity) &&
+            css_extra_matcher_match_specificity(g_matcher, n, g_matchbits, g_specificity)) {
+            /* Stable ascending order means equal-specificity later rules win.
+             * Reuse one scratch array: finish the node before descending. */
+            for (int r = 0; r < g_nrules; r++) if (g_matchbits[r]) {
+                int j = count++;
+                while (j && g_specificity[g_cascade_order[j-1]] > g_specificity[r]) {
+                    g_cascade_order[j] = g_cascade_order[j-1]; j--;
+                }
+                g_cascade_order[j] = r;
+            }
+        }
+        struct pb_base base;pb_snapshot(n->style,&base);
+        struct xpatch normal, important;
+        const char *st = dom_attr(n, "style");
+        parse_cascade_decls(st ? st : "", st ? (int)strlen(st) : 0, &normal, &important);
+        for (int i = 0; i < count; i++) {
+            struct xrule *r = &g_rules[g_cascade_order[i]];
+            g_ax_apply_exact++; g_ax_decl_exact += patch_ndecl(&r->p) + patch_ndecl(&r->important);
+            apply_patch_base(n, &r->p, &base);
+        }
+        apply_patch_base(n, &normal, &base);
+        for (int i = 0; i < count; i++) apply_patch_base(n, &g_rules[g_cascade_order[i]].important, &base);
+        apply_patch_base(n, &important, &base);
+    }
+#endif
+    for (struct node *c = n->first_child; c; c = c->next) walk_exact(c);
 }
 
 /* Test seam (same shape as css_vars_count): how many rules of the last
@@ -1654,17 +1977,46 @@ static void apply_uncompiled(struct node *root, const char *css, int len)
  * produce the same pixels". */
 int css_extra_rules(void) { return g_compiled ? g_nrules : -1; }
 
+static void walk_facing(struct node *n,int backface,int preserve)
+{
+    if(n->type==N_ELEM && n->style) {
+        struct cstyle *s=n->style;
+        if(s->backface_hidden==2)s->backface_hidden=(unsigned char)backface;
+        if(s->preserve_3d==2)s->preserve_3d=(unsigned char)preserve;
+        backface=s->backface_hidden;preserve=s->preserve_3d;
+    }
+    for(struct node *c=n->first_child;c;c=c->next)walk_facing(c,backface,preserve);
+}
+
 void css_extra_apply(struct node *root, const char *css, int len)
 {
     if (!root) return;
     if (!css || len <= 0) { walk_inline(root); walk_anim(root); }
-    else if (compile_sheet(css, len))
+    else if (compile_sheet(css, len)) {
+#ifdef CSS_NEGCTL_APPROX_SELECTOR
         for (int r = 0; r < g_nrules; r++)
             walk_x(root, &g_rules[r].x, g_src + g_rules[r].sel, g_rules[r].slen, &g_rules[r].p);
-    else
-        apply_uncompiled(root, css, len);       /* out of memory: scan as before */
+#else
+        if (g_matcher) walk_exact(root);
+#ifndef CSS_EXTRA_NO_INLINE_FALLBACK
+        /* Zero extension rules is only a statement about the SHEET. Inline
+         * grid/radius/gap declarations still need their producer. The old
+         * null-matcher fast path left a 37px inline grid's second child at x=0
+         * instead of x=37 (test-css-inline-extensions). Keep inline cascade
+         * importance even when no synthetic selector matcher is necessary. */
+        else walk_inline(root);
+#endif
+#endif
+    } else {
+        g_rejected = 1;
+        printf("[css] extra selectors: refused stylesheet (allocation failure)\n");
+    }
+#if defined(CSS_NEGCTL_EXTRA_CASCADE) || defined(CSS_NEGCTL_APPROX_SELECTOR)
     walk_inline(root);
+#endif
     walk_anim(root);
+    const struct cstyle *parent_style=root->parent?root->parent->style:0;
+    walk_facing(root,parent_style?parent_style->backface_hidden:0,parent_style?parent_style->preserve_3d:0);
     /* The clock's post-cascade hook, LAST so the engine sees the same
      * cstyle the painter will: it re-applies the current animated values
      * (a cascade that just overwrote them must not flash the base value
@@ -1674,7 +2026,9 @@ void css_extra_apply(struct node *root, const char *css, int len)
      * Weak: on the host lists without js_anim.c this is the stub and the
      * end-state approximation above is the whole answer, exactly as it
      * was before the clock existed. */
-    if (LOGIT_HAVE(css_anim_note)) css_anim_note(root);
+    /* A passive child has no animation owner. Calling the parent's singleton
+     * hook would register child nodes against its realm and cached sheet. */
+    if (!g_extra_passive && LOGIT_HAVE(css_anim_note)) css_anim_note(root);
 }
 
 /* ======================================================================
@@ -2260,7 +2614,10 @@ int logit_css_engine_ignores_name(const char *name, int len)
          * different slice from this one. */
         "background-image", "background-position", "background-repeat",
         "background-attachment",
-        "vertical-align", "content", "cursor",
+        /* content was listed here when it had no renderer. Since 2026-09-09
+         * its string/attr subset reaches generated boxes; language.c now asks
+         * the value-aware generator hook, so counter/url stay unsupported. */
+        "vertical-align", "cursor",
         "outline", "outline-width",
         "border-collapse", "border-spacing", "table-layout",
         "counter-increment", "counter-reset", "quotes",
@@ -2387,3 +2744,76 @@ int logit_css_extra_supports_name(const char *name, int len)
     }
     return 0;
 }
+
+/* Every grid_raw/anim_raw/trans_raw span borrows the compiled source. Keeping
+ * this cache per document prevents a parent restyle from freeing child style
+ * data (and prevents child styling from retiring parent animation generations). */
+#define CSS_EXTRA_CONTEXT_FIELDS(X) \
+    X(g_extra_passive) \
+    X(g_mr) \
+    X(g_nmr) \
+    X(g_kf) \
+    X(g_nkf) \
+    X(g_kf_droprule) \
+    X(g_kf_dropstop) \
+    X(g_sheet_gen) \
+    X(g_src) \
+    X(g_specificity) \
+    X(g_cascade_order) \
+    X(g_matcher) \
+    X(g_matchbits) \
+    X(g_rejected) \
+    X(g_srclen) \
+    X(g_rules) \
+    X(g_nrules) \
+    X(g_rulecap) \
+    X(g_compiled) \
+    X(g_key_vw) \
+    X(g_key_vh) \
+    X(g_key_dark) \
+    X(g_key_screen_w) \
+    X(g_key_screen_h) \
+    X(g_compiles)
+
+struct css_extra_context {
+#define XC_FIELD(n) __typeof__(n) n;
+    CSS_EXTRA_CONTEXT_FIELDS(XC_FIELD)
+#undef XC_FIELD
+#ifndef CSS_MEDIA_LEGACY_REGIONS
+    int g_mrcap;
+#endif
+};
+static struct css_extra_context extra_default_context;
+static struct css_extra_context *extra_active_context;
+struct css_extra_context *css_extra_context_create(void)
+{
+    struct css_extra_context *c=kmalloc(sizeof *c);
+    if(c){memset(c,0,sizeof *c);c->g_extra_passive=1;}
+    return c;
+}
+struct css_extra_context *css_extra_context_activate(struct css_extra_context *c)
+{
+    struct css_extra_context *previous=extra_active_context;
+    if(previous==c)return previous;
+    struct css_extra_context *save=previous?previous:&extra_default_context;
+    struct css_extra_context *next=c?c:&extra_default_context;
+#define XC_SAVE(n) memcpy(&save->n,&n,sizeof n);
+    CSS_EXTRA_CONTEXT_FIELDS(XC_SAVE)
+#undef XC_SAVE
+#define XC_LOAD(n) memcpy(&n,&next->n,sizeof n);
+    CSS_EXTRA_CONTEXT_FIELDS(XC_LOAD)
+#undef XC_LOAD
+#ifndef CSS_MEDIA_LEGACY_REGIONS
+    save->g_mrcap=g_mrcap;g_mrcap=next->g_mrcap;
+#endif
+    extra_active_context=c;return previous;
+}
+void css_extra_context_destroy(struct css_extra_context *c)
+{
+    if(!c)return;
+    struct css_extra_context *previous=css_extra_context_activate(c);
+    compile_drop();
+    css_extra_context_activate(previous==c?0:previous);
+    kfree(c);
+}
+#undef CSS_EXTRA_CONTEXT_FIELDS

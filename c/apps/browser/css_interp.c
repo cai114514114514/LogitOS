@@ -1,3 +1,4 @@
+#include "../../lib/gfx/openlogit_anim.h"
 /* css_interp.c -- CSS value interpolation, and `transform` as a value.
  *
  * See css_interp.h for what this is for and why the decomposition is the part
@@ -347,12 +348,22 @@ static int sk_unit(struct ci_scan *k, char *buf, int max)
 /* A <length> made absolute. Returns 0 on an unknown unit. Viewport units are
  * NOT here on purpose: this file has no viewport, and answering them with a
  * guess would be worse than declining the value. */
-static int len_px(double v, const char *u, double fs, double root, double *out)
+static int len_px(double v, const char *u, const struct ci_length_context *ctx,
+                   double *out)
 {
+    double fs=ctx->font_px, root=ctx->root_font_px;
     if (!u[0])                  { *out = v;                 return v == 0.0; }  /* unitless: only 0 */
     if (!strcmp(u, "px"))       { *out = v;                 return 1; }
     if (!strcmp(u, "em"))       { *out = v * fs;            return 1; }
     if (!strcmp(u, "rem"))      { *out = v * root;          return 1; }
+#ifndef CI_TRANSFORM_NO_LINEHEIGHT
+    if (!strcmp(u, "lh") && ctx->line_px >= 0) {
+        *out = v * ctx->line_px; return 1;
+    }
+    if (!strcmp(u, "rlh") && ctx->root_line_px >= 0) {
+        *out = v * ctx->root_line_px; return 1;
+    }
+#endif
     if (!strcmp(u, "ex"))       { *out = v * fs * 0.5;      return 1; }
     if (!strcmp(u, "ch"))       { *out = v * fs * 0.5;      return 1; }
     if (!strcmp(u, "in"))       { *out = v * 96.0;          return 1; }
@@ -401,7 +412,15 @@ static const struct fninfo g_fns[] = {
 int ci_transform_parse(const char *s, int len, double fs_px, double root_px,
                        struct ci_xform *out)
 {
-    if (!s || !out) return -1;
+    const struct ci_length_context context={fs_px,root_px,-1,-1};
+    return ci_transform_parse_context(s,len,&context,out);
+}
+
+int ci_transform_parse_context(const char *s, int len,
+                               const struct ci_length_context *context,
+                               struct ci_xform *out)
+{
+    if (!s || !out || !context) return -1;
     if (len < 0) len = (int)strlen(s);
     out->n = 0;
     struct ci_scan k = { s, len, 0 };
@@ -463,10 +482,10 @@ int ci_transform_parse(const char *s, int len, double fs_px, double root_px,
                     if (fi->kind == CI_TRANSLATEZ || (fi->kind == CI_TRANSLATE3D && na == 2))
                         return -1;
                     f->pc[na] = v; f->haspc = 1;
-                } else if (!len_px(v, u, fs_px, root_px, &f->a[na])) return -1;
+                } else if (!len_px(v, u, context, &f->a[na])) return -1;
                 break;
             case CI_PERSPECTIVE:
-                if (!len_px(v, u, fs_px, root_px, &f->a[na])) return -1;
+                if (!len_px(v, u, context, &f->a[na])) return -1;
                 break;
             case CI_ROTATE: case CI_ROTATEX: case CI_ROTATEY: case CI_ROTATEZ:
                 if (!ang_rad(v, u, &f->a[na])) return -1;
@@ -1841,19 +1860,6 @@ int ci_ease_parse(const char *s, int len, struct ci_ease *out)
 
 /* The bezier curve through the four control points, parameterised by t in
  * [0,1]. x(t) and y(t) share the shape; the easing is y(t(x)). */
-static double bez(double t, double p1, double p2)
-{
-    double u = 1.0 - t;
-    return 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t;
-}
-
-/* dx/dt of the x half; zero where Newton stalls and bisection takes over. */
-static double bez_dx(double t, double p1, double p2)
-{
-    double u = 1.0 - t;
-    return 3.0 * u * u + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (1.0 - p2);
-}
-
 double ci_ease_apply(const struct ci_ease *e, double t)
 {
     if (!e) return t;
@@ -1899,36 +1905,10 @@ double ci_ease_apply(const struct ci_ease *e, double t)
         return (double)cur / (double)jumps;
     }
 
-    /* cubic-bezier: safeguarded Newton -- see the corrected block comment
-     * above ci_ease_parse for why the old 8-iteration loop was really
-     * 1/256-precision bisection. The bracket is tightened by the
-     * residual's sign EVERY iteration (the old loop never tightened it on
-     * Newton steps, which is what let Newton bounce), and the Newton step
-     * is taken only when it lands strictly inside. */
-    {
-        double lo = 0.0, hi = 1.0, x = t;
-        for (int it = 0; it < 100; it++) {
-            double cx = bez(x, e->x1, e->x2) - t;
-            if (fabs(cx) < 1e-12) break;
-            if (cx < 0.0) lo = x; else hi = x;
-            double d = bez_dx(x, e->x1, e->x2);
-            double nx;
-            if (fabs(d) < 1e-12) {
-                nx = 0.5 * (lo + hi);
-            } else {
-                nx = x - cx / d;
-                if (!(nx > lo && nx < hi)) nx = 0.5 * (lo + hi);
-            }
-            x = nx;
-        }
-        double y = bez(x, e->y1, e->y2);
-        /* y1/y2 outside [0,1] is legal and overshoots; clamp only at the
-         * physical stops so a property that cannot exceed its range (an
-         * alpha) still lands inside it at the overshoot's peak. Callers
-         * that need the raw overshoot (transform) clamp themselves. */
-        if (y < 0.0) y = 0.0;
-        if (y > 1.0) y = 1.0;
-        return y;
-    }
+    /* 2026-09-13: inversion and precision now belong to OpenLogit.
+     * The browser keeps its endpoint and property-clamping semantics. */
+    double y=ol_ease_bezier(e->x1,e->y1,e->x2,e->y2,t);
+    if(y<0)y=0;if(y>1)y=1;
+    return y;
 #endif
 }

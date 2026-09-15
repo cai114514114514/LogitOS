@@ -1,3 +1,4 @@
+#include <string.h>
 /* CSS custom properties (var()) preprocessor.
  *
  * The vendored LibCSS predates CSS variables: it rejects `--x: 8px` as an
@@ -106,7 +107,15 @@ struct vent {
     unsigned char unusable;        /* too long, or not bracket-balanced: treat
                                     * every var() naming it as undefined */
 };
-static struct vent vars_[MAXVARS];
+struct vchunk;
+struct css_vars_context {
+    struct vent vars[MAXVARS];
+    int count;
+    struct vchunk *arena;
+};
+static struct css_vars_context vars_default_context;
+static struct css_vars_context *vars_active_context;
+static struct vent *vars_ = vars_default_context.vars;
 static int  nvars_;
 
 /* ---- the value arena ----
@@ -324,9 +333,10 @@ static unsigned selector_spec(const char *s, int len, int *gated)
  * ~8 input bytes per level, so an unbounded recursion would blow the ring-3
  * stack on a large stylesheet. Past the limit the fallback is left unexpanded. */
 #define VAR_MAX_DEPTH 32
-static int var_subst(const char *s, int n, char *out, int omax, int depth){
+static int var_subst(const char *s, int n, char *out, int omax, int depth, int *overflow){
     int o = 0;
-    for (int i = 0; i < n && o < omax - 1;) {
+    int i=0;
+    for (; i < n && o < omax - 1;) {
         if (i + 4 <= n && s[i]=='v'&&s[i+1]=='a'&&s[i+2]=='r'&&s[i+3]=='(') {
             int p = i + 4; while (p < n && s[p]==' ') p++;
             if (p + 1 < n && s[p]=='-' && s[p+1]=='-') {
@@ -344,18 +354,22 @@ static int var_subst(const char *s, int n, char *out, int omax, int depth){
                  * nothing instead -- the declaration loses its value, the sheet
                  * keeps its structure. */
                 if (idx >= 0 && vars_[idx].vlen < omax - 1 - o) {
-                    for (int k = 0; k < vars_[idx].vlen; k++) out[o++] = vars_[idx].val[k];
+                    if(out)for (int k = 0; k < vars_[idx].vlen; k++) out[o+k] = vars_[idx].val[k];
+                    o+=vars_[idx].vlen;
+                } else if(idx>=0){
+                    if(overflow)*overflow=1;
                 } else if (idx < 0 && fbs >= 0 && depth < VAR_MAX_DEPTH) {
                     int fe = close; while (fbs < fe && s[fbs]==' ') fbs++;
-                    o += var_subst(s + fbs, fe - fbs, out + o, omax - o, depth + 1);  /* fallback may itself be var() */
+                    o += var_subst(s + fbs, fe - fbs, out?out+o:0, omax - o, depth + 1,overflow);
                 }
                 i = (close < n) ? close + 1 : n;
                 continue;
             }
         }
-        out[o++] = s[i++];
+        if(out)out[o]=s[i];o++;i++;
     }
-    out[o] = 0; return o;
+    if(i<n&&overflow)*overflow=1;
+    if(out)out[o]=0;return o;
 }
 static int has_var(const char *s){ for (; s[0]; s++) if (s[0]=='v'&&s[1]=='a'&&s[2]=='r'&&s[3]=='(') return 1; return 0; }
 
@@ -553,13 +567,13 @@ static void collect(const char *s, int n)
  * runs in ring 3 on a 32 KiB thread stack. */
 static char g_chain[VVAL_MAX + 1];
 
-int css_expand_vars(const char *in, int inlen, char *out, int outmax){
+static void vars_prepare(const char *in,int inlen){
     collect(in, inlen);
     for (int it = 0; it < 8; it++) {                   /* resolve var()-in-value chains */
         int changed = 0;
         for (int i = 0; i < nvars_; i++) {
             if (vars_[i].unusable || !has_var(vars_[i].val)) continue;
-            int tn = var_subst(vars_[i].val, vars_[i].vlen, g_chain, VVAL_MAX + 1, 0);
+            int tn = var_subst(vars_[i].val, vars_[i].vlen, g_chain, VVAL_MAX + 1, 0,0);
             if (tn == vars_[i].vlen) {
                 int same = 1;
                 for (int k = 0; k < tn; k++) if (g_chain[k] != vars_[i].val[k]) { same = 0; break; }
@@ -582,7 +596,32 @@ int css_expand_vars(const char *in, int inlen, char *out, int outmax){
         }
         if (!changed) break;
     }
-    return var_subst(in, inlen, out, outmax, 0);       /* substitute throughout */
+}
+
+int css_expand_vars(const char *in,int inlen,char *out,int outmax)
+{
+    vars_prepare(in,inlen);
+    return var_subst(in,inlen,out,outmax,0,0);
+}
+
+int css_expand_vars_alloc(const char *in,int inlen,char **out,int *cap,int limit)
+{
+    /* Count with the SAME substitution walk before touching the live sheet.
+     * A fixed 4.5 MiB buffer used to cut the tail or omit expanded values;
+     * either can silently change every rule after the boundary. This API
+     * refuses the whole expansion at its explicit ceiling and leaves the
+     * caller's previous bytes intact. It neither refetches nor recollects
+     * variables between the size and emit passes. */
+    vars_prepare(in,inlen);
+    int overflow=0;
+    int needed=var_subst(in,inlen,0,limit,0,&overflow);
+    if(overflow||needed>=limit-1)return -1;
+    if(*cap<needed+2){
+        extern void *malloc(unsigned long);extern void free(void *);
+        char *next=malloc((unsigned long)needed+2);if(!next)return -1;
+        free(*out);*out=next;*cap=needed+2;
+    }
+    return var_subst(in,inlen,*out,*cap,0,0);
 }
 
 /* Test seam: how many distinct custom properties the last expansion collected,
@@ -595,4 +634,36 @@ const char *css_vars_value(const char *name)
     if (nlen > 2 && name[0] == '-' && name[1] == '-') { name += 2; nlen -= 2; }
     int i = var_find(name, nlen);
     return i < 0 ? 0 : vars_[i].val;
+}
+
+/* css_vars_value returns an arena borrow, so a child expansion must not rewind
+ * the parent's chunks. The table and its arena always move as one owner. */
+struct css_vars_context *css_vars_context_create(void)
+{
+    struct css_vars_context *c=kmalloc(sizeof *c);
+    if(c)memset(c,0,sizeof *c);
+    return c;
+}
+struct css_vars_context *css_vars_context_activate(struct css_vars_context *c)
+{
+    struct css_vars_context *previous=vars_active_context;
+    if(previous==c)return previous;
+    struct css_vars_context *save=previous?previous:&vars_default_context;
+    struct css_vars_context *next=c?c:&vars_default_context;
+    /* The 2048-entry table belongs to the context from allocation onward.
+     * Paint switches documents too: swapping its pointer avoids copying that
+     * entire table twice for every embedded paint pass. */
+    save->count=nvars_;save->arena=g_arena;
+    vars_=next->vars;nvars_=next->count;g_arena=next->arena;
+    vars_active_context=c;return previous;
+}
+void css_vars_context_destroy(struct css_vars_context *c)
+{
+    if(!c)return;
+    extern void kfree(void *);
+    struct css_vars_context *previous=css_vars_context_activate(c);
+    while(g_arena){struct vchunk *p=g_arena;g_arena=p->next;kfree(p);}
+    nvars_=0;
+    css_vars_context_activate(previous==c?0:previous);
+    kfree(c);
 }

@@ -77,6 +77,18 @@ struct ci_xform {
 int ci_transform_parse(const char *s, int len, double fs_px, double root_px,
                        struct ci_xform *out);
 
+/* Line-relative lengths require used line heights, which are independent of
+ * font size. A negative line value means the caller has no such context; zero
+ * is a real line-height. The original parser retains its context-free contract
+ * and declines lh/rlh rather than inventing an element for DOMMatrix/WAAPI. */
+struct ci_length_context {
+    double font_px, root_font_px;
+    double line_px, root_line_px;
+};
+int ci_transform_parse_context(const char *s, int len,
+                               const struct ci_length_context *context,
+                               struct ci_xform *out);
+
 /* Collapse to a 4x4. Percentages resolve against (refw, refh). */
 void ci_transform_matrix(const struct ci_xform *t, double refw, double refh,
                          double m[16]);
