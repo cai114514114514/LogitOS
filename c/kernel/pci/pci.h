@@ -23,7 +23,11 @@ int pci_find(uint16_t vendor, uint16_t device, struct pci_dev *out);
 
 /* --------------------------------------------------------- config access --
  * `off` is a byte offset. Offsets >= 0x100 (PCIe extended config) only resolve
- * through ECAM and read back 0xFFFFFFFF on the legacy port path. */
+ * through ECAM and read back 0xFFFFFFFF on the legacy port path.
+ * Each access is one short transaction; 8/16-bit writes use native byte
+ * enables, preserving adjacent write-one-to-clear status registers.
+ * First access to an ECAM bus can allocate/sleep; prepare it in task/probe
+ * context before using config accesses from any IRQ path. */
 uint32_t pci_cfg_read (uint8_t bus, uint8_t slot, uint8_t func, uint16_t off);
 void     pci_cfg_write(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint32_t val);
 uint16_t pci_cfg_read16(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off);
@@ -71,8 +75,13 @@ void     pci_cfg_write8 (uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, 
 /* ------------------------------------------------------------------ ECAM --
  * pci_ecam_init() reads the ACPI MCFG table (acpi_mcfg_entry) and maps the
  * segment-0 window. Returns 1 if ECAM is in use, 0 if we fell back to 0xCF8.
- * pci_ecam_set() is the same thing with the window supplied directly -- the
- * host unit tests point it at a synthetic buffer. */
+ * pci_ecam_set() takes the MCFG bus-zero base (not the first allowed bus).
+ * Segment zero is the supported config API domain; other segments are refused.
+ * It supplies the window directly -- the
+ * host unit tests point it at a synthetic buffer. The first setter is BOOT-ONLY,
+ * before APs/drivers use config space. Its descriptor is immutable after release
+ * publication: an identical call succeeds without remapping, a replacement is
+ * refused. There is no runtime aperture replacement/unmapping API. */
 int      pci_ecam_init(void);
 int      pci_ecam_set(uint64_t base, uint16_t seg, uint8_t bus_start, uint8_t bus_end);
 int      pci_ecam_active(void);
@@ -96,7 +105,8 @@ uint16_t pci_ext_cap_find(uint8_t bus, uint8_t slot, uint8_t func, uint16_t cap_
  * Size BAR `idx` of a function by the write-all-ones probe (decode is disabled
  * around the probe and the original value restored). Fills *out and returns the
  * number of BAR indices consumed: 1 normally, 2 for a 64-bit memory BAR, and 1
- * with out->flags == 0 when the BAR is unimplemented. */
+ * with out->flags == 0 when the BAR is unimplemented. This destructive sizing
+ * operation requires an unbound function: only boot enumeration calls it. */
 struct dev_resource;
 int pci_bar_probe(uint8_t bus, uint8_t slot, uint8_t func, int idx, struct dev_resource *out);
 

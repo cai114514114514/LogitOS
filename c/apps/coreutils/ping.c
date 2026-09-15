@@ -26,6 +26,7 @@
  * and c/fs/vfs_cred.c for what "root" means on this machine today. */
 
 #include "clib.h"
+#include <byteswap.h>
 
 #define PING_TIMEOUT_MS  2000
 #define PING_INTERVAL_MS 1000
@@ -37,9 +38,6 @@ struct icmp_echo {
     unsigned short id, seq;
 } __attribute__((packed));
 
-static unsigned short bswap16(unsigned short x)
-{ return (unsigned short)((x << 8) | (x >> 8)); }
-
 /* The same 16-bit ones'-complement algorithm as c/net/ip/ip.c's
  * ip_checksum() -- duplicated rather than shared because this program links
  * only clib.h (the inline-syscall header every coreutils program uses), not
@@ -47,7 +45,7 @@ static unsigned short bswap16(unsigned short x)
  * programs use logit.h inline syscalls rather than a shared implementation.
  * Reads each pair of bytes as a big-endian 16-bit word regardless of host
  * endianness, exactly like the original, so the result needs the same
- * bswap16() before it goes on the wire that ip_checksum()'s callers apply. */
+ * bswap_16() before it goes on the wire that ip_checksum()'s callers apply. */
 static unsigned short icmp_checksum(const void *data, int len)
 {
     const unsigned char *p = (const unsigned char *)data;
@@ -153,10 +151,10 @@ int main(int argc, char **argv)
         msg.h.type = 8;       /* ICMP_ECHO_REQUEST */
         msg.h.code = 0;
         msg.h.checksum = 0;
-        msg.h.id  = bswap16(my_id);
-        msg.h.seq = bswap16((unsigned short)seq);
+        msg.h.id  = bswap_16(my_id);
+        msg.h.seq = bswap_16((unsigned short)seq);
         for (int i = 0; i < PING_PAYLOAD; i++) msg.pad[i] = (unsigned char)i;
-        msg.h.checksum = bswap16(icmp_checksum(&msg, (int)sizeof msg));
+        msg.h.checksum = bswap_16(icmp_checksum(&msg, (int)sizeof msg));
 
         struct logit_dgram d;
         d.buf = (unsigned char *)&msg; d.len = (int)sizeof msg; d.flags = 0;
@@ -183,8 +181,8 @@ int main(int argc, char **argv)
             if (n >= (int)sizeof(struct icmp_echo)) {
                 struct icmp_echo *rh = (struct icmp_echo *)buf;
                 if (rh->type == 0 && rh->code == 0 &&           /* ICMP_ECHO_REPLY */
-                    rh->id == bswap16(my_id) &&
-                    rh->seq == bswap16((unsigned short)seq) &&
+                    rh->id == bswap_16(my_id) &&
+                    rh->seq == bswap_16((unsigned short)seq) &&
                     rd.addr == dst) {
                     unsigned long long rtt_us = (now - t_send) / 1000ull;
                     outn(n); outs(" bytes from "); ip_print(rd.addr);

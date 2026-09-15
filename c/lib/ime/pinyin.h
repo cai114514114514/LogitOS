@@ -46,7 +46,9 @@
  * budget this file's "no allocator" runs on (c/lib/text/glyphras.h's point
  * budget is the same pattern). Measured against the shipped dictionary:
  * 25,945 keys. 32768 is comfortable headroom for the dictionary to grow
- * without a source change; ime_open() REFUSES (returns NULL) rather than
+ * without a source change. Correction 2026-09-09: the optional Qwen-derived
+ * dictionary has 49,000 keys, so the fixed budget is now 65,536 (256 KiB).
+ * ime_open() REFUSES (returns NULL) rather than
  * silently truncating the table if a future dictionary exceeds it, because a
  * truncated key index would silently make some keys unreachable by lookup
  * with no signal that anything is wrong.
@@ -54,7 +56,7 @@
  * The v2 initials table needs NO equivalent bound, and that is a property of
  * the format rather than luck: it is fixed-stride, so it is binary-searched in
  * place with no .bss array to size (pinyin_fmt.h note 1). */
-#define IME_MAX_KEYS 32768
+#define IME_MAX_KEYS 65536 /* Qwen supplement exceeds the old 32768-key budget. */
 
 struct ime_dict {
 	const uint8_t *base;   /* the mapped/loaded pinyin.dat bytes -- NOT copied, NOT owned */
@@ -161,6 +163,12 @@ const struct ime_dict *ime_open(const void *dat, size_t len);
 
 /* THE CANDIDATE CLASSES, AND THEIR ORDER IS A CONTRACT, NOT A PREFERENCE.
  *
+ * 2026-09-09: TIER_SEG first tries dictionary-word joins, before the legacy
+ * single-character parses below. TIER_PART is a final fallback when whole
+ * input has neither an exact/prefix dictionary range nor an initials bucket;
+ * it exposes alternate words/characters and consumes only raw_used bytes.
+ * Apostrophes constrain syllables without excluding a multi-character word.
+ *
  * Candidates are assembled class by class and a later class can never
  * displace an earlier one, however large its frequency. Two live assertions
  * depend on each boundary, which is what makes this a contract:
@@ -197,11 +205,13 @@ enum {
 	IME_TIER_SEG = 1,
 	IME_TIER_PRE = 2,
 	IME_TIER_ABBR = 3,
+	IME_TIER_PART = 4, /* a selectable prefix; the remaining spelling stays open */
 };
 
 struct ime_candidate {
 	uint32_t cp[IME_CAND_MAXCP];
 	int ncp;
+	int raw_used; /* raw bytes consumed by ime_accept; can be less than raw_len */
 
 	int tier;        /* IME_TIER_*, the class this candidate came from */
 	uint32_t score;  /* dictionary frequency + user weight; 0 for a composed one */
@@ -298,7 +308,8 @@ void ime_reset(struct ime_state *st, const struct ime_dict *dict);
  * that exceeds it, and what a store pays for declaring a loose one.
  * max_mul_q8 below 256 is raised to 256 -- a bound below the base itself
  * would prune candidates that have no bonus at all. Call after ime_reset(),
- * before the first ime_feed(). */
+ * before the first ime_feed(). If a suffix is already open, changing the
+ * hook refreshes its ranking immediately (call AFTER accepting a selection). */
 void ime_set_user_weight(struct ime_state *st, ime_user_weight_fn fn,
                          void *ctx, uint32_t max_mul_q8, uint32_t max_add);
 
@@ -362,11 +373,16 @@ int ime_candidates(const struct ime_state *st, struct ime_candidate *out, int ma
  * letters must still be committable" requirement).
  *
  * Returns the number of codepoints written (<= max), or -1 if idx names a
- * candidate outside the current page. Does NOT reset `st` -- the composition
+ * candidate outside the current page, or max is too small (no partial write). Does NOT reset `st` -- the composition
  * stays open (so paging/selecting again after a commit is meaningful for a
  * caller that wants it); call ime_reset() when the caller is done with it. */
 #define IME_COMMIT_RAW (-1)
 int ime_commit(struct ime_state *st, int idx, uint32_t *out, int max);
+
+/* Commit atomically, then consume only the chosen spelling prefix. A short
+ * output buffer returns -1 with both output and composition unchanged.
+ * The user-weight hook survives; call ime_commit_source before this. */
+int ime_accept(struct ime_state *st, int idx, uint32_t *out, int max);
 
 /* Describe WHICH dictionary entry page-relative `idx` names, so a learned-
  * weight store can record what the user just chose in the same (key, text)
@@ -392,7 +408,7 @@ int ime_commit_source(const struct ime_state *st, int idx,
  * modelled here), and can be asserted against a pinned budget on EVERY host.
  * Zero cost when the macro is off. */
 #ifdef IME_STATS
-extern unsigned long ime_stat_keys, ime_stat_cands, ime_stat_userfn;
+extern unsigned long ime_stat_keys, ime_stat_cands, ime_stat_userfn, ime_stat_word_probes;
 void ime_stat_reset(void);
 #endif
 

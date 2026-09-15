@@ -58,6 +58,11 @@
  * because a fault with nowhere to go is a platform reset by definition on
  * this architecture, not merely by convention. */
 
+/* BKL-removal correction to the original shutdown contract above: sync
+ * failure no longer powers through, and unsuccessful hardware poweroff no
+ * longer strands all filesystems. Admission is drained per explicit request
+ * and restored on failure; successful hardware shutdown still never returns. */
+
 #include <stdint.h>
 #include "power.h"
 #include "acpi.h"
@@ -65,6 +70,34 @@
 #include "ktime.h"
 #include "kprintf.h"
 #include "logitfs.h"
+#include "vfs.h"
+#include "wait.h"
+
+/* Only power requests serialize here. Drain is a reversible token: already
+ * admitted filesystem work finishes with its CPUs running; every failure
+ * below returns the token before returning to the caller. */
+static struct mutex power_lock = MUTEX_INIT;
+static int power_prepare(struct vfs_drain *token)
+{
+    mutex_lock(&power_lock);
+    int rc = vfs_drain_begin(token);
+    if (rc) { mutex_unlock(&power_lock); return rc; }
+    kprintf("[power] syncing...\n");
+    if (logitfs_sync()) {
+        vfs_drain_end(token);
+        mutex_unlock(&power_lock);
+        kprintf("[power] sync failed; filesystem admission restored\n");
+        return -5;
+    }
+    return 0;
+}
+static int power_cancel(struct vfs_drain *token, const char *why)
+{
+    vfs_drain_end(token);
+    mutex_unlock(&power_lock);
+    kprintf("[power] %s; filesystem admission restored\n", why);
+    return -5;
+}
 
 /* Bounded busy-wait, in the style of the driver-probe udelay()s elsewhere in
  * the tree (c/drivers/audio/hda.c): the ns clock has been up since long
@@ -75,15 +108,6 @@ static void spin_ms(unsigned ms)
     uint64_t end = time_mono_ns() + (uint64_t)ms * 1000000ull;
     while (time_mono_ns() < end)
         __asm__ volatile ("pause");
-}
-
-static void halt_forever(const char *why) __attribute__((noreturn));
-static void halt_forever(const char *why)
-{
-    kprintf("%s", why);
-    __asm__ volatile ("cli");
-    for (;;)
-        __asm__ volatile ("cli\n\thlt");
 }
 
 /* Write RESET_VALUE to RESET_REG. acpi_reset_reg() has already refused any
@@ -97,18 +121,17 @@ static void write_reset_reg(const struct acpi_gas *reg, uint8_t value)
         *(volatile uint8_t *)(uintptr_t)reg->address = value;
 }
 
-void kernel_poweroff(void)
+int kernel_poweroff(void)
 {
-    kprintf("[power] syncing...\n");
-    if (logitfs_sync())
-        kprintf("[power] warning: filesystem sync reported an error -- "
-                "continuing, a poweroff that hangs here helps nobody\n");
+    struct vfs_drain token = {0};
+    int rc = power_prepare(&token);
+    if (rc) return rc;
 
     kprintf("[power] going down\n");
 
     uint32_t pm1a = 0, pm1b = 0;
     if (acpi_pm1_cnt(&pm1a, &pm1b) != 0) {
-        halt_forever("[power] no usable FADT PM1_CNT block -- halting\n");
+        return power_cancel(&token, "no usable FADT PM1_CNT block");
     }
 
     /* PM1 Control Register: bits 10-12 are SLP_TYP, bit 13 is SLP_EN
@@ -125,11 +148,14 @@ void kernel_poweroff(void)
         /* Reaching this line means the machine is still here. */
     }
 
-    halt_forever("[power] S5 write did not take -- halting\n");
+    return power_cancel(&token, "S5 write did not take");
 }
 
-void kernel_reboot(void)
+int kernel_reboot(void)
 {
+    struct vfs_drain token = {0};
+    int rc = power_prepare(&token);
+    if (rc) return rc;
     kprintf("[power] rebooting\n");
 
     struct acpi_gas reg;
@@ -162,13 +188,15 @@ void kernel_reboot(void)
      * about a zero IDT limit, not a hope, so this is not a "best effort"
      * tier: there is no C code path that continues past it on real hardware
      * or under QEMU's default (non `-no-reboot`) behaviour. */
-    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtr = { 0, 0 };
+    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtr = { 0, 0 }, previous;
+    __asm__ volatile ("sidt %0" : "=m"(previous));
     __asm__ volatile ("lidt %0" : : "m"(idtr));
     __asm__ volatile ("int3");
 
     /* Unreachable except under a harness that deliberately suppresses the
      * platform reset (e.g. QEMU `-no-reboot`, which turns the triple fault
-     * into a clean exit instead) -- still halt loudly rather than run on with
-     * a null IDT armed. */
-    halt_forever("[power] triple fault returned control -- halting\n");
+     * into a clean exit instead) -- previously halted loudly. If a monitor
+     * returns control at all, restore the IDT before cancelling the drain. */
+    __asm__ volatile ("lidt %0" : : "m"(previous));
+    return power_cancel(&token, "triple fault returned control");
 }

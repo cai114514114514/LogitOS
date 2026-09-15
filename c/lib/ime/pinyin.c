@@ -16,6 +16,9 @@
  * 64*72 = 9,752 against a 32,768-byte kernel stack (sched.c:27), and that
  * bound is v1's too. Re-run it before adding a buffer here; the number that
  * matters is not this file's, it is what sits below it on wm.c's stack.
+ * Correction 2026-09-09: word-DAG + partial selection measured with the same
+ * flags: recompute 5288 B, seg_dfs 72 B/frame, tier_partial 1416 B. The
+ * deepest bound remains recompute + 64*72 = 9896 B, before WM callers.
  *
  * THE FOUR LOOKUP STRUCTURES, and what "binary search" means for each:
  *   1. g_dict.key_off[]     -- the DICTIONARY's 25,945 keys, built once by
@@ -50,8 +53,8 @@
 #include "pinyin_syllables.inc"
 
 #ifdef IME_STATS
-unsigned long ime_stat_keys, ime_stat_cands, ime_stat_userfn;
-void ime_stat_reset(void) { ime_stat_keys = ime_stat_cands = ime_stat_userfn = 0; }
+unsigned long ime_stat_keys, ime_stat_cands, ime_stat_userfn, ime_stat_word_probes;
+void ime_stat_reset(void) { ime_stat_keys = ime_stat_cands = ime_stat_userfn = ime_stat_word_probes = 0; }
 #define STAT(x) ((x)++)
 #else
 #define STAT(x) ((void)0)
@@ -268,7 +271,7 @@ static int is_legal_syllable(const char *s, int len) {
 /* ---- candidate list assembly ------------------------------------------ */
 
 static int cand_equal(const struct ime_candidate *a, const struct ime_candidate *b) {
-	if (a->ncp != b->ncp) return 0;
+	if (a->ncp != b->ncp || a->raw_used != b->raw_used) return 0;
 	for (int i = 0; i < a->ncp; i++)
 		if (a->cp[i] != b->cp[i]) return 0;
 	return 1;
@@ -362,6 +365,7 @@ static void sel_emit(struct ime_state *st, const struct sel *s, int tier) {
 	const struct ime_dict *d = st->dict;
 	for (int i = 0; i < s->n; i++) {
 		struct ime_candidate c;
+		c.raw_used = st->raw_len;
 		uint32_t coff = s->a[i].coff;
 		c.ncp = utf8_decode(cand_text(d, coff), (int)cand_bytes(d, coff),
 		                    c.cp, IME_CAND_MAXCP);
@@ -570,6 +574,7 @@ static void tier_segmentation(struct ime_state *st, const char *letters, int nle
 
 		struct ime_candidate composed;
 		composed.ncp = 0;
+		composed.raw_used = st->raw_len;
 		composed.tier = IME_TIER_SEG;
 		composed.src_key = 0;
 		composed.src_cand = 0;
@@ -590,7 +595,7 @@ static void tier_segmentation(struct ime_state *st, const char *letters, int nle
 			uint32_t f = cand_freq(st->dict, coff);
 			if (f < weakest) weakest = f;
 			int room = IME_CAND_MAXCP - composed.ncp;
-			if (room <= 0) break;
+			if (room <= 0) { ok = 0; break; }
 			uint32_t tmp[IME_CAND_MAXCP];
 			int tn = utf8_decode(cand_text(st->dict, coff), (int)cand_bytes(st->dict, coff),
 			                     tmp, room);
@@ -601,6 +606,135 @@ static void tier_segmentation(struct ime_state *st, const char *letters, int nle
 			cand_append(st, &composed);
 		}
 	}
+}
+
+/* The old syllable DFS is retained below as a fallback. It chose one Han
+ * character per syllable: woaizhongguo -> 我爱中过 despite 中国 being in the
+ * dictionary. This bounded DAG instead joins dictionary WORDS. Fewer words
+ * win, then their log frequencies; no model or allocator runs in ring 0.
+ * One best suffix per byte costs O(IME_MAX_RAW^2 log IME_MAX_KEYS) probes.
+ * It never truncates a sentence at IME_CAND_MAXCP: long input is handled by
+ * the partial-candidate path, which keeps the unconsumed spelling editable. */
+#if !defined(IME_NO_BACKTRACK) && !defined(IME_NO_WORDS)
+static unsigned freq_log(uint32_t f) {
+    unsigned n = 0;
+    while (f > 1) { f >>= 1; n++; }
+    return n;
+}
+#endif
+
+/* A separator forces a syllable boundary, not a word boundary. xi'an must
+ * retain 西安 but reject 先. The bitset records possible syllable COUNTS so a
+ * two-character word cannot be accepted under a one-syllable forced reading. */
+static uint32_t syllable_counts(const char *letters, int n, const uint8_t *forced) {
+    uint32_t reach[IME_MAX_RAW + 1] = {1};
+    for (int i = 0; i < n; i++) {
+        if (!reach[i]) continue;
+        for (int len = 1; len <= 6 && i + len <= n; len++) {
+            if (len > 1 && forced[i + len - 2]) break;
+            if (is_legal_syllable(letters + i, len))
+                reach[i + len] |= reach[i] << 1;
+        }
+    }
+    return reach[n];
+}
+
+static void tier_words(struct ime_state *st, const char *letters, int n,
+                       const uint8_t *forced) {
+#if !defined(IME_NO_BACKTRACK) && !defined(IME_NO_WORDS)
+    struct word_path { uint32_t coff; int32_t ki; uint16_t cost;
+                       uint8_t next, ncp; } dp[IME_MAX_RAW + 1];
+    const struct ime_dict *d = st->dict;
+    for (int i = 0; i <= n; i++) dp[i].cost = 65535;
+    dp[n].cost = 0; dp[n].ncp = 0;
+    for (int pos = n - 1; pos >= 0; pos--) {
+        for (int end = n; end > pos; end--) {
+            if (dp[end].cost == 65535) continue;
+            int len = end - pos;
+            if (len == 1 && !is_legal_syllable(letters + pos, len)) continue;
+            STAT(ime_stat_word_probes);
+            int32_t ki = dict_find_key(d, letters + pos, len);
+            if (ki < 0) continue;
+            int cut = 0;
+            for (int k = pos; k < end - 1; k++) cut |= forced[k];
+            uint32_t counts = cut ? syllable_counts(letters + pos, len, forced + pos) : ~0u;
+            uint32_t nc, coff = key_cands(d, d->key_off[ki], &nc);
+            uint32_t best = 0, bestoff = 0;
+            int bestcp = 0;
+            for (uint32_t j = 0; j < nc; j++) {
+                uint32_t cp[IME_CAND_MAXCP + 1];
+                int ncp = utf8_decode(cand_text(d, coff), (int)cand_bytes(d, coff),
+                                     cp, IME_CAND_MAXCP + 1);
+                if (ncp > 0 && ncp + dp[end].ncp <= IME_CAND_MAXCP &&
+                    (counts & (1u << ncp))) {
+                    uint32_t score = score_of(st, d->key_off[ki], coff, cand_freq(d, coff));
+                    if (!bestoff || score > best) { bestoff = coff; best = score; bestcp = ncp; }
+                }
+                coff += PINYIN_CAND_HDR + cand_bytes(d, coff);
+            }
+            if (!bestoff) continue;
+            /* A 64-point word penalty keeps two common single characters
+             * from defeating their dictionary phrase. Frequency breaks ties
+             * between phrase boundaries; it is not presented as a language model. */
+            unsigned cost = dp[end].cost + 64 - freq_log(best);
+            if (cost < dp[pos].cost) {
+                dp[pos].cost = (uint16_t)cost; dp[pos].coff = bestoff;
+                dp[pos].ki = ki; dp[pos].next = (uint8_t)end;
+                dp[pos].ncp = (uint8_t)(bestcp + dp[end].ncp);
+            }
+        }
+    }
+    if (dp[0].cost == 65535) return;
+    struct ime_candidate c = {0};
+    c.tier = IME_TIER_SEG; c.score = 0xFFFFFFFFu;
+    c.raw_used = st->raw_len;
+    for (int pos = 0; pos < n; pos = dp[pos].next) {
+        uint32_t coff = dp[pos].coff;
+        uint32_t f = cand_freq(d, coff);
+        if (f < c.score) c.score = f;
+        c.ncp += utf8_decode(cand_text(d, coff), (int)cand_bytes(d, coff),
+                            c.cp + c.ncp, IME_CAND_MAXCP - c.ncp);
+        if (pos == 0 && dp[pos].next == n) {
+            c.src_key = d->key_off[dp[pos].ki]; c.src_cand = coff;
+        }
+    }
+    cand_append(st, &c);
+#else
+    (void)st; (void)letters; (void)n; (void)forced;
+#endif
+}
+
+/* Partial selection is how a user corrects a sentence the ranker got wrong.
+ * Each candidate records how many RAW bytes it consumes (including adjacent
+ * apostrophes); choosing 你 from nihaom must leave haom, not discard it.
+ * Longest matching words come first, followed by shorter words/characters. */
+static void tier_partial(struct ime_state *st, const char *letters, int n,
+                         const uint8_t *forced) {
+    const struct ime_dict *d = st->dict;
+    for (int end = n - 1; end > 0 && st->ncand < IME_MAX_CAND; end--) {
+        if (end == 1 && !is_legal_syllable(letters, end)) continue;
+        int32_t ki = dict_find_key(d, letters, end);
+        if (ki < 0) continue;
+        int cut = 0;
+        for (int k = 0; k < end - 1; k++) cut |= forced[k];
+        uint32_t counts = cut ? syllable_counts(letters, end, forced) : ~0u;
+        int raw_used = 0, seen = 0;
+        while (raw_used < st->raw_len && seen < end)
+            if (st->raw[raw_used++] != '\'') seen++;
+        while (raw_used < st->raw_len && st->raw[raw_used] == '\'') raw_used++;
+        struct sel s; sel_init(&s, IME_MAX_CAND - st->ncand);
+        offer_key(st, &s, ki);
+        for (int i = 0; i < s.n; i++) {
+            struct ime_candidate c = {0};
+            uint32_t coff = s.a[i].coff;
+            c.ncp = utf8_decode(cand_text(d, coff), (int)cand_bytes(d, coff),
+                               c.cp, IME_CAND_MAXCP);
+            if (!(counts & (1u << c.ncp))) continue;
+            c.tier = IME_TIER_PART; c.score = s.a[i].score;
+            c.src_key = d->key_off[ki]; c.src_cand = coff; c.raw_used = raw_used;
+            cand_append(st, &c);
+        }
+    }
 }
 
 /* Recompute st->cand[]/st->ncand from st->raw[0..raw_len) from scratch, one
@@ -638,10 +772,15 @@ static void recompute(struct ime_state *st) {
 		}
 	}
 
+	/* Prefer dictionary-word joins to the old single-character fallback. */
+	tier_words(st, letters, nletters, forced);
 	/* IME_TIER_SEG */
 	tier_segmentation(st, letters, nletters, forced);
 
-	if (has_apos) return;
+	if (has_apos) {
+        if (dict_find_key(st->dict, letters, nletters) < 0) tier_partial(st, letters, nletters, forced);
+        return;
+    }
 	/* A full budget ends the recompute. Without this an exhausted class still
 	 * costs its whole sweep -- the prune never fires, because a selector with
 	 * cap 0 has no floor to prune against, so "s" would score all 3,189
@@ -662,7 +801,10 @@ static void recompute(struct ime_state *st) {
 	/* IME_TIER_ABBR */
 	if (st->ncand < IME_MAX_CAND) {
 		int32_t b = ini_find(st->dict, letters, nletters);
-		if (b < 0) return;
+		if (b < 0) {
+            if (exact < 0 && lo == hi) tier_partial(st, letters, nletters, forced);
+            return;
+        }
 		const struct ime_dict *d = st->dict;
 		uint32_t field = d->ini_stride - PINYIN_INI_TAIL;
 		const uint8_t *row = d->base + d->ini_off + (uint32_t)b * d->ini_stride;
@@ -849,6 +991,7 @@ void ime_set_user_weight(struct ime_state *st, ime_user_weight_fn fn,
 	st->user_ctx = fn ? ctx : 0;
 	st->user_mul = fn && max_mul_q8 > 256 ? max_mul_q8 : 256;
 	st->user_add = fn ? max_add : 0;
+	if (st->raw_len) recompute(st);
 }
 
 int ime_feed(struct ime_state *st, int ch) {
@@ -922,8 +1065,9 @@ static int cand_index(const struct ime_state *st, int idx) {
 
 int ime_commit(struct ime_state *st, int idx, uint32_t *out, int max) {
 	if (idx == IME_COMMIT_RAW) {
+		if (!out || max < st->raw_len) return -1;
 		int n = 0;
-		for (int i = 0; i < st->raw_len && n < max; i++)
+		for (int i = 0; i < st->raw_len; i++)
 			out[n++] = (uint32_t)(unsigned char)st->raw[i];
 		return n;
 	}
@@ -931,7 +1075,8 @@ int ime_commit(struct ime_state *st, int idx, uint32_t *out, int max) {
 	if (gi < 0) return -1;
 
 	struct ime_candidate *c = &st->cand[gi];
-	int n = c->ncp < max ? c->ncp : max;
+	if (!out || max < c->ncp) return -1;
+	int n = c->ncp;
 	for (int i = 0; i < n; i++) out[i] = c->cp[i];
 	return n;
 }
@@ -949,4 +1094,17 @@ int ime_commit_source(const struct ime_state *st, int idx,
 	if (cand_utf8) *cand_utf8 = cand_text(d, c->src_cand);
 	if (cand_len) *cand_len = (int)cand_bytes(d, c->src_cand);
 	return 1;
+}
+
+int ime_accept(struct ime_state *st, int idx, uint32_t *out, int max) {
+    int gi = idx == IME_COMMIT_RAW ? -1 : cand_index(st, idx);
+    if (idx != IME_COMMIT_RAW && gi < 0) return -1;
+    int n = gi < 0 ? st->raw_len : st->cand[gi].ncp;
+    int used = gi < 0 ? st->raw_len : st->cand[gi].raw_used;
+    if (!out || max < n || used <= 0 || used > st->raw_len) return -1;
+    int written = ime_commit(st, idx, out, max);
+    for (int i = used; i < st->raw_len; i++) st->raw[i - used] = st->raw[i];
+    st->raw_len -= used;
+    recompute(st);
+    return written;
 }

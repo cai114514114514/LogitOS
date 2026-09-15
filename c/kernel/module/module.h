@@ -39,9 +39,12 @@
  * WHERE THE CODE LIVES, and the measurement that says it is safe
  *   One kmalloc'd block, which is a run of contiguous PMM frames, IDENTITY
  *   MAPPED. On this machine that is physical memory below 512 MiB (Makefile
- *   QEMU_RAM = -m 512M), and the kernel image starts at 1 MiB. Measured on the
+ *   QEMU_RAM = -m 512M), and the kernel image starts at 32 MiB. Measured on the
  *   three simplest real drivers in this tree, `clang -c` with the kernel's own
  *   flags emits exactly five relocation types and no others:
+ *   Correction (2026-09-10): the executable image now uses kmalloc_low, a
+ *   separate <1 GiB identity domain. Ordinary kmalloc uses the NX physmap;
+ *   putting module text there would invalidate the rel32 reach below.
  *
  *       R_X86_64_PLT32  calls              (S + A - P, must fit int32)
  *       R_X86_64_PC32   rip-relative data  (S + A - P, must fit int32)
@@ -143,6 +146,8 @@ int mod_load(const char *path);
 /* REFUSED, always, and the refusal is the honest answer -- see modload.c. */
 int mod_unload(int id);
 
+/* Count publishes only completed, immutable entries. mod_at pointers remain
+ * valid for the boot lifetime because mod_unload refuses every request. */
 int  mod_count(void);
 const struct kmodule *mod_at(int i);
 void mod_dump(void);

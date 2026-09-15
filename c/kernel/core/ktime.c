@@ -1120,13 +1120,11 @@ static void tickloss_step(struct ktimer *t)
      * clears owner_cpu and deliberately leaves owner_ra, so the word to print
      * is "last", not "held by". */
     if (gap > tl_gap) {
-        unsigned long irqs = (unsigned long)(void *)spin_lock_irqsave;
-        int via = (g_tick_gap_ra >= irqs && g_tick_gap_ra < irqs + 64);
-        kprintf("[time] tickloss   worst gap: bkl %s cpu %d ra=%p via=%s; "
+        /* The old global-lock attribution no longer exists. This is the
+         * context observed when a delayed tick arrived, not its cause. */
+        kprintf("[time] tickloss   worst gap: observed cpu %d ra=%p; "
                 "tick on cpu %d, pid %d, %s\n",
-                g_tick_gap_owner >= 0 ? "held by" : "last held by",
                 g_tick_gap_owner, (void *)g_tick_gap_ra,
-                via ? "irqsave(kernel entry, IF=0)" : "bare",
                 g_tick_gap_cpu, g_tick_gap_pid,
                 g_tick_gap_ink ? "in kernel" : "not in kernel");
     }
@@ -1319,8 +1317,8 @@ void time_tick(void)
         if (gap > g_tick_gap_max) {
             g_tick_gap_max = gap;
 #ifndef LOGIT_TIME_HOST
-            g_tick_gap_ra    = g_bkl.owner_ra;
-            g_tick_gap_owner = g_bkl_owner;
+            g_tick_gap_ra    = (unsigned long)__builtin_return_address(0);
+            g_tick_gap_owner = cpu_index();
             g_tick_gap_cpu   = cpu_index();
             g_tick_gap_pid   = proc_current_pid();
             g_tick_gap_ink   = in_kernel_now();

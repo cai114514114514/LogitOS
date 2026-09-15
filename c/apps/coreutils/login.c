@@ -1,6 +1,7 @@
 #include "clib.h"
 #include "logit_stat.h"
 #include "accounts.h"
+#include "boot_services.h"
 
 /* /bin/login -- the thing that goes between "filesystem mounted" and "desktop
  * live", and the reason any of the permission machinery under it means
@@ -71,13 +72,15 @@
  * these, and clang emits calls to them for struct assignment regardless. Two
  * definitions here beats pulling the whole mini-libc arena into a program
  * whose largest allocation is a 4 KiB account store. */
-void *memcpy(void *d, const void *s, unsigned long n)
+/* The optional agent runtime links libc; keep standalone fallbacks weak so
+ * libc string.o can provide its normal strong definitions in that build. */
+__attribute__((weak)) void *memcpy(void *d, const void *s, unsigned long n)
 {
     unsigned char *a = (unsigned char *)d; const unsigned char *b = (const unsigned char *)s;
     for (unsigned long i = 0; i < n; i++) a[i] = b[i];
     return d;
 }
-void *memset(void *d, int c, unsigned long n)
+__attribute__((weak)) void *memset(void *d, int c, unsigned long n)
 {
     unsigned char *a = (unsigned char *)d;
     for (unsigned long i = 0; i < n; i++) a[i] = (unsigned char)c;
@@ -303,6 +306,7 @@ static void no_accounts(void)
 
 int main(int argc, char **argv)
 {
+    if (argc == 1) boot_services();
     if (argc >= 2 && c_streq(argv[1], "-a"))
         return enrol(argc >= 3 ? argv[2] : "");
 

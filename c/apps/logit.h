@@ -41,6 +41,9 @@ static inline long _sys(long n, long a, long b, long c)
 }
 #endif
 
+#include "openlogit_wire.h"
+/* Legacy window drawing is a one-way adapter to the OpenLogit transport. */
+
 static inline unsigned rgb(int r, int g, int b)
 {
     return ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
@@ -49,25 +52,24 @@ static inline unsigned rgb(int r, int g, int b)
 static inline void gui_create(const char *title, int w, int h)
 { _sys(SYS_GUI_CREATE, (long)title, ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
 
-static inline void gui_clear(unsigned color) { _sys(SYS_GUI_CLEAR, color, 0, 0); }
+static inline void gui_clear(unsigned color)
+{ ol_window_clear(color); }
 
 static inline void gui_rect(int x, int y, int w, int h, unsigned color)
-{ _sys(SYS_GUI_RECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), color); }
+{ ol_window_rect(x, y, w, h, color); }
 
 static inline void gui_rrect(int x, int y, int w, int h, int radius, unsigned color)
-{ _sys(SYS_GUI_RRECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), ((long)(radius & 0xFF) << 24) | (color & 0xFFFFFF)); }
+{ ol_window_rrect(x, y, w, h, radius, color); }
 
 static inline void gui_text(int x, int y, unsigned color, const char *s)
-{ _sys(SYS_GUI_TEXT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF), color, (long)s); }
+{ ol_window_text(x, y, color, s); }
 
 /* Monospace text: each glyph occupies a `cell`-pixel column (CJK = 2 cells). */
 static inline void gui_text_mono(int x, int y, unsigned color, int cell, const char *s)
-{ _sys(SYS_GUI_TEXT_MONO, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(cell & 0xFF) << 24) | (color & 0xFFFFFF), (long)s); }
+{ ol_window_text_mono(x, y, color, cell, s); }
 
-static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
+static inline void gui_flush(void)
+{ ol_window_flush(); }
 /* Present the window, but report only the sub-rectangle that actually
  * changed -- CONTENT-LOCAL POINTS, same origin as gui_rect's. See the
  * contract comment on SYS_GUI_FLUSH_RECT in logit_abi.h: w<=0 or h<=0 (which
@@ -76,8 +78,7 @@ static inline void gui_flush(void) { _sys(SYS_GUI_FLUSH, 0, 0, 0); }
  * leaves stale pixels on screen that nothing repaints afterward -- there is
  * no periodic full repaint on this machine. When in doubt, call gui_flush(). */
 static inline void gui_flush_rect(int x, int y, int w, int h)
-{ _sys(SYS_GUI_FLUSH_RECT, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF), 0); }
+{ ol_window_flush_rect(x, y, w, h); }
 static inline int  poll_event(struct logit_event *e) { return (int)_sys(SYS_POLL_EVENT, (long)e, 0, 0); }
 /* Block until an event arrives (or `ms` elapses; 0 = no timeout). Prefer this
  * to poll_event+yield: the spin costs two syscalls per iteration and the BKL
@@ -228,13 +229,14 @@ static inline int http_body(char *buf, int max) { return (int)_sys(SYS_HTTP_BODY
  * have meant editing all 23 to say nothing new. */
 static inline int text_measure_px(const char *s, int len, int px, int mono)
 { return (int)_sys(SYS_TEXT_MEASURE, (long)s, len, ((long)px << 2) | (mono & 3)); }
+#include "text_metrics_wiring.inc"
 static inline void gui_text_run_w(int x, int y, int px, int mono, unsigned color,
                                   const char *s, int len, int bold)
-{ struct logit_run r = { x, y, px, mono, color, s, len, bold }; _sys(SYS_GUI_TEXT_RUN, (long)&r, 0, 0); }
+{ ol_window_text_run_w(x, y, px, mono, color, s, len, bold); }
 static inline void gui_text_run(int x, int y, int px, int mono, unsigned color, const char *s, int len)
-{ gui_text_run_w(x, y, px, mono, color, s, len, 0); }
+{ ol_window_text_run(x, y, px, mono, color, s, len); }
 static inline void gui_blit(int x, int y, int w, int h, const unsigned char *rgba, int sw, int sh)
-{ struct logit_blit b = { x, y, w, h, rgba, sw, sh }; _sys(SYS_GUI_BLIT, (long)&b, 0, 0); }
+{ ol_window_blit(x, y, w, h, rgba, sw, sh); }
 /* Decode an image file into `rgba` (>= w*h*4 bytes); returns 0 + sets *w,*h, or -1. */
 static inline int img_open(const char *path, unsigned char *rgba, int max, int *w, int *h)
 {
@@ -250,15 +252,12 @@ static inline void gui_clip(int x, int y, int w, int h)
 enum { GICON_FOLDER, GICON_DOC, GICON_TERMINAL, GICON_GRID, GICON_GLOBE,
        GICON_CODE, GICON_CHART, GICON_CLOCK, GICON_IMAGE };
 static inline void gui_icon(int id, int x, int y, int px, unsigned color)
-{ _sys(SYS_GUI_ICON, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(id & 0xFFFF) << 16) | (px & 0xFFFF), color); }
+{ ol_window_icon(id, x, y, px, color); }
 /* Liquid-glass a region of THIS window over the content already drawn there
  * (frost + rim refraction + specular highlight + body tint). */
 static inline void gui_glass(int x, int y, int w, int h, int radius,
                              unsigned char tr, unsigned char tg, unsigned char tb, unsigned char ta)
-{ _sys(SYS_GUI_GLASS, ((long)(x & 0xFFFF) << 16) | (y & 0xFFFF),
-       ((long)(w & 0xFFFF) << 16) | (h & 0xFFFF),
-       ((long)radius << 32) | ((long)tr << 24) | ((long)tg << 16) | ((long)tb << 8) | ta); }
+{ ol_window_glass(x, y, w, h, radius, tr, tg, tb, ta); }
 /* Fetch a sub-resource's raw bytes (e.g. an image) into buf (<= max); length or <0. */
 static inline int res_fetch_raw(const char *src, unsigned char *buf, int max)
 { return (int)_sys(SYS_RES_FETCH, (long)src, (long)buf, max); }

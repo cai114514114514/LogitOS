@@ -18,13 +18,16 @@
 /* Sync the filesystem, tell ACPI to put the machine in S5 (soft-off), and if
  * that does not work within a couple of tries, halt the CPU forever having
  * said why on serial. Never returns. */
-void kernel_poweroff(void) __attribute__((noreturn));
+/* Correction: drain/sync/hardware failure restores admission and returns a
+ * negative error. Successful poweroff still never returns. */
+int kernel_poweroff(void);
 
 /* Reset the machine through three tiers, each tried in turn and each logged:
  * the FADT's RESET_REG (if the table carries a usable one), the legacy 8042
  * keyboard-controller reset pulse, and finally a triple fault. Never returns
  * -- the triple fault tier cannot even in principle hand control back to C,
  * so "noreturn" is not an optimistic promise here, it is a fact about x86. */
-void kernel_reboot(void) __attribute__((noreturn));
+/* Correction: preparation failure returns after restoring admission. */
+int kernel_reboot(void);
 
 #endif /* LOGIT_POWER_H */

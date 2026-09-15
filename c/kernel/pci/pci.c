@@ -26,6 +26,15 @@
 #include "io.h"
 #include "vmm.h"
 #include "kprintf.h"
+#include "../../drivers/core/io_lock.h"
+#include "../../drivers/core/io_domain.h"
+
+/* Config transactions never allocate while cfg_gate is held. ECAM first-use
+ * mapping may sleep, so its owner is taken before the short config gate. */
+static io_lock_t cfg_gate;
+static struct io_domain ecam_owner = IO_DOMAIN_INIT;
+static struct io_domain enum_owner = IO_DOMAIN_INIT;
+static struct io_domain bar_owner = IO_DOMAIN_INIT;
 
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC
@@ -36,42 +45,57 @@ static uint64_t g_ecam_phys;
 static uint16_t g_ecam_seg;
 static uint8_t  g_ecam_bus_lo, g_ecam_bus_hi;
 
-int      pci_ecam_active(void) { return g_ecam != NULL; }
-uint64_t pci_ecam_base(void)   { return g_ecam_phys; }
+int      pci_ecam_active(void) { return __atomic_load_n(&g_ecam, __ATOMIC_ACQUIRE) != NULL; }
+uint64_t pci_ecam_base(void)   { return pci_ecam_active() ? g_ecam_phys : 0; }
 
-static uint8_t g_ecam_mapped[32];        /* bit per bus: its 1 MiB is mapped */
+static uint8_t g_ecam_mapped[256];       /* release-published per-bus readiness */
 
 int pci_ecam_set(uint64_t base, uint16_t seg, uint8_t bus_start, uint8_t bus_end)
 {
-    if (!base || bus_end < bus_start) return 0;
-    g_ecam        = (volatile uint8_t *)(uintptr_t)base;
+    if (!base || seg != 0 || bus_end < bus_start ||
+        base > UINT64_MAX - (((uint64_t)bus_end + 1) << 20)) return 0;
+    IO_DOMAIN_GUARD(&ecam_owner);
+    if (pci_ecam_active())
+        return base == g_ecam_phys && seg == g_ecam_seg &&
+               bus_start == g_ecam_bus_lo && bus_end == g_ecam_bus_hi;
+    /* Boot-only first publication. Once visible, the aperture is immutable;
+     * an identical setter is idempotent and never invalidates live mappings. */
     g_ecam_phys   = base;
     g_ecam_seg    = seg;
     g_ecam_bus_lo = bus_start;
     g_ecam_bus_hi = bus_end;
     for (unsigned i = 0; i < sizeof g_ecam_mapped; i++) g_ecam_mapped[i] = 0;
+    __atomic_store_n(&g_ecam, (volatile uint8_t *)(uintptr_t)base, __ATOMIC_RELEASE);
     return 1;
 }
 
 /* Byte address of (bus,slot,func,off) inside the ECAM window, or NULL if this
  * access cannot be served from it.
  *
+ * Correction (2026-09-10): the old code subtracted bus_start from the bus.
+ * MCFG's base is relative to bus ZERO even when the allowed range starts later
+ * (Linux Documentation/PCI/acpi-info.rst cites PCI Firmware 3.2 section 4.1.2).
+ * A bus-0 QEMU fixture cannot catch that; the hardware gate uses buses 2..3.
  * Buses are mapped lazily, one 1 MiB window at a time. A full MCFG covers buses
  * 0..255 = 256 MiB, and eagerly mapping that costs ~512 KiB of page tables for
  * buses that will read back all-ones -- on a machine where a handful of buses
  * exist. The bitmap keeps the common path to one test. */
 static volatile uint8_t *ecam_ptr(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
 {
-    if (!g_ecam || bus < g_ecam_bus_lo || bus > g_ecam_bus_hi) return NULL;
+    volatile uint8_t *window = __atomic_load_n(&g_ecam, __ATOMIC_ACQUIRE);
+    if (!window || bus < g_ecam_bus_lo || bus > g_ecam_bus_hi) return NULL;
     if (slot > 31 || func > 7 || off > 0xFFF) return NULL;
-    if (!(g_ecam_mapped[bus >> 3] & (1u << (bus & 7)))) {
-        uint64_t p = g_ecam_phys + ((uint64_t)(bus - g_ecam_bus_lo) << 20);
-        vmm_map_range(p, p, 1u << 20, VMM_WRITABLE | VMM_NOCACHE);
-        g_ecam_mapped[bus >> 3] |= (uint8_t)(1u << (bus & 7));
+    if (!__atomic_load_n(&g_ecam_mapped[bus], __ATOMIC_ACQUIRE)) {
+        IO_DOMAIN_GUARD(&ecam_owner);
+        if (!__atomic_load_n(&g_ecam_mapped[bus], __ATOMIC_RELAXED)) {
+            uint64_t p = g_ecam_phys + ((uint64_t)bus << 20);
+            vmm_map_range(p, p, 1u << 20, VMM_WRITABLE | VMM_NOCACHE);
+            __atomic_store_n(&g_ecam_mapped[bus], 1, __ATOMIC_RELEASE);
+        }
     }
-    uint64_t o = ((uint64_t)(bus - g_ecam_bus_lo) << 20) | ((uint64_t)slot << 15) |
+    uint64_t o = ((uint64_t)bus << 20) | ((uint64_t)slot << 15) |
                  ((uint64_t)func << 12) | off;
-    return g_ecam + o;
+    return window + o;
 }
 
 /* ------------------------------------------------------- config accessors -- */
@@ -81,50 +105,66 @@ static uint32_t port_addr(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
                       ((uint32_t)func << 8) | (off & 0xFC));
 }
 
-uint32_t pci_cfg_read(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
+/* These helpers require cfg_gate and an already prepared ECAM pointer. */
+static uint32_t cfg_read_locked(volatile uint8_t *p, uint8_t bus, uint8_t slot,
+                                uint8_t func, uint16_t off)
 {
-    volatile uint8_t *p = ecam_ptr(bus, slot, func, (uint16_t)(off & ~3u));
     if (p) return *(volatile uint32_t *)p;
-    if (off > 0xFF) return 0xFFFFFFFFu;      /* extended space needs ECAM */
+    if (off > 0xFF) return 0xFFFFFFFFu;
     outl(PCI_CONFIG_ADDR, port_addr(bus, slot, func, off));
     return inl(PCI_CONFIG_DATA);
 }
-
-void pci_cfg_write(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint32_t val)
+static void cfg_write_locked(volatile uint8_t *p, uint8_t bus, uint8_t slot,
+                             uint8_t func, uint16_t off, uint32_t val)
 {
-    volatile uint8_t *p = ecam_ptr(bus, slot, func, (uint16_t)(off & ~3u));
     if (p) { *(volatile uint32_t *)p = val; return; }
     if (off > 0xFF) return;
     outl(PCI_CONFIG_ADDR, port_addr(bus, slot, func, off));
     outl(PCI_CONFIG_DATA, val);
 }
-
+uint32_t pci_cfg_read(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
+{
+    volatile uint8_t *p = ecam_ptr(bus, slot, func, (uint16_t)(off & ~3u));
+    IO_GUARD(&cfg_gate);
+    return cfg_read_locked(p, bus, slot, func, off);
+}
+void pci_cfg_write(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint32_t val)
+{
+    volatile uint8_t *p = ecam_ptr(bus, slot, func, (uint16_t)(off & ~3u));
+    IO_GUARD(&cfg_gate);
+    cfg_write_locked(p, bus, slot, func, off, val);
+}
 uint16_t pci_cfg_read16(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
 {
     return (uint16_t)(pci_cfg_read(bus, slot, func, (uint16_t)(off & ~1u)) >> ((off & 2) * 8));
 }
-
 uint8_t pci_cfg_read8(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off)
 {
     return (uint8_t)(pci_cfg_read(bus, slot, func, off) >> ((off & 3) * 8));
 }
-
+/* PCI Command and Status share a dword; Status contains write-one-to-clear
+ * bits. The former dword read/modify/write replayed those ones on a Command
+ * update, silently destroying hardware error evidence. Use native byte enables
+ * on both ECAM and CF8/CFC (as Linux arch/x86/pci/direct.c does), while keeping
+ * the address/data pair inside cfg_gate. Narrow writes never read neighbours. */
 void pci_cfg_write16(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint16_t val)
 {
-    uint16_t d = (uint16_t)(off & ~3u);
-    uint32_t v = pci_cfg_read(bus, slot, func, d);
-    int sh = (off & 2) * 8;
-    v = (v & ~(0xFFFFu << sh)) | ((uint32_t)val << sh);
-    pci_cfg_write(bus, slot, func, d, v);
+    uint16_t d = (uint16_t)(off & ~1u);
+    volatile uint8_t *p = ecam_ptr(bus, slot, func, d);
+    IO_GUARD(&cfg_gate);
+    if (p) { *(volatile uint16_t *)p = val; return; }
+    if (d > 0xFF) return;
+    outl(PCI_CONFIG_ADDR, port_addr(bus, slot, func, d));
+    outw((uint16_t)(PCI_CONFIG_DATA + (d & 2)), val);
 }
-
 void pci_cfg_write8(uint8_t bus, uint8_t slot, uint8_t func, uint16_t off, uint8_t val)
 {
-    uint16_t d = (uint16_t)(off & ~3u);
-    uint32_t v = pci_cfg_read(bus, slot, func, d);
-    int sh = (off & 3) * 8;
-    v = (v & ~(0xFFu << sh)) | ((uint32_t)val << sh);
-    pci_cfg_write(bus, slot, func, d, v);
+    volatile uint8_t *p = ecam_ptr(bus, slot, func, off);
+    IO_GUARD(&cfg_gate);
+    if (p) { *p = val; return; }
+    if (off > 0xFF) return;
+    outl(PCI_CONFIG_ADDR, port_addr(bus, slot, func, off));
+    outb((uint16_t)(PCI_CONFIG_DATA + (off & 3)), val);
 }
 
 /* ------------------------------------------------------------ capabilities -- */
@@ -159,7 +199,7 @@ uint8_t pci_cap_find(uint8_t bus, uint8_t slot, uint8_t func, uint8_t cap_id)
 
 uint16_t pci_ext_cap_find(uint8_t bus, uint8_t slot, uint8_t func, uint16_t cap_id)
 {
-    if (!g_ecam) return 0;
+    if (!pci_ecam_active()) return 0;
     uint8_t seen[512] = { 0 };                            /* 0x000..0xFFF / 8 */
     uint16_t off = 0x100;
     for (int i = 0; i < 64 && off >= 0x100 && off < 0x1000; i++) {
@@ -178,31 +218,76 @@ int pci_bar_probe(uint8_t bus, uint8_t slot, uint8_t func, int idx, struct dev_r
 {
     out->start = 0; out->size = 0; out->flags = 0;
     if (idx < 0 || idx >= DEV_NRES) return 1;
+    /* Keep Command and both halves of a 64-bit BAR one transaction.  Individual
+     * config accesses have their own short lock, but another BAR probe must not
+     * observe or overwrite the temporary all-ones value between those calls. */
+    IO_DOMAIN_GUARD(&bar_owner);
 
     uint16_t o = (uint16_t)(PCI_CFG_BAR0 + idx * 4);
     /* Sizing writes all-ones into the BAR, which momentarily moves the device's
      * decode window on top of whatever else is there. Turn decode off first --
      * skipping this is how a BAR probe corrupts an unrelated device's MMIO. */
     uint16_t cmd = pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND);
-    pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND,
-                    (uint16_t)(cmd & ~(PCI_CMD_IO | PCI_CMD_MEM)));
+    uint16_t quiet_cmd = (uint16_t)(cmd & ~(PCI_CMD_IO | PCI_CMD_MEM));
+    pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND, quiet_cmd);
+#ifndef PCI_BAR_NEGCTL_SKIP_DECODE_READBACK
+    /* Firmware or a device can make Command bits effectively read-only.  A
+     * write request is not proof that decoding stopped: confirm it before the
+     * first destructive sizing write, otherwise 0xffffffff can relocate a live
+     * MMIO/I/O window over another device. */
+    uint16_t quiet_readback =
+        pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND);
+    if (quiet_readback & (PCI_CMD_IO | PCI_CMD_MEM)) {
+#ifndef PCI_BAR_NEGCTL_SKIP_PARTIAL_COMMAND_RECOVERY
+        /* A bridge or firmware filter may accept only part of the write (for
+         * example clear MEM but leave IO set).  No BAR was touched yet, so the
+         * correct refusal also restores the device's complete entry state. */
+        pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND, cmd);
+        if (pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND) != cmd) {
+            pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND, cmd);
+            uint16_t recovered =
+                pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND);
+            if (recovered != cmd)
+                kprintf("[pci] %02x:%02x.%u BAR%d refusal Command recovery failed got=%x want=%x\n",
+                        bus, slot, func, idx, (unsigned)recovered,
+                        (unsigned)cmd);
+        }
+#endif
+        kprintf("[pci] %02x:%02x.%u BAR%d probe refused: decode stayed enabled\n",
+                bus, slot, func, idx);
+        return 1;
+    }
+#endif
 
     uint32_t lo = pci_cfg_read(bus, slot, func, o);
+    int type = (lo & 1) ? -1 : (int)((lo >> 1) & 3);
+    int wide = (type == 2 && idx + 1 < DEV_NRES);
+    int consumed = wide ? 2 : 1;
     pci_cfg_write(bus, slot, func, o, 0xFFFFFFFFu);
     uint32_t lo_sz = pci_cfg_read(bus, slot, func, o);
     pci_cfg_write(bus, slot, func, o, lo);
+#ifndef PCI_BAR_NEGCTL_SKIP_BAR_RESTORE_READBACK
+    if (pci_cfg_read(bus, slot, func, o) != lo) {
+        /* One retry also flushes a posted config write.  If the BAR still does
+         * not match, leave decoding off and publish no resource. */
+        pci_cfg_write(bus, slot, func, o, lo);
+        if (pci_cfg_read(bus, slot, func, o) != lo) {
+            kprintf("[pci] %02x:%02x.%u BAR%d restore failed; decode left off\n",
+                    bus, slot, func, idx);
+            return consumed;
+        }
+    }
+#endif
 
-    int consumed = 1;
+    struct dev_resource result = {0};
     if (lo & 1) {                                   /* I/O BAR */
         uint32_t mask = lo_sz & ~0x3u & 0xFFFFu;
         if (mask) {
-            out->start = lo & ~0x3u;
-            out->size  = (uint64_t)((~mask + 1) & 0xFFFFu);
-            out->flags = DEV_RES_IO;
+            result.start = lo & ~0x3u;
+            result.size  = (uint64_t)((~mask + 1) & 0xFFFFu);
+            result.flags = DEV_RES_IO;
         }
     } else {
-        int type = (int)((lo >> 1) & 3);            /* 0 = 32-bit, 2 = 64-bit */
-        int wide = (type == 2 && idx + 1 < DEV_NRES);
         uint64_t base = lo & ~0xFu;
         /* The size mask is the read-back with the low flag bits cleared. For a
          * 32-bit BAR only the low dword is implemented, so sign-extending it
@@ -218,20 +303,42 @@ int pci_bar_probe(uint8_t bus, uint8_t slot, uint8_t func, int idx, struct dev_r
             pci_cfg_write(bus, slot, func, o2, 0xFFFFFFFFu);
             uint32_t hi_sz = pci_cfg_read(bus, slot, func, o2);
             pci_cfg_write(bus, slot, func, o2, hi);
+#ifndef PCI_BAR_NEGCTL_SKIP_BAR_RESTORE_READBACK
+            if (pci_cfg_read(bus, slot, func, o2) != hi) {
+                pci_cfg_write(bus, slot, func, o2, hi);
+                if (pci_cfg_read(bus, slot, func, o2) != hi) {
+                    kprintf("[pci] %02x:%02x.%u BAR%d high restore failed; decode left off\n",
+                            bus, slot, func, idx);
+                    return consumed;
+                }
+            }
+#endif
             base |= (uint64_t)hi << 32;
             mask = (uint64_t)(lo_sz & ~0xFu) | ((uint64_t)hi_sz << 32);
             impl = ((lo_sz & ~0xFu) | hi_sz) != 0;
-            consumed = 2;
         }
         if (impl && mask != ~0ull) {
-            out->start = base;
-            out->size  = ~mask + 1;
-            out->flags = DEV_RES_MEM
-                       | (wide ? DEV_RES_64 : 0)
-                       | ((lo & 0x8) ? DEV_RES_PREFETCH : 0);
+            result.start = base;
+            result.size  = ~mask + 1;
+            result.flags = DEV_RES_MEM
+                         | (wide ? DEV_RES_64 : 0)
+                         | ((lo & 0x8) ? DEV_RES_PREFETCH : 0);
         }
     }
     pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND, cmd);
+#ifndef PCI_BAR_NEGCTL_SKIP_COMMAND_RESTORE_READBACK
+    if (pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND) != cmd) {
+        /* The BAR is back, but decoder ownership is uncertain.  Reassert the
+         * safe state and keep the resource unavailable to every driver. */
+        pci_cfg_write16(bus, slot, func, PCI_CFG_COMMAND, quiet_cmd);
+        uint16_t held = pci_cfg_read16(bus, slot, func, PCI_CFG_COMMAND);
+        kprintf("[pci] %02x:%02x.%u BAR%d Command restore failed; decode=%s\n",
+                bus, slot, func, idx,
+                (held & (PCI_CMD_IO | PCI_CMD_MEM)) ? "still-on" : "off");
+        return consumed;
+    }
+#endif
+    *out = result;
     return consumed;
 }
 
@@ -305,7 +412,7 @@ static void scan_func(uint8_t bus, uint8_t slot, uint8_t func, uint32_t id)
     for (unsigned i = 0; i < sizeof d; i++) ((uint8_t *)&d)[i] = 0;
 
     d.bus_type = DEV_BUS_PCI;
-    d.seg = g_ecam ? g_ecam_seg : 0;
+    d.seg = pci_ecam_active() ? g_ecam_seg : 0;
     d.bus = bus; d.slot = slot; d.func = func;
     d.vendor = (uint16_t)(id & 0xFFFF);
     d.device = (uint16_t)(id >> 16);
@@ -368,6 +475,7 @@ static void scan_bus(uint8_t bus)
 
 int pci_enumerate(void)
 {
+    IO_DOMAIN_GUARD(&enum_owner);
     if (g_enumerated) return dev_count();
     g_enumerated = 1;
     for (unsigned i = 0; i < sizeof g_bus_seen; i++) g_bus_seen[i] = 0;

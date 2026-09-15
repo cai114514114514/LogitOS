@@ -35,18 +35,26 @@
 #include "percpu.h"
 #include "interrupts.h"
 #include "kdiag.h"
+#include "pmm.h"
 
 /* The Mach-O half of panic.h's weak ksym_lookup: this is the only TU that
  * references it, so this is the only TU that needs the stub. See
  * include/weaksym.h. */
 LOGIT_WEAK_STUB(ksym_lookup);
 
-extern char _kernel_end[];          /* linker.ld: first byte past the image */
+extern char _kernel_start[];        /* linker.ld: exact physical image bounds */
+extern char _kernel_end[];
 
-#define KIMAGE_LO   0x100000UL      /* linker.ld: . = 1M */
+/* One definition lives in linker.ld. Keeping a numeric copy here made moving
+ * the physical image silently widen the accepted backtrace/code range. */
+#define KIMAGE_LO   ((uint64_t)(uintptr_t)_kernel_start)
 #define STACK_SPAN  (64 * 1024)     /* kernel stacks are 32 KiB; bound the walk
                                      * well inside the identity-mapped low
                                      * region so a wild pointer cannot fault */
+/* Correction (2026-09-10): heap-backed stacks now use the high physmap. A
+ * numeric 64 KiB bound can cross its RAM holes, unlike the old low identity
+ * region. Validate every read against the immutable RAM provenance below;
+ * panic cannot take a PMM/VMM lock that the stopped core might already own. */
 #define BT_MAX      24
 
 static volatile uint64_t g_warns;
@@ -60,8 +68,8 @@ const char *panic_last_message(void) { return g_last_panic; }
 
 int kernel_text_contains(uint64_t a)
 {
-    /* Coarse on purpose: linker.ld exports only _kernel_end, so the upper
-     * bound is the end of .bss rather than the end of .text. The call-site
+    /* Coarse on purpose: the upper bound is the end of .bss rather than the
+     * end of .text. The call-site
      * check below is what makes the result trustworthy anyway. */
     return a >= KIMAGE_LO + 16 && a < (uint64_t)_kernel_end;
 }
@@ -82,9 +90,30 @@ static int is_call_site(uint64_t ret)
     return 0;
 }
 
+static int stack_readable(uint64_t addr, size_t bytes)
+{
+    if (!bytes || bytes - 1 > UINT64_MAX - addr) return 0;
+    /* The boot stack and low executable-module domain keep their identity
+     * alias. Restrict this to the region the boot page tables actually map. */
+    if (addr >= KIMAGE_LO && addr < PMM_LOW_LIMIT)
+        return bytes <= PMM_LOW_LIMIT - addr;
+    if (addr < PHYSMAP_BASE || addr - PHYSMAP_BASE >= PHYSMAP_SIZE ||
+        !pmm_physmap_low_ready()) return 0;
+    uint64_t phys = addr - PHYSMAP_BASE;
+    /* Low aliases survive a later high-map failure. Requiring full readiness
+     * for these stacks would suppress every frame on that degraded boot. */
+    if ((phys >= PMM_LOW_LIMIT || bytes > PMM_LOW_LIMIT - phys) &&
+        !pmm_physmap_ready()) return 0;
+    /* pmm_is_ram reads an immutable bitmap and takes no locks. Together with
+     * readiness it proves every byte has a permanent supervisor alias: RAM
+     * holes have no PTE, and the user windows are outside this address domain. */
+    return pmm_is_ram(phys, bytes);
+}
+
 static int frame_ok(uint64_t fp, uint64_t rsp)
 {
-    return (fp & 7u) == 0 && fp >= rsp && fp + 16 <= rsp + STACK_SPAN;
+    return (fp & 7u) == 0 && fp >= rsp && fp - rsp <= STACK_SPAN - 16 &&
+           stack_readable(fp, 16);
 }
 
 int backtrace(uint64_t rbp, uint64_t rsp, uint64_t *out, int max)
@@ -134,7 +163,9 @@ void backtrace_print(int level, uint64_t rbp, uint64_t rsp, int max)
     if (n <= 1) {
         klog(level, "  -- stack scan (candidates, may include stale returns) --");
         int shown = 0;
-        for (uint64_t p = (rsp + 7) & ~7ull; p + 8 <= rsp + STACK_SPAN && shown < max; p += 8) {
+        for (uint64_t p = (rsp + 7) & ~7ull;
+             p >= rsp && p - rsp <= STACK_SPAN - 8 && shown < max; p += 8) {
+            if (!stack_readable(p, 8)) break;
             uint64_t v = *(const uint64_t *)(uintptr_t)p;
             if (!is_call_site(v))
                 continue;

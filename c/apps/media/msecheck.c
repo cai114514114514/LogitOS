@@ -129,6 +129,7 @@ static const char *g_types[] = {
     "video/webm; codecs=\"vp9,opus\"",
     "audio/mp4; codecs=\"opus\"",
     "audio/mp4; codecs=\"mp4a.40.5\"",
+    "audio/mp4; codecs=\"mp4a.40.29\"",
     "video/mp4; codecs=\"avc1.6E0033\"",
     "video/mp4",
     0

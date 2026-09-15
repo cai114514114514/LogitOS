@@ -248,6 +248,54 @@ static inline int lc_bytes(const char *s, int nbytes, int cell)
 #endif
 }
 
+/* lc_view needs the next-boundary half of the API, whose documented definition
+ * remains in the boundary section below. */
+static inline int lc_next(const char *s, int nbytes, int i);
+
+/* A horizontally-scrolled edit line, expressed once so a consumer cannot use
+ * the shell's CELL cursor as a BYTE subscript. `first_byte`/`nbytes` are the
+ * complete UTF-8 slice to draw; `first_cell` is where that slice began in the
+ * full line and `caret_cell` is the caret relative to the slice.
+ *
+ * The ceil at the left edge is intentional. If cursor-avail lands in the right
+ * half of a wide character, lc_bytes() returns that character's start (its
+ * documented floor). Drawing it would make the caret avail+1 cells away and
+ * put it outside the input box, so scrolling skips that WHOLE character. No
+ * byte from the middle of its UTF-8 sequence is ever exposed. */
+struct lc_viewport {
+    int first_byte;
+    int nbytes;
+    int first_cell;
+    int caret_cell;
+};
+
+static inline struct lc_viewport lc_view(const char *s, int nbytes,
+                                         int cursor_cell, int avail_cells)
+{
+    struct lc_viewport v = { 0, 0, 0, 0 };
+    if (!s || nbytes <= 0 || avail_cells <= 0) return v;
+
+    int total = lc_cells(s, nbytes);
+    if (cursor_cell < 0) cursor_cell = 0;
+    if (cursor_cell > total) cursor_cell = total;
+    int wanted = cursor_cell > avail_cells ? cursor_cell - avail_cells : 0;
+    int first = lc_bytes(s, nbytes, wanted);
+    int first_cell = lc_cells(s, first);
+    if (first_cell < wanted && first < nbytes) {
+        first = lc_next(s, nbytes, first);
+        first_cell = lc_cells(s, first);
+    }
+
+    int end = lc_bytes(s, nbytes, first_cell + avail_cells);
+    if (end < first) end = first;
+    v.first_byte = first;
+    v.nbytes = end - first;
+    v.first_cell = first_cell;
+    v.caret_cell = cursor_cell - first_cell;
+    if (v.caret_cell < 0) v.caret_cell = 0;
+    return v;
+}
+
 /* ------------------------------------------------------------ boundaries -- */
 
 /* Where a cursor at byte `i` moves back to: the start of the character that

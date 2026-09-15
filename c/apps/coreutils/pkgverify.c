@@ -30,9 +30,10 @@
  * assignment and array copies (ge_scalarmult's `*r = acc`, sha*_update's
  * buffering), and CLI programs link no libc. Every other coreutil gets away
  * without them because none of them copy a struct; this one links crypto. */
-void *memcpy(void *d, const void *s, size_t n)
+/* Standalone fallbacks; an optional linked libc supplies strong versions. */
+__attribute__((weak)) void *memcpy(void *d, const void *s, size_t n)
 { unsigned char *a = d; const unsigned char *b = s; while (n--) *a++ = *b++; return d; }
-void *memset(void *d, int c, size_t n)
+__attribute__((weak)) void *memset(void *d, int c, size_t n)
 { unsigned char *a = d; while (n--) *a++ = (unsigned char)c; return d; }
 
 /* One package at a time, in .bss: a CLI process has a 32 KiB stack and the

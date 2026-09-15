@@ -13,6 +13,10 @@
  * list with no lock of its own because it was written for boot-time use). The
  * one place that is NOT a syscall is mod_dump(), which reads the table and is
  * safe to call from a debugger stop.
+ * Correction after entry-lock removal: mod_load has a sleeping transaction
+ * mutex; published entries are immutable and never unloaded. Count is the
+ * release/acquire publication boundary, after all register/probe callbacks.
+ * A debugger/list reader never waits behind disk I/O or sees a partial module.
  */
 
 #include <stdint.h>
@@ -25,6 +29,7 @@
 #include "vfs_cred.h"
 #include "usercopy.h"
 #include "logit_abi.h"
+#include "wait.h"
 
 void *memcpy(void *, const void *, size_t);
 void *memset(void *, int, size_t);
@@ -32,12 +37,15 @@ void *memset(void *, int, size_t);
 static struct kmodule g_mods[MOD_MAX];
 static int            g_nmod;          /* slots ever used; slots are not reused */
 static int            g_next_id = 1;
+/* Lock order: loader -> VFS / heap / device-registry. Module callbacks do not
+ * recursively load modules (mod_load is not an exported module symbol). */
+static struct mutex g_load_lock = MUTEX_INIT;
 
-int mod_count(void) { return g_nmod; }
+int mod_count(void) { return __atomic_load_n(&g_nmod, __ATOMIC_ACQUIRE); }
 
 const struct kmodule *mod_at(int i)
 {
-    return (i >= 0 && i < g_nmod) ? &g_mods[i] : NULL;
+    return (i >= 0 && i < mod_count()) ? &g_mods[i] : NULL;
 }
 
 /* ------------------------------------------------------------- the name -- */
@@ -84,7 +92,7 @@ static void *resolve_ksym(const char *name, void *ctx)
 }
 
 /* --------------------------------------------------------------- loading -- */
-int mod_load(const char *path)
+static int mod_load_locked(const char *path)
 {
     if (!path || !path[0]) return MOD_E_INVAL;
 
@@ -121,7 +129,11 @@ int mod_load(const char *path)
     long need = mod_elf_size(img, (uint32_t)fsz);
     if (need < 0) { kfree(img); return (int)need; }
 
-    uint8_t *blk = kmalloc((size_t)need);
+    /* Kernel exports remain low-linked. Module rel32/32-bit relocations and
+     * executable text require the low identity alias; the ordinary physmap
+     * heap is NX and much further than +/-2 GiB from those exports. The ELF
+     * input/scratch buffers above are data and can use the ordinary heap. */
+    uint8_t *blk = kmalloc_low((size_t)need);
     if (!blk) { kfree(img); return MOD_E_NOMEM; }
     memset(blk, 0, (size_t)need);
 
@@ -129,7 +141,6 @@ int mod_load(const char *path)
     const char *undef = NULL;
     int e = mod_elf_load(img, (uint32_t)fsz, blk, (uint32_t)need,
                          resolve_ksym, NULL, &lay, &undef);
-    kfree(img);                       /* relocated; the file bytes are dead */
     if (e < 0) {
         /* Named, always. "MOD_E_UNDEF" alone sends the reader to diff two nm
          * outputs by hand; the symbol name sends them to ksyms.c, which is
@@ -139,12 +150,17 @@ int mod_load(const char *path)
                     "c/kernel/module/ksyms.c)\n", name, undef ? undef : "?");
         else
             kprintf("[mod] %s: load failed, err %d\n", name, e);
+        kfree(img); /* undef, if present, points into the input string table. */
         kfree(blk);
         return e;
     }
 
-    if (slot < 0) slot = g_nmod++;              /* claimed: nothing can fail now */
-    struct kmodule *m = &g_mods[slot];
+    kfree(img);
+    if (slot < 0) slot = mod_count();
+    /* Assemble privately. The probe callback may sleep; listing must not see
+     * this entry until its driver ownership and counters have settled. */
+    struct kmodule pending;
+    struct kmodule *m = &pending;
     memset(m, 0, sizeof *m);
     m->id = g_next_id++;
     memcpy(m->name, name, MOD_NAME_LEN);
@@ -190,16 +206,28 @@ int mod_load(const char *path)
     m->nbound = 0;
     for (int i = 0; i < dev_count(); i++) {
         struct device *d = dev_at(i);
-        if (!d || !d->drv) continue;
+        const struct driver *bound_driver = d ? __atomic_load_n(&d->drv, __ATOMIC_ACQUIRE) : NULL;
+        if (!bound_driver) continue;
         for (struct driver **p = ds; p && p < de; p++)
-            if (*p == d->drv) { m->nbound++; break; }
+            if (*p == bound_driver) { m->nbound++; break; }
     }
+
+    g_mods[slot] = pending;
+    __atomic_store_n(&g_nmod, slot + 1, __ATOMIC_RELEASE);
 
     kprintf("[mod] %s: loaded at %x, %d bytes, %d driver(s), %d bound "
             "(probe pass bound %d)\n",
             m->name, (unsigned)(uintptr_t)m->base, (int)m->size,
             m->ndrivers, m->nbound, bound);
     return m->id;
+}
+
+int mod_load(const char *path)
+{
+    mutex_lock(&g_load_lock);
+    int rc = mod_load_locked(path);
+    mutex_unlock(&g_load_lock);
+    return rc;
 }
 
 /* --------------------------------------------------------------- unload --
@@ -241,8 +269,9 @@ int mod_unload(int id)
 
 void mod_dump(void)
 {
-    kprintf("[mod] %d loaded, %d exported symbols\n", g_nmod, ksym_count());
-    for (int i = 0; i < g_nmod; i++) {
+    int count = mod_count();
+    kprintf("[mod] %d loaded, %d exported symbols\n", count, ksym_count());
+    for (int i = 0; i < count; i++) {
         if (!g_mods[i].id) continue;
         kprintf("  #%d %s base=%x size=%d text=+%x/%d drivers=%d bound=%d\n",
                 g_mods[i].id, g_mods[i].name,
@@ -297,8 +326,9 @@ long mod_syscall(long n, long a0, long a1, long a2)
          * with no caller is the one that has quietly stopped compiling by the
          * time somebody needs it at three in the morning. */
         if (!out && max == 0) mod_dump();
+        int total = mod_count();
         int n_out = 0;
-        for (int i = 0; i < g_nmod && n_out < max; i++) {
+        for (int i = 0; i < total && n_out < max; i++) {
             if (!g_mods[i].id) continue;
             struct logit_modinfo mi;
             memset(&mi, 0, sizeof mi);
@@ -313,8 +343,6 @@ long mod_syscall(long n, long a0, long a1, long a2)
         /* The COUNT of loaded modules, which may exceed `max`: a caller sizing
          * a buffer needs to know it was short. Returning n_out would make a
          * truncated answer indistinguishable from a complete one. */
-        int total = 0;
-        for (int i = 0; i < g_nmod; i++) if (g_mods[i].id) total++;
         return total;
     }
 

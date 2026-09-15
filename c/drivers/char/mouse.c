@@ -1,3 +1,6 @@
+/* Controller setup runs once during BSP boot before device IRQs are enabled.
+ * At runtime IRQ1/IRQ12 share that BSP with IF clear; the controller byte and
+ * this packet decoder are not entered concurrently from another CPU. */
 #include <stdint.h>
 #include "mouse.h"
 #include "io.h"

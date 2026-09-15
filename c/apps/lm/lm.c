@@ -65,6 +65,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <signal.h>
+#include <limits.h>
 #include "model.h"
 #include "infer.h"
 
@@ -224,6 +225,25 @@ static const char *lm_open_strerror(int rc)
     case -6: return "out of memory building the model's tensor descriptors";
     default: return "unknown error";
     }
+}
+
+/* These numbers size loops or allocations before a model can defend itself.
+ * atoi/strtol with an ignored end pointer accepted a numeric prefix ("64x")
+ * and silently changed the requested experiment.  strtonum gives every
+ * integer option the same complete-string and range boundary while keeping
+ * the diagnostic reason from libc rather than reimplementing its parser. */
+static int bounded_arg(const char *option, const char *text,
+                       long long minval, long long maxval, long long *out)
+{
+    const char *why = NULL;
+    long long value = strtonum(text, minval, maxval, &why);
+    if (why) {
+        printf("lm: %s '%s': %s (expected %lld..%lld)\n",
+               option, text, why, minval, maxval);
+        return 0;
+    }
+    *out = value;
+    return 1;
 }
 
 /* ------------------------------------------- mapping a file on LogitOS --
@@ -515,25 +535,23 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             prompt = argv[++i];
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-            n_predict = atoi(argv[++i]);
+            long long value;
+            if (!bounded_arg("-n", argv[++i], 0, INT_MAX, &value)) return 2;
+            n_predict = (int)value;
         } else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
             temperature = atof(argv[++i]);
         } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             seed = strtoull(argv[++i], NULL, 10);
             have_seed = 1;
         } else if (strcmp(argv[i], "--budget") == 0 && i + 1 < argc) {
-            unsigned long long mib = strtoull(argv[++i], NULL, 10);
+            long long mib;
             /* The multiplication is done in 64 bits and the argument is
              * bounded first: `--budget 4294967296` on a 32-bit product would
              * wrap to a SMALL ceiling and refuse a model that fits, which is
              * the one failure mode of this flag that would look like a
              * finding. 65536 MiB is past any machine this will run on. */
-            if (mib > 65536ull) {
-                printf("lm: --budget %llu MiB is not a number this machine "
-                       "could mean\n", mib);
-                return 2;
-            }
-            g_budget_bytes = mib * 1024ull * 1024ull;
+            if (!bounded_arg("--budget", argv[++i], 0, 65536, &mib)) return 2;
+            g_budget_bytes = (unsigned long long)mib * 1024ull * 1024ull;
         } else if (strcmp(argv[i], "--ids") == 0 && i + 1 < argc) {
             ids_arg = argv[++i];
         } else if (strcmp(argv[i], "--print-ids") == 0) {
@@ -552,11 +570,9 @@ int main(int argc, char **argv)
                                   * asking for it while still trying to map
                                   * would silently measure nothing. */
         } else if (strcmp(argv[i], "--seq") == 0 && i + 1 < argc) {
-            g_seq_cap = strtol(argv[++i], NULL, 10);
-            if (g_seq_cap <= 0) {
-                printf("lm: --seq %s is not a positive token count\n", argv[i]);
-                return 2;
-            }
+            long long value;
+            if (!bounded_arg("--seq", argv[++i], 1, LONG_MAX, &value)) return 2;
+            g_seq_cap = (long)value;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -566,11 +582,6 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (n_predict < 0) {
-        printf("lm: -n must be >= 0\n");
-        return 2;
-    }
-
     /* Rich streaming: only the ordinary interactive shape (a byte prompt in, a
      * byte stream out). --ids/--print-ids/--dump-logits are host-comparison
      * tooling, not something a person is watching in the Terminal, and their
@@ -945,18 +956,12 @@ int main(int argc, char **argv)
 
     /* -------------------------------------------------------- seed --- */
     /* --greedy is deterministic by construction (lm_sample_greedy takes no
-     * rng) and is what the device test asserts on -- the seed below is dead
-     * code on that path and is not read. For the stochastic path, an
-     * unspecified seed is drawn from the monotonic clock (10 ms granularity,
-     * see c/apps/libc/src/time.c) so an interactive run varies run to run;
-     * -s makes a run reproducible for anyone who needs to bisect one. */
-    if (!have_seed) {
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        seed = (unsigned long long)ts.tv_sec * 1000000000ull
-             + (unsigned long long)ts.tv_nsec;
-        if (seed == 0) seed = 1; /* the rng below is a zero-is-a-fixed-point LCG-ish xorshift */
-    }
+     * rng) and is what the device test asserts on, so it must not acquire an
+     * entropy dependency.  A stochastic run without -s now consumes libc's
+     * arc4random_buf: the old 10 ms monotonic-clock seed made two launches in
+     * one tick replay the same samples.  -s remains the cross-host reproducible
+     * path, while the default gets a seed from the kernel Hash_DRBG. */
+    if (!have_seed && !greedy) arc4random_buf(&seed, sizeof seed);
     unsigned long long rng = seed;
 
     /* Nucleus threshold for the stochastic path. Not a CLI flag: -t is the
