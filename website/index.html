@@ -1,0 +1,365 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fafafa" />
+    <meta
+      name="description"
+      content="认识 LogitOS：一个从启动程序、独立内核到原生桌面持续构建的实验性操作系统，探索人与智能协作的新方式。"
+    />
+    <meta property="og:title" content="LogitOS — 让计算机，接住你的想法。" />
+    <meta
+      property="og:description"
+      content="独立内核。原生桌面。融入工作流的智能。探索一个正在生长的操作系统。"
+    />
+    <meta property="og:type" content="website" />
+    <title>LogitOS — 让计算机，接住你的想法。</title>
+    <link rel="icon" href="./assets/mark.svg" type="image/svg+xml" />
+    <link rel="preload" href="./assets/textedit.png" as="image" />
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/layout.css" />
+    <link rel="stylesheet" href="./styles/product.css" />
+    <link rel="stylesheet" href="./styles/chapters.css" />
+    <link rel="stylesheet" href="./styles/motion.css" />
+    <link rel="stylesheet" href="./styles/scenes.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body id="top">
+    <a class="skip-link" href="#main">跳至主要内容</a>
+    <header class="site-header">
+      <nav class="nav shell" aria-label="主导航">
+        <a class="brand" href="#top" aria-label="LogitOS 首页"
+          ><img
+            src="./assets/mark.svg"
+            width="29"
+            height="29"
+            alt=""
+          />Logit<span>OS</span></a
+        >
+        <button
+          class="menu-toggle"
+          id="menu-toggle"
+          aria-label="展开导航菜单"
+          aria-expanded="false"
+          aria-controls="nav-links"
+          disabled
+        >
+          <span></span><span></span>
+        </button>
+        <div class="nav-links" id="nav-links">
+          <a href="#experience">体验</a>
+          <a href="#intelligence">原生智能</a>
+          <a href="#graphics">图形</a>
+          <a href="#develop">开发</a>
+          <a href="#foundation">系统底座</a>
+          <a
+            href="https://github.com/cai114514114514/LogitOS"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <a class="button small" href="#start"
+          >开始探索 <span aria-hidden="true">↗</span></a
+        >
+      </nav>
+    </header>
+
+    <main id="main">
+      <!-- include:cinema -->
+
+      <section
+        class="intro section shell"
+        id="project"
+        aria-labelledby="intro-title"
+      >
+        <p class="eyebrow">独立构建，向前一步</p>
+        <div class="editorial-grid">
+          <h2 id="intro-title">
+            熟悉的桌面。<br /><span class="muted">全新的起点。</span>
+          </h2>
+          <div class="intro-body">
+            <p>我们想探索：当智能开始参与真实的工作，操作系统会是什么样子？</p>
+            <p>
+              LogitOS
+              的答案，从底层写起。自有启动程序、独立内核、文件系统，以及一个可以浏览、编写和处理任务的原生桌面。人来定义方向，AI
+              编码智能体编写第一方实现，自有组件与移植代码各自保留来源。
+            </p>
+            <a
+              class="text-link"
+              href="https://github.com/cai114514114514/LogitOS/blob/main/TRANSPARENCY.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              >了解项目的构建方式 <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+      </section>
+
+      <section
+        class="experience section"
+        id="experience"
+        aria-labelledby="experience-title"
+      >
+        <div class="shell">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">在这里，开始工作</p>
+              <h2 id="experience-title">
+                每一扇窗口，<br class="mobile-break" />都有用武之地。
+              </h2>
+            </div>
+            <span class="quiet-label">来自真实系统的画面</span>
+          </div>
+          <div class="tour-controls" role="tablist" aria-label="探索原生应用">
+            <button
+              id="tab-textedit"
+              role="tab"
+              aria-selected="true"
+              aria-controls="tour-panel"
+              data-scene="textedit"
+              disabled
+            >
+              文档与智能
+            </button>
+            <button
+              id="tab-finder"
+              role="tab"
+              aria-selected="false"
+              aria-controls="tour-panel"
+              tabindex="-1"
+              data-scene="finder"
+              disabled
+            >
+              文件与任务
+            </button>
+            <button
+              id="tab-browser"
+              role="tab"
+              aria-selected="false"
+              aria-controls="tour-panel"
+              tabindex="-1"
+              data-scene="browser"
+              disabled
+            >
+              浏览与探索
+            </button>
+          </div>
+          <div
+            class="tour-panel"
+            id="tour-panel"
+            role="tabpanel"
+            aria-labelledby="tab-textedit"
+            tabindex="0"
+          >
+            <div class="tour-image">
+              <img
+                id="tour-image"
+                src="./assets/textedit.png"
+                width="1280"
+                height="800"
+                alt="TextEdit 原生文档编辑器与任务侧栏"
+                loading="lazy"
+              /><button
+                class="expand-button"
+                id="expand-image"
+                aria-label="放大查看系统截图"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" />
+                </svg>
+              </button>
+            </div>
+            <div class="tour-caption" aria-live="polite">
+              <div>
+                <p class="eyebrow" id="tour-app">TEXTEDIT</p>
+                <h3 id="tour-title">想法落笔，修改有据。</h3>
+              </div>
+              <p id="tour-description">
+                在文档里提出修改目标，查看带有来源的候选内容，再决定是否应用。智能协作，就在你正在做的工作旁边。
+              </p>
+            </div>
+          </div>
+          <noscript
+            ><p class="no-script">
+              启用 JavaScript 可切换应用截图。<a href="./assets/finder.png"
+                >查看 Finder</a
+              >
+              · <a href="./assets/browser.png">查看浏览器</a>
+            </p></noscript
+          >
+        </div>
+      </section>
+
+      <section
+        class="intelligence section shell"
+        id="intelligence"
+        aria-labelledby="intelligence-title"
+      >
+        <div class="intelligence-copy">
+          <p class="eyebrow">智能，走进工作本身</p>
+          <h2 id="intelligence-title">说出目标。<br />让工作向前。</h2>
+          <p class="section-description">
+            从 Finder 中的一份资料，到 TextEdit
+            里的一次修改。让任务带着上下文继续，把最终决定留给你。
+          </p>
+          <a class="text-link" href="./verification.html"
+            >查看原生任务流程验证 <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <div class="workflow" aria-label="原生任务工作流程示意">
+          <p class="workflow-label">一份文档的旅程 <span>流程示意</span></p>
+          <div class="workflow-step">
+            <span class="step-number">1</span>
+            <div>
+              <span class="app-label">FINDER</span>
+              <h3>从你的资料开始</h3>
+              <p>选择资料，告诉系统你要完成什么。</p>
+              <div class="task-prompt">
+                根据这份资料，整理一份项目摘要。<span aria-hidden="true"
+                  >↑</span
+                >
+              </div>
+            </div>
+          </div>
+          <div class="workflow-step">
+            <span class="step-number">2</span>
+            <div>
+              <span class="app-label">TEXTEDIT</span>
+              <h3>在文档中继续</h3>
+              <p>查看结果，补充目标，生成新的修改建议。</p>
+              <div class="document-lines" aria-hidden="true">
+                <i></i><i></i><i></i>
+              </div>
+            </div>
+          </div>
+          <div class="workflow-step">
+            <span class="step-number">3</span>
+            <div>
+              <span class="app-label">由你确认</span>
+              <h3>看过，再应用</h3>
+              <p>审阅候选修改，将确认后的内容保存到文档。</p>
+            </div>
+          </div>
+        </div>
+        <p class="section-footnote">
+          模型任务需要配置模型服务。目前已验证的是特定 QEMU 配置下的 Finder →
+          TextEdit 文档流程。
+        </p>
+      </section>
+
+      <!-- include:graphics -->
+      <!-- include:language -->
+
+      <!-- include:architecture -->
+
+      <!-- include:capabilities -->
+      <!-- include:making -->
+
+      <section
+        class="start section shell"
+        id="start"
+        aria-labelledby="start-title"
+      >
+        <div class="start-copy">
+          <p class="eyebrow">下一步，一起探索</p>
+          <h2 id="start-title">
+            未来的系统，<br /><span class="muted">正在写下。</span>
+          </h2>
+          <p class="section-description">
+            从阅读源码开始，或者在 QEMU 中启动它。<br />欢迎带着好奇心，走进
+            LogitOS。
+          </p>
+          <div class="actions">
+            <a
+              class="button"
+              href="https://github.com/cai114514114514/LogitOS"
+              target="_blank"
+              rel="noopener noreferrer"
+              >在 GitHub 上探索 <span aria-hidden="true">↗</span></a
+            ><a
+              class="text-link"
+              href="https://github.com/cai114514114514/LogitOS#build--run"
+              target="_blank"
+              rel="noopener noreferrer"
+              >构建指南 <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+        <div class="terminal-card">
+          <div class="terminal-heading">
+            <span>从源码启动</span><span class="terminal-shell">SHELL</span>
+          </div>
+          <pre><code id="start-command">git clone https://github.com/cai114514114514/LogitOS.git
+cd LogitOS
+make run</code></pre>
+          <div class="terminal-bottom">
+            <span>请先按构建指南安装工具链。</span
+            ><button id="copy-command" aria-label="复制启动命令" disabled>
+              复制命令 <span aria-hidden="true">⧉</span>
+            </button>
+          </div>
+          <p id="copy-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="project-notes shell" aria-label="关于当前阶段">
+        <p>
+          <strong>仍在探索，也诚实记录。</strong> LogitOS
+          是研究与学习用途的实验性操作系统。目前以 QEMU
+          环境中的验证为主，硬件支持和浏览器兼容性仍在持续完善，尚不适合作为日常主力系统。
+        </p>
+        <div>
+          <a
+            href="https://github.com/cai114514114514/LogitOS#what-does-not-work"
+            target="_blank"
+            rel="noopener noreferrer"
+            >已知限制 ↗</a
+          ><a
+            href="https://github.com/cai114514114514/LogitOS/blob/main/CONTRIBUTING.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >参与贡献 ↗</a
+          >
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer shell">
+      <a class="brand" href="#top"
+        ><img src="./assets/mark.svg" width="26" height="26" alt="" />Logit<span
+          >OS</span
+        ></a
+      >
+      <p>持续构建，向可能出发。</p>
+      <div>
+        <a
+          href="https://github.com/cai114514114514/LogitOS/blob/main/LICENSING.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          >开源许可</a
+        ><span>简体中文</span>
+      </div>
+    </footer>
+
+    <dialog id="image-dialog" aria-labelledby="image-dialog-title">
+      <div class="dialog-heading">
+        <h2 id="image-dialog-title">LogitOS 系统截图</h2>
+        <button id="close-image" aria-label="关闭截图" disabled>
+          关闭 <span aria-hidden="true">×</span>
+        </button>
+      </div>
+      <img
+        id="dialog-image"
+        src="./assets/textedit.png"
+        width="1280"
+        height="800"
+        alt=""
+      />
+      <p>QEMU 环境中的真实系统画面</p>
+    </dialog>
+  </body>
+</html>

@@ -1,0 +1,110 @@
+<!-- SPDX-License-Identifier: MIT -->
+<section id="graphics-evidence">
+  <p class="eyebrow">OPENLOGIT</p>
+  <h2>从接口，到屏幕上的结果</h2>
+  <p>
+    OpenLogit 提供 2D、合成与动画核心，以及用户空间的软件 3D
+    和着色程序执行。官网中的 Sky Islands 与 Effects 都来自实际 QEMU 截图。
+  </p>
+  <p>
+    2026 年 9 月 13 日的 SDK 实施记录和对应的 Island 来宾报告记录了 12
+    项通过的检查：包含来宾内编译、实际场景显示、暂停与恢复、普通输入完成收集、重新开始、分辨率切换、最小化与恢复。检查数量不代表显示帧率，也不代表整个
+    SDK 的验收已经完成。
+  </p>
+  <p>
+    Scene Studio、矢量绘图与 LSL
+    编译器在当前源码中进一步扩展。它们各自的实现与验收范围不能由 Island
+    的旧截图代替；官网不据此宣称完整 GPU 加速、GLSL 兼容或全系统性能达标。
+  </p>
+  <p class="source-path">
+    来源：<code>docs/OPENLOGIT_SDK_IMPLEMENTATION.md</code>、<code>docs/OPENLOGIT_SCENE_STUDIO.md</code>、<code
+      >examples/openlogit/README.md</code
+    >
+    与配套 <code>island-guest/result.json</code>。
+  </p>
+</section>
+<section id="language-evidence">
+  <p class="eyebrow">AETHERSCRIPT / CODE STUDIO</p>
+  <h2>语言正在向原生编译演进</h2>
+  <p>
+    当前 AetherScript 3.x 路径使用类型检查和 LLVM
+    原生编译。语言说明将已执行验证的子集与未完成设计分开；旧 VM
+    和字节码迁移依赖仍在退出过程中。因此，不能把“支持原生子集”写成“完整语言交付”或“完整原生自举”。
+  </p>
+  <p>
+    首页代码节选来自
+    <code>fsroot/as/examples/hello.as</code
+    >，省略了一行示例说明注释。网页只展示源码，没有执行编译或伪造终端输出。
+  </p>
+  <p>
+    Code Studio 的当前维护文档列出项目树、UTF-8
+    编辑、补全、诊断、草稿恢复与真实子进程运行等模块。宿主引擎测试和原生窗口流程有不同的验证入口；官网本次没有重新运行它们，也没有把完整语言开发闭环标为完成。
+  </p>
+  <p class="source-path">
+    来源：<code>c/apps/as/README.md</code>、<code>docs/AETHERSCRIPT_LANGUAGE_3.md</code>、<code>docs/AETHERSCRIPT_A2_TO_A3.md</code>、<code>c/apps/studio/README.md</code>。
+  </p>
+</section>
+<section id="system-evidence">
+  <p class="eyebrow">系统能力</p>
+  <h2>不同层次，各有验证范围</h2>
+  <dl class="system-evidence">
+    <div>
+      <dt>启动与内存</dt>
+      <dd>
+        自有 BIOS / UEFI 启动路径在当前启动源码与 README
+        中记录。高地址内核堆报告包含 BIOS / UEFI
+        与不同内存配置的具体验证；这是对应构建的证据，不是全部硬件兼容声明。
+      </dd>
+    </div>
+    <div>
+      <dt>LogitFS 与 Project</dt>
+      <dd>
+        当前文件系统保留事务日志与写入屏障。Project 专用 v5
+        磁盘记录持久对象身份，用于改名、移动和重启后的关联；它通过独立
+        <code>run-project</code>
+        路径使用。普通模型任务入口通过并不等于已经迁移到这种磁盘。
+      </dd>
+    </div>
+    <div>
+      <dt>文字与输入</dt>
+      <dd>
+        字体清单记录来自 Noto 的 OFL 字体子集；文字绘制走共同排版入口。当前 IME
+        头文件定义
+        <code>Shift+Space</code>
+        为切换键。输入法的存在不代表所有词语和长句选择均已正确。
+      </dd>
+    </div>
+    <div>
+      <dt>图像与音视频</dt>
+      <dd>
+        媒体模块包含图像解析、音视频解码、容器和播放时钟。2026 年 9 月 15
+        日的声卡报告记录 HDA、AC’97、ES1370 在 QEMU 中的实际 PCM
+        输出验证，尚不证明实体声卡或全部网页视频播放可用。
+      </dd>
+    </div>
+    <div>
+      <dt>网络与应用</dt>
+      <dd>
+        网络和浏览器都有项目实现与互操作记录，部分第三方组件明确标注来源。标准覆盖、站点兼容、程序装载与其他操作系统的二进制兼容是不同问题，不能相互替代。
+      </dd>
+    </div>
+  </dl>
+  <p class="source-path">
+    来源：<code>CLAUDE.md</code>
+    及其中带日期的修正、<code>docs/HIGH_KERNEL_HEAP_2026-09-10.md</code>、<code>docs/PROJECT_WORKSPACE_2026-09-13.md</code>、<code>fsroot/fonts/README.md</code>、<code>reports/drivers/audio/2026-09-15/README.md</code>，并核对对应当前源码入口。
+  </p>
+</section>
+<section id="method-evidence">
+  <p class="eyebrow">构建方式</p>
+  <h2>把文档当作线索，把证据落到实现</h2>
+  <p>
+    这次官网扩充阅读了项目根目录的
+    <code>AGENTS.md</code>、<code>CLAUDE.md</code>、<code>TRANSPARENCY.md</code>
+    和相关子系统维护文档。AGENTS.md
+    强调注释中的原因、实际消费者、能观察到失败的测试，以及对并行工作的尊重。
+  </p>
+  <p>
+    部分旧说明已经被后来的实现修正：例如普通启动的模型网关、AetherScript
+    迁移目标，以及内存和文件系统能力。官网采用明确的当前范围，不沿用笼统旧结论。这里是资料与现有证据核对，不是一次新的操作系统完整验收。
+  </p>
+</section>

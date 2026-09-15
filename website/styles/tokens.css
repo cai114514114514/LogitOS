@@ -1,0 +1,136 @@
+/* SPDX-License-Identifier: MIT */
+:root {
+  color-scheme: light;
+  --paper: #fafafa;
+  --white: #ffffff;
+  --ink: #242730;
+  --muted: #70717c;
+  --line: #e2e2e8;
+  --soft: #f0f0f4;
+  --violet: #64528e;
+  --lilac: #b3a8ef;
+  --peach: #ecc3b4;
+  --night: #181b24;
+  --night-muted: #a6a9b6;
+  --night-line: #3a3e4c;
+  --scroll-thumb: #adaeb8;
+  --scroll-hover: #858795;
+  --scroll-active: #626674;
+  --display: "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --body:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --shell: 1180px;
+  --ease: cubic-bezier(0.2, 0.75, 0.3, 1);
+}
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--soft);
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--soft);
+}
+*::-webkit-scrollbar-thumb {
+  border: 2px solid var(--soft);
+  border-radius: 8px;
+  background: var(--scroll-thumb);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-hover);
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--scroll-active);
+}
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 94px;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+body:has(dialog[open]) {
+  overflow: hidden;
+}
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+a,
+button {
+  touch-action: manipulation;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+:focus-visible {
+  outline: 3px solid var(--violet);
+  outline-offset: 6px;
+}
+::selection {
+  color: var(--ink);
+  background: var(--lilac);
+}
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+h1,
+h2,
+h3,
+p,
+figure {
+  margin: 0;
+}
+h1,
+h2,
+h3 {
+  font-family: var(--display);
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+@media (forced-colors: active) {
+  * {
+    scrollbar-color: auto;
+  }
+  :focus-visible {
+    outline-color: Highlight;
+  }
+  .button,
+  .tour-controls button,
+  .system-plate,
+  .scene-steps button,
+  .stack-controls button {
+    border: 1px solid ButtonText;
+  }
+}

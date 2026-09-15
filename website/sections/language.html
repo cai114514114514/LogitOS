@@ -1,0 +1,43 @@
+<!-- SPDX-License-Identifier: MIT -->
+<section
+  class="language section shell"
+  id="develop"
+  aria-labelledby="language-title"
+>
+  <div class="language-copy">
+    <p class="eyebrow">AETHERSCRIPT + CODE STUDIO</p>
+    <h2 id="language-title">系统里的想法，<br />也能写成代码。</h2>
+    <p class="section-description">
+      一门自己的语言，一个原生开发环境。从短小的程序开始，让探索继续深入系统。
+    </p>
+    <p class="language-detail">
+      AetherScript 正在向静态类型与 LLVM 原生编译演进。Code Studio
+      提供项目树、文本编辑、补全与诊断，串起编写、检查和运行的过程。
+    </p>
+    <a class="text-link" href="./verification.html#language-evidence"
+      >了解语言与开发工具 <span aria-hidden="true">↗</span></a
+    >
+  </div>
+  <div class="code-sample">
+    <div class="code-heading">
+      <span>hello.as</span><span>AetherScript 源码节选</span>
+    </div>
+    <pre
+      aria-label="AetherScript hello 示例源码"
+    ><code><span class="code-comment"># aether: 3.0</span>
+
+<span class="code-keyword">def</span> <span class="code-function">main</span>() -&gt; None:
+    <span class="code-function">print</span>(<span class="code-string">"Hello from AetherScript!"</span>)
+    <span class="code-keyword">for</span> i <span class="code-keyword">in</span> <span class="code-function">range</span>(5):
+        <span class="code-function">print</span>(<span class="code-string">"count"</span>, i)</code></pre>
+    <div class="compiler-path" aria-label="原生编译过程">
+      <span>源码</span><i aria-hidden="true">→</i><span>类型检查</span
+      ><i aria-hidden="true">→</i><span>LLVM IR</span><i aria-hidden="true">→</i
+      ><span>原生程序</span>
+    </div>
+    <p>
+      取自仓库
+      hello.as；这里展示源码，不在网页中执行。原生编译与语言迁移仍在进行，尚未完成完整语言与原生自举验收。
+    </p>
+  </div>
+</section>
