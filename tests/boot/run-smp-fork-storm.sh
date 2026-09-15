@@ -32,7 +32,11 @@ cleanup() {
     [ -n "$QPID" ] && wait "$QPID" 2>/dev/null
     rm -f "$LOG"
 }
+# The serial owner cancels its input thread and reaps QEMU; there is no
+# producer process still sleeping inside this shell job when wait runs.
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # One line per rep, each followed by a marker carrying its number. The marker is
 # a shell builtin, so it cannot itself fork -- if it prints, the fork before it
@@ -56,7 +60,7 @@ cmds="${cmds}echo STORM-ALL-DONE
 ACCEL="-accel tcg"
 [ "$SMP" != "1" ] && ACCEL="-accel tcg,thread=multi"
 
-{ sleep 4; printf '%s' "$cmds"; sleep 240; } | \
+python3 "$(dirname "$0")/serial-guest.py" --send 4 "$cmds" --linger 240 -- \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" \
     -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off \
     -device virtio-blk-pci,drive=hd0 -boot d -snapshot \

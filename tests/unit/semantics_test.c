@@ -50,6 +50,11 @@ int text_measure(const char *s, int len, int px, int mono)
 { (void)s; (void)mono; return len * (px / 2); }
 int res_fetch(const char *u, unsigned char **b, int *l)
 { (void)u; (void)b; (void)l; return -1; }
+/* js_module.c now prefetches module dependencies through browser_rt hooks.
+ * This host fixture imports no modules and owns no network client; resolve
+ * those link dependencies without pretending a requested resource arrived. */
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) { }
 
 static int fails, checks, live_fails, live_checks, in_live;
 static JSContext *g_ctx;

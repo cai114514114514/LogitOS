@@ -74,3 +74,10 @@ FREEZE_REPS ?= 2
 
 test-wait-smp: $(ISO) $(DISK)
 	@bash tests/boot/run-wait-smp.sh $(ISO) $(DISK)
+
+# Short process-ownership regression, including a non-cancellable producer
+# control. It uses real sleeping children, not an emulated guest workload.
+.PHONY: test-serial-process-cleanup
+test-serial-process-cleanup:
+	python3 tests/unit/serial_process_cleanup_test.py --build $(BUILD)/serial-process-cleanup
+test-thread test-smp test-smp-fork-storm test-smp-fork-storm-1core: test-serial-process-cleanup

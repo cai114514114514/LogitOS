@@ -12,14 +12,18 @@ DISK="${2:?usage: run-smp-test.sh <iso> <disk.img>}"
 QEMU="${QEMU:-qemu-system-x86_64}"
 LOG="$(mktemp)"
 cleanup() { [ -n "${QPID:-}" ] && kill "$QPID" 2>/dev/null; [ -n "${QPID:-}" ] && wait "$QPID" 2>/dev/null; rm -f "$LOG"; }
+# The serial owner cancels its input thread and reaps QEMU; there is no
+# producer process still sleeping inside this shell job when wait runs.
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # Boot to the serial shell prompt (~10s), then send /bin/smptest. Serial input is
 # slow (byte-buffered), so the command takes a few seconds to type; smptest then
 # runs two compute batches (1 child baseline + 4 children), several seconds each
 # under TCG. Give a generous window before exit.
-{ sleep 11; printf '/bin/smptest\n'; sleep 75; printf 'exit\n'; sleep 2; } | \
+python3 "$(dirname "$0")/serial-guest.py" --lines --send 11 /bin/smptest --send 75 exit --linger 2 -- \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!

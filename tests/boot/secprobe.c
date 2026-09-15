@@ -46,10 +46,10 @@
  * WRITE is permitted. */
 #define OWN_TEXT 0x50000000UL
 
-/* A kernel address. The kernel is loaded at 1 MiB and the low 1 GiB is identity
+/* A kernel address. The kernel is loaded at 32 MiB and the low 1 GiB is identity
  * mapped with 2 MiB pages that carry no USER bit, so ring 3 must not be able to
  * read this, and no syscall must be willing to write to it on our behalf. */
-#define KERNEL_ADDR 0x00100000UL
+#define KERNEL_ADDR 0x02000000UL
 
 /* Something in .rodata: read-only by the ELF's own p_flags. */
 static const char rodata_probe[] = "rodata";
@@ -146,7 +146,7 @@ static void attack_nx_stack(void)
  * and writes a NUL-terminated string, with no other side effect to disentangle.
  * Three separate targets, because a check that only compares against a base
  * address would pass one and fail another:
- *   - the kernel image at 1 MiB (mapped, supervisor-only)
+ *   - the kernel image at 32 MiB (mapped, supervisor-only)
  *   - a non-canonical address (would #GP inside the kernel, which is fatal here)
  *   - a user address whose START is valid but which runs off the end of the
  *     mapped region, which is the classic length-check miss. */

@@ -15,7 +15,11 @@ trap cleanup EXIT
 
 NET="-netdev user,id=n0 -device e1000,netdev=n0"
 # -snapshot: ephemeral disk writes, so the test is deterministic across runs.
-{ sleep 4; printf 'uname\necho hello-logit-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\n'; sleep 5; } | \
+# A busy TCG host can reach LOGIT_BOOT_OK before login has installed the shell's
+# tty reader. Keep the delay configurable and long enough that the first two
+# commands are not discarded while the desktop finishes bringing up ring 3.
+SHELL_BOOT_DELAY="${SHELL_BOOT_DELAY:-7}"
+{ sleep "$SHELL_BOOT_DELAY"; printf 'uname\necho hello-logit-shell\nls /bin | wc\ncat /docs/readme.txt | wc\nmkdir /cptest\necho cpmvprobe > /cptest/a.txt\ncp /cptest/a.txt /cptest/b.txt\ncat /cptest/b.txt\nmv /cptest/b.txt /cptest/c.txt\nls /cptest\nrm /cptest/a.txt\nrm /cptest/c.txt\nrm /cptest\nexit\n'; sleep 5; } | \
   "$QEMU" -cpu "${QEMU_CPU:-max}" -cdrom "$ISO" -drive file="$DISK",format=raw,if=none,id=hd0,file.locking=off -device virtio-blk-pci,drive=hd0 -boot d -snapshot \
     -m 512M -smp 4 -accel tcg,thread=multi -vga none -device virtio-gpu-pci $NET -serial stdio -display none -no-reboot >"$LOG" 2>/dev/null &
 QPID=$!

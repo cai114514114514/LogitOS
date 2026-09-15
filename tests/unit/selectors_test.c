@@ -51,6 +51,15 @@ int bfetch_resolve(const char *base, const char *ref, char *out, int max)
 { (void)base; if (!ref || !out || max <= 0) return 0; snprintf(out, (size_t)max, "%s", ref); return 1; }
 int bfetch_sync(const char *ref, unsigned char **out, int *outlen)
 { (void)ref; (void)out; (void)outlen; return 0; }
+/* Keep the old claim above (same stubs as dom_iface) beside its correction:
+ * js_module now uses prefetch + res_fetch; omitting these prevented the
+ * selector gate from linking before it could exercise a single selector.
+ * This fixture loads no external modules, so transport refusal is the real
+ * host answer, not fabricated resource bytes. */
+void bfetch_prefetch(const char *ref) { (void)ref; }
+void bfetch_prefetch_wait(void) { }
+int res_fetch(const char *ref, unsigned char **out, int *len)
+{ (void)ref; (void)out; (void)len; return -1; }
 
 static int fails, checks, case_checks, case_fails;
 static int in_case_group;

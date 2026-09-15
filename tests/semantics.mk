@@ -53,6 +53,32 @@
 
 .PHONY: test-semantics test-semantics-negctl semantics-rank
 
+# Finite template read/write consistency, using the existing narrow DOM/forms
+# host composition. The old element-only innerHTML target is a required control:
+# first-use HTML/SVG/MathML must still work while retained content stays stale.
+TEMPLATE_CONTENT_SRC = $(filter-out tests/unit/document_focus_test.c,$(DOCUMENT_FOCUS_SRC)) \
+    tests/unit/template_content_test.c
+TEMPLATE_CONTENT_DEP = $(TEMPLATE_CONTENT_SRC) $(HTML_PARSER_SRC) \
+    c/apps/browser/js_dom_iface.inc c/apps/browser/js_semantics.h \
+    tests/fixtures/template-content/checks.js $(BUILD)/libcss_host.a $(RUST_LIB_HOST)
+.PHONY: test-template-content test-template-content-negctl
+$(BUILD)/template_content_test: $(TEMPLATE_CONTENT_DEP)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(DOMIFACE_CF) -o $@ $(TEMPLATE_CONTENT_SRC) \
+	    $(HTML_PARSER_SRC) $(QJS_SRC) $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+$(BUILD)/template_content_negctl: $(TEMPLATE_CONTENT_DEP)
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -w $(DOMIFACE_CF) -DTEMPLATE_CONTENT_SNAPSHOT -o $@ \
+	    $(TEMPLATE_CONTENT_SRC) $(HTML_PARSER_SRC) $(QJS_SRC) \
+	    $(BUILD)/libcss_host.a $(RUST_LIB_HOST) -lm
+test-template-content-negctl: $(BUILD)/template_content_negctl
+	@rc=0; $< > $(BUILD)/template_content_negctl.log 2>&1 || rc=$$?; \
+	    rg '^template-content: 21 checks, 8 failures$$' $(BUILD)/template_content_negctl.log; \
+	    test $$rc -eq 1
+test-template-content: test-template-content-negctl $(BUILD)/template_content_test
+	@$(BUILD)/template_content_test
+ci-host: test-template-content
+
 # The link is the SHIPPING browser's JS side, wildcarded, for the reason
 # tests/wpt.mk gives at length: a hand-kept list drifted twice in one night and
 # the suite went on reporting bugs that were already fixed. browser.c is out --

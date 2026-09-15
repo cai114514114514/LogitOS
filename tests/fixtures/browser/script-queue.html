@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><title>Dynamic script completion</title>
+<style>body{font:20px sans-serif;margin:28px}#state{padding:20px;background:#d6efdf}input{font:20px sans-serif;padding:12px}</style>
+<h1>Dynamic script completion</h1><p id="state">Loading script resources</p>
+<input id="entry" value="Typing stays available"><p id="tail">Document tail remains present</p>
+<script>
+var count=Number(location.search.slice(1))||16,executed=[],loaded=0,errors=0,inputs=0;
+var started=performance.now(),reported=false;
+document.addEventListener('keydown',function(){inputs++});
+function report(){
+ if(reported)return;reported=true;
+ var ordered=executed.every(function(v,i){return v===i});
+ var result={requested:count,executed:executed.length,loaded:loaded,errors:errors,
+  ordered:ordered,elapsed_ms:Math.round(performance.now()-started),inputs:inputs};
+ document.getElementById('state').textContent=loaded+' / '+count+' scripts loaded; errors '+errors;
+ requestAnimationFrame(function(){console.log('SCRIPT-QUEUE-DONE '+JSON.stringify(result))});
+}
+for(var i=0;i<count;i++){
+ var s=document.createElement('script');s.id=String(i);s.async=false;s.src='/chunk.js?'+i;
+ s.onload=function(){loaded++;if(loaded===count)report()};s.onerror=function(){errors++};
+ document.head.appendChild(s);
+}
+console.log('SCRIPT-QUEUE-START');
+setTimeout(report,12000);
+</script>

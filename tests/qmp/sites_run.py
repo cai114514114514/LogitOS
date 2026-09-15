@@ -131,6 +131,8 @@ def run_one(row, args, outdir, attempt):
            "--shots", outdir]
     if getattr(args, "boxes", False):
         cmd.append("--boxes")
+    if getattr(args, "images", False):
+        cmd.append("--images")
     t0 = time.time()
     try:
         subprocess.run(cmd, cwd=ROOT, timeout=args.per_site_timeout,
@@ -614,6 +616,10 @@ def main():
     # is off by default.
     ap.add_argument("--boxes", action="store_true",
                     help="dump each page's display list to its serial log")
+    # The ordinary PAINTED verdict does not account for decoded-cache refusal.
+    # Use the driver's confirmed image inventory when auditing completeness.
+    ap.add_argument("--images", action="store_true",
+                    help="dump each page's decoded and missing image inventory")
     args = ap.parse_args()
 
     if args.diff:

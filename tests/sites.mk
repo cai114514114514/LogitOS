@@ -26,6 +26,26 @@ SCOREBOARD_REPEAT ?= 2
 
 .PHONY: scoreboard scoreboard-1 scoreboard-diff scoreboard-regress scoreboard-quick test-sites-merge test-sites-merge-negctl
 
+# Logged promise/fetch errors must not vanish behind a PAINTED verdict. The
+# control erases precisely those channels while preserving load counters.
+.PHONY: test-sites-errors test-sites-errors-negctl
+test-sites-errors: test-sites-errors-negctl
+	@python3 tests/unit/site_errors_test.py
+test-sites-errors-negctl:
+	@mkdir -p $(BUILD)
+	@rc=0; python3 tests/unit/site_errors_test.py --negctl > $(BUILD)/site_errors_negctl.log 2>&1 || rc=$$?; \
+	 cat $(BUILD)/site_errors_negctl.log; \
+	 test "$$rc" -eq 1 && grep -q '^FAIL console errors retained' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL fetch failures retained' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL image and stall diagnostics affect verdict' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL dropped scripts and refused images affect verdict' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL late module retained beyond initial load counters' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL late page paint retained after nonnavigation diagnostic' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL native point uses current WM scale and titlebar' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL padded native control rectangle retained' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL diagnostic arrival cannot borrow an older completed image census' $(BUILD)/site_errors_negctl.log && \
+	 grep -q '^FAIL input diagnostic recognizes its complete armed marker' $(BUILD)/site_errors_negctl.log
+
 # The full corpus, every site twice (a site whose two runs disagree is recorded
 # FLAKY and is not scored -- the live web earns that).
 scoreboard: $(ISO) $(DISK)

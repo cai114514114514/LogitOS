@@ -98,6 +98,10 @@ uint64_t pmm_alloc(void)
     return (uint64_t)p;
 }
 
+/* The host has one synthetic physical zone; addressability is exercised by
+ * mapping this frame at the wide guest VA, not by inventing a second allocator. */
+uint64_t pmm_alloc_any(void) { return pmm_alloc(); }
+
 static int host_prot(uint64_t flags)
 {
     int p = PROT_READ;

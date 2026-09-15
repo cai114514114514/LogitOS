@@ -107,7 +107,7 @@ import zlib
 import http.server
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from qmp_ui import Session, PPM                                   # noqa: E402
+from qmp_ui import Session, PPM, browser_client_point             # noqa: E402
 
 # The User-Agent the guest's own fetcher sends, so the host probe is offered the
 # same document. A site that serves a different page to an unknown UA would
@@ -265,8 +265,15 @@ def parse_serial(text):
         "exceptions": [],          # [{message, stack:[frames], count}]
         "timer_exceptions": [],
         "module_exceptions": [],
+        "console_errors": [],     # page-reported errors, not assumed uncaught exceptions
+        "webapi_errors": [],      # fetch failures can be caught by a library
         "fetch_failed": [],
+        "fetch_stalled": [],
         "cannot_fetch": [],
+        "loader_errors": [],      # dropped jobs / refused decoded resources
+        "load_complete_ms": [],   # actual load event, not initial load done
+        "image_state": None,      # last confirmed inventory; None is unobserved
+        "load_event_pending": None,
         "skipped_scripts": 0,
         "requests": None, "dials": None, "reused": None,
         "modules": None, "modules_failed": None,
@@ -275,12 +282,53 @@ def parse_serial(text):
         "page_fetch_failed": None,
         "app_fault": None,
         "panic": False,
+        # Guest monotonic phases, unlike load_seconds/paint_seconds below
+        # which are host orchestration intervals. Nested module fetching is
+        # currently included in scripts_execute, so that is not pure CPU.
+        "load_phases_ms": [],
+        "module_phases_ms": [],  # exclusive nested phases from the real module loader
+        # load done's counters are an INITIAL checkpoint, not the end of
+        # dynamic import(). Preserve them and report actual later fetch log
+        # observations separately; downloaded bytes do not prove execution.
+        "module_fetch_observations": [],
     }
     lines = text.splitlines()
     i = 0
     seen = {}
+    image_state = load_pending = None
     while i < len(lines):
         ln = lines[i]
+        if "[browser] load: about:images" in ln:
+            image_state = load_pending = None
+            out["image_state"] = out["load_event_pending"] = None
+        if "[load-complete] elapsed_ms=" in ln:
+            m = re.search(r"elapsed_ms=(\d+)", ln)
+            if m:
+                out["load_complete_ms"].append(int(m[1]))
+        if "[images] layout " in ln:
+            image_state = {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", ln)}
+        if "[images] owed=" in ln:
+            m = re.search(r"load_event_pending=(\d+)", ln)
+            if m:
+                load_pending = bool(int(m[1]))
+        if "[images] end state" in ln and (i < len(lines) - 1 or text.endswith(('\n', '\r'))):
+            out["image_state"], out["load_event_pending"] = image_state, load_pending
+        # 2026-09-13: Doubao was PAINTED beside 86 dropped script messages;
+        # Apple was PAINTED despite decoded-image refusal. Keep these as
+        # resource diagnostics, separate from page exceptions and network IO.
+        if any(s in ln for s in (
+                "[browser] inserted-script queue ",
+                "[browser] inserted-script drain guard tripped",
+                "[browser] inserted script LOST:",
+                "[browser] script REFUSED", "[img] REFUSED:", "[layout] REFUSED:")):
+            out["loader_errors"].append(ln.strip())
+        if "[load-perf]" in ln:
+            out["load_phases_ms"].append({k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", ln.split("[load-perf]", 1)[1])})
+        if "[module-perf]" in ln:
+            out["module_phases_ms"].append({k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", ln.split("[module-perf]", 1)[1])})
+        mf = re.search(r"\[js\] module loaded (\d+) bytes: (.+)", ln)
+        if mf:
+            out["module_fetch_observations"].append({"bytes": int(mf[1]), "url": mf[2]})
         m = EXC_RE.search(ln)
         if m:
             msg = m.group(1).strip()
@@ -308,7 +356,21 @@ def parse_serial(text):
                 out["exceptions"].append(seen[key])
             i = j
             continue
-        if "[js] uncaught in " in ln:
+        # A library can catch a failed fetch and log it instead of letting the
+        # script throw. QQ's 2026-09-09 guest logged AxiosError and a response
+        # limit failure, while the old parser called that PAINTED/no errors.
+        # Keep these channels separate so a site's own error is not mislabeled
+        # an engine exception, but never erase it from the verdict.
+        if ln.startswith("[error] "):
+            out["console_errors"].append(ln[len("[error] "):].strip())
+        elif re.match(r'^(?:TypeError|ReferenceError|SyntaxError|RangeError|InternalError|URIError|EvalError|Error):', ln):
+            # Some real pages log the caught Error directly with console.log,
+            # without the console.error prefix. Qwen's XHR constructor error
+            # was visible in serial but absent from its 2026-09-13 JSON.
+            out["console_errors"].append(ln.strip())
+        elif ln.startswith(("[webapi] fetch: ", "[webapi] prelude failed: ")):
+            out["webapi_errors"].append(ln[len("[webapi] "):].strip())
+        elif "[js] uncaught in " in ln:
             out["timer_exceptions"].append(ln.split("[js] uncaught in ", 1)[1].strip())
         elif "[browser] module exception in " in ln:
             out["module_exceptions"].append(
@@ -316,8 +378,10 @@ def parse_serial(text):
         elif "[browser] module rejected " in ln:
             out["module_exceptions"].append(
                 ln.split("[browser] module rejected ", 1)[1].strip())
-        elif "[browser] fetch failed (status " in ln:
-            out["fetch_failed"].append(ln.split("[browser] ", 1)[1].strip())
+        elif "[browser] fetch failed (status " in ln or "[img] fetch failed (status " in ln:
+            out["fetch_failed"].append(ln.strip())
+        elif "[browser] fetch stalled: " in ln:
+            out["fetch_stalled"].append(ln.split("[browser] ", 1)[1].strip())
         elif "[browser] cannot fetch " in ln:
             out["cannot_fetch"].append(ln.split("[browser] cannot fetch ", 1)[1].strip())
         elif '[browser] skipping <script' in ln:
@@ -340,6 +404,84 @@ def parse_serial(text):
              out["modules"], out["modules_failed"]) = [int(g) for g in d.groups()]
         i += 1
     return out
+
+
+def resource_error_count(guest):
+    """Count diagnostics, not unique URLs: a stalled image may log twice.
+
+    The old PAINTED verdict ignored even the fetch_failed list it collected,
+    and missed the newer [img] prefix entirely. GitHub's 2026-09-10 snapshot
+    therefore said no errors beside four image timeouts. Request counts only
+    prove issuance, never delivery. Keep this predicate shared with its gate.
+    """
+    return sum(len(guest.get(key, [])) for key in
+               ("fetch_failed", "fetch_stalled", "cannot_fetch", "loader_errors"))
+
+
+def latest_painted_text(text):
+    """Last completed dump, not the largest/first/partially written one.
+
+    about:text/boxes/images return without navigation in browser.c. A later
+    page paint is still the specimen, not an invented diagnostic document.
+    The caller retains the old pre-diagnostic photo too: these observations
+    are sequential, not an atomic screenshot/DOM snapshot or a usable-page test.
+    """
+    pairs = re.findall(
+        r"\[dl\] painted text: (\d+) run\(s\), (\d+) byte[^\n]*\n"
+        r"\[dl\] ---8<--- begin painted text\n(.*?)"
+        r"\[dl\] ---8<--- end painted text", text.replace("\r\n", "\n"), re.S)
+    if not pairs:
+        return {"text_runs": None}
+    runs, count, body = pairs[-1]
+    return {"text_runs": int(runs), "text_bytes": int(count),
+            "text": "\n".join(ln[5:] for ln in body.splitlines() if ln.startswith("[dl] "))}
+
+
+def diagnostic_progress(text, word):
+    """Arrival is not a complete census, and an older dump is not this one.
+
+    Bilibili's three native triggers were logged after the old six-second
+    observation budget. Even a load marker only proves dispatch: a large box
+    dump can still be printing. Match a complete terminator AFTER the latest
+    exact trigger, never an old automatic paint or a partially written line.
+    Older guests without the images terminator remain explicitly incomplete.
+    Input tracing has an armed line, not a display-list terminator. Omitting
+    that command from this table raised KeyError('input') AFTER the real guest
+    armed tracing and discarded the site's completed load observations.
+    """
+    endings = {'text': r'\[dl\] ---8<--- end painted text',
+               'boxes': r'\[dl\] ---8<--- end boxes \(\d+ shown of \d+\)',
+               'images': r'\[images\] end state',
+               'input': r'\[input-trace\] armed [^\r\n]*'}
+    end = endings[word]
+    starts = list(re.finditer(r'^\[browser\] load: about:' + re.escape(word) +
+                             r'\r?\n', text, re.M))
+    return {'arrived': bool(starts),
+            'completed': bool(starts and re.search('^' + end + r'\r?\n',
+                               text[starts[-1].end():], re.M))}
+
+
+def observed_input_box(text, element_id=None, element_class=None):
+    """One positive-sized ordinary control in the last completed box dump.
+
+    printf pads height to four characters: the first input probe assumed one
+    space before '<textarea>' and missed a real 766x42 box. Do not fall back
+    to guessed coordinates or pick the first of ambiguous duplicate IDs.
+    """
+    dumps = re.findall(r'\[dl\] ---8<--- begin boxes\r?\n(.*?)\[dl\] ---8<--- end boxes', text, re.S)
+    if not dumps:
+        return None
+    if bool(element_id) == bool(element_class):
+        return None
+    target = ('#' + re.escape(element_id) if element_id else
+              r'(?:#[^\s]+\s+)?\.' + re.escape(element_class))
+    pattern = (r'\[dl\] ctrl\s+(-?\d+),\s*(-?\d+)\s+(\d+)x\s*(\d+)\s+'
+               r'<(?:input|textarea)> ' + target + r'(?:\s|$)')
+    boxes = re.findall(pattern, dumps[-1])
+    if len(boxes) != 1:
+        return None
+    box = tuple(map(int, boxes[0]))
+    return box if box[2] > 0 and box[3] > 0 else None
 
 
 # ------------------------------------- what the document asked a browser to get
@@ -366,6 +508,14 @@ def parse_serial(text):
 # trade the rest of this file makes.
 
 _ATTR = r'\b%s\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))'
+
+
+def native_input_progress(text):
+    """Do not confuse a key's default action with its subsequent frame."""
+    key = '[input-trace] key-default '
+    frame = '[input-trace] frame-painted '
+    return {'native_defaults_observed': text.count(key),
+            'paint_after_defaults_observed': text.rfind(frame) > text.rfind(key) >= 0}
 
 
 def _attr(tag, name):
@@ -587,6 +737,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iso", default="build/logit.iso")
     ap.add_argument("--disk", default="build/disk.img")
+    ap.add_argument("--memory", type=int, default=1024,
+                    help="guest RAM in MiB; default matches make run (1024)")
     ap.add_argument("--name", required=True)
     ap.add_argument("--url", required=True)
     ap.add_argument("--out", required=True, help="where to write the JSON record")
@@ -600,7 +752,22 @@ def main():
     # site when the question is "how wide does layout think that box is".
     ap.add_argument("--boxes", action="store_true",
                     help="also dump the display list (about:boxes) -- verbose")
+    ap.add_argument("--images", action="store_true",
+                    help="also request decoded image and pending transfer diagnostics")
+    ap.add_argument("--sample-registers", action="store_true",
+                    help="diagnostic only: sample guest CPU registers during slow initial load")
+    input_target = ap.add_mutually_exclusive_group()
+    input_target.add_argument("--input-id", help="ordinary input/textarea ID from the latest box dump; no scrolling or submit")
+    input_target.add_argument("--input-class", help="first reported class of one unique ordinary input/textarea in the box dump")
+    ap.add_argument("--input-text", help="literal text to type, without newline; requires one input selector")
+    ap.add_argument("--trace-input", action="store_true", help="arm bounded native hit/focus diagnostics before explicit input attempt")
+    ap.add_argument("--diagnostic-wait", type=float, default=25.0,
+                    help="host observation budget per diagnostic trigger; never a guest performance measurement")
     args = ap.parse_args()
+    if args.diagnostic_wait <= 0 or args.diagnostic_wait > 60:
+        ap.error('--diagnostic-wait must be in (0, 60] seconds')
+    if bool(args.input_id or args.input_class) != (args.input_text is not None) or (args.input_text and any(c in args.input_text for c in '\r\n')):
+        ap.error('one input selector and --input-text must be paired; multiline/submitting input is not supported')
 
     shots_dir = args.shots or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(shots_dir, exist_ok=True)
@@ -653,7 +820,7 @@ def main():
            # to /browser/* on the LogitFS disk, so without it the second site
            # scored would boot with the first site's tab restored -- exactly the
            # shared-state class of false failure this file exists to avoid.
-           "-snapshot", "-m", "512M", "-smp", "4", "-accel", "tcg,thread=multi",
+           "-snapshot", "-m", str(args.memory) + "M", "-smp", "4", "-accel", "tcg,thread=multi",
            "-vga", "none", "-device", "virtio-gpu-pci,xres=1280,yres=800",
            "-display", "none", "-no-reboot",
            "-netdev", "user,id=n0", "-device", "e1000,netdev=n0",
@@ -836,7 +1003,16 @@ def main():
 
         loaded = False
         fetch_failed = False
+        register_sample_at = t0 + 20
         while time.time() - t0 < LOAD_BUDGET:
+            if args.sample_registers and time.time() >= register_sample_at:
+                regs = ui.cmd({"execute": "human-monitor-command",
+                               "arguments": {"command-line": "info registers -a"}})
+                rec.setdefault('load_register_samples', []).append(regs)
+                # Persist before completion: a stuck guest may never finish.
+                with open(os.path.join(shots_dir, args.name + '.registers.json'), 'w') as fh:
+                    json.dump(rec['load_register_samples'], fh, indent=2)
+                register_sample_at = time.time() + 10
             s = serial(mark)
             if "[browser] load done:" in s:
                 loaded = True
@@ -925,15 +1101,31 @@ def main():
         # RECORDED either way: "the dump did not happen" and "the page painted
         # nothing" are different findings and only the first is the harness's.
         def about(word, settle, tries=3):
+            state = {'arrived': False, 'completed': False}
             for _ in range(tries):
                 frm = len(serial())
                 ctrl(ui, "l")
                 ui.typ("about:" + word)
                 ui.key("ret")
-                if wait_for("[browser] load: about:" + word, 6.0, frm):
+                # Six seconds marked all three Bilibili text triggers absent,
+                # yet their exact load lines appeared later in the same log.
+                # Give the pending native turn time to arrive before retrying;
+                # preserve a bounded failure, not a synthetic successful dump.
+                deadline = time.monotonic() + args.diagnostic_wait
+                while time.monotonic() < deadline:
+                    state = diagnostic_progress(serial(frm), word)
+                    if state['completed']:
+                        break
+                    time.sleep(0.2)
+                if state['arrived']:
+                    # Do not queue another command when dispatch was seen but
+                    # output has not completed. Preserve the old arrival field
+                    # and add the stronger fact, without redefining old JSON.
+                    rec['about_' + word + '_completed'] = state['completed']
                     time.sleep(settle)
                     return True
                 time.sleep(1.0)
+            rec['about_' + word + '_completed'] = False
             return False
 
         rec["about_text_arrived"] = about("text", 2.5)
@@ -942,8 +1134,84 @@ def main():
         # does-not-navigate property, and after about:text so that a run with
         # both gives the words first and then their boxes -- which is the
         # order the two questions are actually asked in.
-        if args.boxes:
+        if args.boxes or args.input_id or args.input_class:
             rec["about_boxes_arrived"] = about("boxes", 3.0)
+        if args.images:
+            rec["about_images_arrived"] = about("images", 1.0)
+
+        # Correction to the old "settled = finished" claim above: a blank
+        # frame can stay stable while a synchronous late module compiles.
+        # z.ai's 10,589,862-byte module and chat-input boxes arrived AFTER the
+        # old primary photo. Preserve that photo/score, then take a second
+        # observation after the confirmed diagnostic turns. A later screenshot
+        # still is not proof that a page is quiescent or interactively usable.
+        late_ppm = os.path.join(tmp, "late.ppm")
+        ui.goto(*PARK)
+        ui.screendump(late_ppm, settle=0.8)
+        late = PPM(late_ppm)
+        late_png = os.path.join(shots_dir, "%s.late.png" % args.name)
+        ppm_to_png(late_ppm, late_png)
+        rec["late_observation"] = dict(
+            latest_painted_text(serial(mark)), shot=late_png,
+            changed_px=changed_pixels(base, late),
+            initial_to_late_changed_px=changed_pixels(after, late),
+            basis="after diagnostic turns; not a completion or usability guarantee")
+
+        if args.input_id or args.input_class:
+            # Explicit opt-in only; never press Enter, solve a challenge or
+            # silently choose a field. The untouched photo above remains the
+            # scored observation; this later artifact records a native attempt.
+            try:
+                if args.trace_input:
+                    trace_mark = len(serial())
+                    if not about('input', 0.5):
+                        raise AssertionError('native input trace command did not arrive')
+                    if not wait_for('[input-trace] armed', 3.0, trace_mark):
+                        raise AssertionError('browser did not arm input tracing')
+                box = observed_input_box(serial(mark), args.input_id, args.input_class)
+                if box is None:
+                    raise AssertionError('input selector did not identify one observed positive-sized control')
+                x, y, w, h = box
+                point = browser_client_point(serial(), x + w/2, y + h/2)
+                ui.click_at(*point)
+                input_mark = len(serial())
+                ui.typ(args.input_text)
+                if args.trace_input:
+                    # A one-second photo saw mouse-up but no EV_KEY yet on a
+                    # busy page. Observe actual native defaults, not "QMP sent
+                    # the bytes". This bounded host wait is instrumentation,
+                    # never a guest input-latency/performance measurement.
+                    # A default can still precede callbacks and painting in
+                    # the same event-loop turn. Require the later paint marker
+                    # too; the screenshot remains the presentation evidence.
+                    deadline = time.monotonic() + 45
+                    while time.monotonic() < deadline:
+                        progress = native_input_progress(serial(input_mark))
+                        if progress['native_defaults_observed'] >= len(args.input_text) and progress['paint_after_defaults_observed']:
+                            break
+                        time.sleep(0.2)
+                input_ppm = os.path.join(tmp, 'input.ppm')
+                ui.screendump(input_ppm, settle=1.0)
+                input_png = os.path.join(shots_dir, '%s.input.png' % args.name)
+                ppm_to_png(input_ppm, input_png)
+                rec['native_input_attempt'] = {'id': args.input_id, 'class': args.input_class, 'text': args.input_text,
+                    'point': point, 'shot': input_png, 'submitted': False,
+                    'basis': 'key events sent; inspect screenshot for actual field contents'}
+                if args.trace_input:
+                    rec['native_input_attempt'].update(native_input_progress(serial(input_mark)))
+                if args.boxes:
+                    # Preserve the input photo FIRST. A newly focused modal
+                    # may not exist in the pre-input boxes; its actual layout
+                    # distinguishes hidden UI from a focus-routing failure.
+                    box_mark = len(serial())
+                    requested = about('boxes', 0.5)
+                    rec['native_input_attempt']['post_input_boxes_completed'] = bool(
+                        requested and wait_for('[dl] ---8<--- end boxes', 10.0, box_mark))
+            except AssertionError as e:
+                # An optional diagnostic miss must not erase the completed
+                # load/paint evidence or silently look like successful typing.
+                rec['native_input_attempt'] = {'id': args.input_id, 'class': args.input_class, 'sent': False,
+                    'reason': str(e), 'submitted': False}
 
         # The document the HOST was served, beside the log for the same
         # reason. Not the guest's copy -- we have no way to read that back --
@@ -1002,6 +1270,10 @@ def main():
         # Everything before `[browser] load: about:text` is the page under
         # test; everything after is the instrument. Take the LAST dump before
         # that line, and take its count and its body together.
+        # Correction (2026-09-10): browser.c now proves these about commands
+        # return without navigation. Keep the historical pre-diagnostic fields
+        # for comparison, but late_observation above includes the later page
+        # paints that this cutoff previously discarded.
         cut = tail_n.find("[browser] load: about:text")
         page_part = tail_n[:cut] if cut >= 0 else tail_n
         pairs = re.findall(
@@ -1010,6 +1282,10 @@ def main():
             r"\[dl\] ---8<--- end painted text)?",
             page_part, re.S)
         m = pairs[-1] if pairs else None
+        # Preserve the disappearance too: a final search bar can meet PAINTED's
+        # pixel threshold while all result text present earlier has vanished.
+        # This is an observation, not a site-specific pass/fail threshold.
+        rec["paint_text_history"] = [{"runs": int(p[0]), "bytes": int(p[1])} for p in pairs]
         if m:
             rec["text_runs"] = int(m[0])
             rec["text_bytes"] = int(m[1])
@@ -1090,6 +1366,13 @@ def main():
         if nexc:
             finish("ERRORS", "painted %d changed px in %.1fs but %d JS exception(s)%s"
                    % (changed, load_s, nexc, gaptext))
+        if g["console_errors"] or g["webapi_errors"]:
+            finish("ERRORS", "painted %d changed px, with %d page-reported error(s) "
+                   "and %d fetch error(s)%s" %
+                   (changed, len(g["console_errors"]), len(g["webapi_errors"]), gaptext))
+        if resource_error_count(g):
+            finish("ERRORS", "painted %d changed px, with %d resource failure diagnostics%s"
+                   % (changed, resource_error_count(g), gaptext))
         if gap:
             finish("GAP", "painted %d changed px in %.1fs and threw nothing, but "
                           "never requested %d of the %d subresources the document "
