@@ -57,6 +57,9 @@
 #include <stddef.h>
 #include "driver.h"
 #include "virtio.h"
+/* Staging belongs to this device operation until completion, not just until
+ * virtio_request publishes descriptors. Independent devices remain concurrent. */
+static io_lock_t balloon_gate = IO_LOCK_INIT;
 #include "virtio_balloon.h"
 #include "kprintf.h"
 #include "pmm.h"
@@ -111,7 +114,23 @@ static uint32_t held_n;
  * is synchronous so there is never a second request in flight to alias it).
  * One request this size moves up to 4 MiB. */
 #define STAGE_PFNS 1024
-static uint32_t stage[STAGE_PFNS];
+/* Correction: only the PFN array itself is a coherent DMA buffer. Its entries
+ * remain guest PHYSICAL frame numbers; they are neither CPU aliases nor IOVAs. */
+static struct dma_buffer *stage_mem;
+static uint32_t *stage;
+static uint32_t pending_n; /* submitted inflate pages whose ACK never arrived */
+#define BALLOON_PHYS_MASK ((UINT64_C(1) << 44) - 1) /* uint32 PFN << 12 */
+
+static void balloon_failed(void)
+{
+    bal_ready = 0;
+    /* A successful device reset revokes all old donations, including a batch
+     * whose inflate completion was lost. A failed reset quarantines BOTH sets;
+     * the PMM must not recycle a page the host may still regard as donated. */
+    if (!bdev.quiesced) return;
+    for (uint32_t i = 0; i < held_n + pending_n; i++) pmm_free(held[i]);
+    held_n = pending_n = 0;
+}
 
 static inline uint32_t cfg_r32(int off) { return *(volatile uint32_t *)(bdev.device + off); }
 static inline void     cfg_w32(int off, uint32_t v) { *(volatile uint32_t *)(bdev.device + off) = v; }
@@ -126,6 +145,7 @@ static inline void     cfg_w32(int off, uint32_t v) { *(volatile uint32_t *)(bde
  * happened. */
 static uint32_t balloon_inflate(uint32_t want)
 {
+    if (!bal_ready || bdev.failed) return 0;
     uint32_t done = 0;
     while (done < want && held_n < MAX_BALLOON_FRAMES) {
         uint32_t batch = want - done;
@@ -135,20 +155,25 @@ static uint32_t balloon_inflate(uint32_t want)
 
         uint32_t got = 0;
         for (; got < batch; got++) {
-            uint64_t f = pmm_alloc();
+            /* High first, bounded by the wire PFN width, without expanding kheap. */
+            uint64_t f = pmm_alloc_contig_masked(1, BALLOON_PHYS_MASK, 4096, 0);
             if (!f) break;                      /* pmm is out of free frames */
             held[held_n + got] = f;
             stage[got] = (uint32_t)(f >> PFN_SHIFT);
         }
         if (got == 0) break;
 
-        struct virtio_buf b = { (uint64_t)(uintptr_t)stage, got * 4u, 0 };  /* driver-writable, device-readable */
+        struct virtio_buf b = { stage_mem->dma, got * 4u, 0, stage_mem };  /* driver-writable, device-readable */
+        pending_n = got;
         int rc = virtio_request(&bdev, &inflate_vq, BAL_Q_INFLATE, &b, 1);
         if (rc < 0) {
-            kprintf("[virtio-balloon] inflate request timed out, giving %u frames back\n", got);
-            for (uint32_t i = 0; i < got; i++) pmm_free(held[held_n + i]);
+            /* Previously: "timed out, giving frames back". Timeout alone
+             * cannot return ownership; only the transport's confirmed reset can. */
+            kprintf("[virtio-balloon] inflate timeout, pending=%u quiesced=%d\n", got, bdev.quiesced);
+            balloon_failed();
             break;
         }
+        pending_n = 0;
         held_n += got;
         done += got;
         if (got < batch) break;   /* pmm ran dry; do not spin asking pmm_alloc for more */
@@ -163,6 +188,7 @@ static uint32_t balloon_inflate(uint32_t want)
  * returned. */
 static uint32_t balloon_deflate(uint32_t want)
 {
+    if (!bal_ready || bdev.failed) return 0;
     uint32_t done = 0;
     while (done < want && held_n > 0) {
         uint32_t batch = want - done;
@@ -171,10 +197,11 @@ static uint32_t balloon_deflate(uint32_t want)
         uint32_t base = held_n - batch;
         for (uint32_t i = 0; i < batch; i++) stage[i] = (uint32_t)(held[base + i] >> PFN_SHIFT);
 
-        struct virtio_buf b = { (uint64_t)(uintptr_t)stage, batch * 4u, 0 };
+        struct virtio_buf b = { stage_mem->dma, batch * 4u, 0, stage_mem };
         int rc = virtio_request(&bdev, &deflate_vq, BAL_Q_DEFLATE, &b, 1);
         if (rc < 0) {
             kprintf("[virtio-balloon] deflate request timed out after %u of %u frames\n", done, want);
+            balloon_failed();
             break;
         }
         for (uint32_t i = 0; i < batch; i++) pmm_free(held[base + i]);
@@ -184,22 +211,24 @@ static uint32_t balloon_deflate(uint32_t want)
     return done;
 }
 
-int      virtio_balloon_present(void)      { return bal_ready; }
+int      virtio_balloon_present(void)      { return bal_ready && !bdev.failed; }
 uint32_t virtio_balloon_held_pages(void)   { return held_n; }
 uint32_t virtio_balloon_target_pages(void) { return bal_ready ? cfg_r32(CFG_NUM_PAGES) : 0; }
 
 int virtio_balloon_poll(void)
 {
-    if (!bal_ready) return 0;
+    IO_GUARD(&balloon_gate);
+    if (!bal_ready || bdev.failed) return 0;
+    if (bdev.failed) return 0;
     uint32_t target = cfg_r32(CFG_NUM_PAGES);
     if (target > held_n) {
         int moved = (int)balloon_inflate(target - held_n);
-        cfg_w32(CFG_ACTUAL, held_n);
+        if (!bdev.failed) cfg_w32(CFG_ACTUAL, held_n);
         return moved;
     }
     if (target < held_n) {
         int moved = (int)balloon_deflate(held_n - target);
-        cfg_w32(CFG_ACTUAL, held_n);
+        if (!bdev.failed) cfg_w32(CFG_ACTUAL, held_n);
         return -moved;
     }
     return 0;
@@ -231,6 +260,18 @@ static void balloon_selftest(const char *devname)
             devname, got, back, (unsigned)f0, (unsigned)f1, (unsigned)f2);
 }
 
+static void balloon_remove(struct device *dev)
+{
+    IO_GUARD(&balloon_gate);
+    (void)dev;
+    bal_ready = 0;
+    if (virtio_stop(&bdev)) return;
+    balloon_failed();
+    dma_free_coherent(stage_mem); stage_mem = NULL; stage = NULL;
+    virtio_queue_release(&bdev, &inflate_vq);
+    virtio_queue_release(&bdev, &deflate_vq);
+}
+
 static int balloon_probe(struct device *dev)
 {
     if (virtio_init(VIRTIO_DEV_BALLOON, &bdev, 0) != 0) return -1;   /* sec 5.5.3: no feature bits requested */
@@ -238,10 +279,14 @@ static int balloon_probe(struct device *dev)
         kprintf("[virtio-balloon] %s: no device-config capability, refusing\n", dev->name);
         return -1;
     }
-    if (virtio_queue_setup(&bdev, BAL_Q_INFLATE, &inflate_vq) != 0) return -1;
-    if (virtio_queue_setup(&bdev, BAL_Q_DEFLATE, &deflate_vq) != 0) return -1;
+    if (virtio_queue_setup(&bdev, BAL_Q_INFLATE, &inflate_vq) != 0) { balloon_remove(dev); return -1; }
+    if (virtio_queue_setup(&bdev, BAL_Q_DEFLATE, &deflate_vq) != 0) { balloon_remove(dev); return -1; }
+    stage_mem = dma_alloc_coherent(&bdev.dma, STAGE_PFNS * sizeof(uint32_t), 4096, 0);
+    if (!stage_mem) { balloon_remove(dev); return -1; }
+    stage = stage_mem->cpu;
     virtio_driver_ok(&bdev);
     bal_ready = 1;
+    dma_report("virtio-balloon");
     kprintf("[virtio-balloon] %s: ready\n", dev->name);
 
     balloon_selftest(dev->name);
@@ -251,11 +296,12 @@ static int balloon_probe(struct device *dev)
      * here, because the device model is fully realised (and answers QMP)
      * long before the guest's own boot reaches PCI enumeration -- see the
      * file header. */
+    if (bdev.failed) return 0;
     uint32_t target = cfg_r32(CFG_NUM_PAGES);
     if (target > 0) {
         uint64_t before = pmm_free_frames();
         uint32_t got = balloon_inflate(target);
-        cfg_w32(CFG_ACTUAL, held_n);
+        if (!bdev.failed) cfg_w32(CFG_ACTUAL, held_n);
         uint64_t after = pmm_free_frames();
         kprintf("VIRTIO_BALLOON_TARGET %s target=%u held=%u free_before=%u free_after=%u\n",
                 dev->name, target, held_n, (unsigned)before, (unsigned)after);
@@ -278,7 +324,7 @@ static struct driver balloon_driver = {
     .bus_type = DEV_BUS_PCI,
     .match    = balloon_ids,
     .probe    = balloon_probe,
-    .remove   = NULL,
+    .remove   = balloon_remove,
     .next     = NULL,
 };
 DRIVER_DECLARE(balloon_driver);

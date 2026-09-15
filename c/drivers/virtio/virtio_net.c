@@ -57,6 +57,7 @@ void *memcpy(void *, const void *, size_t);
 
 static struct virtio_dev vnet;
 static struct virtq      rxq, txq;
+static struct dma_buffer *rx_mem[RX_BUFS], *tx_mem[TX_BUFS];
 static uint8_t          *rx_buf[RX_BUFS];
 static uint8_t          *tx_buf[TX_BUFS];
 static uint8_t           tx_free[TX_BUFS];
@@ -136,17 +137,20 @@ static void stats_poll(void)
     }
 }
 
-static inline void barrier(void) { __asm__ volatile ("mfence" ::: "memory"); }
+static inline void barrier(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
 
 /* Publish one descriptor index on a queue's available ring. One descriptor per
  * buffer: virtio 1.0 devices must accept any descriptor layout, so the 12-byte
  * header and the frame live in the same buffer and no chaining is needed.
  * Descriptor index == buffer index, per queue, which is what makes a completion
  * (which reports only the head descriptor id) name its own buffer. */
-static void vq_publish(struct virtq *vq, uint16_t d, const void *buf,
+static void vq_publish(struct virtq *vq, uint16_t d, struct dma_buffer *mem,
                        uint32_t len, int device_writes)
 {
-    vq->desc[d].addr  = (uint64_t)(uintptr_t)buf;   /* identity-mapped: phys == virt */
+    /* Previously identity-mapped: phys == virt. Coherent CPU aliases now differ
+     * even on a 512 MiB guest; only the handle's DMA address goes on the wire. */
+    if (!dma_buffer_submit(mem)) return;
+    vq->desc[d].addr = dma_addr_value(mem->dma);
     vq->desc[d].len   = len;
     vq->desc[d].flags = (uint16_t)(device_writes ? VIRTQ_DESC_F_WRITE : 0);
     vq->desc[d].next  = 0;
@@ -161,7 +165,8 @@ static void tx_reclaim(void)
     barrier();
     while (vq_pending(txq.used->idx, txq.last_used)) {
         struct virtq_used_elem *e = &txq.used->ring[vq_slot(txq.last_used, txq.size)];
-        if (e->id < TX_BUFS) tx_free[e->id] = 1;
+        if (e->id < TX_BUFS &&
+            !dma_buffer_complete(tx_mem[e->id], tx_mem[e->id]->token)) tx_free[e->id] = 1;
         txq.last_used++;
     }
 }
@@ -169,7 +174,7 @@ static void tx_reclaim(void)
 /* Contract, same as every other NIC here: callers hold net_lock (IF=0). */
 static int vnet_tx(const void *frame, uint16_t len)
 {
-    if (!ready || len == 0 || (uint32_t)len + VNET_HDR_LEN > BUF_SIZE) return -1;
+    if (!ready || vnet.failed || len == 0 || (uint32_t)len + VNET_HDR_LEN > BUF_SIZE) return -1;
     tx_reclaim();
     if (!tx_free[tx_cur]) {
         /* The ring is full and the device has not caught up. Poll briefly --
@@ -184,7 +189,7 @@ static int vnet_tx(const void *frame, uint16_t len)
     memcpy(tx_buf[d] + VNET_HDR_LEN, frame, len);
     tx_free[d] = 0;
     tx_cur = (uint16_t)ring_next(d, TX_BUFS);
-    vq_publish(&txq, d, tx_buf[d], VNET_HDR_LEN + len, 0);
+    vq_publish(&txq, d, tx_mem[d], VNET_HDR_LEN + len, 0);
     barrier();
     *txq.notify = VQ_TX;
     g_tx_ok++;
@@ -193,7 +198,8 @@ static int vnet_tx(const void *frame, uint16_t len)
 
 static int vnet_rx_poll(net_rx_cb cb)
 {
-    if (!ready) return 0;
+    NET_GUARD;
+    if (!ready || vnet.failed) return 0;
     uint64_t f = net_lock();                   /* exclude the RX IRQ + mainline tcp_recv */
     /* Ack here as well as in the ISR, for the reason written out in full in
      * e1000_rx_drain(): reading the ISR status byte is what deasserts the
@@ -221,13 +227,14 @@ static int vnet_rx_poll(net_rx_cb cb)
         uint32_t id = e->id, got = e->len;
         rxq.last_used++;
         if (id < RX_BUFS) {
+            if (dma_buffer_complete(rx_mem[id], rx_mem[id]->token)) continue;
             /* `got` counts what the DEVICE wrote, header included. Anything at
              * or below the header length carries no frame. */
             if (got > VNET_HDR_LEN && got <= BUF_SIZE) {
                 cb(rx_buf[id] + VNET_HDR_LEN, (uint16_t)(got - VNET_HDR_LEN));
                 g_rx_ok++;
             }
-            vq_publish(&rxq, (uint16_t)id, rx_buf[id], BUF_SIZE, 1);
+            vq_publish(&rxq, (uint16_t)id, rx_mem[id], BUF_SIZE, 1);
             reposted++;
         }
         n++;
@@ -242,10 +249,13 @@ static void vnet_irq_on(net_rx_cb cb) { g_rxcb = cb; }
 
 static void vnet_isr(void)
 {
-    if (!ready) return;
+    NET_GUARD;
+    if (!ready || vnet.failed) return;
     /* Read-to-clear the ISR status byte: until this read the device holds its
      * interrupt asserted and will not raise a new one. */
-    if (vnet.isr) (void)*vnet.isr;
+    if (!vnet.isr) return;
+    uint8_t cause = *vnet.isr;
+    if (!(cause & 3u) || cause == UINT8_MAX) return; /* shared INTx / absent function */
     /* Ack here, drain on SOFTIRQ_NET -- see c/net/core/net.c. */
     if (g_rxcb) net_rx_schedule();
 }
@@ -258,36 +268,52 @@ static struct netdev vnet_dev = {
 
 static void free_bufs(void)
 {
-    for (int i = 0; i < RX_BUFS; i++) if (rx_buf[i]) { pmm_free((uint64_t)(uintptr_t)rx_buf[i]); rx_buf[i] = NULL; }
-    for (int i = 0; i < TX_BUFS; i++) if (tx_buf[i]) { pmm_free((uint64_t)(uintptr_t)tx_buf[i]); tx_buf[i] = NULL; }
+    for (int i = 0; i < RX_BUFS; i++) { dma_free_coherent(rx_mem[i]); rx_mem[i] = NULL; rx_buf[i] = NULL; }
+    for (int i = 0; i < TX_BUFS; i++) { dma_free_coherent(tx_mem[i]); tx_mem[i] = NULL; tx_buf[i] = NULL; }
+}
+
+/* Used by both probe unwind and unbind: posted RX buffers and in-flight TX
+ * buffers remain device-owned until the common reset has acknowledged zero. */
+void virtio_net_remove(struct device *dev)
+{
+    NET_GUARD;
+    (void)dev;
+    ready = 0; g_rxcb = NULL;
+    if (virtio_stop(&vnet)) return;
+    free_bufs();
+    virtio_queue_release(&vnet, &rxq);
+    virtio_queue_release(&vnet, &txq);
 }
 
 int virtio_net_probe(struct device *dev)
 {
     if (ready) return -1;                        /* one NIC bound at a time */
-    dev_enable(dev, 1);                          /* memory decode + bus master (DMA) */
-    /* virtio.c owns the transport and locates the device itself by ID; hand it
-     * the ID the match table matched, so a transitional (0x1000) and a modern
-     * (0x1041) device both work without this driver caring which it got. */
-    if (virtio_init(dev->device, &vnet, VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS) != 0)
+    /* Bind the exact PCI function selected by the device model. Multiple
+     * functions may legally share a virtio ID and have distinct reset domains. */
+    if (virtio_init_device(dev, &vnet,
+                           VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS) != 0)
         return -1;
     if (virtio_queue_setup(&vnet, VQ_RX, &rxq) != 0 ||
         virtio_queue_setup(&vnet, VQ_TX, &txq) != 0) {
         kprintf("[virtio-net] queue setup failed\n");
-        return -1;
+        virtio_net_remove(dev); return -1;
     }
     if (rxq.size < RX_BUFS || txq.size < TX_BUFS) {
         kprintf("[virtio-net] queues too small (rx=%d tx=%d)\n", rxq.size, txq.size);
-        return -1;
+        virtio_net_remove(dev); return -1;
     }
 
     for (int i = 0; i < RX_BUFS; i++) {
-        rx_buf[i] = (uint8_t *)pmm_alloc();      /* identity-mapped: phys == virt */
-        if (!rx_buf[i]) { free_bufs(); return -1; }
+        if (!(rx_mem[i] = dma_alloc_coherent(&vnet.dma, 4096, 4096, 0))) {
+            virtio_net_remove(dev); return -1;
+        }
+        rx_buf[i] = rx_mem[i]->cpu;
     }
     for (int i = 0; i < TX_BUFS; i++) {
-        tx_buf[i] = (uint8_t *)pmm_alloc();
-        if (!tx_buf[i]) { free_bufs(); return -1; }
+        if (!(tx_mem[i] = dma_alloc_coherent(&vnet.dma, 4096, 4096, 0))) {
+            virtio_net_remove(dev); return -1;
+        }
+        tx_buf[i] = tx_mem[i]->cpu;
         tx_free[i] = 1;
     }
     tx_cur = 0;
@@ -319,10 +345,11 @@ int virtio_net_probe(struct device *dev)
      * We never enable MSI-X, so the device falls back to legacy INTx on the PCI
      * line -- which is the line smp.c routes to vector 65. */
     for (int i = 0; i < RX_BUFS; i++)
-        vq_publish(&rxq, (uint16_t)i, rx_buf[i], BUF_SIZE, 1);
+        vq_publish(&rxq, (uint16_t)i, rx_mem[i], BUF_SIZE, 1);
 
     virtio_driver_ok(&vnet);
     ready = 1;
+    dma_report("virtio-net");
     barrier();
     *rxq.notify = VQ_RX;
 

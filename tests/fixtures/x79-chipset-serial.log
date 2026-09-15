@@ -1,0 +1,5 @@
+[dev] 0000:00:1f.3 8086:1d22 class=0c.05.00 smbus        driver=c600-smbus bar4=io:0x500/0x20
+[smbus] 0000:00:1f.3 Intel C600/X79 io=0x500 SPD read-only 0x50-0x57
+[spd] addr=0x50 ddr3 module_mib=16384 ranks=2 device_width=8 bus_width=64 ecc_bits=8 crc=ok mfg_raw=2c80 serial=12345678 part=X79-16G-RDIMM
+[spd] modules=1 module_capacity_mib=16384 rejected=0 read_errors=0 source=SPD-not-firmware-map
+LOGIT_BOOT_OK

@@ -1,8 +1,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "virtio.h"
+/* Staging belongs to this device operation until completion, not just until
+ * virtio_request publishes descriptors. Independent devices remain concurrent. */
+static io_lock_t gpu_gate = IO_LOCK_INIT;
 #include "virtio_gpu.h"
 #include "pmm.h"
+#include "driver.h"
+#include "fb.h"
 #include "kprintf.h"
 
 void *memset(void *, int, size_t);
@@ -91,46 +96,66 @@ static uint32_t         *gpu_fb;        /* the RAM framebuffer (identity-mapped)
 static uint32_t         *gpu_cursor_px; /* 64x64 0xAARRGGBB backing (identity-mapped) */
 
 /* Static request/response staging (single outstanding, identity-mapped). */
-static uint8_t cmdbuf[256];
-static uint8_t respbuf[256];
+/* Correction: staging is coherent RAM with independent CPU/device addresses.
+ * DISPLAY_INFO is 408 bytes, so keep a whole page rather than truncating it to
+ * the old 256-byte array. The driver owns these buffers through device stop. */
+static struct dma_buffer *cmd_mem, *resp_mem, *cur_mem, *fb_mem, *cursor_mem;
+static uint8_t *cmdbuf, *respbuf;
+#define GPU_RESP_BYTES 4096
 /* The cursor queue gets its own staging buffer rather than sharing cmdbuf.
  * Requests are synchronous and single-threaded today, so sharing would work --
  * but a pointer move is issued from the input path and a scanout flush from the
  * compositor, and the day those stop being the same thread the failure would be
  * a corrupted command, not a compile error. */
-static uint8_t curbuf[64];
+static uint8_t *curbuf;
 
 /* Send a command (cmd_len bytes from cmdbuf), receive the response into respbuf.
  * Returns the response type, or 0 on failure. */
 static uint32_t gpu_cmd(int cmd_len)
 {
-    memset(respbuf, 0, sizeof respbuf);
+    if (gpudev.failed) return 0;
+    memset(respbuf, 0, GPU_RESP_BYTES);
     struct virtio_buf b[2] = {
-        { (uint64_t)(uintptr_t)cmdbuf,  (uint32_t)cmd_len, 0 },
-        { (uint64_t)(uintptr_t)respbuf, sizeof respbuf,    1 },
+        { cmd_mem->dma,  (uint32_t)cmd_len, 0, cmd_mem },
+        { resp_mem->dma, GPU_RESP_BYTES,    1, resp_mem },
     };
     if (virtio_request(&gpudev, &gpuvq, 0, b, 2) < 0) return 0;
     return ((struct gpu_hdr *)respbuf)->type;
 }
 
 /* Release the RAM framebuffer (init failure unwind; pmm_free is per-frame). */
-static void gpu_free_fb(uint64_t frames)
+static void gpu_release(void)
 {
-    if (!gpu_fb) return;
-    for (uint64_t i = 0; i < frames; i++)
-        pmm_free((uint64_t)(uintptr_t)gpu_fb + i * 4096);
-    gpu_fb = NULL;
+    gpu_ready = gpu_cursor_ready = 0;
+    /* ATTACH completion transfers resource ownership; it does not relinquish
+     * backing. Reset BOTH queues before reclaiming commands or attached RAM. */
+    if (virtio_stop(&gpudev)) return;  /* quarantine all handles on failed reset */
+    dma_free_coherent(fb_mem); fb_mem = NULL;
+    dma_free_coherent(cursor_mem); cursor_mem = NULL;
+    dma_free_coherent(cmd_mem); cmd_mem = NULL;
+    dma_free_coherent(resp_mem); resp_mem = NULL;
+    dma_free_coherent(cur_mem); cur_mem = NULL;
+    virtio_queue_release(&gpudev, &gpuvq);
+    virtio_queue_release(&gpudev, &gpucurvq);
+    gpu_fb = gpu_cursor_px = NULL;
+    cmdbuf = respbuf = curbuf = NULL;
 }
 
 int virtio_gpu_init(void)
 {
     if (virtio_init(VIRTIO_DEV_GPU, &gpudev, 0) != 0) return -1;
-    if (virtio_queue_setup(&gpudev, 0, &gpuvq) != 0) return -1;   /* controlq */
+    if (virtio_queue_setup(&gpudev, 0, &gpuvq) != 0) { gpu_release(); return -1; }   /* controlq */
     /* The cursor queue must be programmed BEFORE DRIVER_OK, like every other
      * queue -- a device is entitled to stop accepting queue configuration once
      * the driver declares itself ready. Its absence is not fatal: the compositor
      * falls back to drawing the pointer into the scanout. */
     int have_cursor_q = (virtio_queue_setup(&gpudev, CURSOR_QIDX, &gpucurvq) == 0);
+    if (!(cmd_mem = dma_alloc_coherent(&gpudev.dma, 4096, 4096, 0)) ||
+        !(resp_mem = dma_alloc_coherent(&gpudev.dma, GPU_RESP_BYTES, 4096, 0)) ||
+        !(cur_mem = dma_alloc_coherent(&gpudev.dma, 64, 64, 0))) {
+        gpu_release(); return -1;
+    }
+    cmdbuf = cmd_mem->cpu; respbuf = resp_mem->cpu; curbuf = cur_mem->cpu;
     virtio_driver_ok(&gpudev);
 
     /* 1. Display info -> preferred resolution.
@@ -161,32 +186,40 @@ int virtio_gpu_init(void)
 
     /* 2. RAM framebuffer (contiguous, identity-mapped). */
     uint64_t bytes = (uint64_t)gpu_w * gpu_h * 4;
-    uint64_t frames = (bytes + 4095) / 4096;
-    gpu_fb = (uint32_t *)pmm_alloc_contig(frames);
-    if (!gpu_fb) return -1;
+    /* Correction: PMM-backed coherent allocation, never kernel heap. A single
+     * backing entry is 32-bit sized even though its device address is 64-bit. */
+    if (gpudev.failed || bytes > UINT32_MAX ||
+        !(fb_mem = dma_alloc_coherent(&gpudev.dma, (size_t)bytes, 4096, 0))) {
+        gpu_release(); return -1;
+    }
+    gpu_fb = fb_mem->cpu;
     memset(gpu_fb, 0, (size_t)bytes);
 
     /* 3. Create a 2D resource, attach our RAM as its backing, bind to scanout 0. */
     { struct gpu_create_2d *c = (struct gpu_create_2d *)cmdbuf; memset(c, 0, sizeof *c);
       c->hdr.type = GPU_CMD_RESOURCE_CREATE_2D;
       c->resource_id = RESID; c->format = GPU_FORMAT_B8G8R8X8; c->width = gpu_w; c->height = gpu_h;
-      if (gpu_cmd(sizeof *c) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
+      if (gpu_cmd(sizeof *c) != GPU_RESP_OK_NODATA) { gpu_release(); return -1; } }
     { struct gpu_attach_backing *a = (struct gpu_attach_backing *)cmdbuf; memset(a, 0, sizeof *a);
       a->hdr.type = GPU_CMD_RESOURCE_ATTACH_BACKING;
       a->resource_id = RESID; a->nr_entries = 1;
-      a->addr = (uint64_t)(uintptr_t)gpu_fb; a->length = (uint32_t)bytes;
-      if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
+      /* ATTACH embeds a device address inside a command payload. Keep backing
+       * device-owned until reset, including after the ATTACH chain completes. */
+      if (!dma_buffer_submit(fb_mem)) { gpu_release(); return -1; }
+      a->addr = dma_addr_value(fb_mem->dma); a->length = (uint32_t)bytes;
+      if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) { gpu_release(); return -1; } }
     { struct gpu_set_scanout *s = (struct gpu_set_scanout *)cmdbuf; memset(s, 0, sizeof *s);
       s->hdr.type = GPU_CMD_SET_SCANOUT;
       s->r.width = gpu_w; s->r.height = gpu_h; s->scanout_id = 0; s->resource_id = RESID;
-      if (gpu_cmd(sizeof *s) != GPU_RESP_OK_NODATA) { gpu_free_fb(frames); return -1; } }
+      if (gpu_cmd(sizeof *s) != GPU_RESP_OK_NODATA) { gpu_release(); return -1; } }
 
     gpu_ready = 1;
+    dma_report("virtio-gpu");
 
     /* 4. The cursor plane: a second 64x64 resource with alpha, never scanned
      *    out -- the device composites it over the scanout itself. */
     if (have_cursor_q) {
-        gpu_cursor_px = (uint32_t *)pmm_alloc_contig((CURSOR_DIM * CURSOR_DIM * 4 + 4095) / 4096);
+        if (!!(cursor_mem = dma_alloc_coherent(&gpudev.dma, CURSOR_DIM * CURSOR_DIM * 4, 4096, 0))) gpu_cursor_px = cursor_mem->cpu;
         if (gpu_cursor_px) {
             memset(gpu_cursor_px, 0, CURSOR_DIM * CURSOR_DIM * 4);
             int ok = 1;
@@ -198,17 +231,19 @@ int virtio_gpu_init(void)
             if (ok) { struct gpu_attach_backing *a = (struct gpu_attach_backing *)cmdbuf; memset(a, 0, sizeof *a);
               a->hdr.type = GPU_CMD_RESOURCE_ATTACH_BACKING;
               a->resource_id = CURSOR_RESID; a->nr_entries = 1;
-              a->addr = (uint64_t)(uintptr_t)gpu_cursor_px; a->length = CURSOR_DIM * CURSOR_DIM * 4;
+              if (!dma_buffer_submit(cursor_mem)) { gpu_release(); return -1; }
+              a->addr = dma_addr_value(cursor_mem->dma); a->length = CURSOR_DIM * CURSOR_DIM * 4;
               if (gpu_cmd(sizeof *a) != GPU_RESP_OK_NODATA) ok = 0; }
             if (ok) gpu_cursor_ready = 1;
         }
     }
+    if (gpudev.failed) { gpu_release(); return -1; }
     kprintf("[virtio-gpu] %dx%d, RAM fb @ %p, cursor plane %s\n",
             gpu_w, gpu_h, (void *)gpu_fb, gpu_cursor_ready ? "yes" : "no");
     return 0;
 }
 
-int       virtio_gpu_present(void) { return gpu_ready; }
+int       virtio_gpu_present(void) { return gpu_ready && !gpudev.failed; }
 uint32_t *virtio_gpu_fb(void)      { return gpu_fb; }
 uint32_t  virtio_gpu_width(void)   { return gpu_w; }
 uint32_t  virtio_gpu_height(void)  { return gpu_h; }
@@ -216,7 +251,8 @@ uint32_t  virtio_gpu_height(void)  { return gpu_h; }
 /* Push a dirty rect: DMA it from the backing to the host resource, then display. */
 void virtio_gpu_flush(int x, int y, int w, int h)
 {
-    if (!gpu_ready) return;
+    IO_GUARD(&gpu_gate);
+    if (!gpu_ready || gpudev.failed) return;
     if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
     if (x + w > (int)gpu_w) w = (int)gpu_w - x;
     if (y + h > (int)gpu_h) h = (int)gpu_h - y;
@@ -227,7 +263,7 @@ void virtio_gpu_flush(int x, int y, int w, int h)
       t->r.x = x; t->r.y = y; t->r.width = w; t->r.height = h;
       t->offset = (uint64_t)y * gpu_w * 4 + (uint64_t)x * 4;
       t->resource_id = RESID;
-      gpu_cmd(sizeof *t); }
+      if (gpu_cmd(sizeof *t) != GPU_RESP_OK_NODATA) return; }
     { struct gpu_flush *f = (struct gpu_flush *)cmdbuf; memset(f, 0, sizeof *f);
       f->hdr.type = GPU_CMD_RESOURCE_FLUSH;
       f->r.x = x; f->r.y = y; f->r.width = w; f->r.height = h; f->resource_id = RESID;
@@ -236,13 +272,14 @@ void virtio_gpu_flush(int x, int y, int w, int h)
 
 /* ---- cursor plane --------------------------------------------------------- */
 
-int virtio_gpu_cursor_ready(void) { return gpu_cursor_ready; }
+int virtio_gpu_cursor_ready(void) { return gpu_cursor_ready && !gpudev.failed; }
 
 /* One command on the cursor queue. The device consumes it and completes with a
  * zero-length used element -- there is no response structure, so unlike gpu_cmd
  * there is nothing to read back and nothing to check beyond "it completed". */
 static int gpu_cursor_cmd(uint32_t type, int x, int y, uint32_t resid, int hot_x, int hot_y)
 {
+    if (gpudev.failed) return -1;
     struct gpu_update_cursor *u = (struct gpu_update_cursor *)curbuf;
     memset(u, 0, sizeof *u);
     u->hdr.type = type;
@@ -251,7 +288,7 @@ static int gpu_cursor_cmd(uint32_t type, int x, int y, uint32_t resid, int hot_x
     u->pos.y = (uint32_t)(y < 0 ? 0 : y);
     u->resource_id = resid;
     u->hot_x = (uint32_t)hot_x; u->hot_y = (uint32_t)hot_y;
-    struct virtio_buf b = { (uint64_t)(uintptr_t)u, (uint32_t)sizeof *u, 0 };
+    struct virtio_buf b = { cur_mem->dma, (uint32_t)sizeof *u, 0, cur_mem };
     return virtio_request(&gpudev, &gpucurvq, CURSOR_QIDX, &b, 1);
 }
 
@@ -261,7 +298,8 @@ static int gpu_cursor_cmd(uint32_t type, int x, int y, uint32_t resid, int hot_x
  * this driver does not control is no pointer at all. */
 int virtio_gpu_cursor_define(const uint32_t *argb, int w, int h, int hot_x, int hot_y)
 {
-    if (!gpu_cursor_ready || !argb || w <= 0 || h <= 0) return -1;
+    IO_GUARD(&gpu_gate);
+    if (!gpu_cursor_ready || gpudev.failed || !argb || w <= 0 || h <= 0) return -1;
     if (w > CURSOR_DIM) w = CURSOR_DIM;
     if (h > CURSOR_DIM) h = CURSOR_DIM;
     memset(gpu_cursor_px, 0, CURSOR_DIM * CURSOR_DIM * 4);
@@ -286,6 +324,44 @@ int virtio_gpu_cursor_define(const uint32_t *argb, int w, int h, int hot_x, int 
  * framebuffer write and no transfer of any kind. */
 void virtio_gpu_cursor_move(int x, int y)
 {
-    if (!gpu_cursor_ready) return;
+    IO_GUARD(&gpu_gate);
+    if (!gpu_cursor_ready || gpudev.failed) return;
     gpu_cursor_cmd(GPU_CMD_MOVE_CURSOR, x, y, CURSOR_RESID, 0, 0);
 }
+
+/* The display is initialized before device binding so boot has a framebuffer.
+ * Register that existing instance with the device model rather than bringing
+ * it up a second time: dev_unbind can now reach a normal, complete teardown. */
+int virtio_gpu_shutdown(void)
+{
+    IO_GUARD(&gpu_gate);
+    gpu_ready = gpu_cursor_ready = 0;
+    if (fb_detach_gpu(gpu_fb)) {
+        gpudev.failed = 1;
+        dma_device_quarantine(&gpudev.dma);
+        kprintf("[virtio-gpu] CPU framebuffer drain failed; backing quarantined\n");
+        return -1;
+    }
+    /* Reset is an explicit alternative to RESOURCE_DETACH_BACKING/UNREF: it
+     * revokes every resource and both queues together. No page is freed before
+     * the device acknowledges it, including after a timed-out cursor request. */
+    gpu_release();
+    return gpudev.quiesced ? 0 : -1;
+}
+
+static int gpu_probe_existing(struct device *dev)
+{
+    return dev == gpudev.dev && gpu_ready && !gpudev.failed ? 0 : -1;
+}
+static void gpu_remove(struct device *dev)
+{
+    if (dev == gpudev.dev) (void)virtio_gpu_shutdown();
+}
+static const struct dev_match gpu_ids[] = {
+    DEV_MATCH_VD(VIRTIO_VENDOR, VIRTIO_DEV_GPU), DEV_MATCH_END
+};
+static struct driver gpu_driver = {
+    .name = "virtio-gpu", .bus_type = DEV_BUS_PCI, .match = gpu_ids,
+    .probe = gpu_probe_existing, .remove = gpu_remove,
+};
+DRIVER_DECLARE(gpu_driver);

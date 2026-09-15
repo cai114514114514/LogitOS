@@ -2,6 +2,8 @@
 #define LOGIT_VIRTIO_H
 
 #include <stdint.h>
+#include "dma.h"
+#include "../core/io_lock.h"
 
 /* Modern (virtio 1.0) virtio-pci transport + split virtqueue. QEMU exposes the
  * modern config structures in a 64-bit MMIO BAR via vendor PCI capabilities;
@@ -28,6 +30,7 @@ struct virtq_used_elem { uint32_t id; uint32_t len; } __attribute__((packed));
 struct virtq_used { uint16_t flags; uint16_t idx; struct virtq_used_elem ring[]; } __attribute__((packed));
 
 struct virtq {
+    struct dma_buffer *desc_mem, *avail_mem, *used_mem;
     uint16_t size;
     struct virtq_desc  *desc;
     struct virtq_avail *avail;
@@ -39,6 +42,12 @@ struct virtq {
 };
 
 struct virtio_dev {
+    io_lock_t gate; /* shared reset domain, including all synchronous queues */
+    struct device *dev;
+    struct dma_device dma;
+    struct virtq *queues[4];  /* all queues share the device reset domain */
+    unsigned nqueues;
+    int failed, quiesced, started;
     volatile uint8_t *common;     /* virtio_pci_common_cfg */
     volatile uint8_t *notify_base;
     uint32_t          notify_mult;
@@ -53,22 +62,40 @@ struct virtio_dev {
 };
 
 /* One scatter/gather buffer for a request. addr is a PHYSICAL address
- * (identity-mapped). device_writes = 1 if the device fills it (read side). */
-struct virtio_buf { uint64_t addr; uint32_t len; int device_writes; };
+ * (identity-mapped). device_writes = 1 if the device fills it (read side).
+ * Correction: dma_addr is explicitly a DEVICE address from the DMA API. CPU
+ * pointers and balloon payload PFNs are separate address spaces. The caller
+ * retains the mapping until completion or confirmed device quiescence. */
+struct virtio_buf {
+    dma_addr_t dma_addr;
+    uint32_t len;
+    int device_writes;
+    struct dma_buffer *owner; /* optional coherent owner, completed with chain */
+};
 
 /* Find dev `devid`, map BAR, reset, ACK+DRIVER, negotiate VIRTIO_F_VERSION_1 plus
  * the device feature bits in `want_lo` (bits 0..31). Returns 0, or -1. */
 int  virtio_init(uint16_t devid, struct virtio_dev *vd, uint32_t want_lo);
+/* Initialize the exact PCI function being probed. Required when multiple
+ * devices share one ID (e.g. virtio keyboard + mouse); does not re-enumerate. */
+int  virtio_init_device(struct device *dev, struct virtio_dev *vd, uint32_t want_lo);
 
 /* Set up queue `qidx` (allocates desc/avail/used). Returns 0, or -1. */
 int  virtio_queue_setup(struct virtio_dev *vd, int qidx, struct virtq *vq);
+
+/* Stop every queue before releasing DMA memory. On reset failure all handles
+ * remain quarantined and reinitialization/submission is refused. */
+int virtio_stop(struct virtio_dev *vd);
+void virtio_queue_release(struct virtio_dev *vd, struct virtq *vq);
 
 /* Finish init (DRIVER_OK). */
 void virtio_driver_ok(struct virtio_dev *vd);
 
 /* Submit a descriptor chain of `n` buffers on queue `qidx`, notify, and poll
  * until the device completes it. Returns the number of bytes the device wrote
- * (used.len), or -1 on timeout. Single outstanding request at a time. */
+ * (used.len), or -1 on timeout. Single outstanding request at a time.
+ * A timeout stops the whole device; inspect vd->quiesced before returning any
+ * device-visible storage. Zero used.len is a valid completion (cursor queue). */
 int  virtio_request(struct virtio_dev *vd, struct virtq *vq, int qidx,
                     struct virtio_buf *bufs, int n);
 

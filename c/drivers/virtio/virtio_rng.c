@@ -47,6 +47,9 @@
 #include <stddef.h>
 #include "driver.h"
 #include "virtio.h"
+/* Staging belongs to this device operation until completion, not just until
+ * virtio_request publishes descriptors. Independent devices remain concurrent. */
+static io_lock_t rng_gate = IO_LOCK_INIT;
 #include "virtio_rng.h"
 #include "kprintf.h"
 
@@ -56,8 +59,9 @@
 static struct virtio_dev rngdev;
 static struct virtq      rngvq;
 static int                rng_ready;
+static struct dma_buffer *rng_stage;
 
-int virtio_rng_present(void) { return rng_ready; }
+int virtio_rng_present(void) { return rng_ready && !rngdev.failed; }
 
 /* One request buffer at a time, capped so it fits the identity-mapped static
  * staging buffer below (same shape as virtio_blk.c's static request header:
@@ -67,14 +71,17 @@ int virtio_rng_present(void) { return rng_ready; }
 
 int virtio_rng_get(void *buf, int len)
 {
-    if (!rng_ready || len <= 0) return -1;
-    static uint8_t stage[RNG_STAGE];
+    IO_GUARD(&rng_gate);
+    if (!rng_ready || rngdev.failed || len <= 0) return -1;
+    /* The old identity-mapped static array is now coherent storage. A failed
+     * reset leaves it quarantined; no subsequent get may overwrite it. */
+    uint8_t *stage = rng_stage->cpu;
     uint8_t *out = (uint8_t *)buf;
     int done = 0;
     while (done < len) {
         int want = len - done;
         if (want > RNG_STAGE) want = RNG_STAGE;
-        struct virtio_buf b = { (uint64_t)(uintptr_t)stage, (uint32_t)want, 1 };
+        struct virtio_buf b = { rng_stage->dma, (uint32_t)want, 1, rng_stage };
         int rc = virtio_request(&rngdev, &rngvq, 0, &b, 1);
         if (rc < 0) return done > 0 ? done : -1;    /* timeout: keep partial progress */
         if (rc > want) rc = want;                    /* never trust the device past our own buffer */
@@ -131,12 +138,26 @@ static void rng_selftest(const char *devname)
             devname, hexa, hexb, zero_a, zero_b, same);
 }
 
+static void rng_remove(struct device *dev)
+{
+    IO_GUARD(&rng_gate);
+    (void)dev;
+    rng_ready = 0;
+    if (virtio_stop(&rngdev)) return;
+    dma_free_coherent(rng_stage); rng_stage = NULL;
+    virtio_queue_release(&rngdev, &rngvq);
+}
+
 static int rng_probe(struct device *dev)
 {
     if (virtio_init(VIRTIO_DEV_RNG, &rngdev, 0) != 0) return -1;   /* sec 5.4.3: no feature bits to request */
-    if (virtio_queue_setup(&rngdev, 0, &rngvq) != 0) return -1;    /* queue 0 = "requestq" (sec 5.4.2) */
+    if (virtio_queue_setup(&rngdev, 0, &rngvq) != 0) { rng_remove(dev); return -1; }    /* queue 0 = "requestq" (sec 5.4.2) */
+    if (!(rng_stage = dma_alloc_coherent(&rngdev.dma, RNG_STAGE, 64, 0))) {
+        rng_remove(dev); return -1;
+    }
     virtio_driver_ok(&rngdev);
     rng_ready = 1;
+    dma_report("virtio-rng");
     kprintf("[virtio-rng] %s: ready\n", dev->name);
     rng_selftest(dev->name);
     return 0;
@@ -152,7 +173,7 @@ static struct driver rng_driver = {
     .bus_type = DEV_BUS_PCI,
     .match    = rng_ids,
     .probe    = rng_probe,
-    .remove   = NULL,
+    .remove   = rng_remove,
     .next     = NULL,
 };
 DRIVER_DECLARE(rng_driver);

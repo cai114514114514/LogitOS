@@ -1,3 +1,4 @@
+/* 2026-09-10 concurrency correction: GPU normal operations and detach now use the frontend gate plus queue lifecycle; the BKL contract below is historical. */
 #ifndef LOGIT_VIRTIO_GPU_H
 #define LOGIT_VIRTIO_GPU_H
 
@@ -5,6 +6,9 @@
 
 int       virtio_gpu_init(void);     /* 0 if a virtio-gpu device is present + scanned out */
 int       virtio_gpu_present(void);
+/* BKL-held normal detach: revoke CPU borrowers, drain AP copies, reset both
+ * device queues, then release backing. -1 leaves owned storage quarantined. */
+int       virtio_gpu_shutdown(void);
 uint32_t *virtio_gpu_fb(void);       /* the RAM framebuffer (0x00RRGGBB pixels) */
 uint32_t  virtio_gpu_width(void);
 uint32_t  virtio_gpu_height(void);
