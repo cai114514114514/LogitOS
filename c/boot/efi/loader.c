@@ -19,7 +19,9 @@
  *
  *   GOP mode                -> mb2 framebuffer tag  (8)  -> c/kernel/gui/fb.c
  *   EFI memory map          -> mb2 mmap tag         (6)  -> c/kernel/mm/pmm.c
- *   EFI config-table RSDP   -> mb2 ACPI tag        (15)  -> nobody yet
+ *   EFI config-table RSDP   -> mb2 ACPI tag        (15)  -> c/kernel/cpu/acpi.c
+ *                                                          (was "nobody yet";
+ *                                                           see THE KNOWN GAP)
  *
  * ================= THE ONE THING GRUB NEVER HAS TO DO =================
  * GRUB loads PT_LOAD segments at the ELF physical addresses after consulting
@@ -36,14 +38,49 @@
  * EfiLoaderData. Any refusal, hole, type mismatch, or descriptor overflow stops
  * before ExitBootServices. No code writes the kernel image after firmware exit.
  *
- * ======================= THE KNOWN GAP, ON PURPOSE ====================
- * c/kernel/cpu/acpi.c finds the RSDP by scanning the BIOS EBDA/ROM area, which
- * under UEFI holds nothing. So the first UEFI boot comes up with NO ACPI: one
- * CPU, no FADT. That is accepted for this milestone and the gate asserts a boot
- * WITHOUT SMP. The tag is emitted here anyway -- carrying it now means the
- * ~20-line acpi.c patch (c/boot/efi/acpi-mb2-tag.patch, deferred because
- * another line owns that file right now) lands against a loader that already
- * provides what it reads.
+ * ================== THE KNOWN GAP -- CLOSED 2026-09-15 ================
+ * THE OLD SENTENCE IS KEPT BELOW BECAUSE SOMEBODY WILL ARRIVE HOLDING IT. It
+ * read, in the present tense, for as long as this file has existed:
+ *
+ *   "c/kernel/cpu/acpi.c finds the RSDP by scanning the BIOS EBDA/ROM area,
+ *    which under UEFI holds nothing. So the first UEFI boot comes up with NO
+ *    ACPI: one CPU, no FADT. That is accepted for this milestone and the gate
+ *    asserts a boot WITHOUT SMP. The tag is emitted here anyway -- carrying it
+ *    now means the ~20-line acpi.c patch (c/boot/efi/acpi-mb2-tag.patch,
+ *    deferred because another line owns that file right now) lands against a
+ *    loader that already provides what it reads."
+ *
+ * Every clause of that is now false, and each was checked rather than assumed:
+ *
+ *   - THE CONSUMER EXISTS. acpi.c:119-128 holds g_mb2_info,
+ *     acpi_set_mb2_info() and rsdp_from_mb2(); kmain.c:84 hands the block over.
+ *     acpi.c:158 states the resulting policy in its own words -- "the
+ *     bootloader's tag WINS over the scan".
+ *   - THE GATE ASSERTS ITS OPPOSITE. tests/boot/run-uefi-test.sh runs `-smp 2`,
+ *     waits for the kernel's own "[smp] 2 CPU(s) detected" (:276) and fails if
+ *     "2/2 CPUs online" never appears (:295) -- with the message "MADT-from-
+ *     forwarded-RSDP is broken". The script's own comment at :78 records the
+ *     flip: "this assertion used to be its own opposite".
+ *   - THE PATCH LANDED. Its content is in acpi.c. Both the patch file and its
+ *     checker are now dead weight, and the checker is dead in the way rule 5 of
+ *     CLAUDE.md names: check-acpi-patch.sh's FIRST branch greps acpi.c for
+ *     acpi_set_mb2_info, prints "patch is ALREADY APPLIED ... nothing to check"
+ *     and exits 0, so it can no longer fail for any input -- and nothing calls
+ *     it anyway: no hit in the Makefile, in any tests fragment, or in build.sh.
+ *     Retiring c/boot/efi/acpi-mb2-tag.patch and check-acpi-patch.sh together
+ *     is a two-file deletion waiting on nothing but somebody's say-so.
+ *
+ * WHAT IS STILL GENUINELY THIN, so that repairing one stale paragraph is not
+ * read as this loader being finished. It emits FIVE tag types (2, 6, 8, 14/15)
+ * out of Multiboot2's twenty-odd. MB2_TAG_CMDLINE is #defined in mb2.h:35 and
+ * never emitted -- a dead define, not a feature. There is no module/initrd tag,
+ * so this loader has no way to hand the kernel anything except the kernel. The
+ * image path is the hardcoded pair \logit.elf / \LOGIT.ELF: no config, no
+ * second entry, no fallback kernel. Nothing verifies the image it is about to
+ * run, on a machine that compiles a root key into the kernel for .lpk. And
+ * placement is one path or death by design (see above) -- which is the right
+ * trade against corrupting firmware state, and is still a machine where 32 MiB
+ * being occupied is a machine that does not boot.
  *
  * ============================ HOUSE RULES =============================
  * REFUSALS ARE LOUD. Every failure path prints WHY on both ConOut and serial
