@@ -126,7 +126,7 @@ static const int SEL_NAMES_FOLD = 1;
 #endif
 
 static const char *SELECT_PRELUDE =
-"(function (nativeQuirks, namesFold) {\n"
+"(function (nativeQuirks, namesFold, nativeSimple) {\n"
 "'use strict';\n"
 "var G = globalThis;\n"
 "var doc = G.document;\n"
@@ -182,8 +182,24 @@ static const char *SELECT_PRELUDE =
 "  throw e;\n"
 "}\n"
 
-"function lower(s) { return String(s).replace(/[A-Z]/g, function (c) {\n"
-"  return String.fromCharCode(c.charCodeAt(0) + 32); }); }\n"
+/* GitHub's live observer list spent 21.27 guest seconds in one qsa (diagnostic
+ * 2026-09-11), repeatedly splitting the same classes and folding the same tag.
+ * Cache string transforms, never nodes or query results: a mutation supplies
+ * its new exact string on the next match. Both entry count and input length
+ * are bounded; large values and a full cache use the original operation. */
+"var foldCache = Object.create(null), foldCount = 0;\n"
+"function lower(s) {\n"
+"  s = String(s);\n"
+#ifndef SELECTOR_NO_TOKEN_CACHE
+"  var hit = foldCache[s]; if (hit !== undefined) return hit;\n"
+#endif
+"  var value = s.replace(/[A-Z]/g, function (c) {\n"
+"    return String.fromCharCode(c.charCodeAt(0) + 32); });\n"
+#ifndef SELECTOR_NO_TOKEN_CACHE
+"  if (foldCount < 256 && s.length <= 256) { foldCache[s] = value; foldCount++; }\n"
+#endif
+"  return value;\n"
+"}\n"
 /* ASCII only. String.prototype.toLowerCase folds U+0130 and the Turkish
  * dotless i, and the corpus tests exactly those: [foo='i' i] must NOT match
  * foo=\"\\u0130\". */
@@ -504,7 +520,10 @@ static const char *SELECT_PRELUDE =
 "    i = r.i;\n"
 "  }\n"
 "  if (comb !== null) synErr('trailing combinator');\n"
-"  if (steps.length) alts.push(steps);\n"
+/* Previously a trailing comma silently reused the preceding alternative.
+ * Reject the empty final item before a simple AST can bypass the matcher. */
+"  if (!steps.length) synErr('empty selector list item');\n"
+"  alts.push(steps);\n"
 "  if (!alts.length) synErr(\"'\" + sel + \"' is not a valid selector\");\n"
 "  return alts;\n"
 "}\n"
@@ -536,11 +555,19 @@ static const char *SELECT_PRELUDE =
 "  t = String(t);\n"
 "  return isHTML(el) ? lower(t) : t;\n"
 "}\n"
+"var classCache = Object.create(null), classCount = 0;\n"
 "function classesOf(el) {\n"
 "  var c = el.getAttribute ? el.getAttribute('class') : null;\n"
 "  if (c === null || c === undefined) return [];\n"
 "  c = String(c);\n"
-"  return c ? c.split(/[\\t\\n\\f\\r ]+/).filter(function (x) { return x; }) : [];\n"
+#ifndef SELECTOR_NO_TOKEN_CACHE
+"  var hit = classCache[c]; if (hit !== undefined) return hit;\n"
+#endif
+"  var tokens = c ? c.split(/[\\t\\n\\f\\r ]+/).filter(function (x) { return x; }) : [];\n"
+#ifndef SELECTOR_NO_TOKEN_CACHE
+"  if (classCount < 256 && c.length <= 256) { classCache[c] = tokens; classCount++; }\n"
+#endif
+"  return tokens;\n"
 "}\n"
 
 /* An attribute's value, honouring the fact that attribute NAMES are ASCII
@@ -875,10 +902,16 @@ static const char *SELECT_PRELUDE =
 "}\n"
 
 /* ---- the walk ----
- * Iterative, with an explicit stack: a recursive walk over a real page's DOM
- * (wikipedia's is 5604 elements deep in places) is a stack-overflow RangeError
- * waiting for the wrong page, and this runtime's stack guard is 2 MiB. */
+ * Iterative: a recursive walk risks the runtime's 2 MiB stack guard. The
+ * original explicit-stack walk fetched .children at every visited element;
+ * native child_array constructs a live collection and its cached index for
+ * each read. One query over 500+ nodes created 531 temporary collections in
+ * traversal_work_test. Follow the existing element links instead: same
+ * preorder, no temporary child collections, no entry into the separate
+ * shadow-root field. Keep the original walk as the allocation negative
+ * control, with the parser/matcher and results unchanged. */
 "function descendants(rootEl, fn) {\n"
+#ifdef SELECT_COLLECTION_WALK
 "  var stack = [], i;\n"
 "  var kids = rootEl && rootEl.children;\n"
 "  if (!kids) return;\n"
@@ -889,6 +922,21 @@ static const char *SELECT_PRELUDE =
 "    var ch = el.children;\n"
 "    if (ch) for (i = ch.length - 1; i >= 0; i--) stack.push(ch[i]);\n"
 "  }\n"
+#else
+"  var el = rootEl && rootEl.firstElementChild;\n"
+"  while (el) {\n"
+"    if (fn(el) === false) return;\n"
+"    var child = el.firstElementChild;\n"
+"    if (child) { el = child; continue; }\n"
+"    var up = el, next = null;\n"
+"    while (up && up !== rootEl) {\n"
+"      next = up.nextElementSibling;\n"
+"      if (next) break;\n"
+"      up = up.parentNode;\n"
+"    }\n"
+"    el = next;\n"
+"  }\n"
+#endif
 "}\n"
 /* Array-like enough for everything real code does with a NodeList: index,
  * length, item(), forEach, for-of, and Array.from / spread. It IS an Array,
@@ -925,10 +973,108 @@ static const char *SELECT_PRELUDE =
 "  if (scope === doc) return doc.documentElement || doc.body;\n"
 "  return scope;\n"
 "}\n"
+/* The C door deliberately accepts no selector text: AST admission follows
+ * full strict parsing. A compound made only from unqualified type/class/id
+ * and attribute-presence tests has exactly the semantics of the native
+ * literals and can finish there. A single :not([attr]) is also exact after
+ * inverting that native literal. These are the hot resource-discovery shapes
+ * (`script[src]`, `link[href]`, `script:not([src])`). Operators, other
+ * pseudos, namespaces and combinators retain the complete matcher rather than
+ * being approximated. */
+"function simpleQuery(scope, r, alts, one) {\n"
+"  if (typeof nativeSimple !== 'function' || alts.length !== 1 || alts[0].length !== 1) return;\n"
+"  var step = alts[0][0];\n"
+"  if (step.comb !== null) return;\n"
+"  var tests = [];\n"
+"  for (var i = 0; i < step.c.length; i++) {\n"
+"    var s = step.c[i];\n"
+"    if (s.t === 'univ') continue;\n"
+"    if (s.t === 'type' && s.ns === null) tests.push([1, s.name]);\n"
+"    else if (s.t === 'class') tests.push([2, s.v]);\n"
+"    else if (s.t === 'id') tests.push([3, s.v]);\n"
+"    else if (s.t === 'attr' && s.ns === null && s.name !== '*' && !s.op)\n"
+"      tests.push([4, s.name]);\n"
+"    else if (s.t === 'not' && s.sels.length === 1 && s.sels[0].length === 1 &&\n"
+"             s.sels[0][0].comb === null && s.sels[0][0].c.length === 1) {\n"
+"      var n = s.sels[0][0].c[0];\n"
+"      if (n.t === 'attr' && n.ns === null && n.name !== '*' && !n.op)\n"
+"        tests.push([4, n.name, 1]);\n"
+"      else return;\n"
+"    }\n"
+"    else return;\n"
+"  }\n"
+"  if (!tests.length) return nativeSimple(r, 0, '', scope === doc, one, QUIRKS, NAMES_FOLD);\n"
+"  if (tests.length === 1)\n"
+"    return nativeSimple(r, tests[0][0], tests[0][1], scope === doc, one, QUIRKS, NAMES_FOLD);\n"
+"  return nativeSimple(r, 6, tests, scope === doc, one, QUIRKS, NAMES_FOLD);\n"
+"}\n"
+/* The original rule above still governs COMPLETE native answers. A compound
+ * can nevertheless reject most nodes before creating wrappers: every match
+ * must have each positive literal in its rightmost compound. Do not descend
+ * into :not/:is/:has arguments (their literals need not belong to the result),
+ * or choose an ancestor's ID. Lists keep the ordinary walk rather than merge
+ * candidates incorrectly or lose document order. A single selector sends all
+ * positive literals in its rightmost compound as one native conjunction.
+ * This prevents `script[src]` from wrapping every img[src] before JS can
+ * reject its tag. Lists remain a union of one best literal per branch.
+ * No results are cached, so DOM/attribute changes are visible on every call.
+ * querySelector deliberately keeps its early-exit walk: collecting EVERY
+ * native candidate first could regress a broad selector whose first node
+ * matches. A resumable/native predicate door is needed before sharing this
+ * eager array optimization with the first-match API.
+ * Measured 2026-09-10, selector-candidates.html (600 rows, 30 queries): host
+ * counters fall from 36,000 to 360 JS attribute reads and 18,030 to 180 wraps;
+ * guest performance.now query intervals are 1600/1570 ms before, 20/30 ms
+ * after, on immutable QEMU snapshots. This is a fixed workload, NOT a claim
+ * about whole-site speed; artifacts are in the real-sites continuation log. */
+/* Correction (2026-09-11): lists now take a single native union walk (kind 5)
+ * and qs1 resumes after one candidate at a time. The old eager-array warning
+ * above still applies: sharing qsa's materialized array with qs1 is a regression.
+ * A branch without a necessary literal, or an oversize list, keeps the full
+ * walk. No pseudo's argument is promoted into a required literal. */
+"function candidateFilter(alts) {\n"
+#ifndef SELECTOR_NO_CANDIDATES
+"  if (typeof nativeSimple !== 'function') return;\n"
+#ifdef SELECTOR_NO_BATCH_CANDIDATES
+"  if (alts.length !== 1) return;\n"
+#endif
+"  var filters = [], conjunction = alts.length === 1 ? [] : null;\n"
+"  for (var a = 0; a < alts.length; a++) {\n"
+"  var steps = alts[a], c = steps[steps.length - 1].c, best = 0, kind, value;\n"
+"  for (var i = 0; i < c.length; i++) {\n"
+"    var s = c[i], rank = 0, k, v;\n"
+"    if (s.t === 'id') { rank = 4; k = 3; v = s.v; }\n"
+"    else if (s.t === 'attr' && s.ns === null && s.name !== '*') { rank = 3; k = 4; v = s.name; }\n"
+"    else if (s.t === 'class') { rank = 2; k = 2; v = s.v; }\n"
+"    else if (s.t === 'type' && s.ns === null) { rank = 1; k = 1; v = s.name; }\n"
+"    if (conjunction !== null && rank) conjunction.push([k, v]);\n"
+"    if (rank > best) { best = rank; kind = k; value = v; }\n"
+"  }\n"
+"  if (!best) return;\n"
+"  filters.push([kind, value]);\n"
+"  }\n"
+"  if (conjunction !== null)\n"
+"    return conjunction.length === 1 ? conjunction[0] : [6, conjunction];\n"
+"  return filters.length === 1 ? filters[0] : [5, filters];\n"
+#endif
+"}\n"
+"function candidateQuery(scope, r, filter, one, after) {\n"
+"  if (filter === undefined) return;\n"
+"  return nativeSimple(r, filter[0], filter[1], scope === doc, one, QUIRKS, NAMES_FOLD, after);\n"
+"}\n"
 "function qsa(scope, sel) {\n"
-"  var alts = compile(sel), out = [], r = rootOf(scope);\n"
-"  if (!r) return nodelist(out);\n"
+"  var alts = compile(sel), r = rootOf(scope);\n"
+"  if (!r) return nodelist([]);\n"
+"  var fast = simpleQuery(scope, r, alts, false);\n"
+"  if (fast !== undefined) return nodelist(fast);\n"
+"  var out = [];\n"
 "  var ctx = { scope: scope === doc ? null : scope };\n"
+"  var candidates = candidateQuery(scope, r, candidateFilter(alts), false);\n"
+"  if (candidates !== undefined) {\n"
+"    for (var i = 0; i < candidates.length; i++)\n"
+"      if (matchAny(candidates[i], alts, ctx)) out.push(candidates[i]);\n"
+"    return nodelist(out);\n"
+"  }\n"
    /* The root itself is a candidate for document.querySelectorAll('html') but
       never for element.querySelectorAll -- a selector matches descendants of
       the scope, not the scope. */
@@ -939,7 +1085,20 @@ static const char *SELECT_PRELUDE =
 "function qs1(scope, sel) {\n"
 "  var alts = compile(sel), r = rootOf(scope), found = null;\n"
 "  if (!r) return null;\n"
+"  var fast = simpleQuery(scope, r, alts, true);\n"
+"  if (fast !== undefined) return fast;\n"
 "  var ctx = { scope: scope === doc ? null : scope };\n"
+#ifndef SELECTOR_NO_BATCH_CANDIDATES
+"  var filter = candidateFilter(alts), after;\n"
+"  if (filter !== undefined) {\n"
+"    for (;;) {\n"
+"      var next = candidateQuery(scope, r, filter, true, after);\n"
+"      if (next === undefined) break;\n"
+"      if (next === null || matchAny(next, alts, ctx)) return next;\n"
+"      after = next;\n"
+"    }\n"
+"  }\n"
+#endif
 "  if (scope === doc && matchAny(r, alts, ctx)) return r;\n"
 "  descendants(r, function (el) {\n"
 "    if (matchAny(el, alts, ctx)) { found = el; return false; }\n"
@@ -1202,10 +1361,15 @@ void js_select_install(JSContext *ctx)
         JS_FreeValue(ctx, fn);
         return;
     }
-    JSValue args[2];
+    JSValue args[3];
     args[0] = JS_NewCFunction(ctx, sel_quirks, "quirks", 0);
     args[1] = JS_NewBool(ctx, SEL_NAMES_FOLD);
-    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 2, (JSValueConst *)args);
+#ifdef SIMPLE_SELECTOR_JS_ONLY
+    args[2] = JS_UNDEFINED; /* same parser/queries, old per-node JS matcher */
+#else
+    args[2] = JS_NewCFunction(ctx, js_dom_simple_query, "simpleQuery", 7);
+#endif
+    JSValue r = JS_Call(ctx, fn, JS_UNDEFINED, 3, (JSValueConst *)args);
     if (JS_IsException(r)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
@@ -1214,6 +1378,7 @@ void js_select_install(JSContext *ctx)
         JS_FreeValue(ctx, e);
     }
     JS_FreeValue(ctx, args[0]);
+    JS_FreeValue(ctx, args[2]);
     JS_FreeValue(ctx, r);
     JS_FreeValue(ctx, fn);
 

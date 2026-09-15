@@ -766,10 +766,8 @@ static JSValue el_getAttributeNode(JSContext *ctx, JSValueConst t, int argc, JSV
     const char *nm = JS_ToCString(ctx, argv[0]);
     if (!nm) return JS_NULL;
     JSValue r = JS_NULL;
-    for (int i = 0; i < n->nattr; i++) {
-        const char *an = dom_attr_name_at(n, i);
-        if (an && ieq(an, nm)) { r = attr_object(ctx, n, an, dom_attr_value_at(n, i)); break; }
-    }
+    const struct dom_attr *a=dom_find_attr(n,nm);
+    if(a)r=attr_object(ctx,n,dom_attr_name_at(n,(int)(a-n->attrs)),a->value);
     JS_FreeCString(ctx, nm);
     return r;
 }
@@ -1171,9 +1169,48 @@ static JSValue docx_get_defaultView(JSContext *ctx, JSValueConst t)
     return JS_GetGlobalObject(ctx);
 }
 
+/* HTML's Document referrer defaults to the empty string when navigation did
+ * not explicitly record one. The loader currently suppresses Referer and has
+ * no referrer-policy result to snapshot. Its Cookie initiator is NOT such a
+ * result: using it here would expose a previous URL despite that suppression.
+ * Keep this a typed, readonly Document member, including detached documents.
+ * A nonempty value must eventually come from the policy-processed navigation
+ * request, frozen at document creation; never derive it from live location.
+ * The focused gate exercises the promise `referrer.substr(...)` failure and
+ * close/reopen lifetime. It does not claim referrer-policy/header support. */
+static JSValue docx_get_referrer(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = node_of(t);
+    int is_page = JS_IsObject(t) && JS_IsObject(g_document) &&
+                  JS_VALUE_GET_PTR(t) == JS_VALUE_GET_PTR(g_document);
+    if (!is_page && (!n || (n->type != N_DOCUMENT && !is_docx(n))))
+        return JS_ThrowTypeError(ctx, "Document.referrer requires a Document");
+    return JS_NewString(ctx, "");
+}
+
+static JSValue docx_hasFocus(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)argc; (void)argv;
+    struct node *n = node_of(t);
+    int is_page = JS_IsObject(t) && JS_IsObject(g_document) &&
+                  JS_VALUE_GET_PTR(t) == JS_VALUE_GET_PTR(g_document);
+    if (!is_page && (!n || (n->type != N_DOCUMENT && !is_docx(n))))
+        return JS_ThrowTypeError(ctx, "Document.hasFocus requires a Document");
+    /* createHTMLDocument has no browsing context. The page remains focused
+     * when its focused area is the body or a descendant frame, so neither
+     * focus_current()!=NULL nor activeElement===body is a substitute. */
+    return JS_NewBool(ctx, is_page && js_dom_has_focus());
+}
+
 static const JSCFunctionListEntry document_extra_funcs[] = {
+#ifndef DOCUMENT_NO_HAS_FOCUS
+    JS_CFUNC_DEF("hasFocus", 0, docx_hasFocus),
+#endif
     JS_CGETSET_DEF("URL", docx_get_url, NULL),
     JS_CGETSET_DEF("documentURI", docx_get_url, NULL),
+#ifndef DOCUMENT_NO_REFERRER
+    JS_CGETSET_DEF("referrer", docx_get_referrer, NULL),
+#endif
     JS_CGETSET_DEF("defaultView", docx_get_defaultView, NULL),
     JS_CGETSET_DEF("implementation", doc_get_implementation, NULL),
     JS_CGETSET_DEF("body", docx_get_body, NULL),
@@ -2016,6 +2053,9 @@ static void named_scan(JSContext *ctx, struct node *root)
     JSValue g = JS_GetGlobalObject(ctx);
     struct node *c = root;
     while (c) {
+#ifdef JSDOM_TRAVERSAL_PROFILE
+        js_dom_profile_named_visits++;
+#endif
         if (c->type == N_ELEM) {
             const char *id = dom_attr(c, "id");
             if (id && *id) named_define(ctx, g, id);

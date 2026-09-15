@@ -17,7 +17,10 @@
  * reads `input.value` in a loop does not walk the DOM per read.
  *
  *   `struct node *js_dom_node_of(JSValueConst)` exported from js_dom.c would
- *   delete this whole mechanism. It is an ASK for that line, not an edit.
+ *   delete this whole mechanism. That was the original ASK; js_dom_node_from
+ *   now exists. The select hooks use it for wrapper arguments so a switcher
+ *   configured before insertion is not lost to the document-only key walk.
+ *   Other hooks retain the old integer protocol here.
  *
  * WHAT IS IN C AND WHAT IS IN THE SHIM. The C is only what has to reach forms.c
  * -- twelve entry points, all taking the integer key. Everything that is
@@ -34,6 +37,12 @@
 #include "js_dom.h"
 #include "forms.h"
 #include "focus.h"
+#include "css.h"
+#include "../../../include/weaksym.h"
+/* Focus-only host embeddings can omit the style engine. Shipping builds use
+ * the same synchronous style door as computed-style reads. */
+extern void css_ensure_styled(struct node *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_ensure_styled);
 #include <string.h>
 
 /* ================================================= id -> node resolution == */
@@ -144,18 +153,69 @@ static JSValue jf_selpos(JSContext *ctx, JSValueConst t, int argc, JSValueConst 
     if (!n || !FC_IS_TEXTUAL(fc_kind(n))) return JS_NULL;
     int a = 0, b = 0;
     fc_selection(n, &a, &b);
+#ifndef FORM_SELECTION_RAW_BYTES
+    if (magic == 2) return JS_NewInt32(ctx, fc_selection_direction(n));
+    int len = 0;
+    const char *value = fc_value(n, &len);
+    int offset = magic ? b : a;
+    if (offset > len) offset = len;
+    return JS_NewInt32(ctx, (int)dom_utf16_length(value, (unsigned)offset));
+#else
+    if (magic == 2) return JS_NewInt32(ctx, 0);
     return JS_NewInt32(ctx, magic ? b : a);
+#endif
+}
+
+/* JS text controls count UTF-16 units; native editing and painting count UTF-8
+ * bytes. Guest evidence: a 600-unit CJK value reported End=1800 and Left=1797.
+ * Count through complete scalars, including two units for astral characters.
+ * The byte editor cannot represent the middle of a surrogate pair: clamp that
+ * endpoint to the scalar's leading boundary, deliberately preserving text
+ * instead of creating an invalid UTF-8 caret. Exact half-surrogate selection
+ * remains absent until the native position representation can express it. */
+static int selection_byte_offset(const char *value, int len, uint32_t units)
+{
+    int at = 0;
+    uint32_t used = 0;
+    while (at < len) {
+        int next = at + 1;
+        while (next < len && ((unsigned char)value[next] & 0xc0) == 0x80) next++;
+        unsigned span = dom_utf16_length(value + at, (unsigned)(next - at));
+        if (span > units - used) break;
+        used += span; at = next;
+    }
+    return at;
 }
 
 static JSValue jf_setsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t;
+    if (argc < 3) return JS_UNDEFINED;
     struct node *n = node_of(arg_id(ctx, argv[0]));
+#ifdef FORM_SELECTION_RAW_BYTES
     int32_t a = 0, b = 0;
     JS_ToInt32(ctx, &a, argv[1]);
     if (argc > 2) JS_ToInt32(ctx, &b, argv[2]);
     else b = a;
     if (n) fc_set_selection(n, a, b);
+#else
+    uint32_t a = 0, b = 0;
+    int32_t direction = 0;
+    if (JS_ToUint32(ctx, &a, argv[1]) || JS_ToUint32(ctx, &b, argv[2])) return JS_EXCEPTION;
+    if (argc > 3 && JS_ToInt32(ctx, &direction, argv[3])) return JS_EXCEPTION;
+    if (n) {
+        int len = 0;
+        const char *value = fc_value(n, &len);
+        int start = selection_byte_offset(value, len, a);
+        int end = selection_byte_offset(value, len, b);
+        if (start > end) start = end;
+        fc_set_selection_directed(n, start, end, direction);
+        /* A second programmatic selection need not stamp an attribute or
+         * change value. Without its own paint invalidation the native caret
+         * moves in memory while the previous caret remains on screen. */
+        js_dom_control_changed(n);
+    }
+#endif
     return JS_UNDEFINED;
 }
 
@@ -167,16 +227,51 @@ static JSValue jf_selectall(JSContext *ctx, JSValueConst t, int argc, JSValueCon
     return JS_UNDEFINED;
 }
 
+static struct node *selection_node(JSContext *ctx, int argc, JSValueConst *argv)
+{
+    if (argc < 1) return 0;
+    return JS_IsObject(argv[0]) ? js_dom_node_from(argv[0])
+                               : node_of(arg_id(ctx, argv[0]));
+}
+
 static JSValue jf_selidx(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
-{ (void)t; (void)argc; return JS_NewInt32(ctx, fc_selected_index(node_of(arg_id(ctx, argv[0])))); }
+{ (void)t; return JS_NewInt32(ctx, fc_selected_index(selection_node(ctx, argc, argv))); }
 
 static JSValue jf_setselidx(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
-    (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    (void)t;
+    if (argc < 2) return JS_UNDEFINED;
+    struct node *n = selection_node(ctx, argc, argv);
     int32_t i = -1;
     JS_ToInt32(ctx, &i, argv[1]);
-    if (n) fc_set_selected_index(n, i);
+    if (n) {
+        int old = fc_selected_index(n);
+        fc_set_selected_index(n, i);
+        if (old != fc_selected_index(n)) js_dom_control_changed(n);
+    }
+    return JS_UNDEFINED;
+}
+
+static JSValue jf_optsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{ (void)t; return JS_NewBool(ctx, fc_option_selected(selection_node(ctx, argc, argv))); }
+
+static JSValue jf_setoptsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    if (argc >= 2) {
+        struct node *n = selection_node(ctx, argc, argv);
+        fc_set_option_selected(n, JS_ToBool(ctx, argv[1]));
+        for (struct node *p = n ? n->parent : 0; p; p = p->parent)
+            if (fc_kind(p) == FC_SELECT) { js_dom_control_changed(p); break; }
+    }
+    return JS_UNDEFINED;
+}
+
+static JSValue jf_resetsel(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)t;
+    struct node *n = selection_node(ctx, argc, argv);
+    if (n) { fc_reset_control(n); js_dom_control_changed(n); }
     return JS_UNDEFINED;
 }
 
@@ -184,13 +279,38 @@ static JSValue jf_setselidx(JSContext *ctx, JSValueConst t, int argc, JSValueCon
 static JSValue jf_focus(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv, int magic)
 {
     (void)t; (void)argc;
-    struct node *n = node_of(arg_id(ctx, argv[0]));
+    struct node *n = argc > 0 && JS_IsObject(argv[0]) ? js_dom_node_from(argv[0])
+                                                      : argc > 0 ? node_of(arg_id(ctx, argv[0])) : 0;
     if (magic) { if (focus_current() == n) focus_set(0); }
     else if (n) {
+        /* Detached focus must be a no-op, and must not make the style cache
+         * adopt a detached subtree as its author-sheet document. */
+        struct node *root = n;
+        while (root->parent) root = root->parent;
+        if (root != js_dom_root()) return JS_UNDEFINED;
+#ifndef FOCUS_NO_STYLE_FLUSH
+        /* A script may insert a display:none ancestor and focus its child in
+         * the same call stack, before browser.c gets its next settle turn.
+         * Null/stale cstyle is not evidence of visibility. The old JS fallback
+         * inspected inline styles; routing focus to its native owner exposed
+         * this missing native flush even with both recent CSS optimizations
+         * disabled (semantics: 89 checks, the same one failure).
+         * css_ensure_styled updates style only and DOES NOT clear js_dom_dirty,
+         * so the embedder still rebuilds/paints its display list afterwards. */
+        if (LOGIT_HAVE(css_ensure_styled)) css_ensure_styled(n);
+#endif
+        /* A refused focus request preserves the prior active element. Passing
+         * an unrendered target to focus_set turns it into an explicit blur. */
+        if (!focus_is_focusable(n)) return JS_UNDEFINED;
         struct node *old = focus_current();
-        if (old && fc_kind(old) != FC_NONE) fc_commit(old);
+        uint32_t old_serial = old ? old->serial : 0, serial = n->serial;
         focus_set(n);
-        if (fc_kind(n) != FC_NONE) fc_mark_focus(n);
+        if (focus_current() == n && n->serial == serial) {
+            /* Focus handlers can destroy/recycle either node synchronously.
+             * Commit only the old identity, never a new element in its slot. */
+            if (old && old != n && old->serial == old_serial && fc_kind(old) != FC_NONE) fc_commit(old);
+            if (fc_kind(n) != FC_NONE) fc_mark_focus(n);
+        }
     }
     return JS_UNDEFINED;
 }
@@ -198,16 +318,9 @@ static JSValue jf_focus(JSContext *ctx, JSValueConst t, int argc, JSValueConst *
 static JSValue jf_active(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     (void)t; (void)argc; (void)argv;
-    /* The id of the focused element, or 0. Only useful when that element has
-     * already been stamped -- the shim's focusin listener is the primary path
-     * and this is the fallback for focus moved from C (a click, or Tab). */
-    struct node *n = focus_current();
-    if (!n) return JS_NewInt32(ctx, 0);
-    const char *v = dom_attr(n, "data-logit-fcid");
-    if (!v) return JS_NewInt32(ctx, -1);        /* focused, but never stamped */
-    int id = 0;
-    for (const char *p = v; *p >= '0' && *p <= '9'; p++) id = id * 10 + (*p - '0');
-    return JS_NewInt32(ctx, id);
+    /* Correction: the old stamped-id fallback and event-maintained JS cache
+     * drifted when inert/detach cleared native focus without a focus event. */
+    return js_dom_node_value(ctx, focus_current());
 }
 
 /* magic: 0 = submit (no event), 1 = requestSubmit (fires it), 2 = reset */
@@ -404,7 +517,17 @@ static JSValue jf_seltext(JSContext *ctx, JSValueConst t, int argc, JSValueConst
     return JS_NewStringLen(ctx, buf, (size_t)(n < 0 ? 0 : n));
 }
 
+#include "js_live_range_native.inc"
+
 static const JSCFunctionListEntry g_natives[] = {
+    JS_CFUNC_DEF("__fc_rangeNew", 0, jf_range_new),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeSC", 1, jf_range_get, 0),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeSO", 1, jf_range_get, 1),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeEC", 1, jf_range_get, 2),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeEO", 1, jf_range_get, 3),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeStart", 3, jf_range_set, 0),
+    JS_CFUNC_MAGIC_DEF("__fc_rangeEnd", 3, jf_range_set, 1),
+    JS_CFUNC_DEF("__fc_rangeCompare", 4, jf_range_compare),
     JS_CFUNC_DEF("__fc_selGet", 0, jf_selget),
     JS_CFUNC_DEF("__fc_selSet", 4, jf_selset),
     JS_CFUNC_DEF("__fc_selClear", 0, jf_selclear),
@@ -418,10 +541,14 @@ static const JSCFunctionListEntry g_natives[] = {
     JS_CFUNC_DEF("__fc_setchecked", 2, jf_setchecked),
     JS_CFUNC_MAGIC_DEF("__fc_selstart", 1, jf_selpos, 0),
     JS_CFUNC_MAGIC_DEF("__fc_selend", 1, jf_selpos, 1),
-    JS_CFUNC_DEF("__fc_setsel", 3, jf_setsel),
+    JS_CFUNC_MAGIC_DEF("__fc_seldirection", 1, jf_selpos, 2),
+    JS_CFUNC_DEF("__fc_setsel", 4, jf_setsel),
     JS_CFUNC_DEF("__fc_selectall", 1, jf_selectall),
     JS_CFUNC_DEF("__fc_selidx", 1, jf_selidx),
     JS_CFUNC_DEF("__fc_setselidx", 2, jf_setselidx),
+    JS_CFUNC_DEF("__fc_optsel", 1, jf_optsel),
+    JS_CFUNC_DEF("__fc_setoptsel", 2, jf_setoptsel),
+    JS_CFUNC_DEF("__fc_resetsel", 1, jf_resetsel),
     JS_CFUNC_MAGIC_DEF("__fc_focus", 1, jf_focus, 0),
     JS_CFUNC_MAGIC_DEF("__fc_blur", 1, jf_focus, 1),
     JS_CFUNC_DEF("__fc_active", 0, jf_active),
@@ -543,12 +670,25 @@ static const char SHIM[] =
 "  try { Object.defineProperty(FileList, 'name', { value: 'FileList', configurable: true }); } catch (e) {}\n"
 "  G.FileList = FileList;\n"
 "}\n"
-/* One EMPTY FileList per element -- fresh on first read, then cached on the
- * element so `input.files === input.files` stays true across reads, the way
- * a live collection's identity is supposed to. */
+/* Correction (2026-09-10): empty does not mean readonly. A real page reached
+ * its 10,589,862-byte module, then stopped rendering at a strict assignment
+ * with "no setter for property 'files'". HTML's nullable FileList setter must
+ * accept null/undefined (no change) and another genuine FileList (same object).
+ * https://html.spec.whatwg.org/multipage/input.html#dom-input-files
+ *
+ * Keep both identity and the brand private: instanceof accepts forged
+ * Object.create(FileList.prototype), and the former __fcFiles expando let page
+ * code supply arbitrary arrays. This realm's only producer remains the empty
+ * list below. A future picker/DataTransfer/cross-realm bridge must register its
+ * real lists here AND connect value/reset/submission to native selected files;
+ * do not accept an array and invent selected file bytes. */
+"var fileLists = new WeakMap(), fileListBrand = new WeakSet();\n"
+"var fileListProto = G.FileList.prototype;\n"
+"function isFile(el){ return tag(el)==='input' && (el.getAttribute('type')||'text').toLowerCase()==='file'; }\n"
 "function emptyFileList(){\n"
-"  var fl = Object.create(G.FileList.prototype);\n"
+"  var fl = Object.create(fileListProto);\n"
 "  try { Object.defineProperty(fl, 'length', { value: 0 }); } catch (e) {}\n"
+"  fileListBrand.add(fl);\n"
 "  return fl;\n"
 "}\n"
 /* Everything from here to the end of installOn() is per-served-tag. `proto` is
@@ -564,6 +704,10 @@ static const char SHIM[] =
 "         t==='option'||t==='li'||t==='data'||t==='param'||t==='progress'||t==='meter'; }\n"
 "def(proto, 'value',\n"
 "  function(){ if (!hasValue(this)) return undefined;\n"
+/* No picker can select a file yet. Do not let a markup value or a text editor
+ * expando masquerade as a selected path. Clearing an already-empty list keeps
+ * its identity; no input/change events accompany script assignment. */
+"    if (isFile(this)) return '';\n"
 "    if (isCtl(this)) {\n"
 "      if (!detached(this)) return G.__fc_value(key(this));\n"
 "      if ('__fcv' in this) return this.__fcv;\n"
@@ -573,7 +717,12 @@ static const char SHIM[] =
 "    }\n"
 "    var v = this.getAttribute('value');\n"
 "    return v === null ? (tag(this)==='option' ? this.textContent : '') : v; },\n"
-"  function(v){ var s = (v === null || v === undefined) ? '' : String(v);\n"
+"  function(v){\n"
+"    if (isFile(this)) {\n"
+"      if (v !== null && String(v) !== '') throw new DOMException('File input value can only be cleared', 'InvalidStateError');\n"
+"      return;\n"
+"    }\n"
+"    var s = (v === null || v === undefined) ? '' : String(v);\n"
 "    if (isCtl(this)) { if (detached(this)) this.__fcv = s;\n"
 "                       else G.__fc_setvalue(key(this), s); return; }\n"
 "    if (hasValue(this)) this.setAttribute('value', s); });\n"
@@ -623,16 +772,26 @@ static const char SHIM[] =
  * a real, empty FileList rather than absent or a plain array. Guarded on
  * type=file the same way `checked` is guarded on tag==='input': every other
  * <input> type answers undefined, matching the spec (files is declared only
- * on the file state's IDL attributes). */
-"def(proto, 'files',\n"
+ * on the file state's IDL attributes).
+ * Correction: the old "undefined, matching the spec" sentence is wrong.
+ * The property belongs to HTMLInputElement for EVERY type; non-file inputs
+ * return null. Web IDL validates a non-null assignment before HTML's no-op
+ * for other types, so even a text input must reject an array. */
+"if (proto === protoOf('input')) def(proto, 'files',\n"
 "  function(){\n"
-"    if (tag(this)!=='input' || (this.getAttribute('type')||'text').toLowerCase()!=='file') return undefined;\n"
-"    if (!Object.prototype.hasOwnProperty.call(this, '__fcFiles')) {\n"
-"      var fl = emptyFileList();\n"
-"      try { Object.defineProperty(this, '__fcFiles', { value: fl, enumerable: false, configurable: false }); }\n"
-"      catch (e) { this.__fcFiles = fl; }\n"
-"    }\n"
-"    return this.__fcFiles; });\n"
+"    if (tag(this)!=='input') throw new TypeError('Illegal invocation');\n"
+"    if (!isFile(this)) return null;\n"
+"    if (!fileLists.has(this)) fileLists.set(this, emptyFileList());\n"
+"    return fileLists.get(this); }\n"
+#ifndef FORM_FILES_GETTER_ONLY
+", function(v){\n"
+"    if (tag(this)!=='input') throw new TypeError('Illegal invocation');\n"
+"    if (v === null || v === undefined) return;\n"
+"    if (!fileListBrand.has(v)) throw new TypeError('files requires a FileList');\n"
+"    if (isFile(this)) fileLists.set(this, v);\n"
+"  }\n"
+#endif
+");\n"
 "def(proto, 'maxLength',\n"
 "  function(){ var v = this.getAttribute('maxlength'); return v === null ? -1 : (parseInt(v,10)|0); },\n"
 "  function(v){ this.setAttribute('maxlength', String(v|0)); });\n"
@@ -642,32 +801,40 @@ static const char SHIM[] =
 "  if (!detached(el)) return which ? G.__fc_selend(key(el)) : G.__fc_selstart(key(el));\n"
 "  return dget(el, which ? '__fcs1' : '__fcs0', (el.value || '').length);\n"
 "}\n"
-"function selSet(el, a, b){\n"
+"function selDir(el){\n"
+"  if (!isField(el)) return null;\n"
+"  if (detached(el)) return dget(el, '__fcsd', 'none');\n"
+"  var d = G.__fc_seldirection(key(el)); return d < 0 ? 'backward' : d > 0 ? 'forward' : 'none';\n"
+"}\n"
+"function selSet(el, a, b, d){\n"
 "  if (!isField(el)) return;\n"
 "  var n = (el.value || '').length;\n"
-"  a = a|0; b = b|0;\n"
-"  if (a < 0) a = 0; if (a > n) a = n;\n"
-"  if (b < 0) b = 0; if (b > n) b = n;\n"
-"  if (b < a) b = a;\n"
-"  if (detached(el)) { el.__fcs0 = a; el.__fcs1 = b; }\n"
-"  else G.__fc_setsel(key(el), a, b);\n"
+/* Web IDL unsigned-long conversion comes before value-length clamping: -1
+ * wraps and clamps to End; it is not a signed request for the start. */
+"  a = a>>>0; b = b>>>0;\n"
+"  if (a > n) a = n; if (b > n) b = n;\n"
+"  if (b < a) a = b;\n"
+"  d = String(d); if (d !== 'forward' && d !== 'backward') d = 'none';\n"
+"  if (detached(el)) { el.__fcs0 = a; el.__fcs1 = b; el.__fcsd = d; }\n"
+"  else G.__fc_setsel(key(el), a, b, d === 'backward' ? -1 : d === 'forward' ? 1 : 0);\n"
 "}\n"
 "def(proto, 'selectionStart',\n"
 "  function(){ return selGet(this, 0); },\n"
-"  function(v){ selSet(this, v, selGet(this, 1)); });\n"
+"  function(v){ var a=v>>>0; selSet(this, a, Math.max(a, selGet(this, 1)), selDir(this)); });\n"
 "def(proto, 'selectionEnd',\n"
 "  function(){ return selGet(this, 1); },\n"
-"  function(v){ selSet(this, selGet(this, 0), v); });\n"
+"  function(v){ selSet(this, selGet(this, 0), v, selDir(this)); });\n"
 /* selectionDirection is stored and reported but does nothing: the caret has no
  * direction in this engine, and answering \"none\" for a field that was
  * selected backwards would be a wrong answer rather than a missing one. */
+/* Correction: native selection now keeps this direction and its anchor, so
+ * changing direction changes subsequent Shift+Arrow and the painted caret. */
 "def(proto, 'selectionDirection',\n"
-"  function(){ return isField(this) ? dget(this, '__fcsd', 'none') : null; },\n"
-"  function(v){ if (isField(this)) this.__fcsd = String(v); });\n"
+"  function(){ return selDir(this); },\n"
+"  function(v){ selSet(this, selGet(this, 0), selGet(this, 1), v); });\n"
 "proto.setSelectionRange = function(a, b, d){\n"
 "  if (!isField(this)) return;\n"
-"  selSet(this, a, b);\n"
-"  this.__fcsd = d ? String(d) : 'none';\n"
+"  selSet(this, a, b, d);\n"
 "  var ev = null;\n"
 "  try { ev = new Event('select', { bubbles: true }); } catch (e) {}\n"
 "  if (ev && this.dispatchEvent) this.dispatchEvent(ev);\n"
@@ -762,13 +929,10 @@ static const char SHIM[] =
  * focus handler, which is what makes `document.activeElement` already correct
  * inside it. Listening only on focusin (which fires after focus) left every
  * page that reads activeElement from a focus handler seeing the body. */
-"var active = null;\n"
-"doc.addEventListener('focus',    function(e){ active = e.target; }, true);\n"
-"doc.addEventListener('focusin',  function(e){ active = e.target; }, true);\n"
-"doc.addEventListener('blur',     function(e){ if (active === e.target) active = null; }, true);\n"
-"doc.addEventListener('focusout', function(e){ if (active === e.target) active = null; }, true);\n"
+/* Correction: events describe transitions; they are not the owner of focus.
+ * The native holder also validates serials and dynamic inert ancestors. */
 "try { Object.defineProperty(doc, 'activeElement', { configurable: true,\n"
-"  get: function(){ return active || doc.body || doc.documentElement; } }); } catch (e) {}\n"
+"  get: function(){ return G.__fc_active() || doc.body || doc.documentElement; } }); } catch (e) {}\n"
 "try { Object.defineProperty(doc, 'forms', { configurable: true, get: function(){\n"
 "  var out = [];\n"
 "  (function walk(n){ var c = n.children||[];\n"
@@ -816,6 +980,15 @@ static const char SHIM[] =
  * a measurement rather than an omission -- both grep to nothing across the
  * corpus this browser is aimed at. Building them speculatively would be two
  * more surfaces to keep true. */
+/* Correction (2026-09-09): the preceding absence claim is retained as history.
+ * Range now owns native live boundaries and exposes compareBoundaryPoints,
+ * clone/delete/extractContents and insertNode. js_live_range_shim.inc consumes
+ * the C mutation stream; forms.c keyboard edits and CharacterData methods use
+ * the same UTF-16 replacement primitive. Range geometry, surroundContents and
+ * Selection.modify remain absent. Selection still maps to the native caret;
+ * addRange/getRangeAt do not yet preserve the identity of an associated Range.
+ * Cross-document boundaries and Document-level insertNode explicitly refuse;
+ * moving one endpoint across detached/shadow roots collapses into that root. */
 static const char SEL_SHIM[] =
 "(function(G){\n"
 "var doc = G.document; if (!doc) return;\n"
@@ -882,76 +1055,7 @@ static const char SEL_SHIM[] =
 "  if (!a || !f) return false;\n"
 "  return !!G.__fc_selSet(a, offIn(an, ao | 0), f, offIn(fn, fo | 0)); }\n"
 
-/* ---- Range -------------------------------------------------------------- */
-"function Range(){ this._sc = null; this._so = 0; this._ec = null; this._eo = 0; }\n"
-"var RP = Range.prototype;\n"
-"function ancestorsOf(n){ var a = []; while (n) { a.unshift(n); n = n.parentNode; } return a; }\n"
-"function commonOf(a, b){\n"
-"  if (!a || !b) return null;\n"
-"  var x = ancestorsOf(a), y = ancestorsOf(b), i = 0;\n"
-"  while (i < x.length && i < y.length && x[i] === y[i]) i++;\n"
-"  return i > 0 ? x[i - 1] : null; }\n"
-"function defp(o, n, g, s){ var d = { configurable: true, enumerable: false };\n"
-"  if (g) d.get = g; if (s) d.set = s;\n"
-"  try { Object.defineProperty(o, n, d); } catch (e) {} }\n"
-"defp(RP, 'startContainer', function(){ return this._sc; });\n"
-"defp(RP, 'startOffset',    function(){ return this._so; });\n"
-"defp(RP, 'endContainer',   function(){ return this._ec; });\n"
-"defp(RP, 'endOffset',      function(){ return this._eo; });\n"
-"defp(RP, 'collapsed', function(){\n"
-"  return this._sc === this._ec && this._so === this._eo; });\n"
-"defp(RP, 'commonAncestorContainer', function(){ return commonOf(this._sc, this._ec); });\n"
-"RP.setStart = function(n, o){ this._sc = n; this._so = o | 0;\n"
-"  if (!this._ec) { this._ec = n; this._eo = o | 0; } };\n"
-"RP.setEnd   = function(n, o){ this._ec = n; this._eo = o | 0;\n"
-"  if (!this._sc) { this._sc = n; this._so = o | 0; } };\n"
-"RP.setStartBefore = function(n){ this.setStart(n.parentNode, idx(n.parentNode, n)); };\n"
-"RP.setStartAfter  = function(n){ this.setStart(n.parentNode, idx(n.parentNode, n) + 1); };\n"
-"RP.setEndBefore   = function(n){ this.setEnd(n.parentNode, idx(n.parentNode, n)); };\n"
-"RP.setEndAfter    = function(n){ this.setEnd(n.parentNode, idx(n.parentNode, n) + 1); };\n"
-"RP.collapse = function(toStart){ if (toStart) { this._ec = this._sc; this._eo = this._so; }\n"
-"  else { this._sc = this._ec; this._so = this._eo; } };\n"
-"RP.selectNode = function(n){ this.setStartBefore(n); this.setEndAfter(n); };\n"
-"RP.selectNodeContents = function(n){\n"
-"  this._sc = n; this._so = 0;\n"
-"  this._ec = n; this._eo = (n.nodeType === 3) ? (n.data || '').length\n"
-"                                              : (n.childNodes || []).length; };\n"
-"RP.cloneRange = function(){ var r = new Range();\n"
-"  r._sc = this._sc; r._so = this._so; r._ec = this._ec; r._eo = this._eo; return r; };\n"
-/* toString walks the tree rather than asking C: a Range the page built itself
- * is not the selection, so there is nothing in C to ask. */
-"function textOf(n){ if (!n) return '';\n"
-"  if (n.nodeType === 3) return n.data || '';\n"
-"  var s = '', cs = n.childNodes || [];\n"
-"  for (var i = 0; i < cs.length; i++) s += textOf(cs[i]);\n"
-"  return s; }\n"
-"RP.toString = function(){\n"
-"  var sc = this._sc, ec = this._ec, so = this._so, eo = this._eo;\n"
-"  if (!sc || !ec) return '';\n"
-/* BOTH ENDS IN THE SAME CONTAINER, and the element case is not the rare one:
- * selectNodeContents(composer) produces exactly it, and that is how a page
- * reads a composer back through a Range. Returning '' there (which the first
- * cut did) makes the whole Range surface look like it does nothing. */
-"  if (sc === ec) {\n"
-"    if (sc.nodeType === 3) return (sc.data || '').substring(so, eo);\n"
-"    var out = [], cs = sc.childNodes || [];\n"
-"    for (var i = so; i < eo && i < cs.length; i++) out.push(textOf(cs[i]));\n"
-"    return out.join(''); }\n"
-"  var out = [], started = false, done = false;\n"
-"  function walk(n){\n"
-"    if (done) return;\n"
-"    if (n === ec) { if (n.nodeType === 3) out.push((n.data || '').substring(0, eo));\n"
-"                    done = true; return; }\n"
-"    if (n === sc) { started = true;\n"
-"      if (n.nodeType === 3) { out.push((n.data || '').substring(so)); return; } }\n"
-"    else if (started && n.nodeType === 3) out.push(n.data || '');\n"
-"    var cs = n.childNodes || [];\n"
-"    for (var i = 0; i < cs.length && !done; i++) walk(cs[i]);\n"
-"  }\n"
-"  walk(commonOf(sc, ec) || root());\n"
-"  return out.join(''); };\n"
-"G.Range = Range;\n"
-"doc.createRange = function(){ return new Range(); };\n"
+#include "js_live_range_shim.inc"
 
 /* ---- Selection ---------------------------------------------------------- */
 "function Selection(){}\n"
@@ -1217,6 +1321,7 @@ static const char EDIT_SHIM[] =
 void js_forms_install(JSContext *ctx)
 {
     if (!ctx) return;
+    range_native_install(ctx);
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyFunctionList(ctx, g, g_natives,
                                (int)(sizeof g_natives / sizeof g_natives[0]));

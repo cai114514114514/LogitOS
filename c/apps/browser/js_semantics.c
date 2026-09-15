@@ -59,9 +59,103 @@
  */
 
 #include "quickjs.h"
+#include "js_dom.h"
+#include "top_layer.h"
+#include "js_semantics.h"
+#include "js_page.h"
+#include "css.h"
+#include "weaksym.h"
 #include <string.h>
 
 int printf(const char *, ...);
+
+/* Native modal state must drive paint/input as well as :modal. Previously a
+ * JS Map could say true while a later page item painted over the dialog and
+ * Tab escaped into the background. These weak edges preserve small host
+ * consumers: showModal explicitly refuses when their native stack is absent. */
+extern int top_layer_push(struct node *) LOGIT_WEAK;
+extern int top_layer_remove(struct node *) LOGIT_WEAK;
+extern int top_layer_is_modal(const struct node *) LOGIT_WEAK;
+extern void top_layer_reset(void) LOGIT_WEAK;
+extern void top_layer_set_close_request(void (*)(struct node *)) LOGIT_WEAK;
+LOGIT_WEAK_STUB(top_layer_push);
+LOGIT_WEAK_STUB(top_layer_remove);
+LOGIT_WEAK_STUB(top_layer_is_modal);
+LOGIT_WEAK_STUB(top_layer_reset);
+LOGIT_WEAK_STUB(top_layer_set_close_request);
+extern int top_layer_push_popover(struct node *, struct node *) LOGIT_WEAK;
+extern int top_layer_is_popover(const struct node *) LOGIT_WEAK;
+extern void top_layer_set_popover_hide(void (*)(struct node *)) LOGIT_WEAK;
+LOGIT_WEAK_STUB(top_layer_push_popover);
+LOGIT_WEAK_STUB(top_layer_is_popover);
+LOGIT_WEAK_STUB(top_layer_set_popover_hide);
+static JSContext *g_modal_ctx;
+static JSValue g_invoker_hook = JS_UNDEFINED;
+static JSValue g_template_content_hook = JS_UNDEFINED;
+static JSValue popover_native(JSContext *ctx, JSValueConst self, int argc, JSValueConst *argv)
+{
+    (void)self;
+    int op=0;
+    if(argc<2||JS_ToInt32(ctx,&op,argv[0])<0)return JS_FALSE;
+    struct node *n=js_dom_node_from(argv[1]);
+    if(!n)return JS_FALSE;
+    int ok=0;
+    if(op==0&&LOGIT_HAVE(top_layer_is_popover))ok=top_layer_is_popover(n);
+    if(op==1&&LOGIT_HAVE(top_layer_push_popover))
+        ok=top_layer_push_popover(n,argc>2?js_dom_node_from(argv[2]):0);
+    if(op==2&&LOGIT_HAVE(top_layer_remove))ok=top_layer_remove(n);
+    if(op&&ok) {
+#ifdef POPOVER_PAINT_INVALIDATION
+        js_dom_control_changed(n);
+#else
+        /* Membership changes the box tree even when every CSS property is
+         * unchanged. The old paint-only mark passed direct-layout host tests
+         * but guest restyle() saw CSS_CHANGED_NONE and skipped layout: the
+         * first showPopover()/getBoundingClientRect() still returned zero. */
+        js_dom_top_layer_changed(n);
+#endif
+    }
+    return JS_NewBool(ctx,ok);
+}
+static void popover_request_hide(struct node *n)
+{
+    if(!g_modal_ctx)return;
+    JSValue obj=js_dom_node_value(g_modal_ctx,n);
+    JSValue fn=JS_GetPropertyStr(g_modal_ctx,obj,"hidePopover");
+    if(JS_IsFunction(g_modal_ctx,fn)) {
+        JSValue r=JS_Call(g_modal_ctx,fn,obj,0,NULL);
+        if(JS_IsException(r)){JSValue e=JS_GetException(g_modal_ctx);JS_FreeValue(g_modal_ctx,e);}
+        JS_FreeValue(g_modal_ctx,r);
+    }
+    JS_FreeValue(g_modal_ctx,fn);JS_FreeValue(g_modal_ctx,obj);
+}
+static JSValue modal_native(JSContext *ctx, JSValueConst self, int argc,
+                            JSValueConst *argv, int magic)
+{
+    (void)self;
+    struct node *n=argc?js_dom_node_from(argv[0]):0;
+    if(!n)return JS_FALSE;
+    int ok=0;
+    if(magic==0 && LOGIT_HAVE(top_layer_is_modal))ok=top_layer_is_modal(n);
+    if(magic==1 && LOGIT_HAVE(top_layer_push)) {
+        ok=top_layer_push(n);
+        if(ok)css_ensure_styled(n); /* open changed before dialog focusing */
+    }
+    if(magic==2 && LOGIT_HAVE(top_layer_remove))ok=top_layer_remove(n);
+    return JS_NewBool(ctx,ok);
+}
+static void modal_request_close(struct node *n)
+{
+    if(!g_modal_ctx)return;
+    JSValue obj=js_dom_node_value(g_modal_ctx,n);
+    JSValue fn=JS_GetPropertyStr(g_modal_ctx,obj,"requestClose");
+    if(JS_IsFunction(g_modal_ctx,fn)) {
+        JSValue r=JS_Call(g_modal_ctx,fn,obj,0,NULL);
+        if(JS_IsException(r)){JSValue e=JS_GetException(g_modal_ctx);JS_FreeValue(g_modal_ctx,e);}
+        JS_FreeValue(g_modal_ctx,r);
+    }
+    JS_FreeValue(g_modal_ctx,fn);JS_FreeValue(g_modal_ctx,obj);
+}
 
 /* --------------------------------------------------------------------------
  * The prelude.
@@ -70,8 +164,10 @@ int printf(const char *, ...);
  * it needs is already on the global object by the time js_page.c calls us
  * (last, after js_forms_install; see the ordering comment there).
  * ------------------------------------------------------------------------ */
+#include "js_bootstrap_scan.inc"
+
 static const char *SEMANTICS_PRELUDE =
-"(function (STATIC_COLLECTIONS) {\n"
+"(function (STATIC_COLLECTIONS, __initialDetails, nativePopover) {\n"
 "'use strict';\n"
 "var G = globalThis, doc = G.document;\n"
 "if (!doc || typeof doc.createElement !== 'function') return;\n"
@@ -349,7 +445,7 @@ static const char *SEMANTICS_PRELUDE =
         * where the attribute is written rather than where `open` is read --
         * and `details.open = true` is reflection, which lands right here. */
 "    if (an === 'open' && tagOf(this) === 'details') enforceDetailsName(this);\n"
-"    if (wasPopoverShowing && popoverType(this) !== oldPopoverType) hidePopoverInternal(this, true);\n"
+"    if (wasPopoverShowing && popoverType(this) !== oldPopoverType) hidePopoverInternal(this, true, true);\n"
 "    return r;\n"
 "  };\n"
 "  wrapped.__logit_sem = 1;\n"
@@ -609,8 +705,10 @@ static const char *SEMANTICS_PRELUDE =
 /* ======================================================================
  * 5. The popover API
  * ====================================================================== */
-"var showingPopovers = new Map();\n"   /* el -> true while in the top layer */
+/* The old JS Map could report visible while layout still treated it as page
+ * flow. Native state now owns visibility; this list only orders JS hide steps. */
 "var topLayer = [];\n"
+"var hidingPopovers = new Set();\n"
 
 "function popoverType(el) {\n"
 "  var v = el.getAttribute && el.getAttribute('popover');\n"
@@ -618,7 +716,7 @@ static const char *SEMANTICS_PRELUDE =
 "  var k = POPOVER_KW[lc(v)];\n"
 "  return k === undefined ? 'manual' : k;\n"
 "}\n"
-"function popoverIsShowing(el) { return !!showingPopovers.get(el); }\n"
+"function popoverIsShowing(el) { return nativePopover(0, el); }\n"
 
 /* The spec's "check popover validity". `throwing` false makes it a predicate,
  * which is what the re-check after the (cancelable) beforetoggle needs: a
@@ -644,9 +742,10 @@ static const char *SEMANTICS_PRELUDE =
 "  return true;\n"
 "}\n"
 
-/* Showing an `auto` popover closes every other auto popover that is not one of
- * its ancestors. `hint` closes other hints. `manual` closes nothing -- which is
- * the whole difference between the two states the corpus parameterises over. */
+/* Showing an auto popover preserves DOM/source ancestors and closes other
+ * autos. The previous JS-only path also claimed hint support; native hint
+ * stack rules are explicitly refused until their separate semantics exist.
+ * Manual entries never create light-dismiss or modal confinement. */
 "function ancestorPopovers(el) {\n"
 "  var set = [];\n"
 "  for (var n = el; n; n = n.parentNode) {\n"
@@ -654,8 +753,9 @@ static const char *SEMANTICS_PRELUDE =
 "  }\n"
 "  return set;\n"
 "}\n"
-"function hideAllPopoversUntil(target, kinds) {\n"
+"function hideAllPopoversUntil(target, kinds, source) {\n"
 "  var keep = target ? ancestorPopovers(target) : [];\n"
+"  if (source) keep = keep.concat(ancestorPopovers(source));\n"
 "  for (var i = topLayer.length - 1; i >= 0; i--) {\n"
 "    var p = topLayer[i];\n"
 "    if (!p) continue;\n"
@@ -664,29 +764,41 @@ static const char *SEMANTICS_PRELUDE =
 "    hidePopoverInternal(p, true);\n"
 "  }\n"
 "}\n"
-"function hidePopoverInternal(el, fireEvents) {\n"
-"  if (!popoverIsShowing(el)) return;\n"
+/* Attribute mutation may already have pruned the native layer. The caller's
+ * captured old state still requires closing events and auxiliary list cleanup. */
+"function hidePopoverInternal(el, fireEvents, wasShowing) {\n"
+"  if ((!wasShowing && !popoverIsShowing(el)) || hidingPopovers.has(el)) return;\n"
+"  hidingPopovers.add(el);\n"
+"  try {\n"
 "  if (fireEvents)\n"
 "    fireEvent(el, ToggleEventCtor, 'beforetoggle',\n"
 "      { bubbles: false, cancelable: false, oldState: 'open', newState: 'closed' });\n"
-"  if (!popoverIsShowing(el)) return;\n"
-"  showingPopovers.delete(el);\n"
+"  nativePopover(2, el);\n"
 "  var ix = topLayer.indexOf(el);\n"
 "  if (ix >= 0) topLayer.splice(ix, 1);\n"
 "  if (fireEvents) queueToggle(el, 'open', 'closed');\n"
+"  } finally { hidingPopovers.delete(el); }\n"
 "}\n"
 
 "meth(EP, 'showPopover', function (options) {\n"
 "  var el = this;\n"
 "  checkPopoverValidity(el, false, true);\n"
 "  var kind = popoverType(el);\n"
+"  if (kind === 'hint') throwDom('NotSupportedError', 'Hint popover stack rules are not implemented.');\n"
 "  if (!fireEvent(el, ToggleEventCtor, 'beforetoggle',\n"
 "        { bubbles: false, cancelable: true, oldState: 'closed', newState: 'open' })) return;\n"
 "  if (!checkPopoverValidity(el, false, false)) return;\n"
-"  if (kind === 'auto') hideAllPopoversUntil(el, ['auto', 'hint']);\n"
-"  else if (kind === 'hint') hideAllPopoversUntil(el, ['hint']);\n"
-"  showingPopovers.set(el, true);\n"
+"  kind = popoverType(el);\n"
+"  if (kind === 'hint') throwDom('NotSupportedError', 'Hint popover stack rules are not implemented.');\n"
+"  if (kind === 'auto') hideAllPopoversUntil(el, ['auto'], options && options.source);\n"
+/* Detached/type-mutated entries are pruned natively without running JS from
+ * a DOM teardown callback. Drop their auxiliary JS references before admission
+ * so repeated show/remove cycles cannot grow this ordering list forever. */
+"  topLayer = topLayer.filter(function(p){return nativePopover(0,p);});\n"
+"  if (!nativePopover(1, el, options && options.source)) throwDom('NotSupportedError', 'Native popover top layer is unavailable or full.');\n"
 "  topLayer.push(el);\n"
+"  if (el.hasAttribute('autofocus')) el.focus();\n"
+"  else { var af=el.querySelector('[autofocus]');if(af)af.focus(); }\n"
 "  queueToggle(el, 'closed', 'open');\n"
 "});\n"
 "meth(EP, 'hidePopover', function () {\n"
@@ -698,7 +810,7 @@ static const char *SEMANTICS_PRELUDE =
 "  if (force === undefined || force === null) want = !popoverIsShowing(this);\n"
 "  else if (typeof force === 'object' && force !== null && 'force' in force) want = !!force.force;\n"
 "  else want = !!force;\n"
-"  if (want) { if (!popoverIsShowing(this)) this.showPopover(); }\n"
+"  if (want) { if (!popoverIsShowing(this)) this.showPopover(typeof force === 'object' ? force : undefined); }\n"
 "  else { if (popoverIsShowing(this)) this.hidePopover();\n"
 "         else checkPopoverValidity(this, false, true); }\n"
 "  return popoverIsShowing(this);\n"
@@ -707,7 +819,7 @@ static const char *SEMANTICS_PRELUDE =
 /* ======================================================================
  * 6. <dialog>
  * ====================================================================== */
-"var modalDialogs = new Map();\n"
+"var modalDialogs = { get: G.__logit_modal_get, delete: G.__logit_modal_remove };\n"
 "var dialogReturn = new Map();\n"
 "var DLG = P('HTMLDialogElement');\n"
 "if (DLG) {\n"
@@ -738,7 +850,7 @@ static const char *SEMANTICS_PRELUDE =
 "    if (!this.isConnected) throwDom('InvalidStateError', 'The element is not in a Document.');\n"
 "    if (popoverIsShowing(this)) throwDom('InvalidStateError', 'The dialog is already open as a popover.');\n"
 "    this.setAttribute('open', '');\n"
-"    modalDialogs.set(this, true);\n"
+"    if (!G.__logit_modal_push(this)) { this.removeAttribute('open'); throwDom('NotSupportedError', 'Native modal top layer is unavailable or full.'); }\n"
 "    dialogFocus(this);\n"
 "  });\n"
 "  meth(DLG, 'close', function (rv) {\n"
@@ -831,11 +943,11 @@ static const char *SEMANTICS_PRELUDE =
 "  if (t === 'input') return !!INPUT_BUTTONISH[lc(el.getAttribute('type') || '')] && !isDisabledCtl(el);\n"
 "  return false;\n"
 "}\n"
-"function runPopoverAction(target, action) {\n"
+"function runPopoverAction(target, action, source) {\n"
 "  var showing = popoverIsShowing(target);\n"
-"  if (action === 'show') { if (!showing) { try { target.showPopover(); } catch (e) {} } }\n"
+"  if (action === 'show') { if (!showing) { try { target.showPopover({source:source}); } catch (e) {} } }\n"
 "  else if (action === 'hide') { if (showing) { try { target.hidePopover(); } catch (e) {} } }\n"
-"  else { try { target.togglePopover(); } catch (e) {} }\n"
+"  else { try { if(showing)target.hidePopover();else target.showPopover({source:source}); } catch (e) {} }\n"
 "}\n"
 "function runCommand(invoker, target, command) {\n"
 "  primeOn(target, 'command');\n"
@@ -857,9 +969,9 @@ static const char *SEMANTICS_PRELUDE =
 "    return;\n"
 "  }\n"
 "  if (popoverType(target) !== null) {\n"
-"    if (c === 'show-popover') runPopoverAction(target, 'show');\n"
-"    else if (c === 'hide-popover') runPopoverAction(target, 'hide');\n"
-"    else if (c === 'toggle-popover') runPopoverAction(target, 'toggle');\n"
+"    if (c === 'show-popover') runPopoverAction(target, 'show', invoker);\n"
+"    else if (c === 'hide-popover') runPopoverAction(target, 'hide', invoker);\n"
+"    else if (c === 'toggle-popover') runPopoverAction(target, 'toggle', invoker);\n"
 "  }\n"
 "}\n"
 /* A <form>'s reset: every control back to its default. js_forms.c owns control
@@ -877,6 +989,9 @@ static const char *SEMANTICS_PRELUDE =
 "        try { el.value = el.getAttribute('value') || ''; } catch (e) {}\n"
 "      }\n"
 "    } else if (t === 'select') {\n"
+#ifndef SELECT_STATE_NO_RESET
+"      if (nativeSelect(el) && typeof nativeSelReset === 'function') { nativeSelReset(el); continue; }\n"
+#endif
 "      var o = []; selectOptions(el, o);\n"
 "      for (var j = 0; j < o.length; j++) optSelected.set(o[j], o[j].hasAttribute('selected'));\n"
 "    } else if (t === 'textarea') {\n"
@@ -891,6 +1006,24 @@ static const char *SEMANTICS_PRELUDE =
  * a button that names a command and gives no valid type IS type=button, so the
  * two rules together say "naming a command opts you out of submitting", which
  * is what the corpus asserts from both directions. */
+/* One invoker default action serves both HTMLElement.click() and the real
+ * device path. It dispatches no extra click and handles no checkbox state;
+ * native forms retain those defaults. Form submit/reset buttons keep their
+ * own priority over invokers. An unresolved command still must not submit. */
+"function activateInvoker(el) {\n"
+"  if (!canInvoke(el)) return false;\n"
+"  var t=tagOf(el), frm=formOwner(el);\n"
+"  if (frm && ((t==='button' && (el.type==='submit'||el.type==='reset')) ||\n"
+"      (t==='input' && /^(submit|image|reset)$/.test(lc(el.getAttribute('type')||''))))) return false;\n"
+"  if (t==='button') {\n"
+"    var cf=attrElement(el,'commandfor'),cmd=el.command;\n"
+"    if(cf&&cmd){runCommand(el,cf,cmd);return true;}\n"
+"    if(cf||el.hasAttribute('command')||el.hasAttribute('commandfor'))return true;\n"
+"  }\n"
+"  var pt=attrElement(el,'popovertarget');\n"
+"  if(pt&&popoverType(pt)!==null){runPopoverAction(pt,el.popoverTargetAction,el);return true;}\n"
+"  return false;\n"
+"}\n"
 "function activationBehaviour(el) {\n"
 "  var t = tagOf(el);\n"
 "  if (t === 'button' && !isDisabledCtl(el)) {\n"
@@ -915,17 +1048,7 @@ static const char *SEMANTICS_PRELUDE =
 "      return;\n"
 "    }\n"
 "  }\n"
-"  if (canInvoke(el)) {\n"
-       /* commandfor wins over popovertarget when both are present. */
-"    if (t === 'button') {\n"
-"      var cf = attrElement(el, 'commandfor');\n"
-"      var cmd = el.command;\n"
-"      if (cf && cmd) { runCommand(el, cf, cmd); return; }\n"
-"      if (cf || el.hasAttribute('command')) return;\n"
-"    }\n"
-"    var pt = attrElement(el, 'popovertarget');\n"
-"    if (pt && popoverType(pt) !== null) { runPopoverAction(pt, el.popoverTargetAction); return; }\n"
-"  }\n"
+"  if (activateInvoker(el)) return;\n"
 "  if (t === 'summary') {\n"
 "    var d = el.parentNode;\n"
 "    if (d && d.nodeType === 1 && tagOf(d) === 'details' && detailsSummary(d) === el) detailsToggle(d);\n"
@@ -1016,6 +1139,7 @@ static const char *SEMANTICS_PRELUDE =
 "        fireEvent(el, null, 'input', { bubbles: true, cancelable: false });\n"
 "        fireEvent(el, null, 'change', { bubbles: true, cancelable: false });\n"
 "      }\n"
+"      if((tagOf(el)==='a'||tagOf(el)==='area')&&typeof G.__logitDownloadAnchor==='function'&&G.__logitDownloadAnchor(el))return;\n"
 "      activationBehaviour(el);\n"
 "    } else undoPreClick(pre);\n"
 "  } finally { clicking.delete(el); }\n"
@@ -1037,12 +1161,17 @@ static const char *SEMANTICS_PRELUDE =
  * duplicated logic, and the `in` guard means that the day js_forms.c installs
  * there itself, this does nothing. */
 "var IEP = P('HTMLInputElement');\n"
-"var nativeFocus = null, nativeBlur = null;\n"
+/* Correction 2026-09-09: the old prototype lookup missed js_forms' actual
+ * install target. Capture its native Node-taking hooks directly. Once native
+ * focus rejects inert/modal-blocked content, synthetic events must NOT turn
+ * that refusal into a second successful focus model. */
+"var nativeFocus = typeof G.__fc_focus === 'function' ? function(){ G.__fc_focus(this); } : null;\n"
+"var nativeBlur = typeof G.__fc_blur === 'function' ? function(){ G.__fc_blur(this); } : null;\n"
 "if (IEP) {\n"
 "  var df = Object.getOwnPropertyDescriptor(IEP, 'focus');\n"
 "  var db = Object.getOwnPropertyDescriptor(IEP, 'blur');\n"
-"  if (df && typeof df.value === 'function') nativeFocus = df.value;\n"
-"  if (db && typeof db.value === 'function') nativeBlur = db.value;\n"
+"  if (!nativeFocus && df && typeof df.value === 'function') nativeFocus = df.value;\n"
+"  if (!nativeBlur && db && typeof db.value === 'function') nativeBlur = db.value;\n"
 "}\n"
 
 /* AND THEN THE EVENTS HAVE TO ARRIVE, WHICH IS A SECOND PROBLEM ENTIRELY.
@@ -1145,13 +1274,13 @@ static const char *SEMANTICS_PRELUDE =
 "  fireFocusEvent(el, 'focusin', true, old || null);\n"
 "}\n"
 "meth(EP, 'focus', function () {\n"
-"  if (nativeFocus) { try { nativeFocus.call(this); } catch (e) {} }\n"
+"  if (nativeFocus) { try { nativeFocus.call(this); } catch (e) {} return; }\n"
 "  if (doc.activeElement === this) return;\n"
 "  if (!isFocusable(this)) return;\n"
 "  focusFallback(this);\n"
 "});\n"
 "meth(EP, 'blur', function () {\n"
-"  if (nativeBlur) { try { nativeBlur.call(this); } catch (e) {} }\n"
+"  if (nativeBlur) { try { nativeBlur.call(this); } catch (e) {} return; }\n"
 "  if (doc.activeElement !== this) return;\n"
 "  fireFocusEvent(this, 'blur', false, null);\n"
 "  fireFocusEvent(this, 'focusout', true, null);\n"
@@ -1185,7 +1314,8 @@ static const char *SEMANTICS_PRELUDE =
  * opened wins") is the opposite of the rule at parse time ("the first wins"). */
 "(function () {\n"
 "  var all = [], seen = {};\n"
-"  descendants(doc, { details: 1 }, all);\n"
+"  if (__initialDetails === undefined) descendants(doc, { details: 1 }, all);\n"
+"  else all = __initialDetails;\n"
 "  for (var i = 0; i < all.length; i++) {\n"
 "    var d = all[i], nm = detailsName(d);\n"
 "    if (nm === null || !d.hasAttribute('open')) continue;\n"
@@ -1380,6 +1510,25 @@ static const char *SEMANTICS_PRELUDE =
  * 12. <select>, <option>, <form>, <template>
  * ====================================================================== */
 "var SEL = P('HTMLSelectElement'), OPT = P('HTMLOptionElement');\n"
+/* The old implementation below kept ALL selectedness in optSelected. That
+ * made JS agree with itself while fc_paint_state still displayed the markup
+ * default: Python's switcher chose English/stable but painted Greek/dev.
+ * Selects now read/write forms.c's actual control state, including
+ * native dropdown changes. Pass the wrapper, not a document-scanned integer
+ * key: pages build and select their switchers while detached. The first bridge
+ * retained JS state for multiple selects because native stored one index;
+ * option-local native state now serves both, so removing `multiple` or clicking
+ * Reset cannot revive a second model. Only links without js_forms use Map. */
+"var nativeSelGet = G.__fc_selidx, nativeSelSet = G.__fc_setselidx;\n"
+"var nativeSelReset = G.__fc_resetsel;\n"
+#ifdef SELECT_STATE_JS_ONLY
+"var nativeOptGet, nativeOptSet;\n"
+"function nativeSelect(s) { return false; }\n"
+#else
+"var nativeOptGet = G.__fc_optsel, nativeOptSet = G.__fc_setoptsel;\n"
+"function nativeSelect(s) { return s &&\n"
+"  typeof nativeSelGet === 'function' && typeof nativeSelSet === 'function'; }\n"
+#endif
 "function selectOptions(sel, out) {\n"
 "  for (var c = sel.firstChild; c; c = c.nextSibling) {\n"
 "    if (c.nodeType !== 1) continue;\n"
@@ -1390,13 +1539,29 @@ static const char *SEMANTICS_PRELUDE =
 "}\n"
 "if (OPT) {\n"
 "  acc(OPT, 'selected', function () {\n"
+"    var sel = ownerSelect(this);\n"
+"    if (nativeSelect(sel)) {\n"
+"      if (sel.hasAttribute('multiple')) return nativeOptGet(this);\n"
+"      var o = []; selectOptions(sel, o);\n"
+"      return o.indexOf(this) === nativeSelGet(sel);\n"
+"    }\n"
 "    var s = optSelected.get(this);\n"
+"    if (s === undefined && typeof nativeOptGet === 'function') return nativeOptGet(this);\n"
 "    return s === undefined ? this.hasAttribute('selected') : s;\n"
 /* Selecting an option in a SINGLE select deselects the others -- the spec's
  * "ask for a reset", and the reason `:checked` on a <select> whose markup put
  * `selected` on option1 must stop matching option1 the moment a script selects
  * option2. Without it both match, which is a state no select can be in. */
 "  }, function (v) {\n"
+"    var sel = ownerSelect(this);\n"
+"    if (nativeSelect(sel)) {\n"
+"      if (sel.hasAttribute('multiple')) { nativeOptSet(this, !!v); return; }\n"
+"      var o = []; selectOptions(sel, o); var i = o.indexOf(this);\n"
+"      if (v) nativeSelSet(sel, i);\n"
+"      else if (nativeSelGet(sel) === i) nativeSelSet(sel, -1);\n"
+"      return;\n"
+"    }\n"
+"    if (!sel && typeof nativeOptSet === 'function') { nativeOptSet(this, !!v); return; }\n"
 "    optSelected.set(this, !!v);\n"
 "    if (!v) return;\n"
 "    var sel = ownerSelect(this);\n"
@@ -1456,6 +1621,7 @@ static const char *SEMANTICS_PRELUDE =
 "      for (var i = 0; i < o.length; i++) if (o[i].selected) out.push(o[i]);\n"
 "    }); });\n"
 "  acc(SEL, 'selectedIndex', function () {\n"
+"    if (nativeSelect(this)) return nativeSelGet(this);\n"
 "    var o = []; selectOptions(this, o);\n"
 "    for (var i = 0; i < o.length; i++) if (o[i].selected) return i;\n"
        /* A single-select with nothing selected still has a selected option:
@@ -1468,6 +1634,7 @@ static const char *SEMANTICS_PRELUDE =
 "    return -1;\n"
 "  }, function (v) {\n"
 "    var o = []; selectOptions(this, o); var want = v | 0;\n"
+"    if (nativeSelect(this)) { nativeSelSet(this, want); return; }\n"
 "    for (var i = 0; i < o.length; i++) optSelected.set(o[i], i === want);\n"
 "  });\n"
 "  acc(SEL, 'value', function () {\n"
@@ -1478,6 +1645,7 @@ static const char *SEMANTICS_PRELUDE =
 "    var o = []; selectOptions(this, o); v = String(v);\n"
 "    var hit = -1;\n"
 "    for (var i = 0; i < o.length; i++) if (o[i].value === v) { hit = i; break; }\n"
+"    if (nativeSelect(this)) { nativeSelSet(this, hit); return; }\n"
 "    for (var j = 0; j < o.length; j++) optSelected.set(o[j], j === hit);\n"
 "  });\n"
 "  acc(SEL, 'type', function () {\n"
@@ -1759,9 +1927,10 @@ static const char *SEMANTICS_PRELUDE =
  * `Object.getPrototypeOf(createElement('input'))`, which stopped being the
  * shared element prototype at 7fc2bec. forms.c's fc_value() is keyed on the
  * NODE and already understands <textarea>, so the descriptor is general and
- * only its location was wrong. `select` is excluded on purpose -- its `value`
- * is the selected option's, which this file defines above and fc_value does
- * not model. */
+ * only its location was wrong. `select` is excluded here because its value
+ * getter above resolves the selected option through the native selectedIndex.
+ * The old comment said fc_value did not model selects; it does, and keeping
+ * a second JS-only selection state is what made the displayed label disagree. */
 "var TAP = P('HTMLTextAreaElement');\n"
 "if (IEP && TAP && IEP !== TAP) {\n"
 "  ['value', 'defaultValue', 'selectionStart', 'selectionEnd', 'selectionDirection',\n"
@@ -1777,11 +1946,17 @@ static const char *SEMANTICS_PRELUDE =
 /* <template>.content. The parser puts a template's children in the template
  * element itself here, so `content` is a DocumentFragment holding them --
  * built once and cached on the element, because the spec's content fragment is
- * a stable object identity (`t.content === t.content`). */
+ * a stable object identity (`t.content === t.content`).
+ * Correction: caching alone left subsequent innerHTML writes in the element
+ * while this getter kept returning the old fragment. The native innerHTML
+ * accessors now query this SAME private Map to choose their content target;
+ * never replace the Map entry, because callers may already hold the fragment.
+ * Only an explicit content read materializes it: eager materialization during
+ * innerHTML would newly empty templates in the native outer-tree serializer.
+ * That serializer/parser representation remains a separate existing limit. */
 "var TPL = P('HTMLTemplateElement');\n"
 "var tplContent = new Map();\n"
-"if (TPL) {\n"
-"  acc(TPL, 'content', function () {\n"
+"function templateContent() {\n"
 "    var f = tplContent.get(this);\n"
 "    if (f) return f;\n"
 "    f = doc.createDocumentFragment();\n"
@@ -1789,8 +1964,9 @@ static const char *SEMANTICS_PRELUDE =
 "    while (c) { var nx = c.nextSibling; f.appendChild(c); c = nx; }\n"
 "    tplContent.set(this, f);\n"
 "    return f;\n"
-"  });\n"
 "}\n"
+"if (TPL) acc(TPL, 'content', templateContent);\n"
+"return [activateInvoker, TPL ? function () { return tplContent.get(this); } : undefined];\n"
 "})";
 
 /* --------------------------------------------------------------------------
@@ -1804,6 +1980,15 @@ static const int SEM_STATIC = 0;
 
 void js_semantics_install(JSContext *ctx)
 {
+    g_modal_ctx=ctx;
+    if(LOGIT_HAVE(top_layer_reset))top_layer_reset();
+    if(LOGIT_HAVE(top_layer_set_close_request))top_layer_set_close_request(modal_request_close);
+    if(LOGIT_HAVE(top_layer_set_popover_hide))top_layer_set_popover_hide(popover_request_hide);
+    JSValue global=JS_GetGlobalObject(ctx);
+    const char *names[]={"__logit_modal_get","__logit_modal_push","__logit_modal_remove"};
+    for(int i=0;i<3;i++) JS_SetPropertyStr(ctx,global,names[i],
+        JS_NewCFunctionMagic(ctx,modal_native,names[i],1,JS_CFUNC_generic_magic,i));
+    JS_FreeValue(ctx,global);
     JSValue fn = JS_Eval(ctx, SEMANTICS_PRELUDE, strlen(SEMANTICS_PRELUDE),
                          "<semantics>", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(fn)) {
@@ -1816,8 +2001,12 @@ void js_semantics_install(JSContext *ctx)
         return;
     }
     JSValue g = JS_GetGlobalObject(ctx);
-    JSValue arg = JS_NewBool(ctx, SEM_STATIC);
-    JSValue r = JS_Call(ctx, fn, g, 1, (JSValueConst *)&arg);
+    JSValue args[3] = { JS_NewBool(ctx, SEM_STATIC), js_bootstrap_snapshot(ctx,"details",1),
+                       JS_NewCFunction(ctx,popover_native,"popoverState",3) };
+    if(JS_IsException(args[1])) {
+        JS_FreeValue(ctx,args[0]);JS_FreeValue(ctx,args[2]);JS_FreeValue(ctx,g);JS_FreeValue(ctx,fn);return;
+    }
+    JSValue r = JS_Call(ctx, fn, g, 3, (JSValueConst *)args);
     if (JS_IsException(r)) {
         JSValue e = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, e);
@@ -1825,8 +2014,55 @@ void js_semantics_install(JSContext *ctx)
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, e);
     }
+    if(JS_IsObject(r)) {
+        JS_FreeValue(ctx,g_invoker_hook);g_invoker_hook=JS_GetPropertyUint32(ctx,r,0);
+        JS_FreeValue(ctx,g_template_content_hook);
+        g_template_content_hook=JS_GetPropertyUint32(ctx,r,1);
+    }
     JS_FreeValue(ctx, r);
-    JS_FreeValue(ctx, arg);
+    JS_FreeValue(ctx,args[0]);
+    JS_FreeValue(ctx,args[1]);
+    JS_FreeValue(ctx,args[2]);
     JS_FreeValue(ctx, g);
     JS_FreeValue(ctx, fn);
+}
+
+JSValue js_semantics_template_content(JSContext *ctx, JSValueConst node)
+{
+    if(ctx!=g_modal_ctx || !JS_IsFunction(ctx,g_template_content_hook))
+        return JS_UNDEFINED;
+    return JS_Call(ctx,g_template_content_hook,node,0,NULL);
+}
+
+/* Unlike .click(), a device click entered through browser.c's native control
+ * default. The old code had no caller for the JS invoker default there: focus
+ * repainted, but no popover opened and no toggle task could possibly exist. */
+int js_semantics_activate_invoker(struct node *n)
+{
+#ifdef SEMANTICS_NO_NATIVE_INVOKER
+    (void)n;return 0;
+#else
+    if(!g_modal_ctx || !n || !JS_IsFunction(g_modal_ctx,g_invoker_hook))return 0;
+    JSContext *ctx=g_modal_ctx;
+    js_page_slice_begin();
+    JSValue arg=js_dom_node_value(ctx,n);
+    JSValue r=JS_Call(ctx,g_invoker_hook,JS_UNDEFINED,1,(JSValueConst *)&arg);
+    int handled=1;
+    if(JS_IsException(r)) {
+        JSValue e=JS_GetException(ctx);const char *m=JS_ToCString(ctx,e);
+        printf("[semantics] invoker default failed: %s\n",m?m:"?");
+        if(m)JS_FreeCString(ctx,m);JS_FreeValue(ctx,e);
+    } else handled=JS_ToBool(ctx,r);
+    JS_FreeValue(ctx,r);JS_FreeValue(ctx,arg);
+    js_dom_run_jobs(ctx);js_page_slice_end();
+    return handled;
+#endif
+}
+void js_semantics_close(JSContext *ctx)
+{
+    if(ctx!=g_modal_ctx)return;
+    JS_FreeValue(ctx,g_invoker_hook);g_invoker_hook=JS_UNDEFINED;
+    JS_FreeValue(ctx,g_template_content_hook);g_template_content_hook=JS_UNDEFINED;
+    if(LOGIT_HAVE(top_layer_reset))top_layer_reset();
+    g_modal_ctx=0;
 }

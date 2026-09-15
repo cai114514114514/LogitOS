@@ -99,6 +99,7 @@
 #include "quickjs.h"
 #include "dom.h"
 #include "html_tree.h"
+#include "js_dom.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -313,6 +314,41 @@ static struct node *dp_of(JSValueConst v)
     struct dp_handle *h = dp_h(v);
     if (!h || !h->n || h->n->serial != h->serial) return 0;
     return h->n;
+}
+
+/* Move/copy a parsed-data node across the one real document boundary.
+ *
+ * DOMParser owns a separate dom_doc and wrapper class, so implementing this
+ * in JavaScript from tagName/textContent necessarily loses attributes. The
+ * DOM already has the exact primitive we need: dom_import_node copies the
+ * native node, attributes, namespace and descendants into the live page's
+ * arena. The returned value is consequently a normal live Element wrapper,
+ * not a DOMParser facade that happens to look similar.
+ *
+ * `adopt` has one unavoidable compatibility deviation: a QuickJS object's
+ * native class cannot be changed from dp_cid to js_dom.c's element class, so
+ * cross-arena adoption returns the imported live wrapper and detaches the old
+ * parsed wrapper instead of preserving JavaScript object identity. Tree,
+ * attributes, ownerDocument and detach semantics are real; callers that use
+ * the returned value get the platform operation rather than a hard stop. */
+static JSValue dp_transfer_live(JSContext *ctx, JSValueConst t, int argc,
+                                JSValueConst *argv)
+{
+    (void)t;
+    if (argc < 1) return JS_ThrowTypeError(ctx, "DOMParser node required");
+    struct node *src = dp_of(argv[0]);
+    struct node *live = js_dom_root();
+    if (!src || !live || src->type == N_DOCUMENT || src->type == N_DOCTYPE)
+        return js_dom_throw_dom(ctx, "NotSupportedError",
+                                "this DOMParser node cannot be transferred");
+
+    int deep = argc > 1 && JS_ToBool(ctx, argv[1]);
+    int adopt = argc > 2 && JS_ToBool(ctx, argv[2]);
+    struct node *copy = dom_import_node(live->doc, src);
+    if (!copy) return JS_ThrowOutOfMemory(ctx);
+    if (!deep) dom_destroy_children(copy);
+    if (adopt && src->parent) dom_remove_child(src->parent, src);
+    return js_dom_wrap_node(ctx, copy);
 }
 
 static int dp_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
@@ -589,6 +625,11 @@ static JSValue dp_get_text(JSContext *ctx, JSValueConst t)
     struct node *n = dp_of(t);
     if (!n) return JS_UNDEFINED;
     if (n->type == N_DOCUMENT || n->type == N_DOCTYPE) return JS_NULL;
+    /* A Comment's own textContent is its data, although comments must be
+     * excluded when gathering an Element's descendant text. The old shared
+     * gather path returned an empty string even for the Comment itself. */
+    if (n->type == N_TEXT || n->type == N_COMMENT)
+        return JS_NewStringLen(ctx, n->text ? n->text : "", (size_t)n->textlen);
     struct dp_sbuf b = { 0, 0, 0 };
     dp_gather_text(n, &b);
     JSValue v = JS_NewStringLen(ctx, b.p ? b.p : "", b.len);
@@ -830,6 +871,21 @@ static JSValue dp_removeChild(JSContext *ctx, JSValueConst t, int argc, JSValueC
     return JS_DupValue(ctx, argv[0]);
 }
 
+static JSValue dp_remove(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)argc; (void)argv;
+    struct node *n = dp_of(t);
+    if (!n || n->type == N_DOCUMENT) return JS_ThrowTypeError(ctx, "remove requires a ChildNode");
+    /* This wrapper used to expose removeChild only. Querying a parsed document
+     * then stripping script/style/header links with node.remove() therefore
+     * threw before search summaries could read textContent. Reuse the same
+     * detach operation as removeChild, not dom_destroy_subtree: the caller can
+     * retain/reinsert this node, and its wrapper's arena reference must keep
+     * it alive even after the parsed Document wrapper is garbage-collected. */
+    if (n->parent) dom_remove_child(n->parent, n);
+    return JS_UNDEFINED;
+}
+
 static JSValue dp_setAttribute(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
 {
     struct node *n = dp_of(t);
@@ -930,6 +986,17 @@ static JSValue dp_doc_get_body(JSContext *ctx, JSValueConst t)
 static JSValue dp_doc_get_docel(JSContext *ctx, JSValueConst t)
 { struct dp_handle *h = dp_h(t); return h ? dp_wrap(ctx, h->arena, dom_doc_element(h->arena->doc)) : JS_UNDEFINED; }
 
+/* Parsed documents have no navigation request, hence HTML's default empty
+ * referrer. This wrapper family has its own native receiver check; borrowing
+ * the live document getter would misidentify its independent arena. */
+static JSValue dp_doc_get_referrer(JSContext *ctx, JSValueConst t)
+{
+    struct node *n = dp_of(t);
+    if (!n || n->type != N_DOCUMENT)
+        return JS_ThrowTypeError(ctx, "Document.referrer requires a Document");
+    return JS_NewString(ctx, "");
+}
+
 /* ============================ property tables =============================
  * Node: everything an Element, Text, Comment, Doctype or the Document itself
  * can answer. Not split into a real Element/CharacterData/Document interface
@@ -972,13 +1039,30 @@ static const JSCFunctionListEntry dp_node_funcs[] = {
     JS_CGETSET_DEF("innerHTML", NULL, dp_set_innerHTML),
 };
 
+/* A parsed data document has no keyboard browsing context. Same-origin
+ * iframe adoption supplies its own owner-chain query in js_platform.c. */
+static JSValue dp_doc_hasFocus(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv)
+{
+    (void)argc; (void)argv;
+    struct node *n = dp_of(t);
+    if (!n || n->type != N_DOCUMENT)
+        return JS_ThrowTypeError(ctx, "Document.hasFocus requires a Document");
+    return JS_FALSE;
+}
+
 static const JSCFunctionListEntry dp_doc_funcs[] = {
+#ifndef DOCUMENT_NO_HAS_FOCUS
+    JS_CFUNC_DEF("hasFocus", 0, dp_doc_hasFocus),
+#endif
     JS_CFUNC_DEF("getElementById", 1, dp_doc_getById),
     JS_CFUNC_DEF("createElement", 1, dp_doc_createElement),
     JS_CFUNC_DEF("createTextNode", 1, dp_doc_createTextNode),
     JS_CFUNC_DEF("createComment", 1, dp_doc_createComment),
     JS_CGETSET_DEF("body", dp_doc_get_body, NULL),
     JS_CGETSET_DEF("documentElement", dp_doc_get_docel, NULL),
+#ifndef DOCUMENT_NO_REFERRER
+    JS_CGETSET_DEF("referrer", dp_doc_get_referrer, NULL),
+#endif
 };
 
 static JSValueConst dp_proto_for(const struct node *n)
@@ -1000,6 +1084,15 @@ static JSValue dp_wrap(JSContext *ctx, struct dp_arena *a, struct node *n)
     a->refcnt++;
     JS_SetOpaque(o, h);
     dom_set_wrapper(n, JS_VALUE_GET_PTR(o));
+#ifndef DOMPARSER_NO_REMOVE
+    /* The small parser wrapper has one shared Node prototype, also inherited
+     * by Document. ChildNode's method belongs to Element, CharacterData and
+     * DocumentType only, so install it on those wrappers instead of leaking it
+     * onto Document. This is a real mutation, not a summary-specific filter. */
+    if (n->type == N_ELEM || n->type == N_TEXT || n->type == N_COMMENT || n->type == N_DOCTYPE)
+        JS_DefinePropertyValueStr(ctx, o, "remove",
+            JS_NewCFunction(ctx, dp_remove, "remove", 0), JS_PROP_C_W_E);
+#endif
     return o;
 }
 
@@ -1136,5 +1229,7 @@ void js_domparser_install(JSContext *ctx)
 
     JSValue g = JS_GetGlobalObject(ctx);
     JS_SetPropertyStr(ctx, g, "DOMParser", ctor);
+    JS_DefinePropertyValueStr(ctx, g, "__domParserTransfer",
+        JS_NewCFunction(ctx, dp_transfer_live, "__domParserTransfer", 3), 0);
     JS_FreeValue(ctx, g);
 }
