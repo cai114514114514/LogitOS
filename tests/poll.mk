@@ -94,10 +94,12 @@ $(BUILD)/pollobj/$(1).o: $(CLIDIR)/polltest.c c/apps/libc/include/poll.h \
                          c/apps/libc/include/sys/timerfd.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
-$(BUILD)/$(1).elf: $(BUILD)/pollobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld
+# Delay LD until the target runs: the AEX v3 activation wrapper is target-local.
+# Expanding it during eval silently produced a v2 app with the original entry.
+$(BUILD)/$(1).elf: $(BUILD)/pollobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm c/apps/libc/logit_tls.ld tests/poll.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
+	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -T c/apps/libc/logit_tls.ld -o $$@ \
 	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/pollobj/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150

@@ -24,6 +24,7 @@
                            * cookie section is that mistake, one subsystem over. */
 
 #define STACK_SIZE  16384
+void *memcpy(void *, const void *, size_t);
 #define KSTACK_SIZE 32768
 
 struct thread {
@@ -34,6 +35,7 @@ struct thread {
     uint64_t kstack_top;     /* ring-0 stack top (TSS rsp0) for ring-3 threads */
     uint64_t cr3;            /* address space (PML4 phys); kernel space if 0 set at init */
     void *data;              /* opaque per-thread payload (the app) */
+    char vfs_name_scratch[256]; /* legacy directory-name result, owned by this thread */
     char name[32];           /* owned copy -- callers pass stack/temp buffers
                               * (execve's `nm` is a stack array; a bare pointer
                               * dangles as soon as the caller returns) */
@@ -73,6 +75,7 @@ struct thread {
      * the run ring. The ring is not a directory -- a parked thread is UNLINKED
      * from it (see ring_unlink) -- so a thread waiting on a futex is exactly the
      * thread the ring cannot find, and waking one by id is the whole job. */
+    int wake_pending; /* async signal/kill posted before the next park */
     uint64_t fsbase;
     struct thread *all_next;
 
@@ -338,6 +341,7 @@ static void name_set(struct thread *t, const char *n)
  * field is added in exactly one place. */
 static void block_fields_init(struct thread *t, int on_ring)
 {
+    t->wake_pending=0;
     t->state     = THREAD_READY;
     t->on_ring   = on_ring;
     t->slices    = 0;
@@ -501,7 +505,7 @@ void sched_init(void)
     main->cr3 = vmm_kernel_cr3();/* the kernel/shared address space */
     main->data = NULL;
     name_set(main, "wm");
-    main->id = next_id++;
+    main->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     main->alive = 1;
     main->running = 1;
     main->entry = NULL;
@@ -535,7 +539,7 @@ void sched_init(void)
     bi->cr3 = vmm_kernel_cr3();
     bi->data = NULL;
     name_set(bi, "idle0");
-    bi->id = next_id++;
+    bi->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     bi->alive = 1;
     bi->running = 0;            /* not currently running (WM is core 0's current) */
     bi->entry = sched_become_idle;
@@ -590,7 +594,7 @@ void thread_create(void (*entry)(void), const char *name)
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
     name_set(t, name);
-    t->id = next_id++;
+    t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     t->alive = 1;
     t->running = 0;
     t->entry = entry;
@@ -643,7 +647,7 @@ void thread_create(void (*entry)(void), const char *name)
 
 /* Create a ring-3 process thread: first switch drops to `entry` in user mode
  * on `ustack`, with its own kernel stack for traps. */
-int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3)
+static int create_user_prepared(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3, uint64_t fsbase, void (*publish)(void *, int), void *opaque)
 {
     struct thread *t = kmalloc(sizeof *t);
     if (!t) return -1;
@@ -651,7 +655,7 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     if (!ks) { kfree(t); return -1; }
     t->stack = ks;
     name_set(t, name);
-    t->id = next_id++;
+    t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     t->data = data;
     t->alive = 1;
     t->running = 0;
@@ -660,6 +664,11 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     t->cr3 = cr3 ? cr3 : vmm_kernel_cr3();
     t->kstack_top = ((uint64_t)ks + KSTACK_SIZE) & ~(uint64_t)0xF;
     block_fields_init(t, 1);
+    /* Install the loader's TLS BEFORE publishing on g_ring/g_all: another CPU
+     * may dispatch this thread as soon as g_sched_lock is released. A setter
+     * after thread_create_user returned would race the first TLS instruction.
+     * No WRMSR here: this thread is not the creating CPU's current thread. */
+    t->fsbase = fsbase;
 
     /* Hand-built kernel frame: context_switch "returns" into ring3_bootstrap
      * with entry in r15 and the user stack in r14. (ring3_bootstrap releases
@@ -680,6 +689,9 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
                       * sti after taking g_bkl; ring3: the iretq's RFLAGS). */                       /* rflags */
     t->rsp = (uint64_t)sp;
 
+    int tid = t->id;
+    proc_publish((struct proc *)data, tid);
+    if (publish) publish(opaque,tid);
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
     /* Under the lock, because it reads g_vnow and this core's current thread:
      * take the creator's nice and the ring's virtual now. See prio_inherit(). */
@@ -690,7 +702,22 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
     g_ring->next = t;
     all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
-    return t->id;
+    return tid;
+}
+
+int thread_create_user_tls(const char *name, uint64_t entry, uint64_t ustack,
+                           void *data, uint64_t cr3, uint64_t fsbase)
+{ return create_user_prepared(name,entry,ustack,data,cr3,fsbase,0,0); }
+int thread_create_user_prepared(const char *name, uint64_t entry, uint64_t ustack,
+                       void *data, uint64_t cr3,
+                       void (*publish)(void *,int), void *opaque)
+{ return create_user_prepared(name,entry,ustack,data,cr3,0,publish,opaque); }
+
+/* Existing raw-thread callers start without TLS and use their documented
+ * user trampoline. Loader callers use the explicit variant above. */
+int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3)
+{
+    return thread_create_user_tls(name, entry, ustack, data, cr3, 0);
 }
 
 /* fork(): build a child thread that, when first scheduled, resumes in ring 3
@@ -698,15 +725,16 @@ int thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *
  * parent's interrupt-return frame to the top of the child's kernel stack and
  * lay a context_switch frame below it whose `ret` lands in fork_ret, which pops
  * that registers frame and iretq's into user mode. */
-int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3)
+int thread_fork(const char *name, struct registers *pr, const void *user_fxarea, void *data, uint64_t cr3)
 {
+    if (!user_fxarea) return -1;
     struct thread *t = kmalloc(sizeof *t);
     if (!t) return -1;
     uint8_t *ks = kmalloc(KSTACK_SIZE);
     if (!ks) { kfree(t); return -1; }
     t->stack = ks;
     name_set(t, name);
-    t->id = next_id++;
+    t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     t->data = data;
     t->alive = 1;
     t->running = 0;
@@ -734,18 +762,28 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     *cr = *pr;
     cr->rax = 0;
 
-    /* context_switch restore frame just below it: popfq; pop r15..rbp; ret. */
-    uint64_t *sp = (uint64_t *)cr;
+    /* Copy the user state saved by isr_common BEFORE kernel C ran. Saving the
+     * current CPU here would copy this function's SSE temporaries instead.
+     * The old fork bootstrap reset FPU state under the assumption fork was
+     * an out-of-line SysV call; _sys is inline, and clang keeps values in XMM
+     * across it (the interpreter guest lost its envp initializer this way). */
+    uint8_t *fx = (uint8_t *)(((uint64_t)cr - 512) & ~15ull);
+    memcpy(fx, user_fxarea, 512);
+    /* r12/r13 carry the two frames through sched_unlock_new_thread, which is
+     * a SysV call. fork_ret restores FP first and then all original GPRs. */
+    uint64_t *sp = (uint64_t *)fx;
     *--sp = (uint64_t)fork_ret;          /* ret target */
     *--sp = 0;                           /* rbp */
     *--sp = 0;                           /* rbx */
-    *--sp = 0;                           /* r12 */
-    *--sp = 0;                           /* r13 */
+    *--sp = (uint64_t)cr;                 /* r12: GPR return frame */
+    *--sp = (uint64_t)fx;                 /* r13: aligned FXSAVE copy */
     *--sp = 0;                           /* r14 */
     *--sp = 0;                           /* r15 */
     *--sp = 0x002;                       /* rflags (IF restored by iretq from cr->rflags) */
     t->rsp = (uint64_t)sp;
 
+    int tid = t->id;
+    proc_publish((struct proc *)data, tid);
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
     /* Under the lock, because it reads g_vnow and this core's current thread:
      * take the creator's nice and the ring's virtual now. See prio_inherit(). */
@@ -756,7 +794,7 @@ int thread_fork(const char *name, struct registers *pr, void *data, uint64_t cr3
     g_ring->next = t;
     all_link(t);
     spin_unlock_irqrestore(&g_sched_lock, f);
-    return t->id;
+    return tid;
 }
 
 /* ==========================================================================
@@ -918,14 +956,14 @@ __attribute__((noinline)) void schedule(void)
          * in_kernel state. Lock order: we release g_sched_lock BEFORE re-acquiring
          * the BKL on the incoming side, so BKL is never taken while holding the
          * inner lock (no AB-BA with interrupt_handler's BKL->sched order). */
-        me->in_kernel = 0;
-        spin_unlock(&g_bkl);
+        /* IF stays off while the incoming stack restores its local depth. */
+        int saved_depth = me->in_kernel;
+        me->in_kernel = 1;
         context_switch(&prev->rsp, next->rsp);
         /* === RESUME AS THE INCOMING THREAD (existing) === g_sched_lock held, BKL not. */
         me = this_cpu();
         spin_unlock(&g_sched_lock);              /* release inner; IF still off */
-        spin_lock(&g_bkl);                       /* re-enter the kernel (correct order) */
-        me->in_kernel = 1;
+        me->in_kernel = saved_depth;
         if (flags & 0x200) __asm__ volatile ("sti");
     } else {
         /* NO switch this time -- but this is still the per-tick visit every
@@ -1020,8 +1058,7 @@ void thread_exit(void)
     /* Drop the BKL before the switch (the dead thread never resumes to release it);
      * the incoming thread re-acquires it (schedule tail / kthread_bootstrap) or
      * runs ring3 without it (ring3_bootstrap/fork_ret). Same model as schedule(). */
-    me->in_kernel = 0;
-    spin_unlock(&g_bkl);
+    me->in_kernel = 1;
     context_switch(&me->exit_discard, next->rsp);   /* per-cpu discard, NOT static */
     /* unreachable: the dead thread never resumes. */
 }
@@ -1050,6 +1087,26 @@ unsigned long sched_blocked_count(void) { return g_blocked; }
  *
  * `deadline` != 0 additionally arms a timer wake; *timed_out (if non-NULL) is
  * set to 1 when the deadline, not a wake, is what made us runnable. */
+/* Both helpers require g_sched_lock. Async wakers cannot acquire an arbitrary
+ * object's wait lock, so an event observed while the target is still READY
+ * must survive until its next park decision. Keep this tiny protocol separate
+ * from the architecture switch; the host gate links these exact helpers plus
+ * sched_wake_id/wake_locked and schedules post between check and park. */
+static int wake_pending_take_locked(struct thread *t)
+{
+    if (!t->wake_pending) return 0;
+    t->wake_pending = 0;
+    return 1;
+}
+static void wake_pending_note_locked(struct thread *t, int did_wake)
+{
+#ifndef BKL_NEGCTL_WAKE_LATCH
+    if (t && !did_wake) t->wake_pending = 1;
+#else
+    (void)t; (void)did_wake; /* former READY wake was simply discarded */
+#endif
+}
+
 static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int *timed_out)
 {
     spin_lock(&g_sched_lock);                 /* IF is already 0 (outer was irqsave) */
@@ -1064,6 +1121,16 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
     if (!self || self->is_idle || !me->idle) {
         spin_unlock(&g_sched_lock);
         spin_unlock_irqrestore(outer, flags);
+        return;
+    }
+
+    /* A signal/kill waker has no access to the caller's object wait lock.
+     * Remember its event under g_sched_lock, including while still RUNNING,
+     * then consume here. A spurious return lets the caller recheck its
+     * predicate; losing that event could leave an exiting thread parked. */
+    if (wake_pending_take_locked(self)) {
+        spin_unlock(&g_sched_lock);
+        spin_unlock_irqrestore(outer,flags);
         return;
     }
 
@@ -1122,8 +1189,8 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
 
     /* Same BKL hand-off as schedule(): drop before the switch, the incoming
      * thread re-acquires after. IF stays 0 across the whole window. */
-    me->in_kernel = 0;
-    spin_unlock(&g_bkl);
+    int saved_depth = me->in_kernel;
+    me->in_kernel = 1;
     context_switch(&self->rsp, next->rsp);
     /* === RESUMED (someone called sched_wake / the deadline fired) ===
      * g_sched_lock is held, the BKL is not. */
@@ -1131,8 +1198,7 @@ static void block_self(spinlock_t *outer, uint64_t flags, uint64_t deadline, int
     timerlist_remove(self);                   /* no-op if the deadline already popped us */
     if (timed_out) *timed_out = self->timed_out;
     spin_unlock(&g_sched_lock);
-    spin_lock(&g_bkl);
-    me->in_kernel = 1;
+    me->in_kernel = saved_depth;
     if (flags & 0x200) __asm__ volatile ("sti");
 }
 
@@ -1197,7 +1263,9 @@ static struct thread *by_id_locked(int id)
 int sched_wake_id(int id)
 {
     uint64_t f = spin_lock_irqsave(&g_sched_lock);
-    int did = wake_locked(by_id_locked(id));
+    struct thread *t=by_id_locked(id);
+    int did = wake_locked(t);
+    wake_pending_note_locked(t,did);
     spin_unlock_irqrestore(&g_sched_lock, f);
     return did;
 }
@@ -1585,6 +1653,7 @@ void sched_unlock_new_thread(void)
     struct thread *t = this_cpu()->current;
     if (t && (t->id < 64 || (t->id % 512) == 0))
         kprintf("[sched] first-run tid %d (%s)\n", t->id, t->name[0] ? t->name : "?");
+    this_cpu()->in_kernel = 0;
     spin_unlock(&g_sched_lock);
 }
 
@@ -1596,7 +1665,6 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
 {
     struct cpu *me = this_cpu();
     spin_unlock(&g_sched_lock);
-    spin_lock(&g_bkl);
     me->in_kernel = 1;
     void (*fn)(void) = me->current->entry;
     __asm__ volatile ("sti");      /* kernel threads run with IF on */
@@ -1622,8 +1690,8 @@ __attribute__((noreturn)) void kthread_bootstrap(void)
  * to 0, and this counter is the same measurement for the rest of the kernel.
  * A build where the pipe and the waitpid still polled through here reaches the
  * thousands over a shell session; one where they park does not. */
-unsigned long g_bkl_hlt_waits;
-unsigned long sched_hlt_waits(void) { return g_bkl_hlt_waits; }
+unsigned long g_sched_poll_waits;
+unsigned long sched_hlt_waits(void) { return g_sched_poll_waits; }
 
 /* WHO IS STILL POLLING. run-kbench.sh fails at >200 passes with "something is
  * still polling instead of blocking" -- a message that names no culprit, and
@@ -1644,7 +1712,9 @@ unsigned long sched_hlt_waits(void) { return g_bkl_hlt_waits; }
 #define HLT_SLOTS 16
 static struct { unsigned long ra; unsigned long n; } g_hlt_who[HLT_SLOTS];
 
-static void hlt_note(unsigned long ra)
+static spinlock_t g_hlt_lock = SPINLOCK_INIT;
+
+static void hlt_note_locked(unsigned long ra)
 {
     unsigned h = (unsigned)((ra >> 4) ^ (ra >> 12)) & (HLT_SLOTS - 1);
     for (int i = 0; i < HLT_SLOTS; i++) {
@@ -1653,6 +1723,13 @@ static void hlt_note(unsigned long ra)
         if (g_hlt_who[k].ra == 0) { g_hlt_who[k].ra = ra; g_hlt_who[k].n = 1; return; }
     }
     g_hlt_who[h].n++;               /* full: merge into the home slot */
+}
+
+static void hlt_note(unsigned long ra)
+{
+    uint64_t f = spin_lock_irqsave(&g_hlt_lock);
+    hlt_note_locked(ra);
+    spin_unlock_irqrestore(&g_hlt_lock, f);
 }
 
 /* The i-th NON-EMPTY entry, -> 0 when there is nothing more to report. Caller
@@ -1675,16 +1752,19 @@ int sched_hlt_who(int i, unsigned long *ra, unsigned long *n)
     return 0;
 }
 
-void bkl_hlt_wait(void)
+void sched_poll_wait(void)
 {
-    g_bkl_hlt_waits++;
+    __atomic_fetch_add(&g_sched_poll_waits, 1, __ATOMIC_RELAXED);
     hlt_note((unsigned long)__builtin_return_address(0));
-    __asm__ volatile ("cli");
+    uint64_t flags;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    int depth = this_cpu()->in_kernel;
+    /* Explicit quiescent point: no spinlock may be held, and callers must
+     * recheck their condition. Both nesting and IF belong to this stack. */
     this_cpu()->in_kernel = 0;
-    spin_unlock(&g_bkl);
-    __asm__ volatile ("sti\n\thlt\n\tcli");
-    spin_lock(&g_bkl);
-    this_cpu()->in_kernel = 1;
+    __asm__ volatile ("sti; hlt; cli" ::: "memory");
+    this_cpu()->in_kernel = depth;
+    if (flags & 0x200) __asm__ volatile ("sti" ::: "memory");
 }
 
 /* Create core `idx`'s off-ring idle thread and make it that core's current. The
@@ -1701,7 +1781,7 @@ void thread_create_idle(int idx)
     t->cr3 = vmm_kernel_cr3();
     t->data = NULL;
     name_set(t, "idle");
-    t->id = next_id++;
+    t->id = __atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED);
     t->alive = 1;
     t->running = 1;          /* idle is always "running" on its core */
     t->entry = NULL;
@@ -1714,9 +1794,12 @@ void thread_create_idle(int idx)
      * dispatch site, so nothing else will ever stamp cpu_stamp_ns for it. */
     t->cpu_stamp_ns = time_mono_raw_ns();
 
+    /* AP adoption overlaps other APs and BSP thread creation. */
+    uint64_t f = spin_lock_irqsave(&g_sched_lock);
     g_cpus[idx].idle = t;
     all_link(t);
     g_cpus[idx].current = t;
+    spin_unlock_irqrestore(&g_sched_lock, f);
 }
 
 /* Become this core's idle thread: arrives holding the BKL (in_kernel=1). Loop:
@@ -1734,10 +1817,47 @@ __attribute__((noreturn)) void sched_become_idle(void)
          * later iterations, but the first entry arrives with IF=1.) */
         __asm__ volatile ("cli");
         this_cpu()->in_kernel = 0;
-        spin_unlock(&g_bkl);
         __asm__ volatile ("sti; hlt; cli");
-        spin_lock(&g_bkl);
         this_cpu()->in_kernel = 1;
         schedule();
     }
+}
+
+/* Compatibility for the legacy borrowed-name API. New callers copy out; a
+ * per-thread buffer also remains valid when an I/O wait migrates its owner. */
+char *sched_name_scratch(void)
+{
+    static char early[PERCPU_MAXCPU][256];
+    struct cpu *c=this_cpu();
+    return c->current ? c->current->vfs_name_scratch : early[c->index];
+}
+
+/* Leave the dying process BEFORE publishing its zombie. Without the old
+ * entry lock another CPU may reap it immediately; neither this thread's
+ * bookkeeping nor its hardware CR3 may then name recycled process memory. */
+void sched_detach_current_proc(void *p)
+{
+    uint64_t f=spin_lock_irqsave(&g_sched_lock);
+    struct thread *t=this_cpu()->current;
+    if (t && t->data==p) {
+        t->data=NULL;
+        t->cr3=vmm_kernel_cr3();
+        vmm_switch(t->cr3);
+        t->fsbase=0; fsbase_load(0);
+    }
+    spin_unlock_irqrestore(&g_sched_lock,f);
+}
+
+/* Temporary loader address spaces must survive an explicit wait/reschedule.
+ * Updating hardware alone lets the scheduler restore the creator's old CR3
+ * halfway through loading a different image. Return the matching restore key. */
+uint64_t sched_use_address_space(uint64_t cr3)
+{
+    uint64_t f=spin_lock_irqsave(&g_sched_lock);
+    struct thread *t=this_cpu()->current;
+    uint64_t old=t ? t->cr3 : vmm_kernel_cr3();
+    if (t) t->cr3=cr3;
+    vmm_switch(cr3);
+    spin_unlock_irqrestore(&g_sched_lock,f);
+    return old;
 }

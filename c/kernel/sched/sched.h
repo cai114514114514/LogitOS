@@ -19,12 +19,20 @@ struct thread;      /* opaque outside sched.c */
 void sched_init(void);                                  /* adopt the boot context as "main" */
 void thread_create(void (*entry)(void), const char *name);
 int  thread_create_user(const char *name, uint64_t entry, uint64_t ustack, void *data, uint64_t cr3);
+/* Loader-owned TLS, initialised before the new thread becomes runnable.
+ * fsbase belongs to the NEW address space and must already be a valid TCB;
+ * the scheduler installs it on dispatch, not on the creator's CPU. */
+int thread_create_user_prepared(const char *name, uint64_t entry, uint64_t ustack,
+                       void *data, uint64_t cr3,
+                       void (*publish)(void *,int), void *opaque);
+int  thread_create_user_tls(const char *name, uint64_t entry, uint64_t ustack,
+                            void *data, uint64_t cr3, uint64_t fsbase);
 /* Create a child thread that resumes from the parent's int 0x80 frame `r`
  * (returning 0 in the child) in address space `cr3`. Used by fork(). */
-int  thread_fork(const char *name, struct registers *r, void *data, uint64_t cr3);
+int  thread_fork(const char *name, struct registers *r, const void *user_fxarea, void *data, uint64_t cr3);
 void thread_exit(void);                                 /* end the current thread */
 void schedule(void);                                    /* switch to the next ready thread */
-void bkl_hlt_wait(void);                                /* blocking waits: drop BKL + hlt, re-acquire */
+void sched_poll_wait(void);                                /* blocking waits: drop BKL + hlt, re-acquire */
 void thread_create_idle(int idx);                       /* SMP: build core `idx`'s idle thread */
 void sched_become_idle(void);                           /* SMP: AP enters its idle loop (never returns) */
 void sched_unlock_new_thread(void);                     /* new ring-3/fork first-run: drop g_sched_lock + BKL */
@@ -127,7 +135,7 @@ void sched_tlb_gen_check(void);
 unsigned long sched_slices_of(struct thread *t);  /* dispatches: the sleep-vs-spin metric */
 int  sched_thread_id(struct thread *t);
 unsigned long sched_blocked_count(void);          /* threads currently parked */
-/* Passes through bkl_hlt_wait(): the count of times some thread POLLED instead
+/* Passes through sched_poll_wait(): the count of times some thread POLLED instead
  * of blocking. The number M27 exists to drive to zero; see sched.c. */
 unsigned long sched_hlt_waits(void);
 
@@ -266,4 +274,7 @@ int sched_nice_set(int pid, int nice);
  * wrong. */
 int sched_weight_get(int pid);
 
+char *sched_name_scratch(void);
+void sched_detach_current_proc(void *p);
+uint64_t sched_use_address_space(uint64_t cr3);
 #endif /* LOGIT_SCHED_H */

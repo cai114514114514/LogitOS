@@ -24,6 +24,28 @@ third-party.
 `init-video.mp4` and others onto the disk). Not touched by this pass —
 class C, outside the class-A removal mandate.
 
+## HE-AAC v1 sample
+
+`whole-he-audio.mp4` is also project-generated from lavfi only. It contains
+0.75 seconds of two deterministic sine inputs (997 Hz left at 0.35 gain and
+15007 Hz right at 0.12 gain), encoded by FFmpeg 8.1's macOS AudioToolbox
+`aac_at` encoder using profile 4 (HE-AAC v1), 48 kb/s, and fragmented-MP4
+flags `+frag_keyframe+empty_moov+default_base_moof`. No third-party media
+bytes are inputs. Its SHA-256 is
+`1addef6092c3d202658890ea35eb2a8c52c1b962c85abb1852c17f72f15d9256`.
+
+The exact audio source graph is:
+
+```text
+sine=frequency=997:duration=0.75:sample_rate=48000 -> volume=0.35 -> left
+sine=frequency=15007:duration=0.75:sample_rate=48000 -> volume=0.12 -> right
+left + right -> amerge=inputs=2 -> aac_at profile 4
+```
+
+This separate committed specimen makes the new `mp4a.40.5` YES answer pass
+through the real MP4 demuxer, ASC parser, AAC-LC core, SBR synthesis and MSE
+audio pump even on hosts that do not have Apple's encoder.
+
 ## History
 
 Generated/committed alongside the MSE work; `tests/unit/gen_mse.sh` is the

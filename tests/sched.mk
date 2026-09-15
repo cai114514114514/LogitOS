@@ -45,10 +45,12 @@ define SCHEDTEST_RULE
 $(BUILD)/schedobj/$(1).o: $(CLIDIR)/schedtest.c c/apps/libc/include/sys/resource.h
 	@mkdir -p $$(dir $$@)
 	$(CC) $(UCFLAGS) $(2) -c $$< -o $$@
-$(BUILD)/$(1).elf: $(BUILD)/schedobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm
+# Keep the target-local AEX activation linker until recipe execution; eval's
+# early LD expansion used to leave this catalogued application at v2.
+$(BUILD)/$(1).elf: $(BUILD)/schedobj/$(1).o $(LIBC_OBJS) $(APPDIR)/crt0_cli.asm tests/sched.mk
 	@mkdir -p $(BUILD)/apps
 	$(ASM) -f elf64 $(APPDIR)/crt0_cli.asm -o $(BUILD)/apps/$(1).crt0c.o
-	$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ \
+	$$(LD) -nostdlib -e _start -Ttext=0x50000000 -o $$@ \
 	    $(BUILD)/apps/$(1).crt0c.o $(BUILD)/schedobj/$(1).o $(LIBC_OBJS)
 $(BUILD)/$(1).aex: $(BUILD)/$(1).elf tools/mkaex.py
 	python3 tools/mkaex.py $(BUILD)/$(1).elf $$@ $(1) - '*' 150 150 150
