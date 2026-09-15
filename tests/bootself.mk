@@ -216,3 +216,107 @@ test-bios-preload: test-bios-preload-negctl test-bios-preload-probe \
     $(BIOS_PRELOAD_IMAGE) $(BIOS_PRELOAD_TEST)
 	@python3 $(BIOS_PRELOAD_TEST) $(BIOS_PRELOAD_IMAGE) --loader $(BIOS_LOADER_BIN) \
 	    --qemu $(BIOS_PRELOAD_QEMU)
+
+# The loader stops at a fixture handoff in real mode.  This is deliberate: the
+# block-format instrument must be independently useful before ELF loading and
+# protected-mode entry exist, otherwise a kernel failure cannot distinguish a
+# bad machine description from a bad handoff.
+BIOS_MB2_DIR := $(BUILD)/bios-mb2
+BIOS_MB2_PRELOAD := $(BIOS_MB2_DIR)/preload.bin
+BIOS_MB2_LOADER := $(BIOS_MB2_DIR)/loader.bin
+BIOS_MB2_A20_LOADER := $(BIOS_MB2_DIR)/loader-a20-skip.bin
+BIOS_MB2_TRUNC_LOADER := $(BIOS_MB2_DIR)/loader-e820-truncated.bin
+BIOS_MB2_BAD_RSDP_LOADER := $(BIOS_MB2_DIR)/loader-rsdp-bad-checksum.bin
+BIOS_MB2_IMAGE := $(BIOS_MB2_DIR)/ours.iso
+BIOS_MB2_A20_IMAGE := $(BIOS_MB2_DIR)/a20-skip.iso
+BIOS_MB2_TRUNC_IMAGE := $(BIOS_MB2_DIR)/e820-truncated.iso
+BIOS_MB2_BAD_RSDP_IMAGE := $(BIOS_MB2_DIR)/rsdp-bad-checksum.iso
+BIOS_MB2_GRUB_IMAGE := $(BIOS_MB2_DIR)/grub-dump.iso
+BIOS_MB2_GRUB_WORK_IMAGE := $(BIOS_MB2_DIR)/grub-dump-work.iso
+BIOS_MB2_GRUB_KERNEL := $(BIOS_MB2_DIR)/kernel-dump.elf
+BIOS_MB2_TEST := tests/unit/bios_mb2_test.py
+BIOS_MB2_QEMU ?= qemu-system-x86_64
+
+.PHONY: test-bios-mb2 test-bios-mb2-negctl \
+    test-bios-mb2-differential test-bios-mb2-differential-negctl
+
+$(BIOS_MB2_PRELOAD): c/boot/bios/preload.asm tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	nasm -f bin -o $@ $<
+
+$(BIOS_MB2_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	nasm -f bin -o $@ tests/fixtures/bios/mb2-dump.asm
+
+$(BIOS_MB2_A20_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	nasm -f bin -DLOADER_NEGCTL_SKIP_A20 -o $@ tests/fixtures/bios/mb2-dump.asm
+
+$(BIOS_MB2_TRUNC_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	# Two entries keep the control parseable and retain one usable region, while
+	# the real nine-entry SeaBIOS map makes the missing suffix unambiguous.
+	nasm -f bin -DLOADER_NEGCTL_TRUNCATE_E820=2 -o $@ tests/fixtures/bios/mb2-dump.asm
+
+$(BIOS_MB2_BAD_RSDP_LOADER): c/boot/bios/loader.asm tests/fixtures/bios/mb2-dump.asm tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	nasm -f bin -DLOADER_NEGCTL_BAD_RSDP -o $@ tests/fixtures/bios/mb2-dump.asm
+
+$(BIOS_MB2_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_LOADER) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_LOADER)
+
+$(BIOS_MB2_A20_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_A20_LOADER) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_A20_LOADER)
+
+$(BIOS_MB2_TRUNC_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_TRUNC_LOADER) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_TRUNC_LOADER)
+
+$(BIOS_MB2_BAD_RSDP_IMAGE): tools/mkiso.py $(BIOS_MB2_PRELOAD) $(BIOS_MB2_BAD_RSDP_LOADER) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_MB2_PRELOAD) --loader $(BIOS_MB2_BAD_RSDP_LOADER)
+
+# Build the ordinary kernel objects in the caller's isolated BUILD tree,
+# recompile only the two diagnostic translation units with BOOT_MB2_DUMP, then
+# link a separately named kernel and ask the ordinary GRUB recipe for a
+# separately named ISO.  Naming both outputs is important: merely recompiling
+# two objects inside one filesystem timestamp tick once left the old kernel
+# linked and the apparent "differential" ran no dumper at all.  The product ISO
+# recipe, product ISO pathname, and grub.cfg remain exactly as shipped.
+$(BIOS_MB2_GRUB_IMAGE): c/kernel/core/mb2dump.c c/kernel/core/kmain.c tests/bootself.mk
+	@mkdir -p $(BIOS_MB2_DIR)
+	$(MAKE) BUILD=$(BUILD) $(KERNEL)
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) $(BIOS_MB2_GRUB_KERNEL)
+	$(MAKE) BUILD=$(BUILD) KERNEL=$(BIOS_MB2_GRUB_KERNEL) \
+	    ISO=$(BIOS_MB2_GRUB_WORK_IMAGE) $(BIOS_MB2_GRUB_WORK_IMAGE)
+	cp $(BIOS_MB2_GRUB_WORK_IMAGE) $@
+
+# SeaBIOS on the measured host enters with A20 enabled.  The control therefore
+# cannot demonstrate a failed enable request here; it still executes the alias
+# write/read verification, and the oracle prints a loud SKIP naming the missing
+# firmware state instead of laundering an unobservable control into a pass.
+test-bios-mb2-negctl: $(BIOS_MB2_A20_IMAGE) $(BIOS_MB2_TEST)
+	@if ! command -v $(BIOS_MB2_QEMU) >/dev/null 2>&1; then \
+	  echo 'SKIP: test-bios-mb2-negctl requires $(BIOS_MB2_QEMU) to watch the A20 alias control'; \
+	  exit 0; \
+	 fi; \
+	 python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) a20-control $(BIOS_MB2_A20_IMAGE)
+
+test-bios-mb2: test-bios-mb2-negctl $(BIOS_MB2_IMAGE) $(BIOS_MB2_TEST)
+	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) check $(BIOS_MB2_IMAGE)
+
+# Both mutations remain valid blocks so the differential, not a parser crash,
+# is what goes red.  The comparator prints every differing consumed field on
+# adjacent CONTROL/GRUB lines; that is intentionally more verbose than a raw
+# unified diff because memory-map suffix loss is otherwise easy to miss.
+test-bios-mb2-differential-negctl: $(BIOS_MB2_TRUNC_IMAGE) \
+    $(BIOS_MB2_BAD_RSDP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_MB2_TEST)
+	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) expect-difference \
+	    $(BIOS_MB2_TRUNC_IMAGE) $(BIOS_MB2_GRUB_IMAGE) --reason truncated-e820
+	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) expect-difference \
+	    $(BIOS_MB2_BAD_RSDP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) --reason bad-rsdp-checksum
+
+test-bios-mb2-differential: test-bios-mb2-differential-negctl \
+    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_MB2_TEST)
+	@python3 $(BIOS_MB2_TEST) --qemu $(BIOS_MB2_QEMU) compare \
+	    $(BIOS_MB2_IMAGE) $(BIOS_MB2_GRUB_IMAGE)

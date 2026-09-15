@@ -44,6 +44,9 @@ int rust_png_selftest(void);       /* rust/src/png.rs -- PNG decoder self-check 
 void kernel_main(uint64_t mb_info)
 {
     serial_init();
+#ifdef BOOT_MB2_DUMP
+    extern void mb2_dump(uint64_t); mb2_dump(mb_info);
+#endif
     /* Boot narration goes through kprintf, not serial_puts. Same bytes on the
      * same wire -- but serial_puts writes ONLY to COM1 and keeps nothing, so
      * every line below used to be invisible to anyone who was not watching the
