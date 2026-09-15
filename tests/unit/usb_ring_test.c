@@ -31,6 +31,9 @@ static void checki(long long got, long long want, const char *what)
 }
 
 #define N 8
+/* Deliberately disjoint from host pointers, including a high DMA address. */
+#define SEG_DMA UINT64_C(0x1234000000)
+#define EV_DMA UINT64_C(0x2345000000)
 static struct trb seg[N];
 static struct trb evseg[N];
 
@@ -39,10 +42,10 @@ int main(void)
     struct xhci_ring r;
 
     /* --- init installs a Link TRB with Toggle Cycle, pointing home --- */
-    xring_init(&r, seg, N, 1);
+    xring_init(&r, seg, SEG_DMA, N, 1);
     checki(TRB_TYPE(seg[N - 1].control), TRB_LINK, "last TRB is a Link TRB");
     check((seg[N - 1].control & TRB_TC) != 0, "the Link TRB carries Toggle Cycle");
-    check(seg[N - 1].param == (uint64_t)(uintptr_t)seg, "the Link TRB points at the segment base");
+    check(seg[N - 1].param == SEG_DMA, "the Link TRB points at the segment base");
     checki(seg[N - 1].control & TRB_C, 0, "the Link TRB is not published before the producer reaches it");
     checki(r.cycle, 1, "PCS starts at 1");
     checki(xring_space(&r), N - 1, "a link ring has n-1 usable slots");
@@ -50,15 +53,15 @@ int main(void)
     /* An event ring has NO link TRB: the controller writes the segment end to
      * end. Installing one would make the controller overwrite our link. */
     struct xhci_ring er;
-    xring_init(&er, evseg, N, 0);
+    xring_init(&er, evseg, EV_DMA, N, 0);
     checki(TRB_TYPE(evseg[N - 1].control), 0, "an event ring gets no Link TRB");
     checki(xring_space(&er), N, "an event ring has all n slots");
 
     /* --- one lap: every TRB published with the current PCS --- */
-    xring_init(&r, seg, N, 1);
+    xring_init(&r, seg, SEG_DMA, N, 1);
     for (int i = 0; i < N - 1; i++) {
         uint64_t p = xring_push(&r, 0x1000 + i, i, TRB_SET_TYPE(TRB_NORMAL));
-        checki(p, (long long)(uintptr_t)&seg[i], "push returns the physical address of the slot it wrote");
+        checki(p, SEG_DMA + i * sizeof *seg, "push returns the device address of the slot it wrote");
         checki(seg[i].control & TRB_C, TRB_C, "TRB published with PCS=1 on lap 0");
         checki(seg[i].param, 0x1000 + i, "param stored");
         checki(TRB_TYPE(seg[i].control), TRB_NORMAL, "type stored");
@@ -74,7 +77,7 @@ int main(void)
     checki(seg[0].param, 0x1000, "a refused push did not overwrite slot 0");
 
     /* --- many laps: the cycle bit alternates per lap, forever --- */
-    xring_init(&r, seg, N, 1);
+    xring_init(&r, seg, SEG_DMA, N, 1);
     for (int lap = 0; lap < 10; lap++) {
         int want_c = (lap % 2 == 0) ? TRB_C : 0;
         for (int i = 0; i < N - 1; i++) {
@@ -88,16 +91,16 @@ int main(void)
     checki(r.cycle, 1, "after 10 laps PCS is back where it started");
 
     /* --- the cycle bit is set by the ring, not the caller --- */
-    xring_init(&r, seg, N, 1);
+    xring_init(&r, seg, SEG_DMA, N, 1);
     xring_push(&r, 0, 0, TRB_SET_TYPE(TRB_NORMAL) | TRB_C);   /* caller wrongly sets C */
     checki(seg[0].control & TRB_C, TRB_C, "a caller-set cycle bit is harmless on lap 0");
-    xring_init(&r, seg, N, 1);
+    xring_init(&r, seg, SEG_DMA, N, 1);
     r.cycle = 0;                                               /* pretend lap 1 */
     xring_push(&r, 0, 0, TRB_SET_TYPE(TRB_NORMAL) | TRB_C);
     checki(seg[0].control & TRB_C, 0, "the ring OVERRIDES a caller-set cycle bit");
 
     /* --- event ring consumption: cycle match, wrap, CCS toggle --- */
-    xring_init(&er, evseg, N, 0);
+    xring_init(&er, evseg, EV_DMA, N, 0);
     struct trb e;
     checki(xring_pop(&er, &e), 0, "an untouched event ring is empty (CCS=1, TRBs are 0)");
 
@@ -119,14 +122,14 @@ int main(void)
     checki(er.cycle, 1, "CCS is back to 1 after an even number of laps");
 
     /* --- ERDP / CRCR pointer forms --- */
-    xring_init(&er, evseg, N, 0);
-    checki(xring_deq_ptr(&er), (long long)(uintptr_t)&evseg[0], "ERDP points at the current dequeue TRB");
+    xring_init(&er, evseg, EV_DMA, N, 0);
+    checki(xring_deq_ptr(&er), EV_DMA, "ERDP points at the current dequeue TRB");
     evseg[0].control = TRB_SET_TYPE(TRB_PORT_STATUS) | TRB_C;
     xring_pop(&er, &e);
-    checki(xring_deq_ptr(&er), (long long)(uintptr_t)&evseg[1], "ERDP advances with the consumer");
+    checki(xring_deq_ptr(&er), EV_DMA + sizeof *evseg, "ERDP advances with the consumer");
 
-    xring_init(&r, seg, N, 1);
-    checki(xring_base_dcs(&r), (long long)((uintptr_t)seg | 1), "CRCR carries RCS in bit 0");
+    xring_init(&r, seg, SEG_DMA, N, 1);
+    checki(xring_base_dcs(&r), SEG_DMA | 1, "CRCR carries RCS in bit 0");
 
     /* --- event decode accessors: residual is UNtransferred bytes --- */
     uint32_t st = (CC_SHORT_PACKET << 24) | 5;

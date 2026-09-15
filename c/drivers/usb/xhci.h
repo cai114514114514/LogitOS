@@ -12,13 +12,18 @@
  * machine without xHCI has not shipped in about a decade. So this is the only
  * one worth writing, and the absence of EHCI/OHCI/UHCI here is a decision, not a
  * gap.
+ * Correction (2026-09-10): the owner now explicitly targets unspecified older
+ * PCs. UHCI/OHCI/EHCI-only boards are therefore a real coverage gap; broader HID
+ * decoding on xHCI does not add support for their host controllers.
  *
  * Section numbers below are xHCI 1.2.
  */
 
 #include <stdint.h>
 #include "xhci_ring.h"
+#include "dma.h"
 #include "usb_desc.h"
+#include "usb_hc.h"
 
 /* --- Host Controller Capability Registers (5.3) --- */
 #define XCAP_CAPLENGTH   0x00   /* u8: bytes from cap base to the operational regs */
@@ -56,6 +61,7 @@
 #define CMD_HCRST (1u << 1)   /* Host Controller Reset */
 #define CMD_INTE  (1u << 2)   /* Interrupter Enable */
 #define CMD_HSEE  (1u << 3)
+#define CRCR_CRR  (1u << 3)   /* Command Ring Running, read-only */
 
 #define STS_HCH   (1u << 0)   /* HCHalted */
 #define STS_HSE   (1u << 2)   /* Host System Error */
@@ -83,10 +89,10 @@
 
 /* Port Speed IDs (7.2.2.1.1). These are also the Slot Context Speed encoding,
  * which is the only reason a driver can copy one into the other. */
-#define XSPEED_FULL  1
-#define XSPEED_LOW   2
-#define XSPEED_HIGH  3
-#define XSPEED_SUPER 4
+#define XSPEED_FULL  USB_SPEED_FULL
+#define XSPEED_LOW   USB_SPEED_LOW
+#define XSPEED_HIGH  USB_SPEED_HIGH
+#define XSPEED_SUPER USB_SPEED_SUPER
 
 /* --- Interrupter Register Set (5.5.2), at runtime base + 0x20 + 32*n --- */
 #define XRT_MFINDEX 0x00
@@ -115,7 +121,7 @@
 #define TRT_OUT     2
 #define TRT_IN      3
 
-#define XHCI_MAX_SLOTS 8       /* devices we will address at once */
+#define XHCI_MAX_SLOTS 32      /* includes hub slots, not only leaf devices */
 #define XHCI_EVQ       8       /* per-endpoint completion FIFO depth */
 #define XHCI_RING_TRBS 64      /* TRBs per ring segment: 64*16 = 1 KiB, and one
                                 * page holds four. Well under the 64 KiB boundary
@@ -133,28 +139,40 @@ struct device;          /* c/drivers/core/driver.h -- the PCI function we bound 
 struct xhci_ep {
     uint8_t  dci;
     uint8_t  used;
+    uint8_t  xfer;
     struct xhci_ring ring;
+    struct dma_buffer *ring_dma, *payload_dma;
     struct trb ev[XHCI_EVQ];
     volatile uint8_t ev_head, ev_tail;
     volatile uint8_t inflight;      /* an interrupt-IN Normal TRB is queued */
     uint8_t *buf;                   /* DMA buffer for interrupt IN */
+    uint64_t buf_dma;             /* stable device address, ready before IRQ */
     int      buflen;
 };
 
 struct xhci_slot {
     uint8_t used;
     struct usb_device *dev;
+    struct dma_buffer *dev_ctx_dma, *in_ctx_dma;
     uint8_t *dev_ctx;               /* Device Context (4.5) */
     uint8_t *in_ctx;                /* Input Context (6.2.5) */
     struct xhci_ep *ep[32];
 };
 
 struct xhci {
+    /* PCI command ownership is part of the DMA lifetime.  `pci` remains set
+     * while a failed controller is quarantined so a later probe cannot reuse
+     * MMIO or DMA state whose hardware ownership is unknown. */
+    struct device *pci;
+    uint16_t pci_command_old;
+    uint16_t pci_command_quiet;       /* MEM decode, BME clear, INTx masked */
+    uint8_t quarantined;
     volatile uint8_t  *cap;
     volatile uint8_t  *op;
     volatile uint8_t  *rt;
     volatile uint32_t *db;
     int maxslots, maxports, ctxsize;
+    struct dma_device dma;
     uint64_t *dcbaa;
     uint64_t *scratch_arr;
     struct xhci_ring cmd;
@@ -176,10 +194,13 @@ struct xhci {
 
 extern struct xhci g_xhci;
 
-/* Bring the controller up: reset, DCBAA, command ring, event ring + ERST, run.
+/* Bring the controller up: firmware handoff with BME clear, reset, DCBAA,
+ * command ring, event ring + ERST, then checked BME enable and run.
  * `dev` is the PCI function the device model bound by class. -> 0 on success.
  * Does NOT enumerate; usb_core.c drives the ports. */
 int  xhci_init(struct device *dev);
+/* Caller first detaches class drivers and IRQ; returns -1 with DMA retained if halt fails. */
+int xhci_shutdown(void);
 
 /* Drain the event ring into the per-endpoint FIFOs and the command rendezvous,
  * acknowledging the interrupt first. This IS the interrupt handler's body;
@@ -199,6 +220,7 @@ int  xhci_enable_slot(void);
 int  xhci_address_device(struct usb_device *d, int bsr);
 int  xhci_set_ep0_packet(struct usb_device *d, int max_packet);
 int  xhci_configure_ep(struct usb_device *d, const struct usb_interface *iface);
+int  xhci_configure_hub(struct usb_device *, int ports, int multi_tt, int tt_think);
 void xhci_free_slot(int slot);
 
 /* Transfers. */
@@ -208,5 +230,7 @@ int  xhci_int_in_arm(struct usb_device *d, uint8_t ep_addr);
 /* -> bytes received (>=0) when a report landed, -1 when nothing is ready.
  * *buf is set to the endpoint's DMA buffer. */
 int  xhci_int_in_poll(struct usb_device *d, uint8_t ep_addr, uint8_t **buf);
+int  xhci_bulk(struct usb_device *, uint8_t ep_addr, void *data, uint32_t len);
+int  xhci_clear_halt(struct usb_device *, uint8_t ep_addr);
 
 #endif /* LOGIT_XHCI_H */

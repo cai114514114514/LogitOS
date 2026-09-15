@@ -9,9 +9,13 @@ static void zero(void *p, unsigned long n)
     while (n--) *b++ = 0;
 }
 
-void xring_init(struct xhci_ring *r, struct trb *base, uint32_t n, int link)
+void xring_init(struct xhci_ring *r, struct trb *base, uint64_t dma_base, uint32_t n, int link)
 {
     r->trb = base;
+#ifdef XRING_DMA_NEGCTL_CPUADDR
+    dma_base = (uint64_t)(uintptr_t)base;
+#endif
+    r->dma_base = dma_base;
     r->n = n;
     r->enq = 0;
     r->deq = 0;
@@ -27,7 +31,7 @@ void xring_init(struct xhci_ring *r, struct trb *base, uint32_t n, int link)
          * written by xring_push when the producer reaches it -- publishing the
          * link only once the TRB before it is complete. */
         struct trb *l = &base[n - 1];
-        l->param = (uint64_t)(uintptr_t)base;
+        l->param = r->dma_base;
         l->status = 0;
         l->control = TRB_SET_TYPE(TRB_LINK) | TRB_TC;
     }
@@ -47,7 +51,7 @@ uint64_t xring_push(struct xhci_ring *r, uint64_t param, uint32_t status, uint32
     t->param = param;
     t->status = status;
     t->control = (control & ~TRB_C) | (r->cycle ? TRB_C : 0);
-    uint64_t phys = (uint64_t)(uintptr_t)t;
+    uint64_t phys = r->dma_base + (uint64_t)r->enq * sizeof *t;
 
     r->enq++;
     r->pending++;
@@ -83,12 +87,12 @@ int xring_pop(struct xhci_ring *r, struct trb *out)
 
 uint64_t xring_deq_ptr(const struct xhci_ring *r)
 {
-    return (uint64_t)(uintptr_t)&r->trb[r->deq];
+    return r->dma_base + (uint64_t)r->deq * sizeof *r->trb;
 }
 
 uint64_t xring_base_dcs(const struct xhci_ring *r)
 {
-    return (uint64_t)(uintptr_t)r->trb | (r->cycle ? 1u : 0u);
+    return r->dma_base | (r->cycle ? 1u : 0u);
 }
 
 void xring_complete(struct xhci_ring *r, uint32_t ntrb)

@@ -86,7 +86,8 @@ struct trb {
 #define CC_SHORT_PACKET      13
 
 struct xhci_ring {
-    struct trb *trb;      /* segment base; identity-mapped, so virt == phys */
+    struct trb *trb;      /* CPU mapping, never a device address */
+    uint64_t    dma_base; /* device address of the same segment */
     uint32_t    n;        /* TRBs in the segment (Link TRB included, if any) */
     uint32_t    enq;      /* producer index */
     uint32_t    deq;      /* consumer index (event rings only) */
@@ -98,14 +99,14 @@ struct xhci_ring {
 /* Zero the segment and set up the ring. `link` != 0 installs a Link TRB with
  * Toggle Cycle in the LAST slot pointing back at the base, which is what makes
  * a one-segment ring circular (4.9.2.2). Event rings pass link == 0. */
-void xring_init(struct xhci_ring *r, struct trb *base, uint32_t n, int link);
+void xring_init(struct xhci_ring *r, struct trb *base, uint64_t dma_base, uint32_t n, int link);
 
 /* Usable slots left before the producer would lap the consumer. */
 uint32_t xring_space(const struct xhci_ring *r);
 
 /* Enqueue one TRB. `control` must NOT carry the cycle bit -- this sets it, then
  * advances, crossing the Link TRB (and toggling PCS) when it lands on one.
- * Returns the physical address of the TRB just written, or 0 if full.
+ * Returns the device address of the TRB just written, or 0 if full.
  *
  * The cycle bit is written LAST relative to the rest of the TRB by virtue of
  * being part of the same store as the type; callers that need the controller to
@@ -118,9 +119,9 @@ uint64_t xring_push(struct xhci_ring *r, uint64_t param, uint32_t status, uint32
  * taken, 0 if the ring is empty. */
 int xring_pop(struct xhci_ring *r, struct trb *out);
 
-/* Physical address of the current dequeue TRB -- what goes in ERDP. */
+/* Device address of the current dequeue TRB -- what goes in ERDP. */
 uint64_t xring_deq_ptr(const struct xhci_ring *r);
-/* Physical address of the base, with the ring's initial cycle in bit 0 -- the
+/* Device address of the base, with the ring's initial cycle in bit 0 -- the
  * form CRCR and the EP context's TR Dequeue Pointer want. */
 uint64_t xring_base_dcs(const struct xhci_ring *r);
 
