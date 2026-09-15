@@ -93,7 +93,14 @@ QEMU        := qemu-system-x86_64
 #     `#include "sched.h"` can ever see. Put any FUTURE userland-only header
 #     whose basename collides with a kernel header here, not at the top level
 #     of c/apps/libc/include -- see UCFLAGS below for the matching -I.
-INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly,$(sort $(shell find c include -type d))))
+# c/apps/as/% is excluded for the third instance of the same shape. The AS
+# compiler's internals are reached by paths relative to c/apps/as, not through
+# this flat namespace, and its runtime/file.h has the basename the kernel's
+# open-file-description pool also uses. The list is SORTED, c/apps/as/runtime
+# sorts before c/kernel/exec/fd, so kmain.c's bare `#include "file.h"` silently
+# gets the AS one and file_init() becomes an undeclared function -- in a file
+# nobody edited. `c/apps/as` itself stays: only the subdirectories are removed.
+INCDIRS := $(addprefix -I,$(filter-out %/include/sys %/include/uonly c/apps/as/%,$(sort $(shell find c include -type d))))
 # Host-built unit tests compile kernel sources against the host libc: the
 # mini-libc headers (c/apps/libc/include) would shadow glibc's <features.h>
 # and break <stdint.h>, so host tests use INCDIRS without that dir.
