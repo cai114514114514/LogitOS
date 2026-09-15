@@ -157,3 +157,17 @@ work-*/
 # every one verified an OLDER snapshot than the file it shadowed, so no work was
 # lost. Recover one with: git show <that ref>:<path>
 *.orig
+
+# Disk images. Same family as the *.iso and *.elf rules at the top of this
+# file -- build output, not source -- and this one was learned the expensive
+# way: reports/logitos-speed-r9-current/release-tested/disk.img is 512 MB, it
+# reached a commit inside an evidence bundle, and GitHub refuses any file over
+# 100 MB at the pre-receive hook, so the whole 148-commit push bounced. The
+# image is still on disk and still verifies against that bundle's own
+# SHA256SUMS; it is simply not the repository's to carry.
+#
+# THE CHECK THAT MISSED IT, because the next person will write the same one: a
+# pre-commit sweep sized every path in `git status`, and this file was inside
+# an UNTRACKED DIRECTORY. Directories are listed as one entry whose size is a
+# few hundred bytes. Size what you are about to commit, not what status prints.
+*.img
