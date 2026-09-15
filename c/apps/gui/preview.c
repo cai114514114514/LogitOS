@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 /* Preview: opens a file and shows what is in it -- a still image, an ANIMATED
  * image, an audio track, a raw video elementary stream, or a REAL CONTAINER
  * with video and audio in it.
@@ -179,6 +182,7 @@ static int pump_events(void)
     struct logit_event e;
     int r = PUMP_NONE;
     while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
         if (e.type == EV_CLOSE) return PUMP_QUIT;
         if (e.type == EV_KEY) {
             if (e.a == 27) r = g_from_picker ? PUMP_BACK : PUMP_QUIT;
@@ -1312,6 +1316,7 @@ static int pick_from_media(char *out, int outmax)
         struct logit_event e;
         for (;;) {
             if (poll_event(&e)) {
+                if(ag_gui_event(&e))continue;
                 if (e.type == EV_CLOSE) return 1;
                 /* A LIST YOU CANNOT CLICK IS NOT A LIST. It was keyboard-only,
                  * which is also why the harness had to send one Down per row
@@ -1388,3 +1393,7 @@ void app_main(void)
     app_exit(0);
 }
 #endif
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{static char b[AG_PATH];int n=get_arg(b,sizeof b);if(n<0)n=0;*bytes=(unsigned)n;return b;}

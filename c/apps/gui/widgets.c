@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 
 /* A showcase for the aui immediate-mode toolkit: label, +/- buttons, checkboxes,
@@ -75,6 +78,7 @@ void app_main(void)
          * turn to be told nothing happened; an idle demo window now costs
          * exactly zero. */
         if (!poll_event(&e)) { wait_idle(0); continue; }
+        if(ag_gui_event(&e))continue;
         if (e.type == EV_CLOSE) app_exit(0);
         /* Every event here ends in a full repaint, and the WM now delivers
          * EV_MOUSE_MOVE at pointer rate. aui has no hover state to update, so
@@ -89,3 +93,7 @@ void app_main(void)
         if (dark != (sys_ui_dark(-1) > 0)) sys_ui_dark(dark);   /* checkbox -> drive the system */
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{static char b[100];int n=snprintf(b,sizeof b,"Widgets: count=%d fancy=%d dark=%d",count,fancy,dark);*bytes=(unsigned)n;return b;}

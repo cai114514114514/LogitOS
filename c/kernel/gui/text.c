@@ -78,7 +78,10 @@ void text_init(void)
 
 /* --- glyph cache (open addressing with hash-slot eviction) --- */
 #define CACHE_N 2048
-struct gentry { int used, fidx, gid, px; uint8_t *cov; int w, h, ox, oy, adv; };
+struct gentry {
+    int used, fidx, gid, px; uint8_t *cov; int w, h, ox, oy, adv;
+    int ix0, iy0, ix1, iy1; /* tight nonzero coverage, half open; empty is zero */
+};
 static struct gentry cache[CACHE_N];
 static uint8_t rastbuf[200 * 200];             /* scratch for one glyph rasterization */
 
@@ -102,6 +105,20 @@ fill: ;
     if (w > 0 && h > 0) { cov = kmalloc(w * h); if (cov) memcpy(cov, rastbuf, w * h); }
     e->used = 1; e->fidx = fidx; e->gid = gid; e->px = px;
     e->cov = cov; e->w = cov ? w : 0; e->h = h; e->ox = ox; e->oy = oy;
+    /* Ink is measured from the same cached mask draw uses. Scanning only at
+     * cache fill avoids re-rasterizing or re-scanning a label on every query. */
+    e->ix0 = e->iy0 = e->ix1 = e->iy1 = 0;
+    if (cov) {
+        int x0 = w, y0 = h, x1 = 0, y1 = 0;
+        for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+            if (cov[y * w + x]) {
+                if (x < x0) x0 = x; if (y < y0) y0 = y;
+                if (x + 1 > x1) x1 = x + 1; if (y + 1 > y1) y1 = y + 1;
+            }
+        if (x1 > x0 && y1 > y0) {
+            e->ix0 = x0; e->iy0 = y0; e->ix1 = x1; e->iy1 = y1;
+        }
+    }
     e->adv = (int)(((long)ttf_advance(&fonts[fidx], gid) * px) / fonts[fidx].units_per_em);
     return e;
 }
@@ -150,6 +167,30 @@ static void emit_blit(void *ud, int fidx, int gid, int x, int y_off)
     struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
     if (g->cov)
         fb_blit_glyph(x + g->ox, e->base - y_off - g->oy, g->cov, g->w, g->h, e->color);
+}
+
+struct metrics_ctx { int base, px; const int *map; struct logit_text_metrics *out; };
+static void emit_metrics(void *ud, int fidx, int gid, int x, int y_off)
+{
+    struct metrics_ctx *e = (struct metrics_ctx *)ud;
+    struct gentry *g = glyph_get(e->map[fidx], gid, e->px);
+    if (!g->cov || g->ix1 <= g->ix0 || g->iy1 <= g->iy0) return;
+    /* Keep placement identical to emit_blit, including fallback glyphs and
+     * shaped mark offsets. The bitmap allocation box alone includes padding. */
+    int left = x + g->ox + g->ix0, right = x + g->ox + g->ix1;
+    int top = e->base - y_off - g->oy + g->iy0;
+    int bottom = e->base - y_off - g->oy + g->iy1;
+    struct logit_text_metrics *r = e->out;
+    if (!r->has_ink) {
+        r->ink_left = left; r->ink_top = top;
+        r->ink_right = right; r->ink_bottom = bottom;
+        r->has_ink = 1;
+    } else {
+        if (left < r->ink_left) r->ink_left = left;
+        if (top < r->ink_top) r->ink_top = top;
+        if (right > r->ink_right) r->ink_right = right;
+        if (bottom > r->ink_bottom) r->ink_bottom = bottom;
+    }
 }
 
 static void tl_scratch(struct shape_scratch *sc)
@@ -342,6 +383,34 @@ int text_measure(const char *s, int len, int px, int face)
  * `px`, returning the end x. For the layout engine's display list. */
 int text_draw_run(int x, int y, const char *s, int len, int px, int face, uint32_t color)
 { return layout(x, y, s, len, face, px, 0, color, 1); }
+
+int text_measure_run_metrics(const char *s, int len, int px, int face,
+                             struct logit_text_metrics *out)
+{
+    if (len < 0 || len > LOGIT_TEXT_METRICS_MAX_BYTES || px < 1 || !out ||
+        (len && !s)) return -1;
+    struct logit_text_metrics r = {0};
+    struct shape_font_set fs;
+    struct shape_scratch sc;
+    int map[SHAPE_MAX_FONTS];
+    spin_lock(&text_lock);
+    tl_fonts(&fs, face_font(face), face, map);
+    if (!fs.n) { spin_unlock(&text_lock); return -1; }
+    const struct ttf_font *f = &fonts[map[0]];
+    r.scale_percent = 100;
+    r.baseline = r.ascent = ascent_px(map[0], px);
+    r.descent = (int)(((long)f->descent * px) / f->units_per_em);
+    r.line_gap = (int)(((long)f->line_gap * px) / f->units_per_em);
+    if (len) {
+        tl_scratch(&sc);
+        struct metrics_ctx ec = { r.baseline, px, map, &r };
+        struct shape_emit em = { emit_metrics, &ec };
+        r.advance = shape_line(&fs, s, len, px, 0, 0, &em, &sc);
+    }
+    spin_unlock(&text_lock);
+    *out = r;
+    return 1;
+}
 
 int text_line_height(int px)
 {

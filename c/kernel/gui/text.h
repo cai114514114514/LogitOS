@@ -31,5 +31,10 @@ int  text_width_sz(const char *utf8, int px);
 int  text_measure(const char *s, int len, int px, int face);  /* length-delimited run */
 int  text_draw_run(int x, int y, const char *s, int len, int px, int face, uint32_t color);
 int  text_line_height(int px);
+/* Device-pixel result; the WM fills the display scale before usercopy. */
+struct logit_text_metrics;
+int text_measure_run_metrics(const char *s, int len, int px, int face,
+                             struct logit_text_metrics *out);
+
 
 #endif /* LOGIT_TEXT_H */

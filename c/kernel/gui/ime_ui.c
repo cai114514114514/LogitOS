@@ -48,6 +48,7 @@
 /* ============================ the dictionary ============================== */
 
 #define IME_DICT_PATH "/ime/pinyin.dat"
+#define IME_EXPANDED_PATH "/ime/pinyin-qwen.dat"
 
 static const struct ime_dict *g_dict;
 static uint8_t *g_dat;          /* the resident file; owned here, never freed (see below) */
@@ -67,28 +68,28 @@ static void st_reset(void);     /* the one door on ime_reset() -- see below */
  * The buffer is deliberately never freed on success: struct ime_dict points
  * INTO it (base + a table of byte offsets), exactly as text.c's load_font
  * leaves the TTF resident because struct ttf_font points into it. */
-int ime_ui_init(void)
+static int load_dictionary(const char *path)
 {
     if (g_dict) return 1;                        /* idempotent */
 
-    int sz = vfs_size(IME_DICT_PATH);
+    int sz = vfs_size(path);
     if (sz <= 0) {
         kprintf("[ime] %s: not found -- the input method is UNAVAILABLE;\n"
                 "[ime] " IME_TOGGLE_NAME " will pass through and ASCII input is unchanged\n",
-                IME_DICT_PATH);
+                path);
         return 0;
     }
     uint8_t *buf = kmalloc((unsigned)sz);
-    if (!buf) { kprintf("[ime] %s: oom (%d bytes)\n", IME_DICT_PATH, sz); return 0; }
+    if (!buf) { kprintf("[ime] %s: oom (%d bytes)\n", path, sz); return 0; }
 
     int off = 0;
     while (off < sz) {
         int want = sz - off;
         if (want > 65536) want = 65536;          /* bounded: a chunk, not the file */
-        int got = vfs_pread(IME_DICT_PATH, buf + off, want, off);
-        if (got <= 0) {
+        int got = vfs_pread(path, buf + off, want, off);
+        if (got <= 0 || got > want) {
             kprintf("[ime] %s: pread at %d returned %d (want %d) -- refusing a partial dictionary\n",
-                    IME_DICT_PATH, off, got, want);
+                    path, off, got, want);
             kfree(buf);
             return 0;
         }
@@ -98,14 +99,14 @@ int ime_ui_init(void)
     g_dict = ime_open(buf, (size_t)sz);
     if (!g_dict) {
         kprintf("[ime] %s: %d bytes read but ime_open REFUSED it (bad magic/version,"
-                " or more keys than IME_MAX_KEYS)\n", IME_DICT_PATH, sz);
+                " or more keys than IME_MAX_KEYS)\n", path, sz);
         kfree(buf);
         return 0;
     }
     g_dat = buf;
     kprintf("[ime] %s: %d bytes, %u pinyin keys -- " IME_TOGGLE_NAME
             " toggles pinyin input\n",
-            IME_DICT_PATH, sz, (unsigned)g_dict->key_count);
+            path, sz, (unsigned)g_dict->key_count);
 
     /* THE STORE, AND IT IS OPENED ONLY AFTER THE DICTIONARY IS. A store loaded
      * beside a dictionary that failed to load would hold weights nothing can
@@ -123,6 +124,16 @@ int ime_ui_init(void)
     ime_learn_init(g_dict->build_id);
     st_reset();
     return 1;
+}
+
+/* Prefer the generated supplement, but a missing/corrupt optional file must
+ * not disable Chinese input on an older image. Both loaders validate the
+ * complete bytes before publishing g_dict. */
+int ime_ui_init(void)
+{
+    if (g_dict) return 1;
+    if (vfs_size(IME_EXPANDED_PATH) > 0 && load_dictionary(IME_EXPANDED_PATH)) return 1;
+    return load_dictionary(IME_DICT_PATH);
 }
 
 /* ============================ per-window state ============================
@@ -192,8 +203,9 @@ static int g_owner = -1;                         /* window g_st belongs to, or -
  *
  * So a machine that has never been taught anything must not declare one. This
  * is exact rather than a heuristic: the store goes non-empty only inside
- * ime_learn_note(), which is called from emit(), which calls drop() -> here on
- * the very next statement. There is no window in which the table has an entry
+ * ime_learn_note(), which is called from emit(). Correction 2026-09-09:
+ * emit() now consumes only the selected prefix and installs the hook on the
+ * remaining state immediately after learning, without dropping that suffix. There is no window in which the table has an entry
  * and the live composition is missing the hook.
  *
  * The cost of the check itself is one load and one branch, on a path that
@@ -251,75 +263,61 @@ static int cp_utf8(uint32_t cp, char *o)
 #define BAR_RAD    9
 #define R2MAX    768
 
-/* Build the two rows and return their pixel widths. The text is built here
- * rather than in ime_ui_compose() so the geometry the damage rectangle comes
- * from is the SAME text that is later drawn -- measuring one string and
- * drawing another is how a bar ends up clipped. */
-static void bar_rows(char *r1, int r1max, char *r2, int r2max, int *w1, int *w2)
-{
+/* A vertical list keeps every numbered candidate visible. The old horizontal
+ * row was clamped to screen width after measuring it, so selectable words
+ * beyond the right edge were invisible. Layout, drawing and mouse hit testing
+ * below share the same line-height and padding. */
+static int page_count(void) { return (g_st.ncand + IME_PAGE_SIZE - 1) / IME_PAGE_SIZE; }
+static int page_items(void) {
+    int n = g_st.ncand - g_st.page * IME_PAGE_SIZE;
+    return n < 0 ? 0 : (n > IME_PAGE_SIZE ? IME_PAGE_SIZE : n);
+}
+static int decimal(char *out, int value) {
+    char rev[12]; int n = 0;
+    do { rev[n++] = (char)('0' + value % 10); value /= 10; } while (value);
+    for (int i = 0; i < n; i++) out[i] = rev[n - i - 1];
+    return n;
+}
+static void bar_row(int item, char *out) {
     int n = 0;
-    for (int i = 0; i < g_st.raw_len && n < r1max - 1; i++) r1[n++] = g_st.raw[i];
-    r1[n] = 0;
-
-    n = 0;
-    struct ime_candidate pg[IME_PAGE_SIZE];
-    int np = ime_candidates(&g_st, pg, IME_PAGE_SIZE);
-    if (np < 0) np = 0;
-    for (int i = 0; i < np; i++) {
-        if (n > r2max - 80) break;
-        r2[n++] = (char)('1' + i);
-        r2[n++] = ' ';
-        for (int k = 0; k < pg[i].ncp; k++) n += cp_utf8(pg[i].cp[k], r2 + n);
-        r2[n++] = ' '; r2[n++] = ' ';
-    }
-    if (np == 0) {
-        /* NOT an empty row. A bar that shrinks to the composition line when a
-         * syllable has no candidates reads as "the IME broke"; saying that
-         * Enter still commits the letters is the one thing the user needs. */
-        const char *m = "(no match -- Enter for the letters)";
-        while (*m && n < r2max - 1) r2[n++] = *m++;
-    } else {
-        int pages = (g_st.ncand + IME_PAGE_SIZE - 1) / IME_PAGE_SIZE;
-        if (pages > 1 && n < r2max - 10) {
-            r2[n++] = ' '; r2[n++] = ' ';
-            r2[n++] = (char)('0' + (g_st.page + 1) % 10);
-            r2[n++] = '/';
-            if (pages >= 10) r2[n++] = (char)('0' + pages / 10);
-            r2[n++] = (char)('0' + pages % 10);
+    if (item < 0) {
+        for (int i = 0; i < g_st.raw_len; i++) out[n++] = g_st.raw[i];
+        if (page_count() > 1) {
+            out[n++] = ' '; out[n++] = '[';
+            n += decimal(out + n, g_st.page + 1); out[n++] = '/';
+            n += decimal(out + n, page_count()); out[n++] = ']';
+            const char *hint = " PgUp/PgDn"; while (*hint) out[n++] = *hint++;
         }
+    } else if (!page_items()) {
+        const char *hint = "Enter: keep spelling"; while (*hint) out[n++] = *hint++;
+    } else {
+        const struct ime_candidate *c = &g_st.cand[g_st.page * IME_PAGE_SIZE + item];
+        out[n++] = (char)('1' + item); out[n++] = ' ';
+        for (int i = 0; i < c->ncp; i++) n += cp_utf8(c->cp[i], out + n);
+        if (c->raw_used < g_st.raw_len) { out[n++] = ' '; out[n++] = '+'; }
     }
-    r2[n] = 0;
-
-    *w1 = text_width_sz(r1, fb_ui_px());
-    *w2 = text_width_sz(r2, fb_ui_px());
+    out[n] = 0;
 }
 
-/* Recompute g_b* from the current composition. Called after every state
- * change, never from inside the renderer. */
 static void bar_layout(void)
 {
     if (!ime_ui_composing()) { g_bw = g_bh = 0; return; }
-
-    char r1[IME_MAX_RAW + 2], r2[R2MAX];
-    int w1, w2;
-    bar_rows(r1, (int)sizeof r1, r2, (int)sizeof r2, &w1, &w2);
-
+    int rows = page_items(); if (!rows) rows = 1;
+    int width = 0;
+    char row[R2MAX];
+    for (int i = -1; i < rows; i++) {
+        bar_row(i, row);
+        int w = text_width_sz(row, fb_ui_px());
+        if (w > width) width = w;
+    }
     int pad = fb_pt(BAR_PAD), lh = text_line_height(fb_ui_px());
-    int w = (w1 > w2 ? w1 : w2) + 2 * pad;
-    int h = 2 * pad + lh * 2 + fb_pt(BAR_GAP);
-
+    int w = width + 2 * pad, h = 2 * pad + lh * (rows + 1) + fb_pt(BAR_GAP);
     int sw = (int)fb_width(), sh = (int)fb_height();
     if (w > sw - 2 * pad) w = sw - 2 * pad;
-
-    /* Anchored just under the focused window's title bar, at its left edge --
-     * the closest a caller with no caret can get to "where the text is going". */
     int wi, ax, ay, aw, ah;
     if (wm_ime_anchor(&wi, &ax, &ay, &aw, &ah) && wi == g_owner) {
         g_bx = ax; g_by = ay + ah + fb_pt(6);
-        (void)aw;
-    } else {
-        g_bx = (sw - w) / 2; g_by = sh * 3 / 4;
-    }
+    } else { g_bx = (sw - w) / 2; g_by = sh * 3 / 4; }
     if (g_bx + w > sw - pad) g_bx = sw - pad - w;
     if (g_bx < pad) g_bx = pad;
     if (g_by + h > sh - pad) g_by = sh - pad - h;
@@ -327,48 +325,34 @@ static void bar_layout(void)
     g_bw = w; g_bh = h;
 }
 
-/* Damage what WAS there and what IS there now. Both, always: a bar that got
- * narrower would otherwise leave its right end standing on the wallpaper --
- * wm.c's dirty_rect has no periodic full repaint behind it to cover for an
- * under-report (see wm.h). */
 static void bar_changed(void)
 {
     bar_layout();
-    if (g_pw > 0) wm_damage(g_px, g_py, g_pw, g_ph);
-    if (g_bw > 0) wm_damage(g_bx, g_by, g_bw, g_bh);
+    /* Include the one-pixel/two-pixel shadow; otherwise closing or shortening
+     * the popup leaves its shadow behind on a damage-only compositor. */
+    if (g_pw > 0) wm_damage(g_px, g_py, g_pw + fb_pt(1), g_ph + fb_pt(2));
+    if (g_bw > 0) wm_damage(g_bx, g_by, g_bw + fb_pt(1), g_bh + fb_pt(2));
     g_px = g_bx; g_py = g_by; g_pw = g_bw; g_ph = g_bh;
 }
 
 void ime_ui_compose(void)
 {
-    if (g_bw <= 0 || g_bh <= 0) return;          /* the not-composing cost of this hook */
-
-    char r1[IME_MAX_RAW + 2], r2[R2MAX];
-    int w1, w2;
-    bar_rows(r1, (int)sizeof r1, r2, (int)sizeof r2, &w1, &w2);
-    (void)w1; (void)w2;
-
+    if (g_bw <= 0 || g_bh <= 0) return;
     int dark = wm_dark();
     int pad = fb_pt(BAR_PAD), lh = text_line_height(fb_ui_px()), rad = fb_pt(BAR_RAD);
-
-    /* NOT GLASS, for notify.c's reason: fb_blur_rect samples outside the rect,
-     * so a glass panel needs an entry in wm.c's dmg_expand and becomes a second
-     * thing a damage rectangle may not cut in half. A blend is clip-exact and
-     * asks the compositor for nothing. */
     fb_blend_round_rect(g_bx + fb_pt(1), g_by + fb_pt(2), g_bw, g_bh, rad, 0, 0, 0, 60);
     if (dark) fb_blend_round_rect(g_bx, g_by, g_bw, g_bh, rad, 32, 32, 40, 244);
-    else      fb_blend_round_rect(g_bx, g_by, g_bw, g_bh, rad, 252, 252, 254, 244);
-    /* The one-row top highlight the notification cards use, same idiom. */
+    else fb_blend_round_rect(g_bx, g_by, g_bw, g_bh, rad, 252, 252, 254, 244);
     fb_blend_round_rect(g_bx, g_by, g_bw, fb_pt(1), 0, 255, 255, 255, dark ? 40 : 190);
-
-    uint32_t ink  = dark ? fb_rgb(238, 239, 244) : fb_rgb(28, 28, 34);
-    uint32_t ink2 = dark ? fb_rgb(150, 200, 255) : fb_rgb(40, 100, 200);
-
-    /* The composition line in the ACCENT colour and the candidates in the ink
-     * colour, not the other way round: the accent marks what is still
-     * provisional. */
-    text_draw_sz(g_bx + pad, g_by + pad, r1, fb_ui_px(), ink2);
-    text_draw_sz(g_bx + pad, g_by + pad + lh + fb_pt(BAR_GAP), r2, fb_ui_px(), ink);
+    uint32_t ink = dark ? fb_rgb(238,239,244) : fb_rgb(28,28,34);
+    uint32_t accent = dark ? fb_rgb(150,200,255) : fb_rgb(40,100,200);
+    char row[R2MAX]; bar_row(-1, row);
+    text_draw_sz(g_bx + pad, g_by + pad, row, fb_ui_px(), accent);
+    int rows = page_items(); if (!rows) rows = 1;
+    for (int i = 0; i < rows; i++) {
+        bar_row(i,row);
+        text_draw_sz(g_bx + pad, g_by + pad + lh * (i + 1) + fb_pt(BAR_GAP), row, fb_ui_px(), ink);
+    }
 }
 
 /* ============================ focus / teardown =========================== */
@@ -392,6 +376,18 @@ static void restore_to(int wi)
     for (int i = 0; i < p->raw_len; i++) ime_feed(&g_st, p->raw[i]);
     for (int i = 0; i < p->page; i++) ime_feed(&g_st, IME_KEY_PGDN);
     g_owner = wi;
+}
+
+/* Called before rendering and before dispatching a key/click, never inside
+ * the renderer: focus can change without a keystroke, including to an English
+ * window. Previously that left the old window's composition painted on top. */
+void ime_ui_focus(int wi)
+{
+    if ((unsigned)wi >= IME_UI_MAXWIN) wi = -1;
+    if (g_owner == wi) return;
+    if (wi < 0) { park_current(); st_reset(); g_owner = -1; }
+    else restore_to(wi);
+    bar_changed();
 }
 
 static void drop(int wi)
@@ -447,7 +443,8 @@ void ime_ui_win_gone(int wi)
  *      deliver would rank a character the user cannot type above one they can,
  *      and the symptom would be a candidate bar whose first entry does nothing.
  *
- * ORDER MATTERS: ime_commit_source() reads g_st, and drop() resets it. The
+ * ORDER MATTERS: ime_commit_source() reads g_st. Previously drop() reset it;
+ * now ime_accept() consumes the selected prefix and recomputes the suffix. The
  * lookup is therefore before the drop, and the pointers it hands back point
  * into the read-only dictionary rather than into g_st, so nothing here depends
  * on the composition still being open when ime_learn_note() copies them. */
@@ -456,28 +453,63 @@ static int emit(int idx, uint32_t *out, int max)
     uint32_t tmp[IME_UI_MAXCP];
     if (max > IME_UI_MAXCP) max = IME_UI_MAXCP;
     int n = ime_commit(&g_st, idx, tmp, max);
-    if (n < 0) return 0;
-    int k = 0;
+    if (n < 0) return 0; /* unavailable digit/capacity leaves the preedit intact */
     for (int i = 0; i < n; i++) {
         uint32_t cp = tmp[i];
         if (cp > 0x7F && (cp < IME_CP_MIN || cp > IME_CP_MAX)) {
-            kprintf("[ime] REFUSED U+%x: outside U+4E00..U+9FFF, so an app would read it\n"
-                    "[ime] as a KEY_* code (logit_abi.h: 0x101..0x108). The dictionary is wrong.\n",
-                    (unsigned)cp);
-            continue;
+            kprintf("[ime] refused candidate codepoint U+%x\n", (unsigned)cp);
+            return 0; /* refuse the whole candidate, never deliver half a word */
         }
-        out[k++] = cp;
     }
-
-    if (k == n) {
-        const char *key; int keylen;
-        const uint8_t *ctext; int clen;
-        if (ime_commit_source(&g_st, idx, &key, &keylen, &ctext, &clen))
-            ime_learn_note(key, keylen, ctext, clen);
+    const char *key = 0; int keylen = 0;
+    const uint8_t *ctext = 0; int clen = 0;
+    int learn = ime_commit_source(&g_st, idx, &key, &keylen, &ctext, &clen);
+    int k = ime_accept(&g_st, idx, out, max);
+    if (k < 0) return 0;
+    if (learn) {
+        ime_learn_note(key, keylen, ctext, clen);
+        ime_set_user_weight(&g_st, ime_learn_weight, 0,
+                            256u, IME_LEARN_STEP * IME_LEARN_COUNT_MAX);
     }
-
-    drop(g_owner);
+    g_park[g_owner].raw_len = 0; g_park[g_owner].page = 0;
+    bar_changed();
     return k;
+}
+
+int ime_ui_click(int wi, int x, int y, uint32_t *out, int max)
+{
+    ime_ui_focus(wi);
+    if (g_bw <= 0 || x < g_bx || x >= g_bx + g_bw || y < g_by || y >= g_by + g_bh) return -1;
+    int y0 = g_by + fb_pt(BAR_PAD) + text_line_height(fb_ui_px()) + fb_pt(BAR_GAP);
+    if (y < y0) return 0;
+    int i = (y - y0) / text_line_height(fb_ui_px());
+    return i < page_items() ? emit(i, out, max) : 0;
+}
+
+static uint32_t punctuation(int c)
+{
+    switch (c) {
+    case ',': return 0xFF0C; case '.': return 0x3002;
+    case '!': return 0xFF01; case '?': return 0xFF1F;
+    case ':': return 0xFF1A; case ';': return 0xFF1B;
+    case '(': return 0xFF08; case ')': return 0xFF09;
+    default: return 0;
+    }
+}
+
+/* Punctuation confirms the composition first. The former default branch
+ * dropped it, making nihao, insert only a comma. A corrected prefix may leave
+ * a suffix open, so finish each suffix before delivering the punctuation. */
+static int finish_punctuation(int c, uint32_t *out, int max)
+{
+    int n = 0;
+    while (g_st.raw_len) {
+        int k = emit(g_st.ncand ? 0 : IME_COMMIT_RAW, out + n, max - n - 1);
+        if (!k) return n;
+        n += k;
+    }
+    if (n < max) out[n++] = punctuation(c);
+    return n;
 }
 
 /* SPLIT IN TWO, and the split is the measurement rather than a style choice.
@@ -495,6 +527,7 @@ static int emit(int idx, uint32_t *out, int max)
 static __attribute__((noinline))
 int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
 {
+    ime_ui_focus(wi);
     if (toggle) {
         if (!g_dict) {
             /* REFUSED OUT LOUD, and the key is PASSED THROUGH rather than
@@ -536,18 +569,16 @@ int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
         return 0;
     }
 
-    if (g_owner != wi) restore_to(wi);
+    ime_ui_focus(wi);
     int composing = (g_st.raw_len > 0);
 
-    /* A system-modifier combination is the app's, always. While composing it
-     * additionally CANCELS: Ctrl+S is about to save, and saving a document
-     * with a half-typed romanisation still pending is worse than losing three
-     * letters. Ctrl+letter has already been folded to a control code by the
+    /* A system-modifier combination is the app's, always. The previous policy
+     * cancelled the preedit on Ctrl+S. Correction 2026-09-09: save/copy now
+     * preserve it visibly; Escape is the explicit cancellation command. Ctrl+letter has already been folded to a control code by the
      * keyboard driver, so the mods bit is the only way to tell Ctrl+S from a
      * literal 0x13. */
     if (mods & (EV_MOD_CTRL | EV_MOD_SUPER | EV_MOD_ALT)) {
-        if (composing) drop(wi);
-        return -1;
+        return -1; /* keep the preedit visible across save/copy shortcuts */
     }
 
     if (!composing) {
@@ -555,6 +586,7 @@ int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
          * types a capital straight through, which is the escape hatch for a
          * name or an acronym without toggling the IME off and on again. */
         if (c >= 'a' && c <= 'z') { ime_feed(&g_st, c); bar_changed(); return 0; }
+        if (punctuation(c) && max > 0) { out[0] = punctuation(c); return 1; }
         return -1;
     }
 
@@ -575,9 +607,9 @@ int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
         ime_feed(&g_st, '\'');
         bar_changed();
         return 0;
-    case KEY_PGUP: case KEY_LEFT:
+    case '-': case KEY_PGUP: case KEY_LEFT:
         ime_feed(&g_st, IME_KEY_PGUP); bar_changed(); return 0;
-    case KEY_PGDN: case KEY_RIGHT:
+    case '=': case KEY_PGDN: case KEY_RIGHT:
         ime_feed(&g_st, IME_KEY_PGDN); bar_changed(); return 0;
     default: break;
     }
@@ -585,12 +617,15 @@ int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
     if (c >= 'a' && c <= 'z') { ime_feed(&g_st, c); bar_changed(); return 0; }
     if (c >= '1' && c <= '9') return emit(c - '1', out, max);
 
-    /* Anything else -- Tab, an arrow the bar does not use, a punctuation mark.
-     * The composition is DROPPED and the key goes to the app. Dropped rather
-     * than committed: committing a candidate the user never looked at puts a
-     * character they did not choose into their document, and the letters were
-     * on screen for them to see disappear. */
-    drop(wi);
+    if (punctuation(c)) return finish_punctuation(c, out, max);
+    /* Uppercase/other printable input is an English escape: return the raw
+     * spelling and that character together. Navigation preserves the preedit
+     * instead of silently destroying it. Escape remains explicit cancellation. */
+    if (c >= 32 && c < 127 && max > g_st.raw_len) {
+        int n = emit(IME_COMMIT_RAW, out, max - 1);
+        out[n++] = (uint32_t)c;
+        return n;
+    }
     return -1;
 }
 
@@ -608,7 +643,7 @@ int ime_key_slow(int wi, int c, int mods, int toggle, uint32_t *out, int max)
 int ime_ui_key(int wi, int c, int mods, uint32_t *out, int max)
 {
     if ((unsigned)wi >= (unsigned)IME_UI_MAXWIN) return -1;
-    int toggle = (c == ' ' && (mods & IME_TOGGLE_MOD));
+    int toggle = (c == ' ' && (mods & (EV_MOD_SHIFT | EV_MOD_CTRL | EV_MOD_ALT | EV_MOD_SUPER)) == IME_TOGGLE_MOD);
     if (!g_on[wi] && !toggle) return -1;
     return ime_key_slow(wi, c, mods, toggle, out, max);
 }

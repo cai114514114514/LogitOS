@@ -102,10 +102,11 @@
  * IME_CAND_MAXCP (c/lib/ime/pinyin.h), which is measured against the shipped
  * dictionary at 15 (the longest phrase) with headroom to 20 -- EXCEPT on the
  * raw-literal path (Enter), which commits up to IME_MAX_RAW = 64 typed ASCII
- * letters. 64 is therefore the real bound and the one used here; sizing this
+ * letters. Correction 2026-09-09: one confirming punctuation codepoint can
+ * follow those 64 letters, so the delivery buffer now holds 65. Sizing it
  * to 20 would silently truncate a long mistyped word on the one path whose
  * whole job is to give the user back exactly what they typed. */
-#define IME_UI_MAXCP 64
+#define IME_UI_MAXCP 65 /* max raw spelling plus its confirming punctuation */
 
 /* Windows this file keeps state for. Must be >= wm.c's MAXWIN, and wm.c
  * _Static_asserts exactly that beside its own definition -- a drift here would
@@ -136,6 +137,12 @@ int  ime_ui_key(int wi, int c, int mods, uint32_t *out, int max);
 /* WM-HOOK 4: draw the candidate bar into the current fb target. Draws nothing
  * and costs one predictable branch when no composition is open. */
 void ime_ui_compose(void);
+
+/* Synchronize focus before the WM snapshots damage; -1 hides/parks preedit. */
+void ime_ui_focus(int wi);
+
+/* Candidate-popup hit test and commit. -1 means outside, >=0 consumed. */
+int ime_ui_click(int wi, int x, int y, uint32_t *out, int max);
 
 /* A window is going away: drop any composition it owned, so its slot cannot be
  * reused with a stale composition attached. Called from wm.c's window teardown.

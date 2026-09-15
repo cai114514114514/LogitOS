@@ -17,6 +17,7 @@ table, per EVENT CLASS, at three display modes:
     type    keystrokes into TextEdit (the app repaints and flushes)
     theme   the menu-bar dark-mode switch (every window must repaint)
     scroll  wheel notches over the Terminal's scrollback
+    open    launch Code Studio and let its kernel open-pop settle
     anim    a widget animation: the Settings toggle, flipped six times
     b-scroll   BROWSER: wheel notches over a real fetched page's body
     b-type     BROWSER: keystrokes into a page <input>, not the address bar
@@ -83,6 +84,7 @@ says so out loud rather than passing quietly. `make test-anim` runs both sides.
 import http.server
 import json as _json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -356,6 +358,43 @@ def w_scroll(ui, geo, steps=48):
                    {"type": "btn", "data": {"button": btn, "down": False}}])
         time.sleep(0.02)
     time.sleep(0.3)
+
+
+def w_open(ui, geo):
+    """Launch one static, large native window and include its whole open-pop.
+
+    Code Studio is 780x620 points and does not run an endless animation, so the
+    compositor interval is the launch plus the kernel's 160 ms scale flight,
+    not a spinner continuing after the window has settled.  This class exists
+    because open-pop used to force every one of those frames to full screen;
+    the other rows begin after their windows have already arrived and cannot
+    expose that cost.
+    """
+    mark = ui.mark()
+    ui.launch_app("studio")
+    # The motion itself is guest-clocked.  This is only an observation bound
+    # long enough to include its terminal frame before Meter takes its mark.
+    time.sleep(1.0)
+    if geo.get("assert_settles"):
+        first = ui.serial_text()[mark:]
+        vals = [int(v) for v in re.findall(r"\[wm\] anim open win \d+ p (\d+)", first)]
+        # A heavily loaded TCG frame may legitimately consume the entire
+        # 160 ms flight and land without an intermediate trace. What may never
+        # happen is another open frame after the one-second settle bound: that
+        # was the real p=0 livelock this gate was added to catch.
+        tail = ui.mark()
+        time.sleep(0.5)
+        late = re.findall(r"\[wm\] anim open win \d+ p (\d+)",
+                          ui.serial_text()[tail:])
+        if late:
+            raise AssertionError(
+                "open animation did not settle: %d trace(s) arrived after "
+                "the one-second deadline, last p=%s" % (len(late), late[-1]))
+        if len(vals) > 64:
+            raise AssertionError(
+                "open animation emitted %d frames before settling (bound 64)" % len(vals))
+        print("     PASS: open animation settled; %d traced frame(s), %d progress value(s)"
+              % (len(vals), len(set(vals))))
 
 
 # ---------------------------------------------------------------------------
@@ -864,7 +903,7 @@ def boot(iso, xres, yres, tmp, disk=None):
 def main(argv):
     xres, yres, reps = 1920, 1200, 3
     iso, disk, only, jpath = None, None, None, None
-    do_assert, expect_off = False, None
+    do_assert, assert_open, expect_off = False, False, None
     i = 1
     while i < len(argv):
         if argv[i] == "--xres":    xres = int(argv[i + 1]); i += 2
@@ -875,6 +914,7 @@ def main(argv):
         elif argv[i] == "--only":  only = argv[i + 1].split(","); i += 2
         elif argv[i] == "--json":  jpath = argv[i + 1]; i += 2
         elif argv[i] == "--assert":     do_assert = True; i += 1
+        elif argv[i] == "--assert-open": assert_open = True; i += 1
         elif argv[i] == "--expect-off": expect_off = int(argv[i + 1]); i += 2
         else:
             print("unknown arg %r" % argv[i]); return 2
@@ -913,6 +953,16 @@ def main(argv):
                     print("     %-7s rep %d: no counter line" % (name, r))
                     continue
                 rows.append(d)
+                if name == "open" and r + 1 < reps:
+                    # An open-pop repetition needs another fresh window.  The
+                    # old loop left Studio alive, so repetition two exercised
+                    # launch_app()'s single-instance focus path and aborted
+                    # before writing JSON.  Close only after Meter's end mark,
+                    # then let the WM reap the window before the next start
+                    # mark; neither close nor cleanup is charged to the open
+                    # interval.
+                    ui.key_mods(("meta_l",), "w", settle=0.2)
+                    time.sleep(1.0 * slow)
             if not rows:
                 return
             s = summarize(rows)
@@ -950,6 +1000,15 @@ def main(argv):
                 measure("drag-small", w_drag,
                         "a SMALLER window (the 640pt Finder) dragged by its titlebar",
                         {"title": t, "ppm": os.path.join(tmp, "aim.ppm")})
+
+        # The open-pop is measured while the desktop still has only its boot
+        # window.  Later phases deliberately add larger windows and would make
+        # a legacy full-screen open look slower merely because the scene below
+        # it changed; one fixed scene keeps before/after comparable.
+        if not only or "open" in only:
+            measure("open", w_open,
+                    "Code Studio launch plus its complete kernel open-pop",
+                    {"assert_settles": assert_open})
 
         # TextEdit, then the Terminal: two more windows, the Terminal focused.
         # Verified launches: the rows below measure repaints of "the TextEdit

@@ -1,3 +1,6 @@
+#include "openlogit_draw.h"
+/* 2026-09-13: borrowed pixel targets render through the SDK. Parsing and
+ * layout stay here; the compatibility rasterizer is no longer a dependency. */
 /* Procedural monochrome vector icons (M26). Each icon is a path in a 0..100
  * unit box (y down), scaled to px and filled into a coverage bitmap that
  * fb_blit_glyph paints in any colour. Filled silhouettes; holes/cutouts use
@@ -180,7 +183,7 @@ void icon_draw(int id, int x, int y, int px, uint32_t color)
             }
         }
         #undef SX
-        if (!gfx_fill_mask_subs(&ic_path, GFX_NONZERO, cov, px, px, 0, 0, IC_SUBS)) {
+        if (!ol_raster_mask_subs(&ic_path, GFX_NONZERO, cov, px, px, 0, 0, IC_SUBS)) {
             kfree(cov); return;
         }
         cache[id].px = px; cache[id].w = px; cache[id].h = px; cache[id].cov = cov;

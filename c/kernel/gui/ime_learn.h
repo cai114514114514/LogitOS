@@ -67,6 +67,10 @@
  * its own -- a mutex, not a spinlock, because the writer may sleep -- and
  * ime_learn_weight() is on the per-keystroke ranking path, so it wants a
  * reader/writer shape rather than a mutex the ranking loop takes 3,000 times.
+ * Correction after removal: only the memory snapshot holds learn_lock; all
+ * allocation and VFS I/O remain outside. Thus a short spinlock suffices and
+ * ranking never waits behind a disk operation. The old mutex proposal assumed
+ * the lock would span the writer I/O, which the implemented split avoids.
  *
  * ---------------------------------------------------------------------------
  * WHAT IS LEARNED: TEXT, NEVER AN OFFSET

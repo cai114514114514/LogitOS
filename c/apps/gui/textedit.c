@@ -16,15 +16,88 @@
  * STILL DELIBERATELY SMALL: one buffer, append-and-backspace, no selection, no
  * undo, no mouse caret placement. This is the app Finder opens a .txt with, and
  * growing it into an editor is a different piece of work from making it stop
- * looking wrong. */
+ * looking wrong.
+ *
+ * 2026-09: the selected document/work layout now adds a movable UTF-8 caret,
+ * selection, clipboard and one-step undo. The older append-only and dirty-tail
+ * arguments below describe the implementation this replaces, not its limits.
+ * Layout now caches line starts and uses AUI text primitives for invalidation. */
 #include "aui.h"
+#include "textedit_document.h"
+#include <stdio.h>
+#include "../../lib/agent/sdk.h"
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 
-#define MAXT   8000
+#define MAXT   ((int)AEX_AGENT_DOCUMENT_MAX)
 #define CTRL_S 0x13
 
-static char text[MAXT + 1];
+static char *text;
 static int  tlen;
-static char fname[64];
+static char fname[AG_PATH];
+static uint64_t agent_task,agent_revision=1;
+static int agent_dirty,load_refused;
+static const char *agent_notice;
+static int caret,anchor,editor_focus=1,follow_caret=1,sidebar=1,view_mode;
+static int te_font=18,te_mono,te_weight;
+static unsigned long long sync_after;
+static unsigned edit_epoch;
+static void work_refresh(int enable);
+static void ask_logit(void);
+
+
+static int load_file(void)
+{
+    int fd=open(fname,O_RDONLY);
+    if(fd<0)return errno==ENOENT?0:-1;
+    struct stat st;int rc=0;
+    if(fstat(fd,&st)<0||!S_ISREG(st.st_mode)||st.st_size<0)rc=-1;
+    else if((uint64_t)st.st_size>MAXT)rc=-2;
+    int got=0;
+    while(!rc&&got<MAXT){long n=read(fd,text+got,(size_t)(MAXT-got));
+        if(n<0){rc=-1;break;}if(!n)break;got+=(int)n;}
+    /* A file growing after fstat must be refused, never silently truncated. */
+    if(!rc&&got==MAXT){char extra;long n=read(fd,&extra,1);if(n)rc=n>0?-2:-1;}
+    if(close(fd)<0)rc=-1;
+    if(!rc)tlen=got;
+    return rc;
+}
+
+static void agent_sync(void)
+{
+    if(!agent_task||!agent_dirty)return;
+    struct ag_message m={.type=AG_EDIT,.task=agent_task,.revision=agent_revision,.bytes=(uint32_t)tlen};void *reply=0;
+    int r=ag_call(&m,text,&reply);free(reply);
+    if(!r){agent_revision=m.revision;agent_dirty=0;agent_notice=0;}
+    else agent_notice=r==AG_E_CONFLICT?"版本已变化，本地编辑已保留，请先核对":"任务服务暂不可用，本地编辑已保留";
+}
+static int agent_refresh(void)
+{
+    static unsigned long long next;
+    if(!agent_task||monotonic_ms()<next)return 0;next=monotonic_ms()+1500;
+    struct ag_message m={.type=AG_DOCUMENT,.task=agent_task};void *doc=0;int r=ag_call(&m,0,&doc);
+    if(!r&&m.revision>agent_revision&&m.bytes<=(unsigned)MAXT){
+        if(agent_dirty&&(m.bytes!=(unsigned)tlen||memcmp(text,doc,m.bytes))){
+            agent_notice="其他窗口更新了文档，本地编辑已保留";free(doc);return 1;}
+        if(m.bytes)memcpy(text,doc,m.bytes);tlen=(int)m.bytes;text[tlen]=0;agent_revision=m.revision;
+        agent_dirty=0;caret=anchor=tlen;edit_epoch++;
+        agent_notice="已载入最新文档版本";}
+    free(doc);work_refresh(0);return 1;
+}
+static int save_document(void)
+{
+    agent_sync();
+    if(agent_task){if(agent_dirty)return -1;
+        struct ag_message m={.type=AG_SAVE,.task=agent_task,.revision=agent_revision};void *out=0;int r=ag_call(&m,0,&out);free(out);
+        agent_notice=r<0?"保存失败，当前文档已保留":"已保存新的文档版本";return r;}
+    int fd=open(fname,O_WRONLY|O_CREAT|O_TRUNC,0600);if(fd<0)return -1;
+    int off=0,r=0;while(off<tlen){long n=write(fd,text+off,(size_t)(tlen-off));if(n<=0){r=-1;break;}off+=(int)n;}
+    if(!r&&fsync(fd)<0)r=-1;if(close(fd)<0)r=-1;return r;
+}
 static int  saved;          /* 1 just after a successful save, 0 once edited */
 static int  scroll;         /* first visible line */
 
@@ -41,8 +114,8 @@ static int  scroll;         /* first visible line */
  * store's own doc comment says as much ("set several keys with commit=0 and
  * finish with setting_commit() -- rather than N of them"), and a resize drag
  * is exactly that batch, just spread across frames instead of one call. */
-#define TE_W_DEFAULT 520
-#define TE_H_DEFAULT 360
+#define TE_W_DEFAULT 1120
+#define TE_H_DEFAULT 660
 #define TE_W_MIN     240
 #define TE_H_MIN     160
 static int geom_dirty;
@@ -104,37 +177,60 @@ static int te_is_cont(char c) { return ((unsigned char)c & 0xC0) == 0x80; }
  * made, not that it landed). Returns 1 if anything changed that a repaint
  * should reflect, 0 for a key this app ignores (navigation) or a no-op
  * (buffer full). */
-static int te_apply_key(int a, int *wrote)
+/* The old handler discarded navigation and edited only the tail. Selection
+ * replacement now has one capacity gate, shared by typing, paste and markup. */
+static char *undo_text;static int undo_len,undo_caret,undo_anchor,undo_valid;
+static void remember_edit(void)
 {
-    if (te_is_nav_key(a)) return 0;        /* navigation, not text -- see the
-                                             * file header: append-only, no
-                                             * caret to move */
-    if (a == CTRL_S) { if (wrote) *wrote = 1; return 1; }
-    if (a == '\b') {
-        if (tlen <= 0) return 0;
-#ifdef AUI_BYTE_BACKSPACE
-        tlen--;
-#else
-        int p = tlen - 1;
-        while (p > 0 && te_is_cont(text[p])) p--;
-        tlen = p;
-#endif
-        text[tlen] = 0;
-        saved = 0;
-        return 1;
+    if(!undo_text)undo_text=malloc(MAXT+1);
+    if(undo_text){memcpy(undo_text,text,(size_t)tlen+1);undo_len=tlen;undo_caret=caret;undo_anchor=anchor;undo_valid=1;}
+}
+static void edited(void)
+{saved=0;agent_dirty=agent_task!=0;agent_notice=0;edit_epoch++;follow_caret=1;sync_after=monotonic_ms()+300;}
+static int replace_selection(const char *s,int n)
+{
+    int selected=caret>anchor?caret-anchor:anchor-caret;
+    if(n>MAXT-(tlen-selected)){agent_notice="文档上限为 1 MiB，内容未被截断";return 0;}
+    remember_edit();if(ted_replace(text,&tlen,MAXT,&caret,&anchor,s,n)<0)return 0;
+    edited();return 1;
+}
+static int te_apply_key(int a,int mods,int *wrote)
+{
+    if(a==CTRL_S){*wrote=1;return 1;}
+    if(a==1){anchor=0;caret=tlen;follow_caret=1;return 1;}
+    if(a==26&&undo_valid){
+        char *swap=text;text=undo_text;undo_text=swap;int n=tlen;tlen=undo_len;undo_len=n;
+        n=caret;caret=undo_caret;undo_caret=n;n=anchor;anchor=undo_anchor;undo_anchor=n;edited();return 1;}
+    if(a==3||a==24){int lo=caret<anchor?caret:anchor,hi=caret>anchor?caret:anchor;
+        if(hi>lo&&clip_set(CLIP_F_TEXT,text+lo,hi-lo)>=0&&a==24)return replace_selection("",0);return 0;}
+    if(a==22){int n=clip_len(CLIP_F_TEXT);if(n<=0)return 0;
+        int selected=caret>anchor?caret-anchor:anchor-caret;
+        if(n>MAXT-(tlen-selected)){agent_notice="粘贴超出 1 MiB，内容未被截断";return 1;}
+        char *b=malloc((size_t)n+1);if(!b)return 0;
+        int got=clip_get(CLIP_F_TEXT,b,n),r=0;if(got==n&&ag_utf8(b,(unsigned)n))r=replace_selection(b,n);free(b);return r;}
+    if(te_is_nav_key(a)){
+        int p=caret;
+        if(a==KEY_LEFT)p=ted_prev(text,p);
+        if(a==KEY_RIGHT)p=ted_next(text,p,tlen);
+        if(a==KEY_HOME){if(mods&EV_MOD_CTRL)p=0;else while(p>0&&text[p-1]!='\n')p--;}
+        if(a==KEY_END){if(mods&EV_MOD_CTRL)p=tlen;else while(p<tlen&&text[p]!='\n')p++;}
+        if(a==KEY_UP||a==KEY_DOWN||a==KEY_PGUP||a==KEY_PGDN){
+            int start=p;while(start>0&&text[start-1]!='\n')start--;
+            int col=0;for(int q=start;q<p;q=ted_next(text,q,tlen))col++;
+            int steps=(a==KEY_PGUP||a==KEY_PGDN)?12:1;
+            while(steps--){if(a==KEY_UP||a==KEY_PGUP){if(!start)break;start--;while(start>0&&text[start-1]!='\n')start--;}
+                else {while(start<tlen&&text[start]!='\n')start++;if(start<tlen)start++;}}
+            p=start;while(col--&&p<tlen&&text[p]!='\n')p=ted_next(text,p,tlen);
+        }
+        caret=p;if(!(mods&EV_MOD_SHIFT))anchor=p;follow_caret=1;return 1;
     }
-    if (a > 0 && a <= 0x7F) {
-        if (tlen >= MAXT) return 0;
-        text[tlen++] = (char)a; text[tlen] = 0; saved = 0;
-        return 1;
+    if(a=='\b'||a==127){
+        if(caret==anchor){if(a=='\b')anchor=ted_prev(text,caret);else anchor=ted_next(text,caret,tlen);}
+        if(caret==anchor)return 0;return replace_selection("",0);
     }
-    if (a > 0x7F) {
-        char enc[4]; int el = te_utf8_encode((unsigned)a, enc);
-        if (tlen + el >= MAXT) return 0;
-        for (int i = 0; i < el; i++) text[tlen++] = enc[i];
-        text[tlen] = 0; saved = 0;
-        return 1;
-    }
+    if(a=='\r')a='\n';
+    if(a=='\n'||a=='\t'||(a>=32&&a<=0x10ffff&&!(a>=0xd800&&a<=0xdfff))){
+        char b[4];int n=te_utf8_encode((unsigned)a,b);return replace_selection(b,n);}
     return 0;
 }
 
@@ -189,14 +285,14 @@ static void load_geometry(int *w, int *h)
 
     if (setting_get("app.textedit.w", buf, (int)sizeof buf) > 0) {
         int v = atoi_or_neg(buf);
-        if (v >= TE_W_MIN) gw = v;
+        if (v >= 900) gw = v;
     }
     if (setting_get("app.textedit.h", buf, (int)sizeof buf) > 0) {
         int v = atoi_or_neg(buf);
-        if (v >= TE_H_MIN) gh = v;
+        if (v >= 640) gh = v;
     }
-    *w = sw > 0 ? clampi(gw, TE_W_MIN, sw) : gw;
-    *h = sh > 0 ? clampi(gh, TE_H_MIN, sh) : gh;
+    *w = sw > 0 ? clampi(gw, TE_W_MIN, sw-40) : gw;
+    *h = sh > 0 ? clampi(gh, TE_H_MIN, sh-140) : gh;
 }
 
 /* ---- Wrapping and the caret: ONE walk, in CODE POINTS and REAL ADVANCES ----
@@ -310,7 +406,7 @@ static int te_bound(int off, int n)
 static int te_fits(int off, int n, int avail, int px)
 {
     if (n <= 0) return 1;
-    int w = text_measure_px(text + off, n, px, 1);
+    int w = text_measure_px(text + off, n, px, te_mono|te_weight);
     return w > 0 && w <= avail;
 }
 
@@ -343,19 +439,6 @@ static int te_fit(int start, int limit, int avail, int px)
  * Progress is guaranteed on the `more` path (te_fit's floor is one code point,
  * and the newline branch steps past the newline), which is what makes the caller
  * a `for(;;)` that cannot spin. */
-static int te_line_break(int start, int avail, int px, int *drawlen, int *next)
-{
-    int e = start;
-    while (e < tlen && text[e] != '\n') e++;
-
-    int fit = te_fit(start, e, avail, px);
-    if (fit < e - start) { *drawlen = fit; *next = start + fit; return 1; }
-
-    *drawlen = e - start;
-    if (e < tlen) { *next = e + 1; return 1; }
-    *next = e; return 0;
-}
-
 /* The walk. Always measures; draws the visible lines when `draw` is set.
  * Reports the display-line count, the caret's line, and the caret's x offset
  * from the left edge of the text in px -- from the real advances of the prefix
@@ -366,23 +449,6 @@ static int te_line_break(int start, int avail, int px, int *drawlen, int *next)
  * is what makes the last line the walk produces the caret's line, and its whole
  * drawn extent the caret's prefix -- one measurement of exactly the run that
  * was handed to gui_text_run, so the two cannot disagree by a kerning pair. */
-static void te_walk(int avail, int px, int x0, int y0, int lh,
-                    int scroll_, int rows, int draw,
-                    int *nlines, int *cl, int *cx)
-{
-    int start = 0, line = 0, dl = 0;
-    for (;;) {
-        int nx, more = te_line_break(start, avail, px, &dl, &nx);
-        if (draw && dl > 0 && line >= scroll_ && line < scroll_ + rows)
-            gui_text_run(x0, y0 + (line - scroll_) * lh, px, 1, AUI_TEXT, text + start, dl);
-        if (!more) break;
-        start = nx; line++;
-    }
-    *nlines = line + 1;
-    *cl = line;
-    *cx = dl > 0 ? text_measure_px(text + start, dl, px, 1) : 0;
-}
-
 /* ---- what changed this frame, in terms ONLY this file can compute ----
  *
  * aui.c's own generic per-primitive diff (aui.c section 5a-flush) already
@@ -399,130 +465,19 @@ static void te_walk(int avail, int px, int x0, int y0, int lh,
  * below is what lets this file compute that ONE gap itself and hand it to
  * aui_end_rect() as an extra hint, unioned with whatever aui's own tracking
  * already found -- never instead of it. */
-static int te_prev_valid;
-static int te_prev_scroll, te_prev_cl, te_prev_nlines, te_prev_w, te_prev_h, te_prev_dark;
-
-static int te_imin(int a, int b) { return a < b ? a : b; }
-static int te_imax(int a, int b) { return a > b ? a : b; }
-
-static void draw(void)
-{
-    int W = aui_width(), H = aui_height();
-    aui_begin(AUI_BG);
-
-    int px = AUI_FS_BODY;
-    int lh = px + AUI_SP(1);
-    int pad = AUI_SP(3);
-    int bar = AUI_H_CTL;
-
-    int viewh = H - bar - 2 * pad;
-    int rows  = viewh / lh; if (rows < 1) rows = 1;
-    /* The wrap width is a PIXEL budget now, not a column count. The floor is one
-     * em rather than four columns: at that point te_fit degenerates to one code
-     * point per line, which is ugly and still correct -- no split sequences, no
-     * spin. The caret may sit at exactly pad + avail on a line that fills the
-     * budget; that is W - pad, still AUI_SP(1) inside the page surface below,
-     * so no column is reserved for it the way the old `col + 1 >= cols` did. */
-    int avail = W - 2 * pad; if (avail < px) avail = px;
-
-    /* Pass one measures. The scroll has to chase the caret's line and the caret
-     * is at the end of the buffer, so the whole text is walked before anything
-     * can be placed. Pass two draws at the scroll this produced -- the SAME
-     * function, so there is no second wrap to disagree with the first. */
-    int nlines, cl, cx;
-    te_walk(avail, px, 0, 0, lh, 0, 0, 0, &nlines, &cl, &cx);
-    int prev_scroll = scroll;
-    if (cl < scroll)            scroll = cl;
-    if (cl >= scroll + rows)    scroll = cl - rows + 1;
-    if (scroll > nlines - 1)    scroll = nlines - 1;
-    if (scroll < 0)             scroll = 0;
-
-    /* The page. A surface rather than the window background, so the text sits
-     * on something with an edge -- the same relationship every other window in
-     * the system has between its chrome and its content. */
-    aui_round(pad - AUI_SP(1), pad - AUI_SP(1),
-              W - 2 * (pad - AUI_SP(1)), viewh + AUI_SP(2), AUI_R_MD, AUI_SURFACE);
-
-    te_walk(avail, px, pad, pad, lh, scroll, rows, 1, &nlines, &cl, &cx);
-
-    if (cl >= scroll && cl < scroll + rows)
-        aui_fill(pad + cx, pad + (cl - scroll) * lh, 2, px, AUI_ACCENT);
-
-    /* Status bar, in the toolkit's colours, so it is a strip of chrome in both
-     * themes instead of a light-mode rectangle. */
-    int by = H - bar;
-    aui_fill(0, by, W, bar, AUI_SURFACE_2);
-    aui_hairline(0, by, W);
-    int ty = by + (bar - AUI_FS_LABEL) / 2;
-    aui_text_ellipsis(AUI_SP(3), ty, W - AUI_SP(30), fname, AUI_TEXT, AUI_FS_LABEL);
-
-    const char *hint = saved ? "saved" : "Ctrl+S";
-    int hw = text_measure_px(hint, saved ? 5 : 6, AUI_FS_LABEL, 0);
-    aui_text_sz(W - AUI_SP(3) - hw, ty, hint, saved ? AUI_SUCCESS : AUI_MUTED, AUI_FS_LABEL);
-    if (!saved) {
-        int d = AUI_SP(2);
-        aui_round(W - AUI_SP(4) - hw - d, by + (bar - d) / 2, d, d, d / 2, AUI_WARNING);
-    }
-
-    /* THE ARGUMENT FOR WHY [min(prev_cl,cl) .. max(prev_nlines-1,nlines-1)]
-     * IS THE WHOLE STORY, and it rests on this app's own shape: te_apply_key
-     * only ever appends at the tail or removes from the tail (te_is_nav_key
-     * makes every navigation key a no-op -- see that function's own comment;
-     * there is no caret to move mid-buffer). te_fit()/te_line_break() process
-     * the buffer strictly left to right, so every wrap decision BEFORE the
-     * byte range an edit touched is a pure function of bytes that did not
-     * change -- byte-identical to last frame's walk. The only display lines
-     * whose wrap CAN differ are therefore the ones covering the last
-     * paragraph's tail: from wherever the caret WAS (te_prev_cl) or IS (cl),
-     * whichever is EARLIER, through wherever the walk now ENDS (nlines-1) or
-     * used to end (te_prev_nlines-1), whichever is LATER. A line that
-     * disappeared entirely (backspace un-wrapping two lines back into one)
-     * is covered by the max() reaching its OLD position -- which is what
-     * makes the page-background aui_round() above (it repaints its whole
-     * area every frame, unconditionally, well before this point) actually
-     * get COMPOSITED once it has erased that line, not just drawn into a
-     * surface nobody was told to show. */
-    int W_changed = !te_prev_valid || W != te_prev_w || H != te_prev_h;
-    int dark_changed = aui_is_dark() != te_prev_dark;
-    int scroll_changed = scroll != prev_scroll;
-
-    if (W_changed || dark_changed) {
-        aui_end();                    /* geometry or theme moved: whole canvas, honestly */
-    } else if (scroll_changed) {
-        /* Every visible line's IDENTITY changed (a wheel notch, or the caret
-         * walking off the bottom of a long paste) -- the text viewport is a
-         * different window into the buffer, but the chrome below it (the
-         * status bar) provably is not, so only the page needs flushing. */
-        aui_end_rect(0, pad - AUI_SP(1), W, viewh + AUI_SP(2));
-    } else {
-        int lo = te_imin(te_prev_cl, cl);
-        int hi = te_imax(te_prev_nlines - 1, nlines - 1);
-        if (lo < scroll) lo = scroll;
-        if (hi > scroll + rows - 1) hi = scroll + rows - 1;
-        if (lo > hi) {
-            /* Nothing in the visible TEXT changed by this file's own
-             * accounting (e.g. Ctrl+S alone landed with no new keystroke) --
-             * still let aui's own generic diff decide: it independently
-             * covers the status bar's "saved"/"Ctrl+S" swap, which this
-             * file's own line-range math knows nothing about. */
-            aui_end_rect(0, 0, 0, 0);
-        } else {
-            int y0 = pad + (lo - scroll) * lh;
-            int y1 = pad + (hi - scroll + 1) * lh;
-            aui_end_rect(0, y0, W, y1 - y0);
-        }
-    }
-
-    te_prev_valid = 1;
-    te_prev_scroll = scroll; te_prev_cl = cl; te_prev_nlines = nlines;
-    te_prev_w = W; te_prev_h = H; te_prev_dark = aui_is_dark();
-}
+/* Raw text draws and tail-only dirty ranges used to live here. The work view
+ * uses aui_text_n for every visible run: its shared invalidation also erases
+ * middle-of-document edits, selections, review highlights and disappearing rows. */
+#include "textedit_work.inc"
 
 void app_main(void)
 {
+    text=malloc(MAXT+1);
+    if(!text)app_exit(1);
+    text[0]=0;
     int n = get_arg(fname, sizeof fname);
     if (n <= 0) {
-        const char *d = "untitled.txt";
+        const char *d = "/untitled.txt";
         int i = 0; while (d[i]) { fname[i] = d[i]; i++; } fname[i] = 0;
     }
     int w, h;
@@ -530,16 +485,36 @@ void app_main(void)
     gui_create(fname, w, h);
     aui_set_size(w, h);
 
-    int r = read_file(fname, text, MAXT);
-    if (r > 0) { tlen = r > MAXT ? MAXT : r; text[tlen] = 0; }
-    saved = 1;
+    if(fname[0]!='/'){char absolute[AG_PATH];absolute[0]='/';
+        size_t len=strlen(fname);if(len+2>sizeof absolute)app_exit(1);
+        memcpy(absolute+1,fname,len+1);memcpy(fname,absolute,len+2);}
+    struct stat st;
+    if(stat(fname,&st)==0&&(uint64_t)st.st_size>MAXT){load_refused=1;agent_notice="Document exceeds 1 MiB; file not opened";}
+    else {
+        struct ag_message m={.type=AG_DOCUMENT,.bytes=(uint32_t)strlen(fname)};void *doc=0;
+        int r=ag_call(&m,fname,&doc);
+        if(!r&&m.bytes<=MAXT){if(m.bytes)memcpy(text,doc,m.bytes);tlen=(int)m.bytes;agent_task=m.task;agent_revision=m.revision;}
+        else {r=load_file();if(r<0){load_refused=1;agent_notice=r==-2?
+            "Document exceeds 1 MiB; file not opened":"Document read failed; file not opened";}}
+        free(doc);text[tlen]=0;
+        if(!ag_utf8(text,(uint32_t)tlen)){tlen=0;text[0]=0;load_refused=1;agent_notice="Document is not valid UTF-8; file not opened";}
+    }
+    saved = 1;caret=anchor=tlen;editor_focus=tlen==0;follow_caret=tlen==0;work_refresh(1);
     draw();
 
     for (;;) {
         struct logit_event e;
-        int changed = 0;
+        int changed = agent_refresh();
         while (poll_event(&e)) {
+            if(e.type==EV_MOUSE||e.type==EV_MOUSE_UP||e.type==EV_MOUSE_MOVE){
+                if(e.type==EV_MOUSE&&work_citation_click(e.a,e.b)){aui_feed_done();draw();continue;}
+                if(e.type==EV_MOUSE&&work_body_hit(e.a,e.b)){
+                    editor_focus=1;view_mode=0;aui_set_focus(-1);work_place_caret(e.a,e.b,e.mods);follow_caret=1;
+                }else if(e.type==EV_MOUSE)editor_focus=0;
+                aui_feed(&e);draw();aui_feed_done();continue;}
             if (e.type == EV_CLOSE) {
+                agent_sync();
+                if(agent_task&&agent_dirty){agent_notice="Keep this window open: edits are not synchronized";changed=1;continue;}
                 /* Commit here, not per-resize -- see geom_dirty's comment
                  * above. A session that never touched the window size never
                  * touches the disk for this at all. */
@@ -554,14 +529,36 @@ void app_main(void)
                 geom_dirty = 1;
             }
             if (e.type == EV_THEME)  changed = 1;
-            if (e.type == EV_WHEEL)  { scroll += e.wheel; if (scroll < 0) scroll = 0; changed = 1; }
+            if (e.type == EV_WHEEL)  { scroll += e.wheel*40; if (scroll < 0) scroll = 0;follow_caret=0;changed=1; }
             if (e.type == EV_KEY) {
+                if(e.a==12){ask_logit();changed=1;continue;}
+                if(!editor_focus){aui_feed(&e);draw();aui_feed_done();continue;}
+                if(e.a==18&&agent_task&&!agent_dirty){
+                    struct ag_message m={.type=AG_DOCUMENT,.task=agent_task};void *doc=0;
+                    if(!ag_call(&m,0,&doc)&&m.bytes<=MAXT){if(m.bytes)memcpy(text,doc,m.bytes);
+                        tlen=(int)m.bytes;text[tlen]=0;agent_revision=m.revision;agent_dirty=0;agent_notice="已载入任务文档";caret=anchor=tlen;edit_epoch++;changed=1;}
+                    free(doc);continue;}
+                if(load_refused||source_open||view_mode)continue;
+                int previous=tlen;
                 int wrote = 0;
-                if (te_apply_key(e.a, &wrote)) changed = 1;
-                if (wrote) { if (write_file(fname, text, tlen) >= 0) saved = 1; changed = 1; }
+                if (te_apply_key(e.a,e.mods, &wrote)) changed = 1;
+                if(previous!=tlen){agent_dirty=agent_task!=0;agent_notice=0;}
+                else if(e.a>=32&&(unsigned)tlen>=MAXT-3)agent_notice="Document limit: 1 MiB";
+                if (wrote) { if (save_document() >= 0) saved = 1; changed = 1; }
             }
         }
+        /* Coalesce typing into a checkpoint, but submit/save/close still call
+         * agent_sync synchronously. One key no longer rewrites a 1 MiB snapshot. */
+        if(agent_dirty&&monotonic_ms()>=sync_after){agent_sync();changed=1;sync_after=monotonic_ms()+1500;}
         if (changed) draw();
-        wait_idle(100);   /* was sys_yield(): a spin. input-driven; the caret blink is drawn from get_time */
+        wait_idle(agent_task?250:0);   /* was sys_yield(): a spin. input-driven; the caret blink is drawn from get_time */
     }
+}
+
+int main(void)
+{
+    struct aex_agent_identity identity;
+    if(ag_self(&identity)<0)return 1;
+    if(identity.mode==AEX_ACT_WORKER)return ag_worker(AG_EDITOR);
+    app_main();return 0;
 }

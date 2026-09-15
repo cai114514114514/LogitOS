@@ -32,7 +32,32 @@
 # through aui.c, nm finds zero browser_paint symbols in it, and two runs of the
 # same binary have read 19,871 and 12,707 microseconds.
 
-.PHONY: test-repaint test-anim test-anim-negctl
+.PHONY: test-repaint test-open-anim test-anim test-anim-negctl test-fb-scale-bl test-fb-scale-bl-negctl
+
+# The animated-window scaler keeps the former four-weight formula in the host
+# gate as a pixel oracle. The production loop may use fewer multiplies, but it
+# may not move a sample centre or round between axes. The mutation does exactly
+# that tempting intermediate round and must be caught by an actual pixel.
+FB_SCALE_BL_SRC := tests/unit/fb_scale_bl_bench.c c/kernel/gui/fb.c c/lib/gfx/openlogit_display.c
+FB_SCALE_BL_INC := -Ic/kernel/gui -Ic/drivers/virtio -Ic/kernel/mm -Ic/lib/text -Ic/lib/gfx
+
+$(BUILD)/fb_scale_bl_bench: $(FB_SCALE_BL_SRC) tests/repaint.mk
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -Wall -Wextra -o $@ $(FB_SCALE_BL_SRC) $(FB_SCALE_BL_INC)
+
+$(BUILD)/fb_scale_bl_negctl: $(FB_SCALE_BL_SRC) tests/repaint.mk
+	@mkdir -p $(BUILD)
+	@$(CC) -O2 -g -Wall -Wextra -DFB_SCALE_BL_NEGCTL_AXIS_ROUND \
+	    -o $@ $(FB_SCALE_BL_SRC) $(FB_SCALE_BL_INC)
+
+test-fb-scale-bl-negctl: $(BUILD)/fb_scale_bl_negctl
+	@rc=0; (cd $(BUILD) && ./fb_scale_bl_negctl) > $(BUILD)/fb_scale_bl_negctl.log 2>&1 || rc=$$?; \
+	 test $$rc -eq 1 && grep -F 'bilinear mismatch 17x13' $(BUILD)/fb_scale_bl_negctl.log
+
+test-fb-scale-bl: test-fb-scale-bl-negctl $(BUILD)/fb_scale_bl_bench
+	@cd $(BUILD) && ./fb_scale_bl_bench
+
+ci-host: test-fb-scale-bl
 
 # ---------------------------------------------------------------------------
 # THE TABLE. Not a pass/fail -- a measurement, printed. It is a make target so
@@ -51,6 +76,14 @@ REPAINT_JSON ?= $(BUILD)/repaint.json
 test-repaint: $(ISO) $(DISK)
 	@python3 tests/qmp/qmp_repaint.py --xres $(REPAINT_XRES) --yres $(REPAINT_YRES) \
 	    --reps $(REPAINT_REPS) --iso $(ISO) --json $(REPAINT_JSON) $(REPAINT_ONLY)
+
+# Regression gate for a flight whose PIT-driven progress once remained p=0
+# indefinitely. It checks the real guest serial stream and gives the animation
+# a full second to settle, independent of how many intermediate TCG frames fit.
+test-open-anim: $(ISO) $(DISK)
+	@python3 tests/qmp/qmp_repaint.py --xres 1280 --yres 800 --reps 1 \
+	    --only open --assert-open --iso $(ISO) --disk $(DISK) \
+	    --json $(BUILD)/open_anim.json
 
 # ---------------------------------------------------------------------------
 # THE ANIMATION GATE. Three assertions; the second and third are what make it a

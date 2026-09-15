@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 /* LogitOS Terminal.
  *
  * Not a VT100 emulator. A VT100 emulator is what you write when you cannot
@@ -47,6 +50,7 @@
 #include "logit.h"
 #include "logit_rich.h"
 #include "logit_sniff.h"
+#include "logit_cells.h"
 #include "h264.h"
 #include "h265.h"
 #include "audio.h"
@@ -2001,17 +2005,27 @@ static void paint(void)
     } else if (have_input) {
         int px = PAD;
         draw_text(px, iy, P.prompt, in_prompt);
-        int poff = slen(in_prompt);
+        /* RT_T_INPUT's cursor is a DISPLAY-CELL offset (sh.c publishes
+         * lc_cells(lbuf,lcur)), while in_buf remains UTF-8 bytes. The old code
+         * used that cell number directly as `in_buf[first]` once the line
+         * scrolled, so a long CJK/mixed line began on a continuation byte and
+         * its caret separated farther from the visible text. A non-ASCII cwd
+         * also shifted everything because prompt strlen was treated as cells.
+         * lc_view is the one conversion authority: it returns a whole-codepoint
+         * byte slice and the caret in the same cell coordinate system. */
+        int prompt_bytes = slen(in_prompt);
+        int poff = lc_cells(in_prompt, prompt_bytes);
         int avail = (win_w - 2 * PAD) / cell - poff - 1;
         if (avail < 8) avail = 8;
-        int first = 0;
-        if (in_cur > avail) first = in_cur - avail;
-        char vis[MAXCOLS + 1];
-        int k = 0;
-        for (int i = first; in_buf[i] && k < avail && k < MAXCOLS; i++) vis[k++] = in_buf[i];
+        int input_bytes = slen(in_buf);
+        struct lc_viewport v = lc_view(in_buf, input_bytes, in_cur, avail);
+        char vis[sizeof in_buf];
+        int k = v.nbytes;
+        if (k >= (int)sizeof vis) k = (int)sizeof vis - 1;
+        for (int i = 0; i < k; i++) vis[i] = in_buf[v.first_byte + i];
         vis[k] = 0;
         draw_text(px + poff * cell, iy, P.fg, vis);
-        int cx = px + (poff + (in_cur - first)) * cell;
+        int cx = px + (poff + v.caret_cell) * cell;
         gui_rect(cx, iy, 2, lh - 2, P.prompt);
     } else {
         draw_text(PAD, iy, P.dim, "starting shell...");
@@ -2569,6 +2583,7 @@ void app_main(void)
     for (;;) {
         struct logit_event e;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             switch (e.type) {
             case EV_CLOSE: app_exit(0);
             case EV_THEME: theme_load(); redraw = 1; break;
@@ -2703,3 +2718,7 @@ void app_main(void)
         wait_idle(16);   /* was sys_yield(): a spin. the shell's pipe is not an event: this one must still poll, but at 60 Hz instead of flat out */
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{*bytes=(unsigned)typed_n;return typed;}

@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 
 /* ============================================================================
@@ -524,6 +527,7 @@ void app_main(void)
         int drew = 0;
         struct logit_event e;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) app_exit(0);
 
             /* THE MODAL TAKES THE KEYBOARD FIRST, and it has to be done here
@@ -645,3 +649,7 @@ static void report_cost(void)
     n = scat(m, n, "\n");
     sys_write(1, m, n);
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{*bytes=(unsigned)strlen(sysbuf);return sysbuf;}

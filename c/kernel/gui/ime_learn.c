@@ -22,6 +22,8 @@
 #include <stddef.h>
 
 #include "ime_learn.h"
+#include "gui_sync.h"
+static struct gui_spin learn_lock = GUI_SPIN_INIT;
 
 #ifndef IME_LEARN_HOST
 #include "vfs.h"
@@ -125,7 +127,7 @@ static int insert(uint32_t h, const char *k, int kl, const uint8_t *c, int cl,
 	g_slot[i].klen = (uint8_t)kl;
 	g_slot[i].clen = (uint8_t)cl;
 	g_atop += (uint32_t)(kl + cl);
-	g_nent++;
+	__atomic_add_fetch(&g_nent, 1, __ATOMIC_RELEASE);
 	return 0;
 }
 
@@ -149,7 +151,7 @@ static void erase(uint32_t i)
 {
 	uint32_t m = IME_LEARN_SLOTS - 1u;
 	g_slot[i].hash = 0;
-	g_nent--;
+	__atomic_sub_fetch(&g_nent, 1, __ATOMIC_RELEASE);
 	for (uint32_t j = i;;) {
 		j = (j + 1) & m;
 		if (!g_slot[j].hash) return;
@@ -231,7 +233,7 @@ static void maybe_age(uint32_t need)
 
 /* ===================== the ranking hook =================================== */
 
-uint32_t ime_learn_weight(void *ctx, const char *key, int keylen,
+uint32_t ime_learn_weight_locked(void *ctx, const char *key, int keylen,
                           const uint8_t *cand_utf8, int cand_len,
                           uint32_t base)
 {
@@ -248,6 +250,19 @@ uint32_t ime_learn_weight(void *ctx, const char *key, int keylen,
 	uint32_t c = g_slot[i].count;
 	if (c > IME_LEARN_COUNT_MAX) c = IME_LEARN_COUNT_MAX;
 	return c * IME_LEARN_STEP;
+}
+
+uint32_t ime_learn_weight(void *ctx, const char *key, int keylen, const uint8_t *cand_utf8, int cand_len, uint32_t base)
+{
+    /* Empty learning is the default and a ranking pass probes many candidates.
+     * An acquire observation of zero linearizes before the first insertion,
+     * without taking thousands of locks on a keyboard path that has no learned
+     * weights to protect. Nonempty stores still protect probe and arena use. */
+    if (!__atomic_load_n(&g_nent, __ATOMIC_ACQUIRE)) return 0;
+    gui_spin_lock(&learn_lock);
+    uint32_t result = ime_learn_weight_locked(ctx, key, keylen, cand_utf8, cand_len, base);
+    gui_spin_unlock(&learn_lock);
+    return result;
 }
 
 /* ===================== the training signal ================================ */
@@ -351,7 +366,7 @@ static int put_hex32(char *b, int n, int max, uint32_t v)
  * the BKL and let the WM thread mutate the table halfway through, producing a
  * file that is a mixture of two states. Allocation happens before this is
  * called; the disk write happens after it returns. */
-int ime_learn_serialise(char *buf, int max)
+int ime_learn_serialise_locked(char *buf, int max)
 {
 	int n = 0;
 	n = put(buf, n, max,
@@ -381,10 +396,18 @@ int ime_learn_serialise(char *buf, int max)
 	return n;
 }
 
+int ime_learn_serialise(char *buf, int max)
+{
+    gui_spin_lock(&learn_lock);
+    int result = ime_learn_serialise_locked(buf, max);
+    gui_spin_unlock(&learn_lock);
+    return result;
+}
+
 /* Parse a file image into the table, which must be empty. Returns entries
  * accepted; `*rejected` (may be NULL) gets the number of non-comment lines
  * that did not parse, which is the file's own damage report. */
-int ime_learn_parse(const char *buf, int len, int *rejected)
+int ime_learn_parse_locked(const char *buf, int len, int *rejected)
 {
 	int acc = 0, rej = 0, i = 0;
 	while (i < len) {
@@ -434,6 +457,14 @@ int ime_learn_parse(const char *buf, int len, int *rejected)
 	return acc;
 }
 
+int ime_learn_parse(const char *buf, int len, int *rejected)
+{
+    gui_spin_lock(&learn_lock);
+    int result = ime_learn_parse_locked(buf, len, rejected);
+    gui_spin_unlock(&learn_lock);
+    return result;
+}
+
 /* ===================== THE KERNEL HALF ====================================
  * Everything below needs vfs/kheap/ktimer/work and exists only in the kernel.
  * ========================================================================== */
@@ -454,8 +485,11 @@ static void flush_now(void *arg)
 {
 	(void)arg;
 	if (!g_ready) return;
+	gui_spin_lock(&learn_lock);
 	uint32_t want = g_gen;
-	if (want == g_saved_gen) return;              /* nothing changed */
+	int clean = want == g_saved_gen;
+	gui_spin_unlock(&learn_lock);
+	if (clean) return;              /* nothing changed */
 	if (g_write_fail >= 3) return;                /* stop shouting; see below */
 
 	/* ALLOCATE FIRST. kmalloc may grow the heap, which may sleep, which drops
@@ -467,11 +501,14 @@ static void flush_now(void *arg)
 		return;
 	}
 
-	/* THE SNAPSHOT. One pass, no call that can sleep, so the table cannot
-	 * change under it and the file is one instant rather than a mixture. */
+	/* THE SNAPSHOT. Historical claim: not sleeping implied no writer under
+	 * the BKL. Correction: learn_lock explicitly excludes WM mutations across
+	 * serialization and its generation/count snapshot. No I/O holds this lock. */
+	gui_spin_lock(&learn_lock);
 	want = g_gen;
-	int n = ime_learn_serialise(buf, LEARN_FILEMAX);
+	int n = ime_learn_serialise_locked(buf, LEARN_FILEMAX);
 	uint32_t ents = g_nent, coms = g_commits;
+	gui_spin_unlock(&learn_lock);
 
 	if (n < 0) {
 		/* The table outgrew the file buffer. Bounded and reportable rather
@@ -499,13 +536,15 @@ static void flush_now(void *arg)
 		return;
 	}
 	g_write_fail = 0;
+	gui_spin_lock(&learn_lock);
 	g_saved_gen = want;
+	gui_spin_unlock(&learn_lock);
 	kprintf("[ime] learn: wrote %s -- %u entries, %u commits, %d bytes\n",
 	        IME_LEARN_PATH, (unsigned)ents, (unsigned)coms, n);
 
 	/* A commit that landed between the snapshot and here is not lost: the gen
 	 * moved past `want`, so re-arm and write again. */
-	if (g_gen != g_saved_gen) ime_learn_flush_soon();
+	ime_learn_flush_soon();
 }
 
 /* THE TIMER CALLBACK, and it does exactly one thing.
@@ -532,8 +571,10 @@ static void arm(uint64_t ms)
 
 void ime_learn_flush_soon(void)
 {
-	if (!g_ready || g_gen == g_saved_gen) return;
-	arm(1);
+	gui_spin_lock(&learn_lock);
+	int dirty = g_ready && g_gen != g_saved_gen;
+	gui_spin_unlock(&learn_lock);
+	if (dirty) arm(1);
 }
 
 void ime_learn_note(const char *key, int keylen,
@@ -546,7 +587,9 @@ void ime_learn_note(const char *key, int keylen,
 		        keylen, cand_len);
 		return;
 	}
+	gui_spin_lock(&learn_lock);
 	note_locked(key, keylen, cand_utf8, cand_len, 1);
+	gui_spin_unlock(&learn_lock);
 	arm(IME_LEARN_QUIET_MS);
 }
 
@@ -599,11 +642,18 @@ void ime_learn_init(uint32_t build_id)
 		        " dictionary no longer has\n");
 }
 
-void ime_learn_stats(uint32_t *entries, uint32_t *commits, int *dirty)
+void ime_learn_stats_locked(uint32_t *entries, uint32_t *commits, int *dirty)
 {
 	if (entries) *entries = g_nent;
 	if (commits) *commits = g_commits;
 	if (dirty)   *dirty = (g_gen != g_saved_gen);
+}
+
+void ime_learn_stats(uint32_t *entries, uint32_t *commits, int *dirty)
+{
+    gui_spin_lock(&learn_lock);
+    ime_learn_stats_locked(entries, commits, dirty);
+    gui_spin_unlock(&learn_lock);
 }
 
 #else  /* IME_LEARN_HOST -- the harness drives the table directly */
@@ -612,21 +662,37 @@ void ime_learn_note(const char *key, int keylen,
                     const uint8_t *cand_utf8, int cand_len)
 {
 	if (!identity_ok(key, keylen, cand_utf8, cand_len)) return;
+	gui_spin_lock(&learn_lock);
 	note_locked(key, keylen, cand_utf8, cand_len, 1);
+	gui_spin_unlock(&learn_lock);
 }
 void ime_learn_init(uint32_t build_id) { g_dict_id = build_id; g_ready = 1; }
 void ime_learn_flush_soon(void) { }
-void ime_learn_stats(uint32_t *e, uint32_t *c, int *d)
+void ime_learn_stats_locked(uint32_t *e, uint32_t *c, int *d)
 {
 	if (e) *e = g_nent;
 	if (c) *c = g_commits;
 	if (d) *d = (g_gen != g_saved_gen);
 }
+
+void ime_learn_stats(uint32_t *e, uint32_t *c, int *d)
+{
+    gui_spin_lock(&learn_lock);
+    ime_learn_stats_locked(e, c, d);
+    gui_spin_unlock(&learn_lock);
+}
 /* The harness needs to start from nothing between cases. */
-void ime_learn_reset_for_test(void)
+void ime_learn_reset_for_test_locked(void)
 {
 	for (uint32_t i = 0; i < IME_LEARN_SLOTS; i++) g_slot[i].hash = 0;
 	g_cur = g_atop = g_nent = g_commits = g_gen = g_saved_gen = g_sweeps = 0;
+}
+
+void ime_learn_reset_for_test(void)
+{
+    gui_spin_lock(&learn_lock);
+    ime_learn_reset_for_test_locked();
+    gui_spin_unlock(&learn_lock);
 }
 
 #endif /* IME_LEARN_HOST */

@@ -16,6 +16,8 @@
 
 #include "logit_abi.h"
 #include "notify.h"
+#include "gui_sync.h"
+static struct gui_mutex note_lock = GUI_MUTEX_INIT;
 #include "fb.h"
 #include "text.h"
 #include "ktime.h"
@@ -198,7 +200,7 @@ static void promote(void)
     }
 }
 
-int notify_post(const char *title, const char *body, int level)
+int notify_post_locked(const char *title, const char *body, int level)
 {
     slots_setup();
     int i = 0;
@@ -215,6 +217,14 @@ int notify_post(const char *title, const char *body, int level)
     notify_damage();
     notify_log("post", ring[i].id);
     return ring[i].id;
+}
+
+int notify_post(const char *title, const char *body, int level)
+{
+    gui_mutex_lock(&note_lock);
+    int result = notify_post_locked(title, body, level);
+    gui_mutex_unlock(&note_lock);
+    return result;
 }
 
 static int queued_count(void)
@@ -234,12 +244,20 @@ long notify_syscall(long num, long a, long b, long c)
     return notify_post(title, body, (int)c);
 }
 
-int notify_showing(void)
+int notify_showing_locked(void)
 {
     slots_setup();
     int n = 0;
     for (int s = 0; s < NOTIFY_VISIBLE; s++) if (slot[s] >= 0) n++;
     return n;
+}
+
+int notify_showing(void)
+{
+    gui_mutex_lock(&note_lock);
+    int result = notify_showing_locked();
+    gui_mutex_unlock(&note_lock);
+    return result;
 }
 
 /* ---- expiry --------------------------------------------------------------- */
@@ -256,7 +274,7 @@ static void close_slot(int s)
     notify_log("close", id);
 }
 
-void notify_tick(void)
+void notify_tick_locked(void)
 {
     slots_setup();
     uint64_t now = time_mono_ms();
@@ -277,7 +295,14 @@ void notify_tick(void)
 #endif
 }
 
-int notify_click(int x, int y)
+void notify_tick(void)
+{
+    gui_mutex_lock(&note_lock);
+    notify_tick_locked();
+    gui_mutex_unlock(&note_lock);
+}
+
+int notify_click_locked(int x, int y)
 {
     slots_setup();
     for (int s = 0; s < NOTIFY_VISIBLE; s++) {
@@ -292,6 +317,14 @@ int notify_click(int x, int y)
         }
     }
     return 0;
+}
+
+int notify_click(int x, int y)
+{
+    gui_mutex_lock(&note_lock);
+    int result = notify_click_locked(x, y);
+    gui_mutex_unlock(&note_lock);
+    return result;
 }
 
 /* ---- drawing --------------------------------------------------------------
@@ -386,7 +419,7 @@ static void draw_ellipsised(int x, int y, const char *s, int px, int maxw, uint3
     }
 }
 
-void notify_compose(void)
+void notify_compose_locked(void)
 {
     slots_setup();
     int dark = wm_dark();
@@ -441,4 +474,11 @@ void notify_compose(void)
         draw_ellipsised(textx, y + S(14), n->title, fb_ui_px(), maxw, ink);
         draw_ellipsised(textx, y + S(38), n->body,  fb_ui_px() * 7 / 8, maxw, ink2);
     }
+}
+
+void notify_compose(void)
+{
+    gui_mutex_lock(&note_lock);
+    notify_compose_locked();
+    gui_mutex_unlock(&note_lock);
 }

@@ -1,6 +1,9 @@
+#include "openlogit_draw.h"
+#include "openlogit_bitmap.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "wm.h"
+#include "gui_sync.h"
 #include "fb.h"
 #include "text.h"
 #include "icons.h"
@@ -10,6 +13,7 @@
 #include "pit.h"
 #include "serial.h"
 #include "sched.h"
+#include "mmguard.h"
 #include "vfs.h"
 #include "settings.h"   /* settings line: theme + wallpaper are persisted */
 #include "rtc.h"
@@ -18,7 +22,9 @@
 #include "pcache.h"     /* the app's own file, so two instances share their text */
 #include "blkdev.h"
 #include "img.h"
+#include "syscall.h" /* kernel_img_decode: all kernel codec users share ownership */
 #include "gfx.h"        /* Open Logit: build_arrow's fill+stroke, below */
+#include "openlogit_anim.h"
 /* The byte identifier /bin/show, the Terminal's output guard and Preview all
  * already share. Pure inline, no libc, no allocation -- see its header. */
 #include "logit_sniff.h"
@@ -34,6 +40,7 @@
 #include "logit_pack.h"
 #include "ktime.h"
 #include "evq.h"
+#include "input_queue.h"
 #include "notify.h"     /* WM-HOOK 1/6: the notification overlay (see notify.h) */
 #include "ime_ui.h"     /* IME-HOOK 1/4: the pinyin candidate bar (see ime_ui.h) */
 #include "keyboard.h"
@@ -207,6 +214,29 @@ struct app {
     int  win;                 /* window index, -1 until the app creates one */
 };
 
+/* A GUI domain lock replaces implicit entry serialization. It owns app/window
+ * slots, geometry and canvas lifetime; no network, filesystem-only or event
+ * wait syscall takes it. It can sleep on launch/resize allocation, unlike an
+ * IRQ spinlock. Recursive entry is for WM helpers called by the WM itself.
+ * Pixel/metadata hold time is reported separately to guide further splitting,
+ * rather than disguising this remaining GUI serialization as parallel draw. */
+static struct gui_mutex wm_lock = GUI_MUTEX_INIT;
+static uint64_t wm_lock_ns, wm_lock_max_ns, wm_lock_calls;
+static unsigned external_dirty;
+static uint64_t wm_lock_started;
+static void wm_state_lock(void) {
+    gui_mutex_lock(&wm_lock);
+    if (wm_lock.depth == 1) wm_lock_started = time_mono_ns();
+}
+static void wm_state_unlock(void) {
+    if (wm_lock.depth == 1) {
+        uint64_t n = time_mono_ns() - wm_lock_started;
+        wm_lock_ns += n; wm_lock_calls++;
+        if (n > wm_lock_max_ns) wm_lock_max_ns = n;
+    }
+    gui_mutex_unlock(&wm_lock);
+}
+
 struct win {
     int  used;
     int  x, y, w, h;          /* outer rectangle */
@@ -219,10 +249,12 @@ struct win {
      * window, not one for the machine: waking every app because one of them
      * got a keystroke is the same waste as polling, moved into the kernel. */
     struct waitq evwq;
+    unsigned wait_refs; /* a parked syscall pins this slot until it returns */
     int  wants_close;
+    int  focus_notified;     /* last EV_WINDOW_FOCUS value; -1 before first delivery */
     int  cw_pt, ch_pt;        /* content size in POINTS -- what the app CURRENTLY has */
     char cwd[128];            /* Finder: current directory path */
-    uint64_t open_t0;         /* tick the open "pop" animation began (0 = settled) */
+    uint64_t open_t0;         /* monotonic ms when the open pop began (0 = settled) */
     /* ---- resize / zoom / minimise -----------------------------------------
      * `w`,`h` above are the AUTHORITATIVE outer frame and they change the
      * instant the pointer moves. surf.w/surf.h is the canvas that has actually
@@ -249,7 +281,7 @@ struct win {
      * on the screen. Freezing a process because its window is hidden would
      * silently break every app that does work in the background, and this WM
      * has no business making that decision for them. */
-    uint64_t min_t0;          /* tick the dock fly began (0 = settled) */
+    uint64_t min_t0;          /* monotonic ms when the dock fly began (0 = settled) */
     int  min_dir;             /* 1 = flying to the dock, 0 = flying back out */
     int  min_slot;            /* dock icon index the flight is aimed at */
     /* The on-screen box this window occupied on the previous animated frame.
@@ -258,6 +290,8 @@ struct win {
      * Seeded when an animation STARTS; a zeroed one would union in the origin
      * and quietly turn every animated frame into a top-left-anchored repaint. */
     struct drect anim_prev;
+    struct drect anim_from;   /* previous box used by the most recent damage call */
+    struct drect anim_sent;   /* exact union submitted by that call */
     int  sx, sy, sw, sh;      /* the frame to restore to; only valid while zoomed */
     /* Pixels the canvas ALLOCATION holds, which is >= surf.w * surf.h. The
      * canvas is reshaped inside this block whenever the new size fits, so a
@@ -276,6 +310,7 @@ struct win {
 
 static struct app apps[MAXWIN];
 static struct win wins[MAXWIN];
+static struct input_queue inq = INPUT_QUEUE_INIT;
 static int order[MAXWIN], norder;      /* z-order; order[norder-1] is on top */
 
 /* ===========================================================================
@@ -479,7 +514,31 @@ static void dirty_rect(int x, int y, int w, int h)
  * documented there. Damage is in device pixels, and the honest-extent rule
  * above applies to a caller in another file exactly as it applies to every
  * caller in this one. */
-void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
+#define EXT_DAMAGE_N 64
+static struct drect ext_damage[EXT_DAMAGE_N];
+static unsigned ext_damage_n;
+static spinlock_t ext_damage_lock = SPINLOCK_INIT;
+void wm_damage(int x, int y, int w, int h)
+{
+    uint64_t f = spin_lock_irqsave(&ext_damage_lock);
+    if (ext_damage_n < EXT_DAMAGE_N)
+        ext_damage[ext_damage_n++] = (struct drect){x,y,x+w,y+h};
+    else __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&ext_damage_lock, f);
+}
+static void wm_external_damage(void)
+{
+    struct drect local[EXT_DAMAGE_N];
+    uint64_t f = spin_lock_irqsave(&ext_damage_lock);
+    unsigned n = ext_damage_n;
+    for (unsigned i=0; i<n; i++) local[i] = ext_damage[i];
+    ext_damage_n = 0;
+    unsigned full = __atomic_exchange_n(&external_dirty, 0, __ATOMIC_ACQ_REL);
+    spin_unlock_irqrestore(&ext_damage_lock, f);
+    if (full) dirty_full();
+    else for (unsigned i=0; i<n; i++)
+        dirty_rect(local[i].x0, local[i].y0, local[i].x1-local[i].x0, local[i].y1-local[i].y0);
+}
 
 /* ===========================================================================
  * MOTION -- Expose, and the dock fly.
@@ -500,24 +559,41 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
  * animations do not each carry their own copy of "and also damage this" --
  * they move a rectangle, and the rest of the file follows it for free.
  *
- * WHY TICKS AND NOT MILLISECONDS. Every animation here is driven off
- * timer_ticks(), the same 100 Hz PIT counter the dock's launch bounce already
- * reads. That is deliberate copying, not laziness: the bounce is a shipped,
- * working per-frame animation on this machine, its cadence is known to be
- * survivable under TCG, and an animation subsystem with its own timer would be
- * a second thing that can be out of step with the compositor's idea of a frame.
- * 10 ms of resolution over a 180 ms gesture is 18 steps, which is more than the
- * eye resolves in a motion that short.
+ * WHY MONOTONIC MILLISECONDS. An animation is elapsed time, so it uses the
+ * clock that keeps advancing while interrupts are masked. timer_ticks() is an
+ * IRQ0 delivery count: one long compositor/BKL hold can coalesce PIT edges and
+ * leave that count unchanged. In production that once pinned an open pop at
+ * p=0 for minutes, continuously redrawing the same frame and making the whole
+ * desktop look hung. time_mono_ms() is TSC-backed when available, cannot run
+ * backwards, and gives every animation a bounded wall-clock lifetime even
+ * through a missed tick.
  *
  * NO FLOATS ANYWHERE. The kernel builds -msse2 now, but the easing is integer
  * because these curves are evaluated per window per frame and a fixed-point
  * quadratic is exact, reproducible, and diffable in a screenshot test. */
 
-/* 180 ms at 100 Hz. Long enough to read as motion rather than a cut, short
+/* Long enough to read as motion rather than a cut, short
  * enough that it never becomes the thing you are waiting for. */
-#define EX_DUR_TICKS    18
-#define MINFLY_TICKS    18
-#define OPEN_DUR_TICKS  16      /* the open pop, as it always was */
+#define EX_DUR_MS       180
+#define MINFLY_MS       180
+#define OPEN_DUR_MS     160      /* the open pop, as it always was */
+
+/* Animation timestamps use 0 as the inactive sentinel. Store start+1 so an
+ * animation begun during the first monotonic millisecond is still active,
+ * then decode before subtracting. The guarded subtraction also makes the
+ * progress functions safe during an early clocksource rebase. */
+static int wm_reduce_motion;
+static uint64_t anim_stamp(void) { return time_mono_ms() + 1; }
+static uint64_t anim_elapsed_at(uint64_t stamp, uint64_t now)
+{
+    if (!stamp) return 0;
+    uint64_t start = stamp - 1;
+    return now >= start ? now - start : 0;
+}
+static uint64_t anim_elapsed(uint64_t stamp)
+{
+    return anim_elapsed_at(stamp, time_mono_ms());
+}
 
 #define EX_GUTTER_PT    26      /* between cells, and to the screen edge */
 #define EX_TITLE_PT     20      /* reserved under each cell for the title */
@@ -531,7 +607,7 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
  * inside -- and 18pt is small enough that crossing the corner on the way to
  * somewhere else does not sit in it. */
 #define EX_CORNER_PT    18
-#define EX_DWELL_TICKS  15      /* 150 ms parked before it fires */
+#define EX_DWELL_MS     150      /* parked before it fires */
 
 /* Quadratic ease-out over 0..256: fast out of the gate, settling into the end.
  * Same curve family as gfx_shadow_falloff, and the same reason -- deceleration
@@ -545,7 +621,7 @@ void wm_damage(int x, int y, int w, int h) { dirty_rect(x, y, w, h); }
  * c/lib/gfx is the only library both rings link, and wm.c already includes
  * gfx.h. Do not re-inline this; the duration constants above are the other
  * half of the same contract and are mirrored by AUI_T_BASE in aui.h. */
-static int ease_out(int t) { return gfx_ease_out(t); }
+static int ease_out(int t) { return ol_ease256(OL_EASE_OUT,t); }
 
 /* ---- Expose ---------------------------------------------------------------
  *
@@ -554,7 +630,14 @@ static int ease_out(int t) { return gfx_ease_out(t); }
  * intent is already "off" while the pixels are still on their way home --
  * ex_state() is the question every other reader actually wants to ask. */
 static int ex_on;                      /* the picker is up (or arriving)      */
-static uint64_t ex_t0;                 /* tick the transition began; 0 = still */
+static uint64_t ex_t0;                 /* monotonic ms transition start; 0 = still */
+/* Leaving is not complete until the click that selected a thumbnail comes
+ * back UP.  A slow full-screen landing frame can outlive the emulated mouse's
+ * button-up packet; dropping ex_state() on the timer alone then lets a queued
+ * down-state motion start a titlebar drag in the ordinary desktop underneath.
+ * Keep modal pointer ownership after the pixels have landed, without keeping
+ * the animation or its damage loop running. */
+static int ex_wait_release;
 static int ex_hov = -1;                /* grid slot under the pointer, or -1  */
 static int ex_n;                       /* windows in the grid                 */
 static int ex_wi[MAXWIN];              /* wins[] index per grid slot          */
@@ -579,7 +662,7 @@ static int ex_state(void) { return ex_on || ex_t0 != 0; }
  * chords (W/Q/M/Tab/`) and E was free -- so this costs one case label and takes
  * no keystroke away from any app. A gesture that only exists as a hot corner is
  * one a keyboard cannot reach. */
-static uint64_t ex_corner_t0;          /* tick the pointer parked in the corner */
+static uint64_t ex_corner_t0;          /* monotonic ms when pointer parked */
 static int ex_corner_armed = 1;        /* leave the corner to re-arm the trigger */
 
 /* Where a window IS on screen this frame -- position, size and opacity -- or 0
@@ -861,9 +944,11 @@ static uint64_t perf_torn, perf_defer, perf_late, perf_drawmax;
 static int g_ui_dark;
 /* WM-HOOK 3/6: so kernel chrome drawn from another file follows the system
  * theme instead of carrying its own idea of it. Declared in wm.h. */
-int wm_dark(void) { return g_ui_dark; }
+int wm_dark(void) { return __atomic_load_n(&g_ui_dark, __ATOMIC_ACQUIRE); }
 static void wm_set_dark(int on);
 static int top_visible(void);   /* fwd: wm_ime_anchor, immediately below */
+static int wm_keyboard_focus(void);
+static void wm_sync_focus(void);
 
 /* IME-HOOK (the one call in the other direction; declared in wm.h). The
  * FOCUSED window, not the top of the z-order -- top_visible() already draws
@@ -912,7 +997,7 @@ static int cascade;
 struct regent { char file[48], name[32], ext[8]; char icon; uint32_t color; int hidden; };
 static struct regent reg[MAXWIN];
 static int nreg;
-static uint64_t reg_bounce[MAXWIN];    /* tick a dock icon's launch bounce started (0 = none) */
+static uint64_t reg_bounce[MAXWIN];    /* monotonic ms a launch bounce started (0 = none) */
 
 static uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) { return fb_rgb(r, g, b); }
 static int lerp(int a, int b, int n, int d) { return a + (b - a) * n / d; }
@@ -1126,10 +1211,10 @@ static int dock_slot_for(const struct win *w)
  * what makes this safe to call on every window every frame. */
 static int min_prog(const struct win *w)
 {
-    if (!w->min_t0) return w->minimized ? 256 : 0;
-    uint64_t e = timer_ticks() - w->min_t0;
-    if (e >= MINFLY_TICKS) return w->min_dir ? 256 : 0;
-    int eased = ease_out((int)(e * 256 / MINFLY_TICKS));
+    if (!w->min_t0 || wm_reduce_motion) return w->minimized ? 256 : 0;
+    uint64_t e = anim_elapsed(w->min_t0);
+    if (e >= MINFLY_MS) return w->min_dir ? 256 : 0;
+    int eased = ease_out((int)(e * 256 / MINFLY_MS));
     return w->min_dir ? eased : 256 - eased;
 }
 
@@ -1235,10 +1320,10 @@ static int ex_slot(int wi)
  * second, different route home. */
 static int ex_prog(void)
 {
-    if (!ex_t0) return ex_on ? 256 : 0;
-    uint64_t e = timer_ticks() - ex_t0;
-    if (e >= EX_DUR_TICKS) return ex_on ? 256 : 0;
-    int eased = ease_out((int)(e * 256 / EX_DUR_TICKS));
+    if (!ex_t0 || wm_reduce_motion) return ex_on ? 256 : 0;
+    uint64_t e = anim_elapsed(ex_t0);
+    if (e >= EX_DUR_MS) return ex_on ? 256 : 0;
+    int eased = ease_out((int)(e * 256 / EX_DUR_MS));
     return ex_on ? eased : 256 - eased;
 }
 
@@ -1328,7 +1413,7 @@ static int win_glass_box(const struct win *w, struct drect *p)
     return 1;
 }
 
-/* Minimise / restore. The state flips NOW and the picture takes MINFLY_TICKS
+/* Minimise / restore. The state flips NOW and the picture takes MINFLY_MS
  * to agree -- see the comment on min_t0 in struct win. */
 static void win_set_min(struct win *w, int on)
 {
@@ -1338,8 +1423,7 @@ static void win_set_min(struct win *w, int on)
     w->minimized = on;
     w->min_dir = on;
     w->min_slot = dock_slot_for(w);
-    w->min_t0 = timer_ticks();
-    if (!w->min_t0) w->min_t0 = 1;   /* 0 means "settled", so never store it */
+    w->min_t0 = anim_stamp();
     if (!on) raise_win((int)(w - wins));
     win_box(w, &w->anim_prev);       /* seed the per-frame damage union */
     dirty_win(w);
@@ -1384,14 +1468,21 @@ static int ex_hover_at(int x, int y)
 static void ex_enter(void)
 {
     if (ex_state()) return;
+    /* Do not transfer pointer ownership in the middle of another gesture.
+     * Expose deliberately consumes every release while it owns the pointer;
+     * entering during a titlebar drag, resize, or app capture would therefore
+     * strand that old owner in its pressed state when the picker later closes.
+     * Once the hand comes up, a later shortcut or hot-corner dwell may enter. */
+    if (mleft || mright || mmiddle || dragging >= 0 ||
+        rz_win >= 0 || mouse_capture >= 0) return;
     /* A dock fly still running would be a second animation moving the same
      * rectangle; land it first rather than interleave two owners. */
     for (int i = 0; i < MAXWIN; i++) if (wins[i].used) win_fly_settle(&wins[i]);
     ex_layout();
     if (ex_n == 0) return;                 /* nothing to pick between */
     ex_on = 1;
-    ex_t0 = timer_ticks();
-    if (!ex_t0) ex_t0 = 1;
+    ex_t0 = anim_stamp();
+    ex_wait_release = 0;
     ex_hov = -1;
     for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
     /* ONE full-screen frame, for the dim -- which lands everywhere at once and
@@ -1425,8 +1516,8 @@ static void ex_leave(int pick)
         raise_win(pick);
     }
     ex_on = 0;
-    ex_t0 = timer_ticks();
-    if (!ex_t0) ex_t0 = 1;
+    ex_t0 = anim_stamp();
+    ex_wait_release = 0;
     ex_hov = -1;
     for (int k = 0; k < ex_n; k++) win_box(&wins[ex_wi[k]], &wins[ex_wi[k]].anim_prev);
     dirty_full();          /* the raise re-stacks every overlap on screen */
@@ -1484,19 +1575,6 @@ static int resize_hit(int x, int y, int *edge)
         if (in_rect(x, y, w->x, w->y, w->w, w->h)) return -1;
     }
     return -1;
-}
-
-/* Everything of an (cw x ch) canvas that is NOT the (copy_w x copy_h) corner
- * carried over from the previous size: the strip to the right, and the band
- * below. Flat, in the window background colour -- the app repaints on the
- * event, so this is only ever seen for the frame or two in between. */
-static void fill_new_area(uint32_t *px, int cw, int ch, int copy_w, int copy_h)
-{
-    uint32_t fill = g_ui_dark ? rgb(30, 30, 36) : rgb(250, 250, 252);
-    for (int y = 0; y < copy_h; y++)
-        for (int x = copy_w; x < cw; x++) px[(long)y * cw + x] = fill;
-    for (int y = copy_h; y < ch; y++)
-        for (int x = 0; x < cw; x++) px[(long)y * cw + x] = fill;
 }
 
 /* Reallocate a window's canvas to match its frame, and tell the app.
@@ -1558,39 +1636,21 @@ static void win_apply_size(struct win *w)
             serial_puts("[wm] resize: canvas alloc failed; stretching\n");
             return;
         }
-        int copy_w = w->surf.w < cw ? w->surf.w : cw;
-        int copy_h = w->surf.h < ch ? w->surf.h : ch;
-        for (int y = 0; y < copy_h; y++)
-            for (int x = 0; x < copy_w; x++)
-                nb[(long)y * cw + x] = w->surf.px[(long)y * w->surf.w + x];
+        /* The SDK owns pixel reshape and initialization, including overlapping
+         * strides. Keep allocation ownership here: allocation failure retains
+         * the last canvas and the compositor can continue stretching it. */
+        if (ol_bitmap_reshape(nb, cw, ch, w->surf.px, w->surf.w, w->surf.h,
+                              g_ui_dark ? rgb(30,30,36) : rgb(250,250,252)) != OL_OK) {
+            kfree(nb);
+            return;
+        }
         kfree(w->surf.px);
         w->surf.px = nb;
         w->surf_cap = (int)want;
-        /* Everything outside the copied corner is whatever kmalloc last had in
-         * that block. Nobody will look at it -- the app repaints on the event
-         * -- but a window that flashes a stranger's heap for one frame is a
-         * worse bug than one that flashes grey. */
-        fill_new_area(w->surf.px, cw, ch, copy_w, copy_h);
     } else {
-        /* Reshape in place. The row stride changes, so rows have to be walked
-         * in the direction that never overwrites a row not yet read: down when
-         * the stride grows (each row moves to a HIGHER offset), up when it
-         * shrinks. Getting the direction wrong does not fault -- it silently
-         * smears the top of the window over the rest of it. */
-        int copy_w = w->surf.w < cw ? w->surf.w : cw;
-        int copy_h = w->surf.h < ch ? w->surf.h : ch;
-        int ow = w->surf.w;
-        uint32_t *p = w->surf.px;
-        if (cw > ow) {
-            for (int y = copy_h - 1; y >= 0; y--)
-                for (int x = copy_w - 1; x >= 0; x--)
-                    p[(long)y * cw + x] = p[(long)y * ow + x];
-        } else if (cw < ow) {
-            for (int y = 0; y < copy_h; y++)
-                for (int x = 0; x < copy_w; x++)
-                    p[(long)y * cw + x] = p[(long)y * ow + x];
-        }
-        fill_new_area(p, cw, ch, copy_w, copy_h);
+        if (ol_bitmap_reshape(w->surf.px, cw, ch, w->surf.px, w->surf.w, w->surf.h,
+                              g_ui_dark ? rgb(30,30,36) : rgb(250,250,252)) != OL_OK)
+            return;
     }
     w->surf.w = cw;
     w->surf.h = ch;
@@ -1653,7 +1713,7 @@ static struct app *find_live_app(const char *name)
     return NULL;
 }
 
-void wm_launch(const char *aex_file, const char *arg)
+void wm_launch_locked(const char *aex_file, const char *arg)
 {
     /* THE GATE. Everything else about the lock is presentation; this line is
      * the mechanism. It is here and not at the call sites deliberately: there
@@ -1661,9 +1721,7 @@ void wm_launch(const char *aex_file, const char *arg)
      * association, SYS_OPEN_PATH from any app) and the next one will not
      * remember to ask. See the block comment on g_locked. */
     if (g_locked && !streq(aex_file, GREETER_AEX)) {
-        serial_puts("[wm] locked: refusing to launch ");
-        serial_puts(aex_file);
-        serial_puts("\n");
+        kprintf("[wm] locked: refusing to launch %s\n", aex_file);
         return;
     }
     int sz = vfs_size(aex_file);
@@ -1695,13 +1753,15 @@ void wm_launch(const char *aex_file, const char *arg)
 
     /* kick off the dock launch bounce for this app's icon */
     for (int i = 0; i < nreg; i++)
-        if (streq(reg[i].file, aex_file)) { uint64_t t = timer_ticks(); reg_bounce[i] = t ? t : 1; break; }
+        if (streq(reg[i].file, aex_file)) { reg_bounce[i] = anim_stamp(); break; }
 
     /* Each app gets its own address space so apps can't touch each other's
      * memory. The new PML4 shares the kernel + framebuffer mappings but has a
      * private user region. elf_load + the stack mapping both target the *active*
      * space, so switch CR3 into it (interrupts off, so the scheduler can't run
-     * and reset CR3 mid-load), load, then restore the kernel space. */
+     * and reset CR3 mid-load), load, then restore the kernel space.
+     * Correction: IRQ state does not stop explicit sleeps; thread.cr3 now
+     * carries the temporary space across every context switch below. */
     uint64_t space = vmm_new_space();
     if (!space) { serial_puts("[wm] launch: no address space\n"); kfree(img); return; }
 
@@ -1720,22 +1780,29 @@ void wm_launch(const char *aex_file, const char *arg)
      * is not an error: the loader copies, exactly as it did before. */
     int fh = pcache_file_open(aex_file);
 
-    uint64_t prev_cr3, fl;
-    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");   /* save IF, then off */
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(prev_cr3));
-    vmm_switch(space);
-    uint64_t img_top = 0;
+    uint64_t img_top = 0, entry = 0, ustack_top = 0;
     struct elf_image wei;
+    {
+    /* Loader I/O may park despite CLI. Save the temporary CR3 in the thread
+     * too, and own this space until every raw ELF/TLS/stack write is done. */
+    MM_GUARD(space);
+    uint64_t fl;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(fl) :: "memory");   /* save IF, then off */
+    uint64_t prev_cr3 = sched_use_address_space(space);
     /* aex_load_image_ex, not aex_load_ex, only so exec_note_load() below gets
      * the page counts -- a launch from the Dock is a load like any other and
      * the loader's line on the serial log has to cover it, or the number reads
      * as if the desktop's apps were exempt. entry/top are the same two fields
      * aex_load_ex would have returned. */
-    uint64_t entry = aex_load_image_ex(img, (uint64_t)bytes, name, ext, &wei, fh) == 0
-                         ? wei.entry : 0;
+    entry = aex_load_image_ex(img, (uint64_t)sz, name, ext, &wei, fh) == 0
+                         ? wei.start_entry : 0;
     if (entry) { img_top = wei.top; exec_note_load(aex_file, &wei); }
-    uint64_t ustack_top = 0;
-    if (entry) {
+    if (entry && (wei.interp_base || ((struct aex_header *)img)->version == 3)) {
+        uint16_t hint = aex_stack_pages(img, (uint64_t)bytes);
+        ustack_top = exec_interpreter_stack(space, &wei, aex_file, arg,
+                                             hint ? (int)hint : 1024);
+        if (!ustack_top) entry = 0;
+    } else if (entry) {
         /* The stack must sit ABOVE the whole app image. browser/js link a large
          * mini-libc arena in BSS (96 MiB for the browser) plus several big CSS/page
          * buffers; a stack landing *inside* that BSS corrupts the allocator (and
@@ -1819,12 +1886,13 @@ void wm_launch(const char *aex_file, const char *arg)
             vmm_map_page(ustack_top - (uint64_t)i * 0x1000, frame, stk_flags);
         }
     }
-    vmm_switch(prev_cr3);
+    sched_use_address_space(prev_cr3);
     /* Restore IF to the caller's state, NOT unconditionally: from the int 0x80
      * gate (SYS_OPEN_PATH -> launch) IF=0 on entry and the syscall-exit path
      * expects it still off; a blind sti here leaks IF=1 through the whole
      * return path (nested-IRQ windows the gate never planned for). */
     if (fl & 0x200) __asm__ volatile ("sti");
+    } /* target-space lease ends only after the creator space is restored */
     /* The loader's VMAs took their own references; this is the transient one
      * this function opened, and it is put on BOTH paths -- the failure return
      * below would otherwise leave a live file entry pinning a slot for the
@@ -1839,7 +1907,7 @@ void wm_launch(const char *aex_file, const char *arg)
     struct app *ap = &apps[ai];
     ap->used = ap->alive = 1;
     ap->id = next_app_id++;
-    ap->base = entry;
+    ap->base = wei.entry;
     ap->win = -1;
     scopy(ap->name, name, sizeof ap->name);
     scopy(ap->arg, arg ? arg : "", sizeof ap->arg);
@@ -1866,28 +1934,37 @@ void wm_launch(const char *aex_file, const char *arg)
      * exec.c:369), and a per-app manifest narrowing this is future work that
      * must arrive as a manifest, not as a silent zero. */
     p->caps = CAP_ALL; p->fs_prefix[0] = 0;
+    if (((struct aex_header *)img)->version == 3) {
+        proc_agent_bind_image(p, &wei, AEX_ACT_UI);
+    }
     /* Give every app real stdio (fd 0/1/2 = the serial console). Apps that only
      * draw never touch them, but it means pipe()/dup2() in an app (e.g. the
      * Terminal spawning a shell) get fds >= 3 and don't collide with 0/1/2. */
     { struct file *tty = file_open_tty();
       if (tty) { p->fd[0] = tty; file_dup(tty); p->fd[1] = tty; file_dup(tty); p->fd[2] = tty; } }
-    p->tid = thread_create_user(ap->name, entry, ustack_top, p, space);
-    if (p->tid < 0) {
+    /* The loader already initialised PT_TLS. Publish its TCB with the thread,
+     * so first-instruction TLS works before any mini-libc initialisation. */
+    int tid = thread_create_user_tls(ap->name, entry, ustack_top, p, space, wei.tls_tp);
+    if (tid < 0) {
         /* OOM: no thread will ever run this proc. Undo everything (the slot-undo
          * idiom matches proc_fork's failure path) or the proc + its address space
          * + the app slot all leak, and a RUNNING proc with no thread is unreapable. */
-        for (int i = 0; i < NFD; i++) if (p->fd[i]) { file_close(p->fd[i]); p->fd[i] = NULL; }
-        p->state = PROC_FREE; p->pid = 0; p->cr3 = 0;
-        ap->used = ap->alive = 0;
         vmm_free_space(space);
+        proc_abort_build(p);
+        ap->used = ap->alive = 0;
         kfree(img);
         serial_puts("[wm] launch: no thread\n");
         return;
     }
     kfree(img);                             /* aex_load copied the image into `space`; drop the load buffer */
-    serial_puts("[wm] launched ");
-    serial_puts(ap->name);
-    serial_puts("\n");
+    kprintf("[wm] launched %s\n", ap->name);
+}
+
+void wm_launch(const char *aex_file, const char *arg)
+{
+    gui_mutex_lock(&wm_lock);
+    wm_launch_locked(aex_file, arg);
+    gui_mutex_unlock(&wm_lock);
 }
 
 /* THE FILE ASSOCIATION, AND WHY IT ASKS THE BYTES.
@@ -1976,8 +2053,13 @@ static int opens_in_preview(const char *path, const char *ext)
 
 static void launch_for_ext(const char *ext, const char *file)
 {
+    /* Markdown uses the text document handler, including task-produced reports.
+     * Prefer an explicitly registered Markdown handler when one exists. */
     for (int i = 0; i < nreg; i++)
         if (reg[i].ext[0] && streq(reg[i].ext, ext)) { wm_launch(reg[i].file, file); return; }
+    if (streq(ext, "md"))
+        for (int i = 0; i < nreg; i++)
+            if (streq(reg[i].ext, "txt")) { wm_launch(reg[i].file, file); return; }
     /* Anything Preview can decode opens in Preview, decided by content. */
     if (opens_in_preview(file, ext)) { wm_launch("preview.aex", file); return; }
     /* No registered handler -> open it in the Terminal (it runs `as <file>` for
@@ -2026,16 +2108,24 @@ static int sysinfo_text(char *buf, int max)
      * second syscall. 10 ms granular (100 Hz tick); see pit.h. */
     p = ap_str(p, end, "Uptime-ms "); p = ap_num(p, end, timer_ms());
     p = ap_str(p, end, "\n");
-    /* Event-ring accounting. `merged` is mouse motion coalesced onto an unread
-     * motion sample instead of taking a slot; `dropped` is events lost to a full
-     * ring, and it is the number that has to stay 0 -- a dropped click is a
-     * click the user made and the machine did not act on. Printed rather than
-     * merely counted because "motion cannot overflow the queue" is a claim, and
-     * a claim you cannot read back is a comment. */
+    /* Both queue boundaries are observable here. `evicted-motion` is the safe
+     * overload valve used to admit a release/key; raw drops are split because a
+     * lost absolute position and a lost semantic edge have different severity. */
+    struct inputq_stats iqstats;
+    inputq_get_stats(&inq, &iqstats);
     p = ap_str(p, end, "Events "); p = ap_num(p, end, evq_queued());
     p = ap_str(p, end, " queued, "); p = ap_num(p, end, evq_coalesced());
-    p = ap_str(p, end, " merged, "); p = ap_num(p, end, evq_dropped());
-    p = ap_str(p, end, " dropped\n\n");
+    p = ap_str(p, end, " merged, "); p = ap_num(p, end, evq_evicted_motion());
+    p = ap_str(p, end, " evicted-motion, "); p = ap_num(p, end, evq_dropped());
+    p = ap_str(p, end, " dropped\n");
+    p = ap_str(p, end, "Raw-input "); p = ap_num(p, end, iqstats.queued);
+    p = ap_str(p, end, " queued, "); p = ap_num(p, end, iqstats.coalesced);
+    p = ap_str(p, end, " merged, "); p = ap_num(p, end, iqstats.evicted_motion);
+    p = ap_str(p, end, " evicted-motion, "); p = ap_num(p, end, iqstats.dropped_motion);
+    p = ap_str(p, end, " dropped-motion, "); p = ap_num(p, end, iqstats.dropped_semantic);
+    p = ap_str(p, end, " dropped-semantic, hwm "); p = ap_num(p, end, iqstats.high_watermark);
+    p = ap_str(p, end, ", backlog-batches "); p = ap_num(p, end, iqstats.batches_with_backlog);
+    p = ap_str(p, end, "\n\n");
     p = ap_str(p, end, "PID  NAME\n");
     p = ap_str(p, end, "  0  wm (compositor)\n");
     for (int i = 0; i < MAXWIN; i++)
@@ -2052,7 +2142,9 @@ static int sysinfo_text(char *buf, int max)
  * SYS_RES_FETCH). If that thread is killed mid-fetch (window closed, fault),
  * the flag would stay 1 forever and net_poll in the WM loop would never run
  * again. Armed/cleared alongside g_net_busy; checked in the WM main loop. */
-static uint64_t net_busy_t0;
+/* Correction: g_net_busy is diagnostic accounting only. net_poll has its
+ * own ownership now; resetting a busy count on a wall-clock deadline could
+ * allow reuse while its original fetch still owns the response. */
 
 /* Hard wall-clock cap on one SYS_HTTP_GET, retries and redirects included.
  *
@@ -2099,7 +2191,8 @@ static int is_draw_call(long num)
     return 0;
 }
 
-long wm_gui_syscall(long num, long a, long b, long c)
+static int wm_domain_call(long num);
+static long wm_gui_dispatch(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
     if (!ap && num != SYS_HTTP_GET && num != SYS_HTTP_STATUS &&
@@ -2148,7 +2241,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
      * switch and for EVERY call, so a window is marked mid-draw by whatever the
      * app happens to draw first: there is no ordering an app has to obey and no
      * ABI for it to get wrong. */
-    {
+    if (wm_domain_call(num)) {
         struct win *dw = app_window(ap);
         if (dw) {
             if (num == SYS_GUI_FLUSH || num == SYS_GUI_FLUSH_RECT) {
@@ -2201,7 +2294,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->surf.px = kmalloc((size_t)(pxcount * 4));
         if (!w->surf.px) { w->used = 0; return -1; }
         w->surf_cap = (int)pxcount;      /* the canvas grows in steps from here */
-        for (uint64_t i = 0; i < pxcount; i++) w->surf.px[i] = rgb(250, 250, 252);
+        ol_bitmap_fill32(w->surf.px, pxcount, rgb(250, 250, 252));
         w->drawing = 0; w->draw_t0 = 0;   /* a fresh canvas is a finished picture */
         /* WAKE the old tenant's waiters, do NOT waitq_init here. waitq_init
          * assigns a fresh SPINLOCK_INIT over the queue's lock -- ticket and
@@ -2211,6 +2304,9 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * needs is for anyone still parked on it to be released, and they
          * re-test their predicate and find the window gone. */
         evq_reset(&w->ev); waitq_wake_all(&w->evwq); w->wants_close = 0;
+        /* A fresh or reused window needs its own initial focus notification,
+         * even when it opens behind system chrome with state zero. */
+        w->focus_notified = -1;
         /* A REUSED SLOT MUST NOT INHERIT the previous tenant's window state.
          * `used` guards the readers, but zoomed/minimized/min_* are read the
          * moment the new window is composited -- a slot whose last occupant was
@@ -2227,7 +2323,14 @@ long wm_gui_syscall(long num, long a, long b, long c)
         w->min_t0 = 0; w->min_dir = 0; w->min_slot = 0;
         w->anim_prev.x0 = w->anim_prev.y0 = w->anim_prev.x1 = w->anim_prev.y1 = 0;
         w->sx = w->x; w->sy = w->y; w->sw = w->w; w->sh = w->h;
-        { uint64_t t = timer_ticks(); w->open_t0 = t ? t : 1; }   /* trigger open pop */
+        w->open_t0 = anim_stamp();       /* trigger open pop */
+        /* The first open frame is deliberately still a full repaint below:
+         * adding a topmost window also changes the previous focus chrome. The
+         * FOLLOWING frames change only this growing box, though, and need a
+         * real previous extent just like minimise and Expose. Seeding after
+         * open_t0 matters because win_box() must describe the 0.84x picture
+         * that is actually on screen first, not the settled frame. */
+        win_box(w, &w->anim_prev);
         ap->win = wi;
         raise_win(wi);
         dirty_full();
@@ -2368,84 +2471,46 @@ long wm_gui_syscall(long num, long a, long b, long c)
         return 0;
 #endif
     }
-    case SYS_WAIT_EVENT: {
-        /* SYS_POLL_EVENT without the spin. See the note in logit_abi.h for the
-         * measurement that motivated it: 98% of this machine's kernel entries
-         * were an app asking whether anything had happened yet.
-         *
-         * The BKL is HELD on entry and the wait must not hold it -- an app
-         * asleep with the global lock stops the machine. wait_event_timeout
-         * drops it across the park and re-takes it on resume (block_self does,
-         * in one place), which is exactly the discipline bkl_hlt_wait already
-         * uses for the console.
-         *
-         * There is no lost wakeup here and the reason is the BKL, not luck:
-         * the predicate is evaluated while this core still holds it, and the
-         * only writer (enqueue/enqueue_input, on the WM thread) needs the same
-         * lock to push. So nothing can be queued between the test and the
-         * park. */
-        struct win *w = app_window(ap); if (!w) return 0;
-        struct logit_event *ev = (struct logit_event *)a;
-        /* ev == NULL: WAIT WITHOUT CONSUMING. That convention is what lets an
-         * existing app adopt this by changing one line -- its `while
-         * (poll_event(&e))` drain stays exactly as written, and only the
-         * sys_yield() at the bottom of the loop becomes a sleep. Handing back
-         * an event here instead would mean every caller restructuring its loop
-         * to handle the first event separately from the rest, which is how a
-         * mechanical change becomes twelve behavioural ones. */
-        if (ev) {
-            if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
-            if (evq_pop(&w->ev, ev)) return 1;      /* fast path: already there */
-        } else if (!evq_empty(&w->ev)) {
-            return 1;
-        }
-        int ms = (int)b;
-        int ok = 0;
-        if (ms > 0)
-            wait_event_timeout(&w->evwq, !evq_empty(&w->ev) || w->wants_close, ms, ok);
-        else
-            wait_event(&w->evwq, !evq_empty(&w->ev) || w->wants_close);
-        return ev ? evq_pop(&w->ev, ev) : !evq_empty(&w->ev);
-    }
-    case SYS_POLL_EVENT: {
-        struct win *w = app_window(ap); if (!w) return 0;
-        struct logit_event *ev = (struct logit_event *)a;
-        if (!user_range_ok(ev, sizeof *ev, 1)) return -1;
-        /* The struct GREW (mods/button/wheel). An app built against the old
-         * three-int layout still writes a three-int buffer here, and this would
-         * scribble 12 bytes past it -- which is why sizeof is asserted at
-         * compile time on both sides and every app in the tree rebuilds from the
-         * one header. There is no ABI version negotiation on this call and there
-         * is deliberately not going to be one: the .aex files and the kernel ship
-         * as a single image. */
-        return evq_pop(&w->ev, ev);
-    }
     case SYS_GET_ARG: {
         char *buf = (char *)a; int max = (int)b, i = 0;
         if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
-        for (; i < max - 1 && ap->arg[i]; i++) buf[i] = ap->arg[i];
-        buf[i] = 0;
-        return i;
+        char tmp[sizeof ap->arg];
+        if (max > (int)sizeof tmp) max = sizeof tmp;
+        for (; i < max - 1 && ap->arg[i]; i++) tmp[i] = ap->arg[i];
+        tmp[i] = 0;
+        return user_copy_to(buf, tmp, (uint64_t)i + 1) < 0 ? -1 : i;
     }
     case SYS_GET_TIME: {
         struct rtc_time t; rtc_now(&t);
         if (!user_range_ok((void *)a, sizeof t, 1)) return -1;
-        memcpy((void *)a, &t, sizeof t);
-        return 0;
+        return user_copy_to((void *)a, &t, sizeof t) < 0 ? -1 : 0;
     }
     case SYS_READ_FILE: {
         char path[USER_PATH_MAX];
         int max = (int)c;
         if (max < 0 || user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
         if (max > 0 && !user_range_ok((void *)b, (uint64_t)max, 1)) return -1;
-        return vfs_read(path, (void *)b, max);
+        int size = vfs_size(path);
+        if (size < 0 || size > max) return -1;
+        char *tmp = kmalloc(size ? (unsigned)size : 1);
+        if (!tmp) return -1;
+        int n = vfs_read(path, tmp, size);
+        if (n > size) n = -1;
+        if (n > 0 && user_copy_to((void *)b, tmp, (unsigned)n) < 0) n = -1;
+        kfree(tmp);
+        return n;
     }
     case SYS_YIELD:
         schedule();
         return 0;
-    case SYS_SYSINFO:
-        if ((int)b <= 0 || !user_range_ok((void *)a, (uint64_t)(int)b, 1)) return -1;
-        return sysinfo_text((char *)a, (int)b);
+    case SYS_SYSINFO: {
+        if ((int)b <= 0) return -1;
+        char tmp[2048];
+        int cap = (int)b < (int)sizeof tmp ? (int)b : (int)sizeof tmp;
+        int n = sysinfo_text(tmp, cap);
+        if (n < 0 || n >= cap) return -1;
+        return user_copy_to((void *)a, tmp, (unsigned)n + 1) < 0 ? -1 : n;
+    }
     case SYS_UI_DARK:                       /* a<0 query; else set system dark mode */
         if ((int)a >= 0) wm_set_dark((int)a);
         return g_ui_dark;
@@ -2454,7 +2519,11 @@ long wm_gui_syscall(long num, long a, long b, long c)
     case SYS_FILE_NAME: {
         int i = (int)a;
         if ((int)c <= 0 || !user_range_ok((void *)b, (uint64_t)(int)c, 1)) return -1;
-        scopy((char *)b, vfs_ent_name("/", i), (int)c);
+        char name[256];
+        int cap = (int)c < (int)sizeof name ? (int)c : (int)sizeof name;
+        scopy(name, vfs_ent_name("/", i), cap);
+        int n=0; while (name[n]) n++;
+        if (user_copy_to((void *)b, name, (unsigned)n+1) < 0) return -1;
         return vfs_ent_size("/", i);
     }
     case SYS_WRITE_FILE: {
@@ -2462,7 +2531,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
         int size = (int)c;
         if (size < 0 || user_copy_string(path, sizeof path, (const char *)a) < 0) return -1;
         if (size > 0 && !user_range_ok((const void *)b, (uint64_t)size, 0)) return -1;
-        return vfs_write(path, (const void *)b, size);
+        char *tmp = kmalloc(size ? (unsigned)size : 1);
+        if (!tmp) return -1;
+        int n = -1;
+        if (!size || user_copy_from(tmp, (const void *)b, (unsigned)size) == 0)
+            n = vfs_write(path, tmp, size);
+        kfree(tmp);
+        return n;
     }
     case SYS_DELETE_FILE: {
         char path[USER_PATH_MAX];
@@ -2485,7 +2560,10 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (user_copy_string(dir, sizeof dir, (const char *)a) < 0) return -1;
         if (!user_range_ok((void *)c, 64, 1)) return -1;
         if (i < 0 || i >= vfs_count(dir)) return -1;
-        scopy((char *)c, vfs_ent_name(dir, i), 64);
+        char name[64];
+        scopy(name, vfs_ent_name(dir, i), sizeof name);
+        int n=0; while (name[n]) n++;
+        if (user_copy_to((void *)c, name, (unsigned)n+1) < 0) return -1;
         return vfs_ent_is_dir(dir, i) ? -2 : vfs_ent_size(dir, i);
     }
     /* SYS_NET_* moved to syscall.c so CLI processes (no GUI window) can use them. */
@@ -2493,12 +2571,16 @@ long wm_gui_syscall(long num, long a, long b, long c)
         /* Fetch only (DNS+TCP+TLS+HTTP, follows redirects). The DOM/CSS/layout
          * pipeline now lives in the ring-3 browser. http_get blocks while pumping
          * net_poll, which needs IF=1, but the int 0x80 gate cleared IF -- so
-         * re-enable interrupts across the fetch, then restore for the iretq. */
+         * re-enable interrupts across the fetch, then restore for the iretq.
+         * Correction: the outer ring-3 dispatcher now enables IF. Preserve
+         * its caller state after releasing the HTTP owner, rather than
+         * forcing the remaining syscall work back into an IRQ-off window. */
         char url[USER_URL_MAX];
         if (user_copy_string(url, sizeof url, (const char *)a) < 0) return -1;
-        __asm__ volatile ("sti");
-        g_net_busy = 1;                          /* we own the net; WM thread must not poll */
-        net_busy_t0 = timer_ticks();
+        uint64_t irq_flags;
+        __asm__ volatile ("pushfq; pop %0; sti" : "=r"(irq_flags) :: "memory");
+        __atomic_add_fetch(&g_net_busy, 1, __ATOMIC_RELAXED);
+        http_lock();
         uint64_t t0 = timer_ticks();
         int grc = http_get(url);
         /* Retry only what a retry can fix, and bound the whole thing.
@@ -2525,51 +2607,38 @@ long wm_gui_syscall(long num, long a, long b, long c)
             if (timer_ticks() - t0 > HTTP_FETCH_CAP_TICKS) break;
             grc = http_get(url);
         }
-        g_net_busy = 0;
-        net_busy_t0 = 0;
+        __atomic_sub_fetch(&g_net_busy, 1, __ATOMIC_RELAXED);
         kprintf("[http] get rc=%d status=%d t=%dms\n", grc, http_status(), (int)(timer_ticks()-t0)*10);
-        __asm__ volatile ("cli");
+        http_unlock();
+        if (irq_flags & 0x200) __asm__ volatile ("sti" ::: "memory");
+        else                   __asm__ volatile ("cli" ::: "memory");
         return grc;
     }
-    case SYS_HTTP_STATUS:
-        return http_status();
+    case SYS_HTTP_STATUS: {
+        http_lock(); long status = http_status(); http_unlock(); return status;
+    }
     case SYS_HTTP_BODY: {
         char *buf = (char *)a; int max = (int)b;
         if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
+        http_lock();
         int blen; const char *body = http_body(&blen);
-        if (!body || blen <= 0) return 0;
-        int n = blen < max ? blen : max;
-        memcpy(buf, body, (size_t)n);
+        int n = body && blen > 0 ? (blen < max ? blen : max) : 0;
+        if (n && user_copy_to(buf, body, (unsigned)n) < 0) n = -1;
+        http_unlock();
         return n;
     }
     case SYS_TEXT_MEASURE: {
-        const char *s = (const char *)a; int len = (int)b;
-        /* (px << 2) | face, where face is LOGIT_FACE_MONO|LOGIT_FACE_BOLD.
-         * It was (px << 1) | mono; bit 0 is unchanged and bit 1 is new, which
-         * is why c/apps/logit.h's text_measure_px kept its signature and only
-         * widened its mask. Both halves of that encoding live in exactly two
-         * places -- there and here. */
-        int px = (int)((c >> 2) & 0x3FFFFFFF), face = (int)(c & 3);
-        if (len < 0 || len > USER_TEXT_MAX) return 0;
-        if (px < 1 || px > 512) return 0;    /* unbounded px overflows the rasterizer's w*h math */
-        char tmp[USER_TEXT_MAX];
-        if (len > 0) { if (!user_range_ok(s, (uint64_t)len, 0)) return -1; memcpy(tmp, s, (size_t)len); }
-        /* Measure at the size it will actually be DRAWN at, then answer in
-         * points. Measuring at the unscaled px instead would be self-consistent
-         * arithmetic and still wrong: hinting-free advances do not scale exactly
-         * linearly, so a caller that word-wraps on the 1x width would overflow
-         * its own box once the 1.5x glyphs landed. */
-        return PT(text_measure(tmp, len, S(px), face));
+#include "text_measure_dispatch.inc"
     }
     case SYS_GUI_TEXT_RUN: {
         struct win *w = app_window(ap); if (!w) return -1;
         struct logit_run r;
         if (!user_range_ok((const void *)a, sizeof r, 0)) return -1;
-        memcpy(&r, (const void *)a, sizeof r);
+        if (user_copy_from(&r, (const void *)a, sizeof r) < 0) return -1;
         if (r.px < 1 || r.px > 512) return -1;   /* unbounded px overflows the rasterizer's w*h math */
         int len = r.len; if (len < 0) len = 0; if (len > USER_TEXT_MAX - 1) len = USER_TEXT_MAX - 1;
         char tmp[USER_TEXT_MAX];
-        if (len > 0) { if (!user_range_ok(r.s, (uint64_t)len, 0)) return -1; memcpy(tmp, r.s, (size_t)len); }
+        if (len > 0 && user_copy_from(tmp, r.s, (unsigned)len) < 0) return -1;
         tmp[len] = 0;
         fb_target(&w->surf);
         /* THE ONE PLACE THE STRUCT BECOMES A MASK. `mono` and `bold` are two
@@ -2588,13 +2657,15 @@ long wm_gui_syscall(long num, long a, long b, long c)
         if (user_copy_string(src, sizeof src, (const char *)a) < 0) return -1;
         char *buf = (char *)b; int max = (int)c;
         if (max <= 0 || !user_range_ok(buf, (uint64_t)max, 1)) return -1;
-        __asm__ volatile ("sti");
-        g_net_busy = 1;
-        net_busy_t0 = timer_ticks();
+        /* As above, restore the caller IF after res_fetch releases its owner;
+         * success and failure both reach this before usercopy or cleanup. */
+        uint64_t irq_flags;
+        __asm__ volatile ("pushfq; pop %0; sti" : "=r"(irq_flags) :: "memory");
+        __atomic_add_fetch(&g_net_busy, 1, __ATOMIC_RELAXED);
         uint8_t *rb = 0; int rl = 0; int rc = res_fetch(src, &rb, &rl);
-        g_net_busy = 0;
-        net_busy_t0 = 0;
-        __asm__ volatile ("cli");
+        __atomic_sub_fetch(&g_net_busy, 1, __ATOMIC_RELAXED);
+        if (irq_flags & 0x200) __asm__ volatile ("sti" ::: "memory");
+        else                   __asm__ volatile ("cli" ::: "memory");
         if (rc != 0 || !rb) {
             /* rc == -2 is the 15 s wall-clock cap res_fetch now applies to its
              * own redirect loop (c/net/http/http.c). Named separately because
@@ -2606,7 +2677,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         }
         kprintf("[res] ok %d bytes url=%s\n", rl, src);
         int n = rl < max ? rl : max;
-        memcpy(buf, rb, (size_t)n);
+        if (user_copy_to(buf, rb, (unsigned)n) < 0) n = -1;
         kfree(rb);
         return n;
     }
@@ -2614,7 +2685,7 @@ long wm_gui_syscall(long num, long a, long b, long c)
         struct win *w = app_window(ap); if (!w) return -1;
         struct logit_blit bl;
         if (!user_range_ok((const void *)a, sizeof bl, 0)) return -1;
-        memcpy(&bl, (const void *)a, sizeof bl);
+        if (user_copy_from(&bl, (const void *)a, sizeof bl) < 0) return -1;
         if (bl.sw <= 0 || bl.sh <= 0 || bl.sw > 4096 || bl.sh > 4096) return -1;
         if (!user_range_ok(bl.rgba, (uint64_t)bl.sw * (uint64_t)bl.sh * 4, 0)) return -1;
         /* dw/dh come straight from the app: fb_blit_rgba clips its loops to the
@@ -2626,9 +2697,13 @@ long wm_gui_syscall(long num, long a, long b, long c)
          * icons around it, which do. */
         int bx = S(bl.x), by = S(bl.y);
         fb_target(&w->surf);
-        fb_blit_rgba(bx, by, S(bl.x + bl.w) - bx, S(bl.y + bl.h) - by, bl.rgba, bl.sw, bl.sh);
+        /* One source-row snapshot, reused for repeated rows when scaling.
+         * A 4096-square image must not cost a second 64 MiB allocation merely
+         * to fault safely; only the visible destination rows are transferred. */
+        int dw = S(bl.x + bl.w) - bx, dh = S(bl.y + bl.h) - by;
+        int rc = fb_blit_user_rgba(bx, by, dw, dh, bl.rgba, bl.sw, bl.sh);
         fb_target(NULL);
-        return 0;
+        return rc;
     }
     case SYS_GUI_CLIP: {
         struct win *w = app_window(ap); if (!w) return -1;
@@ -2677,6 +2752,8 @@ long wm_gui_syscall(long num, long a, long b, long c)
         case WINS_H:         return w->ch_pt;
         case WINS_ZOOMED:    return w->zoomed;
         case WINS_MINIMIZED: return w->minimized;
+        case WINS_FOCUSED:   return wm_keyboard_focus() == ap->win;
+        case WINS_KEY_HELD:  return wm_keyboard_focus() == ap->win && kbd_key_held((int)b);
         case WINS_SET_ZOOM:
             win_set_zoom(w, (int)b < 0 ? !w->zoomed : ((int)b != 0));
             return w->zoomed;
@@ -2697,13 +2774,95 @@ long wm_gui_syscall(long num, long a, long b, long c)
     return -1;
 }
 
+/* Only these calls touch WM-owned geometry or pixels. The old dispatcher also
+ * carries FS/HTTP services for ABI compatibility; holding wm_lock for those
+ * would needlessly freeze the display behind a completely unrelated request. */
+static int wm_domain_call(long num)
+{
+    switch (num) {
+    case SYS_GUI_CREATE: case SYS_GUI_CLEAR: case SYS_GUI_RECT:
+    case SYS_GUI_RRECT: case SYS_GUI_TEXT: case SYS_GUI_TEXT_MONO:
+    case SYS_GUI_ICON: case SYS_GUI_GLASS: case SYS_GUI_TEXT_RUN:
+    case SYS_GUI_BLIT: case SYS_GUI_CLIP: case SYS_GUI_FLUSH:
+    case SYS_GUI_FLUSH_RECT: case SYS_GUI_WIN_MIN: case SYS_GUI_WIN_STATE:
+    case SYS_UI_DARK: case SYS_OPEN_PATH: case SYS_GET_ARG: case SYS_SYSINFO:
+        return 1;
+    }
+    return 0;
+}
+static long wm_event_syscall(long num, long a, long b)
+{
+    if (num == SYS_POLL_EVENT && !a) return -1;
+    if (a && !user_range_ok((void *)a, sizeof(struct logit_event), 1)) return -1;
+    wm_state_lock();
+    struct app *ap = cur_app();
+    struct win *w = app_window(ap);
+    if (!w || !w->used || !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE)) {
+        wm_state_unlock(); return ap ? 0 : -1;
+    }
+    __atomic_add_fetch(&w->wait_refs, 1, __ATOMIC_RELAXED);
+    wm_state_unlock();
+    struct logit_event event;
+    int got = 0, ok = 0;
+    for (;;) {
+        if (a) got = evq_pop(&w->ev, &event);
+        else got = !evq_empty(&w->ev);
+        if (got || num != SYS_WAIT_EVENT ||
+            __atomic_load_n(&w->wants_close, __ATOMIC_ACQUIRE) ||
+            !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE)) break;
+        if ((int)b > 0)
+            wait_event_timeout(&w->evwq, !evq_empty(&w->ev) ||
+                __atomic_load_n(&w->wants_close, __ATOMIC_ACQUIRE) ||
+                !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE), (int)b, ok);
+        else
+            wait_event(&w->evwq, !evq_empty(&w->ev) ||
+                __atomic_load_n(&w->wants_close, __ATOMIC_ACQUIRE) ||
+                !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE));
+        /* A second consumer can win the event between the predicate wake and
+         * this thread's pop. An infinite wait must then park again instead of
+         * returning a spurious zero; a timed call returns so it never silently
+         * starts a fresh full timeout. Availability-only waits do not consume,
+         * so their successful predicate cannot be stolen. */
+        if ((int)b > 0 || !a) {
+            got = a ? evq_pop(&w->ev, &event) : !evq_empty(&w->ev);
+            break;
+        }
+    }
+    (void)ok;
+    long result = got;
+    if (a && got && user_copy_to((void *)a, &event, sizeof event) < 0) result = -1;
+    int dead = !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE);
+    __atomic_sub_fetch(&w->wait_refs, 1, __ATOMIC_RELEASE);
+    if (dead) __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
+    return result;
+}
+long wm_gui_syscall(long num, long a, long b, long c)
+{
+    if (num == SYS_WAIT_EVENT || num == SYS_POLL_EVENT)
+        return wm_event_syscall(num, a, b);
+    int owned = wm_domain_call(num);
+    if (owned) wm_state_lock();
+    int pixels = is_draw_call(num);
+    if (pixels) fb_graphics_lock();
+    long result = wm_gui_dispatch(num, a, b, c);
+    if (num == SYS_GUI_CREATE || (num == SYS_GUI_WIN_STATE && a == WINS_SET_MIN))
+        wm_sync_focus();
+    if (pixels) fb_graphics_unlock();
+    if (owned) wm_state_unlock();
+    return result;
+}
+
 /* Called from proc_exit(): mark the current proc's window dead; the WM reaps it.
  * A CLI/forked process has no window (cur_app() == NULL) -- harmless no-op. */
 void wm_app_exit(void)
 {
     struct app *ap = cur_app();
-    if (ap) ap->alive = 0;
-    dirty_full();
+    if (ap) {
+        __atomic_store_n(&ap->alive, 0, __ATOMIC_RELEASE);
+        int wi = __atomic_load_n(&ap->win, __ATOMIC_ACQUIRE);
+        if (wi >= 0 && wi < MAXWIN) waitq_wake_all(&wins[wi].evwq);
+    }
+    __atomic_store_n(&external_dirty, 1, __ATOMIC_RELEASE);
 }
 
 /* The plain form: a window-level event with no button and no wheel (EV_KEY,
@@ -2712,20 +2871,19 @@ void wm_app_exit(void)
 static void enqueue(struct win *w, int type, int a, int b)
 {
     struct logit_event e = { type, a, b, 0, EV_BTN_NONE, 0 };
-    evq_push(&w->ev, &e);
-    /* WAKE AFTER THE PUSH, never before: the sleeper's predicate is "the ring
-     * is not empty", and a wake that arrives first is a wake the sleeper
-     * re-tests and goes back to sleep through. Waking with nothing queued is
-     * harmless (wait_event re-tests) but it is also the bug that turns a
-     * blocking wait back into a poll, so the order is the point. */
-    waitq_wake_one(&w->evwq);
+    int result = evq_push(&w->ev, &e);
+    /* One wake per newly appended slot. Another thread can be waiting on this
+     * same window even while an earlier event keeps the ring readable. */
+    if (result == EVQ_PUSH_APPENDED)
+        waitq_wake_one(&w->evwq);
 }
 
 static void enqueue_input(struct win *w, int type, int a, int b, int mods, int button, int wheel)
 {
     struct logit_event e = { type, a, b, mods, button, wheel };
-    evq_push(&w->ev, &e);
-    waitq_wake_one(&w->evwq);
+    int result = evq_push(&w->ev, &e);
+    if (result == EVQ_PUSH_APPENDED)
+        waitq_wake_one(&w->evwq);
 }
 
 /* Flip the system theme: kernel chrome follows immediately (redrawn each frame);
@@ -2734,7 +2892,7 @@ static void wm_set_dark(int on)
 {
     on = on ? 1 : 0;
     if (on == g_ui_dark) return;
-    g_ui_dark = on;
+    __atomic_store_n(&g_ui_dark, on, __ATOMIC_RELEASE);
     /* --- settings line: remember it. Committed immediately (the 1), because
      * the user flipping the theme is exactly the change they will expect to
      * still be there after a power cut, and one whole-file write is one
@@ -2752,9 +2910,12 @@ static void wm_set_dark(int on)
 static void reap(void)
 {
     for (int i = 0; i < MAXWIN; i++) {
-        if (apps[i].used && !apps[i].alive) {
+        if (apps[i].used && !__atomic_load_n(&apps[i].alive, __ATOMIC_ACQUIRE)) {
             int wi = apps[i].win;
             if (wi >= 0 && wins[wi].used) {
+                __atomic_store_n(&wins[wi].wants_close, 1, __ATOMIC_RELEASE);
+                waitq_wake_all(&wins[wi].evwq);
+                if (__atomic_load_n(&wins[wi].wait_refs, __ATOMIC_ACQUIRE)) continue;
                 if (wins[wi].surf.px) kfree(wins[wi].surf.px);
                 /* Clear the pointer, do not merely free what it pointed at.
                  * The slot is reused by the next SYS_GUI_CREATE, and until that
@@ -2796,99 +2957,38 @@ static void reap(void)
  * near-infinite pixel loop; and (b) on a dock click run wm_launch, which does
  * disk I/O + kmalloc/pmm/proc/thread creation -- lock-taking, non-reentrant work
  * that deadlocks/corrupts the allocator if the IRQ preempted a thread mid-alloc.
- * Fix: the IRQ now only ENQUEUES the raw input event (no shared-state writes, no
- * locks); the WM thread drains the queue and does ALL processing in thread
+ * Fix: the IRQ now only ENQUEUES the raw input event (no shared WM-state
+ * writes; one bounded IRQ-safe queue lock); the WM thread does ALL processing in thread
  * context (wm_drain_input -> wm_process_mouse/wm_process_key), serialized with
  * its own compositing. This removes the entire IRQ-vs-render race class. */
-/* type 0 = mouse (x,y + button levels + wheel notches); 1 = key (x = code).
- * `mods` is sampled HERE, in the IRQ, not when the WM thread drains: the whole
- * point of an event carrying modifiers is that they were the modifiers at the
- * moment the button went down, and the drain can be a frame later. */
-struct inev { int type; int x, y, l, r, m, wheel, mods; };
-#define INQ_N 512
-static struct inev inq[INQ_N];
-static volatile int inq_head, inq_tail;
-
-/* THE COMMENT THAT USED TO BE HERE SAID "IRQ-safe: no locks, no shared-state",
- * and it was true of one producer. THERE ARE THREE.
- *
- * wm_key comes from IRQ 1, wm_mouse_event from IRQ 12, and BOTH again from
- * usb_isr (c/drivers/usb/usb_core.c) by way of hid_poll -- the xHCI interrupt
- * decodes a HID report and posts it through the same two entry points. Three
- * vectors, one ring. They cannot overlap today only because every interrupt
- * takes the big kernel lock on the way in -- which is precisely what
- * step 3 of the BKL removal takes away for exactly these vectors, since after
- * the input-deferral fix none of the handlers does anything else. Unlocked,
- * two cores read the same inq_tail, write the same slot and store the same nt:
- * one event silently gone, under exactly the flood the ring was sized for.
- *
- * The comment was not wrong; it was UNQUALIFIED. "No locks" is a true statement
- * about this function, and the property that made it sufficient lived in a
- * caller three files away.
- *
- * WHY A LOCK AND NOT A CAS. Claiming a slot with a CAS on the tail advances
- * inq_tail BEFORE inq[t] is written, so the drain can observe a tail past a
- * slot still holding the previous tenant's event -- the standard multi-producer
- * hazard, which one atomic does not close. A per-slot ready flag closes it and
- * puts a spin in the CONSUMER to save six instructions in an IRQ. Two queues,
- * one per vector, is genuinely lock-free and fits the shape -- but it loses the
- * order between a keystroke and a click, and struct inev has no timestamp to
- * restore it. That order is not obviously disposable: `mods` is sampled in the
- * IRQ for the express purpose of reflecting the instant of the press.
- *
- * So: a lock over the producers only. The critical section is a bounds check, a
- * struct copy and a store, on a path that already did a port read. The CONSUMER
- * is untouched -- wm_drain_input writes only inq_head, and one reader against
- * one serialised writer is the single-producer case it was always written for.
- *
- * Inert until step 3: the BKL still serialises both IRQs, so this lock is never
- * contended and nothing about the machine's behaviour changes. That is the
- * point of landing it first -- declaring the vectors BKL-free then becomes one
- * line against a safe queue instead of two changes at once against an unsafe
- * one.
- *
- * NOTE for whoever does step 3: usb_core.c's comment above usb_isr() ends
- * "Nothing sleeps, nothing allocates, nothing takes a lock." The last clause
- * stops being true here. A spinlock in an ISR is fine -- it is the sleeping and
- * the allocating that are not -- but the sentence has to say so rather than be
- * quietly falsified. */
-static spinlock_t inq_lock = SPINLOCK_INIT;
-
-static void inq_push(const struct inev *e)
-{
-    uint64_t f = spin_lock_irqsave(&inq_lock);
-    int nt = (inq_tail + 1) % INQ_N;
-    if (nt != inq_head) {                  /* full: drop (cosmetic under flooding) */
-        inq[inq_tail] = *e;
-        inq_tail = nt;
-    }
-    spin_unlock_irqrestore(&inq_lock, f);
-}
-static void wm_process_mouse(const struct inev *e);   /* fwd: bodies below */
+/* `mods` is sampled in the IRQ, not when the WM drains: it describes the
+ * instant of the click/key. input_queue.c owns the short multi-producer lock,
+ * motion coalescing, release priority and the per-pass fairness bound. */
+static void wm_process_mouse(const struct inputq_event *e);   /* fwd: bodies below */
 static void wm_process_key(int c, int mods);
 /* The IRQ entry points (called from mouse.c / keyboard.c) now ONLY enqueue. */
 void wm_mouse_event(int x, int y, int left, int right, int middle, int wheel)
 {
-    struct inev e = { 0, x, y, left, right, middle, wheel, kbd_mods() };
-    inq_push(&e);
+    inputq_push_pointer(&inq, x, y, left, right, middle, wheel, kbd_mods());
 }
 void wm_key(int c)
 {
-    struct inev e = { 1, c, 0, 0, 0, 0, 0, kbd_mods() };
-    inq_push(&e);
+    inputq_push_key(&inq, c, kbd_mods());
 }
-static void wm_drain_input(void)           /* WM thread: process all input here, NOT in the IRQ */
+/* At most one fixed batch per desktop pass. Returning backlog lets wm_run skip
+ * hlt and start another pass, but every batch still reaches resize, network,
+ * animation, composite and scheduler work before the next sixteen events. */
+static int wm_drain_input(void)
 {
-    for (;;) {
-        struct inev e;
-        __asm__ volatile ("cli");          /* brief: atomic dequeue vs the producing IRQs */
-        int empty = (inq_head == inq_tail);
-        if (!empty) { e = inq[inq_head]; inq_head = (inq_head + 1) % INQ_N; }
-        __asm__ volatile ("sti");
-        if (empty) break;
-        if (e.type == 0) wm_process_mouse(&e);
-        else             wm_process_key(e.x, e.mods);
+    struct inputq_event batch[INPUTQ_DRAIN_BUDGET];
+    int n = inputq_drain(&inq, batch);
+    for (int i = 0; i < n; i++) {
+        if (batch[i].type == INPUTQ_POINTER) wm_process_mouse(&batch[i]);
+        else                                 wm_process_key(batch[i].x, batch[i].mods);
+        /* Publish a window switch before processing the next queued key. */
+        wm_sync_focus();
     }
+    return inputq_pending(&inq);
 }
 
 /* ---------- desktop chrome ---------- */
@@ -2922,14 +3022,16 @@ static int draw_wallpaper(void)
      * a decodable image, falls through to the gradient below exactly as a
      * missing /wallpaper.png always did -- so there is no wallpaper setting
      * that can produce a broken desktop, only a plain one. */
-    const char *wp = settings_get_str("ui.wallpaper", "/wallpaper.png");
+    char wallpaper_path[SET_VALLEN];
+    settings_copy_str("ui.wallpaper", "/wallpaper.png", wallpaper_path, sizeof wallpaper_path);
+    const char *wp = wallpaper_path;
     int sz = vfs_size(wp);
     if (sz <= 0) return 0;
     uint8_t *file = (uint8_t *)kmalloc((unsigned)sz);
     if (!file) return 0;
     int n = vfs_read(wp, file, sz);
     struct image im;
-    int ok = (n > 0 && img_decode(file, n, &im) == 0);
+    int ok = (n > 0 && kernel_img_decode(file, n, &im) == 0);
     kfree(file);
     if (!ok) return 0;
     fb_blit_rgba(0, 0, W, H, im.rgba, im.w, im.h);          /* scale to fill */
@@ -2959,8 +3061,9 @@ static void menubar_box(struct drect *r) { r->x0 = 0; r->y0 = 0; r->x1 = W; r->y
 static void dirty_menubar(void) { dirty_rect(0, 0, W, MBH); }
 /* WM-HOOK (out): see wm.h. The IME's indicator lives in the bar and ime_ui.c
  * must be able to say "it changed" without knowing MBH. */
-void wm_damage_menubar(void) { dirty_menubar(); }
+void wm_damage_menubar(void) { wm_damage(0, 0, W, MBH); }
 static int menu_tog_x, menu_tog_y, menu_tog_w = 38, menu_tog_h = 18;   /* dark-mode switch */
+static int menu_ime_x, menu_ime_w; /* drawn label geometry, also the toggle hit target */
 /* menu_tog_* are DEVICE pixels: they are written here and read by the click
  * handler, which sees device mouse coordinates. Keeping the stored rect in the
  * same space as the thing it is tested against is the whole trick -- the
@@ -3072,7 +3175,9 @@ static void draw_menubar(void)
         int on = ime_ui_enabled(top_visible());
         const char *tag = on ? "\xe4\xb8\xad" : "EN";   /* U+4E2D; ui.ttf is GB2312 */
         int tw = fb_text_width(tag);
-        fb_text(menu_tog_x - S(18) - tw, S(4), tag,
+        menu_ime_x = menu_tog_x - S(18) - tw - S(4);
+        menu_ime_w = tw + S(8);
+        fb_text(menu_ime_x + S(4), S(4), tag,
                 on ? (g_ui_dark ? rgb(150, 195, 255) : rgb(24,  86, 200))
                    : (g_ui_dark ? rgb(146, 148, 158) : rgb(122, 124, 134)));
     }
@@ -3212,8 +3317,8 @@ static int dock_bounce_off(int i)
 {
     uint64_t t0 = reg_bounce[i];
     if (!t0) return 0;
-    uint64_t e = timer_ticks() - t0, DUR = 55, half = DUR / 2;
-    if (e >= DUR) { reg_bounce[i] = 0; return 0; }
+    uint64_t e = anim_elapsed(t0), DUR = 550, half = DUR / 2;
+    if (wm_reduce_motion || e >= DUR) { reg_bounce[i] = 0; return 0; }
     int hop = (e < half) ? 0 : 1, H = S(hop ? 7 : 14);
     int u = (int)(e - (uint64_t)hop * half), d = (int)half;   /* 0..d within the arc */
     return H * 4 * u * (d - u) / (d * d);                      /* parabola, peak mid-arc */
@@ -3343,6 +3448,34 @@ static int g_menu_item_hov = -1;
 enum { OV_NONE, OV_ABOUT, OV_CONFIRM_SHUTDOWN, OV_CONFIRM_RESTART };
 static int g_overlay = OV_NONE;
 static int g_overlay_btn_hov = -1;   /* -1 none, 0 cancel, 1 the destructive action */
+
+/* This is keyboard ownership, not merely the highest painted window. Keep the
+ * query, event producer, key router and IME on one answer: system chrome can
+ * take the keyboard without raising a window, while the locked greeter is the
+ * sole key recipient even if another window remains in the z-order. */
+static int wm_keyboard_focus(void)
+{
+    if (g_locked) return greeter_win();
+    if (ex_state() || g_overlay != OV_NONE || g_menu_open >= 0) return -1;
+    return top_visible();
+}
+
+static void wm_sync_focus(void)
+{
+    int wi = wm_keyboard_focus();
+    for (int i = 0; i < MAXWIN; i++) {
+        struct win *w = &wins[i];
+        if (!w->used || w->kind != WK_APP) continue;
+        int focused = i == wi;
+        if (w->focus_notified == focused) continue;
+        w->focus_notified = focused;
+        /* enqueue also wakes the per-window waiter. Focus must reach an app
+         * sleeping in SYS_WAIT_EVENT(0) without a timer or another keystroke. */
+        enqueue(w, EV_WINDOW_FOCUS, focused, 0);
+    }
+    /* Preserve the locked-screen IME policy; the greeter still receives keys. */
+    ime_ui_focus(g_locked ? -1 : wi);
+}
 
 #define AB_W S(320)
 #define AB_H S(190)
@@ -3731,6 +3864,10 @@ enum { CUR_ARROW, CUR_EW, CUR_NS, CUR_NWSE, CUR_NESW, CUR_NSHAPES };
 static uint32_t cursor_plane[CUR_NSHAPES][CUR_PLANE * CUR_PLANE];
 static int cursor_hot[CUR_NSHAPES][2];
 static int cursor_box[CUR_NSHAPES][2];   /* w,h actually used, from the hotspot */
+
+/* Cursor pixels use the framebuffer's device-native byte lanes. The helper
+ * lives beside the unpack path below, but the OpenLogit builders call it first. */
+static void device_shifts(int *rs, int *gs, int *bs);
 static int cur_shape = CUR_ARROW;
 
 /* Scratch surface for build_arrow(), reused across all four calls (they run
@@ -3755,6 +3892,7 @@ static unsigned char arrow_scratch[CUR_PLANE * CUR_PLANE * 4];
  * scale step -- turning the test inside out like this is what makes the
  * shape a path instead of a bespoke rasterizer, and it is why the diagonals
  * still cost nothing extra over the axis-aligned pair. */
+static void device_shifts(int *rs,int *gs,int *bs);
 static void build_arrow(uint32_t *dst, int ux, int uy)
 {
     const int c = CUR_PLANE / 2;
@@ -3800,7 +3938,7 @@ static void build_arrow(uint32_t *dst, int ux, int uy)
 
     struct gfx_surface surf;
     gfx_surface_init(&surf, arrow_scratch, CUR_PLANE, CUR_PLANE, CUR_PLANE * 4);
-    gfx_surface_clear(&surf);
+    ol_raster_clear(&surf);
 
     /* The outline: ONE stroke of the arrow's own path, centred (width 2t, t
      * in and t out) rather than two strokes or a hand-built dilated polygon.
@@ -3827,11 +3965,11 @@ static void build_arrow(uint32_t *dst, int ux, int uy)
      * needs on the order of 2x that many points, well under the 64-point/
      * 4-subpath budget above. */
     if (gfx_stroke_path(&outline, &arrow, &sk))
-        gfx_fill(&surf, &outline, GFX_NONZERO, &outp, NULL);
+        ol_raster_fill(&surf, &outline, GFX_NONZERO, &outp, NULL);
 
     struct gfx_paint fillp;
     gfx_paint_solid(&fillp, GFX_RGB(255, 255, 255), 255);
-    gfx_fill(&surf, &arrow, GFX_NONZERO, &fillp, NULL);
+    ol_raster_fill(&surf, &arrow, GFX_NONZERO, &fillp, NULL);
 
     /* gfx_fill composited straight RGBA (R,G,B,A byte order -- gfx.h's
      * surface comment) through the engine's own Porter-Duff gfx_over, which
@@ -3840,11 +3978,9 @@ static void build_arrow(uint32_t *dst, int ux, int uy)
      * Repack into the plane's own ARGB word, through the SAME rgb() (=
      * fb_rgb(), device-native channel order) the deleted version used, so
      * the two cursor-plane consumers below need no format change at all. */
-    for (int j = 0; j < CUR_PLANE; j++)
-        for (int i = 0; i < CUR_PLANE; i++) {
-            const unsigned char *px = arrow_scratch + (j * CUR_PLANE + i) * 4;
-            dst[j * CUR_PLANE + i] = px[3] ? ((uint32_t)px[3] << 24) | rgb(px[0], px[1], px[2]) : 0;
-        }
+    int rs,gs,bs;device_shifts(&rs,&gs,&bs);
+    struct ol_display conversion={.rpos=rs,.gpos=gs,.bpos=bs};
+    ol_display_pack_argb(&conversion,dst,arrow_scratch,CUR_PLANE*CUR_PLANE);
 }
 
 /* The tight bounding box of a built plane, measured from its hotspot. The LFB
@@ -3868,7 +4004,7 @@ static void cursor_measure(int s)
 static void build_cursors(void)
 {
     for (int s = 0; s < CUR_NSHAPES; s++) {
-        for (int i = 0; i < CUR_PLANE * CUR_PLANE; i++) cursor_plane[s][i] = 0;
+        ol_bitmap_fill32(cursor_plane[s], CUR_PLANE * CUR_PLANE, 0);
         cursor_hot[s][0] = cursor_hot[s][1] = CUR_PLANE / 2;
     }
     /* The arrow, from the ASCII cells. Its tip is the top-left cell, so the
@@ -3878,6 +4014,10 @@ static void build_cursors(void)
      * locate_cursor depends on). */
     uint32_t o = 0xFF000000u | rgb(20, 20, 26), f = 0xFF000000u | rgb(255, 255, 255);
     int rows = (int)(sizeof cursor_bmp / sizeof cursor_bmp[0]);
+    struct ol_display cursor_draw={0};
+    struct ol_pixel_target cursor_target={.px=cursor_plane[CUR_ARROW],.w=CUR_PLANE,.h=CUR_PLANE};
+    int rs,gs,bs;device_shifts(&rs,&gs,&bs);
+    ol_display_bind(&cursor_draw,&cursor_target,rs,gs,bs);
     for (int r = 0; r < rows; r++) {
         int y0 = S(r), y1 = S(r + 1);
         if (y0 >= CUR_PLANE) break;
@@ -3889,8 +4029,7 @@ static void build_cursors(void)
             int x0 = S(c), x1 = S(c + 1);
             if (x0 >= CUR_PLANE) break;
             if (x1 > CUR_PLANE) x1 = CUR_PLANE;
-            for (int j = y0; j < y1; j++)
-                for (int i = x0; i < x1; i++) cursor_plane[CUR_ARROW][j * CUR_PLANE + i] = col;
+            ol_display_fill_rect(&cursor_draw,x0,y0,x1-x0,y1-y0,col);
         }
     }
     cursor_hot[CUR_ARROW][0] = cursor_hot[CUR_ARROW][1] = 0;
@@ -3961,29 +4100,12 @@ static void device_shifts(int *rs, int *gs, int *bs)
  * that is still the overwhelming common case (the shape's solid interior). */
 static void draw_cursor_back(int x, int y)
 {
-    const uint32_t *p = cursor_plane[cur_shape];
-    int hx = cursor_hot[cur_shape][0], hy = cursor_hot[cur_shape][1];
-    int bw = cursor_box[cur_shape][0], bh = cursor_box[cur_shape][1];
-    int rs, gs, bs;
-    device_shifts(&rs, &gs, &bs);
-    for (int j = 0; j < bh; j++)
-        for (int i = 0; i < bw; i++) {
-            uint32_t v = p[j * CUR_PLANE + i];
-            int a = (int)(v >> 24);
-            if (!a) continue;
-            int px = x + i - hx, py = y + j - hy;
-            if (a >= 255 || !back || px < 0 || py < 0 || px >= W || py >= H) {
-                fb_put(px, py, v & 0x00FFFFFFu);
-                continue;
-            }
-            uint32_t dc = back[py * W + px];
-            int sr = (int)((v >> rs) & 0xFF), sg = (int)((v >> gs) & 0xFF), sb = (int)((v >> bs) & 0xFF);
-            int dr = (int)((dc >> rs) & 0xFF), dg = (int)((dc >> gs) & 0xFF), db = (int)((dc >> bs) & 0xFF);
-            int nr = (sr * a + dr * (255 - a)) / 255;
-            int ng = (sg * a + dg * (255 - a)) / 255;
-            int nb = (sb * a + db * (255 - a)) / 255;
-            fb_put(px, py, rgb((uint8_t)nr, (uint8_t)ng, (uint8_t)nb));
-        }
+    struct ol_display draw={0};
+    struct ol_pixel_target target={.px=back,.w=W,.h=H};
+    int rs,gs,bs;device_shifts(&rs,&gs,&bs);
+    if(ol_display_bind(&draw,&target,rs,gs,bs)!=OL_OK)return;
+    ol_display_blit_argb(&draw,x-cursor_hot[cur_shape][0],y-cursor_hot[cur_shape][1],
+        cursor_plane[cur_shape],cursor_box[cur_shape][0],cursor_box[cur_shape][1],CUR_PLANE);
 }
 
 /* Adopt a pointer shape. Only ever called when the shape CHANGES: on the plane
@@ -4025,11 +4147,10 @@ static int anim_buf_n;
  * wm_anim_tick() owns every timer's end; see the note on win_draw_rect. */
 static int win_open_scale(const struct win *w)
 {
-    if (!w->open_t0) return 0;
-    uint64_t e = timer_ticks() - w->open_t0;
-    if (e >= OPEN_DUR_TICKS) return 0;
-    int t = (int)(e * 256 / OPEN_DUR_TICKS), inv = 256 - t;
-    int eased = 256 - inv * inv * inv / (256 * 256);   /* easeOutCubic */
+    if (!w->open_t0 || wm_reduce_motion) return 0;
+    uint64_t e = anim_elapsed(w->open_t0);
+    if (e >= OPEN_DUR_MS) return 0;
+    int eased = ol_ease256(OL_EASE_OUT_CUBIC, (int)(e * 256 / OPEN_DUR_MS));
     return 216 + (256 - 216) * eased / 256;            /* 0.84x -> 1.0x over ~0.16s */
 }
 
@@ -4073,54 +4194,17 @@ static int win_open_scale(const struct win *w)
  * 0x00RRGGBB: fb.c carries rpos/gpos/bpos from the multiboot tag and does not
  * export them, and a hardcoded layout here would be a colour-swap bug on the
  * one machine whose framebuffer disagrees. Three calls, once, at first use. */
-static int fade_rsh, fade_gsh, fade_bsh, fade_probed;
-static void fade_probe(void)
+/* Correction (2026-09-13): the original private compositing loop above has
+ * moved into OpenLogit; this adapter supplies the existing damage rectangle. */
+static void anim_blit_fade(const struct drect *clip,int dx,int dy,int dw,int dh,
+                           const struct surface *src,int alpha)
 {
-    if (fade_probed) return;
-    fade_probed = 1;
-    uint32_t rm = fb_rgb(255, 0, 0), gm = fb_rgb(0, 255, 0), bm = fb_rgb(0, 0, 255);
-    while (fade_rsh < 24 && !((rm >> fade_rsh) & 1)) fade_rsh++;
-    while (fade_gsh < 24 && !((gm >> fade_gsh) & 1)) fade_gsh++;
-    while (fade_bsh < 24 && !((bm >> fade_bsh) & 1)) fade_bsh++;
-}
-
-/* Scale `src` into (dx,dy,dw,dh) of `back`, blended at a CONSTANT alpha,
- * clipped to `clip` and to the screen. Priced by the DESTINATION rect -- which
- * is why the fly only fades over its second half, when the destination has
- * shrunk (see win_draw_rect). Row-addressed, integer, no per-pixel call. */
-static void anim_blit_fade(const struct drect *clip, int dx, int dy, int dw, int dh,
-                           const struct surface *src, int alpha)
-{
-    if (!back || !src->px || dw <= 0 || dh <= 0 || alpha <= 0) return;
-    fade_probe();
-    int x0 = dx, y0 = dy, x1 = dx + dw, y1 = dy + dh;
-    if (x0 < clip->x0) x0 = clip->x0;
-    if (y0 < clip->y0) y0 = clip->y0;
-    if (x1 > clip->x1) x1 = clip->x1;
-    if (y1 > clip->y1) y1 = clip->y1;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > W) x1 = W;
-    if (y1 > H) y1 = H;
-    if (x0 >= x1 || y0 >= y1) return;
-    int ia = 255 - alpha;
-    for (int y = y0; y < y1; y++) {
-        int sy = (y - dy) * src->h / dh;
-        if (sy < 0) sy = 0;
-        if (sy >= src->h) sy = src->h - 1;
-        const uint32_t *srow = src->px + (long)sy * src->w;
-        uint32_t *drow = back + (long)y * W;
-        for (int x = x0; x < x1; x++) {
-            int sx = (x - dx) * src->w / dw;
-            if (sx < 0) sx = 0;
-            if (sx >= src->w) sx = src->w - 1;
-            uint32_t s = srow[sx], d = drow[x];
-            int r = ((int)((s >> fade_rsh) & 0xFF) * alpha + (int)((d >> fade_rsh) & 0xFF) * ia) / 255;
-            int g = ((int)((s >> fade_gsh) & 0xFF) * alpha + (int)((d >> fade_gsh) & 0xFF) * ia) / 255;
-            int b = ((int)((s >> fade_bsh) & 0xFF) * alpha + (int)((d >> fade_bsh) & 0xFF) * ia) / 255;
-            drow[x] = ((uint32_t)r << fade_rsh) | ((uint32_t)g << fade_gsh) | ((uint32_t)b << fade_bsh);
-        }
-    }
+    struct ol_display draw={0};
+    struct ol_pixel_target target={back,W,H,1,clip->x0,clip->y0,clip->x1,clip->y1};
+    struct ol_pixel_target source={.px=src->px,.w=src->w,.h=src->h};
+    int rs,gs,bs;device_shifts(&rs,&gs,&bs);
+    if(ol_display_bind(&draw,&target,rs,gs,bs)!=OL_OK)return;
+    ol_display_blit_surface_alpha(&draw,dx,dy,dw,dh,&source,alpha);
 }
 
 /* The scratch surface every animated window is rendered into at FULL size
@@ -4323,10 +4407,9 @@ static int rect_blocked(const struct drect *R, uint64_t now, int *late)
  *
  * Every layer is drawn in the same order it always was, and the rectangle is
  * re-laid from the wallpaper up: that is what makes a partial frame produce the
- * same pixels a full one would. Returns 1 if an animation wants another frame. */
-static int render_region(const struct drect *R)
+ * same pixels a full one would. */
+static void render_region(const struct drect *R)
 {
-    int animating = 0;
     int rw = R->x1 - R->x0, rh = R->y1 - R->y0;
     fb_target(NULL);
     fb_set_clip(R->x0, R->y0, rw, rh);
@@ -4348,7 +4431,7 @@ static int render_region(const struct drect *R)
         fb_present_rect(R->x0, R->y0, rw, rh);
         perf_present_ns += time_mono_ns() - t_lock;
         perf_cpx += (uint64_t)rw * (uint64_t)rh;
-        return 0;
+        return;
     }
 
     /* THE DIM, behind the Expose grid, so the windows read as the content and
@@ -4399,8 +4482,6 @@ static int render_region(const struct drect *R)
             draw_titlebar_sep(w->x, w->y + TBH, w->w);  /* after the blit -- see draw_titlebar_sep */
             continue;
         }
-
-        if (win_open_scale(w)) animating = 1;   /* only the pop wants a full frame */
 
         /* THE PICK HIGHLIGHT, drawn BEFORE the thumbnail so it survives as a rim
          * around an opaque blit instead of being painted over it. Cheap for the
@@ -4489,7 +4570,6 @@ static int render_region(const struct drect *R)
     fb_present_rect(R->x0, R->y0, rw, rh);
     perf_present_ns += time_mono_ns() - t_pres;
     perf_cpx += (uint64_t)rw * (uint64_t)rh;
-    return animating;
 }
 
 /* ---- one pass of every animation ------------------------------------------
@@ -4551,48 +4631,72 @@ static int render_region(const struct drect *R)
 
 /* Damage (where it was | where it is), and store where it is for next time.
  * One function, because all three animations have the same obligation and a
- * fourth would otherwise be free to forget half of it. */
+ * fourth would otherwise be free to forget half of it. The test mutation
+ * deliberately reports no animation damage, leaving the guest trace moving
+ * while the scanout does not. */
 static void anim_damage(struct win *w)
 {
     struct drect cur, u;
     win_box(w, &cur);
+    w->anim_from = w->anim_prev;
+#if WM_ANIM_DAMAGE_LIE
+    w->anim_sent = (struct drect){0, 0, 0, 0};
+    w->anim_prev = cur;
+    return;
+#else
     u = cur;
-#if !WM_ANIM_DAMAGE_LIE
     rect_or(&u, &w->anim_prev);
-#endif
+    w->anim_sent = u;
     w->anim_prev = cur;
     dirty_rect(u.x0, u.y0, u.x1 - u.x0, u.y1 - u.y0);
+#endif
 }
 
 static void anim_trace(const char *what, int wi, const struct win *w, int p)
 {
     int x, y, ww, wh, a;
     if (!win_draw_rect(w, &x, &y, &ww, &wh, &a)) return;
-    kprintf("[wm] anim %s win %d p %d rect %d %d %d %d alpha %d home %d %d %d %d\n",
-            what, wi, p, x, y, ww, wh, a, w->x, w->y, w->w, w->h);
+    kprintf("[wm] anim %s win %d p %d rect %d %d %d %d alpha %d home %d %d %d %d"
+            " damage from %d %d %d %d cur %d %d %d %d sent %d %d %d %d\n",
+            what, wi, p, x, y, ww, wh, a, w->x, w->y, w->w, w->h,
+            w->anim_from.x0, w->anim_from.y0, w->anim_from.x1, w->anim_from.y1,
+            w->anim_prev.x0, w->anim_prev.y0, w->anim_prev.x1, w->anim_prev.y1,
+            w->anim_sent.x0, w->anim_sent.y0, w->anim_sent.x1, w->anim_sent.y1);
 }
 
 static void wm_anim_tick(void)
 {
-    uint64_t t = timer_ticks();
+    uint64_t t = time_mono_ms();
 
-    /* 1. THE OPEN POP -- behaviour unchanged, deliberately: it rescales a whole
-     *    window every frame, one whole-screen pass is both cheaper than
-     *    tracking that and impossible to get subtly wrong, and it lasts about a
-     *    sixth of a second. Only its EXPIRY moved here, out of win_open_scale,
-     *    so that reading a window's position stopped mutating it. */
+    /* 1. THE OPEN POP -- the first frame is full because adding a new topmost
+     *    window changes focus and stacking. Every frame after that is only
+     *    (where the scaled window was | where it is), the same damage contract
+     *    minimise and Expose use below. The old path forced all 2,304,000
+     *    pixels at 1920x1200 for every tick of a 0.84x -> 1.0x window whose
+     *    complete swept box is under half that area. That spent most of the
+     *    animation redrawing untouched wallpaper, menu bar and dock, reducing
+     *    the number of distinct positions that could land before 160 ms elapsed.
+     *
+     * Clearing open_t0 BEFORE anim_damage() is the terminal-frame contract:
+     * win_box() then returns the ordinary full-size frame and unions it with
+     * anim_prev, so the exact endpoint is painted once and no near-final scale
+     * is left on screen. The growing rectangles are nested, but the union keeps
+     * this correct if the curve or anchor changes later. */
     for (int i = 0; i < MAXWIN; i++) {
         struct win *w = &wins[i];
         if (!w->used || !w->open_t0) continue;
-        if (t - w->open_t0 >= OPEN_DUR_TICKS) w->open_t0 = 0;
-        else dirty_full();
+        uint64_t e = anim_elapsed_at(w->open_t0, t);
+        if (wm_reduce_motion || e >= OPEN_DUR_MS) w->open_t0 = 0;
+        anim_damage(w);
+        if (w->open_t0)
+            anim_trace("open", i, w, (int)(e * 256 / OPEN_DUR_MS));
     }
 
     /* 2. THE DOCK FLY. */
     for (int i = 0; i < MAXWIN; i++) {
         struct win *w = &wins[i];
         if (!w->used || !w->min_t0) continue;
-        if (t - w->min_t0 >= MINFLY_TICKS) {
+        if (wm_reduce_motion || anim_elapsed_at(w->min_t0, t) >= MINFLY_MS) {
             struct drect s;
             win_fly_sweep(w, &s);
             w->min_t0 = 0;
@@ -4621,9 +4725,22 @@ static void wm_anim_tick(void)
      *    so every frame between the two full ones pays for the windows that
      *    moved and for nothing else. */
     if (ex_t0) {
-        if (t - ex_t0 >= EX_DUR_TICKS) {
-            ex_t0 = 0;
-            dirty_full();          /* entering: the swept area. leaving: the dim. */
+        if (wm_reduce_motion || anim_elapsed_at(ex_t0, t) >= EX_DUR_MS) {
+            if (!ex_on && (mleft || mright || mmiddle)) {
+                /* The windows have reached home, but the selecting press still
+                 * belongs to Expose. Draw that exact terminal frame once and
+                 * retain ex_t0 solely as the modal-capture bit. The first
+                 * all-up packet is consumed by wm_expose_mouse; the next tick
+                 * clears the mode below. */
+                if (!ex_wait_release) {
+                    ex_wait_release = 1;
+                    dirty_full();
+                }
+            } else {
+                ex_t0 = 0;
+                ex_wait_release = 0;
+                dirty_full();      /* entering: the swept area. leaving: the dim. */
+            }
         } else {
             for (int k = 0; k < ex_n; k++) {
                 struct win *w = &wins[ex_wi[k]];
@@ -4644,11 +4761,10 @@ static void wm_hotcorner_tick(void)
     if (!inside) { ex_corner_t0 = 0; ex_corner_armed = 1; return; }
     if (!ex_corner_armed) return;              /* fired already; leave to re-arm */
     if (!ex_corner_t0) {
-        ex_corner_t0 = timer_ticks();
-        if (!ex_corner_t0) ex_corner_t0 = 1;
+        ex_corner_t0 = anim_stamp();
         return;
     }
-    if (timer_ticks() - ex_corner_t0 < EX_DWELL_TICKS) return;
+    if (anim_elapsed(ex_corner_t0) < EX_DWELL_MS) return;
     ex_corner_armed = 0;
     ex_corner_t0 = 0;
     ex_enter();
@@ -4662,18 +4778,11 @@ static void wm_hotcorner_tick(void)
  * `back` is a correct composite of the ENTIRE screen when this returns -- see
  * the invariant at the top of the file. Nothing else in here is allowed to be
  * true only sometimes. */
-void wm_render(void)
+static void wm_render_locked(void)
 {
     reap();
     fb_target(NULL);
     if (!back || !bg) return;              /* wm_init OOM fallback: nothing to composite into */
-
-    /* An open "pop" rescales a whole window every frame and mutates its own
-     * animation state as it reads it; one whole-screen pass per frame is both
-     * cheaper than tracking that and impossible to get subtly wrong. It lasts
-     * about a sixth of a second. */
-    for (int i = 0; i < MAXWIN; i++)
-        if (wins[i].used && wins[i].open_t0) dirty_all = 1;
 
     struct drect r[NDMG];
     int nr = 0, full = dirty_all || ndmg == 0;
@@ -4689,7 +4798,6 @@ void wm_render(void)
     dirty_all = 0; ndmg = 0;
 
     uint64_t t_start = time_mono_ns();
-    int animating = 0;
 #if WM_MIDFRAME_GUARD
     struct drect defer[NDMG];
     int ndef = 0, late = 0;
@@ -4703,9 +4811,8 @@ void wm_render(void)
             continue;
         }
 #endif
-        animating |= render_region(&r[k]);
+        render_region(&r[k]);
     }
-    if (animating) dirty_full();           /* keep compositing until the pop settles */
 #if WM_MIDFRAME_GUARD
     if (late) perf_late++;
     /* Put the held-back rectangles back on the list AFTER the frame, never
@@ -4724,6 +4831,13 @@ void wm_render(void)
     perf_rects += (uint64_t)nr;
     if (full) perf_full++;
     if (dt > perf_comp_ns_max) perf_comp_ns_max = dt;
+}
+
+void wm_render(void)
+{
+    fb_graphics_lock();
+    wm_render_locked();
+    fb_graphics_unlock();
 }
 
 /* ---------- input ---------- */
@@ -4771,6 +4885,7 @@ static int wm_shortcut(int c, int mods)
     if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';      /* Cmd+Shift+W is still close */
 
     switch (c) {
+    case ' ': wm_launch_locked("/assistant.aex", ""); return 1;
     case 'w':
         if (w && w->kind == WK_APP) { enqueue(w, EV_CLOSE, 0, 0); return 1; }
         return 1;                                     /* claimed even with no window */
@@ -4879,8 +4994,7 @@ static void wm_process_key(int c, int mods)
         return;
     }
     if (!g_locked && (mods & EV_MOD_SUPER) && wm_shortcut(c, mods)) return;
-    int wi = g_locked ? greeter_win()
-                      : top_visible();  /* NOT order[norder-1]: that may be minimised */
+    int wi = wm_keyboard_focus();
     if (wi < 0) return;
     struct win *w = &wins[wi];
     if (w->kind == WK_APP) {
@@ -4982,7 +5096,7 @@ static int titlebar_double_click(int wi, int x, int y)
  * The greeter is composited AT 0,0 FILLING THE SCREEN (see render_region), so
  * its window-local coordinates are the screen's -- w->x/w->y are not consulted,
  * because while locked they are not where the window is drawn. */
-static void wm_locked_mouse(const struct inev *in)
+static void wm_locked_mouse(const struct inputq_event *in)
 {
     int x = in->x, y = in->y;
     int moved = (x != mx || y != my);
@@ -4992,11 +5106,11 @@ static void wm_locked_mouse(const struct inev *in)
     int gw = greeter_win();
     if (gw >= 0 && wins[gw].used && wins[gw].kind == WK_APP) {
         struct win *w = &wins[gw];
-        if (in->l && !mleft) enqueue_input(w, EV_MOUSE,    PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
-        if (!in->l && mleft) enqueue_input(w, EV_MOUSE_UP, PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
+        if (in->left && !mleft) enqueue_input(w, EV_MOUSE,    PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
+        if (!in->left && mleft) enqueue_input(w, EV_MOUSE_UP, PT(x), PT(y), in->mods, EV_BTN_LEFT, 0);
         if (moved)           enqueue_input(w, EV_MOUSE_MOVE, PT(x), PT(y), in->mods, EV_BTN_NONE, 0);
     }
-    mleft = in->l; mright = in->r; mmiddle = in->m;
+    mleft = in->left; mright = in->right; mmiddle = in->middle;
     set_cursor(CUR_ARROW);
     /* Without a cursor plane the arrow lives in the composite, so a moved
      * pointer is damage -- exactly as on the unlocked path. */
@@ -5016,7 +5130,7 @@ static void wm_locked_mouse(const struct inev *in)
  * motion. An app has no idea Expose exists and its window is not where the app
  * thinks it is, so a click delivered in window-local coordinates would land on
  * whatever is a quarter of the way across its canvas. */
-static void wm_expose_mouse(const struct inev *in)
+static void wm_expose_mouse(const struct inputq_event *in)
 {
     int x = in->x, y = in->y;
     int moved = (x != mx || y != my);
@@ -5033,7 +5147,7 @@ static void wm_expose_mouse(const struct inev *in)
         }
         if (!hw_cursor) { dirty_cursor(omx, omy); dirty_cursor(x, y); }
     }
-    if (in->l && !mleft) {
+    if (in->left && !mleft) {
         int h = ex_hover_at(x, y);
         /* A window: bring it to the front and leave. Anywhere else -- the dimmed
          * wallpaper, the dock, the menu bar -- leave with the stacking exactly
@@ -5042,14 +5156,14 @@ static void wm_expose_mouse(const struct inev *in)
          * "somewhere else" for a click to usefully mean anything else. */
         ex_leave(h >= 0 ? ex_wi[h] : -1);
     }
-    mleft = in->l; mright = in->r; mmiddle = in->m;
+    mleft = in->left; mright = in->right; mmiddle = in->middle;
     set_cursor(CUR_ARROW);
 }
 
 /* THE ABOUT / SHUT DOWN / RESTART PANEL owns the pointer while it is up, same
  * capture idiom as Expose: a click is a button, or it is a dismissal, and
  * nothing under the panel ever sees it. */
-static void wm_overlay_mouse(const struct inev *in)
+static void wm_overlay_mouse(const struct inputq_event *in)
 {
     int x = in->x, y = in->y;
     int moved = (x != mx || y != my);
@@ -5066,7 +5180,7 @@ static void wm_overlay_mouse(const struct inev *in)
             dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
         }
     }
-    if (in->l && !mleft) {
+    if (in->left && !mleft) {
         if (g_overlay == OV_ABOUT) {
             overlay_close();                    /* an About box has nothing to click but "away" */
         } else {
@@ -5077,7 +5191,7 @@ static void wm_overlay_mouse(const struct inev *in)
             /* hb==0 (Cancel) or hb==-1 (click outside): already dismissed above. */
         }
     }
-    mleft = in->l; mright = in->r; mmiddle = in->m;
+    mleft = in->left; mright = in->right; mmiddle = in->middle;
     set_cursor(CUR_ARROW);
 }
 
@@ -5085,7 +5199,7 @@ static void wm_overlay_mouse(const struct inev *in)
  * the one that was open, or -- via the hover switch below -- land on the new
  * one that is already showing), an item, or "away", and nothing else can be
  * clicked while a menu covers it. */
-static void wm_menu_mouse(const struct inev *in)
+static void wm_menu_mouse(const struct inputq_event *in)
 {
     int x = in->x, y = in->y;
     int moved = (x != mx || y != my);
@@ -5119,7 +5233,7 @@ static void wm_menu_mouse(const struct inev *in)
         dirty_rect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
     }
 
-    if (in->l && !mleft) {
+    if (in->left && !mleft) {
         if (hit_title >= 0 && hit_title == was_open) {
             menu_close();                            /* the OPEN title, clicked again: toggle off */
         } else if (hit_title >= 0) {
@@ -5130,17 +5244,17 @@ static void wm_menu_mouse(const struct inev *in)
             else menu_close();                       /* not a title, not a live item: dismiss */
         }
     }
-    mleft = in->l; mright = in->r; mmiddle = in->m;
+    mleft = in->left; mright = in->right; mmiddle = in->middle;
     set_cursor(CUR_ARROW);
 }
 
-static void wm_process_mouse(const struct inev *in)
+static void wm_process_mouse(const struct inputq_event *in)
 {
     if (g_locked) { wm_locked_mouse(in); return; }
     if (ex_state()) { wm_expose_mouse(in); return; }
     if (g_overlay != OV_NONE) { wm_overlay_mouse(in); return; }
     if (g_menu_open >= 0) { wm_menu_mouse(in); return; }
-    int x = in->x, y = in->y, left = in->l, right = in->r, middle = in->m;
+    int x = in->x, y = in->y, left = in->left, right = in->right, middle = in->middle;
     int mods = in->mods;
     int moved = (x != mx || y != my);
     int old_hov = dock_hover_at(mx, my);   /* before the pointer moves */
@@ -5182,6 +5296,32 @@ static void wm_process_mouse(const struct inev *in)
     if (left && !mleft && notify_click(x, y)) {
         mleft = left; mright = right; mmiddle = middle;
         return;
+    }
+    static int ime_mouse_capture;
+    if (ime_mouse_capture) {
+        if (!left) ime_mouse_capture = 0;
+        mleft = left; mright = right; mmiddle = middle;
+        return;
+    }
+    if (left && !mleft) {
+        int wi = top_visible();
+        if (wi >= 0 && wins[wi].kind == WK_APP) {
+            uint32_t cps[IME_UI_MAXCP];
+            int nc;
+            if (ime_ui_available() && in_rect(x, y, menu_ime_x, 0, menu_ime_w, MBH)) {
+                /* Clicking 中/EN is an accessible alternative to a host-
+                 * intercepted keyboard chord. The same IME policy handles both. */
+                nc = ime_ui_key(wi, ' ', IME_TOGGLE_MOD, cps, IME_UI_MAXCP);
+            } else nc = ime_ui_click(wi, x, y, cps, IME_UI_MAXCP);
+            if (nc >= 0) {
+                for (int i = 0; i < nc; i++)
+                    enqueue_input(&wins[wi], EV_KEY, (int)cps[i], 0, 0, EV_BTN_NONE, 0);
+                if (nc) dirty_win_content(&wins[wi]);
+                ime_mouse_capture = 1;
+                mleft = left; mright = right; mmiddle = middle;
+                return;
+            }
+        }
     }
     if (left && !mleft) {
         /* The dock is chrome drawn ON TOP of every window (hover tooltip already
@@ -5585,6 +5725,7 @@ void wm_init(void)
      * settings_get_int() range-checks, so a settings file saying `ui.dark =
      * banana` lands on 0 here and says so on the serial log. */
     g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
+    wm_reduce_motion = settings_get_int("ui.reduce_motion", 0) != 0;
     /* The one line that says what "the resolution" now means. A test that wants
      * to assert the scale reads this off the serial log; a human reading a
      * screenshot argument needs it to know whether 1920x1200 is four times the
@@ -5734,6 +5875,7 @@ static void wm_geom_report(void)
 static void wm_perf_report(void)
 {
     static uint64_t next_ms, last_comp, last_mot, last_torn, last_def;
+    static uint64_t last_evdrop, last_evevict, last_indrop, last_inevict, last_inback;
     uint64_t ms = time_mono_ms();
     if (ms < next_ms) return;
     next_ms = ms + 1000;
@@ -5744,10 +5886,21 @@ static void wm_perf_report(void)
      * line that says a window was composited half drawn. */
     uint64_t dt_torn = perf_torn - last_torn, dt_def = perf_defer - last_def;
     last_torn = perf_torn; last_def = perf_defer;
-    if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0) return;   /* idle */
+    struct inputq_stats iqstats;
+    inputq_get_stats(&inq, &iqstats);
+    uint64_t evdrop = evq_dropped(), evevict = evq_evicted_motion();
+    uint64_t indrop = iqstats.dropped_motion + iqstats.dropped_semantic;
+    int queue_activity = evdrop != last_evdrop || evevict != last_evevict ||
+        indrop != last_indrop || iqstats.evicted_motion != last_inevict ||
+        iqstats.batches_with_backlog != last_inback;
+    last_evdrop = evdrop; last_evevict = evevict; last_indrop = indrop;
+    last_inevict = iqstats.evicted_motion;
+    last_inback = iqstats.batches_with_backlog;
+    if (dm == 0 && dc <= 20 && dt_torn == 0 && dt_def == 0 && !queue_activity) return;
     kprintf("[wm] perf t=%lu composites=%lu ns=%lu max=%lu motions=%lu curmoves=%lu "
             "curns=%lu full=%lu rects=%lu cpx=%lu fpx=%lu presns=%lu "
-            "torn=%lu defer=%lu late=%lu drawmax=%lu evdrop=%lu\n",
+            "torn=%lu defer=%lu late=%lu drawmax=%lu evdrop=%lu evevict=%lu "
+            "inmerge=%lu inevict=%lu indrop=%lu/%lu inback=%lu inhwm=%lu sdk_draws=%lu\n",
             (unsigned long)ms, (unsigned long)perf_composites,
             (unsigned long)perf_comp_ns, (unsigned long)perf_comp_ns_max,
             (unsigned long)perf_motions, (unsigned long)perf_cursor_moves,
@@ -5757,21 +5910,29 @@ static void wm_perf_report(void)
             (unsigned long)perf_present_ns,
             (unsigned long)perf_torn, (unsigned long)perf_defer,
             (unsigned long)perf_late, (unsigned long)perf_drawmax,
-            /* EVENTS LOST TO A FULL RING, and evq.h already says this is "the
-             * number that has to stay 0 -- a dropped click is a click the user
-             * made and the machine did not act on". It was counted and
-             * reachable only through the sysinfo string, which no serial log
-             * carries -- so on the one occasion it was wanted (six Ctrl+L
-             * chords aimed at a heavy page, none of which reached the browser)
-             * the record could not say whether the keys had been dropped or
-             * never delivered. A counter you cannot read back is a comment. */
-            (unsigned long)evq_dropped());
+            (unsigned long)evdrop, (unsigned long)evevict,
+            (unsigned long)iqstats.coalesced, (unsigned long)iqstats.evicted_motion,
+            (unsigned long)iqstats.dropped_motion, (unsigned long)iqstats.dropped_semantic,
+            (unsigned long)iqstats.batches_with_backlog,
+            (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches());
+    kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu\n",
+            wm_lock_calls, wm_lock_ns, wm_lock_max_ns);
 }
 
 /* The desktop proper. Called at boot on a machine with no accounts, and on the
  * unlock otherwise -- once, ever, which is what g_desktop_started is for: the
  * session can be observed to have changed on many consecutive passes of the
  * loop below and the Finder must be launched on exactly one of them. */
+/* The existing WM loop supervises this one system service after reaping.
+ * Tasks themselves live in userland and survive a service process restart. */
+static void wm_agent_service(void)
+{
+    static int pid; static uint64_t retry;
+    uint64_t now=timer_ticks(); if(now<retry)return; retry=now+500;
+    struct proc p; if(pid>0&&proc_snapshot(pid,&p)&&p.state==PROC_RUNNING)return;
+    char *argv[]={"/bin/agentd",0};
+    if(vfs_size(argv[0])>0)pid=proc_spawn_service(argv[0],argv);
+}
 static void wm_desktop_start(void)
 {
     if (g_desktop_started) return;
@@ -5826,6 +5987,7 @@ static void wm_check_unlock(void)
      * here is what makes "a user's dark mode survives a reboot" visible on the
      * first frame instead of on the next toggle. */
     g_ui_dark = settings_get_int("ui.dark", 0) ? 1 : 0;
+    wm_reduce_motion = settings_get_int("ui.reduce_motion", 0) != 0;
     draw_background();
     { int count = W * H; blit(bg, back, count); }
 
@@ -5842,11 +6004,13 @@ void wm_run(void)
     sched_init();
     smp_mark_sched_ready();   /* release parked APs into the scheduler now the ring exists */
 
-    /* SMP BKL discipline: the WM is a ring-0 thread that does kernel work (the
+    /* Historical SMP BKL discipline: the WM is a ring-0 thread that does kernel work (the
      * compositor) directly, so it must hold the BKL while doing it (vs APs that
-     * touch fb via syscalls). Enter the kernel-held state. */
-    spin_lock(&g_bkl);
+     * touch fb via syscalls). Enter the kernel-held state.
+     * Correction: in_kernel now only prevents involuntary kernel preemption;
+     * wm_lock owns GUI state and the rest of the kernel runs independently. */
     this_cpu()->in_kernel = 1;
+    wm_state_lock();
 
     /* The WM runs as a ring-0 thread; it MUST keep interrupts enabled so the
      * timer/mouse/keyboard keep firing even when no app is running (otherwise
@@ -5906,8 +6070,11 @@ void wm_run(void)
      * still see the shell banner, one exec later. */
     { char *login_argv[] = { "login", 0 }; proc_spawn("/bin/login", login_argv); }
 
+    wm_state_unlock();
     uint64_t last = 0;
     for (;;) {
+        wm_state_lock();
+        wm_external_damage();
 #ifdef WM_CHURN_STRESS
         /* Churn stress (make CHURN=1): hammer the real wm_launch + EV_CLOSE
          * close path -- the repro harness for the app-churn heap corruption.
@@ -5930,23 +6097,23 @@ void wm_run(void)
         }
 #endif
         wm_check_unlock();            /* did somebody authenticate? (greeter OR console) */
-        wm_drain_input();             /* process ALL keyboard/mouse input here, NOT in the IRQ */
+        wm_sync_focus();
+        int input_backlog = wm_drain_input(); /* one bounded keyboard/mouse batch */
         /* Canvases catch up with frames HERE, once per pass -- not inside the
-         * drain. A drain can hand us twenty pointer packets and every one of
+         * drain. A drain can hand us sixteen pointer packets and every one of
          * them moves the frame; reallocating a 9 MB canvas twenty times to
          * arrive at one size is the difference between a resize that is
          * throttled and a resize that is unbounded. See RESIZE_APPLY_MS. */
         wm_apply_sizes();
         wm_pointer_sync();            /* one cursor-plane command per loop, not per packet */
-        proc_reap();                  /* free zombie processes (GUI apps + orphans) */
+        wm_state_unlock();
+        proc_reap();                  /* no WM -> process-table lock nesting */
+        wm_agent_service();
+        wm_state_lock();
         notify_tick();                /* WM-HOOK 5/6: expire notifications (see notify.h) */
-        /* net busy watchdog: a fetch legitimately blocks for seconds, but if its
-         * thread died mid-fetch the flag is stuck -- expire it after 100 s. */
-        if (g_net_busy && net_busy_t0 && timer_ticks() - net_busy_t0 > 10000) {
-            g_net_busy = 0; net_busy_t0 = 0;
-            serial_puts("[wm] net_busy watchdog expired\n");
-        }
-        if (!g_net_busy) net_poll();  /* drive RX -- unless a blocking fetch owns the net */
+        wm_state_unlock();
+        net_poll();                   /* independent network domain, also during fetch */
+        wm_state_lock();
         uint64_t now = timer_ticks();
         /* Composite on DAMAGE, and on nothing else. The ~2 Hz tick no longer
          * asks for a frame -- it says what changed (the clock, in the menu bar)
@@ -5954,7 +6121,19 @@ void wm_run(void)
          * therefore repaints a 24-point strip twice a second instead of the
          * whole screen, and there is no periodic full repaint left to quietly
          * cover for a caller that under-reported its damage. */
-        if (now - last >= 50) { last = now; dirty_menubar(); }
+        if (now - last >= 50) {
+            last = now; dirty_menubar();
+            /* Reuse the existing menu-clock wake. A preference change settles
+             * active transitions via their ordinary terminal damage path, and
+             * wakes sleeping apps once so controls and media queries update. */
+            int reduced = settings_get_int("ui.reduce_motion", 0) != 0;
+            if (reduced != wm_reduce_motion) {
+                wm_reduce_motion = reduced;
+                for (int i = 0; i < MAXWIN; i++)
+                    if (wins[i].used) enqueue(&wins[i], EV_THEME, g_ui_dark, 0);
+                dirty_dock();
+            }
+        }
         /* Animations advance HERE, before the frame that shows them, and they
          * are what asks for that frame -- exactly the shape of the dock bounce
          * this loop already ran (draw_dock re-dirties itself while a bounce is
@@ -5962,32 +6141,21 @@ void wm_run(void)
          * this line, requests no damage, and goes back to sleep on the hlt. */
         wm_hotcorner_tick();
         wm_anim_tick();
+        /* Animation/hot-corner changes can transfer keyboard ownership without
+         * an input event. Notify apps and settle IME before damage is captured. */
+        wm_sync_focus();
+        wm_external_damage();
         if (dirty) {
             dirty = 0;
             wm_render();
         }
         wm_perf_report();
         wm_geom_report();     /* window frames, when they stop moving */
-        /* Idle until the next interrupt instead of spinning schedule(): the timer
-         * IRQ (100 Hz) preempts + round-robins the app threads, and mouse/keyboard
-         * IRQs wake us immediately. This stops the whole system busy-spinning --
-         * critical under QEMU's TCG, where every emulated spin-iteration costs host
-         * CPU. `sti; hlt` is the race-free idle idiom.
-         * SMP: DROP the BKL around the idle hlt so a timer IRQ on the BSP arrives
-         * NON-nested -> acquires the BKL -> schedule()s an app thread (which runs,
-         * eventually preempted back here). The compositor work above runs holding
-         * the BKL (safe vs APs touching fb via syscalls). */
-        /* BOTH the release window (in_kernel=0 .. spin_unlock) and the re-acquire
-         * window (spin_lock .. in_kernel=1) must run with IF=0, or a timer IRQ in
-         * either gap reads nested=0 and re-acquires the BKL this core holds ->
-         * self-deadlock (the flaky whole-system freeze). `hlt` returns via iretq
-         * with IF=1, so cli AFTER hlt too; re-enable IF for the loop body at the end. */
-        __asm__ volatile ("cli");
-        this_cpu()->in_kernel = 0;
-        spin_unlock(&g_bkl);
-        __asm__ volatile ("sti\n\thlt\n\tcli");
-        spin_lock(&g_bkl);
-        this_cpu()->in_kernel = 1;
-        __asm__ volatile ("sti");
+        wm_state_unlock();
+        /* Interrupts only enqueue input. A batch that left backlog starts a new
+         * full desktop pass immediately; otherwise the final locked recheck
+         * catches input that arrived while this pass rendered. Park with no
+         * display/domain lock only when there is genuinely no queued input. */
+        if (!input_backlog && !inputq_pending(&inq)) sched_poll_wait();
     }
 }

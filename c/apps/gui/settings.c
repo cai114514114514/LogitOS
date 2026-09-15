@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 
 /* ============================================================================
@@ -52,6 +55,7 @@ static int tab;
 
 /* ---- live values, loaded from the store at start ---- */
 static int  v_dark;
+static int  v_reduce_motion;
 static int  v_accent_h, v_accent_s, v_accent_l;   /* the accent, as HSL */
 static char v_wallpaper[LOGIT_SET_VALMAX];
 static int  v_restore;
@@ -166,6 +170,7 @@ static unsigned accent_now(void) { return aui_hsl(v_accent_h, v_accent_s, v_acce
 static void load_all(void)
 {
     v_dark    = setting_int("ui.dark", 0) ? 1 : 0;
+    v_reduce_motion = setting_int("ui.reduce_motion", 0) != 0;
     v_restore = setting_int("desktop.restore_session", 1) ? 1 : 0;
     v_dhcp    = setting_int("net.dhcp", 1) ? 1 : 0;
     rgb_to_hsl((unsigned)setting_int("ui.accent", 0x5E96FF),
@@ -270,6 +275,7 @@ static void apply_all(void)
 {
     char b[24];
     itoa_(v_dark, b);           setting_set("ui.dark", b, 0);
+    itoa_(v_reduce_motion, b); setting_set("ui.reduce_motion", b, 0);
     itoa_(v_restore, b);        setting_set("desktop.restore_session", b, 0);
     itoa_(v_dhcp, b);           setting_set("net.dhcp", b, 0);
     hex6(accent_now(), b);      setting_set("ui.accent", b, 0);
@@ -376,6 +382,13 @@ static void page_appearance(struct aui_rect body)
     aui_button_ex(pv.x + AUI_PAD, pv.y + AUI_SP(6), 96, AUI_H_CTL, "Primary", AUI_V_PRIMARY, 1);
     aui_button_ex(pv.x + AUI_PAD + 104, pv.y + AUI_SP(6), 96, AUI_H_CTL, "Secondary", AUI_V_SECONDARY, 1);
     aui_badge(pv.x + AUI_PAD + 216, pv.y + AUI_SP(7), "Accent", acc);
+    /* The preview card has room beside its sample controls. Keep its height:
+     * adding a row to the main card would overlap Apply at the minimum size. */
+    aui_text_sz(pv.x + pv.w - 182, pv.y + AUI_SP(8), "Reduce motion", AUI_TEXT, AUI_FS_CAPTION);
+    if(aui_toggle(pv.x + pv.w - AUI_PAD - 48,pv.y + AUI_SP(6),&v_reduce_motion,1)) {
+        setting_set("ui.reduce_motion",v_reduce_motion?"1":"0",0);
+        dirty=1;
+    }
 }
 
 static void page_desktop(struct aui_rect body)
@@ -585,6 +598,7 @@ void app_main(void)
     for (;;) {
         int drew = 0;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) app_exit(0);
             aui_feed(&e);
             if (aui_want_repaint()) { frame(); drew = 1; }
@@ -626,3 +640,7 @@ void app_main(void)
         }
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{static char b[256];int n=snprintf(b,sizeof b,"Appearance dark=%d; restore desktop=%d; DHCP=%d; wallpaper=%s; unsaved=%d",v_dark,v_restore,v_dhcp,v_wallpaper,dirty);*bytes=(unsigned)n;return b;}

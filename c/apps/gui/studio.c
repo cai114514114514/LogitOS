@@ -1,3 +1,6 @@
+#include "../../lib/agent/gui.h"
+#include <stdio.h>
+#include <string.h>
 #include "aui.h"
 #include "complete.h"
 
@@ -305,6 +308,7 @@ void app_main(void)
         struct logit_event e;
         int changed = 0;
         while (poll_event(&e)) {
+            if(ag_gui_event(&e))continue;
             if (e.type == EV_CLOSE) { if (run_fd >= 0) { sys_close(run_fd); if (run_pid >= 0) sys_waitpid(run_pid, 0); } app_exit(0); }
             if (e.type == EV_MOUSE) {
                 int mx = (int)e.a, my = (int)e.b;
@@ -360,3 +364,7 @@ void app_main(void)
         wait_idle(100);   /* was sys_yield(): a spin. input-driven */
     }
 }
+
+/* Published on Ctrl+L; ownership of the live data remains with this app. */
+const char *ag_gui_context(unsigned *bytes)
+{*bytes=(unsigned)tlen;return text;}
