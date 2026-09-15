@@ -3,7 +3,6 @@ ORG 0
 
 %define COM1                 0x3f8
 %define MMAP_BUFFER          0x5000
-%define MMAP_ENTRY_BYTES     24
 %define MMAP_MAX_ENTRIES     128
 %define VBE_INFO             0x6000
 %define VBE_MODE_INFO        0x6200
@@ -31,6 +30,7 @@ ORG 0
 %define NATIVE_CONTROL_PT    0x01ffc000
 
 %include "logit_boot.inc"
+%define MMAP_ENTRY_BYTES     LOGIT_BOOT_MMAP_ENTRY_SIZE
 %define BOOT_TAG_MMAP        LOGIT_BOOT_TAG_MEMORY_MAP
 %define BOOT_TAG_FRAMEBUFFER LOGIT_BOOT_TAG_FRAMEBUFFER
 %define BOOT_TAG_ACPI_OLD    LOGIT_BOOT_TAG_ACPI_OLD
@@ -236,7 +236,7 @@ collect_e820:
 %endif
     cmp bp, MMAP_MAX_ENTRIES
     jae .overflow
-    mov dword [es:di + 20], 1
+    mov dword [es:di + LOGIT_BOOT_MMAP_ENTRY_RESERVED_OFFSET], 1
     mov eax, 0xe820
     mov edx, 0x534d4150
     mov ecx, MMAP_ENTRY_BYTES
@@ -249,7 +249,7 @@ collect_e820:
     ; E820 may return only the original 20-byte structure. Native entries have
     ; a fixed 24-byte stride here, so the non-firmware tail is deterministically
     ; zero rather than leaking the request attribute into the block.
-    mov dword [es:di + 20], 0
+    mov dword [es:di + LOGIT_BOOT_MMAP_ENTRY_RESERVED_OFFSET], 0
     inc bp
     add di, MMAP_ENTRY_BYTES
     test ebx, ebx
@@ -506,30 +506,30 @@ build_boot_info:
     xor ax, ax
     mov es, ax
     mov di, BOOT_INFO
-    mov dword [es:di], LOGIT_BOOT_MAGIC
+    mov dword [es:di + LOGIT_BOOT_HEADER_MAGIC_OFFSET], LOGIT_BOOT_MAGIC
 %ifdef LOADER_NEGCTL_NATIVE_BAD_VERSION
-    mov word [es:di + 4], LOGIT_BOOT_VERSION + 1
+    mov word [es:di + LOGIT_BOOT_HEADER_VERSION_OFFSET], LOGIT_BOOT_VERSION + 1
 %else
-    mov word [es:di + 4], LOGIT_BOOT_VERSION
+    mov word [es:di + LOGIT_BOOT_HEADER_VERSION_OFFSET], LOGIT_BOOT_VERSION
 %endif
-    mov word [es:di + 6], LOGIT_BOOT_HEADER_SIZE
-    mov dword [es:di + 8], LOGIT_BOOT_IDENTITY_MAP_BYTES
-    mov dword [es:di + 12], 0
-    mov dword [es:di + 16], 0
-    mov dword [es:di + 20], 0
+    mov word [es:di + LOGIT_BOOT_HEADER_HEADER_SIZE_OFFSET], LOGIT_BOOT_HEADER_SIZE
+    mov dword [es:di + LOGIT_BOOT_HEADER_IDENTITY_MAP_BYTES_OFFSET], LOGIT_BOOT_IDENTITY_MAP_BYTES
+    mov dword [es:di + LOGIT_BOOT_HEADER_IDENTITY_MAP_BYTES_OFFSET + 4], 0
+    mov dword [es:di + LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET], 0
+    mov dword [es:di + LOGIT_BOOT_HEADER_RESERVED_OFFSET], 0
     add di, LOGIT_BOOT_HEADER_SIZE
 
     ; Memory-map tag: 16-byte header followed by the firmware entries exactly
     ; as returned.  The chosen 128-entry ceiling plus ACPI/VBE tags fits within
     ; the explicit BOOT_INFO_LIMIT; overflow is fatal instead of truncating.
-    mov dword [es:di], BOOT_TAG_MMAP
+    mov dword [es:di + LOGIT_BOOT_TAG_TYPE_OFFSET], BOOT_TAG_MMAP
     movzx eax, word [mmap_count]
     imul eax, MMAP_ENTRY_BYTES
-    add eax, 16
-    mov [es:di + 4], eax
-    mov dword [es:di + 8], MMAP_ENTRY_BYTES
-    mov dword [es:di + 12], 0
-    add di, 16
+    add eax, LOGIT_BOOT_MMAP_TAG_HEADER_SIZE
+    mov [es:di + LOGIT_BOOT_TAG_SIZE_OFFSET], eax
+    mov dword [es:di + LOGIT_BOOT_MMAP_TAG_ENTRY_SIZE_OFFSET], MMAP_ENTRY_BYTES
+    mov dword [es:di + LOGIT_BOOT_MMAP_TAG_ENTRY_VERSION_OFFSET], 0
+    add di, LOGIT_BOOT_MMAP_TAG_HEADER_SIZE
     mov si, MMAP_BUFFER
     mov cx, [mmap_count]
 .copy_mmap_entry:
@@ -552,15 +552,15 @@ build_boot_info:
     mov al, [fs:si + 15]
     cmp al, 2
     jb .old_acpi
-    mov dword [es:di], BOOT_TAG_ACPI_NEW
+    mov dword [es:di + LOGIT_BOOT_TAG_TYPE_OFFSET], BOOT_TAG_ACPI_NEW
     jmp .acpi_header
 .old_acpi:
-    mov dword [es:di], BOOT_TAG_ACPI_OLD
+    mov dword [es:di + LOGIT_BOOT_TAG_TYPE_OFFSET], BOOT_TAG_ACPI_OLD
 .acpi_header:
     movzx eax, word [rsdp_length]
-    add eax, 8
-    mov [es:di + 4], eax
-    add di, 8
+    add eax, LOGIT_BOOT_TAG_SIZE
+    mov [es:di + LOGIT_BOOT_TAG_SIZE_OFFSET], eax
+    add di, LOGIT_BOOT_TAG_SIZE
     mov cx, [rsdp_length]
 .copy_rsdp:
     mov al, [fs:si]
@@ -573,50 +573,50 @@ build_boot_info:
 .maybe_framebuffer:
     cmp byte [vbe_present], 1
     jne .end_tag
-    mov dword [es:di], BOOT_TAG_FRAMEBUFFER
-    mov dword [es:di + 4], 38
+    mov dword [es:di + LOGIT_BOOT_TAG_TYPE_OFFSET], BOOT_TAG_FRAMEBUFFER
+    mov dword [es:di + LOGIT_BOOT_TAG_SIZE_OFFSET], LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE
     mov eax, [vbe_addr]
-    mov [es:di + 8], eax
-    mov dword [es:di + 12], 0
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_ADDR_OFFSET], eax
+    mov dword [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_ADDR_OFFSET + 4], 0
     movzx eax, word [vbe_pitch]
-    mov [es:di + 16], eax
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_PITCH_OFFSET], eax
     movzx eax, word [vbe_width]
-    mov [es:di + 20], eax
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_WIDTH_OFFSET], eax
     movzx eax, word [vbe_height]
-    mov [es:di + 24], eax
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_HEIGHT_OFFSET], eax
     mov al, [vbe_bpp]
-    mov [es:di + 28], al
-    mov byte [es:di + 29], 1
-    mov word [es:di + 30], 0
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_BPP_OFFSET], al
+    mov byte [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_TYPE_OFFSET], 1
+    mov word [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_RESERVED_OFFSET], 0
     mov al, [vbe_red_pos]
-    mov [es:di + 32], al
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_RED_POSITION_OFFSET], al
     mov al, [vbe_red_size]
-    mov [es:di + 33], al
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_RED_SIZE_OFFSET], al
     mov al, [vbe_green_pos]
-    mov [es:di + 34], al
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_POSITION_OFFSET], al
     mov al, [vbe_green_size]
-    mov [es:di + 35], al
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_SIZE_OFFSET], al
     mov al, [vbe_blue_pos]
-    mov [es:di + 36], al
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_POSITION_OFFSET], al
     mov al, [vbe_blue_size]
-    mov [es:di + 37], al
-    add di, 38
+    mov [es:di + LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_SIZE_OFFSET], al
+    add di, LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE
     call align_di_8
 
 .end_tag:
-    cmp di, BOOT_INFO_LIMIT - 8
+    cmp di, BOOT_INFO_LIMIT - LOGIT_BOOT_TAG_SIZE
     ja .overflow
-    mov dword [es:di], BOOT_TAG_END
-    mov dword [es:di + 4], 8
-    add di, 8
+    mov dword [es:di + LOGIT_BOOT_TAG_TYPE_OFFSET], BOOT_TAG_END
+    mov dword [es:di + LOGIT_BOOT_TAG_SIZE_OFFSET], LOGIT_BOOT_TAG_SIZE
+    add di, LOGIT_BOOT_TAG_SIZE
     movzx eax, di
     sub eax, BOOT_INFO
 %ifdef LOADER_NEGCTL_NATIVE_TRUNCATED
-    sub eax, 8
+    sub eax, LOGIT_BOOT_TAG_SIZE
     mov si, native_truncated_control
     call serial_print
 %endif
-    mov [es:BOOT_INFO + 16], eax
+    mov [es:BOOT_INFO + LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET], eax
     clc
     ret
 .overflow:

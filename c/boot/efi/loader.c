@@ -329,7 +329,7 @@ static struct elf64_phdr phdrs[MAX_PHNUM];
 #define BOOT_TAG_ACPI_OLD    LOGIT_BOOT_TAG_ACPI_OLD
 #define BOOT_TAG_ACPI_NEW    LOGIT_BOOT_TAG_ACPI_NEW
 #define BOOT_TAG_END         LOGIT_BOOT_TAG_END
-_Static_assert(sizeof(struct logit_boot_framebuffer_tag) == 38,
+_Static_assert(sizeof(struct logit_boot_framebuffer_tag) == LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE,
                "native framebuffer wire size drifted");
 
 struct infobuf {
@@ -697,9 +697,9 @@ static void build_fb_tag(struct infobuf *ib)
         return;
     }
 
-    struct logit_boot_framebuffer_tag *t = ib_take(ib, 38);
+    struct logit_boot_framebuffer_tag *t = ib_take(ib, sizeof(*t));
     t->tag.type = BOOT_TAG_FRAMEBUFFER;
-    t->tag.size = 38;                   /* 32 of header+geometry, 6 of colour */
+    t->tag.size = sizeof(*t);           /* 32 of header+geometry, 6 of colour */
     t->addr   = gop->Mode->FrameBufferBase;
     /* PixelsPerScanLine is in PIXELS and may exceed the visible width (the
      * scanline is padded); fb.c's `pitch` is in BYTES -- it strides fb_mem with
@@ -1098,10 +1098,11 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
             sputs("[efi] CONTROL ExitBootServices before native block complete\n");
 #else
         UINTN n_desc = map_size / desc_size;
-        struct logit_boot_mmap_tag *mm = ib_take(&ib, 16 + n_desc * 24);
+        struct logit_boot_mmap_tag *mm =
+            ib_take(&ib, sizeof(*mm) + n_desc * sizeof(mm->entries[0]));
         mm->tag.type = BOOT_TAG_MMAP;
-        mm->tag.size = (UINT32)(16 + n_desc * 24);
-        mm->entry_size = 24;        /* pmm.c:236 refuses anything smaller */
+        mm->tag.size = (UINT32)(sizeof(*mm) + n_desc * sizeof(mm->entries[0]));
+        mm->entry_size = sizeof(mm->entries[0]); /* pmm.c refuses smaller */
         mm->entry_version = 0;
 
         UINT64 avail = 0;
@@ -1141,9 +1142,9 @@ void efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 
         /* End tag, then the total size -- both inside the loop, because a retry
          * with a longer map moves both. */
-        struct logit_boot_tag *end = ib_take(&ib, 8);
+        struct logit_boot_tag *end = ib_take(&ib, sizeof(*end));
         end->type = BOOT_TAG_END;
-        end->size = 8;
+        end->size = sizeof(*end);
         native_header->total_size = (UINT32)ib.off;
 
         if (attempt == 0) {

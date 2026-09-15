@@ -468,9 +468,14 @@ $(PRODUCT_BIOS_PRELOAD): c/boot/bios/preload.asm
 	@mkdir -p $(PRODUCT_BIOS_DIR)
 	$(ASM) -f bin -o $@ $<
 
-$(PRODUCT_BIOS_ABI_INC): include/abi/logit_boot.h
+# The generator is an INPUT, not just a tool, and it is SHARED with
+# tests/bootself.mk. These were two awk lines with two different regular
+# expressions for the same constants until 2026-09-15, when one produced 21
+# and the other 50 from the same header and the product ISO stopped
+# assembling. One jar, two doors.
+$(PRODUCT_BIOS_ABI_INC): include/abi/logit_boot.h tools/gen_boot_inc.py Makefile
 	@mkdir -p $(PRODUCT_BIOS_DIR)
-	@awk '/^#define LOGIT_BOOT_(MAGIC|VERSION|HEADER_SIZE|IDENTITY_MAP_BYTES|IDENTITY_PAGE_BYTES|BASE_PAGE_BYTES|TAG_|MEMORY_)/ { print "%define " $$2 " " $$3 }' $< >$@
+	@python3 tools/gen_boot_inc.py $< -o $@
 
 $(PRODUCT_BIOS_LOADER): c/boot/bios/loader.asm $(PRODUCT_BIOS_ABI_INC)
 	@mkdir -p $(PRODUCT_BIOS_DIR)

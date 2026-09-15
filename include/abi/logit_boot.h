@@ -35,6 +35,45 @@
 #define LOGIT_BOOT_IDENTITY_PAGE_BYTES   0x00200000
 #define LOGIT_BOOT_BASE_PAGE_BYTES       0x00001000
 
+/* The BIOS loader cannot include C declarations.  These wire offsets are
+ * therefore named here, emitted into its generated NASM include, and checked
+ * against the packed structs below.  Keeping the numbers beside the C shape
+ * means a field move cannot leave an old, plausible displacement hidden in
+ * loader.asm; tests/bootself.mk also verifies that each BIOS write uses the
+ * symbol for the field it claims to populate. */
+#define LOGIT_BOOT_HEADER_MAGIC_OFFSET                 0x00
+#define LOGIT_BOOT_HEADER_VERSION_OFFSET               0x04
+#define LOGIT_BOOT_HEADER_HEADER_SIZE_OFFSET           0x06
+#define LOGIT_BOOT_HEADER_IDENTITY_MAP_BYTES_OFFSET    0x08
+#define LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET            0x10
+#define LOGIT_BOOT_HEADER_RESERVED_OFFSET              0x14
+#define LOGIT_BOOT_TAG_TYPE_OFFSET                     0x00
+#define LOGIT_BOOT_TAG_SIZE_OFFSET                     0x04
+#define LOGIT_BOOT_TAG_SIZE                            0x08
+#define LOGIT_BOOT_MMAP_TAG_ENTRY_SIZE_OFFSET          0x08
+#define LOGIT_BOOT_MMAP_TAG_ENTRY_VERSION_OFFSET       0x0c
+#define LOGIT_BOOT_MMAP_TAG_ENTRIES_OFFSET             0x10
+#define LOGIT_BOOT_MMAP_TAG_HEADER_SIZE                0x10
+#define LOGIT_BOOT_MMAP_ENTRY_ADDR_OFFSET              0x00
+#define LOGIT_BOOT_MMAP_ENTRY_LEN_OFFSET               0x08
+#define LOGIT_BOOT_MMAP_ENTRY_TYPE_OFFSET              0x10
+#define LOGIT_BOOT_MMAP_ENTRY_RESERVED_OFFSET          0x14
+#define LOGIT_BOOT_MMAP_ENTRY_SIZE                     0x18
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_ADDR_OFFSET         0x08
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_PITCH_OFFSET        0x10
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_WIDTH_OFFSET        0x14
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_HEIGHT_OFFSET       0x18
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_BPP_OFFSET          0x1c
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_TYPE_OFFSET         0x1d
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_RESERVED_OFFSET     0x1e
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_RED_POSITION_OFFSET 0x20
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_RED_SIZE_OFFSET     0x21
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_POSITION_OFFSET 0x22
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_SIZE_OFFSET   0x23
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_POSITION_OFFSET 0x24
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_SIZE_OFFSET    0x25
+#define LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE                0x26
+
 /* These are intentionally outside the retired Multiboot2 namespace. Unknown
  * tags are skipped using size rounded up to eight bytes; END must be last. */
 #define LOGIT_BOOT_TAG_MEMORY_MAP        0x4c420101
@@ -102,10 +141,75 @@ struct logit_boot_framebuffer_tag {
 
 _Static_assert(sizeof(struct logit_boot_header) == LOGIT_BOOT_HEADER_SIZE,
                "native boot header layout drifted");
-_Static_assert(sizeof(struct logit_boot_mmap_entry) == 24,
+_Static_assert(sizeof(struct logit_boot_tag) == LOGIT_BOOT_TAG_SIZE,
+               "native tag header layout drifted");
+_Static_assert(sizeof(struct logit_boot_mmap_entry) == LOGIT_BOOT_MMAP_ENTRY_SIZE,
                "native memory-map entry layout drifted");
-_Static_assert(sizeof(struct logit_boot_framebuffer_tag) == 38,
+_Static_assert(sizeof(struct logit_boot_mmap_tag) == LOGIT_BOOT_MMAP_TAG_HEADER_SIZE,
+               "native memory-map tag header layout drifted");
+_Static_assert(sizeof(struct logit_boot_framebuffer_tag) == LOGIT_BOOT_FRAMEBUFFER_TAG_SIZE,
                "native framebuffer tag layout drifted");
+
+#define LOGIT_BOOT_ASSERT_OFFSET(type, field, expected) \
+    _Static_assert(__builtin_offsetof(type, field) == (expected), \
+                   "native boot " #type "." #field " offset drifted")
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, magic,
+                         LOGIT_BOOT_HEADER_MAGIC_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, version,
+                         LOGIT_BOOT_HEADER_VERSION_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, header_size,
+                         LOGIT_BOOT_HEADER_HEADER_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, identity_map_bytes,
+                         LOGIT_BOOT_HEADER_IDENTITY_MAP_BYTES_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, total_size,
+                         LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_header, reserved,
+                         LOGIT_BOOT_HEADER_RESERVED_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_tag, type,
+                         LOGIT_BOOT_TAG_TYPE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_tag, size,
+                         LOGIT_BOOT_TAG_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_tag, entry_size,
+                         LOGIT_BOOT_MMAP_TAG_ENTRY_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_tag, entry_version,
+                         LOGIT_BOOT_MMAP_TAG_ENTRY_VERSION_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_tag, entries,
+                         LOGIT_BOOT_MMAP_TAG_ENTRIES_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_entry, addr,
+                         LOGIT_BOOT_MMAP_ENTRY_ADDR_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_entry, len,
+                         LOGIT_BOOT_MMAP_ENTRY_LEN_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_entry, type,
+                         LOGIT_BOOT_MMAP_ENTRY_TYPE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_mmap_entry, reserved,
+                         LOGIT_BOOT_MMAP_ENTRY_RESERVED_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, addr,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_ADDR_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, pitch,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_PITCH_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, width,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_WIDTH_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, height,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_HEIGHT_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, bpp,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_BPP_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, framebuffer_type,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_TYPE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, reserved,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_RESERVED_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, red_position,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_RED_POSITION_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, red_mask_size,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_RED_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, green_position,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_POSITION_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, green_mask_size,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_GREEN_SIZE_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, blue_position,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_POSITION_OFFSET);
+LOGIT_BOOT_ASSERT_OFFSET(struct logit_boot_framebuffer_tag, blue_mask_size,
+                         LOGIT_BOOT_FRAMEBUFFER_TAG_BLUE_SIZE_OFFSET);
+#undef LOGIT_BOOT_ASSERT_OFFSET
 
 uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic);
 

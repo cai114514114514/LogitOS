@@ -45,6 +45,14 @@ static void version_refused(uint16_t got)
     serial_puts(line);
 }
 
+static void version_accepted(void)
+{
+    char line[] = "LOGIT_BOOT_NATIVE_OK version=0000\n";
+    char *p = line + 29;
+    append_hex(&p, LOGIT_BOOT_VERSION, 4);
+    serial_puts(line);
+}
+
 static __attribute__((noreturn)) void refuse(const char *message)
 {
     serial_puts(message);
@@ -120,11 +128,14 @@ uint64_t logit_boot_normalize(uint64_t info_addr, uint64_t entry_magic)
     if (!saw_end || cursor != end)
         refuse("LOGIT BOOT TAG LIST TRUNCATED\n");
 
-    /* Native offsets 16/20 are now the canonical total_size/reserved header;
-     * the native prefix remains in the same reserved low-memory page. */
-    uint32_t *canonical = (uint32_t *)(base + 16);
-    canonical[0] = header->total_size - 16;
+    /* The internal view begins at native total_size.  Deriving that address
+     * from the wire contract avoids a third spelling of offset 16; the ABI
+     * gate still checks this exact source shape so a refactor cannot turn the
+     * source scan into a zero-match pass. */
+    uint32_t *canonical =
+        (uint32_t *)(base + LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET);
+    canonical[0] = header->total_size - LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET;
     canonical[1] = 0;
-    serial_puts("LOGIT_BOOT_NATIVE_OK version=0001\n");
-    return info_addr + 16;
+    version_accepted();
+    return info_addr + LOGIT_BOOT_HEADER_TOTAL_SIZE_OFFSET;
 }

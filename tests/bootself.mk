@@ -179,6 +179,72 @@ test-bios-preload: test-bios-preload-negctl test-bios-preload-probe \
 	@python3 $(BIOS_PRELOAD_TEST) $(BIOS_PRELOAD_IMAGE) --loader $(BIOS_LOADER_BIN) \
 	    --qemu $(BIOS_PRELOAD_QEMU)
 
+# The native ABI has one C definition but two producer implementations.  UEFI
+# gets compiler member offsets from logit_boot.h; BIOS gets numeric constants
+# generated from the same header, then this source gate proves every hand-built
+# field uses the symbol for the member it claims to write.  The kernel scan
+# independently freezes the framing it accepts.  Controls mutate build-local
+# copies because a deliberately wrong protocol header must never be includable
+# by a product target.
+BOOT_CONTRACT_DIR := $(BUILD)/boot-contract
+BOOT_CONTRACT_TEST := tests/unit/boot_contract_test.py
+BOOT_CONTRACT_BAD_HEADER := $(BOOT_CONTRACT_DIR)/logit_boot_bad_offset.h
+BOOT_CONTRACT_BAD_ASM := $(BOOT_CONTRACT_DIR)/loader_bad_offset.asm
+BOOT_CONTRACT_BAD_VERSION := $(BOOT_CONTRACT_DIR)/bootinfo_bad_version.c
+
+.PHONY: test-boot-contract test-boot-contract-negctl
+
+$(BOOT_CONTRACT_BAD_HEADER): include/abi/logit_boot.h tests/bootself.mk
+	@mkdir -p $(BOOT_CONTRACT_DIR)
+	@sed -e 's/uint16_t version;/uint16_t boot_contract_swap;/' \
+	    -e 's/uint16_t header_size;/uint16_t version;/' \
+	    -e 's/uint16_t boot_contract_swap;/uint16_t header_size;/' $< >$@
+
+$(BOOT_CONTRACT_BAD_ASM): c/boot/bios/loader.asm tests/bootself.mk
+	@mkdir -p $(BOOT_CONTRACT_DIR)
+	@sed 's/LOGIT_BOOT_HEADER_VERSION_OFFSET\], LOGIT_BOOT_VERSION/LOGIT_BOOT_HEADER_HEADER_SIZE_OFFSET], LOGIT_BOOT_VERSION/' \
+	    $< >$@
+
+$(BOOT_CONTRACT_BAD_VERSION): c/kernel/core/bootinfo.c tests/bootself.mk
+	@mkdir -p $(BOOT_CONTRACT_DIR)
+	@sed 's/header->version != LOGIT_BOOT_VERSION/header->version != LOGIT_BOOT_VERSION + 1/' \
+	    $< >$@
+
+# Each mutation runs through the ordinary oracle and must emit the exact field
+# or site plus both disagreeing values.  Merely observing a nonzero status would
+# let a syntax error or missing input impersonate a working control.
+test-boot-contract-negctl: $(BOOT_CONTRACT_TEST) $(BOOT_CONTRACT_BAD_HEADER) \
+    $(BOOT_CONTRACT_BAD_ASM) $(BOOT_CONTRACT_BAD_VERSION)
+	@set -e; failed=0; \
+	 rc=0; python3 $(BOOT_CONTRACT_TEST) --header $(BOOT_CONTRACT_BAD_HEADER) \
+	   >$(BOOT_CONTRACT_DIR)/bad-header.log 2>&1 || rc=$$?; \
+	 cat $(BOOT_CONTRACT_DIR)/bad-header.log; \
+	 if ! { test "$$rc" -eq 1 && grep -Fq 'FAIL: field header.version offset: C=6 BIOS=4' \
+	   $(BOOT_CONTRACT_DIR)/bad-header.log; }; then \
+	   echo 'test-boot-contract-negctl: FAIL -- moved-header-field control did not name C=6 BIOS=4'; failed=1; \
+	 else echo 'PASS: moved-header-field control was watched failing'; fi; \
+	 rc=0; python3 $(BOOT_CONTRACT_TEST) --asm $(BOOT_CONTRACT_BAD_ASM) \
+	   >$(BOOT_CONTRACT_DIR)/bad-asm.log 2>&1 || rc=$$?; \
+	 cat $(BOOT_CONTRACT_DIR)/bad-asm.log; \
+	 if ! { test "$$rc" -eq 1 && grep -Fq 'FAIL: field header.version offset: C=4 BIOS=6' \
+	   $(BOOT_CONTRACT_DIR)/bad-asm.log; }; then \
+	   echo 'test-boot-contract-negctl: FAIL -- BIOS-offset control did not name C=4 BIOS=6'; failed=1; \
+	 else echo 'PASS: BIOS-offset control was watched failing'; fi; \
+	 rc=0; python3 $(BOOT_CONTRACT_TEST) --kernel $(BOOT_CONTRACT_BAD_VERSION) \
+	   >$(BOOT_CONTRACT_DIR)/bad-version.log 2>&1 || rc=$$?; \
+	 cat $(BOOT_CONTRACT_DIR)/bad-version.log; \
+	 if ! { test "$$rc" -eq 1 && grep -Fq 'FAIL: protocol version kernel-check=0x0002 header=0x0001' \
+	   $(BOOT_CONTRACT_DIR)/bad-version.log; }; then \
+	   echo 'test-boot-contract-negctl: FAIL -- version control did not name 0x0002 and 0x0001'; failed=1; \
+	 else echo 'PASS: protocol-version control was watched failing'; fi; \
+	 test "$$failed" -eq 0 || exit 1; \
+	 echo 'PASS: native boot-contract negative controls all failed as required'
+
+test-boot-contract: test-boot-contract-negctl $(BOOT_CONTRACT_TEST) \
+    include/abi/logit_boot.h c/boot/bios/loader.asm c/boot/efi/loader.c \
+    c/kernel/core/bootinfo.c
+	@python3 $(BOOT_CONTRACT_TEST)
+
 # Shipping and test loaders now speak only native v1. The sole retired-protocol
 # entry is assembled from tests/fixtures/bootoracle into a separately named
 # GRUB kernel. That keeps an independent loader oracle without putting the old
@@ -211,9 +277,11 @@ BIOS_ORACLE_WORK_IMAGE := $(BIOS_ORACLE_DIR)/grub-dump-work.iso
 
 .PHONY: test-bios-native test-bios-native-negctl
 
-$(BIOS_NATIVE_ABI_INC): include/abi/logit_boot.h tests/bootself.mk
+# Same generator as the root Makefile's product rule -- see the comment there
+# for what having two of them cost on 2026-09-15.
+$(BIOS_NATIVE_ABI_INC): include/abi/logit_boot.h tools/gen_boot_inc.py tests/bootself.mk
 	@mkdir -p $(BIOS_NATIVE_DIR)
-	@awk '/^#define LOGIT_BOOT_(MAGIC|VERSION|HEADER_SIZE|IDENTITY_MAP_BYTES|IDENTITY_PAGE_BYTES|BASE_PAGE_BYTES|TAG_)/ { print "%define " $$2 " " $$3 }' $< >$@
+	@python3 tools/gen_boot_inc.py $< -o $@
 
 $(BIOS_NATIVE_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) tests/bootself.mk
 	nasm -f bin -DLOADER_NATIVE -I$(BIOS_NATIVE_DIR)/ -o $@ $<
