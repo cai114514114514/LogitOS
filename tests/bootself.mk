@@ -432,3 +432,113 @@ test-bios-boot: test-bios-boot-negctl $(BIOS_BOOT_IMAGE) \
 	    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_BOOT_GRUB_IMAGE)
 	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) kernel-check \
 	    $(BIOS_BOOT_IMAGE)
+
+# Phase 2 keeps the MB2 artifacts above as both compatibility path and oracle.
+# Only these native targets relink the same kernel with logit_native_start as
+# ELF e_entry; there is no scanned header and no address baked into the loader.
+# The NASM include is mechanically derived from the C ABI header so protocol
+# numbers have one authoritative spelling.
+BIOS_NATIVE_DIR := $(BUILD)/bios-native
+BIOS_NATIVE_ABI_INC := $(BIOS_NATIVE_DIR)/logit_boot.inc
+BIOS_NATIVE_LOADER := $(BIOS_NATIVE_DIR)/loader.bin
+BIOS_NATIVE_BAD_VERSION_LOADER := $(BIOS_NATIVE_DIR)/loader-bad-version.bin
+BIOS_NATIVE_TRUNCATED_LOADER := $(BIOS_NATIVE_DIR)/loader-truncated.bin
+BIOS_NATIVE_SHORT_MAP_LOADER := $(BIOS_NATIVE_DIR)/loader-short-map.bin
+BIOS_NATIVE_DUMP_KERNEL := $(BIOS_NATIVE_DIR)/kernel-dump.elf
+BIOS_NATIVE_KERNEL := $(BIOS_NATIVE_DIR)/kernel.elf
+BIOS_NATIVE_KERNEL_STAMP := $(BIOS_NATIVE_DIR)/kernel-normal.stamp
+BIOS_NATIVE_DUMP_IMAGE := $(BIOS_NATIVE_DIR)/native-dump.iso
+BIOS_NATIVE_IMAGE := $(BIOS_NATIVE_DIR)/native.iso
+BIOS_NATIVE_BAD_VERSION_IMAGE := $(BIOS_NATIVE_DIR)/bad-version.iso
+BIOS_NATIVE_TRUNCATED_IMAGE := $(BIOS_NATIVE_DIR)/truncated.iso
+BIOS_NATIVE_SHORT_MAP_IMAGE := $(BIOS_NATIVE_DIR)/short-map.iso
+
+.PHONY: test-bios-native test-bios-native-negctl
+
+$(BIOS_NATIVE_ABI_INC): include/abi/logit_boot.h tests/bootself.mk
+	@mkdir -p $(BIOS_NATIVE_DIR)
+	@awk '/^#define LOGIT_BOOT_(MAGIC|VERSION|HEADER_SIZE|IDENTITY_MAP_BYTES|IDENTITY_PAGE_BYTES|BASE_PAGE_BYTES|TAG_)/ { print "%define " $$2 " " $$3 }' $< >$@
+
+$(BIOS_NATIVE_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) tests/bootself.mk
+	nasm -f bin -DLOADER_NATIVE -I$(BIOS_NATIVE_DIR)/ -o $@ $<
+
+$(BIOS_NATIVE_BAD_VERSION_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) tests/bootself.mk
+	nasm -f bin -DLOADER_NATIVE -DLOADER_NEGCTL_NATIVE_BAD_VERSION \
+	    -I$(BIOS_NATIVE_DIR)/ -o $@ $<
+
+$(BIOS_NATIVE_TRUNCATED_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) tests/bootself.mk
+	nasm -f bin -DLOADER_NATIVE -DLOADER_NEGCTL_NATIVE_TRUNCATED \
+	    -I$(BIOS_NATIVE_DIR)/ -o $@ $<
+
+$(BIOS_NATIVE_SHORT_MAP_LOADER): c/boot/bios/loader.asm $(BIOS_NATIVE_ABI_INC) tests/bootself.mk
+	nasm -f bin -DLOADER_NATIVE -DLOADER_NEGCTL_NATIVE_SHORT_MAP \
+	    -I$(BIOS_NATIVE_DIR)/ -o $@ $<
+
+# Build the dump sibling after explicitly installing dump objects.  The normal
+# sibling reverses those two objects before relinking, preserving the same
+# apparatus guard already paid for by test-bios-boot above.
+$(BIOS_NATIVE_DUMP_KERNEL): $(OBJ) $(RUST_LIB) linker.ld c/kernel/core/mb2dump.c \
+    c/kernel/core/kmain.c c/kernel/core/bootinfo.c c/boot/long.asm \
+    include/abi/logit_boot.h tests/bootself.mk
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
+	$(CC) $(CFLAGS) -DBOOT_MB2_DUMP -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+	$(LD) $(LDFLAGS) -e logit_native_start -Map=$(BIOS_NATIVE_DIR)/kernel-dump.map \
+	    -o $@ --start-group $(OBJ) $(RUST_LIB) --end-group
+
+$(BIOS_NATIVE_KERNEL_STAMP): $(BIOS_NATIVE_DUMP_IMAGE) c/kernel/core/mb2dump.c \
+    c/kernel/core/kmain.c tests/bootself.mk
+	$(CC) $(CFLAGS) -c c/kernel/core/mb2dump.c -o $(BUILD)/c/kernel/core/mb2dump.o
+	$(CC) $(CFLAGS) -c c/kernel/core/kmain.c -o $(BUILD)/c/kernel/core/kmain.o
+	$(LD) $(LDFLAGS) -e logit_native_start -Map=$(BIOS_NATIVE_DIR)/kernel.map \
+	    -o $(BIOS_NATIVE_KERNEL) --start-group $(OBJ) $(RUST_LIB) --end-group
+	@touch $@
+
+$(BIOS_NATIVE_DUMP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_NATIVE_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_NATIVE_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
+
+$(BIOS_NATIVE_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) $(BIOS_NATIVE_LOADER) \
+    $(BIOS_NATIVE_KERNEL_STAMP) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_NATIVE_LOADER) --kernel $(BIOS_NATIVE_KERNEL)
+
+$(BIOS_NATIVE_BAD_VERSION_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_NATIVE_BAD_VERSION_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_NATIVE_BAD_VERSION_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
+
+$(BIOS_NATIVE_TRUNCATED_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_NATIVE_TRUNCATED_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_NATIVE_TRUNCATED_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
+
+$(BIOS_NATIVE_SHORT_MAP_IMAGE): tools/mkiso.py $(BIOS_BOOT_PRELOAD) \
+    $(BIOS_NATIVE_SHORT_MAP_LOADER) $(BIOS_NATIVE_DUMP_KERNEL) tests/bootself.mk
+	python3 tools/mkiso.py $@ --boot-image $(BIOS_BOOT_PRELOAD) \
+	    --loader $(BIOS_NATIVE_SHORT_MAP_LOADER) --kernel $(BIOS_NATIVE_DUMP_KERNEL)
+
+# All three controls are prerequisites.  The map control's failure is the
+# absent final 4 KiB PTE itself: the kernel prints the promised-extent probe,
+# touches its final byte, and must fault before LOGIT_BOOT_NATIVE_OK.
+test-bios-native-negctl: $(BIOS_NATIVE_BAD_VERSION_IMAGE) \
+    $(BIOS_NATIVE_TRUNCATED_IMAGE) $(BIOS_NATIVE_SHORT_MAP_IMAGE) $(BIOS_BOOT_DISK) \
+    $(BIOS_BOOT_TEST)
+	@if ! command -v $(BIOS_BOOT_QEMU) >/dev/null 2>&1; then \
+	  echo 'SKIP: test-bios-native-negctl requires $(BIOS_BOOT_QEMU) to watch the native-entry controls'; \
+	  exit 0; \
+	 fi
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) \
+	    native-control $(BIOS_NATIVE_BAD_VERSION_IMAGE) --reason bad-version
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) \
+	    native-control $(BIOS_NATIVE_TRUNCATED_IMAGE) --reason truncated-tags
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) \
+	    native-control $(BIOS_NATIVE_SHORT_MAP_IMAGE) --reason short-map
+	@echo 'PASS: bios-native negative controls all failed as required'
+
+test-bios-native: test-bios-native-negctl $(BIOS_NATIVE_DUMP_IMAGE) \
+    $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_MB2_GRUB_IMAGE) $(BIOS_NATIVE_IMAGE) $(BIOS_BOOT_TEST)
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) three-way \
+	    $(BIOS_NATIVE_DUMP_IMAGE) $(BIOS_BOOT_DUMP_IMAGE) $(BIOS_MB2_GRUB_IMAGE)
+	@python3 $(BIOS_BOOT_TEST) --qemu $(BIOS_BOOT_QEMU) --disk $(BIOS_BOOT_DISK) \
+	    native-kernel-check $(BIOS_NATIVE_IMAGE)

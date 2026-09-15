@@ -7,12 +7,26 @@
 ; ============================================================================
 
 global long_mode_start
+global logit_native_start
 extern kernel_main
 extern cpu_early_init
+extern logit_boot_normalize
 
 section .text
 bits 64
+logit_native_start:
+    ; The BIOS loader's low stack is only part of the entry contract.  Switch
+    ; to the kernel-owned 32 KiB stack before any call; stack_top is 4 KiB
+    ; aligned, so CALL supplies the SysV-required rsp%16==8 callee entry.
+    mov rsp, native_stack_top
+    mov r12d, 1
+    mov r13, rdi                 ; native block pointer
+    mov r14, rax                 ; native entry magic
+    jmp long_mode_common
+
 long_mode_start:
+    xor r12d, r12d               ; retained Multiboot2 path
+long_mode_common:
     ; In long mode segment bases are ignored; null data selectors are fine.
     mov ax, 0
     mov ss, ax
@@ -136,6 +150,14 @@ long_mode_start:
 .no_smep:
     ; ----------------------------------------------------------------------
 
+    test r12d, r12d
+    jz .boot_info_ready
+    mov rdi, r13
+    mov rsi, r14
+    call logit_boot_normalize
+    mov edi, eax                 ; canonical low-memory view returned in RAX
+.boot_info_ready:
+
     ; Decode CPUID once, before anything can race, and pick the crypto
     ; backends. Pure CPUID + a pointer store: no serial, heap, IDT or timer
     ; needed, which is why it can run this early. Reporting happens later,
@@ -156,3 +178,12 @@ long_mode_start:
 .hang:
     hlt
     jmp .hang
+
+; Keep the native runway independent of boot.asm.  Both stacks coexist for
+; this one compatibility milestone; deleting the 32-bit MB2 path later also
+; deletes its sibling stack without changing this entry's contract.
+section .bss
+align 4096
+native_stack_bottom:
+    resb 32768
+native_stack_top:

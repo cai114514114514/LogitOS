@@ -279,6 +279,19 @@ def kernel_check(args):
     print("PASS: bios-boot -- our loader reached the kernel end-of-init marker")
 
 
+def native_kernel_check(args):
+    output, _ = boot(args.qemu, args.iso, timeout=60, disk=args.disk)
+    if "LOGIT_BIOS_LOADER_NATIVE" not in output:
+        fail("native image did not execute the native BIOS loader\n" + output)
+    if "LOGIT_BOOT_NATIVE_OK version=0001" not in output:
+        fail("kernel did not accept native protocol version 1\n" + output)
+    if "LOGIT_BOOT_OK" not in output:
+        fail("native kernel did not reach LOGIT_BOOT_OK\n" + output)
+    print("LOGIT_BOOT_NATIVE_OK version=0001")
+    print("LOGIT_BOOT_OK")
+    print("PASS: bios-native -- native long-mode entry reached the kernel end-of-init marker")
+
+
 def kernel_control(args):
     if args.reason == "bad-magic":
         output, vga_text = boot_and_read_vga(args.qemu, args.iso, disk=args.disk)
@@ -313,6 +326,60 @@ def kernel_control(args):
         else:
             print("PASS: BSS-zero control was watched failing: LOGIT_BOOT_OK absent")
         return
+
+
+def native_control(args):
+    output, _ = boot(args.qemu, args.iso, disk=args.disk)
+    print_guest_evidence(output)
+    if "LOGIT_BIOS_LOADER_NATIVE" not in output:
+        fail("native control did not execute the native BIOS loader")
+    if "LOGIT_BOOT_NATIVE_OK" in output or "LOGIT_BOOT_OK" in output:
+        fail(f"{args.reason} control unexpectedly passed native entry")
+    if args.reason == "bad-version":
+        wanted = "LOGIT BOOT VERSION REFUSED got=0002 wanted=0001"
+        if wanted not in output:
+            fail("wrong-version control did not print got and wanted versions")
+        print("PASS: wrong-version control was watched failing: "
+              "got=0002 wanted=0001; LOGIT_BOOT_NATIVE_OK absent")
+        return
+    if args.reason == "truncated-tags":
+        if ("LOADER CONTROL NATIVE TAG LIST TRUNCATED" not in output or
+                "LOGIT BOOT TAG LIST TRUNCATED" not in output):
+            fail("truncated-tag control was not refused by the kernel walker")
+        print("PASS: truncated-tag-list control was watched failing: "
+              "LOGIT BOOT TAG LIST TRUNCATED")
+        return
+    if args.reason == "short-map":
+        if ("LOADER CONTROL IDENTITY MAP ONE PAGE SHORT" not in output or
+                "LOGIT BOOT IDENTITY VERIFY promised=0000000040000000" not in output):
+            fail("short-map control did not reach the promised-runway probe")
+        print("PASS: short-identity-map control was watched failing after the "
+              "1 GiB promise probe; LOGIT_BOOT_NATIVE_OK absent")
+        return
+
+
+def three_way(args):
+    native_output, _ = boot(args.qemu, args.native)
+    ours_output, _ = boot(args.qemu, args.ours)
+    grub_output, _ = boot(args.qemu, args.grub)
+    if "LOGIT_BOOT_NATIVE_OK version=0001" not in native_output:
+        fail("native side did not pass protocol normalization\n" + native_output)
+    native = dump_lines(native_output)
+    ours = dump_lines(ours_output)
+    grub = dump_lines(grub_output)
+    validate(native)
+    validate(ours)
+    validate(grub)
+    compare_consumed(native, ours, "NATIVE", "LOADER-MB2")
+    compare_consumed(ours, grub, "LOADER-MB2", "GRUB-MB2")
+    memory_regions = sum(line.startswith("MB2 MMAP ") for line in native)
+    rsdp = "present" if any(line.startswith("MB2 ACPI ") for line in native) else "absent"
+    framebuffer = "present" if any(line.startswith("MB2 FB ") for line in native) else "absent"
+    print(f"THREE-WAY FACTS memory_regions={memory_regions} "
+          f"rsdp={rsdp} framebuffer={framebuffer}")
+    print("PASS: bios-native three-way agreement -- native, loader-MB2 and "
+          "GRUB-MB2 have identical consumed memory-map order/types, RSDP and "
+          "framebuffer presence")
 
 
 def expect_difference(args):
@@ -366,17 +433,30 @@ def main():
     kernel_check_parser = sub.add_parser("kernel-check")
     kernel_check_parser.add_argument("iso")
     kernel_check_parser.set_defaults(func=kernel_check)
+    native_kernel = sub.add_parser("native-kernel-check")
+    native_kernel.add_argument("iso")
+    native_kernel.set_defaults(func=native_kernel_check)
     control = sub.add_parser("kernel-control")
     control.add_argument("iso")
     control.add_argument("--reason", required=True,
                          choices=("bad-magic", "short-segment", "skip-bss-zero"))
     control.set_defaults(func=kernel_control)
+    native_neg = sub.add_parser("native-control")
+    native_neg.add_argument("iso")
+    native_neg.add_argument("--reason", required=True,
+                            choices=("bad-version", "truncated-tags", "short-map"))
+    native_neg.set_defaults(func=native_control)
     neg = sub.add_parser("expect-difference")
     neg.add_argument("control")
     neg.add_argument("grub")
     neg.add_argument("--reason", required=True,
                      choices=("truncated-e820", "bad-rsdp-checksum"))
     neg.set_defaults(func=expect_difference)
+    three = sub.add_parser("three-way")
+    three.add_argument("native")
+    three.add_argument("ours")
+    three.add_argument("grub")
+    three.set_defaults(func=three_way)
     args = parser.parse_args()
     args.func(args)
 

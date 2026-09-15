@@ -24,6 +24,10 @@ FS_FILES    := $(filter-out fsroot/fonts fsroot/as,$(wildcard fsroot/*))
 # (precompiled to .la). Packed to /usr/as/examples/ and /usr/as/lib/ respectively.
 AS_EXAMPLES := $(wildcard fsroot/as/examples/*.as)
 AS_LIB_SRCS := $(wildcard fsroot/as/lib/*.as)
+# Rewritten native library sources stay in the original directory. A2 callers
+# temporarily use frozen bytecode for these names; compiling A3 through the VM
+# would silently bypass the static-language boundary.
+AS_A2_CACHES := $(wildcard fsroot/as/compat2/*.lacache)
 AS_LA       := $(patsubst fsroot/as/lib/%.as,$(BUILD)/%.la,$(AS_LIB_SRCS))
 # Four faces, two weights. The Bold pair is an INSTANCE of the same vendored
 # variable fonts at wght=700 -- same source file, same OFL licence, same
@@ -4569,11 +4573,23 @@ test-devmodel: test-devmodel-a test-devmodel-b
 # test-time-negctl  the same suite with the cross-check's tolerance removed.
 #                 REQUIRED TO FAIL: it is the proof that test-time-host's 2x
 #                 assertions can fail at all.
-test-time-host:
+.PHONY: test-time-switch-negctl
+test-time-host: test-time-switch-negctl
 	@mkdir -p $(BUILD)
 	@$(CC) -DLOGIT_TIME_HOST -O1 -g -Wall -Wextra -o $(BUILD)/time_test \
 	    tests/unit/time_test.c c/kernel/core/ktime.c -Ic/kernel/core -Iinclude/abi
 	@$(BUILD)/time_test
+
+test-time-switch-negctl:
+	@mkdir -p $(BUILD)/switch-negctl
+	@$(CC) -DLOGIT_TIME_HOST -DTIME_NEGCTL_SOURCE_BEFORE_SEQ -O1 -g -Wall -Wextra \
+	    -o $(BUILD)/switch-negctl/time_test tests/unit/time_test.c c/kernel/core/ktime.c \
+	    -Ic/kernel/core -Iinclude/abi
+	@set +e; out=`$(BUILD)/switch-negctl/time_test 2>&1`; rc=$$?; set -e; \
+	 echo "$$out" | grep -q 'source/fold point published as a torn tuple'; \
+	 test `echo "$$out" | grep -c 'FAIL .*source/fold point published as a torn tuple'` -eq 1; \
+	 test $$rc -ne 0; \
+	 echo 'TIME-SWITCH-NEGCTL-OK: publishing source before seqlock reddened exactly one check'
 
 test-time-negctl:
 	@mkdir -p $(BUILD)/negctl

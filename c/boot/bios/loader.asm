@@ -23,6 +23,28 @@ ORG 0
 %define GDT_DATA32           0x10
 %define GDT_CODE16           0x18
 %define GDT_DATA16           0x20
+%define NATIVE_CODE64        0x08
+%define NATIVE_DATA64        0x10
+
+%define NATIVE_PML4          0x01ffd000
+%define NATIVE_PDPT          0x01ffe000
+%define NATIVE_PD            0x01fff000
+%define NATIVE_CONTROL_PT    0x01ffc000
+
+%ifdef LOADER_NATIVE
+%include "logit_boot.inc"
+%define BOOT_TAG_MMAP        LOGIT_BOOT_TAG_MEMORY_MAP
+%define BOOT_TAG_FRAMEBUFFER LOGIT_BOOT_TAG_FRAMEBUFFER
+%define BOOT_TAG_ACPI_OLD    LOGIT_BOOT_TAG_ACPI_OLD
+%define BOOT_TAG_ACPI_NEW    LOGIT_BOOT_TAG_ACPI_NEW
+%define BOOT_TAG_END         LOGIT_BOOT_TAG_END
+%else
+%define BOOT_TAG_MMAP        6
+%define BOOT_TAG_FRAMEBUFFER 8
+%define BOOT_TAG_ACPI_OLD    14
+%define BOOT_TAG_ACPI_NEW    15
+%define BOOT_TAG_END         0
+%endif
 
 %ifndef LOADER_HANDOFF
 %define LOADER_HANDOFF load_kernel_and_enter
@@ -87,7 +109,7 @@ loader_entry:
     jc e820_failed
     call find_rsdp
     call probe_vbe
-    call build_mb2
+    call build_boot_info
     jc mb2_failed
 
     mov eax, MB2_MAGIC
@@ -491,18 +513,33 @@ probe_vbe:
     jnz near .mode
     jmp .none
 
-build_mb2:
+build_boot_info:
     xor ax, ax
     mov es, ax
     mov di, MB2_INFO
+%ifdef LOADER_NATIVE
+    mov dword [es:di], LOGIT_BOOT_MAGIC
+%ifdef LOADER_NEGCTL_NATIVE_BAD_VERSION
+    mov word [es:di + 4], LOGIT_BOOT_VERSION + 1
+%else
+    mov word [es:di + 4], LOGIT_BOOT_VERSION
+%endif
+    mov word [es:di + 6], LOGIT_BOOT_HEADER_SIZE
+    mov dword [es:di + 8], LOGIT_BOOT_IDENTITY_MAP_BYTES
+    mov dword [es:di + 12], 0
+    mov dword [es:di + 16], 0
+    mov dword [es:di + 20], 0
+    add di, LOGIT_BOOT_HEADER_SIZE
+%else
     mov dword [es:di], 0
     mov dword [es:di + 4], 0
     add di, 8
+%endif
 
     ; Memory-map tag: 16-byte header followed by the firmware entries exactly
     ; as returned.  The chosen 128-entry ceiling plus ACPI/VBE tags fits within
     ; the explicit MB2_LIMIT; overflow is fatal instead of silently truncating.
-    mov dword [es:di], 6
+    mov dword [es:di], BOOT_TAG_MMAP
     movzx eax, word [mmap_count]
     imul eax, MMAP_ENTRY_BYTES
     add eax, 16
@@ -532,10 +569,10 @@ build_mb2:
     mov al, [fs:si + 15]
     cmp al, 2
     jb .old_acpi
-    mov dword [es:di], 15
+    mov dword [es:di], BOOT_TAG_ACPI_NEW
     jmp .acpi_header
 .old_acpi:
-    mov dword [es:di], 14
+    mov dword [es:di], BOOT_TAG_ACPI_OLD
 .acpi_header:
     movzx eax, word [rsdp_length]
     add eax, 8
@@ -553,7 +590,7 @@ build_mb2:
 .maybe_framebuffer:
     cmp byte [vbe_present], 1
     jne .end_tag
-    mov dword [es:di], 8
+    mov dword [es:di], BOOT_TAG_FRAMEBUFFER
     mov dword [es:di + 4], 38
     mov eax, [vbe_addr]
     mov [es:di + 8], eax
@@ -586,12 +623,21 @@ build_mb2:
 .end_tag:
     cmp di, MB2_LIMIT - 8
     ja .overflow
-    mov dword [es:di], 0
+    mov dword [es:di], BOOT_TAG_END
     mov dword [es:di + 4], 8
     add di, 8
     movzx eax, di
     sub eax, MB2_INFO
+%ifdef LOADER_NATIVE
+%ifdef LOADER_NEGCTL_NATIVE_TRUNCATED
+    sub eax, 8
+    mov si, native_truncated_control
+    call serial_print
+%endif
+    mov [es:MB2_INFO + 16], eax
+%else
     mov [es:MB2_INFO], eax
+%endif
     clc
     ret
 .overflow:
@@ -722,15 +768,18 @@ load_kernel_and_enter:
     mov si, kernel_enter_marker
     call serial_print
 
-    ; This is the final transition, not a copy round-trip: paging and
-    ; interrupts remain off, and the flat 32-bit selectors are the state the
-    ; existing boot.asm entry contract requires.
+    ; This is the final transition, not a copy round-trip.  MB2 keeps the
+    ; original 32-bit contract; native enters the loader's long-mode runway.
     cli
     lgdt [gdt_descriptor]
     mov eax, cr0
     or eax, 1
     mov cr0, eax
+%ifdef LOADER_NATIVE
+    jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_native_entry)
+%else
     jmp dword GDT_CODE32:(LOADER_PHYSICAL + protected_kernel_entry)
+%endif
 
 kernel_load_failed:
     mov si, kernel_load_fail
@@ -964,6 +1013,112 @@ protected_kernel_entry:
     mov ebx, MB2_INFO
     jmp edx
 
+%ifdef LOADER_NATIVE
+protected_native_entry:
+    mov ax, GDT_DATA32
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, 0x7c00
+    cld
+
+    ; Three active pages plus the control-only fourth page immediately below
+    ; the 32 MiB PT_LOAD floor are permanently covered by pmm.c's existing
+    ; reserve(0, kernel_end), so the active tables cannot later be handed out
+    ; as RAM.  The 1 GiB identity runway matches the protocol promise but
+    ; conveys no E820 policy; pmm.c still decides which reported regions become
+    ; allocatable and extends this root itself.
+    xor eax, eax
+    mov edi, NATIVE_CONTROL_PT
+    mov ecx, (4 * 4096) / 4
+    rep stosd
+    mov dword [NATIVE_PML4], NATIVE_PDPT | 3
+    mov dword [NATIVE_PDPT], NATIVE_PD | 3
+    mov edi, NATIVE_PD
+    mov eax, 0x00000083
+%ifdef LOADER_NEGCTL_NATIVE_SHORT_MAP
+    mov ecx, (LOGIT_BOOT_IDENTITY_MAP_BYTES / LOGIT_BOOT_IDENTITY_PAGE_BYTES) - 1
+%else
+    mov ecx, LOGIT_BOOT_IDENTITY_MAP_BYTES / LOGIT_BOOT_IDENTITY_PAGE_BYTES
+%endif
+.map_native_page:
+    mov [edi], eax
+    add edi, 8
+    add eax, LOGIT_BOOT_IDENTITY_PAGE_BYTES
+    loop .map_native_page
+
+%ifdef LOADER_NEGCTL_NATIVE_SHORT_MAP
+    ; Keep the ordinary 2 MiB runway layout through 1022 MiB, then split only
+    ; its final leaf and omit exactly the last 4 KiB PTE.  The control therefore
+    ; means one architectural base page, not an ambiguously named huge page.
+    mov dword [edi], NATIVE_CONTROL_PT | 3
+    mov edi, NATIVE_CONTROL_PT
+    mov eax, LOGIT_BOOT_IDENTITY_MAP_BYTES - LOGIT_BOOT_IDENTITY_PAGE_BYTES
+    or eax, 3
+    mov ecx, (LOGIT_BOOT_IDENTITY_PAGE_BYTES / LOGIT_BOOT_BASE_PAGE_BYTES) - 1
+.map_native_control_page:
+    mov [edi], eax
+    add edi, 8
+    add eax, LOGIT_BOOT_BASE_PAGE_BYTES
+    loop .map_native_control_page
+    mov esi, LOADER_PHYSICAL + native_short_map_control
+    call protected_serial_print
+%endif
+
+    mov eax, NATIVE_PML4
+    mov cr3, eax
+    mov eax, cr4
+    and eax, ~(1 << 12)         ; protocol is four-level, never inherited LA57
+    or eax, 1 << 5              ; PAE
+    mov cr4, eax
+    mov ecx, 0xc0000080
+    rdmsr
+    or eax, 1 << 8              ; EFER.LME
+    wrmsr
+    mov eax, cr0
+    or eax, 1 << 31             ; paging activates long mode
+    mov cr0, eax
+    ; Use a native-only GDT whose selector indices match the kernel GDT.  The
+    ; earlier 32-bit transition still uses gdt_descriptor; sharing one table
+    ; would require selector 0x08 to mean both 32-bit and 64-bit code.
+    lgdt [LOADER_PHYSICAL + native_gdt_descriptor]
+    jmp NATIVE_CODE64:(LOADER_PHYSICAL + native_long_entry)
+
+; ESI is a loader-physical NUL-terminated string.  This duplicate is confined
+; to the one pre-long-mode control line: calling the 16-bit serial routine from
+; here would decode its stack/register instructions under the wrong bitness.
+protected_serial_print:
+    mov dx, COM1 + 5
+.wait:
+    in al, dx
+    test al, 0x20
+    jz .wait
+    lodsb
+    test al, al
+    jz .done
+    mov dx, COM1
+    out dx, al
+    mov dx, COM1 + 5
+    jmp .wait
+.done:
+    ret
+
+BITS 64
+native_long_entry:
+    mov ax, NATIVE_DATA64
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    xor eax, eax
+    mov fs, ax
+    mov gs, ax
+    mov rsp, 0x7c00
+    mov edx, [abs LOADER_PHYSICAL + kernel_entry_address]
+    mov edi, MB2_INFO
+    mov eax, LOGIT_BOOT_MAGIC
+    jmp rdx
+%endif
+
 BITS 16
 protected_return_16:
     mov ax, GDT_DATA16
@@ -1097,8 +1252,22 @@ gdt_descriptor:
     dw gdt_end - gdt - 1
     dd LOADER_PHYSICAL + gdt
 
+align 8
+native_gdt:
+    dq 0
+    dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) ; flat 64-bit code
+    dq (1 << 41) | (1 << 44) | (1 << 47)             ; writable long-mode data
+native_gdt_end:
+native_gdt_descriptor:
+    dw native_gdt_end - native_gdt - 1
+    dd LOADER_PHYSICAL + native_gdt
+
 rsdp_signature: db 'RSD PTR '
+%ifdef LOADER_NATIVE
+loader_marker: db 'LOGIT_BIOS_LOADER_NATIVE', 13, 10, 0
+%else
 loader_marker: db 'LOGIT_BIOS_LOADER_MB2', 13, 10, 0
+%endif
 a20_ok: db 'LOADER A20 VERIFY PASS', 13, 10, 0
 a20_fail: db 'LOADER A20 VERIFY FAIL', 13, 10, 0
 a20_control_unavailable: db 'LOADER CONTROL A20 PRE_ENABLED', 13, 10, 0
@@ -1113,6 +1282,8 @@ kernel_elf_fail: db 'LOADER KERNEL ELF FAIL', 13, 10, 0
 kernel_read_fail: db 'LOADER KERNEL READ FAIL', 13, 10, 0
 short_segment_control: db 'LOADER CONTROL PT_LOAD ONE PAGE SHORT', 13, 10, 0
 bss_zero_control: db 'LOADER CONTROL BSS ZERO SKIPPED', 13, 10, 0
+native_truncated_control: db 'LOADER CONTROL NATIVE TAG LIST TRUNCATED', 13, 10, 0
+native_short_map_control: db 'LOADER CONTROL IDENTITY MAP ONE PAGE SHORT', 13, 10, 0
 
 ; mkiso.py patches this with the kernel's native-CD LBA and block count using
 ; the exact descriptor format preload uses for loader.  Pinning it away from
