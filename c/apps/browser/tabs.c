@@ -139,6 +139,28 @@ int tabs_next(int dir)
     return g_active;
 }
 
+/* The old session path restored the NUMBERS but only cached-src hydration
+ * ever applied them. Disk sessions intentionally have no src, so every first
+ * network load silently started at zero. Keep a one-shot intent independent
+ * of retained bytes; dropping failed/redirected document bytes must not spend
+ * it, and navigating somewhere else must not apply it to that other page. */
+void tab_restore_begin(struct tab *t, const char *requested_url)
+{
+    if (!t || !t->restore_pending) return;
+    if (!requested_url || strcmp(requested_url, t->url) != 0) {
+        t->restore_pending = 0;
+        t->scroll_x = t->scroll = 0;
+    }
+}
+int tab_restore_take(struct tab *t, int *x, int *y)
+{
+    if (!t || !t->restore_pending) return 0;
+    if (x) *x = t->scroll_x;
+    if (y) *y = t->scroll;
+    t->restore_pending = 0;
+    return 1;
+}
+
 /* ---------------------------------------------------------- what tabs keep */
 
 /* ---------------------------------------------------------------------------
@@ -422,6 +444,10 @@ int session_save(void)
         put_field(&p, end, t->url, '\t');
         put_field(&p, end, t->title, '\t');
         append_u(&p, end, (unsigned)(t->scroll < 0 ? 0 : t->scroll));
+        /* Optional fifth column: old sessions restore at x=0, and old readers
+         * already ignore trailing columns. No on-disk version fork needed. */
+        if (p < end - 1) *p++ = '\t';
+        append_u(&p, end, (unsigned)(t->scroll_x < 0 ? 0 : t->scroll_x));
         if (p < end - 1) *p++ = '\n';
     }
     st_mkdir(BROWSER_DIR);
@@ -458,6 +484,12 @@ int session_restore(void)
                     struct tab *t = tab_at(idx);
                     if (nf >= 3 && f[2][0]) sncpy(t->title, f[2], TAB_TITLE);
                     if (nf >= 4) t->scroll = (int)parse_u(f[3]);
+                    if (nf >= 5) t->scroll_x = (int)parse_u(f[4]);
+#ifndef TABS_RESTORE_LEGACY
+                    /* The control restores the old numbers-without-intent
+                     * path: disk read succeeds, but no first load consumes it. */
+                    t->restore_pending = 1;
+#endif
                     /* A restored tab is dehydrated AND empty: it has no bytes,
                      * so selecting it loads. Restoring eight tabs must not be
                      * eight page loads. */
@@ -623,53 +655,82 @@ const struct hist_entry *bookmark_at(int i)
 static struct download g_dl[DOWNLOAD_MAX];
 static int g_ndl;
 
-int download_name(const char *url, char *out, int max)
-{
-    if (max <= 0) return 0;
-    out[0] = 0;
-    if (!url) return 0;
-    /* The last path segment, minus any query or fragment. */
-    const char *q = url;
-    const char *last = url;
-    int in_path = 0;
-    for (const char *p = url; *p; p++) {
-        if (*p == '?' || *p == '#') break;
-        if (*p == ':' && p[1] == '/' && p[2] == '/') { p += 2; last = p + 1; in_path = 0; continue; }
-        if (*p == '/') { last = p + 1; in_path = 1; }
-        q = p;
-    }
-    (void)q; (void)in_path;
-    int n = 0;
-    for (const char *p = last; *p && n < max - 1; p++) {
-        if (*p == '?' || *p == '#') break;
-        char c = *p;
-        /* A name is written to a real filesystem: keep it to bytes a path can
-         * hold. '/' would create a directory that was never asked for. */
-        if (c == '/' || c == '\\' || c == ':' || c < 0x20) c = '_';
-        out[n++] = c;
-    }
-    out[n] = 0;
-    if (n == 0) { sncpy(out, "download", max); n = (int)strlen(out); }
-    return n;
-}
 
-int download_record(const char *url, const unsigned char *data, int len)
+int download_name(const char *url, char *out, int max)
+{ return dl_filename(url,NULL,NULL,out,max); }
+static int dl_exists(const char *path)
+{ char probe;return g_store&&g_store->exists?g_store->exists(path):st_read(path,&probe,1)>=0; }
+static void dl_number(char *out, int *at, unsigned v)
+{ char b[10];int n=0;do{b[n++]=(char)('0'+v%10);v/=10;}while(v);while(n)out[(*at)++]=b[--n];out[*at]=0; }
+static void dl_path(char *out, const char *name, unsigned suffix)
 {
-    if (g_ndl >= DOWNLOAD_MAX) return -1;
-    struct download *d = &g_dl[g_ndl];
-    memset(d, 0, sizeof *d);
-    sncpy(d->url, url ? url : "", TAB_URL);
-    char name[96];
-    download_name(url, name, (int)sizeof name);
-    int p = 0;
-    for (const char *s = DOWNLOAD_DIR; *s && p < (int)sizeof d->path - 2; s++) d->path[p++] = *s;
-    d->path[p++] = '/';
-    for (const char *s = name; *s && p < (int)sizeof d->path - 1; s++) d->path[p++] = *s;
-    d->path[p] = 0;
-    d->len = len;
+    int p=(int)strlen(DOWNLOAD_DIR);memcpy(out,DOWNLOAD_DIR,(size_t)p);out[p++]='/';
+    int n=(int)strlen(name),cut=n;const char *dot=strrchr(name,'.');if(dot&&dot!=name)cut=(int)(dot-name);
+    memcpy(out+p,name,(size_t)cut);p+=cut;
+    if(suffix){out[p++]=' ';out[p++]='(';dl_number(out,&p,suffix);out[p++]=')';}
+    memcpy(out+p,name+cut,(size_t)(n-cut));p+=n-cut;out[p]=0;
+}
+int download_record_as(const char *url,const char *disposition,const char *suggested,const unsigned char *data,int len)
+{
+    if(len<0 || (len&&!data) || len>64*1024*1024)return -1;
+    if(g_ndl==DOWNLOAD_MAX){memmove(g_dl,g_dl+1,sizeof g_dl-sizeof g_dl[0]);g_ndl--;}
+    struct download *d=&g_dl[g_ndl++];memset(d,0,sizeof *d);sncpy(d->url,url?url:"",TAB_URL);d->len=len;
+    char name[48],tmp[128],dir[128];dl_filename(url,disposition,suggested,name,sizeof name);
     st_mkdir(DOWNLOAD_DIR);
-    d->ok = (data && len > 0 && st_write(d->path, data, len) >= 0) ? 1 : 0;
-    return g_ndl++;
+    unsigned serial=0;
+    for(unsigned attempt=0;attempt<10000;attempt++){
+        dl_path(d->path,name,attempt?attempt+1:0);if(!dl_exists(d->path)){serial=attempt;break;}
+        if(attempt==9999)return (int)(d-g_dl);
+    }
+    const char *writepath=d->path;int staged=0;
+    if(g_store&&g_store->rename){
+        /* mkdir reserves a private staging namespace even when two browser
+         * processes choose the same final name. VFS rename refuses clobber;
+         * a racing completed download must therefore choose another suffix. */
+        for(unsigned i=1;i<10000;i++){
+            int at=(int)strlen(DOWNLOAD_DIR);memcpy(dir,DOWNLOAD_DIR,(size_t)at);
+            memcpy(dir+at,"/.pending-",10);at+=10;dl_number(dir,&at,i);
+            if(g_store->mkdir&&g_store->mkdir(dir)>=0){
+                memcpy(tmp,dir,(size_t)at);memcpy(tmp+at,"/body",6);staged=1;writepath=tmp;break;
+            }
+        }
+        if(!staged)return (int)(d-g_dl);
+    }
+    int written=st_write(writepath,data?data:(const unsigned char *)"",len);
+    if(written!=0&&written!=len)goto cleanup;
+    /* A legacy store returns zero, the actual VFS returns len. Neither is
+     * enough on its own: empty files, short writes and corrupt readback all
+     * travel through the same exact-byte confirmation before a success row. */
+    unsigned char *back=malloc((size_t)len+1);if(!back)goto cleanup;
+    int got=st_read(writepath,back,len+1);
+    int valid=got==len&&(!len||!memcmp(back,data,(size_t)len));free(back);if(!valid)goto cleanup;
+#ifdef BROWSER_DOWNLOAD_NEGCTL
+    goto cleanup;
+#endif
+    if(staged){
+        while(g_store->rename(tmp,d->path)<0){
+            if(!dl_exists(d->path)||++serial>=10000)goto cleanup;
+            dl_path(d->path,name,serial+1);
+        }
+    }
+    d->ok=1;
+cleanup:
+    if(staged&&g_store->remove){g_store->remove(tmp);g_store->remove(dir);}
+    return (int)(d-g_dl);
+}
+int download_record(const char *url,const unsigned char *data,int len)
+{ return download_record_as(url,NULL,NULL,data,len); }
+int download_should_save(const char *url,const char *disposition,const char *type,int forced)
+{
+    if(forced||dl_attachment(disposition))return 1;
+    if(type){int n=(int)strcspn(type,"; \t");
+        /* An HTML error/login page does not become an ISO merely because its
+         * URL has that suffix. A real attachment or download attribute wins. */
+        if(dl_equal(type,n,"text/html")||dl_equal(type,n,"application/xhtml+xml"))return 0;
+        if(dl_equal(type,n,"application/octet-stream")||dl_equal(type,n,"application/pdf")||
+           dl_equal(type,n,"application/zip")||dl_equal(type,n,"application/x-7z-compressed"))return 1;
+    }
+    return download_is_downloadable(url);
 }
 
 int download_count(void) { return g_ndl; }

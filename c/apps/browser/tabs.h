@@ -67,6 +67,8 @@ struct tab {
     char base[TAB_URL];          /* the url AFTER redirects: the resolution base */
     char title[TAB_TITLE];
     int  scroll;                 /* pixel scroll offset, preserved across switches */
+    int  scroll_x;               /* horizontal offset, retained across switches */
+    int  restore_pending;        /* disk position awaits a successful first layout */
     int  ph;                     /* laid-out page height (clamps scroll on return) */
     int  loaded;                 /* has ever completed a load */
 
@@ -109,6 +111,14 @@ int   tabs_close(int i);
 /* Make `i` the active tab. Returns 1 if the active tab changed. */
 int   tabs_select(int i);
 int   tabs_next(int dir);        /* cycle; returns the new active index */
+
+/* A disk-restored tab has no src, so cached-document hydration cannot restore
+ * its position. Begin once per user navigation (NOT each redirect hop): a
+ * different requested URL cancels the old position. Take only after the final
+ * document has loaded and been laid out; a failed load must leave it pending.
+ * The caller clamps x/y against that layout and stores the clamped position. */
+void  tab_restore_begin(struct tab *t, const char *requested_url);
+int   tab_restore_take(struct tab *t, int *x, int *y);
 
 /* --------------------------------------------------------------- retention */
 /* Hand the tab the bytes it must keep to be re-hydratable. Each takes
@@ -160,11 +170,18 @@ int   tab_hist_joint_extra(void);
  *
  * Semantics are deliberately the ones write_file/read_file already have:
  * whole-file, replace-on-write. `read` returns the byte count or < 0; `write`
- * returns 0 on success. */
+ * returns 0 on success.
+ * Correction (2026-09-09): that last claim describes several host stores;
+ * the guest write_file -> vfs_write -> logitfs_write_locked path returns len.
+ * Consumers must accept 0 or the complete length, and reject short writes;
+ * durable snapshots additionally read back bytes before publishing success. */
 struct bstore_ops {
     int (*read)(const char *path, void *buf, int max);
     int (*write)(const char *path, const void *buf, int len);
     int (*mkdir)(const char *path);
+    int (*rename)(const char *from, const char *to); /* optional; guest refuses clobber */
+    int (*remove)(const char *path);
+    int (*exists)(const char *path); /* Optional: read_file refuses short buffers. */
 };
 void tabs_set_store(const struct bstore_ops *ops);
 
@@ -174,7 +191,8 @@ void tabs_set_store(const struct bstore_ops *ops);
 #define SESSION_PATH       "/browser/session"
 #define HISTORY_PATH       "/browser/history"
 #define BOOKMARKS_PATH     "/browser/bookmarks"
-#define DOWNLOAD_DIR       "/downloads"
+#include "../download_name.h"
+#define DOWNLOAD_DIR       LOGIT_DOWNLOAD_DIR
 
 /* Write the open tabs (url, title, scroll, active index). Returns 0 on success.
  * Called after every navigation and every tab open/close -- a session that is
@@ -226,6 +244,8 @@ int  download_name(const char *url, char *out, int max);
  * or -1. The record is kept even when the write fails, with ok = 0: a download
  * that silently did not land is the failure mode worth seeing. */
 int  download_record(const char *url, const unsigned char *data, int len);
+int  download_record_as(const char *url, const char *disposition, const char *suggested, const unsigned char *data, int len);
+int  download_should_save(const char *url, const char *disposition, const char *type, int forced);
 int  download_count(void);
 const struct download *download_at(int i);
 
