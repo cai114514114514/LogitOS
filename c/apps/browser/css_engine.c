@@ -4,6 +4,7 @@
 #include "dom.h"
 #include "css.h"
 #include "layout_text.h"   /* the LTX_* vocabulary the text fields carry */
+#include "forms.h"         /* FC_PAD_*: UA button defaults and intrinsic metrics agree */
 #include "css_interp.h"    /* struct ci_xform -- see sup_beside_libcss() */
 #include "css_report.h"    /* the ONE accounting of the stylesheet pipeline */
 #include "../../../include/weaksym.h"   /* LOGIT_WEAK/_STUB/LOGIT_HAVE */
@@ -25,6 +26,18 @@
 extern int ci_transform_parse(const char *s, int len, double fs_px,
                               double root_px, struct ci_xform *out) LOGIT_WEAK;
 LOGIT_WEAK_STUB(ci_transform_parse);
+extern int ci_transform_parse_context(const char *,int,
+    const struct ci_length_context *,struct ci_xform *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(ci_transform_parse_context);
+extern int css_facing_keyword(const char *,int,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_facing_keyword);
+extern int css_box_supports_decl(const char *,int,const char *,int) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_box_supports_decl);
+/* The production SVG codec is also the shared literal colour evaluator. Host
+ * CSS-only harnesses intentionally omit the image pipeline; they have no SVG
+ * pixels to resolve. Keep that source-list boundary explicit. */
+extern int img_css_color(const char *, int, unsigned char[4]) LOGIT_WEAK;
+LOGIT_WEAK_STUB(img_css_color);
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -45,7 +58,14 @@ LOGIT_WEAK_STUB(ci_transform_parse);
  * make every flex item look like it had an authored `min-width:0`, which is
  * precisely the declaration pages use to switch the automatic minimum OFF. The
  * raw getters keep the two distinguishable. */
+/* Correction (2026-09-09): the positioned-inset bridge also reads raw
+ * composed offsets here, because relative opposite-edge synthesis loses units
+ * in LibCSS's public getters. The reason for the original min-size use above
+ * is unchanged. */
 #include "select/propget.h"
+#include "select/propset.h"
+#include "select/arena.h"
+#include "stylesheet.h"
 
 /* cstyle is owned by the DOM node and freed via kfree in dom_free. */
 void *kmalloc(unsigned long);
@@ -321,6 +341,97 @@ static css_error h_node_is_link(void *pw, void *node, bool *match)
 static css_error h_false(void *pw, void *node, bool *match)
 { (void)pw; (void)node; *match = false; return CSS_OK; }
 
+/* Interaction changes do not mutate DOM attributes. Keep a separate revision
+ * for CSSOM flushes and for the embedder's frame invalidation: consuming one
+ * must not silently consume the other. The first implementation left these
+ * selectors false (reason preserved below); browser.c now feeds pointer state
+ * even when a page has no JavaScript listeners and settles a full cascade.
+ * Full-document invalidation is intentional here: ancestor :hover and following
+ * sibling selectors can change nodes outside the hit element's subtree.
+ * :visited remains refused. :focus-visible/:focus-within need parser support
+ * and are not claimed by this three-state foundation. */
+#include "focus.h"
+extern struct node *focus_current(void) LOGIT_WEAK;
+LOGIT_WEAK_STUB(focus_current);
+struct css_ui_handle { struct node *node; uint32_t serial; };
+static struct css_ui_handle ui_hover, ui_active, ui_focus;
+static unsigned long ui_revision = 1, ui_rendered;
+static int g_css_passive;
+static struct node *ui_live(struct css_ui_handle *h)
+{
+    struct node *n = h->node;
+    if (!n || n->serial != h->serial) return NULL;
+    struct node *r = n;
+    while (r->parent) r = r->parent;
+    return r->type == N_DOCUMENT ? n : NULL;
+}
+static void ui_assign(struct css_ui_handle *h, struct node *n)
+{
+    while (n && n->type != N_ELEM) n = n->parent;
+    if (h->node == n && h->serial == (n ? n->serial : 0)) return;
+    h->node = n; h->serial = n ? n->serial : 0; ui_revision++;
+}
+static void ui_sync(void)
+{
+    ui_assign(&ui_hover, ui_live(&ui_hover));
+    ui_assign(&ui_active, ui_live(&ui_active));
+    ui_assign(&ui_focus, !g_css_passive && LOGIT_HAVE(focus_current) ? focus_current() : NULL);
+}
+void css_interaction_hover(struct node *n) { ui_assign(&ui_hover, n); }
+void css_interaction_active(struct node *n) { ui_assign(&ui_active, n); }
+void css_interaction_reset(void)
+{
+    /* Called before DOM destruction; serial validation cannot make a freed
+     * document arena safe to dereference. Reset does not inspect old nodes. */
+    memset(&ui_hover, 0, sizeof ui_hover);
+    memset(&ui_active, 0, sizeof ui_active);
+    memset(&ui_focus, 0, sizeof ui_focus);
+    ui_revision++; ui_rendered = ui_revision;
+}
+int css_interaction_take_change(void)
+{
+    ui_sync();
+    int changed = ui_rendered != ui_revision;
+    ui_rendered = ui_revision;
+    return changed;
+}
+static int ui_contains(struct css_ui_handle *h, struct node *n)
+{
+    for (struct node *p = ui_live(h); p; p = p->parent)
+        if (p == n) return 1;
+    return 0;
+}
+static css_error h_ui_hover(void *pw, void *node, bool *match)
+{
+    (void)pw;
+#ifdef CSS_NEGCTL_STATIC_INTERACTION
+    (void)node; *match = false;
+#else
+    *match = ui_contains(&ui_hover, node);
+#endif
+    return CSS_OK;
+}
+static css_error h_ui_active(void *pw, void *node, bool *match)
+{
+    (void)pw;
+#ifdef CSS_NEGCTL_STATIC_INTERACTION
+    (void)node; *match = false;
+#else
+    *match = ui_contains(&ui_active, node);
+#endif
+    return CSS_OK;
+}
+static css_error h_ui_focus(void *pw, void *node, bool *match)
+{
+    (void)pw;
+#ifdef CSS_NEGCTL_STATIC_INTERACTION
+    (void)node; *match = false;
+#else
+    *match = LOGIT_HAVE(focus_current) && focus_current() == node;
+#endif
+    return CSS_OK;
+}
+
 /* ---------- the four STATIC pseudo-classes -------------------------------
  *
  * :checked, :disabled, :enabled and :target answered h_false unconditionally,
@@ -479,7 +590,44 @@ static css_error h_node_is_lang(void *pw, void *node, lwc_string *lang, bool *ma
 
 static css_error h_node_presentational_hint(void *pw, void *node,
         uint32_t *nhints, css_hint **hints)
-{ (void)pw; (void)node; *nhints = 0; *hints = NULL; return CSS_OK; }
+{
+    (void)pw; struct node *n = node;
+    /* LibCSS consumes (and does not free) these hints synchronously before
+     * author rules. Feeding SVG colour through that path gives presentation
+     * attributes their required low priority, and makes HTML -> SVG -> child
+     * currentColor inheritance agree with the ordinary computed style. */
+    static css_hint svg_hints[3];
+    *nhints = 0; *hints = NULL;
+    if (!n || n->ns != NS_SVG) return CSS_OK;
+    const char *s = dom_attr(n, "color"); unsigned char rgba[4];
+    if (s && LOGIT_HAVE(img_css_color) && img_css_color(s, (int)strlen(s), rgba)) {
+        css_hint *h = &svg_hints[(*nhints)++]; memset(h, 0, sizeof *h);
+        h->prop = CSS_PROP_COLOR; h->status = CSS_COLOR_COLOR;
+        h->data.color = ((uint32_t)rgba[3] << 24) | ((uint32_t)rgba[0] << 16) |
+                       ((uint32_t)rgba[1] << 8) | rgba[2];
+    }
+    s = dom_attr(n, "opacity");
+    if (s && *s) {
+        char *end; double v = strtod(s, &end);
+        if (end != s) {
+            if (*end == '%') { v /= 100; end++; }
+            while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+            if (!*end && v == v) {
+                if (v < 0) v = 0; if (v > 1) v = 1;
+                css_hint *h = &svg_hints[(*nhints)++]; memset(h, 0, sizeof *h);
+                h->prop = CSS_PROP_OPACITY; h->status = CSS_OPACITY_SET;
+                h->data.fixed = (css_fixed)(v * 1024 + 0.5);
+            }
+        }
+    }
+    s = dom_attr(n, "display");
+    if (s && !strcmp(s, "none")) {
+        css_hint *h = &svg_hints[(*nhints)++]; memset(h, 0, sizeof *h);
+        h->prop = CSS_PROP_DISPLAY; h->status = CSS_DISPLAY_NONE;
+    }
+    if (*nhints) *hints = svg_hints;
+    return CSS_OK;
+}
 
 static css_error h_ua_default_for_property(void *pw, uint32_t property, css_hint *hint)
 {
@@ -523,7 +671,7 @@ static css_select_handler g_handler = {
      * block. :hover/:active/:focus need re-style on state change, which does
      * not exist here; answering them once would freeze the styles of whatever
      * was hovered during that one pass. */
-    h_false /*visited*/, h_false /*hover*/, h_false /*active*/, h_false /*focus*/,
+    h_false /*visited*/, h_ui_hover, h_ui_active, h_ui_focus,
     h_node_is_enabled, h_node_is_disabled, h_node_is_checked,
     h_node_is_target, h_node_is_lang,
     h_node_presentational_hint, h_ua_default_for_property,
@@ -659,6 +807,7 @@ static bool g_allow_quirks;     /* the document being styled is in quirks mode:
                                  * read by style_node. */
 static css_unit_ctx g_unit;
 static css_media g_media;
+static int g_screen_w, g_screen_h; /* only css_set_screen supplies device metrics */
 static int g_vw, g_vh;          /* last viewport set via css_viewport (0 = never) */
 /* The colour scheme this document is being rendered for. Interned once and
  * pointed at by g_media.prefers_color_scheme.
@@ -674,6 +823,8 @@ static int g_vw, g_vh;          /* last viewport set via css_viewport (0 = never
  * such stylesheet is written against. */
 static lwc_string *g_scheme;
 static int g_scheme_dark;
+/* System preference, shared across document contexts. */
+static int g_reduced_motion;
 
 static css_error resolve_url(void *pw, const char *base, lwc_string *rel, lwc_string **abs)
 { (void)pw; (void)base; *abs = lwc_string_ref(rel); return CSS_OK; }
@@ -725,6 +876,32 @@ static const char UA_CSS[] =
     "pre,xmp,plaintext,listing{white-space:pre}"
     "xmp,plaintext,listing{display:block}"
     "textarea{white-space:pre-wrap}nobr{white-space:nowrap}"
+    /* Control chrome used to exist only in paint_control: computed transparent
+     * + zero borders was mistaken for "author did not style it" and restored
+     * a white system button. The flex-control fix exposed that on real nav
+     * buttons. Defaults belong in the UA cascade, where background:none and
+     * border:0 can override them, including stylesheet and inline !important.
+     * appearance is deliberately not inferred from those resets: there is no
+     * appearance property channel yet, so appearance:none alone remains absent. */
+    "button,input,select,textarea{background:#fff;border:1px solid #b0b4ba;"
+    "border-radius:4px;color:#1d1d1f}"
+    /* Former native child insets: 3px vertical / 5px horizontal. Keeping them
+     * in UA CSS lets authored padding:0 remove them, like the chrome above. */
+#define UA_PAD_TEXT_(v) #v
+#define UA_PAD_TEXT(v) UA_PAD_TEXT_(v)
+#ifdef FC_CONTENT_BOX_LEGACY
+    "button{padding:" UA_PAD_TEXT(FC_PAD_Y) "px " UA_PAD_TEXT(FC_PAD_X) "px}"
+#else
+    "button,input,select,textarea{padding:" UA_PAD_TEXT(FC_PAD_Y) "px " UA_PAD_TEXT(FC_PAD_X) "px}"
+    "input[type=checkbox],input[type=radio]{padding:0}"
+#endif
+#undef UA_PAD_TEXT
+#undef UA_PAD_TEXT_
+    "button,select,input[type=button],input[type=submit],input[type=reset],"
+    "input[type=file]{background:#f6f7f8;border-radius:5px}"
+    "button{text-align:center}"
+    "button:disabled,input:disabled,select:disabled,textarea:disabled{"
+    "background:#f1f2f4;color:#9aa0a6}"
     "svg{display:inline}"
     /* dt/dd: same missing-rule bug as address/aside above, in the one place
      * it also needs a NUMBER, not just a box type -- a definition list with
@@ -777,6 +954,7 @@ static const char UA_CSS[] =
      * toggle `open` later) is now doubly wrong with position:fixed also
      * fixed to be out-of-flow above -- it would anchor to the viewport
      * origin at its full declared size instead of disappearing. */
+    "dialog{display:block;background:white;color:black;padding:1em;border:3px solid black}"
     "dialog:not([open]){display:none}";
 
 /* The quirks-mode UA sheet, appended ON TOP of UA_CSS (same UA origin, later
@@ -826,6 +1004,163 @@ static css_stylesheet *make_sheet(const char *data, size_t len, bool inl, bool q
     css_stylesheet_data_done(s);
     return s;
 }
+
+/* Exact selector matching for properties outside LibCSS's vocabulary.
+ * The previous css_extra scan dropped ancestors and everything after ':': a
+ * dark-theme ancestor painted light pages dark, and :hover::before transformed
+ * the real link. Reuse this engine's parser, combinators and state handlers.
+ * One synthetic sheet (z-index carries a rule ID) gives one indexed selection
+ * per element, rather than a parse/selection for every element x rule pair.
+ * No synthetic declaration reaches cstyle; it is only an internal ID channel.
+ * The adapter uses the existing match-report hook because computed style only
+ * retains the WINNING declaration, whereas extra properties need every match.
+ */
+extern void (*css__select_match_report)(const css_selector *, int);
+extern void (*css__stylesheet_rule_decl_report)(const css_rule *);
+extern void (*css__parse_drop_report)(const char *, size_t, int);
+extern void (*css__parse_selector_drop_report)(const char *, size_t);
+extern void (*css__parse_recover_report)(int);
+struct css_extra_matcher {
+    css_stylesheet *sheet;
+    css_select_ctx *ctx;
+    int count;
+};
+static unsigned char *extra_matches;
+static int extra_match_count;
+static uint32_t *extra_specificity;
+
+static int extra_rule_id(const css_rule *r)
+{
+    if (!r || r->type != CSS_RULE_SELECTOR) return -1;
+    const css_style *s = ((const css_rule_selector *)r)->style;
+    if (!s || s->used != 2 || getOpcode(s->bytecode[0]) != CSS_PROP_Z_INDEX ||
+        getValue(s->bytecode[0]) != Z_INDEX_SET) return -1;
+    return FIXTOINT((css_fixed)s->bytecode[1]);
+}
+static int extra_element_selector(const css_selector *s)
+{
+    /* The parser forbids pseudo elements in ancestors. Inspect every detail
+     * of the target, including :before's legacy single-colon spelling. */
+    const css_selector_detail *d = &s->data;
+    do {
+        if (d->type == CSS_SELECTOR_PSEUDO_ELEMENT) return 0;
+    } while ((d++)->next);
+    return 1;
+}
+static void extra_match_report(const css_selector *s, int matched)
+{
+    if (!matched || !extra_element_selector(s)) return;
+    int id = extra_rule_id(s->rule);
+    if (id >= 0 && id < extra_match_count) {
+        extra_matches[id] = 1;
+        /* Only actually matching list arms count; an unmatched #id cannot
+         * lend its weight to a matching .class in the same selector list. */
+        if (extra_specificity && s->specificity > extra_specificity[id])
+            extra_specificity[id] = s->specificity;
+    }
+}
+void css_extra_matcher_destroy(void *ptr)
+{
+    struct css_extra_matcher *m = ptr;
+    if (!m) return;
+    if (m->ctx) css_select_ctx_destroy(m->ctx);
+    if (m->sheet) css_stylesheet_destroy(m->sheet);
+    kfree(m);
+}
+void *css_extra_matcher_create(const char *src, int len, int count,
+                              unsigned char *accepted)
+{
+    struct css_extra_matcher *m = kmalloc(sizeof *m);
+    if (!m) return NULL;
+    memset(m, 0, sizeof *m);
+    memset(accepted, 0, (size_t)count);
+    m->count = count;
+    /* Census hooks describe the AUTHOR input. Reporting our ID declarations
+     * would double-count rules, invent z-index usage and retain freed synthetic
+     * rule pointers in the census. Unsupported selectors are instead counted
+     * from the accepted array returned to css_extra. Parsing is synchronous. */
+    void (*old_decl)(const css_rule *) = css__stylesheet_rule_decl_report;
+    void (*old_drop)(const char *, size_t, int) = css__parse_drop_report;
+    void (*old_selector)(const char *, size_t) = css__parse_selector_drop_report;
+    void (*old_recover)(int) = css__parse_recover_report;
+    css__stylesheet_rule_decl_report = NULL;
+    css__parse_drop_report = NULL;
+    css__parse_selector_drop_report = NULL;
+    css__parse_recover_report = NULL;
+    m->sheet = make_sheet(src, (size_t)len, false, false);
+    css__stylesheet_rule_decl_report = old_decl;
+    css__parse_drop_report = old_drop;
+    css__parse_selector_drop_report = old_selector;
+    css__parse_recover_report = old_recover;
+    if (!m->sheet || css_select_ctx_create(&m->ctx) != CSS_OK ||
+        css_select_ctx_append_sheet(m->ctx, m->sheet, CSS_ORIGIN_AUTHOR, NULL) != CSS_OK) {
+        css_extra_matcher_destroy(m); return NULL;
+    }
+    /* data_done can succeed while dropping an unsupported/invalid selector.
+     * Count accepted parsed rules, never equate successful parsing with support.
+     * A pseudo-only rule is also refused: css_extra has no pseudo-element
+     * cstyle target. Mixed lists keep their valid element-target arms. */
+    for (css_rule *r = m->sheet->rule_list; r; r = r->next) {
+        int id = extra_rule_id(r);
+        if (id < 0 || id >= count) continue;
+        css_rule_selector *rs = (css_rule_selector *)r;
+        for (int j = 0; j < r->items; j++)
+            if (extra_element_selector(rs->selectors[j])) accepted[id] = 1;
+    }
+    return m;
+}
+struct extra_node_data { void *data; struct extra_node_data *next; };
+static css_error extra_get_data(void *pw, void *node, void **data)
+{ (void)pw; (void)node; *data = NULL; return CSS_OK; }
+static css_error extra_set_data(void *pw, void *node, void *data)
+{
+    (void)node;
+    /* set_node_data transfers ownership only when this callback succeeds.
+     * Release AFTER selection returns, not while LibCSS still owns its state. */
+    /* LibCSS can transfer a synthesized PARENT bloom as well as this node's
+     * data in one call. Keeping only the last pointer leaked one bloom per
+     * element; keep every transfer until the selection has finished. */
+    struct extra_node_data *entry = kmalloc(sizeof *entry);
+    if (!entry) return CSS_NOMEM;
+    entry->data = data;
+    entry->next = *(struct extra_node_data **)pw;
+    *(struct extra_node_data **)pw = entry;
+    return CSS_OK;
+}
+int css_extra_matcher_match_specificity(void *ptr, struct node *node, unsigned char *matches, uint32_t *specificity)
+{
+    struct css_extra_matcher *m = ptr;
+    if (!m) return 0;
+    if (!g_ctx) css_init();
+    memset(matches, 0, (size_t)m->count);
+    if (specificity) memset(specificity, 0, (size_t)m->count * sizeof *specificity);
+    css_select_handler handler = g_handler;
+    /* Never reuse author node data: style sharing could bypass match callbacks
+     * or let dummy z-index data contaminate the next ordinary cascade. */
+    handler.get_libcss_node_data = extra_get_data;
+    handler.set_libcss_node_data = extra_set_data;
+    struct extra_node_data *data = NULL;
+    css_select_results *res = NULL;
+    void (*old_report)(const css_selector *, int) = css__select_match_report;
+    extra_matches = matches; extra_match_count = m->count; extra_specificity = specificity;
+    css__select_match_report = extra_match_report;
+    css_error err = css_select_style(m->ctx, node, &g_unit, &g_media, NULL,
+                                     &handler, &data, &res);
+    css__select_match_report = old_report;
+    extra_matches = NULL; extra_match_count = 0; extra_specificity = NULL;
+    if (res) css_select_results_destroy(res);
+    while (data) {
+        struct extra_node_data *entry = data;
+        data = entry->next;
+        css_libcss_node_data_handler(&handler, CSS_NODE_DELETED,
+                                     NULL, NULL, NULL, entry->data);
+        kfree(entry);
+    }
+    return err == CSS_OK;
+}
+
+int css_extra_matcher_match(void *ptr, struct node *node, unsigned char *matches)
+{ return css_extra_matcher_match_specificity(ptr, node, matches, NULL); }
 
 /* ---------------- the author stylesheet, parsed ONCE ----------------
  *
@@ -916,7 +1251,10 @@ void css_init(void)
     g_media.type = CSS_MEDIA_SCREEN;
     g_media.width  = INTTOFIX(vw);
     g_media.height = INTTOFIX(vh);
+    g_media.device_width = INTTOFIX(g_screen_w);
+    g_media.device_height = INTTOFIX(g_screen_h);
     css_set_color_scheme(g_scheme_dark);
+    g_media.prefers_reduced_motion = g_reduced_motion;
 
     memset(&g_unit, 0, sizeof g_unit);
     g_unit.viewport_width  = INTTOFIX(vw);
@@ -946,6 +1284,18 @@ static void set_quirks_sheet(int on)
     g_quirks_appended = on;
 }
 
+/* Keep screen and viewport separate: dragging/resizing a browser window must
+ * not change (min-device-width) or screen.width. Zero means no device facts
+ * were supplied by this embedder; css_init preserves an earlier measurement. */
+void css_set_screen(int w, int h)
+{
+    g_screen_w = w > 0 ? w : 0; g_screen_h = h > 0 ? h : 0;
+    g_media.device_width = INTTOFIX(g_screen_w);
+    g_media.device_height = INTTOFIX(g_screen_h);
+}
+int css_screen_width(void) { return g_screen_w; }
+int css_screen_height(void) { return g_screen_h; }
+
 void css_viewport(int w, int h)
 {
     g_vw = w; g_vh = h;
@@ -963,6 +1313,17 @@ void css_set_color_scheme(int dark)
     if (lwc_intern_string(s, g_scheme_dark ? 4 : 5, &g_scheme) != lwc_error_ok)
         g_scheme = NULL;
     g_media.prefers_color_scheme = g_scheme;
+}
+
+void css_set_reduced_motion(int reduced)
+{
+    g_reduced_motion = reduced != 0;
+#ifndef OPENLOGIT_MOTION_INVALIDATION_DISABLED
+    /* A preference change is not a DOM mutation. Without this revision a
+     * getComputedStyle read can reuse the old media cascade indefinitely. */
+    if (g_media.prefers_reduced_motion != g_reduced_motion) ui_revision++;
+#endif
+    g_media.prefers_reduced_motion = g_reduced_motion;
 }
 
 int css_color_scheme(void) { return g_scheme_dark; }
@@ -1073,6 +1434,78 @@ static int len_px(css_fixed val, css_unit unit, int font_px, int *pct)
     return FIXTOINT(FMUL(val, per) + F_0_5);
 }
 
+/* Computed font-size still carries fractional CSS px (or an absolute unit).
+ * Do not round it to cstyle.font_px before resolving an inherited length: a
+ * 14.5px font at 200% has a 29px line, even if raster text uses 15px glyphs. */
+static css_fixed line_font_px(const css_computed_style *cs, int fallback)
+{
+    css_fixed size; css_unit unit;
+    if (!cs || css_computed_font_size(cs, &size, &unit) != CSS_FONT_SIZE_DIMENSION)
+        return INTTOFIX(fallback);
+    return FMUL(size, px_per_unit(unit, fallback));
+}
+
+/* LibCSS's absolute-line-height pass only folds ex into em. It leaves %/em
+ * on the composed style, and compose_line_height later copies that unit into
+ * the child. The old convert() then sent 130% through len_px(NULL), producing
+ * 130px; merely multiplying there would fix the parent but make an inherited
+ * percentage/em depend on the CHILD font (20px/1.3em -> 40px child gave 52px,
+ * not the parent's 26px, in the pass4 host reproduction).
+ *
+ * Normalize dimensions BEFORE this style becomes the inheritance parent.
+ * NUMBER is deliberately untouched: 1.5 remains a ratio on descendants.
+ * eff is already arena-interned and may be shared by siblings/node caches.
+ * Never mutate it in place: clone, normalize, then intern the new value.
+ * The local px_per_unit is used instead of LibCSS's length helper because
+ * that helper rounds the per-unit scale (and swaps viewport axes), as its
+ * comment above documents. Keep fixed precision until final layout rounding. */
+static css_error normalize_line_height(const css_computed_style *eff,
+                                      const css_computed_style *parent,
+                                      int parent_font, css_computed_style **out)
+{
+    *out = NULL;
+#ifndef CSS_NEGCTL_LINE_HEIGHT_DIMENSION
+    css_fixed value; css_unit unit;
+    if (css_computed_line_height(eff, &value, &unit) != CSS_LINE_HEIGHT_DIMENSION ||
+        unit == CSS_UNIT_PX) return CSS_OK;
+    css_fixed font = line_font_px(eff, parent_font), scale;
+    switch (unit) {
+    case CSS_UNIT_PCT:
+        value = (css_fixed)(((int64_t)font * value) / (100 * (int64_t)F_1));
+        scale = F_1;
+        break;
+    case CSS_UNIT_EM: scale = font; break;
+    case CSS_UNIT_REM:
+        scale = parent ? line_font_px(g_unit.root_style, g_root_px) : font;
+        break;
+    case CSS_UNIT_EX: scale = FMUL(font, FLTTOFIX(0.6)); break;
+    case CSS_UNIT_CH: scale = FMUL(font, FLTTOFIX(0.4)); break;
+    case CSS_UNIT_LH: {
+        /* lh in line-height references the PARENT line, avoiding self
+         * recursion. The root uses the initial font/normal-line model. */
+        css_fixed pv; css_unit pu;
+        css_fixed pf = parent ? line_font_px(parent, parent_font) : g_unit.font_size_default;
+        uint8_t kind = parent ? css_computed_line_height(parent, &pv, &pu) : CSS_LINE_HEIGHT_NORMAL;
+        scale = kind == CSS_LINE_HEIGHT_NUMBER ? FMUL(pv, pf) :
+                kind == CSS_LINE_HEIGHT_DIMENSION && pu == CSS_UNIT_PX ? pv :
+                FMUL(pf, FLTTOFIX(1.25));
+        break;
+    }
+    default: scale = px_per_unit(unit, FIXTOINT(font + F_0_5)); break;
+    }
+    css_error err = css__computed_style_clone(eff, out);
+    if (err != CSS_OK) return err;
+    err = set_line_height(*out, CSS_LINE_HEIGHT_DIMENSION,
+                          FMUL(value, scale), CSS_UNIT_PX);
+    if (err == CSS_OK) err = css__arena_intern_style(out);
+    if (err != CSS_OK) { css_computed_style_destroy(*out); *out = NULL; }
+    return err;
+#else
+    (void)eff; (void)parent; (void)parent_font;
+    return CSS_OK; /* Reproduce raw percent-as-px and child-relative em. */
+#endif
+}
+
 /* A percentage in HUNDREDTHS of a percent. len_px() rounds a percentage to a
  * whole number, which is right for the properties that had it first (width,
  * height, min/max) and wrong for padding: 56.25% of 400 is 225, and 56% of it
@@ -1140,13 +1573,24 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
 
     switch (css_computed_display(cs, false)) {
     case CSS_DISPLAY_NONE:         o->display = DISP_NONE; break;
+    /* Preserve contents through the real display cascade; treating it as a
+     * post-CSS substring override would lose specificity, media and inherit. */
+    case CSS_DISPLAY_CONTENTS:     o->display = DISP_CONTENTS; break;
     case CSS_DISPLAY_INLINE:       o->display = DISP_INLINE; break;
-    case CSS_DISPLAY_INLINE_BLOCK: o->display = DISP_INLINE_BLOCK; break;
+    case CSS_DISPLAY_INLINE_BLOCK: o->display = DISP_INLINE_BLOCK; o->outer_inline = 1; break;
     case CSS_DISPLAY_LIST_ITEM:    o->display = DISP_BLOCK; o->list_item = 1; break;
     case CSS_DISPLAY_FLEX:         o->display = DISP_FLEX; break;
-    case CSS_DISPLAY_INLINE_FLEX:  o->display = DISP_FLEX; break;
+    case CSS_DISPLAY_INLINE_FLEX:
+        o->display = DISP_FLEX;
+#ifndef CSS_NEGCTL_INLINE_FLEX_BLOCK
+        /* css_computed_display already blockifies floats and positioned
+         * inline-flex boxes. Preserve the inline outer only when it survives
+         * that computation; every internal flex consumer still sees FLEX. */
+        o->outer_inline = 1;
+#endif
+        break;
     case CSS_DISPLAY_GRID:         o->display = DISP_GRID; break;
-    case CSS_DISPLAY_INLINE_GRID:  o->display = DISP_GRID; break;
+    case CSS_DISPLAY_INLINE_GRID:  o->display = DISP_GRID; o->outer_inline = 1; break;
     default:                       o->display = DISP_BLOCK; break;  /* block + table-ish */
     }
 
@@ -1174,11 +1618,26 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     { lwc_string **fnames = NULL;
       if (css_computed_font_family(cs, &fnames) == CSS_FONT_FAMILY_MONOSPACE) o->mono = 1; }
 
-    /* margins (auto -> -1) */
-    o->mt = css_computed_margin_top(cs, &len, &unit)    == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
-    o->mr = css_computed_margin_right(cs, &len, &unit)  == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
-    o->mb = css_computed_margin_bottom(cs, &len, &unit) == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
-    o->ml = css_computed_margin_left(cs, &len, &unit)   == CSS_MARGIN_AUTO ? -1 : clamp_px(len_px(len, unit, fp, NULL));
+    /* Preserve the percentage and auto kind; layout owns the containing block
+     * width. The previous len_px(..., NULL) path lost the unit here. */
+#define MARGIN(NAME, FIELD, EDGE) do { \
+    int kind = css_computed_margin_##NAME(cs, &len, &unit); \
+    o->FIELD = kind == CSS_MARGIN_AUTO ? 0 : clamp_px(len_px(len, unit, fp, NULL)); \
+    if (kind == CSS_MARGIN_AUTO) o->margin_auto |= 1u << EDGE; \
+    else if (unit == CSS_UNIT_PCT) { o->margin_pct[EDGE] = len; o->FIELD = 0; } \
+} while (0)
+    MARGIN(top, mt, 0); MARGIN(right, mr, 1);
+    MARGIN(bottom, mb, 2); MARGIN(left, ml, 3);
+#undef MARGIN
+#ifdef LAYOUT_NEGCTL_MARGIN_KIND
+    /* Executable old conversion: 10% becomes 10px, -1px becomes auto. */
+    { int *m[4] = { &o->mt, &o->mr, &o->mb, &o->ml };
+      for (int e = 0; e < 4; e++) {
+          if (o->margin_pct[e]) *m[e] = FIXTOINT(o->margin_pct[e] + F_0_5);
+          o->margin_pct[e] = 0;
+          if (*m[e] == -1) { o->margin_auto |= 1u << e; *m[e] = 0; }
+      } }
+#endif
 
     /* PADDING PERCENTAGES ARE KEPT, and they used to be thrown away right
      * here: all four of these passed NULL for len_px's `pct` out-parameter, so
@@ -1375,9 +1834,17 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
     }
 
     switch (css_computed_line_height(cs, &len, &unit)) {
-    case CSS_LINE_HEIGHT_NUMBER:    o->line_px = clamp_px(FIXTOINT(FMUL(len, INTTOFIX(fp)))); break;
-    case CSS_LINE_HEIGHT_DIMENSION: o->line_px = clamp_px(len_px(len, unit, fp, NULL)); break;
-    default:                        o->line_px = 0; break;   /* normal -> layout derives */
+    case CSS_LINE_HEIGHT_NUMBER:
+        o->line_px = clamp_px(FIXTOINT(FMUL(len, line_font_px(cs, parent_font)) + F_0_5));
+        o->has_line_px = 1;
+        break;
+    case CSS_LINE_HEIGHT_DIMENSION:
+        /* normalize_line_height has already made inherited dimensions PX.
+         * The negative control skips it to retain the old 130% -> 130px bug. */
+        o->line_px = clamp_px(len_px(len, unit, fp, NULL));
+        o->has_line_px = 1;
+        break;
+    default: o->line_px = 0; o->has_line_px = 0; break; /* normal -> layout derives */
     }
 
     /* borders: full per-edge model (top/right/bottom/left). `hidden` is a
@@ -1469,11 +1936,20 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       if (td & CSS_TEXT_DECORATION_LINE_THROUGH) o->strike = 1;
       if (td & CSS_TEXT_DECORATION_OVERLINE)     o->overline = 1; }
 
+    o->pointer_events_none = css_computed_pointer_events(cs) == CSS_POINTER_EVENTS_NONE;
+#ifdef CSS_POINTER_ALL_HIT_LEGACY
+    /* Required negative control: keep parsing/computed all present but restore
+     * the non-clickable box failure. A capability-only test must not pass as
+     * proof of real native targeting. The immutable pre-fix disk separately
+     * proves the original parser-rejection path, without this seam. */
+    o->pointer_events_none |= css_computed_pointer_events(cs) == CSS_POINTER_EVENTS_ALL;
+#endif
     { uint8_t v = css_computed_visibility(cs);
       if (v == CSS_VISIBILITY_HIDDEN || v == CSS_VISIBILITY_COLLAPSE) { o->hidden = 1; o->vis_hid = 1; } }
     { css_fixed op;
-      o->opacity = 255;
+      o->opacity = 255;o->opacity_context=0;
       if (css_computed_opacity(cs, &op) == CSS_OPACITY_SET) {
+          o->opacity_context=op<F_1;
           if (op <= 0) { o->hidden = 1; o->op0 = 1; o->opacity = 0; }
           else if (op < F_1) o->opacity = FIXTOINT(FMUL(op, INTTOFIX(255)) + F_0_5);
       } }
@@ -1510,6 +1986,10 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
        * as a known simplification rather than a new mechanism, because the
        * failure mode is "off by the wrapper's offset", not "gone".
        *
+       * Correction (2026-09-09): fixed now anchors to the viewport in layout,
+       * and paint/native hit/CSSOM share css_viewport_fixed_owner to ignore page
+       * scroll. A transform-established fixed containing block remains absent.
+       *
        * sticky is laid out as relative, which is what it is until the
        * scroll offset reaches it. */
       case CSS_POSITION_ABSOLUTE: o->position = POS_ABSOLUTE; o->pos_abs = 1; break;
@@ -1528,18 +2008,36 @@ static void convert(const css_computed_style *cs, int parent_font, struct cstyle
       case CSS_POSITION_STICKY:   o->position = POS_STICKY; break;
       default:                    o->position = POS_STATIC; break;
       } }
-    /* Box offsets, in any absolute unit. Percentages are skipped rather than
-     * misapplied: they resolve against the containing block's size, which the
-     * cstyle has no room to defer and layout does not thread through here. */
-    { css_fixed v; css_unit u; int p;
-      if (css_computed_top(cs, &v, &u) == CSS_TOP_SET)
-          { int q = len_px(v, u, fp, &p); if (!p) { o->top = clamp_px(q); o->has_top = 1; } }
-      if (css_computed_left(cs, &v, &u) == CSS_LEFT_SET)
-          { int q = len_px(v, u, fp, &p); if (!p) { o->left = clamp_px(q); o->has_left = 1; } }
-      if (css_computed_right(cs, &v, &u) == CSS_RIGHT_SET)
-          { int q = len_px(v, u, fp, &p); if (!p) { o->right = clamp_px(q); o->has_right = 1; } }
-      if (css_computed_bottom(cs, &v, &u) == CSS_BOTTOM_SET)
-          { int q = len_px(v, u, fp, &p); if (!p) { o->bottom = clamp_px(q); o->has_bottom = 1; } } }
+    /* Formerly percentage offsets were dropped because cstyle had no deferred
+     * unit. In the guest that turned a fixed top:20% search box into top:auto
+     * at y=0, under a z-index:4 navigation row. Keep the specified fraction;
+     * only layout knows whether its basis is viewport or positioned padding.
+     * LibCSS's length-auto cascade still skips calc inset declarations. This
+     * bridge does NOT synthesize a slope from an absent computed value.
+     * Read the raw composed inset here: LibCSS's public relative-position
+     * getters synthesize the opposite edge but get_*_bits returns type only,
+     * losing a percentage unit and turning top:25% into bottom:-25px. Layout
+     * now resolves relative auto/opposite edges with the real CB basis. */
+#define INSET_VALUE(NAME, EDGE, SET) do { \
+    css_fixed v=0; css_unit u=CSS_UNIT_PX; int pc; \
+    if(o->position!=POS_STATIC && get_##NAME(cs,&v,&u)==SET) { \
+        int q=len_px(v,u,fp,&pc); \
+        if(!pc) {o->NAME=clamp_px(q);o->has_##NAME=1;} \
+        else { \
+            INSET_PERCENT(NAME,EDGE,v); \
+        } \
+    } \
+} while(0)
+#ifdef LAYOUT_INSET_PERCENT_LEGACY
+#define INSET_PERCENT(NAME,EDGE,V) ((void)0)
+#else
+#define INSET_PERCENT(NAME,EDGE,V) do {o->NAME=0;o->has_##NAME=1; \
+    o->inset_pct[EDGE]=(int)(V);o->inset_pct_mask|=1u<<(EDGE);} while(0)
+#endif
+    INSET_VALUE(top,0,CSS_TOP_SET); INSET_VALUE(right,1,CSS_RIGHT_SET);
+    INSET_VALUE(bottom,2,CSS_BOTTOM_SET); INSET_VALUE(left,3,CSS_LEFT_SET);
+#undef INSET_PERCENT
+#undef INSET_VALUE
 
     { int32_t z;
       /* z-index is stored as a raw css_fixed by css__cascade_z_index (unlike
@@ -1717,6 +2215,8 @@ static const char *const g_prop_names[CSSP__COUNT] = {
     "text-align", "line-height", "text-decoration",
     "box-sizing", "white-space", "float", "clear",
     "list-style-type",
+    "pointer-events",
+    "backface-visibility", "transform-style",
 };
 
 const char *css_prop_name(int i)
@@ -1833,6 +2333,7 @@ int css_prop_paint_only(int prop)
     case CSSP_BORDER_TOP_STYLE: case CSSP_BORDER_RIGHT_STYLE:
     case CSSP_BORDER_BOTTOM_STYLE: case CSSP_BORDER_LEFT_STYLE:
     case CSSP_OPACITY: case CSSP_VISIBILITY: case CSSP_Z_INDEX:
+    case CSSP_BACKFACE_VISIBILITY: case CSSP_TRANSFORM_STYLE:
     case CSSP_TEXT_DECORATION:
         return 1;
     default:
@@ -1988,6 +2489,7 @@ static const char *display_name(const css_computed_style *cs)
 {
     switch (css_computed_display(cs, false)) {
     case CSS_DISPLAY_NONE:          return "none";
+    case CSS_DISPLAY_CONTENTS:      return "contents";
     case CSS_DISPLAY_INLINE:        return "inline";
     case CSS_DISPLAY_INLINE_BLOCK:  return "inline-block";
     case CSS_DISPLAY_LIST_ITEM:     return "list-item";
@@ -2119,6 +2621,16 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
     int fp = n->style ? ((struct cstyle *)n->style)->font_px : parent_font_of(n);
 
     switch (prop) {
+    case CSSP_POINTER_EVENTS:
+        ob_s(&b, css_computed_pointer_events(cs)==CSS_POINTER_EVENTS_NONE ? "none" :
+                 css_computed_pointer_events(cs)==CSS_POINTER_EVENTS_ALL ? "all" : "auto");
+        break;
+    case CSSP_BACKFACE_VISIBILITY:
+        ob_s(&b,n->style && ((struct cstyle *)n->style)->backface_hidden?"hidden":"visible");
+        break;
+    case CSSP_TRANSFORM_STYLE:
+        ob_s(&b,n->style && ((struct cstyle *)n->style)->preserve_3d?"preserve-3d":"flat");
+        break;
     case CSSP_WIDTH:
         if (css_computed_width(cs, &len, &unit) == CSS_WIDTH_SET) ob_len(&b, len, unit, fp);
         else ob_s(&b, "auto");
@@ -2486,6 +2998,83 @@ int css_computed_text(struct node *n, int prop, char *out, int outmax)
     return b.n;
 }
 
+/* A cstyle is freed in dom.c with one kfree, and scoped snapshots copy only
+ * its prefix. Keep both proxies and copied UTF-8 in the SAME allocation, rather
+ * than teach every DOM cleanup/clone path a second lifetime. LibCSS content
+ * strings belong to the computed-style arena: borrowing them into the display
+ * list would turn restyling into a use-after-free.
+ *
+ * This is the string/attr() subset. Counters, quote-depth and image content
+ * require additional state/resources and are refused as a whole declaration;
+ * silently printing only the string half of `url(...) "alt"` would be false
+ * rendering. A 64 KiB per-pseudo budget refuses oversized content without
+ * truncating the generated text into a plausible but incorrect value.
+ * Measured 2026-09-09 by test-generated-content: with this producer disabled,
+ * the empty 80x12 generated background disappears and the authored child moves
+ * from y=12 to y=0. The positive gate inspects IT_TEXT/IT_RECT and geometry;
+ * actual glyph rasterization remains a separate guest-fixture check. */
+struct generated_box {
+    struct cstyle style;
+    struct node box, text;
+};
+/* The generator and feature queries share this whitelist. LibCSS also parses
+ * counters, quotes and URIs, but accepting their syntax does not make them ink.
+ * Keep capability separate from whether a particular attr currently has text. */
+static unsigned long long g_generated_composes, g_generated_skips;
+unsigned long long css_generated_compose_count(void) { return g_generated_composes; }
+unsigned long long css_generated_skip_count(void) { return g_generated_skips; }
+
+static int generated_item_supported(int type)
+{
+    return type == CSS_COMPUTED_CONTENT_STRING || type == CSS_COMPUTED_CONTENT_ATTR;
+}
+
+/* Value-aware @supports hook; input is the property parser's bytecode, never a
+ * second CSS text scanner. CSS.supports uses this same hook on its inline rule.
+ * Each supported list item carries one string-table index; reject the ENTIRE
+ * list on an unsupported item. CSS-wide keywords/none/normal need no box. */
+int logit_css_generated_supports(const uint32_t *code, uint32_t used)
+{
+#ifdef CSS_CONTENT_SUPPORTS_NEGCTL
+    return 0; /* Restore the old name-only denial for the watched control. */
+#endif
+    if (!code || !used || getOpcode(code[0]) != CSS_PROP_CONTENT) return 0;
+    if (getFlagValue(code[0]) != FLAG_VALUE__NONE) return used == 1;
+    uint32_t value = getValue(code[0]), at = 1;
+    if (value == CONTENT_NORMAL || value == CONTENT_NONE) return used == 1;
+    for (;;) {
+        int type = value == CONTENT_STRING ? CSS_COMPUTED_CONTENT_STRING :
+                   value == CONTENT_ATTR ? CSS_COMPUTED_CONTENT_ATTR : -1;
+        if (!generated_item_supported(type) || at + 1 >= used) return 0;
+        at++; /* the string/attribute name belongs to the stylesheet */
+        value = code[at++];
+        if (value == CONTENT_NORMAL) return at == used;
+    }
+}
+
+static int generated_text(const css_computed_style *cs, struct node *owner, char *out)
+{
+    const css_computed_content_item *v = NULL;
+    if (css_computed_content(cs, &v) != CSS_CONTENT_SET || !v) return -1;
+    int total = 0;
+    for (; v->type != CSS_COMPUTED_CONTENT_NONE; v++) {
+        const char *s; size_t len;
+        if (!generated_item_supported(v->type)) return -1;
+        if (v->type == CSS_COMPUTED_CONTENT_STRING) {
+            s = lwc_string_data(v->data.string); len = lwc_string_length(v->data.string);
+        } else if (v->type == CSS_COMPUTED_CONTENT_ATTR) {
+            s = dom_attr_lw(owner, v->data.attr);
+            if (!s) s = "";
+            len = strlen(s);
+        } else return -1;
+        if (len > 65536u - (unsigned)total) return -1;
+        if (out && len) memcpy(out + total, s, len);
+        total += (int)len;
+    }
+    if (out) out[total] = 0;
+    return total;
+}
+
 /* ---------- traversal ---------- */
 static void style_node(struct node *n, const css_computed_style *parent, int parent_font)
 {
@@ -2509,6 +3098,17 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
     css_computed_style *eff = base;
     if (parent && css_computed_style_compose(parent, base, &g_unit, &composed) == CSS_OK && composed)
         eff = composed;
+    css_computed_style *line_resolved = NULL;
+    if (normalize_line_height(eff, parent, parent_font, &line_resolved) != CSS_OK) {
+        /* An allocation failure must not publish a style whose inherited
+         * length changes meaning at the next generation. Retain the previous
+         * node style, as the selection-failure path above does. */
+        if (composed) css_computed_style_destroy(composed);
+        css_select_results_destroy(res);
+        if (inl) css_stylesheet_destroy(inl);
+        return;
+    }
+    if (line_resolved) eff = line_resolved;
 
     /* The root element's own style is the reference for every `rem` below it.
      * Publish it before the subtree is walked and before convert() runs on any
@@ -2518,11 +3118,65 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
      * font_size_default (16), which is exactly what CSS specifies. */
     int is_root = (parent == NULL);
 
-    struct cstyle *o = kmalloc(sizeof *o);
+    css_computed_style *pseudo[2] = { NULL, NULL };
+    int plen[2] = { -1, -1 };
+    size_t extra = 0;
+#ifndef CSS_NEGCTL_GENERATED
+    for (int pi = 0; pi < 2; pi++) {
+        css_computed_style *pc = res->styles[pi ? CSS_PSEUDO_ELEMENT_AFTER : CSS_PSEUDO_ELEMENT_BEFORE];
+        if (!pc) continue;
+#ifndef CSS_GENERATED_NO_EMPTY_SKIP
+        /* A global ::before/::after reset creates partial pseudo styles even
+         * without a generated box. NORMAL/NONE cannot be changed by font or
+         * inheritance composition, so avoid composing them only to discard
+         * them afterwards. Explicit INHERIT must still compose; an empty
+         * STRING must still build its background/box. The host gate's reset
+         * page drops actual composition attempts from 16 to 0 with identical
+         * authored text; guest phase timing measures any speed benefit. */
+        const css_computed_content_item *content_items;
+        uint8_t content_type = css_computed_content(pc, &content_items);
+        if (content_type == CSS_CONTENT_NORMAL || content_type == CSS_CONTENT_NONE) {
+            g_generated_skips++;
+            continue;
+        }
+#endif
+        g_generated_composes++;
+        if (css_computed_style_compose(eff, pc, &g_unit, &pseudo[pi]) != CSS_OK)
+            continue;
+        css_computed_style *pr = NULL;
+        if (normalize_line_height(pseudo[pi], eff, parent_font, &pr) != CSS_OK) {
+            css_computed_style_destroy(pseudo[pi]); pseudo[pi] = NULL;
+            continue;
+        }
+        if (pr) { css_computed_style_destroy(pseudo[pi]); pseudo[pi] = pr; }
+        plen[pi] = generated_text(pseudo[pi], n, NULL);
+        if (plen[pi] >= 0) extra += sizeof(struct generated_box) + (size_t)plen[pi] + 1 + 7;
+    }
+#endif
+    struct cstyle *o = kmalloc(sizeof *o + extra);
     if (o) {
         memset(o, 0, sizeof *o);
         o->font_px = parent_font;          /* sensible default before convert */
         convert(eff, parent_font, o);
+        css_color local_color;
+        o->svg_color_explicit = css_computed_color(base, &local_color) == CSS_COLOR_COLOR;
+        char *tail = (char *)(o + 1);
+        for (int pi = 0; pi < 2; pi++) if (plen[pi] >= 0) {
+            /* Align each embedded struct after the previous variable text. */
+            tail = (char *)(((uintptr_t)tail + 7u) & ~(uintptr_t)7u);
+            struct generated_box *g = (struct generated_box *)tail;
+            memset(g, 0, sizeof *g);
+            convert(pseudo[pi], o->font_px, &g->style);
+            g->style.generated_owner = n; g->style.generated_kind = (unsigned char)(pi + 1);
+            g->box.type = N_ELEM; g->box.tag = "span"; g->box.tag_id = TAG_SPAN;
+            g->box.parent = n; g->box.style = &g->style;
+            g->box.first_child = g->box.last_child = &g->text;
+            g->text.type = N_TEXT; g->text.parent = &g->box;
+            g->text.text = (char *)(g + 1); g->text.textlen = plen[pi];
+            generated_text(pseudo[pi], n, g->text.text);
+            o->generated[pi] = &g->box;
+            tail = g->text.text + plen[pi] + 1;
+        }
         /* See is_html_table_box(): the collapsed-table exception, which needs
          * the element and so cannot live inside convert(). */
         if (css_computed_border_collapse(eff) == CSS_BORDER_COLLAPSE_COLLAPSE &&
@@ -2532,6 +3186,7 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
         if (n->style) kfree(n->style);
         n->style = o;
     }
+    for (int pi = 0; pi < 2; pi++) if (pseudo[pi]) css_computed_style_destroy(pseudo[pi]);
     g_stat_styled++;
     if (is_root) { g_unit.root_style = eff; g_root_px = o ? o->font_px : 16; }
 
@@ -2547,6 +3202,7 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
     for (struct node *c = n->first_child; c; c = c->next)
         style_node(c, eff, my_font);
 
+    if (line_resolved) css_computed_style_destroy(line_resolved);
     if (composed) css_computed_style_destroy(composed);
     css_select_results_destroy(res);
     if (inl) css_stylesheet_destroy(inl);
@@ -2557,13 +3213,19 @@ static void style_node(struct node *n, const css_computed_style *parent, int par
  * note there for why re-styling with the WRONG sheet set is the failure mode
  * this records against. */
 static struct node *g_auto_root;
+/* Full synchronous computed-style flushes need the same extension producer
+ * as scoped flushes. Otherwise the base pass zeroes a new backface keyword
+ * immediately before getComputedStyle reads it. Registered by the browser. */
+static void (*g_post_pass)(struct node *root, const char *css, int len);
 static const char  *g_auto_css;
 static int          g_auto_len;
 static char        *g_auto_owned;      /* CSS we collected ourselves, if any */
 static int          g_auto_ready;
+static unsigned long g_auto_ui_revision;
 
 void css_apply(struct node *root, const char *page_css, int page_len)
 {
+    ui_sync();
     if (!g_ctx) css_init();
     if (!g_ctx) return;
 
@@ -2608,6 +3270,7 @@ void css_apply(struct node *root, const char *page_css, int page_len)
     g_auto_css  = page_css;
     g_auto_len  = (page_css && page_len > 0) ? page_len : 0;
     g_auto_ready = 1;
+    g_auto_ui_revision = ui_revision;
 }
 
 /* ======================================================================
@@ -2667,9 +3330,11 @@ void css_apply(struct node *root, const char *page_css, int page_len)
  * c/apps/libc/include/features.h defines that name, and it has already cost
  * this tree three bugs. */
 extern int          js_dom_dirty(void)                    LOGIT_WEAK;
+extern unsigned long long js_dom_mutation_generation(void) LOGIT_WEAK;
 extern int          js_dom_inval_roots(void)              LOGIT_WEAK;
 extern struct node *js_dom_inval_root(int i, int *sibs)   LOGIT_WEAK;
 LOGIT_WEAK_STUB(js_dom_dirty);
+LOGIT_WEAK_STUB(js_dom_mutation_generation);
 LOGIT_WEAK_STUB(js_dom_inval_roots);
 LOGIT_WEAK_STUB(js_dom_inval_root);
 
@@ -2712,6 +3377,17 @@ static unsigned long g_auto_fp;
 
 static unsigned long inval_fingerprint(struct node *root)
 {
+#ifndef CSS_NEGCTL_CAPACITY_FINGERPRINT
+    /* Correction to the historical high-water claim above: dom_doc_bytes is
+     * allocated CHUNK capacity, not a mutation epoch. none -> block -> none
+     * inside an already-dirty subtree can reuse a chunk and its scope roots,
+     * making that fingerprint unchanged while the actual style changed.
+     * Read the DOM binding's mutation generation when available. Keep the
+     * legacy fallback for reduced host embeddings without that optional API;
+     * it is no longer the shipping browser's freshness authority. */
+    if (LOGIT_HAVE(js_dom_mutation_generation))
+        return (unsigned long)js_dom_mutation_generation();
+#endif
     unsigned long h = 1469598103934665603UL;
 #define MIX(x) do { h ^= (unsigned long)(x); h *= 1099511628211UL; } while (0)
     MIX(root->doc ? dom_doc_bytes(root->doc) : 0);
@@ -2800,9 +3476,15 @@ void css_ensure_styled(struct node *n)
     struct node *root = n;
     while (root->parent) root = root->parent;
 
+    ui_sync();
+    int ui_dirty = g_auto_ui_revision != ui_revision;
     int fresh = (g_auto_ready && g_auto_root == root);
-    int dirty = LOGIT_HAVE(js_dom_dirty) ? js_dom_dirty() : 0;
-    if (fresh && !dirty) return;
+    /* Passive documents have no script mutation owner. The live realm's
+     * invalidation roots may name its own nodes; never restyle those while a
+     * child selection context is active. The embedder explicitly restyles a
+     * passive document after resource/viewport changes. */
+    int dirty = !g_css_passive && LOGIT_HAVE(js_dom_dirty) ? js_dom_dirty() : 0;
+    if (fresh && !dirty && !ui_dirty) return;
 
     /* Dirty, but possibly dirty from a mutation we have already cascaded --
      * the embedder owns the flag and has not cleared it yet. See the note
@@ -2811,7 +3493,7 @@ void css_ensure_styled(struct node *n)
     unsigned long fp = 0;
     if (fresh) {
         fp = inval_fingerprint(root);
-        if (fp && fp == g_auto_fp) return;
+        if (!ui_dirty && fp && fp == g_auto_fp) return;
     }
 
     if (!fresh) {
@@ -2821,6 +3503,7 @@ void css_ensure_styled(struct node *n)
         g_auto_owned = build_author_css(root, &len);
         g_auto_flushes++;
         css_apply(root, g_auto_owned, len);      /* records g_auto_* */
+        if(g_post_pass)g_post_pass(root,g_auto_owned,len);
         g_auto_fp = inval_fingerprint(root);
         return;
     }
@@ -2831,7 +3514,7 @@ void css_ensure_styled(struct node *n)
     g_auto_flushes++;
     g_auto_fp = fp;
     int nroots = LOGIT_HAVE(js_dom_inval_roots) ? js_dom_inval_roots() : 0;
-    if (nroots > 0 && LOGIT_HAVE(js_dom_inval_root)) {
+    if (!ui_dirty && nroots > 0 && LOGIT_HAVE(js_dom_inval_root)) {
         int all = 0;
         for (int i = 0; i < nroots; i++) {
             int sibs = 0;
@@ -2842,6 +3525,7 @@ void css_ensure_styled(struct node *n)
         if (!all) return;
     }
     css_apply(root, g_auto_css, g_auto_len);
+    if(g_post_pass)g_post_pass(root,g_auto_css,g_auto_len);
 #endif
 }
 
@@ -2877,7 +3561,6 @@ static int g_snap_over;                 /* scope bigger than the cap: give up me
  * conservatively (CHANGED_LAYOUT), which is exactly what css_apply does anyway. */
 #define SNAP_MAX 1024
 
-static void (*g_post_pass)(struct node *root, const char *css, int len);
 void css_set_post_pass(void (*fn)(struct node *root, const char *css, int len))
 { g_post_pass = fn; }
 
@@ -2935,6 +3618,11 @@ static void snap_scope(struct node *n, int siblings)
 static int cstyle_diff(const struct cstyle *a, const struct cstyle *b)
 {
     if (!a || !b) return CSS_CHANGED_LAYOUT;
+    /* Snapshot pointers may refer to the allocation just freed by style_node.
+     * Never dereference them or infer equality from allocator address reuse:
+     * attr() text can change while every prefix byte stays identical. */
+    if (a->generated[0] || a->generated[1] || b->generated[0] || b->generated[1])
+        return CSS_CHANGED_LAYOUT;
     if (memcmp(a, b, sizeof *a) == 0) return CSS_CHANGED_NONE;
     struct cstyle t;
     memcpy(&t, a, sizeof t);                    /* byte copy: see snap_push */
@@ -2947,6 +3635,7 @@ static int cstyle_diff(const struct cstyle *a, const struct cstyle *b)
     t.underline = b->underline; t.strike = b->strike; t.overline = b->overline;
     t.opacity = b->opacity;
     t.hidden = b->hidden; t.op0 = b->op0; t.vis_hid = b->vis_hid;
+    t.backface_hidden=b->backface_hidden;t.preserve_3d=b->preserve_3d;
     for (int i = 0; i < 4; i++) { t.radius[i] = b->radius[i]; t.radius_pct[i] = b->radius_pct[i]; }
     t.z_index = b->z_index; t.has_z = b->has_z;
     t.anim = b->anim; t.trans_op = b->trans_op;
@@ -3134,6 +3823,14 @@ static int sup_beside_libcss(const char *prop, int plen, const char *value, int 
     char buf[1024];
     int len = 0;
 
+#ifndef CSS_PHYSICAL_SPACING_LEGACY
+    if(LOGIT_HAVE(css_box_supports_decl) && css_box_supports_decl(prop,plen,value,vlen))return 1;
+#endif
+
+    if(LOGIT_HAVE(css_facing_keyword) &&
+       (sup_ieq(prop,plen,"backface-visibility") || sup_ieq(prop,plen,"transform-style")))
+        return css_facing_keyword(value,vlen,sup_ieq(prop,plen,"transform-style"))>=0;
+
     if (css_canon_decl(prop, plen, value, vlen, buf, (int)sizeof buf, &len)
             == CSS_CANON_OK)
         return 1;
@@ -3148,9 +3845,12 @@ static int sup_beside_libcss(const char *prop, int plen, const char *value, int 
      * properly (and is what computes it), so ask it. The em/rem bases are the
      * initial font-size: whether a value PARSES does not depend on them, and
      * CSS.supports has no element to take them from. */
-    if (LOGIT_HAVE(ci_transform_parse) && sup_ieq(prop, plen, "transform")) {
+    if (LOGIT_HAVE(ci_transform_parse_context) && sup_ieq(prop, plen, "transform")) {
         struct ci_xform t;
-        if (ci_transform_parse(value, vlen, 16.0, 16.0, &t) == 0) return 1;
+        /* These are syntax-validation bases only. Computed and used values
+         * are resolved later with the owning element and document's metrics. */
+        const struct ci_length_context context={16,16,20,20};
+        if (ci_transform_parse_context(value,vlen,&context,&t) == 0) return 1;
     }
 #endif
     return 0;
@@ -3189,6 +3889,15 @@ int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
      * nothing at all and "nothing reported" is our not-supported answer, but
      * being explicit here keeps the two reasons distinguishable. */
 
+    return css_native_supports_decl(prop,plen,value,vlen);
+}
+
+/* Used only when the bounded box grammar declines a declaration. Asking
+ * LibCSS directly avoids recursing through the extension supports hook and
+ * preserves existing native values without duplicating its unit grammar. */
+int css_native_supports_decl(const char *prop,int plen,const char *value,int vlen)
+{
+    if(!prop || !value || plen<=0 || vlen<=0)return 0;
     int need = plen + vlen + 2;
     char stackbuf[256];
     char *decl = (need <= (int)sizeof stackbuf) ? stackbuf : (char *)kmalloc((size_t)need);
@@ -3203,6 +3912,15 @@ int css_supports_decl(const char *prop, int plen, const char *value, int vlen)
     css__parse_drop_report = sup_report;
     css_stylesheet *s = make_sheet(decl, (size_t)(plen + 1 + vlen), true, false);
     css__parse_drop_report = saved;
+    if (sup_ieq(prop, plen, "content")) {
+        /* The old syntax-only answer said YES to counter()/url(), while the
+         * actual generator refused both. Read the compiled declaration before
+         * destroying its owner, exactly as @supports does in language.c. */
+        const css_rule *r = s ? s->rule_list : NULL;
+        const css_style *st = r && r->type == CSS_RULE_SELECTOR ?
+            ((const css_rule_selector *)r)->style : NULL;
+        g_sup_ok = g_sup_ok && st && logit_css_generated_supports(st->bytecode, st->used);
+    }
     if (s) css_stylesheet_destroy(s);
     if (decl != stackbuf) kfree(decl);
     return g_sup_seen && g_sup_ok;
@@ -3737,3 +4455,141 @@ int css_specified_canon(const char *prop, int plen, const char *value, int vlen,
 {
     return css_canon_decl(prop, plen, value, vlen, out, outcap, outlen);
 }
+
+/* Quiescent style isolation, paired with layout_context. Holding only computed
+ * nodes is insufficient: automatic CSSOM flush remembers the author buffer,
+ * the parse cache owns that sheet, and extension fields borrow another cache.
+ * Each passive context owns all three producers. Process-level parser reporter
+ * hooks and the computed-style releaser are immutable services and stay shared. */
+extern struct css_extra_context *css_extra_context_create(void) LOGIT_WEAK;
+extern struct css_extra_context *css_extra_context_activate(struct css_extra_context *) LOGIT_WEAK;
+extern void css_extra_context_destroy(struct css_extra_context *) LOGIT_WEAK;
+extern struct css_vars_context *css_vars_context_create(void) LOGIT_WEAK;
+extern struct css_vars_context *css_vars_context_activate(struct css_vars_context *) LOGIT_WEAK;
+extern void css_vars_context_destroy(struct css_vars_context *) LOGIT_WEAK;
+LOGIT_WEAK_STUB(css_extra_context_create);
+LOGIT_WEAK_STUB(css_extra_context_activate);
+LOGIT_WEAK_STUB(css_extra_context_destroy);
+LOGIT_WEAK_STUB(css_vars_context_create);
+LOGIT_WEAK_STUB(css_vars_context_activate);
+LOGIT_WEAK_STUB(css_vars_context_destroy);
+#define CSS_CONTEXT_FIELDS(X) \
+    X(ui_hover) \
+    X(ui_active) \
+    X(ui_focus) \
+    X(ui_revision) \
+    X(ui_rendered) \
+    X(g_css_passive) \
+    X(g_target_frag) \
+    X(g_target_fraglen) \
+    X(g_nd) \
+    X(g_ndcap) \
+    X(g_ndused) \
+    X(g_stat_styled) \
+    X(g_stat_hits) \
+    X(g_ctx) \
+    X(g_ua_sheet) \
+    X(g_quirks_sheet) \
+    X(g_quirks_appended) \
+    X(g_allow_quirks) \
+    X(g_unit) \
+    X(g_media) \
+    X(g_screen_w) \
+    X(g_screen_h) \
+    X(g_vw) \
+    X(g_vh) \
+    X(g_scheme) \
+    X(g_scheme_dark) \
+    X(extra_matches) \
+    X(extra_match_count) \
+    X(extra_specificity) \
+    X(g_author_sheet) \
+    X(g_author_src) \
+    X(g_author_srclen) \
+    X(g_author_quirks) \
+    X(g_author_parses) \
+    X(g_root_px) \
+    X(g_last_custom) \
+    X(g_generated_composes) \
+    X(g_generated_skips) \
+    X(g_auto_root) \
+    X(g_auto_css) \
+    X(g_auto_len) \
+    X(g_auto_owned) \
+    X(g_auto_ready) \
+    X(g_auto_ui_revision) \
+    X(g_auto_flushes) \
+    X(g_auto_fp) \
+    X(g_snap) \
+    X(g_snapn) \
+    X(g_snapcap) \
+    X(g_snap_over) \
+    X(g_post_pass)
+
+struct css_context {
+#define CC_FIELD(n) __typeof__(n) n;
+    CSS_CONTEXT_FIELDS(CC_FIELD)
+#undef CC_FIELD
+    struct css_extra_context *extra;
+    struct css_vars_context *vars;
+};
+static struct css_context css_default_context;
+static struct css_context *css_active_context;
+struct css_context *css_context_create(void)
+{
+    if(!LOGIT_HAVE(css_extra_context_create)||!LOGIT_HAVE(css_extra_context_activate)||!LOGIT_HAVE(css_extra_context_destroy)||
+       !LOGIT_HAVE(css_vars_context_create)||!LOGIT_HAVE(css_vars_context_activate)||!LOGIT_HAVE(css_vars_context_destroy))return 0;
+    struct css_context *c=kmalloc(sizeof *c);
+    if(!c)return 0;
+    memset(c,0,sizeof *c);
+    c->extra=css_extra_context_create();c->vars=css_vars_context_create();
+    if(!c->extra||!c->vars){css_extra_context_destroy(c->extra);css_vars_context_destroy(c->vars);kfree(c);return 0;}
+    c->g_css_passive=1;c->ui_revision=1;c->g_root_px=16;
+    c->g_screen_w=g_screen_w;c->g_screen_h=g_screen_h;
+    c->g_scheme_dark=g_scheme_dark;
+    c->g_post_pass=g_post_pass;
+    return c;
+}
+struct css_context *css_context_activate(struct css_context *c)
+{
+    struct css_context *previous=css_active_context;
+    if(previous==c)return previous;
+#ifndef CSS_CONTEXT_LEGACY_SHARED
+    struct css_context *save=previous?previous:&css_default_context;
+    struct css_context *next=c?c:&css_default_context;
+#define CC_SAVE(n) memcpy(&save->n,&n,sizeof n);
+    CSS_CONTEXT_FIELDS(CC_SAVE)
+#undef CC_SAVE
+#define CC_LOAD(n) memcpy(&n,&next->n,sizeof n);
+    CSS_CONTEXT_FIELDS(CC_LOAD)
+#undef CC_LOAD
+    css_extra_context_activate(c?c->extra:0);
+    css_vars_context_activate(c?c->vars:0);
+#endif
+    /* Inactive documents keep their own style revision, but the preference
+     * belongs to the system. Invalidate on activation before replacing the
+     * saved value; updating only the media value leaves cached styles stale. */
+    css_set_reduced_motion(g_reduced_motion);
+    css_active_context=c;return previous;
+}
+void css_context_destroy(struct css_context *c)
+{
+    if(!c)return;
+#ifndef CSS_CONTEXT_LEGACY_SHARED
+    struct css_context *previous=css_context_activate(c);
+    nd_reset();
+    if(g_nd){kfree(g_nd);g_nd=0;g_ndcap=g_ndused=0;}
+    if(g_ctx){css_select_ctx_destroy(g_ctx);g_ctx=0;}
+    if(g_author_sheet){css_stylesheet_destroy(g_author_sheet);g_author_sheet=0;}
+    if(g_ua_sheet){css_stylesheet_destroy(g_ua_sheet);g_ua_sheet=0;}
+    if(g_quirks_sheet){css_stylesheet_destroy(g_quirks_sheet);g_quirks_sheet=0;}
+    if(g_author_src){kfree(g_author_src);g_author_src=0;}
+    if(g_auto_owned){free(g_auto_owned);g_auto_owned=0;}
+    if(g_snap){kfree(g_snap);g_snap=0;}
+    if(g_scheme){lwc_string_unref(g_scheme);g_scheme=0;}
+    css_context_activate(previous==c?0:previous);
+#endif
+    css_extra_context_destroy(c->extra);css_vars_context_destroy(c->vars);
+    kfree(c);
+}
+#undef CSS_CONTEXT_FIELDS
