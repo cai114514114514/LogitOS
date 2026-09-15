@@ -71,6 +71,11 @@ void   srand(unsigned);
 int    rand_r(unsigned *);
 long   random(void);
 void   srandom(unsigned);
+/* Cryptographic random family: unlike rand/random these draw from the kernel
+ * Hash_DRBG and do not have a user-visible seed. */
+unsigned int arc4random(void);
+void         arc4random_buf(void *buf, size_t n);
+unsigned int arc4random_uniform(unsigned int upper_bound);
 
 /* --- environment -------------------------------------------------------- */
 extern char **environ;
@@ -101,6 +106,37 @@ char  *realpath(const char *restrict, char *restrict);
 
 /* --- allocation (c/apps/libc/src/pathx.c; malloc.c owns the other four) -- */
 void  *reallocarray(void *, size_t, size_t);
+void  *reallocf(void *, size_t);
+void   freezero(void *, size_t);
+
+char  *canonicalize_file_name(const char *);
+char  *secure_getenv(const char *);
+long long strtonum(const char *, long long, long long, const char **);
+long   a64l(const char *);
+char  *l64a(long);
+
+struct drand48_data {
+    unsigned short __x[3], __old_x[3], __c, __init;
+    unsigned long long __a;
+};
+double drand48(void);
+double erand48(unsigned short [3]);
+long   lrand48(void);
+long   nrand48(unsigned short [3]);
+long   mrand48(void);
+long   jrand48(unsigned short [3]);
+void   srand48(long);
+unsigned short *seed48(unsigned short [3]);
+void   lcong48(unsigned short [7]);
+int drand48_r(struct drand48_data *, double *);
+int erand48_r(unsigned short [3], struct drand48_data *, double *);
+int lrand48_r(struct drand48_data *, long *);
+int nrand48_r(unsigned short [3], struct drand48_data *, long *);
+int mrand48_r(struct drand48_data *, long *);
+int jrand48_r(unsigned short [3], struct drand48_data *, long *);
+int srand48_r(long, struct drand48_data *);
+int seed48_r(unsigned short [3], struct drand48_data *);
+int lcong48_r(unsigned short [7], struct drand48_data *);
 
 /* --- suboption parsing (c/apps/libc/src/pathx.c) -------------------------
  * getsubopt() is declared here rather than in a header of its own because

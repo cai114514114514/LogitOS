@@ -58,6 +58,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
+#include "pty_ctl.h"
 
 /* ------------------------------------------------------------------------
  * readv / writev / preadv / pwritev
@@ -253,6 +254,11 @@ int ioctl(int fd, unsigned long request, ...)
 
     switch (request) {
     case TIOCGWINSZ:
+        if (libc_pty_ctl(fd,LPTY_GETWIN,arg)==0) return 0;
+        errno=ENOTTY;return -1;
+    case 0x5414: /* TIOCSWINSZ; kept available for Linux-value consumers */
+        if (libc_pty_ctl(fd,LPTY_SETWIN,arg)==0) return 0;
+        errno=ENOTTY;return -1;
     case TIOCGPGRP:
         /* Consistent with termios.c's not_a_pty(): no driver in this kernel
          * tracks a window size or a foreground process group for ANY fd, tty

@@ -33,6 +33,8 @@
  * a client retry loop is written around exactly that distinction. */
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netinet/in.h>
+#include <sys/time.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -70,6 +72,7 @@ static int sock_errno(long rc)
     case LSK_E_NET:         return ENETDOWN;
     case LSK_E_PERM:        return EACCES;
     case LSK_E_CONNREFUSED: return ECONNREFUSED;
+    case LSK_E_INTR:        return EINTR;
     default:                return EIO;
     }
 }
@@ -110,8 +113,29 @@ static int to_kaddr(const struct sockaddr *sa, socklen_t len,
     return 0;
 }
 
+/* 2026-09-11: IPv4 STREAM descriptors now have a real connect consumer.
+ * Convert network byte order at this one boundary, including accept/name
+ * results; the native ABI continues to carry host-order addresses. */
+static int to_inet(const struct sockaddr *sa,socklen_t len,struct logit_sockaddr *out)
+{
+    if(len<sizeof(struct sockaddr_in)){errno=EINVAL;return -1;}
+    const struct sockaddr_in *in=(const struct sockaddr_in *)sa;
+    out->family=LOGIT_AF_INET;out->addr=ntohl(in->sin_addr.s_addr);out->port=ntohs(in->sin_port);return 0;
+}
+static int from_inet(const struct logit_sockaddr *ka,struct sockaddr *sa,socklen_t *len)
+{
+    struct sockaddr_in in;memset(&in,0,sizeof in);
+    in.sin_family=AF_INET;in.sin_addr.s_addr=htonl(ka->addr);in.sin_port=htons(ka->port);
+    socklen_t n=*len;if(n>sizeof in)n=sizeof in;memcpy(sa,&in,n);*len=sizeof in;return 0;
+}
+
 int socket(int domain, int type, int protocol)
 {
+    if(domain==AF_INET){
+        if(type!=SOCK_STREAM){errno=EPROTOTYPE;return -1;}
+        if(protocol&&protocol!=IPPROTO_TCP){errno=EPROTONOSUPPORT;return -1;}
+        return (int)sfail(sys(SYS_SOCKET,LOGIT_AF_INET,LOGIT_SOCK_STREAM,0));
+    }
     if (!is_unix(domain)) { errno = EAFNOSUPPORT; return -1; }
     if (protocol != 0) { errno = EPROTONOSUPPORT; return -1; }
     if (type != SOCK_STREAM && type != SOCK_DGRAM && type != SOCK_SEQPACKET)
@@ -129,6 +153,10 @@ int socketpair(int domain, int type, int protocol, int sv[2])
 
 int bind(int fd, const struct sockaddr *addr, socklen_t len)
 {
+    if(addr&&len>=sizeof(sa_family_t)&&addr->sa_family==AF_INET){
+        struct logit_sockaddr ka;if(to_inet(addr,len,&ka)<0)return -1;
+        return (int)sfail(sys(SYS_BIND,fd,(long)&ka,sizeof ka));
+    }
     struct logit_sockaddr_un ka;
     if (to_kaddr(addr, len, &ka) < 0) return -1;
     return (int)sfail(sys(SYS_BIND, fd, (long)&ka, sizeof ka));
@@ -136,6 +164,10 @@ int bind(int fd, const struct sockaddr *addr, socklen_t len)
 
 int connect(int fd, const struct sockaddr *addr, socklen_t len)
 {
+    if(addr&&len>=sizeof(sa_family_t)&&addr->sa_family==AF_INET){
+        struct logit_sockaddr ka;if(to_inet(addr,len,&ka)<0)return -1;
+        return (int)sfail(sys(SYS_CONNECT,fd,(long)&ka,sizeof ka));
+    }
     struct logit_sockaddr_un ka;
     if (to_kaddr(addr, len, &ka) < 0) return -1;
     return (int)sfail(sys(SYS_CONNECT, fd, (long)&ka, sizeof ka));
@@ -155,9 +187,12 @@ int accept(int fd, struct sockaddr *addr, socklen_t *len)
      * here: the kernel leaves the caller's buffer untouched and this sets the
      * length to zero rather than fabricating a name. A caller that prints the
      * peer gets an empty string, not a wrong one. */
-    long rc = sys(SYS_ACCEPT, fd, 0, 0);
+    if(addr&&!len){errno=EINVAL;return -1;}
+    struct logit_sockaddr peer;memset(&peer,0,sizeof peer);
+    long rc = sys(SYS_ACCEPT, fd, addr?(long)&peer:0, 0);
     if (rc < 0) { errno = sock_errno(rc); return -1; }
     if (addr && len) {
+        if(peer.family==LOGIT_AF_INET){from_inet(&peer,addr,len);return (int)rc;}
         if (*len >= (socklen_t)sizeof(sa_family_t))
             ((struct sockaddr_un *)addr)->sun_family = AF_UNIX;
         *len = 0;
@@ -167,16 +202,18 @@ int accept(int fd, struct sockaddr *addr, socklen_t *len)
 
 int getsockname(int fd, struct sockaddr *addr, socklen_t *len)
 {
-    if (!addr || !len || *len < (socklen_t)sizeof(struct sockaddr_un))
+    if (!addr || !len)
         { errno = EINVAL; return -1; }
     struct logit_sockaddr_un ka;
     long rc = sys(SYS_GETSOCKNAME, fd, (long)&ka, sizeof ka);
     if (rc < 0) { errno = sock_errno(rc); return -1; }
-    struct sockaddr_un *un = (struct sockaddr_un *)addr;
+    if(ka.family==LOGIT_AF_INET){struct logit_sockaddr in;memcpy(&in,&ka,sizeof in);return from_inet(&in,addr,len);}
+    struct sockaddr_un result;memset(&result,0,sizeof result);
+    struct sockaddr_un *un = &result;
     un->sun_family = AF_UNIX;
     memcpy(un->sun_path, ka.path, sizeof un->sun_path);
     un->sun_path[sizeof un->sun_path - 1] = 0;
-    *len = (socklen_t)sizeof *un;
+    socklen_t n=*len;if(n>sizeof result)n=sizeof result;memcpy(addr,&result,n);*len=sizeof result;
     return 0;
 }
 
@@ -276,4 +313,16 @@ ssize_t recvfrom(int fd, void *buf, size_t n, int flags,
 int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen)
 { (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; errno = ENOPROTOOPT; return -1; }
 int setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen)
-{ (void)fd; (void)level; (void)optname; (void)optval; (void)optlen; errno = ENOPROTOOPT; return -1; }
+{
+    if(!optval){errno=EINVAL;return -1;}
+    if(level==SOL_SOCKET&&optname==SO_REUSEADDR){
+        if(optlen<sizeof(int)){errno=EINVAL;return -1;}int value;memcpy(&value,optval,sizeof value);
+        return (int)sfail(sys(SYS_SETSOCKOPT,fd,(LOGIT_SOL_SOCKET<<16)|LOGIT_SO_REUSEADDR,value));
+    }
+    if(level==SOL_SOCKET&&optname==SO_RCVTIMEO){
+        if(optlen<sizeof(struct timeval)){errno=EINVAL;return -1;}struct timeval t;memcpy(&t,optval,sizeof t);
+        if(t.tv_sec<0||t.tv_sec>2147483||t.tv_usec<0||t.tv_usec>=1000000){errno=EINVAL;return -1;}
+        return (int)sfail(sys(SYS_SETSOCKOPT,fd,(LOGIT_SOL_SOCKET<<16)|LOGIT_SO_RCVTIMEO,t.tv_sec*1000+(t.tv_usec+999)/1000));
+    }
+    errno=ENOPROTOOPT;return -1;
+}

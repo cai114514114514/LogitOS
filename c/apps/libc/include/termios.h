@@ -34,6 +34,9 @@ struct termios {
 #define IXON   0x0400
 #define ICRNL  0x0100
 #define OPOST  0x0001
+#define ONLCR  0x0004
+#define VQUIT  1
+#define VKILL  3
 #define VMIN   6
 #define VTIME  5
 #define VINTR  0

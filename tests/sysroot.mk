@@ -269,3 +269,6 @@ test-sysroot: test-sysroot-tree test-sysroot-headers test-sysroot-link test-sysr
 # --- device ------------------------------------------------------------------
 test-sysroot-os: $(ISO) $(SYSROOT_WORK)/disk.img
 	bash tests/boot/run-sysroot-test.sh $(ISO) $(SYSROOT_WORK)/disk.img
+
+# The OpenLogit consumer SDK extends, and must follow, the libc installation.
+include tests/openlogit_sdk.mk

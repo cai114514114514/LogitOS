@@ -8,6 +8,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include "pty_ctl.h"
+_Static_assert(sizeof(struct termios)==sizeof(struct logit_termios),"one terminal attribute ABI");
+static int pty_result(long r) { if(r<0){errno=ENOTTY;return -1;}return 0; }
 
 static int not_a_pty(int fd)
 {
@@ -18,10 +21,18 @@ static int not_a_pty(int fd)
     return 1;
 }
 
-int tcgetattr(int fd, struct termios *t) { (void)t; return not_a_pty(fd) ? -1 : 0; }
-int tcsetattr(int fd, int actions, const struct termios *t) { (void)actions; (void)t; return not_a_pty(fd) ? -1 : 0; }
-int tcflush(int fd, int queue) { (void)queue; return not_a_pty(fd) ? -1 : 0; }
-int tcdrain(int fd) { return not_a_pty(fd) ? -1 : 0; }
+/* 2026-09-11: PTY descriptors now own real attributes; the historical
+ * ENOTTY description above still applies to the legacy serial console. */
+int tcgetattr(int fd, struct termios *t) { return pty_result(libc_pty_ctl(fd,LPTY_GETATTR,t)); }
+int tcsetattr(int fd, int actions, const struct termios *t)
+{
+    if(actions<0||actions>2){errno=EINVAL;return -1;}
+    if(actions!=TCSANOW && tcdrain(fd)<0)return -1;
+    if(actions==TCSAFLUSH && tcflush(fd,TCIFLUSH)<0)return -1;
+    return pty_result(libc_pty_ctl(fd,LPTY_SETATTR,(void *)t));
+}
+int tcflush(int fd, int queue) { return pty_result(libc_pty_ctl(fd,LPTY_FLUSH,(void *)(long)queue)); }
+int tcdrain(int fd) { return pty_result(libc_pty_ctl(fd,LPTY_DRAIN,0)); }
 int tcflow(int fd, int action) { (void)action; return not_a_pty(fd) ? -1 : 0; }
 pid_t tcgetpgrp(int fd) { not_a_pty(fd); return -1; }
 int tcsetpgrp(int fd, pid_t pgrp) { (void)pgrp; return not_a_pty(fd) ? -1 : 0; }

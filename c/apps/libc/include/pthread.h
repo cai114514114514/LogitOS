@@ -28,11 +28,11 @@
  *   pthread_sigmask succeeds because there is nothing that could fail: it
  *   manipulates a mask that nothing consults, exactly as sigprocmask does.
  *
- * WHAT IS NOT HERE AT ALL: pthread_rwlock_*, pthread_barrier_*, pthread_spin_*,
- * priority inheritance, and process-shared anything. None is needed by the
- * program this was built for and each would be an untested primitive; the futex
- * they would all sit on is in place, so adding one is a page of code in
- * c/apps/libc/src/pthread.c and no kernel change.
+ * Reader/writer locks, reusable barriers and spin locks are real too. Like the
+ * older mutex/condition-variable layer, they are guest-tested against actual
+ * kernel threads rather than supplied as source-compatibility no-ops.
+ * Process-shared synchronization and priority inheritance remain unsupported:
+ * this kernel has neither a cross-address-space futex key nor shared mappings.
  *
  * `__thread` NEEDS THE LINKER SCRIPT. Link with
  *     -T c/apps/libc/logit_tls.ld
@@ -85,6 +85,8 @@ typedef unsigned int  pthread_key_t;
 typedef struct { size_t stacksize; int detachstate; size_t guardsize; } pthread_attr_t;
 typedef struct { int type; int pshared; } pthread_mutexattr_t;
 typedef struct { int clock; int pshared; } pthread_condattr_t;
+typedef struct { int pshared; } pthread_rwlockattr_t;
+typedef struct { int pshared; } pthread_barrierattr_t;
 
 /* The futex word is the WHOLE mutex. 0 = free, 1 = held with no waiter, 2 =
  * held and at least one thread is parked -- Drepper's three-state lock, which
@@ -108,6 +110,25 @@ typedef struct {
  * (no requeue: a broadcast wakes everyone, and they contend for the mutex). */
 typedef struct { volatile unsigned seq; int clock; } pthread_cond_t;
 #define PTHREAD_COND_INITIALIZER { 0, 0 }
+
+/* Writers is both the number of queued writers and the admission gate for new
+ * readers. Without it, a steady stream of readers can keep state above zero
+ * forever and starve a writer. state == -1 means writer-held, state >= 0 is the
+ * reader count. */
+typedef struct { volatile int state; volatile int writers; } pthread_rwlock_t;
+#define PTHREAD_RWLOCK_INITIALIZER { 0, 0 }
+
+/* generation makes the barrier reusable and is the futex word waiters sleep
+ * on. The last arrival advances it only after resetting waiting for the next
+ * round. */
+typedef struct {
+    volatile int generation;
+    volatile int waiting;
+    unsigned int count;
+} pthread_barrier_t;
+#define PTHREAD_BARRIER_SERIAL_THREAD (-1)
+
+typedef volatile int pthread_spinlock_t;
 
 typedef volatile int pthread_once_t;
 
@@ -143,6 +164,8 @@ int  pthread_mutexattr_init(pthread_mutexattr_t *a);
 int  pthread_mutexattr_destroy(pthread_mutexattr_t *a);
 int  pthread_mutexattr_settype(pthread_mutexattr_t *a, int type);
 int  pthread_mutexattr_gettype(const pthread_mutexattr_t *a, int *type);
+int  pthread_mutexattr_setpshared(pthread_mutexattr_t *a, int pshared);
+int  pthread_mutexattr_getpshared(const pthread_mutexattr_t *a, int *pshared);
 
 /* --- condition variables ------------------------------------------------ */
 int  pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a);
@@ -156,6 +179,44 @@ int  pthread_condattr_init(pthread_condattr_t *a);
 int  pthread_condattr_destroy(pthread_condattr_t *a);
 int  pthread_condattr_setclock(pthread_condattr_t *a, clockid_t clk);
 int  pthread_condattr_getclock(const pthread_condattr_t *a, clockid_t *clk);
+int  pthread_condattr_setpshared(pthread_condattr_t *a, int pshared);
+int  pthread_condattr_getpshared(const pthread_condattr_t *a, int *pshared);
+
+/* --- reader/writer locks ----------------------------------------------- */
+int  pthread_rwlock_init(pthread_rwlock_t *rw, const pthread_rwlockattr_t *a);
+int  pthread_rwlock_destroy(pthread_rwlock_t *rw);
+int  pthread_rwlock_rdlock(pthread_rwlock_t *rw);
+int  pthread_rwlock_tryrdlock(pthread_rwlock_t *rw);
+int  pthread_rwlock_timedrdlock(pthread_rwlock_t *rw,
+                                const struct timespec *abs);
+int  pthread_rwlock_wrlock(pthread_rwlock_t *rw);
+int  pthread_rwlock_trywrlock(pthread_rwlock_t *rw);
+int  pthread_rwlock_timedwrlock(pthread_rwlock_t *rw,
+                                const struct timespec *abs);
+int  pthread_rwlock_unlock(pthread_rwlock_t *rw);
+int  pthread_rwlockattr_init(pthread_rwlockattr_t *a);
+int  pthread_rwlockattr_destroy(pthread_rwlockattr_t *a);
+int  pthread_rwlockattr_setpshared(pthread_rwlockattr_t *a, int pshared);
+int  pthread_rwlockattr_getpshared(const pthread_rwlockattr_t *a,
+                                   int *pshared);
+
+/* --- barriers ---------------------------------------------------------- */
+int  pthread_barrier_init(pthread_barrier_t *b,
+                          const pthread_barrierattr_t *a, unsigned int count);
+int  pthread_barrier_destroy(pthread_barrier_t *b);
+int  pthread_barrier_wait(pthread_barrier_t *b);
+int  pthread_barrierattr_init(pthread_barrierattr_t *a);
+int  pthread_barrierattr_destroy(pthread_barrierattr_t *a);
+int  pthread_barrierattr_setpshared(pthread_barrierattr_t *a, int pshared);
+int  pthread_barrierattr_getpshared(const pthread_barrierattr_t *a,
+                                    int *pshared);
+
+/* --- spin locks -------------------------------------------------------- */
+int  pthread_spin_init(pthread_spinlock_t *s, int pshared);
+int  pthread_spin_destroy(pthread_spinlock_t *s);
+int  pthread_spin_lock(pthread_spinlock_t *s);
+int  pthread_spin_trylock(pthread_spinlock_t *s);
+int  pthread_spin_unlock(pthread_spinlock_t *s);
 
 /* --- once + thread-specific data ---------------------------------------- */
 int  pthread_once(pthread_once_t *once, void (*init)(void));

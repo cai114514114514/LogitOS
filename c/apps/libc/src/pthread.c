@@ -566,6 +566,7 @@ int pthread_attr_getstack(const pthread_attr_t *a, void **addr, size_t *sz)
 int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a)
 {
     if (!m) return EINVAL;
+    if (a && a->pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
     m->futex = 0; m->owner = 0; m->depth = 0;
     m->type = a ? a->type : PTHREAD_MUTEX_NORMAL;
     return 0;
@@ -670,6 +671,16 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *a, int type)
 }
 int pthread_mutexattr_gettype(const pthread_mutexattr_t *a, int *type)
 { if (!a || !type) return EINVAL; *type = a->type; return 0; }
+int pthread_mutexattr_setpshared(pthread_mutexattr_t *a, int pshared)
+{
+    if (!a || (pshared != PTHREAD_PROCESS_PRIVATE &&
+               pshared != PTHREAD_PROCESS_SHARED)) return EINVAL;
+    if (pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    a->pshared = pshared;
+    return 0;
+}
+int pthread_mutexattr_getpshared(const pthread_mutexattr_t *a, int *pshared)
+{ if (!a || !pshared) return EINVAL; *pshared = a->pshared; return 0; }
 
 /* --- condition variables ------------------------------------------------ */
 
@@ -692,7 +703,13 @@ int pthread_mutexattr_gettype(const pthread_mutexattr_t *a, int *type)
  */
 
 int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a)
-{ if (!c) return EINVAL; c->seq = 0; c->clock = a ? a->clock : CLOCK_REALTIME; return 0; }
+{
+    if (!c) return EINVAL;
+    if (a && a->pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    c->seq = 0;
+    c->clock = a ? a->clock : CLOCK_REALTIME;
+    return 0;
+}
 int pthread_cond_destroy(pthread_cond_t *c) { return c ? 0 : EINVAL; }
 
 static int cond_wait_ms(pthread_cond_t *c, pthread_mutex_t *m, unsigned ms)
@@ -756,6 +773,254 @@ int pthread_condattr_setclock(pthread_condattr_t *a, clockid_t clk)
 }
 int pthread_condattr_getclock(const pthread_condattr_t *a, clockid_t *clk)
 { if (!a || !clk) return EINVAL; *clk = a->clock; return 0; }
+int pthread_condattr_setpshared(pthread_condattr_t *a, int pshared)
+{
+    if (!a || (pshared != PTHREAD_PROCESS_PRIVATE &&
+               pshared != PTHREAD_PROCESS_SHARED)) return EINVAL;
+    if (pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    a->pshared = pshared;
+    return 0;
+}
+int pthread_condattr_getpshared(const pthread_condattr_t *a, int *pshared)
+{ if (!a || !pshared) return EINVAL; *pshared = a->pshared; return 0; }
+
+/* --- reader/writer locks ------------------------------------------------
+ *
+ * state is the futex word: -1 for a writer, otherwise the reader count.
+ * writers is an admission gate, not another sleeping address. A writer raises
+ * it before waiting, so later readers park instead of barging forever. Every
+ * transition that may make progress wakes state; all predicates are rechecked
+ * after a wake, so harmless spurious wakes stay harmless.
+ * ------------------------------------------------------------------------- */
+
+int pthread_rwlock_init(pthread_rwlock_t *rw, const pthread_rwlockattr_t *a)
+{
+    if (!rw) return EINVAL;
+    if (a && a->pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    rw->state = 0;
+    rw->writers = 0;
+    return 0;
+}
+
+int pthread_rwlock_destroy(pthread_rwlock_t *rw)
+{
+    if (!rw) return EINVAL;
+    if (__atomic_load_n(&rw->state, __ATOMIC_SEQ_CST) != 0 ||
+        __atomic_load_n(&rw->writers, __ATOMIC_SEQ_CST) != 0) return EBUSY;
+    return 0;
+}
+
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *rw)
+{
+    if (!rw) return EINVAL;
+    for (;;) {
+        int s;
+        if (__atomic_load_n(&rw->writers, __ATOMIC_SEQ_CST) != 0) return EBUSY;
+        s = __atomic_load_n(&rw->state, __ATOMIC_SEQ_CST);
+        if (s < 0 || s == INT_MAX) return EBUSY;
+        if (cas(&rw->state, s, s + 1) == s) {
+            /* A writer may have announced itself between the admission check
+             * and our CAS. Back out so it retains priority. */
+            if (__atomic_load_n(&rw->writers, __ATOMIC_SEQ_CST) == 0) return 0;
+            if (__atomic_sub_fetch(&rw->state, 1, __ATOMIC_SEQ_CST) == 0)
+                futex_wake(&rw->state, INT_MAX);
+            return EBUSY;
+        }
+    }
+}
+
+static int rw_rdlock(pthread_rwlock_t *rw, const struct timespec *abs, int timed)
+{
+    if (!rw || (timed && (!abs || abs->tv_nsec < 0 ||
+                          abs->tv_nsec >= 1000000000L))) return EINVAL;
+    for (;;) {
+        int s, rc = pthread_rwlock_tryrdlock(rw);
+        if (rc == 0) return 0;
+        s = __atomic_load_n(&rw->state, __ATOMIC_SEQ_CST);
+        rc = futex_wait(&rw->state, s,
+                        timed ? abs_to_ms(abs, CLOCK_REALTIME) : 0);
+        if (timed && rc == FUTEX_E_TIMEDOUT) {
+            if (pthread_rwlock_tryrdlock(rw) == 0) return 0;
+            return ETIMEDOUT;
+        }
+    }
+}
+
+int pthread_rwlock_rdlock(pthread_rwlock_t *rw)
+{ return rw_rdlock(rw, 0, 0); }
+
+int pthread_rwlock_timedrdlock(pthread_rwlock_t *rw,
+                               const struct timespec *abs)
+{ return rw_rdlock(rw, abs, 1); }
+
+int pthread_rwlock_trywrlock(pthread_rwlock_t *rw)
+{
+    if (!rw) return EINVAL;
+    return cas(&rw->state, 0, -1) == 0 ? 0 : EBUSY;
+}
+
+static int rw_wrlock(pthread_rwlock_t *rw, const struct timespec *abs, int timed)
+{
+    if (!rw || (timed && (!abs || abs->tv_nsec < 0 ||
+                          abs->tv_nsec >= 1000000000L))) return EINVAL;
+    __atomic_add_fetch(&rw->writers, 1, __ATOMIC_SEQ_CST);
+    for (;;) {
+        int s = __atomic_load_n(&rw->state, __ATOMIC_SEQ_CST);
+        if (s == 0 && cas(&rw->state, 0, -1) == 0) {
+            __atomic_sub_fetch(&rw->writers, 1, __ATOMIC_SEQ_CST);
+            return 0;
+        }
+        if (futex_wait(&rw->state, s,
+                       timed ? abs_to_ms(abs, CLOCK_REALTIME) : 0)
+                == FUTEX_E_TIMEDOUT && timed) {
+            if (cas(&rw->state, 0, -1) == 0) {
+                __atomic_sub_fetch(&rw->writers, 1, __ATOMIC_SEQ_CST);
+                return 0;
+            }
+            if (__atomic_sub_fetch(&rw->writers, 1, __ATOMIC_SEQ_CST) == 0)
+                futex_wake(&rw->state, INT_MAX);
+            return ETIMEDOUT;
+        }
+    }
+}
+
+int pthread_rwlock_wrlock(pthread_rwlock_t *rw)
+{ return rw_wrlock(rw, 0, 0); }
+
+int pthread_rwlock_timedwrlock(pthread_rwlock_t *rw,
+                               const struct timespec *abs)
+{ return rw_wrlock(rw, abs, 1); }
+
+int pthread_rwlock_unlock(pthread_rwlock_t *rw)
+{
+    if (!rw) return EINVAL;
+    for (;;) {
+        int s = __atomic_load_n(&rw->state, __ATOMIC_SEQ_CST);
+        if (s == -1) {
+            if (cas(&rw->state, -1, 0) != -1) continue;
+            futex_wake(&rw->state, INT_MAX);
+            return 0;
+        }
+        if (s <= 0) return EPERM;
+        if (cas(&rw->state, s, s - 1) != s) continue;
+        if (s == 1) futex_wake(&rw->state, INT_MAX);
+        return 0;
+    }
+}
+
+int pthread_rwlockattr_init(pthread_rwlockattr_t *a)
+{ if (!a) return EINVAL; a->pshared = PTHREAD_PROCESS_PRIVATE; return 0; }
+int pthread_rwlockattr_destroy(pthread_rwlockattr_t *a) { return a ? 0 : EINVAL; }
+int pthread_rwlockattr_setpshared(pthread_rwlockattr_t *a, int pshared)
+{
+    if (!a || (pshared != PTHREAD_PROCESS_PRIVATE &&
+               pshared != PTHREAD_PROCESS_SHARED)) return EINVAL;
+    if (pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    a->pshared = pshared;
+    return 0;
+}
+int pthread_rwlockattr_getpshared(const pthread_rwlockattr_t *a, int *pshared)
+{ if (!a || !pshared) return EINVAL; *pshared = a->pshared; return 0; }
+
+/* --- barriers ---------------------------------------------------------- */
+
+int pthread_barrier_init(pthread_barrier_t *b,
+                         const pthread_barrierattr_t *a, unsigned int count)
+{
+    if (!b || count == 0) return EINVAL;
+    if (a && a->pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    b->generation = 0;
+    b->waiting = 0;
+    b->count = count;
+    return 0;
+}
+
+int pthread_barrier_destroy(pthread_barrier_t *b)
+{
+    if (!b || !b->count) return EINVAL;
+    if (__atomic_load_n(&b->waiting, __ATOMIC_SEQ_CST) != 0) return EBUSY;
+    b->count = 0;
+    return 0;
+}
+
+int pthread_barrier_wait(pthread_barrier_t *b)
+{
+    int generation;
+    unsigned int arrived;
+    if (!b || !b->count) return EINVAL;
+    generation = __atomic_load_n(&b->generation, __ATOMIC_SEQ_CST);
+    arrived = (unsigned int)__atomic_add_fetch(&b->waiting, 1,
+                                               __ATOMIC_SEQ_CST);
+    if (arrived == b->count) {
+        __atomic_store_n(&b->waiting, 0, __ATOMIC_SEQ_CST);
+        __atomic_add_fetch(&b->generation, 1, __ATOMIC_SEQ_CST);
+        futex_wake(&b->generation, INT_MAX);
+        return PTHREAD_BARRIER_SERIAL_THREAD;
+    }
+    if (arrived > b->count) {
+        __atomic_sub_fetch(&b->waiting, 1, __ATOMIC_SEQ_CST);
+        return EINVAL;
+    }
+    while (__atomic_load_n(&b->generation, __ATOMIC_SEQ_CST) == generation)
+        futex_wait(&b->generation, generation, 0);
+    return 0;
+}
+
+int pthread_barrierattr_init(pthread_barrierattr_t *a)
+{ if (!a) return EINVAL; a->pshared = PTHREAD_PROCESS_PRIVATE; return 0; }
+int pthread_barrierattr_destroy(pthread_barrierattr_t *a) { return a ? 0 : EINVAL; }
+int pthread_barrierattr_setpshared(pthread_barrierattr_t *a, int pshared)
+{
+    if (!a || (pshared != PTHREAD_PROCESS_PRIVATE &&
+               pshared != PTHREAD_PROCESS_SHARED)) return EINVAL;
+    if (pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    a->pshared = pshared;
+    return 0;
+}
+int pthread_barrierattr_getpshared(const pthread_barrierattr_t *a, int *pshared)
+{ if (!a || !pshared) return EINVAL; *pshared = a->pshared; return 0; }
+
+/* --- spin locks -------------------------------------------------------- */
+
+int pthread_spin_init(pthread_spinlock_t *s, int pshared)
+{
+    if (!s) return EINVAL;
+    if (pshared != PTHREAD_PROCESS_PRIVATE &&
+        pshared != PTHREAD_PROCESS_SHARED) return EINVAL;
+    if (pshared == PTHREAD_PROCESS_SHARED) return ENOTSUP;
+    *s = 0;
+    return 0;
+}
+
+int pthread_spin_destroy(pthread_spinlock_t *s)
+{
+    if (!s) return EINVAL;
+    return __atomic_load_n(s, __ATOMIC_SEQ_CST) ? EBUSY : 0;
+}
+
+int pthread_spin_trylock(pthread_spinlock_t *s)
+{
+    if (!s) return EINVAL;
+    return cas(s, 0, 1) == 0 ? 0 : EBUSY;
+}
+
+int pthread_spin_lock(pthread_spinlock_t *s)
+{
+    unsigned int spins = 0;
+    if (!s) return EINVAL;
+    while (cas(s, 0, 1) != 0) {
+        __asm__ volatile ("pause");
+        if (++spins == 128) { sched_yield(); spins = 0; }
+    }
+    return 0;
+}
+
+int pthread_spin_unlock(pthread_spinlock_t *s)
+{
+    if (!s) return EINVAL;
+    if (__atomic_exchange_n(s, 0, __ATOMIC_RELEASE) == 0) return EPERM;
+    return 0;
+}
 
 /* --- pthread_once ------------------------------------------------------- */
 

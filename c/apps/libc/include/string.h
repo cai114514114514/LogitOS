@@ -49,5 +49,14 @@ int    strverscmp(const char *, const char *);
 size_t strlcpy(char *, const char *, size_t);   /* BSD: bounded copy, always NUL-term, returns src len */
 size_t strlcat(char *, const char *, size_t);   /* BSD: bounded concat, returns intended total len */
 char  *strsep(char **, const char *);           /* tokenize: split *sp at any delim char */
+char  *strnstr(const char *, const char *, size_t);
+void   explicit_bzero(void *, size_t);
+void  *memset_explicit(void *, int, size_t);
+int    timingsafe_bcmp(const void *, const void *, size_t);
+int    timingsafe_memcmp(const void *, const void *, size_t);
+
+#include <locale.h>
+int    strcoll_l(const char *, const char *, locale_t);
+size_t strxfrm_l(char *, const char *, size_t, locale_t);
 
 #endif

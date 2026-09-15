@@ -109,4 +109,8 @@ int      fwide(FILE *, int);
 
 size_t wcsftime(wchar_t *, size_t, const wchar_t *, const struct tm *);
 
+#include <locale.h>
+int    wcscoll_l(const wchar_t *, const wchar_t *, locale_t);
+size_t wcsxfrm_l(wchar_t *, const wchar_t *, size_t, locale_t);
+
 #endif /* _WCHAR_H */

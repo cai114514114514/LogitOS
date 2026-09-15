@@ -82,6 +82,7 @@ unsigned sleep(unsigned secs);
 int     usleep(unsigned usecs);
 long    sysconf(int name);
 int     gethostname(char *buf, size_t n);
+int     getentropy(void *buf, size_t n);
 
 /* nice() is declared here because POSIX puts it here, and IMPLEMENTED in
  * c/apps/libc/src/resource.c next to getpriority/setpriority, which it is

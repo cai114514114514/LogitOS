@@ -36,6 +36,11 @@
  * with the errno a C program tests for by name. */
 
 typedef unsigned int socklen_t;
+/* 2026-09-11 correction to the historical inventory above: IPv4 STREAM
+ * socket/bind/listen/accept/connect/getsockname and ordinary read/write now
+ * work, including byte-order conversion. SO_REUSEADDR and SO_RCVTIMEO map
+ * to the native options. getpeername/getsockopt and addressed datagrams
+ * still report unsupported; this is not a complete BSD socket surface. */
 typedef unsigned short sa_family_t;
 
 struct sockaddr { sa_family_t sa_family; char sa_data[14]; };
