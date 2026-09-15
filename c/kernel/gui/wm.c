@@ -243,24 +243,118 @@ struct app {
  * rather than disguising this remaining GUI serialization as parallel draw. */
 static struct gui_mutex wm_lock = GUI_MUTEX_INIT;
 static uint64_t wm_lock_ns, wm_lock_max_ns, wm_lock_calls;
+enum wm_lock_tag {
+    WM_LOCK_LAUNCH = 256,
+    WM_LOCK_BOOT,
+    WM_LOCK_INPUT_PASS,
+    WM_LOCK_NOTIFY_PASS,
+    WM_LOCK_FRAME_PASS,
+    WM_LOCK_TAG_COUNT
+};
+struct wm_lock_stat {
+    uint64_t calls, wall_ns, cpu_ns, max_wall_ns, max_cpu_ns, redispatches;
+};
+struct wm_lock_hold {
+    uint64_t seq, wall_ns, cpu_ns, redispatches;
+    unsigned tag;
+};
+#define WM_LOCK_TOP_N 6
+static struct wm_lock_stat wm_lock_stats[WM_LOCK_TAG_COUNT];
+static struct wm_lock_hold wm_lock_top[WM_LOCK_TOP_N];
+static struct wm_lock_stat wm_lock_stats_snapshot[WM_LOCK_TAG_COUNT];
+static struct wm_lock_hold wm_lock_top_snapshot[WM_LOCK_TOP_N];
+static int wm_lock_report_pending;
+static uint64_t wm_lock_seq;
+static uint64_t wm_lock_render_frames;
 /* Cross-thread requests for a full repaint carry their cause all the way to
  * the compositor.  This used to be a boolean named external_dirty, shared by
  * damage-ring overflow AND process exit, so the only measurement available
  * called both of them "overflow".  That is worse than no attribution: it
  * points an optimization at the queue when the caller was proc_exit(). */
 static unsigned external_full_reasons;
-static uint64_t wm_lock_started;
-static void wm_state_lock(void) {
+static uint64_t wm_lock_started, wm_lock_cpu_started, wm_lock_slices_started;
+static unsigned wm_lock_tag;
+static void wm_state_lock(unsigned tag) {
     gui_mutex_lock(&wm_lock);
-    if (wm_lock.depth == 1) wm_lock_started = time_mono_ns();
+    if (wm_lock.depth == 1) {
+        /* This tree now has an exact per-thread CPU accumulator even though the
+         * first WM-lock investigation assumed it did not: sched.c folds the
+         * dispatched thread at every switch, park and timer tick.  Bracket it
+         * INSIDE the wall-clock bracket so cpu_ns cannot include time which
+         * wall_ns excluded.  The slices delta is the independent cheap proxy:
+         * this same holder gains a slice only after it was switched away and
+         * redispatched, so nonzero means the mutex survived descheduling. */
+        wm_lock_started = time_mono_ns();
+        wm_lock_cpu_started = sched_cpu_ns_self();
+        wm_lock_slices_started = sched_slices_of(sched_current_thread());
+        wm_lock_tag = tag;
+    }
 }
 static void wm_state_unlock(void) {
     if (wm_lock.depth == 1) {
+        uint64_t cpu = sched_cpu_ns_self() - wm_lock_cpu_started;
+        uint64_t slices = sched_slices_of(sched_current_thread()) - wm_lock_slices_started;
         uint64_t n = time_mono_ns() - wm_lock_started;
+        unsigned tag = wm_lock_tag < WM_LOCK_TAG_COUNT ? wm_lock_tag : 0;
+        struct wm_lock_stat *s = &wm_lock_stats[tag];
         wm_lock_ns += n; wm_lock_calls++;
         if (n > wm_lock_max_ns) wm_lock_max_ns = n;
+        s->calls++; s->wall_ns += n; s->cpu_ns += cpu; s->redispatches += slices;
+        if (n > s->max_wall_ns) { s->max_wall_ns = n; s->max_cpu_ns = cpu; }
+        struct wm_lock_hold h = { ++wm_lock_seq, n, cpu, slices, tag };
+        for (int i = 0; i < WM_LOCK_TOP_N; i++) {
+            if (h.wall_ns <= wm_lock_top[i].wall_ns) continue;
+            struct wm_lock_hold old = wm_lock_top[i]; wm_lock_top[i] = h; h = old;
+        }
     }
     gui_mutex_unlock(&wm_lock);
+}
+
+static const char *wm_lock_tag_name(unsigned tag)
+{
+    switch (tag) {
+    case WM_LOCK_LAUNCH:      return "launch";
+    case WM_LOCK_BOOT:        return "boot";
+    case WM_LOCK_INPUT_PASS:  return "input";
+    case WM_LOCK_NOTIFY_PASS: return "notify";
+    case WM_LOCK_FRAME_PASS:  return "frame";
+    default:                  return "syscall";
+    }
+}
+
+/* Snapshot under wm_lock, print after it. Serial output is allowed to stall and
+ * was already inside the measured frame-pass hold before this attribution work;
+ * putting the new diagnostic there would manufacture the tail being measured. */
+static void wm_lock_report_prepare(void)
+{
+    for (unsigned i = 0; i < WM_LOCK_TAG_COUNT; i++)
+        wm_lock_stats_snapshot[i] = wm_lock_stats[i];
+    for (int i = 0; i < WM_LOCK_TOP_N; i++)
+        wm_lock_top_snapshot[i] = wm_lock_top[i];
+    wm_lock_report_pending = 1;
+}
+
+static void wm_lock_report_emit(void)
+{
+    if (!wm_lock_report_pending) return;
+    wm_lock_report_pending = 0;
+    for (unsigned tag = 0; tag < WM_LOCK_TAG_COUNT; tag++) {
+        const struct wm_lock_stat *s = &wm_lock_stats_snapshot[tag];
+        if (!s->calls) continue;
+        kprintf("[wm] locktag tag=%s num=%u calls=%lu wall_ns=%lu cpu_ns=%lu "
+                "max_wall_ns=%lu max_cpu_ns=%lu redispatches=%lu\n",
+                wm_lock_tag_name(tag), tag, (unsigned long)s->calls,
+                (unsigned long)s->wall_ns, (unsigned long)s->cpu_ns,
+                (unsigned long)s->max_wall_ns, (unsigned long)s->max_cpu_ns,
+                (unsigned long)s->redispatches);
+    }
+    for (int i = 0; i < WM_LOCK_TOP_N && wm_lock_top_snapshot[i].wall_ns; i++) {
+        const struct wm_lock_hold *h = &wm_lock_top_snapshot[i];
+        kprintf("[wm] locktop rank=%d seq=%lu tag=%s num=%u wall_ns=%lu cpu_ns=%lu "
+                "redispatches=%lu\n", i + 1, (unsigned long)h->seq,
+                wm_lock_tag_name(h->tag), h->tag, (unsigned long)h->wall_ns,
+                (unsigned long)h->cpu_ns, (unsigned long)h->redispatches);
+    }
 }
 
 struct win {
@@ -1844,6 +1938,12 @@ static struct app *find_live_app(const char *name)
 
 void wm_launch_locked(const char *aex_file, const char *arg)
 {
+    unsigned state_tag = wm_lock_tag;
+    /* Contract: enter and return with wm_lock held.  Do NOT substitute
+     * graphics_lock while wm_lock is peeled below: the loader does not touch
+     * pixels, and doing so would merely transfer the measured 99 ms stall to
+     * the compositor lock.  A second single-instance check immediately before
+     * publication resolves the real race without freezing either domain. */
     /* THE GATE. Everything else about the lock is presentation; this line is
      * the mechanism. It is here and not at the call sites deliberately: there
      * are five of them today (boot, the dock, a Finder double-click, a file
@@ -1853,19 +1953,26 @@ void wm_launch_locked(const char *aex_file, const char *arg)
         kprintf("[wm] locked: refusing to launch %s\n", aex_file);
         return;
     }
+    /* File I/O, image allocation and ELF mapping do not inspect WM state.  In
+     * the measured Terminal launch the enclosing input acquisition was 93--99
+     * ms and almost entirely on-CPU.  The image and address space are private
+     * until publication, so stop calling that loader work a WM-state critical
+     * section. */
+    wm_state_unlock();
     int sz = vfs_size(aex_file);
-    if (sz <= 0) { serial_puts("[wm] launch: not found\n"); return; }
-    if (sz < AEX_HDR_SIZE) { serial_puts("[wm] launch: bad aex\n"); return; }  /* aex_info reads the 64-byte header */
+    if (sz <= 0) { serial_puts("[wm] launch: not found\n"); wm_state_lock(state_tag); return; }
+    if (sz < AEX_HDR_SIZE) { serial_puts("[wm] launch: bad aex\n"); wm_state_lock(state_tag); return; }  /* aex_info reads the 64-byte header */
 
-    if (sz > 0x7FF00000) { serial_puts("[wm] launch: too large\n"); return; }  /* sz+511 would overflow int */
+    if (sz > 0x7FF00000) { serial_puts("[wm] launch: too large\n"); wm_state_lock(state_tag); return; }  /* sz+511 would overflow int */
     int bytes = ((sz + 511) / 512) * 512;
     void *img = kmalloc((unsigned)bytes);
-    if (!img) { serial_puts("[wm] launch: kmalloc img failed\n"); return; }
-    if (vfs_read(aex_file, img, bytes) <= 0) { serial_puts("[wm] launch: vfs_read failed\n"); kfree(img); return; }
+    if (!img) { serial_puts("[wm] launch: kmalloc img failed\n"); wm_state_lock(state_tag); return; }
+    if (vfs_read(aex_file, img, bytes) <= 0) { serial_puts("[wm] launch: vfs_read failed\n"); kfree(img); wm_state_lock(state_tag); return; }
 
     char name[32], ext[8];
-    if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); kfree(img); return; }
+    if (aex_info(img, name, ext) != 0) { serial_puts("[wm] launch: bad aex\n"); kfree(img); wm_state_lock(state_tag); return; }
 
+    wm_state_lock(state_tag);
     struct app *exist = find_live_app(name);
     if (exist) {                            /* single instance: just focus it */
         serial_puts("[wm] launch: already live, focusing\n");
@@ -1884,6 +1991,8 @@ void wm_launch_locked(const char *aex_file, const char *arg)
     for (int i = 0; i < nreg; i++)
         if (streq(reg[i].file, aex_file)) { reg_bounce[i] = anim_stamp(); break; }
 
+    wm_state_unlock();
+
     /* Each app gets its own address space so apps can't touch each other's
      * memory. The new PML4 shares the kernel + framebuffer mappings but has a
      * private user region. elf_load + the stack mapping both target the *active*
@@ -1892,7 +2001,7 @@ void wm_launch_locked(const char *aex_file, const char *arg)
      * Correction: IRQ state does not stop explicit sleeps; thread.cr3 now
      * carries the temporary space across every context switch below. */
     uint64_t space = vmm_new_space();
-    if (!space) { serial_puts("[wm] launch: no address space\n"); kfree(img); return; }
+    if (!space) { serial_puts("[wm] launch: no address space\n"); kfree(img); wm_state_lock(state_tag); return; }
 
     /* wm_launch may run from the WM thread (kernel CR3) OR from an app's
      * syscall (SYS_OPEN_PATH / dock-open) while a ring-3 app is current (that
@@ -2028,8 +2137,22 @@ void wm_launch_locked(const char *aex_file, const char *arg)
      * rest of the boot (32 of them exist). Put after the sti, because
      * pcache_file_put can purge pages and reach the frame allocator. */
     if (fh >= 0) pcache_file_put(fh);
-    if (!entry) { serial_puts("[wm] launch: load failed\n"); vmm_free_space(space); kfree(img); return; }
+    if (!entry) { serial_puts("[wm] launch: load failed\n"); vmm_free_space(space); kfree(img); wm_state_lock(state_tag); return; }
 
+    wm_state_lock(state_tag);
+    /* Another caller may have published this single-instance app while this
+     * caller was loading its private image.  Recheck instead of holding either
+     * GUI lock across the loader; the loser discards only unpublished state. */
+    exist = find_live_app(name);
+    if (exist) {
+        if (exist->win >= 0) { win_set_min(&wins[exist->win], 0); raise_win(exist->win); }
+        dirty_full(FULL_FOCUS_EXISTING);
+        wm_state_unlock();
+        vmm_free_space(space);
+        kfree(img);
+        wm_state_lock(state_tag);
+        return;
+    }
     int ai = -1;
     for (int i = 0; i < MAXWIN; i++) if (!apps[i].used) { ai = i; break; }
     if (ai < 0) { serial_puts("[wm] launch: app slots full\n"); vmm_free_space(space); kfree(img); return; }
@@ -2091,9 +2214,14 @@ void wm_launch_locked(const char *aex_file, const char *arg)
 
 void wm_launch(const char *aex_file, const char *arg)
 {
-    gui_mutex_lock(&wm_lock);
+    uintptr_t me = (uintptr_t)sched_current_thread();
+    int had_state = me && __atomic_load_n(&wm_lock.owner, __ATOMIC_ACQUIRE) == me;
+    /* Do not add a recursive state depth: wm_launch_locked deliberately drops
+     * the caller's one real level around loader work.  A depth of two would
+     * make that unlock a no-op and silently restore the 99 ms hold. */
+    if (!had_state) wm_state_lock(WM_LOCK_LAUNCH);
     wm_launch_locked(aex_file, arg);
-    gui_mutex_unlock(&wm_lock);
+    if (!had_state) wm_state_unlock();
 }
 
 /* THE FILE ASSOCIATION, AND WHY IT ASKS THE BYTES.
@@ -2321,6 +2449,22 @@ static int is_draw_call(long num)
 }
 
 static int wm_domain_call(long num);
+static void wm_frame_boundary(long num)
+{
+    struct app *ap = cur_app();
+    struct win *dw = app_window(ap);
+    if (!dw) return;
+    if (num == SYS_GUI_FLUSH || num == SYS_GUI_FLUSH_RECT) {
+        if (dw->drawing) {
+            uint64_t d = time_mono_ms() - dw->draw_t0;
+            if (d > perf_drawmax) perf_drawmax = d;
+        }
+        dw->drawing = 0;
+    } else if (is_draw_call(num) && !dw->drawing) {
+        dw->drawing = 1;
+        dw->draw_t0 = time_mono_ms();
+    }
+}
 static long wm_gui_dispatch(long num, long a, long b, long c)
 {
     struct app *ap = cur_app();
@@ -2364,26 +2508,6 @@ static long wm_gui_dispatch(long num, long a, long b, long c)
         scopy(ap->name, p->name, sizeof ap->name);
         ap->arg[0] = 0;
         p->gui = ap;
-    }
-
-    /* The frame boundary, observed from the kernel side. This runs before the
-     * switch and for EVERY call, so a window is marked mid-draw by whatever the
-     * app happens to draw first: there is no ordering an app has to obey and no
-     * ABI for it to get wrong. */
-    if (wm_domain_call(num)) {
-        struct win *dw = app_window(ap);
-        if (dw) {
-            if (num == SYS_GUI_FLUSH || num == SYS_GUI_FLUSH_RECT) {
-                if (dw->drawing) {
-                    uint64_t d = time_mono_ms() - dw->draw_t0;
-                    if (d > perf_drawmax) perf_drawmax = d;
-                }
-                dw->drawing = 0;
-            } else if (is_draw_call(num) && !dw->drawing) {
-                dw->drawing = 1;
-                dw->draw_t0 = time_mono_ms();
-            }
-        }
     }
 
     switch (num) {
@@ -2976,7 +3100,7 @@ static long wm_event_syscall(long num, long a, long b)
 {
     if (num == SYS_POLL_EVENT && !a) return -1;
     if (a && !user_range_ok((void *)a, sizeof(struct logit_event), 1)) return -1;
-    wm_state_lock();
+    wm_state_lock((unsigned)num);
     struct app *ap = cur_app();
     struct win *w = app_window(ap);
     if (!w || !w->used || !__atomic_load_n(&ap->alive, __ATOMIC_ACQUIRE)) {
@@ -3024,14 +3148,30 @@ long wm_gui_syscall(long num, long a, long b, long c)
     if (num == SYS_WAIT_EVENT || num == SYS_POLL_EVENT)
         return wm_event_syscall(num, a, b);
     int owned = wm_domain_call(num);
-    if (owned) wm_state_lock();
+    /* graphics_lock comes first even for metadata-only domain calls.  The
+     * compositor keeps it while temporarily dropping wm_lock around pixels;
+     * taking wm_lock first here would make a syscall wait for that whole frame
+     * WHILE HOLDING the state lock, recreating the measured tail as inversion.
+     * Read-only/non-WM calls remain outside both domains. */
+    /* OPEN_PATH's launch loader is private until a state-locked publish.  It
+     * keeps wm_lock only for those state phases, but must not hold the graphics
+     * mutex for I/O/ELF work that never touches pixels. */
+    int graphics = owned && num != SYS_OPEN_PATH;
+    if (graphics) fb_graphics_lock();
+    if (owned) wm_state_lock((unsigned)num);
+    /* Observe the single-buffer frame boundary while state is coherent, then
+     * let expensive raster calls run under graphics_lock alone.  The WM input
+     * pass's resize section takes graphics_lock before wm_lock too, so
+     * win_apply_size cannot replace the surface while a syscall draws into it. */
+    if (owned) wm_frame_boundary(num);
     int pixels = is_draw_call(num);
-    if (pixels) fb_graphics_lock();
+    if (pixels) wm_state_unlock();
     long result = wm_gui_dispatch(num, a, b, c);
+    if (pixels) wm_state_lock((unsigned)num);
     if (num == SYS_GUI_CREATE || (num == SYS_GUI_WIN_STATE && a == WINS_SET_MIN))
         wm_sync_focus();
-    if (pixels) fb_graphics_unlock();
     if (owned) wm_state_unlock();
+    if (graphics) fb_graphics_unlock();
     return result;
 }
 
@@ -5016,6 +5156,53 @@ static void wm_render_locked(void)
      * not to the one being composited. */
     dirty_all = 0; ndmg = 0; dirty_full_reasons = 0;
 
+#if WM_MIDFRAME_GUARD
+    struct drect defer[NDMG];
+    int ndef = 0, late = 0, draw_n = 0;
+    uint64_t now_ms = time_mono_ms();
+    /* Decide which rectangles are safe while wm_lock still freezes `drawing`
+     * and window geometry.  The graphics mutex was deliberately moved ahead
+     * of wm_lock for every GUI-domain syscall, so no app can begin or finish a
+     * canvas update between this decision and the pixel pass below. */
+    for (int k = 0; k < nr; k++) {
+        if (rect_blocked(&r[k], now_ms, &late)) {
+            defer[ndef++] = r[k];
+            perf_defer++;
+        } else {
+            r[draw_n++] = r[k];
+        }
+    }
+#else
+    int draw_n = nr;
+#endif
+
+#ifndef WM_STATE_RENDER_NEGCTL
+    /* DISEASE (a), MEASURED BEFORE THIS PEEL: the three worst state-lock holds
+     * were frame acquisitions of 122.4--123.4 ms; their exact per-thread CPU
+     * time differed from wall by only 2--3 us and redispatches were zero.  The
+     * compositor's own max in those same guests was 121.8--122.8 ms.  That is
+     * computation under wm_lock, not a holder asleep or descheduled.
+     *
+     * WHAT IS INCONSISTENT WHILE UNLOCKED: `back` is between its old and new
+     * composite, the frame counters are not committed, and this frame's damage
+     * has been removed from dmg[].  That is safe because graphics_lock remains
+     * held.  Every GUI-domain syscall takes it BEFORE wm_lock, so neither
+     * pixels nor the geometry/stacking metadata render_region reads can change;
+     * the WM thread is the only other state writer and it is here.  Cross-file
+     * wm_damage() only appends to its own spinlocked queue for the next pass.
+     * The existing mid-frame guard above made its decision before the peel, and
+     * deferred rectangles are restored after wm_lock is reacquired below.
+     *
+     * WM_STATE_RENDER_NEGCTL restores the old hold for the guest control.  It
+     * does not slow the renderer or assert a noisy tail threshold: it restores
+     * the causal lock boundary the gate counts. */
+    wm_state_unlock();
+#else
+    /* The control's asserted quantity: one frame entered its pixel pass while
+     * wm_lock was still owned.  Its duration is still recorded, never gated. */
+    if (wm_lock.depth == 1) wm_lock_render_frames++;
+#endif
+
     uint64_t t_start = time_mono_ns();
     uint64_t cpx_start = perf_cpx;
     uint64_t present_start = perf_present_ns;
@@ -5048,19 +5235,7 @@ static void wm_render_locked(void)
      * to ask is not "is the peel correct" but "does this kernel still have a
      * big lock" -- and the way to answer it is to grep for a DECLARATION
      * (`spinlock_t g_bkl` or an extern of it), never for the name. */
-#if WM_MIDFRAME_GUARD
-    struct drect defer[NDMG];
-    int ndef = 0, late = 0;
-    uint64_t now_ms = time_mono_ms();
-#endif
-    for (int k = 0; k < nr; k++) {
-#if WM_MIDFRAME_GUARD
-        if (rect_blocked(&r[k], now_ms, &late)) {
-            defer[ndef++] = r[k];
-            perf_defer++;
-            continue;
-        }
-#endif
+    for (int k = 0; k < draw_n; k++) {
         render_region(&r[k]);
     }
     /* origin/main re-armed a full frame here while a window's open pop was
@@ -5071,6 +5246,9 @@ static void wm_render_locked(void)
      * claiming it keeps the pop alive, which is worse than the missing
      * re-arm. To restore it, give render_region() an int return again and OR
      * it across the loop above -- do not reintroduce the flag alone. */
+#ifndef WM_STATE_RENDER_NEGCTL
+    wm_state_lock(WM_LOCK_FRAME_PASS);
+#endif
 #if WM_MIDFRAME_GUARD
     if (late) perf_late++;
     /* Put the held-back rectangles back on the list AFTER the frame, never
@@ -5111,9 +5289,11 @@ void wm_render(void)
      * first attribution run.  A stack copy preserves both properties. */
     struct full_frame_trace trace = {0};
     fb_graphics_lock();
+    wm_state_lock(WM_LOCK_FRAME_PASS);
     wm_render_locked();
     trace = full_trace;
     full_trace.pending = 0;
+    wm_state_unlock();
     fb_graphics_unlock();
     if (trace.pending) {
         uint64_t accounted = trace.glass_ns + trace.present_ns;
@@ -6226,8 +6406,9 @@ static void wm_perf_report(void)
             (unsigned long)iqstats.dropped_motion, (unsigned long)iqstats.dropped_semantic,
             (unsigned long)iqstats.batches_with_backlog,
             (unsigned long)iqstats.high_watermark, (unsigned long)fb_openlogit_batches());
-    kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu\n",
-            wm_lock_calls, wm_lock_ns, wm_lock_max_ns);
+    kprintf("[wm] locks calls=%lu hold_ns=%lu max_ns=%lu render_locked=%lu\n",
+            wm_lock_calls, wm_lock_ns, wm_lock_max_ns, wm_lock_render_frames);
+    wm_lock_report_prepare();
 }
 
 /* The desktop proper. Called at boot on a machine with no accounts, and on the
@@ -6321,7 +6502,7 @@ void wm_run(void)
      * Correction: in_kernel now only prevents involuntary kernel preemption;
      * wm_lock owns GUI state and the rest of the kernel runs independently. */
     this_cpu()->in_kernel = 1;
-    wm_state_lock();
+    wm_state_lock(WM_LOCK_BOOT);
 
     /* The WM runs as a ring-0 thread; it MUST keep interrupts enabled so the
      * timer/mouse/keyboard keep firing even when no app is running (otherwise
@@ -6384,7 +6565,11 @@ void wm_run(void)
     wm_state_unlock();
     uint64_t last = 0;
     for (;;) {
-        wm_state_lock();
+        /* Input metadata needs only wm_lock.  Keeping graphics_lock around the
+         * whole pass would move launch latency into the compositor domain.
+         * Surface replacement is split into its own graphics->state section
+         * below because that is the one operation a pixel syscall must exclude. */
+        wm_state_lock(WM_LOCK_INPUT_PASS);
         wm_external_damage();
 #ifdef WM_CHURN_STRESS
         /* Churn stress (make CHURN=1): hammer the real wm_launch + EV_CLOSE
@@ -6415,16 +6600,24 @@ void wm_run(void)
          * them moves the frame; reallocating a 9 MB canvas twenty times to
          * arrive at one size is the difference between a resize that is
          * throttled and a resize that is unbounded. See RESIZE_APPLY_MS. */
+        wm_state_unlock();
+
+        /* Same graphics->state order as GUI syscalls.  win_apply_size() can
+         * replace a 9 MB surface, so this narrow section keeps a raster call's
+         * saved pointer alive while avoiding a graphics lock around launch. */
+        fb_graphics_lock();
+        wm_state_lock(WM_LOCK_INPUT_PASS);
         wm_apply_sizes();
         wm_pointer_sync();            /* one cursor-plane command per loop, not per packet */
         wm_state_unlock();
+        fb_graphics_unlock();
         proc_reap();                  /* no WM -> process-table lock nesting */
         wm_agent_service();
-        wm_state_lock();
+        wm_state_lock(WM_LOCK_NOTIFY_PASS);
         notify_tick();                /* WM-HOOK 5/6: expire notifications (see notify.h) */
         wm_state_unlock();
         net_poll();                   /* independent network domain, also during fetch */
-        wm_state_lock();
+        wm_state_lock(WM_LOCK_FRAME_PASS);
         uint64_t now = timer_ticks();
         /* Composite on DAMAGE, and on nothing else. The ~2 Hz tick no longer
          * asks for a frame -- it says what changed (the clock, in the menu bar)
@@ -6456,13 +6649,15 @@ void wm_run(void)
          * an input event. Notify apps and settle IME before damage is captured. */
         wm_sync_focus();
         wm_external_damage();
-        if (dirty) {
-            dirty = 0;
-            wm_render();
-        }
+        int render = dirty;
+        if (render) dirty = 0;
+        wm_state_unlock();
+        if (render) wm_render();
+        wm_state_lock(WM_LOCK_FRAME_PASS);
         wm_perf_report();
         wm_geom_report();     /* window frames, when they stop moving */
         wm_state_unlock();
+        wm_lock_report_emit();
         /* Interrupts only enqueue input. A batch that left backlog starts a new
          * full desktop pass immediately; otherwise the final locked recheck
          * catches input that arrived while this pass rendered. Park with no

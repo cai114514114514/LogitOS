@@ -3328,7 +3328,7 @@ test-selfhost-lex: check-asops check-abi $(BUILD)/asc
 	@bash tests/unit/run-selfhost-lex.sh $(BUILD)/asc
 
 # S2/S3: programs compiled by the self-hosted compiler (lib/asc.as) run identically.
-test-selfhost-compile: check-asops check-abi $(BUILD)/asc
+test-selfhost-compile: check-asops check-abi test-as-examples $(BUILD)/asc
 	@bash tests/unit/run-selfhost-compile.sh $(BUILD)/asc
 
 # S4: the self-hosting fixpoint -- the compiler compiled by itself reproduces itself.
@@ -4822,6 +4822,8 @@ clean-scratch:
 # tests/qmp/qmp_repaint.py had no make target at all until this line: five other
 # drivers import it as a library, so it was reachable and never run.
 -include tests/repaint.mk
+-include tests/compositor_lock.mk
+-include tests/wm_state_lock.mk
 
 # The browser LOADER test (test-loader), its negative control and the on-device
 # test-script-nav. Own fragment for the same reason as every other one above --
@@ -5205,6 +5207,7 @@ bench-aui: $(ISO) $(BUILD)/gallery.aex
 # taking no space, position:absolute anchored at its parent rather than at its
 # containing block) have their own controls in the same fragment.
 -include tests/layoutbox.mk
+-include tests/positioned_replaced.mk
 -include tests/line_height.mk
 -include tests/atomic_inline.mk
 -include tests/intrinsic.mk
